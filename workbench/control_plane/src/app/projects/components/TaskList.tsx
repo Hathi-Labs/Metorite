@@ -33,6 +33,7 @@
  * function the table calls, so the two canvases draw one row set.
  */
 import { ControlLink } from "@/components/ControlLink";
+import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
@@ -44,7 +45,7 @@ import {
   TaskMeta,
 } from "@/components/TaskMeta";
 import { AgentPill } from "./AgentPill";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
@@ -56,7 +57,8 @@ import {
   WAITING_ON_ME_EMPTY,
   WAITING_ON_ME_HINT,
 } from "../lib/agentRuns";
-import { sortForView } from "../lib/board";
+import { buildColumnDropUpdate, sortForView } from "../lib/board";
+import { LONG_PRESS_MS, pressMoved } from "../lib/compactChrome";
 import { tagColours, taskDeepLink, taskRef, typeFacts, visibleChips } from "../lib/card";
 import { clampCursor, stepCursor } from "../lib/cursor";
 import { emptyStateCopy } from "../lib/emptyState";
@@ -70,6 +72,7 @@ import {
   personLabel,
   toQuery,
 } from "../lib/grouping";
+import { PHONE_TICK_PX, phoneRowParts } from "../lib/listPhoneRow";
 import { quickAddPrefill } from "../lib/quickAdd";
 import {
   type Fold,
@@ -156,6 +159,24 @@ interface Props {
    * the top Capture. Default true.
    */
   canQuickAdd?: boolean;
+  /**
+   * MOB-2 — a phone, with the compact chrome. The list then draws a two-line
+   * row (tick, title, project, due, status) and no table. It is the page's own
+   * `phone` flag, never a second detector. The desktop table is unchanged.
+   */
+  phone?: boolean;
+  /**
+   * MOB-2 — the board's status write (`TaskBoard.onDrop`). The phone row's tick
+   * calls it with the axis patch the board card's tick builds, so one tap is
+   * one write with the page's own undo. Absent, the row has no tick.
+   */
+  onDrop?: (
+    task: TaskRow,
+    writes: [],
+    patch: Record<string, string | number | null> | null
+  ) => void;
+  /** MOB-2 — a task's OWN project lanes, where rows span projects (My tasks). */
+  statusesFor?: (task: TaskRow) => readonly StatusRow[];
 }
 
 export function TaskList({
@@ -182,8 +203,17 @@ export function TaskList({
   projectPath,
   projectPrivate,
   canQuickAdd = true,
+  phone = false,
+  onDrop,
+  statusesFor,
 }: Props) {
   const [cursor, setCursor] = useState(-1);
+  // MOB-2 — the finger resting on a phone row (selection by long press).
+  const pressed = useRef<{
+    fired: boolean;
+    at: { x: number; y: number } | null;
+    timer: ReturnType<typeof setTimeout> | undefined;
+  }>({ fired: false, at: null, timer: undefined });
   const [anchor, setAnchor] = useState<number | null>(null);
   const { flash, attach, scrollTo } = useFlash();
   // Group sections collapse, /tasks-style (TaskListGrouped's grammar): a
@@ -328,6 +358,246 @@ export function TaskList({
   const columnCount = columns.length;
   const showStatus = columns.includes("status");
   const showAssignees = columns.includes("assignees");
+
+  if (phone) {
+    const selectMode = Boolean(onToggle) && (selected?.size ?? 0) > 0;
+    const phoneStatus = listColumns(shownFields, Boolean(onToggle)).includes("status");
+    return (
+      // P2-6: the list container carries a visible focus ring for the keyboard.
+      <div
+        tabIndex={0}
+        onKeyDown={onKeyDown}
+        className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-label="Task list — arrow keys move, Shift extends the selection, Enter opens"
+        data-list-phone=""
+      >
+        {sections.map((group, groupIndex) => {
+          const isFolded = groupBy !== "none" && folded.has(group.key);
+          const accent = accentForGroup(
+            groupBy,
+            group.key,
+            groupIndex,
+            sections.length,
+            statuses
+          );
+          return (
+            <section key={group.key}>
+              {groupBy === "none" ? null : (
+                <h3
+                  className={`border-l-2 px-3 py-1.5 text-left text-xs font-medium ${accent.soft} ${accent.bar} ${accent.text}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleFold(group.key)}
+                    aria-expanded={!isFolded}
+                    className="flex min-h-8 min-w-0 items-center gap-2 text-left"
+                  >
+                    <Icon
+                      name="ChevronRight"
+                      className={`h-3.5 w-3.5 shrink-0 transition-transform ${accent.text} ${
+                        isFolded ? "" : "rotate-90"
+                      }`}
+                    />
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${accent.dot}`} />
+                    <span className="truncate">{group.label}</span>
+                    <span className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                      {group.count}
+                    </span>
+                  </button>
+                </h3>
+              )}
+              {isFolded ? null : (
+                <ul>
+                  {group.rows.map((row) => {
+                    const task = row.task;
+                    const atCursor = cursorAt >= 0 && rows[cursorAt] === task.id;
+                    const parts = phoneRowParts({
+                      task,
+                      statuses: statusesFor?.(task) ?? statuses,
+                      shownFields,
+                      path: projectPath?.(task) ?? null,
+                      selectMode,
+                      selected: selected?.has(task.id) ?? false,
+                      canComplete: Boolean(onDrop),
+                    });
+                    const stop = () => clearTimeout(pressed.current.timer);
+                    return (
+                      <li
+                        key={task.id}
+                        ref={attach(task.id)}
+                        data-phone-row=""
+                        onClick={() => {
+                          if (pressed.current.fired) {
+                            pressed.current.fired = false;
+                            return;
+                          }
+                          onSelect(task);
+                        }}
+                        // A finger that rests on a row starts a selection, as it
+                        // opens the menu on a board card. The tick is the one tap.
+                        onTouchStart={(event) => {
+                          if (!onToggle) return;
+                          const touch = event.touches[0];
+                          pressed.current.fired = false;
+                          pressed.current.at = { x: touch.clientX, y: touch.clientY };
+                          stop();
+                          pressed.current.timer = setTimeout(() => {
+                            pressed.current.fired = true;
+                            onToggle(task.id, false);
+                          }, LONG_PRESS_MS);
+                        }}
+                        onTouchMove={(event) => {
+                          const touch = event.touches[0];
+                          const from = pressed.current.at;
+                          if (from && pressMoved(touch.clientX - from.x, touch.clientY - from.y))
+                            stop();
+                        }}
+                        onTouchEnd={stop}
+                        onTouchCancel={stop}
+                        className={`flex cursor-pointer items-start gap-1 border-b border-border py-1 pr-3 last:border-0 ${
+                          selected?.has(task.id) ? "bg-accent/40" : ""
+                        } ${atCursor ? "bg-muted/60 ring-2 ring-inset ring-ring" : ""}`}
+                        style={{ paddingLeft: `${0.25 + row.depth * 0.75}rem` }}
+                      >
+                        {parts.tick.kind === "select" ? (
+                          <label
+                            className="flex shrink-0 items-center justify-center"
+                            style={{ width: PHONE_TICK_PX, height: PHONE_TICK_PX }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Checkbox
+                              aria-label={parts.tick.label}
+                              checked={parts.tick.checked}
+                              onChange={() => onToggle?.(task.id, false)}
+                            />
+                          </label>
+                        ) : parts.tick.kind === "complete" ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            type="button"
+                            title={parts.tick.label}
+                            aria-label={parts.tick.label}
+                            aria-pressed={parts.tick.done}
+                            data-phone-tick=""
+                            className="shrink-0"
+                            style={{ width: PHONE_TICK_PX, height: PHONE_TICK_PX }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (parts.tick.kind !== "complete") return;
+                              onDrop?.(
+                                task,
+                                [],
+                                buildColumnDropUpdate("status", parts.tick.toStatusId)
+                              );
+                            }}
+                          >
+                            <span
+                              className={`flex h-6 w-6 items-center justify-center rounded-full border-2 ${
+                                parts.tick.done
+                                  ? "border-success bg-success/15 text-success"
+                                  : "border-border text-transparent"
+                              }`}
+                            >
+                              <Icon name="Check" size={14} strokeWidth={3} aria-hidden />
+                            </span>
+                          </Button>
+                        ) : (
+                          // The tick's own width, so a row with no tick (no done
+                          // lane, or the statuses still load) lines its title up
+                          // with its neighbours (verifier P3).
+                          <span className="shrink-0" style={{ width: PHONE_TICK_PX }} aria-hidden />
+                        )}
+                        <div className="min-w-0 flex-1 py-2">
+                          <div className="flex min-w-0 items-start gap-1">
+                            {row.childCount > 0 ? (
+                              <button
+                                type="button"
+                                aria-label={
+                                  collapsed.has(task.id)
+                                    ? `Expand ${row.descendantCount} subtasks of ${task.title}`
+                                    : `Collapse subtasks of ${task.title}`
+                                }
+                                aria-expanded={!collapsed.has(task.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleParent(task.id);
+                                }}
+                                className="shrink-0 rounded p-0.5 text-muted-foreground"
+                              >
+                                <Icon
+                                  name={collapsed.has(task.id) ? "ChevronRight" : "ChevronDown"}
+                                  size={14}
+                                  aria-hidden
+                                />
+                              </button>
+                            ) : null}
+                            <span
+                              className={`line-clamp-2 min-w-0 text-sm text-foreground ${
+                                task.completed_at ? "line-through opacity-60" : ""
+                              }`}
+                            >
+                              <ControlLink
+                                href={taskDeepLink(task)}
+                                onActivate={() => onSelect(task)}
+                              >
+                                {task.title}
+                              </ControlLink>
+                            </span>
+                          </div>
+                          {row.crumb ? <ParentCrumb parent={task.parent} /> : null}
+                          <div className="mt-1 flex min-w-0 items-center gap-2">
+                            {parts.project ? (
+                              <span
+                                data-project-chip=""
+                                title={parts.project.title}
+                                className="inline-flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted-foreground"
+                              >
+                                <Icon
+                                  name="FolderKanban"
+                                  className="h-3 w-3 shrink-0"
+                                  aria-hidden
+                                />
+                                <span className="truncate">{parts.project.label}</span>
+                              </span>
+                            ) : (
+                              <span className="flex-1" />
+                            )}
+                            {parts.due ? (
+                              <span data-phone-due="" className="shrink-0">
+                                <TaskMeta chips={[parts.due]} />
+                              </span>
+                            ) : null}
+                            {parts.status && phoneStatus ? (
+                              <span data-phone-status="" className="shrink-0">
+                                <StatusChip
+                                  accent={accentForStatus(parts.status)}
+                                  label={parts.status.name}
+                                />
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {isFolded || !canQuickAdd ? null : (
+                <div className="px-3 py-1">
+                  <QuickAdd
+                    label={groupBy === "none" ? "Add a task" : `Add to ${group.label}`}
+                    onAdd={(title) => quickAdd(title, group.key)}
+                    className="max-w-md"
+                  />
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <div

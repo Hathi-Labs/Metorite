@@ -831,6 +831,9 @@ export default function MyTasksSpace({
               onSelect={onOpenTask}
               projectPath={pathOf}
               projectPrivate={privateOf}
+              phone={phone}
+              onDrop={(task, writes, patch) => void drop(task, writes, patch)}
+              statusesFor={statusesFor}
             />
           )}
           {compactChrome && !wantsAll && listMode ? (
