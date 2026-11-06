@@ -63,6 +63,8 @@ function QuickCapturePanel() {
   // the box opens; the member edits them before anything is filed.
   const [value, setValue] = useState(() => useTaskStore.getState().quickCaptureSeed ?? "");
   const seedFromAI = useState(() => useTaskStore.getState().quickCaptureSeedFromAI)[0];
+  // My Day's Shift+Enter opens the box on the AI split of its words (CC-1).
+  const openOnReview = useState(() => useTaskStore.getState().quickCaptureReview)[0];
   const [added, setAdded] = useState(0);
   const [pendingAtts, setPendingAtts] = useState<TaskAttachment[]>([]);
   // Optional capture-time date: a "remind" (RX-6: a REAL reminder at a date and
@@ -243,6 +245,15 @@ function QuickCapturePanel() {
       .catch(() => { /* keep the line split — atomizer is an upgrade */ })
       .finally(() => setAtomizing(false));
   };
+  // Opened for the AI split: go to its review at once. The instant line split
+  // shows first, and the atomizer upgrades it, as for a sweep.
+  const reviewOpened = useRef(false);
+  useEffect(() => {
+    if (!openOnReview || reviewOpened.current) return;
+    reviewOpened.current = true;
+    goToReview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on mount
+  }, []);
   const reviewCount = reviewItems.filter((l) => l.include && l.title.trim()).length;
   const commitReview = () => {
     const clean = reviewItems
