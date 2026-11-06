@@ -104,7 +104,11 @@ def _visit_log(mid: str, fields: list[dict[str, Any]] | None = None) -> dict[str
         "purpose": "Log each install visit: the site, the state and the count. Café ✓.",
         "objects": [{"name": "visit", "label": "Visit",
                      "fields": copy.deepcopy(_FIELDS if fields is None else fields)}],
-        "actions": [{"id": "find", "uses": "object:visit.list"}],
+        # STU-BETA-2: complete (plain list, get and write), so a save and a plan
+        # add nothing and the stored manifest equals the sent one.
+        "actions": [{"id": "find", "uses": "object:visit.list"},
+                    {"id": "peek", "uses": "object:visit.get"},
+                    {"id": "add", "uses": "object:visit.create"}],
     }
 
 
