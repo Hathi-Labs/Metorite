@@ -26,11 +26,11 @@ export const REMINDERS_BASE = "/api/projects/my/reminders";
 const BASE = REMINDERS_BASE;
 
 /**
- * A write that the server took. `already` is true when the create route found
+ * A write that the server took. `id` is the reminder the route answered with. `already` is true when the create route found
  * an open twin and wrote nothing (RX-7): the reminder was set before. `fireAt`
  * is the time of that twin, as the server sent it.
  */
-export type WriteResult = { ok: true; already?: boolean; fireAt?: string } | { ok: false; words: string };
+export type WriteResult = { ok: true; id?: string; already?: boolean; fireAt?: string } | { ok: false; words: string };
 
 /** The words of a create or a move that the server refused for no named reason. */
 const SAVE_FAILED_WORDS = "Metorite could not save the reminder. Try again.";
@@ -50,9 +50,11 @@ async function write(
     });
     const data: unknown = await res.json().catch(() => null);
     if (res.ok) {
-      const row = (data ?? {}) as { already?: unknown; fire_at?: unknown };
-      if (row.already !== true) return { ok: true };
-      return { ok: true, already: true, fireAt: typeof row.fire_at === "string" ? row.fire_at : undefined };
+      const row = (data ?? {}) as { already?: unknown; fire_at?: unknown; id?: unknown };
+      // The id lets a caller undo what it made (My Day capture, CC-1).
+      const id = typeof row.id === "string" ? row.id : undefined;
+      if (row.already !== true) return { ok: true, id };
+      return { ok: true, id, already: true, fireAt: typeof row.fire_at === "string" ? row.fire_at : undefined };
     }
     if (off && (res.status === 404 || res.status === 403)) return { ok: false, words: off };
     return { ok: false, words: refusalWords(res.status, data, SAVE_FAILED_WORDS) };

@@ -994,6 +994,8 @@ interface TaskState {
   quickCaptureSeed: string;
   /** The seed came from the AI, so the box says "Filled by AI" (§6.4 rule 2). */
   quickCaptureSeedFromAI: boolean;
+  /** The box opens on the AI split's review of the seed (My Day, CC-1). */
+  quickCaptureReview: boolean;
   /** the focused clarify overlay (keyboard-driven inbox processing). */
   clarifyModalOpen: boolean;
   // ⚠️ `workspacesModalOpen` / `openWorkspaces` / `closeWorkspaces` were
@@ -1477,7 +1479,7 @@ interface TaskState {
   openSettings: () => void;
   closeSettings: () => void;
   /** `seed` types words into the box first, for a member to check (NS-4b). */
-  openQuickCapture: (mode: "single" | "sweep", seed?: string, fromAI?: boolean) => void;
+  openQuickCapture: (mode: "single" | "sweep", seed?: string, fromAI?: boolean, review?: boolean) => void;
   closeQuickCapture: () => void;
   /** Open/close the clarify overlay for an item. */
   openClarify: (id: string) => void;
@@ -1860,6 +1862,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   quickCaptureMode: "single",
   quickCaptureSeed: "",
   quickCaptureSeedFromAI: false,
+  quickCaptureReview: false,
   clarifyModalOpen: false,
   processedThisSession: 0,
   clarifiedThisSession: new Set(),
@@ -2171,8 +2174,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  openQuickCapture: (mode, seed = "", fromAI = false) =>
+  openQuickCapture: (mode, seed = "", fromAI = false, review = false) =>
     set({
+      quickCaptureReview: review && seed.trim() !== "",
       quickCaptureOpen: true,
       quickCaptureMode: mode,
       quickCaptureSeed: seed.slice(0, 500),
