@@ -3846,7 +3846,10 @@ async def _apply_tool_packs(
     current = base + len(added) - (len(pool) - len(kept))
     plan = tool_packs.LoaderPlan()
     if offer_loader:
-        # RX-1: a sticky pack gives way to a load, so the plan counts it free.
+        # RX-1: a spare pack gives way to a load, so the plan counts it free:
+        # an old sticky pack, and (task 1747, D169 item 8 as amended) a pack
+        # that came in only by the words. For the Projects owner the plan
+        # also reaches the owner through it.
         built = {b.slug: len(b.tools) for b in builds}
         plan = await _plan_pack_loader(
             agent, allow, [b.slug for b in builds], builds=builds, current=current,
@@ -3863,7 +3866,10 @@ async def _apply_tool_packs(
     except RuntimeError as exc:
         _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
         return None
-    record = tool_packs.PackRun.of(turn, choice, loaded, via)
+    # Task 1747: the record keeps the sticky packs that left at the start of
+    # this turn, and which of them the loader offers. The context of the turn
+    # names them (``executor._pack_left_block``, ``tool_packs.left_line``).
+    record = tool_packs.PackRun.of(turn, choice, loaded, via, offered=plan.offered)
     replaced = frozenset(record.replaced)
     # OA-8f: the count that the run sends once this apply is done: the base
     # (with the load tool only when the plan offers it), the pack tools, less
@@ -3966,8 +3972,9 @@ async def _plan_pack_loader(
     the owner's delegation text exactly once. The MCP rule reads the registry
     (:func:`_mcp_may_attach`) and only for a pack of an owner that reads
     stranger text, and only while the run holds none of them. *spare* names
-    the sticky packs that can give way to a load, each with its tool count
-    (RX-1)."""
+    the packs that can give way to a load, each with its tool count (RX-1,
+    ``PackRun.spare``). For the Projects owner the plan reaches through them
+    (task 1747)."""
     from acb_skills import tool_packs
 
     if not _loader_agent_ok(agent):
