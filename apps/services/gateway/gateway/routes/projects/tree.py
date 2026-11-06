@@ -23,6 +23,7 @@ tree.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -485,6 +486,31 @@ def _nest(nodes: dict[str, dict]) -> list[dict]:
         parent = nodes.get(str(node.get("parent_project_id") or ""))
         (parent["children"] if parent else roots).append(node)
     return roots
+
+
+async def grantable_project_ids(user: UserContext) -> frozenset[str]:
+    """The project ids that the member of the session may mark on one of
+    their own agent connections (WS-55 EA-17c-1, D-EA-13,
+    ``external_agent_access.md`` §10.8).
+
+    Each team project that :func:`_visible_projects` returns, and each root
+    of the member's own personal tree, as ``GET /projects/tree`` nests it in
+    ``personal``. Change access refuses any other id with 422.
+
+    ⚠️ It is the MEMBER's sight. The visibility drops ``user.agent``, so the
+    narrowing of an agent never decides what its member may grant. The
+    session is the request's own tenant (``_tenant_session``).
+    """
+    async with _tenant_session() as db:
+        vis = dataclasses.replace(await resolve_visibility(db, user), agent=None)
+        team = await _visible_projects(db, user, vis)
+        own = await _own_personal_projects(db, vis)
+    own_ids = {str(r.id) for r in own}
+    personal_roots = {
+        str(r.id) for r in own
+        if str(r.parent_project_id or "") not in own_ids
+    }
+    return frozenset({str(r.id) for r in team} | personal_roots)
 
 
 @router.get("/tree")

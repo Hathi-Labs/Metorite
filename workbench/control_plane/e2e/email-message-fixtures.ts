@@ -29,6 +29,7 @@ export const IDS = {
   slow: "77777777-7777-4777-8777-777777777777",
   inlineSimple: "88888888-8888-4888-8888-888888888888",
   inlineStyled: "99999999-9999-4999-8999-999999999999",
+  files: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 } as const;
 
 /**
@@ -213,6 +214,19 @@ export const MAILS: Record<string, Raw> = {
   }),
 };
 
+/** The six files of `IDS.files`. The list row has none, so they arrive late. */
+export const SIX_FILES = [
+  "invoice-1042.pdf", "invoice-1043.pdf", "gstr-1-september.xlsx",
+  "bank-statement.pdf", "credit-note-77.pdf", "notes-for-accounts.docx",
+].map((filename, i) => ({ id: `f-six-${i}`, filename, mime_type: "application/pdf", size_bytes: 80_000 + i * 1000 }));
+
+MAILS[IDS.files] = mail(IDS.files, "GST filing for September", {
+  has_attachments: true,
+  body_text: "Hi,\n\nThe six files of the September return are attached.\n\nMeera",
+  snippet: "The six files of the September return",
+  from_address: { name: "Meera Shah", email: "meera@contoso.test" },
+});
+
 export interface Recorded {
   patches: Array<{ id: string; body: Raw }>;
 }
@@ -260,6 +274,9 @@ export async function installEmailMocks(
     if (id === IDS.slow && opts.slowMs) {
       await new Promise((done) => setTimeout(done, opts.slowMs));
       return json(r, { ...row, body_text: "The slow body arrived." });
+    }
+    if (id === IDS.files) {
+      return json(r, { ...row, attachments: SIX_FILES });
     }
     if (id === IDS.threadOld) {
       return json(r, { ...row, attachments: [{ id: "f-1", filename: "trial-plan.pdf", mime_type: "application/pdf", size_bytes: 52_000 }] });

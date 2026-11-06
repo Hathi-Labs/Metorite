@@ -353,3 +353,26 @@ def test_pkg7_the_r8_suite_is_named_in_the_must_run_list(workflow):
     assert block, "the --must-run argument list is missing"
     assert re.search(r"^[ \t]+tests/unit/test_auth_me_install_features_r8\.py(?: \\)?$",
                      block.group(1), re.M)
+
+
+# ── AI Studio (WS-STU J1) ───────────────────────────────────────────────────
+
+GUEST = build_access(["feature:chat", "apps:use:*"])
+WORKFLOWS_ONLY = build_access(["feature:workflows"])
+
+
+@pytest.mark.parametrize("who,expected", [
+    (OWNER, True), (ADMIN, True), (build_access(["feature:*"]), True),
+    (GUEST, False), (WORKFLOWS_ONLY, False),
+    (build_access(["feature:*"], [("feature:studio", "deny")]), False),
+])
+def test_studio_reaches_feature_holders_from_the_code_mirror_alone(who, expected):
+    """`studio` is in FEATURES, so `/auth/me` lists it also on a box whose
+    catalog has no `studio` row yet. The interim gate of B1 is gone: a member
+    with only `feature:workflows` does not reach Studio."""
+    assert "studio" in FEATURES
+    assert ("studio" in slugs(who, [])) is expected
+
+
+def test_a_member_without_studio_is_told_which_permission_it_needs():
+    assert denied(WORKFLOWS_ONLY, ["studio"])["studio"] == "feature:studio"
