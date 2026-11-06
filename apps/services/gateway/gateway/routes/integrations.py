@@ -41,7 +41,7 @@ from gateway import outbound_guard
 from gateway.connections import github as github_connection
 from gateway.connections import store as connection_store
 from gateway.db import current_tenant, tenant_session
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, StrictBool, model_validator
 from sqlalchemy import text
 
 _log = get_logger("gateway.integrations")
@@ -1949,12 +1949,46 @@ class McpServerRequest(BaseModel):
     #: says no.
     #: Strict, as the PATCH is: "false", "off" or 0 is 422, never "off".
     always_confirm: StrictBool = True
+    #: MCP-C2 (item 32): the admin says the key can only read, so no tool of
+    #: the server waits for the card. Off for a new server. A register is a
+    #: full register, so a body with no key turns it off. Strict too.
+    read_only_key: StrictBool = False
 
 
-class McpAlwaysConfirmRequest(BaseModel):
-    """The body of ``PATCH /integrations/mcp/{name}`` (H-300)."""
+class McpSwitchesRequest(BaseModel):
+    """The body of ``PATCH /integrations/mcp/{name}`` (H-300, MCP-C2).
 
-    always_confirm: StrictBool
+    Either switch, or both. A body with neither is 422, and so is a value
+    that is not a JSON boolean. A body with only ``always_confirm`` is the
+    H-300 body, and it behaves as it did."""
+
+    always_confirm: StrictBool | None = None
+    read_only_key: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def _one_switch_at_least(self) -> McpSwitchesRequest:
+        if self.always_confirm is None and self.read_only_key is None:
+            raise ValueError("Send always_confirm, read_only_key, or both.")
+        return self
+
+
+def _mcp_switch_refusal(exc: Exception) -> HTTPException:
+    """The 422 of a write that ``gateway.connections.mcp.McpSwitchRefused``
+    refuses (MCP-C2, item 32). The words name the reason, and no value."""
+    from gateway.connections import mcp as mcp_registry
+
+    words = {
+        mcp_registry.SWITCHES_BOTH_ON: (
+            "A server cannot be set to always confirm and to a read-only key at the "
+            "same time. Turn one switch off."),
+        mcp_registry.SWITCHES_OAUTH: (
+            "This server is connected over OAuth. It acts as the admin who connected "
+            "it, so the read-only key switch does not apply to it."),
+    }
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=words.get(getattr(exc, "reason", ""), "The switches of this server cannot change."),
+    )
 
 
 def audit_integration(
@@ -1993,6 +2027,8 @@ def mcp_out(server: Any) -> dict[str, Any]:
         "env_var_names": [], "header_names": list(server.header_names),
         "agent_scope": list(server.agent_scope), "enabled": server.enabled,
         "always_confirm": bool(server.always_confirm),
+        # MCP-C2: the one parse of the registry (``StoredServer``).
+        "read_only_key": bool(server.read_only_key),
         "created_at": str(server.created_at) if server.created_at else None,
         "updated_at": str(server.updated_at) if server.updated_at else None,
     }
@@ -2087,8 +2123,11 @@ async def register_mcp_server(
             connected_by=user.email, label=req.label or req.name,
             description=req.description, transport=req.transport,
             agent_scope=req.agent_scope, enabled=req.enabled,
-            always_confirm=req.always_confirm,
+            always_confirm=req.always_confirm, read_only_key=req.read_only_key,
         )
+    except mcp_registry.McpSwitchRefused as exc:
+        # MCP-C2: both switches on, or the read-only key on an OAuth row.
+        raise _mcp_switch_refusal(exc) from None
     except mcp_registry.OAuthUrlChange:
         # WS-54 IN-8a (review of #931): the token of an OAuth server is for
         # its URL. A new URL is another server, so the admin disconnects it
@@ -2106,53 +2145,80 @@ async def register_mcp_server(
     # re-POST of one that exists, so it writes an audit event as the PATCH
     # does. The insert sets both stamps to one now(). An update keeps
     # ``created_at``. No header and no url go into the payload.
+    # MCP-C2: the event records both switches, because a re-POST with no
+    # ``read_only_key`` turns that switch off too.
     stamp = getattr(saved, "created_at", None)
     created = stamp is not None and stamp == getattr(saved, "updated_at", None)
     audit_integration(user, org, f"mcp:{req.name}", action="integration.mcp.registered",
-                      always_confirm=req.always_confirm,
+                      always_confirm=req.always_confirm, read_only_key=req.read_only_key,
                       outcome="created" if created else "updated")
     _log.info("mcp.registered", name=req.name, actor=user.email,
-              always_confirm=req.always_confirm)
+              always_confirm=req.always_confirm, read_only_key=req.read_only_key)
     return {"ok": True, "name": req.name}
 
 
 @router.patch(
-    "/mcp/{name}", summary="Set the always-confirm switch of an MCP server",
+    "/mcp/{name}", summary="Set the always-confirm and read-only-key switches of an MCP server",
     dependencies=[_REQUIRE_MANAGE],
 )
-async def set_mcp_always_confirm(
+async def set_mcp_switches(
     name: str,
-    req: McpAlwaysConfirmRequest,
+    req: McpSwitchesRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Turn the "always confirm" switch of one server of the caller's org on or off.
+    """Turn a switch of one server of the caller's org on or off.
 
-    H-300 (``agent_architecture.md`` §12.2 WS-8c, item 31). With the switch on,
-    every tool of the server waits for the member's card, whatever hints the
-    server sends. The change goes through ``gateway.connections.mcp`` inside
-    ``tenant_session(org)``, so a name that another organization holds is
-    404, and its row stays. It changes the switch only: the headers, the URL
-    and the status stay. With no tenant bound, it is 404 and nothing is
-    written. Each change writes one audit event.
+    H-300 (``agent_architecture.md`` §12.2 WS-8c, item 31): with "always
+    confirm" on, every tool of the server waits for the member's card,
+    whatever hints the server sends. MCP-C2 (item 32): with the read-only
+    key on, no tool of the server waits for the card. The body names either
+    switch or both. The change goes through ``gateway.connections.mcp``
+    inside ``tenant_session(org)``, so a name that another organization holds
+    is 404, and its row stays. It changes the named switches only: the
+    headers, the URL and the status stay. With no tenant bound, it is 404 and
+    nothing is written.
+
+    The gateway checks the row as it would be AFTER the change. A change
+    that would leave both switches on is 422, and so is the read-only key
+    on an OAuth row. Each named switch writes one audit event:
+    ``integration.mcp.always_confirm`` and ``integration.mcp.read_only_key``.
+    The answer names the switches of the body, so a body with only
+    ``always_confirm`` gets the H-300 answer.
     """
     org = current_tenant()
     if not org:
         raise HTTPException(404, f"MCP server '{name}' not found.")
-    try:
-        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+    from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
 
-        server = await mcp_registry.set_always_confirm(org, name, req.always_confirm)
+    try:
+        server = await mcp_registry.set_switches(
+            org, name, always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+        )
+    except mcp_registry.McpSwitchRefused as exc:
+        _log.info("mcp.switches_refused", name=name, actor=user.email, reason=exc.reason)
+        raise _mcp_switch_refusal(exc) from None
     except Exception as exc:
         # The class of the error only: a DB message can echo a bound value.
         _log.warning("mcp.always_confirm_failed", error=type(exc).__name__)
         raise HTTPException(500, "The MCP server could not be changed.") from exc
     if server is None:
         raise HTTPException(404, f"MCP server '{name}' not found.")
-    audit_integration(user, org, f"mcp:{server.name}", action="integration.mcp.always_confirm",
-                      always_confirm=server.always_confirm)
-    _log.info("mcp.always_confirm_set", name=server.name, actor=user.email,
-              always_confirm=server.always_confirm)
-    return {"ok": True, "name": server.name, "always_confirm": server.always_confirm}
+    out: dict[str, Any] = {"ok": True, "name": server.name}
+    if req.always_confirm is not None:
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.always_confirm",
+                          always_confirm=server.always_confirm)
+        _log.info("mcp.always_confirm_set", name=server.name, actor=user.email,
+                  always_confirm=server.always_confirm)
+        out["always_confirm"] = server.always_confirm
+    if req.read_only_key is not None:
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.read_only_key",
+                          read_only_key=server.read_only_key)
+        _log.info("mcp.read_only_key_set", name=server.name, actor=user.email,
+                  read_only_key=server.read_only_key)
+        out["read_only_key"] = server.read_only_key
+    return out
 
 
 @router.delete(
