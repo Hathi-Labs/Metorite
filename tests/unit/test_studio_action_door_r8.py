@@ -1431,6 +1431,12 @@ def test_r8_a_writer_after_the_busy_ones_is_admitted_again(dworld) -> None:
 # ``test_r8_an_ask_after_a_run_opens_a_new_request`` and
 # ``test_r8_an_expired_request_is_409_writes_nothing_and_a_new_ask_opens_one``.
 # 5 hermetic tests go red. D2: the same 4 R8 tests and 3 hermetic tests go red.
+#
+# Fix round 2 ran both again on its head (2026-11-06), over the 24 delegated
+# tests of this file. D1: 12 go red, the 11 above and
+# ``test_r8_three_runs_of_one_change_each_open_a_new_request_at_a_constant_cost``.
+# D2: the same 4 tests go red. A typo in the ``_APPROVAL_ROUTES`` entry of the
+# decision route turns ``test_the_route_scan_reads_an_f_string`` red.
 
 from acb_common.no_person import no_person_scope  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
