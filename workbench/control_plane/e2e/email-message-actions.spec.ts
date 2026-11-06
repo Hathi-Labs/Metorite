@@ -184,6 +184,42 @@ test.describe("The files and the buttons of a message", () => {
     expect(Math.abs((await top(body)) - before)).toBeLessThanOrEqual(1);
   });
 
+  // Found on the local stack, 2026-11-06. Mutation caught: with the old measure
+  // of the root element, a short HTML mail kept a frame over 400 px tall and
+  // grew by 24 px on each measure, so the buttons fell off the screen.
+  test("a short HTML mail has its buttons right below its text", async ({ page }) => {
+    await installEmailMocks(page, [IDS.plain]);
+    await open(page, IDS.plain);
+    const iframe = frame(page);
+    await expect(iframe).toBeVisible();
+    // After the last timed measure of the frame, at 1200 ms.
+    await page.waitForTimeout(1500);
+    const first = await iframe.boundingBox();
+    await page.waitForTimeout(600);
+    const second = await iframe.boundingBox();
+    expect(second?.height).toBe(first?.height);
+    const inner = await iframe.evaluate((f: HTMLIFrameElement) => f.contentDocument!.body.scrollHeight);
+    // The floor of a frame is 200 px. Above it, only the slack of 24 px is blank.
+    expect(second?.height ?? 0).toBeLessThanOrEqual(Math.max(200, inner + 24) + 2);
+    const below = bar(page, IDS.plain);
+    expect(await top(below)).toBeLessThanOrEqual((second?.y ?? 0) + (second?.height ?? 0) + 24);
+  });
+
+  // The other side of that fix: a tall mail still draws whole, with no scroller
+  // of its own inside the frame.
+  test("a tall HTML mail still draws whole in its frame", async ({ page }) => {
+    await installEmailMocks(page, [IDS.newsletter]);
+    await open(page, IDS.newsletter);
+    const iframe = frame(page);
+    await expect(iframe).toBeVisible();
+    await page.waitForTimeout(1500);
+    const seen = await iframe.evaluate((f: HTMLIFrameElement) => {
+      const root = f.contentDocument!.documentElement;
+      return { scroll: root.scrollHeight, client: root.clientHeight };
+    });
+    expect(seen.scroll).toBeLessThanOrEqual(seen.client);
+  });
+
   // A failed fetch must not leave the shape for good.
   test("a failed file list gives the space back", async ({ page }) => {
     await installEmailMocks(page, [IDS.threadNew]);
