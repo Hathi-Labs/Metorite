@@ -10,6 +10,10 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   - Stop filtering by app (`shownGroups` returns `groups`): "a tab shows
  *     only its app rows" fails on the My work tab.
  *   - Drop `onKeyDown` from `Tabs.tsx`: "the arrow keys" fails.
+ *   - Count the cut rows (read `groups` and not `fullGroups` in FeedCard):
+ *     "a tab counts every row" fails on 20 and not 25.
+ *   - Show the band heading under the Reminders tab (`tabbed` false): the
+ *     Reminders tab test fails on the hidden heading.
  *   - Give All a count (needsTabs.ts): "All draws no count" fails.
  *   - Draw the chevron always (drop the `edge.right` test in NeedsTabBar):
  *     "a bar that fits draws no chevron" fails.
@@ -47,6 +51,12 @@ const card = (app: string, id: string, kind: string, title: string, href: string
   at: hoursAgo(5),
   href,
   acts: [],
+  // A card with a state_fp draws the menu, so a test can dismiss it.
+  state: "seen",
+  updated: false,
+  still_open: false,
+  visits: 1,
+  state_fp: [...`${app}${id}`].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7).toString(16).padStart(8, "0"),
 });
 
 /** Two tasks, one reply, one approval. Projects has no row. */
@@ -69,22 +79,50 @@ const MANY = [
 
 const NEEDS = { count: 4, total: 4, items: [], sources: {}, totals: {}, capped: [] };
 
-async function setup(page: Page, cards = CARDS) {
+interface Opts {
+  cards?: ReturnType<typeof card>[];
+  /** One assistant run that waits on the member. */
+  ai?: boolean;
+  /** Two reminders of later today, so the band has two rows. */
+  reminders?: boolean;
+}
+
+async function setup(page: Page, opts: Opts | ReturnType<typeof card>[] = {}) {
+  const o: Opts = Array.isArray(opts) ? { cards: opts } : opts;
+  const hidden = new Set<string>();
   await page.addInitScript(() => {
     for (const k of ["cc-shell-bar", "cc-shell-nav", "cc-shell-dock", "cc-my-day", "cc-my-day-feed"]) localStorage.setItem(k, "1");
   });
   await page.route("**/api/**", async (route: Route) => {
-    const path = new URL(route.request().url()).pathname;
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
-    if (path === "/api/shell/feed")
+    if (path === "/api/shell/feed") {
+      const cards = (o.cards ?? CARDS).filter((c) => !hidden.has(c.signal_id));
       return json({
         cards,
         groups: [{ id: "needs_you", count: cards.length }],
         needs: NEEDS,
         sources: { tasks: "ok", projects: "ok", email: "ok", approvals: "ok", calendar: "ok" },
         capped: [],
+        ...(o.reminders
+          ? {
+              reminders_ahead: [
+                { id: "r1", title: "Call the bank", fire_at: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+                { id: "r2", title: "Pay the rent", fire_at: new Date(Date.now() + 4 * 3_600_000).toISOString() },
+              ],
+              reminder_subjects: {},
+            }
+          : {}),
       });
-    if (path === "/api/shell/feed/state") return json({ written: 0 });
+    }
+    if (path === "/api/shell/feed/state") {
+      const body = req.postDataJSON() as { items: Record<string, unknown>[] };
+      for (const item of body.items) {
+        if (["snooze", "dismiss", "not_useful"].includes(String(item.action))) hidden.add(String(item.signal_id));
+      }
+      return json({ written: body.items.length });
+    }
     if (path === "/api/shell/needs") return json(NEEDS);
     if (path === "/api/auth/me/shell") return json(LAYOUT);
     if (path === "/api/auth/me") return json(MEMBER);
@@ -93,7 +131,12 @@ async function setup(page: Page, cards = CARDS) {
     if (path === "/api/accounts") return json({ enabled: false });
     if (path === "/api/settings/branding") return json({ logo: null, updatedBy: "", updatedAt: "" });
     if (path.startsWith("/api/projects/notifications")) return json({ rows: [], total: 0, unread: { total: 0, mentions: 0 } });
-    if (path === "/api/chat/active-sessions") return json([]);
+    if (path === "/api/chat/active-sessions")
+      return json(
+        o.ai
+          ? [{ threadId: "th1", agentName: "Researcher", title: "Which supplier do you prefer?", startedAt: hoursAgo(1), state: "needs_input", askKind: "questions" }]
+          : [],
+      );
     if (/^\/api\/(notes|chat|agent|apps|agents|email\/accounts)\b/.test(path)) return json([]);
     return json({ rows: [], items: [], total: 0 });
   });
@@ -207,6 +250,72 @@ test.describe("My Day, the Needs you bar with many tabs (CC-11)", () => {
   });
 });
 
+/** Twenty-five tasks, one reply and one approval. All draws 20 rows, so a tab must not. */
+const LOTS = [
+  ...Array.from({ length: 25 }, (_, i) => card("tasks", `l${i}`, "overdue", `Task number ${i}`, `/projects?task=l${i}`)),
+  card("email", "a", "needs_reply", "Re: the supplier contract", "/email?email=a&account=acc1"),
+  card("approvals", "p1", "approvals_waiting", "3 approvals wait for you", "/approvals"),
+];
+
+test.describe("My Day, the Needs you counts keep their promise (CC-11)", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("a tab counts every row of its app and draws every row it counts, past the cut of 20", async ({ page }) => {
+    await setup(page, LOTS);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:l0")).toBeVisible();
+    await expect(feed(page).getByRole("tab", { name: /^My work/ })).toHaveText("My work25");
+    await feed(page).getByRole("tab", { name: /^My work/ }).click();
+    await expect(feed(page).locator("[data-feed-row]")).toHaveCount(25);
+    await expect(feedCard(page, "tasks:l24")).toBeVisible();
+  });
+
+  test("a dismiss takes one off the count, and the active tab falls back to All when it empties", async ({ page }) => {
+    await setup(page);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    await feed(page).getByRole("tab", { name: /^My work/ }).click();
+    await expect(tabs(page).nth(1)).toHaveText("My work2");
+    await feedCard(page, "tasks:t1").getByRole("button", { name: "More for Send the quote" }).click();
+    await page.getByRole("menu").getByRole("menuitem", { name: "Dismiss" }).click();
+    await expect(tabs(page).nth(1)).toHaveText("My work1");
+    await expect(feed(page).locator("[data-feed-row]")).toHaveCount(1);
+    await feedCard(page, "tasks:t2").getByRole("button", { name: "More for Book the venue" }).click();
+    await page.getByRole("menu").getByRole("menuitem", { name: "Dismiss" }).click();
+    await expect(feed(page).getByRole("tab", { name: /^My work/ })).toHaveCount(0);
+    await expect(tabs(page).first()).toHaveAttribute("aria-selected", "true");
+    await expect(tabs(page).first()).toHaveText("All");
+    await expect(feedCard(page, "email:a")).toBeVisible();
+  });
+
+  test("the AI questions tab draws, and filters to the run", async ({ page }) => {
+    await setup(page, { ai: true });
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    const ai = tabs(page).filter({ hasText: /^AI questions/ });
+    await expect(ai).toHaveText("AI questions1", { timeout: 20_000 });
+    await ai.click();
+    await expect(page.getByText("Which supplier do you prefer?")).toBeVisible();
+    await expect(feed(page).locator("[data-feed-row]")).toHaveCount(0);
+    await expect(page.getByText("Nothing needs you")).toHaveCount(0);
+  });
+
+  test("the Reminders tab draws, filters to the band, and the band drops its own heading word", async ({ page }) => {
+    await setup(page, { reminders: true });
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    const rem = tabs(page).filter({ hasText: /^Reminders/ });
+    await expect(rem).toHaveText("Reminders2");
+    // In All the band keeps its heading.
+    await expect(feed(page).locator("#my-day-reminders")).toBeVisible();
+    await rem.click();
+    await expect(page.getByTestId("my-day-reminders")).toBeVisible();
+    await expect(page.getByText("Call the bank")).toBeVisible();
+    await expect(feed(page).locator("[data-feed-row]")).toHaveCount(0);
+    await expect(feed(page).locator("#my-day-reminders")).toHaveClass(/sr-only/);
+  });
+});
+
 test.describe("My Day, the Needs you tabs on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
@@ -225,5 +334,17 @@ test.describe("My Day, the Needs you tabs on a phone", () => {
     await feed(page).getByRole("tab", { name: /^Email/ }).tap();
     await expect(feedCard(page, "email:a")).toBeVisible();
     await expect(feedCard(page, "tasks:t1")).toHaveCount(0);
+  });
+
+  test("a bar that overflows swipes, and no chevron shows", async ({ page }) => {
+    await setup(page, MANY);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    const overflows = await page.evaluate(() => {
+      const bar = document.querySelector<HTMLElement>('[data-testid="my-day-feed"] [role="tablist"]')!;
+      return bar.scrollWidth > bar.clientWidth + 1;
+    });
+    expect(overflows).toBe(true);
+    await expect(page.locator("[data-feed-tabs-next], [data-feed-tabs-prev]")).toBeHidden();
   });
 });

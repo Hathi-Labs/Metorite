@@ -9,7 +9,33 @@
  * `FeedCard.tsx` draws what this file decides. A new app adds no tab code: its
  * rows carry an `app`, and its tab appears.
  */
+import { NAV_SECTIONS } from "@/lib/nav";
+
 import { FEED_APP_NAMES, type FeedApp, feedAppIcon } from "./feed";
+
+/**
+ * The name of an app tab. The feed's own names come first, then the label of
+ * the app's nav pane (`/<key>`), then the key in title case. A member never
+ * reads a raw key.
+ */
+export function appTabLabel(app: string): string {
+  const named = FEED_APP_NAMES[app as FeedApp];
+  if (named) return named;
+  const pane = NAV_SECTIONS.flatMap((s) => s.items).find((p) => p.href === `/${app}`);
+  if (pane) return pane.label;
+  return app
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** The rows of each app in the groups: one count rule for the tabs. */
+export function appRowCounts(groups: readonly { cards: readonly { app: string }[] }[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const g of groups) for (const c of g.cards) counts.set(c.app, (counts.get(c.app) ?? 0) + 1);
+  return counts;
+}
 
 /** The id of a tab: "all", "ai", "reminders", or `app:<key>`. */
 export type NeedsTabId = string;
@@ -50,7 +76,7 @@ export function buildNeedsTabs(input: {
     .map(
       ([app, n]): NeedsTab => ({
         id: appTabId(app),
-        label: FEED_APP_NAMES[app as FeedApp] ?? app,
+        label: appTabLabel(app),
         icon: feedAppIcon(app),
         count: n,
         app,

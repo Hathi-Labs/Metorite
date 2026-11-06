@@ -132,7 +132,7 @@ describe("no reminder shows twice", () => {
     const s = src("FeedCard.tsx");
     expect(s).toMatch(/isReminderKind\(c\.kind\)\)\.map\(\(c\) => c\.signal_id\)/);
     expect(s).toMatch(/hidden: apart \}/);
-    expect(s).toContain("<RemindersBand feed={feed} now={now} />");
+    expect(s).toMatch(/<RemindersBand feed=\{feed\} now=\{now\}/);
   });
 });
 

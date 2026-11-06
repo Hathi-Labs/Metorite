@@ -108,7 +108,7 @@ import {
 import { AiWaitingGroup } from "./AiWaitingCard";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
-import { AI_TAB, ALL_TAB, REMINDERS_TAB, type NeedsTabId, activeNeedsTab, buildNeedsTabs, seeAllHref } from "./needsTabs";
+import { AI_TAB, ALL_TAB, appRowCounts, REMINDERS_TAB, type NeedsTabId, activeNeedsTab, buildNeedsTabs, seeAllHref } from "./needsTabs";
 import NeedsTabBar from "./NeedsTabBar";
 import RemindersBand from "./RemindersBand";
 import { bandCount, bandRows } from "./reminderBand";
@@ -623,8 +623,11 @@ export function FeedColumn({
   // the default. A tab that empties falls back to All. The rules are in
   // `needsTabs.ts`.
   const [only, setOnly] = useState<NeedsTabId>(ALL_TAB);
-  const appCounts = new Map<string, number>();
-  for (const g of groups) for (const c of g.cards) appCounts.set(c.app, (appCounts.get(c.app) ?? 0) + 1);
+  // The cut (FEED_SHOWN) belongs to All. A tab counts every row of its app
+  // and shows every row it counts, so the number is a promise it keeps.
+  const full = columnView(feed.answer, visit, { shown: Number.MAX_SAFE_INTEGER, marked: feed.marked, hidden: apart });
+  const fullGroups = full.groups.filter((g) => g.id !== "later");
+  const appCounts = appRowCounts(fullGroups);
   const bandTotal = bandRows(feed.answer, feed.marked, feed.hidden, now?.getTime() ?? 0).length;
   const tabs = buildNeedsTabs({ apps: appCounts, ai: ai.length, reminders: bandTotal });
   const active = activeNeedsTab(tabs, only);
@@ -635,7 +638,7 @@ export function FeedColumn({
       ? filtered
         ? []
         : groups
-      : groups.map((g) => ({ ...g, cards: g.cards.filter((c) => c.app === activeApp) })).filter((g) => g.cards.length > 0);
+      : fullGroups.map((g) => ({ ...g, cards: g.cards.filter((c) => c.app === activeApp) })).filter((g) => g.cards.length > 0);
   const seeAll = seeAllHref(active);
   const tabBar =
     tabs.length > 0 ? (
@@ -819,7 +822,7 @@ export function FeedColumn({
         aria-labelledby={tabs.length > 0 ? `feed-needs-panel-tab-${active}` : undefined}
         className="flex min-w-0 flex-col gap-3"
       >
-        {active === ALL_TAB || active === REMINDERS_TAB ? <RemindersBand feed={feed} now={now} /> : null}
+        {active === ALL_TAB || active === REMINDERS_TAB ? <RemindersBand feed={feed} now={now} tabbed={active === REMINDERS_TAB} /> : null}
         {active === REMINDERS_TAB ? null : body}
         {seeAll ? (
           <div className="flex justify-center">

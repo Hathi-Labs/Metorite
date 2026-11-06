@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { activeNeedsTab, buildNeedsTabs, seeAllHref } from "./needsTabs";
+import { activeNeedsTab, appRowCounts, appTabLabel, buildNeedsTabs, seeAllHref } from "./needsTabs";
 
 const apps = (o: Record<string, number>) => new Map(Object.entries(o));
 
@@ -56,5 +56,27 @@ describe("seeAllHref", () => {
     expect(seeAllHref("app:approvals")).toBe("/approvals");
     expect(seeAllHref("all")).toBeNull();
     expect(seeAllHref("app:email")).toBeNull();
+  });
+});
+
+describe("appTabLabel", () => {
+  it("never shows a raw key", () => {
+    expect(appTabLabel("email")).toBe("Email");
+    expect(appTabLabel("knowledge")).toBe("Knowledge");
+    expect(appTabLabel("purchase_orders")).toBe("Purchase Orders");
+    expect(appTabLabel("vendor-desk")).toBe("Vendor Desk");
+  });
+  it("names an unknown app in the tab", () => {
+    const tabs = buildNeedsTabs({ apps: apps({ email: 2, vendor_desk: 1 }), ai: 0, reminders: 0 });
+    expect(tabs.map((t) => t.label)).toEqual(["All", "Email", "Vendor Desk"]);
+  });
+});
+
+describe("appRowCounts", () => {
+  it("counts each row of each app, with no cut", () => {
+    const rows = (app: string, n: number) => Array.from({ length: n }, () => ({ app }));
+    const counts = appRowCounts([{ cards: rows("tasks", 25) }, { cards: rows("email", 2) }, { cards: rows("tasks", 3) }]);
+    expect(counts.get("tasks")).toBe(28);
+    expect(counts.get("email")).toBe(2);
   });
 });

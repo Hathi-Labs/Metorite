@@ -63,31 +63,37 @@ export default function NeedsTabBar({
         tabs={tabs}
       />
       {edge.left ? (
-        <div className="pointer-events-none absolute inset-y-0 left-0 hidden w-14 items-center bg-gradient-to-r from-background via-background/90 to-transparent sm:flex">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            icon="ChevronLeft"
-            aria-label="Show more tabs"
-            data-feed-tabs-prev=""
-            tabIndex={-1}
-            onClick={() => page(-1)}
-            className="pointer-events-auto"
-          />
+        // An opaque cap holds the chevron, and the fade runs beyond it, so no
+        // cut-off tab fragment shows beside the chevron.
+        <div className="pointer-events-none absolute inset-y-0 left-0 hidden items-stretch sm:flex">
+          <div className="pointer-events-auto flex w-9 items-center justify-center bg-background">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="ChevronLeft"
+              aria-label="Show more tabs"
+              data-feed-tabs-prev=""
+              tabIndex={-1}
+              onClick={() => page(-1)}
+            />
+          </div>
+          <div className="w-5 bg-gradient-to-r from-background from-30% to-transparent" />
         </div>
       ) : null}
       {edge.right ? (
-        <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-14 items-center justify-end bg-gradient-to-l from-background via-background/90 to-transparent sm:flex">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            icon="ChevronRight"
-            aria-label="Show more tabs"
-            data-feed-tabs-next=""
-            tabIndex={-1}
-            onClick={() => page(1)}
-            className="pointer-events-auto"
-          />
+        <div className="pointer-events-none absolute inset-y-0 right-0 hidden items-stretch sm:flex">
+          <div className="w-5 bg-gradient-to-l from-background from-30% to-transparent" />
+          <div className="pointer-events-auto flex w-9 items-center justify-center bg-background">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="ChevronRight"
+              aria-label="Show more tabs"
+              data-feed-tabs-next=""
+              tabIndex={-1}
+              onClick={() => page(1)}
+            />
+          </div>
         </div>
       ) : null}
     </div>
