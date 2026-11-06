@@ -602,8 +602,9 @@ the member's words, and the words of a pack. The surface came with OA-7d.
 - **Sticky on use.** A pack becomes sticky after one of its tools ran
   (`tool_packs.note_used`), or after the model loaded it (task 1747). That
   write changes one field only (`HSET`), so two calls at once lose no
-  update. A sticky pack leaves when no tool of it ran in the last 8 member
-  turns.
+  update. A sticky pack leaves when the chat did not use it in the last 8
+  member turns. A tool of it that ran is a use, and so is a load by the
+  model.
 - **The words.** Each email word needs an email context (fix round 1, P1-B).
   A bare "draft" or "unread" loads no pack, and "draft a reply" does. A run
   with the email pack gets no registry MCP server. So a false match took the
@@ -1153,7 +1154,7 @@ The first build of a pack in a process imports the owner module once. A delegati
 - A pack holds at most 35 tools.
 - At the start of a turn, a load past the cap first drops the least recently used pack.
 - In the middle of a turn, a load past the cap first moves a sticky pack out, the least recently used first (D169). Then it moves a pack that came in only by the words, the last one first (D169 item 8, as amended). A pack of the surface or of a reference stays, and so does a sticky pack that the member named in this turn. A pack with a tool that ran or started in this run stays too. With no such pack, `load_skill_tools` refuses. Its answer names `spawn_subagents` with that pack (§6), or the hand-off (`LOAD_NO_PATH`) for an owner that the loader reached.
-- A sticky pack leaves at the start of a turn when no tool of it ran in the last 8 member turns.
+- A sticky pack leaves at the start of a turn when the chat did not use it in the last 8 member turns. A tool of it that ran counts as a use, and so does a load by the model (task 1747).
 
 **Typical tool counts.** These are estimates from the OA-5 base of 53 tools (report `:118`).
 
@@ -1225,12 +1226,14 @@ The tools of OA-4 have the same scope (the "As built, OA-4" notes at the top of 
 
 **As built, task 1747 (2026-11-06, in review).** The production thread a398b43e failed on 2026-11-05 UTC. The member saw 'Function "create_task" not found', and the same text for five other Projects tools. `choose` picks the packs again at the start of each member turn. A pack that held the tool left, and the model's history still showed the tool. Nothing told the model.
 
-- **A pack that this turn named, or that the last turn used, stays.** `choose` passes both sets to `_step_aside` (`named`, `fresh`). Only a sticky pack outside both sets steps aside, the least recently used first. So the core pack and a pack that this turn asked for stay. The reach then comes from the spare packs ("The reach on a promise", above). Four rows of the production table were this case: `create_tasks`, `update_status`, `set_status_set` and `delete_status`.
+- **A pack that the last turn used stays.** `choose` passes the packs that the last member turn used to `_step_aside` (`fresh`), and no order moves such a pack. Four rows of the production table were this case: `create_tasks`, `update_status`, `set_status_set` and `delete_status`.
+- **Two orders of the step-aside (fix round 2).** With a spare pack, the plan reaches the owner. Then only a sticky pack that this turn does not name (`named`) steps aside. So the core pack and a pack that this turn asked for stay. The spare pack gives the reach ("The reach on a promise", above). With no spare pack, the order of PJP-2 fix round 3 applies, with the guard of `fresh`. So an org that `HELD_CARD_WRITES_ORGS` does not name keeps its reach (D169 item 13).
 - **A load by the model is sticky.** `LoadSkillTools._load` calls `note_used` after the tools join. So the next turn holds the pack, also when none of its tools ran. A load by layer (c) is not sticky until one of its tools runs.
 - **The turn says which packs left.** `PackRun.gone` holds the sticky packs that left at the start of the turn (`Choice.evicted`). `PackRun.gone_offered` names the ones that the loader offers. `tool_packs.left_line` is the one text, modelled on `LOAD_MADE_ROOM`. It tells the model to call `load_skill_tools` first for an offered pack, and not to call the tools of the others in this turn. `executor._pack_left_block` puts the line last in the context of the turn, after the cache break, so the persona keeps its bytes. A delegated run drops the record, so it gets no line.
 - **An explicit load beats a words-only pack (D169 item 8, as amended on 2026-11-06, option A).** In three rows the cap moved the Projects pack out for packs that the member's words named (email, CRM, bulk). Then the reload did not fit. Now such a pack gives way. `PackRun.words` holds the packs of the layer "words", and `PackRun.spare` gives them after the old sticky packs, the last one first. With the room still full, the reload answers `LOAD_NO_PATH`, and the chat hands off.
-- **When a Projects pack leaves for a load.** `PackRun.leaves` opens the hand-off to the owner, as RX-1 does, because no load of that pack is on offer in this turn. Nothing steers the model to that hand-off. Row 16:37:28 is this case: the bulk pack leaves for the core pack.
-- **When the owner stays unreached.** With no spare pack, the specialist and the route line stay. The RX-1 switch is off, or each held pack came by the surface or a reference, or is sticky and named again. An example is "archive tasks that are done" on the Projects page, after a turn that used the bulk pack.
+- **The answer when a words pack leaves (fix round 2).** The member asked for the work of that pack in this turn. So `made_room_line` gives `LOAD_MADE_ROOM_ASKED`, not `LOAD_MADE_ROOM`. It names the hand-off to the owner of the pack when `PackRun.refusal` gives None, as `LOAD_NO_PATH` does. `PackRun.leaves` opens the hand-off to a Projects owner that the loader reached. Else it tells the model to say which part did not run. Row 16:37:28 is this case: the bulk pack leaves for the core pack.
+- **A tool of a spare pack in the same step (fix round 2).** MAF starts each call of a step as its own task. A build can end with no suspension, so a load could read `PackRun.ran` before a sibling call reached `pack_tool_runs`. `_admit_pack` yields once before that check. When a call still starts after the move, `note_used` writes the pack that left, and `_make_room` keeps its state. The next turn then holds the pack again, or names it in the line of the turn.
+- **When the owner stays unreached.** Each Projects pack in the request was used in the last member turn, and no pack is spare. With the switch off, "now tidy them up" after a turn that used the core and plan packs is this case.
 - **Fences.** `tests/unit/test_pack_turn_keeps_used_packs.py`: the name of a test of a row starts with its time in the production table. `evals/trajectories/test_pack_turn_trajectory.py` runs the turns of the report.
 
 In this table, `_tool_injection.py` and `executor.py` are in `orchestrator/`. `egress.py` is in `acb_skills/`. `agents.py` is `agent-email-assistant/agents.py`.

@@ -688,7 +688,7 @@ async def test_a_load_does_not_move_out_a_pack_whose_tool_starts_in_the_same_ste
     Mutation: drop the ``asyncio.sleep(0)`` from ``_admit_pack`` -> red."""
     _stub_owners(monkeypatch)
     turn = _turn(EMAIL_CRM, _st(CORE, 9, 0))
-    run, live, loader, _plan_ = await _row_run(turn, LIVE_1622)
+    run, live, loader, _p = await _row_run(turn, LIVE_1622)
     with _frame(run, loader.run_key):
         out = await _one_step(loader, live, CORE, marked=marked)
     assert out["answer"].startswith("Loaded the Projects tools"), out["answer"]
@@ -709,7 +709,7 @@ async def test_a_tool_that_starts_after_the_move_makes_its_pack_sticky_again(
     Mutation: drop the ``run.left`` branch from ``note_used`` -> red."""
     _stub_owners(monkeypatch)
     first = await _begin(EMAIL_CRM)
-    run, live, loader, _plan_ = await _row_run(first, LIVE_1622)
+    run, live, loader, _p = await _row_run(first, LIVE_1622)
     with _frame(run, loader.run_key):
         out = await _one_step(loader, live, CORE, late=True)
     assert "crm-records" in run.left, "non-vacuity: the late call starts after the move"
@@ -732,7 +732,7 @@ async def test_row_162253_the_answer_hands_the_crm_part_to_its_assistant(
     member asked for it, and names the open hand-off. Mutation: answer
     ``LOAD_MADE_ROOM`` for a words pack -> red."""
     _stub_owners(monkeypatch)
-    run, live, loader, _plan_ = await _row_run(_turn(EMAIL_CRM, _st(CORE, 9, 0)), LIVE_1622)
+    run, live, loader, _p = await _row_run(_turn(EMAIL_CRM, _st(CORE, 9, 0)), LIVE_1622)
     with _frame(run, loader.run_key):
         answer, _passed = await _call(loader, CORE, live)
     room = (tp.LOAD_MADE_ROOM_ASKED.format(labels="CRM records")
