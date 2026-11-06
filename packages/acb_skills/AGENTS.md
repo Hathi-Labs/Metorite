@@ -168,15 +168,19 @@ not write a second copy of that seam. A bare test file name is under
    - Fences: `test_knowledge_tools.py`, `test_knowledge_chat_coverage.py`, `test_kb_proposals.py`.
 5n-2. chat_parity.py -- the ONE parity table of the whole control plane (spec `chat_parity.md`, Metorite task 1238). It is data, and it imports nothing.
    - Each request of the UI has one row: `COVERED` with a tool, `EXEMPT` with a kind of `EXEMPT_KINDS`, or `DEBT` with a wave. Projects rows stay in `skill_projects.manifest` (F3), and Knowledge rows in its manifest. Do not copy them here.
+   - `ALSO` names the other tools of a `COVERED` request that more than one tool sends. The fence checks each one as it checks the `COVERED` tool (STU-B2c-2b: the door route of a package page).
    - `DEBT_CEILING` and `UNREAD_CEILING` only go down. Lower a number in the change that pays the debt.
    - Fence: `test_chat_parity.py`.
 5o. reports.py -- `make_report`, the ONE report tool of the chat (spec `projects_ai_chat.md` §14.10). It keeps no copy of the checks of `documents.py`.
    - `by_code` is the ONE gate of a report that a tool builds from its own reads. Fences: `test_chat_reports.py`, `test_reports_by_code.py`.
-5p. studio_tools.py -- the chat tools of the `studio` pack (spec `ai_studio.md` §14 G1, G2, F2d and G1c). Each tool calls a `/studio` route over HTTP as the member of the run, and takes no org or member argument.
+5p. studio_tools.py -- the chat tools of the `studio` pack (spec `ai_studio.md` §14 G1, G2, F2d, G1c, D2b and B2c-2b). Each tool calls a `/studio` route over HTTP as the member of the run, and takes no org or member argument.
    - J1-1: `studio_draft`, `studio_outline`, `studio_describe` and `studio_interview` call no route. So the pack is empty unless the org is in `STUDIO_ORGS` and the member holds `feature:studio`. `orchestrator._tool_injection._studio_member_open` decides it, and it fails closed. Fence: `tests/unit/test_tool_packs_registry.py`.
    - G1c: `studio_plan` writes the approval record of a plan to tenant Redis only on `approved`. The key holds a hash of the member and a hash of the manifest id, the value is `manifest_hash`, and it lives 2 hours (`PLAN_NAMESPACE`). A stopped or revised plan card writes a withdraw stamp for the member, and a record from before it gives no plan. When the stamp write fails, `_UNWITHDRAWN` (process memory, bounded) makes the publish of that process refuse.
    - `studio_publish` reads the record of the stored draft and fails closed. It sends that hash as `based_on`, and the store compares it under its row lock. After a 201 it deletes the record that names the published draft. No other code reads or writes the record. `acb_common.studio_manifest.manifest_hash` is the ONE hash of a draft.
-   - Fences: `test_studio_package_tools.py`, `test_studio_chat_build_r8.py` (R8), `test_studio_interview_plan.py`, `test_studio_skill_tools.py`.
+   - B2c-2b: `studio_record_create`, `studio_record_update` and `studio_record_delete` call the door with no proof, so the door treats each call as delegated. A first call sends `ask=1` and the body, and it saves nothing. A call with `request_id` sends no body, and the door runs the stored call once. Only a 200 of a resend gives `ok` and `saved` true.
+   - ⚠️ No tool here names the decision route of a request, reads the direct key or sends the direct header. No write tool asks with `request_confirmation`, because the request of the store is the one approval. `WRITE_REFUSALS` gives one sentence for each refusal code of the door.
+   - `orchestrator._tool_injection._drop_studio_writes_unless_requests` takes the three writes out of the pack while `APP_REQUESTS_ORGS` leaves the org out, and it fails closed. `STUDIO_RECORD_WRITES` is the one list of their names.
+   - Fences: `test_studio_package_tools.py`, `test_studio_chat_build_r8.py` (R8), `test_studio_interview_plan.py`, `test_studio_skill_tools.py`, `test_studio_record_writes.py`, cases ap to ar of `test_studio_action_door_r8.py` (R8).
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox. It is advisory only: it never blocks a write and never raises.
    - `CC_CLASSES` mirrors the stylesheet in `SandboxedHtml.tsx`, so register a new `cc-` block in BOTH places. Fence: `test_artifact_lint.py`.
 
