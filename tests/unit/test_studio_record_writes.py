@@ -19,11 +19,23 @@ The fences (R7):
 * no write tool asks with ``request_confirmation``;
 * the tools take no org, member, action or confirm argument.
 
-Mutation runs (2026-11-06, each on a committed tree, restored with git):
+Mutation runs (2026-11-06, each on a committed tree, restored with git, over
+this file and cases ap to ar of ``test_studio_action_door_r8.py`` on a real
+database):
 
-1. ``_asked``: give ``ok`` and ``saved`` True for a 202 -> red.
-2. ``_record_write``: send the body on a resend -> red.
-3. ``_record_write``: send ``ask=1`` on a resend too -> red.
+1. ``_tool_injection._drop_studio_writes_unless_requests``: give the tools
+   back unchanged. 3 tests of ``test_tool_packs_registry.py`` go red: the
+   two dark cases of
+   ``test_the_studio_pack_holds_the_record_writes_only_where_requests_are_open``
+   and ``test_the_record_write_filter_fails_closed``.
+2. ``_asked``: give ``ok`` and ``saved`` True for a 202. 12 tests go red:
+   10 here (``test_an_ask_saves_nothing_and_says_where_the_member_approves``,
+   ``test_an_ask_that_finds_an_approved_request_says_to_resend`` and the six
+   202 cases of ``test_no_answer_of_the_door_to_an_ask_is_saved``) and R8
+   ap and aq.
+3. ``_record_write``: send the body on a resend. 40 tests go red: 38 here
+   (among them ``test_a_resend_names_the_request_and_sends_no_body``) and R8
+   ap and aq.
 """
 from __future__ import annotations
 
