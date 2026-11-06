@@ -1425,6 +1425,12 @@ def test_r8_a_writer_after_the_busy_ones_is_admitted_again(dworld) -> None:
 #   hermetic half, the three cases of
 #   ``test_a_resend_reads_no_byte_and_spends_writes_and_audits_in_one_session``
 #   go red.
+#
+# Fix round 1 ran both again on its head (2026-11-06), over the 22 delegated
+# tests of this file. D1: 11 go red, the cases above and also
+# ``test_r8_an_ask_after_a_run_opens_a_new_request`` and
+# ``test_r8_an_expired_request_is_409_writes_nothing_and_a_new_ask_opens_one``.
+# 5 hermetic tests go red. D2: the same 4 R8 tests and 3 hermetic tests go red.
 
 from acb_common.no_person import no_person_scope  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
