@@ -1899,3 +1899,68 @@ def test_r8_an_expired_request_is_409_writes_nothing_and_a_new_ask_opens_one(rwo
     assert new != first
     reasons = [r.get("reason") for r in _ran(w, w.pkg, "remove")]
     assert "request_expired" in reasons
+
+
+# ── ao. Fix round 2: one read, a constant cost ─────────────────────────────
+
+
+def test_r8_three_runs_of_one_change_each_open_a_new_request_at_a_constant_cost(
+        rworld) -> None:
+    """A checklist toggle, asked, approved and run three times in a row. Each
+    ask opens a new request with the same number of statements, so the cost
+    does not grow with the closed requests of the change."""
+    from acb_common.db import get_engine
+    from sqlalchemy import event
+
+    w = rworld
+    card = {"id": w.rec, "data": {"status": "done"}}
+    counts: list[int] = []
+    ids: list[str] = []
+
+    async def go() -> None:
+        engine = get_engine().sync_engine
+        seen: list[str] = []
+
+        def _count(conn: Any, cursor: Any, statement: str, *rest: Any) -> None:
+            seen.append(statement)
+
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            for _ in range(3):
+                seen.clear()
+                status, body = await _delegated(w.a, ANA, w.pkg, "change", card)
+                assert status == 202 and body["state"] == "awaiting", body
+                counts.append(len(seen))
+                ids.append(body["request_id"])
+                await _decide(w, body["request_id"], "approve")
+                ran = await _delegated(w.a, ANA, w.pkg, "change", None, body["request_id"])
+                assert ran[0] == 200, ran
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+
+    _run(w, go)
+    assert len(set(ids)) == 3
+    assert counts[0] == counts[1] == counts[2], counts
+    assert _studio_runs(w) == 3
+
+
+def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None:
+    """With the plain scan off, the planner reads ``pm_agent_runs`` through
+    ``pm_agent_runs_app_member``, and the window of a live request on
+    ``created_at`` is part of the index condition. So the read never walks the
+    whole history of the member. ``clock_timestamp()`` is volatile and cannot
+    bound an index, so the window reads ``now()``."""
+    w = rworld
+    params = {"org": w.a, "me": ANA, "app": "studio",
+              "binding": f"session:{ANA}:studio:{w.pkg}", "digest": "0" * 64,
+              "window": app_requests.OPEN_WINDOW_SECONDS}
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("SET LOCAL enable_seqscan = off"))
+        lines = [r[0] for r in c.execute(
+            text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)]
+    plan = "\n".join(lines)
+    assert "Seq Scan on pm_agent_runs" not in plan, plan
+    at = next(i for i, line in enumerate(lines) if "on pm_agent_runs r" in line)
+    assert "pm_agent_runs_app_member" in lines[at], plan
+    cond = lines[at + 1]
+    assert "Index Cond" in cond and "created_at >" in cond, plan

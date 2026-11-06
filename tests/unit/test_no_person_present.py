@@ -1052,6 +1052,11 @@ def test_the_route_scan_reads_an_f_string() -> None:
     # WS-55 MCP-G15: the outside decision closes the member's question.
     outside = 'url = f"/projects/agent-runs/{run_id}/outside-decision"'
     assert _routes_in(outside) == ["/agent-runs/{}/outside-decision"]
+    # WS-STU B2c-2a: the decision of an app request approves a Studio write.
+    decision = 'url = f"/agent-access/requests/{request_id}/decision"'
+    assert _routes_in(decision) == ["/requests/{}/decision"]
+    assert _routes_in('u = f"/api/agent-access/requests/{rid}/decision"') == [
+        "/requests/{}/decision"]
     # A plain string of each route still matches.
     assert _routes_in('u = "/api/actions/pending"') == ["/actions/pending"]
     assert _routes_in('u = "/agent/respond-input"') == ["/respond-input"]

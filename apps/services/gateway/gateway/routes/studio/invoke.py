@@ -27,10 +27,12 @@ package declares. The route registers on the router of ``actions.py``, as
 6. The approval. Class B and class C get 403 ``approval_required``. Two
    exceptions open the create, the update and the delete of an object
    (:data:`DIRECT_EXECUTORS`). A DIRECT call of a member runs them at once
-   (B2c-1). Each other call is DELEGATED, and it waits for the member's card
-   (B2c-2a, below). It is delegated only while ``APP_REQUESTS_ORGS`` holds the
-   org, and else it gets ``approval_required`` as before. A delegated call of
-   a run with no person present gets 403 ``no_person_present`` (AUTO-7a).
+   (B2c-1). A DELEGATED call waits for the member's card (B2c-2a, below). A
+   call is delegated only while ``APP_REQUESTS_ORGS`` holds the org AND its
+   query holds ``ask=1`` or a ``request_id``. Each other call gets
+   ``approval_required`` at the first check, a run with no person present
+   too. A delegated call of a run with no person present gets 403
+   ``no_person_present`` (AUTO-7a) after the first check, before the body.
 7. The body. Only a call that an open or a direct executor runs, or that
    asks for a card, reads the body. So a non-owner and a refused action read
    no byte. The resend of an approved request reads no byte either. No session
@@ -100,12 +102,14 @@ store.
   :func:`_door_call`: the door path, the ``uses`` of the action in the query,
   and the body. The answer is 202 ``{state, request_id, expires_at}``, and
   nothing runs.
-* The key (fix round 1). The first key is the digest of the call, so a retry
-  of an open request (awaiting, or approved and not spent) gives that request.
-  A closed request (spent, declined or expired) gives the key of the next
-  generation, which names the closed request (:func:`_ask_key`). So an ask
-  after a close opens ONE new request, also when two asks race: both walk the
-  same keys, and the lock of ``open_request`` makes the second one replay.
+* The open request (fix round 2). ``app_requests.open_studio_request``
+  takes the lock of ``open_request`` for the member and the app, then reads
+  ONCE: the newest open request (awaiting, or approved and not spent, and
+  live) of this binding and digest. A found request is the answer, so a
+  retry gives it. Else the door opens a new request with a fresh key
+  (:func:`_ask_key`). So an ask after a close opens ONE new request, also
+  when two asks race: the second waits on the lock, then finds the first
+  one. The cost is one lock and one read, whatever the history.
 * The resend. A delegated call with ``request_id`` reads no byte of its body.
   In ONE session it reads the stored call with ``read_request``, computes the
   digest of :func:`_door_call` from it, calls ``spend``, runs the stored write
@@ -147,7 +151,7 @@ from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
 
 __all__ = ["ASK_MARKER", "DELEGATED_EXECUTORS", "DIRECT_EXECUTORS", "DOOR_TEMPLATE",
-           "LIST_INPUT_KEYS", "MAX_ASK_GENERATIONS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
+           "LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
            "OPEN_EXECUTORS", "REFUSALS", "REQUEST_APP", "REQUEST_VIA", "SPEND_REFUSALS",
            "WRITERS_PER_ORG", "WRITERS_TOTAL", "router"]
 
@@ -185,14 +189,6 @@ _DELEGATED_MODES = ("ask", "spend")
 #: opens a card only with it. B2c-2b's tools send it, and the member's own
 #: screen never does. It is in no digest and no binding.
 ASK_MARKER = ("ask", "1")
-
-#: The states of a request that an ask does not replay: a new ask after one of
-#: them opens the next generation (:func:`_ask_key`).
-_CLOSED_STATES = frozenset({"done", "declined", "expired"})
-
-#: The most closed requests of one exact change that an ask walks past. Each
-#: step is one replay read under the lock of ``open_request``.
-MAX_ASK_GENERATIONS = 100
 
 #: The most writes in flight for one org, and in the process (B2c-1). The door
 #: counts them BEFORE it opens a session, so a call past the cap holds no
@@ -242,6 +238,12 @@ REFUSALS: dict[str, str] = {
     NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
 }
 
+#: The text of ``approval_required`` for a write of an object while
+#: ``APP_REQUESTS_ORGS`` holds the org (fix round 2): an ask works there.
+APPROVAL_ASK = (
+    "This action writes data and needs an approval, so send the action again with ask=1 "
+    "to ask the member.")
+
 #: The answer of each refused spend (B2c-2a): the status, the code and one
 #: sentence that a model can act on. The key is the reason that
 #: ``acb_auth.app_requests.classify_refusal`` gives.
@@ -262,19 +264,13 @@ SPEND_REFUSALS: dict[str, tuple[int, str, str]] = {
                 "This approval expired, so send the action again with ask=1 for a new "
                 "approval."),
     "mismatch": (409, "request_mismatch",
-                 "This approval is for another change, so send this action again with "
-                 "ask=1 for its own approval."),
+                 "This approval does not match this action, or its change cannot run as "
+                 "stored (a number of 1e16 or more), so change the input."),
 }
 
 #: The answer of a refusal of ``open_request`` that names no code of its own.
 ASK_REFUSED = "request_refused"
 ASK_AGAIN = "The door cannot open this request now, so send the change again."
-
-#: The refusal of an ask past :data:`MAX_ASK_GENERATIONS`.
-ASK_LIMIT = "ask_limit"
-ASK_LIMIT_MESSAGE = (
-    "A caller asked for this exact change too many times, so change the input before you "
-    "ask again.")
 
 #: The title of the card of each delegated write. The server writes it from
 #: the object name, so the card shows no text that the caller chose.
@@ -356,6 +352,9 @@ class _Outcome:
     #: The request of a delegated call, for its audit row: a canonical UUID,
     #: or None.
     request_id: str | None = None
+    #: True when an ask works for this call (fix round 2): the org flag holds,
+    #: the action is a write of an object, and a person is present.
+    can_ask: bool = False
     #: True when the call wrote its own audit row, in the session of the write,
     #: or wrote none because it held no connection.
     audited: bool = False
@@ -727,34 +726,30 @@ def _door_call(pid: str, action: str, uses: str | None, body: Any) -> dict[str, 
     }
 
 
-def _ask_key(digest: str, closed: str | None) -> str:
-    """The idempotency key of one generation of an ask (fix round 1). The first
-    generation is the digest of the call. Each later one names the closed
-    request before it. So a retry of an open request replays it, and an ask
-    after a close opens one new request. The key stays inside the door: the
-    replay of ``open_request`` does not change for its MCP callers."""
-    return digest if closed is None else f"{digest}:after:{closed}"
+def _ask_key(digest: str) -> str:
+    """The idempotency key of a NEW request of one change (fix round 2): the
+    digest and a fresh nonce. The lock and the one read of
+    ``open_studio_request``, not the key, make a retry give the open request.
+    The replay of ``open_request`` does not change for its MCP callers."""
+    return f"{digest}:{uuid.uuid4().hex}"
 
 
-async def _open_generation(db: Any, *, org: str, member: str, package: packages_store.Package,
-                           ref: UsesRef, call: dict[str, Any], binding: str,
-                           out: _Outcome) -> app_requests.Opened | None:
-    """The open request of this exact change, or a new one after the last
-    closed one. None past :data:`MAX_ASK_GENERATIONS`. Each step runs
-    ``open_request``, which locks the scope of the member and the app first.
-    So two asks at once walk the same keys, and the second one replays."""
+async def _open_or_find(db: Any, *, org: str, member: str, package: packages_store.Package,
+                        ref: UsesRef, call: dict[str, Any], binding: str,
+                        out: _Outcome) -> app_requests.Opened:
+    """The open request of this exact change, or a new one. ONE lock and ONE
+    read, then at most one ``open_request``, so the cost does not grow with
+    the closed requests of the change."""
     digest = store.call_digest(call, binding)
-    closed: str | None = None
-    for _ in range(MAX_ASK_GENERATIONS):
-        opened = await app_requests.open_request(
-            db, org=org, member=member, source="studio", app=REQUEST_APP,
-            subject=package.id, op=out.action, cls=str(out.cls), call=call,
-            idempotency_key=_ask_key(digest, closed), connection_id=None,
-            via=REQUEST_VIA, title=_card_title(ref), app_name=package.name)
-        if opened.created or opened.state not in _CLOSED_STATES:
-            return opened
-        closed = opened.request_id
-    return None
+    found = await app_requests.open_studio_request(
+        db, org=org, member=member, app=REQUEST_APP, binding=binding, digest=digest)
+    if found is not None:
+        return found
+    return await app_requests.open_request(
+        db, org=org, member=member, source="studio", app=REQUEST_APP,
+        subject=package.id, op=out.action, cls=str(out.cls), call=call,
+        idempotency_key=_ask_key(digest), connection_id=None,
+        via=REQUEST_VIA, title=_card_title(ref), app_name=package.name)
 
 
 def _card_title(ref: UsesRef) -> str:
@@ -807,17 +802,13 @@ async def _run_ask(db: Any, org: str, member: str, package: packages_store.Packa
         call = _door_call(package.id, out.action, out.uses, body)
         binding = store.studio_binding(member, REQUEST_APP, package.id)
         try:
-            out.asked = await _open_generation(db, org=org, member=member, package=package,
-                                               ref=ref, call=call, binding=binding, out=out)
+            out.asked = await _open_or_find(db, org=org, member=member, package=package,
+                                            ref=ref, call=call, binding=binding, out=out)
         except HTTPException as exc:
             # Each refusal of the store comes before its first write.
             out.fail = _ask_refused(exc)
         else:
-            if out.asked is None:
-                out.fail = _Fail("refused", ASK_LIMIT, HTTPException(
-                    status_code=429, detail={"code": ASK_LIMIT, "message": ASK_LIMIT_MESSAGE}))
-            else:
-                out.request_id = out.asked.request_id
+            out.request_id = out.asked.request_id
     await record_app_audit_in(db, app_id=package.id, user_email=member, kind="action",
                               detail=_audit_detail(out))
     out.audited = True
@@ -1015,8 +1006,9 @@ def _answer(out: _Outcome) -> dict[str, Any] | JSONResponse:
         raise HTTPException(status_code=503, detail={
             "code": CATALOG_UNAVAILABLE, "message": CATALOG_DOWN})
     if out.refusal is not None:
+        ask = out.refusal == APPROVAL_REQUIRED and out.can_ask
         raise HTTPException(status_code=403, detail={
-            "code": out.refusal, "message": REFUSALS[out.refusal]})
+            "code": out.refusal, "message": APPROVAL_ASK if ask else REFUSALS[out.refusal]})
     if out.too_large:
         raise HTTPException(status_code=413, detail={
             "code": BODY_TOO_LARGE, "message": BODY_OVER_CAP})
@@ -1064,11 +1056,15 @@ async def invoke_action(
     # card with ask=1, or names a request (fix round 1). While APP_REQUESTS_ORGS
     # leaves the org out, or with no marker, it gets today's 403. So an
     # unsigned Save of the member's own screen never gets a 202.
-    delegated = not direct and app_requests.requests_allowed(user.organization_id)
-    request_id = _request_id(request) if delegated else None
-    delegated = delegated and (request_id is not None or _asks(request))
+    allowed = not direct and app_requests.requests_allowed(user.organization_id)
+    request_id = _request_id(request) if allowed else None
+    delegated = allowed and (request_id is not None or _asks(request))
     async with _tenant_session() as db:
         package, ref = await _check(db, user.email, pid, action, out, direct, delegated)
+    # Fix round 2: where an ask works (the org flag, an object write, a person
+    # present), the text of approval_required names the step: ask=1.
+    out.can_ask = (allowed and ref is not None
+                   and (ref.source, ref.op) in DELEGATED_EXECUTORS and not no_person_present())
     if ref is not None and out.uses is not None and ref.source != "object":
         try:
             out.cls = await _catalog_class(out.uses)

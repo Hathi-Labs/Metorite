@@ -1055,7 +1055,7 @@ class TestTheTables:
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
                     "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP,
                     "request_refused": invoke.ASK_AGAIN,
-                    "ask_limit": invoke.ASK_LIMIT_MESSAGE}
+                    "approval_ask": invoke.APPROVAL_ASK}
         # B2c-2a: each refused spend has its own code and one sentence.
         messages.update({code: text for _, code, text in invoke.SPEND_REFUSALS.values()})
         for code, message in messages.items():
@@ -1602,6 +1602,9 @@ def rw(dw, monkeypatch):
     # The answers of ``open_request``, oldest first: (request id, state,
     # created). The last one repeats.
     dw.open_answers = [(RID, "awaiting", True)]
+    # Fix round 2: the open request of the change that the one read finds,
+    # or None. Each call of the read is in ``dw.found_reads``.
+    dw.open_found, dw.found_reads = None, []
 
     async def _open(db: Any, **kw: Any) -> Any:
         dw.log.append("open_request")
@@ -1609,6 +1612,13 @@ def rw(dw, monkeypatch):
         rid, state, created = dw.open_answers[min(len(dw.opened), len(dw.open_answers)) - 1]
         return app_requests.Opened(request_id=rid, run_id=str(uuid.uuid4()), state=state,
                                    expires_at="2026-11-07T00:00:00+00:00", created=created)
+
+    async def _open_of_change(db: Any, **kw: Any) -> Any:
+        dw.log.append("open_of_change")
+        dw.found_reads.append((db, kw))
+        return dw.open_found
+
+    monkeypatch.setattr(app_requests, "open_studio_request", _open_of_change, raising=False)
 
     async def _read(db: Any, **kw: Any) -> Any:
         dw.log.append("read_request")
@@ -1680,7 +1690,8 @@ class TestTheDelegatedWrites:
         status, got = _delegated(rw, pid, action, _request(rw, BODIES[action]))
         assert (status, got) == (202, {"state": "awaiting", "request_id": RID,
                                        "expires_at": "2026-11-07T00:00:00+00:00"})
-        assert rw.log == ["open", "close", "body", "open", "open_request", "audit_in", "close"]
+        assert rw.log == ["open", "close", "body", "open", "open_of_change", "open_request",
+                          "audit_in", "close"]
         (db, kw), (adb, akw) = rw.opened[0], rw.audits_in[0]
         assert db is adb and rw.writes == []
         verb = _VERBS[action]
@@ -1694,7 +1705,8 @@ class TestTheDelegatedWrites:
             "query": [["uses", f"object:visit.{verb}"]], "body": BODIES[action],
             "if_match": None}
         binding = request_store.studio_binding(ANA, "studio", pid)
-        assert kw["idempotency_key"] == request_store.call_digest(kw["call"], binding)
+        assert kw["idempotency_key"].startswith(
+            request_store.call_digest(kw["call"], binding) + ":")
         assert akw["detail"]["outcome"] == "asked" and akw["detail"]["request_id"] == RID
 
     def test_the_class_and_the_org_never_come_from_the_body(self, rw):
@@ -1784,34 +1796,81 @@ class TestTheDelegatedWrites:
         kw = rw.opened[0][1]
         assert "ask" not in json.dumps(kw["call"]["query"])
         binding = request_store.studio_binding(ANA, "studio", pid)
-        assert kw["idempotency_key"] == request_store.call_digest(kw["call"], binding)
+        digest = request_store.call_digest(kw["call"], binding)
+        assert kw["idempotency_key"].startswith(f"{digest}:")
+        assert rw.found_reads[0][1]["digest"] == digest
 
-    @pytest.mark.parametrize("closed", ["done", "declined", "expired"])
-    def test_an_ask_after_a_closed_request_opens_the_next_generation(self, rw, closed):
-        """The first key replays a closed request, so the door asks again with
-        a key that names it. A retry walks the same keys, so two asks at once
-        meet on one key and the store opens one request."""
+    # ── Fix round 2 ─────────────────────────────────────────────────────────
+
+    def test_an_ask_reads_the_open_request_once_then_opens_one(self, rw):
+        """No open request of the change: ONE read, then ONE ``open_request``
+        with a fresh key. The cost does not grow with the closed requests."""
         pid, _, _ = _setup(rw)
-        old, new = str(uuid.uuid4()), str(uuid.uuid4())
-        rw.open_answers = [(old, closed, False), (new, "awaiting", True)]
         status, got = _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
-        assert (status, got["request_id"], got["state"]) == (202, new, "awaiting")
-        (first, second) = [kw["idempotency_key"] for _, kw in rw.opened]
-        assert first != second and old in second
-        assert rw.opened[0][1]["call"] == rw.opened[1][1]["call"]
+        assert (status, got["request_id"]) == (202, RID)
+        assert rw.log.count("open_of_change") == 1 and rw.log.count("open_request") == 1
+        assert rw.log.index("open_of_change") < rw.log.index("open_request")
+        (db, kw), (odb, okw) = rw.found_reads[0], rw.opened[0]
+        assert db is odb
+        binding = request_store.studio_binding(ANA, "studio", pid)
+        assert (kw["org"], kw["member"], kw["app"], kw["binding"]) == (
+            ORG, ANA, "studio", binding)
+        assert kw["digest"] == request_store.call_digest(okw["call"], binding)
+
+    def test_two_asks_get_two_fresh_keys(self, rw):
+        """Each new request has a key of its own. The lock and the one read,
+        not the key, make a retry of an open request give that request."""
+        pid, _, _ = _setup(rw)
+        _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        first, second = (kw["idempotency_key"] for _, kw in rw.opened)
+        assert first != second
 
     @pytest.mark.parametrize("state", ["awaiting", "approved"])
-    def test_a_retry_of_an_open_request_replays_it(self, rw, state):
+    def test_an_open_request_of_the_change_is_the_answer(self, rw, state):
         pid, _, _ = _setup(rw)
-        rw.open_answers = [(RID, state, False)]
+        rw.open_found = app_requests.Opened(request_id=RID, run_id="run", state=state,
+                                            expires_at="later", created=False)
         status, got = _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
-        assert (status, got["request_id"], got["state"]) == (202, RID, state)
-        assert len(rw.opened) == 1
+        assert (status, got) == (202, {"state": state, "request_id": RID, "expires_at": "later"})
+        assert rw.opened == []
+
+    def test_the_door_holds_no_cap_of_generations(self):
+        for name in ("MAX_ASK_GENERATIONS", "ASK_LIMIT", "ASK_LIMIT_MESSAGE"):
+            assert not hasattr(invoke, name), name
 
     def test_each_spend_refusal_names_a_step_that_works(self):
-        """A closed request opens a new one on an ask (fix round 1), so each
-        refusal of a closed or a wrong request says to ask with ``ask=1``. An
-        open request says to wait and send the ``request_id``."""
+        """A closed request opens a new one on an ask, so each refusal of a
+        closed request says to ask with ``ask=1``. An open request says to
+        wait and send the ``request_id``. A mismatch never says ``ask=1``: an
+        ask finds the same approved request, so the caller would loop."""
         for why, (_, code, text) in invoke.SPEND_REFUSALS.items():
+            if why == "mismatch":
+                continue
             step = "request_id" if why == "awaiting" else "ask=1"
             assert step in text, code
+
+    def test_a_mismatch_names_the_known_limit_and_no_ask(self):
+        _, code, text = invoke.SPEND_REFUSALS["mismatch"]
+        assert code == "request_mismatch"
+        assert "ask=1" not in text and "1e16" in text
+        assert "change the input" in text
+
+    @pytest.mark.parametrize("allowed,action,text", [
+        ("*", "add", "ask"), ("*", "change", "ask"), ("*", "remove", "ask"),
+        ("", "add", "plain"), ("*", "flow", "plain")])
+    def test_the_approval_text_names_ask_only_where_an_ask_works(
+            self, rw, monkeypatch, allowed, action, text):
+        """While the org flag holds, a write of an object with no marker says
+        to send it again with ``ask=1``. A dark org, and a source that is not
+        an object, keep the plain text: an ask cannot help there."""
+        monkeypatch.setattr(get_settings(), "app_requests_orgs", allowed)
+        pid, _, _ = _setup(rw)
+        body = BODIES.get(action, {"id": "x"})
+        status, detail = _delegated(rw, pid, action, _request(rw, body, ask=False))
+        assert (status, detail["code"]) == (403, "approval_required")
+        if text == "ask":
+            assert detail["message"] == invoke.APPROVAL_ASK and "ask=1" in detail["message"]
+        else:
+            assert detail["message"] == invoke.REFUSALS["approval_required"]
+            assert "ask=1" not in detail["message"]
