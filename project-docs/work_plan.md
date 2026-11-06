@@ -5424,9 +5424,9 @@ It extends D140 and changes none of its rules. It amends D-EA-14 (`external_agen
 1. **An app project is the unit of ownership.** A contributor takes the tasks of one app and works in one app at a time.
 2. **GitHub stays the merge gate.** Local CI is for speed.
 3. **The GitHub connection lives in Metorite** (WS-54).
-4. **The app lead is `pm_projects.lead`**, found up the project tree. A shared seam is a project with its own lead.
+4. **The app lead is `pm_projects.lead`**, read through `authority.py`, where a lead already holds write authority on the subtree. Setting a lead is a grant write. A shared seam is a project with its own lead.
 5. **A claim outside the member's apps warns.** A mode for each organization can turn the warning into a refusal.
-6. **A question has an addressee.** The agent sets a `purpose`. The gateway sets the person: the run's member, the app lead, or the fallback of owner and admin.
+6. **A preview or a review goes to the app lead first.** The agent sets a `purpose`. The addressee ladder of the Waiting spec (AP-15) resolves the person at read, and the lead joins the answer set of D-EA-14.
 7. **Nothing frees a task by itself.** An unanswered question escalates to people and keeps the slot.
 8. **A review cap for each person** stops new work on that person's apps. It ships as a warning.
 9. **The board mirrors GitHub and does not replace it.** A per-organization switch comes first. The App gets no new permission.

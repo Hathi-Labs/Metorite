@@ -255,54 +255,58 @@ The source is the Linear research of 2026-10-30, the comment on epic 321. Append
 
 **Production flags.** They come from the brief of task 1874, and nobody measured them again. `GITHUB_APP_ENABLED` and `AGENT_RUN_SWEEP_ENABLED` are unset. 478 pull request links hold no check state. The lease is 2 hours.
 
+The 187 loose tasks and the missing CRM project come from a comment on task 1872. Check them again at dispatch (SW-44).
+
 **Rules that bind P9.**
 
-1. **Nothing here is a permission** (D140.2). App ownership, an addressee and a role route work and warnings. They grant and deny no read or write.
+1. **The lead is already an authority, and `authority.py` is its one seam.** A lead of a project, or of any ancestor, has write authority on the subtree. It covers delete, move and grants (D-OP-11, D-OP-12, D-OP-14). Setting `lead` is a grant write. P9 adds no second owner table.
+
+   A rule that keys on the lead reads it through `authority.py`. An addressee, a role, a label and a warning route work. They grant and deny nothing (D140.2).
 2. **Nothing frees a task by itself.** A late answer, a stuck run or a full review queue never reassigns or releases a task (D140.3).
 3. **Warn first.** Each rule that can stop an agent ships as `off`, then `warn`, then `refuse`. The flip to `refuse` is an `enforcement-flip`.
-4. **One seam each.** The app lead is `pm_projects.lead`. A question has one addressee column. A flag per organization follows `docs/flag_reload.md`.
+4. **One seam each.** The app lead is `pm_projects.lead`, read through `authority.py`. The Waiting spec (PR 1772, accepted) owns the addressee ladder of a question. A flag for each organization follows `docs/flag_reload.md`.
 
 #### 3.10.1 App ownership (SW-44, SW-45)
 
-**Already planned.** Nothing plans app ownership. Three parts exist. `pm_projects.lead` holds a lead for each project (`146_projects.sql`). SW-31 uses the project lead as the write floor of guidance. SW-18 names the project lead as a last-resort reviewer.
+**Already planned.** Nothing plans app ownership for agents. Two parts exist. `pm_projects.lead` holds a lead for each project (`146_projects.sql`). `authority.py` gives the lead of a project, or of any ancestor, the write authority on the subtree. SW-31 uses the project lead as the write floor of guidance.
+
+SW-18 names the project lead as a last-resort reviewer.
 
 **New.**
 
-- **The unit is an app project.** It sits under "Metorite Application". The **app lead** of a task is the lead of the nearest project, up the tree, that has a lead.
+- **The unit is an app project.** It sits under "Metorite Application". The **app lead** of a task is a lead of its project or of an ancestor, by the rule of `authority.py`. For routing, the nearest lead is the first addressee.
 - **A shared seam is a project too, with its own lead.** The seams are tenancy and security, the shell, the design system, the chat orchestrator with its packs, migrations, and Platform and CI/CD.
-- **Two board gaps close first** (task 1872). CRM has no project. 187 tasks sit directly in "Metorite Application". A Needs attention row, "Project with no lead", keeps the gap shut.
-- **A member's own apps** are the projects where the member is the lead or holds a write grant. A role does not count. Read the grant rule again at dispatch.
-- **`my_work` lists own-app rows first.** Each row carries `app`, the name of its app project. A row outside the member's apps carries `outside_apps: true` and comes last.
-- **A claim outside the member's apps warns. It does not refuse.** The reasons:
+- **Setting a lead is a grant write** (`authority.py`). It gives the lead delete, move and grant power on the subtree. So SW-44 is HIGH, and the lead names come from the owner (Q6).
+- **Two board gaps close first** (task 1872). CRM has no project. 187 tasks sit directly in "Metorite Application". A Needs attention row, "App project with no lead", keeps the gap shut.
+- **A member's own apps** are the projects where the member is a lead, or holds a write grant on the project itself. A role does not count. Read the grant rule again at dispatch.
+- **`my_work` prefers own apps.** `my_work` lists assigned tasks and runs only. It does not list free tasks. SW-45 adds a group, reason `own_app_free`: up to 5 unheld, unassigned tasks in the member's own apps, best priority first. Each row carries `app_project`. The name `app` is taken by migration 342 (the door app).
+- **A claim of an unassigned task outside the member's apps warns. It does not refuse.** The reasons:
   1. A refusal blocks real cross-app work. A shell change touches every app, and a night hotfix has no time for a hand-off.
   2. A refusal teaches an agent to drop a task that the owner asked for by name.
   3. A warning leaves a line in the timeline, so the lead sees the claim.
   4. The mode `refuse` can follow after one week of data (Q6).
-- **A claim of a task that is assigned to the member always passes.**
-- **The hard gate for a seam is GitHub.** CODEOWNERS on the seam paths makes the seam owner review the change (task 1872, ONB-7). The board only routes and warns.
+- **A task assigned to the member always passes.** Someone chose that member.
+- **The hard gate for a seam is GitHub.** CODEOWNERS on the seam paths makes the seam owner review the change (ONB-7, task 1872, which has no spec yet). The board only routes and warns.
 
 #### 3.10.2 Approvals to the right person (SW-46, SW-48)
 
 **Already planned.**
 
-- **D-EA-14 and EA-18a to EA-18d** (`external_agent_access.md` §12.8, tasks 1788 and 1806 to 1808, 1832). One list of the questions that wait on a person. The task creator, the assignees, the run's member and the roles owner, admin and manager see and answer. The creator gets the bell. Each answer names its author. EA-18a is built, dark and not merged on 2026-11-06.
-- **Task 1750 (CIV-14k, PR 1741).** The "Waiting for you" list on `/approvals`. The Waiting spec (PR 1772, proposed) moves it to `/waiting`. It plans a team lens (AP-12) and a forward to a person (AP-14).
+- **D-EA-14 and EA-18** (`external_agent_access.md` §12.8, tasks 1788 and 1806 to 1808, 1832). One list of the questions that wait on a person. The task creator, the assignees, the run's member and the roles owner, admin and manager see and answer. Each answer names its author. Task 1806 is built, dark and not merged on 2026-11-06. It holds `person_may_answer_sql` and `may_answer_run`, behind `AGENT_QUESTIONS_ORGS`.
+- **The Waiting spec** (PR 1772, accepted on 2026-11-06). It owns the list at `/waiting`. It also owns the **addressee ladder** of §4.5 (AP-15, task 1875). The ladder runs: the run's member, the assignees and watchers, the project lead (with the `authority.py` walk), and last the holders of `data:org:read`. The ladder stores no addressee column. An owned wait opens to its circle after 24 hours (AP-Q9). AP-16 (task 1876, AP-Q10, open) lets an agent name one person of the circle. AP-14 (forward) got "not now".
+- **Task 1750 (CIV-14k, PR 1741).** The first "Waiting for you" list. AP-2 moves it.
 - **SW-43 (§3.9).** Withdraw (SW-43a, built dark). Change and `confirm: true` (SW-43b, task 1801). The chat tool (SW-43c, task 1802).
 - **SW-18.** A named reviewer, or the project lead, accepts agent work.
-- **Task 1731 (CIV-14f).** An answer watcher on the home box wakes the session that asked. **MCP-G4** (merged, #1742): an answer reaches only the session that asked.
+- **Task 1731 (CIV-14f, no spec).** An answer watcher on the home box wakes the session that asked. **MCP-G4** (merged, #1742): an answer reaches only the session that asked.
 
-**New.**
+**New.** P9 builds on the two specs above. It does not copy them.
 
-- **Gap 1: D-EA-14 never names the app lead.** A lead who did not create the task, and who is not an assignee or an admin, cannot answer a question on their own app. SW-46 adds the lead to both lists. It amends D-EA-14 points 1 and 2.
-- **Gap 2: a question always goes to the run's member.** A contributor's agent asks "Approve this preview?" and the contributor answers their own question. The owner wants the lead.
-- **The approver of record fixes gap 2.** `ask_on_task` takes `purpose`: `question` (the default), `preview` or `review`. The gateway sets the addressee, and the agent never names a person.
-  1. `question`: the addressee stays the run's member. The lead reads and answers too.
-  2. `preview` and `review`: the addressee is the app lead. If the lead is the asker's own member, the next lead up the tree takes it.
-  3. No lead, or an absent lead (`people_absences`): the fallback is the roles owner and admin.
-  4. The addressee and the reason sit on the question row, so each list filters on one column.
-- **The answer returns to the asker.** The run stays in the asking member's queue. The answer wakes that member's box through task 1731. The `my_work` row carries `answered_by`.
+- **Gap 1: the answer set has no lead.** D-EA-14 lists the creator, the assignees, the run's member and three roles. A lead who is none of these cannot answer a question on their own app. SW-46 adds the lead to `person_may_answer_sql`, the one text. It adds no second flag. `AGENT_QUESTIONS_ORGS` gates it.
+- **Gap 2: a preview or a review goes to the run's member first.** A contributor's agent asks "Approve this preview?", and the contributor answers their own question. The owner wants the lead. `ask_on_task` takes `purpose`: `question` (the default), `preview` or `review`. For `preview` and `review`, the ladder of AP-15 starts at the nearest lead instead of the run's member. If the lead is the run's own member, the ladder goes on to the next. The ladder stays a read-time rule, with no stored column.
+- **Invariant.** Every person on the ladder is in the answer set and can open the task (V2 and V9 of the Waiting spec).
+- **The answer returns to the asker.** The run stays in the asking member's queue, and the answer wakes that member's box through task 1731. The `my_work` row of the answered run carries `answered_by`.
 - **The answerer may withdraw or change.** The window rule of §3.9 says "written by the run's own member". SW-46 widens it to "written by the person who answered".
-- **A costly option asks twice.** An option that stops machines, ends sessions, deletes data or restarts a box carries `confirm: true` (SW-43b). The server instructions say so, and `test_mcp_edge_prompts.py` holds the sentence.
+- **A costly option asks twice.** An option that stops machines, ends sessions, deletes data or restarts a box carries `confirm: true` (SW-43b). The text goes in the `work_on_task` steps or the SW-56 block. The server instructions are over budget (task 1803).
 - **The lead acts on a teammate's run.** SW-48 lets the app lead Release and Resume a run on their app. Q5 and Q9 hold the open choice.
 
 #### 3.10.3 Review capacity (SW-49)
@@ -331,29 +335,30 @@ SW-8 is the roster. SW-29a shows "Owner: Ravi · Agent: Claude Code (Ravi)", the
 
 #### 3.10.5 Stuck work across people (SW-47)
 
-**Already planned.** D140.3 and §3.3. SW-10a, the sweep, is built and dark. SW-10b turns it on, staging first. 1045a, 1045b and 1045c carry `waiting`, linked events and the stranded card.
+**Already planned.** D140.3 and §3.3. SW-10a, the sweep, is built and dark. SW-10b turns it on. 1045a, 1045b and 1045c carry `waiting`, linked events and the stranded card.
 
 SW-9 is the wait record. Task 1730 (CIV-14e, PR 1736) flags a run that waits on the owner with no question. SW-11a is Resume, which writes `resume: true`. H-409 and Q5 ask who may end another member's run. A question keeps a task for three leases, 6 hours by default.
+
+The Waiting spec (AP-15, AP-Q9) opens an unanswered question to its circle after 24 hours.
 
 **New.**
 
 - **Who hears of it.** The first nudge goes to the run's member only. The recovery record goes to the run's member and the app lead.
-- **The ladder for an unanswered question.** The times run from the question, and they are defaults (Q7).
-  1. **At one lease (2 h):** one bell to the fallback of §3.10.2.
-  2. **At three leases (6 h):** a Needs attention row, "Question unanswered", for the lead and the admins. It offers Answer, Forward (AP-14) and Release the run.
-  3. **The slot stays held.** A release would let a second agent start on the work. The first agent would lose its context. A person decides.
+- **One row for a question that nobody answers.** At three leases a question stops being a live path (§3.3), so the stranded sweep starts. The sweep writes one fingerprint with the reason `question_unanswered` for an `awaiting` run. It writes no second `lease_ended` fingerprint for the same run. The result is one bell and one Needs attention row. The row offers Answer and Release the run.
+- **The slot stays held.** A release would let a second agent start on the work, and the first agent would lose its context. A person decides.
+- **The question timing is the Waiting spec's.** The circle opens at 24 hours (AP-Q9). P9 sets no second clock for a question.
 - **A resume hand-off restarts work.** The agent continues and does not ask again. The run's member or the app lead writes it. The home box watcher (task 1731) starts the session. A box with no watcher leaves the run in `my_work`, where the next session pulls it.
-- **The sweep goes live before people join.** SW-10b is on the critical path (§5.0a).
+- **The sweep goes live before people join.** SW-10b is on the critical path (§5.0a). Staging is retired (D144), so SW-10b follows its own order.
 
 #### 3.10.6 One view of every fleet (SW-51)
 
 **Already planned.** SW-8 is a roster for each project. SW-29b is the profile of one agent. The agent strip and the Reports Overview (RA-2, RA-4) count runs and run time. SW-20 holds cost, deferred behind H-42 (Q4).
 
-SW-38 (task 1064, proposed) adds caps and cost on the roster. AP-12 is a team lens for questions.
+Task 1064 (SW-38, in no spec yet) plans caps and cost on the roster. AP-12 is a team lens for questions.
 
 **New.**
 
-- **A Fleet tab in the Agents panel of Projects.** It adds no nav pane. The owner and admins see every run they may see. A lead sees the runs of their apps. Visibility stays the seam of D12.
+- **A Fleet tab in the Agents panel of Projects.** It reads the route `GET /projects/{project_id}/agent-summary` on the root project. It adds no nav pane. The owner and admins see every run they may see. A lead sees the runs of their apps. Visibility stays the seam of D12.
 - **Rows group by person, then box, then agent, then session.** Each row shows the task, the app, the state, the age, the last line and the flags blocked, stale, stranded and "waits on a question".
 - **A person line** shows run time today and in 7 days (measured), and "waiting on you: N, oldest age".
 - **The pull request and its check state show** when item 8 is on.
@@ -367,7 +372,7 @@ SW-38 (task 1064, proposed) adds caps and cost on the roster. AP-12 is a team le
 **New.**
 
 - **SW-27 comes before the second contributor.** Two people double the chance of a clash on a migration or a D number.
-- **A note reaches the owners.** It goes to both run members and to the lead of each app. A change on a seam path also goes to the seam lead. The seam paths sit in a setting of the seam project (`owned_paths`). CODEOWNERS stays the GitHub gate. The two maps are kept in step by hand, and the slice is advisory on that point (R7).
+- **A note reaches the owners.** SW-26 and SW-28 send it to the run members. P9 adds the lead of each app. A change on a seam path also goes to the seam lead. The seam paths sit in a setting of the seam project (`owned_paths`). CODEOWNERS stays the GitHub gate. The two maps are kept in step by hand, and the slice is advisory on that point (R7).
 - **SW-26 and SW-28 need the GitHub store.** They wait for item 8.
 
 #### 3.10.8 GitHub on the board (SW-53, SW-54, SW-55, SW-58)
@@ -383,10 +388,10 @@ G-9 asks the App for no Contents permission. G-6 allows one installation for eac
 **New.**
 
 - **A per-organization switch (SW-53).** `GITHUB_APP_ORGS` is a list of organizations, and it reloads with no restart. `github_app_enabled` stays the master: off means off for all. A delivery for an organization not on the list gets 202 and writes nothing.
-- **Go live in the order of GH-8:** staging first, then one organization on production. The install on a customer's GitHub account stays an OWNER-GATE act.
-- **Required checks on the task (SW-54).** An admin lists the names of the required checks. The default holds the 7 names of `ci_velocity.md` §4, tier 1. The task shows "5 of 7 required". The App gets no new permission. Reading branch protection would need Administration, and G-9 forbids it (Q10).
+- **Go live behind the per-organization switch.** Staging is retired (D144). GH-8 still names a staging step, and its text is old. Turn it on for one organization on production. The install on a customer's GitHub account stays an OWNER-GATE act.
+- **Required checks on the task (SW-54).** An admin lists the names of the required checks. The default is empty. The 7 names of `ci_velocity.md` §4 seed the HathiLabs organization only. The task shows "5 of 7 required". The App gets no new permission. Reading branch protection would need Administration, and G-9 forbids it (Q10).
 - **The board does not read CODEOWNERS.** Reading a file needs the Contents permission, and G-9 forbids it. The board keeps its own owner map (§3.10.1). ONB-7 (task 1872) owns the file.
-- **A merge and the review stage agree (SW-55).** With "Agent work needs review" on, a merge moves the task to the review lane. It moves to Done only when the merging login maps to the named reviewer or the lead.
+- **A merge and the review stage agree (SW-55).** With "Agent work needs review" on, a merge moves the task to the review lane. It moves to Done only when the merging login maps to the named reviewer or the lead. No map from a GitHub login to a member exists, so v1 always lands in review under the setting.
 - **A pull request from a person with no Metorite access (SW-58).** It shows in Needs attention as "Work with no task". The lead makes the task in one click.
 
 #### 3.10.9 Agents that are not Claude Code (SW-56, SW-57)
@@ -475,14 +480,15 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 ### 5.0a The order for P9
 
 1. **Before a second contributor starts.** Build or turn on these:
-   - SW-10b (the sweep) and SW-7a (the session key).
+   - SW-10b (the sweep), SW-7a (the session key) and SW-7b (the label).
    - Task 1803 (the instruction budget) and task 360 (MCP-G6).
    - SW-27 (numbers) and SW-44 (the owner map).
-   - EA-18a to EA-18d and the Waiting list (AP-2).
-   - The box token, if the contributor uses a box.
-2. **Routing.** SW-45, SW-46, SW-47, SW-48, then SW-49.
+   - The Questions for me slices (tasks 1806 to 1808, 1832) and the Waiting slices AP-2 and AP-15 (task 1875).
+   - SW-18 and SW-25, which SW-55 and SW-26 need.
+   - The box token (task 1838), if the contributor uses a box.
+2. **Routing.** SW-45, SW-46, SW-48, SW-47, then SW-49.
 3. **Seeing.** SW-50, then SW-51.
-4. **GitHub.** SW-53, then GH-8 on staging, then SW-54, SW-28, SW-26, SW-52, SW-55 and SW-58.
+4. **GitHub.** SW-53, then GH-8 behind the per-organization switch, then SW-54, SW-28, SW-26, SW-52, SW-55 and SW-58.
 5. **Other agents.** SW-56, SW-57 and SW-59.
 
 **Why this order.** A second person doubles every clash, every stuck run and every question. The first group removes the silent failures. The second group sends each question to a person who can answer it. The rest adds sight and the GitHub link.
@@ -578,7 +584,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
   - A vitest maps `waiting` to its look in light and dark.
 - **Fence.** `test_agent_runs_r8.py`, `test_mcp_edge_agent_runs.py`, `test_mcp_edge_prompts.py`, `agentCardLook.test.ts`.
 - **Live.** It goes live at the merge under `agent_runs_enabled`. It only adds an optional argument, and the state shows only when an agent sends it.
-- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
+- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. D145 owner preview for the chip. **Depends on.** SW-7b, GH-5 (the head of the pull request) and SW-53.
 
 #### 1045b · Linked events count as life
 
@@ -888,59 +894,58 @@ They keep their own gates.
 
 - **Metorite task.** 1877.
 - **Scope.**
-  1. Make a CRM project. Move the 187 tasks that sit directly in "Metorite Application" into an app or a seam project. Use `preview_move_tasks` first.
+  1. Make a CRM project. Move the 187 tasks that sit directly in "Metorite Application" into an app or a seam project. Use `preview_move_tasks` first. Count them again at dispatch.
   2. Make the seam projects of §3.10.1 that do not exist yet.
-  3. Set `lead` on each app and seam project. The owner names the leads (Q6).
-  4. Add a Needs attention kind, "Project with no lead". It lists an app or seam project that has open tasks and no lead up its tree.
-- **Done when.** No task sits directly in "Metorite Application". Each app and seam project has a lead. A test project with open tasks and no lead shows the row.
+  3. Set `lead` on each app and seam project. This is a grant write (`authority.py`). The owner names the leads and does the writes on production, or opens a dated grant (Q6).
+  4. Add a Needs attention kind, "App project with no lead". It lists a child of "Metorite Application" that has open tasks and no lead of its own.
+- **Done when.** No task sits directly in "Metorite Application". Each app and seam project has a lead. A test app project with open tasks and no lead shows the row.
 - **Fence.** `test_needs_attention_r8.py` holds the kind. The board moves are advisory, because no test reads production data (R7).
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE for the code and the moves. The names of the leads come from the owner.
+- **Risk.** HIGH (a grant write). **Gate.** AGENT-SAFE for the code. OWNER-GATE for the lead writes on production (CLAUDE.md §3a rule 3).
 
 #### SW-45 · Own apps in `my_work` and `claim_task`
 
 - **Metorite task.** 1878.
 - **Scope.**
-  1. Read "own apps" as §3.10.1 says. No migration.
-  2. `my_work` rows gain `app` (the nearest ancestor with a lead). Own-app rows come first. Other rows carry `outside_apps: true` and come last.
-  3. `claim_task` outside the member's apps, in mode `warn`, claims and returns a `warning` that names the lead. It writes one timeline line, "Claimed outside <member>'s apps". In mode `refuse` it answers 403 `outside_apps`. A task assigned to the member always passes.
+  1. Read "own apps" as §3.10.1 says, through `authority.py`. No migration.
+  2. `my_work` gains the group `own_app_free` (§3.10.1). Each row carries `app_project`. Assigned rows keep their order.
+  3. In mode `warn`, `claim_task` of an unassigned task outside the member's apps works. It returns a `warning` that names the lead. It writes one timeline line. In mode `refuse` it answers 403 `outside_apps`. A task assigned to the member always passes.
   4. The flag `AGENT_CLAIM_SCOPE_MODES`, a map from organization to `off`, `warn` or `refuse`, default `off` (`docs/flag_reload.md`).
-- **Done when.** R8: a member with one own app sees that app's rows first. A claim outside it warns in `warn`, gets 403 in `refuse`, and passes in `off`. An assigned task passes in all modes.
-- **Fence.** `test_agent_claim_scope_r8.py` (new). A structural test that no module of `acb_auth` and no visibility seam reads app ownership (R7, extends §3.7). An edge test for the warning text.
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE dark. The flip to `refuse` is OWNER-GATE `enforcement-flip`. **Depends on.** SW-44. Q6.
+- **Done when.** R8: a member with one own app gets that app's free tasks in `own_app_free`. A claim outside it warns in `warn`, gets 403 in `refuse`, and passes in `off`. An assigned task passes in all modes.
+- **Fence.** `test_agent_claim_scope_r8.py` (new). `test_app_ownership_seam.py` (new) fails when a module other than `authority.py` and the new claim rule reads `pm_projects.lead` for a claim decision. An edge test for the warning text.
+- **Risk.** HIGH (a refusal on a write). **Gate.** AGENT-SAFE dark. The flip to `refuse` is OWNER-GATE `enforcement-flip`. **Depends on.** SW-44. Q6.
 
-#### SW-46 · The approver of record
+#### SW-46 · The lead answers, and a preview goes to the lead first
 
 - **Metorite task.** 1879.
-- **Scope.**
-  1. Migration, expand only: `pm_agent_run_activities.addressee_email TEXT NULL` and `addressee_reason TEXT NULL`, with a CHECK of `run_member`, `app_lead`, `ancestor_lead`, `admin_fallback` and `absent_fallback`. Both columns are NULL on old rows.
-  2. `ask_on_task` takes `purpose`: `question`, `preview` or `review`. The gateway sets the addressee by §3.10.2. An unknown field gets 422. The agent never names a person.
-  3. The one answer rule of EA-18a (one function for the list and the write) gains the app lead. Edit that function. Add no second rule. This amends D-EA-14 points 1 and 2.
-  4. The `agent_question` notification goes to the addressee, the creator and the run's member, once each.
+- **Scope.** No migration. The ladder of AP-15 resolves the addressee at read.
+  1. `ask_on_task` takes `purpose`: `question`, `preview` or `review`. An unknown `purpose` value gets 422. The value goes in the activity `content`.
+  2. For `preview` and `review`, the ladder of AP-15 starts at the nearest lead (§3.10.2). Edit the ladder function of AP-15. Add no second ladder.
+  3. `person_may_answer_sql` gains the app lead. This is the one text. `AGENT_QUESTIONS_ORGS` stays the only flag.
+  4. The invariant of §3.10.2 holds: each person on the ladder is in the answer set and can open the task.
   5. The `my_work` row of an answered run carries `answered_by`.
   6. The window rule of SW-43a reads "written by the person who answered".
-  7. The server instructions and the `work_on_task` steps tell the agent three things. Use `preview` to show a change. Use `review` to ask for a review. Put `confirm: true` on any option that stops machines, ends sessions, deletes data or restarts a box.
-- **Done when.** R8: a contributor's agent asks with `purpose: preview` on an app with lead L. L sees it in "For me" and answers it. The contributor's row says "Waiting for L". The run reads `answered`, and the contributor's `my_work` shows `answered_by` L. With L absent, an admin sees it. A member who is not in the answer set gets 403.
-- **Fence.** `test_agent_questions_r8.py` (the suite of EA-18a, extended), `test_agent_approver_r8.py` (new), `test_mcp_edge_prompts.py` for the sentences, and the migration test of `test_tenant_coverage.py`.
-- **Risk.** HIGH (identity, a migration, who may answer). **Gate.** AGENT-SAFE, dark behind `AGENT_APPROVER_ORGS`. **Depends on.** EA-18a merged, SW-44. Q7.
+  7. The `work_on_task` steps tell the agent to use `preview` and `review`, and to put `confirm: true` on a costly option. The text does not go in the server instructions.
+- **Done when.** R8: a contributor's agent asks with `purpose: preview` on an app with lead L. L sees it in the list and answers it. The contributor's row says "Waiting for L". The run reads `answered`, and the contributor's `my_work` shows `answered_by` L. With no lead, the ladder reaches the `data:org:read` holders. A member outside the answer set gets 403.
+- **Fence.** `test_agent_questions_r8.py` (task 1806) and `test_waiting_seam_r8.py` (AP-15) extended, and `test_mcp_edge_prompts.py` for the `work_on_task` text.
+- **Risk.** HIGH (identity, who may answer). **Gate.** AGENT-SAFE, dark behind `AGENT_QUESTIONS_ORGS`. **Depends on.** Task 1806 merged, AP-15 (task 1875), SW-44, SW-43b (task 1801), task 1803. Q7.
 
-#### SW-47 · The ladder for an unanswered question, and who hears of stuck work
+#### SW-47 · Stuck work reaches the app lead
 
 - **Metorite task.** 1880.
 - **Scope.**
-  1. The sweep adds two steps for each `awaiting` run. At one lease after the question it sends one bell to the fallback. At three leases it writes a Needs attention row, "Question unanswered", for the lead and the admins. The row offers Answer, Forward (AP-14) and Release the run.
-  2. Each step keys on a fingerprint `(run, step)`, so a second pass writes nothing. Widen the reason CHECK of `pm_agent_run_strands` if the fingerprints live there (migration, expand only). Fix this at dispatch.
-  3. The recovery record of a stranded run goes to the run's member and the app lead. The first nudge stays with the run's member.
-  4. The slot stays held at every step.
-- **Done when.** R8 with a moved clock: at the lease plus 1 minute one bell goes to the fallback and no second one follows. At three leases the row appears and the task is still held. A repeated sweep writes once.
+  1. The recovery record of a stranded run goes to the run's member and the app lead. The first nudge stays with the run's member.
+  2. An `awaiting` run past three leases gets one fingerprint with the reason `question_unanswered`, and no `lease_ended` fingerprint (§3.10.5). Widen the reason CHECK of `pm_agent_run_strands` as `NOT VALID`, then `VALIDATE` (migration, expand only, the pattern of migration 342).
+  3. The Needs attention row offers Answer and Release the run. The slot stays held.
+- **Done when.** R8 with a moved clock: at three leases one bell and one row appear, and the task is still held. A repeated sweep writes once. The app lead sees the recovery record.
 - **Fence.** `test_agent_run_sweep_r8.py` and `test_needs_attention_r8.py`.
-- **Risk.** HIGH (a migration, the sweep). **Gate.** AGENT-SAFE dark. The sweep itself is OWNER-GATE `enforcement-flip` through SW-10b. **Depends on.** SW-10b, SW-46, task 1730. Q7.
+- **Risk.** HIGH (a migration, the sweep). **Gate.** AGENT-SAFE dark. The sweep itself is OWNER-GATE `enforcement-flip` through SW-10b. **Depends on.** SW-10b, SW-46, AP-15, task 1730.
 
 #### SW-48 · The lead acts on the runs of their apps
 
 - **Metorite task.** 1881.
-- **Scope.** `may_end_run` gains one branch: the app lead of the run's task may Release and Resume the run. The route and the run wire read the same text. Q5 keeps `admin:members:manage` for the org-wide case. The lead may not answer by this rule. SW-46 holds the answer.
-- **Done when.** R8: the lead of the app gets 200 on Release and Resume. A member who is not the run's member and not the lead gets 403. A lead of another app gets 403.
-- **Fence.** `test_agent_runs_r8.py` and `test_agent_run_exclusive.py`.
+- **Scope.** Edit `person_may_end_sql` in `agent_runs.py`, the one text. `may_end_run` and `needs_attention.py` read it, so the button and the route agree. Add one branch: the app lead of the run's task may Release and Resume the run. Today the org-wide case uses `RELEASE_ADMIN_PERMISSION = "admin:members:read"`. Q5 recommends `admin:members:manage` and is still open. The lead does not answer by this rule (SW-46).
+- **Done when.** R8: the lead of the app gets 200 on Release and Resume. A member who is not the run's member and not the lead gets 403. A lead of another app gets 403. `can_act` on Needs attention agrees with the route.
+- **Fence.** `test_agent_runs_r8.py`, `test_agent_run_exclusive.py` and `test_needs_attention_r8.py`.
 - **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-44. Q5 and Q9.
 
 #### SW-49 · Review capacity
@@ -948,12 +953,12 @@ They keep their own gates.
 - **Metorite task.** 1882.
 - **Scope.**
   1. One SQL text, `filters.review_queue_sql`, counts the items that wait on a member (§3.10.3).
-  2. The setting `review_cap` for each member, default 5. Reuse the settings row of MCP-G6. Add a table only if no settings store fits.
-  3. A task whose addressee or app lead is at the cap gets 429 `review_capacity` on `claim_task` and `start_agent_run`. The answer holds the count, the cap and the age of the oldest item. In mode `warn` the claim works and carries a warning. `my_work` leaves out the new-work rows and says why.
+  2. The setting `review_cap` for each member, default 5. MCP-G6 (task 360, no spec, not built) caps open runs for each connection and has no settings row yet. SW-49 fixes the store of `review_cap` at dispatch, and it adds a table only if no settings store fits.
+  3. A task whose addressee or app lead is at the cap gets 429 `review_capacity` on `claim_task` and `start_agent_run`. The answer holds the count, the cap and the age of the oldest item. In mode `warn` the claim works and carries a warning. `my_work` leaves out the `own_app_free` rows and says why.
   4. The flag `AGENT_REVIEW_CAP_MODES`, default `off`.
 - **Done when.** R8: a lead with 5 waiting items. A contributor's sixth claim gets 429 in `refuse` and a warning in `warn`. The lead answers one, and the claim passes. A run that exists is never stopped.
 - **Fence.** `test_review_capacity_r8.py` (new).
-- **Risk.** STANDARD, HIGH if a migration is needed. **Gate.** AGENT-SAFE dark. The flip to `refuse` is OWNER-GATE `enforcement-flip`. **Depends on.** MCP-G6 (task 360), SW-46. Q8.
+- **Risk.** HIGH (a refusal on a write). **Gate.** AGENT-SAFE dark. The flip to `refuse` is OWNER-GATE `enforcement-flip`. **Depends on.** SW-46. Task 360 helps but is not needed. Q8.
 
 #### SW-50 · The run shows the human and the box
 
@@ -961,19 +966,19 @@ They keep their own gates.
 - **Scope.** The run wire gains `for_member` and `box`. `box` is the name of the connection when the connection is a box token, else null. Read it through `pm_agent_runs.connection_id`. Add a column only if the join is not enough. The card, the run panel, the bell, the fleet view and `get_agent_run` show "Claude Code for Ravi · on metorite-home".
 - **Done when.** A run of a box token shows the box. A run of a revoked connection shows `box` null and does not fail.
 - **Fence.** `agentCardLook.test.ts` and a route test.
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** The box token slices of task 1819 (PR 1764), SW-7b.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** The box token slices of task 1819 (PR 1764, task 1838), SW-7b.
 
 #### SW-51 · The fleet view
 
 - **Metorite task.** 1884.
 - **Scope.**
-  1. Extend `GET /projects/agent-summary` with `scope=org`. Add no second route.
+  1. Extend `GET /projects/{project_id}/agent-summary` (`agent_summary.py`) with `group_by=person`. Call it on the root project for the org view. Add no second route.
   2. Group by person, box, agent and session. Fields as §3.10.6 lists. Cost reads "unknown".
   3. A Fleet tab in the Agents panel (SW-8). No new nav pane.
   4. A class A chat read in `skill_projects/manifest.py`.
 - **Done when.** R8 with two members and two apps: the owner sees both apps and the lead sees only theirs. No row shows a task the viewer cannot see. `visual-review` passes at four widths.
 - **Fence.** `test_projects_agent_focus_r8.py`, `test_projects_chat_coverage.py`, and a vitest for the tab.
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE. D145 owner preview, because the tab is a new screen. **Depends on.** SW-8, SW-45, SW-50.
+- **Risk.** HIGH (visibility across the organization, as AP-12). **Gate.** AGENT-SAFE. D145 owner preview, because the tab is a new screen. **Depends on.** SW-8, SW-45, SW-50.
 
 #### SW-52 · Collision notes reach the owners
 
@@ -981,7 +986,6 @@ They keep their own gates.
 - **Scope.**
   1. Migration, expand only: `pm_projects.owned_paths TEXT[] NULL` on a seam project.
   2. The notes of SW-26 and SW-28 go to both run members and the lead of each app. A change on an owned path goes to the seam lead too.
-  3. Needs attention shows "Will collide" to the same people.
 - **Done when.** Two pull requests add the same migration number: both run members and the leads get one note each. A note never names a task that its reader cannot see.
 - **Fence.** `test_conflict_radar_r8.py` and `test_needs_attention_r8.py`. The match between `owned_paths` and CODEOWNERS is advisory (R7).
 - **Risk.** HIGH (a migration, visibility). **Gate.** AGENT-SAFE. **Depends on.** SW-26, SW-28, SW-44.
@@ -997,16 +1001,16 @@ They keep their own gates.
 #### SW-54 · Required checks on the task
 
 - **Metorite task.** 1887.
-- **Scope.** An admin lists the required check names for the organization. The default holds the 7 names of `ci_velocity.md` §4, tier 1. The fold of GH-5 reports `required_passed` and `required_total`. A required check that has not run counts as pending. The task and the card show "5 of 7 required".
+- **Scope.** An admin lists the required check names for the organization. The default is empty, and the 7 names of `ci_velocity.md` §4 seed HathiLabs only. The fold of GH-5 reports `required_passed` and `required_total`. A required check that has not run counts as pending. The task and the card show "5 of 7 required".
 - **Done when.** A reference with 7 required names and 5 passed reads "5 of 7". A missing name reads pending.
 - **Fence.** `test_github_checks.py` (new cases).
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** GH-5 live (GH-8), SW-53. Q10.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** GH-5 live (GH-8), SW-53. Q10.
 
 #### SW-55 · A merge and the review stage agree
 
 - **Metorite task.** 1888.
-- **Scope.** The G-4 rule gains a step. When the project setting "Agent work needs review" (SW-18) is on, a merge moves the task to the review lane. It moves to Done only when the merging login maps to the named reviewer or the lead. If no login-to-member map exists, the merge always lands in review under the setting. The timeline names the merger.
-- **Done when.** R8: with the setting on, a merge by a non-reviewer lands in review. A merge by the reviewer lands in Done. With the setting off, GH-6 is unchanged.
+- **Scope.** The G-4 rule gains a step. When the project setting "Agent work needs review" (SW-18) is on, a merge moves the task to the review lane. No map from a GitHub login to a member exists. So under the setting every merge lands in review. The timeline names the merger. A login map is later work and has no slice.
+- **Done when.** R8: with the setting on, a merge lands in review and the timeline names the merger. With the setting off, GH-6 is unchanged.
 - **Fence.** `test_github_merge_r8.py` (new cases).
 - **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** GH-6, SW-18.
 
@@ -1016,7 +1020,7 @@ They keep their own gates.
 - **Scope.** The results of `claim_task` and `my_work` carry `protocol: {version, lines}`. It holds at most 6 lines of 120 characters. The lines say: claim first, post a thought each minute, ask when blocked, hand off with evidence, release when you stop. The text is fixed server text.
 - **Done when.** A client that ignores instructions and prompts still reads the block in the claim result.
 - **Fence.** `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`. The 3500-character budget fence belongs to task 1803.
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** Task 1803.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** Task 1803 (no spec).
 
 #### SW-57 · The evidence of a pull request is a GitHub check
 
@@ -1024,7 +1028,7 @@ They keep their own gates.
 - **Scope.** `scripts/check_pr_evidence.py` reads the pull request body. It needs a task URL, an id `mt-<8 hex>`, or the line `No task: <reason>`. It also needs a `Verifier:` line and a `Reviewer:` line. The template of ONB-6 (task 1872) names the headings. A pr-check step runs the script. The step reports only for one week. The owner then makes it a required check.
 - **Done when.** Unit tests cover each body case. The step runs on a pull request from any author.
 - **Fence.** `tests/unit/test_check_pr_evidence.py` (new).
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE to build. OWNER-GATE to make it required, because branch protection is the owner's. **Depends on.** ONB-6.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE to build. OWNER-GATE to make it required, because branch protection is the owner's. **Depends on.** ONB-6 (task 1872, no spec yet).
 
 #### SW-58 · Make a task from a pull request
 
@@ -1032,15 +1036,15 @@ They keep their own gates.
 - **Scope.** The row "Work with no task" (SW-28) gains the act "Make a task". The lead picks a project. The act makes the task, adds the `pull_request` reference and removes the row. A chat tool does the same (class B, one confirm card).
 - **Done when.** R8: the act makes one task with one reference, and the row leaves. A second press makes no second task.
 - **Fence.** `test_needs_attention_r8.py`, a route test and `test_projects_chat_coverage.py`.
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** SW-28, SW-53.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-28, SW-53.
 
 #### SW-59 · A run declares its role
 
 - **Metorite task.** 1891.
-- **Scope.** Migration, expand only: `pm_agent_runs.role TEXT NULL`, with a CHECK of `implementer`, `verifier` and `reviewer`. `claim_task` and `start_agent_run` take an optional `role`. The task shows "Verified by <run>" when a verifier run of another run id finished on the head of the task's pull request. The role is display data.
+- **Scope.** Migration, expand only: `pm_agent_runs.role TEXT NULL`, with a CHECK of `implementer`, `verifier` and `reviewer`, added as `NOT VALID` and then `VALIDATE` (R6). `claim_task` and `start_agent_run` take an optional `role`. The task shows "Verified by <run>" when a verifier run of another run id finished on the head of the task's pull request. The role is display data.
 - **Done when.** Two runs with two roles show two chips. The role reaches no authorization check.
 - **Fence.** The structural test of §3.7 (extended), an edge schema test and a vitest for the chip. The chip is advisory (R7).
-- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
+- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. D145 owner preview for the chip. **Depends on.** SW-7b, GH-5 (the head of the pull request) and SW-53.
 
 ---
 
@@ -1219,7 +1223,7 @@ Each question carries a recommendation. A slice that waits on one says so.
 | Q4 | Do cost attribution and goals wait for H-42? (The open question of epic 321) | **Cost waits for H-42. Goals fold into WM-5** (task 984, goals and key results), so Projects gets one goal object | SW-20, SW-21 |
 | Q5 | May a person with `admin:members:read` end another member's run? (H-409 item 2) | **No. Use `admin:members:manage`.** Ending a run is a write | H-409, SW-29b Stop all |
 | Q6 | May a claim outside the member's apps be refused? (P9, §3.10.1) | **Warn first, per organization.** Refuse only after one week of data. The owner names the lead of each app (SW-44) | SW-44, SW-45 |
-| Q7 | Who answers a preview or a review, and when does an unanswered question escalate? | **The app lead, then the next lead up, then owner and admin.** A bell to the fallback at 2 hours. A Needs attention row at 6 hours. The slot stays held | SW-46, SW-47 |
+| Q7 | Who answers a preview or a review, and when does an unanswered question escalate? | **The app lead first, by the ladder of the Waiting spec (AP-15).** The circle opens at 24 hours (AP-Q9). P9 adds no second clock. The slot stays held | SW-46, SW-47 |
 | Q8 | What is the review cap for each person? | **5 items, in mode `warn` first.** The age of the queue tells when to change it | SW-49 |
 | Q9 | May the app lead Release and Resume a teammate's run? | **Yes, for the lead of the run's task project.** Q5 stays as it is for the org-wide case | SW-48 |
 | Q10 | How does GitHub reach the board? | **A per-organization switch (`GITHUB_APP_ORGS`). No new App permission.** An admin types the required check names. The board keeps its own owner map and does not read CODEOWNERS | SW-53, SW-54 |
@@ -1239,6 +1243,8 @@ Each question carries a recommendation. A slice that waits on one says so.
 - **The owner map.** CODEOWNERS (task 1872, ONB-7) and the leads on the board are two maps. A pr-check test cannot read the board. SW-52 keeps them in step by hand, and it is advisory.
 - **The login-to-member map.** SW-55 needs to know which GitHub login is which member. Read at dispatch whether such a map exists.
 - **Own apps.** The rule "lead or write grant" needs a check of the grant tables at dispatch (SW-45).
+- **Staging is retired (D144).** SW-7a, SW-10b and GH-8 still name a staging step. P9 adds no staging step. The slice that turns each one on must restate its order.
+- **Dependencies with no spec.** ONB-6 and ONB-7 (task 1872), the answer watcher (task 1731), MCP-G6 (task 360) and MCP-G16 (task 1803) live in tasks only. Build them as their tasks say.
 - **Slice names in two branches.** The box token (PR 1764) and "Questions for me" (branch `mt-181a56e0-questions-for-me`) both name slices EA-18a and up. One branch renumbers at merge. This spec cites the tasks (1806 to 1808, 1832 and 1838) so the names are not needed.
 - **The D number.** D183 was the next free number on 2026-11-06. Check it again at merge (R1).
 
