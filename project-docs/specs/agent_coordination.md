@@ -886,6 +886,7 @@ They keep their own gates.
 
 #### SW-44 · The app-owner map on the board
 
+- **Metorite task.** 1877.
 - **Scope.**
   1. Make a CRM project. Move the 187 tasks that sit directly in "Metorite Application" into an app or a seam project. Use `preview_move_tasks` first.
   2. Make the seam projects of §3.10.1 that do not exist yet.
@@ -897,6 +898,7 @@ They keep their own gates.
 
 #### SW-45 · Own apps in `my_work` and `claim_task`
 
+- **Metorite task.** 1878.
 - **Scope.**
   1. Read "own apps" as §3.10.1 says. No migration.
   2. `my_work` rows gain `app` (the nearest ancestor with a lead). Own-app rows come first. Other rows carry `outside_apps: true` and come last.
@@ -908,6 +910,7 @@ They keep their own gates.
 
 #### SW-46 · The approver of record
 
+- **Metorite task.** 1879.
 - **Scope.**
   1. Migration, expand only: `pm_agent_run_activities.addressee_email TEXT NULL` and `addressee_reason TEXT NULL`, with a CHECK of `run_member`, `app_lead`, `ancestor_lead`, `admin_fallback` and `absent_fallback`. Both columns are NULL on old rows.
   2. `ask_on_task` takes `purpose`: `question`, `preview` or `review`. The gateway sets the addressee by §3.10.2. An unknown field gets 422. The agent never names a person.
@@ -922,6 +925,7 @@ They keep their own gates.
 
 #### SW-47 · The ladder for an unanswered question, and who hears of stuck work
 
+- **Metorite task.** 1880.
 - **Scope.**
   1. The sweep adds two steps for each `awaiting` run. At one lease after the question it sends one bell to the fallback. At three leases it writes a Needs attention row, "Question unanswered", for the lead and the admins. The row offers Answer, Forward (AP-14) and Release the run.
   2. Each step keys on a fingerprint `(run, step)`, so a second pass writes nothing. Widen the reason CHECK of `pm_agent_run_strands` if the fingerprints live there (migration, expand only). Fix this at dispatch.
@@ -933,6 +937,7 @@ They keep their own gates.
 
 #### SW-48 · The lead acts on the runs of their apps
 
+- **Metorite task.** 1881.
 - **Scope.** `may_end_run` gains one branch: the app lead of the run's task may Release and Resume the run. The route and the run wire read the same text. Q5 keeps `admin:members:manage` for the org-wide case. The lead may not answer by this rule. SW-46 holds the answer.
 - **Done when.** R8: the lead of the app gets 200 on Release and Resume. A member who is not the run's member and not the lead gets 403. A lead of another app gets 403.
 - **Fence.** `test_agent_runs_r8.py` and `test_agent_run_exclusive.py`.
@@ -940,6 +945,7 @@ They keep their own gates.
 
 #### SW-49 · Review capacity
 
+- **Metorite task.** 1882.
 - **Scope.**
   1. One SQL text, `filters.review_queue_sql`, counts the items that wait on a member (§3.10.3).
   2. The setting `review_cap` for each member, default 5. Reuse the settings row of MCP-G6. Add a table only if no settings store fits.
@@ -951,6 +957,7 @@ They keep their own gates.
 
 #### SW-50 · The run shows the human and the box
 
+- **Metorite task.** 1883.
 - **Scope.** The run wire gains `for_member` and `box`. `box` is the name of the connection when the connection is a box token, else null. Read it through `pm_agent_runs.connection_id`. Add a column only if the join is not enough. The card, the run panel, the bell, the fleet view and `get_agent_run` show "Claude Code for Ravi · on metorite-home".
 - **Done when.** A run of a box token shows the box. A run of a revoked connection shows `box` null and does not fail.
 - **Fence.** `agentCardLook.test.ts` and a route test.
@@ -958,6 +965,7 @@ They keep their own gates.
 
 #### SW-51 · The fleet view
 
+- **Metorite task.** 1884.
 - **Scope.**
   1. Extend `GET /projects/agent-summary` with `scope=org`. Add no second route.
   2. Group by person, box, agent and session. Fields as §3.10.6 lists. Cost reads "unknown".
@@ -969,6 +977,7 @@ They keep their own gates.
 
 #### SW-52 · Collision notes reach the owners
 
+- **Metorite task.** 1885.
 - **Scope.**
   1. Migration, expand only: `pm_projects.owned_paths TEXT[] NULL` on a seam project.
   2. The notes of SW-26 and SW-28 go to both run members and the lead of each app. A change on an owned path goes to the seam lead too.
@@ -979,6 +988,7 @@ They keep their own gates.
 
 #### SW-53 · GitHub per organization
 
+- **Metorite task.** 1886.
 - **Scope.** The setting `GITHUB_APP_ORGS`, a list of organizations that reloads with no restart. `github_app_enabled` stays the master. The webhook receiver, the connect flow and the reconcile poll check the list. A delivery for an organization not on the list gets 202 and writes nothing.
 - **Done when.** R8: with the master on and organization B off the list, a delivery for B writes nothing, and one for A links its pull request.
 - **Fence.** `test_github_webhook_r8.py` (new cases) and `test_github_reconcile_r8.py`.
@@ -986,6 +996,7 @@ They keep their own gates.
 
 #### SW-54 · Required checks on the task
 
+- **Metorite task.** 1887.
 - **Scope.** An admin lists the required check names for the organization. The default holds the 7 names of `ci_velocity.md` §4, tier 1. The fold of GH-5 reports `required_passed` and `required_total`. A required check that has not run counts as pending. The task and the card show "5 of 7 required".
 - **Done when.** A reference with 7 required names and 5 passed reads "5 of 7". A missing name reads pending.
 - **Fence.** `test_github_checks.py` (new cases).
@@ -993,6 +1004,7 @@ They keep their own gates.
 
 #### SW-55 · A merge and the review stage agree
 
+- **Metorite task.** 1888.
 - **Scope.** The G-4 rule gains a step. When the project setting "Agent work needs review" (SW-18) is on, a merge moves the task to the review lane. It moves to Done only when the merging login maps to the named reviewer or the lead. If no login-to-member map exists, the merge always lands in review under the setting. The timeline names the merger.
 - **Done when.** R8: with the setting on, a merge by a non-reviewer lands in review. A merge by the reviewer lands in Done. With the setting off, GH-6 is unchanged.
 - **Fence.** `test_github_merge_r8.py` (new cases).
@@ -1000,6 +1012,7 @@ They keep their own gates.
 
 #### SW-56 · A protocol block in the results
 
+- **Metorite task.** 1892.
 - **Scope.** The results of `claim_task` and `my_work` carry `protocol: {version, lines}`. It holds at most 6 lines of 120 characters. The lines say: claim first, post a thought each minute, ask when blocked, hand off with evidence, release when you stop. The text is fixed server text.
 - **Done when.** A client that ignores instructions and prompts still reads the block in the claim result.
 - **Fence.** `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`. The 3500-character budget fence belongs to task 1803.
@@ -1007,6 +1020,7 @@ They keep their own gates.
 
 #### SW-57 · The evidence of a pull request is a GitHub check
 
+- **Metorite task.** 1889.
 - **Scope.** `scripts/check_pr_evidence.py` reads the pull request body. It needs a task URL, an id `mt-<8 hex>`, or the line `No task: <reason>`. It also needs a `Verifier:` line and a `Reviewer:` line. The template of ONB-6 (task 1872) names the headings. A pr-check step runs the script. The step reports only for one week. The owner then makes it a required check.
 - **Done when.** Unit tests cover each body case. The step runs on a pull request from any author.
 - **Fence.** `tests/unit/test_check_pr_evidence.py` (new).
@@ -1014,6 +1028,7 @@ They keep their own gates.
 
 #### SW-58 · Make a task from a pull request
 
+- **Metorite task.** 1890.
 - **Scope.** The row "Work with no task" (SW-28) gains the act "Make a task". The lead picks a project. The act makes the task, adds the `pull_request` reference and removes the row. A chat tool does the same (class B, one confirm card).
 - **Done when.** R8: the act makes one task with one reference, and the row leaves. A second press makes no second task.
 - **Fence.** `test_needs_attention_r8.py`, a route test and `test_projects_chat_coverage.py`.
@@ -1021,6 +1036,7 @@ They keep their own gates.
 
 #### SW-59 · A run declares its role
 
+- **Metorite task.** 1891.
 - **Scope.** Migration, expand only: `pm_agent_runs.role TEXT NULL`, with a CHECK of `implementer`, `verifier` and `reviewer`. `claim_task` and `start_agent_run` take an optional `role`. The task shows "Verified by <run>" when a verifier run of another run id finished on the head of the task's pull request. The role is display data.
 - **Done when.** Two runs with two roles show two chips. The role reaches no authorization check.
 - **Fence.** The structural test of §3.7 (extended), an edge schema test and a vitest for the chip. The chip is advisory (R7).
