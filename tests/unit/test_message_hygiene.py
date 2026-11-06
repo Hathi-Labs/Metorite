@@ -127,10 +127,7 @@ def test_the_router_gives_each_step_the_empty_content_its_vendor_accepts():
 
 def test_a_failover_chain_applies_the_rule_for_the_model_it_really_calls():
     """main._kwargs_for builds each step's messages with messages_for_step."""
-    import ast
-    import inspect
 
-    from customer_console import main
     from customer_console.reasoning import messages_for_step
 
     wire = [{"role": "user", "content": "hi"},
@@ -441,7 +438,7 @@ def _router_kwargs_for():
     ns["credentials"] = {
         p: cred for p in ("deepseek", "anthropic", "groq", "bedrock")
     }
-    exec(compile(module, "main.py::_kwargs_for", "exec"), ns)  # noqa: S102
+    exec(compile(module, "main.py::_kwargs_for", "exec"), ns)
     return ns["_kwargs_for"], ns
 
 
