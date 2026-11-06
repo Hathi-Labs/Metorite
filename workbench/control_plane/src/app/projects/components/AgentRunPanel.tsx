@@ -60,6 +60,7 @@ import {
   type AgentStartResult,
   type AgentState,
   answerPayload,
+  answerHeldLine,
   answerTo,
   answeredLine,
   archiveApprovalPayload,
@@ -86,6 +87,9 @@ import {
   replyPayload,
   runToShow,
   stopPayload,
+  withdrawPayload,
+  withdrawShown,
+  withdrawTarget,
   writeFailure,
 } from "../lib/agentRuns";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
@@ -394,6 +398,21 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     if (archivedAt) onTaskChanged?.({ ...task, archived_at: archivedAt });
   }
 
+  /** SW-43. The member takes back an answer that no agent has read. */
+  async function withdraw() {
+    // The server names the live answer. The local copy may be a guess.
+    const target = run ? withdrawTarget(run) : null;
+    if (!target) return;
+    const body = withdrawPayload(target);
+    const ok = await write(
+      () => agentRunsApi.withdrawAnswer(shownRunId, body),
+      "awaiting",
+      "Could not withdraw the answer.",
+    );
+    // The question card is open again, so the member answers with it.
+    if (ok) setSent(null);
+  }
+
   async function sendReply() {
     const text = reply.trim();
     if (!text) return;
@@ -601,6 +620,26 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
             {answeredLine(answer, elicitation, personLabels)}
           </span>
         </p>
+      ) : null}
+
+      {withdrawShown(run, answer, archiveMine, canReply) ? (
+        run.answer?.changeable ? (
+          <div className="flex items-center" data-agent-withdraw="">
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="Undo2"
+              disabled={busy}
+              onClick={() => void withdraw()}
+            >
+              Withdraw my answer
+            </Button>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground" data-agent-held="">
+            {answerHeldLine(client)}
+          </p>
+        )
       ) : null}
 
       {canReply ? (
