@@ -319,6 +319,13 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
                 users = test_users.get(upstream, set())
                 if len(users) <= HUB_LIMIT:
                     picked |= users
+                # CIV-18. A test that imports an aggregating package's
+                # `router` mounts every route module the package registers,
+                # whatever the package's size. `gateway.routes.projects` has
+                # 259 test importers (a hub), but only 35 import its router,
+                # and the R8 suites are among them. Without this, a change to
+                # `projects/personal.py` skipped `test_personal_privacy_r8.py`.
+                picked |= test_users.get(f"{upstream}.router", set())
 
     if any(c.startswith("infra/postgres/") and c.endswith(".sql") for c in changed):
         picked.add("tests/unit/test_migration_prefixes.py")
