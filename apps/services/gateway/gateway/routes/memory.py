@@ -273,6 +273,15 @@ async def delete_memory(
     # KG-9 review: the owner read of a delete is not gated by the memory
     # tenant guard, as the delete is not. A refused layer must still forget.
     # The read names this one authorized scope, so the isolation check holds.
+    # The keys `agent:<name>` and `org:global` hold no org. While the layer
+    # is refused (two orgs exist) their ids span every org, so a delete there
+    # could remove another org's memory. Refuse them until KG-11 (review P2).
+    from acb_memory import memory_tenancy_ok  # noqa: PLC0415
+
+    if (scope.startswith("agent:") or scope == "org:global") and not (
+        await memory_tenancy_ok()
+    ):
+        raise HTTPException(status_code=404, detail="Memory not found")
     owned = await client.scope_ids(scope)
     if memory_id not in owned:
         # 404, not 403: whether a memory id exists elsewhere is itself

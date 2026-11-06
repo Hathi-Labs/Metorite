@@ -646,3 +646,46 @@ async def test_the_probe_counts_real_organizations(monkeypatch) -> None:
                 await outer.rollback()
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_delete_in_an_org_less_scope_is_refused_while_the_layer_is_refused(
+    monkeypatch,
+) -> None:
+    """KG-9 re-review, P2. `agent:<name>` and `org:global` span every org.
+
+    While two orgs exist, a delete in such a scope would reach another org's
+    memory id, so the route answers 404 and never deletes.
+    """
+    from fastapi import HTTPException
+
+    import gateway.routes.memory as mem
+
+    _flags(monkeypatch, mem0=True)
+    _orgs(monkeypatch, 2)
+    assert await tenant_guard.memory_tenancy_ok() is False
+
+    deleted: list[str] = []
+
+    class _Mem0Rows:
+        def get_all(self, filters: dict, **kw: Any) -> dict:
+            return {"results": [{"id": "other-org-1"}]}
+
+        def delete(self, memory_id: str) -> None:
+            deleted.append(memory_id)
+
+    client = mem0_client.MemoryClient()
+    monkeypatch.setattr(client, "_get_client", lambda: _Mem0Rows())
+    monkeypatch.setattr(mem, "_get_mem0", lambda: client)
+    monkeypatch.setattr(mem, "_authorize_scope", lambda *a, **k: None)
+
+    class _Person:
+        role = None
+        organization_id = ORG_A
+        email = "a@x.test"
+
+    for scope in ("agent:sales", "org:global"):
+        with pytest.raises(HTTPException) as exc:
+            await mem.delete_memory(scope, "other-org-1", _Person())
+        assert exc.value.status_code == 404
+    assert deleted == []
