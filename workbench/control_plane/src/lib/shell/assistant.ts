@@ -391,6 +391,11 @@ export interface AssistantState {
    * message once, then takes it (`consumeReminder`).
    */
   reminder: string | null;
+  /**
+   * The next fresh chat opens with the hello (WS-BUD BUD-1). The dock asks
+   * the server for the first message once, then takes it (`consumeHello`).
+   */
+  hello: boolean;
   /** Grows when the cursor should go to the assistant's composer. */
   focusSeq: number;
   /** The side panel's width. */
@@ -436,6 +441,7 @@ const CLOSED: AssistantState = {
   draft: null,
   freshSeq: 0,
   reminder: null,
+  hello: false,
   focusSeq: 0,
   width: DOCK_DEFAULT,
 };
@@ -467,6 +473,8 @@ export interface OpenOptions {
   fresh?: boolean;
   /** A reminder id to open in the fresh chat that this open asks for (RM-4). */
   reminder?: string;
+  /** The fresh chat that this open asks for opens with the hello (BUD-1): pass `fresh` too. */
+  hello?: boolean;
   /** WS-63 D-PZ-37: the member typed `text` or `draft` in a box of the
    *  shell. Leave it unset for words that a click sends. */
   typed?: boolean;
@@ -522,6 +530,7 @@ export function openAssistant(opts: OpenOptions = {}): void {
       : base.draft,
     freshSeq: opts.fresh ? base.freshSeq + 1 : base.freshSeq,
     reminder: reminder || base.reminder,
+    hello: opts.hello === true ? true : base.hello,
     focusSeq: base.focusSeq + 1,
   });
 }
@@ -529,7 +538,7 @@ export function openAssistant(opts: OpenOptions = {}): void {
 /** Close the assistant. The chat it showed stays its chat for next time. */
 export function closeAssistant(): void {
   if (!_state.open) return;
-  _set({ ..._state, open: false, ask: null, draft: null, reminder: null });
+  _set({ ..._state, open: false, ask: null, draft: null, reminder: null, hello: false });
 }
 
 /** The composer took the draft. */
@@ -542,6 +551,12 @@ export function consumeDraft(): void {
 export function consumeReminder(): void {
   if (!_state.reminder) return;
   _set({ ..._state, reminder: null });
+}
+
+/** The dock asked the server for the hello: drop it, so it opens once. */
+export function consumeHello(): void {
+  if (!_state.hello) return;
+  _set({ ..._state, hello: false });
 }
 
 /** Change the form of this open. Nothing is kept for the next one. */

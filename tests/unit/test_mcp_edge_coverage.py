@@ -477,6 +477,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # EA-15b (§12.4). The edge cuts its merged rows to this length. No route
     # of `my_work` takes it.
     ("my_work", "limit"),
+    # MCP-G4. The edge keeps the runs whose session key is the caller's. The
+    # runs route takes no such parameter.
+    ("list_agent_runs", "mine_only"),
     # MCP-G1. The edge checks the level against the parent, and the node
     # route takes no level. The key uses the slot of `create_task`.
     ("create_project", "level"),
@@ -484,6 +487,8 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # MCP-G1. The edge compares it with the id of the preview that it runs
     # again. The move route takes no such field.
     ("move_tasks", "preview_id"),
+    # CIV-14c. The edge picks the page size and pages the timeline itself.
+    ("get_task_context", "comments"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in
@@ -507,7 +512,7 @@ def test_the_ea15_reads_are_listed_and_add_no_pair():
         for route in (tool.route, *tool.routes):
             assert ("GET", route) in MCP_ROUTES, (name, route)
     assert TOOLS["my_work"].edge_inputs == frozenset({"limit"})
-    assert TOOLS["get_task_context"].edge_inputs == frozenset()
+    assert TOOLS["get_task_context"].edge_inputs == frozenset({"comments"})
 
 
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
