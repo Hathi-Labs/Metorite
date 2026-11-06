@@ -25,15 +25,18 @@ f. No file of ``routes/studio`` names the ``workflows`` gate.
 g. In a chat, a Studio tool that a member without the feature runs gets the
    refusal text, and the handler never runs.
 h. The R8 half is in the ``--must-run`` list of the CI skip guard.
+i. A member with a ``feature:workflows`` deny override passes the gate. The
+   owner accepted this edge on 2026-11-06 (task 1199, D180).
 
-**The mutations (R7).** Each ran on 2026-11-05, and each test named here
-went red.
+**The mutations (R7).** Each ran on 2026-11-05, M1 again on 2026-11-06
+with 16 routes, and each test named here went red.
 
 * M1: in ``actions.py``, restore ``require_feature_router("workflows")``.
-  88 tests went red: ``test_a_workflows_member_gets_403_on_each_route`` (28),
-  ``test_a_member_without_studio_gets_403_on_each_route`` (28, the two
+  116 tests went red: ``test_a_workflows_member_gets_403_on_each_route`` (32),
+  ``test_a_member_without_studio_gets_403_on_each_route`` (32, the two
   override cases), ``test_a_studio_holder_passes_the_gate_on_each_route``
-  (14), ``test_no_route_adds_a_second_gate_or_the_share_verb`` (14),
+  (16), ``test_a_workflows_deny_override_no_longer_closes_studio`` (16),
+  ``test_no_route_adds_a_second_gate_or_the_share_verb`` (16),
   ``test_the_router_carries_one_feature_gate_and_it_is_studio``,
   ``test_no_studio_file_names_the_workflows_gate`` and both chat tests. The
   R8 half went red too (its docstring names the tests).
