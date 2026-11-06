@@ -1,0 +1,164 @@
+{
+  "_doc": "WS-MDC CC-2 (my_day_command_centre.md §9.2, D-MD-2): is a task in the member's Today, and why? One member, one local day. `task` holds the shared facts: the stated disposition of the member and the effective one that the client gets, the lane category, who is assigned (`me`, `other` or null), and the dates. `mine` holds the member's own overlay and day state: the focus mark, the block and the One Thing. `why` lists the arms that hold, in the order one_thing, focus, scheduled, due. An empty `why` is a task outside the set. The `due` arm alone is the old rule. Readers: tests/unit/test_today_rule_r8.py (mine.in_today and personal.effective_disposition hermetic, today_rule.today_set_sql on Postgres), workbench/control_plane/src/lib/shell/todayRule.test.ts (todayRule.ts todayWhy and today.ts isInToday).",
+  "zone": "Asia/Kolkata",
+  "today": "2026-11-07",
+  "at": "2026-11-07T06:30:00Z",
+  "cases": [
+    {
+      "name": "an open task of mine with no date is not in Today",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "due late this evening in my zone",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-07T18:00:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": ["due"]
+    },
+    {
+      "name": "due just after my midnight is tomorrow",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-07T18:45:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "overdue work is in Today",
+      "task": {"stated": "NEXT", "effective": "NEXT", "category": "in_progress", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-05T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": ["due"]
+    },
+    {
+      "name": "started today with no due date",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": "2026-11-07", "due_at": null},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": ["due"]
+    },
+    {
+      "name": "starts tomorrow, so an old due date does not count",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": "2026-11-08", "due_at": "2026-11-06T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "deferred past my midnight, due today",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": "2026-11-07T19:00:00Z", "start_date": null, "due_at": "2026-11-07T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "deferred to later today, due today",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": "2026-11-07T10:00:00Z", "start_date": null, "due_at": "2026-11-07T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": ["due"]
+    },
+    {
+      "name": "due today but assigned to another member reads as Waiting",
+      "task": {"stated": null, "effective": "WAITING", "category": "todo", "assignee": "other", "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-07T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "due today but I filed it as Someday",
+      "task": {"stated": "SOMEDAY", "effective": "SOMEDAY", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-07T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "due today in a backlog lane with nothing stated reads as Someday",
+      "task": {"stated": null, "effective": "SOMEDAY", "category": "backlog", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-07T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "a stated Done on a reopened task reads as Next",
+      "task": {"stated": "DONE", "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-07T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": ["due"]
+    },
+    {
+      "name": "due today in a closed lane is done",
+      "task": {"stated": null, "effective": "DONE", "category": "done", "assignee": "me", "completed": true, "defer_until": null, "start_date": null, "due_at": "2026-11-07T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "my focus mark of today on a task with no date",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": "2026-11-07", "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": ["focus"]
+    },
+    {
+      "name": "my focus mark of yesterday has expired",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": "2026-11-06", "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "my focus mark on a task of another member that I can see",
+      "task": {"stated": null, "effective": "WAITING", "category": "todo", "assignee": "other", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": "2026-11-07", "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": ["focus"]
+    },
+    {
+      "name": "my block starts this morning",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": null, "scheduled_start": "2026-11-07T04:30:00Z", "scheduled_end": "2026-11-07T05:30:00Z", "one_thing": false},
+      "why": ["scheduled"]
+    },
+    {
+      "name": "my block starts one minute before my midnight of today",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": null, "scheduled_start": "2026-11-06T18:29:00Z", "scheduled_end": "2026-11-06T19:00:00Z", "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "my block starts at my midnight of today",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": null, "scheduled_start": "2026-11-06T18:30:00Z", "scheduled_end": "2026-11-06T19:30:00Z", "one_thing": false},
+      "why": ["scheduled"]
+    },
+    {
+      "name": "my block today on a task of another member",
+      "task": {"stated": null, "effective": "WAITING", "category": "todo", "assignee": "other", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": null, "scheduled_start": "2026-11-07T08:00:00Z", "scheduled_end": "2026-11-07T09:00:00Z", "one_thing": false},
+      "why": ["scheduled"]
+    },
+    {
+      "name": "the One Thing with no date",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": true},
+      "why": ["one_thing"]
+    },
+    {
+      "name": "the One Thing, marked, blocked and due holds every arm",
+      "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-07T12:00:00Z"},
+      "mine": {"focus_on": "2026-11-07", "scheduled_start": "2026-11-07T09:00:00Z", "scheduled_end": "2026-11-07T10:00:00Z", "one_thing": true},
+      "why": ["one_thing", "focus", "scheduled", "due"]
+    },
+    {
+      "name": "the One Thing in a closed lane is done",
+      "task": {"stated": null, "effective": "DONE", "category": "done", "assignee": "me", "completed": true, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": true},
+      "why": []
+    },
+    {
+      "name": "a focus mark on a closed task does not show",
+      "task": {"stated": null, "effective": "DONE", "category": "done", "assignee": "me", "completed": true, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": "2026-11-07", "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "a focus mark on a task in my trash does not show",
+      "task": {"stated": "TRASH", "effective": "TRASH", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": "2026-11-07", "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    },
+    {
+      "name": "due today and stated Next, but assigned to nobody, is not mine",
+      "task": {"stated": "NEXT", "effective": "NEXT", "category": "todo", "assignee": null, "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-07T06:30:00Z"},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": false},
+      "why": []
+    }
+  ]
+}

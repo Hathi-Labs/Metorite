@@ -474,6 +474,8 @@ _SAMPLE: dict[str, Any] = {
     "waiting_on": "Priya",
     "waiting_since": "2026-10-05",
     "expected_by": "2026-10-09",
+    # WS-MDC CC-2: today's focus.
+    "focus": "yes",
     "filters": '{"overdue": true}',
     "personal": '{"disposition": "someday", "context": "@home"}',
     # WS-66 RM-3: a reminder's time, kind, estimate, answer and list state.

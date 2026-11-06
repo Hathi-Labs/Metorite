@@ -163,6 +163,17 @@ def validate_personal(
                 "project's done lane and sets your disposition with it."
             ),
         )
+    if "focus_on" in values:
+        # WS-MDC CC-2 (D-MD-3): the cap of today's focus holds for one mark
+        # at a time (`personal.mark_focus`). A selection of fifty would pass
+        # it in one body, so the bulk route takes no mark and no clear.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Today's focus is set on one task at a time, through "
+                "PATCH /projects/tasks/{id}/personal, which holds the cap."
+            ),
+        )
     return values
 
 

@@ -23,7 +23,7 @@
  * Fence: `myTasks.test.ts`.
  */
 
-import { isInToday } from "@/app/tasks/lib/today";
+import { inTodayChip } from "@/lib/shell/todayRule";
 import { STATUS_CATEGORIES, categoryLabel, landingLane } from "@/lib/statusCategory";
 
 import type { NodeSummary, StatusRow, TaskRow, ThroughputReport } from "./api";
@@ -176,6 +176,7 @@ export function chipForApp(id: string | null | undefined): MyTasksChip | null {
 /** The overlay facts a chip reads off a row (`with_overlay=1`). */
 export type ChipRow = Pick<
   TaskRow,
+  | "id"
   | "disposition"
   | "is_mine"
   | "is_new"
@@ -191,15 +192,23 @@ export type ChipRow = Pick<
  *
  * - Next: the effective disposition is NEXT, and the task is assigned to me.
  * - Waiting, Someday and Done: the effective disposition.
- * - Today: `isInToday`, the one Today rule (`tasks/lib/today.ts`), which the
- *   server's `in_today` mirrors.
+ * - Today: `isInToday`, the old Today rule (`tasks/lib/today.ts`), which the
+ *   server's `in_today` mirrors. With `TODAY_RULE_ORGS` on, the summary sends
+ *   `today_ids`, the set of the one Today predicate (WS-MDC CC-2), and the
+ *   chip lists that set (`todayRule.ts` `inTodayChip`).
  * - New: the server's `is_new` (`mine.new_work`), no stated disposition of mine.
  * - All: every row but TRASH. TRASH is in no chip.
  *
  * `disposition` arrives EFFECTIVE (`effective_disposition`, D77), so a closed
  * lane already reads DONE here.
  */
-export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?: string): boolean {
+export function inChip(
+  row: ChipRow,
+  chip: MyTasksChip,
+  today: string,
+  timeZone?: string,
+  todayIds?: ReadonlySet<string> | null,
+): boolean {
   const effective = String(row.disposition ?? "");
   switch (chip) {
     case "all":
@@ -215,8 +224,9 @@ export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?
     case "done":
       return effective === "DONE";
     case "today":
-      return isInToday(
+      return inTodayChip(
         {
+          id: row.id,
           disposition: effective as never,
           isMine: Boolean(row.is_mine),
           archivedAt: row.archived_at ?? undefined,
@@ -225,8 +235,8 @@ export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?
           startDate: row.start_date ?? undefined,
           deferUntil: row.defer_until ?? undefined,
         },
-        today,
-        timeZone,
+        { today, timeZone },
+        todayIds,
       );
   }
 }
@@ -237,8 +247,20 @@ export function chipRows<T extends ChipRow>(
   chip: MyTasksChip,
   today: string,
   timeZone?: string,
+  todayIds?: ReadonlySet<string> | null,
 ): T[] {
-  return rows.filter((row) => inChip(row, chip, today, timeZone));
+  return rows.filter((row) => inChip(row, chip, today, timeZone, todayIds));
+}
+
+/**
+ * The ids of the Today set, from the summary, or null for the old rule.
+ * `today_ids` comes only with `TODAY_RULE_ORGS` on (WS-MDC CC-2).
+ */
+export function todayIdsOf(
+  summary: Pick<NodeSummary, "today_rule" | "today_ids"> | null | undefined,
+): ReadonlySet<string> | null {
+  if (!summary?.today_rule || !Array.isArray(summary.today_ids)) return null;
+  return new Set(summary.today_ids.map(String));
 }
 
 /** The server count of a chip, or null when the summary has not said. */

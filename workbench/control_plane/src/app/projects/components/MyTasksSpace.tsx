@@ -69,6 +69,7 @@ import {
   planMineDrop,
   quickAddHome,
   stageGroups,
+  todayIdsOf,
   truncationNotice,
 } from "../lib/myTasks";
 import { useSubtaskComplete } from "./useSubtaskComplete";
@@ -455,7 +456,12 @@ export default function MyTasksSpace({
     attentionRead.error && !attentionRead.data ? `Could not read the list. ${attentionRead.error}` : null;
 
   // ── What the canvases draw ──────────────────────────────────────────────
-  const shown = useMemo(() => chipRows(list.rows, chip, today, zone), [list.rows, chip, today, zone]);
+  // WS-MDC CC-2: the server's Today set, or null for the old rule.
+  const todayIds = useMemo(() => todayIdsOf(summary.data), [summary.data]);
+  const shown = useMemo(
+    () => chipRows(list.rows, chip, today, zone, todayIds),
+    [list.rows, chip, today, zone, todayIds],
+  );
   const statuses = useMemo(() => mineStatuses(list.rows, known), [list.rows, known]);
   // A status is a lane of ONE project, so the roll-up groups by stage instead.
   // The same holds for the lanes: a status lane would name one project's
@@ -476,8 +482,8 @@ export default function MyTasksSpace({
     [statusSets, statuses],
   );
   const calendarRows = useMemo(
-    () => chipRows(month.rows, chip, today, zone),
-    [month.rows, chip, today, zone],
+    () => chipRows(month.rows, chip, today, zone, todayIds),
+    [month.rows, chip, today, zone, todayIds],
   );
 
   // A quick add files to the personal root, or nowhere: never "" (item 10).

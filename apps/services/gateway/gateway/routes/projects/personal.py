@@ -16,6 +16,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §3.11-§3.12, §6.1 ·
     PATCH /projects/tasks/{task_id}/personal     → set MY overlay on a task
     GET   /projects/my/contexts                  → the contexts I actually use
     GET   /projects/my/today                     → my date and my zone (WS-46 P7)
+    GET   /projects/my/today?with_tasks=true     → …and my Today set (WS-MDC CC-2)
 
 **There is no sync here, and that is the whole point.** A task assigned to a
 member is not copied into their inbox — it *is* the row in their inbox. So
@@ -42,6 +43,7 @@ from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.projects import today_rule
 from gateway.routes.projects.cascade import complete_subtree, emit_all
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
@@ -188,6 +190,13 @@ class PersonalIn(BaseModel):
     #: WhatsApp) is the owner-gated one, and is still unbuilt. Accepted on a
     #: PATCH as well, so a client can clear it.
     last_nudged_at: str | None = None
+
+    # ── Today's focus (migration 349, WS-MDC CC-2) ──────────────────────────
+    #: My mark "today's focus": my today as ``YYYY-MM-DD``, or null to clear.
+    #: Any other date is a 422. A mark past my cap is a 409
+    #: ``focus_cap_reached`` (:func:`mark_focus`, ``today_rule``). Only the
+    #: single PATCH takes a mark. The bulk route refuses one.
+    focus_on: str | None = None
 
 
 class CaptureIn(BaseModel):
@@ -838,8 +847,16 @@ async def capture_batch(
 
 async def _upsert_personal(
     db: Any, task_id: str, email: str, values: dict[str, Any],
+    *, focus: today_rule.FocusGuard | None = None,
 ) -> Any:
-    """Write MY overlay row for a task. Never anybody else's."""
+    """Write MY overlay row for a task. Never anybody else's.
+
+    *focus* is the guard of a today's-focus mark (WS-MDC CC-2). Only
+    :func:`mark_focus` passes it. The value of ``focus_on`` is then
+    ``today_rule.focus_room_sql``, so this ONE statement counts the marks of
+    the day and writes the mark. A full day writes NULL, and the caller
+    answers 409.
+    """
     # D77's fence at the ONE writer. Every overlay write in the gateway —
     # the PATCH, bulk, organize, the planner, the AI seam — comes through
     # here, so a retired column cannot be written by a path the 422 in
@@ -850,6 +867,18 @@ async def _upsert_personal(
             f"pm_task_personal: {retired} retired by D77/D78 — "
             + " ".join(RETIRED_OVERLAY_KEYS[k] for k in retired)
         )
+    # CC-2's fence at the same writer: a mark is written under the cap only.
+    # A clear (NULL) needs no guard.
+    if values.get("focus_on") is not None and focus is None:
+        raise ValueError(
+            "pm_task_personal: a today's-focus mark is written only through "
+            "personal.mark_focus, under the cap (today_rule.focus_room_sql)."
+        )
+    placeholders = {c: _placeholder(c) for c in values}
+    binds = {"task_id": task_id, "member_email": email, **_bindable(values)}
+    if focus is not None:
+        placeholders["focus_on"] = today_rule.focus_room_sql()
+        binds.update(focus.binds)
     columns = ["task_id", "member_email", *values]
     assignments = ", ".join(f"{c} = EXCLUDED.{c}" for c in values)
     # `pm_task_personal` has a COMPOSITE key, so the shared `update_row` helper
@@ -869,13 +898,76 @@ async def _upsert_personal(
         text(
             f"INSERT INTO pm_task_personal ({', '.join(columns)}) "
             f"VALUES (CAST(:task_id AS uuid), :member_email, "
-            f"{', '.join(_placeholder(c) for c in values)}) "
+            f"{', '.join(placeholders[c] for c in values)}) "
             f"ON CONFLICT (task_id, member_email) DO UPDATE "
             f"SET {assignments}, updated_at = now() "
             f"RETURNING *"
         ),
-        {"task_id": task_id, "member_email": email, **_bindable(values)},
+        binds,
     )).fetchone()
+
+
+async def check_focus_on(db: Any, email: str, values: dict[str, Any]) -> date | None:
+    """The member's mark of a PATCH, checked: the date of today, or ``None``.
+
+    ``focus_on`` takes the member's own today (``YYYY-MM-DD`` in the stored
+    zone) or null. Any other value is a 422, so a mark of another day never
+    lands. Absent from *values*, or null, reads as ``None``.
+    """
+    if values.get("focus_on") is None:
+        return None
+    raw = str(values["focus_on"]).strip()
+    today = local_date(await stored_zone(db, email), today_rule.clock())
+    try:
+        day = date.fromisoformat(raw) if len(raw) == 10 else None
+    except ValueError:
+        day = None
+    if day != today:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"focus_on is your today ({today.isoformat()}) or null. A mark of "
+                "today's focus holds for one day, so another date is refused."
+            ),
+        )
+    return day
+
+
+async def mark_focus(
+    db: Any, vis: Visibility, task_id: str, email: str, day: date,
+) -> None:
+    """Mark *task_id* as one of the member's focus tasks for *day*, under the cap.
+
+    WS-MDC CC-2 (D-MD-3). It takes the transaction lock of the org, the
+    member and the day first (``today_rule.FOCUS_LOCK_SQL``), so two marks of
+    one day never count at the same time. Then ONE statement counts the other
+    marks, plus the One Thing with no mark, and writes the mark when the
+    count is under the cap. A mark that the task holds already is kept. A
+    full day answers 409 ``focus_cap_reached``, and the transaction rolls
+    back. The member is the session's, and the cap is the member's own.
+    """
+    org = str(vis.organization_id or "")
+    await db.execute(
+        text(today_rule.FOCUS_LOCK_SQL),
+        {"key": today_rule.focus_lock_key(org, email, day)},
+    )
+    cap = await today_rule.focus_cap_of(db, email)
+    guard = today_rule.FocusGuard(who=email, organization_id=org, task_id=task_id, cap=cap)
+    row = await _upsert_personal(db, task_id, email, {"focus_on": day}, focus=guard)
+    if row is None or getattr(row, "focus_on", None) != day:
+        count = await today_rule.focus_count(db, vis, day)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": today_rule.FOCUS_CAP_REACHED,
+                "message": (
+                    f"Today's focus holds {cap} tasks, and it is full. Unmark one "
+                    "first, then mark this task."
+                ),
+                "focus_cap": cap,
+                "focus_count": count,
+            },
+        )
 
 
 def _as_utc(value: Any) -> Any:
@@ -1049,6 +1141,13 @@ async def set_personal(
         # in exchange for the API telling the truth about whose fault it is.
         await _reject_impossible_block(db, task_id, email, values)
         await _reject_waiting_without_since(db, task_id, email, values)
+        # WS-MDC CC-2: a mark of today's focus, under the cap, BEFORE any
+        # write that emits an event. A refused mark (409) rolls the whole
+        # PATCH back. A clear (null) rides with the other values.
+        day = await check_focus_on(db, email, values)
+        if day is not None:
+            values.pop("focus_on")
+            await mark_focus(db, vis, task_id, email, day)
 
         # Triage is recorded even when nothing changed: "when did I last look at
         # this" is the Weekly Review's question, and a no-op PATCH is still a
@@ -1121,6 +1220,8 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         # collecting a real value that no caller could read — the Weekly
         # Review's "when did I last look at this" had no way to ask.
         "clarified_at": _iso(row, "clarified_at"),
+        # WS-MDC CC-2 (349): my mark of today's focus, a date or None.
+        "focus_on": _iso(row, "focus_on"),
     }
 
 
@@ -1587,9 +1688,11 @@ async def stored_due(db: Any, email: str, value: Any) -> Any:
 
 
 @router.get("/my/today")
-async def my_today(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+async def my_today(
+    user: UserContext = Depends(get_current_user), with_tasks: bool = False,
+) -> dict[str, Any]:
     """My own date, and my zone (WS-46 P7, `projects_agent_parity.md` §8.1
-    item 4).
+    item 4). With ``with_tasks=true``, also my Today set (WS-MDC CC-2).
 
     The browser knows the member's zone, and a chat tool does not. Before this
     read, a weekly rule with no day took today's weekday in UTC, which is the
@@ -1609,21 +1712,37 @@ async def my_today(user: UserContext = Depends(get_current_user)) -> dict[str, A
     (``shell.state._hour``, 7 when none is saved). The reminder tools read it
     for "tomorrow morning". The zone keeps its own read above, so this field
     changes no zone answer.
+
+    ``with_tasks=true`` (WS-MDC CC-2, `my_day_command_centre.md` §9.2) adds
+    the Today set of the one predicate, ``today_rule.today_answer``: ``rows``
+    (each task with its block and ``why``), ``total``, ``to_fit`` (the set
+    minus the tasks with a block today), ``focus_cap`` and ``focus_count``.
+    The set reads the same zone and the same date as ``today``. With no
+    ``with_tasks`` the answer is the five keys above, and the read runs no
+    extra statement, so the chat's clock read costs nothing more.
     """
     # Imported here: `shell.state` reaches the projects routes through the feed.
     from gateway.routes.shell.state import DEFAULT_DAY_START, _hour
 
     email = actor(user).lower()
+    at = today_rule.clock()
+    extra: dict[str, Any] = {}
     async with _tenant_session() as db:
         stored = await stored_zone(db, email)
         _day_zone, hour = await member_day(db, user)
+        if with_tasks:
+            vis = await resolve_visibility(db, user)
+            extra = await today_rule.today_answer(
+                db, vis, today_rule.window_of(stored, at),
+            )
     zone = zone_name(stored)
     return {
-        "today": local_date(zone, datetime.now(UTC)).isoformat(),
+        "today": local_date(zone, at).isoformat(),
         "timezone": zone,
         "stored": stored is not None,
         "valid": stored is None or zone == str(stored),
         "day_start_hour": _hour(hour, DEFAULT_DAY_START, 23),
+        **extra,
     }
 
 

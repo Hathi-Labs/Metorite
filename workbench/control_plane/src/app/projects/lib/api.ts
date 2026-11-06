@@ -314,6 +314,12 @@ export interface NodeSummary {
   >;
   today?: string;
   time_zone?: string;
+  /**
+   * WS-MDC CC-2: present only with `TODAY_RULE_ORGS` on. `today_ids` is the
+   * set of the one Today predicate, so the Today chip lists what it counts.
+   */
+  today_rule?: boolean;
+  today_ids?: string[];
 }
 
 /**

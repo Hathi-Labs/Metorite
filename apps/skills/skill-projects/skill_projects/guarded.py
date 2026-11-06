@@ -1262,6 +1262,10 @@ async def _bulk_personal(ids: list[str], personal: str) -> str:
             "personal is a JSON object with set_my_overlay's arguments, for example "
             f'{{"disposition": "someday"}}. The arguments are {", ".join(OVERLAY_ARGUMENTS)}.'
         )
+    if "focus" in given:
+        # WS-MDC CC-2: the bulk route takes no mark, because the cap of
+        # today's focus holds for one mark at a time.
+        return "Mark today's focus on one task at a time, with set_my_overlay focus."
     values = await _overlay_values(given, {})
     if isinstance(values, str):
         return values

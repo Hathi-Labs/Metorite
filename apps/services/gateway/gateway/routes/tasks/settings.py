@@ -94,6 +94,10 @@ class UserSettingsModel(BaseModel):
     # Recurring day-templates (migration 94): flexible block/focus windows —
     # [{days:[0..6], start_hour, end_hour, kind:'block'|'focus', label, theme}].
     day_templates: list[dict] = []
+    # Today's focus (migration 349, WS-MDC CC-2, D-MD-3): how many tasks the
+    # member may mark for one day. NULL reads as 3, and a read clamps to 1..10
+    # (`projects.today_rule.clamp_focus_cap`).
+    today_focus_cap: int = 3
 
 
 class UserSettingsPatch(BaseModel):
@@ -120,6 +124,8 @@ class UserSettingsPatch(BaseModel):
     lunch_start_hour: int | None = None
     lunch_end_hour: int | None = None
     day_templates: list[dict] | None = None
+    #: WS-MDC CC-2. A write clamps it to 1..10. No control sends it until CC-7.
+    today_focus_cap: int | None = None
 
 
 async def task_models(db: Any, user_id: str) -> dict[str, str]:
@@ -257,6 +263,7 @@ async def _load(db: Any, user_id: str, *, any_case: bool = False) -> UserSetting
         lunch_start_hour=_int_or_none(getattr(row, "lunch_start_hour", None)),
         lunch_end_hour=_int_or_none(getattr(row, "lunch_end_hour", None)),
         day_templates=_day_templates(getattr(row, "day_templates", None)),
+        today_focus_cap=clamp_focus_cap(getattr(row, "today_focus_cap", None)),
     )
 
 
@@ -345,6 +352,15 @@ def _day_templates(val: Any) -> list[dict]:
         if len(out) >= 40:
             break
     return out
+
+
+def clamp_focus_cap(value: Any) -> int:
+    """The cap of today's focus, 1..10, by the one rule of
+    ``projects.today_rule.clamp_focus_cap``. A lazy import: the projects
+    package imports this one."""
+    from gateway.routes.projects.today_rule import clamp_focus_cap as clamp
+
+    return clamp(value)
 
 
 def _int_or(v: Any, default: int) -> int:
@@ -472,6 +488,9 @@ async def write_member_settings(uid: str, fields: dict[str, Any]) -> None:
         # Validate + JSON-encode for the JSONB column.
         fields["energy_windows"] = json.dumps(
             _energy_windows(fields["energy_windows"]))
+    if "today_focus_cap" in fields:
+        # WS-MDC CC-2: the cap of today's focus, clamped to 1..10 on the way in.
+        fields["today_focus_cap"] = clamp_focus_cap(fields["today_focus_cap"])
     # JSONB columns need an explicit ::jsonb cast on the bind param.
     # The space before the cast matters — SQLAlchemy's bind-param
     # scanner mis-parses a bind name immediately followed by a
