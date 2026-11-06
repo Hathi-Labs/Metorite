@@ -1109,7 +1109,11 @@ def live_app(monkeypatch):
 
     slug = f"h201-app-{_tag()}"
 
-    async def _live():
+    async def _live(*, organization_id):
+        # H-201c keys the presence set for each tenant. This stub ignores the
+        # org on purpose: the test is about the app details, which the
+        # database reads for real. test_activity_feed_tenant.py owns the
+        # presence set itself.
         return [{"agent": f"app:{slug}", "ts": "2026-11-05T00:00:00Z", "source": "apps"}]
 
     monkeypatch.setattr(agent_routes, "_AGENT_REGISTRY", [])

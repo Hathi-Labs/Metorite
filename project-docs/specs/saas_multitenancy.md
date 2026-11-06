@@ -2178,6 +2178,11 @@ constructed without one **refuses to run** rather than defaulting.
 > `cc:<org>:email-att:<id>` through `get_tenant_redis(binary=True)`. That is the same wrapper
 > over a second, small pool that does not decode replies. `routes/email/core.py` left the
 > import allow-list. Fence: `tests/unit/test_email_attachment_cache_tenancy.py`.
+> **Converted (H-201c, task 1718, 2026-11-05, BUILT, not merged):** the live activity feed.
+> The stream is `cc:<org>:activity` and the presence keys are `cc:<org>:activity:live:<run>`,
+> through the wrapper. A writer with no org writes nothing. The SSE `XREAD BLOCK` runs on a
+> third pool (`get_tenant_redis(blocking=True)`). `activity.py` stays on both allow-lists for
+> `cc:cost:{day}` and its one-shot clients only. Fence: `tests/unit/test_activity_feed_tenant.py`.
 > **NOT converted:** the other key sites, across 9 clients. Deliberately separate — the docstring
 > carries the migration path, including *not* writing a dual-read shim (every key is cache,
 > presence or a bounded stream, so conversion is a cache-cold event, not a data migration).
@@ -2192,8 +2197,8 @@ constructed without one **refuses to run** rather than defaulting.
 >    `orchestrator/agents.py:436`, which hands `redis_url` to `agent_framework`'s
 >    `RedisHistoryProvider`, keying chat history **outside this wrapper entirely**. That one
 >    needs its own decision, not a conversion.
-**Owner:** §0.9.4, §1.9 · **Anchor:** today's untenanted `cc:activity`, `cc:room`,
-`cc:cost`, `cc:presence`, `cc:runactor`, …
+**Owner:** §0.9.4, §1.9 · **Anchor:** today's untenanted `cc:room`,
+`cc:cost`, `cc:presence`, `cc:runactor`, … (`cc:activity` converted by H-201c, 2026-11-05)
 
 **Done when:** a wrapper client is the only way the codebase reaches Redis and it **cannot
 construct an unprefixed key**; consumer groups are per-tenant; a grep-assertion test fails
