@@ -4,8 +4,7 @@
  * One pure rule: which tabs the card draws, in which order, with which count.
  * "All" comes first. Then "AI questions", then one tab for each app with rows,
  * the app with the most rows first. "Reminders" comes last. A tab with no row
- * is not drawn. A tab's count is the number of rows it shows, so the sum of
- * the tabs after "All" equals the count of "All".
+ * is not drawn. A tab's count is the number of rows it shows. "All" shows no count.
  *
  * `FeedCard.tsx` draws what this file decides. A new app adds no tab code: its
  * rows carry an `app`, and its tab appears.
@@ -20,7 +19,8 @@ export interface NeedsTab {
   label: string;
   /** A Lucide icon name. */
   icon: string;
-  count: number;
+  /** The rows of the tab. "All" has none: the page summary counts another way, and two numbers would disagree. */
+  count?: number;
   /** The app key of an app tab. The card reads its hue from it. */
   app?: string;
   /** The tab holds the assistant's runs, drawn in amber. */
@@ -59,8 +59,7 @@ export function buildNeedsTabs(input: {
   kinds.push(...apps);
   if (input.reminders > 0) kinds.push({ id: REMINDERS_TAB, label: "Reminders", icon: "Bell", count: input.reminders });
   if (kinds.length < 2) return [];
-  const total = kinds.reduce((sum, t) => sum + t.count, 0);
-  return [{ id: ALL_TAB, label: "All", icon: "", count: total }, ...kinds];
+  return [{ id: ALL_TAB, label: "All", icon: "" }, ...kinds];
 }
 
 /** The tab that is in force: the chosen one, or "All" when it emptied or never was. */

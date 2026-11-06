@@ -10,6 +10,10 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   - Stop filtering by app (`shownGroups` returns `groups`): "a tab shows
  *     only its app rows" fails on the My work tab.
  *   - Drop `onKeyDown` from `Tabs.tsx`: "the arrow keys" fails.
+ *   - Give All a count (needsTabs.ts): "All draws no count" fails.
+ *   - Draw the chevron always (drop the `edge.right` test in NeedsTabBar):
+ *     "a bar that fits draws no chevron" fails.
+ *   - Drop the chevron's onClick: "the last tab is reachable" fails.
  *   - Let the bar wrap (`flex-wrap` on the tablist, no `overflow-x-auto`):
  *     "one line at 390 px" fails on the height.
  */
@@ -53,9 +57,19 @@ const CARDS = [
   card("approvals", "p1", "approvals_waiting", "3 approvals wait for you", "/approvals"),
 ];
 
+/** Eight apps with a row each, so the bar must scroll at 1440. */
+const MANY = [
+  ...CARDS,
+  card("projects", "p", "mention", "Kim mentioned you", "/projects?task=t3"),
+  card("calendar", "c", "meeting_soon", "Design review", "/calendar"),
+  card("knowledge", "k", "kb_gap", "Travel policy gap", "/knowledge/gaps"),
+  card("crm", "d", "deal_stale", "Deal went quiet", "/crm"),
+  card("people", "q", "absence", "Leave request", "/people"),
+];
+
 const NEEDS = { count: 4, total: 4, items: [], sources: {}, totals: {}, capped: [] };
 
-async function setup(page: Page) {
+async function setup(page: Page, cards = CARDS) {
   await page.addInitScript(() => {
     for (const k of ["cc-shell-bar", "cc-shell-nav", "cc-shell-dock", "cc-my-day", "cc-my-day-feed"]) localStorage.setItem(k, "1");
   });
@@ -64,8 +78,8 @@ async function setup(page: Page) {
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
     if (path === "/api/shell/feed")
       return json({
-        cards: CARDS,
-        groups: [{ id: "needs_you", count: CARDS.length }],
+        cards,
+        groups: [{ id: "needs_you", count: cards.length }],
         needs: NEEDS,
         sources: { tasks: "ok", projects: "ok", email: "ok", approvals: "ok", calendar: "ok" },
         capped: [],
@@ -97,7 +111,7 @@ test.describe("My Day, the Needs you tabs (CC-11)", () => {
     await page.goto("/");
     await expect(feedCard(page, "tasks:t1")).toBeVisible();
     // All first, then the apps by count. The count is the number of rows.
-    await expect(tabs(page)).toHaveText(["All4", "My work2", "Email1", "Approvals1"]);
+    await expect(tabs(page)).toHaveText(["All", "My work2", "Email1", "Approvals1"]);
     await expect(tabs(page).first()).toHaveAttribute("aria-selected", "true");
     await expect(feed(page).getByRole("tab", { name: /^Projects/ })).toHaveCount(0);
     await expect(feed(page).locator("[data-feed-row]")).toHaveCount(4);
@@ -145,6 +159,51 @@ test.describe("My Day, the Needs you tabs (CC-11)", () => {
     await expect(selected()).toContainText("Approvals");
     await page.keyboard.press("Home");
     await expect(selected()).toContainText("All");
+  });
+});
+
+test.describe("My Day, the Needs you bar with many tabs (CC-11)", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("All draws no count", async ({ page }) => {
+    await setup(page);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    await expect(tabs(page).first()).toHaveText("All");
+  });
+
+  test("a bar that fits draws no chevron", async ({ page }) => {
+    await setup(page);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    await expect(page.locator("[data-feed-tabs-next], [data-feed-tabs-prev]")).toHaveCount(0);
+  });
+
+  test("with 8 tabs the last tab is reachable through the chevron", async ({ page }) => {
+    await setup(page, MANY);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    const next = feed(page).locator("[data-feed-tabs-next]");
+    const prev = feed(page).locator("[data-feed-tabs-prev]");
+    await expect(tabs(page)).toHaveCount(9);
+    await expect(next).toBeVisible();
+    await expect(prev).toHaveCount(0);
+    await expect(next).toHaveAccessibleName("Show more tabs");
+    const last = tabs(page).last();
+    const bar = feed(page).getByRole("tablist");
+    const inside = async () => {
+      const t = (await last.boundingBox())!;
+      const b = (await bar.boundingBox())!;
+      return t.x >= b.x - 1 && t.x + t.width <= b.x + b.width + 1;
+    };
+    for (let i = 0; i < 4 && !(await inside()); i++) {
+      await next.click();
+      await page.waitForTimeout(500);
+    }
+    expect(await inside()).toBe(true);
+    // The right edge is reached: its chevron goes, the left one comes.
+    await expect(next).toHaveCount(0);
+    await expect(prev).toBeVisible();
   });
 });
 

@@ -47,7 +47,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import type { DoneRow } from "@/app/tasks/lib/completeFromHome";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import Icon, { themedIcon } from "@/components/Icon";
-import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
@@ -110,6 +109,7 @@ import { AiWaitingGroup } from "./AiWaitingCard";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
 import { AI_TAB, ALL_TAB, REMINDERS_TAB, type NeedsTabId, activeNeedsTab, buildNeedsTabs, seeAllHref } from "./needsTabs";
+import NeedsTabBar from "./NeedsTabBar";
 import RemindersBand from "./RemindersBand";
 import { bandCount, bandRows } from "./reminderBand";
 import { isReminderKind } from "./reminderKinds";
@@ -641,22 +641,18 @@ export function FeedColumn({
     tabs.length > 0 ? (
       // One line on a phone (task 1898): the tabs scroll sideways inside the
       // bar, edge to edge, and never wrap.
-      <div data-feed-filter="" className="-mx-4 border-b border-border px-4 sm:mx-0 sm:px-0">
-        <Tabs
-          variant="underline"
-          chrome="inline"
-          panelId="feed-needs-panel"
-          activeTab={active}
-          onTabChange={setOnly}
-          tabs={tabs.map((t) => ({
-            id: t.id,
-            label: t.label,
-            icon: t.icon || undefined,
-            iconClass: t.ai ? accentForHue("amber").text : t.app ? appHue(t.app).text : t.id === REMINDERS_TAB ? accentForHue("amber").text : undefined,
-            count: t.count,
-          }))}
-        />
-      </div>
+      <NeedsTabBar
+        panelId="feed-needs-panel"
+        active={active}
+        onChange={setOnly}
+        tabs={tabs.map((t) => ({
+          id: t.id,
+          label: t.label,
+          icon: t.icon || undefined,
+          iconClass: t.ai ? accentForHue("amber").text : t.app ? appHue(t.app).text : t.id === REMINDERS_TAB ? accentForHue("amber").text : undefined,
+          count: t.count,
+        }))}
+      />
     ) : null;
   const sentinel = useRevealOnScroll(reveal, hidden > 0);
   const nowMs = now?.getTime() ?? null;

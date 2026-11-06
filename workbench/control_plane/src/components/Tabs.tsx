@@ -91,6 +91,8 @@ export interface TabsProps {
    * the selection. Without it, the bar draws as before.
    */
   panelId?: string;
+  /** Underline variant: less padding and gap, for a bar with many tabs. */
+  dense?: boolean;
 }
 
 /**
@@ -105,6 +107,7 @@ export default function Tabs({
   className = "",
   chrome = "page",
   panelId,
+  dense = false,
 }: TabsProps) {
   const CONTAINER =
     chrome === "inline"
@@ -134,13 +137,13 @@ export default function Tabs({
     };
     return (
       <div
-        className={`flex items-center gap-1 pb-0 shrink-0 overflow-x-auto scrollbar-hide ${CONTAINER} ${className}`}
+        className={`flex items-center ${dense ? "gap-0" : "gap-1"} pb-0 shrink-0 overflow-x-auto scrollbar-hide ${CONTAINER} ${className}`}
         role="tablist"
         onKeyDown={onKeyDown}
       >
         {tabs.map((t) => {
           const active = activeTab === t.id;
-          const cls = `flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 tech-transition whitespace-nowrap ${
+          const cls = `flex items-center gap-1.5 ${dense ? "px-2" : "px-3"} py-2 text-sm font-medium rounded-t-lg border-b-2 tech-transition whitespace-nowrap ${
             active
               ? "border-primary text-foreground bg-primary/5"
               : "border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/50"
