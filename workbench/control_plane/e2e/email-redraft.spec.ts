@@ -397,16 +397,20 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     await box.fill(ONLY_KIM);
     await page.locator('[data-chat-primary="send"]').click();
     await steered(page);
-    const slot = page.locator("[data-redraft-slot]");
-    await expect(slot).toHaveText("Updating the draft…");
+    // Fix round 5: the shown card turned into a slot, so the view goes to the
+    // card that waits on the member, Bob's.
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await expect(text).toHaveValue(BOB_TEXT);
+    await expect(page.locator("[data-card-tabs-count]")).toHaveText("1 to approve");
     await expect(page.locator("[data-redraft-changing]")).toHaveText("Changing: Email to Bob");
     await page.locator('[data-chat-primary="stop"]').click();
     // The slot ends. It reads its end line, and then it closes.
+    const slot = page.locator("[data-redraft-slot]");
+    await page.getByRole("tab", { name: /Kim/ }).click();
     await expect(page.locator('[data-redraft-slot="unchanged"]')).toHaveText(NOT_CHANGED);
     await expect(slot).toHaveCount(0, { timeout: 8000 });
     // Bob's card waits still. A plain send carries no version, so the composer
     // names no email, and the nudge says what a request now does.
-    const text = page.getByRole("textbox", { name: "Email text" });
     await expect(text).toHaveValue(BOB_TEXT);
     await expect(page.locator("[data-redraft-changing]")).toHaveCount(0);
     await text.fill("Hi Bob,\n\nMy own words.");
