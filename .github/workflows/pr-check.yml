@@ -193,6 +193,13 @@ jobs:
       - name: worktree-notice stale-rules hook (blocking)
         run: node .claude/hooks/worktree-notice.test.mjs
 
+      # stop-children.mjs runs at every Stop (CIV-16). It walks up to the
+      # claude process and leaves the MCP servers off its list. A wrong root
+      # lists nothing, or tells the agent to kill its own MCP servers. Both
+      # failures are silent. R7 — the rule names its fence.
+      - name: stop-children cleanup hook (blocking)
+        run: node .claude/hooks/stop-children.test.mjs
+
       # ── The process fences (two-speed CI, 2026-10-19) ─────────────────────
       #
       # These tests read files as text and guard consistency: naming, docs,

@@ -129,6 +129,15 @@ def test_stop_hook_is_wired_in_settings():
     assert any("stop-children.mjs" in c for c in cmds)
 
 
+def test_stop_hook_fence_runs_in_pr_check():
+    """CIV-16, R7: the hook test runs in pr-check, or its fence is a word only."""
+    import yaml
+
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8"))
+    runs = [s.get("run", "") for job in wf["jobs"].values() for s in job.get("steps", [])]
+    assert "node .claude/hooks/stop-children.test.mjs" in runs
+
+
 def test_next_ticket_step_1_names_get_task_context_and_the_20_comment_limit():
     """CIV-14i: a session reads the description and every comment before it builds."""
     step = _flat(NEXT_TICKET[NEXT_TICKET.index("**1 — Select.**"):NEXT_TICKET.index("**1b")])
