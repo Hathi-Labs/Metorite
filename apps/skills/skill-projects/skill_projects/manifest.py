@@ -723,6 +723,7 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("GET", "/projects/agent-runs"): {
         "status": "waiting_agent_requests",
         "limit": "waiting_agent_requests",
+        "order": "waiting_agent_requests",
     },
     # ── Needs attention (WS-55 SW-11a) ───────────────────────────────────
     ("GET", "/projects/needs-attention"): {
@@ -1476,6 +1477,9 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/agent-runs"): {
         "needs_agent": "G23", "task_id": "G23",
         "client_via": "G23", "cursor": "G23",
+        # CIV-14k: the Approvals page asks for the task facts. The chat reads
+        # each task itself.
+        "with_task": "G23",
     },
     ("GET", "/projects/agent-runs/{run_id}"): {"after": "G23", "wait_s": "G23"},
     ("POST", "/projects/tasks/{task_id}/agent-runs"): {
@@ -1623,6 +1627,8 @@ UI_ACTIONS: dict[str, str] = {
     # EA-12d: "Ask an agent", a member starts a run for their own agent.
     "agentRunsApi.start": "start_agent_run",
     "agentRunsApi.enabled": "waiting_agent_requests",
+    # CIV-14k: the Approvals list reads the same rows as the chat tool.
+    "agentRunsApi.waiting": "waiting_agent_requests",
     # EA-13e: the strip's five counts. The chat reads the same route through a
     # tool after EA-12e (`PLANNED`).
     "agentRunsApi.summary": "agent_summary",

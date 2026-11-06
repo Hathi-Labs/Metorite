@@ -690,6 +690,48 @@ class TestAgentRunsOnARealDatabase:
                 _count(w.p, "SELECT count(*) FROM pm_notifications"),
             )
 
+    # ── CIV-14k: the "Waiting for you" list ─────────────────────────────
+
+    async def test_civ14k_waiting_list_is_oldest_first_with_task_facts_and_hides_unseen(self, w):
+        m_email = "ea12-m@runs-r8.test"
+        conn = _seed_connection(w.p, w.p.org_a, m_email)
+        agent_m = _principal(m_email, w.p.org_a, unrestricted=False, agent_connection=conn)
+        task_x = _seed_task(w.p, w.p.org_a, w.a_email, grant=m_email)
+        task_y = _seed_task(w.p, w.p.org_a, w.a_email, grant=m_email)
+        task_h = _seed_task(w.p, w.p.org_a, w.a_email, grant=m_email)
+        async with _session(w.p) as call:
+            ids = {}
+            for name, task in (("x", task_x), ("y", task_y), ("h", task_h)):
+                run = await _start(w, call, user=agent_m, task=task)
+                ids[name] = run["id"]
+                asked = await _act(call, agent_m, run["id"], **_select(f"Question {name}?"))
+                assert asked.status_code == 201, asked.text
+            # The member loses sight of the third project.
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "DELETE FROM pm_project_grants WHERE subject = :m AND project_id = "
+                    "(SELECT project_id FROM pm_tasks WHERE id = CAST(:t AS uuid))"),
+                    {"m": m_email, "t": task_h})
+            me = _principal(m_email, w.p.org_a, unrestricted=False)
+            plain = await call(me, "GET", "/projects/agent-runs?status=awaiting")
+            assert plain.status_code == 200, plain.text
+            assert "task" not in plain.json()["rows"][0], "the wire stays as it was"
+            assert [r["id"] for r in plain.json()["rows"]] == [ids["y"], ids["x"]]
+            got = await call(
+                me, "GET", "/projects/agent-runs?status=awaiting&order=oldest&with_task=true")
+            assert got.status_code == 200, got.text
+            rows = got.json()["rows"]
+            assert [r["id"] for r in rows] == [ids["x"], ids["y"]]
+            assert ids["h"] not in [r["id"] for r in rows]
+            for row in rows:
+                assert row["open_elicitation"] is not None
+                assert row["task"] == {
+                    "number": 1, "title": "Fix the extruder", "project_name": "runs",
+                }
+            assert rows[0]["task_id"] == task_x and rows[1]["task_id"] == task_y
+            bad = await call(me, "GET", "/projects/agent-runs?order=sideways")
+            assert bad.status_code == 422
+
     # ── R6 ──────────────────────────────────────────────────────────────
 
     async def test_r6_another_organization_and_a_hidden_task_are_404(self, w):
