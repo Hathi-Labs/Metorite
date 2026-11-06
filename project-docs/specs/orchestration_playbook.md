@@ -116,7 +116,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-1 · The playbook content, v1
 
-- **Metorite task.** {{T:PB-1}}.
+- **Metorite task.** 1947.
 - **Scope.** The files of §6, the header schema, the loader, and a version for each file.
 - **Done when.** The loader lists every file with its version. A file with a bad header fails the test.
 - **Fence.** `tests/unit/test_playbook_content.py` (new), `test_playbook_org_neutral.py` (PB-5).
@@ -124,7 +124,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-2 · The prompts
 
-- **Metorite task.** {{T:PB-2}}.
+- **Metorite task.** 1948.
 - **Scope.** `set_up_agent_team`, `plan_slices`, `write_brief`, `review_my_fleet` and `run_retro` in `agent_edge/prompts.py`, and the session commands of SW-82 in the same registry. Each message is fixed text and names the tools to call. A prompt makes no gateway request.
 - **Done when.** `prompts/list` holds them. A prompt message holds no member text. The existing fences of `test_mcp_edge_prompts.py` pass.
 - **Fence.** `test_mcp_edge_prompts.py`.
@@ -132,7 +132,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-3 · The resources and `read_playbook`
 
-- **Metorite task.** {{T:PB-3}}.
+- **Metorite task.** 1949.
 - **Scope.** The `metorite://playbook/...` resources of §5 beside the three resources of SW-34a. The tool `read_playbook(topic)` for a client with no resources. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
 - **Done when.** A client lists and reads each resource. An unknown topic answers not found. The text leaves as `untrusted_text`.
 - **Fence.** The transport test of SW-34a, `test_mcp_edge_coverage.py`.
@@ -140,7 +140,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-4 · Tips in the results
 
-- **Metorite task.** {{T:PB-4}}.
+- **Metorite task.** 1950.
 - **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. They are separate from the safety lines.
 - **Done when.** A claim of a delegated task with no brief carries the brief tip once. The same run sees it once. An organization that switched tips off sees none, and still sees the safety lines.
 - **Fence.** `test_mcp_edge_context.py`, `test_mcp_edge_prompts.py`.
@@ -148,7 +148,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-5 · The default layer, and the neutral fence
 
-- **Metorite task.** {{T:PB-5}}.
+- **Metorite task.** 1951.
 - **Scope.** The Metorite default level in guidance (SW-31): read-only, versioned, below the organization. The setting that switches tips off. The two tests of §4 and the fixture.
 - **Done when.** `get_task_context` returns the default block last. A HathiLabs token in any playbook file fails the test. A token in the fixture that is gone from `CLAUDE.md` fails the second test.
 - **Fence.** `test_playbook_org_neutral.py` (new), `test_agent_guidance_r8.py`.
@@ -156,7 +156,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-6 · Setup tools and the starter kit
 
-- **Metorite task.** {{T:PB-6}}.
+- **Metorite task.** 1952.
 - **Scope.** `propose_agent_setup` reads the apps, the leads, the members and the connected repositories by name. It returns one proposal: one lane to start, the leads that are missing, the gates and the budgets. It raises a card, and the admin accepts each part. A lead is a grant write, so the admin accepts it alone. `get_starter_kit` returns the kit files as text.
 - **Done when.** R8: a proposal lists only what the caller may see. Nothing is written before the admin accepts. A lead is never set by a proposal. A proposal starts with one lane.
 - **Fence.** `test_agent_setup_proposal_r8.py` (new), `test_mcp_edge_coverage.py`.
@@ -164,7 +164,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-7 · The orchestration doctor
 
-- **Metorite task.** {{T:PB-7}}.
+- **Metorite task.** 1953.
 - **Scope.** A set of pure checks over data. Examples: an app with no lead, no guidance, or no required checks. A lane with no purpose or no budget. A high rate of runs that end with no disposition. No verifier run on HIGH tasks in 30 days. A policy that auto-answers a HIGH task. A lesson past `verify_by`. A proposal queue older than 14 days. It runs each day and on demand. It writes Needs attention rows of kind `orchestration_check` with the fix. It uses no AI credit.
 - **Done when.** R8: a fixture organization with 5 faults gets 5 rows. A fixed fault leaves its row. A reader sees only rows of their scope.
 - **Fence.** `test_agent_doctor_r8.py` (new), `test_needs_attention_r8.py`.
@@ -172,7 +172,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-8 · Chat parity
 
-- **Metorite task.** {{T:PB-8}}.
+- **Metorite task.** 1954.
 - **Scope.** Chat tools `propose_agent_setup` (class B, one confirm card), `agent_doctor` (class A) and `explain_pattern` (class A). The playbook pack of the orchestrator.
 - **Done when.** "Set up agents for my team" from chat raises the proposal card. `test_projects_chat_coverage.py` passes.
 - **Fence.** `test_projects_chat_coverage.py`, the new-chat-tool fence set.
@@ -180,7 +180,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-9 · Versioned lane and prompt templates
 
-- **Metorite task.** {{T:PB-9}}.
+- **Metorite task.** 1955.
 - **Scope.** A lane template has a version. An organization copies one to make a lane, and the lane records the version. When a newer version ships, the lane shows "Template update available". The organization's copy never changes by itself.
 - **Done when.** R8: a lane records its template version. A new version raises the notice and changes no lane.
 - **Fence.** `test_agent_lanes_r8.py` (extended).
@@ -188,7 +188,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 
 #### PB-10 · The HathiLabs layer
 
-- **Metorite task.** {{T:PB-10}}.
+- **Metorite task.** 1956.
 - **Scope.** In the HathiLabs organization, write the organization guidance: "Follow `CLAUDE.md` in the repository." Nothing more.
 - **Done when.** An agent that claims a HathiLabs task gets the pointer in its guidance.
 - **Risk.** LOW. **Gate.** OWNER-GATE for the write in the live organization (it changes a live organization's guidance). **Depends on.** SW-31.

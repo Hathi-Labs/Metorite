@@ -922,7 +922,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-64 · A steer reaches a running agent
 
-- **Metorite task.** {{T:SW-64}}.
+- **Metorite task.** 1910.
 - **Scope.** The table `pm_agent_run_notices`. The route `POST /projects/agent-runs/{run_id}/notices` for `steer` and `pause`. The edge adds `notices` to the results named in §3.11.1. The agent reads a notice by a thought that names its id. The card shows "Steer not read" after 10 minutes. `my_work` rows carry the unread count.
 - **Done when.** R8: a member in the answer set posts a steer, and the next `post_agent_activity` result holds it once. A member outside the set gets 403. A run that ended gets 409. The 11th steer in an hour gets 429. A steer text leaves as `untrusted_text`. A replayed key writes once.
 - **Fence.** `test_agent_notices_r8.py` (new), `test_mcp_edge_agent_runs.py`, `test_mcp_edge_prompts.py` for the protocol line, `test_tenant_coverage.py`.
@@ -930,7 +930,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-65 · Watch runs, and ask a peer through the task
 
-- **Metorite task.** {{T:SW-65}}.
+- **Metorite task.** 1911.
 - **Scope.** Tools `watch_runs`, `ask_peer` and `reply_peer`, on the notice table of SW-64. The limits of §3.11.1. Each request and reply is also a comment on both tasks. A watch event holds fixed words and the task title.
 - **Done when.** R8: a coordinator that watches two runs gets one `watch` notice when one turns idle, and none for a run it may not see. A request reaches the open run of the other task once. A chain stops at depth 3. The sixth request in an hour gets 429. No notice holds the text of an activity.
 - **Fence.** `test_agent_notices_r8.py`, `test_mcp_edge_coverage.py`, and a test that walks every watch event for leaked text.
@@ -938,7 +938,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-66 · Park on a merge, a run or a time
 
-- **Metorite task.** {{T:SW-66}}.
+- **Metorite task.** 1912.
 - **Scope.** The table `pm_agent_run_wakes`. `waiting` takes `wake_on`, a list of `{kind, ref, at}` with the kinds `pr_merged`, `run_done` and `at`. One function, `run_wake_conditions`, reads these and the `ci` column of SW-60. `lease_held_sql` and the stranded clause read it. The three writers are in §3.11.1. The cap is `AGENT_PARK_MAX_MINUTES` (Q13).
 - **Done when.** R8 with a moved clock: a run parked on a merge reads `waiting` past 120 minutes up to the cap, and is stranded after it. A merge writes one wake and one lease renewal. A replayed event writes nothing. A run parked on another run wakes when that run ends. An `at` beyond the cap gets 422. A wake clears the session key.
 - **Fence.** `test_agent_runs_r8.py`, `test_agent_run_sweep_r8.py`, a webhook test beside the GitHub fences, `test_tenant_coverage.py`.
@@ -946,7 +946,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-67 · Lanes as records
 
-- **Metorite task.** {{T:SW-67}}.
+- **Metorite task.** 1913.
 - **Scope.** The table `pm_agent_lanes`. Its columns are the name, the purpose (required, the bottleneck this lane removes), the app project, the model and a rules note of 2,000 characters. It also holds the box connection, `max_open_runs` (default 1), the owner member, a shared flag, and the template with its version (PB-9). The column `pm_agent_runs.lane_id`. `claim_task` and `start_agent_run` take an optional `lane`. A claim outside the lane's app returns a `warning`. The flag `AGENT_LANE_MODES` adds `refuse` for a full lane (429 `lane_full`). Settings, Agents, Lanes edits them. The Fleet tab groups by lane.
 - **Done when.** R8: two lanes of two members. A claim from a lane outside its app warns and writes one timeline line. In `refuse` the second open run of a lane with cap 1 gets 429. A claim with no lane is unchanged. A lane of another organization is invisible. A lane never reaches an authorization check.
 - **Fence.** `test_agent_lanes_r8.py` (new), the structural test of §3.7 extended to lane fields, `test_tenant_coverage.py`, a vitest for the screen.
@@ -954,7 +954,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-68 · A queue that knows capacity
 
-- **Metorite task.** {{T:SW-68}}.
+- **Metorite task.** 1914.
 - **Scope.** `GET /projects/agent-queue?lane=` ranks the tasks a box may start next: answered and queued runs first, then tasks that can still reach the 21:30 UTC release, then priority. Each task that cannot start carries a reason from a fixed list. The reasons are `lane_full`, `review_cap`, `box_memory`, `account_limit`, `ci_lane_busy` and `cut_off`. The last four come from the heartbeat (SW-77) and are advisory. The first two come from the server and bind.
 - **Done when.** R8: a full lane lists its tasks with `lane_full`. A lead at the review cap lists `review_cap` for the tasks of the lead's apps. A stale heartbeat adds no reason and writes a note. The route lists no task the caller cannot see.
 - **Fence.** `test_agent_queue_r8.py` (new). The advisory reasons are labelled so (R7).
@@ -962,7 +962,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-69 · Path claims below the task
 
-- **Metorite task.** {{T:SW-69}}.
+- **Metorite task.** 1915.
 - **Scope.** The table `pm_agent_path_claims` and the tool `declare_paths(task_id, paths)`. At most 50 paths for each run. An overlap with another open run returns the other task when the caller may see it, and writes an affects note both ways once (SW-25). A path under an `owned_paths` entry (SW-52) warns with the seam lead. Claims end with the run. It only warns.
 - **Done when.** R8: two runs declare one path, and each gets one warning. A declared path never blocks a write. A claim ends when the run ends. A note never names a task its reader cannot see.
 - **Fence.** `test_agent_path_claims_r8.py` (new), `test_conflict_radar_r8.py` for the confirm step. The feature is advisory (R7).
@@ -970,7 +970,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-70 · A brief on the task
 
-- **Metorite task.** {{T:SW-70}}.
+- **Metorite task.** 1916.
 - **Scope.** `pm_tasks.brief JSONB NULL` with the six keys of §3.11.7, each text at most 500 characters, a schema check at write. `create_task` and `update_task` take `brief`. `get_task_context` returns it after the Check. The policy `brief_required` (SW-94) warns or refuses a delegation with no brief. The shape is the schema of PB-1.
 - **Done when.** R8: a brief with an unknown key gets 422. A delegated task with no brief and the policy on in `warn` carries a warning. The brief leaves as `untrusted_text`.
 - **Fence.** `test_task_brief_r8.py` (new), `test_mcp_edge_context.py`, `test_mcp_edge_coverage.py`.
@@ -978,7 +978,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-71 · The delivery pipeline on the task
 
-- **Metorite task.** {{T:SW-71}}.
+- **Metorite task.** 1917.
 - **Scope.** `pm_tasks.risk_tier` with a CHECK, added `NOT VALID` then `VALIDATE`. The table `pm_task_stages` for reported stages. One read function joins the system stages (§3.11.7). The tool `report_stage(task_id, stage, result, evidence)`. The task wire gains `stages`. The policy `stages_required` (SW-94) lists the stages for a tier, with a default. It warns and refuses nothing.
 - **Done when.** R8: a task with a finished run, a merged reference and passed checks reads `build`, `ci` and `merge` as passed with no stored row. `report_stage` stores `audit`. A caller that may not write the task gets 403. A task that moves to Done with a required stage open carries a warning.
 - **Fence.** `test_task_stages_r8.py` (new), `test_tenant_coverage.py`, `test_mcp_edge_coverage.py`.
@@ -986,7 +986,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-72 · The live check closes the task
 
-- **Metorite task.** {{T:SW-72}}.
+- **Metorite task.** 1918.
 - **Scope.** The table `pm_release_events`. The route `POST /releases`, signed with HMAC over the raw body by an organization secret, with the deployed commit, the merged pull request numbers and the live version line. The route marks `release` and `live` on each task whose merged reference is in the list. With `done_on = live` it moves the task to Done, closes the run, and writes the evidence. Needs attention gains "Merged, not live" after 36 hours. A person may `report_stage` `live` with evidence where no release step exists. This repository's `deploy.yml` gets the last step.
 - **Done when.** R8: a signed record for a merged task passes `live` and, in `live` mode, closes it once. A bad signature gets 401 and writes nothing. A replay writes nothing. A record for another organization's pull request touches no task. A task merged 37 hours ago with no record shows the row.
 - **Fence.** `test_release_events_r8.py` (new), `test_needs_attention_r8.py`, `test_github_merge_r8.py` (GH-6 unchanged in `merge` mode).
@@ -994,7 +994,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-73 · A production act record
 
-- **Metorite task.** {{T:SW-73}}.
+- **Metorite task.** 1919.
 - **Scope.** The tool `record_act(task_id, act, box, evidence, rollback)`. It writes a `response` activity with `content.act`. No migration. `evidence` must not be empty. The evidence panel (SW-87) lists the acts. The protocol and `work_on_task` tell an agent to call it after each production act.
 - **Done when.** An act with no evidence gets 422. The act shows on the task. The text leaves as `untrusted_text`. The record is self-reported and says so.
 - **Fence.** `test_mcp_edge_agent_runs.py`, `test_mcp_edge_coverage.py`. Advisory (R7).
@@ -1002,7 +1002,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-74 · Merged, shared and quiet questions
 
-- **Metorite task.** {{T:SW-74}}.
+- **Metorite task.** 1920.
 - **Scope.** Three parts, one flag. (1) Two open questions on one task with the same purpose and the same option ids show as one card, and an answer closes both. (2) "Answer the N similar" on a card: the same project and the same option ids. It writes one answer for each question and names the member. A question with a `confirm: true` option is never in the set. (3) A bell for a question waits for the next `day_start_hour` of the member (Reach quiet hours), except an interrupt class (AP-5).
 - **Done when.** R8: duplicates merge and one answer closes both. A bulk answer writes N answers and skips the `confirm` question. A quiet-hours bell moves to the morning and an interrupt does not.
 - **Fence.** `test_agent_questions_r8.py`, `test_waiting_seam_r8.py`, a vitest for the card.
@@ -1010,7 +1010,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-75 · A question taken by policy
 
-- **Metorite task.** {{T:SW-75}}.
+- **Metorite task.** 1921.
 - **Scope.** The policy `question_auto_after_minutes` (SW-94), null by default. After the deadline, a question that the agent marked `reversible` and `recommended` gets the recommended option. The answer writes `content.by_policy` and the card reads "Taken by policy after 4 hours: Wait for the shards". The Change button of SW-43b stays. It never applies to `purpose` `preview` or `review`, to an auth question, to a `confirm: true` option, to a HIGH-tier task, or inside quiet hours. The minimum is 240 minutes.
 - **Done when.** R8 with a moved clock: a reversible question is taken at the deadline and each excluded case is not. The timeline names the policy and not a member. The policy off writes nothing.
 - **Fence.** `test_agent_auto_answer_r8.py` (new), one named mutation for each exclusion.
@@ -1018,7 +1018,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-76 · An opened pull request moves its task to review
 
-- **Metorite task.** {{T:SW-76}}.
+- **Metorite task.** 1922.
 - **Scope.** The webhook path of GH-4 moves a linked task to the review lane. This happens when its pull request opens as ready for review and the task has an open run. A draft does not move it. The setting is per organization (`GITHUB_APP_ORGS`). A task already in review or Done does not move. The timeline names the pull request.
 - **Done when.** R8: an opened pull request moves a linked task once. A draft, a closed task and an organization off the list do not. A replayed delivery writes nothing.
 - **Fence.** `test_github_webhook_r8.py` (new cases).
@@ -1026,7 +1026,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-77 · The box heartbeat and the machine record
 
-- **Metorite task.** {{T:SW-77}}.
+- **Metorite task.** 1923.
 - **Scope.** The table `agent_box_health`: connection, time, free memory, load, sessions, sign-in state, account state, CI lane busy, lease counts. The route `POST /projects/agent-boxes/heartbeat`, for a box token only. The values are untrusted display data. A heartbeat older than 3 minutes reads "offline". Account state is best effort.
 - **Done when.** R8: a box token writes a heartbeat. An OAuth connection gets 403. A member reads only the boxes of the member's organization that the member may see. A revoked token writes nothing.
 - **Fence.** `test_agent_box_health_r8.py` (new), `test_tenant_coverage.py`.
@@ -1034,7 +1034,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-78 · The runner
 
-- **Metorite task.** {{T:SW-78}}.
+- **Metorite task.** 1924.
 - **Scope.** §3.11.4. The runner grows from task 1731. Start sessions for queued, answered and woken runs in their lanes. Never two sessions for one run. Wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Post the heartbeat. Write the notice file for the fast path. Obey the caps of SW-68. It keeps the secret in the box's secret store and reads no OAuth token.
 - **Done when.** A fake `list_agent_runs` and a fake `claude` show one start for one run. They show a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll.
 - **Fence.** A test in `scripts/home_server/`. `test_runner_no_secret.py` (new) refuses a read of an OAuth token path.
@@ -1042,7 +1042,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-79 · Recover the fleet in one step
 
-- **Metorite task.** {{T:SW-79}}.
+- **Metorite task.** 1925.
 - **Scope.** `metorite-runner recover` and a Recover button on the Machines tab. It lists the open runs of the box that have no live process, and restarts each in its lane with the reason `box_restarted`. The run keeps its task and its handoff. It shows the count first and asks one confirm.
 - **Done when.** A test box with 3 dead sessions restarts 3 runs once. A run that is parked or awaiting is not restarted. A second call restarts none.
 - **Fence.** The runner test, and a route test for the reason.
@@ -1050,7 +1050,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-80 · Resource leases on the box
 
-- **Metorite task.** {{T:SW-80}}.
+- **Metorite task.** 1932.
 - **Scope.** A register in the box's state folder. `metorite-lease acquire port|db|preview` gives a free resource named for a run, and the runner frees all leases of a run when it ends. The heartbeat carries the counts. It generalizes CIV-14j and CIV-16.
 - **Done when.** Two runs get two ports. A run that ends frees its leases. A lease of a dead run is freed within one poll.
 - **Fence.** A runner test. Advisory (R7).
@@ -1058,7 +1058,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-81 · The Machines tab
 
-- **Metorite task.** {{T:SW-81}}.
+- **Metorite task.** 1926.
 - **Scope.** A Machines tab beside Fleet in the Agents panel (SW-51). One card for each box: memory, load, sessions, sign-in, account state, CI lane, leases, and the runs it holds. The Recover button (SW-79). A link to Settings, AI agents for revoke.
 - **Done when.** `visual-review` passes at four widths. An offline box reads "offline" with its last time.
 - **Fence.** A vitest for the tab and `test_projects_agent_focus_r8.py`.
@@ -1066,7 +1066,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-82 · The Metorite plugin for Claude Code
 
-- **Metorite task.** {{T:SW-82}}.
+- **Metorite task.** 1927.
 - **Scope.** A plugin that bundles four things. First, the MCP config with a bearer header from an environment variable. Second, the protocol hooks: the Stop gate of SW-61, a context hook for the notice file, and a warning on a push with no task id in the branch. Third, commands built from the prompt registry. Fourth, generic verifier and reviewer agents. The commands are `/claim`, `/park`, `/ask`, `/handoff`, `/done` and `/fleet`. `/ask` asks on the task and waits. It holds no HathiLabs rule. A fence keeps the command list equal to the registry of PB-2.
 - **Done when.** A fresh Claude Code installs the plugin and `/metorite:claim 42` claims a task. The hooks pass their tests. The package holds no token and no HathiLabs token (the denylist of PB-5).
 - **Fence.** `node` tests for each hook, `test_plugin_commands_match_prompts.py` (new), `test_playbook_org_neutral.py`.
@@ -1074,7 +1074,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-83 · A status line
 
-- **Metorite task.** {{T:SW-83}}.
+- **Metorite task.** 1928.
 - **Scope.** A script that prints the task, the stage, the lease left, the CI state and the waiting answers from a local cache. Hooks fill the cache from the results of Metorite tools. The runner fills the CI and waiting parts. The script makes no network call and holds no secret. A plugin cannot set the status line, so a setup command writes the user's settings.
 - **Done when.** The line reads from the cache in under 50 ms. With no cache it prints nothing. The setup command asks before it writes.
 - **Fence.** A node test with cache fixtures.
@@ -1082,14 +1082,14 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-84 · Spike: a push into an idle session
 
-- **Metorite task.** {{T:SW-84}}.
+- **Metorite task.** 1929.
 - **Scope.** No build. Test two ways on a real Claude Code: a local channel server in the plugin, and the resume command of the runner. Write the finding, the version and the limits into §3.11.10. Recommend one.
 - **Done when.** The finding is in this file and on the task. An owner decision follows if it needs a build.
 - **Risk.** LOW. **Gate.** AGENT-SAFE.
 
 #### SW-85 · A worktree for each claim
 
-- **Metorite task.** {{T:SW-85}}.
+- **Metorite task.** 1930.
 - **Scope.** When the runner starts a session for a claim, it makes a worktree from the project `repo` and `base_ref` (DX-8). It removes the worktree at Done or release, and it keeps one with uncommitted work. A VS Code panel is deferred.
 - **Done when.** A claim makes one worktree. Done removes it. A dirty worktree stays and shows in the heartbeat.
 - **Fence.** A runner test.
@@ -1097,7 +1097,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-86 · Card controls
 
-- **Metorite task.** {{T:SW-86}}.
+- **Metorite task.** 1931.
 - **Scope.** On the card and the panel: Steer (SW-64), Pause, Take over and Hand to another agent. Take over releases the run, adds the member as assignee, and asks for a handoff note. Hand over releases and delegates (SW-30a). Each act uses an existing route and one confirm. Open session and a resume command show when the run carries a link or a session id.
 - **Done when.** Each act works for a person who may do it and shows no button to others. `visual-review` passes.
 - **Fence.** A vitest, `test_projects_ui_actions.py`, `test_agent_runs_r8.py`.
@@ -1105,7 +1105,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-87 · The evidence panel
 
-- **Metorite task.** {{T:SW-87}}.
+- **Metorite task.** 1933.
 - **Scope.** One panel on the task. It draws the stages of SW-71 with their evidence. It also shows the checks, the verifier chip, the production acts (SW-73) and the images of task 1727.
 - **Done when.** A task with a full pipeline shows every stage and its link. `visual-review` passes.
 - **Fence.** A vitest.
@@ -1113,7 +1113,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-88 · The release train and the stuck list
 
-- **Metorite task.** {{T:SW-88}}.
+- **Metorite task.** 1934.
 - **Scope.** Two sections on the Fleet tab. The release train lists merged, live, waiting for 21:30 UTC, and "Merged, not live". The stuck list lists stranded runs, digests and unanswered questions. No new pane.
 - **Done when.** R8: the sections list only tasks the viewer may see. `visual-review` passes at four widths.
 - **Fence.** `test_projects_agent_focus_r8.py`, a vitest.
@@ -1121,7 +1121,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-89 · A run queue for a selection
 
-- **Metorite task.** {{T:SW-89}}.
+- **Metorite task.** 1935.
 - **Scope.** Select tasks, pick a lane, set an order, and optionally a window such as overnight. The columns are `pm_agent_runs.queue_id` and `queue_pos`. The runs are `created`. The next run wakes when the one before it ends (`run_done`, SW-66). The policy `overnight_allowed` (SW-94) limits the tiers. The review cap stops the queue.
 - **Done when.** R8: three tasks run one after the other. A HIGH task in an overnight queue is refused by default. A cancelled run does not stall the queue.
 - **Fence.** `test_agent_run_queue_r8.py` (new).
@@ -1129,7 +1129,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-90 · A ready set and a critical path
 
-- **Metorite task.** {{T:SW-90}}.
+- **Metorite task.** 1936.
 - **Scope.** A read tool and a timeline overlay (WS-27t). The ready set is the open tasks of an epic with no open blocker. The critical path is the longest chain of `blocks` by estimate. No new table.
 - **Done when.** A test epic with a known chain returns the right ready set and path. A task the caller cannot see is left out.
 - **Fence.** `test_plan_view_r8.py` (new).
@@ -1137,7 +1137,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-91 · Fleet digests
 
-- **Metorite task.** {{T:SW-91}}.
+- **Metorite task.** 1937.
 - **Scope.** Two sections for the brief (WS-BRIEF): a morning fleet digest and a release-eve digest before 21:30 UTC. Counts and links only. No AI credit.
 - **Done when.** The digest lists what needs the reader, what runs, what is stuck and what ships tonight. A reader sees only their own scope.
 - **Fence.** The brief fences of `core_brief.md`.
@@ -1145,7 +1145,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-92 · Approve many
 
-- **Metorite task.** {{T:SW-92}}.
+- **Metorite task.** 1938.
 - **Scope.** On `/waiting`, "Approve the LOW-tier items". It lists the questions with `purpose` `preview` or `review` on LOW-tier tasks whose `verify` and `ci` stages passed. One confirm. It writes one answer for each, naming the member. It chooses the option the agent marked recommended. A `confirm: true` option is never in the list.
 - **Done when.** R8: a batch of 3 writes 3 answers. A task with a failed stage or a HIGH tier is not in the list. The member who is not the addressee gets 403.
 - **Fence.** `test_agent_questions_r8.py`, a vitest.
@@ -1153,7 +1153,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-93 · Delivery analytics
 
-- **Metorite task.** {{T:SW-93}}.
+- **Metorite task.** 1939.
 - **Scope.** Reports, Agents: time in each stage, idle-hold hours, answer latency, merge rate, rework (changes requested), and cost per merged slice. Cost reads "unknown" until SW-20. A cause filter (SW-99).
 - **Done when.** The panels match a fixture. No cost shows as zero.
 - **Fence.** The analytics tests beside `analytics_agent_runs.py`.
@@ -1161,7 +1161,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-94 · One policy store
 
-- **Metorite task.** {{T:SW-94}}.
+- **Metorite task.** 1940.
 - **Scope.** §3.11.5. The table `pm_agent_policies`, with history. The function `policy_for`. The first keys. Settings, Agents, Policies. SW-18, SW-49 and SW-54 read their settings through it if it has merged.
 - **Done when.** R8: the nearest project wins over the organization, and a tier row wins over `any`. An unknown key gets 422. A policy cannot turn on what a flag turns off. Each save adds a row.
 - **Fence.** `test_agent_policies_r8.py` (new), `test_tenant_coverage.py`.
@@ -1169,7 +1169,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-95 · Day budgets and loop guards
 
-- **Metorite task.** {{T:SW-95}}.
+- **Metorite task.** 1941.
 - **Scope.** Budgets for each lane and each day (minutes, writes). Loop guards catch the same tool call with the same arguments repeated too many times, or too many writes in a window. The modes `off`, `warn` and `stop`. `stop` uses the stop signal of SW-38. Values come from the policy store.
 - **Done when.** R8: a run that repeats one call 20 times gets a notice in `warn` and `stopping` in `stop`. A lane over its day budget starts no new run. Cost is not needed.
 - **Fence.** `test_agent_budgets_r8.py` (new).
@@ -1177,7 +1177,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-96 · A kill switch
 
-- **Metorite task.** {{T:SW-96}}.
+- **Metorite task.** 1942.
 - **Scope.** The policy `agents_paused` for a box, a member or an organization. While it is on, the edge answers each tool except reads with 423 `agents_paused`. Open runs get `stopping`. A box also stops its runner. An admin pauses any scope. A member pauses their own. Only an admin resumes an organization.
 - **Done when.** R8: a paused member's write tool gets 423 and a read works. A pause of one organization touches no other. Resume restores writes. The audit row names who paused.
 - **Fence.** `test_agent_pause_r8.py` (new), `test_mcp_edge_coverage.py`.
@@ -1185,7 +1185,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-97 · An audit export
 
-- **Metorite task.** {{T:SW-97}}.
+- **Metorite task.** 1943.
 - **Scope.** An admin exports the agent writes of a date range as CSV or JSON: member, client stamp, run, task, tool, time. The export is itself an audit row.
 - **Done when.** R8: an admin gets the rows of the organization only. A non-admin gets 403.
 - **Fence.** `test_agent_audit_export_r8.py` (new).
@@ -1193,7 +1193,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-98 · Lessons with provenance and age
 
-- **Metorite task.** {{T:SW-98}}.
+- **Metorite task.** 1944.
 - **Scope.** §3.11.6. The guidance kind `lesson`, with `verify_by` and the source. Approval by a lead. `propose_lessons` for an import. A queue in Settings, Agents.
 - **Done when.** As §3.11.6.
 - **Fence.** `test_agent_lessons_r8.py` (new), `test_tenant_coverage.py`, `test_mcp_edge_prompts.py`.
@@ -1201,7 +1201,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### SW-99 · A cause on each stalled run
 
-- **Metorite task.** {{T:SW-99}}.
+- **Metorite task.** 1945.
 - **Scope.** The list: `ci_wait`, `no_disposition`, `question_terminal_only`, `answer_unread`, `merge_not_linked`, `session_dead`, `epic_hold`, `box_down`, `signed_out`, `capacity`, `human_wait` and `other`. A column `cause` on the strand record and on a release. The sweep sets it from its evidence. A person picks it on Release. An agent may send it in a handoff.
 - **Done when.** R8: the sweep tags a parked run `ci_wait`, an epic claim `epic_hold` and a revoked connection `signed_out`. A value outside the list gets 422.
 - **Fence.** `test_agent_run_sweep_r8.py`, `test_needs_attention_r8.py`.
