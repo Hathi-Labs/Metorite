@@ -175,35 +175,40 @@ in a manager changes.
 
 ### 7.1 Status-set slices (§9, D185)
 
+**Order:** PST-1, then PST-2 and PST-4 in parallel, then PST-3 and the PST-5 UI. The PST-5 server read can start after PST-1.
+
 Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice skips the audit when its Metorite task states the acceptance criteria. A slice that changes a screen needs the visual-review walk of §6. No slice adds a migration.
 
 **PST-1 (task 1798). Goes first.**
 
 - **Does:** the extended read of §9.4. The copy module of §9.5. The scope line on every Statuses screen (the dialog and the pane). The list of projects that own their own set, with links. The pane section gets the name "Space default statuses". The text "Client Projects's set" is fixed.
-- **Files:** `apps/services/gateway/gateway/routes/projects/admin.py` (`describe_status_set`, `_OVERRIDES_BELOW_SQL`). A count query beside `_STATUS_SCOPE_SQL` in `routes/projects/core.py`. In `workbench/control_plane/src/app/projects`: `lib/statusSetCopy.ts` (new), `components/ProjectsSettings.tsx`, `components/StatusManager.tsx`, `components/StatusSetControl.tsx`, and the file that holds the section labels.
+- **Files:** `apps/services/gateway/gateway/routes/projects/admin.py` (`describe_status_set`, `_OVERRIDES_BELOW_SQL`). A count query beside `_STATUS_SCOPE_SQL` in `routes/projects/core.py`. In `workbench/control_plane/src/app/projects`: `lib/statusSetCopy.ts` (new), `components/StatusManager.tsx`, `components/StatusSetControl.tsx`, `components/ProjectsSettings.tsx:69` (the "Statuses" label), `lib/commands.ts:293` (the palette entry) and `lib/projectMenu.ts:343` (the row-menu label).
+- **Note:** the read computes the `used_by` count of every override in ONE grouped query. It does not run one recursive query for each row.
 - **Done when:**
   1. `GET /projects/nodes/{id}/status-set` returns `owner_kind`, `used_by` and the richer `overrides`.
   2. The Space default statuses section of a space with 27 users shows "27 projects use these statuses." It lists the projects that own their own set. Each row links to that project's editor.
   3. The dialog of a subproject shows "Uses the statuses of {owner} (shared with {N})".
   4. A project named "Client Projects" never reads "Client Projects's set".
-  5. The section list, the heading and the palette entry use "Space default statuses".
-- **Fence (R7):** `tests/unit/test_projects_status_set_read_r8.py` on Postgres. It checks the counts for cases 1, 2 and 3. It checks a nested owner that the count must skip. It checks that tenant B cannot change the count of tenant A. It checks a hidden project that the list leaves out and the count includes. It fails when the `NOT p.owns_statuses` test leaves the recursive arm. Also `statusSetCopy.test.ts` and `projectsSettings.test.ts` (§6).
+  5. The section list, the heading, the palette entry and the row-menu label use "Space default statuses".
+  6. The read returns `hidden_overrides`. The screen shows "and {N} more that you cannot see" only when N is more than 0.
+  7. `path` of an override never holds a name that the member cannot see.
+- **Fence (R7):** `tests/unit/test_projects_status_set_read_r8.py` on Postgres. It checks the counts for cases 1, 2 and 3. It checks a nested owner that the count must skip. It checks that tenant B cannot change the count of tenant A. It checks a hidden project that the list leaves out and the count includes, and `hidden_overrides` for it. It checks a visible override under a hidden parent: its `path` shows no hidden name. It fails when the `NOT p.owns_statuses` test leaves the recursive arm. Also `statusSetCopy.test.ts` and `projectsSettings.test.ts` (§6).
 
-**PST-2 (task 1799). After PST-1. Parallel with PST-3 and PST-4.**
+**PST-2 (task 1799). After PST-1. Parallel with PST-4.**
 
 - **Does:** "Give this project its own statuses" and "Go back to the inherited statuses" replace the two radios. Each opens the preview, then `TaskMoveChoice` (§9.7), then the confirm. Both use the existing routes `POST /projects/nodes/{id}/status-set/preview` and `POST /projects/nodes/{id}/status-set`.
-- **Files:** `components/StatusSetControl.tsx`, `components/TaskMoveChoice.tsx` (new, extracted from the inline mapping), `lib/statusSetCopy.ts`. `routes/projects/admin.py` only if the preview lacks a field.
+- **Files:** `components/StatusSetControl.tsx`, `components/StatusManager.tsx`, `components/TaskMoveChoice.tsx` (new, extracted from the inline mapping), `lib/statusSetCopy.ts`. `routes/projects/admin.py` only if the preview lacks a field.
 - **Done when:**
   1. A member with the right gives a subproject its own statuses. The copy comes from the set that it uses today. The member sees the count of moving tasks first.
   2. The same member goes back. The own set stays saved (dormant). It returns on the next "Give this project its own statuses".
   3. A space shows the text of §9.5 and no button.
   4. The confirm stays off while a lane has no target.
-- **Fence (R7):** `statusSetCopy.test.ts` (button text and target line). `tests/unit/test_projects_status_sets.py` gets a case: own, then inherit, then own again returns the dormant lanes. `TaskMoveChoice.test.ts` (confirm off while a target is empty).
+- **Fence (R7):** `statusSetCopy.test.ts` (button text and target line). `tests/unit/test_projects_status_sets.py` gets a case: own, then inherit, then own again returns the dormant lanes. This case is hermetic (fakes), because PST-2 changes no SQL. `TaskMoveChoice.test.ts` (confirm off while a target is empty).
 
-**PST-3 (task 1800). After PST-1. Parallel with PST-2 and PST-4.**
+**PST-3 (task 1800). After PST-2. Parallel with PST-4 and with the PST-5 server read.** It runs after PST-2 because its gate hides the buttons of PST-2, and it edits `StatusManager.tsx` too.
 
 - **Does:** the board chip of §9.5 replaces the Statuses button of task 1792. A click opens the editor. The permission gate of §9.6 hides the arrows and the two buttons of PST-2 from a member with `may_edit` false. The chip stays visible to that member.
-- **Files:** `components/TaskBoard.tsx` (the `onManageStatuses` control). `page.tsx` (passes the read, and the comment above `projectActions` gets one line that points to §9.3). `components/StatusOrderArrows.tsx`. `components/StatusManager.tsx` (passes `may_edit`).
+- **Files:** `components/TaskBoard.tsx` (the `onManageStatuses` control). `page.tsx` (passes the read, and the comment above `projectActions` gets one line that points to §9.3). `components/StatusOrderArrows.tsx`. `components/StatusManager.tsx` (passes `may_edit`). `components/StatusSetControl.tsx` (hides the PST-2 buttons).
 - **Done when:**
   1. The board shows the chip and not the Statuses button.
   2. The chip text matches §9.5 for each case.
@@ -211,7 +216,7 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
   4. The chip does not show when the board does not group by status.
 - **Fence (R7):** `statusChip.test.ts` (text per case, absent when not grouped by status). `StatusManager.arrows.test.ts` gets a case: no arrows when `may_edit` is false. `tests/unit/test_projects_agent_grants.py` stays green. It holds the server side of the same predicate.
 
-**PST-4 (task 1790, the chat half). After PST-1. Parallel with PST-2 and PST-3.**
+**PST-4 (task 1790, the chat half). After PST-1. Parallel with PST-2.**
 
 - **Flag (decided by the session lead, 2026-11-06):** `STATUS_SET_GUARD_ORGS`, a per-organization list in `Settings`. It is off by default. A flip reloads with no restart (`docs/flag_reload.md`). The only reader is `describe_status_set` in `admin.py`, which returns `guard_on` (§9.4). With the flag off, the three tools behave as they do today: no refusal, no shared-set text on the card, and the raw `position` argument.
 - **Choice on `position`:** the server accepts `slot` and `after` at all times, and the old `position` field keeps working there (additive, so unflagged). The change in the TOOL is behind the same flag. With the flag on, the tool takes `slot` or `after` and no longer sends `position`. With the flag off, the tool keeps `position`.
@@ -219,15 +224,17 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
   1. When the project does not own its set, the tool refuses. It says that the set belongs to {owner} and that N projects share it. It offers `set_status_set` mode=own first.
   2. The member can ask on purpose to change the shared set. Then the card names the set and the count: "Changes the statuses of {owner} for {N} projects".
   3. `position` becomes a 1-based `slot`, or an `after` lane name. The server renumbers. The model can no longer send a raw sort key.
-- **Files:** `apps/skills/skill-projects/skill_projects/writes.py` (`create_status`, `update_status`, `status_edit_refusal`, `_next_position`). `skill_projects/guarded.py` (`delete_status`). `routes/projects/admin.py` (`create_status` and `patch_status` accept `slot` or `after`). The tool schemas and the pack summary of the changed tools.
+- **Ownership:** PST-4 adds `guard_on` to the response of `describe_status_set`. PST-4 edits `create_status` and `patch_status` in `admin.py`, so it merges `main` before its own merge.
+- **Files:** the Settings field `status_set_guard_orgs`. `tests/unit/test_flag_reload.py`. `apps/skills/skill-projects/skill_projects/writes.py` (`create_status`, `update_status`, `status_edit_refusal`, `_next_position`). `skill_projects/guarded.py` (`delete_status`). `routes/projects/admin.py` (`create_status` and `patch_status` accept `slot` or `after`). The tool schemas and the pack summary of the changed tools.
 - **Done when:**
   1. A chat request to add a lane to a subproject that uses the space's set gets a refusal. The refusal names the space and N, and offers mode=own.
   2. The same request with an explicit "change the shared set" shows a card with the set and N.
   3. "Put Done last" with slot 4 of 4 puts it last in its stage group. The set order stays stage, then position, then name.
   4. The server refuses a slot outside the stage of the lane, and gives the allowed range.
   5. With the flag on, the tool does not send a raw position from the model any more.
-  6. With the flag off, all five behaviours above are absent and the tools act as before this slice.
-- **Fence (R7):** `tests/unit/test_projects_status_chat.py` (refusal, card text, slot and after, and a case that the flag off keeps today's behaviour, including `position`). `tests/unit/test_flag_reload.py` gets `STATUS_SET_GUARD_ORGS` in its list of reloading flags. `tests/unit/test_projects_status_slot_r8.py` on Postgres (the renumbering keeps the stage rule). The new chat tool fence set applies: claim strings, pack summary and pinned tables.
+  6. The Settings field `status_set_guard_orgs` exists, and its key is in the `for key in (...)` loop of `tests/unit/test_flag_reload.py` (about line 66).
+  7. With the flag off, all five behaviours above are absent and the tools act as before this slice.
+- **Fence (R7):** `tests/unit/test_projects_status_chat.py` (refusal, card text, slot and after, and a case that the flag off keeps today's behaviour, including `position`). `tests/unit/test_flag_reload.py` gets `status_set_guard_orgs` in its `for key in (...)` loop. `tests/unit/test_projects_status_slot_r8.py` on Postgres (the renumbering keeps the stage rule). The new chat tool fence set applies: claim strings, pack summary and pinned tables.
 
 **PST-5 (task 1791, the delete flow). The server read can start after PST-1. The UI goes after PST-2.**
 
@@ -244,6 +251,13 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
 
 ```bash
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+The R8 tests of §9 need a real database. Without one, they skip and the run reads green.
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_projects_status_set_read_r8.py tests/unit/test_projects_status_sets.py
 ```
 
 The visual-review skill walks the pane in the contexts of §6. Without them the
@@ -313,7 +327,8 @@ A second implementation of this read is a defect.
 |---|---|---|
 | `owner_kind` | `"space"` or `"project"` | The kind of the owner node |
 | `used_by` | integer | Projects that use the set, not counting the owner. It counts every depth below the owner, and stops at a node that owns a set (`_STATUS_SCOPE_SQL`) |
-| `overrides` | list of `{id, name, path, used_by}` | Each project below the owner that owns its own set. It keeps the rule of `_OVERRIDES_BELOW_SQL`: a node under another owner belongs to that owner's screen. `path` is the names from the space down, and `used_by` is the count for that project's set |
+| `overrides` | list of `{id, name, path, used_by}` | Each project below the owner that owns its own set. It keeps the rule of `_OVERRIDES_BELOW_SQL`: a node under another owner belongs to that owner's screen. `path` lists only names that the member can see. A hidden ancestor never appears. The path starts at the first ancestor that the member can see, and a hidden part shows as "…". `used_by` is the count for that project's set |
+| `hidden_overrides` | integer | The projects below this owner that own their own set and that the member cannot see |
 
 `used_by` is also the number in "shared with N". For a project that uses a set, N is the owner
 plus the other users, which equals `used_by`. For the owner, N is `used_by`.
@@ -322,8 +337,9 @@ plus the other users, which equals `used_by`. For the owner, N is `used_by`.
 (`load_visible_project`). The counts come from `pm_projects` rows that Postgres RLS filters by
 `organization_id`. No tenant comes from request input. The count includes projects that the
 member cannot see, because an edit changes them too. The list `overrides` holds only projects
-that the member can see. A line "and N more that you cannot see" covers the others, so the
-member can read the full impact and no hidden name leaks. The R8 test proves both.
+that the member can see. `hidden_overrides` counts the others. The screen shows the line
+"and {N} more that you cannot see" only when N is more than 0. So the member can read the full
+impact and no hidden name leaks. The R8 test proves both.
 
 **The chat tools call the same read.** `status_edit_refusal` in `skill_projects/writes.py` already
 reads it. PST-4 adds the shared-set checks to that one place. The read also returns `guard_on`
@@ -354,8 +370,9 @@ the lanes of {N} projects.` The word "projects" is "project" when N is 1.
 **Pane section.** The Statuses section of Settings has the name **Space default statuses**. Its heading
 names the space. Under the scope line, it lists the projects that own their own set. Each row has
 the project name, its path and a link that opens that project's Statuses editor. The list heading is
-`{count} projects keep their own statuses` (`1 project keeps its own statuses`). With no such
-project, the list shows `No project keeps its own statuses.` The Statuses section label in the
+`{count} projects keep their own statuses` (`1 project keeps its own statuses`). When
+`hidden_overrides` is more than 0, a last line reads `and {N} more that you cannot see`. With no such
+project and no hidden one, the list shows `No project keeps its own statuses.` The Statuses section label in the
 section list, the heading and the palette entry all use the new name.
 
 **Board chip.** The chip sits in the place of the Statuses button of task 1792. It shows only when
@@ -431,16 +448,16 @@ All three use one flow, and each asks the same question: where do these tasks go
 | PST-5 (the delete flow) | 1791 | STANDARD |
 
 No slice adds a migration or a table. PST-1, PST-2, PST-3 and PST-5 have no flag, because each one changes
-only words, the place of controls that exist, or a read. **PST-4 ships dark** (decided by the session lead on
+only words, the place of controls that exist, or a read. The new wording on the `delete_status` card (a proposed target by stage) is not new write behaviour, because the write still needs `move_to`, as today. So PST-5 stays unflagged. **PST-4 ships dark** (decided by the session lead on
 2026-11-06, under the owner's standing instruction to follow the recommendations). Its chat refusal changes
 what a write tool does, so it sits behind the flag `STATUS_SET_GUARD_ORGS` (§7.1). The owner can change these choices.
 
 Order and parallel work:
 
 - **PST-1 goes first.** It builds the read of §9.4 and the copy module of §9.5. Every other slice uses both.
-- **After PST-1, three slices run in parallel:** PST-2, PST-3 and PST-4. They touch different files.
-  PST-4 touches Python only.
-- **PST-5 goes after PST-2.** It uses `TaskMoveChoice.tsx` and edits `StatusManager.tsx`, which PST-2 also edits.
+- **After PST-1, PST-2 and PST-4 run in parallel.** They touch different files. PST-4 touches Python only.
+- **PST-3 goes after PST-2.** Its gate hides the buttons of PST-2, and both edit `StatusManager.tsx`.
+- **The PST-5 UI goes after PST-2.** It uses `TaskMoveChoice.tsx` and edits `StatusManager.tsx`.
   The server part of PST-5 (the delete plan) can start as soon as PST-1 merges.
 
 The full definition of each slice is in §7. The rows there are the contract.
