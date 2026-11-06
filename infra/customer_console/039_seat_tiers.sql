@@ -156,16 +156,16 @@ INSERT INTO seat_tier_version
      storage_gb_per_seat, max_background_agents, max_automations, max_file_mb)
 VALUES
     ('core', '2026-11-06T00:00:00Z', 1,
-     '["chat","apps","mcp","dictation","meeting_notes","extra_usage"]'::jsonb,
+     '["chat","apps","mcp","dictation","meeting_notes","extra_usage","ai_studio_use_agents"]'::jsonb,
      '["text"]'::jsonb, 30, 1, 10, 100),
     ('pro', '2026-11-06T00:00:00Z', 5,
      '["chat","apps","mcp","dictation","meeting_notes","extra_usage",
-       "deep_research","image_generation","voice_conversation"]'::jsonb,
+       "deep_research","image_generation","voice_conversation","ai_studio_build_agents"]'::jsonb,
      '["text","image"]'::jsonb, 250, 3, 100, 1000),
     ('max', '2026-11-06T00:00:00Z', 10,
      '["chat","apps","mcp","dictation","meeting_notes","extra_usage",
        "deep_research","image_generation","voice_conversation",
-       "video_music_sound","early_access"]'::jsonb,
+       "video_music_sound","early_access","ai_studio_build_agents","ai_studio_build_apps"]'::jsonb,
      '["text","image","video"]'::jsonb, 1024, 10, 500, 5000)
 ON CONFLICT (plan_slug, effective_from) DO NOTHING;
 

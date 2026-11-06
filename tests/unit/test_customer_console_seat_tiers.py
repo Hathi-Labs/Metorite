@@ -9,7 +9,7 @@ server. ``pr-check.yml`` and ``deploy.yml`` name it in their must-run lists.
 
 Run::
 
-    export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:5442/cc_platform
+    export CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
     uv run pytest tests/unit/test_customer_console_seat_tiers.py
 """
 from __future__ import annotations
@@ -194,10 +194,20 @@ def test_a_replay_changes_nothing(eng):
     )
     with eng.begin() as conn:
         before = tuple(conn.execute(counts_sql).one())
+        flags_before = conn.execute(text("SELECT count(*) FROM seat_assignment WHERE is_seat_tier")).scalar_one()
+        kind_checks = conn.execute(text(
+            "SELECT count(*) FROM pg_constraint WHERE conrelid = 'plan_catalog'::regclass "
+            "AND contype = 'c' AND conname = 'plan_catalog_kind_known'")).scalar_one()
+        assert kind_checks == 1
         conn.exec_driver_sql(sql)
         conn.exec_driver_sql(sql)
         after = tuple(conn.execute(counts_sql).one())
     assert before == after
+    with eng.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM seat_assignment WHERE is_seat_tier")).scalar_one() == flags_before
+        assert conn.execute(text(
+            "SELECT count(*) FROM pg_constraint WHERE conrelid = 'plan_catalog'::regclass "
+            "AND contype = 'c' AND conname = 'plan_catalog_kind_known'")).scalar_one() == 1
 
 
 def test_a_version_or_price_row_is_never_edited_or_deleted(eng):
@@ -251,12 +261,12 @@ def test_the_seeded_offer_matches_the_spec(eng):
         mult = dict(conn.execute(text(
             "SELECT plan_slug, allowance_multiple FROM seat_tier_current"
         )).all())
-        assert [float(mult[s]) for s in ("core", "pro", "max")][:1] == [1.0]
+        assert [float(mult[s]) for s in ("core", "pro", "max")] == [1.0, 5.0, 10.0]
 
 
 def test_the_migration_is_expand_only():
     sql = _MIGRATION.read_text(encoding="utf-8")
-    code = "\n".join(l for l in sql.splitlines() if not l.lstrip().startswith("--"))
+    code = "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
     upper = code.upper()
     for banned in ("DROP TABLE", "DROP COLUMN", "RENAME"):
         assert banned not in upper
