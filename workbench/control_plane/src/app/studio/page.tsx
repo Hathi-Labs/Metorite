@@ -19,7 +19,7 @@
  *        modules    /api/workflows/modules* (ModuleStudio)
  */
 
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -28,6 +28,7 @@ import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import ModuleStudio from "@/app/workflows/components/ModuleStudio";
 import { canUseFeature } from "@/lib/access";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import AppsGallery from "./components/AppsGallery";
 import SkillsGallery from "./components/SkillsGallery";
 import WorkflowsGallery from "./components/WorkflowsGallery";
@@ -47,6 +48,10 @@ function StudioLibrary() {
   const pathname = usePathname();
   const params = useSearchParams();
   const { access } = useAccess();
+  // An app or skill that the assistant saves in chat shows with no reload: the
+  // bumped key remounts each gallery, and each one reads its list again.
+  const [librarySeq, setLibrarySeq] = useState(0);
+  useLiveRefresh(() => setLibrarySeq((n) => n + 1), "studio");
 
   const kind = readKind(params.get("kind"));
   const tab = params.get("tab") === "modules" ? "modules" : "library";
@@ -99,9 +104,9 @@ function StudioLibrary() {
             onChange={(id) => go({ kind: id as Kind })}
           />
           <div className="flex-1 overflow-y-auto p-3 sm:p-4 flex flex-col gap-3 sm:gap-4">
-            {showApps && <div className={PANEL}><AppsGallery /></div>}
-            {showWorkflows && <div className={PANEL}><WorkflowsGallery /></div>}
-            {showSkills && <div className={PANEL}><SkillsGallery /></div>}
+            {showApps && <div key={`apps-${librarySeq}`} className={PANEL}><AppsGallery /></div>}
+            {showWorkflows && <div key={`workflows-${librarySeq}`} className={PANEL}><WorkflowsGallery /></div>}
+            {showSkills && <div key={`skills-${librarySeq}`} className={PANEL}><SkillsGallery /></div>}
           </div>
         </>
       )}

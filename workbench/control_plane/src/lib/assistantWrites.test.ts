@@ -34,6 +34,7 @@ const WIRING: Record<string, string> = {
   crm: "app/crm/page.tsx",
   knowledge: "app/knowledge/layout.tsx",
   artifacts: "components/ArtifactSidebar.tsx",
+  studio: "app/studio/page.tsx",
 };
 
 describe("which tool changes which app", () => {
@@ -153,6 +154,38 @@ describe("wireLiveRefresh and the assistant event", () => {
     expect(n).toBe(0);
     off();
     expect(Object.values(r.handlers).every((h) => h.length === 0)).toBe(true);
+  });
+});
+
+describe("the Studio pack (D179)", () => {
+  it("a studio write tool names the studio app, and a studio read tool names none", () => {
+    for (const w of ["studio_save", "studio_publish", "studio_skill_save", "studio_skill_state"]) {
+      expect(appsForWrite(w), w).toEqual(["studio"]);
+    }
+    for (const rd of ["studio_draft", "studio_validate", "studio_patch", "studio_outline", "studio_plan",
+      "studio_describe", "studio_list_actions", "studio_package_get", "studio_record_list",
+      "studio_skill_list", "studio_interview"]) {
+      expect(appsForWrite(rd), rd).toEqual([]);
+    }
+  });
+
+  it("a finished studio_save fires the refresh for studio, and a read does not", () => {
+    const seen: unknown[] = [];
+    const prev = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = {
+      dispatchEvent: (e: { detail: unknown }) => { seen.push(e.detail); return true; },
+    };
+    try {
+      noteToolStart("a1", "studio_save");
+      expect(noteToolEnd("a1", undefined, true)).toEqual(["studio"]);
+      noteToolStart("a2", "studio_describe");
+      expect(noteToolEnd("a2", undefined, true)).toEqual([]);
+      noteToolStart("a3", "studio_save");
+      expect(noteToolEnd("a3", undefined, false)).toEqual([]);
+    } finally {
+      (globalThis as { window?: unknown }).window = prev;
+    }
+    expect(seen).toEqual([{ apps: ["studio"], tool: "studio_save" }]);
   });
 });
 
