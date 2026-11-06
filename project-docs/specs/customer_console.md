@@ -11131,6 +11131,10 @@ keeps NULL vectors until its next edit.
 
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
 
+
+> **Pointer (task 1400, 2026-11-06).** The Router enforces a "this call carries mail" bit and filters the
+> chain to mail-safe steps (slice OR-2 of `email_app_master_plan.md` §12.3.13.16). WS-31 owns the Router
+> half. The email spec holds the design and adds nothing here.
 **Written 2026-08-26 on owner directive:** *"The next main task is assigning AI credits and
 managing AI API keys through the Operator Console. Ensure all documentation is ready so the
 app can sync with the console and access AI features via the configured models."*
