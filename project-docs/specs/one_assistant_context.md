@@ -51,6 +51,8 @@ below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 
 RX-1 is BUILT, not merged (2026-11-02, D169, "As built, RX-1" in §4.2.3). A held chat keeps the writes that a card shows, and a load makes room. It ships dark behind `HELD_CARD_WRITES_ORGS`, which is empty by default, and a merge changes no held chat until a person names an org. `TOOL_PACKS` must name `projects-reminders`, or no run loads that pack.
 
+Task 1747 is BUILT IN PART, in review (2026-11-06, "As built, task 1747" in §4.2.3). A pack that the last member turn used never steps aside. A load by the model is sticky. A turn that a sticky pack left at its start says so. The rest waits on the owner, because it conflicts with D169 item 8.
+
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
 
@@ -262,11 +264,13 @@ middle of a turn.
   own tool by identity, never by name. One load runs at a time in a run.
 - **A pack that the run holds.** A second load of it builds nothing, and
   its answer tells the model to call the tools.
-- **Not sticky on load.** A mere load is not use. A pack becomes sticky
-  only after one of its tools runs (`note_used` in the pack call). So a
-  wrong pack never becomes sticky. A pack that the model loads and calls
-  is sticky from the next turn on. The tool list then stays stable for the
-  prompt cache.
+- **Sticky on load (task 1747, 2026-11-06).** A load by the model is
+  sticky from the next turn on, also when none of its tools runs
+  (`note_used` in `LoadSkillTools._load`). In production, the next turn
+  lost such a pack, and its call gave 'Function "create_status" not found'.
+  A pack that the model loads and does not use is idle from then on. The
+  cap, the step-aside and the decay can take it out. A load by the turn
+  kind (layer (c)) is still not sticky until one of its tools runs.
 - **The held answer.** The build reads it once, as layer (a) does. The
   strict hold within a turn stays.
 - **Mail beside an MCP server.** A load of a pack of the email assistant
@@ -595,10 +599,11 @@ the member's words, and the words of a pack. The surface came with OA-7d.
   `cc:<org>:tool-packs:<session>:<member hash>`. One field counts the member
   turns with `HINCRBY`. Each other field is one pack, with its first load and
   its last use.
-- **Sticky on use.** A pack becomes sticky only after one of its tools ran
-  (`tool_packs.note_used`). That write changes one field only (`HSET`), so
-  two calls at once lose no update. A sticky pack leaves when no tool of it
-  ran in the last 8 member turns.
+- **Sticky on use.** A pack becomes sticky after one of its tools ran
+  (`tool_packs.note_used`), or after the model loaded it (task 1747). That
+  write changes one field only (`HSET`), so two calls at once lose no
+  update. A sticky pack leaves when no tool of it ran in the last 8 member
+  turns.
 - **The words.** Each email word needs an email context (fix round 1, P1-B).
   A bare "draft" or "unread" loads no pack, and "draft a reply" does. A run
   with the email pack gets no registry MCP server. So a false match took the
@@ -1107,7 +1112,7 @@ Three layers choose the packs, in the order that D117 item 3 sets. Layer (a) dec
 
 **Layer (a): a fixed choice, with no model call.** It runs during setup, from server-side inputs only (R5). It loads the union of four sets:
 
-1. **Sticky packs.** These are the packs that this chat used before, in their first-load order. They live in tenant Redis at `cc:<org>:tool-packs:<session>`. They use the idiom (`acb_skills/email_chat_context.py:22-27`) and the 1.0 s timeout (`:57`) of the email working set. A pack becomes sticky only after one of its tools ran.
+1. **Sticky packs.** These are the packs that this chat used before, in their first-load order. They live in tenant Redis at `cc:<org>:tool-packs:<session>`. They use the idiom (`acb_skills/email_chat_context.py:22-27`) and the 1.0 s timeout (`:57`) of the email working set. A pack becomes sticky after one of its tools ran, or after the model loaded it with `load_skill_tools` (task 1747).
 2. **The surface.** This is the app that the member is in. Today it reaches the server only as text in `system_context` (`cp/lib/shell/assistant.ts:738-756`, `cp/app/api/agent/chat/route.ts:823`). OA-7d adds a structured `surface` field. The field is a hint. It can add the core pack of the app, and nothing else.
 3. **References.** These are an in-app link or a record id in the words of the member, for example `/email?email=<id>`. Each pack registers a pattern for them.
 4. **Words.** This is a short word list for each pack. The loader matches it against the words that the member sent in this turn. Since D-PZ-37 (`personalization.md` §15.3) those are `assistant_profile.sent_words()`: typed or tapped. They choose tools only, and they ground no write.
@@ -1216,6 +1221,14 @@ The tools of OA-4 have the same scope (the "As built, OA-4" notes at the top of 
 - **After a pack leaves.** `PackRun.holds` leaves it out, so `note_used` writes nothing for it and `PackRun.refusal` reads the rest. A hand-off to its owner opens if the loader was the only path. The persona keeps its rules until the next turn. A pack that left is not on offer again in this turn.
 - **Layer (c) moves no pack.** MAF copies the tool list before `before_run`, so a move there cannot reach the request. The model can load in its first step.
 - **Fences.** `tests/unit/test_held_card_writes.py` holds the table, the fail-closed cases, MCP, the card door, the pack path and the reader. `tests/unit/test_pack_room.py` holds the room rule, with two real stream runs.
+
+**As built, task 1747 (2026-11-06, in review).** The production thread a398b43e failed on 2026-11-05 UTC. The member saw 'Function "create_task" not found', and the same text for five other Projects tools. `choose` picks the packs again at the start of each member turn. A pack that held the tool left, and the model's history still showed the tool. Nothing told the model.
+
+- **A pack that the last turn used stays.** `choose` passes the sticky packs used in the last member turn to `_step_aside` (`fresh`). No rule of the step-aside moves such a pack. Rule 3 does not run while such a pack of the owner is held. It would move a pack that this turn asked for (D169). A pack that was idle for longer can still step aside, so the loader reaches the Projects owner. Four rows of the production table were this case: `create_tasks`, `update_status`, `set_status_set` and `delete_status`.
+- **A load by the model is sticky.** `LoadSkillTools._load` calls `note_used` after the tools join. So the next turn holds the pack, also when none of its tools ran. A load by layer (c) is not sticky until one of its tools runs.
+- **The turn says which packs left.** `PackRun.gone` holds the sticky packs that left at the start of the turn (`Choice.evicted`). `PackRun.gone_offered` names the ones that the loader offers. `tool_packs.left_line` is the one text, modelled on `LOAD_MADE_ROOM`. It tells the model to call `load_skill_tools` first for an offered pack, and not to call the tools of the others in this turn. `executor._pack_left_block` puts the line last in the context of the turn, after the cache break, so the persona keeps its bytes. A delegated run drops the record, so it gets no line.
+- **What waits on the owner.** In three rows the cap moved the Projects pack out for packs that the member's words named (email, CRM, bulk). Then the reload did not fit. A fix needs a load to move out a pack that the words named in this turn. D169 item 8 says that such a pack stays. Until the owner decides, the reload answers `LOAD_NO_PATH`, and the chat hands off.
+- **Fence.** `tests/unit/test_pack_turn_keeps_used_packs.py`. Each test name starts with the row of the production table.
 
 In this table, `_tool_injection.py` and `executor.py` are in `orchestrator/`. `egress.py` is in `acb_skills/`. `agents.py` is `agent-email-assistant/agents.py`.
 

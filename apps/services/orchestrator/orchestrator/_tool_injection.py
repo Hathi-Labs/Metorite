@@ -3862,7 +3862,10 @@ async def _apply_tool_packs(
     except RuntimeError as exc:
         _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
         return None
-    record = tool_packs.PackRun.of(turn, choice, loaded, via)
+    # Task 1747: the record keeps the sticky packs that left at the start of
+    # this turn, and which of them the loader offers. The context of the turn
+    # names them (``executor._pack_left_block``, ``tool_packs.left_line``).
+    record = tool_packs.PackRun.of(turn, choice, loaded, via, offered=plan.offered)
     replaced = frozenset(record.replaced)
     # OA-8f: the count that the run sends once this apply is done: the base
     # (with the load tool only when the plan offers it), the pack tools, less

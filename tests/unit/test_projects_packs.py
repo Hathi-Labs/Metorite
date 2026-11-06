@@ -1221,17 +1221,18 @@ def test_with_the_switch_off_the_cap_moves_the_older_reminders_pack_out(monkeypa
     """Fix round 3 (P3-2). With ``HELD_CARD_WRITES_ORGS`` off for the org, the
     cap does not read the words of the turn (RX-1), so the least recently used
     sticky pack leaves: the reminders pack. The plan and core packs then make
-    104 tools, and no work pack fits beside them (104 - 1 + 11 > 110), so the
-    plan pack steps aside: the words do not name it. The core pack alone
+    104 tools, and no work pack fits beside them (104 - 1 + 11 > 110), so one
+    pack steps aside. Task 1747: the plan pack ran in the last turn (19), so
+    it stays, and the core pack of the page steps aside. The plan pack alone
     reaches the owner. Mutation: let the cap read the words with the switch
     off -> the reminders pack stays -> red."""
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
     choice = _case_a()
-    assert choice.slugs == ("projects",), choice
-    assert choice.evicted == ("projects-reminders", "projects-plan"), choice
-    assert choice.skipped == (), choice
+    assert choice.slugs == ("projects-plan",), choice
+    assert choice.evicted == ("projects-reminders",), choice
+    assert choice.skipped == ("projects",), choice
     assert _owner_reached(choice)
 
 
@@ -1255,16 +1256,26 @@ def test_a_sticky_pack_of_another_owner_leaves_before_a_projects_pack() -> None:
 def test_the_step_aside_moves_the_sticky_pack_that_the_member_did_not_name() -> None:
     """Two sticky Projects packs fit the caps (105 tools) and keep the owner
     unreached. The member asks for a burndown, so the older plan pack is a need
-    of this turn, and the newer structure pack steps aside. Mutation: let a
-    named sticky pack leave by age alone -> the plan pack leaves -> red."""
+    of this turn, and the newer structure pack steps aside. Task 1747: the
+    structure pack was last used in turn 18, not in the last turn, so it can
+    step aside. Used in turn 19, it stays (``test_pack_turn_keeps_used_packs``).
+    Mutation: let a named sticky pack leave by age alone -> the plan pack
+    leaves -> red."""
     choice = tp.choose(
         _sticky_turn("show the burndown", "",
                      tp.Sticky("projects-plan", (10, 0), 13),
-                     tp.Sticky("projects-structure", (11, 0), 19)),
+                     tp.Sticky("projects-structure", (11, 0), 18)),
         allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
     assert choice.slugs == ("projects-plan",), choice
     assert choice.evicted == ("projects-structure",), choice
     assert _owner_reached(choice)
+    fresh = tp.choose(
+        _sticky_turn("show the burndown", "",
+                     tp.Sticky("projects-plan", (10, 0), 13),
+                     tp.Sticky("projects-structure", (11, 0), 19)),
+        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert fresh.slugs == ("projects-plan", "projects-structure"), fresh
+    assert fresh.evicted == (), fresh
 
 
 def test_a_sticky_pack_of_another_owner_does_not_keep_the_core_pack_on_the_page() -> None:
@@ -1363,17 +1374,20 @@ def test_a_pack_too_small_for_work_does_not_reach_the_owner() -> None:
 def test_plan_the_sprint_then_archive_the_done_ones_keeps_the_chat_in_place(
     surface: str, words: str,
 ) -> None:
-    """The trace of the review. Turn 19, "plan the sprint", held the core pack
-    and the model loaded the plan pack, so both are sticky. In turn 20 the two
-    would make 104 tools, and the bulk pack (22) would not fit beside them.
-    Before fix round 4 the authority pack (3) still "fitted", so the owner was
-    reached, the bulk load refused with LOAD_NO_PATH, and the chat handed off
-    one round later. Now one pack steps aside: the owner is reached, and bulk
-    is held at the start or fits a load. Mutation: drop ``REACH_MIN_TOOLS`` ->
-    the two packs stay and bulk does not fit -> red."""
+    """The trace of the review. Turn 18, "plan the sprint", held the core pack
+    and the model loaded the plan pack, so both are sticky. The member then
+    sent one turn about something else. In turn 20 the two would make 104
+    tools, and the bulk pack (22) would not fit beside them. Before fix round
+    4 the authority pack (3) still "fitted", so the owner was reached, the
+    bulk load refused with LOAD_NO_PATH, and the chat handed off one round
+    later. Now one pack steps aside: the owner is reached, and bulk is held at
+    the start or fits a load. Task 1747 moved the plan turn from 19 to 18: a
+    pack that the last turn used never steps aside (the next case). Mutation:
+    drop ``REACH_MIN_TOOLS`` -> the two packs stay and bulk does not fit ->
+    red."""
     choice = tp.choose(
-        _sticky_turn(words, surface, tp.Sticky("projects", (19, 0), 19),
-                     tp.Sticky("projects-plan", (19, 1), 19)),
+        _sticky_turn(words, surface, tp.Sticky("projects", (18, 0), 18),
+                     tp.Sticky("projects-plan", (18, 1), 18)),
         allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
     total = _BASE + sum(len(_family(slug)) for slug in choice.slugs)
     assert len(choice.slugs) == 1, choice
@@ -1384,6 +1398,34 @@ def test_plan_the_sprint_then_archive_the_done_ones_keeps_the_chat_in_place(
     plan = tp.plan_loader(EVERY, choice.slugs, current=total, removable=_SPECIALIST)
     assert "projects-bulk" in plan.offered, plan
     assert total - 1 + len(_family("projects-bulk")) <= tp.MAX_REQUEST_TOOLS, choice
+
+
+@pytest.mark.parametrize("surface", ["projects", ""])
+@pytest.mark.parametrize("words", ["now archive the done ones", "now tidy them up"])
+def test_plan_the_sprint_in_the_last_turn_keeps_both_packs(surface: str, words: str) -> None:
+    """Task 1747. The same trace, with "plan the sprint" in the last turn (19).
+    Both packs ran then, so neither steps aside. When the words name the bulk
+    pack, the cap moves the unnamed one of the two out, and the bulk pack is
+    held at the start. It does not step aside for a pack that the last turn
+    used: a new need never loses to it (D169). Else both stay, and with the
+    RX-1 switch on the loader still offers the bulk pack, because a sticky
+    pack can leave for it. Mutation: let rule 3 move the bulk pack while a
+    fresh pack stays -> the bulk pack is skipped -> red."""
+    entries = (tp.Sticky("projects", (19, 0), 19), tp.Sticky("projects-plan", (19, 1), 19))
+    turn = _sticky_turn(words, surface, *entries)
+    choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    total = _BASE + sum(len(_family(slug)) for slug in choice.slugs)
+    assert total <= tp.MAX_REQUEST_TOOLS and choice.skipped == (), choice
+    if tp.matched_layer("projects-bulk", words):
+        assert "projects-bulk" in choice.slugs and len(choice.slugs) == 2, choice
+        return
+    assert choice.slugs == ("projects", "projects-plan") and choice.evicted == (), choice
+    run = tp.PackRun.of(turn, choice, [(slug, False) for slug in choice.slugs])
+    spare = {slug: len(_family(slug)) for slug in run.spare()}
+    assert spare, "non-vacuity: a pack that the words did not name can leave"
+    plan = tp.plan_loader(EVERY, choice.slugs, current=total, removable=_SPECIALIST,
+                          spare=spare)
+    assert "projects-bulk" in plan.offered, plan
 
 
 @pytest.mark.parametrize("words", [

@@ -178,6 +178,10 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 
    The steps stay only when the result reaches the owner within the caps. Else the turn keeps the packs that the cap left.
 
+   **A pack that the last turn used stays (task 1747, 2026-11-06).** No rule of the step-aside moves a sticky pack that was used in the last member turn. A tool of it ran, or the model loaded it, so the model's history shows its tools. In production the step-aside moved such packs out at 79 and 101 tools. The next tool call then answered 'Function not found'. A pack that was idle for longer can still step aside.
+
+   Rule 3 does not run while such a pack of the owner is held. It would move a pack that this turn asked for, so nothing steps aside. With the RX-1 switch on, a load can still move a sticky pack that the words do not name. The context of the turn names each pack that left (`tool_packs.left_line`). Fence: `tests/unit/test_pack_turn_keeps_used_packs.py`.
+
    **The switch.** The cap reads the member's words only for an org that `HELD_CARD_WRITES_ORGS` names (RX-1). For any other org, the cap moves the least recently used sticky pack out first, also when the words name it. The step-aside reads the words for each org.
 
    An example: the reminders pack (turn 13) and the plan pack (turn 19) are sticky, and the member says "remind me" on the Projects page. With the switch on, the cap moves the plan pack out, and the reminders and core packs stay (99 tools). With the switch off, the cap moves the reminders pack out. The plan and core packs then leave no room for a work pack. So the plan pack steps aside, and the core pack stays (80 tools).
@@ -454,3 +458,4 @@ The rule text of §3.1 is advisory until PJP-11's scripted turn passes.
 ## 12. Change log
 
 - 2026-11-02 — PJP-0. The owner reported four faults from a morning session and asked for planning methods. The agent read the production journal and the database, and wrote this spec. The owner answered four questions in chat, recorded as D168.
+- 2026-11-06 — Task 1747, in review. The step-aside of §3.3 rule 2 keeps a pack that the last member turn used. `one_assistant_context.md` "As built, task 1747" holds the rest.
