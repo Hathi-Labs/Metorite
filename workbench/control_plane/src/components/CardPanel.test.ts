@@ -9,7 +9,15 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import CardPanel, { cardEscape, cardFrameClasses, PAGE_MIN_REM, sideCardFits } from "@/components/CardPanel";
+import CardPanel, {
+  cardEscape,
+  cardFrameClasses,
+  OVER_THE_CARD,
+  PAGE_MIN_REM,
+  pageBehindCard,
+  scrimCloses,
+  sideCardFits,
+} from "@/components/CardPanel";
 import { LAYER_CLASS } from "@/lib/layers";
 import { PANEL_WIDTH_CLASS } from "@/lib/panelMode";
 
@@ -102,6 +110,38 @@ describe("a docked card leaves the page usable", () => {
   });
 });
 
+describe("a card over the page", () => {
+  type Node = { name: string; parentElement: Node | null; children: Node[] };
+  const node = (name: string, children: Node[] = []): Node => {
+    const made: Node = { name, parentElement: null, children };
+    for (const child of children) child.parentElement = made;
+    return made;
+  };
+
+  it("names the title bar, the rail and main, and never the card's own line", () => {
+    const aside = node("aside");
+    const card = node("card", [aside]);
+    const host = node("host", [card]);
+    const row = node("row", [node("rail"), node("main"), host]);
+    const page = node("page", [node("title"), row]);
+    expect(pageBehindCard(page, aside).map((n) => n.name)).toEqual(["rail", "main", "title"]);
+  });
+
+  it("closes on the scrim only when the press began there, so a drag keeps a note", () => {
+    expect(scrimCloses(true, true)).toBe(true);
+    expect(scrimCloses(false, true)).toBe(false);
+    expect(scrimCloses(true, false)).toBe(false);
+  });
+
+  it("speaks through a status line, because a docked card moves no focus", () => {
+    expect(draw("side")).toContain('<p role="status" class="sr-only"></p>');
+  });
+
+  it("the aside's focus ring is on the line of its outline-none", () => {
+    expect(cardFrameClasses("side").aside).toMatch(/outline-none .*focus-visible:ring-2/);
+  });
+});
+
 describe("what Escape means for a card", () => {
   it("closes from inside the card or from the page that holds it", () => {
     expect(cardEscape(escape, body, true, false)).toBe("close");
@@ -121,6 +161,12 @@ describe("what Escape means for a card", () => {
       closest: (selector: string) => (selector.includes("aria-expanded") ? {} : null),
     };
     expect(cardEscape(escape, target, true, false)).toBeNull();
+  });
+
+  it("an open fold is no popup, so Escape from it still closes the card", () => {
+    expect(OVER_THE_CARD).not.toMatch(/(^|, )\[aria-expanded/);
+    expect(OVER_THE_CARD).toContain('[aria-haspopup][aria-expanded="true"]');
+    expect(OVER_THE_CARD).toContain('[role="combobox"][aria-expanded="true"]');
   });
 
   it("leaves a key that another handler already took", () => {

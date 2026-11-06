@@ -61,6 +61,19 @@ describe("one frame for each record kind", () => {
   });
 });
 
+describe("a record that loads or fails", () => {
+  it("both sheets draw the one failure state", () => {
+    expect(code("./RecordSheet.tsx")).toContain("<RecordLoadFailed");
+    expect(code("./ModuleRecordSheet.tsx")).toContain("<RecordLoadFailed");
+  });
+
+  it("the steps take the id from the URL, so they stay while the record loads", () => {
+    const sheet = code("./RecordSheet.tsx");
+    expect(sheet).toContain("<RecordSteps order={order} id={id}");
+    expect(code("../page.tsx")).toContain("id={view.record.id}");
+  });
+});
+
 describe("the header is the Projects header", () => {
   it("the shell draws TaskHeaderRow with the noun of a record", () => {
     const shell = code("./RecordShell.tsx");
@@ -114,9 +127,10 @@ describe("the list marks the open record", () => {
       }),
     );
 
-  it("marks only that row", () => {
+  it("marks only that row, in the house token for selected", () => {
     const html = draw("b");
     expect(html.match(/aria-current="true"/g)).toHaveLength(1);
+    expect(html.match(/bg-primary\/10/g)).toHaveLength(1);
     expect(html.indexOf('aria-current="true"')).toBeGreaterThan(html.indexOf("Acme"));
   });
 

@@ -68,7 +68,7 @@ import type { TimelineEntry } from "../lib/types";
 import FieldValue from "./FieldValue";
 import { FoldedFields } from "./FieldsPanel";
 import ModuleEditRow from "./ModuleEditRow";
-import { RecordCard, RecordFacts, RecordTabBar } from "./RecordShell";
+import { RecordCard, RecordFacts, RecordLoadFailed, RecordTabBar } from "./RecordShell";
 import Timeline from "./Timeline";
 
 /** The write path of the sheet (CRM-Z10d). `onPatch` gives `false` on a refusal. */
@@ -166,12 +166,7 @@ export default function ModuleRecordSheet({
           edit={{ saving, refusal, owners, onPatch: patch }}
         />
       ) : state.kind === "failed" ? (
-        <div className="flex flex-col items-center gap-3 p-8 text-center">
-          <p className="text-xs text-muted-foreground">This record did not load. Try again.</p>
-          <Button variant="secondary" size="sm" icon="RefreshCw" onClick={res.refresh}>
-            Retry
-          </Button>
-        </div>
+        <RecordLoadFailed onRetry={res.refresh} />
       ) : (
         <p className="p-8 text-center text-xs text-muted-foreground">
           {state.kind === "missing" ? "This record has not synced yet." : "Loading…"}

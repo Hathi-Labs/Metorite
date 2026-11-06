@@ -24,7 +24,7 @@
 
 import Button from "@/components/ui/Button";
 import { useCachedResource } from "@/lib/useCachedResource";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import * as api from "../lib/api";
 import { importedLine, isLocked, zohoLink } from "../lib/connect";
 import { summaryFacts, type FieldDef } from "../lib/fields";
@@ -38,7 +38,7 @@ import { useCrmModeValue } from "../lib/modeContext";
 import { useFieldDefs, useFieldLayout } from "../lib/useCrmMode";
 import { ENTITY_NOUN, sourceSingular, type SourceLabels } from "../lib/views";
 import FieldsPanel from "./FieldsPanel";
-import { RecordCard, RecordFacts, RecordTabBar } from "./RecordShell";
+import { RecordCard, RecordFacts, RecordLoadFailed, RecordTabBar } from "./RecordShell";
 import StatusPill from "./StatusPill";
 import Timeline, { TimelineItem } from "./Timeline";
 import type { DealContact, EntitySlug, Status, TimelineEntry } from "../lib/types";
@@ -92,6 +92,7 @@ type RecordOrder = {
 
 export default function RecordSheet({
   entity,
+  id,
   record,
   statuses,
   places,
@@ -108,6 +109,8 @@ export default function RecordSheet({
   ...actions
 }: {
   entity: EntitySlug;
+  /** The id in the URL. It is known while the record loads, so the steps stay. */
+  id: string;
   record: Row | null;
   statuses: Status[];
   /** The places of the pipeline the record sits in, for the stage menu order. */
@@ -130,6 +133,8 @@ export default function RecordSheet({
   // CRM-C4b: the layout draws the Fields tab when it says `studio`.
   const { layout } = useFieldLayout(entity);
   const refusal = useCrmStore((s) => s.refusal);
+  const loadFailed = useCrmStore((s) => s.recordFailed);
+  const loadRecord = useCrmStore((s) => s.loadRecord);
   const attachContact = useCrmStore((s) => s.attachContact);
 
   // A contact row names its company by id only. The name is one read of the
@@ -149,30 +154,31 @@ export default function RecordSheet({
 
   // `j` and `k` (CRM-X4 item 5). `navStep` refuses a key with a modifier down,
   // so Cmd-K stays the shell's, and a key typed into a field.
-  const recordId = typeof record?.id === "string" ? record.id : null;
   useEffect(() => {
-    if (!order || !recordId) return;
+    if (!order) return;
     const onKey = (event: KeyboardEvent) => {
       const step = navStep(event);
       if (step === null) return;
-      const next = neighbour(order, recordId, step);
+      const next = neighbour(order, id, step);
       if (!next) return;
       event.preventDefault();
       onStep(next);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [order, recordId, onStep]);
+  }, [order, id, onStep]);
 
   const title = record
     ? TITLE_KEY[entity]
         .map((key) => record[key])
         .filter(Boolean)
         .join(" ") || "Untitled"
-    : "Loading…";
+    : loadFailed
+      ? "Did not load"
+      : "Loading…";
 
   const zoho = zohoLink(record);
-  const steps = order && recordId ? <RecordSteps order={order} id={recordId} onStep={onStep} /> : null;
+  const steps = order ? <RecordSteps order={order} id={id} onStep={onStep} /> : null;
 
   return (
     // The page mounts it from `?deal=` and the rest, and every way out runs
@@ -185,7 +191,9 @@ export default function RecordSheet({
       actions={steps}
       onClose={onClose}
     >
-      {record === null ? (
+      {record === null && loadFailed ? (
+        <RecordLoadFailed onRetry={() => void loadRecord(entity, id)} />
+      ) : record === null ? (
         <p className="p-8 text-center text-xs text-muted-foreground">Loading…</p>
       ) : (
         <RecordPage
@@ -233,8 +241,21 @@ export function RecordSteps({
   const place = navLabel(order, id);
   const previous = neighbour(order, id, -1);
   const next = neighbour(order, id, 1);
+  // A step to the end of the list disables the button that took it, and a
+  // disabled button drops the focus. So the other button takes it after the
+  // step, when the new record has enabled it.
+  const box = useRef<HTMLDivElement>(null);
+  const handOver = useRef<string | null>(null);
+  useEffect(() => {
+    if (handOver.current) box.current?.querySelector<HTMLElement>(`[aria-label="${handOver.current}"]`)?.focus();
+    handOver.current = null;
+  }, [id]);
+  const step = (to: string, direction: 1 | -1, other: string) => {
+    handOver.current = neighbour(order, to, direction) === null ? other : null;
+    onStep(to);
+  };
   return (
-    <div className="flex shrink-0 items-center gap-0.5">
+    <div ref={box} className="flex shrink-0 items-center gap-0.5">
       {place && <span className="px-1 text-[11px] tabular-nums text-muted-foreground">{place}</span>}
       <Button
         variant="ghost"
@@ -243,7 +264,7 @@ export function RecordSteps({
         aria-label="Previous record"
         title="Previous record (k)"
         disabled={!previous}
-        onClick={() => previous && onStep(previous)}
+        onClick={() => previous && step(previous, -1, "Next record")}
       />
       <Button
         variant="ghost"
@@ -252,7 +273,7 @@ export function RecordSteps({
         aria-label="Next record"
         title="Next record (j)"
         disabled={!next}
-        onClick={() => next && onStep(next)}
+        onClick={() => next && step(next, 1, "Previous record")}
       />
     </div>
   );

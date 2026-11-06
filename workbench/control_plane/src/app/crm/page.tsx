@@ -1199,6 +1199,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         {view.record && (
           <RecordSheet
             entity={view.record.entity}
+            id={view.record.id}
             labels={labels}
             record={store.record}
             statuses={statusesFor(view.record.entity)}

@@ -338,7 +338,7 @@ describe("the place in the list (CRM-X4 item 5)", () => {
   it("shows no arrows when no list is behind the record", () => {
     // The sheet draws the steps in the card's header, and only with a list.
     const sheet = readFileSync(new URL("./RecordSheet.tsx", import.meta.url), "utf8");
-    expect(sheet).toMatch(/order && recordId \? <RecordSteps/);
+    expect(sheet).toMatch(/order \? <RecordSteps/);
     // The body never draws them, so a narrow card keeps the facts whole (ORC-1).
     expect(page({})).not.toContain("Previous record");
   });

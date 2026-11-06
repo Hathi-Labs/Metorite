@@ -17,6 +17,7 @@
 import CardPanel, { useCardStop } from "@/components/CardPanel";
 import Tabs from "@/components/Tabs";
 import { TaskHeaderRow } from "@/components/TaskPanelHeader";
+import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import type { ReactNode } from "react";
 import type { FieldRow } from "../lib/fields";
@@ -84,6 +85,18 @@ export function RecordCard({
       </header>
       {children}
     </CardPanel>
+  );
+}
+
+/** A record that did not load, with the way to try again. Both sheets draw it. */
+export function RecordLoadFailed({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-3 p-8 text-center">
+      <p className="text-xs text-muted-foreground">This record did not load. Try again.</p>
+      <Button variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
   );
 }
 

@@ -27,10 +27,16 @@
  * the row cannot hold the card and {@link PAGE_MIN_REM}, the card stands over
  * the page instead (`useCardStop`). The toggle hides, because it has nowhere
  * to go, and the member's choice stays stored for a wider page.
+ *
+ * This frame is not a `Modal`, because the AI pill must stay in reach (D172.4).
+ * So it gives back by hand what the old drawer took from `Modal`: over the page
+ * the page goes `inert`, and a close gives the focus to the last control the
+ * member used, or to the landmark, with no scroll.
  */
 
 import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { focusLandmark, LANDMARK } from "@/components/ui/Modal";
 import { TASK_CARD_FRAME } from "@/lib/layers";
 import {
   DEFAULT_PANEL_MODE,
@@ -68,7 +74,7 @@ export function sideCardFits(rowWidth: number, railWidth: number, rem: number): 
 
 /** The classes of the three parts at one stop. Pure, so a test reads them. */
 export function cardFrameClasses(stop: CardStop): { host: string; card: string; aside: string } {
-  const aside = "flex h-full w-full flex-col bg-background outline-none glass:bg-card";
+  const aside = "flex h-full w-full flex-col bg-background outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring glass:bg-card";
   if (stop === "side") {
     return {
       host: "contents",
@@ -90,9 +96,45 @@ export function cardFrameClasses(stop: CardStop): { host: string; card: string; 
   };
 }
 
-/** A popup, a dialog or a menu that holds this key. Each one owns its Escape. */
-const OVER_THE_CARD =
-  '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [aria-expanded="true"]';
+/**
+ * A popup, a dialog or a menu that holds this key. Each one owns its Escape.
+ *
+ * A bare `aria-expanded` is not a popup: an open fold of the Fields tab has one,
+ * and Escape from there closes the card. Only a control that opens a popup counts.
+ */
+export const OVER_THE_CARD =
+  '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [aria-haspopup][aria-expanded="true"], [role="combobox"][aria-expanded="true"]';
+
+/** What can hold the focus: what a press on the page leaves it on. */
+const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]';
+
+/**
+ * A click on the scrim closes the card only when the press began there too. A
+ * drag that selects text in a note and ends on the scrim fires its click on the
+ * host, and it must not close the card and lose the note.
+ */
+export function scrimCloses(pressedOnScrim: boolean, clickedOnScrim: boolean): boolean {
+  return pressedOnScrim && clickedOnScrim;
+}
+
+/** The nodes `pageBehindCard` walks. A test passes plain objects. */
+type TreeNode<T> = { parentElement: T | null; children: ArrayLike<T> };
+
+/**
+ * Everything of the page that is not the card: at each level from the card up
+ * to the page root, the siblings of the card's line. New rows and banners inside
+ * `<main>` are covered, because `<main>` itself is one of these.
+ */
+export function pageBehindCard<T extends TreeNode<T>>(page: T, card: T): T[] {
+  const behind: T[] = [];
+  for (let node: T | null = card; node && node !== page; node = node.parentElement) {
+    const siblings: ArrayLike<T> = node.parentElement?.children ?? [];
+    for (const other of Array.from(siblings)) {
+      if (other !== node) behind.push(other);
+    }
+  }
+  return behind;
+}
 
 type KeyEventLike = Parameters<typeof panelEscape>[0] & { defaultPrevented?: boolean };
 type KeyTarget = NonNullable<Parameters<typeof panelEscape>[1]> & {
@@ -118,12 +160,13 @@ export function cardEscape(
 }
 
 /**
- * The member's stop, side or full. It reads the storage after the first paint,
- * because the server has none, and every app shares the one value.
+ * The member's stop, side or full. Every app shares the one value. It reads the
+ * storage before the first paint, so a stored `full` never flashes as `side`,
+ * and not in the first render, because the server has no storage.
  */
 export function usePanelMode(): [PanelMode, (next: PanelMode) => void] {
   const [mode, setMode] = useState<PanelMode>(DEFAULT_PANEL_MODE);
-  useEffect(() => {
+  useLayoutEffect(() => {
     // The server has no storage, so the first render cannot read it.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMode(readPanelMode());
@@ -155,6 +198,8 @@ function useSideCardFits(asideRef: RefObject<HTMLElement | null>): boolean {
     measure();
     const watcher = new ResizeObserver(measure);
     watcher.observe(row);
+    // A rail that folds moves `<main>` and leaves the row the same width.
+    watcher.observe(main);
     return () => watcher.disconnect();
   }, [asideRef]);
   return fits;
@@ -200,18 +245,60 @@ export default function CardPanel({
   const ownRef = useRef<HTMLElement>(null);
   const asideRef = givenRef ?? ownRef;
   const classes = cardFrameClasses(stop);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const pressedOnScrim = useRef(false);
+  const statusRef = useRef<HTMLParagraphElement>(null);
+  // Read in the first render: the effects below can blur it.
+  const [opener] = useState<Element | null>(() =>
+    typeof document === "undefined" ? null : document.activeElement,
+  );
 
-  // The opener takes the focus back on close. It is read on mount, not per
-  // record, so a step to the next record still returns to where the trail
-  // started. `contains`: a list that loaded again has dropped the old row.
+  // ⚠️ Keep this effect first. A cleanup runs in the order of the effects, and
+  // the next one gives the focus back, which an `inert` page refuses.
+  // Over the page, the page is out of the tab order and out of a screen reader.
+  // The AI pill and the assistant are outside the page root, so they stay.
   useEffect(() => {
-    const opener = typeof document === "undefined" ? null : document.activeElement;
+    const aside = asideRef.current;
+    const page = aside?.closest(`[${CARD_PAGE_ATTR}]`);
+    if (stop === "side" || !aside || !page) return;
+    const behind = pageBehindCard<Element>(page, aside);
+    for (const node of behind) node.setAttribute("inert", "");
     return () => {
-      if (opener instanceof HTMLElement && opener !== document.body && document.contains(opener)) {
-        opener.focus();
-      }
+      for (const node of behind) node.removeAttribute("inert");
     };
-  }, []);
+  }, [stop, asideRef]);
+
+  // The focus goes back to the last control the member used on the page: the
+  // opener first, then each row or card they used while the card stayed open.
+  // With none it goes to the landmark, as a `Modal` does. It never scrolls, so a
+  // long list stays where the member left it. It stays away when the member has
+  // gone elsewhere: to the assistant, or to another page.
+  useEffect(() => {
+    const aside = asideRef.current;
+    const page = aside?.closest(`[${CARD_PAGE_ATTR}]`) ?? null;
+    let last = opener;
+    const remember = (event: Event) => {
+      const target = event.target;
+      // The scrim is the card's own: a press on it must not forget the opener.
+      if (!(target instanceof Element) || hostRef.current?.contains(target) || !page?.contains(target)) return;
+      last = target.closest(FOCUSABLE);
+    };
+    window.addEventListener("focusin", remember);
+    window.addEventListener("pointerdown", remember, true);
+    return () => {
+      window.removeEventListener("focusin", remember);
+      window.removeEventListener("pointerdown", remember, true);
+      if (!page || !document.contains(page)) return;
+      const active = document.activeElement;
+      if (active && active !== document.body && !page.contains(active)) return;
+      if (last instanceof HTMLElement && last !== document.body && document.contains(last)) {
+        last.focus({ preventScroll: true });
+        return;
+      }
+      const landmark = document.querySelector<HTMLElement>(LANDMARK);
+      if (landmark) focusLandmark(landmark);
+    };
+  }, [asideRef, opener]);
 
   // A card over the page takes the focus, unless the focus is already inside
   // it, as it is on the toggle that expanded it. A docked card leaves the
@@ -247,18 +334,36 @@ export default function CardPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, asideRef]);
 
+  // A docked card moves no focus, so a screen reader hears of it here. A status
+  // line speaks when its words change, so an effect writes them after the mount.
+  useEffect(() => {
+    if (stop === "side" && statusRef.current) statusRef.current.textContent = label;
+  }, [stop, label]);
+
   return (
     <div
+      ref={hostRef}
       className={classes.host}
       role="presentation"
-      onClick={stop === "full" ? onClose : undefined}
+      onMouseDown={
+        stop === "full"
+          ? (event) => {
+              pressedOnScrim.current = event.target === event.currentTarget;
+            }
+          : undefined
+      }
+      onClick={
+        stop === "full"
+          ? (event) => {
+              if (scrimCloses(pressedOnScrim.current, event.target === event.currentTarget)) onClose();
+              pressedOnScrim.current = false;
+            }
+          : undefined
+      }
     >
-      <div
-        className={classes.card}
-        role="presentation"
-        onClick={stop === "full" ? (event) => event.stopPropagation() : undefined}
-      >
+      <div className={classes.card} role="presentation">
         <aside ref={asideRef} aria-label={label} tabIndex={-1} className={classes.aside}>
+          <p ref={statusRef} role="status" className="sr-only" />
           {children}
         </aside>
       </div>

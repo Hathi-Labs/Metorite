@@ -207,7 +207,7 @@ const CALLER_SETS_MAX_HEIGHT = /(?:^|\s)(?:[\w-]+:)*max-h-/;
  * The landmark focus lands on when the opener is gone. First in document
  * order, which on every Metorite page is `AppShell`'s own `<main>`.
  */
-const LANDMARK = "main, [role='main']";
+export const LANDMARK = "main, [role='main']";
 
 /**
  * Focus a landmark that is not focusable, and leave the DOM as it was found.
@@ -223,7 +223,7 @@ const LANDMARK = "main, [role='main']";
  * its **first tabbable child** — i.e. the first control on the page, which is
  * a jump, not a return.
  */
-function focusLandmark(el: HTMLElement): void {
+export function focusLandmark(el: HTMLElement): void {
   const owned = !el.hasAttribute("tabindex");
   if (owned) el.setAttribute("tabindex", "-1");
   queueMicrotask(() => {

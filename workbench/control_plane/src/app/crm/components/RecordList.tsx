@@ -326,7 +326,7 @@ export default function RecordList({
                   onClick={() => onOpen(String(row.id))}
                   aria-current={String(row.id) === selectedId ? "true" : undefined}
                   className={`cursor-pointer border-b border-border/60 hover:bg-secondary/40 tech-transition ${
-                    String(row.id) === selectedId ? "bg-accent/40" : ""
+                    String(row.id) === selectedId ? "bg-primary/10" : ""
                   }`}
                 >
                   {columns.map((column, index) => {
