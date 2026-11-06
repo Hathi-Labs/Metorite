@@ -120,22 +120,68 @@ def greeting_for(zone: str | None, now: datetime | None = None) -> str:
     return _row_at(zone, now)[2]
 
 
-def part_of_day_line(zone: str | None, now: datetime | None = None) -> str:
-    """One short line: the part of the day and the greeting to use.
+#: The gap that ends a conversation (PZ-39, owner 2026-11-06). The chat greets
+#: in the first reply of a chat, and in the first reply after this many hours
+#: with no message in that chat. It never greets in the middle of one.
+GREET_GAP_HOURS = 4
+
+
+def greet_due(last_message_ms: int | None, now_ms: int, *, first_reply: bool) -> bool:
+    """True when this turn opens a conversation. Pure.
+
+    *first_reply* means the chat holds no earlier message. Otherwise
+    *last_message_ms* is the newest stored message BEFORE this turn, and the
+    gap must reach :data:`GREET_GAP_HOURS`. A missing time gives False."""
+    if first_reply:
+        return True
+    if last_message_ms is None:
+        return False
+    return now_ms - last_message_ms >= GREET_GAP_HOURS * 3600 * 1000
+
+
+def part_of_day_line(
+    zone: str | None, now: datetime | None = None, *, greet: bool = False,
+    language: str | None = None,
+) -> str:
+    """One short line: the part of the day, and the greeting when one is due.
 
     WS-63 PZ-4 (``personalization.md`` §5.2): the greeting rule says "for the
     time of day", and :func:`today_line` gives no hour. *zone* is the
-    member's resolved zone. In the late hours the line says "Hello" or "Good
-    evening" and never "Good night". The line changes once per band, so it is
-    stable for a given hour. Fence: ``tests/unit/test_executor_profile_block.py``."""
+    member's resolved zone. The text "Greet now." appears only when *greet*
+    is true. The greeting rules in ``GREETING_LINES`` wait for it. In the late
+    hours the line says "Hello" or "Good evening" and never "Good night".
+    When *language* is a tag whose primary subtag is not ``en``, the line
+    asks for the common hello of that language. The line never guesses a
+    language from a name or a region. Fence:
+    ``tests/unit/test_executor_profile_block.py``."""
     part = part_of_day(zone, now)
+    base = f"Part of the day for the member: {part}."
+    if not greet:
+        return base
+    tag = (language or "").strip()
+    if tag and tag.replace("_", "-").split("-")[0].lower() != "en":
+        return (
+            f"{base} Greet now. The member's language is \"{tag}\". Greet with "
+            "the common hello of that language, for example Namaste, Namaskaram "
+            "or Vanakkam. Do not copy a time-of-day phrase from forwarded messages."
+        )
     word = greeting_for(zone, now)
     if part == "night":
         return (
-            f"Part of the day for the member: {part}. Greet with \"{word}\" "
-            "or \"Good evening\". Never say \"Good night\", because it is a goodbye."
+            f"{base} Greet now. Greet with \"{word}\" or \"Good evening\". "
+            "Never say \"Good night\", because it is a goodbye."
         )
-    return f"Part of the day for the member: {part}. Greet with \"{word}\"."
+    return f"{base} Greet now. Greet with \"{word}\"."
 
 
-__all__ = ["DEFAULT_ZONE", "GREETING_TABLE", "greeting_for", "part_of_day", "part_of_day_line", "resolve_zone", "today_line"]
+__all__ = [
+    "DEFAULT_ZONE",
+    "GREETING_TABLE",
+    "GREET_GAP_HOURS",
+    "greet_due",
+    "greeting_for",
+    "part_of_day",
+    "part_of_day_line",
+    "resolve_zone",
+    "today_line",
+]

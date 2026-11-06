@@ -54,7 +54,10 @@ const NEVER = {
 };
 const ANSWERED = { ...NEVER, preset: "engineer", answered: "answered" };
 const SERVER_TIME = "2026-11-05T12:00:00.000Z";
-const HELLO = "Hi Priya, welcome to Metorite. It can look like a lot at first, and that's okay. You don't have to learn it all today. I'm here whenever you need me. Ask me anything, and I'll show you where it is.";
+// The opener follows the member's time of day (PZ-39), so the spec matches
+// the stable part. The hello starts with a greeting word, the name and a dot.
+const GREETING = /^(Good morning|Good afternoon|Good evening|Hello), Priya\. Welcome to Metorite\./;
+const HELLO = "Good morning, Priya. Welcome to Metorite. It can look like a lot at first, and that's okay. You don't have to learn it all today. I'm here whenever you need me. Ask me anything, and I'll show you where it is.";
 const CHIPS = [
   { id: "tour", label: "Show me around" },
   { id: "ask", label: "What can you do here?" },
@@ -192,7 +195,7 @@ async function shot(page: Page, name: string): Promise<void> {
 }
 
 async function expectHello(page: Page): Promise<void> {
-  await expect(page.getByText("Hi Priya, welcome to Metorite.").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(GREETING).first()).toBeVisible({ timeout: 20_000 });
   await expect(helloCard(page)).toHaveCount(1);
   for (const c of CHIPS) await expect(chip(page, c.label)).toBeVisible();
 }

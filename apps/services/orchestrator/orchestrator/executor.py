@@ -1590,6 +1590,122 @@ def _member_briefing_block(agent_name: str) -> str:
         return ""
 
 
+# ── When to greet (PZ-39, owner 2026-11-06) ─────────────────────────────────
+# The chat greets in the first reply of a chat and in the first reply after
+# ``today.GREET_GAP_HOURS`` with no message in it. The answer comes from the
+# STORED rows of this chat (``chat_message``) in a tenant session, never from
+# ``event_payload["messages"]``, which the client sends (R5). An async prime
+# step binds the answer into the run, and the sync context builder reads it,
+# as the briefing does. A fault, a timeout and an unknown result all give
+# "do not greet": a missed hello is harmless and a hello mid-conversation is
+# the defect. A run without cards (WhatsApp) has no reachable chat rows of its
+# own, so it never greets. Fences: ``tests/unit/test_executor_greet_due.py``
+# and ``tests/unit/test_executor_greet_due_r8.py`` (R8).
+
+#: The run-binding key of the answer of THIS run: ``(run_id, org, member, due)``.
+_GREET_KEY = "greet_due"
+#: The longest wait of a turn for the read. A slower turn does not greet.
+_GREET_TIMEOUT_S = 1.0
+#: The newest stored time before this turn. The turn's own rows are the newest
+#: ``user`` row (the run route writes it before the run starts) and the empty
+#: minted reply, so both stay out. ``content <> ''`` drops the mint.
+_GREET_LAST_SQL = (
+    "SELECT timestamp_ms FROM chat_message "
+    "WHERE session_id = :sid AND content <> '' "
+    "AND id NOT IN (SELECT id FROM chat_message "
+    "WHERE session_id = :sid AND role = 'user' "
+    "ORDER BY timestamp_ms DESC, id DESC LIMIT 1) "
+    "ORDER BY timestamp_ms DESC LIMIT 1"
+)
+
+
+async def _greet_read(org: str, session: str) -> tuple[bool, int | None]:
+    """``(first_reply, last_ms)`` of the stored chat before this turn."""
+    from acb_common.db import tenant_session
+    from sqlalchemy import text
+
+    async with tenant_session(org) as db:
+        row = (await db.execute(text(_GREET_LAST_SQL), {"sid": session})).first()
+    return (row is None, None if row is None else int(row[0]))
+
+
+async def _greet_decision(org: str, session: str) -> bool:
+    """True when this turn opens a conversation. False on any fault."""
+    from acb_common.today import greet_due
+
+    try:
+        first, last_ms = await asyncio.wait_for(
+            _greet_read(org, session), timeout=_GREET_TIMEOUT_S)
+        now_ms = int(_briefing_now().timestamp() * 1000)
+        return greet_due(last_ms, now_ms, first_reply=first)
+    except Exception as exc:
+        _log.warning("executor.greet_read_failed", error=type(exc).__name__)
+        return False
+
+
+async def _prime_greet_due(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> None:
+    """Bind "greet now" for this turn into the run, or bind nothing.
+
+    Same gates as the briefing without its flag: the orchestrator, a run that
+    is not delegated, not batch and that shows cards, the run's own org, a
+    verified member and a solo room. All from the run boundary (R5). Never
+    raises, apart from a cancel of the turn."""
+    if agent_name != _PROFILE_AGENT or delegated or batch_thread or not shows_cards:
+        return
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return
+    try:
+        from acb_common import assistant_profile
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+
+        if not assistant_profile.enabled_for(org):
+            return
+        ctx = artifact_context()
+        run_id = str(ctx.get("run_id") or "")
+        if not run_id or ctx.get("batch_thread") is True:
+            return
+        if str(ctx.get("session_id") or "") != session:
+            return
+        if await _greet_decision(org, session):
+            derive_artifact_context(**{_GREET_KEY: (run_id, org, member, True)})
+    except ImportError:
+        return
+
+
+def _greet_due_now() -> bool:
+    """True when the run binding says this turn greets. Reads no database."""
+    try:
+        from acb_skills.write_artifact import artifact_context
+
+        org = str(_current_run_org() or "").strip()
+        member = _verified_run_member()
+        if not org or not member or _RUN_SOLO_ROOM.get() is not True:
+            return False
+        ctx = artifact_context()
+        entry = ctx.get(_GREET_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return False
+        run_id, bound_org, bound_member, due = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return False
+        return bound_org == org and bound_member == member and due is True
+    except Exception:
+        return False
+
+
 # ── The tool packs of the one assistant (WS-67 OA-7c) ───────────────────────
 # ``one_assistant_context.md`` §4.2.2 and §4.2.8. Layer (a) in a live run.
 # The read starts beside the load (:func:`_start_pack_turn`), the apply runs
@@ -6837,6 +6953,13 @@ async def run_agent_stream(
                 batch_thread=_batch_thread,
             )
             _laps.lap("briefing")
+            # PZ-39: whether this turn opens a conversation, from the stored
+            # rows of this chat. A fault costs the greeting, never the turn.
+            await _prime_greet_due(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, shows_cards=shows_cards,
+                batch_thread=_batch_thread,
+            )
             try:
                 # Ensure the three visible workspace directories exist so the
                 # Files Viewer sidebar shows them even before the agent writes
@@ -10726,9 +10849,11 @@ def _context_preamble_parts(
     # a profile block whose greeting is not "none". Last, so each block above
     # keeps its place.
     if profile_block and profile_greeting != "none":
+        from acb_common.assistant_profile import block_language
         from acb_common.today import part_of_day_line
 
-        parts.append(part_of_day_line(member_zone))
+        parts.append(part_of_day_line(
+            member_zone, greet=_greet_due_now(), language=block_language(profile_block)))
     return parts
 
 

@@ -1817,11 +1817,13 @@ NO_NAME_LINE = "Do not address them by name. Never write a placeholder."
 #: "at most once a day", because the model keeps no day of its own (R7).
 GREETING_LINES: dict[str, str] = {
     "none": "Greeting: none. Open with the answer.",
-    "brief": ("Greeting: brief. In the first reply of a chat only, open with one "
-              "short greeting for the time of day. Never greet again in that chat."),
-    "warm": ("Greeting: warm. In the first reply of a chat only, open with a "
-             "greeting and one personal line from a fact in this block. Do this "
-             "at most once a day."),
+    "brief": ("Greeting: brief. Greet only when the part-of-day line says "
+              "\"Greet now.\" Then open with one short greeting. Otherwise do "
+              "not greet."),
+    "warm": ("Greeting: warm. Greet only when the part-of-day line says "
+             "\"Greet now.\" Then open with a greeting and one personal line "
+             "from a fact in this block. Do this at most once a day. Otherwise "
+             "do not greet."),
 }
 #: The rule of each answer length (§5.3, the WS-52 brevity rule).
 LENGTH_LINES: dict[str, str] = {
@@ -1865,6 +1867,17 @@ def _address_line(address: dict[str, Any], name: str, *, own: bool = True) -> st
         bits.append(f"Tone: {address['formality']}.")
     bits.append(GREETING_LINES[address.get("greeting") or DEFAULT_GREETING])
     return " ".join(bits)
+
+
+_BLOCK_LANGUAGE = re.compile(r"Language: (\S+?)\. Answer in it")
+
+
+def block_language(block: str) -> str | None:
+    """The ``style.language`` tag that :func:`_style_line` wrote into *block*,
+    or None. The part-of-day line reads it (PZ-39). It never guesses a
+    language from a name or a region."""
+    m = _BLOCK_LANGUAGE.search(block or "")
+    return m.group(1) if m else None
 
 
 def _style_line(style: dict[str, Any], notes: list[str]) -> str:

@@ -421,10 +421,11 @@ HELLO_MESSAGE_ID = "buddy-hello"
 HELLO_TEMPLATE = "buddyHello"
 #: The chat's name. The hello is the first thing a new member sees there.
 HELLO_TITLE = "Welcome"
-#: The words of the hello: ONE constant, with the member's first name as
-#: ``{name}``. It names no model and no inner service.
+#: The words of the hello: ONE constant. ``{opener}`` is the greeting for the
+#: member's time of day, with the first name when there is one: "Good morning,
+#: Vijay." or "Good morning." (PZ-39). It names no model and no inner service.
 HELLO_COPY = (
-    "Hi {name}, welcome to Metorite. It can look like a lot at first, and "
+    "{opener} Welcome to Metorite. It can look like a lot at first, and "
     "that's okay. You don't have to learn it all today. I'm here whenever "
     "you need me. Ask me anything, and I'll show you where it is."
 )
@@ -442,13 +443,20 @@ _NAME_SQL = (
 )
 
 
-def hello_text(display_name: str | None) -> str:
-    """The hello for a member: the first word of the display name, or
-    "there". Pure, so a unit test holds it."""
+def hello_text(
+    display_name: str | None, zone: str | None = None, now: datetime | None = None,
+) -> str:
+    """The hello for a member: the greeting for the hour of *zone*, then the
+    first word of the display name when there is one. Pure, so a unit test
+    holds it. The greeting comes from ``acb_common.today.greeting_for``, the
+    one table (PZ-39)."""
+    from acb_common.today import greeting_for
     from gateway.reach.plan import first_name
 
-    # One first-name rule for the product. An empty email gives "there".
-    return HELLO_COPY.format(name=first_name(display_name, ""))
+    word = greeting_for(zone, now)
+    # One first-name rule for the product. No name gives a greeting alone.
+    name = first_name(display_name, "") if str(display_name or "").split() else ""
+    return HELLO_COPY.format(opener=f"{word}, {name}." if name else f"{word}.")
 
 
 def hello_event() -> dict[str, Any]:
@@ -471,6 +479,34 @@ def _display_name(org: str, email: str) -> str | None:
     with tenant_session(org) as s:
         row = s.execute(text(_NAME_SQL), {"org": org, "m": email}).first()
     return None if row is None or row[0] is None else str(row[0])
+
+
+_ZONES_SQL = (
+    "SELECT (SELECT timezone FROM user_settings "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(user_id) = lower(:m) "
+    "ORDER BY updated_at DESC LIMIT 1), "
+    "(SELECT NULLIF(btrim(timezone), '') FROM people "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(email) = lower(:m) LIMIT 1)"
+)
+
+
+def _member_zone(org: str, email: str) -> str:
+    """The member's zone for the hello: ``user_settings.timezone``, then
+    ``people.timezone``, through ``resolve_zone``. Read from the member's own
+    rows in the bound tenant, never from the request (R5). A failed read gives
+    the defaults of ``resolve_zone()`` and never fails the hello."""
+    from acb_common.today import resolve_zone
+
+    try:
+        from acb_graph import tenant_session
+        from sqlalchemy import text
+
+        with tenant_session(org) as s:
+            row = s.execute(text(_ZONES_SQL), {"org": org, "m": email}).first()
+        return resolve_zone(*(str(v or "") for v in (row or ())))
+    except Exception as exc:
+        _log.warning("chat_brief.hello_zone_failed", error=type(exc).__name__)
+        return resolve_zone()
 
 
 def _set_title(org: str, session_id: str, title: str) -> None:
@@ -547,7 +583,8 @@ async def post_buddy_hello(
         return _nothing(response)
 
     name = await asyncio.to_thread(_display_name, org, email)
-    lead = hello_text(name)
+    zone = await asyncio.to_thread(_member_zone, org, email)
+    lead = hello_text(name, zone)
     agent = (room.agent_name or "").strip() or DEFAULT_AGENT
     posted = False
     try:

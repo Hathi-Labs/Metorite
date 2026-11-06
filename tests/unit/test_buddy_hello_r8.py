@@ -15,7 +15,7 @@ What this proves:
   no row, and several calls at the same moment make exactly one row;
 * ``GUIDE_ORGS`` off answers 404, writes no row and takes no stamp;
 * another member's chat answers 404 and gets no row;
-* a member with no display name gets "Hi there";
+* a member with no display name gets the greeting alone, "Good morning.";
 * a failed post gives the stamp back, so the next visit tries again.
 
 **The mutation (R7).** Commit first, restore with git after. In
@@ -155,10 +155,20 @@ def _dsn(ns) -> str:
 def test_the_copy_is_one_constant_with_the_first_name() -> None:
     from gateway.routes.chat_brief import HELLO_COPY, hello_text
 
-    assert hello_text("Priya Shah").startswith("Hi Priya, welcome to Metorite.")
-    assert hello_text("  ").startswith("Hi there, welcome to Metorite.")
-    assert hello_text(None) == hello_text("")
-    assert hello_text("Priya") == HELLO_COPY.format(name="Priya")
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    kol = ZoneInfo("Asia/Kolkata")
+    morning = datetime(2026, 11, 6, 9, 0, tzinfo=kol)
+    late = datetime(2026, 11, 6, 2, 0, tzinfo=kol)
+    assert hello_text("Priya Shah", "Asia/Kolkata", morning).startswith(
+        "Good morning, Priya. Welcome to Metorite.")
+    assert hello_text("  ", "Asia/Kolkata", morning).startswith("Good morning. Welcome to Metorite.")
+    assert hello_text(None, "Asia/Kolkata", morning) == hello_text("", "Asia/Kolkata", morning)
+    assert hello_text("Priya", "Asia/Kolkata", late).startswith("Hello, Priya. Welcome")
+    assert "Good night" not in hello_text("Priya", "Asia/Kolkata", late)
+    assert hello_text("Priya", "Asia/Kolkata", morning) == HELLO_COPY.format(
+        opener="Good morning, Priya.")
     for banned in ("model", "claude", "gpt", "jev", "orchestrator"):
         assert banned not in HELLO_COPY.lower()
 
@@ -182,7 +192,9 @@ async def test_a_fresh_chat_gets_one_sealed_hello_named_welcome(graph_as_app, gu
         [row] = _rows(ns, sid)
         assert (row.role, row.author_kind, row.author_email, row.run_member_email) == (
             "assistant", "agent", "orchestrator", email)
-        assert row.content.startswith("Hi Alice, welcome to Metorite.")
+        assert row.content.startswith(
+            ("Good morning, Alice. Welcome", "Good afternoon, Alice. Welcome",
+             "Good evening, Alice. Welcome", "Hello, Alice. Welcome"))
         assert row.org == org and row.sealed is True
         [event] = row.custom_events
         props = event["value"]["props"]
@@ -250,7 +262,9 @@ async def test_another_member_s_chat_is_404_and_a_member_with_no_name_is_greeted
             _new_session(own, intruder, org)
             got = await _post(_member(intruder, org), own)
         assert _status(got) == 200
-        assert got["preview"].startswith("Hi there, welcome to Metorite.")
+        assert got["preview"].startswith(
+            ("Good morning. Welcome", "Good afternoon. Welcome",
+             "Good evening. Welcome", "Hello. Welcome"))
     finally:
         _unseed(ns, owner)
         _unseed(ns, intruder)
