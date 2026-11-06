@@ -318,9 +318,45 @@ async def is_runnable_with_ancestors(db: Any, project_id: Any) -> bool:
 #: colour are the owner's; this is what completion, the personal mirror (§6.1)
 #: and automation gates (§6.3) key off. `triage` (WS-27u, migration 164) is the
 #: parked-at-the-front-door value that :func:`triage_exclusion_clause` keys off.
+#: Triage sits LAST here, which is what the list sort by Status shows
+#: (``_CATEGORY_RANK_ARRAY``).
+#:
+#: This is the ONE written list of stages (task 1792). ``_LIFECYCLE`` and
+#: ``STATUS_STAGE_ORDER`` derive from it. Keep it a literal:
+#: ``projectToolRows.test.ts`` reads this line and compares it with
+#: ``STATUS_CATEGORIES`` in ``statusCategory.ts``.
 STATUS_CATEGORIES: tuple[str, ...] = (
     "backlog", "todo", "in_progress", "done", "cancelled", "triage",
 )
+
+#: The five stages in lifecycle order: every category but triage.
+_LIFECYCLE: tuple[str, ...] = tuple(c for c in STATUS_CATEGORIES if c != "triage")
+
+#: The order a BOARD draws its lanes (task 1792): triage first, then the
+#: lifecycle. ONE rule orders status lanes everywhere: stage rank, then
+#: ``position``, then ``name``. Position orders lanes INSIDE a stage and never
+#: moves a lane into another stage, so a Done row with the lowest position
+#: still draws after In progress. Mirrors ``STATUS_CATEGORIES`` in
+#: ``workbench/control_plane/src/lib/statusCategory.ts``. An unknown stage
+#: sorts last.
+STATUS_STAGE_ORDER: tuple[str, ...] = ("triage", *_LIFECYCLE)
+
+
+def status_order_sql(alias: str = "") -> str:
+    """The ONE SQL ``ORDER BY`` body for status lanes: stage, position, name.
+
+    ``alias`` is the table alias with no dot (``"n"`` gives ``n.category``).
+    The stage names are constants, never request input.
+    """
+    a = f"{alias}." if alias else ""
+    whens = " ".join(
+        f"WHEN '{c}' THEN {i}" for i, c in enumerate(STATUS_STAGE_ORDER)
+    )
+    return (
+        f"CASE {a}category {whens} ELSE {len(STATUS_STAGE_ORDER)} END, "
+        f"{a}position, {a}name"
+    )
+
 
 #: The one category the default list reads exclude (WS-27u). A constant rather
 #: than a literal in the clause below so the vocabulary word and the predicate
@@ -2943,9 +2979,9 @@ COALESCE(
   (SELECT n.id FROM pm_task_statuses n
     WHERE n.project_id = CAST(:owner AS uuid)
       AND n.category <> :triage
-    ORDER BY n.position, n.name LIMIT 1)
+    ORDER BY __ORDER__ LIMIT 1)
 )
-"""
+""".replace("__ORDER__", status_order_sql("n"))
 
 
 async def remap_task_statuses(
@@ -3252,7 +3288,7 @@ async def reserve_task_numbers(db: Any, root_id: str, count: int) -> int:
 async def load_default_status(
     db: Any, root_id: str, category: str | None = None,
 ) -> Any:
-    """The status a task lands in: the FIRST lane, by position.
+    """The status a task lands in: the first OPEN lane in stage order.
 
     ⚠️ **There is no "default status" setting any more** (owner directive
     2026-09-06). ``is_default`` used to be consulted first and the position was
@@ -3266,8 +3302,9 @@ async def load_default_status(
     four category columns therefore had no flagged answer at all and fell
     through to the position anyway. The fallback was doing the work.
 
-    So position IS the rule, and position is a thing people already see and
-    already drag. The column stays on the table under R6 and goes in a later
+    So the lane order IS the rule: stage, then position, then name
+    (:func:`status_order_sql`, task 1792). Position is a thing people already
+    see and already drag, and it orders lanes inside a stage. The column stays on the table under R6 and goes in a later
     release; nothing reads it for a status any more. Task TYPES keep their own
     ``is_default`` — a type list has no order to read the answer out of.
 
@@ -3288,29 +3325,35 @@ async def load_default_status(
         clauses.append("category = :category")
         params["category"] = category
     else:
-        clauses.append("category <> :triage")
+        # Task 1792. A new task never starts in a closed lane. Stage rank
+        # orders the rest, so a Done row at position 1 cannot win.
+        closed = ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+        clauses.append(f"category <> :triage AND category NOT IN ({closed})")
         params["triage"] = TRIAGE_CATEGORY
     row = (await db.execute(
         text(
             "SELECT * FROM pm_task_statuses WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY position, name LIMIT 1"
+            + f" ORDER BY {status_order_sql()} LIMIT 1"
         ),
         params,
     )).fetchone()
     if row is not None:
         return row
-    if category is not None:
+    if category is None:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"This project has no {category.replace('_', ' ')} status; "
-                "add one first."
+                "This project has no open status for a new task. Add a "
+                "Backlog, To do or In progress status first."
             ),
         )
     raise HTTPException(
         status_code=422,
-        detail="No task statuses are configured for this project; create one first.",
+        detail=(
+            f"This project has no {category.replace('_', ' ')} status; "
+            "add one first."
+        ),
     )
 
 
