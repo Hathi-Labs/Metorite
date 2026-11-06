@@ -3196,8 +3196,8 @@ test files that it names:
 
 ```bash
 # PZ-39
-uv run pytest tests/unit/test_greeting_table.py tests/unit/test_executor_greet_due_r8.py tests/unit/test_buddy_hello_r8.py -q
-cd workbench/control_plane && npx vitest run src/lib/myDay src/app/chat/buddyHello
+uv run pytest tests/unit/test_greeting_table.py tests/unit/test_executor_greet_due.py tests/unit/test_executor_greet_due_r8.py tests/unit/test_buddy_hello_r8.py -q
+cd workbench/control_plane && npx vitest run src/lib/shell/myDay.test.ts src/lib/shell/buddyHello.test.ts src/lib/shell/addressName.test.ts
 # PZ-40 and PZ-41
 uv run pytest tests/unit/test_honorifics.py tests/unit/test_salutation_titles.py -q
 # PZ-42
