@@ -623,6 +623,7 @@ describe("fix round 3: the slot goes only to a card to the same people", () => {
     // Finding 2 of the verifier. Mutation: compare the case → red.
     const shout = { ...FORM, recipients: { reply: { to: ["KIM@Contoso.TEST"], cc: [] }, reply_all: { to: ["KIM@Contoso.TEST"], cc: [] } } };
     expect(sharesTo(replyFromEvent(FORM, OLD), replyFromEvent(shout, NEW))).toBe(true);
+    expect(sharesTo(replyFromEvent(shout, OLD), replyFromEvent(FORM, NEW))).toBe(true);
     expect(sharesTo(replyFromEvent(FORM, OLD), replyFromEvent(carol, NEW))).toBe(false);
     expect(sharesTo(replyFromEvent(FORM, OLD), replyFromEvent({ ...shout, kind: undefined, message_id: "m-1" }, NEW))).toBe(false);
     const taken = run([
