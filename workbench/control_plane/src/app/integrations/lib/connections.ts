@@ -193,6 +193,14 @@ export interface PanelPlan {
    */
   alwaysConfirm: "edit" | "view" | null;
   /**
+   * MCP-C2: the read-only key of an MCP server, with the same rule. A row
+   * that acts as an admin through OAuth gets `"view"`, because the gateway
+   * refuses the key there (D98).
+   */
+  readOnlyKey: "edit" | "view" | null;
+  /** The extra line under the read-only key on an OAuth row, or null. */
+  readOnlyKeyNote: string | null;
+  /**
    * IN-8c: the OAuth consent of an MCP server. `"connect"` for a server
    * with no consent yet, `"reconnect"` for one that has one or needs one,
    * `null` when the row offers none.
@@ -218,6 +226,10 @@ export function reconnectHref(row: Connection): string | null {
 export function panelPlan(row: Connection, canManage: boolean): PanelPlan {
   const app = APP_LABEL[row.owning_app];
   const connect = mcpConnect(row, canManage);
+  const switches = row.kind === "mcp" && mcpName(row) !== null ? (canManage ? "edit" : "view") : null;
+  // MCP-C2 review (P2): the gateway refuses the key on an OAuth row, so the
+  // tick there is disabled, with a line that says why.
+  const oauth = switches !== null && mcpActsThroughOAuth(row);
   return {
     openLabel: row.setup_href && row.owning_app !== "integrations" ? `Open in ${app}` : null,
     href: row.setup_href,
@@ -226,7 +238,9 @@ export function panelPlan(row: Connection, canManage: boolean): PanelPlan {
     reconnectHref: reconnectHref(row),
     disconnect: canManage && row.can_disconnect,
     test: canManage && row.kind === "mcp" && mcpName(row) !== null,
-    alwaysConfirm: row.kind === "mcp" && mcpName(row) !== null ? (canManage ? "edit" : "view") : null,
+    alwaysConfirm: switches,
+    readOnlyKey: oauth ? "view" : switches,
+    readOnlyKeyNote: oauth ? READ_ONLY_KEY_OAUTH_NOTE : null,
     memberNote:
       row.scope === "member" ? `${row.owner || "The owner"} manages this connection in ${app}.` : null,
     connect,
@@ -294,6 +308,13 @@ export function connectDialogCopy(
       ? ` It acts as ${before} now. After your sign-in, it acts as you.`
       : "";
   const alwaysConfirm = row.detail?.always_confirm === "true";
+  // MCP-C2: the gateway reads the read-only key as off on a connection that
+  // acts as an admin (D98), so the words say that the switch stops.
+  const keyStops =
+    row.detail?.read_only_key === "true"
+      ? `The switch "${READ_ONLY_KEY_LABEL}" does not apply to a connection that acts as ${who}, ` +
+        "so it stops after your sign-in. "
+      : "";
   return {
     title: `${CONNECT_LABEL[mode]} ${row.label}?`,
     body:
@@ -305,7 +326,8 @@ export function connectDialogCopy(
     note: alwaysConfirm
       ? "This server is set to always confirm, so each tool waits for a member to approve it. " +
         "If you turn that switch off, a tool that the server marks as read-only runs with no approval."
-      : "A tool that the server marks as read-only runs with no approval. So every member can " +
+      : keyStops +
+        "A tool that the server marks as read-only runs with no approval. So every member can " +
         `read, through an agent, what ${who} can read at ${host}.`,
     confirmLabel: "Open the sign-in",
   };
@@ -397,9 +419,10 @@ export function consentReturn(
 /** The `detail` fields as label and value pairs. Keys read as words. */
 export function detailRows(row: Connection): { label: string; value: string }[] {
   // `key_names` shows in the Remove confirm only (spec: names show nowhere else).
-  // `always_confirm` is drawn as a switch (H-300), not as a line of text.
+  // `always_confirm` (H-300) and `read_only_key` (MCP-C2) are drawn as
+  // switches, not as lines of text.
   return Object.entries(row.detail ?? {})
-    .filter(([key]) => key !== "key_names" && key !== "always_confirm")
+    .filter(([key]) => key !== "key_names" && key !== "always_confirm" && key !== "read_only_key")
     .map(([key, value]) => ({
     label: key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()),
     value: String(value),
@@ -483,6 +506,114 @@ export function mcpAlwaysConfirm(row: Connection): boolean | null {
   return row.detail?.always_confirm === "true";
 }
 
+// ── The read-only key of an MCP server (MCP-C2, item 32) ─────────────────
+//
+// The admin says that the key of the server can only read, so the server
+// refuses each write at the source. With the switch on, no tool of the
+// server waits for a member to approve it. The gateway sends it as
+// `detail.read_only_key`, "true" or "false", and a row with no key reads as
+// off. The two switches are never both on: a tick of one clears the other,
+// and the console sends both keys in one PATCH.
+
+export const READ_ONLY_KEY_LABEL = "This key can only read";
+export const READ_ONLY_KEY_HELP =
+  "Every tool of this server runs without asking. " +
+  "Turn this on only when the key cannot change data at the source.";
+/** The extra line under the tick on a row that acts as an admin through OAuth. */
+export const READ_ONLY_KEY_OAUTH_NOTE =
+  "This switch does not apply to a connection that acts as an admin through OAuth.";
+
+/**
+ * True for an MCP row that acts as an admin through OAuth (D98). The gateway
+ * names that admin in `acts_as`, and it refuses the read-only key there.
+ */
+export function mcpActsThroughOAuth(row: Pick<Connection, "kind" | "acts_as">): boolean {
+  return row.kind === "mcp" && Boolean((row.acts_as ?? "").trim());
+}
+
+/** The read-only key of an MCP row. `null` on a row that is not an MCP server. */
+export function mcpReadOnlyKey(row: Connection): boolean | null {
+  if (row.kind !== "mcp") return null;
+  return row.detail?.read_only_key === "true";
+}
+
+/** The two switches of an MCP server, with the names the gateway uses. */
+export interface McpSwitches {
+  always_confirm: boolean;
+  read_only_key: boolean;
+}
+
+export type McpSwitch = keyof McpSwitches;
+
+/** The switches of an MCP row. `null` on a row that is not an MCP server. */
+export function mcpSwitches(row: Connection): McpSwitches | null {
+  if (row.kind !== "mcp") return null;
+  return { always_confirm: mcpAlwaysConfirm(row) === true, read_only_key: mcpReadOnlyKey(row) === true };
+}
+
+/**
+ * One tick. A tick of one switch ON clears the other, because the gateway
+ * refuses a server with both on. A tick OFF leaves the other as it is.
+ */
+export function tickSwitch(current: McpSwitches, which: McpSwitch, next: boolean): McpSwitches {
+  const out: McpSwitches = { ...current, [which]: next };
+  if (next) out[which === "always_confirm" ? "read_only_key" : "always_confirm"] = false;
+  return out;
+}
+
+/**
+ * What new chats do after a change. A live chat keeps the switches that it
+ * read when it started, so the words speak of new chats only.
+ */
+export function switchesSavedText(s: McpSwitches): string {
+  if (s.always_confirm) return "New chats will ask before any tool runs.";
+  if (s.read_only_key) return "New chats will run every tool of this server without asking.";
+  return "New chats will ask only before tools that can change data.";
+}
+
+/**
+ * A save of the switches that the list may not show yet (review of MCP-C2).
+ *
+ * The cached list keeps its old rows while it reads again, so a tick right
+ * after a save would build the pair from the OLD row and could turn a
+ * switch back. `pair` is what the gateway saved, or null when the save
+ * failed and the stored pair is not known. `list` is the list object that
+ * was on screen when the save ended.
+ */
+export interface HeldSwitches {
+  id: string;
+  pair: McpSwitches | null;
+  list: unknown;
+}
+
+/**
+ * What the panel draws for *row* while *held* is open, given the list that
+ * is on screen now.
+ *
+ * - After a save, the panel draws the saved pair until the row shows it.
+ *   A tick builds from that pair. Then the hold is `done`.
+ * - After a failed save, the panel draws the row, and the ticks `wait`
+ *   until a newer list arrives. Then the hold is `done`.
+ * - A hold of another row is `done` at once.
+ */
+export function heldSwitches(
+  row: Connection,
+  held: HeldSwitches | null,
+  list: unknown,
+): { switches: McpSwitches | null; wait: boolean; done: boolean } {
+  const shown = mcpSwitches(row);
+  if (!held || held.id !== row.id || shown === null) {
+    return { switches: shown, wait: false, done: held !== null };
+  }
+  if (held.pair === null) {
+    const newer = list !== held.list;
+    return { switches: shown, wait: !newer, done: newer };
+  }
+  const same =
+    shown.always_confirm === held.pair.always_confirm && shown.read_only_key === held.pair.read_only_key;
+  return { switches: same ? shown : held.pair, wait: false, done: same };
+}
+
 // ── The MCP add form (spec §3.4) ──────────────────────────────────────────
 
 export interface McpForm {
@@ -496,6 +627,8 @@ export interface McpForm {
   agentScope: string;
   /** H-300. ON for a new server. */
   alwaysConfirm: boolean;
+  /** MCP-C2. OFF for a new server. Never on with `alwaysConfirm`. */
+  readOnlyKey: boolean;
 }
 
 export const EMPTY_MCP_FORM: McpForm = {
@@ -507,7 +640,14 @@ export const EMPTY_MCP_FORM: McpForm = {
   headerValue: "",
   agentScope: "*",
   alwaysConfirm: true,
+  readOnlyKey: false,
 };
+
+/** One tick in the Add form. It follows `tickSwitch`, so a tick of one clears the other. */
+export function tickFormSwitch(f: McpForm, which: McpSwitch, next: boolean): McpForm {
+  const s = tickSwitch({ always_confirm: f.alwaysConfirm, read_only_key: f.readOnlyKey }, which, next);
+  return { ...f, alwaysConfirm: s.always_confirm, readOnlyKey: s.read_only_key };
+}
 
 export function mcpFormReady(f: McpForm): boolean {
   return Boolean(f.name.trim() && f.url.trim());
@@ -530,6 +670,9 @@ export function mcpBody(f: McpForm): Record<string, unknown> {
     agent_scope: scope.length ? scope : ["*"],
     enabled: true,
     always_confirm: f.alwaysConfirm,
+    // MCP-C2: always sent. A register is a full register, so a body with no
+    // key turns it off.
+    read_only_key: f.readOnlyKey,
   };
 }
 

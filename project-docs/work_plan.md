@@ -132,7 +132,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 1. **Customer zero safe and working** (M0, P0): H-259, BO-23b, M0.4, the chat flag, H-163, H-373, H-120, H-326 and CZ-DEWIN-1.
 2. **The shared job queue**: BR-1a. Every brief task runs on it, so build it first and small.
 3. **Issue reporting and the Get started checklist** before the pilots: IR-0 to IR-3 and OB-1. Help follows in M1: HLP-1 to HLP-3.
-4. **The cheap isolation fixes** (M1, P0): H-249, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. H-334 closed the owner check on 2026-11-04, and its list reads wait on task 1692. AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
+4. **The cheap isolation fixes** (M1, P0): H-249, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. H-334 closed the owner check on 2026-11-04. H-334b closed its three list reads on 2026-11-05 (task 1692). AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
 5. **The isolation spine**: H2, then H3.2 (D120), then H3 in a maintenance window. H4, H5 and H6 run beside it.
 6. **The owner answers**: WS-40-Q (D121) and H3.2 (D120). Both gate P0 work.
 7. **Branch protection**: WS-38a, then WS-5a and WS-38b.
@@ -3967,6 +3967,15 @@ orgs?" The owner answered: "Build it now, keep MCP on." `MAF_MCP_ORGS=*` stays
 on production. The switch is `provider_meta.always_confirm` on the registry row,
 read by `McpPermissionGate`. It came right after IN-4, and it is built as
 `specs/agent_architecture.md` §12.2 WS-8c, item 31.
+
+**Recorded 2026-11-04, not a decision of its own (MCP-C2).** The owner asked in
+chat for full read access to an outside MCP server, Shaurrya Console, with no
+card for each read. Its one tool, `call_operation`, says that it is destructive.
+The org's key has read scopes only. The answer is a second admin switch,
+`provider_meta.read_only_key`, built as `specs/agent_architecture.md` §12.2
+WS-8c, item 32. It narrows H-299 by the admin's statement about the key, not by
+trust in the server. Item 31 wins when both are set. H-236 and step 3a of
+`decide()` do not change. Metorite task 1584.
 
 **What it extends.** D96.4: an MCP server is a connection. D98 adds the
 connections that need an OAuth consent.

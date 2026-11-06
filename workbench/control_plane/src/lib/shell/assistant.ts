@@ -362,6 +362,12 @@ export interface AssistantAsk {
    */
   join?: boolean;
   /**
+   * A draft that asked for a new chat (`fresh`): the chat that the dock held
+   * when the draft was made. The mounted chat must not take the draft. Only the
+   * chat that the fresh request starts takes it (BETA-1 fix, `draftFor`).
+   */
+  after?: string | null;
+  /**
    * WS-63 D-PZ-37: the member typed these words, in the Ask field or the
    * command bar. Only then does the send carry the typed mark
    * (`lib/typedMark.ts`). A start pill and "Get to know me" leave it unset.
@@ -526,7 +532,10 @@ export function openAssistant(opts: OpenOptions = {}): void {
       ? { seq: ++_askSeq, text, join: base.open, ...(opts.typed === true ? { typed: true } : {}) }
       : base.ask,
     draft: draft
-      ? { seq: ++_askSeq, text: draft, ...(opts.typed === true ? { typed: true } : {}) }
+      ? {
+        seq: ++_askSeq, text: draft, ...(opts.typed === true ? { typed: true } : {}),
+        ...(opts.fresh ? { after: base.sessionId } : {}),
+      }
       : base.draft,
     freshSeq: opts.fresh ? base.freshSeq + 1 : base.freshSeq,
     reminder: reminder || base.reminder,
@@ -539,6 +548,18 @@ export function openAssistant(opts: OpenOptions = {}): void {
 export function closeAssistant(): void {
   if (!_state.open) return;
   _set({ ..._state, open: false, ask: null, draft: null, reminder: null, hello: false });
+}
+
+/**
+ * The draft that the chat on screen may take. A draft that asked for a new chat
+ * waits while the chat of the dock is still the old one. The mounted chat reads
+ * the draft in its own effect, before the dock switches to the new chat, so a
+ * draft that it took would be lost. Same race as the ask (owner report 2026-10-26).
+ */
+export function draftFor(draft: AssistantAsk | null, activeId: string | null): AssistantAsk | null {
+  if (!draft) return null;
+  if (draft.after === undefined) return draft;
+  return activeId && activeId !== draft.after ? draft : null;
 }
 
 /** The composer took the draft. */

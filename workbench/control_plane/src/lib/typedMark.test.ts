@@ -162,7 +162,7 @@ describe("each send path of the chat", () => {
     expect(bar).toContain("toChat(() => openAssistant({ text: s }));");
     expect(read("lib/shell/interviewMessage.ts")).not.toContain("typed");
     expect(read("lib/shell/AssistantDock.tsx"))
-      .toContain("pendingInputTyped={!chat.recoveredInput && st.draft?.typed === true}");
+      .toContain("pendingInputTyped={!chat.recoveredInput && draftFor(st.draft, active.id)?.typed === true}");
   });
 
   it("a `/chat?q=` link never carries the mark", () => {
