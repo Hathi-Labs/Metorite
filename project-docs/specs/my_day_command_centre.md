@@ -282,6 +282,59 @@ Run the R8 files with the dev database exported, and confirm that no R8 test ski
 
 **Gate labels.** The migration, the route, the write and the predicate are AGENT-SAFE, HIGH tier. The flip of `TODAY_RULE_ORGS` is OWNER-GATE until a dated `enforcement-flip` grant covers it.
 
+### 9.3 CC-5 in detail: the focus-session log and the check-in
+
+CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in in the app. CC-5b needs CC-4 merged, because it calls the one start door of CC-4 (`useStartFocus` in `src/app/tasks/lib/focusStart.ts`).
+
+**What exists.** One `actual_start` and `actual_end` pair on `pm_task_personal` (`infra/postgres/187`). Each session writes over the pair. No row holds a session, a pause or an outcome. `estimate-stats` learns from the pair (`routes/projects/planning.py:187-199`).
+
+**CC-5a, storage (migration 350, expand only).** A new table `focus_sessions`:
+
+- `id uuid` primary key, `organization_id` (the tenant column, FORCE RLS, the policy of its neighbours), `member_email`, `task_id uuid` (a task in `pm_tasks`).
+- `started_at timestamptz NOT NULL`, `ended_at timestamptz NULL`, `planned_end timestamptz NULL` (the end of the block, or the start plus the timer length).
+- `paused_seconds integer NOT NULL DEFAULT 0`, `mode text` (`25/5`, `50/10` or `flow`).
+- `outcome text NULL`, one of `done`, `almost`, `not_now`, `blocked`, `replaced` and `auto_closed`.
+- An index on `(organization_id, member_email, started_at)`.
+
+A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build takes the number 350, after CC-2's 349. Re-check both at merge (R1).
+
+**CC-5a, privacy.** A session row belongs to its member. Every route reads and writes only the rows of the session's member. Identity comes from the session, never from the request (R5). A manager sees no other member's minutes (D-MD-5).
+
+**CC-5a, routes.**
+
+- `POST /projects/my/focus-sessions` starts a session for a task that the member can see. It ends any open session of the member first, with the outcome `replaced`. It also stamps `actual_start` on the overlay, as the room does now, so `estimate-stats` keeps its input.
+- `PATCH /projects/my/focus-sessions/{id}` pauses, resumes, extends (`+10 min` moves `planned_end`) or ends a session with an outcome. Only the session's member can write it. An end stamps `actual_end` on the overlay.
+- `GET /projects/my/focus-sessions?day=` lists the member's sessions of one local day, with the minutes of each and the total. The minutes are the end minus the start minus the paused seconds.
+- **Auto close.** No job runs. A read or a start first closes the member's open session whose `planned_end` is more than 15 minutes ago. It sets `ended_at` to `planned_end` and the outcome `auto_closed`.
+- Each route gets a row in the chat manifest. The tools come with CC-10.
+
+**CC-5a, flag.** `FOCUS_LOG_ORGS`, default empty, reloaded by SIGHUP. With it off, the routes answer 404, and the client keeps the pair only.
+
+**CC-5b, the check-in.** When the timer ends, the room and the Now card ask "Is it done?". The answers:
+
+- **Done** ends the session with `done` and finishes the task by the tick's write (the board's status write).
+- **Almost** extends the session by 10 minutes.
+- **Not now** ends it with `not_now`, and moves the task's block to the next free slot through the planner route.
+- **Blocked** ends it with `blocked`, and opens the existing "Waiting for" control of the task.
+- Esc keeps the session and closes the card.
+
+The Close phase (CC-8) and the Calendar read the minutes from `GET /projects/my/focus-sessions`.
+
+**Not in CC-5.** The phases, the day rail, the chat tools and any report for a manager.
+
+**Fences.** `tests/unit/test_focus_session_rls_r8.py` holds that organization A and member X see only their own rows, through the routes and through the table. `tests/unit/test_focus_sessions_r8.py` holds that a start ends the open session, that pauses do not count, that an end stamps the overlay pair, and that a stale session closes itself. CC-5b adds `src/app/tasks/lib/checkIn.test.ts` and `e2e/focus-check-in.spec.ts`.
+
+**Verify with (CC-5a):**
+
+```bash
+uv run pytest tests/unit/test_focus_session_rls_r8.py tests/unit/test_focus_sessions_r8.py -q
+uv run ruff check apps/services/gateway/gateway/routes/projects/
+```
+
+Run them with a database exported, and confirm that no R8 test skips.
+
+**Gate labels.** CC-5a is AGENT-SAFE, HIGH tier: a migration and a table with RLS. CC-5b is AGENT-SAFE, MEDIUM. The flip of `FOCUS_LOG_ORGS` is OWNER-GATE until a dated `enforcement-flip` grant covers it.
+
 ---
 
 ## 10. Fences (R7)
