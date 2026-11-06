@@ -5,6 +5,8 @@
 
 Verified against code on 2026-09-29 at `main` `02658314`.
 
+**Status order (task 1792, 2026-11-05).** One rule orders every status lane: stage, then position, then name. The Statuses dialog shows up and down arrows on each row. The board has a Statuses control that opens the dialog. A new task never starts in a Done or Cancelled lane.
+
 ## 0. One paragraph
 
 Projects gets ONE settings surface. It is a pane inside Projects, beside

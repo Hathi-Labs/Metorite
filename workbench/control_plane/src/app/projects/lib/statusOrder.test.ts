@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { EDITABLE_CATEGORIES, STATUS_CATEGORIES } from "@/lib/statusCategory";
+import {
+  EDITABLE_CATEGORIES,
+  STATUS_CATEGORIES,
+  orderedLanes,
+} from "@/lib/statusCategory";
 
 import {
   POSITION_STEP,
@@ -12,6 +16,7 @@ import {
   placeNew,
   reorder,
   siblings,
+  statusLaneOf,
 } from "./statusOrder";
 
 /** Every stage the editor can file a lane under. */
@@ -278,5 +283,59 @@ describe("lastDoneRefusal — the editor explains D79 before the write", () => {
     const rows = set(["To do", "todo"], ["Done", "done"]);
     expect(lastDoneRefusal(rows, "To do", "remove")).toBeNull();
     expect(lastDoneRefusal(rows, "Done", "done")).toBeNull();
+  });
+});
+
+describe("one lane order: stage, then position, then name (task 1792)", () => {
+  const lane = (id: string, category: string, position: number, name = id) => ({
+    id,
+    name,
+    category,
+    position,
+  });
+
+  it("draws a Done lane with the lowest position AFTER In progress", () => {
+    const lanes = [
+      lane("done", "done", 1),
+      lane("todo", "todo", 20),
+      lane("doing", "in_progress", 30),
+      lane("backlog", "backlog", 10),
+    ];
+    expect(orderedLanes(lanes).map((l) => l.id)).toEqual([
+      "backlog",
+      "todo",
+      "doing",
+      "done",
+    ]);
+  });
+
+  it("orders ties inside a stage by name", () => {
+    const lanes = [lane("b", "todo", 5, "Bravo"), lane("a", "todo", 5, "Alpha")];
+    expect(orderedLanes(lanes).map((l) => l.id)).toEqual(["a", "b"]);
+  });
+
+  it("puts an unknown stage last", () => {
+    const lanes = [lane("x", "mystery", 1), lane("d", "done", 99)];
+    expect(orderedLanes(lanes).map((l) => l.id)).toEqual(["d", "x"]);
+  });
+
+  it("lands a stranded task in the first lane of its stage, not the lowest position", () => {
+    const lanes = [lane("done", "done", 1), lane("todo", "todo", 20)];
+    const laneOf = statusLaneOf(lanes);
+    expect(laneOf({ status_id: "gone", status_category: "todo" })).toBe("todo");
+    // No known stage: the first lane in lifecycle order, never Done.
+    expect(laneOf({ status_id: null, status_category: null })).toBe("todo");
+  });
+
+  it("keeps a reorder inside its stage", () => {
+    const lanes = [
+      lane("done", "done", 1),
+      lane("a", "in_progress", 30),
+      lane("b", "in_progress", 31),
+    ];
+    const patches = reorder(lanes, "b", "up");
+    expect(patches.map((p) => p.id).sort()).toEqual(["a", "b"]);
+    expect(patches.every((p) => p.position >= 30)).toBe(true);
+    expect(reorder(lanes, "a", "up")).toEqual([]);
   });
 });

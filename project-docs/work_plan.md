@@ -5227,6 +5227,10 @@ In one chat the owner read mail, sent mail, and said "Remind me to call Rajendra
 6. **A held write that would skip its card still shows it.** WS-66 RX-2 lets a reminder write act at once in a clear chat. `egress.write_must_show_card` is the one reader, and that path reads it first.
 7. **No text sends the member away.** A held pack names no new chat and no app. For what stays off, it names the act and the reason in one sentence. `AGENT_ASSIGNEE_REFUSED` follows this too.
 8. **One chat loads what it needs.** A new need of the member never loses to an old sticky pack. Layer (a) already met this. A load that the model asks for now meets it too. The sticky pack that the member used least recently leaves, in that same turn, and it leaves the sticky state. This reverses "a load is monotonic" of §4.2.2 of `one_assistant_context.md`. A pack that the member named in this turn stays. A pack with a tool that started in this run stays too, also while that tool waits on a card.
+
+   **Amended 2026-11-06 (owner, task 1747, option A):** "A: amend D169.8, an explicit load beats a words-only pack". The owner chose it on run `ce6947d1` at 03:29 UTC and confirmed it at 04:21 UTC.
+
+   When a load by the model finds the room full, a pack that came into this turn ONLY by the member's words gives way. No tool of such a pack started in this run. A pack whose tool ran or started stays, and so does a pack that the member named by surface. If the room still does not fit, the failed load reaches the Projects assistant (`LOAD_NO_PATH`).
 9. **The card keeps the promise.** The click is the guard only when the card shows the exact change. `acb_common.card_body` holds the rule. Each short field shows first, and nothing cuts it. Only `description`, `body` and `notes` may be cut, and the card says so. A short field that does not fit refuses in each chat. In a held chat, a card with a cut refuses in plain words, and it says what to shorten. The fixed note and the Zoho note stay first. A value holds one line, so a value cannot forge a line of the card.
 10. **A held chat refuses each parameter that writes a grant, an owner or an audience.** `egress.HELD_REFUSED_PARAMS` is the list. `lead` of `create_project` and `update_project` is a grant write (D-OP-11). `grant_access` is off, so `lead` would be a second door. The `edit_project` form offers no such field in a held chat. `org_wide` of `create_field`, `create_tag` and `create_type` puts a row on each project, so it refuses too. The rest of each tool still works. An agent assignee refuses in a marked top-level chat too.
 11. **A held card says where the change goes and who it reaches.** The card of `create_task` names the project and the parent in each chat. A held card of `create_task`, `create_tasks`, `capture_intake`, `propose_plan` and `move_task` adds `seen by`. `gives access to` names each person that an assignment or a move opens the row to. `assign`, `move_task`, `file_tasks` and the creates show it. `GET /projects/nodes/{id}/audience` answers from `project_grant_holders`, the one predicate, so each tool stays on the list. A failed read shows no card. A held create also shows the mailbox line. That line comes from the server's held answer, because a steered model would leave out `source`. `comment`, `edit_comment` and `update_task` name each address that a mention tells (`sent to`). A held comment adds the people that the task already tells.
@@ -5234,7 +5238,7 @@ In one chat the owner read mail, sent mail, and said "Remind me to call Rajendra
 13. **The kill switch.** `HELD_CARD_WRITES_ORGS` is a comma list of org ids or `*`, and it is empty by default. `egress.held_card_writes_on` is the one reader, and it fails closed. With the org off, a held chat works as it did before this decision. The CRM writes leave a held run. Each Projects write stays, class C included. The note says that the pack holds no write. `lead` does not refuse, and a load moves no pack. The name ends in `_ORGS`, so a SIGHUP turns it off with no deploy and no restart (`docs/flag_reload.md`). A flip is the gate `enforcement-flip`. Three things do not wait for the switch, because each makes a card more true in each chat. They are the short fields first, the project and parent lines, and the `sent to` line.
 14. **A known residual, not new.** A task write still emits its event. A published workflow on a `pm.task.*` event runs outside the hold (`routes/workflows/engine/handlers.py`, and `egress.STORE_WRITES`). §16.3 of `maf_coding_engine.md` records it. A workflow is configuration that a person published, and the model does not reach it.
 
-**Fences.** `tests/unit/test_held_card_writes.py`, `tests/unit/test_held_card_promises.py`, `tests/unit/test_card_body.py`, `tests/unit/test_project_audience_r8.py`, `tests/unit/test_pack_room.py`, `tests/unit/test_no_egress_tool_audit.py`, `tests/unit/test_held_send_guidance.py`, `tests/unit/test_delegation_no_egress.py`.
+**Fences.** `tests/unit/test_held_card_writes.py`, `tests/unit/test_held_card_promises.py`, `tests/unit/test_card_body.py`, `tests/unit/test_project_audience_r8.py`, `tests/unit/test_pack_room.py`, `tests/unit/test_no_egress_tool_audit.py`, `tests/unit/test_held_send_guidance.py`, `tests/unit/test_delegation_no_egress.py`, `tests/unit/test_pack_turn_keeps_used_packs.py`.
 
 ### D170 — My task inbox holds only what the member captured (2026-11-03)
 
@@ -5415,6 +5419,43 @@ GitHub starts the `30 21 * * *` cron of `deploy.yml` 3.5 to 5.5 h late, each nig
 5. **The cron stays as the backup.** It ships only when the box did not ship that night.
 
 This amends D145 point 5. Fence: `tests/unit/test_daily_release.py` and `tests/unit/test_nightly_release_box.py`.
+
+### D179 — Studio opens to every beta org, the members bleed it out, and the build continues on top of it (2026-11-05)
+
+Owner directive, 2026-11-05, in chat. Metorite task 1795 (`mt-8bfa6cb4`). Owning spec: `specs/ai_studio.md` §14 A1.
+
+```text
+"You can build this for everybody. Let all my beta customers be able to try it
+out and bleed it out, and continue to build features onto it."
+```
+
+1. **The nav entry is live.** The `/studio` pane in `nav.ts` goes from `preview` to `live`. Every member who holds its feature sees Studio in the AI Studio section. `launch_surface.md` §2 lists it, and `nav.test.ts` fences the set.
+2. **The routes still wait for the switch-on.** The Studio routes answer only for an org on `STUDIO_ORGS`. An org outside the list sees a plain "not open for your organization yet" state. The supervisor turns it on after the gates of task 1795: `STUDIO_ORGS=*` and the `studio` pack in `TOOL_PACKS`. This decision does not flip either one.
+3. **The kill switch.** `STUDIO_ORGS` reloads with no restart (`docs/flag_reload.md`). An empty value closes the routes for every org at once. The nav entry stays, and the pane then shows the not-open state.
+4. **The build goes on.** Each later Studio slice lands on this live pane, behind its own flag where it needs one. D178 and the J1 slices keep their own gates.
+
+**Why.** The owner wants the beta customers to use Studio and find its faults, so the next slices come from real use.
+
+**Fence.** `src/lib/nav.test.ts` fails when `/studio` is `preview` and when the live count is wrong. It also holds the one allowed exception to the job rule (`NO_JOB_YET`).
+
+### D180 — Every member builds and publishes private Studio apps, and `studio:publish` gates the share to others (2026-11-05)
+
+Owner answers in a Metorite run on task 1199 (STU-J1): STU-Q4 on 2026-11-04, STU-Q4b on 2026-11-05, and the edge of item 6 on 2026-11-06. Owner spec: `specs/ai_studio.md` §9, §12 and §14 J1. Board: **WS-STU**.
+
+```text
+STU-Q4:  "Every member builds private apps. Owners and admins publish and can grant publish."
+STU-Q4b: "Yes: a member publishes their own private app for themselves. `studio:publish` gates sharing to others."
+Item 6:  "Accept the gap: such members get Studio"
+```
+
+1. **Who builds.** Each person who holds `feature:studio` builds private packages and skills. A member, a manager and an admin hold it through `feature:*`, and the owner through `*`. A guest does not. An admin can deny it to one person with an override.
+2. **Publish to self needs no publish right.** The owner of a private package or skill publishes its versions with `feature:studio` and ownership only. That covers the version snapshot, the object sync and the skill state change. It also covers a rollback or a delete of the member's own object.
+3. **`studio:publish` gates the share to others.** It covers the share of an app to other people and the review of a manifest diff (J2, task 1200). The owner holds it through `*`. J1-2 (task 1707) seeds it on `admin`. Then owners and admins can grant it.
+4. **A group carries no permission grant.** The access model reads roles and per-person overrides only. So a grant of `studio:publish` goes to one person (an override) or to a custom role. A share of an app to a group is the object grant `group:<slug>` of J2 (D12), not a permission.
+5. **One vocabulary.** Studio adds `feature:studio` and `studio:publish` only. No `studio:*` family, no reuse of `apps:publish`, and no new table.
+6. **A `feature:workflows` deny no longer closes Studio.** Before J1-1, a member with a `feature:workflows` deny override got 403 on each Studio route. After J1-1 that member gets Studio, because `feature:*` decides `feature:studio`. The owner accepted this on 2026-11-06. An admin can deny `feature:studio` by hand. No agent writes that override.
+
+Fence: `tests/unit/test_studio_route_gate.py` and `tests/unit/test_studio_route_gate_r8.py` (items 1 and 2), and `tests/unit/test_org_access_control.py` (items 3 and 5), and `test_studio_route_gate.py::test_a_workflows_deny_override_no_longer_closes_studio` (item 6). Item 4 is advisory until J1-2 and J2 build their tests.
 
 ### D181 — One record card: the Projects frame and the CRM tabs (2026-11-06)
 

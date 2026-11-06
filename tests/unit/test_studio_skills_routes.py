@@ -220,7 +220,7 @@ def _client(world: Any, org: str | None = ORG, email: str = ANA) -> TestClient:
         # The auth layer binds the session's org. The fake session reads it.
         world.org = org
         return UserContext(email=email, role=UserRole.EMPLOYEE,
-                           access=build_access(["feature:workflows"]), organization_id=org)
+                           access=build_access(["feature:studio"]), organization_id=org)
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app)
