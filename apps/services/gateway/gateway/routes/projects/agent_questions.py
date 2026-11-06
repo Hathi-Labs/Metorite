@@ -43,11 +43,11 @@ from gateway.routes.projects.agent_runs import (
     _OPEN_ELICITATIONS_SQL,
     _member,
     _parse_uuid,
-    answer_reason_sql,
     archive_request_of,
     holds_answer_role,
     listed_question_sql,
     person_may_answer_sql,
+    question_reason_sql,
 )
 from gateway.routes.projects.analytics import scope_clause, scope_params
 from gateway.routes.projects.core import (
@@ -112,7 +112,7 @@ def questions_sql(scope_sql: str, vis: Any) -> str:
         f"SELECT r.id AS run_id, r.client_via,"
         f"       COALESCE(r.started_at, r.created_at) AS run_started_at,"
         f"       t.id AS task_id, t.task_number, t.title AS task_title, t.project_id,"
-        f"       {answer_reason_sql('r')} AS why,"
+        f"       {question_reason_sql('r')} AS why,"
         f"       {person_may_answer_sql('r')} AS may_answer"
         f"  FROM pm_agent_runs r"
         f"  JOIN pm_tasks t ON t.id = r.task_id"

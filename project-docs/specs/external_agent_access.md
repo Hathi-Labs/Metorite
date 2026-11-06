@@ -2157,7 +2157,7 @@ The role test adds no third rule to `may_end_run`. "Manager" means the organizat
 - The route reads the open elicitation with the SQL that the run list uses (`open_elicitation` in `agent_runs.py`, and the awaiting rule of `filters.agent_focus_clause`). It reads the path with the project parent walk. It adds `task_visibility_clause`. It writes nothing.
 - With `agent_runs_enabled` off, the list is empty. With the new flag off, the route answers 404.
 - A question on a closed task does not show. It is a `dangling` row of Needs attention, and the sweep closes it.
-- A typed archive request on an open task shows to the run's member only, with `why` `my_agent` and `can_answer` true. Only that member approves it, through `archive-approval` (§12.1). The creator, an assignee and an owner, admin or manager do not see it, in "For me" or in "Everyone".
+- A typed archive request on an open task shows to the run's member only, with `why` `my_agent` and `can_answer` true. `why` stays `my_agent` when that member also created the task or is an assignee (`question_reason_sql`). A free question keeps the order created, assigned, own agent. Only that member approves it, through `archive-approval` (§12.1). The creator, an assignee and an owner, admin or manager do not see it, in "For me" or in "Everyone".
 - `question.kind` is `archive_request` for a typed archive request, and `question` for any other question. The server takes it from `archive_request_of`, so the browser never derives it. EA-18b sends Approve and Decline of an `archive_request` row to `archive-approval`, and not to `/activities`.
 - `listed_question_sql` in `agent_runs.py` is the one text of these two rules. With the flag on, "Waiting on me" reads it too, so both count the same questions.
 
@@ -2220,6 +2220,9 @@ While it is on, all five points of D-EA-14 apply. The write narrowing sits behin
 **Fences.**
 
 - EA-18a: `tests/unit/test_agent_questions_r8.py`, on R8, each class marked `@_DB_GATE`. Named mutations, each one turning a test red: (M1) a reader outside the set sees `can_answer` true. (M2) the write route accepts an answer to an open question from a viewer who is not in the set. (M3) `scope=everyone` answers a reader without the role. (M4) a question of another organization shows. (M5) the creator is notified twice when the creator is also an assignee. (M6) the list and the route use two different texts for the answer set. (M7) the rule also refuses a Stop from a viewer. (M8) `project_path` shows the name of a hidden parent. The same file holds "a read writes nothing" and the flag-off cases (404 and the old audience).
+- The fix rounds of EA-18a add M9 to M20, in the same file. (M9) "Waiting on me" drops `listed_question_sql`. (M10) a typed request shows to the creator. (M11) a question on a closed task shows. (M12) the list loses `r.status = 'awaiting'`.
+- (M13) a typed request hides from its member. (M14) `kind` is always `question`. (M15) `kind` is always `archive_request`. (M16) a typed request reads `created` or `assigned`.
+- (M17) an explicit `signal: continue` skips the write rule. (M18) a closed task skips the write rule. (M19) `kind` comes from the option ids. (M20) the flag reads the org from a request header.
 - EA-18a also edits `test_agent_runs_r8.py`. The old "any viewer may answer" case becomes a flag-off case. If the digest of `test_tenant_request_binding.py` changes, the §10.1 review applies.
 - EA-18b: `app/projects/lib/agentQuestions.test.ts`, `projectApps.test.ts` (the new id and its link), `compactChrome.test.ts`, and a component test of `AgentQuestionCard`. An e2e, `e2e/agent-questions.spec.ts`.
 - EA-18c: `lib/shell/feed.test.ts` for the card kind, a test of the approvals page, and `e2e/agent-questions-doors.spec.ts`. `src/lib/shell/seams.test.ts` stays green.
@@ -3038,6 +3041,7 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   3. The EA-18b row now names `can_answer` on the run wire. Without it, the run panel would need a second text of who may answer.
   4. Fix round 2 (the coordinator's rule). A typed archive request on an open task waits on the run's member only, in "For me" and in "Waiting on me". Only that member approves it. Every other reader does not see it, and "Everyone" leaves it out. This replaces item 1 of the build entry. The write rule does not change.
   5. Fix round 3. Each row's `question` holds `kind`: `question` or `archive_request`. The server takes it from `archive_request_of`. So EA-18b sends the answer to a typed request to `archive-approval`, and the browser holds no second text of the rule.
+  6. Fix round 4, after the independent verify. A typed request reads `why` `my_agent`, also when the run's member created the task or is an assignee. The verify found four test gaps, and each now has a fence (M17 to M20). An outside answer to an open question on a closed task gets 403, because the rule reads no task status.
 
 ## 19. One manifest, two doors: every app over the MCP (MCP-P0, D136)
 

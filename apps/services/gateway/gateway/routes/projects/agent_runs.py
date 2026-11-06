@@ -2299,6 +2299,23 @@ def listed_question_sql(run: str, *, me: str = "me") -> str:
     )
 
 
+def question_reason_sql(run: str, *, me: str = "me") -> str:
+    """``why`` of a row of the list, over the run alias *run* (spec §12.8,
+    EA-18a fix round 4). It binds ``:me``, or the name in *me*.
+
+    For a typed archive request, the reason is always ``my_agent``. Only the
+    run's member answers it, so "Your agent asked" is the true reason, also
+    when that member created the task or is an assignee. Any other question
+    takes :func:`answer_reason_sql`, in the order created, assigned, own agent.
+    The answer set does not change: the member is in it in each case.
+    """
+    return (
+        f"(CASE WHEN NOT {answerable_question_sql(f'{run}.id')}"
+        f" AND lower({run}.member_email) = :{me} THEN 'my_agent'"
+        f" ELSE {answer_reason_sql(run, me=me)} END)"
+    )
+
+
 def person_may_answer_sql(run: str, *, me: str = "me") -> str:
     """The three groups of D-EA-14: the creator of the task, an assignee, or
     the run's member, in SQL over the run alias *run*.

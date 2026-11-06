@@ -65,6 +65,20 @@ Fix round 3, on a committed tree:
   ``test_a1_the_creator_sees_the_question_with_why_and_the_path`` and
   ``test_a_free_question_has_no_options``.
 
+Fix round 4 (the independent verify of 2026-11-06), on a committed tree:
+
+* M16. ``R`` ``question_reason_sql``: no typed arm, so a typed request reads
+  ``created`` or ``assigned``.
+  ``test_a_typed_request_reads_my_agent_whoever_else_the_member_is``.
+* M17 (the verifier's V2). ``R`` ``_refuse_an_outside_answer``: any explicit
+  signal skips the rule. ``test_m2_a_viewer_outside_the_set_gets_403_on_an_answer``.
+* M18 (V3). ``R`` ``_refuse_an_outside_answer``: a closed task skips the rule.
+  ``test_an_outside_answer_on_a_closed_task_still_gets_403``.
+* M19 (V5). ``Q`` ``question_row``: ``kind`` comes from the option ids.
+  ``test_a_free_question_with_approve_and_decline_ids_is_a_question``.
+* M20 (V6). ``Q`` ``require_agent_questions``: the org comes from an
+  ``x-org-id`` header first. ``test_a_header_that_names_an_org_changes_nothing``.
+
 The cases that the spec names with no M number, each red under its own mutation:
 
 * ``Q``: the route writes a row. ``test_a_read_writes_nothing``.
@@ -73,7 +87,8 @@ The cases that the spec names with no M number, each red under its own mutation:
 * ``R``: the bell reads no flag. ``test_a7_with_the_flag_off_the_audience_has_no_creator``.
 * ``filters.py``: the focus reads no flag.
   ``test_waiting_on_me_and_for_me_agree_with_the_flag_on``.
-* ``Q``: a typed request is listed. ``test_a4_a_typed_archive_request_does_not_show``.
+* ``R``: a typed request is listed for each reader (M10).
+  ``test_a4_a_typed_archive_request_shows_to_its_member_only``.
 * ``Q``: a closed task is listed. ``test_a_question_on_a_closed_task_does_not_show``.
 * ``R``: the rule also binds a run that is not awaiting.
   ``test_a_reply_to_a_finished_run_stays_open_with_its_question_open``.
@@ -219,6 +234,7 @@ class TestTheOneText:
         listed = agent_questions.questions_sql("TRUE", vis)
         assert agent_runs.person_may_answer_sql("r") in listed
         assert agent_runs.answer_reason_sql("r") in listed
+        assert agent_runs.question_reason_sql("r") in listed
         source = inspect.getsource(agent_runs.may_answer_run)
         assert "person_may_answer_sql('r')" in source
         assert "holds_answer_role(user)" in source
@@ -360,6 +376,8 @@ def world(promoted):  # noqa: F811 — a fixture
     ns.task_deep = b.task(promoted, org, CREATOR_WRITTEN, ns.deep, title="Deep work")
     ns.task_secret = b.task(promoted, org, LOST, ns.secret, assignee=ELSEWHERE, title="Hidden")
     ns.task_system = b.task(promoted, org, "", ns.other, title="No creator")
+    # The run's member created this task (fix round 4).
+    ns.task_mine = b.task(promoted, org, MEMBER, ns.other, title="Mine")
 
     ns.conn = _seed_connection(promoted, org, MEMBER)
     ns.agent = _principal(MEMBER, org, agent_connection=ns.conn)
@@ -424,6 +442,15 @@ async def _ask_again(w: Any, call: Any, run: str) -> str:
 async def _list(call: Any, user: Any, **query: Any) -> Any:
     path = "/projects/agent-questions"
     return await call(user, "GET", f"{path}?{urlencode(query)}" if query else path)
+
+
+async def _with_header(call: Any, user: Any, method: str, path: str,
+                       headers: dict[str, str], body: dict | None = None) -> Any:
+    """One request as *user*, with extra request *headers*."""
+    key = str(id(user))
+    call.users[key] = user
+    return await call.client.request(method, path, json=body,
+                                     headers={"x-test-as": key, **headers})
 
 
 async def _rows(call: Any, user: Any, **query: Any) -> list[dict[str, Any]]:
@@ -520,6 +547,51 @@ class TestTheRead:
             assert answered.status_code == 201, answered.text
             got = await _list(call, w.creator)
             assert got.json()["rows"] == [] and got.json()["counts"]["mine"] == 0
+
+    async def test_a_typed_request_reads_my_agent_whoever_else_the_member_is(self, w):
+        """Fix round 4 (F1). The run's member is an assignee of ``task_held`` and
+        the creator of ``task_mine``. A typed request on each reads ``my_agent``,
+        because only the member answers it. A free question on the same tasks
+        keeps the spec order, so it reads ``assigned`` and ``created``."""
+        other = w.other["id"]
+        async with _session(w.p) as call:
+            for task in (w.task_held, w.task_mine):
+                asked = await call(w.agent, "POST", f"/projects/tasks/{task}/archive-request",
+                                   {"idempotency_key": _key()})
+                assert asked.status_code == 201, asked.text
+            rows = await _rows(call, w.member, project=other)
+            assert {r["task_id"]: (r["why"], r["question"]["kind"]) for r in rows} == {
+                w.task_held: ("my_agent", "archive_request"),
+                w.task_mine: ("my_agent", "archive_request"),
+            }
+            assert all(r["can_answer"] for r in rows)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM pm_agent_runs"))
+            for task in (w.task_held, w.task_mine):
+                await _ask(w, call, task)
+            rows = await _rows(call, w.member, project=other)
+            assert {r["task_id"]: (r["why"], r["question"]["kind"]) for r in rows} == {
+                w.task_held: ("assigned", "question"),
+                w.task_mine: ("created", "question"),
+            }
+
+    async def test_a_free_question_with_approve_and_decline_ids_is_a_question(self, w):
+        """Fix round 4 (V5, EA3-40 G2). Only the server types a request. A free
+        question whose option ids are ``approve`` and ``decline`` stays a
+        question: it reads ``kind`` ``question``, it shows to the creator, and
+        the generic route takes the creator's answer."""
+        async with _session(w.p) as call:
+            run = await _start(w, call, user=w.agent, task=w.task)
+            asked = await _act(call, w.agent, run["id"], type="elicitation", body="Ship it?",
+                               options=[{"id": "approve", "label": "Approve"},
+                                        {"id": "decline", "label": "Decline"}])
+            assert asked.status_code == 201, asked.text
+            [row] = await _rows(call, w.creator)
+            assert row["question"]["kind"] == "question"
+            assert [o["id"] for o in row["question"]["options"]] == ["approve", "decline"]
+            assert row["why"] == "created" and row["can_answer"] is True
+            got = await _act(call, w.creator, run["id"], type="prompt", selected=["approve"])
+            assert got.status_code == 201, got.text
 
     async def test_a_free_question_has_no_options(self, w):
         async with _session(w.p) as call:
@@ -792,7 +864,10 @@ class TestTheWriteRule:
         """Acceptance 2, the write half. Options and free text, and nothing moves."""
         async with _session(w.p) as call:
             run, _ = await _ask(w, call)
-            for body in ({"selected": ["pg"]}, {"body": "Use Postgres"}):
+            # Fix round 4 (V2): an explicit `continue` is an answer too.
+            for body in ({"selected": ["pg"]}, {"body": "Use Postgres"},
+                         {"selected": ["pg"], "signal": "continue"},
+                         {"body": "Use Postgres", "signal": "continue"}):
                 got = await _act(call, w.viewer, run, type="prompt", **body)
                 assert got.status_code == 403, got.text
                 assert got.json()["detail"] == FORBIDDEN_ANSWER.format(name=MEMBER)
@@ -899,6 +974,27 @@ class TestTheWriteRule:
             got = await _act(call, w.viewer, run, type="prompt", body="Please look again")
             assert got.status_code == 201, got.text
             assert got.json()["run"]["status"] == "in_progress"
+
+    async def test_an_outside_answer_on_a_closed_task_still_gets_403(self, w):
+        """Fix round 4 (V3). The rule reads no task status: D-EA-14 binds each
+        answer to an open question that is not a typed request. So a closed task
+        changes nothing. A viewer outside the set gets 403, and the creator still
+        answers. The list hides the question, but the run panel can still post
+        an answer to it."""
+        async with _session(w.p) as call:
+            run, question = await _ask(w, call, w.task_other)
+            _move(w, w.task_other, "done")
+            try:
+                assert await _rows(call, w.creator) == []
+                got = await _act(call, w.viewer, run, type="prompt", selected=["pg"])
+                assert got.status_code == 403, got.text
+                assert got.json()["detail"] == FORBIDDEN_ANSWER.format(name=MEMBER)
+                assert await _status(call, w.creator, run) == ("awaiting", "awaiting")
+                got = await _act(call, w.creator, run, type="prompt", selected=["pg"])
+                assert got.status_code == 201, got.text
+                assert got.json()["activity"]["in_reply_to"] == question
+            finally:
+                _move(w, w.task_other, "todo")
 
     async def test_a_comment_stays_open_and_answers_nothing(self, w):
         async with _session(w.p) as call:
@@ -1252,6 +1348,30 @@ class TestTheFlags:
         async with _session(w.p) as call:
             assert (await _list(call, w.creator)).status_code == 404
             assert (await _list(call, w.b_member)).status_code == 200
+
+    async def test_a_header_that_names_an_org_changes_nothing(self, w, monkeypatch):
+        """Fix round 4 (V6, R5). The flag reads the session's org only. A header
+        that names another org changes neither the route nor the write rule."""
+        fake = {"x-org-id": w.org_b, "x-organization-id": w.org_b, "x-tenant-id": w.org_b}
+        async with _session(w.p) as call:
+            run, _ = await _ask(w, call)
+            # The flag holds org A only. A header that names org B leaves it on.
+            monkeypatch.setattr(get_settings(), "agent_questions_orgs", w.org)
+            got = await _with_header(call, w.creator, "GET", "/projects/agent-questions", fake)
+            assert got.status_code == 200, got.text
+            assert [r["run_id"] for r in got.json()["rows"]] == [run]
+            got = await _with_header(call, w.viewer, "POST", f"/projects/agent-runs/{run}/activities",
+                                     fake, {"type": "prompt", "selected": ["pg"],
+                                            "idempotency_key": _key()})
+            assert got.status_code == 403, got.text
+            # The flag holds org B only. A header that names org B does not open it.
+            monkeypatch.setattr(get_settings(), "agent_questions_orgs", w.org_b)
+            got = await _with_header(call, w.creator, "GET", "/projects/agent-questions", fake)
+            assert got.status_code == 404, got.text
+            got = await _with_header(call, w.viewer, "POST", f"/projects/agent-runs/{run}/activities",
+                                     fake, {"type": "prompt", "selected": ["pg"],
+                                            "idempotency_key": _key()})
+            assert got.status_code == 201, got.text
 
     async def test_with_the_runs_flag_off_the_list_is_empty(self, w, monkeypatch):
         async with _session(w.p) as call:
