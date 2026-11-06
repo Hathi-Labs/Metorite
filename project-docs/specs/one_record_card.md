@@ -1,6 +1,6 @@
 # One record card — the Projects frame and the CRM tabs
 
-**Status: ACTIVE, 2026-11-06. D181. ORC-1 is in build, and ORC-2 and ORC-3 wait in Backlog.** Verified against code on 2026-11-06 at `main` `06cfc43f8`.
+**Status: ACTIVE, 2026-11-06. D181. ORC-1 merged (`c2ab518da`). ORC-3 is in build, before ORC-2, on the owner's ask in chat (2026-11-06). ORC-2 waits in Backlog.** Verified against code on 2026-11-06 at `main` `06cfc43f8`, and §5 again at `4dfbe3b13`.
 
 **Owner:** this file owns the shared frame and the tabs of a record card. `one_projects_app.md` §9c owns the task card's content (D172). `crm_platform.md` §19.8 owns the CRM record's content. Each links here and adds nothing about the frame.
 
@@ -72,7 +72,7 @@ The rules of the frame:
 | ORC-2 | 1835 | L4 | `TaskPanel` and `projects/page.tsx` draw `CardPanel`, with one mount. The re-export goes | Side, full and phone look as they do today. A half-typed comment survives expand. A source scan finds no second overlay in `projects/page.tsx` | MEDIUM | AGENT-SAFE |
 | ORC-3 | 1836 | L4 | Tabs in `TaskBody` (§5). `RecordTabBar` moves to a shared component, and both cards draw it | Each section of today is on one tab, in Projects, My Tasks and Calendar. `?ttab=` keeps the tab. §3.3's last rule holds. Four captures, side and full. **The owner checks the tab names at the preview** | MEDIUM | AGENT-SAFE |
 
-ORC-2 waits on ORC-1, and ORC-3 waits on ORC-2. ORC-2 and TC-3 (task 1547) touch the same mount: whichever lands second adapts. ORC-3 and TC-4 (task 1548) touch the same Overview: the five facts and "More details" are the Overview tab.
+ORC-2 waits on ORC-1. ORC-3 lands before ORC-2. `?ttab=` keeps the tab when expand mounts the body again, so ORC-3 does not need the one mount (§5). ORC-2 and TC-3 (task 1547) touch the same mount: whichever lands second adapts. ORC-3 and TC-4 (task 1548) touch the same Overview: the five facts and "More details" are the Overview tab.
 
 ## 5. The task card's tabs (ORC-3)
 
@@ -87,12 +87,23 @@ ORC-2 waits on ORC-1, and ORC-3 waits on ORC-2. ORC-2 and TC-3 (task 1547) touch
 - **Counts.** A tab with content shows its count, through the `count` of `Tabs`.
 - **The Add menu** opens the tab of what it adds. A file that is dropped or pasted on any tab lands in Files.
 - **At the side stop** the four words fit in `TASK_PANEL_WIDTH`. ORC-3 proves it with the compact and the comfortable captures.
+- **The custom fields** are facts, so they are on Overview, under Description.
+
+**5.1 How ORC-3 builds it** (`TaskBody.tsx`, `components/useTaskTab.ts`, `lib/taskTabs.ts`)
+
+- **Above the bar, on each tab:** the host's strip (`above`), the agent run, an open decision, then the Add row. They scroll away with the card.
+- **The bar sticks** to the top of the card's one scroll region, so the tabs stay in reach under a long Overview. A new tab opens at its top.
+- **Each tab stays mounted.** Only `hidden` changes. So the Related and Files counts stay true on each tab, and a half-typed subtask survives a look at another tab.
+- **The composer** shows on Discussion, under Comments. On another tab, it hides with the comments.
+- **A file dropped on the card** lands in Files, and Files opens, so the member sees it go up. A drop on the description or the composer stays inline.
+- **Files and Discussion** draw no section heading of their own, because the tab is the heading. Overview and Related keep their folds.
+- **The URL.** `history.replaceState` writes `?ttab=`, and Overview takes the key out. The key leaves one tick after the last card closes. Until ORC-2, expand mounts the body again in the same commit, and that tick keeps the tab.
 
 ## 6. The fences
 
 - ORC-1: `components/CardPanel.test.ts` holds the three stops, the one mount, the fit rule and the Escape rule. `app/crm/components/crmCardPanel.test.ts` holds that both record sheets draw `CardPanel`, and that `RecordShell.tsx` does not draw `Modal`.
 - ORC-2: a source scan that `projects/page.tsx` draws no overlay of its own.
-- ORC-3: a test that each section of `TaskBody` belongs to one tab, and a source scan for one tab bar.
+- ORC-3: `app/projects/lib/taskTabs.test.ts`. It draws `TaskBody` and checks that each section of today is on one tab, and that the card opens on Overview. It checks that the agent run, the decision and the Add row come before the bar. Its source scan finds one tab bar (`components/RecordTabBar.tsx`) on both cards. `app/tasks/lib/itemDetail.test.ts` holds that each Add button opens its tab.
 
 Each fence is advisory until its slice builds.
 
@@ -101,7 +112,7 @@ Each fence is advisory until its slice builds.
 ```
 cd workbench/control_plane
 npx tsc --noEmit
-npx vitest run src/components/CardPanel.test.ts src/lib/layers.test.ts src/lib/taskPanel.test.ts src/app/projects/lib/panelMode.test.ts src/app/crm
+npx vitest run src/components/CardPanel.test.ts src/lib/layers.test.ts src/lib/taskPanel.test.ts src/app/projects/lib/panelMode.test.ts src/app/crm src/app/projects/lib/taskTabs.test.ts src/app/tasks/lib/itemDetail.test.ts
 ```
 
 For each slice, also run the `visual-review` skill at light, compact, a changed accent and 390 px, at the side stop and the full stop.
