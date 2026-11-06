@@ -5,6 +5,26 @@
 // narrow the scopes, never widen them.
 import { describe, expect, it } from "vitest";
 
+import {
+  NO_SELECTION,
+  analyzeTree,
+  buildProjectTree,
+  cleanSelection,
+  grantSummary,
+  parentIds,
+  personalSpillover,
+  TOO_LONG_NOTICE,
+  projectLists,
+  projectsProblem,
+  searchMatches,
+  selectedCount,
+  summaryText,
+  tickProject,
+  toggleProject,
+  untickProject,
+  visibleNodes,
+  type Selection,
+} from "@/lib/accessTree";
 import { isKnownIcon } from "@/lib/icons";
 
 import {
@@ -22,7 +42,7 @@ import {
   isContinueView,
   organizationName,
   parseAuthorizeRequest,
-  pinChoices,
+  toggleScope,
   refusalFor,
   scopeRows,
   type CheckView,
@@ -109,6 +129,7 @@ describe("approveBody", () => {
     const body = approveBody(REQUEST, VIEW, {
       scopes: new Set(["projects:read"]),
       pins: ["p1"],
+      leftOut: ["p2"],
       includePersonal: false,
     });
     expect(body).toEqual({
@@ -116,37 +137,376 @@ describe("approveBody", () => {
       consent_ticket: VIEW.consent_ticket,
       scopes: ["projects:read", OFFLINE_ACCESS],
       pinned_projects: ["p1"],
+      left_out_projects: ["p2"],
       include_personal: false,
     });
   });
 });
 
-describe("pinChoices", () => {
-  const tree = {
-    rows: [
-      { id: "a", name: "Engineering", children: [{ id: "a1", name: "Platform", children: [] }] },
-      { id: "b", name: "Old", archived_at: "2026-01-01", children: [{ id: "b1", name: "Hidden" }] },
-      { id: "c", name: "Sales" },
-      { id: 7, name: "Bad id" },
-    ],
-  };
+describe("toggleScope (read is needed for the rest)", () => {
+  it("turning read off clears the other scopes", () => {
+    const next = toggleScope(VIEW, new Set(["projects:read", "projects:write"]), "projects:read");
+    expect([...next]).toEqual([]);
+  });
 
-  it("lists the tree in order with depth, and leaves out an archived subtree", () => {
-    expect(pinChoices(tree)).toEqual([
-      { id: "a", name: "Engineering", depth: 0 },
-      { id: "a1", name: "Platform", depth: 1 },
-      { id: "c", name: "Sales", depth: 0 },
+  it("turning write on turns read on, when the agent asked for read", () => {
+    const next = toggleScope(VIEW, new Set(), "projects:write");
+    expect(next.has("projects:read")).toBe(true);
+    expect(next.has("projects:write")).toBe(true);
+  });
+
+  it("never adds a scope that the agent did not ask for", () => {
+    const view = { ...VIEW, scopes: ["projects:write"] };
+    expect([...toggleScope(view, new Set(), "projects:write")]).toEqual(["projects:write"]);
+  });
+
+  it("offline_access has no box", () => {
+    expect([...toggleScope(VIEW, new Set(["projects:read"]), OFFLINE_ACCESS)]).toEqual(["projects:read"]);
+  });
+});
+
+// ── The project tree (EA-17b, spec §10.8, D-EA-12) ───────────────────────────
+//
+//   eng           Engineering
+//     plat          Platform
+//       api           API
+//       ui            UI
+//     data          Data
+//   sales         Sales
+const RAW_TREE = {
+  rows: [
+    {
+      id: "eng",
+      name: "Engineering",
+      children: [
+        {
+          id: "plat",
+          name: "Platform",
+          children: [
+            { id: "api", name: "API" },
+            { id: "ui", name: "UI" },
+          ],
+        },
+        { id: "data", name: "Data" },
+      ],
+    },
+    { id: "sales", name: "Sales" },
+    { id: 7, name: "Bad id" },
+  ],
+};
+const TREE = buildProjectTree(RAW_TREE);
+const states = (sel: Selection) => {
+  const facts = analyzeTree(TREE, sel);
+  return Object.fromEntries(TREE.nodes.map((n) => [n.id, facts[n.id].state]));
+};
+
+describe("buildProjectTree", () => {
+  it("lists team projects in tree order with depth", () => {
+    expect(TREE.nodes.map((n) => [n.id, n.depth, n.parent])).toEqual([
+      ["eng", 0, null],
+      ["plat", 1, "eng"],
+      ["api", 2, "plat"],
+      ["ui", 2, "plat"],
+      ["data", 1, "eng"],
+      ["sales", 0, null],
     ]);
   });
 
-  it("lists at most 50", () => {
-    const many = { rows: Array.from({ length: 80 }, (_, i) => ({ id: `p${i}`, name: `P${i}` })) };
-    expect(pinChoices(many)).toHaveLength(50);
+  it("reads a shape it does not know as no projects", () => {
+    expect(buildProjectTree(null).nodes).toEqual([]);
+    expect(buildProjectTree({ rows: "x" }).nodes).toEqual([]);
+  });
+});
+
+describe("the tick cascades down (D-EA-12)", () => {
+  it("a tick on a parent reaches every child, with ONE pin", () => {
+    const sel = tickProject(TREE, NO_SELECTION, "eng");
+    expect(sel).toEqual({ pins: ["eng"], leftOut: [] });
+    expect(states(sel)).toEqual({
+      eng: "on", plat: "on", api: "on", ui: "on", data: "on", sales: "off",
+    });
   });
 
-  it("reads a shape it does not know as no projects", () => {
-    expect(pinChoices(null)).toEqual([]);
-    expect(pinChoices({ rows: "x" })).toEqual([]);
+  it("a click on an empty box ticks, and a click on a full box unticks", () => {
+    const on = toggleProject(TREE, NO_SELECTION, "plat");
+    expect(on.pins).toEqual(["plat"]);
+    expect(toggleProject(TREE, on, "plat")).toEqual(NO_SELECTION);
+  });
+
+  it("a tick on a parent drops the marks below it, because it covers them", () => {
+    let sel = tickProject(TREE, NO_SELECTION, "api");
+    sel = tickProject(TREE, sel, "ui");
+    expect(sel.pins).toEqual(["api", "ui"]);
+    sel = tickProject(TREE, sel, "eng");
+    expect(sel).toEqual({ pins: ["eng"], leftOut: [] });
+  });
+});
+
+describe("an untick under a ticked parent leaves the child out", () => {
+  const base = tickProject(TREE, NO_SELECTION, "eng");
+
+  it("adds the child to the left-out list, and the parent shows a dash", () => {
+    const sel = untickProject(TREE, base, "ui");
+    expect(sel).toEqual({ pins: ["eng"], leftOut: ["ui"] });
+    expect(states(sel)).toMatchObject({ eng: "partial", plat: "partial", api: "on", ui: "off", data: "on" });
+    expect(analyzeTree(TREE, sel).ui.leftOutMark).toBe(true);
+    expect(analyzeTree(TREE, sel).api.leftOutMark).toBe(false);
+  });
+
+  it("leaving out a subtree leaves out its children too, with one mark", () => {
+    const sel = untickProject(TREE, base, "plat");
+    expect(sel.leftOut).toEqual(["plat"]);
+    expect(states(sel)).toMatchObject({ plat: "off", api: "off", ui: "off", data: "on", eng: "partial" });
+  });
+
+  it("an untick of a project with no mark above sends no mark at all", () => {
+    const sel = untickProject(TREE, tickProject(TREE, NO_SELECTION, "plat"), "plat");
+    expect(sel).toEqual(NO_SELECTION);
+  });
+
+  it("a click on a dashed box ticks everything under it again", () => {
+    const partial = untickProject(TREE, base, "ui");
+    expect(toggleProject(TREE, partial, "eng")).toEqual({ pins: ["eng"], leftOut: [] });
+  });
+});
+
+describe("a pin under a left-out parent wins (the nearest mark)", () => {
+  it("a tick under a left-out project becomes a pin and keeps its own reach", () => {
+    let sel = tickProject(TREE, NO_SELECTION, "eng");
+    sel = untickProject(TREE, sel, "plat");
+    sel = tickProject(TREE, sel, "api");
+    expect(sel).toEqual({ pins: ["eng", "api"], leftOut: ["plat"] });
+    expect(states(sel)).toMatchObject({ plat: "partial", api: "on", ui: "off", data: "on" });
+    expect(analyzeTree(TREE, sel).api.reached).toBe(true);
+    expect(analyzeTree(TREE, sel).ui.reached).toBe(false);
+  });
+});
+
+describe("the counts", () => {
+  it("count the project itself and every project beneath it", () => {
+    const sel = untickProject(TREE, tickProject(TREE, NO_SELECTION, "eng"), "ui");
+    const facts = analyzeTree(TREE, sel);
+    expect([facts.eng.inside, facts.eng.total]).toEqual([4, 5]);
+    expect([facts.plat.inside, facts.plat.total]).toEqual([2, 3]);
+    expect([facts.data.inside, facts.data.total]).toEqual([1, 1]);
+    expect(selectedCount(TREE, sel)).toBe(4);
+    expect(selectedCount(TREE, NO_SELECTION)).toBe(0);
+  });
+
+  it("a mark for an id that is not in the tree is dropped before it is sent", () => {
+    const clean = cleanSelection(TREE, { pins: ["eng", "gone"], leftOut: ["ghost"] });
+    expect(clean).toEqual({ pins: ["eng"], leftOut: [] });
+  });
+});
+
+describe("the two choices", () => {
+  const sel: Selection = { pins: ["eng"], leftOut: ["ui"] };
+
+  it("All my projects sends no list, even when the tree holds marks", () => {
+    expect(projectLists("all", sel)).toEqual(NO_SELECTION);
+    expect(projectLists("pick", sel)).toEqual(sel);
+  });
+
+  it("Only the ones I pick with nothing ticked is refused, because no pin means every project", () => {
+    expect(projectsProblem("pick", TREE, NO_SELECTION)).toMatch(/Pick one project/);
+    expect(projectsProblem("pick", TREE, { pins: [], leftOut: ["ui"] })).toMatch(/Pick one project/);
+    expect(projectsProblem("pick", TREE, sel)).toBeNull();
+    expect(projectsProblem("all", TREE, NO_SELECTION)).toBeNull();
+  });
+
+  it("refuses more than 50 marks", () => {
+    const wide = buildProjectTree({ rows: Array.from({ length: 60 }, (_, i) => ({ id: `p${i}`, name: `P${i}` })) });
+    let s: Selection = NO_SELECTION;
+    for (const n of wide.nodes) s = tickProject(wide, s, n.id);
+    expect(projectsProblem("pick", wide, s)).toMatch(/at most 50/);
+  });
+
+  it("the approval body carries the lists of the picked choice", () => {
+    const lists = projectLists("pick", sel);
+    const body = approveBody(REQUEST, VIEW, {
+      scopes: new Set(["projects:read", "projects:write"]),
+      pins: lists.pins,
+      leftOut: lists.leftOut,
+      includePersonal: true,
+    });
+    expect(body.pinned_projects).toEqual(["eng"]);
+    expect(body.left_out_projects).toEqual(["ui"]);
+    expect(body.scopes).toEqual(["projects:read", "projects:write", OFFLINE_ACCESS]);
+  });
+});
+
+describe("the search", () => {
+  it("shows a match with its parents, and no query shows all", () => {
+    expect(searchMatches(TREE, "")).toBeNull();
+    expect([...(searchMatches(TREE, " api ") as Set<string>)].sort()).toEqual(["api", "eng", "plat"]);
+    const rows = visibleNodes(TREE, new Set(), searchMatches(TREE, "api"));
+    expect(rows.map((n) => n.id)).toEqual(["eng", "plat", "api"]);
+  });
+
+  it("a folded parent hides its children", () => {
+    expect(visibleNodes(TREE, new Set(), null).map((n) => n.id)).toEqual(["eng", "sales"]);
+    expect(visibleNodes(TREE, new Set(parentIds(TREE)), null)).toHaveLength(6);
+  });
+});
+
+describe("the summary line", () => {
+  const facts = {
+    who: "claude.ai",
+    scopes: ["projects:read", "projects:write"],
+    mode: "pick" as const,
+    picked: 7,
+    includePersonal: true,
+    personalPinned: 2,
+    offline: true,
+  };
+
+  it("says what the agent can do, from the verified host", () => {
+    expect(summaryText(grantSummary(facts))).toBe(
+      "claude.ai will read and change tasks in 7 projects and the personal projects you have now. It stays connected until you remove it.",
+    );
+  });
+
+  it("follows each choice", () => {
+    const read = { ...facts, scopes: ["projects:read"], picked: 1, includePersonal: false, offline: false };
+    expect(summaryText(grantSummary(read))).toBe("claude.ai will only read tasks in 1 project.");
+    // A pick with no personal root pinned makes no claim about personal projects.
+    expect(summaryText(grantSummary({ ...facts, personalPinned: 0 }))).not.toContain("personal");
+    expect(summaryText(grantSummary({ ...facts, mode: "all" }))).toContain(
+      "in all your team projects and your personal projects",
+    );
+  });
+});
+
+describe("personal projects need a pin (a pinned connection reaches no other)", () => {
+  const sel: Selection = { pins: ["eng"], leftOut: [] };
+  const roots = ["me1", "me2"];
+
+  it("pick + switch on adds the personal roots to the pins, after the picks", () => {
+    expect(projectLists("pick", sel, roots).pins).toEqual(["eng", "me1", "me2"]);
+  });
+
+  it("pick + switch off adds none, and All my projects sends no list", () => {
+    expect(projectLists("pick", sel, []).pins).toEqual(["eng"]);
+    expect(projectLists("all", sel, roots)).toEqual(NO_SELECTION);
+  });
+
+  it("the approval body carries the personal roots", () => {
+    const lists = projectLists("pick", sel, roots);
+    const body = approveBody(REQUEST, VIEW, {
+      scopes: new Set(["projects:read"]),
+      pins: lists.pins,
+      leftOut: lists.leftOut,
+      includePersonal: true,
+    });
+    expect(body.pinned_projects).toEqual(["eng", "me1", "me2"]);
+  });
+
+  it("buildProjectTree reads the personal roots from the personal key", () => {
+    const t = buildProjectTree({ rows: [], personal: [{ id: "me1", name: "Mine", children: [{ id: "x", name: "X" }] }, { id: 5 }] });
+    expect(t.personalRoots).toEqual(["me1"]);
+    expect(buildProjectTree({ rows: [] }).personalRoots).toEqual([]);
+  });
+
+  it("the personal roots count toward the 50 marks", () => {
+    const tree = buildProjectTree({ rows: [{ id: "a", name: "A" }] });
+    const picked = tickProject(tree, NO_SELECTION, "a");
+    expect(projectsProblem("pick", tree, picked, 49)).toBeNull();
+    expect(projectsProblem("pick", tree, picked, 50)).toMatch(/at most 50/);
+  });
+});
+
+describe("a team root under a personal project (migration 297)", () => {
+  // `t` is a team root whose parent_project_id is the personal project `me`.
+  const raw = {
+    rows: [
+      { id: "a", name: "A" },
+      { id: "t", name: "T", parent_project_id: "me" },
+      { id: "u", name: "U", parent_project_id: "me" },
+      { id: "plain", name: "Plain", parent_project_id: null },
+    ],
+    personal: [{ id: "me", name: "Mine", children: [{ id: "me-kid", name: "Kid" }] }],
+  };
+  const tree = buildProjectTree(raw);
+
+  it("leaves out each such root that the member did not tick", () => {
+    const sel = tickProject(tree, NO_SELECTION, "a");
+    expect(personalSpillover(tree, sel)).toEqual(["t", "u"]);
+  });
+
+  it("keeps a root off the list when the member ticked it", () => {
+    const sel = tickProject(tree, tickProject(tree, NO_SELECTION, "a"), "t");
+    expect(personalSpillover(tree, sel)).toEqual(["u"]);
+  });
+
+  it("sends the spillover on the left-out list after the pin on the personal root", () => {
+    const sel = tickProject(tree, NO_SELECTION, "a");
+    const lists = projectLists("pick", sel, tree.personalRoots, personalSpillover(tree, sel));
+    expect(lists).toEqual({ pins: ["a", "me"], leftOut: ["t", "u"] });
+  });
+
+  it("sends none when the switch is off, and none for a plain root", () => {
+    const sel = tickProject(tree, NO_SELECTION, "a");
+    expect(projectLists("pick", sel, [], []).leftOut).toEqual([]);
+    expect(personalSpillover(buildProjectTree({ rows: [{ id: "p", name: "P" }], personal: [] }), NO_SELECTION)).toEqual([]);
+  });
+
+  it("counts the extra marks toward the 50", () => {
+    const sel = tickProject(tree, NO_SELECTION, "a");
+    expect(projectsProblem("pick", tree, sel, 1, 50)).toBeNull();
+    expect(projectsProblem("pick", tree, sel, 1, 51)).toMatch(/at most 50/);
+  });
+});
+
+describe("a long list is cut at a root, and says so", () => {
+  const kids = (r: string, n: number) => Array.from({ length: n }, (_, i) => ({ id: `${r}${i}`, name: `${r} ${i}` }));
+
+  it("600 flat projects: 500 shown, truncated, the true total kept", () => {
+    const t = buildProjectTree({ rows: Array.from({ length: 600 }, (_, i) => ({ id: `p${i}`, name: `P${i}` })) });
+    expect(t.nodes).toHaveLength(500);
+    expect(t.truncated).toBe(true);
+    expect(t.totalSeen).toBe(600);
+  });
+
+  it("never shows a parent with its children cut", () => {
+    const t = buildProjectTree({
+      rows: [
+        { id: "A", name: "A", children: kids("a", 300) },
+        { id: "B", name: "B", children: kids("b", 300) },
+      ],
+    });
+    expect(t.truncated).toBe(true);
+    expect(t.nodes).toHaveLength(301);
+    expect(t.byId.B).toBeUndefined();
+    expect(t.byId.A.children).toHaveLength(300);
+  });
+
+  it("a short list is not truncated, and a lone root over the cap blocks the pick", () => {
+    expect(buildProjectTree({ rows: [{ id: "a", name: "A" }] }).truncated).toBe(false);
+    const big = buildProjectTree({ rows: [{ id: "A", name: "A", children: kids("a", 600) }] });
+    expect(big.nodes).toEqual([]);
+    expect(projectsProblem("pick", big, NO_SELECTION)).toMatch(/too long/);
+    // The words the member reads are the cut notice, never "You see no team projects".
+    expect(projectsProblem("pick", big, NO_SELECTION)).toBe(TOO_LONG_NOTICE);
+    expect(big.truncated && big.nodes.length === 0).toBe(true);
+  });
+});
+
+describe("an archived subproject is drawn, counted and can be left out", () => {
+  const tree = buildProjectTree({
+    rows: [{ id: "e", name: "E", children: [{ id: "old", name: "Old", archived_at: "2026-01-01", children: [{ id: "older", name: "Older" }] }, { id: "live", name: "Live" }] }],
+  });
+
+  it("keeps the archived row, marked, with its subtree", () => {
+    expect(tree.nodes.map((n) => [n.id, n.archived])).toEqual([["e", false], ["old", true], ["older", false], ["live", false]]);
+  });
+
+  it("a tick on the parent covers it, and an untick leaves it out", () => {
+    const on = tickProject(tree, NO_SELECTION, "e");
+    expect(selectedCount(tree, on)).toBe(4);
+    const off = untickProject(tree, on, "old");
+    expect(off.leftOut).toEqual(["old"]);
+    expect(selectedCount(tree, off)).toBe(2);
+    expect(analyzeTree(tree, off).e.state).toBe("partial");
   });
 });
 
