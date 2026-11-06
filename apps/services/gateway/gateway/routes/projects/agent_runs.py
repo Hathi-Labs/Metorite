@@ -1622,6 +1622,22 @@ _INSERT_RUN_SQL = (
 )
 
 
+#: CIV-14a. The newest link of the run's own caller wins.
+_SET_LINK_SQL = (
+    "UPDATE pm_agent_runs SET external_link = :link "
+    " WHERE id = CAST(:rid AS uuid) AND external_link IS DISTINCT FROM :link"
+)
+
+
+async def _set_run_link(db: Any, run_id: str, link: str | None) -> None:
+    """Set the link of an open run that the caller already owns. A call with no
+    link keeps the old one. The run came from the gate (``_gate_task``), so it
+    is the run of this member and connection (CIV-14a)."""
+    if link is None:
+        return
+    await db.execute(text(_SET_LINK_SQL), {"rid": run_id, "link": link})
+
+
 #: The ONE open-run read of EA12-6: the open run of a task for a member and a
 #: client stamp. The start, the archive request and the claim read it.
 #:
@@ -1783,6 +1799,10 @@ async def start_agent_run(
                                             session=own_session)
                 if existing is None:
                     raise HTTPException(status_code=409, detail="Start the run again.")
+        if existing is not None and via is not None:
+            # CIV-14a: an agent's start on its open run sets the link.
+            await _set_run_link(db, str(existing.id), link)
+            existing = await _load_run(db, str(existing.id))
         if existing is not None:
             # The open run is the answer (EA12-6). A member's instruction is
             # not dropped: it is a prompt on that run, and the status machine
@@ -2526,7 +2546,7 @@ async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> 
 
 
 async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
-                          via: str) -> tuple[str | None, bool]:
+                          via: str, link: str | None = None) -> tuple[str | None, bool]:
     """The id of the agent's open run on the task, or of a new
     ``in_progress`` run (EA12-6), and True when this call made it.
 
@@ -2541,12 +2561,13 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 connection=_agent_connection(user),
                                 session=_agent_session(user))
     if existing is not None:
+        await _set_run_link(db, str(existing.id), link)
         return str(existing.id), False
     ts = await _clock(db)
     made = (await db.execute(text(_INSERT_RUN_SQL), {
         "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
         "via": via, "status": "in_progress", "by": via, "started": ts,
-        "link": None, "ts": ts, "agent_ts": ts, "key": None,
+        "link": link, "ts": ts, "agent_ts": ts, "key": None,
         "sk": _agent_session(user),
     })).fetchone()
     if made is not None:
@@ -2556,6 +2577,8 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     existing = await _gate_task(db, task_id, me, via=via,
                                 connection=_agent_connection(user),
                                 session=_agent_session(user))
+    if existing is not None:
+        await _set_run_link(db, str(existing.id), link)
     return (str(existing.id) if existing is not None else None), False
 
 
@@ -2570,7 +2593,8 @@ async def _open_or_new_run(db: Any, user: UserContext, task_id: str, me: str,
     return await _lock_run(db, run_id)
 
 
-async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | None:
+async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
+                             link: str | None = None) -> str | None:
     """WS-55 EA-13c (spec §12.2 item 3, EA3-42). A claim by an agent opens
     its run, so the card reads "working" even when the agent skips
     ``start_agent_run``. ``claim_task`` calls it in the claim's OWN
@@ -2580,7 +2604,9 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | 
       ``agent_runs_enabled`` is on. A member's claim opens no run, and None
       comes back.
     * With an open run of this task, member and stamp (EA12-6), it writes
-      nothing and returns that run. Else it
+      nothing and returns that run. CIV-14a: a *link* (already checked by
+      ``check_run_link``) is the one exception. It sets the link of the run
+      or of the new run, and the newest link wins. Else it
       inserts one ``in_progress`` run, started by the stamp, with the
       connection and ``last_agent_activity_at`` now. No activity row, no
       comment and no notification (C7 and C9 of EA-6b).
@@ -2598,11 +2624,17 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | 
     """
     if getattr(user, "agent", None) is None or not agent_runs_enabled():
         return None
-    run_id, made = await _agent_open_run(db, user, task_id, _member(user), _agent_via(user) or "")
+    run_id, made = await _agent_open_run(db, user, task_id, _member(user),
+                                         _agent_via(user) or "", link)
     if run_id is not None and not made:
         # SW-43. The claim finds the run of the agent: that is a read.
         await _stamp_answer_read(db, await _load_run(db, run_id), user)
     return run_id
+
+
+def check_run_link(value: str | None) -> str | None:
+    """The https check of ``external_link`` for the claim route (CIV-14a)."""
+    return _check_link(value)
 
 
 @router.post("/tasks/{task_id}/archive-request", status_code=201, dependencies=_ENABLED)

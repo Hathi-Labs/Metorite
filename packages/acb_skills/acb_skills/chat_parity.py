@@ -539,6 +539,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "chat",
         "Asks the assistant for the brief as a turn of the thread.",
     ),
+    "POST /api/chat/sessions/{}/buddy-hello": (
+        "chat",
+        "Posts the hello once, on a member's first visit (BUD-1). The shell sends it, not the member.",
+    ),
     "POST /api/chat/sessions/{}/compact": (
         "chat",
         "Folds the old turns of a thread into a summary. It is the chat's own context step.",

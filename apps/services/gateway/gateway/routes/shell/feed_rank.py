@@ -73,6 +73,9 @@ BASE: dict[str, int] = {
     # kinds at once, so MD-3d to MD-3f add only their providers. This table
     # is also the vocabulary of kinds that the prefs accept (``prefs.py``).
     "agent_asks": 43,
+    # WS-ALN ALN-2b: a question that waits on the member by name. It ties
+    # with `agent_asks`, which also waits on an answer.
+    "decision": 43,
     "promise_due": 42,
     "crm_followup_due": 41,
     "block_overlap": 40,
@@ -209,7 +212,7 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     does."""
     if kind in ("overdue", "due_today", "approval", "needs_reply", "no_plan_yet",
                 "waiting_quiet", "source_sync_failed", "absent_on_due", "no_answer",
-                "deal_close_passed", "agent_asks"):
+                "deal_close_passed", "agent_asks", "decision"):
         # A due date is a day, so no hour moves a due task into Now (RX-5).
         return "needs_you"
     if kind == "unblocked":

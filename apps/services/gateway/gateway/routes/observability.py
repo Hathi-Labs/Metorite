@@ -3,8 +3,9 @@
 Where ``/debug`` (routes/debug.py) is the *post-hoc* view over the durable
 ``agent_run`` trace store, this is the *live* view: a real-time feed of every
 agent run and model call as it happens, across chat AND every app, plus a
-"running right now" snapshot. Backed by the global ``cc:activity`` Redis stream
-(``acb_common.activity``), not Postgres — this is the ephemeral signal layer.
+"running right now" snapshot. Backed by the tenant's ``cc:<org>:activity`` Redis
+stream (``acb_common.activity``), not Postgres — this is the ephemeral signal
+layer.
 
     GET /observability/activity/recent?limit=   → recent activations (backfill)
     GET /observability/activity/stream          → SSE live feed (new events)
@@ -19,7 +20,15 @@ Open to any AUTHENTICATED caller (this is the operator's own dashboard). It
 returns operational *metadata* — agent/model/tier/user/duration/tokens/cost and
 error messages — but NEVER the full message-content trace, which stays
 EXECUTIVE-gated behind ``/debug/runs/{id}``. The Redis feed (recent/stream) is
-ephemeral (~2000 events, latest-first); ``/runs`` is the durable timeline.
+ephemeral (~2000 events for each tenant, latest-first); ``/runs`` is the
+durable timeline.
+
+Tenancy (H-201c). The feed, the stream and the presence set are keyed for each
+tenant. Each route takes the org from the authenticated session
+(``viewer.organization_id``), never from the request, and passes it to the
+reader. A viewer with no org gets an empty answer. The cost view
+(``/cost``) still reads the deployment-global ``cc:cost:{day}`` rollup. Its
+conversion is a separate follow-up task.
 """
 from __future__ import annotations
 
@@ -62,26 +71,26 @@ router = APIRouter(prefix="/observability", tags=["observability"])
 @router.get("/activity/recent")
 async def activity_recent(
     limit: int = 100,
-    _viewer: UserContext = _VIEWER,
+    viewer: UserContext = _VIEWER,
 ) -> dict[str, Any]:
-    """Recent activations, oldest-first — used to backfill the feed on load.
+    """Recent activations of the viewer's tenant, oldest-first — the backfill.
 
     ``limit`` is clamped to [1, 500].
     """
-    events = await recent_activity(limit=limit)
+    events = await recent_activity(limit=limit, organization_id=viewer.organization_id)
     return {"events": events, "count": len(events)}
 
 
 @router.get("/active")
 async def active(
-    _viewer: UserContext = _VIEWER,
+    viewer: UserContext = _VIEWER,
 ) -> dict[str, Any]:
     """Agent runs currently in flight (the "running right now" panel).
 
     Self-healing: a run whose end event was lost ages out of the presence set
     after ``acb_common.activity.LIVE_TTL_SECONDS``.
     """
-    runs = await active_runs()
+    runs = await active_runs(organization_id=viewer.organization_id)
     return {"runs": runs, "count": len(runs)}
 
 
@@ -122,14 +131,15 @@ async def roster(
         "agent_runtime": "maf",
     }] + registry
 
-    runs = await active_runs()
+    # The tenant of the session (H-201c): the presence set and the avatars.
+    org = viewer.organization_id
+    runs = await active_runs(organization_id=org)
     live_by_agent: dict[str, list[dict[str, Any]]] = {}
     for r in runs:
         live_by_agent.setdefault(str(r.get("agent") or ""), []).append(r)
 
     # Avatar overrides (Avatar Studio) — merged so every viewer sees the pinned
     # look/sprite. Best-effort; the office falls back to deriveAvatar() without it.
-    org = viewer.organization_id
     avatars = _load_avatars(org)
 
     seen: set[str] = set()
@@ -325,20 +335,28 @@ async def runs(
     return {"runs": out, "count": len(out)}
 
 
-async def _sse_activity() -> AsyncIterator[bytes]:
-    """Yield SSE frames for each new activation; heartbeat on idle.
+async def _sse_activity(organization_id: str | None) -> AsyncIterator[bytes]:
+    """Yield SSE frames for each new activation of one tenant; heartbeat on idle.
 
     Starts from ``$`` (new events only) — the client backfills history via
     ``/activity/recent`` first, then opens this for the live tail. A heartbeat
     comment on each idle cycle keeps proxies from closing the connection.
+
+    *organization_id* is an argument, taken from the session by the route.
+    The body of this generator runs after the middleware released the tenant,
+    so it must never read the ambient value. With no org, the stream sends
+    the opening comment and ends: no event, and no busy loop.
     """
     cursor = "$"
     # Prime the client so EventSource fires ``onopen`` promptly.
     yield b": connected\n\n"
+    if not organization_id:
+        return
     while True:
         try:
             events, cursor = await read_activity_since(
-                cursor, block_ms=15_000, count=200,
+                cursor, organization_id=organization_id,
+                block_ms=15_000, count=200,
             )
         except asyncio.CancelledError:  # client disconnected
             raise
@@ -357,11 +375,11 @@ async def _sse_activity() -> AsyncIterator[bytes]:
 
 @router.get("/activity/stream")
 async def activity_stream(
-    _viewer: UserContext = _VIEWER,
+    viewer: UserContext = _VIEWER,
 ) -> StreamingResponse:
-    """Server-Sent Events stream of live activations (agent + model)."""
+    """Server-Sent Events stream of the tenant's live activations (agent + model)."""
     return StreamingResponse(
-        _sse_activity(),
+        _sse_activity(viewer.organization_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",

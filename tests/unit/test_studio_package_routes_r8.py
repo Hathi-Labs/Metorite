@@ -1350,8 +1350,8 @@ def _org_objects(world: Any) -> int:
 
 
 def test_r8_the_org_object_cap_names_a_next_step(world) -> None:
-    """One member can fill the org cap of objects, and no route deletes a
-    package yet (A5c). So the refusal of another member names a next step."""
+    """One member can fill the org cap of objects. So the refusal of another
+    member names a next step: the delete of a package (A5c-1)."""
     cap, per = objects_store.MAX_OBJECTS_PER_ORG, objects_store.MAX_OBJECTS_PER_PACKAGE
     room = cap - _org_objects(world)
     assert room >= 0, "the org holds too many objects for this test"
@@ -1372,7 +1372,7 @@ def test_r8_the_org_object_cap_names_a_next_step(world) -> None:
     [problem] = got["problems"]
     assert (problem["kind"], problem["object"]) == ("store_refused", "visit")
     assert f"at most {cap} objects" in problem["message"]
-    assert "ask an admin to remove a package" in problem["message"]
+    assert "delete a package" in problem["message"] and "admin" not in problem["message"]
     assert _versions(world, pid) == [] and _objects(world, pid) == []
 
 

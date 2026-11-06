@@ -1037,6 +1037,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   deal_close_passed: "Close date passed",
   colleague_out: "Colleague away",
   agent_asks: "Waiting for your answer",
+  // WS-ALN ALN-2b: a question that waits on me by name.
+  decision: "Waiting for your decision",
   // WS-53 CRM-Q28 item 14: the weekly CRM digest is ready in Reports.
   digest_ready: "Weekly digest",
   // WS-53 CRM-Q32-4: new questions about the CRM data, for a CRM admin.
