@@ -17,7 +17,7 @@ Mutations (R7), each turns the named test red. ``E`` is
 * E4. ``E`` ``_claim_task``: return ``guidance`` as the raw gateway blocks. ``test_mcp_edge_claim.py::TestClaimReturnsGuidance``.
 * E5. ``E`` ``_guidance_of``: return ``[]`` on a 404. ``test_flag_off_the_context_has_no_guidance_key``.
 * E6. ``E`` ``_work_row``: ``guidance_ref`` carries the body. ``test_my_work_rows_carry_a_ref_and_no_body``.
-* E7. ``E``: ``CONTEXT_CALL_CEILING = 12``. ``test_the_context_stays_inside_the_ceiling``.
+* E7. ``E``: ``CONTEXT_CALL_CEILING = 14``. ``test_the_context_stays_inside_the_ceiling``.
 * E8. ``E`` ``_guidance_of``: ``"dropped": 0`` in place of the gateway count. ``test_the_cap_count_reaches_the_context`` and ``test_mcp_edge_claim.py::TestClaimReturnsGuidance::test_the_claim_carries_the_cap_count``.
 * E9. ``E`` ``_guidance_block``: keep the full source of a hidden block. ``test_a_hidden_source_leaves_as_the_stub``.
 * G1. ``agent_guidance.py`` ``guidance_allowed``: always True. ``test_flag_off_is_404_for_each_route``.
@@ -211,7 +211,7 @@ async def test_the_context_stays_inside_the_ceiling(gboard) -> None:
     gboard.blocks = [NEAR, MID, FAR]
     _chain(gboard, 7, project=OTHER_PROJECT)
     await _context()
-    assert tools.CONTEXT_CALL_CEILING == 13
+    assert tools.CONTEXT_CALL_CEILING == 14
     assert len(gboard.requests) <= tools.CONTEXT_CALL_CEILING
     assert BLOCK_PATH in gboard.paths()
 

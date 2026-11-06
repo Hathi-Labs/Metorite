@@ -779,6 +779,9 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks/{task_id}/relations"),
     ("GET", "/projects/tasks/{task_id}/timeline"),
     ("GET", "/projects/tasks/{task_id}/refs"),
+    # MCP-G17: the metadata of the files on a task, for `get_task_context`.
+    # The row also holds a cookie URL, which the edge never returns.
+    ("GET", "/projects/tasks/{task_id}/attachments"),
     ("GET", "/projects/search"),
     ("GET", "/projects/tasks/{task_id}/agent-runs"),
     ("GET", "/projects/agent-runs"),

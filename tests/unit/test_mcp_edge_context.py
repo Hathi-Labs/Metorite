@@ -24,7 +24,7 @@ Run::
 * X3. ``E`` ``_ancestor``: no cut of the description. ``test_x2_the_ancestors_come_root_first_with_their_fields``.
 * X4. ``E`` ``_walk_up``: on a 404, ``break`` with no stub, so the hidden level drops out. ``test_x4_a_hidden_parent_is_one_stub_and_the_walk_stops``.
 * X5. ``E``: ``MAX_ANCESTORS = 6``. ``test_x5_the_walk_reads_at_most_five_levels``.
-* X6. ``E`` ``_walk_up``: ``spare = MAX_ANCESTORS`` (the spare calls ignore the walk). ``test_x6_the_call_ceiling_is_thirteen``.
+* X6. ``E`` ``_walk_up``: ``spare = MAX_ANCESTORS`` (the spare calls ignore the walk). ``test_x6_the_call_ceiling_is_fourteen``.
 * X7. ``E`` ``_ancestor``: show the status name for a parent in another project. ``test_x7_a_parent_in_another_project_shows_its_category_only``.
 * X8. ``E`` ``_project_of``: re-raise a 404. ``test_x8_the_project_has_its_name_and_description_or_is_null``.
 * X9. ``E`` ``_get_task_context``: swap ``incoming`` and ``outgoing``. ``test_x9_blocked_by_and_blocks_come_from_the_blocks_links``.
@@ -147,6 +147,7 @@ class _Board(_Gateway):
         self.runs: list[dict[str, Any]] = []
         self.assigned: list[dict[str, Any]] = []
         self.task_runs: list[dict[str, Any]] = []
+        self.attachments: list[dict[str, Any]] = []
 
     def _answer(self, r: Any) -> tuple[int, Any]:
         if (r.method, r.path) in self.answers:
@@ -169,6 +170,8 @@ class _Board(_Gateway):
                 return 200, {"rows": []}
             if leaf == "agent-runs":
                 return 200, {"rows": self.task_runs}
+            if leaf == "attachments":
+                return 200, {"rows": self.attachments, "total": len(self.attachments)}
             if leaf == "timeline":
                 size = int(r.pairs.get("page_size") or len(self.timeline) or 1)
                 start = (int(r.pairs.get("page") or 1) - 1) * size
@@ -298,14 +301,14 @@ class TestTheContext:
                  and p.count("/") == 3]
         assert len(reads) == 1 + tools.MAX_ANCESTORS
 
-    async def test_x6_the_call_ceiling_is_thirteen(self, board):
+    async def test_x6_the_call_ceiling_is_fourteen(self, board):
         """§12.4: five calls of get_task, five parents, the node and the
-        timeline. SW-31a adds the read of the guidance. The deepest chain,
+        timeline. SW-31a adds the read of the guidance. MCP-G17 adds the attachments. The deepest chain,
         every parent in another project, and the runs flag on. The spare calls
         are gone, so no status read more."""
         _chain(board, 7, project=OTHER_PROJECT)
         await _context()
-        assert tools.CONTEXT_CALL_CEILING == 13
+        assert tools.CONTEXT_CALL_CEILING == 14
         assert len(board.requests) == tools.CONTEXT_CALL_CEILING
 
     async def test_x6_a_short_chain_stays_under_the_ceiling(self, board):
@@ -389,6 +392,7 @@ class TestTheContext:
         assert body["comments_truncated"] is True
         assert len(board.requests) <= tools.CONTEXT_ALL_CALL_CEILING
         assert tools.CONTEXT_ALL_CALL_CEILING == tools.CONTEXT_CALL_CEILING + 4
+        assert tools.CONTEXT_ALL_CALL_CEILING == 18
 
     async def test_civ14c_a_bad_mode_is_refused(self, board):
         result = await _tool("get_task_context", {"task_id": TASK, "comments": "some"})
@@ -988,3 +992,104 @@ class TestTheQueryParametersAreRealRouteParameters:
         sent = split_csv(tools.MY_WORK_CATEGORIES)
         assert validate_categories(sent) == ["backlog", "todo", "in_progress"]
         assert not {"triage", "done", "cancelled"} & set(sent)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MCP-G17: the attachments of a task, as metadata
+# ═══════════════════════════════════════════════════════════════════════════
+
+COOKIE = "/api/projects/attachments"
+
+
+def _file(n: int, *, name: str = "spec.pdf", mime: str = "application/pdf") -> dict[str, Any]:
+    """One row as ``attachments.py::descriptor`` answers it, cookie URL included."""
+    aid = _uuid(9500 + n)
+    return {"attachment_id": aid, "kind": "image" if mime.startswith("image/") else "file",
+            "name": name, "mime": mime, "size": 1234 + n, "added_by": ME,
+            "created_at": V0, "url": f"{COOKIE}/{aid}/{name}"}
+
+
+class TestTheAttachments:
+    """MCP-G17 (owner decision 2026-11-06): metadata only. The name is
+    ``untrusted_text``. No link, no bytes."""
+
+    async def test_g17_a_row_has_the_pinned_keys_and_an_untrusted_name(self, board):
+        board.attachments = [_file(1, name=SENTINEL + ".pdf")]
+        body = await _context()
+        (row,) = body["attachments"]
+        assert tuple(row) == tools.ATTACHMENT_KEYS
+        assert row["name"] == {"untrusted_text": SENTINEL + ".pdf"}
+        assert (row["mime"], row["size"], row["added_by"], row["created_at"]) == (
+            "application/pdf", 1235, ME, V0)
+        assert row["attachment_id"] == _uuid(9501)
+        leaked = [s for s in _bare_strings(body) if SENTINEL in s]
+        assert not leaked, leaked
+
+    async def test_g17_no_link_and_no_cookie_path_leave_the_edge(self, board):
+        board.attachments = [_file(n) for n in range(3)]
+        raw = await _tool("get_task_context", {"task_id": TASK})
+        assert COOKIE not in json.dumps(raw)
+        for row in _structured(raw)["attachments"]:
+            assert "url" not in row and not {"bytes", "content", "data"} & set(row)
+
+    async def test_g17_kind_is_image_or_file(self, board):
+        board.attachments = [_file(1, name="a.png", mime="image/png"),
+                             _file(2, name="b.zip", mime="application/zip"),
+                             {**_file(3), "kind": "weird"}]
+        rows = (await _context())["attachments"]
+        assert [r["kind"] for r in rows] == ["image", "file", "file"]
+
+    async def test_g17_no_files_is_an_empty_list_and_no_flag(self, board):
+        body = await _context()
+        assert body["attachments"] == [] and "attachments_truncated" not in body
+
+    async def test_g17_the_list_stops_at_100_and_says_so(self, board):
+        board.attachments = [_file(n, name=f"f{n}.txt") for n in range(130)]
+        body = await _context()
+        assert len(body["attachments"]) == tools.CONTEXT_ATTACHMENTS_MAX == 100
+        assert body["attachments"][0]["name"] == {"untrusted_text": "f0.txt"}
+        assert body["attachments_truncated"] is True
+
+    async def test_g17_exactly_100_is_not_truncated(self, board):
+        board.attachments = [_file(n) for n in range(100)]
+        body = await _context()
+        assert len(body["attachments"]) == 100 and "attachments_truncated" not in body
+
+    async def test_g17_a_refused_read_gives_no_rows_and_the_context_goes_on(self, board):
+        for status in (404, 403, 422):
+            board.answers[("GET", f"/projects/tasks/{TASK}/attachments")] = (
+                status, {"detail": "SECRET"})
+            body = await _context()
+            assert body["attachments"] == [] and body["task"]["id"] == TASK
+            assert "SECRET" not in json.dumps(body)
+
+    async def test_g17_a_busy_gateway_ends_the_call_as_the_other_optional_reads_do(
+            self, board):
+        board.answers[("GET", f"/projects/tasks/{TASK}/attachments")] = (500, {})
+        result = await _tool("get_task_context", {"task_id": TASK})
+        assert result["isError"] is True and _text(result) == tools.TEXT_BUSY
+
+    async def test_g17_the_read_is_one_call_inside_the_ceilings(self, board):
+        _chain(board, 7, project=OTHER_PROJECT)
+        board.attachments = [_file(1)]
+        await _context()
+        reads = [p for p in board.paths() if p.endswith("/attachments")]
+        assert reads == [f"/projects/tasks/{TASK}/attachments"]
+        assert len(board.requests) == tools.CONTEXT_CALL_CEILING
+
+    async def test_g17_a_hidden_task_is_not_found_and_reads_no_attachments(self, board):
+        board.attachments = [_file(1)]
+        board.answers[("GET", f"/projects/tasks/{TASK}")] = (404, {"detail": "x"})
+        result = await _tool("get_task_context", {"task_id": TASK})
+        assert _text(result) == tools.TEXT_TASK_NOT_FOUND
+        assert not [p for p in board.paths() if p.endswith("/attachments")]
+
+    async def test_g17_the_route_is_read_only_on_the_allowlist(self):
+        from acb_auth import agent_oauth
+        pair = ("GET", tools.ATTACHMENTS_ROUTE)
+        assert pair in agent_oauth.MCP_ROUTES and pair not in agent_oauth.MCP_WRITE_ROUTES
+        assert not [m for m, t in agent_oauth.MCP_ROUTES
+                    if t.endswith("/attachments") and m != "GET"]
+
+    async def test_g17_no_agent_text_names_a_removal(self):
+        assert "delet" not in tools.GET_TASK_CONTEXT.description.lower()
