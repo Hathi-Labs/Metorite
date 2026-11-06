@@ -639,7 +639,9 @@ No palette, bell, assistant rail or ⌘K listener of its own.
 
 ## 13. Owner questions
 
-**Answered.** On 2026-11-06 at 09:43 UTC, the owner chose "Accept all 8 recommendations" on task 1855 (run `ce35d443`). So AP-Q1 to AP-Q8 hold their recommended answers below. AP-Q1 amends D171.1 (`work_plan.md` §3). Later the same day, in chat, the owner asked for §4.5. AP-Q9 and AP-Q10 come from it. At 10:33 UTC the owner answered AP-Q10: "Yes, a person of the circle only". AP-Q9 keeps its working default.
+**Answered.** On 2026-11-06 at 09:43 UTC, the owner chose "Accept all 8 recommendations" on task 1855 (run `ce35d443`). So AP-Q1 to AP-Q8 hold their recommended answers below. AP-Q1 amends D171.1 (`work_plan.md` §3). Later the same day, in chat, the owner asked for §4.5. AP-Q9 and AP-Q10 come from it.
+
+At 10:33 UTC the owner answered AP-Q10: "Yes, a person of the circle only". AP-Q9 keeps its working default.
 
 Each open question has a recommended answer. The build uses it as a working default only where the row says so.
 
