@@ -102,3 +102,11 @@ def test_an_answer_in_chat_is_recorded_on_the_task():
 def test_the_final_report_states_the_run():
     report = NEXT_TICKET[NEXT_TICKET.index("## Final report"):]
     assert "run state" in report
+
+
+def test_next_ticket_step_1_names_get_task_context_and_the_20_comment_limit():
+    """CIV-14i: a session reads the description and every comment before it builds."""
+    step = _flat(NEXT_TICKET[NEXT_TICKET.index("**1 — Select.**"):NEXT_TICKET.index("**1b")])
+    assert "`get_task_context`" in step
+    assert "more than 20 comments" in step and "`get_task_timeline`" in step
+    assert "`get_task_context`" in _task_board()

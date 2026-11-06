@@ -793,7 +793,9 @@ async def approve_authorize(
     except Exception:
         tenant = current_tenant()
         if tenant is not None:
-            await agent_tokens.revoke_connection(tenant, connection_id)
+            await agent_tokens.revoke_connection(
+                tenant, connection_id,
+                reason=agent_tokens.REVOKE_APPROVE_ROLLBACK)
         raise
     _log.info(
         "agent_access.approved",
@@ -917,7 +919,8 @@ async def revoke_my_connection(
     email = _member(user)
     org = str(current_tenant())
     revoked = await agent_tokens.revoke_connection_scoped(
-        org, str(connection_id), member_email=email)
+        org, str(connection_id), member_email=email,
+        reason=agent_tokens.REVOKE_MEMBER)
     if not revoked:
         raise _not_found()
     audit_revoke(email, org, str(connection_id), admin=False)
