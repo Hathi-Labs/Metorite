@@ -1501,7 +1501,9 @@ def agent_focus_clause(focus: str) -> str:
       ``AGENT_QUESTIONS_ORGS`` on for the bound tenant, it reads
       ``agent_runs.person_may_answer_sql`` instead, so "Waiting on me" and the
       list "For me" name the same people (§12.8, D-EA-14). The creator of the
-      task then counts too.
+      task then counts too. It also reads ``agent_runs.listed_question_sql``
+      over the task's one open run, so a closed task and a typed archive
+      request count in neither.
     * ``review``: an open or draft GitHub pull request, and the task is not in
       a closing category. ``merged``: a pull request merged in the last 7 days.
 
@@ -1521,10 +1523,19 @@ def agent_focus_clause(focus: str) -> str:
     if focus == "waiting":
         if agent_questions_allowed(current_tenant()):
             # A lazy import: `agent_runs` imports this module.
-            from gateway.routes.projects.agent_runs import person_may_answer_sql
+            from gateway.routes.projects.agent_runs import (
+                listed_question_sql,
+                person_may_answer_sql,
+            )
 
+            # The pill row has no run id. A task has one open run at most
+            # (`pm_agent_runs_one_open_per_task`), so the awaiting run of the
+            # task is the run of the pill.
             return _state_exists(
                 f"s.state = 'awaiting' AND {person_may_answer_sql('s', me=AGENT_FOCUS_ME)}"
+                " AND EXISTS (SELECT 1 FROM pm_agent_runs qr"
+                " WHERE qr.task_id = s.task_id AND qr.task_id IS NOT NULL"
+                f" AND qr.status = 'awaiting' AND {listed_question_sql('qr')})"
             )
         return _state_exists(
             "s.state = 'awaiting'"

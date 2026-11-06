@@ -20,7 +20,8 @@ the role test of ``agent_runs.holds_answer_role``. The path is
 button that the route refuses.** A typed archive request takes its answer only
 from ``archive-approval``, on the task card, and only from the run's member. An
 open run of a closed task is a ``dangling`` row of Needs attention, and the sweep
-closes it.
+closes it. ``agent_runs.listed_question_sql`` is the one text of both, and
+"Waiting on me" reads it too.
 
 ⚠️ **Tenancy (R5).** The caller's tenant session runs each query, and each query
 carries ``task_visibility_clause``. No parameter names an organization or a
@@ -44,8 +45,8 @@ from gateway.routes.projects.agent_runs import (
     _member,
     _parse_uuid,
     answer_reason_sql,
-    archive_request_of,
     holds_answer_role,
+    listed_question_sql,
     person_may_answer_sql,
 )
 from gateway.routes.projects.analytics import scope_clause, scope_params
@@ -62,7 +63,6 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_STATE_SQL,
     agent_questions_allowed,
     agent_runs_enabled,
-    task_closed_sql,
 )
 from sqlalchemy import text
 
@@ -84,9 +84,17 @@ async def require_agent_questions(user: UserContext = Depends(get_current_user))
 
 
 def questions_sql(scope_sql: str, vis: Any) -> str:
-    """Each run in ``awaiting`` on a task of the scope that the reader sees, and
-    is not closed, with ``why`` and the answer set for the reader. It binds
-    ``:me`` and the visibility and scope parameters.
+    """Each run in ``awaiting`` on a task of the scope that the reader sees, with
+    ``why`` and the answer set for the reader. It binds ``:me`` and the
+    visibility and scope parameters.
+
+    ``agent_runs.listed_question_sql`` leaves out a closed task and a typed
+    archive request. "Waiting on me" reads the same text.
+
+    ``r.status = 'awaiting'`` comes before the state test, so the partial index
+    ``pm_agent_runs_one_open_per_task`` serves the read. The CASE of
+    ``AGENT_RUN_STATE_SQL`` alone hides the status from the planner. For
+    ``awaiting`` the CASE answers ``r.status``, so both select the same rows.
 
     The open question of each run comes from
     ``agent_runs._OPEN_ELICITATIONS_SQL``, in a second query over these run ids,
@@ -101,18 +109,18 @@ def questions_sql(scope_sql: str, vis: Any) -> str:
         f"  FROM pm_agent_runs r"
         f"  JOIN pm_tasks t ON t.id = r.task_id"
         f" WHERE r.task_id IS NOT NULL"
-        f"   AND ({AGENT_RUN_STATE_SQL}) = 'awaiting'"
-        f"   AND NOT {task_closed_sql('r')}"
+        f"   AND r.status = 'awaiting' AND ({AGENT_RUN_STATE_SQL}) = 'awaiting'"
+        f"   AND {listed_question_sql('r')}"
         f"   AND ({scope_sql})"
         f"   AND ({task_visibility_clause(vis, 't')})"
     )
 
 
-#: The head of each open question: enough to sort, to count and to drop a typed
-#: request. It reads ``_OPEN_ELICITATIONS_SQL`` as it is. A count, as the sidebar
-#: badge reads it every 60 seconds, then holds no question text in memory.
+#: The head of each open question: enough to sort and to count. It reads
+#: ``_OPEN_ELICITATIONS_SQL`` as it is. A count, as the sidebar badge reads it
+#: every 60 seconds, then holds no question text in memory.
 _QUESTION_HEADS_SQL = (
-    "SELECT q.id, q.run_id, q.type, q.created_at, q.content_metadata"
+    "SELECT q.id, q.run_id, q.created_at"
     f" FROM ({_OPEN_ELICITATIONS_SQL}) q"
 )
 
@@ -133,7 +141,6 @@ async def read_questions(
         for q in (await db.execute(
             text(_QUESTION_HEADS_SQL), {"ids": [str(r.run_id) for r in runs]},
         )).fetchall()
-        if archive_request_of(q) is None
     }
     found = [(run, heads[str(run.run_id)]) for run in runs if str(run.run_id) in heads]
     found.sort(key=lambda pair: (pair[1].created_at, str(pair[0].run_id)))

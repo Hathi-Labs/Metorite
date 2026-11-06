@@ -2256,6 +2256,39 @@ def answer_reason_sql(run: str, *, me: str = "me") -> str:
     )
 
 
+def answerable_question_sql(run_id: str) -> str:
+    """The run whose id is the SQL expression *run_id* waits on a question that
+    a person answers through the generic route. Its NEWEST open elicitation, as
+    :data:`_OPEN_ELICITATIONS_SQL` picks it, is not a typed archive request.
+
+    The SQL twin of ``archive_request_of(question) is None``. Only
+    ``archive-approval`` answers a typed request, so the list and "Waiting on
+    me" leave it out.
+    """
+    return (
+        "EXISTS (SELECT 1 FROM (SELECT oq.content_metadata"
+        "   FROM pm_agent_run_activities oq"
+        f"  WHERE oq.run_id = {run_id} AND oq.type = 'elicitation'"
+        "    AND NOT EXISTS (SELECT 1 FROM pm_agent_run_activities op"
+        "                     WHERE op.run_id = oq.run_id AND op.in_reply_to = oq.id)"
+        "  ORDER BY oq.seq DESC LIMIT 1) nq"
+        " WHERE coalesce(nq.content_metadata -> 'request' ->> 'kind', '')"
+        f" <> '{ARCHIVE_REQUEST_KIND}')"
+    )
+
+
+def listed_question_sql(run: str) -> str:
+    """ONE text of "the question of the run alias *run* is one that the list
+    shows" (WS-55 EA-18a fix round 1, spec §12.8). The task is not closed, and
+    :func:`answerable_question_sql` holds.
+
+    ``agent_questions.questions_sql`` and the flag-on branch of
+    ``filters.agent_focus_clause("waiting")`` both read it, so "For me" and
+    "Waiting on me" count the same questions.
+    """
+    return f"(NOT {task_closed_sql(run)} AND {answerable_question_sql(f'{run}.id')})"
+
+
 def person_may_answer_sql(run: str, *, me: str = "me") -> str:
     """The three groups of D-EA-14: the creator of the task, an assignee, or
     the run's member, in SQL over the run alias *run*.

@@ -37,6 +37,19 @@ restore with ``git checkout -- <file>``. ``Q`` is
 * M8. ``C`` ``visible_project_paths``: no ``Visibility.project_clause``.
   ``test_m8_the_path_stops_at_the_first_hidden_parent``.
 
+Fix round 1 (the review of 2026-11-06), each run on a committed tree:
+
+* M9. ``filters.py`` ``agent_focus_clause``: the flag-on branch drops the
+  ``listed_question_sql`` test. ``test_waiting_on_me_and_for_me_agree_with_the_flag_on``,
+  ``test_a_typed_request_counts_in_neither_for_me_nor_waiting_on_me`` and
+  ``test_a_question_on_a_done_task_counts_in_neither``.
+* M10. ``R`` ``listed_question_sql``: no ``answerable_question_sql``. The typed
+  tests of the list and of the focus.
+* M11. ``R`` ``listed_question_sql``: no ``task_closed_sql``. The closed tests of
+  the list and of the focus.
+* M12. ``Q`` ``questions_sql``: no ``r.status = 'awaiting'``.
+  ``test_the_list_names_the_status_for_the_partial_index``.
+
 The cases that the spec names with no M number, each red under its own mutation:
 
 * ``Q``: the route writes a row. ``test_a_read_writes_nothing``.
@@ -195,6 +208,34 @@ class TestTheOneText:
         assert "person_may_answer_sql('r')" in source
         assert "holds_answer_role(user)" in source
         assert "person_may_answer_sql" in inspect.getsource(filters.agent_focus_clause)
+
+    def test_the_list_names_the_status_for_the_partial_index(self) -> None:
+        """Fix round 1 (P3). A plain status test, ahead of the CASE, lets the
+        partial index ``pm_agent_runs_one_open_per_task`` serve the list."""
+        vis = SimpleNamespace(unrestricted=True, agent=None, params={})
+        listed = agent_questions.questions_sql("TRUE", vis)
+        assert f"r.status = 'awaiting' AND ({filters.AGENT_RUN_STATE_SQL}) = 'awaiting'" in listed
+
+    def test_the_list_and_the_focus_read_one_text_of_a_listed_question(self, monkeypatch):
+        """Fix round 1 (P2). The list and "Waiting on me" read
+        ``listed_question_sql``, and it holds the closed test and the typed test."""
+        vis = SimpleNamespace(unrestricted=True, agent=None, params={})
+        assert agent_runs.listed_question_sql("r") in agent_questions.questions_sql("TRUE", vis)
+        text_ = agent_runs.listed_question_sql("qr")
+        assert filters.task_closed_sql("qr") in text_
+        assert agent_runs.answerable_question_sql("qr.id") in text_
+        typed = agent_runs.answerable_question_sql("qr.id")
+        assert f"<> '{agent_runs.ARCHIVE_REQUEST_KIND}'" in typed
+        assert "-> 'request' ->> 'kind'" in typed and "ORDER BY oq.seq DESC LIMIT 1" in typed
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        org = "6f1d0b8a-1c2e-4a4b-9d3e-2f6a1b0c9d8e"
+        monkeypatch.setattr(get_settings(), "agent_questions_orgs", org)
+        scope = bind_tenant(org)
+        try:
+            on = filters.agent_focus_clause("waiting")
+        finally:
+            release_tenant(scope)
+        assert agent_runs.listed_question_sql("qr") in on
 
     def test_the_answer_set_is_the_reason_set(self) -> None:
         reason = agent_runs.answer_reason_sql("r")
@@ -1019,6 +1060,14 @@ async def _waiting_tasks(call: Any, user: Any, w: Any) -> set[str]:
     return {row["id"] for row in got.json()["rows"]}
 
 
+def _move(w: Any, task: str, category: str) -> None:
+    """Put *task* of the project ``other`` in its lane of *category*."""
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_tasks SET status_id = CAST(:s AS uuid) "
+                       "WHERE id = CAST(:t AS uuid)"),
+                  {"s": w.other["lanes"][category], "t": task})
+
+
 async def _waiting_count(call: Any, user: Any, w: Any) -> int:
     got = await call(user, "GET", f"/projects/{w.other['id']}/agent-summary")
     assert got.status_code == 200, got.text
@@ -1028,15 +1077,66 @@ async def _waiting_count(call: Any, user: Any, w: Any) -> int:
 @_DB_GATE
 class TestTheFocus:
 
+    async def _agree(self, w: Any, call: Any, want: dict[str, int]) -> None:
+        """For each reader, "For me", the "Waiting on me" filter and the strip
+        count read one number."""
+        for name, count in want.items():
+            reader = getattr(w, name)
+            listed = await _rows(call, reader, project=w.other["id"])
+            assert len(listed) == count, name
+            assert await _waiting_tasks(call, reader, w) == (
+                {w.task_other} if count else set()), name
+            assert await _waiting_count(call, reader, w) == count, name
+
     async def test_waiting_on_me_and_for_me_agree_with_the_flag_on(self, w):
+        """A free question, a typed archive request, and a question on a done
+        task. The fix round of the review adds the second and the third."""
+        async with _session(w.p) as call:
+            run, _ = await _ask(w, call, w.task_other)
+            await self._agree(w, call, {"creator": 1, "member": 1, "viewer": 0})
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM pm_agent_runs WHERE id = CAST(:r AS uuid)"),
+                          {"r": run})
+            asked = await call(w.agent, "POST", f"/projects/tasks/{w.task_other}/archive-request",
+                               {"idempotency_key": _key()})
+            assert asked.status_code == 201, asked.text
+            await self._agree(w, call, {"creator": 0, "member": 0, "viewer": 0})
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM pm_agent_runs"))
+            await _ask(w, call, w.task_other)
+            _move(w, w.task_other, "done")
+            try:
+                await self._agree(w, call, {"creator": 0, "member": 0, "viewer": 0})
+            finally:
+                _move(w, w.task_other, "todo")
+
+    async def test_a_typed_request_counts_in_neither_for_me_nor_waiting_on_me(self, w):
+        """The first proof of the review, turned into a fence. Before the fix the
+        creator read ``for_me=0 waiting_on_you=1``. Only the run's member answers
+        a typed request, on the task card, and the bell still tells them."""
+        async with _session(w.p) as call:
+            asked = await call(w.agent, "POST", f"/projects/tasks/{w.task_other}/archive-request",
+                               {"idempotency_key": _key()})
+            assert asked.status_code == 201, asked.text
+            listed = await _rows(call, w.creator, project=w.other["id"])
+            assert len(listed) == 0
+            assert await _waiting_count(call, w.creator, w) == 0
+            assert await _waiting_tasks(call, w.creator, w) == set()
+        assert _bells(w) == [MEMBER]
+
+    async def test_a_question_on_a_done_task_counts_in_neither(self, w):
+        """The second proof of the review, turned into a fence. Before the fix
+        the creator read ``for_me=0 waiting_on_you=1``."""
         async with _session(w.p) as call:
             await _ask(w, call, w.task_other)
-            for reader, count in ((w.creator, 1), (w.member, 1), (w.viewer, 0)):
-                listed = await _rows(call, reader, project=w.other["id"])
-                assert len(listed) == count, reader.email
-                assert await _waiting_tasks(call, reader, w) == (
-                    {w.task_other} if count else set()), reader.email
-                assert await _waiting_count(call, reader, w) == count, reader.email
+            _move(w, w.task_other, "done")
+            try:
+                listed = await _rows(call, w.creator, project=w.other["id"])
+                assert len(listed) == 0
+                assert await _waiting_count(call, w.creator, w) == 0
+                assert await _waiting_tasks(call, w.creator, w) == set()
+            finally:
+                _move(w, w.task_other, "todo")
 
     async def test_waiting_on_me_stays_as_it_was_with_the_flag_off(self, w, monkeypatch):
         _flag_off(monkeypatch)
@@ -1044,6 +1144,14 @@ class TestTheFocus:
             await _ask(w, call, w.task_held)
             assert await _waiting_tasks(call, w.creator, w) == set()
             assert await _waiting_count(call, w.creator, w) == 0
+            assert await _waiting_tasks(call, w.member, w) == {w.task_held}
+            assert await _waiting_count(call, w.member, w) == 1
+            # With the flag off, the member still counts a typed request, as before.
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM pm_agent_runs"))
+            asked = await call(w.agent, "POST", f"/projects/tasks/{w.task_held}/archive-request",
+                               {"idempotency_key": _key()})
+            assert asked.status_code == 201, asked.text
             assert await _waiting_tasks(call, w.member, w) == {w.task_held}
             assert await _waiting_count(call, w.member, w) == 1
 
