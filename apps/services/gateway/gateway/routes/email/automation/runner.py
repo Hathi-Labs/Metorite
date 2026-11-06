@@ -59,7 +59,6 @@ from gateway.routes.email.automation.rules import (
     proposes_only,
 )
 from gateway.routes.email.automation.senders import _maybe_block_cold
-from gateway.routes.email.provider_errors import MESSAGE_GONE_DETAIL
 from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
@@ -74,6 +73,7 @@ from gateway.routes.email.core import (
     router,
 )
 from gateway.routes.email.mailbox_access import mailbox_predicate
+from gateway.routes.email.provider_errors import MESSAGE_GONE_DETAIL
 from pydantic import BaseModel
 from sqlalchemy import text
 
