@@ -968,9 +968,13 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 #: WS-55 MCP-G15 adds the outside decision. It closes the member's question,
 #: so only an outside agent with the member's word may call it. Its chat tool
 #: stays PLANNED, and a tool that names the route fails this scan.
+#: WS-STU B2c-2a adds the decision of an app request. It approves a Studio
+#: write that a member identity asked for, and Mira calls as the member. So a
+#: tool that posts to it would approve its own write.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
                     "/agent-runs/{}/activities", "/agent-runs/{}/resume",
-                    "/decisions/{}/answer", "/agent-runs/{}/outside-decision")
+                    "/decisions/{}/answer", "/agent-runs/{}/outside-decision",
+                    "/requests/{}/decision")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.

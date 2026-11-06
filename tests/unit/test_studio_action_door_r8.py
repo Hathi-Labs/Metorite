@@ -1393,6 +1393,18 @@ def test_r8_a_writer_after_the_busy_ones_is_admitted_again(dworld) -> None:
 #     while the action names the same ``uses``.
 # ak. A wrong body, and an object that the package lacks, open no card.
 #
+# Fix round 1 (2026-11-06):
+#
+# al. A card opens only for a call that asks with ``ask=1``. A delegated write
+#     with no marker and no ``request_id`` gets 403 ``approval_required`` while
+#     the org flag is on. It opens no card and writes nothing. So an unsigned
+#     Save of the member's own screen never reads as saved.
+# am. An ask after a closed request (spent, declined or expired) opens a NEW
+#     request. A retry while the request is open gives the same one. Two asks
+#     at once after a close open one new request.
+# an. A resend of an expired request is 409 ``request_expired`` and writes
+#     nothing.
+#
 # **The mutations (R7).** Each was run on 2026-11-06 on a committed tree, and
 # restored with git. The two of the acceptance line:
 #
@@ -1431,12 +1443,13 @@ def rworld(dworld, monkeypatch):
 
 
 async def _delegated(org: str, email: str, pid: str, action: str, payload: Any,
-                     request_id: str | None = None) -> tuple[int, Any]:
-    """The real handler with NO proof, so the call is delegated. With
-    *request_id*, the query names it, and the body read FAILS: a resend that
-    reads a byte of its body errors. Answers the status and the answer, or the
-    detail and the headers of a refusal."""
-    query = {} if request_id is None else {"request_id": request_id}
+                     request_id: str | None = None, ask: bool = True) -> tuple[int, Any]:
+    """The real handler with NO proof, so the call is delegated. With no
+    *request_id*, the query holds the ask marker ``ask=1`` unless *ask* is
+    False (fix round 1). With *request_id*, the query names it, and the body
+    read FAILS: a resend that reads a byte of its body errors. Answers the
+    status and the answer, or the detail and the headers of a refusal."""
+    query = ({"ask": "1"} if ask else {}) if request_id is None else {"request_id": request_id}
     request = _Request(payload, fails=request_id is not None,
                        path=f"/studio/apps/{pid}/actions/{action}", query=query)
     token = bind_tenant(org)
@@ -1777,3 +1790,106 @@ def test_r8_a_wrong_body_or_a_missing_object_opens_no_card(rworld) -> None:
     assert (missing[0], missing[1][0]["code"]) == (404, "object_missing")
     assert _studio_runs(w) == 0
     assert _record_row(w, w.rec) is not None
+
+
+# ── al to an. Fix round 1 ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("action", ["add", "change", "remove"])
+def test_r8_a_write_with_no_ask_marker_opens_no_card_and_writes_nothing(rworld, action) -> None:
+    """The flag is on, and the call has no proof, no ``ask=1`` and no
+    ``request_id``: the unsigned Save of the member's own screen. It is 403
+    ``approval_required``, as before B2c-2a, and nothing changes."""
+    w = rworld
+    card, _ = _bodies(w)[action]
+    count, before = _record_count(w, w.obj), _record_row(w, w.rec)
+    status, (detail, _) = _run(w, lambda: _delegated(w.a, ANA, w.pkg, action, card, ask=False))
+    assert (status, detail["code"]) == (403, "approval_required")
+    assert _studio_runs(w) == 0
+    assert (_record_count(w, w.obj), _record_row(w, w.rec)) == (count, before)
+    # The same call with the marker asks.
+    status, body = _run(w, lambda: _delegated(w.a, ANA, w.pkg, action, card))
+    assert (status, body["state"]) == (202, "awaiting")
+    assert _studio_runs(w) == 1
+
+
+def test_r8_an_ask_after_a_run_opens_a_new_request(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec, "data": {"notes": "Card note"}}
+
+    async def go() -> tuple[str, Any, str, Any]:
+        first = (await _delegated(w.a, ANA, w.pkg, "change", card))[1]["request_id"]
+        await _decide(w, first, "approve")
+        ran = await _delegated(w.a, ANA, w.pkg, "change", None, first)
+        again = await _delegated(w.a, ANA, w.pkg, "change", card)
+        retry = await _delegated(w.a, ANA, w.pkg, "change", card)
+        return first, ran, again[1]["request_id"], (again, retry)
+
+    first, ran, second, (again, retry) = _run(w, go)
+    assert ran[0] == 200
+    assert again[0] == 202 and again[1]["state"] == "awaiting"
+    assert second != first
+    # A retry while the new request waits gives that request again.
+    assert retry[0] == 202 and retry[1]["request_id"] == second
+    assert _studio_runs(w) == 2
+
+
+def test_r8_an_ask_after_a_decline_opens_a_new_request(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec}
+
+    async def go() -> tuple[str, str, str]:
+        first = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        same = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        await _decide(w, first, "decline")
+        new = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        return first, same, new
+
+    first, same, new = _run(w, go)
+    assert same == first, "a retry while the request waits gives the same request"
+    assert new != first
+    assert _studio_runs(w) == 2 and _record_row(w, w.rec) is not None
+
+
+def test_r8_two_asks_at_once_after_a_close_open_one_new_request(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec}
+
+    async def go() -> tuple[str, list[Any]]:
+        first = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        await _decide(w, first, "decline")
+        both = await asyncio.gather(_delegated(w.a, ANA, w.pkg, "remove", card),
+                                    _delegated(w.a, ANA, w.pkg, "remove", card))
+        return first, list(both)
+
+    first, both = _run(w, go)
+    assert [s for s, _ in both] == [202, 202]
+    ids = {b["request_id"] for _, b in both}
+    assert len(ids) == 1 and first not in ids
+    assert _studio_runs(w) == 2
+
+
+def test_r8_an_expired_request_is_409_writes_nothing_and_a_new_ask_opens_one(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec}
+
+    async def go() -> tuple[str, Any, str]:
+        first = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        await _decide(w, first, "approve")
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE pm_agent_run_activities SET content_metadata = jsonb_set("
+                " content_metadata, '{request,expires_at}',"
+                " to_jsonb(CAST(now() - interval '1 minute' AS text)))"
+                " WHERE id = CAST(:i AS uuid)"), {"i": first})
+        late = await _delegated(w.a, ANA, w.pkg, "remove", None, first)
+        new = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        return first, late, new
+
+    first, late, new = _run(w, go)
+    status, (detail, _) = late
+    assert (status, detail["code"]) == (409, "request_expired")
+    assert _record_row(w, w.rec) is not None
+    assert new != first
+    reasons = [r.get("reason") for r in _ran(w, w.pkg, "remove")]
+    assert "request_expired" in reasons

@@ -88,14 +88,24 @@ write, and a failed audit fails the write.
 (``gateway/app_requests.py``) holds the card, and the door builds no second
 store.
 
-* The ask. A delegated call with no ``request_id`` in the query reads the
-  body, checks its keys, and calls ``open_request`` in the session of the
-  second check. The source and the app are ``studio``, the subject is the
-  package id, the op is the action id, and the class comes from
-  ``OBJECT_OP_CLASSES``. The call is :func:`_door_call`: the door path, the
-  ``uses`` of the action in the query, and the body. The key is the digest of
-  that call, so a retry gives the first request. The answer is 202 ``{state,
-  request_id, expires_at}``, and nothing runs.
+* Only an explicit call is delegated (fix round 1). The query must hold the
+  ask marker ``ask=1`` (:data:`ASK_MARKER`), or name a ``request_id``. Each
+  other call that is not direct keeps 403 ``approval_required``. So an
+  unsigned Save of the member's own screen never gets a 202 that reads as
+  saved. The marker is in no digest and no binding.
+* The ask. A delegated call with ``ask=1`` reads the body, checks its keys,
+  and calls ``open_request`` in the session of the second check. The source
+  and the app are ``studio``, the subject is the package id, the op is the
+  action id, and the class comes from ``OBJECT_OP_CLASSES``. The call is
+  :func:`_door_call`: the door path, the ``uses`` of the action in the query,
+  and the body. The answer is 202 ``{state, request_id, expires_at}``, and
+  nothing runs.
+* The key (fix round 1). The first key is the digest of the call, so a retry
+  of an open request (awaiting, or approved and not spent) gives that request.
+  A closed request (spent, declined or expired) gives the key of the next
+  generation, which names the closed request (:func:`_ask_key`). So an ask
+  after a close opens ONE new request, also when two asks race: both walk the
+  same keys, and the lock of ``open_request`` makes the second one replay.
 * The resend. A delegated call with ``request_id`` reads no byte of its body.
   In ONE session it reads the stored call with ``read_request``, computes the
   digest of :func:`_door_call` from it, calls ``spend``, runs the stored write
@@ -136,9 +146,10 @@ from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
 
-__all__ = ["DELEGATED_EXECUTORS", "DIRECT_EXECUTORS", "DOOR_TEMPLATE", "LIST_INPUT_KEYS",
-           "MAX_AUDIT_TEXT", "MAX_BODY_BYTES", "OPEN_EXECUTORS", "REFUSALS", "REQUEST_APP",
-           "REQUEST_VIA", "SPEND_REFUSALS", "WRITERS_PER_ORG", "WRITERS_TOTAL", "router"]
+__all__ = ["ASK_MARKER", "DELEGATED_EXECUTORS", "DIRECT_EXECUTORS", "DOOR_TEMPLATE",
+           "LIST_INPUT_KEYS", "MAX_ASK_GENERATIONS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
+           "OPEN_EXECUTORS", "REFUSALS", "REQUEST_APP", "REQUEST_VIA", "SPEND_REFUSALS",
+           "WRITERS_PER_ORG", "WRITERS_TOTAL", "router"]
 
 _log = get_logger("gateway.studio.invoke")
 
@@ -169,6 +180,19 @@ DOOR_TEMPLATE = "/studio/apps/{app_id}/actions/{action}"
 #: The modes of a delegated call: ``ask`` opens a card, and ``spend`` runs the
 #: stored call of an approved request.
 _DELEGATED_MODES = ("ask", "spend")
+
+#: The query marker of an ask (fix round 1): ``ask=1``. A call with no proof
+#: opens a card only with it. B2c-2b's tools send it, and the member's own
+#: screen never does. It is in no digest and no binding.
+ASK_MARKER = ("ask", "1")
+
+#: The states of a request that an ask does not replay: a new ask after one of
+#: them opens the next generation (:func:`_ask_key`).
+_CLOSED_STATES = frozenset({"done", "declined", "expired"})
+
+#: The most closed requests of one exact change that an ask walks past. Each
+#: step is one replay read under the lock of ``open_request``.
+MAX_ASK_GENERATIONS = 100
 
 #: The most writes in flight for one org, and in the process (B2c-1). The door
 #: counts them BEFORE it opens a session, so a call past the cap holds no
@@ -223,19 +247,34 @@ REFUSALS: dict[str, str] = {
 #: ``acb_auth.app_requests.classify_refusal`` gives.
 SPEND_REFUSALS: dict[str, tuple[int, str, str]] = {
     "not_found": (404, "request_not_found",
-                  "This door finds no request of yours with this id, so ask for the change again."),
-    "declined": (403, "request_declined", "The member declined this change, so it does not run."),
+                  "This door finds no request of yours with this id, so send the action "
+                  "again with ask=1 for a new approval."),
+    "declined": (403, "request_declined",
+                 "The member declined this change, so send the action again with ask=1 "
+                 "only if the member wants it now."),
     "awaiting": (409, "request_awaiting",
-                 "The member did not approve this change yet, so send it again after the approval."),
-    "spent": (409, "request_spent", "This approval ran once already, so ask for a new approval."),
-    "expired": (409, "request_expired", "This approval expired, so ask for the change again."),
+                 "The member did not approve this change yet, so send it again with its "
+                 "request_id after the approval."),
+    "spent": (409, "request_spent",
+              "This approval ran once already, so send the action again with ask=1 for a "
+              "new approval."),
+    "expired": (409, "request_expired",
+                "This approval expired, so send the action again with ask=1 for a new "
+                "approval."),
     "mismatch": (409, "request_mismatch",
-                 "This approval is for another change, so ask for this change again."),
+                 "This approval is for another change, so send this action again with "
+                 "ask=1 for its own approval."),
 }
 
 #: The answer of a refusal of ``open_request`` that names no code of its own.
 ASK_REFUSED = "request_refused"
 ASK_AGAIN = "The door cannot open this request now, so send the change again."
+
+#: The refusal of an ask past :data:`MAX_ASK_GENERATIONS`.
+ASK_LIMIT = "ask_limit"
+ASK_LIMIT_MESSAGE = (
+    "A caller asked for this exact change too many times, so change the input before you "
+    "ask again.")
 
 #: The title of the card of each delegated write. The server writes it from
 #: the object name, so the card shows no text that the caller chose.
@@ -688,6 +727,36 @@ def _door_call(pid: str, action: str, uses: str | None, body: Any) -> dict[str, 
     }
 
 
+def _ask_key(digest: str, closed: str | None) -> str:
+    """The idempotency key of one generation of an ask (fix round 1). The first
+    generation is the digest of the call. Each later one names the closed
+    request before it. So a retry of an open request replays it, and an ask
+    after a close opens one new request. The key stays inside the door: the
+    replay of ``open_request`` does not change for its MCP callers."""
+    return digest if closed is None else f"{digest}:after:{closed}"
+
+
+async def _open_generation(db: Any, *, org: str, member: str, package: packages_store.Package,
+                           ref: UsesRef, call: dict[str, Any], binding: str,
+                           out: _Outcome) -> app_requests.Opened | None:
+    """The open request of this exact change, or a new one after the last
+    closed one. None past :data:`MAX_ASK_GENERATIONS`. Each step runs
+    ``open_request``, which locks the scope of the member and the app first.
+    So two asks at once walk the same keys, and the second one replays."""
+    digest = store.call_digest(call, binding)
+    closed: str | None = None
+    for _ in range(MAX_ASK_GENERATIONS):
+        opened = await app_requests.open_request(
+            db, org=org, member=member, source="studio", app=REQUEST_APP,
+            subject=package.id, op=out.action, cls=str(out.cls), call=call,
+            idempotency_key=_ask_key(digest, closed), connection_id=None,
+            via=REQUEST_VIA, title=_card_title(ref), app_name=package.name)
+        if opened.created or opened.state not in _CLOSED_STATES:
+            return opened
+        closed = opened.request_id
+    return None
+
+
 def _card_title(ref: UsesRef) -> str:
     """The title of the card, from the verb and the object name."""
     return CARD_TITLES[str(ref.op)].format(object=ref.object)
@@ -738,16 +807,17 @@ async def _run_ask(db: Any, org: str, member: str, package: packages_store.Packa
         call = _door_call(package.id, out.action, out.uses, body)
         binding = store.studio_binding(member, REQUEST_APP, package.id)
         try:
-            out.asked = await app_requests.open_request(
-                db, org=org, member=member, source="studio", app=REQUEST_APP,
-                subject=package.id, op=out.action, cls=str(out.cls), call=call,
-                idempotency_key=store.call_digest(call, binding), connection_id=None,
-                via=REQUEST_VIA, title=_card_title(ref), app_name=package.name)
+            out.asked = await _open_generation(db, org=org, member=member, package=package,
+                                               ref=ref, call=call, binding=binding, out=out)
         except HTTPException as exc:
             # Each refusal of the store comes before its first write.
             out.fail = _ask_refused(exc)
         else:
-            out.request_id = out.asked.request_id
+            if out.asked is None:
+                out.fail = _Fail("refused", ASK_LIMIT, HTTPException(
+                    status_code=429, detail={"code": ASK_LIMIT, "message": ASK_LIMIT_MESSAGE}))
+            else:
+                out.request_id = out.asked.request_id
     await record_app_audit_in(db, app_id=package.id, user_email=member, kind="action",
                               detail=_audit_detail(out))
     out.audited = True
@@ -810,6 +880,13 @@ def _request_id(request: Request) -> str | None:
     in the session's org, under the binding of this package."""
     found = request.query_params.get("request_id")
     return None if found is None else str(found)
+
+
+def _asks(request: Request) -> bool:
+    """True when the query holds the ask marker ``ask=1`` exactly (fix round
+    1). Any other value is no ask."""
+    key, value = ASK_MARKER
+    return request.query_params.get(key) == value
 
 
 async def _run_executor(request: Request, user: UserContext, pid: str, action: str,
@@ -983,10 +1060,13 @@ async def invoke_action(
     out = _Outcome(action=action)
     # The proof is read once, here, before any body read (B2c-1).
     direct = _is_direct(request, user)
-    # B2c-2a: each other call of a write is delegated, and asks the member
-    # first. While APP_REQUESTS_ORGS leaves the org out, it gets today's 403.
+    # B2c-2a: a call that is not direct is delegated only when it asks for a
+    # card with ask=1, or names a request (fix round 1). While APP_REQUESTS_ORGS
+    # leaves the org out, or with no marker, it gets today's 403. So an
+    # unsigned Save of the member's own screen never gets a 202.
     delegated = not direct and app_requests.requests_allowed(user.organization_id)
     request_id = _request_id(request) if delegated else None
+    delegated = delegated and (request_id is not None or _asks(request))
     async with _tenant_session() as db:
         package, ref = await _check(db, user.email, pid, action, out, direct, delegated)
     if ref is not None and out.uses is not None and ref.source != "object":

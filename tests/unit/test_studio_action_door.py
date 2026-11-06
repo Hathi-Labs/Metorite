@@ -1054,7 +1054,8 @@ class TestTheTables:
         messages = {**invoke.REFUSALS, "catalog_unavailable": invoke.CATALOG_DOWN,
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
                     "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP,
-                    "request_refused": invoke.ASK_AGAIN}
+                    "request_refused": invoke.ASK_AGAIN,
+                    "ask_limit": invoke.ASK_LIMIT_MESSAGE}
         # B2c-2a: each refused spend has its own code and one sentence.
         messages.update({code: text for _, code, text in invoke.SPEND_REFUSALS.values()})
         for code, message in messages.items():
@@ -1598,12 +1599,16 @@ def rw(dw, monkeypatch):
     ``classify_refusal`` into ``world.log``."""
     monkeypatch.setattr(get_settings(), "app_requests_orgs", "*")
     dw.opened, dw.spends, dw.stored_body, dw.spend_ok = [], [], None, True
+    # The answers of ``open_request``, oldest first: (request id, state,
+    # created). The last one repeats.
+    dw.open_answers = [(RID, "awaiting", True)]
 
     async def _open(db: Any, **kw: Any) -> Any:
         dw.log.append("open_request")
         dw.opened.append((db, kw))
-        return app_requests.Opened(request_id=RID, run_id=str(uuid.uuid4()), state="awaiting",
-                                   expires_at="2026-11-07T00:00:00+00:00", created=True)
+        rid, state, created = dw.open_answers[min(len(dw.opened), len(dw.open_answers)) - 1]
+        return app_requests.Opened(request_id=rid, run_id=str(uuid.uuid4()), state=state,
+                                   expires_at="2026-11-07T00:00:00+00:00", created=created)
 
     async def _read(db: Any, **kw: Any) -> Any:
         dw.log.append("read_request")
@@ -1630,12 +1635,16 @@ def rw(dw, monkeypatch):
 
 
 def _request(world: Any, payload: Any = None, request_id: str | None = None,
-             fails: bool = False) -> Any:
+             fails: bool = False, ask: bool = True) -> Any:
     """A request of the handler with *payload* as its body and *request_id* in
-    its query. With *fails*, a read of the body raises."""
+    its query. With no *request_id*, the query holds the ask marker ``ask=1``
+    unless *ask* is False. With *fails*, a read of the body raises."""
     raw = b"" if payload is None else json.dumps(payload).encode()
     body = _Body(world, raw, fails=fails)
-    body.query_params = {} if request_id is None else {"request_id": request_id}
+    if request_id is not None:
+        body.query_params = {"request_id": request_id}
+    else:
+        body.query_params = {"ask": "1"} if ask else {}
     return body
 
 
@@ -1751,3 +1760,58 @@ class TestTheDelegatedWrites:
         assert r.status_code == 200, r.text
         assert not {"open_request", "read_request", "spend"} & set(rw.log)
         assert rw.writes[0][3][0].data == BODIES["add"]["data"]
+
+    # ── Fix round 1 ─────────────────────────────────────────────────────────
+
+    @pytest.mark.parametrize("action", ["add", "change", "remove"])
+    @pytest.mark.parametrize("ask", [None, "0", "true", ""])
+    def test_a_write_with_no_ask_marker_is_403_and_reads_no_byte(self, rw, action, ask):
+        """The flag is on. A call with no proof opens a card only when its
+        query holds ``ask=1``, or names a request. Each other value is today's
+        403, so an unsigned Save of the member's screen never reads as saved."""
+        pid, _, _ = _setup(rw)
+        request = _request(rw, BODIES[action], fails=True, ask=False)
+        if ask is not None:
+            request.query_params = {"ask": ask}
+        status, detail = _delegated(rw, pid, action, request)
+        assert (status, detail["code"]) == (403, "approval_required")
+        assert not {"body", "open_request", "read_request", "spend"} & set(rw.log)
+
+    def test_the_ask_marker_is_in_no_digest_and_no_binding(self, rw):
+        pid, _, _ = _setup(rw)
+        status, _got = _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        assert status == 202
+        kw = rw.opened[0][1]
+        assert "ask" not in json.dumps(kw["call"]["query"])
+        binding = request_store.studio_binding(ANA, "studio", pid)
+        assert kw["idempotency_key"] == request_store.call_digest(kw["call"], binding)
+
+    @pytest.mark.parametrize("closed", ["done", "declined", "expired"])
+    def test_an_ask_after_a_closed_request_opens_the_next_generation(self, rw, closed):
+        """The first key replays a closed request, so the door asks again with
+        a key that names it. A retry walks the same keys, so two asks at once
+        meet on one key and the store opens one request."""
+        pid, _, _ = _setup(rw)
+        old, new = str(uuid.uuid4()), str(uuid.uuid4())
+        rw.open_answers = [(old, closed, False), (new, "awaiting", True)]
+        status, got = _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        assert (status, got["request_id"], got["state"]) == (202, new, "awaiting")
+        (first, second) = [kw["idempotency_key"] for _, kw in rw.opened]
+        assert first != second and old in second
+        assert rw.opened[0][1]["call"] == rw.opened[1][1]["call"]
+
+    @pytest.mark.parametrize("state", ["awaiting", "approved"])
+    def test_a_retry_of_an_open_request_replays_it(self, rw, state):
+        pid, _, _ = _setup(rw)
+        rw.open_answers = [(RID, state, False)]
+        status, got = _delegated(rw, pid, "add", _request(rw, BODIES["add"]))
+        assert (status, got["request_id"], got["state"]) == (202, RID, state)
+        assert len(rw.opened) == 1
+
+    def test_each_spend_refusal_names_a_step_that_works(self):
+        """A closed request opens a new one on an ask (fix round 1), so each
+        refusal of a closed or a wrong request says to ask with ``ask=1``. An
+        open request says to wait and send the ``request_id``."""
+        for why, (_, code, text) in invoke.SPEND_REFUSALS.items():
+            step = "request_id" if why == "awaiting" else "ask=1"
+            assert step in text, code
