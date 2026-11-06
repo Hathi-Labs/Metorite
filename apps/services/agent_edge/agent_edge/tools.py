@@ -1973,7 +1973,7 @@ _STRANDED_SCHEMA = _object({
 #: Task 1045a (``agent_coordination.md`` §3.2). The wait of a run that reads
 #: ``waiting``: what it waits on, when the wait ends, and the agent's note.
 #: The note is the agent's own text, so (U).
-WAITING_ON: tuple[str, ...] = ("subagents", "ci", "review", "deploy", "member")
+WAITING_ON: tuple[str, ...] = agent_oauth.RUN_WAITING_ON
 _WAITING_SCHEMA = _object({
     "on": {"type": "string", "enum": list(WAITING_ON)},
     "until": _NULLABLE_STRING,
@@ -5696,7 +5696,7 @@ START_AGENT_RUN = Tool(
 #: Task 1045a. The longest wait in minutes, as the gateway holds it
 #: (``filters.AGENT_RUN_WAITING_MAX_MIN``). A shorter lease lowers the cap on
 #: the gateway, which answers the code of :data:`WAITING_TEXTS`.
-MAX_WAITING_MINUTES = 120
+MAX_WAITING_MINUTES = agent_oauth.RUN_WAITING_MAX_MIN
 #: The longest note of a wait (``agent_runs.MAX_WAITING_NOTE``).
 MAX_WAITING_NOTE = 200
 #: The types of an activity that take ``waiting``.

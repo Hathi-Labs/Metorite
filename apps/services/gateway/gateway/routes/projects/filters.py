@@ -24,6 +24,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from acb_auth import agent_oauth as _agent_oauth
 from acb_common import get_settings
 from acb_common.db import current_tenant
 from fastapi import HTTPException
@@ -974,9 +975,11 @@ def agent_run_lease_s() -> int:
 
 #: What a `waiting` line may wait on. The CHECK `pm_agent_runs_waiting_on` of
 #: the migration lists the same five.
-AGENT_RUN_WAITING_ON: tuple[str, ...] = ("subagents", "ci", "review", "deploy", "member")
+#: The one copy is ``acb_auth.agent_oauth.RUN_WAITING_ON``, which the edge
+#: reads too.
+AGENT_RUN_WAITING_ON: tuple[str, ...] = _agent_oauth.RUN_WAITING_ON
 #: The longest wait, in minutes (D140.8).
-AGENT_RUN_WAITING_MAX_MIN = 120
+AGENT_RUN_WAITING_MAX_MIN = _agent_oauth.RUN_WAITING_MAX_MIN
 
 
 def agent_run_waiting_cap_min() -> int:
