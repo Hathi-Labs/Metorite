@@ -70,10 +70,22 @@ as each other reader does.
 org takes ``pg_advisory_xact_lock`` on ``package_install:<org>``. Each read
 that decides the write runs after it, so two installs of one org run one at
 a time. Two claims of one key then give one winner and one
-:class:`ClaimTaken`. The lock ends with the caller's transaction. A caller
-that also locks the row of the app in ``apps`` in the same transaction calls
-:func:`install` first, so the org lock always comes first (advisory: no fence
-holds this order yet).
+:class:`ClaimTaken`. The lock ends with the caller's transaction.
+
+⚠️ **The lock order (PKG-8a).** The first caller is the Studio publish. It
+holds the row of the app in ``apps`` ``FOR UPDATE``, then the org lock of
+``objects_store``, and only then calls :func:`set_version` or
+:func:`install`. The INSERT of an install checks its FK, and that check
+waits for a ``FOR UPDATE`` on the ``apps`` row. So a second caller that does
+not hold the row must lock it (``FOR KEY SHARE``) before it calls here.
+Else it can hold this lock and wait for the row while a publish holds the
+row and waits for this lock. PKG-8b adds the second caller (advisory: no
+fence holds this order yet).
+
+**A new version (PKG-8a).** :func:`set_version` moves an install to a new
+version and replaces its claims. It holds the one UPDATE of
+``package_install.version`` and a DELETE of the claims of one install. It
+writes the new claims with the INSERT of :func:`install`.
 
 **READ COMMITTED.** The conflict reads rely on READ COMMITTED, so the
 snapshot of each read comes after the lock. Under REPEATABLE READ a second
@@ -591,3 +603,95 @@ async def install(
     return Install(
         id=install_id, app_id=app, version=ver, scope_kind=kind, scope_subject=subject,
         installed_by=member, ends_at=ends, contributions=tuple(wanted))
+
+
+# ── The version of an install (PKG-8a) ──────────────────────────────────────
+
+#: The install of one app at one scope in the bound org, with the row lock.
+_INSTALL_AT_SCOPE_SQL = (
+    "SELECT CAST(id AS text), installed_by, ends_at FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:app AS uuid) "
+    "AND scope_kind = :kind AND scope_subject = :subject FOR UPDATE"
+)
+
+#: The new version of one install. The state and the end date stay.
+_SET_VERSION_SQL = (
+    "UPDATE package_install SET version = :version, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid)"
+)
+
+#: The claims of one install, before :func:`set_version` writes the new ones.
+_CLEAR_CLAIMS_SQL = (
+    "DELETE FROM package_contribution "
+    f"WHERE organization_id = {_BOUND_ORG} AND install_id = CAST(:install AS uuid)"
+)
+
+
+async def set_version(
+    db: Any,
+    *,
+    app_id: str,
+    version: int | None,
+    scope_subject: str,
+    scope_kind: str,
+    contributions: Sequence[Contribution],
+) -> Install | None:
+    """Move the install of *app_id* at one scope to *version*, with new claims.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    A publish calls this first, and calls :func:`install` only when it
+    answers None: the app has no install at the scope, and nothing is
+    written. So a second publish never gets :class:`AlreadyInstalled`.
+
+    The function takes the org lock of :func:`install`, then the row lock of
+    the install. It checks the new claims as :func:`install` does. The old
+    claims of the install are of the same app, so they never conflict. Then
+    it writes the version and replaces each claim. The state, the end date
+    and ``installed_by`` stay, so a paused install stays paused. Each refusal
+    raises an :class:`InstallError` and writes nothing. The store does not
+    check that the member may change the install. The routes own that check.
+
+    ⚠️ The lock order of a publish is the ``apps`` row ``FOR UPDATE``, then
+    the org lock of ``objects_store``, then this org lock. A second caller
+    that does not hold the ``apps`` row must lock it before it calls here or
+    :func:`install`. Else the FK check of an INSERT waits for the row, while
+    a publish waits for the org lock, and Postgres ends one with a deadlock.
+    """
+    ver = _version(version)
+    # A private install belongs to its subject, so the subject is the member
+    # of the check. A bad subject gives "", and _scope refuses it.
+    try:
+        owner = (normalize_grant_subject(str(scope_subject))
+                 if _plain(scope_subject, limit=MAX_SUBJECT_BYTES) else "")
+    except ValueError:
+        owner = ""
+    kind, subject = _scope(scope_subject, scope_kind, owner, ver)
+    app = _app_id(app_id)
+    claims = _claims(contributions)
+    bound = (await db.execute(text(_ORG_SQL))).first()
+    org, level = (bound[0], bound[1]) if bound is not None else (None, None)
+    if not org:
+        raise TenantUnbound("a new version needs a session bound to a tenant")
+    if level != ISOLATION:
+        raise RuntimeError(
+            f"a new version needs a {ISOLATION} transaction, and this one is {level}")
+    # The lock comes first, as in install. Each read below decides the write.
+    await db.execute(text(_LOCK_SQL), {"key": f"package_install:{org}"})
+    row = (await db.execute(text(_INSTALL_AT_SCOPE_SQL), {
+        "app": app, "kind": kind, "subject": subject})).first()
+    if row is None:
+        return None
+    install_id = str(row[0])
+    wanted = [c for c, _ in claims]
+    _check_system(wanted)
+    await _check_held(db, kind, subject, app, wanted)
+    await db.execute(text(_SET_VERSION_SQL), {"install": install_id, "version": ver})
+    await db.execute(text(_CLEAR_CLAIMS_SQL), {"install": install_id})
+    if claims:
+        await db.execute(text(_INSERT_CONTRIBUTION_SQL), [
+            {"install": install_id, "point": c.point, "key": c.key, "payload": payload,
+             "position": c.position}
+            for c, payload in claims])
+    return Install(
+        id=install_id, app_id=app, version=ver, scope_kind=kind, scope_subject=subject,
+        installed_by=str(row[1]), ends_at=row[2], contributions=tuple(wanted))
