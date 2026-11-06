@@ -3,6 +3,7 @@ import { cacheKey, invalidate } from "@/lib/dataCache";
 import type { ParentFact, PullRequestFact } from "@/lib/taskCard";
 
 import {
+  type AgentActivity,
   type AgentPromptBody,
   type AgentRun,
   type AgentRunDetail,
@@ -12,6 +13,7 @@ import {
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
@@ -3226,6 +3228,17 @@ export const agentRunsApi = {
     call<ResumeResult & { run: AgentRun }>(
       `agent-runs/${encodeURIComponent(runId)}/resume`,
       { method: "POST", body: JSON.stringify(resumeBody(idempotencyKey)) },
+    ),
+
+  /**
+   * SW-43. The run's member takes back an answer that no agent has read.
+   * 404 while the gateway flag is off, 403 for any other caller, 409 when the
+   * agent already has the answer. A retry with the same key writes once.
+   */
+  withdrawAnswer: (runId: string, body: WithdrawBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; withdrawn: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/withdraw`,
+      { method: "POST", body: JSON.stringify(body) },
     ),
 
   /**

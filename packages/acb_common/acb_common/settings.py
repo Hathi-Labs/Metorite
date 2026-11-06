@@ -2030,6 +2030,12 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.runs_enabled` is the one reader. 🔴 A flip on a
     # box is gate `enforcement-flip`.
     agent_runs_enabled: bool = False
+    # SW-43 (spec agent_coordination.md §3.9): a member takes back an answer
+    # to an agent's question, while no agent activity follows it. Default
+    # OFF. While it is false, the withdraw route answers 404 and the run wire
+    # has no `answer` field. `acb_auth.agent_oauth.answer_change_enabled` is
+    # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_answer_change_enabled: bool = False
     # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
     # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
     # still sends is read as no session (never a 404), and no
