@@ -31,7 +31,7 @@ describe("the sidebar holds places to work, by team", () => {
       ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
-      ["studio", ["/chat"]],
+      ["studio", ["/chat", "/studio"]],
       ["admin", ["/approvals", "/settings/organization", "/settings/appearance", "/integrations"]],
     ]);
   });
@@ -296,7 +296,7 @@ describe("All apps lists every app the member holds, never a preference", () => 
       ["personal", ["/calendar", "/email", "/whatsapp", "/artifacts"]],
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
-      ["studio", ["/chat"]],
+      ["studio", ["/chat", "/studio"]],
       ["admin", ["/approvals", "/settings/organization", "/settings/appearance", "/integrations"]],
     ]);
   });

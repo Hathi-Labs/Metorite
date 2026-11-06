@@ -886,7 +886,7 @@ def _client(world: SimpleNamespace, org: str | None = ORG, email: str = ANA) -> 
     def _user() -> UserContext:
         world.org = org
         return UserContext(email=email, role=UserRole.EMPLOYEE,
-                           access=build_access(["feature:workflows"]), organization_id=org)
+                           access=build_access(["feature:studio"]), organization_id=org)
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app)
@@ -911,7 +911,7 @@ class _Request:
 
 def _user(org: str = ORG, email: str = ANA) -> UserContext:
     return UserContext(email=email, role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:workflows"]), organization_id=org)
+                       access=build_access(["feature:studio"]), organization_id=org)
 
 
 @pytest.mark.parametrize("value", ["", "other-org", OTHER])

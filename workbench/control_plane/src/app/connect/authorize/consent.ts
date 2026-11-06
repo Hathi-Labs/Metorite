@@ -127,16 +127,17 @@ export function isContinueView(value: unknown): value is ContinueView {
 }
 
 export const OFFLINE_ACCESS = "offline_access";
+export const READ_SCOPE = "projects:read";
 
 /** The words of each scope. A scope the page does not know shows its name. */
 export const SCOPE_COPY: Record<string, { label: string; detail: string }> = {
   "projects:read": {
     label: "Read your projects and tasks",
-    detail: "Only the projects and tasks you can see in Metorite.",
+    detail: "Needed for everything below. Only what you can see in Metorite.",
   },
   "projects:write": {
     label: "Change your projects and tasks",
-    detail: "Create and update tasks as you, where you may change them.",
+    detail: "As you, where you may change them.",
   },
   "context:read": {
     label: "Read company context",
@@ -182,50 +183,31 @@ export function canApprove(view: CheckView, chosen: ReadonlySet<string>): boolea
   return grantedScopes(view, chosen).some((s) => s !== OFFLINE_ACCESS);
 }
 
-/** The most projects the picker lists. The gateway caps pins at 50 too. */
-export const MAX_PIN_CHOICES = 50;
-
-export interface PinChoice {
-  id: string;
-  name: string;
-  depth: number;
-}
-
-interface TreeNode {
-  id?: unknown;
-  name?: unknown;
-  archived_at?: unknown;
-  children?: unknown;
-}
-
 /**
- * The projects a member may pin, in tree order, at most 50.
+ * Turn one scope on or off.
  *
- * `GET /projects/tree` never holds a personal project (`tree.py` reads
- * `personal_owner IS NULL`), so every row here is a team project. An archived
- * node and its subtree stay out. A pin covers its subtree at the gateway
- * (`external_agent_access.md` §7.3), so a space or a folder is a fair pin.
+ * "Read your projects and tasks" is needed for everything below it, so turning
+ * it off clears the others, and turning another one on also turns it on (when
+ * the agent asked for it). `offline_access` has no box and never changes.
  */
-export function pinChoices(tree: unknown, limit = MAX_PIN_CHOICES): PinChoice[] {
-  const rows = (tree as { rows?: unknown } | null)?.rows;
-  const out: PinChoice[] = [];
-  const walk = (nodes: unknown, depth: number) => {
-    if (!Array.isArray(nodes)) return;
-    for (const node of nodes as TreeNode[]) {
-      if (out.length >= limit) return;
-      if (!node || typeof node.id !== "string" || typeof node.name !== "string") continue;
-      if (node.archived_at) continue;
-      out.push({ id: node.id, name: node.name, depth });
-      walk(node.children, depth + 1);
-    }
-  };
-  walk(rows, 0);
-  return out;
+export function toggleScope(view: CheckView, chosen: ReadonlySet<string>, scope: string): Set<string> {
+  const next = new Set(chosen);
+  if (scope === OFFLINE_ACCESS) return next;
+  if (next.has(scope)) {
+    next.delete(scope);
+    if (scope === READ_SCOPE) next.clear();
+    return next;
+  }
+  next.add(scope);
+  if (view.scopes.includes(READ_SCOPE)) next.add(READ_SCOPE);
+  return next;
 }
 
 export interface Choice {
   scopes: ReadonlySet<string>;
   pins: readonly string[];
+  /** The left-out list of D-EA-12. The gateway reads it next to the pins. */
+  leftOut: readonly string[];
   includePersonal: boolean;
 }
 
@@ -236,6 +218,7 @@ export function approveBody(request: AuthorizeRequest, view: CheckView, choice: 
     consent_ticket: view.consent_ticket,
     scopes: grantedScopes(view, choice.scopes),
     pinned_projects: [...choice.pins],
+    left_out_projects: [...choice.leftOut],
     include_personal: choice.includePersonal,
   };
 }

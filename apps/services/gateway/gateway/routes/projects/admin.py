@@ -58,6 +58,7 @@ from gateway.routes.projects.core import (
     router,
     row_to_dict,
     shadowed,
+    status_order_sql,
     status_owner_id,
     status_scope_ids,
     update_row,
@@ -75,7 +76,7 @@ class StatusIn(BaseModel):
     position: int | None = None
     category: str | None = None
     #: ⚠️ ``is_default`` is GONE from a status (owner directive 2026-09-06).
-    #: The first lane by position is where work starts — see
+    #: The first open lane in stage order is where work starts — see
     #: ``core.load_default_status`` for why the flag was the wrong answer.
     #: Pydantic drops an unknown field, so a client still sending one is
     #: ignored rather than refused, which is what R6 asks of the release that
@@ -133,8 +134,8 @@ async def _clear_other_defaults(
     a two-step operation that is broken in between.
 
     ⚠️ **Statuses no longer come here at all** (owner directive 2026-09-06).
-    A status has no default any more: the first lane by position is where work
-    starts, and the drag that orders the lanes is the whole control. See
+    A status has no default any more: the first open lane in stage order is where
+    work starts, and the drag that orders the lanes is the whole control. See
     ``core.load_default_status``, which records why the flag lost — the owner
     could not see it, and on the dev database it was set wrong on every root.
 
@@ -163,7 +164,7 @@ async def list_statuses(
         rows = (await db.execute(
             text(
                 "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
-                "ORDER BY position, name"
+                f"ORDER BY {status_order_sql()}"
             ),
             {"root": root},
         )).fetchall()
@@ -503,7 +504,7 @@ async def _lanes_of(db: Any, owner_id: str) -> list[Any]:
     return list((await db.execute(
         text(
             "SELECT * FROM pm_task_statuses "
-            " WHERE project_id = CAST(:owner AS uuid) ORDER BY position, name"
+            f" WHERE project_id = CAST(:owner AS uuid) ORDER BY {status_order_sql()}"
         ),
         {"owner": owner_id},
     )).fetchall())

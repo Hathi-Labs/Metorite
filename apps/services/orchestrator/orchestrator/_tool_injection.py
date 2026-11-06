@@ -3364,12 +3364,37 @@ def _studio_open() -> bool:
         return False
 
 
+async def _studio_member_open() -> bool:
+    """True when the org is open (:func:`_studio_open`) AND the member of the
+    run holds ``feature:studio`` (STU-J1-1).
+
+    The gateway refuses a Studio route to a guest and to a member with a deny
+    override, but ``studio_draft``, ``studio_outline``, ``studio_describe``
+    and ``studio_interview`` call no route. So the pack needs the same check.
+    The member is the verified member of the run, through
+    ``in_app_path.member_features`` (one cached ``resolve_access`` read). It
+    fails closed: no member, an inactive member or a failed read is closed.
+    A closed org reads no member. Fence: ``tests/unit/test_tool_packs_registry.py``.
+    """
+    if not _studio_open():
+        return False
+    try:
+        from orchestrator import in_app_path
+
+        features = await in_app_path.member_features()
+    except Exception as exc:  # fail closed
+        _log.info("executor.studio_member_unread", error=str(exc)[:200])
+        return False
+    return features is not None and "studio" in features
+
+
 async def _drop_pack_unless_studio(
     tools: list[Any], dropped: list[str], *, held: bool = False,
 ) -> tuple[list[Any], list[str]]:
-    """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks
-    (STU-G1, :func:`_studio_open`)."""
-    if _studio_open():
+    """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks,
+    and for a member without ``feature:studio`` (STU-G1 and J1-1,
+    :func:`_studio_member_open`)."""
+    if await _studio_member_open():
         return tools, dropped
     return [], [*dropped, *(_tool_name(t) for t in tools)]
 
@@ -3846,7 +3871,10 @@ async def _apply_tool_packs(
     current = base + len(added) - (len(pool) - len(kept))
     plan = tool_packs.LoaderPlan()
     if offer_loader:
-        # RX-1: a sticky pack gives way to a load, so the plan counts it free.
+        # RX-1: a spare pack gives way to a load, so the plan counts it free:
+        # an old sticky pack, and (task 1747, D169 item 8 as amended) a pack
+        # that came in only by the words. For the Projects owner the plan
+        # also reaches the owner through it.
         built = {b.slug: len(b.tools) for b in builds}
         plan = await _plan_pack_loader(
             agent, allow, [b.slug for b in builds], builds=builds, current=current,
@@ -3863,7 +3891,10 @@ async def _apply_tool_packs(
     except RuntimeError as exc:
         _log.error("executor.packs_refused", reason="persona_swap", error=str(exc)[:200])
         return None
-    record = tool_packs.PackRun.of(turn, choice, loaded, via)
+    # Task 1747: the record keeps the sticky packs that left at the start of
+    # this turn, and which of them the loader offers. The context of the turn
+    # names them (``executor._pack_left_block``, ``tool_packs.left_line``).
+    record = tool_packs.PackRun.of(turn, choice, loaded, via, offered=plan.offered)
     replaced = frozenset(record.replaced)
     # OA-8f: the count that the run sends once this apply is done: the base
     # (with the load tool only when the plan offers it), the pack tools, less
@@ -3966,8 +3997,9 @@ async def _plan_pack_loader(
     the owner's delegation text exactly once. The MCP rule reads the registry
     (:func:`_mcp_may_attach`) and only for a pack of an owner that reads
     stranger text, and only while the run holds none of them. *spare* names
-    the sticky packs that can give way to a load, each with its tool count
-    (RX-1)."""
+    the packs that can give way to a load, each with its tool count (RX-1,
+    ``PackRun.spare``). For the Projects owner the plan reaches through them
+    (task 1747)."""
     from acb_skills import tool_packs
 
     if not _loader_agent_ok(agent):
@@ -3986,6 +4018,9 @@ async def _plan_pack_loader(
         mcp = await _mcp_may_attach(
             agent, agent_name, no_egress=no_egress, is_authorized=is_authorized,
             held_untrusted=any(b.owner in UNTRUSTED_INPUT_AGENTS for b in builds))
+    # STU-G1 and J1-1: the one check of the studio pack filter, read once for
+    # the plan. A run whose packs hold no ``studio`` reads no member.
+    studio_ok = "studio" in allow and await _studio_member_open()
 
     def _available(owner: str) -> bool:
         if _pack_owner_module(owner) is None:
@@ -3994,9 +4029,10 @@ async def _plan_pack_loader(
         # reach the owner and the specialist stays (``_drop_pack_covered``).
         if owner == "projects-assistant" and _run_covered(owner):
             return False
-        # STU-G1: an org that STUDIO_ORGS lacks gets an empty studio pack
-        # (``_drop_pack_unless_studio``), so the loader cannot offer it.
-        if owner == "studio-builder" and not _studio_open():
+        # STU-G1 and J1-1: an org that STUDIO_ORGS lacks, and a member without
+        # feature:studio, get an empty studio pack (``_drop_pack_unless_studio``),
+        # so the loader cannot offer it.
+        if owner == "studio-builder" and not studio_ok:
             return False
         if owner in tool_packs.NO_PERSONA_BULLETS and owner not in bullets:
             return True  # by design the persona has no text of this owner (OA-8a)

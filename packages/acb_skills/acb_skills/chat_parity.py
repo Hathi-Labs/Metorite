@@ -373,6 +373,12 @@ COVERED: dict[str, str | tuple[str, str]] = {
 
 #: An action -> (kind, reason). The kind is a key of :data:`EXEMPT_KINDS`.
 EXEMPT: dict[str, tuple[str, str]] = {
+    # ── Shell ──
+    "GET /api/shell/manifest": (
+        "stream",
+        "The shell reads the installed packages to draw the sidebar and the command bar, and reads them "
+        "again every few seconds (PKG-6). No member click sends it. The chat acts on the same records.",
+    ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
         "download",
@@ -1041,7 +1047,7 @@ DEBT: dict[str, str] = {
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
-    "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED.
+    "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
     "tasks": 11,
     "calendar": 1,
     "email": 13,
@@ -1049,7 +1055,7 @@ DEBT_CEILING: dict[str, int] = {
     "notes": 51,
     "whatsapp": 25,
     "people": 19,
-    "knowledge": 17,  # The Knowledge manifest's planned rows.
+    "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them.
     "memory": 5,
     "workflows": 24,
     "apps": 28,

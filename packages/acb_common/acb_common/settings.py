@@ -927,6 +927,17 @@ class Settings(BaseSettings):
     # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
     authority_pins_orgs: str = ""
 
+    # ── Questions for me (WS-55 EA-18a, external_agent_access.md §12.8) ──────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/agent-questions` answers 404, the
+    # creator joins no `agent_question` audience, and any member who sees the
+    # task may answer (D-EA-10 point 1). On, all five points of D-EA-14 apply.
+    # The one reader is `gateway.routes.projects.filters.agent_questions_allowed`.
+    # A SIGHUP reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_questions_r8.py.
+    agent_questions_orgs: str = ""
+
     # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1099,6 +1110,15 @@ class Settings(BaseSettings):
     # writes it (`env_guard`, prefix `SEARXNG_`).
     # Fence: tests/unit/test_web_search_providers.py.
     searxng_url: str = ""
+    # WEB-7 (§3.2, §5.1): the web worker that renders a page with Chromium.
+    # `web_worker_url` is its base URL, for example `http://127.0.0.1:8096`.
+    # `web_worker_token` is its bearer. With either one empty, `fetch_page`
+    # renders nothing. Only the operator writes them (`env_guard`, prefix
+    # `WEB_WORKER_`). 🔴 The token is a secret: no log line, no tool output
+    # and no error text may carry it. The one reader is
+    # `acb_skills.web_render_client`. Fence: tests/unit/test_web_render.py.
+    web_worker_url: str = ""
+    web_worker_token: str = ""
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
@@ -2016,6 +2036,15 @@ class Settings(BaseSettings):
     # the edge both read it, so both units need the same value. 🔴 A change
     # on a box is gate `enforcement-flip`.
     agent_access_orgs: str = ""
+    # EA-17c-1 (D-EA-13, spec §10.8): the organizations where a member may
+    # change the grant of their own agent connection, through
+    # `PATCH /agent-access/connections/{id}`. The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps the route dark, so it answers 404. Only the gateway
+    # reads it, at each call, so a SIGHUP reload applies a change
+    # (`docs/flag_reload.md`). `acb_auth.agent_oauth.change_access_allowed`
+    # is the one reader. 🔴 A change on a box is gate `enforcement-flip`.
+    agent_change_access_orgs: str = ""
     # EA-6a (EA3-29, spec §6.1 and §9.2): the second switch, for the WRITE
     # tools. Default OFF. While it is false, branch 0 refuses every method
     # other than GET with 401, so the read tools work and no write lands.
@@ -2030,6 +2059,12 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.runs_enabled` is the one reader. 🔴 A flip on a
     # box is gate `enforcement-flip`.
     agent_runs_enabled: bool = False
+    # SW-43 (spec agent_coordination.md §3.9): a member takes back an answer
+    # to an agent's question, while no agent activity follows it. Default
+    # OFF. While it is false, the withdraw route answers 404 and the run wire
+    # has no `answer` field. `acb_auth.agent_oauth.answer_change_enabled` is
+    # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_answer_change_enabled: bool = False
     # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
     # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
     # still sends is read as no session (never a 404), and no
