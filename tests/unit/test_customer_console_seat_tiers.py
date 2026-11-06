@@ -101,7 +101,7 @@ def test_a_released_tier_seat_lets_the_member_take_another(eng):
             rows = conn.execute(
                 text(
                     "SELECT plan_slug FROM member_seat_tier "
-                    "WHERE organization_id = :o AND user_identity_id = :u"
+                    "WHERE member_org_id = :o AND user_identity_id = :u"
                 ),
                 {"o": org, "u": user},
             ).all()
@@ -159,7 +159,7 @@ def test_every_core_seat_reads_as_the_lowest_tier(eng):
             row = conn.execute(
                 text(
                     "SELECT tier_rank, tier_name FROM member_seat_tier "
-                    "WHERE organization_id = :o AND user_identity_id = :u"
+                    "WHERE member_org_id = :o AND user_identity_id = :u"
                 ),
                 {"o": org, "u": user},
             ).one()
@@ -172,6 +172,22 @@ def test_every_core_seat_reads_as_the_lowest_tier(eng):
                      "WHERE plan_slug = 'core' AND NOT is_seat_tier")
             ).scalar_one()
             assert unflagged == 0
+        finally:
+            trans.rollback()
+
+
+def test_try_assign_seat_absorbs_the_tier_conflict(eng):
+    """A tier seat for a member who holds another tier returns False, not a 500."""
+    from customer_console import store
+
+    with eng.connect() as conn:
+        trans = conn.begin()
+        try:
+            org, user = _org_and_user(conn)
+            _seat(conn, org, user, "pro")
+            assert store.try_assign_seat(
+                conn, org_id=org, plan_slug="core", identity_id=user, source="core"
+            ) is False
         finally:
             trans.rollback()
 

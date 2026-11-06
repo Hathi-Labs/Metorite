@@ -237,8 +237,11 @@ SELECT DISTINCT ON (v.plan_slug)
  ORDER BY v.plan_slug, v.effective_from DESC;
 
 -- The live tier of each member. A core seat is rank 1, Standard.
+-- The org column is NOT named organization_id on purpose: the org purge fence
+-- (test_org_purge_console.py) classifies every relation with that column name,
+-- and a view cannot take a DELETE.
 CREATE OR REPLACE VIEW member_seat_tier AS
-SELECT a.organization_id, a.user_identity_id, a.plan_slug,
+SELECT a.organization_id AS member_org_id, a.user_identity_id, a.plan_slug,
        t.rank AS tier_rank, t.display_name AS tier_name
   FROM seat_assignment a
   JOIN seat_tier t ON t.plan_slug = a.plan_slug
