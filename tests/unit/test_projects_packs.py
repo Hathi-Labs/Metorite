@@ -1403,8 +1403,8 @@ def test_plan_the_sprint_then_archive_the_done_ones_keeps_the_chat_in_place(
     (``PackRun.spare``). Bulk is held at the start, or it fits a load. Without
     the reach, the specialist and the route line stay: the fault of
     2026-11-02. Mutation: read the reach with no spare pack -> red. Mutation:
-    drop ``REACH_MIN_TOOLS`` -> the owner is reached with no room -> the first
-    run of this trace goes red in ``test_a_pack_too_small_...``."""
+    drop ``REACH_MIN_TOOLS`` -> the owner is reached with no spare pack -> the
+    non-vacuity assert goes red."""
     turn = _sticky_turn(words, surface, tp.Sticky("projects", (19, 0), 19),
                         tp.Sticky("projects-plan", (19, 1), 19))
     choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
