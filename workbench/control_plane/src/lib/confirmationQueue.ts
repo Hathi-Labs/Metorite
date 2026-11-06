@@ -31,7 +31,7 @@
  */
 
 import { unfenced } from "@/lib/fencedText";
-import { tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
+import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
 import { isNewMail, replyFromEvent, startTicks, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 
@@ -498,13 +498,14 @@ export function confirmationReducer(
         return { ...state, cards: noteNewer(cards, slot, card) };
       }
       // Fix round 2: a new mail that names no slot while a slot waits (one
-      // message revised two cards, so the gateway linked none) takes the
-      // first slot that waits, in its tab. No slot then says "Updating the
-      // draft…" beside a draft that came. The client cannot tell which card
-      // it replaces, so it shows no "Changed:" line. The ticks are the
-      // server's in both cases.
+      // message revised two cards, so the gateway linked none) takes a slot
+      // that waits, in its tab. Fix round 3: only the slot of a card to the
+      // same people (`sharesTo`, the gateway's own rule). So a new mail to
+      // another person, in the same message, shows as its own card. The
+      // client cannot tell which of two such cards it replaces, so it shows
+      // no "Changed:" line. The ticks are the server's in each case.
       const free = !revises && card.reply && isNewMail(card.reply)
-        ? state.cards.findIndex((c) => c.redraft === "updating")
+        ? state.cards.findIndex((c) => c.redraft === "updating" && sharesTo(c.reply, card.reply))
         : -1;
       if (free >= 0) {
         const cards = state.cards.slice();

@@ -14,9 +14,12 @@
  * 2. The slot (step 7). The queue (`lib/confirmationQueue.ts`) keeps a
  *    new-mail card that a steer closed as a slot with no buttons:
  *    "Updating the draft…". The next card whose `revises` names it takes its
- *    place, in the same tab (D173), with the label "Draft <n>". A run that
- *    ends with no new card turns the slot into "The draft did not change.",
- *    and then closes it.
+ *    place, in the same tab (D173), with the label "Draft <n>". A card with
+ *    no link takes a slot only when its To shares an address with the To of
+ *    the slot's card (`sharesTo`, fix round 3). So a new mail to another
+ *    person shows as its own card. A slot that no card takes waits until
+ *    the run ends. Then it closes with no line when a new-mail card came
+ *    after it, and else it reads "The draft did not change." and closes.
  * 3. The "Changed:" line. The client computes it from its own copy of the
  *    member's last version and the new text, with `diffKeys` of
  *    `app/knowledge/lib/wordDiff.ts`, and never from a claim of the model.
@@ -100,6 +103,17 @@ const low = (list: readonly string[] | undefined) => (list ?? []).map((a) => a.t
 /** The people of a sent version: the ones it left ticked. */
 export function tickedOfSent(v: SentVersion): string[] {
   return low([...(v.to ?? []), ...(v.cc ?? []), ...(v.bcc ?? [])]);
+}
+
+/**
+ * True when two new-mail forms share an address in To, in any case (fix
+ * round 3). The gateway links a redraft by the same rule (`redraft.link_fields`),
+ * so a card with no link takes only the slot of a card to the same people.
+ */
+export function sharesTo(a: ReplyForm | null | undefined, b: ReplyForm | null | undefined): boolean {
+  if (!a || !b || !isNewMail(a) || !isNewMail(b)) return false;
+  const was = new Set(low(a.recipients.reply_all.to).map((x) => x.trim()).filter(Boolean));
+  return low(b.recipients.reply_all.to).some((x) => was.has(x.trim()));
 }
 
 /**

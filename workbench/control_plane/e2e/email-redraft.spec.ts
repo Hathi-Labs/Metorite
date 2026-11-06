@@ -14,6 +14,9 @@ import { expect, test, type Page } from "@playwright/test";
  * Fix round 2 (rule 7): the GATEWAY starts the person the member unticked
  * unticked, and names that person (`ticked`, `unticked`). The stub's new forms
  * carry what the gateway sends, and the test reads that the card draws them.
+ *
+ * Fix round 3: a new mail to another person, in the same message, takes no
+ * link and no slot. It shows as its own card, and Kim's draft keeps Kim's slot.
  */
 
 const OLD = "a".repeat(32);
@@ -23,6 +26,10 @@ const NEW_BOB = "d".repeat(32);
 const KIM = "kim@contoso.test";
 const GEO = "geo@acme.test";
 const BOB = "bob@contoso.test";
+const CAROL = "carol@contoso.test";
+const CAROL_ID = "e".repeat(32);
+const LATE = "Hi Carol,\n\nI am running ten minutes late.";
+const MIXED = "first email Carol that I am late, then make this shorter";
 const FIRST = "Hi Kim,\n\nPlease find the rates for May attached.";
 const EDITED = "Hi Kim,\n\nPlease find the rates for May attached. Call me on Friday.";
 const SHORTER = "Hi Kim,\n\nThe May rates are attached. Call me on Friday.";
@@ -44,7 +51,7 @@ interface StubCard { request_id: string; title: string; reply: unknown }
 
 const stubCard = (id: string, title: string, reply: unknown): StubCard => ({ request_id: id, title, reply });
 
-async function install(page: Page, firstCards: StubCard[], newCards: StubCard[]) {
+async function install(page: Page, firstCards: StubCard[], newCards: StubCard[], steer = STEER) {
   await page.addInitScript(({ steer, firstCards, newCards }) => {
     window.localStorage.clear();
     const w = window as unknown as Record<string, unknown>;
@@ -123,16 +130,16 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[])
       }
       return orig(input, init);
     };
-  }, { steer: STEER, firstCards, newCards });
+  }, { steer, firstCards, newCards });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
   await page.route("**/api/memory/**", (r) => r.fulfill({ json: [] }));
 }
 
-async function openCard(page: Page, firstCards: StubCard[], newCards: StubCard[]) {
+async function openCard(page: Page, firstCards: StubCard[], newCards: StubCard[], steer = STEER) {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await install(page, firstCards, newCards);
+  await install(page, firstCards, newCards, steer);
   await page.goto("/chat");
   const picker = page.getByText("New session", { exact: true });
   const box = page.getByRole("textbox", { name: /^Message / });
@@ -225,6 +232,45 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     await expect(page.getByRole("textbox", { name: "Email text" })).toHaveValue(SHORTER);
     await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
     await expect(page.getByRole("checkbox", { name: `Send to ${KIM}` })).toBeChecked();
+    await expect(page.locator("[data-redraft-kept-out]")).toHaveText(`Still unticked from your last draft: ${GEO}.`);
+  });
+
+  test("a new email to Carol in the same message shows as its own card, and Kim's Draft 2 keeps its slot", async ({ page }) => {
+    // P1 of the review of fix round 2. The member unticks Geo, then asks for
+    // a new email to Carol AND a change of Kim's card. The model draws
+    // Carol's card first. The gateway gives it no link (its To is not Kim's),
+    // and starts Geo unticked on it too: the always-copy rule names Geo.
+    const carolPeople = { to: [CAROL], cc: [GEO] };
+    const carolKept = { ticked: { reply: { to: [CAROL], cc: [] }, reply_all: { to: [CAROL], cc: [] } }, unticked: [GEO] };
+    const box = await openCard(page,
+      [stubCard(OLD, `Email to ${KIM}`, form(FIRST))],
+      [stubCard(CAROL_ID, `Email to ${CAROL}`, { ...form(LATE, carolKept, carolPeople), subject: "Running late" }),
+       stubCard(NEW, `Email to ${KIM}`, form(SHORTER, { revises: OLD, draft: 2, ...KEPT }))],
+      MIXED);
+    await page.getByRole("textbox", { name: "Email text" }).fill(EDITED);
+    await page.getByRole("checkbox", { name: `Send to ${GEO}` }).uncheck();
+    await box.fill(MIXED);
+    await page.locator('[data-chat-primary="send"]').click();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __steers: unknown[] }).__steers.length)).toBe(1);
+    await expect(page.locator('[data-redraft-slot="updating"]')).toHaveText("Updating the draft…");
+    await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+    // Two cards wait. No slot is left: Kim's draft took Kim's slot.
+    await expect(page.locator("[data-card-tabs-count]")).toHaveText("2 to approve");
+    await expect(page.locator("[data-redraft-slot]")).toHaveCount(0);
+    // Kim's tab: Draft 2, the Changed: line, and Geo still unticked.
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    await expect(page.locator("[data-redraft-label]")).toHaveText("Draft 2");
+    await expect(page.locator("[data-redraft-changed]")).toContainText("Changed:");
+    await expect(page.getByRole("textbox", { name: "Email text" })).toHaveValue(SHORTER);
+    await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
+    await expect(page.getByRole("checkbox", { name: `Send to ${KIM}` })).toBeChecked();
+    // Carol's tab: its own card, with no label and no Changed: line.
+    await page.getByRole("tab", { name: /Carol/ }).click();
+    await expect(page.getByRole("textbox", { name: "Email text" })).toHaveValue(LATE);
+    await expect(page.locator("[data-redraft-label]")).toHaveCount(0);
+    await expect(page.locator("[data-redraft-changed]")).toHaveCount(0);
+    await expect(page.getByRole("checkbox", { name: `Send to ${CAROL}` })).toBeChecked();
+    await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
     await expect(page.locator("[data-redraft-kept-out]")).toHaveText(`Still unticked from your last draft: ${GEO}.`);
   });
 });

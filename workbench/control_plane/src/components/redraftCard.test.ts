@@ -19,6 +19,10 @@
  *    unticked unticked, and names them. The client draws that start and the
  *    "Still unticked" note on every path: a slot, no slot, two revised cards,
  *    a remount and a replay. It ticks and unticks nobody.
+ * 7. Fix round 3: a card with no link takes only the slot of a card to the
+ *    same people (`sharesTo`, in any case). A new mail to another person
+ *    shows as its own card, and a slot that no card takes ends at the run's
+ *    end.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -55,6 +59,7 @@ import {
   keptOutText,
   linePieces,
   pickCardDrafts,
+  sharesTo,
   snapshotOf,
   type KeptDraft,
 } from "@/lib/redraftCard";
@@ -434,10 +439,11 @@ describe("rule 7: the people the member unticked stay unticked, on every path", 
     expect(keptOutOf(state.cards[0].reply)).toEqual([]);
   });
 
-  it("two revised cards (many): each new card takes a slot in place, with the server's ticks", () => {
+  it("two revised cards (many): each new card takes the slot of its own people, with the server's ticks", () => {
     // Path 1 of the review. One message closed Kim's card and Bob's card. The
-    // gateway linked neither new card. Mutation: append an unlinked card in
-    // place of taking the slot that waits → red.
+    // gateway linked neither new card. Fix round 3: Bob's draft takes Bob's
+    // slot, though Kim's slot waits first. Mutation: append an unlinked card
+    // in place of taking a slot, or take the first slot that waits → red.
     const bobList = { to: ["bob@contoso.test"], cc: [] as string[] };
     const bob = { ...FORM, recipients: { reply: bobList, reply_all: bobList } };
     const THIRD = "d".repeat(32);
@@ -450,10 +456,10 @@ describe("rule 7: the people the member unticked stay unticked, on every path", 
     ]);
     expect(slots.cards.map((c) => c.redraft)).toEqual(["updating", "updating"]);
     const one = run([{ type: "requested", value: mailCard(THIRD, bob) }], slots);
-    expect(one.cards.map((c) => [c.key, c.redraft])).toEqual([[THIRD, undefined], [NEW, "updating"]]);
+    expect(one.cards.map((c) => [c.key, c.redraft])).toEqual([[OLD, "updating"], [THIRD, undefined]]);
     const both = run([{ type: "requested", value: mailCard(FOURTH, unlinked) }], one);
-    expect(both.cards.map((c) => [c.key, c.redraft])).toEqual([[THIRD, undefined], [FOURTH, undefined]]);
-    const kim = both.cards[1];
+    expect(both.cards.map((c) => [c.key, c.redraft])).toEqual([[FOURTH, undefined], [THIRD, undefined]]);
+    const kim = both.cards[0];
     expect(startTicks(kim.reply!).reply_all).toEqual([KIM]);
     expect(kim.before).toBeUndefined();
     const html = draw(kim.reply!);
@@ -567,6 +573,78 @@ describe("the Changed: line reads cleanly (fix round 2)", () => {
   it("the note on the kept unticks is its own sentence", () => {
     expect(keptOutText([])).toBe("");
     expect(keptOutText(["geo@acme.test"])).toBe("Still unticked from your last draft: geo@acme.test.");
+  });
+});
+
+describe("fix round 3: the slot goes only to a card to the same people", () => {
+  // The member unticks Geo on Kim's card, then writes "first email Carol
+  // that I am late, then make this shorter". The model draws Carol's card
+  // first. The gateway gives it no link, because its To is not Kim's.
+  const CAROL = "carol@contoso.test";
+  const carolList = { to: [CAROL], cc: ["geo@acme.test"] };
+  const carolStart = { to: [CAROL], cc: [] as string[] };
+  const carol = {
+    ...FORM, subject: "Late", body: "Hi Carol, I am late.", recipients: { reply: carolList, reply_all: carolList },
+    ticked: { reply: carolStart, reply_all: carolStart }, unticked: ["geo@acme.test"],
+  };
+  const kimStart = { to: ["kim@contoso.test"], cc: [] as string[] };
+  const redraft = {
+    ...FORM, body: "Hi Kim, the rates.", revises: OLD, draft: 2,
+    ticked: { reply: kimStart, reply_all: kimStart }, unticked: ["geo@acme.test"],
+  };
+  const CAROL_ID = "f".repeat(32);
+
+  it("a new mail to another person shows as its own card, and Kim's draft takes Kim's slot", () => {
+    // P1 of the review (its label half), and Finding 1 of the verifier.
+    // Mutation: let a card with no link take any slot that waits → red.
+    const slotted = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "memberVersion", key: OLD, version: { subject: FORM.subject, body: "My text.", to: ["kim@contoso.test"], cc: [], bcc: [] } },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+    ]);
+    const first = run([{ type: "requested", value: { ...mailCard(CAROL_ID, carol), title: `Email to ${CAROL}` } }], slotted);
+    expect(first.cards.map((c) => [c.key, c.redraft])).toEqual([[OLD, "updating"], [CAROL_ID, undefined]]);
+    expect(first.cards[1].before).toBeUndefined();
+    const both = run([{ type: "requested", value: mailCard(NEW, redraft) }], first);
+    expect(both.cards.map((c) => [c.key, c.redraft])).toEqual([[NEW, undefined], [CAROL_ID, undefined]]);
+    expect(both.cards[0].before?.body).toBe("My text.");
+    // Carol's card draws no label and no "Changed:" line, and names Geo.
+    const noop = () => {};
+    const html = renderToStaticMarkup(createElement(NewMailCardForm, {
+      form: both.cards[1].reply!, before: both.cards[1].before, onAnswer: noop, onDiscard: noop, armed: true,
+    }));
+    expect(html).not.toContain("data-redraft-label");
+    expect(html).not.toContain("data-redraft-changed");
+    expect(html).toContain("Still unticked from your last draft: geo@acme.test.");
+  });
+
+  it("the To compare ignores the case, and a card of other people takes no slot", () => {
+    // Finding 2 of the verifier. Mutation: compare the case → red.
+    const shout = { ...FORM, recipients: { reply: { to: ["KIM@Contoso.TEST"], cc: [] }, reply_all: { to: ["KIM@Contoso.TEST"], cc: [] } } };
+    expect(sharesTo(replyFromEvent(FORM, OLD), replyFromEvent(shout, NEW))).toBe(true);
+    expect(sharesTo(replyFromEvent(FORM, OLD), replyFromEvent(carol, NEW))).toBe(false);
+    expect(sharesTo(replyFromEvent(FORM, OLD), replyFromEvent({ ...shout, kind: undefined, message_id: "m-1" }, NEW))).toBe(false);
+    const taken = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "requested", value: mailCard(NEW, shout) },
+    ]);
+    expect(taken.cards.map((c) => [c.key, c.redraft])).toEqual([[NEW, undefined]]);
+  });
+
+  it("a slot that no card takes waits for the run's end, then closes with no false line", () => {
+    // The member asked for a change, and the run drew only Carol's card. The
+    // slot waits while Carol's card waits. At the run's end it closes with no
+    // line, because a new mail came. Mutation: keep "Updating the draft…"
+    // after the run's end → red.
+    const ended = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "requested", value: mailCard(CAROL_ID, carol) },
+    ]);
+    expect(ended.cards.map((c) => c.redraft)).toEqual(["updating", undefined]);
+    const after = run([{ type: "runFinalized" }], ended);
+    expect(after.cards.some((c) => c.redraft !== undefined)).toBe(false);
   });
 });
 
