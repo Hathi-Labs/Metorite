@@ -3010,6 +3010,72 @@ async def status_scope_ids(db: Any, project_id: str) -> list[str]:
     return [str(r.id) for r in rows]
 
 
+#: How many projects use each set in ``:owners``, with the owner left out. It
+#: is ``used_by`` of ``GET /nodes/{id}/status-set`` (projects_settings.md §9.4,
+#: PST-1).
+#:
+#: The walk of :data:`_STATUS_SCOPE_SQL`, from many owners at once, with one
+#: count for each owner. So a list of N owners costs one query, not N.
+#:
+#: ⚠️ The ``NOT p.owns_statuses`` sits in the RECURSIVE arm, as it does in
+#: :data:`_STATUS_SCOPE_SQL`. A nested owner and every node under it use
+#: another set, so the walk must not go through it. A test at the end would
+#: count the children of a nested owner. Fence:
+#: ``tests/unit/test_projects_status_set_read_r8.py``.
+#:
+#: ⚠️ The walk goes THROUGH a folder, so a project under a folder counts. The
+#: count leaves the folder out, because a folder holds no lanes (the rule of
+#: :func:`node_kind`, and of ``hasStatusSet`` in the frontend ``tree.ts``). A
+#: NULL kind reads as a project (R6 expand).
+#:
+#: It counts every row that the tenant session reads, and Postgres RLS binds
+#: that session to one organization. A project that the caller cannot see
+#: still counts, because an edit changes its lanes too.
+_STATUS_USERS_SQL = """
+WITH RECURSIVE status_users AS (
+    SELECT id AS owner_id, id, kind FROM pm_projects
+     WHERE id = ANY(CAST(:owners AS uuid[]))
+    UNION ALL
+    SELECT u.owner_id, p.id, p.kind FROM pm_projects p
+      JOIN status_users u ON p.parent_project_id = u.id
+     WHERE NOT p.owns_statuses
+)
+SELECT owner_id,
+       count(*) FILTER (
+           WHERE id <> owner_id AND COALESCE(kind, 'project') <> 'folder'
+       ) AS used_by
+  FROM status_users GROUP BY owner_id
+"""
+
+
+def holds_lanes(node: Any) -> bool:
+    """True when ``node``'s own board shows lanes, so a status edit reaches it.
+
+    A folder holds no lanes (:func:`node_kind`). A team space holds no task and
+    shows no board (:func:`is_team_space`, owner directive 2026-08-31). A
+    personal root holds the Inbox, so it counts. The reach of a status edit
+    (PST-1, §9.5) adds the owner only when this is true.
+    """
+    return (
+        node_kind(getattr(node, "kind", None)) != "folder"
+        and not is_team_space(node)
+    )
+
+
+async def status_users(db: Any, owner_ids: list[str]) -> dict[str, int]:
+    """``{owner id: projects that use its set, the owner left out}``.
+
+    One grouped query for every owner in ``owner_ids``. An id that has no row
+    in the tenant is not in the answer.
+    """
+    if not owner_ids:
+        return {}
+    rows = (await db.execute(
+        text(_STATUS_USERS_SQL), {"owners": list(owner_ids)},
+    )).fetchall()
+    return {str(r.owner_id): int(r.used_by) for r in rows}
+
+
 #: Where a task lands when its lane is not in the set it now resolves to.
 #:
 #: Name first, then the same category, then the first lane that is not triage.
