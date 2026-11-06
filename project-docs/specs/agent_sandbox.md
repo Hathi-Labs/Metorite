@@ -675,6 +675,13 @@ the build card.
 the assistant passes its name as `failed_tool`. The checks skip that tool,
 and the gap row names it (§6.7, level c).
 
+**Who the library search can see (D187).** The library search reads one
+organization only. It keeps a package in three cases only: the viewer owns
+it live, an install reaches the viewer, or it is a `system` package. It never
+runs a bare full-text query over `apps`. Such a query would leak the private
+package of another member into the candidates and the decide prompt
+(SBX-F23).
+
 **The build card.** Before a build, the member sees one card:
 
 - what the tool will do, in one sentence,
@@ -1285,11 +1292,12 @@ tenancy and outward writes also get mutation testing
 | SBX-F15 | `tests/unit/test_sandbox_log_lines.py` | A log line of §9.1 holds input data, output data, a need text or a token, or the operator view returns a `need` text |
 | SBX-F16 | `tests/unit/test_sandbox_metering.py` | A step ends with no usage event, or a step starts for an org at its hard cap |
 | SBX-F17 | `tests/unit/test_user_tool_repair.py` | (D187) A repair starts on a signal outside §6.7, or one failed run gets a second repair build. A repair changes a schema or a scope. A level (b) version runs for a member who is not its author, or moves a pin or the `live_version` of another member |
-| SBX-F18 | `tests/unit/test_tool_compose_check.py` | (D187) `find_tool` answers `no_match` when the decide answer is `compose`, `build_tool` takes a `compose` gap, or the compose check offers a catalog row that the member cannot call |
+| SBX-F18 | `tests/unit/test_tool_compose_check.py` | (D187) `find_tool` answers `no_match` when the decide answer is `compose`, `build_tool` takes a `compose` gap, or the compose check offers a catalog row that the member cannot call. `find_tool` opens a session while `catalog_rows` runs. It proves done-when 9 of §12.1 |
 | SBX-F19 | `tests/unit/test_no_platform_patch_at_run_time.py` | (D187) A level (c) path writes into the repository or calls `attempt_self_mutation`. A failure report holds error text or code with no consent row of the member |
 | SBX-F20 | `tests/unit/test_tool_adoption_counts.py` | (D187) The view of §6.8 returns a value that is not a count, a category slug, a built-in tool name or an error class, or it names an organization |
 | SBX-F21 | `tests/unit/test_sandbox_remote_backend.py` | (D187) The `docker-remote` backend binds a mount of the gateway host, runs `runc` in production mode, or gives `DOCKER_HOST` to a child that is not `docker`. It has a `sandbox_docker` half |
 | SBX-F22 | `tests/unit/test_sandbox_door_client.py` | (D187) The door client reads an env value other than `METORITE_API_TOKEN`, calls a host other than the door name, or the image lacks it |
+| SBX-F23 | `tests/unit/test_user_tool_registry.py`, R8 half | (D187) The library search reads across organizations, or runs a bare full-text query over `apps`. A private package of another member reaches `candidates`, the decide prompt or the gap row. A paused or archived install still comes back. It proves done-when 7 of §12.1 |
 
 **Where the Docker halves run.** On `.github/workflows/sandbox-docker.yml`,
 with the `sandbox_docker` marker, as WS43-F4 does. A skip fails that
@@ -1323,7 +1331,7 @@ the A2 model.
 | Slice | Work | Depends on | Gate |
 |---|---|---|---|
 | **SBX-0** | ✅ Done 2026-10-27. D130 answers §14, and the board row is WS-TO | Nothing | Done |
-| **SBX-0b** | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
+| **SBX-0b** (task 1962) | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
 | **SBX-1** | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
 | **SBX-2** | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
@@ -1335,12 +1343,12 @@ the A2 model.
 | **SBX-9** | (D187) Turn it on: `tools:<Fracktal>` on production, on the dedicated box of §4.6. D144 retired staging, so the local staging gate of D145 comes first | SBX-1 to SBX-8, SBX-12, SBX-13, SBX-15, WS43-G1, WS43-G2, WS43-G4, WS43-G5, SBX-G9, SBX-G10, SBX-G11 | **OWNER-GATE** |
 | **SBX-10** | The `e2b` backend (§4.4) and the public door name. (D187) The alternative to the box of §4.6 | SBX-5, SBX-Q1 | AGENT-SAFE to build on a free test account. The account, the key and the DNS record are **OWNER-GATE** |
 | **SBX-11** | The SPACE check through ECW (§4.5) | SBX-10, the three triggers of §4.5 | **OWNER-GATE**. A new host costs money |
-| **SBX-12** | (D187) **Repair, levels (a) and (b)** (§6.7): the three signals, the cap of 1, the contract check, the card that names the writes that landed, and the repair version of the store with its private pin (§8.2). **Done when:** a fixture tool that exits 1 gets one repair, and the fixed version runs and persists. A second failure stops with no second build. A level (b) version runs for its author only, and the org pin does not move | SBX-5. SBX-6 for level (b) | AGENT-SAFE. Dark |
-| **SBX-13** | (D187) **The door client** `metorite_door` in the sandbox image (§6.9). **Done when:** in a `sandbox_docker` test, a tool reads two pages through the door with the capability and no other code. The client calls no host but the door name. The image test (WS43-F25) lists the module | SBX-2 | AGENT-SAFE. The image on a box is WS43-G2 |
-| **SBX-14** | (D187) **Repair, level (c)** (§6.7): `find_tool` with `failed_tool`, the private workaround, the report to the failure log with its consent rule, and the archive of a workaround when its fix ships. **Done when:** a fixture failure of a built-in tool files one report with no error text before consent. The workaround runs for this member only. A release that marks the report fixed archives the workaround install | SBX-5, the spec and the store of the tool failure log (task 1793), SBX-Q8 | AGENT-SAFE. Dark |
-| **SBX-15** | (D187) **The `docker-remote` backend** (§4.6): the broker drives a second Docker daemon over `DOCKER_HOST`, moves the files in and out with no bind mount, and runs `runsc` only. **Done when:** on the dev stack, a build, a smoke test and a run go to a second local daemon. The outputs come back through the safe opener. In production mode the broker refuses a `runc` run on that backend | SBX-4, SBX-8, WS-43g | AGENT-SAFE to build and test on the dev stack. The box, its network and its DNS are **OWNER-GATE** (SBX-G9, SBX-G10) |
-| **SBX-16** | (D187) **The platform counts view** (§6.8, §9.2) in the Operator Console. A later slice. **Done when:** a platform admin sees counts by category and by built-in tool, and no tenant text. A tenant session gets 404 | SBX-1, SBX-5, SBX-14 | AGENT-SAFE |
-| **SBX-17** | (D187) **The adoption consent** (§6.8): the consent card for an owner of the source organization, and the consent record that a PR names. **Done when:** no path reads the files of a tool of a tenant for adoption without a consent row. A consent row names one tool, one version and one person of the source organization | SBX-16, SBX-6, SBX-Q9 | AGENT-SAFE to build. Each adoption is **OWNER-GATE** (SBX-G12) |
+| **SBX-12** (task 1980) | (D187) **Repair, levels (a) and (b)** (§6.7): the three signals, the cap of 1, the contract check, the card that names the writes that landed, and the repair version of the store with its private pin (§8.2). **Done when:** a fixture tool that exits 1 gets one repair, and the fixed version runs and persists. A second failure stops with no second build. A level (b) version runs for its author only, and the org pin does not move | SBX-5. SBX-6 for level (b) | AGENT-SAFE. Dark |
+| **SBX-13** (task 1981) | (D187) **The door client** `metorite_door` in the sandbox image (§6.9). **Done when:** in a `sandbox_docker` test, a tool reads two pages through the door with the capability and no other code. The client calls no host but the door name. The image test (WS43-F25) lists the module | SBX-2 | AGENT-SAFE. The image on a box is WS43-G2 |
+| **SBX-14** (task 1982) | (D187) **Repair, level (c)** (§6.7): `find_tool` with `failed_tool`, the private workaround, the report to the failure log with its consent rule, and the archive of a workaround when its fix ships. **Done when:** a fixture failure of a built-in tool files one report with no error text before consent. The workaround runs for this member only. A release that marks the report fixed archives the workaround install | SBX-5, the spec and the store of the tool failure log (task 1793), SBX-Q8 | AGENT-SAFE. Dark |
+| **SBX-15** (task 1983) | (D187) **The `docker-remote` backend** (§4.6): the broker drives a second Docker daemon over `DOCKER_HOST`, moves the files in and out with no bind mount, and runs `runsc` only. **Done when:** on the dev stack, a build, a smoke test and a run go to a second local daemon. The outputs come back through the safe opener. In production mode the broker refuses a `runc` run on that backend | SBX-4, SBX-8, WS-43g | AGENT-SAFE to build and test on the dev stack. The box, its network and its DNS are **OWNER-GATE** (SBX-G9, SBX-G10) |
+| **SBX-16** (task 1984) | (D187) **The platform counts view** (§6.8, §9.2) in the Operator Console. A later slice. **Done when:** a platform admin sees counts by category and by built-in tool, and no tenant text. A tenant session gets 404 | SBX-1, SBX-5, SBX-14 | AGENT-SAFE |
+| **SBX-17** (task 1985) | (D187) **The adoption consent** (§6.8): the consent card for an owner of the source organization, and the consent record that a PR names. **Done when:** no path reads the files of a tool of a tenant for adoption without a consent row. A consent row names one tool, one version and one person of the source organization | SBX-16, SBX-6, SBX-Q9 | AGENT-SAFE to build. Each adoption is **OWNER-GATE** (SBX-G12) |
 
 ### 12.1 SBX-1 — the first dispatchable slice
 
@@ -1367,19 +1375,36 @@ holds no `find_tool`.
 - New: `apps/services/gateway/gateway/routes/user_tools.py`, the gap view
   route.
 - New: `packages/acb_skills/acb_skills/user_tool_tools.py`, `find_tool`.
-- Changed: `apps/services/orchestrator/orchestrator/_tool_injection.py`, to
-  give `find_tool` to the general agent when the flag is on.
 - Changed: `packages/acb_common/acb_common/settings.py`, the flag.
-- Read, not changed (D187): `apps/services/gateway/gateway/studio/packages_store.py`,
-  the packages of the member.
-- Read, not changed (D187): `apps/services/gateway/gateway/package_host/resolve.py`,
-  the installs that reach the member.
-- Read, not changed (D187): `apps/services/gateway/gateway/routes/studio/actions.py`,
-  `catalog_rows` and `package_rows`.
+- Read, not changed (D187): `apps/services/gateway/gateway/package_host/resolve.py`
+  (`read_installs` at :316, `system_contributions` at :311), and
+  `apps/services/gateway/gateway/routes/studio/actions.py` (`catalog_rows` at :149,
+  `package_rows` at :203).
+- New (D187): `apps/services/gateway/gateway/studio/package_search.py`, with one
+  read function `search_visible(db, viewer, groups, query, limit=5)`. It is the ONE
+  library search. It keeps a package only when one of three conditions holds:
+  1. The viewer owns it, it is not archived, and it has a live version.
+  2. `read_installs` returns an install for it.
+  3. It is a `system` package.
+
+  It never selects from `apps` across members. `find_tool` imports it inside the
+  function, as `history_tools.py:201` does for `gateway.rooms`.
+- New (D187): a member filter for the compose check, in `package_search.py`:
+  `callable_catalog(user, rows)`. It drops a row that `user.can_use_feature` refuses.
+  Call `catalog_rows()` and `package_rows()` BEFORE a session is open. Their docstrings
+  require it.
+- Changed (D187): `_tool_injection.py`, in the `decide_tool_for` block near :2303. Add
+  `find_tool` to `_all_tools` only when `user_tool_find_enabled` is on.
+- Changed: the gateway router list and `tests/unit/test_studio_route_gate.py`
+  `EXPECTED_ROUTES` if the gap view route sits under `/studio`. The route requires
+  the `studio:publish` verb (§8.1) and reads one org only.
+- New tests: `test_tool_gap_detection.py`, `test_tool_compose_check.py`,
+  `test_user_tool_registry.py`, `test_user_tool_injection.py` and
+  `test_sandbox_log_lines.py`, all under `tests/unit/`.
 - New: the migration, at the next free number at build time. (D187) It adds
   `tool_gaps` and `user_tool_runs` only.
 - New: the fences SBX-F7 (its `find_tool` half), SBX-F8 (its record half),
-  SBX-F9 (its RLS half), SBX-F15 (its gap half) and SBX-F18 (D187).
+  SBX-F9 (its RLS half), SBX-F15 (its gap half), SBX-F18 and SBX-F23 (D187).
 
 **Done when.**
 
@@ -1389,14 +1414,17 @@ holds no `find_tool`.
 3. With the flag off, no agent holds `find_tool`.
 4. With the flag on, `find_tool` writes one `tool_gaps` row for each call,
    with `answer` and `outcome` set.
-5. (D187) A Studio package of the member that matches the need comes back as
-   `reuse`. The test makes it through `packages_store.create_package`, the
-   real writer.
+5. (D187) A published Studio package of the member that matches the need comes back
+   as `reuse`. The test makes it with `create_package`, then `publish_version`. A draft
+   with no live version never comes back as `reuse`.
 6. (D187) A need that two catalog actions cover comes back as `compose`. Its
    gap row reads `compose`, never `no_match`, so no later build can take it.
-7. (D187) A package of another member that no install shows to the caller
-   never comes back.
+7. (D187) As member B, a private package of member A with no install that reaches B never
+   comes back. It is not in `candidates`, in the decide prompt or in the gap row. An
+   org-scope install of A's package does come back. A paused or archived install does not.
 8. The log line holds no `need` text.
+9. (D187) A catalog row that the caller's `can_use_feature` refuses never reaches the compose
+   check. `find_tool` opens no session while `catalog_rows` runs.
 
 **Verification commands.**
 
@@ -1406,7 +1434,8 @@ eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_tool_gap_detection.py tests/unit/test_tool_compose_check.py tests/unit/test_user_tool_registry.py tests/unit/test_user_tool_injection.py tests/unit/test_sandbox_log_lines.py tests/unit/test_tenant_coverage.py -q -rs
 ```
 
-A skip in that run is a failure. R8 needs the database.
+A run with any skipped test in the six files fails the slice. R8 needs the
+database.
 
 ---
 
