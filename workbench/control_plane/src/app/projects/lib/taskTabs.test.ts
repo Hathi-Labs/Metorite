@@ -28,12 +28,14 @@ vi.mock("next/navigation", () => ({
 
 import { TaskBody } from "../components/TaskBody";
 import type { TaskRow } from "./api";
+import { relatedCount } from "./relations";
 import {
   TASK_TABS,
   TASK_TAB_LABEL,
   readTaskTab,
   searchWithTab,
   tabCount,
+  tabOnMount,
 } from "./taskTabs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -173,5 +175,51 @@ describe("the tab in the address (?ttab=)", () => {
   it("a tab with content shows its count, and an empty tab shows none", () => {
     expect(tabCount(3)).toBe(3);
     expect(tabCount(0)).toBeUndefined();
+  });
+
+  it("a key with no card behind it is stale, and the card opens on Overview", () => {
+    // A reload in Projects: the page took `?task=` out when it opened the card.
+    expect(tabOnMount("?ttab=files", 0)).toBe("overview");
+    // A link names the task too.
+    expect(tabOnMount("?task=t1&ttab=discussion", 0)).toBe("discussion");
+    // Expand: the body that it replaces is still counted in the render.
+    expect(tabOnMount("?ttab=files", 1)).toBe("files");
+  });
+});
+
+describe("the review fixes (ORC-3)", () => {
+  it("Related counts a blocker once: blocked_by is a part of links", () => {
+    const blocker = { link_id: "l1" } as never;
+    // One open blocker and nothing else: the block draws one row.
+    expect(relatedCount({ subtasks: [], links: [blocker] })).toBe(1);
+    expect(relatedCount({ subtasks: [{} as never, {} as never], links: [blocker] })).toBe(3);
+    const block = code("app/projects/components/RelationsBlock.tsx");
+    expect(block).toContain("onCount?.(data ? relatedCount(data) : 0)");
+  });
+
+  it("M1: the agent row keeps its space while it reads, above the bar", () => {
+    // Drawn as the server would: no read has answered, so the panel holds the
+    // space of its "Ask an agent" row, and the Add row and the bar stay put.
+    const html = renderToStaticMarkup(
+      createElement(TaskBody, {
+        task: TASK,
+        statuses: [{ id: "s1", name: "To do", category: "todo" }] as never,
+        onChanged: () => {},
+      }),
+    );
+    const held = html.indexOf("data-ask-agent-placeholder");
+    expect(held).toBeGreaterThan(0);
+    expect(held).toBeLessThan(html.indexOf("data-record-tab-bar"));
+    expect(html.slice(held - 120, held)).toContain("invisible");
+  });
+
+  it("a pasted file lands in Files on any tab, and focus clears the bar (M4)", () => {
+    const body = code("app/projects/components/TaskBody.tsx");
+    expect(body).toMatch(/onPaste=\{\(e\) => \{\s*if \(inline\.pasteOnCard\(e\)\) showTab\("files"\);/);
+    expect(body).toMatch(/className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto"/);
+    // A field that took the paste inline prevented its default first.
+    expect(code("app/projects/components/useInlineUploads.ts")).toMatch(
+      /if \(e\.defaultPrevented\) return false;/,
+    );
   });
 });

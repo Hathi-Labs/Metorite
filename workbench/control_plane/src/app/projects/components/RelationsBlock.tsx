@@ -42,6 +42,7 @@ import {
   populated,
   progressLabel,
   progressPercent,
+  relatedCount,
 } from "../lib/relations";
 
 const LINK_LABELS: Array<[LinkType, string]> = [
@@ -123,7 +124,9 @@ export function RelationsBlock({
   }, [data]);
 
   useEffect(() => {
-    onCount?.(data ? data.subtasks.length + data.links.length + data.blocked_by.length : 0);
+    // ⚠️ Not `blocked_by` too: the gateway builds it from the incoming
+    // `blocks` rows of `links` (`relations.py`), so a blocker is in both.
+    onCount?.(data ? relatedCount(data) : 0);
   }, [data, onCount]);
 
   if (!data) return null;

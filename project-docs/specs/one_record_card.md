@@ -96,9 +96,14 @@ ORC-2 waits on ORC-1. ORC-3 lands before ORC-2. `?ttab=` keeps the tab when expa
 - **The bar sticks** to the top of the card's one scroll region, so the tabs stay in reach under a long Overview. A new tab opens at its top.
 - **Each tab stays mounted.** Only `hidden` changes. So the Related and Files counts stay true on each tab, and a half-typed subtask survives a look at another tab.
 - **The composer** shows on Discussion, under Comments. On another tab, it hides with the comments.
-- **A file dropped on the card** lands in Files, and Files opens, so the member sees it go up. A drop on the description or the composer stays inline.
+- **A file dropped or pasted on the card** lands in Files, and Files opens, so the member sees it go up. A drop or a paste on the description or the composer stays inline.
+- **The agent row keeps its space (M1).** Until its first read answers, the agent run panel holds the height of its "Ask an agent" row. So the Add row and the bar do not move when the row arrives.
+- **Focus clears the bar (M4).** The scroll region sets `scroll-pt-12`, so a field that Tab reaches never stops under the bar.
+- **Related counts each task once.** The gateway builds `blocked_by` from `links`, so the count is the subtasks and the links (`relatedCount`).
 - **Files and Discussion** draw no section heading of their own, because the tab is the heading. Overview and Related keep their folds.
 - **The URL.** `history.replaceState` writes `?ttab=`, and Overview takes the key out. The key leaves one tick after the last card closes. Until ORC-2, expand mounts the body again in the same commit, and that tick keeps the tab.
+- **A stale key opens nothing.** A card reads `?ttab=` only when another card is open, or when the address names the task too (`tabOnMount`). Projects takes `?task=` out once the card opens, so a reload leaves the key with no card, and the next card opens on Overview.
+- **A reader of the address keys on its own keys.** A change of `?ttab=` re-renders every reader of `useSearchParams`. The Calendar's link reader opened its day again on each change, so it reads `date`, `at` and `reminder` only (`linkQuery`).
 
 ## 6. The fences
 

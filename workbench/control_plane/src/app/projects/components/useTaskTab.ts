@@ -22,8 +22,8 @@
  * rewrites that app's address.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import { type TaskTab, readTaskTab, searchWithTab } from "../lib/taskTabs";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { type TaskTab, searchWithTab, tabOnMount } from "../lib/taskTabs";
 
 /** The task bodies on screen now. Module state, because two mounts share it. */
 let mounted = 0;
@@ -37,14 +37,20 @@ function replaceSearch(search: string): void {
 export function useTaskTab(): [TaskTab, (tab: TaskTab) => void] {
   // A lazy read of the address: a link that names Discussion opens on
   // Discussion, with no flash of Overview. The body only renders once a task
-  // has loaded in the browser, so the server never draws it.
+  // has loaded in the browser, so the server never draws it. `mounted` is
+  // read in the render, before this commit's cleanup, so expand still sees
+  // the body that it replaces.
   const [tab, setTabState] = useState<TaskTab>(() =>
-    typeof window === "undefined" ? "overview" : readTaskTab(window.location.search),
+    typeof window === "undefined" ? "overview" : tabOnMount(window.location.search, mounted),
   );
+  const opened = useRef(tab);
 
   useEffect(() => {
     mounted += 1;
     const path = window.location.pathname;
+    // The address follows the tab the card opened on. A stale key (a reload
+    // with no card open) leaves here.
+    replaceSearch(searchWithTab(window.location.search, opened.current));
     return () => {
       mounted -= 1;
       window.setTimeout(() => {

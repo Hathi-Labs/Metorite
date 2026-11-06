@@ -43,7 +43,9 @@ export default function RecordTabBar<T extends string>({
   return (
     <div
       className={`shrink-0 border-b border-border px-2 ${
-        pinned ? "sticky top-0 z-10 bg-card" : ""
+        // z-20, above the z-10 icon of `Input`: at z-10 the later field
+        // painted its glyph over the tab words while it scrolled under.
+        pinned ? "sticky top-0 z-20 bg-card" : ""
       }`}
       data-record-tab-bar=""
     >

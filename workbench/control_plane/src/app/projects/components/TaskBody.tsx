@@ -956,15 +956,21 @@ export function TaskBody({
           nothing. Without the handlers the browser opens the file in the
           tab and the task is gone. ORC-3 — it lands in Files on any tab,
           and Files opens, so the member sees it go up. A drop on a field
-          stops at the field, so this never sees it. */}
+          stops at the field, so this never sees it. A pasted file does the
+          same, unless the description or the composer took it inline. */}
+      {/* M4 — `scroll-pt-12` keeps a focused field clear of the sticky tab
+          bar (about 2.5rem tall), when Tab or Shift+Tab moves through it. */}
       <div
         ref={scrollRegion}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto"
         onDragOver={inline.allowDrop}
         onDrop={(e) => {
           const dropped = (e.dataTransfer?.files?.length ?? 0) > 0;
           inline.dropInto(e);
           if (dropped) showTab("files");
+        }}
+        onPaste={(e) => {
+          if (inline.pasteOnCard(e)) showTab("files");
         }}
       >
         {above}

@@ -45,6 +45,20 @@ export function readTaskTab(search: string): TaskTab {
 }
 
 /**
+ * The tab a card opens on.
+ *
+ * The key in the address counts only when it belongs to a card: when another
+ * card is open now (expand mounts the body again in the same commit), or
+ * when the address names the task too (a link, `?task=…&ttab=…`). Projects
+ * takes `?task=` out once the card opens, so a reload leaves `?ttab=` with no
+ * card. That key is stale, and the next card opens on Overview.
+ */
+export function tabOnMount(search: string, cardsOpen: number): TaskTab {
+  if (cardsOpen > 0 || new URLSearchParams(search).has("task")) return readTaskTab(search);
+  return "overview";
+}
+
+/**
  * The query string with the tab in it. Overview is the default, so it takes
  * the key out, and a card on Overview leaves the address as it found it.
  * Returns "" or a string that starts with "?".
