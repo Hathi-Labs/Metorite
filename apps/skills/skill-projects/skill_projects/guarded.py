@@ -1439,8 +1439,8 @@ async def delete_status(
     the statuses read returns per lane, which is the count the route acts
     on. The last lane, the last Done lane (D79) and the last lane that
     closes a task cannot be deleted, and the tool says so before any card.
-    When the set is shared, the tool refuses unless change_whole_set is
-    true, which the member must ask for."""
+    Pass change_whole_set=true only when the member asks to change a set that
+    other projects share."""
     if _many(status):
         return f"delete_status {ONE_ACT.replace('id', 'name')}"
     pid, node = await _node(project_id)

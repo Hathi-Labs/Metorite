@@ -41,8 +41,10 @@ The gate is ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass. Run::
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import re
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -410,6 +412,54 @@ async def test_the_old_position_still_works(world, space) -> None:
     assert res.status_code == 200 and made.status_code == 201
     assert _names(w, space.id, "done") == ["Shipped", "Released", "Closed", "Done"]
     assert _names(w, space.id, "todo") == ["Backlog", "Parked"]
+
+
+# ── R8: the set lock ────────────────────────────────────────────────────────
+
+
+@_DB_GATE
+async def test_a_slot_move_waits_for_the_set_lock_and_keeps_the_committed_order(
+    world, space,
+) -> None:
+    """D79 lock (M3). Connection 1 holds the set lock in an open transaction. The
+    slot move of connection 2 must WAIT, and then see what connection 1
+    committed. The wait is read from `pg_stat_activity`, in a loop with a
+    deadline. No two timers are ordered against each other.
+
+    Connection 1 moves Closed to the front of the done stage and commits. The
+    move of Done to slot 4 then reads that order: Closed, Shipped, Released,
+    Done. Without the lock, the move reads the old order first and writes the
+    old positions over the commit, so Closed is not first (M3: remove the
+    `_lock_status_sets` call of `_renumber_stage`).
+    """
+    w = world
+    done = _id(w, space.id, "Done")
+    with w.p.admin_engine.connect() as holder:
+        tx = holder.begin()
+        holder.execute(text(
+            "SELECT id FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid) "
+            "ORDER BY id FOR NO KEY UPDATE"), {"p": space.id})
+        async with _session(w.p) as call:
+            move = asyncio.create_task(call.send(
+                "PATCH", w.admin_u, f"/projects/statuses/{done}", {"slot": 4}))
+            waiting, deadline = False, time.monotonic() + 30
+            while time.monotonic() < deadline and not move.done():
+                with w.p.admin_engine.connect() as probe:
+                    waiting = bool(probe.execute(text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        " WHERE wait_event_type = 'Lock' AND datname = current_database()"
+                    )).scalar_one())
+                if waiting:
+                    break
+                await asyncio.sleep(0.05)
+            assert waiting and not move.done(), "the move did not wait for the lock"
+            holder.execute(text(
+                "UPDATE pm_task_statuses SET position = 0 "
+                " WHERE project_id = CAST(:p AS uuid) AND name = 'Closed'"), {"p": space.id})
+            tx.commit()
+            res = await asyncio.wait_for(move, 30)
+    assert res.status_code == 200, res.text
+    assert _names(w, space.id, "done") == ["Closed", "Shipped", "Released", "Done"]
 
 
 # ── R8: a subproject, the shared set and the copy ───────────────────────────

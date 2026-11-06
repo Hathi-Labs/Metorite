@@ -1241,15 +1241,15 @@ _TASK_PREFIX_REASON = (
 _HELD_CARD_REASON = "The card of a held chat sets it from the rows it read."
 
 _STATUS_PLACE_REASON = (
-    "create_status and update_status send it when the status-set read says guard_on "
-    "(STATUS_SET_GUARD_ORGS), and the route accepts it at all times. "
+    "create_status and update_status send it when the model passes slot or after, in "
+    "every organization, and the route accepts it at all times. "
     "test_projects_status_chat.py proves the send."
 )
 
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
-    # WS-42 PST-4: the place of a lane. The tools send them only when the
-    # status-set read says guard_on, and this fence's gateway has the flag off.
+    # WS-42 PST-4: the place of a lane. The tools send them when the model
+    # passes a place, and this fence's witnesses pass none.
     ("POST", "/projects/nodes/{project_id}/statuses"): {
         "slot": _STATUS_PLACE_REASON,
         "after": _STATUS_PLACE_REASON,

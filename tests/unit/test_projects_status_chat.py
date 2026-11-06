@@ -250,7 +250,7 @@ async def test_the_server_range_refusal_reaches_the_model(monkeypatch) -> None:
     from skill_projects import client
 
     approve(monkeypatch)
-    detail = "Slot 9 is outside the stage. Use a slot from 1 to 4."
+    detail = "Slot 3 is outside the stage. Use a slot from 1 to 4."
 
     def respond(call: dict) -> Any:
         if call["method"] == "PATCH":
@@ -263,7 +263,7 @@ async def test_the_server_range_refusal_reaches_the_model(monkeypatch) -> None:
 
     fake_gateway(monkeypatch, respond)
     with pytest.raises(client.GatewayRefusal) as err:
-        await skill_projects.update_status(SUB, "Done", slot=9)
+        await skill_projects.update_status(SUB, "Done", slot=3)
     assert "from 1 to 4" in str(err.value)
 
 
@@ -296,15 +296,30 @@ async def test_an_older_read_without_the_flag_is_off(monkeypatch) -> None:
     assert out.startswith("Added status") and len(_sent(calls, "POST")) == 1
 
 
-async def test_the_flag_off_refuses_slot_and_after_and_sends_nothing(monkeypatch) -> None:
+async def test_the_flag_off_still_sends_slot_and_after(monkeypatch) -> None:
+    """P1 of the review: a tool schema cannot be dark. "Put Done last" is ONE
+    call in every org, flag on or off."""
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway(_read(guard_on=False)))
-    for out in (
-        await skill_projects.create_status(SUB, "Blocked", slot=2),
-        await skill_projects.update_status(SUB, "Done", after="Shipped"),
-    ):
-        assert "slot and after are not open here" in out
-    assert asked == [] and writes(calls) == []
+    await skill_projects.update_status(SUB, "Done", slot=4)
+    await skill_projects.update_status(SUB, "Done", after="Shipped")
+    out = await skill_projects.create_status(SUB, "Blocked", category="done", slot=2)
+    assert out.startswith("Added status"), out
+    assert [c["json"] for c in _sent(calls, "PATCH")] == [{"slot": 4}, {"after": "Shipped"}]
+    assert _sent(calls, "POST")[0]["json"] == {"name": "Blocked", "category": "done", "slot": 2}
+    assert len(asked) == 3
+    for card in asked:
+        assert "Changes the statuses" not in card["detail"]
+
+
+async def test_the_flag_off_adds_to_an_inheriting_project_in_one_step(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway(_read(guard_on=False)))
+    out = await skill_projects.create_status(SUB, "Blocked", category="done")
+    assert out.startswith("Added status"), out
+    assert len(asked) == 1
+    assert not [c for c in calls if c["path"].endswith("/status-set") and c["method"] != "GET"]
+    assert not [c for c in calls if c["path"].endswith("/status-set/preview")]
 
 
 async def test_set_status_set_is_not_held_by_the_guard(monkeypatch) -> None:
@@ -329,20 +344,24 @@ async def test_set_status_set_is_not_held_by_the_guard(monkeypatch) -> None:
 # ── The words ───────────────────────────────────────────────────────────────
 
 
-def test_the_rule_text_gives_the_model_the_order() -> None:
-    """Acceptance 9: own set first, then the copy. The shared set only when the
-    member names it. The text is in the pack rules and in the agent file."""
+def test_the_rule_text_is_flag_neutral() -> None:
+    """P1: the static text holds no unconditional "mode=own first". The rule
+    lives in the refusal, which only a flag-on org sees. The placement rule and
+    the conditional line stay."""
     from pathlib import Path
 
     from acb_skills.tool_packs import _PROJECTS_STRUCTURE_RULES
 
-    flat = " ".join(_PROJECTS_STRUCTURE_RULES.split())
-    assert "set_status_set with mode=own first. Then change the copy" in flat
-    assert "only when the member names it" in flat and "change_whole_set=true" in flat
     agent = Path(__file__).resolve().parents[2] / "apps/agents/agent-projects/instructions.md"
-    text = " ".join(agent.read_text(encoding="utf-8").split())
-    assert re.search(r"`mode=own` first\. Then change the copy", text)
-    assert "only when the member names it" in text
+    texts = {
+        "pack rules": " ".join(_PROJECTS_STRUCTURE_RULES.split()),
+        "instructions": " ".join(agent.read_text(encoding="utf-8").split()).replace("`", ""),
+    }
+    for where, flat in texts.items():
+        assert "mode=own first" not in flat and "own set first" not in flat, where
+        assert "never guess a position" in flat.lower(), where
+        assert "When a status tool refuses because the set is shared" in flat, where
+        assert "change_whole_set=true only when the member says so" in flat, where
 
 
 def test_the_tools_take_the_new_arguments_and_the_manifest_maps_them() -> None:
@@ -359,3 +378,64 @@ def test_the_tools_take_the_new_arguments_and_the_manifest_maps_them() -> None:
     for key in (("POST", "/projects/nodes/{project_id}/statuses"),
                 ("PATCH", "/projects/statuses/{status_id}")):
         assert {"slot", "after"} <= set(manifest.FIELD_EXEMPT[key]), key
+
+
+# ── The review round ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("guard_on", [True, False], ids=["flag-on", "flag-off"])
+async def test_a_slot_past_the_stage_is_refused_before_any_card(monkeypatch, guard_on) -> None:
+    """P2: the card must not show a place that the route will refuse. Done
+    stage holds 4 lanes: slot 6 is out for an update (1 to 4), and slot 6 is out
+    for a create (1 to 5)."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(
+        monkeypatch,
+        _gateway(_read(owns=True, owner_id=SUB, used_by=0, reach=1, guard_on=guard_on)),
+    )
+    moved = await skill_projects.update_status(SUB, "Done", slot=6)
+    made = await skill_projects.create_status(SUB, "Late", category="done", slot=6)
+    assert moved.startswith("Refused:") and "slot is 1 to 4" in moved
+    assert made.startswith("Refused:") and "slot is 1 to 5" in made
+    assert "Nothing was done" in moved and "Nothing was done" in made
+    assert asked == [] and writes(calls) == []
+
+
+async def test_an_after_that_is_not_in_the_stage_is_refused_before_any_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway(_read(owns=True, owner_id=SUB, used_by=0, reach=1)))
+    out = await skill_projects.update_status(SUB, "Done", after="Doing")
+    assert out.startswith("Refused:") and "No lane named «Doing»" in out
+    assert "«Shipped», «Released», «Closed»" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_the_last_slot_of_a_create_is_allowed(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway(_read(owns=True, owner_id=SUB, used_by=0, reach=1)))
+    await skill_projects.create_status(SUB, "Late", category="done", slot=5)
+    assert _sent(calls, "POST")[0]["json"]["slot"] == 5
+
+
+async def test_one_project_reads_in_the_singular_in_the_refusal(monkeypatch) -> None:
+    """P3: "1 project shares that set … changes it". Not "1 project share"."""
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _gateway(_read(used_by=1, reach=1)))
+    one = await skill_projects.create_status(SUB, "Blocked")
+    assert "1 project shares that set, so a change here changes it." in one
+    assert "1 project share " not in one and "all 1" not in one
+    fake_gateway(monkeypatch, _gateway(_read(used_by=3, reach=3)))
+    many = await skill_projects.create_status(SUB, "Blocked")
+    assert "3 projects share that set, so a change here changes all 3." in many
+
+
+async def test_the_vocabulary_read_says_a_shared_set_needs_its_own_first(monkeypatch) -> None:
+    """Noted: with the flag on, "you may edit it" must not stand for a set that
+    the tools refuse to change."""
+    fake_gateway(monkeypatch, _gateway(_read()))
+    on = await skill_projects.vocabulary(SUB)
+    assert "shared by 28 projects" in on and "mode=own" in on
+    assert "you may edit it" not in on
+    fake_gateway(monkeypatch, _gateway(_read(guard_on=False)))
+    off = await skill_projects.vocabulary(SUB)
+    assert "the server says you may edit it" in off and "shared by" not in off

@@ -4069,7 +4069,8 @@ def shared_set_refusal(status_set: dict[str, Any], node_name: Any) -> str:
     n = shared_reach(status_set)
     return "\n".join([
         f"{REFUSED} {data(node_name)} uses the statuses of the {kind} {owner}. "
-        f"{_n_projects(n)} share that set, so a change here changes all {n}. "
+        f"{_n_projects(n)} {'shares' if n == 1 else 'share'} that set, so a change here "
+        f"changes {'it' if n == 1 else f'all {n}'}. "
         "Nothing was done.",
         "Next: To change the statuses of this project only, call set_status_set "
         "with mode=own first. That gives the project a copy, and then you change "
@@ -4270,15 +4271,40 @@ def _next_position(rows: list[dict[str, Any]]) -> int:
     return (max(taken) + 10) if taken else 10
 
 
-_PLACE_OFF = (
-    "slot and after are not open here. Leave them out, and use position only for "
-    "update_status. Nothing was done."
-)
-
-
 def _place_args(slot: int, after: str) -> tuple[int, str]:
     """``slot`` (1-based, 0 = not given) and ``after`` (a lane name, empty = not given)."""
     return max(int(slot or 0), 0), str(after or "").strip()
+
+
+def _place_refusal(
+    rows: list[dict[str, Any]], cat: str, self_id: str, slot: int, after: str,
+) -> str:
+    """The refusal BEFORE the card when the place cannot be: a slot past the
+    stage, or an ``after`` that is not a lane of the stage. ``""`` to go on.
+
+    The route refuses the same places with a 422. Saying it first means the
+    member never approves a card that cannot succeed (PST-4 review).
+    """
+    others = [r for r in rows if r.get("category") == cat and str(r.get("id")) != self_id]
+    size = len(others) + 1
+    stage = _category_words(cat)
+    names = ", ".join(data(r.get("name")) for r in others)
+    if after:
+        if any(str(r.get("name") or "").strip().lower() == after.lower() for r in others):
+            return ""
+        return (
+            f"{REFUSED} No lane named {data(after)} is in the {stage} stage"
+            + (f". Its other lanes, in order: {names}." if names else ", and it has no other lane.")
+            + " Nothing was done.\nNext: Name a lane of this stage in after, or pass slot."
+        )
+    if slot > size:
+        return (
+            f"{REFUSED} Slot {slot} is outside the {stage} stage. The stage has {size} "
+            f"place{'' if size == 1 else 's'} for this lane, so the slot is 1 to {size}. "
+            "Nothing was done.\nNext: Pass a slot in that range, or name a lane of this "
+            "stage in after."
+        )
+    return ""
 
 
 def _place_words(rows: list[dict[str, Any]], cat: str, self_id: str, slot: int, after: str) -> str:
@@ -4305,9 +4331,9 @@ async def create_status(
     LAST in its stage in the set the project uses. slot (1-based, inside the
     stage) or after (a lane name of the same stage) places it elsewhere. The
     card names the project that owns that set, because a subproject may
-    inherit its lanes from a parent. When the set is shared, the tool refuses
-    unless change_whole_set is true, which the member must ask for. Deleting
-    a lane is a guarded act."""
+    inherit its lanes from a parent. Pass change_whole_set=true only when the
+    member asks to change a set that other projects share. Deleting a lane is
+    a guarded act."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -4323,23 +4349,25 @@ async def create_status(
         return refused
     guard = status_guard_on(owner)
     place, behind = _place_args(slot, after)
-    if (place or behind) and not guard:
-        return _PLACE_OFF
     rows = await _vocab(pid, "statuses")
     if _matches_by_name(rows, label):
         return f"{data(label)} already exists here. The statuses are: {_names(rows)}."
+    bad_place = _place_refusal(rows, cat, "", place, behind) if (place or behind) else ""
+    if bad_place:
+        return bad_place
     payload: dict[str, Any] = {"name": label, "category": cat}
     shown: dict[str, Any] = {}
-    if guard:
-        # PST-4: the model never sends a sort key. A slot, or a lane to follow.
-        # No place means last in the stage: one past the lanes that are there.
-        if behind:
-            payload["after"] = behind
-        else:
-            payload["slot"] = place or len([r for r in rows if r.get("category") == cat]) + 1
-        shown["position"] = _place_words(rows, cat, "", payload.get("slot", 0), behind)
+    # slot and after are open in every org (a tool schema cannot be dark). The
+    # flag only decides what happens with NO place: last in the stage by slot
+    # (on), or the old raw position (off).
+    if behind:
+        payload["after"] = behind
+    elif place or guard:
+        payload["slot"] = place or len([r for r in rows if r.get("category") == cat]) + 1
     else:
         payload["position"] = _next_position(rows)
+    if "slot" in payload or "after" in payload:
+        shown["position"] = _place_words(rows, cat, "", payload.get("slot", 0), behind)
     if color.strip():
         payload["color"] = hue_of(color)
     set_of = "this project" if owner.get("owns") else data(owner.get("owner_name"))
@@ -4387,8 +4415,8 @@ async def update_status(
     green, blue or violet. To reorder, pass slot (1-based, inside the stage of
     the lane) or after (a lane name of the same stage). A lane never leaves
     its stage by a reorder. position is a raw sort key, so do not guess it.
-    When the set is shared, the tool refuses unless change_whole_set is
-    true, which the member must ask for. The card shows before → after."""
+    Pass change_whole_set=true only when the member asks to change a set that
+    other projects share. The card shows before → after."""
     pid, node = await _node(project_id)
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     refused = status_edit_refusal(
@@ -4398,8 +4426,6 @@ async def update_status(
         return refused
     guard = status_guard_on(owner)
     place, behind = _place_args(slot, after)
-    if (place or behind) and not guard:
-        return _PLACE_OFF
     if guard and position >= 0:
         return (
             "position is a raw sort key, and the tool does not send it. Pass slot "
@@ -4431,6 +4457,9 @@ async def update_status(
             return "Pass slot or after, not both."
         rows = await _vocab(pid, "statuses")
         cat = str(payload.get("category") or row.get("category"))
+        bad_place = _place_refusal(rows, cat, str(row.get("id")), place, behind)
+        if bad_place:
+            return bad_place
         here = [r for r in rows if r.get("category") == row.get("category")]
         send["after" if behind else "slot"] = behind or place
         payload["position"] = _place_words(rows, cat, str(row.get("id")), place, behind)
