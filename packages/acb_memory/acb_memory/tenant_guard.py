@@ -23,9 +23,12 @@ both off, :func:`memory_tenancy_ok` reads two settings and returns. It opens no
 session.
 
 **Caching.** A refusal stays for the life of the process, because the count of
-organizations does not go down. A pass stays for :data:`PASS_TTL_S` seconds, so
-a new second organization stops the memory layer within that time. A database
-fault refuses this call and is not kept, so the next call asks again.
+organizations does not go down. A pass keeps the id of the one organization
+that the probe saw. The pass is good for :data:`PASS_TTL_S` seconds, and only
+for a call whose bound tenant is unset or is that same id. A call bound to any
+other tenant probes again at once. So a new second organization never reads
+the memory of the first one from a kept pass. A database fault refuses this
+call and is not kept, so the next call asks again.
 
 The read goes through the shared engine (``acb_common.db.get_db``), unbound,
 because ``organization`` is RLS-exempt. It is the same idiom as
@@ -44,17 +47,18 @@ _log = get_logger("acb_memory.tenant_guard")
 #: How long a pass stays good, in seconds.
 PASS_TTL_S = 60.0
 
-#: One read, at most two rows. It answers "more than one organization?" and
-#: never counts the whole table.
-_ORG_PROBE_SQL = "SELECT count(*) AS n FROM (SELECT 1 FROM organization LIMIT 2) AS o"
+#: One read, at most two rows. It answers "which organizations, up to two?"
+#: and never reads the whole table.
+_ORG_PROBE_SQL = "SELECT id::text AS id FROM organization LIMIT 2"
 
 
 class MemoryTenancyRefused(RuntimeError):
     """The memory layer refused to start: two organizations or more exist."""
 
 
-#: ``None`` until the first check. Then ``(ok, at)`` from ``time.monotonic``.
-_verdict: tuple[bool, float] | None = None
+#: ``None`` until the first check. Then ``(ok, at, sole_org)``. ``at`` is from
+#: ``time.monotonic``. ``sole_org`` is the one org id that a pass saw, or "".
+_verdict: tuple[bool, float, str] | None = None
 
 
 def memory_flags_on() -> tuple[str, ...]:
@@ -68,18 +72,28 @@ def memory_flags_on() -> tuple[str, ...]:
     return tuple(layers)
 
 
-async def _organizations_more_than_one() -> bool:
-    """True when two organizations or more exist. A fault raises."""
+def _norm(org: str | None) -> str:
+    return str(org or "").strip().lower()
+
+
+async def _probe_organizations() -> tuple[str, ...]:
+    """The ids of the organizations, two at most. A fault raises."""
     from sqlalchemy import text
 
     from acb_common.db import get_db
 
     session: Any = await get_db()
     try:
-        row = (await session.execute(text(_ORG_PROBE_SQL))).mappings().first()
+        rows = (await session.execute(text(_ORG_PROBE_SQL))).mappings().all()
     finally:
         await session.close()
-    return int(row["n"] if row else 0) > 1
+    return tuple(_norm(r["id"]) for r in rows)
+
+
+def _bound_tenant() -> str:
+    from acb_common.db import current_tenant
+
+    return _norm(current_tenant())
 
 
 async def memory_tenancy_ok() -> bool:
@@ -93,25 +107,36 @@ async def memory_tenancy_ok() -> bool:
     if not layers:
         return True
     now = time.monotonic()
+    tenant = _bound_tenant()
     if _verdict is not None:
-        ok, at = _verdict
-        if not ok or now - at < PASS_TTL_S:
-            return ok
+        ok, at, sole = _verdict
+        if not ok:
+            return False
+        # A kept pass serves only the org that it saw. Another bound tenant
+        # means that a new org exists, so probe again now, not after the TTL.
+        if now - at < PASS_TTL_S and (not tenant or tenant == sole):
+            return True
     try:
-        multi = await _organizations_more_than_one()
+        orgs = await _probe_organizations()
     except Exception as exc:
         # Fail closed for this call. Do not keep it, so the next call asks again.
         _log.warning("memory.tenant_guard_probe_failed", error=type(exc).__name__)
         return False
-    if multi:
-        _verdict = (False, now)
+    if len(orgs) > 1:
+        _verdict = (False, now, "")
         _log.error(
             "memory.tenant_guard_refused",
             layers=",".join(layers),
             reason="two or more organizations exist and the memory store has no org scope",
         )
         return False
-    _verdict = (True, now)
+    sole = orgs[0] if orgs else ""
+    if tenant and tenant != sole:
+        # The bound tenant is not the one org that exists. Refuse this call
+        # and keep no pass. This is not a state that a real run reaches.
+        _log.warning("memory.tenant_guard_unknown_tenant")
+        return False
+    _verdict = (True, now, sole)
     return True
 
 

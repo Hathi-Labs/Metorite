@@ -286,6 +286,35 @@ class MemoryClient:
             _log.debug("mem0.get_all_error", error=str(exc)[:100])
             return []
 
+    async def scope_ids(self, user_id: str) -> set[str]:
+        """The memory ids of one scope, for a delete only.
+
+        KG-9 review. The tenant guard does not gate this read, as it does not
+        gate a delete. A refused memory layer must still forget what a member
+        asks it to forget, and the delete route needs these ids to check that
+        the memory is IN the scope. It gives ids only, never memory text.
+        Like ``delete_scope``, it refuses a blank scope and the wildcard.
+        Returns an empty set on a Mem0 error.
+        """
+        scope = user_id.strip() if isinstance(user_id, str) else ""
+        if not scope or scope == "*":
+            return set()
+        client = self._get_client()
+        if client is None:
+            return set()
+        try:
+            def _sync() -> set[str]:
+                # The same read as ``get_all``, so the route sees the rows
+                # that it saw before KG-9.
+                page = client.get_all(filters={"user_id": scope})
+                rows = page.get("results", []) if isinstance(page, dict) else list(page or [])
+                return {str(r["id"]) for r in rows if isinstance(r, dict) and r.get("id")}
+
+            return await asyncio.to_thread(_sync)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("mem0.scope_ids_error", error=str(exc)[:100])
+            return set()
+
     async def delete(self, memory_id: str) -> None:
         """Delete a single memory by ID."""
         client = self._get_client()

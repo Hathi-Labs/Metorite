@@ -32,6 +32,7 @@ Typical usage in an agent:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from datetime import UTC, datetime
@@ -74,12 +75,32 @@ class GraphitiClient:
     def __init__(self) -> None:
         self._graphiti: Any | None = None
         self._init_attempted = False
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: Any = None
+
+    def _start_lock(self) -> asyncio.Lock:
+        """One start at a time, on this event loop (KG-9 review)."""
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock, self._lock_loop = asyncio.Lock(), loop
+        return self._lock
 
     async def _get_graphiti(self) -> Any | None:
-        """Lazily initialise and return the Graphiti instance."""
+        """Lazily initialise and return the Graphiti instance.
+
+        The guard check awaits, so two first calls can overlap. The lock lets
+        one of them start the client. The other waits, and then reads the
+        result of the first.
+        """
         if self._init_attempted:
             return self._graphiti
+        async with self._start_lock():
+            if self._init_attempted:
+                return self._graphiti
+            return await self._start()
 
+    async def _start(self) -> Any | None:
+        """Start Graphiti once. The caller holds the start lock."""
         settings = get_settings()
         if not getattr(settings, "graphiti_enabled", False):
             self._init_attempted = True

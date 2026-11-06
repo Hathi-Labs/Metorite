@@ -147,6 +147,20 @@ def _authorize_person(scope: str, user: UserContext) -> None:
         raise _deny("Forbidden: that is somebody else's private memory.")
 
 
+def _canonical_scope(scope: str) -> str:
+    """The one spelling of a scope key that the readers use (KG-9 review).
+
+    ``org:<org id>`` is lowercase, as ``acb_memory.org_scope_key`` writes it.
+    Each handler authorizes and then calls Mem0 with this value, never with the
+    raw path. Else ``org:<ID>`` in capitals passes the check and writes a key
+    that no reader reads.
+    """
+    scope = (scope or "").strip()
+    if scope.startswith(ORG_SCOPE_PREFIX):
+        return scope.lower()
+    return scope
+
+
 def _authorize_scope(scope: str, user: UserContext, *, write: bool) -> None:
     """Raise 403/404 unless *user* may touch this memory scope.
 
@@ -214,6 +228,7 @@ async def list_memories(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict]:
     """Return all stored episodic memories in *scope*."""
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=False)
     client = _get_mem0()
     if client is None:
@@ -228,6 +243,7 @@ async def search_memories(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict]:
     """Return memories in *scope* semantically relevant to the query."""
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=False)
     client = _get_mem0()
     if client is None:
@@ -249,15 +265,15 @@ async def delete_memory(
     somebody else's memory id would delete their memory — the same IDOR one
     level down, and the one a path-parameter check alone would leave open.
     """
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=True)
     client = _get_mem0()
     if client is None:
         return
-    owned = {
-        str(m.get("id"))
-        for m in await client.get_all(scope)
-        if isinstance(m, dict) and m.get("id")
-    }
+    # KG-9 review: the owner read of a delete is not gated by the memory
+    # tenant guard, as the delete is not. A refused layer must still forget.
+    # The read names this one authorized scope, so the isolation check holds.
+    owned = await client.scope_ids(scope)
     if memory_id not in owned:
         # 404, not 403: whether a memory id exists elsewhere is itself
         # something the caller should not be able to probe for.
@@ -276,6 +292,7 @@ async def add_memories(
     This endpoint is called by the Control Plane after a session ends.
     The extraction runs asynchronously — returns 202 immediately.
     """
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=True)
     client = _get_mem0()
     if client is None:
@@ -302,6 +319,7 @@ async def memory_status(
     Gated like the others: the count alone tells you how much a colleague has
     stored, which is not much and is still not yours to know.
     """
+    scope = _canonical_scope(scope)
     _authorize_scope(scope, user, write=False)
     from acb_common import get_settings  # noqa: PLC0415
 

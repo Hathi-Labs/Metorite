@@ -54,11 +54,11 @@ def _orgs(monkeypatch: pytest.MonkeyPatch, count: int) -> list[int]:
     """Stub the probe. The list counts the probes that ran."""
     probes: list[int] = []
 
-    async def _probe() -> bool:
+    async def _probe() -> tuple[str, ...]:
         probes.append(count)
-        return count > 1
+        return (ORG_A, ORG_B)[:count]
 
-    monkeypatch.setattr(tenant_guard, "_organizations_more_than_one", _probe)
+    monkeypatch.setattr(tenant_guard, "_probe_organizations", _probe)
     return probes
 
 
@@ -146,27 +146,103 @@ async def test_a_probe_fault_refuses_and_asks_again(monkeypatch) -> None:
     _flags(monkeypatch, mem0=True)
     calls: list[int] = []
 
-    async def _boom() -> bool:
+    async def _boom() -> tuple[str, ...]:
         calls.append(1)
         raise ConnectionError("no database")
 
-    monkeypatch.setattr(tenant_guard, "_organizations_more_than_one", _boom)
+    monkeypatch.setattr(tenant_guard, "_probe_organizations", _boom)
     assert await tenant_guard.memory_tenancy_ok() is False
     assert await tenant_guard.memory_tenancy_ok() is False
     assert len(calls) == 2
 
 
-@pytest.mark.asyncio
-async def test_a_second_org_stops_a_started_layer_after_the_ttl(monkeypatch) -> None:
-    _flags(monkeypatch, mem0=True)
+def _bound(org: str | None):
+    """Bind *org* as the auth dependency does, or clear the scope."""
+    import contextlib
+
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+
+    @contextlib.contextmanager
+    def _cm():
+        token = bind_tenant(org) if org else clear_tenant()
+        try:
+            yield
+        finally:
+            release_tenant(token)
+
+    return _cm()
+
+
+def _growing_orgs(monkeypatch: pytest.MonkeyPatch) -> tuple[dict, dict, list[int]]:
+    """A probe whose org count the test raises, and a clock the test moves."""
     count = {"n": 1}
+    probes: list[int] = []
 
-    async def _probe() -> bool:
-        return count["n"] > 1
+    async def _probe() -> tuple[str, ...]:
+        probes.append(count["n"])
+        return (ORG_A, ORG_B)[:count["n"]]
 
-    monkeypatch.setattr(tenant_guard, "_organizations_more_than_one", _probe)
+    monkeypatch.setattr(tenant_guard, "_probe_organizations", _probe)
     clock = {"t": 1000.0}
     monkeypatch.setattr(tenant_guard.time, "monotonic", lambda: clock["t"])
+    return count, clock, probes
+
+
+@pytest.mark.asyncio
+async def test_a_new_org_refuses_at_once_inside_the_ttl(monkeypatch) -> None:
+    """KG-9 review, P1. A kept pass serves only the org that it saw.
+
+    Org A passes. Org B appears inside the TTL. A call bound to org B must
+    refuse at once. Else it reads org A's ``agent:<name>`` memory.
+    """
+    _flags(monkeypatch, mem0=True)
+    count, clock, probes = _growing_orgs(monkeypatch)
+
+    with _bound(ORG_A):
+        assert await tenant_guard.memory_tenancy_ok() is True
+    count["n"] = 2
+    clock["t"] += 1.0  # well inside the TTL
+    with _bound(ORG_B):
+        assert await tenant_guard.memory_tenancy_ok() is False
+    assert probes == [1, 2]
+    # And the refusal now holds for org A too.
+    with _bound(ORG_A):
+        assert await tenant_guard.memory_tenancy_ok() is False
+
+
+@pytest.mark.asyncio
+async def test_a_new_org_reads_no_mem0_inside_the_ttl(monkeypatch) -> None:
+    _flags(monkeypatch, mem0=True)
+    count, clock, _ = _growing_orgs(monkeypatch)
+    client, fake, _ = _client_with(monkeypatch)
+
+    with _bound(ORG_A):
+        assert await client.search("agent:sales", "q") == [{"memory": "a fact"}]
+    count["n"] = 2
+    clock["t"] += 1.0
+    fake.calls.clear()
+    with _bound(ORG_B):
+        assert await client.search("agent:sales", "q") == []
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_same_org_keeps_its_pass_inside_the_ttl(monkeypatch) -> None:
+    _flags(monkeypatch, mem0=True)
+    _, clock, probes = _growing_orgs(monkeypatch)
+
+    with _bound(ORG_A):
+        assert await tenant_guard.memory_tenancy_ok() is True
+        clock["t"] += tenant_guard.PASS_TTL_S / 2
+        assert await tenant_guard.memory_tenancy_ok() is True
+    assert await tenant_guard.memory_tenancy_ok() is True  # no tenant bound
+    assert probes == [1]
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_call_sees_a_second_org_after_the_ttl(monkeypatch) -> None:
+    _flags(monkeypatch, mem0=True)
+    count, clock, _ = _growing_orgs(monkeypatch)
 
     assert await tenant_guard.memory_tenancy_ok() is True
     count["n"] = 2
@@ -174,6 +250,46 @@ async def test_a_second_org_stops_a_started_layer_after_the_ttl(monkeypatch) -> 
     assert await tenant_guard.memory_tenancy_ok() is True  # the pass is kept
     clock["t"] += tenant_guard.PASS_TTL_S
     assert await tenant_guard.memory_tenancy_ok() is False
+
+
+@pytest.mark.asyncio
+async def test_a_tenant_that_is_not_the_one_org_is_refused(monkeypatch) -> None:
+    _flags(monkeypatch, mem0=True)
+    _orgs(monkeypatch, 1)
+    with _bound(ORG_B):
+        assert await tenant_guard.memory_tenancy_ok() is False
+
+
+@pytest.mark.asyncio
+async def test_two_first_graphiti_calls_start_it_once(monkeypatch) -> None:
+    """KG-9 review, P2. The guard check awaits, so two first calls overlap.
+
+    ``_start`` stands in for the build of Graphiti and waits on a gate. Two
+    calls run at once. The start lock lets one build, and the other reads it.
+    """
+    import asyncio
+
+    gate = asyncio.Event()
+    builds: list[int] = []
+    built = object()
+    gc = graphiti_client.GraphitiClient()
+
+    async def _start() -> Any:
+        builds.append(1)
+        await gate.wait()
+        gc._init_attempted = True
+        gc._graphiti = built
+        return built
+
+    monkeypatch.setattr(gc, "_start", _start)
+    first = asyncio.ensure_future(gc._get_graphiti())
+    second = asyncio.ensure_future(gc._get_graphiti())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    gate.set()
+    a, b = await asyncio.gather(first, second)
+    assert builds == [1]
+    assert a is built and b is built
 
 
 # ---------------------------------------------------------------------------
@@ -204,10 +320,10 @@ async def test_mem0_on_with_one_org_starts(monkeypatch) -> None:
 async def test_flags_off_reads_no_database(monkeypatch) -> None:
     _flags(monkeypatch)
 
-    async def _never() -> bool:
+    async def _never() -> tuple[str, ...]:
         raise AssertionError("the guard must not read the database with both flags off")
 
-    monkeypatch.setattr(tenant_guard, "_organizations_more_than_one", _never)
+    monkeypatch.setattr(tenant_guard, "_probe_organizations", _never)
     assert await tenant_guard.memory_tenancy_ok() is True
     await tenant_guard.check_memory_tenancy()  # does not raise
 
@@ -375,6 +491,108 @@ def test_the_memory_api_reaches_only_the_members_own_org() -> None:
     assert exc.value.status_code == 404
 
 
+class _OrgMember:
+    """A member of ORG_A with both org memory rights."""
+
+    role = None
+    organization_id = ORG_A
+    email = "a@x.test"
+
+    def has_permission(self, perm: str) -> bool:
+        return perm in {"memory:read_org", "memory:write_org"}
+
+
+@pytest.mark.asyncio
+async def test_the_memory_api_sends_mem0_the_lowercase_org_key(monkeypatch) -> None:
+    """KG-9 review, P2. ``org:<ID>`` in capitals reaches Mem0 lowercase.
+
+    Else the write lands on a key that no reader reads.
+    """
+    import gateway.routes.memory as mem
+
+    seen: list[tuple[str, str]] = []
+
+    class _Client:
+        async def get_all(self, scope):
+            seen.append(("get_all", scope))
+            return [{"id": "m1"}]
+
+        async def search(self, scope, query, limit=8):
+            seen.append(("search", scope))
+            return []
+
+        async def add(self, scope, messages, agent_id=""):
+            seen.append(("add", scope))
+
+        async def scope_ids(self, scope):
+            seen.append(("scope_ids", scope))
+            return {"m1"}
+
+        async def delete(self, memory_id):
+            seen.append(("delete", memory_id))
+
+    monkeypatch.setattr(mem, "_get_mem0", lambda: _Client())
+    upper = f"  org:{ORG_A.upper()} "
+    user = _OrgMember()
+    await mem.list_memories(upper, user)
+    await mem.search_memories(upper, mem.SearchRequest(query="q"), user)
+    await mem.add_memories(upper, mem.AddRequest(messages=[{"role": "user", "content": "x"}]), user)
+    await mem.delete_memory(upper, "m1", user)
+    import asyncio
+
+    await asyncio.sleep(0)  # the add runs as a task
+    scopes = {scope for op, scope in seen if op != "delete"}
+    assert scopes == {f"org:{ORG_A}"}
+
+
+@pytest.mark.asyncio
+async def test_a_member_delete_works_while_the_layer_is_refused(monkeypatch) -> None:
+    """KG-9 review, P2. A refused layer still forgets, through the route.
+
+    The guard refuses (two orgs). The owner read of the delete is not gated,
+    so the member's own memory deletes, and another memory id still gets 404.
+    """
+    from fastapi import HTTPException
+
+    import gateway.routes.memory as mem
+
+    _flags(monkeypatch, mem0=True)
+    _orgs(monkeypatch, 2)
+    assert await tenant_guard.memory_tenancy_ok() is False
+
+    deleted: list[str] = []
+
+    class _Mem0Rows:
+        def get_all(self, filters: dict, **kw: Any) -> dict:
+            assert filters == {"user_id": "a@x.test"}
+            return {"results": [{"id": "mine-1"}]}
+
+        def delete(self, memory_id: str) -> None:
+            deleted.append(memory_id)
+
+    client = mem0_client.MemoryClient()
+    monkeypatch.setattr(client, "_get_client", lambda: _Mem0Rows())
+    monkeypatch.setattr(mem, "_get_mem0", lambda: client)
+
+    class _Person:
+        role = None
+        organization_id = ORG_A
+        email = "a@x.test"
+
+        def has_permission(self, perm: str) -> bool:
+            return False
+
+    # The gated read answers nothing under the refusal ...
+    assert await client.get_all("a@x.test") == []
+    # ... and the delete still works.
+    await mem.delete_memory("a@x.test", "mine-1", _Person())
+    assert deleted == ["mine-1"]
+    with pytest.raises(HTTPException) as exc:
+        await mem.delete_memory("a@x.test", "someone-elses", _Person())
+    assert exc.value.status_code == 404
+    assert deleted == ["mine-1"]
+
+
 # ---------------------------------------------------------------------------
 # 5. R8: the probe against a real organization table
 # ---------------------------------------------------------------------------
@@ -416,11 +634,11 @@ async def test_the_probe_counts_real_organizations(monkeypatch) -> None:
                     await _add_org(n)
                     n = await _count()
                 if n == 1:
-                    assert await tenant_guard._organizations_more_than_one() is False
+                    assert len(await tenant_guard._probe_organizations()) == 1
                     assert await tenant_guard.memory_tenancy_ok() is True
                     await _add_org(n)
                     tenant_guard.reset_memory_tenancy()
-                assert await tenant_guard._organizations_more_than_one() is True
+                assert len(await tenant_guard._probe_organizations()) == 2
                 assert await tenant_guard.memory_tenancy_ok() is False
                 with pytest.raises(MemoryTenancyRefused):
                     await tenant_guard.check_memory_tenancy()
