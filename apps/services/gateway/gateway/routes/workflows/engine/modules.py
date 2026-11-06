@@ -15,6 +15,14 @@ changes here). Defense layers, each independent:
    code arrives via stdin as data, never interpolated into the harness.
 3. OS resource limits (CPU seconds, address space, file size, no subprocess
    inheritable env), a wall-clock kill, and output size caps.
+
+⚠️ **Dark by org (WS-STU STU-Q15a).** D127.2 keeps member code off the box,
+and this runner is not a sandbox. So :func:`run_module_code` takes a required
+``organization_id`` and calls ``gateway.module_runs.refuse_unless_allowed``
+as its first statement. An org that ``MODULE_RUN_ORGS`` does not list gets
+``ModuleRunsOff``, and no child process starts. The three callers (the two
+test routes and the module node) pass the org of the session or of the run,
+never one from request input. Fence: ``tests/unit/test_module_runs_off.py``.
 """
 
 from __future__ import annotations
@@ -26,6 +34,8 @@ import json
 import sys
 from dataclasses import dataclass
 from typing import Any
+
+from gateway.module_runs import refuse_unless_allowed
 
 MAX_CODE_BYTES = 20 * 1024
 MAX_INPUT_BYTES = 256 * 1024
@@ -266,6 +276,7 @@ async def run_module_code(
     code: str,
     inputs: dict[str, Any],
     *,
+    organization_id: str | None,
     timeout: float = MODULE_WALL_TIMEOUT_SECS,
 ) -> dict[str, Any]:
     """Execute validated module *code* against *inputs*.
@@ -273,7 +284,13 @@ async def run_module_code(
     Returns the module's output dict, or raises ``ModuleExecutionError`` with
     a user-facing message. Re-validates before running (defense in depth —
     the DB row could predate a validator tightening).
+
+    *organization_id* has no default, so a caller that forgets it fails at
+    once. It is the org of the session or of the run. The switch runs first:
+    an org off ``MODULE_RUN_ORGS``, or no org, raises
+    ``gateway.module_runs.ModuleRunsOff`` and spawns nothing (STU-Q15a).
     """
+    refuse_unless_allowed(organization_id)
     violations = validate_module_code(code)
     if violations:
         raise ModuleExecutionError(

@@ -458,11 +458,17 @@ def _module_child(monkeypatch):
     Windows has neither, so only there a stand-in runs the seeded source in
     this process. The subject of this file is the READ under RLS. CI runs the
     real child, and ``test_workflows_modules.py`` fences that child.
+
+    The runner is dark by org (STU-Q15a), so ``MODULE_RUN_ORGS`` opens every
+    org here. ``test_module_runs_off.py`` fences the switch.
     """
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "module_run_orgs", "*", raising=False)
     if sys.platform != "win32":
         return
 
-    async def _run(code: str, inputs: dict) -> dict:
+    async def _run(code: str, inputs: dict, *, organization_id: str | None) -> dict:
         namespace: dict[str, Any] = {}
         exec(code, namespace)
         return namespace["run"](inputs)

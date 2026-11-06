@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from gateway.module_runs import ModuleRunsOff
 from gateway.routes.workflows.engine.modules import run_module_code
 from gateway.routes.workflows.engine.templating import resolve_value
 
@@ -83,6 +84,11 @@ class NodeServices:
     actor: str = "workflow"
     #: Extra context merged into agent messages' metadata (reserved).
     context: dict[str, Any] = field(default_factory=dict)
+    #: The org of the RUN (``service.build_node_services``), never of node
+    #: input. The module node passes it to ``run_module_code``, whose switch
+    #: refuses an org off ``MODULE_RUN_ORGS``. ``None`` (a run with no org, or
+    #: a stub) is always refused (STU-Q15a).
+    organization_id: str | None = None
 
 
 # ── Condition evaluation (no eval(), a closed operator set) ─────────────────
@@ -179,13 +185,7 @@ async def execute_node(
         return await services.run_tool(action, args, services.actor)
 
     if ntype == "module":
-        module_id = str(config.get("module_id") or "").strip()
-        raw_inputs = config.get("inputs") if isinstance(config.get("inputs"), dict) else {}
-        inputs = resolve_value(raw_inputs, state)
-        code = await services.get_module_code(module_id)
-        if not code:
-            raise NodeExecutionError("module not found or not ready")
-        return await run_module_code(code, inputs)
+        return await _execute_module(config, state, services)
 
     if ntype == "condition":
         left = resolve_value(config.get("left"), state)
@@ -228,6 +228,32 @@ async def execute_node(
         return {"value": value}
 
     raise NodeExecutionError(f"unknown node type '{ntype}'")
+
+
+async def _execute_module(
+    config: dict[str, Any],
+    state: dict[str, Any],
+    services: NodeServices,
+) -> dict[str, Any]:
+    """The module node: read the module of the run's org, then run it.
+
+    A function of its own, as ``_execute_set`` is: ``execute_node`` sits at
+    the complexity ceiling. ``run_module_code`` takes the org of the RUN
+    (``services.organization_id``) and refuses an org off
+    ``MODULE_RUN_ORGS`` before it spawns anything (STU-Q15a). The refusal
+    fails this node with the member's words, so the run ends as a failed run
+    and never hangs.
+    """
+    module_id = str(config.get("module_id") or "").strip()
+    raw_inputs = config.get("inputs") if isinstance(config.get("inputs"), dict) else {}
+    inputs = resolve_value(raw_inputs, state)
+    code = await services.get_module_code(module_id)
+    if not code:
+        raise NodeExecutionError("module not found or not ready")
+    try:
+        return await run_module_code(code, inputs, organization_id=services.organization_id)
+    except ModuleRunsOff as exc:
+        raise NodeExecutionError(exc.message) from None
 
 
 def _execute_set(config: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:

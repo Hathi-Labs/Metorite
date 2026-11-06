@@ -24,6 +24,7 @@ from acb_common import get_logger
 from acb_common.app_manifests.shell_manifest import load_vocabulary
 from acb_common.guide_flags import guide_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException
+from gateway.module_runs import module_runs_allowed
 from gateway.routes.admin._common import _tenant_session, get_org_id
 from pydantic import (
     BaseModel,
@@ -478,7 +479,7 @@ _SET_BY_MODE = {
 #: Fields of the ANSWER that are facts of the server, not of the layout. A
 #: tab on an older bundle spreads the whole answer back into its save, so the
 #: PUT drops these before it validates, and never stores them.
-READ_ONLY_ANSWER_KEYS: tuple[str, ...] = ("guide",)
+READ_ONLY_ANSWER_KEYS: tuple[str, ...] = ("guide", "module_runs")
 
 
 def _server_stamp() -> str:
@@ -523,12 +524,20 @@ def stored_shell(raw: Any) -> dict[str, Any]:
 
 
 def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
-    """The layout, and ``guide``: true when ``GUIDE_ORGS`` holds the
-    session's org (WS-OB GD-5a). The org comes from the session, never from
-    the request (R5). ``guide`` is a fact of the server, not of the layout,
-    so ``ShellPrefs`` refuses it in a body."""
+    """The layout, and two facts of the server about the session's org.
+
+    ``guide`` is true when ``GUIDE_ORGS`` holds it (WS-OB GD-5a).
+    ``module_runs`` is true when ``MODULE_RUN_ORGS`` holds it (WS-STU
+    STU-Q15a), and `/studio` shows the Module Studio tab only then. The org
+    comes from the session, never from the request (R5). Neither is a fact of
+    the layout, so ``ShellPrefs`` refuses each in a body."""
     org = getattr(user, "organization_id", None)
-    return {**layout, "guide": guide_allowed(str(org) if org else None)}
+    bound = str(org) if org else None
+    return {
+        **layout,
+        "guide": guide_allowed(bound),
+        "module_runs": module_runs_allowed(bound),
+    }
 
 
 def _member(user: UserContext) -> str:
@@ -605,7 +614,8 @@ async def get_my_shell(user: UserContext = Depends(get_current_user)) -> dict[st
 
     A failed read answers 503, never an empty layout. All-null means "ask the
     first sign-in question", and a database fault must not ask it again.
-    The answer also carries ``guide`` (``_answer``, WS-OB GD-5a).
+    The answer also carries ``guide`` (WS-OB GD-5a) and ``module_runs``
+    (WS-STU STU-Q15a), through ``_answer``.
     """
     uid = _member(user)
     if not uid:
@@ -635,7 +645,7 @@ async def put_my_shell(
     mode = "layout"
     keep: tuple[str, ...] = ()
     if body is not None:
-        # An old tab sends back the answer it read, ``guide`` included.
+        # An old tab sends back the answer it read, ``guide`` and ``module_runs`` included.
         body = {k: v for k, v in body.items() if k not in READ_ONLY_ANSWER_KEYS}
         # The hello route is the ONLY writer of ``buddy_hello_at`` (BUD-1).
         # A client PUT never claims it, so it never blocks the hello.

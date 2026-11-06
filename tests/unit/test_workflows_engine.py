@@ -210,6 +210,7 @@ def _stub_services(
         run_tool=run_tool,
         get_module_code=get_module_code,
         actor="workflow:test",
+        organization_id="org-engine",
     )
 
 
@@ -255,7 +256,11 @@ def test_condition_routes_only_the_taken_branch() -> None:
     assert outcome.outputs == ["ignored"]
 
 
-def test_module_node_runs_generated_code() -> None:
+def test_module_node_runs_generated_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common import get_settings
+
+    # The runner is dark by org (STU-Q15a). `test_module_runs_off.py` fences it.
+    monkeypatch.setattr(get_settings(), "module_run_orgs", "org-engine", raising=False)
     code = (
         "def run(inputs):\n"
         "    rows = [r for r in inputs.get('rows', []) if r.get('email')]\n"

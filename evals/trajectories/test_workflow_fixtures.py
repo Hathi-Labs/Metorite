@@ -54,6 +54,19 @@ FIXTURE_DIR = Path(__file__).parent / "workflows"
 FIXTURES = sorted(FIXTURE_DIR.glob("*.json"))
 
 
+#: The org of each run here. ``MODULE_RUN_ORGS`` lists it, because the module
+#: runner is dark by org (STU-Q15a). ``tests/unit/test_module_runs_off.py``
+#: fences the switch, and this eval keeps its subject: the engine.
+EVAL_ORG = "org-eval"
+
+
+@pytest.fixture(autouse=True)
+def _module_runs_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "module_run_orgs", EVAL_ORG, raising=False)
+
+
 def _load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
@@ -95,6 +108,7 @@ class _Stubs:
             run_tool=self.run_tool,
             get_module_code=self.get_module_code,
             actor="eval:fixtures",
+            organization_id=EVAL_ORG,
         )
 
     def emit(self, node_id: str, status: str, detail: dict[str, Any]) -> None:

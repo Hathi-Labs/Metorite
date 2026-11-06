@@ -949,6 +949,19 @@ class Settings(BaseSettings):
     # tests/unit/test_app_requests_r8.py.
     app_requests_orgs: str = ""
 
+    # ── Member code runs on the box (WS-STU STU-Q15a) ──────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, a code module of Module Studio runs for no org: the
+    # two test routes answer 403 `module_runs_off`, a workflow module node
+    # fails with the same message, and `/studio` shows no Module Studio tab.
+    # D127.2 keeps member code off the box, and the runner is not a sandbox
+    # (`ai_studio.md` §12 STU-Q15). The one reader is
+    # `gateway.module_runs.module_runs_allowed`. A SIGHUP reload applies a
+    # change. Only the owner flips it, after the owner answers STU-Q15.
+    # Fence: tests/unit/test_module_runs_off.py.
+    module_run_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,

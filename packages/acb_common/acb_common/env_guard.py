@@ -219,6 +219,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.
     "APP_REQUESTS_ORGS",
+    # WS-STU STU-Q15a: MODULE_RUN_ORGS lets the code modules of an org run as
+    # a child process on the box. A tenant that set it could run member code
+    # for every org, so only the owner writes it.
+    "MODULE_RUN_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",

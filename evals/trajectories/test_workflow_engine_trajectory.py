@@ -40,6 +40,19 @@ DESTRUCTIVE = {"http.request"}
 MODULE_CODE = 'def run(inputs):\n    return {"cleaned": inputs["text"].strip().lower()}\n'
 
 
+#: The org of each run here. ``MODULE_RUN_ORGS`` lists it, because the module
+#: runner is dark by org (STU-Q15a). ``tests/unit/test_module_runs_off.py``
+#: fences the switch, and this eval keeps its subject: the engine.
+EVAL_ORG = "org-eval"
+
+
+@pytest.fixture(autouse=True)
+def _module_runs_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "module_run_orgs", EVAL_ORG, raising=False)
+
+
 def _node(nid: str, ntype: str, config: dict | None = None) -> dict:
     return {
         "id": nid,
@@ -104,7 +117,8 @@ class _Trace:
             return MODULE_CODE if module_id == "mod-clean" else None
 
         return NodeServices(
-            run_agent=run_agent, run_tool=run_tool, get_module_code=get_module_code
+            run_agent=run_agent, run_tool=run_tool, get_module_code=get_module_code,
+            organization_id=EVAL_ORG,
         )
 
     def emit(self, node_id: str, status: str, detail: dict) -> None:
