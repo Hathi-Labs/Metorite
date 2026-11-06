@@ -1970,6 +1970,15 @@ _STRANDED_SCHEMA = _object({
     "idle_minutes": _NULLABLE_INTEGER,
     "note": {"type": "string"},
 })
+#: Task 1045a (``agent_coordination.md`` §3.2). The wait of a run that reads
+#: ``waiting``: what it waits on, when the wait ends, and the agent's note.
+#: The note is the agent's own text, so (U).
+WAITING_ON: tuple[str, ...] = ("subagents", "ci", "review", "deploy", "member")
+_WAITING_SCHEMA = _object({
+    "on": {"type": "string", "enum": list(WAITING_ON)},
+    "until": _NULLABLE_STRING,
+    "note": _UNTRUSTED_OR_NULL,
+})
 _RUN_SCHEMA = _object({
     "id": {"type": "string"}, "task_id": {"type": "string"},
     "status": _NULLABLE_STRING, "state": _NULLABLE_STRING,
@@ -1979,6 +1988,7 @@ _RUN_SCHEMA = _object({
     "open_question": {"anyOf": [_QUESTION_SCHEMA, {"type": "null"}]},
     "latest_line": {"anyOf": [_LINE_SCHEMA, {"type": "null"}]},
     "stranded": {"anyOf": [_STRANDED_SCHEMA, {"type": "null"}]},
+    "waiting": {"anyOf": [_WAITING_SCHEMA, {"type": "null"}]},
 })
 #: SW-43. The answer of the member that may still change. It is OPTIONAL: the
 #: key is there only while ``agent_answer_change_enabled`` is on, so it is not
@@ -2097,6 +2107,23 @@ def _stranded(raw: Any) -> dict[str, Any] | None:
     }
 
 
+def _waiting(raw: Any) -> dict[str, Any] | None:
+    """``waiting`` of a run (task 1045a): what it waits on, the end of the
+    wait and the agent's note as untrusted text. ``None`` for a run that
+    does not read ``waiting``, and for a value the edge does not know."""
+    if not isinstance(raw, dict):
+        return None
+    on = raw.get("on")
+    if not isinstance(on, str) or on not in WAITING_ON:
+        return None
+    note = raw.get("note")
+    return {
+        "on": on,
+        "until": _str_or_none(raw.get("until")),
+        "note": untrusted(note) if isinstance(note, str) and note else None,
+    }
+
+
 def _member_of(value: Any) -> str | dict[str, str] | None:
     """A member address by :func:`assignee`, or ``None``."""
     return assignee(value) if isinstance(value, str) else None
@@ -2133,6 +2160,7 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "open_question": _question(row.get("open_elicitation")),
         "latest_line": _line(row.get("latest_ephemeral")),
         "stranded": _stranded(row.get("stranded")),
+        "waiting": _waiting(row.get("waiting")),
     }
     if "answer" in row:  # only a gateway with SW-43 on sends it
         out["answer"] = _answer(row.get("answer"))
@@ -5593,7 +5621,8 @@ async def _post_activity(ctx: Context, run_id: str, payload: Mapping[str, Any], 
     ``created``."""
     status, body = await _write(
         ctx, "POST", RUN_ACTIVITIES_ROUTE, TEXT_RUN_NOT_FOUND,
-        path_params={"run_id": run_id}, json_body=payload, texts={409: conflict})
+        path_params={"run_id": run_id}, json_body=payload, texts={409: conflict},
+        coded=WAITING_TEXTS)
     return _activity_result(status, body)
 
 
@@ -5664,6 +5693,38 @@ START_AGENT_RUN = Tool(
 
 # ── post_agent_activity ─────────────────────────────────────────────────────
 
+#: Task 1045a. The longest wait in minutes, as the gateway holds it
+#: (``filters.AGENT_RUN_WAITING_MAX_MIN``). A shorter lease lowers the cap on
+#: the gateway, which answers the code of :data:`WAITING_TEXTS`.
+MAX_WAITING_MINUTES = 120
+#: The longest note of a wait (``agent_runs.MAX_WAITING_NOTE``).
+MAX_WAITING_NOTE = 200
+#: The types of an activity that take ``waiting``.
+WAITING_TYPES: tuple[str, ...] = ("thought", "action", "response")
+_WAITING_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "on": {"type": "string", "enum": list(WAITING_ON),
+               "description": "What you wait on: subagents, ci, review, deploy or member."},
+        "until_minutes": {"type": "integer", "minimum": 1, "maximum": MAX_WAITING_MINUTES,
+                          "description": "How long you expect to wait, 1 to 120 minutes."},
+        "note": {"type": "string", "maxLength": MAX_WAITING_NOTE,
+                 "description": "A short note about the wait."},
+    },
+    "required": ["on", "until_minutes"],
+    "additionalProperties": False,
+    "description": (
+        "Optional. Send it before a wait of more than 2 minutes, with type"
+        " thought, action or response. The task then shows the run as"
+        " waiting, not idle, until the time ends or your next activity."),
+}
+#: The fixed text of each coded 422 of the activity route (task 1045a).
+WAITING_TEXTS: Mapping[str, str] = {
+    "waiting_too_long": (
+        "until_minutes passes the lease of this server. Send a shorter wait,"
+        " then send a new waiting line when it ends."),
+}
+
 _POST_ACTIVITY_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -5678,6 +5739,7 @@ _POST_ACTIVITY_INPUT: dict[str, Any] = {
         "parameters": {"type": "object", "maxProperties": 50,
                        "additionalProperties": {"type": "string", "maxLength": 2000},
                        "description": "For type action: its inputs, as strings."},
+        "waiting": _WAITING_INPUT,
         "idempotency_key": _KEY_INPUT,
     },
     "required": ["run_id", "type", "idempotency_key"],
@@ -5700,9 +5762,11 @@ def _activity_payload(args: Mapping[str, Any]) -> dict[str, Any]:
         raise ToolError("The input 'action' is required for type action.")
     if kind != "action" and "body" not in args:
         raise ToolError(f"The input 'body' is required for type {kind}.")
+    if "waiting" in args and kind not in WAITING_TYPES:
+        raise ToolError("Only an activity of type thought, action or response takes waiting.")
     _check_options(args.get("options"))
     payload: dict[str, Any] = {"type": kind, "idempotency_key": str(args["idempotency_key"])}
-    for name in ("body", "options", "allow_multiple", "action", "parameters"):
+    for name in ("body", "options", "allow_multiple", "action", "parameters", "waiting"):
         if name in args:
             payload[name] = args[name]
     return payload
@@ -5726,7 +5790,11 @@ POST_AGENT_ACTIVITY = Tool(
         " error also becomes a comment on the task. After an elicitation, call"
         " get_agent_run with wait_seconds 20 again and again until the answer"
         " arrives, or end the session. If the run in the result has the status"
-        " stopped, a person stopped it: stop the work at once." + _UNTRUSTED_NOTE
+        " stopped, a person stopped it: stop the work at once. Before a wait of"
+        " more than 2 minutes on sub-agents, CI, a review, a deploy or a member,"
+        " add waiting with on and until_minutes (at most 120). The run then"
+        " reads waiting, not idle. A wait on a person for longer than 120"
+        " minutes is a question: use ask_on_task." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_POST_ACTIVITY_INPUT,
@@ -5734,7 +5802,8 @@ POST_AGENT_ACTIVITY = Tool(
     route=RUN_ACTIVITIES_ROUTE,
     params={"run_id": "run_id", "type": "type", "body": "body", "options": "options",
             "allow_multiple": "allow_multiple", "action": "action",
-            "parameters": "parameters", "idempotency_key": "idempotency_key"},
+            "parameters": "parameters", "waiting": "waiting",
+            "idempotency_key": "idempotency_key"},
     not_found=TEXT_RUN_NOT_FOUND,
     run=_post_agent_activity,
     method="POST",

@@ -649,6 +649,9 @@ class TestTheChecks:
                                                  "untrusted_text", "held_by", "run_id",
                                                  "agent_run_id", "task_held",
                                                  "external_link",
+                                                 # Task 1045a: an input of
+                                                 # post_agent_activity.
+                                                 "until_minutes",
                                                  *tools.MY_WORK_REASONS}
             assert not unknown, unknown
 
@@ -784,6 +787,31 @@ class TestTheProtocol:
         """The protocol claims, so it shows on the test of the routine."""
         text = await _instructions(READ_ONLY)
         assert "my_work" not in text and "409" not in text
+
+
+class TestTheWaitingRule:
+    """Task 1045a item 7 (``agent_coordination.md``). The prompt and the
+    instructions tell the agent to post a waiting line before a wait of more
+    than 2 minutes. With the runs flag off, neither names it."""
+
+    async def test_the_prompt_gives_the_waiting_step_with_the_runs_flag(
+            self, armed, monkeypatch):
+        flat = " ".join((await _prompt_text({"task": TASK})).split())
+        assert prompts.WAITING_RULE in flat
+        assert "more than 2 minutes" in flat and "ask_on_task" in flat
+        _runs_off(monkeypatch)
+        flat = " ".join((await _prompt_text({"task": TASK})).split())
+        assert "waiting {on" not in flat
+
+    @pytest.mark.parametrize("on", [False, True])
+    async def test_the_instructions_name_the_wait_before_the_cut(
+            self, armed, monkeypatch, on):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
+        text = await _instructions()
+        sentence = "Set waiting for a wait over 2 minutes."
+        assert -1 < text.find(sentence) < TestTheAnswerRule.CUT - len(sentence)
+        _runs_off(monkeypatch)
+        assert "Set waiting" not in await _instructions()
 
 
 class TestTheAnswerRule:

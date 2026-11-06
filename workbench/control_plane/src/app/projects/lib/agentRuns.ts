@@ -36,6 +36,7 @@ import type { ElicitationAnswers, ElicitationQuestion } from "@/lib/elicitationA
 export type AgentState =
   | "queued"
   | "working"
+  | "waiting"
   | "awaiting"
   | "answered"
   | "stopping"
@@ -45,6 +46,7 @@ export type AgentState =
 export const AGENT_STATE_VALUES: readonly AgentState[] = [
   "queued",
   "working",
+  "waiting",
   "awaiting",
   "answered",
   "stopping",
@@ -180,6 +182,50 @@ export interface AgentRun {
    * take it back. The key is there only while the gateway flag is on.
    */
   answer?: { id: string; seq: number; changeable: boolean } | null;
+  /**
+   * Task 1045a (`agent_coordination.md` §3.2). The wait of a run that reads
+   * `waiting`, else null. A gateway before 1045a does not send it.
+   */
+  waiting?: AgentWaiting | null;
+}
+
+/** What a `waiting` run waits on (the CHECK of the gateway migration). */
+export type AgentWaitingOn = "subagents" | "ci" | "review" | "deploy" | "member";
+
+/** The wait of a run (task 1045a): what, until when, and the agent's note. */
+export interface AgentWaiting {
+  on: AgentWaitingOn;
+  /** ISO time when the wait ends. */
+  until?: string | null;
+  note?: string | null;
+}
+
+/** The words for each `on`, for "waiting on CI". */
+export const WAITING_ON_LABELS: Readonly<Record<AgentWaitingOn, string>> = {
+  subagents: "sub-agents",
+  ci: "CI",
+  review: "a review",
+  deploy: "a deploy",
+  member: "a person",
+};
+
+/**
+ * "waiting on CI · about 25 min", from the wait of a run. The minutes round
+ * up, so a wait of 30 seconds still reads "about 1 min". With no wait, or an
+ * `on` the client does not know, it reads "waiting".
+ */
+export function waitingText(
+  waiting?: Pick<AgentWaiting, "on" | "until"> | null,
+  nowMs: number = Date.now(),
+): string {
+  const label = waiting && Object.prototype.hasOwnProperty.call(WAITING_ON_LABELS, waiting.on)
+    ? WAITING_ON_LABELS[waiting.on]
+    : null;
+  if (!label) return "waiting";
+  const until = Date.parse(waiting?.until ?? "");
+  if (Number.isNaN(until)) return `waiting on ${label}`;
+  const minutes = Math.max(1, Math.ceil((until - nowMs) / 60_000));
+  return `waiting on ${label} · about ${minutes} min`;
 }
 
 /** What `GET /projects/agent-runs/{run_id}` gives, after `normalizeRunDetail`. */
@@ -402,6 +448,10 @@ export interface AgentPillFacts {
    */
   viewerEmail?: string | null;
   labels?: ReadonlyMap<string, string>;
+  /** Task 1045a. The wait of a `waiting` run: `agent_waiting` of the row. */
+  waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /** The clock for the minutes of a wait. Tests pass it. */
+  nowMs?: number;
 }
 
 export interface AgentPillText {
@@ -462,6 +512,12 @@ function pillText(
       return {
         text: `${client} working`,
         title: facts.thought?.trim() || `${client} works on this task`,
+      };
+    case "waiting":
+      // Task 1045a: the agent said that it waits, so the run is not idle.
+      return {
+        text: `${client} waiting`,
+        title: `${client} ${waitingText(facts.waiting, facts.nowMs)}`,
       };
     case "queued":
       return {
@@ -859,7 +915,7 @@ export function stripVisible(summary?: AgentSummary | null): boolean {
 }
 
 /** The states that read as "working" on the strip and on the filter. */
-const WORKING_AGENT_STATES: readonly string[] = ["working", "answered", "stale"];
+const WORKING_AGENT_STATES: readonly string[] = ["working", "answered", "stale", "waiting"];
 
 /** The row facts that the oversight filters read. */
 export interface AgentOversightFacts extends AgentRowFacts {
@@ -911,6 +967,7 @@ export const AGENT_LANES: readonly { key: string; label: string }[] = [
   { key: "awaiting", label: "Needs you" },
   { key: "answered", label: "Answered" },
   { key: "working", label: "Working" },
+  { key: "waiting", label: "Waiting" },
   { key: "queued", label: "Queued" },
   { key: "stale", label: "Idle" },
   { key: "stopping", label: "Stopping" },

@@ -9,6 +9,7 @@
  *
  * | state            | edge        | line                              |
  * | working/answered | live        | "<client> · <agent_note>"         |
+ * | waiting          | steady      | "<client> · waiting on CI · about 25 min" |
  * | queued           | steady      | none (the pill says "Queued for") |
  * | awaiting         | warning     | "Needs you: <question>"           |
  * | stale (idle)     | breathing   | the agent's last note, else none  |
@@ -18,9 +19,19 @@
  * No edge is dashed (EA-13h, owner 2026-10-30). "live" travels round the card.
  * "breathing" glows slowly and means idle. "steady" is still. The pill already
  * says "idle" or "Queued for", so the stale and queued lines never repeat it.
+ *
+ * Task 1045a: "waiting" is still too, because motion means working (EA-13g).
+ * The agent said that it waits on sub-agents, CI, a review, a deploy or a
+ * person, and for about how long.
  */
 
-import { type AgentPillFacts, agentPillText, asAgentState, clientName } from "./agentRuns";
+import {
+  type AgentPillFacts,
+  agentPillText,
+  asAgentState,
+  clientName,
+  waitingText,
+} from "./agentRuns";
 
 export type AgentEdge = "live" | "steady" | "warning" | "breathing" | "destructive";
 
@@ -49,6 +60,11 @@ export function agentCardLook(
           : known === "working"
             ? `${client} working`
             : agentPillText(known, facts).text,
+      };
+    case "waiting":
+      return {
+        edge: "steady",
+        line: `${client} · ${waitingText(facts.waiting, facts.nowMs)}`,
       };
     case "queued":
       return { edge: "steady", line: null };

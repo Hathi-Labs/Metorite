@@ -129,7 +129,9 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_ANSWER_WAITS_SQL,
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
+    AGENT_RUN_WAITING_MAX_MIN,
     agent_questions_allowed,
+    agent_run_waiting_cap_min,
     agent_runs_enabled,
     answer_change_enabled,
     attach_agent_state,
@@ -142,6 +144,7 @@ from gateway.routes.projects.filters import (
     open_strand_sql,
     strand_fits_sql,
     task_closed_sql,
+    waiting_of,
 )
 from gateway.routes.projects.notifications import (
     excerpt_of,
@@ -278,13 +281,33 @@ class StartIn(BaseModel):
     body: str | None = Field(default=None, max_length=MAX_BODY)
 
 
+#: Task 1045a. The longest ``note`` of a wait, in characters.
+MAX_WAITING_NOTE = 200
+#: The code of the 422 for a wait that passes the cap of
+#: ``filters.agent_run_waiting_cap_min`` (D140.8, SW-4 item 2).
+WAITING_TOO_LONG = "waiting_too_long"
+
+
+class WaitingIn(BaseModel):
+    """``waiting`` of an agent activity (task 1045a, ``agent_coordination.md``
+    §3.2). What the agent waits on, how long, and a short note. The run reads
+    ``waiting`` until the time passes or a later activity comes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    on: Literal["subagents", "ci", "review", "deploy", "member"]
+    until_minutes: int = Field(ge=1, le=AGENT_RUN_WAITING_MAX_MIN)
+    note: str | None = Field(default=None, max_length=MAX_WAITING_NOTE)
+
+
 class ActivityIn(BaseModel):
     """``POST /projects/agent-runs/{id}/activities``.
 
     ``options`` makes the ``select`` signal of an ``elicitation``.
     ``selected`` answers it, on a ``prompt``. ``signal`` is the member's
     ``continue`` (the default) or ``stop``. The server sets ``select`` and
-    ``in_reply_to`` itself (EA12-7).
+    ``in_reply_to`` itself (EA12-7). Task 1045a: ``waiting`` goes on an
+    agent ``thought``, ``action`` or ``response`` only.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -298,6 +321,7 @@ class ActivityIn(BaseModel):
     action: str | None = Field(default=None, min_length=1, max_length=200)
     parameters: dict[str, str] | None = None
     signal: Literal["continue", "stop"] | None = None
+    waiting: WaitingIn | None = None
 
 
 class FinishIn(BaseModel):
@@ -671,6 +695,28 @@ SELECT DISTINCT ON (s.run_id) s.run_id, s.reason, s.nudged_at, s.recovered_at
 """
 
 
+#: Task 1045a. The note of the newest waiting line of each run. Any later
+#: activity clears the wait, so while a run reads ``waiting`` this row is the
+#: line that set it.
+_WAITING_NOTES_SQL = """
+SELECT DISTINCT ON (a.run_id) a.run_id, a.content->'waiting'->>'note' AS note
+  FROM pm_agent_run_activities a
+ WHERE a.run_id = ANY(CAST(:ids AS uuid[])) AND a.content ? 'waiting'
+ ORDER BY a.run_id, a.seq DESC
+"""
+
+
+def _waiting_out(row: Any, notes: dict[str, Any]) -> dict[str, Any] | None:
+    """``waiting`` of one run on the wire (task 1045a): ``{on, until, note}``
+    while the run reads ``waiting``, else ``None``. The note is the agent's
+    own text, and the edge sends it on as untrusted text."""
+    found = waiting_of(getattr(row, "state", None), getattr(row, "waiting_on", None),
+                       getattr(row, "waiting_until", None))
+    if found is None:
+        return None
+    return {**found, "note": notes.get(str(row.id))}
+
+
 def _stranded_out(found: Any, idle_s: Any) -> dict[str, Any]:
     """``stranded`` of one run: the reason, the first miss, the second miss
     (the recovery record) and the seconds since the last activity."""
@@ -690,6 +736,7 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
     questions: dict[str, dict[str, Any]] = {}
     lines: dict[str, dict[str, Any]] = {}
     strands: dict[str, Any] = {}
+    notes: dict[str, Any] = {}
     answers: dict[str, dict[str, Any]] = {}
     if ids:
         for found in (await db.execute(text(_OPEN_ELICITATIONS_SQL), {"ids": ids})).fetchall():
@@ -698,6 +745,10 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             lines[str(found.run_id)] = _activity_out(found)
         for found in (await db.execute(text(_OPEN_STRANDS_SQL), {"ids": ids})).fetchall():
             strands[str(found.run_id)] = found
+        waits = [str(r.id) for r in rows if getattr(r, "state", None) == "waiting"]
+        if waits:
+            for found in (await db.execute(text(_WAITING_NOTES_SQL), {"ids": waits})).fetchall():
+                notes[str(found.run_id)] = found.note
         if answer_change_enabled():
             for found in (await db.execute(
                 text(live_answer_sql("p.run_id = ANY(CAST(:ids AS uuid[]))")),
@@ -753,6 +804,9 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             "needs_agent": getattr(row, "needs_agent", None),
             "stranded": (_stranded_out(strand, getattr(row, "idle_s", None))
                          if strand is not None else None),
+            # Task 1045a (agent_coordination.md §3.2): the wait of a run that
+            # reads `waiting`, else null.
+            "waiting": _waiting_out(row, notes),
         })
         if answer_change_enabled():
             # SW-43. Only with the flag on, so a flag-off wire is unchanged.
@@ -862,6 +916,25 @@ def _validate_fields(payload: ActivityIn) -> None:
         raise HTTPException(status_code=422, detail="Only a prompt carries selected.")
     if (payload.action is not None or payload.parameters is not None) and kind != "action":
         raise HTTPException(status_code=422, detail="Only an action carries action and parameters.")
+    if payload.waiting is not None:
+        _validate_waiting(payload)
+
+
+def _validate_waiting(payload: ActivityIn) -> None:
+    """Task 1045a. A wait goes on an agent ``thought``, ``action`` or
+    ``response``. A question waits on a person through ``awaiting``, and an
+    error ends the run, so neither takes a wait. The wait never passes the
+    cap (D140.8): 120 minutes, or the lease when it is shorter."""
+    if payload.type not in ("thought", "action", "response"):
+        raise HTTPException(
+            status_code=422, detail="Only a thought, an action or a response carries waiting.",
+        )
+    cap = agent_run_waiting_cap_min()
+    if payload.waiting is not None and payload.waiting.until_minutes > cap:
+        raise HTTPException(status_code=422, detail={
+            "error": WAITING_TOO_LONG,
+            "message": f"until_minutes is at most {cap}, one lease.",
+        })
 
 
 def _validate_action(payload: ActivityIn) -> None:
@@ -1083,6 +1156,7 @@ async def _write_activity(
     closes: str | None = None,
     metadata: dict[str, Any] | None = None,
     withdraws: str | None = None,
+    waiting: WaitingIn | None = None,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
@@ -1111,6 +1185,11 @@ async def _write_activity(
 
     AUTO-7a. This is the one write path of an activity, so a marked prompt
     stops here (:func:`_refuse_a_marked_prompt`).
+
+    Task 1045a. *waiting* is the wait of an agent activity. It goes into
+    ``content.waiting``, so the note stays with its line, and
+    :func:`_move_run` sets ``waiting_on`` and ``waiting_until``. An activity
+    with no *waiting* clears both, whoever writes it.
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
@@ -1159,6 +1238,11 @@ async def _write_activity(
         )
     if extra:
         content.update(extra)
+    if waiting is not None:
+        content["waiting"] = {
+            "on": waiting.on, "until_minutes": waiting.until_minutes,
+            "note": _clean_body(waiting.note),
+        }
     if kind == "prompt" and reopened_end is not None:
         # RA-4b. The marker of a REAL reopen. The report reads it for the idle
         # gap (`analytics_agents._REOPEN_GAPS_JOIN`), never the row trail,
@@ -1218,6 +1302,10 @@ async def _write_activity(
         error_body=body if kind == "error" else None,
         error_activity=str(made.id) if kind == "error" else None,
         stop=(kind == "prompt" and signal_out == "stop"),
+        # Only an `in_progress` run reads `waiting` (§3.2), so no other
+        # status keeps a wait.
+        wait=((waiting.on, waiting.until_minutes)
+              if waiting is not None and new_status == "in_progress" else None),
     )
     return _Written(made, True, commented)
 
@@ -1299,9 +1387,17 @@ async def _move_run(
     db: Any, run: Any, new_status: str, *, ts: Any, user: UserContext | None,
     via: str | None,
     error_body: str | None = None, error_activity: str | None = None, stop: bool = False,
+    wait: tuple[str, int] | None = None,
 ) -> None:
     """Set the run's status and stamps. Column names are fixed here, and
     only the values are bound.
+
+    Task 1045a, the wait of the run (``agent_coordination.md`` §3.2). *wait*
+    is ``(on, minutes)`` of an activity with ``waiting``, and only
+    :func:`_write_activity` passes it. It sets ``waiting_on`` and
+    ``waiting_until``, which is *ts* plus the minutes. Every other move
+    clears both: a later activity of any author, and a close. So the run
+    reads ``waiting`` only while the waiting line is the newest activity.
 
     *user* is ``None`` only for a move that the server makes with no caller:
     the archive close of the SW-10a sweep (:func:`close_archived_run`). Such a
@@ -1322,8 +1418,17 @@ async def _move_run(
     * An agent move from ANOTHER connection writes the caller's key, which
       may be NULL. A key minted for the old connection never survives.
     """
-    sets = ["status = :status", "last_activity_at = :ts"]
-    params: dict[str, Any] = {"rid": str(run.id), "status": new_status, "ts": ts}
+    sets = [
+        "status = :status", "last_activity_at = :ts",
+        "waiting_on = CAST(:won AS text)",
+        "waiting_until = CASE WHEN CAST(:won AS text) IS NULL THEN NULL"
+        " ELSE CAST(:ts AS timestamptz) + make_interval(mins => CAST(:wmin AS integer)) END",
+    ]
+    params: dict[str, Any] = {
+        "rid": str(run.id), "status": new_status, "ts": ts,
+        "won": wait[0] if wait is not None else None,
+        "wmin": wait[1] if wait is not None else None,
+    }
     if via is not None:
         agent = getattr(user, "agent", None)
         sets.append("last_agent_activity_at = :ts")
@@ -2089,6 +2194,7 @@ async def post_agent_activity(
             body=_clean_body(payload.body), options=payload.options,
             allow_multiple=bool(payload.allow_multiple), selected=payload.selected,
             action=payload.action, parameters=payload.parameters, signal=payload.signal,
+            waiting=payload.waiting,
         )
         if not written.created:
             response.status_code = 200

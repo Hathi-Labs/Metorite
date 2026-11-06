@@ -499,6 +499,8 @@ export const AGENT_STATES: Record<string, AgentStateVisual> = {
   awaiting: { hue: "amber", icon: "MessageCircleQuestion" },
   answered: { hue: "blue", icon: "CircleCheck" },
   working: { hue: "gray", icon: "Bot" },
+  // Task 1045a: neutral, as working is. The agent still holds the task.
+  waiting: { hue: "gray", icon: "Hourglass" },
   queued: { hue: "gray", icon: "CircleDashed" },
   stale: { hue: "gray", muted: true, icon: "CirclePause" },
   stopping: { hue: "gray", muted: true, icon: "CircleStop" },

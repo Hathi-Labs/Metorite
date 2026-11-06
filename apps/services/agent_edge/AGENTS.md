@@ -56,6 +56,8 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 
 - SW-10a (spec §12.6). Each run of the edge gains `stranded`: null, or the reason, the quiet minutes and a fixed note that `tools.STRANDED_NOTES` builds. `my_work` reads the gateway's `needs_agent` reason for group 1 (`tools._waiting_reason`), so an answer older than five minutes still comes back as `run_answered`. A gateway that sends no reason gives the state, as before.
 
+- Task 1045a (`agent_coordination.md` §3.2, 1045a). `post_agent_activity` takes an optional `waiting: {on, until_minutes, note}` on a thought, an action or a response. `on` is one of `tools.WAITING_ON`, and `until_minutes` is 1 to 120. The gateway lowers the cap to the lease when the lease is shorter, and its coded 422 `waiting_too_long` maps to a fixed text of `tools.WAITING_TEXTS`. Each run gains `waiting`: null, or `{on, until, note}`, and the note leaves as untrusted text. The step of `prompts.WAITING_RULE` and step 5 of the instructions name the waiting line. Fences: `test_mcp_edge_agent_runs.py` (`TestTheWaitingLine`), `test_mcp_edge_prompts.py` (`TestTheWaitingRule`).
+
 - SW-31a (`agent_coordination.md` SW-31, spec §9.5) adds the org's guidance to three tools, over the two read pairs `GET /agent-guidance/tasks/{task_id}` and `GET /agent-guidance/refs`.
   - `get_task_context` and `claim_task` return `guidance` (`tools.GUIDANCE_KEY`), the object `{blocks, dropped}` (`tools.GUIDANCE_KEYS`). The blocks come nearest first. `dropped` counts the farthest blocks that the cap of the gateway cut.
   - Each block body and each source name leaves as `{"untrusted_text": ...}`. A hidden source leaves as `{"hidden": true}` only, whatever the gateway sends (`tools._guidance_block`).

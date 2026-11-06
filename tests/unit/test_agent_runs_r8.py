@@ -1522,3 +1522,206 @@ class TestWithdrawAnAnswer:
             assert self._read_at(w, aid) is None
             assert seen.json()["run"]["answer"]["changeable"] is True
             assert (await _withdraw(call, w.a, rid, aid)).status_code == 200
+
+
+# ── Task 1045a: the `waiting` state (spec agent_coordination.md §3.2) ───────
+
+
+def _waiting_migration() -> Path:
+    """The migration that adds ``pm_agent_runs.waiting_on``, found by content
+    (R1)."""
+    found = [
+        p for p in sorted(_MIGRATIONS.glob("*.sql"))
+        if "CONSTRAINT pm_agent_runs_waiting_on" in p.read_text(encoding="utf-8")
+    ]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_the_waiting_migration_is_expand_only_and_checks_the_five_values() -> None:
+    """1045a item 2. Two nullable columns with no default, and a CHECK of the
+    same five values that the gateway and the edge hold."""
+    from agent_edge import tools as edge_tools
+    from gateway.routes.projects import filters
+
+    sql = _waiting_migration().read_text(encoding="utf-8")
+    assert "ADD COLUMN IF NOT EXISTS waiting_until TIMESTAMPTZ" in sql
+    assert "DEFAULT" not in sql.split("$checks$")[0].split("SET lock_timeout")[1]
+    for value in filters.AGENT_RUN_WAITING_ON:
+        assert f"'{value}'" in sql, value
+    assert filters.AGENT_RUN_WAITING_ON == edge_tools.WAITING_ON
+    assert filters.AGENT_RUN_WAITING_MAX_MIN == edge_tools.MAX_WAITING_MINUTES == 120
+    assert agent_runs.MAX_WAITING_NOTE == edge_tools.MAX_WAITING_NOTE
+    for forbidden in ("DROP ", "RENAME", "UPDATE "):
+        assert forbidden not in sql.upper().split("-- ====")[-1], forbidden
+
+
+@pytest.mark.parametrize(("lease", "cap"), [
+    ("", 120), ("7200", 120), ("9000", 120), ("1800", 30), ("90", 1), ("30", 1),
+])
+def test_the_cap_of_a_wait_is_120_minutes_or_one_lease(monkeypatch, lease, cap) -> None:
+    """D140.8 and SW-4 item 2. A wait never passes one lease."""
+    from gateway.routes.projects import filters
+
+    monkeypatch.setenv(filters.AGENT_RUN_LEASE_ENV, lease)
+    assert filters.agent_run_waiting_cap_min() == cap
+
+
+def test_waiting_comes_first_in_the_in_progress_arm() -> None:
+    """§3.2: the order is waiting, then stale, then answered, then working."""
+    from gateway.routes.projects import filters
+
+    sql = filters.AGENT_RUN_STATE_SQL
+    arm = sql[sql.index("WHEN 'in_progress'"):]
+    order = [arm.index(f"'{s}'") for s in ("waiting", "stale", "answered", "working")]
+    assert order == sorted(order), order
+    assert "waiting" in filters.WORKING_STATES
+
+
+def _clock_back(w: Any, rid: str, minutes: int) -> None:
+    """Move the clock of run *rid* on by *minutes*: every stamp of the run
+    goes back by that much, so ``now()`` reads that many minutes later."""
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE pm_agent_runs SET"
+            " last_activity_at = last_activity_at - make_interval(mins => :m),"
+            " last_agent_activity_at = last_agent_activity_at - make_interval(mins => :m),"
+            " waiting_until = waiting_until - make_interval(mins => :m)"
+            " WHERE id = CAST(:r AS uuid)"), {"r": rid, "m": minutes})
+
+
+def _waits(w: Any, rid: str) -> tuple[Any, Any]:
+    found = _rows(w.p, "SELECT waiting_on, waiting_until FROM pm_agent_runs "
+                       "WHERE id = CAST(:r AS uuid)", r=rid)
+    return found[0][0], found[0][1]
+
+
+_CI_30 = {"on": "ci", "until_minutes": 30, "note": "PR 12 runs its checks"}
+
+
+@_DB_GATE
+class TestTheWaitingState:
+    async def test_a_wait_on_ci_reads_waiting_at_minute_20_and_stale_at_minute_31(self, w):
+        """1045a done-when 1. Mutation: drop the `waiting` arm of the state
+        SQL, and minute 20 reads `stale`."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            got = await _act(call, w.agent_a, rid, type="thought",
+                             body="Waiting on CI", waiting=_CI_30)
+            assert got.status_code == 201, got.text
+            run = got.json()["run"]
+            assert run["state"] == "waiting"
+            assert run["waiting"]["on"] == "ci"
+            assert run["waiting"]["note"] == "PR 12 runs its checks"
+            assert run["waiting"]["until"] is not None
+            assert got.json()["activity"]["content"]["waiting"] == {
+                "on": "ci", "until_minutes": 30, "note": "PR 12 runs its checks"}
+            on, until = _waits(w, rid)
+            assert on == "ci" and until is not None
+            _clock_back(w, rid, 20)
+            assert await _status(call, w.a, rid) == ("in_progress", "waiting")
+            # The task row carries the wait for the card, and the strip
+            # counts the run as working.
+            task = await call(w.a, "GET", f"/projects/tasks/{w.task_a}")
+            assert task.json()["agent_state"] == "waiting"
+            assert task.json()["agent_waiting"]["on"] == "ci"
+            _clock_back(w, rid, 11)
+            assert await _status(call, w.a, rid) == ("in_progress", "stale")
+            read = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+            assert read.json()["run"]["waiting"] is None
+            task = await call(w.a, "GET", f"/projects/tasks/{w.task_a}")
+            assert task.json()["agent_state"] == "stale"
+            assert task.json()["agent_waiting"] is None
+
+    async def test_a_thought_at_minute_10_clears_the_wait(self, w):
+        """1045a done-when 2. Mutation: keep the columns on a plain activity,
+        and the run still reads `waiting`."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            await _act(call, w.agent_a, rid, type="thought", body="Wait", waiting=_CI_30)
+            _clock_back(w, rid, 10)
+            assert await _status(call, w.a, rid) == ("in_progress", "waiting")
+            got = await _act(call, w.agent_a, rid, type="thought", body="CI passed")
+            assert got.status_code == 201, got.text
+            assert got.json()["run"]["state"] == "working"
+            assert got.json()["run"]["waiting"] is None
+            assert _waits(w, rid) == (None, None)
+
+    async def test_a_members_prompt_clears_the_wait(self, w):
+        """§3.2: a member's answer clears the wait, so the card reads
+        `answered`."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            await _act(call, w.agent_a, rid, type="thought", body="Wait",
+                       waiting={"on": "member", "until_minutes": 60})
+            said = await _act(call, w.a, rid, type="prompt", body="Go on")
+            assert said.status_code == 201, said.text
+            assert await _status(call, w.a, rid) == ("in_progress", "answered")
+            assert _waits(w, rid) == (None, None)
+
+    async def test_a_wrong_wait_gets_422_and_writes_nothing(self, w):
+        """1045a done-when 3: `until_minutes` of 121 gets 422. So do 0, an
+        unknown `on`, a long note and a wait on a question or an error."""
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            for waiting, kind in (
+                ({"on": "ci", "until_minutes": 121}, "thought"),
+                ({"on": "ci", "until_minutes": 0}, "thought"),
+                ({"on": "lunch", "until_minutes": 5}, "thought"),
+                ({"on": "ci", "until_minutes": 5, "note": "x" * 201}, "thought"),
+                ({"on": "ci", "until_minutes": 5, "extra": 1}, "thought"),
+                ({"on": "ci", "until_minutes": 5}, "elicitation"),
+                ({"on": "ci", "until_minutes": 5}, "error"),
+            ):
+                got = await _act(call, w.agent_a, rid, type=kind, body="b", waiting=waiting)
+                assert got.status_code == 422, (waiting, kind, got.text)
+            said = await _act(call, w.a, rid, type="prompt", body="hi",
+                              waiting={"on": "ci", "until_minutes": 5})
+            assert said.status_code == 422, said.text
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'waiting'",
+                          r=rid) == 0
+            assert _waits(w, rid) == (None, None)
+
+    async def test_a_lease_below_two_hours_caps_the_wait(self, w, monkeypatch):
+        """SW-4 item 2 (D140.8). With a lease of 30 minutes, a wait of 31
+        minutes gets the coded 422, and a wait of 30 is taken."""
+        from gateway.routes.projects import filters
+
+        monkeypatch.setenv(filters.AGENT_RUN_LEASE_ENV, "1800")
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            long = await _act(call, w.agent_a, rid, type="thought", body="b",
+                              waiting={"on": "ci", "until_minutes": 31})
+            assert long.status_code == 422, long.text
+            assert long.json()["detail"]["error"] == agent_runs.WAITING_TOO_LONG
+            ok = await _act(call, w.agent_a, rid, type="thought", body="b",
+                            waiting={"on": "ci", "until_minutes": 30})
+            assert ok.status_code == 201, ok.text
+
+    async def test_the_stranded_clause_never_matches_a_waiting_run(self, w):
+        """1045a done-when 4. A waiting run whose lease ended still reads
+        `waiting`, and the stranded clause does not match it. The control:
+        the same run with no wait matches. Mutation: put the `stale` arm
+        before the `waiting` arm, and the first count is 1."""
+        from gateway.routes.projects import filters
+
+        stranded = (f"SELECT count(*) FROM pm_agent_runs r WHERE r.id = CAST(:r AS uuid)"
+                    f" AND {filters.stranded_clause()}")
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            await _act(call, w.agent_a, rid, type="thought", body="Wait", waiting=_CI_30)
+            # The lease (2 hours) ended, and the wait has not: an edge case
+            # that the cap prevents, made here by hand.
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE pm_agent_runs SET last_activity_at = now() - interval '3 hours',"
+                    " last_agent_activity_at = now() - interval '3 hours'"
+                    " WHERE id = CAST(:r AS uuid)"), {"r": rid})
+            assert await _status(call, w.a, rid) == ("in_progress", "waiting")
+            assert _count(w.p, stranded, r=rid) == 0
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_agent_runs SET waiting_until = now() - interval"
+                               " '1 minute' WHERE id = CAST(:r AS uuid)"), {"r": rid})
+            assert await _status(call, w.a, rid) == ("in_progress", "stale")
+            assert _count(w.p, stranded, r=rid) == 1

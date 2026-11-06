@@ -166,13 +166,18 @@ _PROTOCOL_RUNS_ON = (
     " (reason run_queued or run_answered), read it with get_agent_run. Then"
     " call claim_task with the task_id and the version of the row."
     " 3. A 409 task_held means that another session holds the task. Do not try"
-    " it again. Take the next row. A run of another connection, such as one"
-    " on another machine, is never yours, and my_work does not list it."
+    " it again. Take the next row. A run of another connection is never"
+    " yours, and my_work does not list it."
     "{terminals}"
     " Take only a row that my_work lists.{answer}"
     " 4. Call get_task_context, then call start_agent_run when the claim"
     " opened no run."
-    " 5. Post a thought with post_agent_activity at least once a minute."
+    # Task 1045a: the waiting line. The text sits at the cut of 4096 (task
+    # 1803), so step 3 gave up the words ", such as one on another machine,"
+    # to make room. The work_on_task steps (`prompts.py`) and the tool
+    # post_agent_activity hold the full rule.
+    " 5. Post a post_agent_activity thought at least once a minute."
+    " Set waiting for a wait over 2 minutes."
     " 6. End with exactly one disposition: the task moves to review or done,"
     " or a question waits on a named member (ask_on_task), or release_task"
     " gives the task back. A comment is evidence, never a disposition."

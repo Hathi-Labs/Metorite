@@ -2,6 +2,8 @@
 
 **Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.** **P9 (§3.10, §5.10, D183) was planned on 2026-11-06. No P9 slice is built.**
 
+**1045a (the `waiting` state, migration 351) is built, 2026-11-06. It also carries SW-4 item 2. 1045b and 1045c are open.**
+
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
 **Verified against code on 2026-10-30** (origin/main of that day). §6 holds each anchor and the commit it was read at. Re-verify each anchor at dispatch (`work_plan.md` §1 item 4).
@@ -553,7 +555,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 
 - **Scope.**
   1. `AgentRunPanel.tsx` reads `lease_expired`. So for a dead connection, it does not say that the next claim can take the task. `external_agent_access.md` §12.3 names this gap. Make the panel read the server's holder-free answer, which `held_by.stale` already carries.
-  2. Cap a `waiting` time at one lease. When `AGENT_RUN_LEASE_SECONDS` is below 7200, the cap is the lease in minutes, not 120.
+  2. Cap a `waiting` time at one lease. When `AGENT_RUN_LEASE_SECONDS` is below 7200, the cap is the lease in minutes, not 120. **Built with 1045a** (2026-11-06).
   3. Add an R8 test with a moved clock, if `test_agent_run_exclusive.py` lacks one. A claim at the lease plus 1 minute takes the task over. A claim at the lease minus 1 minute gets 409.
 - **Not in scope.** The 15-minute TTL of the first text (D140.10). The end of a run when its task closes is H-409 item 1, Metorite #748.
 - **Done when.** The panel, the card and `held_by.stale` agree for a dead connection. The moved-clock test passes on a real database.
@@ -611,6 +613,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 
 #### 1045a · The `waiting` state
 
+- **Built** 2026-11-06, migration 351, live under `agent_runs_enabled`. The build also caps a wait at one lease when the lease is shorter than 2 hours (SW-4 item 2, `filters.agent_run_waiting_cap_min`). The task row carries `agent_waiting`, so the card says "waiting on CI".
 - **Scope.**
   1. `post_agent_activity` takes an optional `waiting: {on, until_minutes, note}`. `on` is `subagents`, `ci`, `review`, `deploy` or `member`. `until_minutes` is 1 to 120. 1045a ships this fixed cap of 120 minutes. SW-4 later lowers the cap to the lease when the lease is shorter. `note` holds at most 200 characters.
   2. Migration, expand only: `pm_agent_runs.waiting_on TEXT NULL`, with a CHECK of the five values, and `waiting_until TIMESTAMPTZ NULL`.
