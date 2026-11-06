@@ -94,12 +94,16 @@ import {
   enrichSession,
   fetchAndMergeSessionsFromDb,
   getSessions,
+  keepSession,
   renameSession,
   setSessionArchived,
   type ChatSession,
 } from "@/lib/sessions";
 
 import { requestBrief } from "./briefTurn";
+import { claimHello, opensHello, requestHello, takeBeforeHello } from "./buddyHello";
+import GuideOffer from "./GuideOffer";
+import { offerGuide, startGuide, useGuideAllowed } from "./guide";
 import { chatFirstOn } from "./chatFlag";
 import {
   REMINDER_HOLD_MS,
@@ -112,7 +116,7 @@ import {
   requestReminderOpen,
   useKnownReminder,
 } from "./reminderOpen";
-import { markChatFirstMessage } from "./shellPrefs";
+import { markBuddyHello, markChatFirstMessage, setHelloPending } from "./shellPrefs";
 import {
   dockFloats,
   dockFoldsNav,
@@ -120,6 +124,7 @@ import {
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  GUIDE_PERSONA_LINE,
   BRIEF_HOLD_MS,
   DOCK_MAX,
   DOCK_MIN,
@@ -129,10 +134,13 @@ import {
   holdsForBrief,
   consumeAsk,
   consumeDraft,
+  consumeHello,
+  draftFor,
   consumeReminder,
   effectiveMode,
   focusAssistant,
   markBriefAsked,
+  guideAct,
   navigateAct,
   onChatLink,
   runMovesPage,
@@ -195,6 +203,20 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   // chat before this mounted must still be honoured (review of 2026-10-12).
   const handledFresh = useRef(0);
   const refresh = useCallback(() => setSessions(getSessions()), []);
+  // The chats this page made. A second tab of the member shares the stored
+  // list and can drop one in a racing save, so this page puts it back
+  // (`keepSession`). Without it the chat has no row, and the panel waits.
+  const madeHere = useRef(new Map<string, ChatSession>());
+  const makeFresh = useCallback(() => {
+    const pick = startFresh(ASSISTANT_AGENT);
+    const made = getSessions().find((s) => s.id === pick.activeId);
+    if (made) madeHere.current.set(made.id, { ...made });
+    return pick;
+  }, []);
+  const keepMine = useCallback((id: string) => {
+    const mine = madeHere.current.get(id);
+    return mine ? keepSession(mine) : false;
+  }, []);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   // A new member or org: nothing carries over.
@@ -219,7 +241,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     if (!scope || !open) return;
     if (st.freshSeq !== handledFresh.current) {
       handledFresh.current = st.freshSeq;
-      const pick = startFresh(ASSISTANT_AGENT);
+      const pick = makeFresh();
       setRestoredId(null);
       setNotice(null);
       setAssistantSession(pick.activeId);
@@ -240,7 +262,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
         setAssistantSession(last.id);
       } else {
         setRestoredId(null);
-        setAssistantSession(startFresh(ASSISTANT_AGENT).activeId);
+        setAssistantSession(makeFresh().activeId);
       }
       refresh();
     };
@@ -254,6 +276,22 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     }
     return () => { cancelled = true; };
   }, [scope, open, st.sessionId, st.freshSeq, refresh]);
+
+  // Keep this page's own chat in the stored list (see `madeHere`). A save
+  // from another tab can drop it at any time, so the storage event asks for
+  // a fresh look, and every look puts the chat back.
+  useEffect(() => {
+    if (!scope || !open) return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key.endsWith("::sessions")) refresh();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [scope, open, refresh]);
+  useEffect(() => {
+    if (!scope || !open || !st.sessionId || sessions.some((s) => s.id === st.sessionId)) return;
+    if (keepMine(st.sessionId)) refresh();
+  }, [scope, open, st.sessionId, sessions, keepMine, refresh]);
 
   // The bar's words join the open chat only while it is recent. Each ask is
   // decided once, and `AgentChat` gets the words only for the chat the
@@ -353,6 +391,63 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       });
   }, [scope, open, st.reminder, st.freshSeq, activeIdForBrief, activeCount, refresh]);
 
+  // The hello (WS-BUD BUD-1, D177). The landing asked for a fresh chat AND
+  // the hello, so the open waits until that chat exists: the two fresh counts
+  // agree. Then it asks the server once (`claimHello`). The server claims the
+  // stamp first and writes the row only when it won, so a second tab gets a
+  // 204 and an ordinary empty chat. The hold works as for the reminder, so
+  // the chat's first load reads the row. This effect comes before the
+  // brief's: the brief never lands in the hello's chat.
+  useLayoutEffect(() => {
+    if (!scope || !open || !st.hello || !activeIdForBrief || activeCount === undefined) return;
+    if (handledFresh.current !== st.freshSeq) return;
+    const id = activeIdForBrief;
+    consumeHello();
+    if (!claimHello(id)) {
+      setHelloPending(false);
+      return;
+    }
+    setBriefHold(id);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      setBriefHold((held) => (held === id ? null : held));
+      refresh();
+    };
+    const timer = setTimeout(release, REMINDER_HOLD_MS);
+    // A hello that leaves no row puts the panel back as the landing found it
+    // (BUD-1): closed, on the chat it showed before, and with no empty chat
+    // of its own left in the list.
+    const undoHello = (helloId: string) => {
+      const prior = takeBeforeHello();
+      const own = getSessions().find((s) => s.id === helloId);
+      closeAssistant();
+      madeHere.current.delete(helloId);
+      if (assistantState().sessionId === helloId) setAssistantSession(prior);
+      if (own && !own.messageCount && !own.hasUserMessage) deleteSession(helloId);
+      refresh();
+    };
+    void requestHello(id)
+      .then((posted) => {
+        if (!posted) {
+          // The hello left no row: no open panel and no empty chat stays.
+          // A late answer, after the hold ended, leaves a panel the member
+          // may already use, so it is left as it is.
+          if (!released) undoHello(id);
+          return;
+        }
+        markBuddyHello();
+        keepMine(id);
+        enrichSession(id, { title: posted.title, messageCount: 1, lastPreview: posted.preview });
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        setHelloPending(false);
+        release();
+      });
+  }, [scope, open, st.hello, st.freshSeq, activeIdForBrief, activeCount, refresh, keepMine]);
+
   // The brief as the first turn (CF-5). Asked once per page per day, and
   // only through the rule. The server decides whether a brief exists and
   // writes the row (D-PM-39); a 204 or a fault opens the chat empty.
@@ -364,6 +459,8 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   useLayoutEffect(() => {
     if (!scope || !open || !activeIdForBrief || activeCount === undefined) return;
     if (st.reminder || opensReminder(activeIdForBrief)) return;
+    // The hello takes the brief's place on its visit (BUD-1).
+    if (st.hello || opensHello(activeIdForBrief)) return;
     if (!wantsBrief({
       chatFirst: surface.chatFirst, phone: surface.phone,
       messageCount: activeCount, askedFor: briefAskedToday(),
@@ -395,7 +492,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
         clearTimeout(timer);
         release();
       });
-  }, [scope, open, st.reminder, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
+  }, [scope, open, st.reminder, st.hello, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // The reminder's context block (RM-4, §5.7 item 4). While its chat is on
@@ -777,7 +874,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // WS-67 OA-7d: the app slug of the pane, sent as `surface` (a hint for the tool packs).
   const surface = surfaceOfPane(here);
   // WS-62 CF-3: the page line joins only with the chat-first flag on.
-  const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  // WS-OB GD-7: the guide line joins only when `guide` of the shell prefs is on.
+  const guideOn = useGuideAllowed();
+  const basePersona = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  const personaText = guideOn ? `${basePersona} ${GUIDE_PERSONA_LINE}` : basePersona;
   const persona = agent === ASSISTANT_AGENT ? `${personaText}\n\n${context}` : context;
 
   // A new chat's files start empty.
@@ -905,6 +1005,14 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       if (!runMovesPage(live)) return;
       router.push(target.href);
     },
+    // WS-OB GD-4: the run named a guide. It starts where the page may move
+    // (`guideAct`), and elsewhere the member taps the chip. The store checks the id.
+    onGuide: ({ guideId, threadId }) => {
+      const live = liveRef.current;
+      const act = guideAct({ open: live.open, threadId, activeId: live.activeId, guideId, phone, form: live.form });
+      if (act === "start" && guideId) startGuide(guideId, "agent");
+      else if (act === "offer" && guideId) offerGuide(guideId);
+    },
     // WS-62 CF-3: the run opened a page with show_in_app. Once per turn is
     // the server's rule. The client checks the path again and acts.
     onNavigate: ({ path, threadId }) => {
@@ -974,6 +1082,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // control (`chat_first_surface.md` §4.8).
   const phoneChrome = phone && chatFirst;
   const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";
+  // The switcher shows a title, so it keeps the 44 px height and lets the width follow the title (task 1717).
+  const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
@@ -1070,7 +1180,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         {columnForm ? (
           <ChatTitle session={active} />
         ) : (
-          <ChatSwitcher session={active} open={pickerShown} onToggle={() => setPickerOpen((o) => !o)} className={phoneTap} />
+          <ChatSwitcher session={active} open={pickerShown} onToggle={() => setPickerOpen((o) => !o)} className={phoneTapTall} />
         )}
         <Button
           variant="secondary"
@@ -1215,6 +1325,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 // the way (`chat_first_surface.md` §4.8).
                 phoneChrome={phoneChrome}
                 moreActs={moreActs}
+                aboveComposer={<GuideOffer />}
                 persona={persona}
                 surface={surface}
                 memories={memories}
@@ -1224,8 +1335,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 onArtifact={onArtifact}
                 onSessionRefused={chat.onSessionRefused}
                 notice={chat.notice}
-                pendingInput={chat.recoveredInput ?? st.draft?.text}
-                pendingInputTyped={!chat.recoveredInput && st.draft?.typed === true}
+                pendingInput={chat.recoveredInput ?? draftFor(st.draft, active.id)?.text}
+                pendingInputTyped={!chat.recoveredInput && draftFor(st.draft, active.id)?.typed === true}
                 onPendingInputConsumed={() => {
                   chat.consumeRecoveredInput();
                   consumeDraft();

@@ -1275,6 +1275,12 @@ class TestTheDirectWrites:
         assert (r.status_code, r.json()) == (404, NOT_FOUND)
         assert dw.writes == []
 
+    def test_a_get_with_the_read_marker_still_reads(self, dw):
+        """STU-D2b fix round 1: `{id, read: true}` is the body of the real door. The get ignores the key."""
+        pid, _, rid = _setup(dw)
+        r = _call(_client(dw), pid, "peek", {"id": rid, "read": True})
+        assert r.status_code == 200 and r.json()["record"]["id"] == rid
+
     def test_a_get_and_a_list_stay_open_without_a_proof(self, dw):
         pid, _, rid = _setup(dw)
         c = _client(dw)
@@ -1289,6 +1295,11 @@ class TestTheDirectWrites:
         ("change", {"id": str(uuid.uuid4()), "data": {}, "package_id": "x"}),
         ("remove", {}), ("remove", {"id": str(uuid.uuid4()), "data": {}}),
         ("remove", {"id": ["x"]}),
+        # STU-D2b fix round 1: the read marker of a `.get` body. A delete, an update and a
+        # create refuse a body that carries it, so a read id re-pointed at a write acts on nothing.
+        ("remove", {"id": str(uuid.uuid4()), "read": True}),
+        ("change", {"id": str(uuid.uuid4()), "data": {}, "read": True}),
+        ("add", {"data": {}, "read": True}),
     ])
     def test_a_body_with_other_keys_is_422_and_writes_nothing(self, dw, action, body):
         pid, _, _ = _setup(dw)

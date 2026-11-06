@@ -746,8 +746,18 @@ _BINARY_POOL: Any = None
 #: Connection ceiling of the binary pool. One caller, short-lived commands.
 BINARY_POOL_MAX_CONNECTIONS = 4
 
+#: The third pool, for long blocking reads (H-201c). The live activity feed
+#: holds an ``XREAD BLOCK 15000`` open for each viewer. On the main pool of
+#: 16, a few open feeds take every connection, and each other caller then
+#: gets "Too many connections". This pool keeps those reads apart. It is the
+#: SAME wrapper over it, so the key discipline is identical.
+_BLOCKING_POOL: Any = None
 
-def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
+#: Connection ceiling of the blocking pool. One connection for each open feed.
+BLOCKING_POOL_MAX_CONNECTIONS = 16
+
+
+def get_tenant_redis(*, binary: bool = False, blocking: bool = False) -> TenantRedis:
     """The shared tenant-aware client for this process.
 
     Does **not** require a tenant to be bound — the client is tenant-agnostic;
@@ -757,8 +767,23 @@ def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
     ``binary=True`` returns the same wrapper over a second, small pool with
     ``decode_responses=False``: replies come back as ``bytes``, unchanged.
     Use it only for values that are not text.
+
+    ``blocking=True`` returns the same wrapper over the third pool, for a
+    command that waits on the server (``XREAD BLOCK``). Use it only for such a
+    read, so a long wait never takes a connection of the main pool.
     """
-    global _POOL, _BINARY_POOL
+    global _POOL, _BINARY_POOL, _BLOCKING_POOL
+    if binary and blocking:
+        raise ValueError("binary and blocking pools are separate: pick one")
+    if blocking:
+        if _BLOCKING_POOL is None:
+            _BLOCKING_POOL = aioredis.from_url(
+                get_settings().redis_url,
+                decode_responses=True,
+                max_connections=BLOCKING_POOL_MAX_CONNECTIONS,
+                health_check_interval=30,
+            )
+        return TenantRedis(_BLOCKING_POOL)
     if binary:
         if _BINARY_POOL is None:
             _BINARY_POOL = aioredis.from_url(
@@ -779,7 +804,8 @@ def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
 
 
 def reset_pool_for_tests() -> None:
-    """Drop both cached pools. Tests only — there is no runtime reason to call it."""
-    global _POOL, _BINARY_POOL
+    """Drop the cached pools. Tests only — there is no runtime reason to call it."""
+    global _POOL, _BINARY_POOL, _BLOCKING_POOL
     _POOL = None
     _BINARY_POOL = None
+    _BLOCKING_POOL = None

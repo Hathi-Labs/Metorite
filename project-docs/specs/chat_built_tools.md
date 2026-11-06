@@ -2,9 +2,9 @@
 
 <!-- ste-tier: strict -->
 
-- **Status:** 📋 PROPOSED, 2026-11-04. Planning only. Nothing built. The
-  owner questions of §15 are open. Each one has a default, so no slice waits
-  on the owner to start.
+- **Status:** ✅ ACTIVE, 2026-11-04. Planning only. Nothing built. The owner
+  accepted CBT-Q1 to CBT-Q10 as recommended (D182, 2026-11-04). CBT-1 is
+  dispatchable now.
 - **Verified against code on 2026-11-04** at `main` `a221ab972`. Re-verify
   every anchor at dispatch. The code is the fact.
 - **Asked by:** the owner, in chat, 2026-11-04 (UTC). Metorite task 1655 holds
@@ -419,8 +419,9 @@ Metorite data to an outside source, and data from source A to source B.
   static test is: the step reads Metorite data and names an outside source,
   or it names two or more different outside servers, or it passes a `tr_`
   of one server to another.
-- **Until CBT-Q3 is answered, each flow is refused** with
-  `data_to_source_refused`. A step may read Metorite data, or call one
+- **Before CBT-Q3 is on, each flow is refused** with
+  `data_to_source_refused`. The owner answered yes (D182), so the card path
+  below is built, and it stays off in production until CBT-G5. A step may read Metorite data, or call one
   outside server, but not both. So the rung-3 example "call two sources and
   merge them" works only after a yes to CBT-Q3. Until then, the assistant
   calls each source in chat and merges the two `tr_` results in a step
@@ -1001,7 +1002,7 @@ Every slice that runs code waits for the SBX slice it names.
 
 | Slice | Work | Depends on | Risk | Gate | Task |
 |---|---|---|---|---|---|
-| **CBT-0** | The owner answers §15. The answers become one numbered decision in `work_plan.md` §3 | — | — | **OWNER-GATE** (a decision) | #1658 |
+| **CBT-0** | ✅ Done 2026-11-04. The owner answered §15, and D182 records it | — | — | Done | #1658 |
 | **CBT-1** | Data handles `tr_`, `art_` and `att_`: `acb_skills/handles.py`, `resolve_handle`, `expired_handle`, the R8 half, and the measured note on where the spill lives (§6.2) | CTX-1 (built) | HIGH (tenancy) | AGENT-SAFE. Dark | #1659 |
 | **CBT-2** | The source bridge for MCP tools. Step 0: record the package-free executor in `ai_studio.md` B2. Then the route, the `uses` check, the shared MCP gate function, the per-server cap, the class rule, the D98 rule, `nested_tool` | SBX-2, SBX-3, B1b | HIGH (auth, outward writes) | AGENT-SAFE. Dark. The D98 class follows CBT-Q9's default | #1660 |
 | **CBT-3** | `run_code`: the gap check, `reads`, the `scratch` phase, image-only packages, the fix loop, the Code row, outputs as artifacts, the run row, `RUN_CODE_ORGS`, the error module, handles `ds_` and `out_`, `source_needs_card` | SBX-4, CBT-1, CBT-6a. Not CBT-2: `source_needs_card` refuses outside sources until CBT-4 | HIGH (code execution) | AGENT-SAFE. Dark | #1661 |
@@ -1321,22 +1322,24 @@ A skip in a run that names an R8 test is a failure.
 
 ## 15. Owner questions
 
-Each question has a recommendation and a default. A slice that needs an
-answer builds to the default and stays dark. The default never ships to
-production by itself.
+**Answered 2026-11-04 (D182).** The owner chose "every member with
+feature:studio" for CBT-Q1 and "accept every recommendation" for CBT-Q2 to
+CBT-Q10. So each recommendation below stands. Where a default below says
+"No" (CBT-Q3 and CBT-Q5), the owner's answer is yes. A slice still builds
+dark. A production turn-on of CBT-Q3 stays OWNER-GATE (CBT-G5).
 
 | # | Question | Recommendation | Default until answered |
 |---|---|---|---|
-| **CBT-Q1** | Who may run scratch code in chat? | Every member with `feature:studio`, in an org on `RUN_CODE_ORGS`. An admin can take the org off the list | As recommended, dark |
-| **CBT-Q2** | Does a scratch run that only reads Metorite data need a card first? | No. A card shows for a write, an outside source with shared data, or a web host. The Code row shows the code after | As recommended |
-| **CBT-Q3** | May one step send Metorite data, or data from one source, to an org-connected MCP server or API? | Yes, after one card that names each source, its scopes and its cap. A web host stays closed in such a step (SBX-Q2) | No. Such a step is refused |
-| **CBT-Q4** | Who approves an admin's new version of an organization tool? | A second holder of `tools:approve`. With only one holder, a self-approval with a flag in the audit | As recommended |
-| **CBT-Q5** | Do member-authored logic modules (`ai_studio.md` B5) use this tool registry? | Yes, with B5's limits (no network, no database link) and a proposed-writes output file. One store of member code | No. B5 keeps its own plan |
-| **CBT-Q6** | Do we keep the code of a scratch run? | Yes, for 30 days, in the tenant, readable by the member only | As recommended |
-| **CBT-Q7** | Where is the list of tools? | In AI Studio's library, as a fourth kind, Tools | As recommended |
-| **CBT-Q8** | May a scratch run install a package? | No. Only the image's packages. A new package means a saved tool with a lock | As recommended |
-| **CBT-Q9** | Are the tools of a D98 connection (acts as the admin who connected it) class B when sandbox code calls them? | Yes. In code, a loop of reads as an admin needs a card | As recommended |
-| **CBT-Q10** | May an approver read a member's scratch code, or adopt a departed member's private tool? | Scratch code: no, the member only. Adopt: yes, after a card that names the departed owner | As recommended |
+| **CBT-Q1** | Who may run scratch code in chat? | Every member with `feature:studio`, in an org on `RUN_CODE_ORGS`. An admin can take the org off the list | **✅ As recommended (D182).** Dark until CBT-G1 |
+| **CBT-Q2** | Does a scratch run that only reads Metorite data need a card first? | No. A card shows for a write, an outside source with shared data, or a web host. The Code row shows the code after | **✅ As recommended (D182)** |
+| **CBT-Q3** | May one step send Metorite data, or data from one source, to an org-connected MCP server or API? | Yes, after one card that names each source, its scopes and its cap. A web host stays closed in such a step (SBX-Q2) | **✅ Yes (D182).** Before a production turn-on (CBT-G5), such a step stays refused |
+| **CBT-Q4** | Who approves an admin's new version of an organization tool? | A second holder of `tools:approve`. With only one holder, a self-approval with a flag in the audit | **✅ As recommended (D182)** |
+| **CBT-Q5** | Do member-authored logic modules (`ai_studio.md` B5) use this tool registry? | Yes, with B5's limits (no network, no database link) and a proposed-writes output file. One store of member code | **✅ Yes (D182).** The slice that moves B5 onto this registry comes after CBT-9 |
+| **CBT-Q6** | Do we keep the code of a scratch run? | Yes, for 30 days, in the tenant, readable by the member only | **✅ As recommended (D182)** |
+| **CBT-Q7** | Where is the list of tools? | In AI Studio's library, as a fourth kind, Tools | **✅ As recommended (D182)** |
+| **CBT-Q8** | May a scratch run install a package? | No. Only the image's packages. A new package means a saved tool with a lock | **✅ As recommended (D182)** |
+| **CBT-Q9** | Are the tools of a D98 connection (acts as the admin who connected it) class B when sandbox code calls them? | Yes. In code, a loop of reads as an admin needs a card | **✅ As recommended (D182)** |
+| **CBT-Q10** | May an approver read a member's scratch code, or adopt a departed member's private tool? | Scratch code: no, the member only. Adopt: yes, after a card that names the departed owner | **✅ As recommended (D182)** |
 
 ---
 
@@ -1411,3 +1414,5 @@ open the WS-43 or SBX gates, and it does not open these.
   CBT-4 and CBT-11 dependencies, the sweep's seam registration and start
   hook, the `RUN_CODE_` env prefix, one card for each D98 call, and the
   task numbers 1658 to 1674.
+- 2026-11-04 — The owner accepted CBT-Q1 to CBT-Q10 as recommended (D182).
+  CBT-Q3 and CBT-Q5 are now yes. Status is ACTIVE.

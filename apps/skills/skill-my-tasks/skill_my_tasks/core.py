@@ -872,6 +872,8 @@ async def my_tasks_people(query: str = "", offset: int = 0,
 async def my_tasks_clarify(item_id: str) -> str:
     """Get the structured clarify proposal for one inbox item — disposition,
     next action, matched project, destination, default stage, confidence.
+    When the result has ``clarified_by`` "heuristic", tell the member it is a
+    rule-based guess, and say why from ``fallback_reason``.
 
     Args:
         item_id: The item's full UUID (from my_tasks_list).

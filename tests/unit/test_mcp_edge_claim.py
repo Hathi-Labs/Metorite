@@ -188,6 +188,31 @@ class TestClaimTaskAtTheEdge:
         assert task["status"] == {"id": S_DOING, "name": {"untrusted_text": "Doing"}}
         assert "clickup_id" not in json.dumps(body)
 
+    async def test_ci14a_a_claim_sends_the_link_in_the_body(self, edge):
+        link = "https://claude.ai/code/session_1"
+        result = await _tool("claim_task", {**_claim_args(), "external_link": link})
+        assert result["isError"] is False, result
+        [post] = edge.gateway.writes()
+        assert json.loads(post.body) == {"external_link": link}
+
+    @pytest.mark.parametrize("link", [
+        "http://claude.ai/code/1", "https://" + "a" * 2041, "javascript:alert(1)",
+        "https://a b.example"])
+    async def test_ci14a_a_link_that_is_not_https_or_too_long_is_refused(self, edge, link):
+        result = await _tool("claim_task", {**_claim_args(), "external_link": link})
+        assert result["isError"] is True, result
+        assert edge.gateway.writes() == []
+
+    async def test_ci14a_a_link_of_2049_characters_is_refused_and_2048_is_sent(self, edge):
+        ok = "https://" + "a" * 2040
+        bad = ok + "a"
+        assert (len(ok), len(bad)) == (2048, 2049)
+        refused = await _tool("claim_task", {**_claim_args(), "external_link": bad})
+        assert refused["isError"] is True, refused
+        assert edge.gateway.writes() == []
+        sent = await _tool("claim_task", {**_claim_args(), "external_link": ok})
+        assert sent["isError"] is False, sent
+
     async def test_a_failed_re_read_gives_the_claim_answer(self, edge):
         edge.gateway.answers[("GET", f"/projects/tasks/{TASK}")] = (503, {})
         result = await _tool("claim_task", _claim_args())
@@ -1060,6 +1085,56 @@ class TestAClaimOpensARun:
         assert started["structuredContent"]["run"]["id"] == (
             claimed["structuredContent"]["agent_run_id"])
         assert len(_runs(live, task)) == 1
+
+    async def test_ci14a_a_claim_with_a_link_stores_it_and_the_next_link_wins(
+            self, live, runs_on):
+        """CIV-14a. Mutations: ``agent_runs.py`` ``open_run_for_claim`` passes
+        no link, or ``_set_run_link`` does nothing. Both turn this test red."""
+        task = _task(live, live.team, live.s.todo, "ci14a")
+        first_link, second_link = "https://claude.ai/code/session_a", "https://claude.ai/code/b"
+        first = await _mcp(live, "claim_task", {
+            "task_id": task, "expected_version": await _version(live, task),
+            "external_link": first_link})
+        assert first["isError"] is False, first
+        [run] = _runs(live, task)
+        assert run.external_link == first_link
+        assert first["structuredContent"]["agent_run_id"] == str(run.id)
+        # A claim with no link keeps it.
+        keep = await _claim(live, task, first["structuredContent"]["task"]["version"])
+        assert keep["isError"] is False, keep
+        assert [r.external_link for r in _runs(live, task)] == [first_link]
+        # A claim with another link replaces it, on the same run.
+        again = await _mcp(live, "claim_task", {
+            "task_id": task, "expected_version": keep["structuredContent"]["task"]["version"],
+            "external_link": second_link})
+        assert again["isError"] is False, again
+        [run2] = _runs(live, task)
+        assert (str(run2.id), run2.external_link) == (str(run.id), second_link)
+
+    async def test_ci14a_the_gateway_refuses_a_link_that_is_not_https(self, live, runs_on):
+        task = _task(live, live.team, live.s.todo, "ci14a bad")
+        r = await _send(live, "POST", f"/projects/tasks/{task}/claim",
+                        body={"external_link": "http://claude.ai/x"})
+        assert r.status_code == 422, r.text
+        r = await _send(live, "POST", f"/projects/tasks/{task}/claim",
+                        body={"external_link": "https://" + "a" * 2041})
+        assert r.status_code == 422, r.text
+        assert _runs(live, task) == [] and _assignees(live, task) == []
+
+    async def test_ci14a_an_ask_with_a_link_sets_it_on_the_open_run(self, live, runs_on):
+        task = _task(live, live.team, live.s.todo, "ci14a ask")
+        claimed = await _mcp(live, "claim_task", {
+            "task_id": task, "expected_version": await _version(live, task),
+            "external_link": "https://claude.ai/code/one"})
+        assert claimed["isError"] is False, claimed
+        asked = await _mcp(live, "ask_on_task", {
+            "task_id": task, "question": "Which?", "idempotency_key": "ci14a-ask",
+            "external_link": "https://claude.ai/code/two"})
+        assert asked["isError"] is False, asked
+        [run] = _runs(live, task)
+        assert run.external_link == "https://claude.ai/code/two"
+        assert asked["structuredContent"]["run"]["external_link"] == (
+            "https://claude.ai/code/two")
 
     async def test_o4_a_member_claim_opens_no_run(self, live, runs_on):
         task = _task(live, live.team, live.s.todo, "o4")

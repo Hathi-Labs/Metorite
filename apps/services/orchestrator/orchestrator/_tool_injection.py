@@ -1078,7 +1078,8 @@ def _permission_gate(
     ``mcp_annotations`` (H-299), so ``decide()`` applies its MCP rule. They
     are set after the argument mapping, so a tool argument cannot write them.
     A caller that needs a fail-closed answer must not trust ``gate_error``:
-    the MCP gate shows a card for every code but ``mcp_read_only``.
+    the MCP gate shows a card for every code but ``mcp_read_only`` and
+    ``mcp_read_only_key`` (MCP-C2).
     """
     try:
         from acb_skills.permission_policy import (  # noqa: PLC0415
@@ -3798,7 +3799,9 @@ async def _apply_tool_packs(
     if not current_tenant():
         _log.warning("executor.packs_refused", reason="no_tenant")
         return None
-    disabled = frozenset(_load_disabled_skill_families(agent_name))
+    # PJP-2 fix round 3 (P3-1): a pack of FOLLOWS is off where an admin turned
+    # its parent off, as it is on where the pack flag names its parent.
+    disabled = tool_packs.with_followers(_load_disabled_skill_families(agent_name))
     allow = frozenset(allowed) - disabled
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
@@ -4311,6 +4314,9 @@ def _maf_servers(servers: list[Any], is_authorized: Any) -> list[Any]:
             # H-300: the admin's "always confirm" switch. A row with no key
             # reads as false, so the server keeps its H-299 behaviour.
             always_confirm=getattr(srv, "always_confirm", False) is True,
+            # MCP-C2: the admin's read-only key, as the registry parsed it
+            # once (``StoredServer.read_only_key``). Nothing parses it again.
+            read_only_key=getattr(srv, "read_only_key", False) is True,
             # IN-8b: an OAuth row, and whether this read refreshed its token.
             oauth=getattr(srv, "oauth", False) is True,
             oauth_refreshed=getattr(srv, "refreshed", False) is True,

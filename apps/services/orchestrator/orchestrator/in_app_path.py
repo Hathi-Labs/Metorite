@@ -36,6 +36,15 @@ _OFF_PATH_MARKS = re.compile(r"[\\\x00-\x1f\x7f]")
 #: First segments that are never a page, on either side of the twin.
 _NEVER_A_PAGE = frozenset({"api", "_next"})
 
+#: The one page move of a turn (``show_in_app``, ``show_guide``) is a mark on
+#: the run's queue, ``_show_in_app_done``. It reads MOVE_PENDING while the call
+#: that took it checks the member's right, and True when the page moved. A
+#: refusal sets it back to False. Fence: ``tests/unit/test_guide_tools.py``.
+MOVE_PENDING = "pending"
+#: The answer of a call that meets a MOVE_PENDING mark. The page has not moved
+#: yet, and it may not move, so the answer must not say that it moved.
+MOVE_PENDING_ERROR = "Another page move runs in this reply. Call again only if it failed."
+
 
 def path_segments(pathname: str) -> list[str] | None:
     """The decoded segments of *pathname*, or None when one is not a page's.

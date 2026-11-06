@@ -31,6 +31,7 @@ import { starterPills } from "@/lib/starterPills";
 import { chatFirstOn } from "@/lib/shell/chatFlag";
 import { type FeedAnswer, feedAppIcon, feedKey, fetchFeed } from "@/lib/shell/feed";
 import { holdsOnlyBrief } from "@/lib/shell/briefTurn";
+import { announceHelloOnce, isHelloRow } from "@/lib/shell/buddyHello";
 import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
@@ -106,7 +107,7 @@ import {
 } from "@/lib/chatSteer";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { mergeCappedText } from "@/lib/chatTurnFailure";
-import { editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
+import { EDIT_LOADING, editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { ShareSheet } from "@/components/room/ShareSheet";
@@ -318,6 +319,11 @@ interface AgentChatProps {
    */
   moreActs?: readonly { icon: string; label: string; onClick: () => void }[];
   /**
+   * WS-OB GD-4: a line the shell lends, drawn above the message box (the guide's
+   * step card). The chat knows nothing of it.
+   */
+  aboveComposer?: React.ReactNode;
+  /**
    * One-shot text to drop into the composer (not auto-sent) — used by the email
    * Assistant's "Fix" flow to hand a correction prompt to the user for review.
    * Changing this value injects it; `onPendingInputConsumed` fires once applied.
@@ -386,6 +392,7 @@ export default function AgentChat({
   headSlot = null,
   phoneChrome = false,
   moreActs,
+  aboveComposer,
   pendingInput,
   pendingInputTyped,
   onPendingInputConsumed,
@@ -678,6 +685,16 @@ export default function AgentChat({
     const t = setTimeout(() => setHistoryLoaderVisible(true), HISTORY_LOADER_DELAY_MS);
     return () => clearTimeout(t);
   }, [loadingHistory]);
+
+  // The hello comes without a click, so a screen reader hears its words once
+  // (DESIGN_SYSTEM.md §11 M9). The line is always in the page, empty until
+  // the row is there: a live region that arrives with its text is missed.
+  const helloWords = messages.find((m) => isHelloRow(m.id))?.content ?? "";
+  const [helloSaid, setHelloSaid] = useState("");
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- said once, from the row
+    if (helloWords && announceHelloOnce(sessionId)) setHelloSaid(helloWords);
+  }, [helloWords, sessionId]);
 
   // ── The starter pills (WS-62 CF-4, chat_first_surface.md §4.6) ──────────
   // With the chat-first flag on, the empty chat of the one assistant draws
@@ -1892,7 +1909,9 @@ export default function AgentChat({
   // Resolves with null when the server accepted the edit, or the reason it
   // refused. The composer stays open with the text on a refusal.
   const handleEditLast = useCallback(async (messageId: string, content: string): Promise<string | null> => {
-    if (loadingHistory) return null;
+    // A silent null here closed the composer as if the edit had gone through,
+    // and nothing happened (task 1653). Say why, and keep the text.
+    if (loadingHistory) return EDIT_LOADING;
     const out = await submitEdit(
       {
         threadId: sessionId,
@@ -2284,9 +2303,14 @@ export default function AgentChat({
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
   // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).
   // An earlier one would fork, and another person's is not theirs to edit.
+  // While the saved history loads, the thread on screen is the browser's
+  // cache. It can end at an older turn than the server's, so its last message
+  // is not yet THE last one: no message offers Edit until the load ends (task
+  // 1653). It showed Edit under an older message, and a Send from it did
+  // nothing.
   const lastUserId = useMemo(
-    () => editableLastUserId(messages, viewerEmail || undefined, isRoom),
-    [messages, viewerEmail, isRoom],
+    () => (loadingHistory ? null : editableLastUserId(messages, viewerEmail || undefined, isRoom)),
+    [messages, viewerEmail, isRoom, loadingHistory],
   );
   // A watcher reads the room and cannot drive its agents. The composer says so
   // instead of failing the send with a 403 after they have typed a paragraph.
@@ -2545,6 +2569,8 @@ export default function AgentChat({
           )}
           {!isLoading && !outage && !interruptedId && messages.length > 0 && !(briefOnly && starterFeedWanted) && (() => {
             const last = lastNonSteer(messages);
+            // No follow-ups under the hello: its chips are the next step (BUD-1).
+            if (last && isHelloRow(last.id)) return null;
             if (last?.role === "assistant" && last.content.trim() && !last.streaming) {
               return (
                 <SuggestionPills
@@ -2650,6 +2676,7 @@ export default function AgentChat({
         )}
 
         <div className="max-w-3xl mx-auto">
+          <p role="status" aria-live="polite" className="sr-only" data-hello-status="">{helloSaid}</p>
           {/* One note from the parent, for example the email chat after the
               mailbox of its scope left (EM-T8f-3). A status, so a screen
               reader hears it once. */}
@@ -2687,6 +2714,7 @@ export default function AgentChat({
               message box, as the notes above do. The member's own assistant
               only, after the first turn, and never during a run. The server's
               `prompt` flag decides whether it draws at all. */}
+          {aboveComposer}
           <PushPromptSheet
             ownChat={ownAssistantChat}
             messageCount={messages.length}

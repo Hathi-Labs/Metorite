@@ -141,7 +141,9 @@ def _core_tool_names() -> frozenset[str]:
     return frozenset(_CORE_STANDARD_TOOL_NAMES)
 
 
-def _disabled_families_by_agent() -> dict[str, frozenset[str]]:
+def _disabled_families_by_agent(
+    organization_id: str | None,
+) -> dict[str, frozenset[str]]:
     """agent name → families an admin disabled (WS-23 S2), best-effort.
 
     Reads the same ``agent_skill_setting`` rows the enforcement seam
@@ -149,11 +151,16 @@ def _disabled_families_by_agent() -> dict[str, frozenset[str]]:
     start, so the matrix shows the EFFECTIVE surface — stored settings on top
     of declared scope. Any failure (table not migrated, DB down) returns
     empty: the catalog then shows declared scope only, exactly S1's view.
+
+    H-201: the read binds the caller's tenant (``agent_skill_setting`` has
+    FORCE RLS). With no tenant it reads nothing and returns empty.
     """
+    if not organization_id:
+        return {}
     try:
-        from acb_graph import get_session  # noqa: PLC0415
+        from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text as _text  # noqa: PLC0415
-        with get_session() as s:
+        with tenant_session(organization_id) as s:
             rows = s.execute(
                 _text(
                     "SELECT agent_name, family FROM agent_skill_setting "
@@ -238,7 +245,7 @@ async def skills_catalog(
         core_tool_names=_core_tool_names(),
     )
 
-    disabled_map = _disabled_families_by_agent()
+    disabled_map = _disabled_families_by_agent(user.organization_id)
 
     agents_out: list[dict[str, Any]] = []
     for a in _list_agents():

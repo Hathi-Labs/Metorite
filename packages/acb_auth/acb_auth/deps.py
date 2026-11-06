@@ -981,6 +981,7 @@ async def _agent_user(request: Request) -> UserContext:
             scopes=connection.scopes,
             pinned_projects=connection.pinned_projects,
             include_personal=connection.include_personal,
+            left_out_projects=connection.left_out_projects,
             client_origin=connection.client_origin,
             actor_via=expected_via,
             session_key=session,
