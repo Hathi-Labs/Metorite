@@ -51,9 +51,11 @@ import {
   newMailSummary,
   NUDGE_CHIPS,
   NUDGE_EDITED,
+  NUDGE_EDITED_AT_REST,
   NUDGE_LEAD,
   NUDGE_TEXT,
   newMailEdited,
+  newMailTicksMoved,
   recipientsFor,
   sendsCount,
   startFileTicks,
@@ -62,6 +64,7 @@ import {
   subjectCanGo,
   tickedFor,
   toggleTick,
+  type NewMailEdits,
   type ReplyAction,
   type ReplyApproval,
   type ReplyForm,
@@ -89,6 +92,18 @@ export interface NewMailCardFormProps {
   onDraftChange?: (draft: CardDraft | null) => void;
   /** §18.11: the member's last version of the card that this card revises. */
   before?: CardText & { people?: PeopleBefore };
+  /**
+   * §18.11: a message in the chat goes as a steer now, the one path that
+   * carries the member's version. False at rest, as after a Stop.
+   */
+  carriesEdits?: boolean;
+  /**
+   * The member's edits of this card, from before a change of tab. The queue
+   * holds them, because a change of tab unmounts this form.
+   */
+  savedEdits?: NewMailEdits;
+  /** Report the member's edits, for `savedEdits`. */
+  onEdits?: (edits: NewMailEdits) => void;
 }
 
 /**
@@ -138,34 +153,40 @@ export function KeptOutLine({ names }: { names: readonly string[] }) {
  * `onSuggest`, and that is all it does: it sends nothing, and it answers no
  * card. With no `onSuggest`, the line shows with no chips.
  *
- * `edited`: the member changed the subject or the text. Since §18.11 a
- * request in the chat carries those edits, so the line says so
- * (`NUDGE_EDITED`), and the chips stay.
+ * `edited`: the member changed the card. While a run is live, a request in
+ * the chat carries those edits (§18.11), so the line says so
+ * (`NUDGE_EDITED`), and the chips stay. With `carriesEdits` false, as after a
+ * Stop, a plain send carries none. The line says that
+ * (`NUDGE_EDITED_AT_REST`), and the chips hide, so no chip leads the member
+ * to lose the edits.
  */
 export function NudgeLine({
   onSuggest,
   disabled = false,
   edited = false,
+  carriesEdits = false,
 }: {
   onSuggest?: (text: string) => void;
   disabled?: boolean;
   edited?: boolean;
+  carriesEdits?: boolean;
 }) {
+  const lost = edited && !carriesEdits;
   return (
     <div
       className="flex flex-wrap items-center gap-1.5 rounded-md bg-muted/40 px-2.5 py-1.5 text-xs glass:rounded-[10px] glass:bg-secondary glass:px-3 glass:py-2"
-      data-new-mail-nudge={edited ? "edited" : ""}
+      data-new-mail-nudge={lost ? "edited-at-rest" : edited ? "edited" : ""}
     >
       <Icon name="Sparkles" size={12} className="shrink-0 text-muted-foreground" />
       {edited ? (
-        <span className="text-foreground">{NUDGE_EDITED}</span>
+        <span className="text-foreground">{lost ? NUDGE_EDITED_AT_REST : NUDGE_EDITED}</span>
       ) : (
         <span className="text-foreground">
           <span className="font-medium">{NUDGE_LEAD}</span>{" "}
           <span className="text-muted-foreground">{NUDGE_TEXT}</span>
         </span>
       )}
-      {onSuggest &&
+      {onSuggest && !lost &&
         NUDGE_CHIPS.map((chip) => (
           <Button
             key={chip}
@@ -192,12 +213,22 @@ export default function NewMailCardForm({
   disabled = false,
   onDraftChange,
   before,
+  carriesEdits = false,
+  savedEdits,
+  onEdits,
 }: NewMailCardFormProps) {
-  const [subject, setSubject] = useState(form.subject);
-  const [body, setBody] = useState(form.body);
-  const [ticks, setTicks] = useState<ReplyTicks>(() => startTicks(form));
+  // A change of tab unmounts this form. Each state starts from the member's
+  // edits, or an untick comes back ticked, and Send goes to that person.
+  const [subject, setSubject] = useState(savedEdits?.subject ?? form.subject);
+  const [body, setBody] = useState(savedEdits?.body ?? form.body);
+  const [ticks, setTicks] = useState<ReplyTicks>(() => savedEdits?.ticks ?? startTicks(form));
   // The file rows of a held new mail (fix round 1): a ticked file goes.
-  const [fileTicks, setFileTicks] = useState<string[]>(() => startFileTicks(form));
+  const [fileTicks, setFileTicks] = useState<string[]>(() => savedEdits?.fileTicks ?? startFileTicks(form));
+  const keepEdits = useRef(onEdits);
+  useEffect(() => { keepEdits.current = onEdits; }, [onEdits]);
+  useEffect(() => {
+    keepEdits.current?.({ subject, body, ticks, fileTicks });
+  }, [subject, body, ticks, fileTicks]);
   const box = useRef<HTMLTextAreaElement>(null);
   // §18.11 step 1: the member's version after each edit, for the next chat
   // message. A ref holds the callback, so a new callback runs no report.
@@ -353,7 +384,12 @@ export default function NewMailCardForm({
         </ul>
       )}
 
-      <NudgeLine onSuggest={onSuggest} disabled={disabled} edited={newMailEdited(form, subject, body)} />
+      <NudgeLine
+        onSuggest={onSuggest}
+        disabled={disabled}
+        edited={newMailEdited(form, subject, body) || newMailTicksMoved(form, ticks)}
+        carriesEdits={carriesEdits}
+      />
 
       <div className="flex flex-wrap items-center gap-2">
         <Button

@@ -44,6 +44,14 @@ export type RunPhase =
 /** A run may still run: Stop is offered, a send steers it. */
 const LIVE: ReadonlySet<RunPhase> = new Set(["starting", "working", "waiting_for_you", "finishing"]);
 
+/**
+ * True for each phase a run rests in: it ended, or none runs. A cut stream
+ * is not one: `finishing` asks the server, and the run may go on.
+ */
+export function isRestingPhase(p: RunPhase): boolean {
+  return p === "done" || p === "stopped" || p === "failed" || p === "idle";
+}
+
 /** Live, for the composer, the session dot and the nav badge. */
 export function isLivePhase(p: RunPhase): boolean {
   return LIVE.has(p);

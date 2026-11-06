@@ -29,7 +29,9 @@ import { useId, useReducer, useState } from "react";
 import ConfirmationCard, { cardSummary } from "@/components/ConfirmationCard";
 import CardTabs, { cardPanelId, cardTabId, type CardTab } from "@/components/ui/CardTabs";
 import {
+  NO_EDITS,
   NO_TICKS,
+  formEditsReducer,
   rowTicksReducer,
   rowsView,
   type PendingConfirmation,
@@ -38,7 +40,7 @@ import {
 import { cardKind, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
 import { unfenced } from "@/lib/fencedText";
 import type { CardDraft } from "@/lib/redraftCard";
-import type { ReplyApproval } from "@/lib/replyCard";
+import { isNewMail, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
 
 /** A plain answer, an Approve that names the ticked rows of a card with
  *  rows (WS-46 P13 one-card), or the Send or Save of a reply card (EM-CR).
@@ -56,6 +58,8 @@ interface ConfirmationQueueProps {
   onSuggest?: (text: string) => void;
   /** §18.11: a new-mail card's version after each edit, by the card's key. */
   onDraftChange?: (key: string, draft: CardDraft | null) => void;
+  /** §18.11: a message in the chat carries the member's version now. */
+  carriesEdits?: boolean;
 }
 
 /** The index the queue shows: the one asked for, held inside the list. */
@@ -89,6 +93,10 @@ export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
  * other change keeps the member's card. Pure and idempotent, so a render that
  * React runs twice reaches the same state. The component calls it, and
  * `confirmationQueue.test.ts` runs it over a real Undo.
+ *
+ * One change does move the view (§18.11 fix round 4). The member looks at a
+ * slot, which has no button, and a live card arrives: the view goes to that
+ * card, because the run waits on the member there.
  */
 export function reconcileShown(
   prevKeys: readonly string[],
@@ -98,15 +106,21 @@ export function reconcileShown(
   const keys = cards.map((c) => c.key);
   if (keys.length === prevKeys.length && keys.every((k, i) => k === prevKeys[i])) return { keys: prevKeys, shown };
   const opened = restoredFirst(prevKeys, keys);
-  return { keys, shown: opened !== null ? { key: opened, index: 0 } : shown };
+  if (opened !== null) return { keys, shown: { key: opened, index: 0 } };
+  const showing = cards.find((c) => c.key === shown.key);
+  const fresh = showing?.redraft ? cards.findIndex((c) => !c.redraft && !prevKeys.includes(c.key)) : -1;
+  return { keys, shown: fresh >= 0 ? { key: cards[fresh].key, index: fresh } : shown };
 }
 
-export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange }: ConfirmationQueueProps) {
+export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange, carriesEdits }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
   // `rowTicksReducer` and `rowsView`, and this component holds none.
   const [ticks, tick] = useReducer(rowTicksReducer, NO_TICKS);
+  // The member's edits of each new-mail form, by key, for the same reason. A
+  // change of tab unmounts the form (`formEditsReducer`).
+  const [edits, keepEdits] = useReducer(formEditsReducer, NO_EDITS);
   const uid = useId();
   // The cards the member has opened, by key: a tab not in it wears a dot.
   const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
@@ -164,6 +178,9 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       // reports each edit, and a redrafted card knows the member's last version.
       {...(card.redraft ? { slot: card.redraft } : {})}
       {...(onDraftChange ? { onDraftChange: (d: CardDraft | null) => onDraftChange(card.key, d) } : {})}
+      {...(isNewMail(card.reply)
+        ? { carriesEdits, savedEdits: edits.get(card.key), onEdits: (value: NewMailEdits) => keepEdits({ key: card.key, value }) }
+        : {})}
       {...(card.before ? { before: card.before } : {})}
       // The tab row sits inside the card's frame, and the card is its panel.
       {...(tabbed

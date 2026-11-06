@@ -1078,7 +1078,7 @@ def _new_mail_unticked(value: Any, people: dict, ticked: dict | None) -> list[st
     """The kept unticks of a new-mail form (§18.11 rule 7), in lower case.
 
     Each name is a person of the card, and none of them starts ticked, so the
-    line "Still unticked" never names a person that the card ticks. A form
+    note never names a person that the card ticks. A form
     with no ticked start ticks each person, so it can name nobody. A bad name
     raises ``ValueError`` before any card is drawn."""
     from acb_skills.reply_card import MAX_REPLY_RECIPIENTS

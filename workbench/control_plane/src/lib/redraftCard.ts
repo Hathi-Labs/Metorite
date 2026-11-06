@@ -18,8 +18,9 @@
  *    no link takes a slot only when its To shares an address with the To of
  *    the slot's card (`sharesTo`, fix round 3). So a new mail to another
  *    person shows as its own card. A slot that no card takes waits until
- *    the run ends. Then it closes with no line when a new-mail card came
- *    after it, and else it reads "The draft did not change." and closes.
+ *    the run ends, by any end: a `done`, a Stop or a failure (`runRested`).
+ *    Then it closes with no line when a card to the same people came after
+ *    it, and else it reads "The draft did not change." and closes.
  * 3. The "Changed:" line. The client computes it from its own copy of the
  *    member's last version and the new text, with `diffKeys` of
  *    `app/knowledge/lib/wordDiff.ts`, and never from a claim of the model.
@@ -27,7 +28,7 @@
  *    them unticked on the next card and names them (`ReplyForm.unticked`), so
  *    every path gets the same ticks: a slot, no slot, two revised cards, a
  *    remount, a reload and a replay. The client draws the server's start and
- *    the "Still unticked" note from the form. It ticks and unticks nobody.
+ *    the "Unticked earlier" note from the form. It ticks and unticks nobody.
  *
  * Fence: `src/components/redraftCard.test.ts`.
  */
@@ -35,7 +36,7 @@
 import { diffKeys } from "@/app/knowledge/lib/wordDiff";
 import { tabLabel } from "@/lib/cardTabs";
 import type { PendingConfirmation } from "@/lib/confirmationQueue";
-import { isNewMail, startTicks, tickedFor, type ReplyForm, type ReplyTicks } from "@/lib/replyCard";
+import { isNewMail, newMailTicksMoved, startTicks, tickedFor, type ReplyForm, type ReplyTicks } from "@/lib/replyCard";
 
 /**
  * The member's version of an open new-mail card, as a steer carries it. The
@@ -126,9 +127,6 @@ export function keptOutOf(form: ReplyForm | null | undefined): string[] {
   return form && isNewMail(form) ? [...(form.unticked ?? [])] : [];
 }
 
-const sameList = (a: readonly string[], b: readonly string[]) =>
-  a.length === b.length && a.every((x, i) => x === b[i]);
-
 /**
  * The member's version of a new-mail card, whether they edited it or not:
  * the subject, the text and the people they left ticked, from the server's
@@ -158,8 +156,7 @@ export function cardDraftOf(
   now: { subject: string; body: string; ticks: ReplyTicks },
 ): CardDraft | null {
   if (!isNewMail(form)) return null;
-  const ticksMoved = !sameList(startTicks(form).reply_all, now.ticks.reply_all);
-  if (now.subject === form.subject && now.body === form.body && !ticksMoved) return null;
+  if (now.subject === form.subject && now.body === form.body && !newMailTicksMoved(form, now.ticks)) return null;
   return snapshotOf(form, requestId, now);
 }
 
@@ -210,17 +207,16 @@ export function pickCardDrafts(
   return groups.flat().slice(0, MAX_CARD_DRAFTS);
 }
 
-/** The newest open new-mail card, for the composer's line, or null. */
-export function changingCard(cards: readonly PendingConfirmation[]): PendingConfirmation | null {
-  for (let i = cards.length - 1; i >= 0; i--) {
-    if (isOpenNewMail(cards[i])) return cards[i];
-  }
-  return null;
-}
-
-/** The composer's line while a new-mail card is open: "Changing: Email to Kim". */
-export function changingLine(card: PendingConfirmation): string {
-  return `Changing: ${tabLabel(card)}`;
+/**
+ * The composer's line while a new-mail card is open, or null for none:
+ * "Changing: Email to Kim". With more, it counts them ("Changing: 2 emails"),
+ * because a message that names no card closes each one. The chat draws it
+ * only while a message goes as a steer: a plain send carries no version.
+ */
+export function changingLine(cards: readonly PendingConfirmation[]): string | null {
+  const open = cards.filter(isOpenNewMail);
+  if (open.length === 0) return null;
+  return open.length === 1 ? `Changing: ${tabLabel(open[0])}` : `Changing: ${open.length} emails`;
 }
 
 /** The label of a redrafted card, "Draft 2", or "" for a first draft. */
@@ -377,9 +373,11 @@ export function changedText(c: Changes): string {
 
 /**
  * The note on the people that start unticked because the member unticked
- * them on the draft before (rule 7), or "". It reads the server's names
- * (`keptOutOf`), so it shows on a card with no "Changed:" line too.
+ * them earlier in this chat (rule 7), or "". It reads the server's names
+ * (`keptOutOf`), so it shows on a card with no "Changed:" line too. Fix round
+ * 4: it says "earlier in this chat", because the untick can come from another
+ * card, and the last draft may even have gone to that person.
  */
 export function keptOutText(names: readonly string[]): string {
-  return names.length ? `Still unticked from your last draft: ${names.join(", ")}.` : "";
+  return names.length ? `Unticked earlier in this chat: ${names.join(", ")}. Tick the box to include them.` : "";
 }

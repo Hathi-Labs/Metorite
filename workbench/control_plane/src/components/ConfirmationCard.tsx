@@ -57,7 +57,7 @@ import { cardKey, fieldSpec, parseFieldValue, repeatsLine, valueIsLong } from "@
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
 import { slotLine, type CardDraft, type CardText } from "@/lib/redraftCard";
-import { isNewMail, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
+import { isNewMail, type NewMailEdits, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
 import { noRecipientHint, rowMark } from "@/lib/sendCard";
 
 /**
@@ -294,6 +294,12 @@ interface ConfirmationCardProps {
   onDraftChange?: (draft: CardDraft | null) => void;
   /** §18.11: the member's last version of the card that this card revises. */
   before?: CardText;
+  /** §18.11: a message in the chat carries the member's version now. */
+  carriesEdits?: boolean;
+  /** The member's edits of a new-mail card, from before a change of tab. */
+  savedEdits?: NewMailEdits;
+  /** A new-mail card reports the member's edits, for `savedEdits`. */
+  onEdits?: (edits: NewMailEdits) => void;
 }
 
 /** A line of card text: fenced names as tokens, or the text as sent. */
@@ -322,6 +328,9 @@ export default function ConfirmationCard({
   slot,
   onDraftChange,
   before,
+  carriesEdits,
+  savedEdits,
+  onEdits,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -443,6 +452,9 @@ export default function ConfirmationCard({
           onSuggest={onSuggest}
           onDraftChange={onDraftChange}
           before={before}
+          carriesEdits={carriesEdits}
+          savedEdits={savedEdits}
+          onEdits={onEdits}
         />
       )}
       {!slot && isReply && !newMail && (

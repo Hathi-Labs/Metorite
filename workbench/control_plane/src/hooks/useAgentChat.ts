@@ -37,7 +37,7 @@ import {
   wantLiveSteps,
   type LiveRun,
 } from "@/lib/liveRuns";
-import { isLivePhase, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
+import { isLivePhase, isRestingPhase, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
 import { stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
 import { planReplay, rejectFor } from "@/lib/runReplay";
@@ -1552,7 +1552,7 @@ export function useAgentChat({
     // more: the run is finalized here, as its `done` would have done. A cut
     // stream with NO remount keeps its card, so an answer still goes
     // (the restart path, `chat-card-restart.spec.ts`).
-    const resting = runPhase === "done" || runPhase === "stopped" || runPhase === "failed" || runPhase === "idle";
+    const resting = isRestingPhase(runPhase);
     if (runPhase === "working" || runPhase === "waiting_for_you") wasCheckingRef.current = false;
     if (resting && wasCheckingRef.current) {
       wasCheckingRef.current = false;
@@ -1566,6 +1566,10 @@ export function useAgentChat({
     // rest then redraws no stale card. The card on screen now stays: a cut
     // stream's answer still goes by the restart path.
     if (resting) clearCardLog(threadId);
+    // §18.11 step 7: a slot of a redraft ends with ANY end of a run. A Stop, a
+    // failed model call and an end on the attach stream emit no
+    // `onRunFinalized`, and the slot would then spin with no button.
+    if (resting) emitAgentEvent("onRunRested", { threadId });
   }, [runPhase, threadId]);
   // A new run (another run key) has none of the old run's cards.
   const runKeyNow = sessionState.run.runKey;

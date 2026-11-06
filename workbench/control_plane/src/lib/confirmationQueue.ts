@@ -32,7 +32,7 @@
 
 import { unfenced } from "@/lib/fencedText";
 import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
-import { isNewMail, replyFromEvent, startTicks, type ReplyForm } from "@/lib/replyCard";
+import { isNewMail, replyFromEvent, startTicks, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 
 /** The event a closed card arrives as. The server owns the name
@@ -194,6 +194,23 @@ export function withTicked(
 
 /** The member's ticks of every card with rows, by card key. */
 export type RowTicks = Readonly<Record<string, readonly string[]>>;
+
+/**
+ * The member's edits of each new-mail form, by card key. The queue holds them
+ * as it holds `RowTicks`, because a change of tab unmounts the form. Without
+ * them, an untick came back ticked and Send went to that person.
+ */
+export type FormEdits = ReadonlyMap<string, NewMailEdits>;
+
+export const NO_EDITS: FormEdits = new Map();
+
+/** Keep the edits of one form. The same values change nothing. */
+export function formEditsReducer(edits: FormEdits, action: { key: string; value: NewMailEdits }): FormEdits {
+  const was = edits.get(action.key);
+  const now = action.value;
+  if (was && was.subject === now.subject && was.body === now.body && was.ticks === now.ticks && was.fileTicks === now.fileTicks) return edits;
+  return new Map(edits).set(action.key, now);
+}
 
 export const NO_TICKS: RowTicks = {};
 
@@ -382,6 +399,8 @@ export type ConfirmationAction =
   | { type: "memberVersion"; key: string; version: SentVersion }
   /** §18.11: the slots that read "The draft did not change." close. */
   | { type: "closeUnchanged" }
+  /** §18.11: the run rests, by any end. Only a slot moves, and a card stays. */
+  | { type: "runRested" }
   /** An answer is in flight. With `label`, a receipt line says so (UXD-3). */
   | {
       type: "answering";
@@ -456,10 +475,25 @@ function redrafted(card: PendingConfirmation, old: PendingConfirmation): Pending
   };
 }
 
-/** P3: every other slot that waits sees a new-mail card arrive after it. */
+/**
+ * P3: every other slot that waits sees a new-mail card to its own people
+ * arrive after it. Fix round 4: a card to OTHER people is no new draft of
+ * the slot's card. That slot must read its end line, or the member's card
+ * goes with no word (`endSlot`).
+ */
 function noteNewer(cards: PendingConfirmation[], at: number, card: PendingConfirmation): PendingConfirmation[] {
   if (!card.reply || !isNewMail(card.reply)) return cards;
-  return cards.map((c, i) => (i !== at && c.redraft === "updating" && !c.newerCard ? { ...c, newerCard: true as const } : c));
+  return cards.map((c, i) => (i !== at && c.redraft === "updating" && !c.newerCard && sharesTo(c.reply, card.reply) ? { ...c, newerCard: true as const } : c));
+}
+
+/**
+ * What the end of a run does to one card that is a slot (§18.11 step 7). A
+ * slot with a newer draft closes with no line, and any other slot says that
+ * the draft did not change. Any other card stays.
+ */
+function endSlot(c: PendingConfirmation): PendingConfirmation[] {
+  if (c.redraft !== "updating") return [c];
+  return c.newerCard ? [] : [{ ...c, redraft: "unchanged" as const }];
 }
 
 function withRemoved(set: ReadonlySet<string>, key: string): Set<string> {
@@ -612,13 +646,14 @@ export function confirmationReducer(
       // took reads "The draft did not change." until `closeUnchanged`.
       return {
         ...state,
-        cards: state.cards.flatMap((c) => {
-          // A new-mail card arrived after the slot (P3): the run did draw a
-          // draft, so the slot closes with no line.
-          if (c.redraft === "updating") return c.newerCard ? [] : [{ ...c, redraft: "unchanged" as const }];
-          return !c.requestId || c.redraft === "unchanged" ? [c] : [];
-        }),
+        cards: state.cards.flatMap((c) => (c.redraft || !c.requestId ? endSlot(c) : [])),
       };
+    case "runRested":
+      // A Stop, a failure or an end on the attach stream: the slot branch of
+      // `runFinalized` alone, so a blocking card stays as it is.
+      return state.cards.some((c) => c.redraft === "updating")
+        ? { ...state, cards: state.cards.flatMap(endSlot) }
+        : state;
     case "closeUnchanged":
       return { ...state, cards: state.cards.filter((c) => c.redraft !== "unchanged") };
     case "reset":

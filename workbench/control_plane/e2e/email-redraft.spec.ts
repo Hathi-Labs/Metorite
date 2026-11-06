@@ -17,6 +17,10 @@ import { expect, test, type Page } from "@playwright/test";
  *
  * Fix round 3: a new mail to another person, in the same message, takes no
  * link and no slot. It shows as its own card, and Kim's draft keeps Kim's slot.
+ *
+ * Fix round 4: a slot ends with a Stop and with a failed model call, a card to
+ * other people leaves the slot its end line, the view goes to a live card, the
+ * chat claims nothing at rest, and a change of tab keeps the member's edits.
  */
 
 const OLD = "a".repeat(32);
@@ -30,6 +34,11 @@ const CAROL = "carol@contoso.test";
 const CAROL_ID = "e".repeat(32);
 const LATE = "Hi Carol,\n\nI am running ten minutes late.";
 const MIXED = "first email Carol that I am late, then make this shorter";
+const ALSO = "also email Carol that I am late";
+const ONLY_KIM = "make the one to kim shorter";
+const BOB_TEXT = "Hi Bob,\n\nThe spare parts ship on Monday.";
+const NOTE = `Unticked earlier in this chat: ${GEO}. Tick the box to include them.`;
+const NOT_CHANGED = "The draft did not change.";
 const FIRST = "Hi Kim,\n\nPlease find the rates for May attached.";
 const EDITED = "Hi Kim,\n\nPlease find the rates for May attached. Call me on Friday.";
 const SHORTER = "Hi Kim,\n\nThe May rates are attached. Call me on Friday.";
@@ -49,10 +58,21 @@ const KEPT = { ticked: { reply: { to: [KIM], cc: [] }, reply_all: { to: [KIM], c
 
 interface StubCard { request_id: string; title: string; reply: unknown }
 
+interface StubOptions {
+  /** The message that steers the run. */
+  steer?: string;
+  /** The cards that the steer closes, by id. With none, each first card closes. */
+  closes?: string[];
+  /** The model call fails once the steer closed the cards. */
+  failAfterSteer?: boolean;
+  /** The first stream is cut, and the run goes on, and ends, on the attach stream. */
+  cutFirstStream?: boolean;
+}
+
 const stubCard = (id: string, title: string, reply: unknown): StubCard => ({ request_id: id, title, reply });
 
-async function install(page: Page, firstCards: StubCard[], newCards: StubCard[], steer = STEER) {
-  await page.addInitScript(({ steer, firstCards, newCards }) => {
+async function install(page: Page, firstCards: StubCard[], newCards: StubCard[], options: StubOptions = {}) {
+  await page.addInitScript(({ steer, firstCards, newCards, closes, failAfterSteer, cutFirstStream }) => {
     window.localStorage.clear();
     const w = window as unknown as Record<string, unknown>;
     const steers: unknown[] = [];
@@ -60,6 +80,13 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[],
     let released: () => void = () => {};
     const release = new Promise<void>((r) => { released = r; });
     w.__release = () => released();
+    let finished: () => void = () => {};
+    const finish = new Promise<void>((r) => { finished = r; });
+    w.__finish = () => finished();
+    const answers: unknown[] = [];
+    let liveThread: string | null = null;
+    w.__attached = 0;
+    w.__answers = answers;
     let steered: () => void = () => {};
     const steeredOnce = new Promise<void>((r) => { steered = r; });
     const enc = new TextEncoder();
@@ -70,7 +97,14 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[],
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/api/chat/active-sessions")) return json([]);
+      if (url.includes("/api/agent/cancel")) return json({ cancelled: true });
+      if (url.includes("/api/agent/respond-input")) {
+        answers.push(JSON.parse(String(init?.body ?? "{}")));
+        return json({ ok: true });
+      }
+      if (url.includes("/api/chat/active-sessions")) {
+        return json(liveThread ? [{ threadId: liveThread, agentName: "orchestrator", state: "running", live: true, runId: "r-1" }] : []);
+      }
       if (url.includes("/api/auth/me")) {
         return json({
           email: "jane@acme.test", user_id: "jane", authenticated: true, is_active: true,
@@ -87,7 +121,37 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[],
       }
       if (url.includes("/api/agent/chat")) {
         const body = JSON.parse(String(init?.body ?? "{}"));
-        if (body.reconnect) return json({}, 404);
+        if (body.reconnect) {
+          if (!cutFirstStream) return json({}, 404);
+          w.__attached = Number(w.__attached) + 1;
+          // The attach stream: it replays the run, and the run ends on it.
+          const attach = new ReadableStream<Uint8Array>({
+            async start(ctl) {
+              const send = (e: unknown) => {
+                try { ctl.enqueue(frame(e)); } catch { /* closed */ }
+              };
+              send({ type: "message_start", messageId: "m-1" });
+              firstCards.forEach((c, i) => {
+                send({ type: "tool_start", id: `t-${i}`, name: "send_email", args: {} });
+                send({ type: "custom", name: "confirmation_requested", value: {
+                  title: c.title, detail: "From Work · jane@acme.test · Rates for May",
+                  request_id: c.request_id, reply: c.reply,
+                } });
+              });
+              await steeredOnce;
+              firstCards.forEach((c, i) => {
+                send({ type: "custom", name: "confirmation_resolved", value: { request_id: c.request_id, answer: "REVISED" } });
+                send({ type: "tool_end", id: `t-${i}`, name: "send_email", success: true,
+                       result: "The member wrote in the chat while the card was open." });
+              });
+              await finish;
+              liveThread = null;
+              send({ type: "done", run_id: "r-1" });
+              try { ctl.close(); } catch { /* closed */ }
+            },
+          });
+          return new Response(attach, { status: 200, headers: { "content-type": "text/event-stream" } });
+        }
         if (body.steerFollowUp) return json({ steered: false, followUp: false, reason: "nothing_pending" }, 202);
         if (body.message === steer) {
           steers.push(body);
@@ -95,10 +159,17 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[],
           return json({ steered: true, delivered: true, pendingReplay: false, reason: "folded_into_live_run" }, 202);
         }
         const stream = new ReadableStream<Uint8Array>({
-          async start(c) {
+          async start(ctl) {
             const send = (e: unknown) => {
-              try { c.enqueue(frame(e)); } catch { /* closed */ }
+              try { ctl.enqueue(frame(e)); } catch { /* closed */ }
             };
+            const end = () => {
+              try { ctl.close(); } catch { /* closed */ }
+            };
+            // A real fetch rejects its read on an abort, as a Stop does.
+            init?.signal?.addEventListener("abort", () => {
+              try { ctl.error(new DOMException("Aborted", "AbortError")); } catch { /* closed */ }
+            });
             send({ type: "message_start", messageId: "m-1" });
             send({ type: "delta", messageId: "m-1", content: "Here is the email.\n\n" });
             firstCards.forEach((c, i) => {
@@ -108,13 +179,25 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[],
                 request_id: c.request_id, reply: c.reply,
               } });
             });
+            if (cutFirstStream) {
+              // A cut with no `done`: the run goes on, and the server lists it.
+              liveThread = String(body.threadId);
+              end();
+              return;
+            }
             await steeredOnce;
             // The steer names no card, so it closes each one as REVISED (`close_on_steer`).
             firstCards.forEach((c, i) => {
+              if (closes && !closes.includes(c.request_id)) return;
               send({ type: "custom", name: "confirmation_resolved", value: { request_id: c.request_id, answer: "REVISED" } });
               send({ type: "tool_end", id: `t-${i}`, name: "send_email", success: true,
                      result: "The member wrote in the chat while the card was open." });
             });
+            if (failAfterSteer) {
+              send({ type: "error", content: "The model call failed." });
+              end();
+              return;
+            }
             await release;
             newCards.forEach((c, i) => {
               send({ type: "tool_start", id: `n-${i}`, name: "send_email", args: {} });
@@ -124,22 +207,29 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[],
               } });
             });
             // The run waits on the new cards. The stream stays open.
+            await finish;
+            send({ type: "done", run_id: "r-1" });
+            end();
           },
         });
         return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
       }
       return orig(input, init);
     };
-  }, { steer, firstCards, newCards });
+  }, {
+    steer: options.steer ?? STEER, firstCards, newCards,
+    closes: options.closes ?? null, failAfterSteer: !!options.failAfterSteer,
+    cutFirstStream: !!options.cutFirstStream,
+  });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
   await page.route("**/api/memory/**", (r) => r.fulfill({ json: [] }));
 }
 
-async function openCard(page: Page, firstCards: StubCard[], newCards: StubCard[], steer = STEER) {
+async function openCard(page: Page, firstCards: StubCard[], newCards: StubCard[], options: StubOptions = {}) {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await install(page, firstCards, newCards, steer);
+  await install(page, firstCards, newCards, options);
   await page.goto("/chat");
   const picker = page.getByText("New session", { exact: true });
   const box = page.getByRole("textbox", { name: /^Message / });
@@ -201,7 +291,7 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     // unticked. One click would otherwise send to a person the member removed.
     await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
     await expect(page.getByRole("checkbox", { name: `Send to ${KIM}` })).toBeChecked();
-    await expect(page.locator("[data-redraft-kept-out]")).toHaveText(`Still unticked from your last draft: ${GEO}.`);
+    await expect(page.locator("[data-redraft-kept-out]")).toHaveText(NOTE);
     // The line reads cleanly: no semicolon, and a word on each side of a comma.
     await expect(changed).not.toContainText(";");
   });
@@ -232,7 +322,7 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     await expect(page.getByRole("textbox", { name: "Email text" })).toHaveValue(SHORTER);
     await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
     await expect(page.getByRole("checkbox", { name: `Send to ${KIM}` })).toBeChecked();
-    await expect(page.locator("[data-redraft-kept-out]")).toHaveText(`Still unticked from your last draft: ${GEO}.`);
+    await expect(page.locator("[data-redraft-kept-out]")).toHaveText(NOTE);
   });
 
   test("a new email to Carol in the same message shows as its own card, and Kim's Draft 2 keeps its slot", async ({ page }) => {
@@ -246,7 +336,7 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
       [stubCard(OLD, `Email to ${KIM}`, form(FIRST))],
       [stubCard(CAROL_ID, `Email to ${CAROL}`, { ...form(LATE, carolKept, carolPeople), subject: "Running late" }),
        stubCard(NEW, `Email to ${KIM}`, form(SHORTER, { revises: OLD, draft: 2, ...KEPT }))],
-      MIXED);
+      { steer: MIXED });
     await page.getByRole("textbox", { name: "Email text" }).fill(EDITED);
     await page.getByRole("checkbox", { name: `Send to ${GEO}` }).uncheck();
     await box.fill(MIXED);
@@ -271,6 +361,121 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     await expect(page.locator("[data-redraft-changed]")).toHaveCount(0);
     await expect(page.getByRole("checkbox", { name: `Send to ${CAROL}` })).toBeChecked();
     await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
-    await expect(page.locator("[data-redraft-kept-out]")).toHaveText(`Still unticked from your last draft: ${GEO}.`);
+    await expect(page.locator("[data-redraft-kept-out]")).toHaveText(NOTE);
+  });
+
+  // Fix round 4.
+  const bobCard = () => stubCard(OLD_BOB, `Email to ${BOB}`, form(BOB_TEXT, {}, { to: [BOB], cc: [] }));
+  const carolPeople = { to: [CAROL], cc: [GEO] };
+  const carolKept = { ticked: { reply: { to: [CAROL], cc: [] }, reply_all: { to: [CAROL], cc: [] } }, unticked: [GEO] };
+  const carolCard = () => stubCard(CAROL_ID, `Email to ${CAROL}`, { ...form(LATE, carolKept, carolPeople), subject: "Running late" });
+  const steered = (page: Page) => expect.poll(() => page.evaluate(() => (window as unknown as { __steers: unknown[] }).__steers.length)).toBe(1);
+
+  test("a Stop ends the slot, a blocking card stays, and the chat then claims nothing about the edits", async ({ page }) => {
+    // P1 and P2 of the review of fix round 3. Only Kim's card closes.
+    const box = await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST)), bobCard()], [], { steer: ONLY_KIM, closes: [OLD] });
+    await expect(page.locator("[data-redraft-changing]")).toHaveText("Changing: 2 emails");
+    await box.fill(ONLY_KIM);
+    await page.locator('[data-chat-primary="send"]').click();
+    await steered(page);
+    const slot = page.locator("[data-redraft-slot]");
+    await expect(slot).toHaveText("Updating the draft…");
+    await expect(page.locator("[data-redraft-changing]")).toHaveText("Changing: Email to Bob");
+    await page.locator('[data-chat-primary="stop"]').click();
+    // The slot ends. It reads its end line, and then it closes.
+    await expect(page.locator('[data-redraft-slot="unchanged"]')).toHaveText(NOT_CHANGED);
+    await expect(slot).toHaveCount(0, { timeout: 8000 });
+    // Bob's card waits still. A plain send carries no version, so the composer
+    // names no email, and the nudge says what a request now does.
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await expect(text).toHaveValue(BOB_TEXT);
+    await expect(page.locator("[data-redraft-changing]")).toHaveCount(0);
+    await text.fill("Hi Bob,\n\nMy own words.");
+    await expect(page.locator('[data-new-mail-nudge="edited-at-rest"]')).toContainText("starts again from the assistant's draft");
+    await expect(page.locator("[data-nudge-chip]")).toHaveCount(0);
+  });
+
+  test("a failed model call ends the slot", async ({ page }) => {
+    const box = await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST))], [], { failAfterSteer: true });
+    await box.fill(STEER);
+    await page.locator('[data-chat-primary="send"]').click();
+    await steered(page);
+    await expect(page.locator('[data-redraft-slot="unchanged"]')).toHaveText(NOT_CHANGED);
+    await expect(page.locator("[data-redraft-slot]")).toHaveCount(0, { timeout: 8000 });
+  });
+
+  test("a run that ends on the attach stream ends the slot", async ({ page }) => {
+    // The stream was cut, and the chat attached to the live run. A `done` on
+    // the attach stream emits no `onRunFinalized`, so the run's rest must end it.
+    const box = await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST))], [], { cutFirstStream: true });
+    await expect.poll(() => page.evaluate(() => Number((window as unknown as { __attached: number }).__attached)), { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
+    await box.fill(STEER);
+    await page.locator('[data-chat-primary="send"]').click();
+    await steered(page);
+    await expect(page.locator("[data-redraft-slot]")).toHaveText("Updating the draft…");
+    await page.evaluate(() => (window as unknown as { __finish: () => void }).__finish());
+    await expect(page.locator('[data-redraft-slot="unchanged"]')).toHaveText(NOT_CHANGED);
+    await expect(page.locator("[data-redraft-slot]")).toHaveCount(0, { timeout: 8000 });
+  });
+
+  test("a new email to Carol alone: the view goes to her card, and Kim's slot says that it did not change", async ({ page }) => {
+    // P1 and P2 of the review of fix round 3. The model draws only Carol's card.
+    const box = await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST))], [carolCard()], { steer: ALSO });
+    await box.fill(ALSO);
+    await page.locator('[data-chat-primary="send"]').click();
+    await steered(page);
+    await expect(page.locator("[data-redraft-slot]")).toHaveText("Updating the draft…");
+    await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+    // The run waits on the member at Carol's card, so the view shows it.
+    await expect(page.getByRole("textbox", { name: "Email text" })).toHaveValue(LATE);
+    await expect(page.locator("[data-card-tabs-count]")).toHaveText("1 to approve");
+    await expect(page.locator("[data-redraft-changing]")).toHaveText("Changing: Email to Carol");
+    // The member can go back to the slot, and it stays in view.
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    await expect(page.locator("[data-redraft-slot]")).toHaveText("Updating the draft…");
+    // The run ends with no new draft of Kim's card, and the member reads so.
+    await page.evaluate(() => (window as unknown as { __finish: () => void }).__finish());
+    await expect(page.locator('[data-redraft-slot="unchanged"]')).toHaveText(NOT_CHANGED);
+    await expect(page.locator("[data-redraft-slot]")).toHaveCount(0, { timeout: 8000 });
+  });
+
+  test("a change of tab keeps an untick and the text, and Send does not go to that person", async ({ page }) => {
+    // P2 of the review of fix round 3, and a path to mail.
+    await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST)), bobCard()], []);
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await text.fill(EDITED);
+    await page.getByRole("checkbox", { name: `Send to ${GEO}` }).uncheck();
+    await page.getByRole("tab", { name: /Bob/ }).click();
+    await expect(text).toHaveValue(BOB_TEXT);
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    await expect(text).toHaveValue(EDITED);
+    await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
+    await expect(page.getByRole("checkbox", { name: `Send to ${KIM}` })).toBeChecked();
+    // The card arms again after a change of tab (`ARM_MS`).
+    await page.waitForTimeout(600);
+    await page.locator("[data-reply-send]").click();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __answers: unknown[] }).__answers.length)).toBe(1);
+    const [answer] = await page.evaluate(() => (window as unknown as { __answers: unknown[] }).__answers);
+    expect(JSON.stringify(answer)).not.toContain(GEO);
+    expect(JSON.stringify(answer)).toContain("Call me on Friday");
+  });
+
+  test("a change of tab keeps the version that a steer carries", async ({ page }) => {
+    // The form used to report its start on the remount, and that deleted the
+    // kept version. So the next steer carried Geo as ticked.
+    const box = await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST)), bobCard()], []);
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    await page.getByRole("textbox", { name: "Email text" }).fill(EDITED);
+    await page.getByRole("checkbox", { name: `Send to ${GEO}` }).uncheck();
+    await page.getByRole("tab", { name: /Bob/ }).click();
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    await box.fill(STEER);
+    await page.locator('[data-chat-primary="send"]').click();
+    await steered(page);
+    const [sent] = await page.evaluate(() => (window as unknown as { __steers: { cardDraft?: { request_id: string; cc: string[]; body: string }[] }[] }).__steers);
+    const kim = sent.cardDraft?.find((d) => d.request_id === OLD);
+    expect(kim?.cc).toEqual([]);
+    expect(kim?.body).toBe(EDITED);
   });
 });

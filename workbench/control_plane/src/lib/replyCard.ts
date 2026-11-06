@@ -712,6 +712,29 @@ export const NUDGE_CHIPS: readonly string[] = ["make it shorter", "make it more 
  */
 export const NUDGE_EDITED = "Your edits go with a request in the chat. Save draft keeps your version.";
 
+/**
+ * The same line when no run is live, as after a Stop (§18.11 fix round 4). Only
+ * a steer carries the member's version. A plain send starts a new run and
+ * carries none, so a new card starts from the assistant's words, and a person
+ * the member unticked starts ticked. The card shows no chips in this state,
+ * because a chip would lead the member to lose the edits.
+ */
+export const NUDGE_EDITED_AT_REST = "A request in the chat starts again from the assistant's draft. Save draft keeps your version.";
+
+/** The member's edits of a new-mail form. The queue keeps them by card key. */
+export interface NewMailEdits {
+  subject: string;
+  body: string;
+  ticks: ReplyTicks;
+  fileTicks: string[];
+}
+
+/** True when the people the member left ticked differ from the card's start. */
+export function newMailTicksMoved(form: ReplyForm, ticks: ReplyTicks): boolean {
+  const start = startTicks(form).reply_all;
+  return start.length !== ticks.reply_all.length || start.some((a) => !ticks.reply_all.includes(a));
+}
+
 /** True when the member changed the subject or the text of the card. */
 export function newMailEdited(form: ReplyForm, subject: string, body: string): boolean {
   return subject !== form.subject || body !== form.body;

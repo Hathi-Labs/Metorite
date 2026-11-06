@@ -67,7 +67,6 @@ import {
 } from "@/lib/confirmationQueue";
 import {
   UNCHANGED_CLOSE_MS,
-  changingCard,
   changingLine,
   pickCardDrafts,
   type CardDraft,
@@ -876,6 +875,9 @@ export default function AgentChat({
   // A remount's "checking" offers no Stop and no "working…" until the
   // server lists the run (`isRunActiveForUi`, re-review of #1171).
   const isRunActive = isRunActiveForUi(run);
+  // §18.11: a message goes as a steer now, the one path that carries the
+  // member's version of a card (`cardDraft`). A plain send carries none.
+  const steerOpen = sendRoute({ runActive: isRunActive, mode: effectiveRuntime }) === "steer";
   // Glass (GL-10b): the colour edge around the composer is always drawn. Its
   // state says what the run is doing, and the caller's CSS keys on it.
   const glowState = isRunActive ? (run.phase === "waiting_for_you" ? "waiting" : "live") : "rest";
@@ -1251,6 +1253,12 @@ export default function AgentChat({
           submitText(message);
         }
       }
+    },
+    // §18.11 step 7: any end of a run ends a slot of a redraft, and a blocking
+    // card stays as it is (`runRested`).
+    onRunRested: ({ threadId }) => {
+      if (threadId && threadId !== sessionId) return;
+      dispatchConfirmation({ type: "runRested" });
     },
     onRunFinalized: ({ threadId }) => {
       if (threadId && threadId !== sessionId) return;
@@ -2214,6 +2222,7 @@ export default function AgentChat({
             onAnswer={answerConfirmation}
             onSuggest={suggestToComposer}
             onDraftChange={onCardDraft}
+            carriesEdits={steerOpen}
           />
         )}
 
@@ -2387,9 +2396,10 @@ export default function AgentChat({
   // "…" control. The row above the box goes when it has nothing to say.
   const ringInComposer = !phoneChrome || contextUsage.pct >= PHONE_RING_PCT;
   const steerShown = primary === "send" && isRunActive && !!input.trim();
-  // §18.11 step 7: while a new-mail card is open, the composer names the
-  // email that a message changes ("Changing: Email to Kim").
-  const changing = changingCard(confirmations.cards);
+  // §18.11 step 7: while a new-mail card is open and a message goes as a
+  // steer, the composer names the emails that a message changes ("Changing:
+  // Email to Kim", "Changing: 2 emails"). After a Stop, it claims nothing.
+  const changing = steerOpen ? changingLine(confirmations.cards) : null;
   const composerRowShown = !phoneChrome || !!runView || ringInComposer || composerOverflow || steerShown || !!changing;
   // The phone's tap size, on Attach and on Send (CF-8).
   const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";
@@ -2711,7 +2721,7 @@ export default function AgentChat({
               the one waiting question still says so. */}
           {changing && !(steerShown && typedTarget) ? (
             <span data-redraft-changing="" className="max-w-[60%] shrink-0 truncate text-[10px] text-primary">
-              {changingLine(changing)}
+              {changing}
             </span>
           ) : steerShown && (
             <span data-steer-caption className="shrink-0 text-[10px] text-primary">

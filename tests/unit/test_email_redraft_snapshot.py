@@ -980,7 +980,7 @@ async def test_the_unticks_of_one_member_and_thread_change_no_other_card(env) ->
 async def test_a_held_card_starts_the_members_untick_unticked_and_never_names_a_new_address(
     env,
 ) -> None:
-    """Rule 7 on a held card, and the review's note: "Still unticked" names
+    """Rule 7 on a held card, and the review's note: the card's note names
     only a person that the member unticked. The new address started unticked,
     and the member never unticked it. Mutation: count each unticked row of the
     old card as the member's → red."""

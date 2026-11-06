@@ -2322,7 +2322,7 @@ const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
 
 /** The words of a closed card that a chat message revised. The result itself
  *  is the model's instruction, so the member never reads it. */
-export const REVISED_NOTE = "You wrote in the chat, so this card closed. Nothing was sent. A new draft follows.";
+export const REVISED_NOTE = "You wrote in the chat, so this card closed. Nothing was sent. A new draft can follow.";
 
 function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {
   const meta = NO_ACTION_META[kind];
