@@ -135,6 +135,7 @@ import {
   consumeAsk,
   consumeDraft,
   consumeHello,
+  draftFor,
   consumeReminder,
   effectiveMode,
   focusAssistant,
@@ -1334,8 +1335,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 onArtifact={onArtifact}
                 onSessionRefused={chat.onSessionRefused}
                 notice={chat.notice}
-                pendingInput={chat.recoveredInput ?? st.draft?.text}
-                pendingInputTyped={!chat.recoveredInput && st.draft?.typed === true}
+                pendingInput={chat.recoveredInput ?? draftFor(st.draft, active.id)?.text}
+                pendingInputTyped={!chat.recoveredInput && draftFor(st.draft, active.id)?.typed === true}
                 onPendingInputConsumed={() => {
                   chat.consumeRecoveredInput();
                   consumeDraft();
