@@ -1099,6 +1099,15 @@ class Settings(BaseSettings):
     # writes it (`env_guard`, prefix `SEARXNG_`).
     # Fence: tests/unit/test_web_search_providers.py.
     searxng_url: str = ""
+    # WEB-7 (§3.2, §5.1): the web worker that renders a page with Chromium.
+    # `web_worker_url` is its base URL, for example `http://127.0.0.1:8096`.
+    # `web_worker_token` is its bearer. With either one empty, `fetch_page`
+    # renders nothing. Only the operator writes them (`env_guard`, prefix
+    # `WEB_WORKER_`). 🔴 The token is a secret: no log line, no tool output
+    # and no error text may carry it. The one reader is
+    # `acb_skills.web_render_client`. Fence: tests/unit/test_web_render.py.
+    web_worker_url: str = ""
+    web_worker_token: str = ""
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
@@ -2016,6 +2025,15 @@ class Settings(BaseSettings):
     # the edge both read it, so both units need the same value. 🔴 A change
     # on a box is gate `enforcement-flip`.
     agent_access_orgs: str = ""
+    # EA-17c-1 (D-EA-13, spec §10.8): the organizations where a member may
+    # change the grant of their own agent connection, through
+    # `PATCH /agent-access/connections/{id}`. The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps the route dark, so it answers 404. Only the gateway
+    # reads it, at each call, so a SIGHUP reload applies a change
+    # (`docs/flag_reload.md`). `acb_auth.agent_oauth.change_access_allowed`
+    # is the one reader. 🔴 A change on a box is gate `enforcement-flip`.
+    agent_change_access_orgs: str = ""
     # EA-6a (EA3-29, spec §6.1 and §9.2): the second switch, for the WRITE
     # tools. Default OFF. While it is false, branch 0 refuses every method
     # other than GET with 401, so the read tools work and no write lands.
