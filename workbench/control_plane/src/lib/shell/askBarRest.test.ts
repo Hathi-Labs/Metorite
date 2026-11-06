@@ -28,6 +28,7 @@ import {
   readFolds,
   restBoxes,
   scrollClears,
+  countsUnderBar,
   writeFold,
 } from "./askBarRest";
 
@@ -99,6 +100,18 @@ describe("content that can scroll clear of the bar is not in the way", () => {
   it("lets a control the scroll can lift past the bar stay", () => {
     expect(scrollClears(400, 870, 834)).toBe(true);
     expect(scrollClears(36 + ASK_LIFT_GAP, 870, 834)).toBe(true);
+  });
+
+  it("counts a field that a scroll could lift, because the member types there (task 1816)", () => {
+    // The inline reply composer: 41 px of scroll left, a field 25 px under the bar's top.
+    const field = { height: 16, bottom: 859, field: true, scroll: 400 };
+    expect(countsUnderBar(field, 834)).toBe(true);
+    expect(countsUnderBar({ ...field, height: 120 }, 834)).toBe(true);
+    // The same box as a button stays out: a scroll lifts it clear.
+    expect(countsUnderBar({ ...field, field: false }, 834)).toBe(false);
+    // A large non-field target stays out, and a button near the end of its scroll counts.
+    expect(countsUnderBar({ ...field, field: false, height: 120, scroll: 0 }, 834)).toBe(false);
+    expect(countsUnderBar({ ...field, field: false, scroll: 0 }, 834)).toBe(true);
   });
 
   it("counts a control near the end of its scroll", () => {

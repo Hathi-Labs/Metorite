@@ -22,7 +22,9 @@
  * covered a fifth of the button. Two kinds of target never count:
  *
  * - **Content that can still scroll clear.** The member scrolls it up from
- *   under the bar, as under any glass bar. Near the end of its scroll, when
+ *   under the bar, as under any glass bar. A field is not such content: the
+ *   member types where it is and does not scroll it away (the reply
+ *   composer of Email, owner report, 2026-11-06, task 1816). Near the end of its scroll, when
  *   the scroll left is too short to lift it past the bar, it counts. The
  *   measured case: a lane's "+ Add" with 17 px of scroll left, under a bar
  *   it needed 60 px to clear.
@@ -181,6 +183,21 @@ export function scrollClears(left: number, bottom: number, barTop: number): bool
   return left >= bottom - barTop + ASK_LIFT_GAP;
 }
 
+/**
+ * Does a control under the bar count? A control taller than `ASK_LARGE_TARGET`
+ * does not, unless it is a field. A control that a scroll lifts clear does not,
+ * unless it is a field: the member types in a field and keeps it where it is.
+ * `scroll` is the scroll left in the nearest scroller.
+ */
+export function countsUnderBar(
+  c: { height: number; bottom: number; field: boolean; scroll: number },
+  barTop: number,
+): boolean {
+  if (c.field) return true;
+  if (c.height > ASK_LARGE_TARGET) return false;
+  return !scrollClears(c.scroll, c.bottom, barTop);
+}
+
 /** How far the nearest scroller of `el`, or the page, can still scroll down. */
 function scrollLeft(el: Element): number {
   for (let node = el.parentElement; node; node = node.parentElement) {
@@ -215,8 +232,8 @@ export function controlsUnder(boxes: readonly Box[], skip: readonly Element[]): 
   const out: Box[] = [];
   for (const el of found) {
     const r = el.getBoundingClientRect();
-    if (r.height > ASK_LARGE_TARGET && !el.matches(FIELD)) continue;
-    if (scrollClears(scrollLeft(el), r.bottom, barTop)) continue;
+    const field = el.matches(FIELD);
+    if (!countsUnderBar({ height: r.height, bottom: r.bottom, field, scroll: field ? 0 : scrollLeft(el) }, barTop)) continue;
     out.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
   }
   return out;
