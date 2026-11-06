@@ -1749,7 +1749,15 @@ def _salutation_name(recipient_name: str) -> str:
         return tokens[idx] if (last_title.also_name and not lead) else ""
     for shown_text, h in lead:
         if h.follows == honorifics.SURNAME:
-            return f"{shown_text} {tokens[-1]}"
+            # The surname is the last token that is not a spoken suffix
+            # (garu, ji) or a generational mark (Jr, III).
+            end = len(tokens)
+            while end > idx and (
+                honorifics.find_suffix(tokens[end - 1]) is not None
+                or tokens[end - 1].rstrip(".").casefold() in {"jr", "sr", "ii", "iii"}
+            ):
+                end -= 1
+            return f"{shown_text} {tokens[end - 1]}" if end > idx else ""
     first = tokens[idx]
     if idx + 1 < len(tokens):
         s = honorifics.find_suffix(tokens[idx + 1])

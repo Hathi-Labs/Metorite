@@ -69,6 +69,11 @@ def test_a_title_alone_is_not_a_name(h) -> None:
         ("Ramesh Garu", "Ramesh Garu"),
         ("Vijay ji", "Vijay ji"),
         ("Shri Ramesh Garu", "Shri Ramesh Garu"),
+        ("Dr Ramesh Garu", "Dr Ramesh"),
+        ("Dr. Anil Mehta Jr", "Dr. Mehta"),
+        ("Prof. Jane Smith III", "Prof. Smith"),
+        ("Dr Garu", ""),
+        ("Dr. Jr", ""),
         ("Shri", ""),
         ("Dr.", ""),
         ("Kumari", "Kumari"),
@@ -121,11 +126,85 @@ def test_catalogue_rows_are_well_formed() -> None:
         assert hon.find_prefix(s) is None
 
 
+# Openers of _GREETING_START_RE that a catalogue spelling also spells. They are
+# greeting words, not a second title list. Each one needs a reason.
+# None collides today: no opener of _GREETING_START_RE (dear, hi, hello, hey,
+# greetings, respected, good ..., namaste, namaskar, namaskaram, namaskara,
+# vanakkam, hola, bonjour, salut, hallo, ciao) is a catalogue spelling. "sir"
+# is a suffix row, and it is not an opener. Add an entry here, with a reason,
+# only when a future opener collides.
+_OPENER_ALLOW: dict[str, str] = {}
+
+_REGEX_NOISE = re.compile(r"\\\.\??|[\^\$\(\)\?:\\]")
+
+
+def _norm(word: str) -> str:
+    return word.strip().casefold().rstrip(".")
+
+
+def _catalogue_spellings() -> set[str]:
+    return {_norm(s) for h in hon.HONORIFICS for s in h.spellings}
+
+
+def second_list_hits(src: str) -> set[str]:
+    """Catalogue spellings that a module spells in a string literal.
+
+    A literal counts when it, or one `|` alternative of it, equals a catalogue
+    spelling after case-folding and dropping a trailing full stop. Docstrings
+    are skipped."""
+    import ast
+
+    tree = ast.parse(src)
+    docs: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(
+                body[0].value, ast.Constant
+            ):
+                docs.add(id(body[0].value))
+    spellings = _catalogue_spellings() - set(_OPENER_ALLOW)
+    hits: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if id(node) in docs:
+            continue
+        for alt in node.value.split("|"):
+            cleaned = _norm(_REGEX_NOISE.sub("", alt))
+            if cleaned in spellings:
+                hits.add(cleaned)
+    return hits
+
+
+_MUTATIONS = {
+    "regex_new_titles": (
+        "import re\n"
+        'X = re.compile(r"^(tmt|hafiz|sushri|maulana|haji|ca|cs)\\.?$")\n'
+    ),
+    "tuple_of_titles": 'X = ("tmt", "hafiz", "sushri")\n',
+    "old_list_back": (
+        "import re\n"
+        'X = re.compile(r"^(mr|mrs|ms|mx|dr|er)")\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_MUTATIONS))
+def test_fence_fails_on_a_second_title_list(name: str) -> None:
+    assert second_list_hits(_MUTATIONS[name]), name
+
+
+def test_fence_expected_hits() -> None:
+    assert second_list_hits(_MUTATIONS["regex_new_titles"]) == {
+        "tmt", "hafiz", "sushri", "maulana", "haji", "ca", "cs"
+    }
+    assert second_list_hits(_MUTATIONS["old_list_back"]) == {"mr", "mrs", "ms", "mx", "dr", "er"}
+
+
 def test_drafter_keeps_no_second_title_list() -> None:
     """Fence: the drafter reads titles from acb_common.honorifics only."""
     src = Path(dr.__file__).read_text(encoding="utf-8")
     assert "from acb_common import honorifics" in src
     assert "_HONORIFIC_RE" not in src
-    # No title spelled in a literal, such as a tuple or a regex alternation.
-    for word in ("shri", "smt", "thiru", "janab", "pandit", "sardar", "adv", "prof"):
-        assert not re.search(rf"""["'|(]{word}["'|)]""", src, re.IGNORECASE), word
+    assert second_list_hits(src) == set()
