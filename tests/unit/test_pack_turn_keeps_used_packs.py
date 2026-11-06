@@ -86,15 +86,18 @@ from tests.unit.test_load_skill_tools import (
     _tool_result,
     orchestrator,  # noqa: F401 - a pytest fixture
 )
-from tests.unit.test_loader_replaces_handoff import _fake_run_agent
+from tests.unit.test_loader_replaces_handoff import _base, _fake_run_agent
 from tests.unit.test_pack_room import _frame, _projects_real, _stub_owners
 
 EVERY = frozenset(sf.pack_slugs())
 PA = "projects-assistant"
 #: The specialist tools that the real base holds, one for each owner.
 SPECIALISTS = {PA: 1, "email-assistant": 1, "crm-assistant": 1}
+#: The base of the orchestrator on production (``base_tools``). A test build
+#: of the agent counts fewer tools, and at that count a third pack still fits.
+PROD_BASE = 56
 #: The base of a real run with the load tool (``test_pack_room``: about 56).
-BASE = 57
+BASE = PROD_BASE + 1
 CORE, BULK, PLAN, STRUCTURE = (
     "projects", "projects-bulk", "projects-plan", "projects-structure")
 #: Words with no pack word, so only a sticky pack or the surface loads a pack.
@@ -414,9 +417,14 @@ async def test_the_owner_is_reached_and_no_specialist_or_route_line_stays(
     (the fault of 2026-11-02). Mutation: read the reach with no spare pack in
     ``plan_loader`` -> the specialist stays -> red."""
     _stub_owners(monkeypatch)
+    _base(monkeypatch, PROD_BASE)
     await _seed(*seeds)
     applied = await _apply(orchestrator, words, surface)
-    assert set(applied.record.slugs) == want, applied.record.slugs
+    slugs = applied.record.slugs
+    assert set(slugs) == want, slugs
+    total = BASE + sum(_size(s) for s in slugs)
+    without = tp.plan_loader(EVERY, slugs, current=total, removable={PA: 1})
+    assert PA not in without.via_loader, "non-vacuity: only a spare pack reaches the owner"
     _assert_reached(orchestrator, applied)
     assert tp._PROJECTS_LOAD_LINE in orchestrator[0].default_options["instructions"]
     if words == A_TASK:
@@ -495,6 +503,7 @@ async def test_row_163728_create_task_loads_in_the_main_chat_and_the_chat_keeps_
     Mutation: keep the offer as it was, with no words pack in ``spare`` -> no
     load tool -> red."""
     _stub_owners(monkeypatch)
+    _base(monkeypatch, PROD_BASE)
     await _seed((CORE,))
     applied = await _apply(orchestrator, EMAIL_BULK)
     assert set(applied.record.slugs) == {"email", BULK}, applied.record.slugs
@@ -523,6 +532,7 @@ async def test_row_162253_the_assembled_turn_says_that_projects_left_and_to_load
     record in ``_apply_tool_packs`` -> the line says not to call the tools ->
     red."""
     _stub_owners(monkeypatch)
+    _base(monkeypatch, PROD_BASE)
     await _seed((CORE,))
     applied = await _apply(orchestrator, EMAIL_CRM)
     assert set(applied.record.slugs) == {"email", "crm-records"}, applied.record.slugs
