@@ -43,7 +43,7 @@ This spec does not add a second app model. It grows the AI Studio package (`ai_s
 5. **No app-local look.** A package names no colour, font or pixel size (`ai_studio.md` §1.2).
 6. **No move without consent.** The AI never moves a stable region (§9.2).
 7. **No schema change for each tenant.** A field extension is a row, never a column (§8.3).
-8. **No cross-company marketplace.** That needs its own spec.
+8. **No cross-company marketplace.** That needs its own spec. A `system` install from reviewed repo code is not a marketplace (D187, `agent_sandbox.md` §6.8).
 
 ---
 

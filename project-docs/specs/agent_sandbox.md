@@ -3,38 +3,130 @@
 <!-- ste-tier: strict -->
 
 - **Status:** ACTIVE, 2026-10-27. **D130** answers every owner call of §14,
-  and takes each recommendation. Nothing built. SBX-1 is the first slice.
-- **Verified against code on 2026-10-19** at `main` `daad004f9`. Re-verify
-  every anchor at dispatch.
+  and takes each recommendation. **D187** amends the spec on 2026-11-07
+  (§0a): a user tool is an AI Studio package. Nothing built. SBX-1 is the
+  first slice.
+- **Verified against code on 2026-10-19** at `main` `daad004f9`. The anchors
+  of D187 were read on 2026-11-07 at `main` `f2671c706`. Re-verify every
+  anchor at dispatch.
 - **Board row:** **WS-TO**, Metorite epic 521 (D130). The work extends the
   one sandbox broker of D83, so `maf_coding_engine.md` (WS-43) still owns the
-  broker.
+  broker. Metorite task 1962 is SBX-0b, the D187 amendment.
 - **Asked by:** the owner, 2026-10-18 and 2026-10-19, in chat. The owner
   asked whether the AI may write code for a function that no tool covers. The
   owner chose **"A full capable sandbox"**, and asked us to check
-  `perplexityai/SPACE` for it.
+  `perplexityai/SPACE` for it. On 2026-11-06 the owner asked for repair,
+  reuse and platform adoption, and accepted each recommendation on
+  2026-11-07 (D187).
 - **Owner tasks:** #234 to #242 in the Metorite project. §1 maps each one to
   a section.
 - **Reads:** D12, D15, D16, D56, D58, D64, D83, D85, D86, D90, D93, D97,
-  D99, D100, R5 to R8.
+  D99, D100, D126, D127, D139, D146, D147, D180, D187, R5 to R8.
 - **Owns:**
-  - tool-gap detection and the user-tool registry,
+  - tool-gap detection, and the tool lifecycle on the one Studio library
+    (D187),
   - the run capability and the sandbox API door,
-  - the build, smoke and run steps of a user tool,
+  - the build, smoke, run and repair steps of a user tool,
   - the review controls of a stored tool,
   - the choice of sandbox backend.
 - **Does not own:**
   - the broker, the image, the egress proxy and the host rules
     (`maf_coding_engine.md`),
+  - the package store and its versions (`ai_studio.md` A3 and A4, D187),
+  - installs, scopes and promotion (`package_host.md`, D187),
+  - the tool failure log (Metorite task 1793, no spec yet, D187),
   - the confirmation card (`projects_ai_chat.md` §5),
   - branch 0 and the route allowlists (`external_agent_access.md` §10.1),
   - credit prices (`credit_pricing.md`),
   - the box (`box_hardening.md`).
 
 **Ids in this spec.** Every id carries the `SBX-` prefix (R2). The slices
-are `SBX-0` to `SBX-11`, the fences `SBX-F1` and up, the owner gates
-`SBX-G1` and up, and the owner calls `SBX-Q1` and up. The owner's approval
-records each accepted call as a numbered entry in `work_plan.md` §3.
+are `SBX-0`, `SBX-0b` and `SBX-1` to `SBX-17` (D187). The fences are
+`SBX-F1` and up, the owner gates `SBX-G1` and up, and the owner calls
+`SBX-Q1` and up. The owner's approval records each accepted call as a
+numbered entry in `work_plan.md` §3.
+
+---
+
+## 0a. Amendment, 2026-11-07 (D187)
+
+**The owner's request, 2026-11-06, in chat.** The assistant builds a tool
+from the chat when no tool exists. It repairs a tool that fails, and uses the
+new version. Each created or repaired tool stays reusable in the
+organization.
+
+A useful tool can serve all of Metorite. This matters most when a built-in
+tool fails, and the fix of one member could fix it for everyone. The owner
+accepted each recommendation below on 2026-11-07: "go ahead with your
+recommendation". `work_plan.md` §3 records it as D187.
+
+### The five decisions
+
+1. **A sandbox per chat thread, and short-lived (§6.2).** No member gets a
+   sandbox of their own. The broker key stays (organization, `user-tool`,
+   thread).
+   - A tool version is an immutable stored copy. A container never holds a
+     tool between runs.
+   - Why: a sandbox that lives long gathers data, and an injected prompt
+     could leave something behind in it. Idle containers cost CPU. Sharing
+     works by a version, not by a machine.
+2. **One library: a user tool is an AI Studio package (§7, §8).** Its code
+   is a member-authored logic module (`ai_studio.md` B5), and the catalog
+   serves it as an action.
+   - So a tool gets the scopes of the package host and the promotion of the
+     same install (`package_host.md` §6).
+   - The tables `user_tools` and `user_tool_versions` go. A version is a row
+     of `app_versions`, and its five files live in a new column of that row
+     (§7.2).
+   - Before any build, `find_tool` asks whether catalog actions can do the
+     need with no code (§6.1).
+   - A holder of `studio:publish` reads the code and approves one version
+     before another member can run it (§8.1).
+3. **Repair at three levels (§6.7).** Three signals start a repair, and one
+   failed run gets at most 1 repair build.
+   - (a) The member's own tool fails. The assistant builds the next version,
+     runs it, and keeps it only if that run succeeds.
+   - (b) An installed tool of another member fails. The same steps, and the
+     new version runs for this member only.
+   - (c) A built-in tool fails. The assistant never changes platform code at
+     run time. It may build a private workaround, and it files the error to
+     the tool failure log (task 1793).
+4. **Platform adoption only through reviewed repo code (§6.8).**
+   - A tool serves all of Metorite only as first-party code in the
+     repository, after a PR and a review. A release then ships it as a
+     `system` install.
+   - Nobody copies a running tool from one organization into another. The
+     source organization must consent, because the code is theirs.
+   - Only counts cross tenants: runs, the success rate and the number of
+     organizations with the same gap.
+5. **Production on a dedicated sandbox box (§4.6).**
+   - A separate small VPS runs the Docker backend of the broker under gVisor
+     (`runsc`). Only a private network reaches it. The backend value is
+     `docker-remote`.
+   - Member data stays with the hosting provider that processes it today. No
+     new processor joins.
+   - The `e2b` backend stays the alternative, after a data processing
+     agreement (D130.7). This amends D130.1 for production only. The dev
+     stack keeps the local Docker backend.
+
+### Building blocks, speed and order
+
+- **Building blocks (§6.9).** The image holds 24 pinned Python packages, and
+  nothing installs at run time. SBX-13 adds one door client to the image.
+  The build runs on the one coding harness (D139, CA-14), and the model is a
+  setting.
+- **Speed (§6.10).** Reuse first, no install at run time, and one warm
+  container for each thread.
+- **The order (§12).** Phase 1 runs no code: SBX-1 as reshaped, and the
+  spec of the tool failure log. Phase 2 builds the door, the build and the
+  run on the dev stack. Phase 3 is production on the dedicated box, after
+  the owner gates.
+
+### What changes in this spec
+
+The header, §0, §2, §3.1, §3.2, §4.4, §6.1 to §6.5, §7, §8, §9.2, §11, §12,
+§13, §14 and §16 change. §4.6 and §6.7 to §6.10 are new. Each changed
+paragraph carries "(D187)". Text with no mark stands as D130 left it.
 
 ---
 
@@ -57,12 +149,21 @@ own tools and the registry. It builds a tool only when both come back empty.
 A tool that passed its smoke test and its first real run becomes a private
 registry row. Another member can use it only after a person approves it.
 
+**(D187) The registry is the Studio library.** A stored tool is a private
+AI Studio package, and a version is a row of `app_versions` (§7). Before a
+build, the assistant also checks whether Studio can do the need with no
+code. A tool that fails gets one repair (§6.7).
+
 **Runtime.** Slice 1 runs on the broker we have, under gVisor where the box
 has it, with no spend and no third party. SPACE cannot run on our boxes, and
 it is 18 days old. Scale moves user code off the gateway box to hosted
 microVMs with an E2B-compatible API. SPACE's E2B wrapper is the exit to a
 self-hosted microVM host later, with the same SDK. §4 gives the comparison,
 and §14 lists the calls that cost money.
+
+**(D187) Production runs on a dedicated sandbox box first.** A separate
+small VPS runs the broker's Docker backend under gVisor (§4.6). Hosted
+microVMs stay the alternative.
 
 ---
 
@@ -111,6 +212,9 @@ row is rebuilt.
 | Credits | `apps/services/customer_console/customer_console/store.py:1112`, `record_usage`, and `credits.py:606`, `decide_spend` | `usage_event` has `task`, `quantity` and `unit`. `task_catalog` is an allowlist with no sandbox task. `POST /usage/record` passes token fields only | Live for AI calls. Sandbox time has no meter |
 | The SSRF guard | `apps/services/gateway/gateway/outbound_guard.py` | One `is_global` check with a pinned address, for the gateway's own outbound calls | Live |
 | A user-tool registry | — | No `user_tool`, `custom_tool` or per-member tool table exists | **Absent** |
+| The Studio package store (D187, read 2026-11-07) | `gateway/studio/packages_store.py`, tables `apps` and `app_versions` | A package is a row of `apps` with `format = 'manifest'`. `publish_version` (`:709`) and `rollback` (`:752`) append `app_versions` rows and never change one | Built, dark (`ai_studio.md` A3, A4). The library of D187 |
+| Installs and scopes (D187, read 2026-11-07) | `gateway/package_host/store.py`, table `package_install` (`324_package_registry.sql`) | One install of one package at `private`, `group` or `org`. A `system` package is a file and has no row | Built, dark (PKG-4, PKG-5b) |
+| The share permission (D187, read 2026-11-07) | `acb_auth/permissions.py:198` | `studio:publish` is a capability. No code names `tools:approve` | Built. No route reads it yet (J1-1) |
 
 **What the table shows.** The sandbox is built and dark, and production
 cannot run it yet. Three pieces block a production run: the Docker socket
@@ -126,7 +230,8 @@ waits on those three for production.
 
 1. Tool-gap detection: the checks that must come back empty before a build
    starts (#234).
-2. The user-tool registry: four tenant tables and one lookup table (#235).
+2. The user-tool registry: the Studio package store, two tenant tables and
+   one lookup table (#235, D187).
 3. A sandbox for one build or one run, from the existing broker, with limits
    (#236).
 4. The build: code, pinned packages and a smoke test, in the sandbox (#237).
@@ -138,6 +243,9 @@ waits on those three for production.
 10. The run capability and the sandbox API door (§5).
 11. A backend seam inside the broker, so a run can go to a hosted microVM
     service later (§4.4).
+12. Repair of a tool that fails, at three levels (§6.7, D187).
+13. The one path from a tool of a tenant to a platform tool (§6.8, D187).
+14. The dedicated sandbox box for production (§4.6, D187).
 
 ### 3.2 Non-goals
 
@@ -148,8 +256,15 @@ waits on those three for production.
 - **Code that runs with no person to ask.** A workflow or a background job
   cannot build a tool, and cannot pass a write card. A stored tool may run
   there only for reads, after SBX-Q5.
-- **A tool marketplace across organizations.** A tool never leaves its
-  organization.
+- **A tool marketplace across organizations (D187).** A running tool never
+  leaves its organization, and nobody copies it into another one. A tool
+  reaches every organization only as reviewed first-party code in the
+  repository, with the consent of the source organization (§6.8). That is a
+  `system` install at a release, not a marketplace.
+- **A sandbox for each member (D187).** A sandbox serves the steps of one
+  chat thread and then stops (§6.2).
+- **A change to platform code at run time (D187).** A failed built-in tool
+  gets a reviewed PR, never a live patch (§6.7, level c).
 - **P5-c, P5-d, P5-b.3 and the pooled cutover.** D83 keeps them parked. A
   user-tool run is a T2 container that runs one command set. It is not an
   agent run in a container.
@@ -247,6 +362,11 @@ package, and WS43-F1 grows to say so (SBX-F11). The broker's interface of
 `maf_coding_engine.md` §7.1 stays the same: `acquire`, `exec`, `host_files`,
 `grant_egress`, `revoke_egress`, `release` and `sweep`.
 
+**(D187) A third value, `docker-remote`.** It drives the Docker daemon of
+the dedicated sandbox box of §4.6, and it is the first choice for
+production. `e2b` stays the alternative. The interface above does not
+change.
+
 **What the hosted backend changes.**
 
 - The workspace is no longer a bind mount. The broker uploads the inputs and
@@ -270,6 +390,61 @@ Look again when all three hold:
 
 Then SBX-11 runs our escape probes and the egress probes of WS43-F5 against
 a SPACE host through ECW, before any tenant run goes there.
+
+### 4.6 Production: a dedicated sandbox box (D187)
+
+**The recommendation.** Production runs user tools on a separate small VPS.
+That box runs the Docker backend of the broker under gVisor (`runsc`). Only
+a private network reaches it. The gateway box runs no member code, which is
+the aim of D127.2.
+
+**This amends D130.1 for production only.** The dev stack and the `e2b`
+alternative keep D130.1 as it is.
+
+**Why this box comes before E2B.**
+
+1. Member data stays with the hosting provider that already processes it.
+   No new processor joins, so no new data processing agreement is due
+   (D130.7).
+2. The systrap platform of gVisor needs no KVM, so a plain KVM guest runs it
+   (§4.1).
+3. User code no longer shares the 2 vCPU of the gateway (§4.3).
+4. The broker is still one module. Only the place of the daemon changes.
+
+**How the broker drives the box.** One broker, and no second sandbox seam.
+
+- `sandbox_backend=docker-remote` points the `docker` CLI child at the
+  daemon of the box. `DOCKER_HOST` is already one of the names that a
+  `docker` child gets (`acb_common/child_env.py:169`, `DOCKER_NAMES`).
+- The daemon listens on the private network only, through `ssh://` or TLS
+  with a client certificate. The key lives with the broker and goes to the
+  `docker` child only.
+- A remote daemon cannot see a bind mount of the gateway box. The broker
+  binds the run-data dir today (`sandbox_broker.py:403`). On this backend it
+  moves the inputs in and the outputs out through the daemon, as §4.4 does
+  for `e2b`. SBX-15 picks the mechanism, for example `docker cp` into a
+  volume. The safe opener still guards each host write.
+- The egress proxy of WS-43g runs on the sandbox box. It forwards the door
+  name `metorite-api.sandbox` to the gateway over the private network. So
+  the door needs no public name.
+- The box keeps no tenant data at rest. A run-data dir lives for one run, as
+  on the gateway box.
+- Production allows `runsc` only on this box (§13). The caps of §5.6 take
+  the size of the box in SBX-15.
+
+**BH-3 still binds.** The key that reaches the box lives in the broker's
+own unit (BH-3, gate WS43-G1), not in the gateway process. So SBX-9 still
+waits on WS43-G1.
+
+**The dev stack** keeps the local Docker backend. SBX-15 tests
+`docker-remote` against a second local daemon.
+
+**The alternative.** The `e2b` backend of §4.4 (SBX-10) stays. It runs
+tenant data only after a data processing agreement and a region check
+(D130.7).
+
+**What it costs.** The owner picks the plan and buys the box (SBX-G9). This
+spec quotes no price.
 
 ---
 
@@ -464,24 +639,41 @@ radius. Only the card stops a write the member did not mean.
 the build card.
 
 **`find_tool(need)`.** A new platform tool on the general agent
-(`orchestrator`, D99). It runs four checks in this order:
+(`orchestrator`, D99). (D187) It runs five checks in this order:
 
-1. **The registry.** A lexical search over the `name` and `description` of
-   the tools the member can see (§7), with `status = 'active'`. The search
-   uses Postgres full text on one GIN index. At most 5 candidates.
+1. **The library (D187).** A lexical search over the name and the
+   description of the Studio packages that the member can see. The member
+   owns some of them. The others come from the installs that reach the
+   member (`package_host.md` §5.2), or are `system` packages. A paused or
+   archived install does not count. The search uses Postgres full text at
+   query time, with at most 5 candidates, and a `system` package first.
 2. **The run's own tools.** The names and descriptions of the tools in the
    run's scope after injection, and the skills catalog of WS-23.
-3. **One typed question** on `tier-decide` (D93, D100): "Can one of these
-   tools do this need? Answer with its name, `none` or `unsure`."
-4. **The record.** One `tool_gaps` row with the candidates, the answer and
+3. **The compose check (D187).** It reads at most 20 rows of the Studio
+   action catalog that the member can call. A lexical match on the title
+   picks them (`catalog_rows` at `routes/studio/actions.py:149`, and
+   `package_rows` at `:203`). Can a Studio skill or workflow of these
+   actions do the need, with no code? Studio builds those with no sandbox
+   (`ai_studio.md` §19.3, kind `none`).
+4. **One typed question** on `tier-decide` (D93, D100). (D187) It asks:
+   "Can one of these tools do this need? Or can these catalog actions do it
+   with no code? Answer with a tool name, `compose`, `none` or `unsure`."
+   One question serves checks 1 to 3, so the lookup costs one call to
+   `tier-decide`.
+5. **The record.** One `tool_gaps` row with the candidates, the answer and
    the outcome.
 
 | Answer | What `find_tool` returns | What the assistant does |
 |---|---|---|
 | A platform tool | `existing`, with its name | Uses that tool |
-| A stored tool | `reuse`, with its id and version | Calls `run_tool` (§6.4) |
+| A stored tool | `reuse`, with its package id and version (D187) | Calls `run_tool` (§6.4) |
+| `compose` (D187) | `compose`, with the catalog action ids | Offers a Studio skill or workflow. No sandbox starts |
 | `unsure` | The candidates, and no gap id | Tries a candidate first, or asks the member |
 | `none` | `no_match`, with a gap id | May offer a build |
+
+**A failed built-in tool (D187).** When a platform tool failed in this run,
+the assistant passes its name as `failed_tool`. The checks skip that tool,
+and the gap row names it (§6.7, level c).
 
 **The build card.** Before a build, the member sees one card:
 
@@ -513,12 +705,24 @@ gap id that is not `no_match`, not from this run, or older than 30 minutes
   At a cap, the tool answers "the sandbox is busy, try again in a minute".
 - **No fallback to the host,** as the broker's rule 14 says.
 
+**Short-lived, one for each thread (D187).** No member has a sandbox of
+their own. A container serves the steps of one thread: the build, the smoke
+test, the run and a repair. The reaper of the broker stops it after
+`sandbox_idle_ttl_seconds` (600 s, `settings.py:1678`) with no step. It never
+lives past `sandbox_max_lifetime_seconds` (7200 s, `:1679`). The container
+never holds a tool between runs, because each run writes the stored version
+into a fresh run-data dir (§6.4).
+
 ### 6.3 Build and smoke test (#237)
 
 **The build** is a MAF harness session, the same as `code_task` on MAF
 (`maf_coding_engine.md` §7.6). It gets `run_command`, the file tools over the
 run-data dir, and the `build` profile. It must write one package in the MAF
-skill format, so the existing `SkillsProvider` can load it:
+skill format, so the existing `SkillsProvider` can load it.
+
+(D187) The session runs on the one coding harness of CA-14 (D139), with the
+profile `tool_builder`. The model is a setting (§6.9). The five files become
+the files of one `app_versions` row (§7.2):
 
 | File | What it holds |
 |---|---|
@@ -547,6 +751,12 @@ fails, and the gap row reads `build_failed`. The gateway stores nothing.
   under the `run` profile.
 - A first run after a build uses the package from the run-data dir. A later
   run materialises the stored version into the run-data dir.
+- (D187) A `tool_id` is the id of the package, `apps.id`. A later run reads
+  the files of the version that the caller runs (§7.2, §8.2). It writes them
+  into a fresh run-data dir.
+- (D187) The writes that §5.3 holds for a card are the proposed writes of
+  the B4 and B5 contract (`ai_studio.md` §3.7). The platform applies each
+  one only after the member approves it.
 - Writes go through cards (§5.3).
 - The result is the files in `outputs/` and a JSON summary. The chat shows
   the files as artifact cards, as S8 does (`projects_ai_chat.md` §14). The
@@ -562,8 +772,15 @@ Success means all three:
 2. The first real run exited 0, and its output matched the schema.
 3. No door call answered 5xx, and no write that the member approved failed.
 
-Then, at the end of that run, the gateway writes the `user_tools` row and
-its first `user_tool_versions` row in one transaction.
+(D187) Then, at the end of that run, the gateway writes the tool into the
+one library, in one transaction, through `packages_store.py`:
+
+- a private package (`create_package`), whose manifest names the logic
+  module (§7.1),
+- version 1 with its five files (`publish_version`, and the files of §7.2).
+
+The owner runs it with no install, as the author of a package does. A share
+is an install (§8).
 
 **Before that, nothing is kept.** Until then, the package lives only in the
 run-data dir, which the host deletes at the end of the run
@@ -573,7 +790,8 @@ no blob. Only its `tool_gaps` row and its `user_tool_runs` rows stay.
 **The member has the last word.** The result card shows "This is wrong" for
 24 hours. If the member presses it, the gateway deletes the tool, while it
 still has one version and no run by another member. The gap row then reads
-`build_failed`.
+`build_failed`. (D187) The delete is the delete path of the package store
+(`packages_store.py`, A5c-1).
 
 A new version follows the same rule. The member asks for a change, the build
 makes a new package, and the new version row lands only after its first real
@@ -587,66 +805,262 @@ run succeeds.
   function, because each function costs context on every turn (WS-23).
 - `run_tool` reads the version to run from the pin rule of §8.2.
 
+### 6.7 Repair (D187)
+
+**The rule.** When a tool fails, the assistant reads the error, builds the
+next version, runs it, and keeps it only if that run succeeds. The rules of
+§6.5 bind each new version. A repair never widens a tool.
+
+**The signals.** Three signals start a repair, and nothing else does:
+
+1. The run exits with a code that is not 0.
+2. The output does not match the output schema of `tool.json`.
+3. A door call answers 5xx.
+
+A refusal is not a signal. A 403 for a declined card, a 404 and a 429 are
+answers. A timeout and a limit kill are not signals in this version, and the
+assistant reports them to the member. A door 5xx can be a fault of the
+route, so the assistant also files it to the failure log (level c).
+
+**The cap.** One failed run gets at most **1** repair build. That build has
+the 3 smoke rounds of §6.3, inside the same build budget of 600 seconds. If
+the new version fails too, the assistant stops and tells the member what
+failed. The setting is `user_tool_repairs_per_run`, default 1 (SBX-F17). It
+matches `MAX_MUTATION_ATTEMPTS = 1` of self-mutation
+(`orchestrator/mutation.py:45`).
+
+**What the repair reads.**
+
+- The error class, the exit code and the last 4 KB of standard error.
+- The `user_tool_runs` row of the failed run (§7.3), and the files of the
+  version.
+- The error text reaches the model inside the untrusted frame
+  (`acb_skills/untrusted.py`), because input data can shape it.
+- The smoke test of the repair also runs the input of the failed run, with a
+  read-only capability (§5.3).
+
+**A repair keeps the contract.** The new version keeps the input schema, the
+output schema, the read scopes and the write scopes of the version that it
+repairs. A change to any of them is a new version that the owner asks for.
+So a repair never needs a new review of its scopes.
+
+**Writes that landed.** A run can write before it fails. The run of the new
+version is a new run, and each write waits for a new card (§5.3). That card
+names the writes of the failed run that landed. So the member does not
+approve one write twice.
+
+**The three levels.**
+
+| Level | What failed | What the assistant does | Who runs the new version |
+|---|---|---|---|
+| **(a)** | The member's own tool | Builds version N+1 in the sandbox, runs it, and keeps it only on success | The owner. `apps.live_version` moves to N+1 |
+| **(b)** | An installed tool of another member | The same steps. Version N+1 lands in the same package, as a repair of this member | This member only, through a private pin (§8.2). Each other member keeps the approved version until a holder of `studio:publish` moves the pin |
+| **(c)** | A built-in platform tool | Changes no platform code at run time. May build a private workaround now, through `find_tool` with `failed_tool` (§6.1). Files the error to the tool failure log | This member, until the fix ships |
+
+**Level (b) in the store.** Today `packages_store.py` writes only the
+packages of their owner. SBX-12 adds one path: a member who runs an
+installed package may add a repair version, for their own use. The
+version row names that member in `published_by`. The `live_version` of the
+owner and each install keep their version. This path is the one exception to
+D180.2, and one function of the store holds it.
+
+**Level (c), the report.** Metorite task 1793 owns the tool failure log, and
+it has no spec yet. SBX-14 waits for that spec. A report holds:
+
+- The name of the built-in tool, the error class and the run id.
+- The gap category, and whether a workaround worked.
+- The error text and the workaround code, only with the consent of the
+  member. One consent covers one report (SBX-Q8, as D126 does for a chat).
+
+**Level (c), the fix.** A coding agent turns a report into a PR on the
+built-in tool, under the D145 loop and its review. The fix reaches every
+organization at the next daily release. Then the gateway archives each
+workaround install that names the fixed report, through the disposal path
+(`package_host.md` §5.3). The member gets a note in the bell.
+
+**Not self-mutation.** `attempt_self_mutation` (`orchestrator/mutation.py:345`)
+serves the first-party organization only (`mutation.py:259`). It changes
+platform code, and a person approves its push. A tenant run never calls it.
+Level (c) uses the failure log and the PR loop.
+
+### 6.8 Platform adoption (D187)
+
+**The rule.** A tool serves all of Metorite only as first-party code in the
+repository: a Studio B4 module (`ai_studio.md` §3.7) or a platform tool. It
+goes through a PR and the review of its risk tier. A release then ships it
+as a `system` install, which is a file of `package_host.md` §3.3.
+
+**What never happens.**
+
+- Nobody copies a running tool from one organization into another.
+- No code of a tenant enters the repository without the consent of that
+  organization. The code is theirs, and it can hold their business rules.
+- No text, code or data of a tenant reaches another tenant or the counts.
+
+**The signals.** Only counts cross tenants. They rank the candidates:
+
+- the runs and the success rate, by gap category,
+- the number of organizations with a gap in the same category,
+- for a built-in tool, the failures by tool name and error class.
+
+A category is a slug from the fixed list of §7.4, so it carries no tenant
+text. The counts sum across organizations and name none.
+
+**Who sees the counts.** A platform admin, in one view of the Operator
+Console. The view shows counts only, as §9.2 says (D64.5). SBX-16 builds it
+after SBX-5, so it is a later slice.
+
+**The path.**
+
+1. The counts name a candidate category.
+2. A Metorite engineer writes the first-party module from the need alone. To
+   start from the tool of a tenant, the engineer needs consent first.
+3. An owner of the source organization approves one card, for one tool and
+   one version (SBX-Q9, SBX-17). The PR names that consent record.
+4. The PR follows the D145 loop. The daily release ships the `system`
+   install.
+5. The tool of the source organization runs until its owner archives it.
+   `find_tool` ranks the `system` package first (§6.1).
+
+### 6.9 Building blocks for the model (D187)
+
+**The image.** `apps/services/orchestrator/sandbox/requirements.in` names 24
+packages. `requirements.txt` beside it pins each one with a hash.
+
+| Set | Packages |
+|---|---|
+| Data, spreadsheets, charts and simple PDFs | pandas, numpy, openpyxl, matplotlib, pypdf, fpdf2, markdown, tabulate, pyyaml, python-dateutil, requests |
+| Business documents | python-docx, python-pptx, xlsxwriter, reportlab, pdfplumber, pillow |
+| Analysis and charts | scipy, seaborn, networkx |
+| HTML, XML and templates | beautifulsoup4, lxml, jinja2 |
+| The data toolkit | duckdb. Only `sandbox/data_engine.py` imports it |
+
+**Nothing installs at run time** (`requirements.in:16`). A build may install
+an allowlisted package through the egress proxy, under the `build` profile
+(§5.5). That proxy is WS-43g, and it is spec only. `ai_studio.md` §19.5 holds
+the rules of such an install (B8).
+
+**The door client (new).** One small Python module in the image,
+`metorite_door`. A tool imports it to call Metorite as the member.
+
+- It reads `METORITE_API_TOKEN` and calls the fixed door name of §5.2.
+- It reads a list page by page, at most 100 rows each.
+- It handles the answers of §5.3: a held write, a 403 and a 429.
+- It uses `requests`, which the image holds, so it adds no package.
+
+So a tool never writes HTTP by hand, and the model has less code to write.
+SBX-13 adds it beside `sandbox/data_engine.py`, with the same read-only copy
+(`Dockerfile.coding-sandbox:100`).
+
+**The harness and the model.** The build runs on the one coding harness
+(D139, CA-14), with the profile `tool_builder`. The model is a setting,
+`user_tool_build_model`. It holds a Router tier name, as `mutation_model`
+does (`settings.py:1579`). Its default is an Opus or Sonnet class model.
+
+### 6.10 What makes it fast (D187)
+
+1. **Reuse first.** `find_tool` returns a stored tool or a path with no
+   code before any build. One decide question serves the checks (§6.1).
+2. **No install at run time.** The image holds the 24 packages (§6.9).
+3. **One warm container for each thread.** The build, the smoke test, the
+   run and a repair use the same container (§6.2).
+4. **The door client.** The model has less code to write, so a build needs
+   fewer smoke rounds (§6.9).
+5. **A repair keeps the contract.** No scope review waits (§6.7).
+6. **The image is on the box first.** SBX-15 pulls it by digest when the box
+   starts.
+
 ---
 
 ## 7. The registry schema (#235)
 
-Five new tables. Each tenant table follows R5a: `organization_id`, the
-generated RLS migration, and `tests/unit/test_tenant_coverage.py`. The
-migration is expand-only (R6): new tables, nullable columns or columns with
-defaults, and no change to an existing table. Its number is the next free
-number at build time (R1). Every query runs against a real Postgres as the
-NOBYPASSRLS app role before it is believed (R8).
+**(D187) One library.** A user tool is a Studio package, so the package
+store of `ai_studio.md` A3 and A4 is its registry. This spec drops its own
+tables `user_tools` and `user_tool_versions`, and nobody built either. It
+keeps three new tables: `user_tool_runs`, `tool_gaps` and
+`sandbox_capabilities`. It adds two nullable columns and one trigger to
+`app_versions` (§7.2).
 
-### 7.1 `user_tools` — one row for each stored tool
+Each tenant table follows R5a: `organization_id`, the generated RLS
+migration, and `tests/unit/test_tenant_coverage.py`. (D187) Each migration is
+expand-only (R6): new tables, nullable columns or columns with defaults, and
+no change to an existing row. Its number is the next free number at build
+time (R1). Every query runs against a real Postgres as the NOBYPASSRLS app
+role before anyone trusts it (R8).
+
+### 7.1 A tool is a Studio package (D187)
+
+A tool is one row of `apps` with `format = 'manifest'`
+(`infra/postgres/322_apps_format.sql`). `gateway/studio/packages_store.py` is
+its one writer. The manifest names one logic module with `runtime.kind`
+`sandbox`, or `packages` for an install at build time (`ai_studio.md` §19.3,
+B7). The module entry holds the input schema, the output schema and the
+scopes. So the catalog, the validator and the reviewer read them with no
+code.
+
+Each column of the dropped `user_tools` table has a home:
+
+| Was in `user_tools` | Now |
+|---|---|
+| `slug`, `name`, `description`, `owner_email` | The same columns of `apps` |
+| `visibility` | The scope of each install: `private`, `group:<slug>`, `org` or `system` (`package_host.md` §6.1) |
+| `status` | `apps.status`, and the `state` of each install: `active`, `paused` or `archived` |
+| `latest_version` | `apps.live_version`, the pointer of the owner |
+| `org_version` | `package_install.version` of the group or org install |
+| `approved_by`, `approved_at` | The approval record of `ai_studio.md` J2 and `package_host.md` PKG-11 |
+| `disabled_by`, `disabled_at`, `disabled_reason` | An install in `paused`, and its audit row with the reason |
+| `last_run_at` | The newest `user_tool_runs` row of the package |
+| `search` | Postgres full text at query time, over the packages that the member can see. No index until a measurement asks for one |
+
+### 7.2 A version and its files (D187)
+
+**A version is a row of `app_versions`** (`infra/postgres/114_custom_apps.sql:42`).
+`publish_version` (`packages_store.py:709`) and `rollback` (`:752`) write it.
+The store never updates or deletes a version row (`:49`).
+
+**The five files live in a new column of that row.** No column of
+`app_versions` can hold them today. Its columns are `id`, `app_id`,
+`version`, `manifest`, `bundle_html`, `bundle_sha256`, `release_notes`,
+`scope_set_hash`, `published_by`, `published_at`, `review_status` and the
+generated `organization_id`. A package writes `bundle_html = ''`
+(`packages_store.py:182`).
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | `uuid` | Primary key, `gen_random_uuid()` |
-| `organization_id` | `uuid` | Not null. RLS |
-| `slug` | `text` | Not null. Unique per organization |
-| `name` | `text` | Not null, at most 80 characters |
-| `description` | `text` | Not null, at most 500 characters |
-| `owner_email` | `text` | Not null. The member who built it |
-| `visibility` | `text` | Not null, default `'private'`. `'private'` or `'org'` (D12) |
-| `status` | `text` | Not null, default `'active'`. `'active'`, `'disabled'` or `'revoked'` |
-| `latest_version` | `int` | Not null |
-| `org_version` | `int` | Null. The version that other members run. Set only by an approval |
-| `approved_by` | `text` | Null. Who approved `org_version` |
-| `approved_at` | `timestamptz` | Null |
-| `disabled_by` | `text` | Null |
-| `disabled_at` | `timestamptz` | Null |
-| `disabled_reason` | `text` | Null, at most 500 characters |
-| `last_run_at` | `timestamptz` | Null |
-| `search` | `tsvector` | Generated from `name` and `description`. GIN index |
-| `created_at`, `updated_at` | `timestamptz` | Not null, default `now()` |
+| `files` | `jsonb` | Null. Path to text: `main.py`, `tool.json`, `requirements.lock`, `smoke.json` and `SKILL.md`. At most 262144 bytes of JSON text |
+| `files_sha256` | `text` | Null. The SHA-256 of that JSON text |
 
-A Center scope and `group:<slug>` grants (D12) come later, when the owner
-asks. Version 1 has private and org only.
+**Why a column, and no other place.**
 
-### 7.2 `user_tool_versions` — one immutable row for each version
+- `app_versions.manifest` holds validated data, and the resolve and the
+  catalog read it (`package_host.md` §5.2). Code in it would grow each of
+  those reads.
+- `bundle_html` holds the HTML entry of an App Workshop app. Two meanings for
+  one column is a defect.
+- `app_files` (`115_app_files.sql`) mirrors a draft. It has no version, and
+  its rows change. A tool keeps no draft: until its first good run, its files
+  live only in the run-data dir (§6.5).
+- One row is one version. So the files, the manifest and the hash commit
+  together.
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `uuid` | Primary key |
-| `organization_id` | `uuid` | Not null. RLS |
-| `tool_id` | `uuid` | Not null. References `user_tools(id)` with `ON DELETE CASCADE` |
-| `version` | `int` | Not null. Unique with `tool_id` |
-| `files` | `jsonb` | Not null. Path to text, the five files of §6.3. At most 256 KB in all |
-| `files_sha256` | `text` | Not null |
-| `input_schema`, `output_schema` | `jsonb` | Not null |
-| `read_scopes`, `write_scopes` | `text[]` | Not null, default empty |
-| `image_ref` | `text` | Not null. The sandbox image digest of the build |
-| `built_by_email` | `text` | Not null |
-| `built_in_thread` | `text` | Null |
-| `smoke_passed_at` | `timestamptz` | Not null |
-| `first_run_id` | `uuid` | Not null. The run that made it persist |
-| `created_at` | `timestamptz` | Not null |
+**Expand only (R6).** `ADD COLUMN IF NOT EXISTS`, nullable and with no
+default, so the ALTER rewrites no row. A CHECK holds the size and the shape
+of a JSON object. Each old row passes it, because it holds NULL. A trigger
+refuses each change of `files` after the INSERT, as `apps_format_fixed` does
+for `apps.format` (`322_apps_format.sql:100`). Old code names no new column.
 
-A version row never changes. The gateway issues no `UPDATE` on this table,
-and the app role holds no `UPDATE` grant on it (SBX-F10). A delete happens
-only through the cascade of §6.5. The `tool_id` of a `user_tool_runs` row has
-no foreign key, so the run record stays after that delete.
+**SBX-5 adds it.** It adds both columns, the CHECK and the trigger. It also
+makes `publish_version` write the files, and `rollback` copy them with the
+manifest.
+
+**`tool.json`** also holds the image digest of the build. For a workaround
+(§6.7, level c), it names the built-in tool and the id of the report. The
+store refuses a version whose `tool.json` and manifest entry differ
+(SBX-F12).
+
+**Who reads the files.** `run_tool` reads the files of the version that the
+caller runs (§8.2), and writes them into a fresh run-data dir (§6.4). An
+approver reads them on the approval card (§8.1).
 
 ### 7.3 `user_tool_runs` — one row for each step
 
@@ -654,11 +1068,13 @@ no foreign key, so the run record stays after that delete.
 |---|---|---|
 | `id` | `uuid` | Primary key |
 | `organization_id` | `uuid` | Not null. RLS |
-| `tool_id`, `version` | `uuid`, `int` | Null for a build that did not persist |
+| `app_id`, `version` | `uuid`, `int` | (D187) The package and its version. Null for a build that did not persist. No foreign key, so the row stays after a delete |
 | `gap_id` | `uuid` | Null |
+| `repair_of` | `uuid` | (D187) Null. The failed run that this repair answers (§6.7) |
+| `signal` | `text` | (D187) Null. `'exit_code'`, `'schema'` or `'door_5xx'`, the signal of a failed run (§6.7) |
 | `member_email`, `thread_id`, `run_id` | `text` | The member, the chat thread, the agent run |
 | `phase` | `text` | `'build'`, `'smoke'` or `'run'` |
-| `backend` | `text` | `'docker-runc'`, `'docker-runsc'` or `'e2b'` |
+| `backend` | `text` | `'docker-runc'`, `'docker-runsc'`, `'remote-runsc'` (D187) or `'e2b'` |
 | `outcome` | `text` | `'succeeded'`, `'failed'`, `'timeout'`, `'refused'` or `'cancelled'` |
 | `exit_code` | `int` | Null |
 | `wall_ms`, `cpu_ms`, `peak_mem_mb` | `int` | Measured by the broker |
@@ -678,9 +1094,10 @@ no foreign key, so the run record stays after that delete.
 | `need` | `text` | At most 280 characters, written by the model. It stays in the tenant |
 | `category` | `text` | One slug from a fixed list of about 30, chosen by the decide question. It carries no tenant text |
 | `candidates` | `text[]` | The tool names that the checks found |
-| `answer` | `text` | `'tool'`, `'none'` or `'unsure'` |
-| `outcome` | `text` | `'existing'`, `'reuse'`, `'no_match'`, `'declined'`, `'built'` or `'build_failed'` |
-| `tool_id` | `uuid` | Null |
+| `answer` | `text` | `'tool'`, `'compose'` (D187), `'none'` or `'unsure'` |
+| `outcome` | `text` | `'existing'`, `'reuse'`, `'compose'` (D187), `'no_match'`, `'declined'`, `'built'` or `'build_failed'` |
+| `app_id` | `uuid` | (D187) Null. The package that answered or that the build made |
+| `failed_tool` | `text` | (D187) Null. The name of a failed platform tool (§6.7, level c). A platform name, never tenant text |
 | `created_at` | `timestamptz` | |
 
 ### 7.5 `sandbox_capabilities` — the capability lookup
@@ -694,7 +1111,7 @@ same reason as the token table of `external_agent_access.md` §10.3.
 | `token_sha256` | `text` | Primary key |
 | `organization_id` | `uuid` | Not null |
 | `member_email`, `run_id`, `thread_id` | `text` | Not null |
-| `tool_id`, `version` | `uuid`, `int` | Null during a build |
+| `app_id`, `version` | `uuid`, `int` | (D187) The package and its version. Null during a build |
 | `phase` | `text` | Not null |
 | `read_scopes`, `write_scopes` | `text[]` | Not null |
 | `expires_at` | `timestamptz` | Not null |
@@ -707,32 +1124,54 @@ token itself.
 
 ## 8. Review controls (#241)
 
+**(D187) Sharing goes through the package host.** A tool is a package, so a
+share is an install at a scope of `package_host.md` §6.1. Promotion moves the
+same install to a wider scope, and it never copies the package (PKG-11,
+`ai_studio.md` J2). This section adds the rules that hold because a tool
+runs code.
+
 ### 8.1 Who can do what
 
 | Act | Who | Card or check |
 |---|---|---|
-| Build a tool | Any member, when the scope names the org | The build card (§6.1) |
-| Run a private tool | Its owner | Write cards (§5.3) |
-| Share a tool with the org | Its owner asks, and an approver approves | The approver sees the files, the scopes and the last 5 runs |
-| Run an org tool | Any member of the org | That member's own access and cards. A shared tool shares code, never authority |
-| Disable a tool | Its owner, or an approver | Immediate. Running steps finish, and no new step starts |
-| Revoke a tool | An approver | As disable, and `find_tool` never returns it again |
+| Build a tool | (D187) Any member with `feature:studio`, when the scope names the org | The build card (§6.1) |
+| Run a private tool | Its owner | Write cards (§5.3). (D187) No approval: D180.2 lets an owner publish for their own use |
+| Share a tool with named people, a group or the org (D187) | Its owner asks, and a holder of `studio:publish` approves one version | The approver reads the five files, the scopes, the package list and the last 5 runs |
+| Run an installed tool (D187) | Each member that the install reaches | That member's own access and cards. A shared tool shares code, never authority |
+| Add a repair version (D187) | A member whose run of an installed tool failed (§6.7, level b) | The rules of §6.7. The version runs for that member only |
+| Move the pin of an install (D187) | A holder of `studio:publish` | The approver reads the diff of the files |
+| Disable a tool | Its owner, or a holder of `studio:publish` (D187) | Each install goes to `paused`. Running steps finish, and no new step starts |
+| Revoke a tool | A holder of `studio:publish` (D187) | Each install goes to `archived`, and `find_tool` never returns it again |
 
-**The approver.** A new permission, `tools:approve`, in the catalog of
-`org_access_control.md`. The admin role holds it by default. SBX-6 checks
-the name against the naming rule of `feature_catalog` (for example
-`admin:access:manage`) at dispatch. Whether stored
-tools may be shared org-wide at all is the owner's call (SBX-Q3). Until the
-owner answers, every tool stays private, and the share button is not built.
+**(D187) A code package needs the approval at each scope past private.**
+`package_host.md` §6.1 lets a member with `feature:studio` install a package
+for a group. That fits a declarative package. A package with a `sandbox` or
+`packages` module runs code for each viewer. So an install of it for named
+people, a group or the org waits for the approval of one version.
 
-### 8.2 Versions and pins
+**(D187) The approver holds `studio:publish`.** D130.3 named a new
+permission, `tools:approve`, and no code holds it. `studio:publish` exists
+(`acb_auth/permissions.py:198`), and D180.3 makes it the gate of a share of a
+package to others. A tool is now a package, so one object gets one gate. A
+second permission for the same act on the same object would be a second
+seam. The owner holds it through `*`, and an admin can grant it to one
+person (D180.3, D180.4).
+
+### 8.2 Versions and pins (D187)
 
 - A version is immutable (§7.2).
-- The owner runs `latest_version`. Every other member runs `org_version`.
-- A new version never changes `org_version`. An approver must approve it.
-- An approver may pin `org_version` back to any earlier version.
-- `run_tool` refuses a version that the caller may not run, and a tool that
-  is not `active`.
+- The owner runs `apps.live_version`.
+- Each other member runs the `version` of the widest install that reaches
+  them, as the resolve picks it (`package_host.md` §5.2, `resolve.py:126`).
+- A repair version of level (b) runs only for its author. The author gets a
+  private install of the package at that version. `run_tool` reads the
+  private pin of the caller first, and the menus still show the widest
+  install.
+- A new version never moves the pin of an install. A holder of
+  `studio:publish` must move it.
+- A holder of `studio:publish` may move a pin back to any earlier version.
+- `run_tool` refuses a version that the caller may not run, and an install
+  that is not `active`.
 
 ### 8.3 Kill switches
 
@@ -740,13 +1179,18 @@ owner answers, every tool stays private, and the share button is not built.
 - `user_tool_runs_enabled` is an incident switch, default true. Set to
   false, it stops runs of stored tools and keeps builds. The scope entry
   keeps the whole feature dark, so this default changes nothing on its own.
-- An approver disables one tool in place.
+- (D187) A holder of `studio:publish` pauses one install, and the disposal
+  path removes its contributions at once (`package_host.md` §5.3).
+- (D187) `user_tool_repairs_per_run` set to 0 stops each repair and keeps
+  the runs.
 
-### 8.4 Audit
+### 8.4 Audit (D187)
 
-Each share, approval, pin, disable and revoke writes one `audit_event` row
-through `acb_audit.record`. The row holds the actor, the tool, the version
-and the reason. Each write that a tool makes carries the stamp
+Each act writes one audit row in the transaction of the act, through the
+seam that owns the act. A version and a rollback write `app_audit` through
+`packages_store.py`. A share, an approval, a pin, a pause and an archive
+write the record of J2 and PKG-11. The row holds the actor, the package, the
+version and the reason. Each write that a tool makes carries the stamp
 `sandbox:<slug>@v<n>` in `meta.via` (§5.2).
 
 ---
@@ -778,6 +1222,11 @@ No line holds input data, output data, a need text or a token.
 - **What it is for.** A category with many `built` or `build_failed`
   outcomes is a tool we should build properly. The weekly list goes to the
   board as a candidate, never as an automatic build.
+- **(D187) The adoption counts.** SBX-16 adds the counts of §6.8 to this
+  view. They are the runs and the success rate by category, and the
+  organizations for each category. They also count the failures of each
+  built-in tool by error class. The view names no organization. A candidate
+  becomes a platform tool only through §6.8.
 
 ### 9.3 Documentation
 
@@ -827,14 +1276,20 @@ tenancy and outward writes also get mutation testing
 | SBX-F6 | `tests/unit/test_sandbox_door_identity.py` | The door's identity step skips a branch 0 step, reads the member from a header, falls through to branch 1a, or a refused request leaves a tenant bound. Its source is pinned by digest, as branch 0's is |
 | SBX-F7 | `tests/unit/test_user_tool_injection.py` | `find_tool`, `build_tool` or `run_tool` reaches an agent with no `tool_scope`, a run whose org the scope does not name, or a run with no chat for `build_tool` |
 | SBX-F8 | `tests/unit/test_tool_gap_detection.py` | `build_tool` runs with no gap id, with a gap id that is not `no_match`, from another run, or older than 30 minutes, or with no approved build card |
-| SBX-F9 | `tests/unit/test_user_tool_registry.py` | R8, on a real database as the NOBYPASSRLS role. A tool persists after a failed smoke test or a failed first run. A failed build leaves a file or a blob. RLS shows a tool to another org. A private tool shows to another member |
-| SBX-F10 | `tests/unit/test_user_tool_versions_immutable.py` | Any code issues `UPDATE` on `user_tool_versions`, or the app role holds that grant |
+| SBX-F9 | `tests/unit/test_user_tool_registry.py` | R8, on a real database as the NOBYPASSRLS role. (D187) A package persists after a failed smoke test or a failed first run. A failed build leaves a file, a blob or a package. RLS shows a package or a `tool_gaps` row to another org. A private tool shows to another member |
+| SBX-F10 | `tests/unit/test_user_tool_versions_immutable.py` | (D187) Any code issues an `UPDATE` of `app_versions.files`, or the trigger of §7.2 lets one through on a real database |
 | SBX-F11 | WS43-F1, `tests/unit/test_sandbox_broker_seam.py`, extended | A module outside `sandbox_broker.py` imports `e2b` or starts a `docker` process, or the `tools` target falls back to the host |
-| SBX-F12 | `tests/unit/test_user_tool_build.py` | A build package lacks a file of §6.3, a lock line lacks a hash, the smoke test runs more than 3 fix rounds, or a build passes the smoke test with a call outside its scopes |
-| SBX-F13 | `tests/unit/test_user_tool_review.py` | A member who is not the owner runs `latest_version`, a new version changes `org_version`, a member without `tools:approve` approves or revokes, or a disabled tool starts a step |
+| SBX-F12 | `tests/unit/test_user_tool_build.py` | A build package lacks a file of §6.3, a lock line lacks a hash, the smoke test runs more than 3 fix rounds, or a build passes the smoke test with a call outside its scopes. (D187) Or the store keeps a version whose `tool.json` and manifest entry differ |
+| SBX-F13 | `tests/unit/test_user_tool_review.py` | (D187) A member who is not the owner runs `apps.live_version`, a new version moves the pin of an install, or a member without `studio:publish` approves, moves a pin or revokes. A code package gets an install for named people, a group or the org with no approved version. A paused install starts a step |
 | SBX-F14 | `tests/unit/test_user_tool_audit.py` | A share, approval, pin, disable or revoke writes no audit row |
 | SBX-F15 | `tests/unit/test_sandbox_log_lines.py` | A log line of §9.1 holds input data, output data, a need text or a token, or the operator view returns a `need` text |
 | SBX-F16 | `tests/unit/test_sandbox_metering.py` | A step ends with no usage event, or a step starts for an org at its hard cap |
+| SBX-F17 | `tests/unit/test_user_tool_repair.py` | (D187) A repair starts on a signal outside §6.7, or one failed run gets a second repair build. A repair changes a schema or a scope. A level (b) version runs for a member who is not its author, or moves a pin or the `live_version` of another member |
+| SBX-F18 | `tests/unit/test_tool_compose_check.py` | (D187) `find_tool` answers `no_match` when the decide answer is `compose`, `build_tool` takes a `compose` gap, or the compose check offers a catalog row that the member cannot call |
+| SBX-F19 | `tests/unit/test_no_platform_patch_at_run_time.py` | (D187) A level (c) path writes into the repository or calls `attempt_self_mutation`. A failure report holds error text or code with no consent row of the member |
+| SBX-F20 | `tests/unit/test_tool_adoption_counts.py` | (D187) The view of §6.8 returns a value that is not a count, a category slug, a built-in tool name or an error class, or it names an organization |
+| SBX-F21 | `tests/unit/test_sandbox_remote_backend.py` | (D187) The `docker-remote` backend binds a mount of the gateway host, runs `runc` in production mode, or gives `DOCKER_HOST` to a child that is not `docker`. It has a `sandbox_docker` half |
+| SBX-F22 | `tests/unit/test_sandbox_door_client.py` | (D187) The door client reads an env value other than `METORITE_API_TOKEN`, calls a host other than the door name, or the image lacks it |
 
 **Where the Docker halves run.** On `.github/workflows/sandbox-docker.yml`,
 with the `sandbox_docker` marker, as WS43-F4 does. A skip fails that
@@ -848,31 +1303,61 @@ Each slice is one PR, ships dark, and ends at the next free migration number
 at build time (R1). The `tools` target stays out of `MAF_CODING_SCOPE` on
 every box until SBX-9.
 
+**The order (D187).** The owner asked for speed. Three phases, in this
+order:
+
+1. **Phase 1, no code runs.** SBX-1 as reshaped, and the spec of the tool
+   failure log (task 1793). Both cost nothing, and SBX-1 gives real gap
+   counts.
+2. **Phase 2, on the dev stack.** The door (SBX-2, SBX-3), the door client
+   (SBX-13), the build (SBX-4), the run and the library (SBX-5), and repair
+   (SBX-12). Then the review controls (SBX-6), metering (SBX-7), gVisor
+   (SBX-8), the remote backend (SBX-15) and level (c) (SBX-14).
+3. **Phase 3, production.** The owner buys the box and sets up its network
+   (SBX-G9, SBX-G10). Then SBX-9 turns on `tools:<Fracktal>` on that box.
+   SBX-16 and SBX-17 come after real use.
+
+SBX-5 also needs `ai_studio.md` B7, the `runtime` key of a logic module in
+the A2 model.
+
 | Slice | Work | Depends on | Gate |
 |---|---|---|---|
 | **SBX-0** | ✅ Done 2026-10-27. D130 answers §14, and the board row is WS-TO | Nothing | Done |
-| **SBX-1** | The registry tables (§7), `find_tool` with the gap record (§6.1), the log lines of §9.1 for gaps, and the gap view for an approver. No code runs anywhere | SBX-0 for the board row only | AGENT-SAFE. Dark |
+| **SBX-0b** | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
+| **SBX-1** | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
 | **SBX-2** | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
-| **SBX-4** | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend | SBX-2, WS-43g for the proxy | AGENT-SAFE. Dark |
-| **SBX-5** | `run_tool`, persist on success, reuse (§6.4 to §6.6) | SBX-3, SBX-4 | AGENT-SAFE. Dark |
-| **SBX-6** | Review controls: share, approve, pin, disable, revoke, audit (§8) | SBX-5, SBX-Q3 | AGENT-SAFE. Dark |
+| **SBX-4** | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend | SBX-2, SBX-13 (D187), WS-43g for the proxy | AGENT-SAFE. Dark |
+| **SBX-5** | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
+| **SBX-6** | (D187) The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
 | **SBX-7** | Metering (§10) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
 | **SBX-8** | `sandbox_runtime=runsc` in the broker, and a measured cost of gVisor on a local stack | SBX-4 | AGENT-SAFE. The install on a box is WS43-G5, **OWNER-GATE** |
-| **SBX-9** | Turn it on: staging first, then `tools:<Fracktal>` on production | SBX-1 to SBX-8, WS43-G1, WS43-G2, WS43-G4, WS43-G5 | **OWNER-GATE** |
-| **SBX-10** | The `e2b` backend (§4.4) and the public door name | SBX-5, SBX-Q1 | AGENT-SAFE to build on a free test account. The account, the key and the DNS record are **OWNER-GATE** |
+| **SBX-9** | (D187) Turn it on: `tools:<Fracktal>` on production, on the dedicated box of §4.6. D144 retired staging, so the local staging gate of D145 comes first | SBX-1 to SBX-8, SBX-12, SBX-13, SBX-15, WS43-G1, WS43-G2, WS43-G4, WS43-G5, SBX-G9, SBX-G10, SBX-G11 | **OWNER-GATE** |
+| **SBX-10** | The `e2b` backend (§4.4) and the public door name. (D187) The alternative to the box of §4.6 | SBX-5, SBX-Q1 | AGENT-SAFE to build on a free test account. The account, the key and the DNS record are **OWNER-GATE** |
 | **SBX-11** | The SPACE check through ECW (§4.5) | SBX-10, the three triggers of §4.5 | **OWNER-GATE**. A new host costs money |
+| **SBX-12** | (D187) **Repair, levels (a) and (b)** (§6.7): the three signals, the cap of 1, the contract check, the card that names the writes that landed, and the repair version of the store with its private pin (§8.2). **Done when:** a fixture tool that exits 1 gets one repair, and the fixed version runs and persists. A second failure stops with no second build. A level (b) version runs for its author only, and the org pin does not move | SBX-5. SBX-6 for level (b) | AGENT-SAFE. Dark |
+| **SBX-13** | (D187) **The door client** `metorite_door` in the sandbox image (§6.9). **Done when:** in a `sandbox_docker` test, a tool reads two pages through the door with the capability and no other code. The client calls no host but the door name. The image test (WS43-F25) lists the module | SBX-2 | AGENT-SAFE. The image on a box is WS43-G2 |
+| **SBX-14** | (D187) **Repair, level (c)** (§6.7): `find_tool` with `failed_tool`, the private workaround, the report to the failure log with its consent rule, and the archive of a workaround when its fix ships. **Done when:** a fixture failure of a built-in tool files one report with no error text before consent. The workaround runs for this member only. A release that marks the report fixed archives the workaround install | SBX-5, the spec and the store of the tool failure log (task 1793), SBX-Q8 | AGENT-SAFE. Dark |
+| **SBX-15** | (D187) **The `docker-remote` backend** (§4.6): the broker drives a second Docker daemon over `DOCKER_HOST`, moves the files in and out with no bind mount, and runs `runsc` only. **Done when:** on the dev stack, a build, a smoke test and a run go to a second local daemon. The outputs come back through the safe opener. In production mode the broker refuses a `runc` run on that backend | SBX-4, SBX-8, WS-43g | AGENT-SAFE to build and test on the dev stack. The box, its network and its DNS are **OWNER-GATE** (SBX-G9, SBX-G10) |
+| **SBX-16** | (D187) **The platform counts view** (§6.8, §9.2) in the Operator Console. A later slice. **Done when:** a platform admin sees counts by category and by built-in tool, and no tenant text. A tenant session gets 404 | SBX-1, SBX-5, SBX-14 | AGENT-SAFE |
+| **SBX-17** | (D187) **The adoption consent** (§6.8): the consent card for an owner of the source organization, and the consent record that a PR names. **Done when:** no path reads the files of a tool of a tenant for adoption without a consent row. A consent row names one tool, one version and one person of the source organization | SBX-16, SBX-6, SBX-Q9 | AGENT-SAFE to build. Each adoption is **OWNER-GATE** (SBX-G12) |
 
 ### 12.1 SBX-1 — the first dispatchable slice
 
-**Scope.** The tables of §7.1 to §7.4, with the generated RLS. `find_tool`
-on the general agent, with checks 1 to 4 of §6.1. The `sandbox.tool.gap` log
-line. A read route for an approver's gap view. No container starts, no
-capability exists, and no code runs.
+**Scope (D187).** The tables of §7.3 and §7.4, with the generated RLS.
+`find_tool` on the general agent, with the five checks of §6.1. The
+`sandbox.tool.gap` log line. A read route for an approver's gap view.
+
+No container starts, no capability exists, and no code runs.
+
+**Not in SBX-1 (D187).** No column of `app_versions` changes, because SBX-5
+adds the files (§7.2). `sandbox_capabilities` comes with SBX-2. The library
+check finds no tool module until SBX-5, so it finds packages of every kind.
 
 **Why first.** It answers #234, #235 and the counter half of #242. It costs
 nothing, needs no owner act after the board row, and gives the team real gap
-counts before anyone spends on a runtime.
+counts before anyone spends on a runtime. (D187) The compose check sends a
+need to Studio before any sandbox exists.
 
 **The flag.** `user_tool_find_enabled`, default off. Off, the general agent
 holds no `find_tool`.
@@ -885,9 +1370,16 @@ holds no `find_tool`.
 - Changed: `apps/services/orchestrator/orchestrator/_tool_injection.py`, to
   give `find_tool` to the general agent when the flag is on.
 - Changed: `packages/acb_common/acb_common/settings.py`, the flag.
-- New: the migration, at the next free number at build time.
+- Read, not changed (D187): `apps/services/gateway/gateway/studio/packages_store.py`,
+  the packages of the member.
+- Read, not changed (D187): `apps/services/gateway/gateway/package_host/resolve.py`,
+  the installs that reach the member.
+- Read, not changed (D187): `apps/services/gateway/gateway/routes/studio/actions.py`,
+  `catalog_rows` and `package_rows`.
+- New: the migration, at the next free number at build time. (D187) It adds
+  `tool_gaps` and `user_tool_runs` only.
 - New: the fences SBX-F7 (its `find_tool` half), SBX-F8 (its record half),
-  SBX-F9 (its RLS half) and SBX-F15 (its gap half).
+  SBX-F9 (its RLS half), SBX-F15 (its gap half) and SBX-F18 (D187).
 
 **Done when.**
 
@@ -897,15 +1389,21 @@ holds no `find_tool`.
 3. With the flag off, no agent holds `find_tool`.
 4. With the flag on, `find_tool` writes one `tool_gaps` row for each call,
    with `answer` and `outcome` set.
-5. A stored tool that matches the need comes back as `reuse` (a fixture row).
-6. The log line holds no `need` text.
+5. (D187) A Studio package of the member that matches the need comes back as
+   `reuse`. The test makes it through `packages_store.create_package`, the
+   real writer.
+6. (D187) A need that two catalog actions cover comes back as `compose`. Its
+   gap row reads `compose`, never `no_match`, so no later build can take it.
+7. (D187) A package of another member that no install shows to the caller
+   never comes back.
+8. The log line holds no `need` text.
 
 **Verification commands.**
 
 ```bash
 bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_tool_gap_detection.py tests/unit/test_user_tool_registry.py tests/unit/test_user_tool_injection.py tests/unit/test_sandbox_log_lines.py tests/unit/test_tenant_coverage.py -q -rs
+uv run pytest tests/unit/test_tool_gap_detection.py tests/unit/test_tool_compose_check.py tests/unit/test_user_tool_registry.py tests/unit/test_user_tool_injection.py tests/unit/test_sandbox_log_lines.py tests/unit/test_tenant_coverage.py -q -rs
 ```
 
 A skip in that run is a failure. R8 needs the database.
@@ -919,7 +1417,7 @@ dev-phase window does not open the WS-43 gates, and the same holds here.
 
 | # | Act |
 |---|---|
-| SBX-G1 | Add `tools:<org>` to `MAF_CODING_SCOPE` on staging or production (it is WS43-G3 for this target) |
+| SBX-G1 | Add `tools:<org>` to `MAF_CODING_SCOPE` on production (it is WS43-G3 for this target). (D187) D144 retired staging |
 | SBX-G2 | Install `runsc` on a box (WS43-G5) |
 | SBX-G3 | Open an account with a sandbox vendor, or put its key on a box |
 | SBX-G4 | Create the DNS record `sandbox-api.metorite.com`, or its Caddy block |
@@ -927,10 +1425,15 @@ dev-phase window does not open the WS-43 gates, and the same holds here.
 | SBX-G6 | Set a credit price for sandbox time |
 | SBX-G7 | Turn on org sharing of tools |
 | SBX-G8 | Set the `web:` profile policy on production, or the production package-host list (WS43-G4) |
+| SBX-G9 | (D187) Buy or rent the dedicated sandbox box of §4.6, and pick its plan |
+| SBX-G10 | (D187) Set up the private network between the gateway box and the sandbox box, and each DNS record or firewall rule of either box |
+| SBX-G11 | (D187) Set `sandbox_backend=docker-remote` on production, or put the key that reaches the sandbox box on a box |
+| SBX-G12 | (D187) Read the code of a tool of a tenant for platform adoption (§6.8). It needs the consent record of the source organization. With no record, refuse it always |
 
 **Production stays on `runsc`.** SBX-9 turns on the `tools` target on
 production only on a box where `sandbox_runtime=runsc` works. On `runc`, the
-target stays off there.
+target stays off there. (D187) On the dedicated box, the `docker-remote`
+backend runs `runsc` only.
 
 ---
 
@@ -939,6 +1442,11 @@ target stays off there.
 **Answered 2026-10-27.** D130 takes the recommendation of each call below.
 It also sets a cap of USD 200 a month on the `e2b` backend. The owner still
 does each act of §13.
+
+**(D187) Amended 2026-11-07.** D187 amends SBX-Q1 for production: the
+dedicated box of §4.6 comes first, and `e2b` stays the alternative. D187
+names `studio:publish` as the approver of SBX-Q3, in place of
+`tools:approve` (§8.1). SBX-Q8 and SBX-Q9 are new, and each has a default.
 
 Every call has a default. A slice that needs a call waits for it, and the
 default never ships to production by itself.
@@ -952,6 +1460,8 @@ default never ships to production by itself.
 | **SBX-Q5** | May a stored tool run with no chat, in a workflow? | Reads only, and only an org-approved version | No |
 | **SBX-Q6** | Accept the run capability inside the container. This amends one line of D83 for the `tools` target | Yes. It is short-lived, opens only the door, and has the member's access as its ceiling | No. SBX-2 and later wait |
 | **SBX-Q7** | May member data go to a hosted vendor? This is a DPDP question for WS-37 | Yes only after a data processing agreement and a region check | No. The `e2b` backend runs no tenant data |
+| **SBX-Q8** | (D187) May a failure report carry the error text and the workaround code of a member to the Metorite team (§6.7, level c)? | Only with the consent of the member, one report at a time, as D126 does for a chat | Counts, the tool name and the error class only |
+| **SBX-Q9** | (D187) Who in the source organization consents to a platform adoption (§6.8)? | A person with the `owner` role, on one card for one tool and one version | No adoption from the code of a tenant. An engineer may still build from the counts alone |
 
 ---
 
@@ -980,3 +1490,8 @@ here, and each needs its own check before anyone acts on it.
   and the nine tasks #234 to #242. Nothing built.
 - 2026-10-27 — ACTIVE. The owner deferred the calls of §14 to the
   recommendations, and D130 records them. The board row is WS-TO.
+- 2026-11-07 — D187 (SBX-0b, task 1962). A user tool is an AI Studio
+  package, and a sandbox serves one chat thread for a short time. A tool that
+  fails gets one repair, at three levels. A tool reaches all of Metorite only
+  as reviewed repo code. Production runs on a dedicated sandbox box. New
+  slices SBX-12 to SBX-17. Nothing built.
