@@ -813,20 +813,23 @@ starts with `/centers/`. The six `preview` Center panes stay (D49). A new `src/l
 Home file calls a `center.` feature check. A gateway test drives rule 4 with a
 private task of another member and asserts that no card returns it.
 
-### 4.3 Personal Center — three apps, three jobs
+### 4.3 Personal Center — four apps, four jobs
+
+**Amended 2026-11-07 (D188, `my_day_command_centre.md`).** My Day is now the command centre. It notices, plans, starts work, focuses and closes the day. Calendar keeps the week, the full grid and events. Projects keeps the structure. The table below shows the new jobs.
 
 My Tasks and Calendar already read the one task store. My Day joins them at
 the top. The risk is a third view of the same tasks, so each app gets one job.
 
 | App | Its job | The question | What it may change | What it hands on |
 |---|---|---|---|---|
-| **My Day** | Notice | "What needs me, across every app?" | One-click acts only: done, approve, snooze. A longer act opens the owning app | Planning goes to Calendar. Lists go to My Tasks |
+| **My Day** | Run the day | "What needs me, and what do I do now?" | Capture, the top 3, the One Thing, today's blocks, the focus session, done, roll over. A longer act opens the owning app | The week and the full grid go to Calendar. Lists go to My Tasks |
 | **My Tasks** | Commit | "What have I promised, and what is next?" | Every task field, every list, capture | Time goes to Calendar |
-| **Calendar** | Place | "When will I do it?" | The schedule, focus blocks, the start and the end of the day | What to do goes to My Tasks |
+| **Calendar** | Plan the week | "When will I do it, this week?" | The schedule of any day, events, recurring windows, planner settings | What to do goes to My Tasks |
 | **Email** | Reply | "Who waits for my answer?" | Its own threads | It feeds My Day through its manifest |
 
-**No second ritual.** Calendar has `StartupRitual`. The first open of My Day
-each day offers that ritual. My Day does not copy it.
+**No second ritual.** Calendar has `StartupRitual`. The Plan phase of My Day
+mounts that same component. My Day does not copy it. `my_day_command_centre.md`
+§5 owns the phases.
 
 **What goes into the feed lives in `my_day_feed.md` (WS-58, ACTIVE
 2026-10-13).** That spec owns the signals, the cards, the order, the life of
