@@ -1136,9 +1136,19 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: comes from the connection row, as the pins do. Nothing new is read from
 #: the request: the scan and the tripwire are as before. The pins before it
 #: were 3.12 ``8eff3015…1f25d2bc9`` and 3.13 ``340a6d01…d2bd756a``.
+#:
+#: EA-19b (2026-11-06, external_agent_access.md §10.9 question 1, D-EA-5):
+#: step 5 passes ``credential``, ``connection_id`` and ``client_name`` of the
+#: connection row to ``actor_via_for``. So a box connection expects the stamp
+#: ``mcp:box:<slug>-<8 hex>``, and an OAuth connection expects the same stamp
+#: as before. The three values come from the row, never from the request.
+#: The scan and the tripwire are as before. The box flag is read in
+#: ``agent_tokens.read_live_connection``, which this digest does not cover.
+#: The pins before it were 3.12 ``c737e1f1…0ae25127`` and 3.13
+#: ``034c2925…9155f094``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "c737e1f19f504f87f62fea3f76428c02c0a4861b23299dad137501ed0ae25127",
-    (3, 13): "034c2925beaec3fae77ed31ae84a05ad7917a2a32269fd8337164b209155f094",
+    (3, 12): "e43d06fb1cc799b077a99b2ec610797af2d5f553877b300bc15227c942c16da5",
+    (3, 13): "26da978996f1ca7a396e201dd645c79064841066616bd3e7d7cbb22bb0416b13",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

@@ -2082,6 +2082,16 @@ class Settings(BaseSettings):
     # Only the edge reads it. `acb_auth.agent_oauth.mcp_sessions_enabled` is
     # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_mcp_sessions_enabled: bool = False
+    # EA-19b (external_agent_access.md §10.9, D-EA-5): box tokens, the one
+    # access token of a headless agent box, with no refresh token. Default
+    # OFF. While it is false, the edge bearer check and the connection read
+    # of branch 0 refuse a box connection, so a box token gets 401. It is a
+    # pause and not a kill: `/oauth/revoke` and the revoke routes still work,
+    # and a flip back to on revives each box token that no one revoked. Both
+    # units read it, so both need the same value, and a change needs a
+    # restart of each. `acb_auth.agent_oauth.box_tokens_enabled` is the one
+    # reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_box_tokens_enabled: bool = False
     # SW-10a (spec §12.6): the sweep of stranded agent runs. Default OFF.
     # While it is false, the gateway starts no sweep task, so no fingerprint
     # and no recovery record exist, and no member gets a nudge. Only the

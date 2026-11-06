@@ -39,6 +39,8 @@ write pairs, and :func:`writes_enabled` is the one reader of the writes flag. :f
 ``mcp:<host>:<slug>`` stamp of a connection (EA-13a). :data:`ACTOR_VIA_PATTERN`
 is the one shape of that stamp, and the Projects routes import it from here.
 :data:`CLIENT_LABELS` and :func:`client_label` give the name of a stamp.
+EA-19b adds the box stamp ``mcp:box:<slug>-<8 hex>`` (spec §10.9), and
+:func:`box_tokens_enabled` is the one reader of the box-token flag.
 
 **The app door (MCP-P1a, spec §19).** The app scopes come from
 ``acb_common.app_manifests`` (:data:`APP_SCOPES`), and :func:`covered_scopes`
@@ -248,6 +250,19 @@ def mcp_sessions_enabled() -> bool:
     gateway needs no flag: with no signed session it behaves as before SW-7.
     """
     return bool(get_settings().agent_mcp_sessions_enabled)
+
+
+def box_tokens_enabled() -> bool:
+    """True when ``agent_box_tokens_enabled`` is on (EA-19b, spec §10.9).
+
+    The ONE reader of the box-token flag, for both units. The edge bearer
+    check and ``agent_tokens.read_live_connection`` (branch 0) refuse a
+    connection of credential ``box`` while it is false, next to
+    :func:`org_allowed`. ``agent_tokens.lookup_token`` does not read it,
+    because ``/oauth/revoke`` must still find a box token (rule 8). It is a
+    pause, not a kill.
+    """
+    return bool(get_settings().agent_box_tokens_enabled)
 
 
 #: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
@@ -925,8 +940,66 @@ def client_slug(client_id: str | None) -> str:
     return segment[:CLIENT_SLUG_MAX].rstrip("-")
 
 
-def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
+#: EA-19b (spec §10.9 question 6). The ``credential`` of a box connection,
+#: its ``client_id``, and the longest ``<slug>`` of its stamp.
+BOX_CREDENTIAL = "box"
+BOX_CLIENT_ID = "urn:metorite:box"
+BOX_SLUG_MAX = 40
+#: The start of each box stamp. It keeps ``mcp:``, so a header from a person
+#: that names a box stamp starts branch 0 and fails the HMAC (§10.9 q. 1).
+BOX_STAMP_PREFIX = "mcp:box:"
+_BOX_LABEL = re.compile(r"(?P<slug>.+)-[0-9a-f]{8}")
+_BOX_HEX = re.compile(r"[0-9a-f]{8}")
+
+
+def box_slug(name: str | None) -> str:
+    """The ``<slug>`` of a box name (EA-19b, spec §10.9 question 1).
+
+    The name in lower case. Each run of characters other than ``[a-z0-9-]``
+    becomes one ``-``, a ``-`` at either end goes, and the slug keeps at most
+    :data:`BOX_SLUG_MAX` characters. A name with no such character gives
+    ``""``.
+    """
+    slug = _SLUG_JUNK.sub("-", (name or "").lower()).strip("-")
+    return slug[:BOX_SLUG_MAX].rstrip("-")
+
+
+def _box_stamp(connection_id: str | None, client_name: str | None) -> str:
+    """``mcp:box:<slug>-<8 hex>``, else ``mcp:box:<8 hex>``, else ``""``.
+
+    ``<8 hex>`` is the start of the canonical connection id, so two boxes of
+    one name stay apart. A stamp that does not fully match
+    :data:`ACTOR_VIA_PATTERN` falls back to the short form. A connection id
+    that is not a UUID gives ``""``, which branch 0 refuses.
+    """
+    try:
+        short = str(uuid.UUID(str(connection_id or "")))[:8]
+    except ValueError:
+        return ""
+    slug = box_slug(client_name)
+    if slug:
+        stamp = f"{BOX_STAMP_PREFIX}{slug}-{short}"
+        if ACTOR_VIA_PATTERN.fullmatch(stamp):
+            return stamp
+    return f"{BOX_STAMP_PREFIX}{short}"
+
+
+def actor_via_for(
+    client_origin: str | None,
+    *,
+    client_id: str | None,
+    credential: str | None = None,
+    connection_id: str | None = None,
+    client_name: str | None = None,
+) -> str:
     """The ``X-Actor-Via`` stamp of a connection (spec §10.1, §12.2 item 1).
+
+    EA-19b (spec §10.9 question 1). For *credential* ``box`` the stamp is
+    ``mcp:box:<slug>-<8 hex>`` (:func:`_box_stamp`), from *client_name* (the
+    box name) and *connection_id*. The origin and the client id do not
+    count then. Every other credential, and the defaults, give the stamp
+    below, as before. An OAuth connection whose origin host is ``box`` gets
+    the hash stamp, so it can never read as a box.
 
     EA-13a (EA3-47): ``mcp:<host>:<slug>``, where ``<host>`` is the
     lower-case ASCII host of *client_origin* and ``<slug>`` is
@@ -949,6 +1022,8 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
     both accept it. The label of an old row reads it, through
     :data:`CLIENT_LABELS`.
     """
+    if credential == BOX_CREDENTIAL:
+        return _box_stamp(connection_id, client_name)
     origin = (client_origin or "").strip()
     if not origin:
         return ""
@@ -956,7 +1031,8 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
         host = (urlsplit(origin).hostname or "").lower()
     except ValueError:
         host = ""
-    host_ok = bool(host) and host.isascii()
+    # EA-19b: the host `box` is the namespace of the box stamps.
+    host_ok = bool(host) and host.isascii() and host != "box"
     # An IPv6 host has colons of its own, so a slug after it could not be
     # read back. Such a host keeps the host stamp (EA-13a fix round 1).
     slug = client_slug(client_id) if host_ok and ":" not in host else ""
@@ -994,8 +1070,17 @@ def client_label(via: str | None) -> str:
 
     A body with more than one colon is an IPv6 host stamp, because
     :func:`actor_via_for` adds no slug to an IPv6 host. It reads whole.
+
+    EA-19b: a box stamp ``mcp:box:<slug>-<8 hex>`` reads ``Box <slug>``. The
+    short form ``mcp:box:<8 hex>`` reads ``Box``.
     """
     raw = (via or "").strip().lower()
+    if raw.startswith(BOX_STAMP_PREFIX):
+        tail = raw.removeprefix(BOX_STAMP_PREFIX)
+        named = _BOX_LABEL.fullmatch(tail)
+        if named is not None:
+            return f"Box {named.group('slug')}"
+        return "Box" if not tail or _BOX_HEX.fullmatch(tail) else f"Box {tail}"
     body = raw.removeprefix("mcp:")
     host = body if body.count(":") > 1 else body.split(":", 1)[0]
     return CLIENT_LABELS.get(body) or CLIENT_LABELS.get(host) or host or "Agent"
@@ -1007,7 +1092,7 @@ def client_host(via: str | None) -> str:
     value gives ``""``. An IPv6 host stamp reads whole, as in
     :func:`client_label`. The host is the part that the gateway verified when
     the member connected the client, so it is the part that no client names for
-    itself.
+    itself. A box stamp (EA-19b) gives ``box``.
     """
     body = (via or "").strip().lower().removeprefix("mcp:")
     return body if body.count(":") > 1 else body.split(":", 1)[0]
@@ -1032,6 +1117,10 @@ __all__ = [
     "APPROVAL_REQUIRED_CODE",
     "APP_OFF_CODE",
     "APP_SCOPES",
+    "BOX_CLIENT_ID",
+    "BOX_CREDENTIAL",
+    "BOX_SLUG_MAX",
+    "BOX_STAMP_PREFIX",
     "CLIENT_LABELS",
     "CLIENT_SLUG_MAX",
     "CONTEXT_READ",
@@ -1062,6 +1151,8 @@ __all__ = [
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
+    "box_slug",
+    "box_tokens_enabled",
     "client_host",
     "client_label",
     "client_origin",
