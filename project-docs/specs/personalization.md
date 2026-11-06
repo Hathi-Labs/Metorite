@@ -2826,7 +2826,7 @@ on 2026-11-06.
 
 ### 17.3 Identity and tone
 
-The assistant is named Mira (D125). A persona never changes its name, what
+Mira is the name of the assistant (D125). A persona never changes the name, what
 it knows, or what it may do.
 
 A persona changes how the assistant sounds in the places of §17.4, and
@@ -2846,25 +2846,52 @@ settles PZ-50.
 
 | Place | Default when a persona is on |
 |---|---|
-| Reminders | Ticked |
-| Nudges | Ticked |
-| The hello and the encouragement in the chat | Ticked |
-| Interview questions | Ticked |
-| Chat answers | Not ticked. The member turns on "chat answers too" |
+| Reminders | On |
+| Nudges | On |
+| The hello and the encouragement in the chat | On |
+| Interview questions | On |
+| Chat answers | Off. The member turns on "chat answers too" |
 
 **Never,** in any setting:
 
 - A draft to another person: email, WhatsApp, or any outbound message. These
-  use the member's own voice.
-- A fact, a number, a date, a name or a decision.
-- A card: confirm, sensitive or profile.
-- A tool result.
-- Quoted text, code or data.
-- A summary that other people read.
+  use the member's own voice (Q1).
+- A fact, a number or a date (Q1).
+- A name or a decision. The text of task 1474 says "Voice never changes a
+  number, a date, a name or a decision".
+- A card: confirm, sensitive or profile (Q1).
+- A tool result (Q1).
+- Quoted text (Q1). Code and data come from rule 12 of `acb_llm.voice` CORE,
+  which says the rules never cover them.
+- A summary that other people read. It falls under "a draft to another
+  person" in Q1.
 
 **The ambiguity rule.** When a persona line and a task conflict, the
 assistant states the task in plain words. The persona colours only the one
 added line. The persona never rewrites the task text.
+
+**Where each persona line comes from.** This table is the reading of this
+spec. The owner confirms it at the PZ-48 preview (§17.10).
+
+| Place | Where the line comes from | Counts toward the cap of 3 a day |
+|---|---|---|
+| Reminders and nudges (messages that arrive without a request) | One line from the bank, after the fixed fact text. No model writes at send time | Yes |
+| The hello and the encouragement line in the chat | The model writes them inside its chat reply. The persona line in the profile block colours them. They do not come from the bank. The hello keeps the pace of the PZ-39 greeting rule: the first reply of a chat, and after 4 quiet hours. A reply holds at most one encouragement line, after the answer | No |
+| Interview questions | The model asks them in the chat. The persona line in the profile block colours them. The question and its reason stay plain (the PZ-30 rules) | No |
+| Chat answers, with "chat answers too" on | The persona colours the register of the answer. The fact rules still bind | No |
+
+The cap of 3 counts the bank lines on reminders and nudges only. Inside a
+chat that the member started, the pace rules of the chat apply.
+
+**This section amends two older rules.**
+
+- Today a nudge is a fixed string (`chat_first_surface.md`, "No model in the
+  nudge or the brief").
+- Also "No model writes an interrupt" (`proactive_reach.md`).
+
+The fact text stays the fixed template. One bank line may follow it. No model
+writes at send time, so both rules still hold in substance. PZ-48 updates
+those two specs in its own PR.
 
 ### 17.5 Presets and the free-text line
 
@@ -2883,7 +2910,9 @@ preset holds a character name.
 - **Sage is the Yoda-like preset.** It has no character name.
 - **A free-text style** is one line of at most 140 characters.
 - **A save-time check** refuses a named film, book, TV or game character and
-  a real person. It offers the nearest preset.
+  a real person. It offers the nearest preset. The owner said "film
+  character". This spec extends it to book, TV and game characters for the
+  same copyright reason. The PZ-47 preview confirms the extension.
 - **No character name** appears in any preset, prompt or line.
 
 The reasons come from news and law-firm reports. No court document was read.
@@ -2920,15 +2949,19 @@ The owner decided this as Q4 (D-PZ-46).
    sensitive card or an error.
 3. **Never on a WhatsApp template message.** Meta approves its fixed text.
 4. **Checks on each line before it goes live:**
-   - It is at most 120 characters, in one or two sentences.
-   - It holds no number, date, name or claim.
+   - It is at most 120 characters, in one or two sentences. This is a
+     default. The PZ-49 preview confirms it.
+   - It holds no number, date, name or claim. This is how the build meets
+     the owner's "a changed fact". A line with no fact in it cannot change
+     one.
    - It holds no flattery.
    - It does not claim to be a character or a person.
 5. **A failed check means the message goes out plain.**
 6. **An admin can turn personas off** for the whole organization.
 7. **Forget and offboarding (PZ-9) delete** the persona and its lines.
-8. **Data law.** A persona is an ordinary preference. Secondary reports say
-   the DPDP Act has no special category for it.
+8. **Data law.** We treat a persona as an ordinary preference. This point is
+   unverified. The research file holds it from memory. The lawyer's check
+   covers it (§17.10).
 
 The evidence: no study shows that a quote or a playful tone gets more tasks
 done. This is a preference and not a promise of more output. A flattery test
@@ -2962,8 +2995,13 @@ Note: no study shows that a quote or a playful tone gets more tasks done. This i
 
 - **The persona record** lives on the profile, inside `PROFILE_MAX`. It holds
   the preset id, the free-text line, the tick list and an on/off switch.
-- **Only a short line enters the profile block,** and only when a chat
-  surface is ticked.
+- **Only one short line enters the profile block,** and only when a chat
+  surface is on. The line reads "Persona: <preset label>. <the style line, at
+  most 140 characters>. Use it for: <the chat surfaces that are on>." It is at
+  most 200 characters. Over `RENDER_MAX` it drops together with the style
+  notes, and the drop order does not change otherwise.
+- **Who can set a free-text style.** Only words that the member typed, with
+  the typed mark (D-PZ-37), can set it. A card answer can set a preset only.
 - **The line bank does not go in the profile block.** It would break the
   `RENDER_MAX` cap and the cached prefix. It is a tenant-scoped table (R5).
   PZ-45 builds it with expand-only migration rules (R6). The builder takes
@@ -2982,7 +3020,7 @@ does not exist yet is advisory until its slice builds (R7).
 |---|---|---|---|---|
 | **PZ-44** · task 1469 | This section, D187 and the INDEX sentence | The section, D187 and the INDEX sentence are in `main`. The four doc tests still pass | Advisory. Docs only | AGENT-SAFE · LOW |
 | **PZ-45** · task 1470 | The persona record on the profile, and the tenant-scoped line-bank table (§17.8) | A persona holds a label, a preset or one line, a tick list and an off switch. A row of one tenant never shows to another tenant. Forget deletes the persona and its lines | Planned `tests/unit/test_persona_store.py` and an R8 file, advisory until PZ-45 builds | AGENT-SAFE · **HIGH** (a migration) |
-| **PZ-46** · task 1471 | An interview area for tone. It saves the answer as a persona proposal | The question reuses the one-question-a-day shape. A yes on the card saves the proposal. Nothing saves without a yes | Planned `tests/unit/test_persona_interview.py`, advisory until PZ-46 builds | AGENT-SAFE · STANDARD |
+| **PZ-46** · task 1471 | An interview area for tone. It saves the answer as a persona proposal | The question reuses the one-question-a-day shape. A yes on the card saves the proposal. Nothing saves without a yes. Only typed words (D-PZ-37) can set a free-text style, and a card answer sets a preset only | Planned `tests/unit/test_persona_interview.py`, advisory until PZ-46 builds | AGENT-SAFE · STANDARD |
 | **PZ-47** · task 1472 | The picker in Settings, Assistant settings, with the presets, the free line, a preview and one switch. The chat path covers WhatsApp too | The preview shows a nudge in the chosen voice before the save. The switch turns the persona off. The save-time check of §17.5 refuses a character or a person | Planned `tests/unit/test_persona_picker.py` and a vitest file, advisory until PZ-47 builds | AGENT-SAFE · STANDARD |
 | **PZ-48** · task 1473 | The line on reminders and nudges, from the bank, with the 14-day rotation | Each message picks one line. No line repeats within 14 days. No model runs at send time. Over 3 lines a day, the member gets the plain message | Planned `tests/unit/test_persona_lines.py`, advisory until PZ-48 builds. It also fails when a send path imports a model client | AGENT-SAFE · STANDARD |
 | **PZ-49** · task 1474 | The guards of §17.7 and a flattery test | Each guard has a test. A failed check gives a plain message. The evaluation set of PZ-10 covers each guard | Planned `tests/unit/test_persona_guards.py`, advisory until PZ-49 builds | AGENT-SAFE · STANDARD |
@@ -3028,3 +3066,21 @@ answers.
    preview.
 4. **The `ASSISTANT_NAME` constant.** It still says "Metorite" and D125 says
    Mira. Default: a finding for the board. This spec does not change it.
+5. **The reading of Q4.** The cap of 3 counts the bank lines on reminders and
+   nudges only (§17.4). This is the reading of this spec. The owner confirms
+   it at the PZ-48 preview.
+
+**The exception to the house voice.** `acb_llm.voice` CORE
+(`packages/acb_llm/acb_llm/voice.py`, owned by `agent_writing_voice.md`,
+WS-52) conflicts with the presets. Rule 9 bans enthusiasm that the writer
+puts on. Rule 2 says "plain words". Rule 4 says "do not build up to a
+reveal".
+
+The line "Quick one before chai, then you are free!" and the Sage riddle break
+these rules. The owner approved those lines, and they need the exception.
+
+Rules 2, 4 and 9 give way to the chosen style in two places only. These are
+the persona line and the hello and encouragement line of the chat. Rules 7
+(no em dashes), 10 (never invent a name, number, date or quote) and 12 (the
+reader's language) always bind. "Chat answers too" changes the register only,
+so every CORE rule still binds the answer itself. Plain keeps every rule.
