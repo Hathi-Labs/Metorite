@@ -661,6 +661,16 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 - **Fence.** `test_mcp_edge_claim.py` (`ci14a` tests, including the real database), `test_mcp_edge_agent_runs.py`, `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. No migration: the column exists since the table.
 
+#### CIV-14f · An answer watcher on the home box (Metorite task 1731, G2b)
+
+- **Scope.** A systemd user timer on `metorite-home` runs `scripts/home_server/answer_watcher.sh` every 2 minutes. The script calls `list_agent_runs` with `needs_agent` true. For each run in `run_answered` or `run_queued`, it starts ONE headless session in the lane of the task, with the run id in the prompt. The prompt says: read the run with `get_agent_run`, act only on an answer that this run's session asked, and finish or release. The watcher never reads an answer and never acts on one. It never wakes an old session, because no tool can reach a session that ended its turn.
+- **One session for one run.** The script takes a lock file per run id before it starts a session. It keeps the lock until the run leaves `needs_agent` or 2 hours pass. A second tick finds the lock and starts nothing. A run with the state `stopping` is never started.
+- **The credential (decided by the owner, 2026-11-06, task 1731).** The watcher has its own read-only token. It is a box token (D-EA-5, `external_agent_access.md` §10.9) with the scope `projects:read` only. The owner makes it in Integrations, AI agents once EA-19c and EA-19d merge. The owner drops it in `~/.config/metorite/watcher.env` (mode 0600) through the secrets drop (`docs/secrets_drop.md`). The script reads it from the environment and never prints it. A hook never reads the OAuth token of Claude Code. A session that the watcher starts uses the login of its lane, and not the watcher token.
+- **Status.** Not built. It cannot be switched on before the token exists. Until then, the timer unit ships disabled.
+- **Fence.** `tests/unit/test_answer_watcher.py`, with a fake `list_agent_runs`. One run gives one start. A second tick gives none. A `stopping` run gives none. A run with no lane gives a bell and no start. The script never writes the token to its output.
+- **Open (owner, task 1731).** The watcher needs a rule that maps a task to a lane and a worktree. The question is on the task.
+- **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. OWNER-GATE to enable the timer (`deploy`) and to mint the token.
+
 ### 5.9 P8 — deferred, the owner decides
 
 | Slice | What | Waits on | Gate |
