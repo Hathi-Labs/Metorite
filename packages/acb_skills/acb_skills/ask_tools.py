@@ -1057,13 +1057,22 @@ def _clean_new_mail_form(form: dict) -> dict:
     # says so. Each is a person of the card that starts unticked, or no card shows.
     if "unticked" in form:
         out["unticked"] = _new_mail_unticked(form["unticked"], people, out.get("ticked"))
-    # §18.11 fix round 5: the SAME card, shown again because a revise did not
-    # run. The client puts it back in its slot, with the member's edits.
-    if form.get("reopened") is True:
-        out["reopened"] = True
-    # §18.11 step 6: the card that this card replaces, and its draft number.
-    # The gateway sets both, and the tool copies them from its answer. The
-    # client draws the card in that card's slot, as "Draft <n>".
+    out.update(_new_mail_redraft(form))
+    return out
+
+
+def _new_mail_redraft(form: dict) -> dict:
+    """The redraft fields of a new-mail form (§18.11), checked.
+
+    ``revises`` and ``draft`` (step 6): the card that this card replaces, and
+    its draft number. The gateway sets both, and the tool copies them from its
+    answer. The client draws the card in that card's slot, as "Draft <n>". A
+    bad pair raises ``ValueError``.
+
+    ``reopened`` (fix round 5): the SAME card, shown again because a revise
+    did not run. The client puts it back in its slot, with the member's edits.
+    Only ``True`` stands."""
+    out: dict = {"reopened": True} if form.get("reopened") is True else {}
     if "revises" in form or "draft" in form:
         revises, draft = form.get("revises"), form.get("draft")
         if (not isinstance(revises, str) or not _CARD_ID_RE.fullmatch(revises)
