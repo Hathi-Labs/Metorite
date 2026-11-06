@@ -1261,6 +1261,10 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
                            "and nothing is on the calendar.")
     if kind in needs.REMINDER_KINDS:
         return _reminder_line(kind, facts, tz, today)
+    if kind == "decision":
+        # WS-ALN ALN-2b. The question is the asker's own words, 140 characters
+        # at most, and the bell shows it too. The closing time is a fact.
+        return "decision", _decision_line(facts, tz, today)
     return _md3_why(kind, facts, tz, today)
 
 
@@ -1429,6 +1433,25 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
     raise KeyError(kind)
 
 
+def _decision_line(facts: dict[str, Any], tz: ZoneInfo, today: date, *,
+                   folded: bool = False) -> str:
+    """The why line of a decision card, and its folded clause (WS-ALN ALN-2b).
+    Folded under its bell row, the row already names who asked."""
+    end = facts.get("expires_at")
+    more = int(facts.get("open") or 1) - 1
+    who = facts.get("who") or "Somebody"
+    if folded:
+        line = f"The question: {facts['question']}" if facts.get("question") else "It waits for you."
+    elif facts.get("question"):
+        line = f"{who} asks you to decide: {facts['question']}"
+    else:
+        line = f"{who} asks you to decide."
+    line += f" It closes {_when(end, tz, today)} at {_clock(end, tz)}." if _instant(end) else ""
+    if more > 0:
+        line += f" {more} more {'decision waits' if more == 1 else 'decisions wait'} on this task."
+    return line
+
+
 def _reminder_line(kind: str, facts: dict[str, Any], tz: ZoneInfo,
                    today: date) -> tuple[str, str]:
     """The why line of a reminder card (§5.4 "Words", WS-66 RM-2). A code
@@ -1462,6 +1485,8 @@ def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) 
         return "You promised this by mail."
     if kind == "colleague_out":
         return _colleague_line(facts)
+    if kind == "decision":
+        return _decision_line(facts, tz, today, folded=True)
     return ""
 
 
@@ -1546,7 +1571,12 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
 
     parts: dict[str, tuple[list[Signal], dict[str, Any]]] = {}
     for key, kinds in by_key.items():
-        ordered = sorted(kinds.values(), key=lambda s: (-feed_rank.base(s.kind), s.kind))
+        # A question that waits on the member by name LEADS its card (WS-ALN
+        # ALN-2b), though its base is below a notification's: the card then
+        # reads "Waiting for your decision" with the Answer act first. Its
+        # own bell row folds under it.
+        ordered = sorted(kinds.values(),
+                         key=lambda s: (s.kind != "decision", -feed_rank.base(s.kind), s.kind))
         facts = copy.deepcopy(ordered[0].facts)
         for signal in ordered[1:]:
             for name, value in signal.facts.items():
@@ -1577,7 +1607,9 @@ def build_cards(signals: list[Signal], now: datetime, tz: ZoneInfo,
         folded = [s.kind for s in rest]
         why_key, line = why(main.kind, facts, main.at, now, tz, today)
         clauses = [line]
-        clauses += [c for c in (_folded_clause(s.kind, s.facts, tz, today) for s in rest) if c]
+        clauses += [c for c in (_folded_clause(s.kind, s.facts, tz, today) for s in rest
+                                if not (main.kind == "decision"
+                                        and s.facts.get("notification") == "decision")) if c]
         if main.kind != "block_overlap" and facts.get("overlaps"):
             clauses.append(f"Its block overlaps {_names(facts['overlaps'])}.")
         card: dict[str, Any] = {"signal_id": key, "app": main.app}
