@@ -1324,10 +1324,12 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "defer": _pin("task_id until"),
     "move_task": _pin(
         "task_ids destination_project_id parent_task_id fields include_subtasks"),
+    # WS-MDC CC-2: `focus` marks the member's own today's focus. It writes the
+    # member's overlay only, on the same card, and reaches nobody.
     "set_my_overlay": _pin(
         "task_id disposition context energy next_action estimate_mins two_minute "
         "block_start block_end flexible hard_date actual_start actual_end "
-        "deep_work waiting_on waiting_since expected_by clear"),
+        "deep_work waiting_on waiting_since expected_by focus clear"),
     "update_task": _pin(
         "task_id title description status due start estimate_mins tags clear "
         "priority important leveraged importance type fields include_subtasks"),
