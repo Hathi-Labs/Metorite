@@ -319,7 +319,7 @@ describe("the purpose line is behind the shell nav flag (NS-2)", () => {
  * filter. Each one fails a case below.
  */
 describe("every app the member holds, with nothing pinned", () => {
-  const LIVE_FEATURES = ["tasks", "email", "whatsapp", "projects", "crm", "people", "chat", "approvals"];
+  const LIVE_FEATURES = ["tasks", "email", "whatsapp", "projects", "crm", "people", "chat", "approvals", "studio"];
   // Preview panes the member also holds the grant for. They stay out.
   const PREVIEW_FEATURES = ["notes", "dashboard", "workflows", "agents", "integrations"];
   const goHrefs = (features: string[], admin: boolean, preview = false) =>
