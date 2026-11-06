@@ -102,14 +102,6 @@ store that must work before a tenant is known.
    Both run in the bound tenant and take the member from the caller, who
    passes the session's member. No other caller passes ``True``.
 
-<<<<<<< HEAD
-10. ⚠️ **Each revoke stores its reason (EA-19a, spec §10.9).** Every writer
-    that revokes a connection takes a REQUIRED keyword ``reason``, one of
-    :data:`REVOKE_REASONS`, and writes it to ``revoked_reason``. An unknown
-    reason raises ``ValueError`` before any SQL runs. The column has no
-    CHECK, so a wrong string can never roll back a reuse revoke. Fence:
-    ``tests/unit/test_agent_revoke_reason.py`` (R8).
-=======
 10. ⚠️ **Change access (EA-17c-1, D-EA-13, spec §10.8).**
     :func:`update_connection_grant` changes the scopes, the pins, the
     left-out list and the personal switch of ONE live connection, in one
@@ -123,7 +115,13 @@ store that must work before a tenant is known.
     member no longer sees stays, and a new one is refused. A grant that
     equals the row writes nothing. ``offline_access`` and
     ``requested_scopes`` never change here.
->>>>>>> origin/main
+
+11. ⚠️ **Each revoke stores its reason (EA-19a, spec §10.9).** Every writer
+    that revokes a connection takes a REQUIRED keyword ``reason``, one of
+    :data:`REVOKE_REASONS`, and writes it to ``revoked_reason``. An unknown
+    reason raises ``ValueError`` before any SQL runs. The column has no
+    CHECK, so a wrong string can never roll back a reuse revoke. Fence:
+    ``tests/unit/test_agent_revoke_reason.py`` (R8).
 
 Fence: ``tests/unit/test_agent_connection_tokens.py`` (R8, a phase-4-promoted
 catalog, as a NON-privileged role). D-EA-11:
