@@ -221,7 +221,9 @@ async function install(page: Page, opts: InstallOptions = {}) {
 
 const panel = (page: Page) => page.locator("section[data-assistant]");
 const spacer = (page: Page) => page.locator("[data-assistant-spacer]");
-const toggle = (page: Page) => page.locator("[data-assistant-toggle]");
+// The top-bar toggle is gone (GL-12, 30e72d332, 2026-11-01). The Ask bar's
+// side-panel button opens the dock now, and it is the opener on a desktop.
+const toggle = (page: Page) => page.getByRole("button", { name: "Open the chat beside the page" });
 const composer = (page: Page) => panel(page).getByRole("textbox", { name: /^Message / });
 
 /** Tag the chat's first element. A remount would draw a new one, with no tag. */
@@ -326,11 +328,16 @@ async function expectStrip(page: Page, height: number) {
 
 async function openPanel(page: Page) {
   await expect(toggle(page)).toBeVisible({ timeout: 60_000 });
-  await toggle(page).click();
+  // A press before the bar hydrates does nothing, so press again while the
+  // button is still there. It leaves the bar once the panel is asked for, so
+  // a press that worked is never repeated.
   // The dock mounts lazily on the first open. Late in a run that takes more
   // than the 5 s default (measured 2026-10-22: the panel was open in the
   // failure's snapshot). The same wait `expectLandedOnChat` gives it.
-  await expect(panel(page)).toHaveAttribute("data-panel-phase", "open", { timeout: 30_000 });
+  await expect(async () => {
+    if (await toggle(page).isVisible()) await toggle(page).click();
+    await expect(panel(page)).toHaveAttribute("data-panel-phase", "open", { timeout: 4_000 });
+  }).toPass({ timeout: 60_000 });
   await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
 }
 
@@ -400,7 +407,8 @@ test.describe("the assistant opens, closes and goes full screen as one element",
   });
 
   test("a narrow desktop floats the panel over the page, with no spacer", async ({ page }) => {
-    await openHome(page, 1100);
+    // 900 floats: the floor fell from 1280 to 1024 in GL-11 (8f497e7b8).
+    await openHome(page, 900);
     await openPanel(page);
     await expect(panel(page)).toHaveAttribute("data-panel-form", "dock");
     await expect(spacer(page)).toHaveCount(0);
@@ -476,12 +484,13 @@ test.describe("the assistant opens, closes and goes full screen as one element",
     await expect(sheet.locator("[data-chat-room-row]")).toHaveCount(0);
     await expect(sheet.getByRole("button", { name: "Share" })).toHaveCount(0);
     // The row's five controls, at the phone's tap size, and no Files.
-    for (const name of ["Your chats", "New chat", "Show as a strip", "Close Metorite"]) {
-      const b = sheet.getByRole("button", { name, exact: true });
+    // The title button names the chat too: "Your chats. This one: …".
+    for (const name of [/^Your chats\. This one: /, "New chat", "Show as a strip", "Close Metorite"]) {
+      const b = sheet.getByRole("button", typeof name === "string" ? { name, exact: true } : { name });
       await expect(b).toBeVisible();
       const box = (await b.boundingBox())!;
-      expect(Math.round(box.height), name).toBeGreaterThanOrEqual(44);
-      expect(Math.round(box.width), name).toBeGreaterThanOrEqual(44);
+      expect(Math.round(box.height), String(name)).toBeGreaterThanOrEqual(44);
+      expect(Math.round(box.width), String(name)).toBeGreaterThanOrEqual(44);
     }
     await expect(sheet.getByRole("button", { name: "Open this chat's files in Artifacts" })).toHaveCount(0);
 
