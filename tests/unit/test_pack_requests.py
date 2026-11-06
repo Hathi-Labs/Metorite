@@ -242,6 +242,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- studio records (STU-D2b) --
     "studio_package_get": ("list my studio packages",),
     "studio_record_list": ("show the records of my studio package",),
+    # -- studio record writes (STU-B2c-2b) --
+    "studio_record_create": ("add a record to my studio package",),
+    "studio_record_update": ("change a record in my studio package",),
+    "studio_record_delete": ("delete a record from my studio package",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),

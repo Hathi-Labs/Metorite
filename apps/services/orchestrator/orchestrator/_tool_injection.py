@@ -3393,10 +3393,51 @@ async def _drop_pack_unless_studio(
 ) -> tuple[list[Any], list[str]]:
     """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks,
     and for a member without ``feature:studio`` (STU-G1 and J1-1,
-    :func:`_studio_member_open`)."""
+    :func:`_studio_member_open`). For an open member, the second filter
+    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b)."""
     if await _studio_member_open():
-        return tools, dropped
+        return await _drop_studio_writes_unless_requests(tools, dropped, held=held)
     return [], [*dropped, *(_tool_name(t) for t in tools)]
+
+
+def _studio_requests_open() -> bool:
+    """True when ``APP_REQUESTS_ORGS`` holds the org of this run (STU-B2c-2b).
+
+    The reader is ``gateway.app_requests.requests_allowed``, the one that the
+    door reads before it opens a request. The org is the run's own
+    (:func:`_run_org_or_none`), never an argument (R5). It fails closed: no
+    org, no gateway or an error reads as closed.
+    """
+    try:
+        from gateway.app_requests import requests_allowed
+        return bool(requests_allowed(_run_org_or_none()))
+    except Exception as exc:  # fail closed
+        _log.info("executor.studio_requests_unread", error=str(exc)[:200])
+        return False
+
+
+async def _drop_studio_writes_unless_requests(
+    tools: list[Any], dropped: list[str], *, held: bool = False,
+) -> tuple[list[Any], list[str]]:
+    """Take the three record write tools out of a ``studio`` pack while the
+    org has no approval store (STU-B2c-2b, :func:`_studio_requests_open`).
+
+    In a dark org, the door answers each write from chat 403
+    ``approval_required``, so a write tool there only fails. The read tools
+    stay. A pack with no write tool reads no flag. The names are
+    ``acb_skills.studio_tools.STUDIO_RECORD_WRITES``, the one list.
+    Fence: ``tests/unit/test_tool_packs_registry.py``.
+    """
+    from acb_skills.studio_tools import STUDIO_RECORD_WRITES
+
+    if not any(_tool_name(t) in STUDIO_RECORD_WRITES for t in tools):
+        return tools, dropped
+    if _studio_requests_open():
+        return tools, dropped
+    kept = [t for t in tools if _tool_name(t) not in STUDIO_RECORD_WRITES]
+    gone = [_tool_name(t) for t in tools if _tool_name(t) in STUDIO_RECORD_WRITES]
+    _log.info("executor.studio_writes_dropped", tools=sorted(gone), source="pack")
+    return kept, [*dropped, *gone]
 
 
 #: The one pre-filter slot of :func:`_pack_tools`, by owner. A filter takes the
