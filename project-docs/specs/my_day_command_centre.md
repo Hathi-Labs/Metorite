@@ -290,25 +290,29 @@ CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in 
 
 **CC-5a, storage (migration 350, expand only).** A new table `focus_sessions`:
 
-- `id uuid` primary key, `organization_id` (the tenant column, FORCE RLS, the policy of its neighbours), `member_email`, `task_id uuid` (a task in `pm_tasks`).
+- `id uuid` primary key, `member_email text NOT NULL`, and `task_id uuid NOT NULL REFERENCES pm_tasks(id) ON DELETE CASCADE`. A deleted task takes its sessions with it.
+- `organization_id uuid NOT NULL REFERENCES organization(id) DEFAULT current_setting('app.tenant_id', true)::uuid`, in the idiom of migration 340. A guarded `DO` block enables and forces RLS, with the policy `focus_sessions_tenant_isolation` on `app.tenant_id` for USING and WITH CHECK. `test_tenant_coverage.py` and `test_tenancy_boundary.py` must pass with no exemption.
 - `started_at timestamptz NOT NULL`, `ended_at timestamptz NULL`, `planned_end timestamptz NULL` (the end of the block, or the start plus the timer length).
-- `paused_seconds integer NOT NULL DEFAULT 0`, `mode text` (`25/5`, `50/10` or `flow`).
-- `outcome text NULL`, one of `done`, `almost`, `not_now`, `blocked`, `replaced` and `auto_closed`.
+- `paused_seconds integer NOT NULL DEFAULT 0`, and `mode text` with a CHECK for `25/5`, `50/10` and `flow`.
+- `outcome text NULL`, with a CHECK for `done`, `almost`, `not_now`, `blocked`, `replaced` and `auto_closed`.
 - An index on `(organization_id, member_email, started_at)`.
+- A partial unique index on `(organization_id, member_email) WHERE ended_at IS NULL`. A member has at most one open session.
+- The DDL is idempotent, as `infra/postgres/README.md` asks.
 
 A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build takes the number 350, after CC-2's 349. Re-check both at merge (R1).
 
-**CC-5a, privacy.** A session row belongs to its member. Every route reads and writes only the rows of the session's member. Identity comes from the session, never from the request (R5). A manager sees no other member's minutes (D-MD-5).
+**CC-5a, privacy.** A session row belongs to its member. Every route reads and writes only the rows of the session's member. Identity comes from the session, never from the request (R5). A manager sees no other member's minutes (D-MD-5). The RLS of the table is tenant RLS only, as on `pm_task_personal`. The routes filter by the member. No repo policy keys on the member, so the table test proves the tenant, and the route test proves the member.
 
 **CC-5a, routes.**
 
-- `POST /projects/my/focus-sessions` starts a session for a task that the member can see. It ends any open session of the member first, with the outcome `replaced`. It also stamps `actual_start` on the overlay, as the room does now, so `estimate-stats` keeps its input.
-- `PATCH /projects/my/focus-sessions/{id}` pauses, resumes, extends (`+10 min` moves `planned_end`) or ends a session with an outcome. Only the session's member can write it. An end stamps `actual_end` on the overlay.
-- `GET /projects/my/focus-sessions?day=` lists the member's sessions of one local day, with the minutes of each and the total. The minutes are the end minus the start minus the paused seconds.
-- **Auto close.** No job runs. A read or a start first closes the member's open session whose `planned_end` is more than 15 minutes ago. It sets `ended_at` to `planned_end` and the outcome `auto_closed`.
-- Each route gets a row in the chat manifest. The tools come with CC-10.
+- `POST /projects/my/focus-sessions` starts a session for a task that the member can see. A task that the member cannot see answers 404. In one transaction, it ends any open session of the member with the outcome `replaced`, then inserts the new row. On a unique violation of the open-session index, it retries once.
+- `PATCH /projects/my/focus-sessions/{id}` pauses, resumes, extends (`+10 min` moves `planned_end`) or ends a session with an outcome. Only the session's member can write it.
+- `GET /projects/my/focus-sessions?day=` lists the member's sessions of one local day, with the minutes of each and the total. The minutes are the end minus the start minus the paused seconds. The day is the member's local day, in the zone that the Today predicate of CC-2 uses.
+- **Auto close.** No job runs. A read or a start first runs ONE statement: `UPDATE … SET ended_at = planned_end, outcome = 'auto_closed' WHERE` the member's row is open and `planned_end` is more than 15 minutes ago. A second reader at the same time updates no row. Never read first and then write.
+- **The overlay pair.** The routes own the `actual_start` and `actual_end` stamps of a session: a start stamps `actual_start`, and an end stamps `actual_end`. A replaced session stamps the end of its own task. An auto-closed session stamps `planned_end`. Until CC-5b, no client calls these routes, so the room's own stamp stays the only writer. CC-5b removes the room's stamp in the same change that calls the routes. So the two never write the same pair.
+- Each new route gets a row in `skill_projects/manifest.py` as class X, with the reason "the tools come with CC-10", so `test_projects_chat_coverage.py` passes.
 
-**CC-5a, flag.** `FOCUS_LOG_ORGS`, default empty, reloaded by SIGHUP. With it off, the routes answer 404, and the client keeps the pair only.
+**CC-5a, flag.** `FOCUS_LOG_ORGS`, default empty, reloaded by SIGHUP. Add it to `acb_common/settings.py` in the idiom of `studio_orgs`, add the prefix `FOCUS_LOG_` to `env_guard.py` (a tenant must not set it), read it through a small `flags.py` reader in the idiom of `routes/studio/flags.py`, and record it in `docs/flag_reload.md`. With it off, each route answers 404 before any database work, and nothing writes the overlay.
 
 **CC-5b, the check-in.** When the timer ends, the room and the Now card ask "Is it done?". The answers:
 
@@ -327,9 +331,11 @@ The Close phase (CC-8) and the Calendar read the minutes from `GET /projects/my/
 **Verify with (CC-5a):**
 
 ```bash
-uv run pytest tests/unit/test_focus_session_rls_r8.py tests/unit/test_focus_sessions_r8.py -q
-uv run ruff check apps/services/gateway/gateway/routes/projects/
+uv run pytest tests/unit/test_focus_session_rls_r8.py tests/unit/test_focus_sessions_r8.py tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_boundary.py tests/unit/test_projects_chat_coverage.py -q
+uv run ruff check apps/services/gateway/gateway/routes/projects/ packages/acb_common
 ```
+
+The R8 files hold an `apply_ladder` fixture. They also prove two starts at once leave one open row, a flag-off POST writes nothing, and the auto close runs once. Run the env_guard and flag tests that `scripts/affected_tests.py` lists.
 
 Run them with a database exported, and confirm that no R8 test skips.
 
