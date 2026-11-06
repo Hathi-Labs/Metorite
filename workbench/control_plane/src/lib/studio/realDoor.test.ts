@@ -15,6 +15,10 @@
  *    Mutation: return `rec.data` without the id. "flattens" turns red.
  * 4. The refusal map. A 422 keeps `fieldErrors`, `rule` and `message`.
  *    Mutation: drop `fieldErrors` in `mapAnswer`. "a 422 keeps" turns red.
+ * 5. A 202 is not a save (STU-B2c-2a fix round 1). The door answers 202 when a
+ *    write waits for an approval card, and nothing is written yet. So the
+ *    blocks must not show it as saved.
+ *    Mutation: drop the 202 branch of `mapAnswer`. "a 202 waits" turns red.
  */
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +26,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
 import { sourceKey } from "./dataDoor";
 import {
-  APPROVAL_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
+  APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
   listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
 } from "./realDoor";
 import { canRetryRead } from "./dataDoor";
@@ -193,6 +197,18 @@ describe("the refusal map", () => {
   });
   it("a 2xx is ok and keeps the body", () => {
     expect(mapAnswer(200, { record: { id: "a" } })).toEqual({ ok: true, data: { record: { id: "a" } } });
+  });
+  it("a 202 waits for an approval, so it is not ok and is not a save", () => {
+    const res = mapAnswer(202, { state: "awaiting", request_id: "r1", expires_at: "x" });
+    expect(res).toEqual({ ok: false, message: WAITING_SENTENCE });
+    expect(WAITING_SENTENCE).toMatch(/approv/);
+    expect(WAITING_SENTENCE).toMatch(/not saved/);
+  });
+  it("a write that gets 202 reads as not saved through the door", async () => {
+    const { impl } = fakeFetch(202, { state: "awaiting", request_id: "r1", expires_at: "x" });
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    expect(await door.run("object:visit.create", { data: { title: "A" } })).toEqual(
+      { ok: false, message: WAITING_SENTENCE });
   });
 });
 
