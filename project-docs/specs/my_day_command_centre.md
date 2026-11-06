@@ -12,7 +12,7 @@
 
 **Gate summary:** every slice is AGENT-SAFE to build dark. CC-2 and CC-5 add a migration and are HIGH tier. CC-10 changes the chat tools and is HIGH tier. No slice flips a production flag. Each flag flip is named in its own PR.
 
-**Design source:** the approved proposal page `workbench/control_plane/ux-shots/my-day-command-centre/index.html`. It holds the mockups. This spec holds the rules.
+**Design source:** the approved proposal page `project-docs/specs/mockups/my_day_command_centre.html`. It holds the mockups. This spec holds the rules.
 
 ---
 
