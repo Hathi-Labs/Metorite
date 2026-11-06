@@ -108,6 +108,21 @@ class TestOutboundStaysOff:
                     f"{section} gets {name}")
 
 
+class TestPreviewSwitches:
+    @needs_bash
+    def test_dev_up_orgs_on_turns_a_per_org_switch_on_for_this_stack(self, tmp_path, monkeypatch):
+        """A dark feature behind a *_ORGS list shows in the owner's local preview (D145)."""
+        monkeypatch.setenv("DEV_UP_ORGS_ON", "GUIDE_ORGS")
+        assert _print_env(tmp_path)["gateway"]["GUIDE_ORGS"] == "*"
+
+    @needs_bash
+    def test_dev_up_orgs_on_skips_a_held_switch_and_a_non_orgs_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DEV_UP_ORGS_ON", "PUSH_PROMPT_ORGS DATABASE_URL")
+        gw = _print_env(tmp_path)["gateway"]
+        assert "PUSH_PROMPT_ORGS" not in gw
+        assert gw["DATABASE_URL"].startswith("postgresql+psycopg://acb_app:")
+
+
 class TestStudioSwitch:
     @needs_bash
     def test_the_gateway_lists_every_org_for_studio(self, tmp_path):

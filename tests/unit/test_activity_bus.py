@@ -1,8 +1,8 @@
 """Unit tests for the live activity bus (E2 live observability).
 
 The bus (`acb_common.activity`) publishes one small event per agent run / model
-call to a global Redis stream so the /observability feed can show activations in
-real time. These tests cover the pure event-shaping + the best-effort,
+call to the tenant's Redis stream (H-201c) so the /observability feed can show
+activations in real time. test_activity_feed_tenant.py owns the two-org proof. These tests cover the pure event-shaping + the best-effort,
 non-blocking publish contract WITHOUT needing a live Redis (the Redis IO is
 monkeypatched / exercised only on the no-loop swallow path).
 """
@@ -11,8 +11,27 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
 from acb_common import bind_run_context, clear_run_context, publish_activity
 from acb_common.activity import _build_event
+from acb_common.db import bind_tenant, release_tenant
+
+#: The tenant that the publish and presence tests bind. H-201c drops a write
+#: with no tenant, so each test that expects a write binds this one.
+_ORG = "org-bus-test"
+
+
+@pytest.fixture
+def bound_org():
+    token = bind_tenant(_ORG)
+    try:
+        yield _ORG
+    finally:
+        release_tenant(token)
+
+
+def _live(run_id: str) -> str:
+    return f"cc:{_ORG}:activity:live:{run_id}"
 
 # ── Event shaping (pure) ─────────────────────────────────────────────────────
 
@@ -90,11 +109,13 @@ def test_source_is_bound_into_run_context():
 
 # ── Publish contract ─────────────────────────────────────────────────────────
 
-def test_publish_schedules_write_on_the_running_loop(monkeypatch):
+def test_publish_schedules_write_on_the_running_loop(monkeypatch, bound_org):
     recorded: list[dict] = []
+    orgs: list[str] = []
 
-    async def _fake_axadd(evt):
+    async def _fake_axadd(evt, org):
         recorded.append(evt)
+        orgs.append(org)
 
     monkeypatch.setattr("acb_common.activity._axadd", _fake_axadd)
 
@@ -109,6 +130,9 @@ def test_publish_schedules_write_on_the_running_loop(monkeypatch):
     assert recorded[0]["kind"] == "agent"
     assert recorded[0]["phase"] == "start"
     assert recorded[0]["run_id"] == "r9"
+    # The org rides as an argument, never in the event body (H-201c).
+    assert orgs == [_ORG]
+    assert "organization_id" not in recorded[0]
 
 
 def test_tool_event_carries_tool_and_agent(monkeypatch):
@@ -127,10 +151,10 @@ def test_tool_event_carries_tool_and_agent(monkeypatch):
     assert evt["agent"] == "email-assistant"  # keyed to the office cast member
 
 
-def test_publish_schedules_tool_event(monkeypatch):
+def test_publish_schedules_tool_event(monkeypatch, bound_org):
     recorded: list[dict] = []
 
-    async def _fake_axadd(evt):
+    async def _fake_axadd(evt, _org):
         recorded.append(evt)
 
     monkeypatch.setattr("acb_common.activity._axadd", _fake_axadd)
@@ -157,8 +181,8 @@ def test_publish_never_raises_even_if_shaping_fails(monkeypatch):
     publish_activity(kind="model", model="x")
 
 
-def test_publish_write_failure_is_swallowed(monkeypatch):
-    async def _fake_axadd(_evt):
+def test_publish_write_failure_is_swallowed(monkeypatch, bound_org):
+    async def _fake_axadd(_evt, _org):
         raise ConnectionError("no redis")
 
     monkeypatch.setattr("acb_common.activity._axadd", _fake_axadd)
@@ -176,7 +200,11 @@ def test_publish_write_failure_is_swallowed(monkeypatch):
 # ── Presence gate (kind="agent" | "app") ────────────────────────────────────
 
 class _FakePresenceRedis:
-    """Enough of the redis.asyncio surface for `_axadd`'s presence branch."""
+    """Enough of the redis.asyncio surface for `_axadd`'s presence branch.
+
+    The test wraps it in a TenantRedis, so the keys it sees are the wire keys
+    (``cc:<org>:activity:live:<run>``).
+    """
 
     def __init__(self):
         self.store: dict[str, str] = {}
@@ -196,14 +224,25 @@ class _FakePresenceRedis:
     async def get(self, key):
         return self.store.get(key)
 
-    async def delete(self, key):
-        self.store.pop(key, None)
+    async def delete(self, *keys):
+        for key in keys:
+            self.store.pop(key, None)
 
-    async def scan(self, cursor, match=None, count=None):
-        return 0, list(self.store)
+    async def scan_iter(self, match=None, count=None):
+        import fnmatch
+        for k in list(self.store):
+            if fnmatch.fnmatchcase(k, match):
+                yield k
 
     async def mget(self, keys):
         return [self.store.get(k) for k in keys]
+
+
+def _patch_client(monkeypatch, r):
+    from acb_common import activity
+    from acb_common.tenant_redis import TenantRedis
+
+    monkeypatch.setattr(activity, "get_tenant_redis", lambda **_kw: TenantRedis(r))
 
 
 def test_app_start_creates_a_presence_key_like_an_agent_run(monkeypatch):
@@ -213,32 +252,32 @@ def test_app_start_creates_a_presence_key_like_an_agent_run(monkeypatch):
     from acb_common import activity
 
     r = _FakePresenceRedis()
-    monkeypatch.setattr(activity, "_get_client", lambda: r)
+    _patch_client(monkeypatch, r)
 
     asyncio.run(activity._axadd({
         "kind": "app", "phase": "start", "run_id": "app-run-1",
         "agent": "app:filament-tracker",
-    }))
-    assert activity._live_key("app-run-1") in r.store
+    }, _ORG))
+    assert _live("app-run-1") in r.store
 
 
 def test_app_end_clears_the_presence_key(monkeypatch):
     from acb_common import activity
 
     r = _FakePresenceRedis()
-    monkeypatch.setattr(activity, "_get_client", lambda: r)
+    _patch_client(monkeypatch, r)
 
     asyncio.run(activity._axadd({
         "kind": "app", "phase": "start", "run_id": "app-run-2",
-    }))
-    assert activity._live_key("app-run-2") in r.store
+    }, _ORG))
+    assert _live("app-run-2") in r.store
     asyncio.run(activity._axadd({
         "kind": "app", "phase": "end", "run_id": "app-run-2",
-    }))
-    assert activity._live_key("app-run-2") not in r.store
+    }, _ORG))
+    assert _live("app-run-2") not in r.store
 
 
-def test_presence_carries_the_instance_after_the_late_bind(monkeypatch):
+def test_presence_carries_the_instance_after_the_late_bind(monkeypatch, bound_org):
     # WS-6a: the presence key is written from the phase="start" event, which is
     # published BEFORE load_agent and therefore before `instance` exists. Without
     # refresh_run_presence the snapshot — and so /observability/active and the
@@ -248,27 +287,27 @@ def test_presence_carries_the_instance_after_the_late_bind(monkeypatch):
     from acb_common import activity
 
     r = _FakePresenceRedis()
-    monkeypatch.setattr(activity, "_get_client", lambda: r)
+    _patch_client(monkeypatch, r)
 
     async def _run():
         await activity._axadd({
             "kind": "agent", "phase": "start", "run_id": "run-inst",
             "agent": "email-assistant", "user": "alice@fracktal.in",
             "source": "email", "ts": "2026-08-02T00:00:00+00:00",
-        })
+        }, _ORG)
         # The pre-fix state, asserted so the regression is visible if the
         # refresh is ever removed.
-        before = json.loads(r.store[activity._live_key("run-inst")])
+        before = json.loads(r.store[_live("run-inst")])
         assert "instance" not in before
 
         activity.refresh_run_presence("run-inst", instance="u:alice@fracktal.in")
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         # …and the office view's own reader sees it.
-        return await activity.active_runs()
+        return await activity.active_runs(organization_id=_ORG)
 
     live = asyncio.run(_run())
-    snap = json.loads(r.store[activity._live_key("run-inst")])
+    snap = json.loads(r.store[_live("run-inst")])
     assert snap["instance"] == "u:alice@fracktal.in"
     # Nothing else in the snapshot was disturbed — it is a patch, not a rewrite.
     assert snap["agent"] == "email-assistant"
@@ -278,22 +317,22 @@ def test_presence_carries_the_instance_after_the_late_bind(monkeypatch):
     assert [e["instance"] for e in live] == ["u:alice@fracktal.in"]
 
 
-def test_presence_refresh_never_resurrects_a_finished_run(monkeypatch):
+def test_presence_refresh_never_resurrects_a_finished_run(monkeypatch, bound_org):
     # A patch that lands after the end event (or for a run that never started)
     # must be a no-op — a resurrected presence key would show a finished agent
     # as working for LIVE_TTL_SECONDS.
     from acb_common import activity
 
     r = _FakePresenceRedis()
-    monkeypatch.setattr(activity, "_get_client", lambda: r)
+    _patch_client(monkeypatch, r)
 
     async def _run():
         await activity._axadd({
             "kind": "agent", "phase": "start", "run_id": "run-gone",
-        })
+        }, _ORG)
         await activity._axadd({
             "kind": "agent", "phase": "end", "run_id": "run-gone",
-        })
+        }, _ORG)
         activity.refresh_run_presence("run-gone", instance="u:a@b.com")
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -302,7 +341,7 @@ def test_presence_refresh_never_resurrects_a_finished_run(monkeypatch):
     assert r.store == {}
 
 
-def test_presence_refresh_ignores_empty_and_missing_input(monkeypatch):
+def test_presence_refresh_ignores_empty_and_missing_input(monkeypatch, bound_org):
     # A shared run's instance is '' — nothing to patch, and no Redis touched
     # (not even the no-running-loop one-shot path, which would open a client).
     from acb_common import activity
@@ -325,11 +364,11 @@ def test_model_events_never_create_a_presence_key(monkeypatch):
     from acb_common import activity
 
     r = _FakePresenceRedis()
-    monkeypatch.setattr(activity, "_get_client", lambda: r)
+    _patch_client(monkeypatch, r)
 
     asyncio.run(activity._axadd({
         "kind": "model", "phase": "start", "run_id": "model-run-1",
-    }))
+    }, _ORG))
     assert r.store == {}
 
 

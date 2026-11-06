@@ -22,6 +22,7 @@ from gateway.routes.email.core import (
     MAILBOX_LIMIT_DETAIL,
     MAX_MAILBOXES_PER_MEMBER,
     _account_scope,
+    _bound_org,
     _default_label,
     _log,
     _tenant_session,
@@ -310,7 +311,8 @@ async def list_accounts(
     """List all connected email accounts for the current user.
 
     Two reads for any number of accounts: the rows, then one grouped count
-    (EM-T4e).
+    (EM-T4e). The rows read names the bound tenant, so a role that bypasses
+    RLS still lists one organization only (R5, H-334b).
     """
     owner = user.email or "anonymous"
     async with _tenant_session() as db:
@@ -323,6 +325,7 @@ async def list_accounts(
                           in_all_inboxes, {_PROGRESS_COLUMNS}
                    FROM email_accounts
                    WHERE {mailbox_predicate(uid="user_id", level="read")}
+                     AND organization_id = {_bound_org()}
                    ORDER BY is_default DESC, created_at"""
             ),
             {"user_id": owner},
@@ -373,6 +376,8 @@ async def feed_mailboxes(user: UserContext) -> list[dict[str, Any]]:
     (``_unread_counts``), and the feed threw that count away on each read.
 
     Not a route. The shell calls it after its own ``feature:email`` check.
+    The read names the bound tenant, as :func:`list_accounts` does (R5,
+    H-334b).
     """
     owner = user.email or "anonymous"
     async with _tenant_session() as db:
@@ -380,6 +385,7 @@ async def feed_mailboxes(user: UserContext) -> list[dict[str, Any]]:
             text(
                 f"""SELECT id, in_all_inboxes FROM email_accounts
                    WHERE {mailbox_predicate(uid="user_id", level="read")}
+                     AND organization_id = {_bound_org()}
                    ORDER BY is_default DESC, created_at"""
             ),
             {"user_id": owner},

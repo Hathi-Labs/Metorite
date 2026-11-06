@@ -2996,6 +2996,7 @@ time), `PUT /shell/feed/prefs`, and `test_my_day_prefs.py` (§13.3).
   - `mutes`: a list of kinds, 20 at most.
   - `open_in_app`: a list of kinds, for §11.2 rule 4.
   - `corrections`: 10 lines at most, 300 characters each, 1,500 in all.
+  - `rule_mutes` (BR-5, `core_brief.md` §6): a list of exception rule ids. Reach reads it. The feed does not.
 
   Any other key gets 422.
 - **The body.** `{key, value}`. The server merges one key with `jsonb_set`,
@@ -3356,7 +3357,10 @@ it. These are the parts:
 - `feed_mailboxes` names no tenant. RLS holds for `acb_app`, the role of
   production, so this is defence in depth (R5). Read past RLS, the list would
   hold the member's mailbox of another organization too. The wrappers refuse
-  it with a 404, and the provider skips it. HANDOFF H-334 holds the rest.
+  it with a 404, and the provider skips it.
+  **Closed 2026-11-05, H-334b (task 1692):** `feed_mailboxes` names the
+  bound tenant now. `tests/unit/test_email_mailbox_list_tenant_r8.py` is
+  the fence.
 
 **Fix round 1, 2026-10-16.** The review found that a fold moved the state
 fingerprint. A `promise_due` folded under a notification card added

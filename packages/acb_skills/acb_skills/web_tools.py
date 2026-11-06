@@ -6,7 +6,7 @@ MAF agents and GitHub Copilot SDK agents identically.
 
 Tools
 -----
-web_search(query, max_results=5) -> str
+web_search(query, max_results=5, source="web") -> str
     Provider chain, best-first: SerpAPI (Google results, when
     SERPAPI_API_KEY / settings.serpapi_api_key is configured) → the free
     ddgs engines (DuckDuckGo/Bing/Brave/…, zero-credential rotation).
@@ -31,8 +31,10 @@ fetch_page(url, max_chars=8000) -> str
     4. **Redirects.** The guard follows them by hand, at most
        :data:`MAX_REDIRECTS`. Each hop passes rules 1 to 3 again. One cookie
        jar holds the cookies of the hops of one read, and no other read. The
-       jar keeps only a host-only cookie. It refuses a cookie with a
-       ``Domain`` attribute, because it knows no public suffix.
+       jar keeps only a host-only cookie, because it knows no public suffix.
+       A cookie with a ``Domain`` attribute is kept for the exact host that
+       set it, as if it had no ``Domain``. The jar refuses a ``Domain`` that
+       does not match that host.
     5. **Caps.** Each read stops at :data:`TOTAL_TIMEOUT_S` seconds and at
        :data:`MAX_READ_BYTES` bytes, on the wire and after a gzip decode.
        The walk is one read and the Jina read is another, so one call can
@@ -149,7 +151,7 @@ from acb_skills.untrusted import UntrustedFrame
 _log = get_logger("acb_skills.web_tools")
 
 
-async def web_search(query: str, max_results: int = 5) -> str:
+async def web_search(query: str, max_results: int = 5, source: str = "web") -> str:
     """Search the web and return the top results.
 
     Provider chain, best-first: **SerpAPI** (Google results — used whenever a
@@ -164,12 +166,22 @@ async def web_search(query: str, max_results: int = 5) -> str:
     Args:
         query:       The search query string.
         max_results: Number of results to return (1-10).  Default 5.
+        source:      ``"web"`` (default), ``"papers"`` (OpenAlex and arXiv) or
+                     ``"wiki"`` (Wikipedia).  Read only for an organization
+                     that WEB_RESEARCH_ORGS holds; else it is ignored.
 
     Returns:
         A plain-text block with one result per section, or an error message
         if the search could not be completed.
     """
     max_results = max(1, min(10, int(max_results)))
+
+    # WEB-4: an org of WEB_RESEARCH_ORGS gets the provider list (spec 3.3).
+    # Any other org keeps the chain below, byte for byte.
+    if _local_reader_on():
+        from acb_skills import web_search_providers
+
+        return await web_search_providers.search(query, max_results, source)
 
     # ── 1. SerpAPI first (Google — the best result quality) ─────────────
     serp = await _serpapi_search(query, max_results)
@@ -302,6 +314,12 @@ MAX_CHARS = 100_000
 #: The most bytes of HTML that the direct read decodes and strips. The strip
 #: runs on the event loop, so this bound is the bound of its stall.
 MAX_HTML_BYTES = 512 * 1024
+#: The type that the header names when Jina's text wins. Jina gives Markdown,
+#: whatever type the page had.
+_JINA_TYPE = "text/markdown"
+#: The mark at the end of the direct read of a page that is longer than
+#: :data:`MAX_HTML_BYTES`.
+_CUT_MARK = f"[... page cut at {MAX_HTML_BYTES} bytes]"
 #: The most bytes of Jina's Markdown that the read decodes. UTF-8 needs at
 #: most four bytes for one character of :data:`MAX_CHARS`.
 MAX_MARKDOWN_BYTES = 4 * MAX_CHARS
@@ -567,15 +585,36 @@ class _HostOnlyCookies(http.cookiejar.DefaultCookiePolicy):
     """The cookie rule of one walk: a host-only cookie, and no other.
 
     The jar knows no public suffix, so a cookie with ``Domain=co.uk`` would go
-    to each host under it. This rule refuses each cookie with a ``Domain``
-    attribute. A host-only cookie goes back only to the host that set it."""
+    to each host under it. This rule keeps such a cookie for the host that set
+    it, and for no other host. A site that sets ``Domain=.example.com`` and
+    redirects to itself then still gets its cookie back. A ``Domain`` that
+    does not match the setting host is refused."""
 
     def __init__(self) -> None:
         super().__init__(
             strict_ns_domain=http.cookiejar.DefaultCookiePolicy.DomainStrictNonDomain)
 
     def set_ok(self, cookie: http.cookiejar.Cookie, request: object) -> bool:
-        return not cookie.domain_specified and super().set_ok(cookie, request)
+        if cookie.domain_specified:
+            req_host, erhn = http.cookiejar.eff_request_host(request)
+            domain = cookie.domain.lower().lstrip(".")
+            if not _domain_matches(req_host, domain):
+                return False
+            cookie.domain = erhn
+            cookie.domain_specified = False
+            cookie.domain_initial_dot = False
+        return super().set_ok(cookie, request)
+
+
+def _domain_matches(host: str, domain: str) -> bool:
+    """True when ``host`` is ``domain`` or a sub-host of it. An IP must be equal."""
+    if not domain:
+        return False
+    if host == domain:
+        return True
+    if http.cookiejar.IPV4_RE.search(host):
+        return False
+    return host.endswith("." + domain)
 
 
 def _walk_jar() -> httpx.Cookies:
@@ -818,7 +857,13 @@ async def _direct_text(walk: _Walk, charset: str | None = None) -> tuple[str, st
         text = _strip_html(await _decode(body, charset or answer.charset))
     except Exception as exc:  # a fault of the strip is not a raise of the tool
         return "", _fault(exc)
-    return text, "" if text else "empty answer"
+    if len(answer.body) <= MAX_HTML_BYTES:
+        return text, "" if text else "empty answer"
+    # The cut is visible. A page with script bloat at the start gives no text
+    # in the first bytes, and the fault says why.
+    if not text:
+        return "", f"no text in the first {MAX_HTML_BYTES} bytes of the page"
+    return f"{text}\n\n{_CUT_MARK}", ""
 
 
 # ── The local reader (WEB-2, spec section 3.2) ───────────────────────────────
@@ -1240,11 +1285,13 @@ async def _read_locally(walk: _Walk, max_chars: int) -> str:
     other_type = page.other_type
     ask_jina = _remote_reader() == _REMOTE_JINA and len(text) < MIN_LOCAL_CHARS
     jina_fault = ""
+    jina_won = False
     if ask_jina:
         jina_text, jina_fault = await _jina_read(walk.first.url)
         if len(jina_text) > len(text):
             text, source, title, date = jina_text, walk.first.url, "", ""
             other_type = False
+            jina_won = True
     if not text:
         host = walk.first.host
         line = _BINARY_LINE if page.binary else (
@@ -1253,7 +1300,8 @@ async def _read_locally(walk: _Walk, max_chars: int) -> str:
         if ask_jina:
             line += f" Jina Reader: {jina_fault or 'empty answer'}."
         return line
-    content_type = walk.answer.content_type if walk.answer else ""
+    content_type = _JINA_TYPE if jina_won else (
+        walk.answer.content_type if walk.answer else "")
     # The frame passes over up to MAX_CHARS characters on the loop, so it
     # gets its own step, as in fetch_page.
     await asyncio.sleep(0)
@@ -1389,16 +1437,17 @@ async def fetch_page(url: str, max_chars: int = 8000) -> str:
     # call, and the direct read read the last hop of the walk.
     text, jina_fault = await _jina_read(walk.first.url)
     source, direct_fault = walk.first.url, ""
+    content_type = _JINA_TYPE
     if not text:
         text, direct_fault = await _direct_text(walk)
         source = walk.target.url
+        content_type = walk.answer.content_type if walk.answer else ""
     if not text:
         host = walk.first.host
         return (
             f"fetch_page could not read the page on host {host[:_HOST_IN_MESSAGE]}. "
             f"Jina Reader: {jina_fault or 'empty answer'}. Direct read: {direct_fault}."
         )
-    content_type = walk.answer.content_type if walk.answer else ""
     # The frame passes over up to MAX_CHARS characters on the loop. It gets
     # its own step, so its pass and the strip's pass do not add up.
     await asyncio.sleep(0)

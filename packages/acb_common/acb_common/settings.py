@@ -671,6 +671,12 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
+    # of the guide's tour (the welcome button and the account menu row). `*`
+    # opens every org. Empty opens none. Reader: `acb_common.guide_flags.
+    # guide_allowed`, returned as `guide` from GET /auth/me/shell. Spec:
+    # assistant_guide.md section 7.
+    guide_orgs: str = ""
     # WS-PKG PKG-5b: PACKAGE_HOST_ORGS lists the org ids that may read the
     # resolved shell manifest (GET /shell/manifest). `*` opens every org.
     # Empty opens none. Reader:
@@ -929,6 +935,16 @@ class Settings(BaseSettings):
     # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
     authority_pins_orgs: str = ""
 
+    # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, each `/project-rules` route answers 404 and no rule
+    # row is written. The one reader is
+    # `gateway.routes.project_rules.project_rules_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_project_rules.py.
+    project_rules_orgs: str = ""
+
     # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1042,6 +1058,20 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_held_card_writes.py.
     held_card_writes_orgs: str = ""
 
+    # ── Continue a held chat in a fresh chat (one_assistant_context.md §9, WT-1) ─
+    #
+    # `chat_continue_orgs` lists the organization ids where
+    # `POST /chat/sessions/{id}/continue` answers, or `*` for each one. Empty
+    # means off, and the route answers 404 for each caller. The one reader is
+    # `gateway.routes.chat.continue_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4, slice WT-5). The flip also waits for WT-1b and WT-2 (§9.3 item 9).
+    # Fence: tests/unit/test_continue_carry.py.
+    chat_continue_orgs: str = ""
+
     # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
     #
     # `email_edit_card_orgs` lists the organization ids whose chat shows a new
@@ -1071,6 +1101,12 @@ class Settings(BaseSettings):
     # is under 200 characters. Any other value means no remote reader.
     # 🔴 OWNER-ONLY on a box: `jina` sends each URL to a third party (WEB-Q3).
     web_reader_remote: str = ""
+    # `searxng_url` is the base URL of the self-hosted SearXNG (WEB-4, §3.3),
+    # for example `http://127.0.0.1:8888`. Empty means no SearXNG, and the
+    # provider list skips it. The URL is not a member input: only the operator
+    # writes it (`env_guard`, prefix `SEARXNG_`).
+    # Fence: tests/unit/test_web_search_providers.py.
+    searxng_url: str = ""
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #

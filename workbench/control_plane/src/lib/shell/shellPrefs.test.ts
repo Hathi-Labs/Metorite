@@ -25,14 +25,18 @@ import { chatScope } from "@/lib/sessions";
 
 import { EMPTY_SHELL, type StoredShell } from "./presets";
 import { NUDGE_PREFIX, clearNudgeMarks, nudgeKey, readNudgeRetired } from "./shellCache";
+import { __guideRunner, guideState } from "./guide";
 import {
   SHELL_PREFS_PATH,
   __newShellPageForTests,
   asLayout,
   bodyFor,
+  guideOn,
   markChatFirstMessage,
+  markTourSeen,
   memberWrote,
   nudgeShows,
+  readShellPrefs,
   saveShellPrefs,
 } from "./shellPrefs";
 
@@ -230,5 +234,87 @@ describe("the nudge (WS-62 CF-2)", () => {
     await saveShellPrefs(WROTE);
     expect((fetches[1].body as StoredShell).chat_first_message_at).toBe(WROTE.chat_first_message_at);
     expect(bodyFor(null)).toBeNull();
+  });
+});
+
+describe("GD-5a: the tour mark and the guide's switch", () => {
+  let fetches: Array<{ method: string; body: unknown }>;
+  const SEEN = "2026-11-02T10:00:00.000Z";
+
+  beforeEach(() => {
+    vi.stubGlobal("window", { localStorage: new MemoryStorage() });
+    fetches = [];
+    __newShellPageForTests();
+    clearAll();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** A gateway that merges a key-only write and stamps the tour with ITS time, as `me.py` does. */
+  const server = (layout: StoredShell & { guide?: boolean }) =>
+    vi.fn(async (_url: string, init?: RequestInit) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      fetches.push({ method, body });
+      const merged = method === "GET" ? layout : { ...layout, ...body, ...(body?.tour_seen_at ? { tour_seen_at: SEEN } : {}) };
+      return new Response(JSON.stringify(merged), { status: 200 });
+    });
+
+  it("asLayout reads the tour mark, and keeps no key that is not the layout's (`guide`)", () => {
+    const read = asLayout({ ...EMPTY_SHELL, answered: "skipped", tour_seen_at: SEEN, guide: true });
+    expect(read?.tour_seen_at).toBe(SEEN);
+    expect(read && "guide" in read).toBe(false);
+    const old: Record<string, unknown> = { ...EMPTY_SHELL, answered: "skipped" };
+    delete old.tour_seen_at;
+    expect(asLayout(old)?.tour_seen_at).toBeNull();
+  });
+
+  it("a layout save never sends the tour mark or `guide`, so the gateway keeps the mark and refuses nothing", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, tour_seen_at: SEEN, guide: true }));
+    const stamped = { ...NEVER, pins: ["/chat"], tour_seen_at: SEEN, guide: true } as StoredShell;
+    await saveShellPrefs(stamped);
+    const body = fetches[0].body as Record<string, unknown>;
+    expect("tour_seen_at" in body).toBe(false);
+    expect("buddy_hello_at" in body).toBe(false);
+    expect("guide" in body).toBe(false);
+    expect(Object.keys(bodyFor(stamped) ?? {}).sort()).toEqual(["answered", "cardOrder", "known", "newOrder", "pins", "preset"]);
+  });
+
+  it("the tour mark is ONE key-only write, the server's time comes back, and a second call writes nothing", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, pins: ["/tasks", "/email"] }));
+    put(SHELL_PREFS_PATH, { ...NEVER, pins: ["/tasks"] });
+    await markTourSeen();
+    await markTourSeen();
+    expect(fetches.map((f) => f.method)).toEqual(["PUT"]);
+    expect(Object.keys(fetches[0].body as object)).toEqual(["tour_seen_at"]);
+    const shown = peek<StoredShell>(SHELL_PREFS_PATH)?.data;
+    expect(shown?.tour_seen_at).toBe(SEEN);
+    expect(shown?.pins).toEqual(["/tasks", "/email"]);
+  });
+
+  it("a layout that already holds the mark keeps the first start: no write", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, tour_seen_at: SEEN }));
+    put(SHELL_PREFS_PATH, { ...NEVER, tour_seen_at: SEEN });
+    await markTourSeen();
+    expect(fetches).toEqual([]);
+  });
+
+  it("guideOn: only `guide: true` is on, and a missing field is off", () => {
+    expect(guideOn({ ...NEVER, guide: true })).toBe(true);
+    expect(guideOn({ ...NEVER, guide: false })).toBe(false);
+    expect(guideOn({ ...NEVER })).toBe(false);
+    expect(guideOn({ ...NEVER, guide: "true" })).toBe(false);
+    expect(guideOn(null)).toBe(false);
+  });
+
+  it("the read passes the switch to the guide, and a new member resets it", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, guide: true }));
+    await readShellPrefs();
+    expect(guideState().phase).toBe("idle");
+    expect(__guideRunner.allowed()).toBe(true);
+    clearAll();
+    expect(__guideRunner.allowed()).toBeNull();
+    vi.stubGlobal("fetch", server({ ...NEVER }));
+    await readShellPrefs();
+    expect(__guideRunner.allowed()).toBe(false);
   });
 });

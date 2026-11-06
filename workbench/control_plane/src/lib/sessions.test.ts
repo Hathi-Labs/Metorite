@@ -13,7 +13,10 @@ import {
   bindChatScope,
   chatKey,
   fetchMessagesFromDb,
+  createSession,
   getMessages,
+  getSessions,
+  keepSession,
   postMessagesWithRetry,
   queueSave,
   resetSaveLines,
@@ -219,5 +222,22 @@ describe("the save line", () => {
     await queueSave("s1", "[1]", NO_WAIT, 0);
     await queueSave("s2", "[1]", NO_WAIT, 0);
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe("keepSession: two tabs share one stored list (WS-BUD BUD-1)", () => {
+  it("puts back a chat that the other tab's save dropped, and only then", () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    const mine = createSession();
+    const theirs = createSession();
+    const key = chatKey("sessions") as string;
+    // Tab B read the list before tab A saved, then wrote its own over it.
+    localStorage.setItem(key, JSON.stringify([theirs]));
+    expect(getSessions().map((s) => s.id)).toEqual([theirs.id]);
+    expect(keepSession(mine)).toBe(true);
+    expect(getSessions().map((s) => s.id).sort()).toEqual([mine.id, theirs.id].sort());
+    // A chat that is in the list is left alone.
+    expect(keepSession(mine)).toBe(false);
+    expect(getSessions()).toHaveLength(2);
   });
 });
