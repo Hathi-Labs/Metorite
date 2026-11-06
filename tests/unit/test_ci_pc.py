@@ -296,7 +296,7 @@ def test_every_job_container_runs_in_this_runs_checkout():
     # shared clone, not the run's own worktree (CIV-6, found 2026-11-04: a
     # selected run could not find a test file that its commit had added).
     joined = re.sub(r"\\\r?\n", " ", _RUN_SUITE)
-    jobs = [l for l in joined.splitlines() if "docker run --rm" in l]
+    jobs = [ln for ln in joined.splitlines() if "docker run --rm" in ln]
     assert len(jobs) >= 2
     for cmd in jobs:
         assert '-w "$PWD"' in cmd, cmd[:90]
@@ -305,7 +305,7 @@ def test_every_job_container_runs_in_this_runs_checkout():
 def test_the_exit_trap_expands_the_worktree_path_when_it_is_set():
     # `$wt` is a local of ci_remote_run. In a single-quoted trap it is empty
     # at exit, so no worktree was ever removed (found 2026-11-04).
-    trap = next(l for l in _REMOTE.splitlines() if l.strip().startswith("trap "))
+    trap = next(ln for ln in _REMOTE.splitlines() if ln.strip().startswith("trap "))
     assert trap.strip().startswith('trap "')
     assert '\\"$wt\\"' in trap
 

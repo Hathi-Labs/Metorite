@@ -78,8 +78,10 @@ def test_nothing_is_granted_when_the_smallest_run_does_not_fit(tmp_path):
 
 def test_a_live_reservation_counts_against_the_budget(tmp_path):
     env = _env(tmp_path)
-    slots = Path(env["CI_SLOT_DIR"]); slots.mkdir()
-    res = slots / "a.res"; res.write_text("10\n", encoding="utf-8")
+    slots = Path(env["CI_SLOT_DIR"])
+    slots.mkdir()
+    res = slots / "a.res"
+    res.write_text("10\n", encoding="utf-8")
     holder = subprocess.Popen(["flock", str(res), "sleep", "30"])
     try:
         time.sleep(0.5)
@@ -87,13 +89,15 @@ def test_a_live_reservation_counts_against_the_budget(tmp_path):
         assert _grant(env, 6, 1) == "1"
         assert _grant(env, 6, 2) == ""
     finally:
-        holder.kill(); holder.wait()
+        holder.kill()
+        holder.wait()
 
 
 def test_a_dead_reservation_counts_for_nothing(tmp_path):
     # A crashed run keeps its file but drops its flock.
     env = _env(tmp_path)
-    slots = Path(env["CI_SLOT_DIR"]); slots.mkdir()
+    slots = Path(env["CI_SLOT_DIR"])
+    slots.mkdir()
     (slots / "dead.res").write_text("18\n", encoding="utf-8")
     assert _grant(env, 6, 2) == "6"
 
