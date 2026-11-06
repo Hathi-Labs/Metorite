@@ -233,6 +233,15 @@ A guard hook enforces all of this independently. If it blocks you, that block is
 correct — do not work around it, and do not ask a subagent to do what you were
 blocked from doing. Report the exact gate id the owner must grant.
 
+## Clean up after yourself
+
+Root `CLAUDE.md` §4 holds the rule (CIV-16). At the end of a cycle, do these steps:
+
+1. Run each test command under `timeout`, and give every wait a deadline.
+2. After the merge, remove your worktree with `bash scripts/worktree.sh remove <slug>`.
+3. Stop each background job, tunnel, tmux session, preview server and container that you started.
+4. Before your final message, list your background jobs. Name the ones that stay, and say why.
+
 ## Final report
 
 Twelve lines or fewer:

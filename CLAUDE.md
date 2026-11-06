@@ -302,6 +302,16 @@ Rules that make it work:
   verify. One `harden` PR per feature runs the full review and makes them
   block. A HIGH-tier slice keeps the full loop. Contract:
   `engineering_practice.md` §7a. Lists: `tests/fences.json`.
+- **⚠️ CLEAN UP AFTER YOURSELF** *(owner directive, 2026-11-06, CIV-16)*. Other
+  sessions share the box. Give every wait a deadline, and run each test command
+  under `timeout`. Stop each background job, tunnel, tmux session, preview server
+  and container that you started, when you no longer need it. Remove your
+  worktree after the merge with `bash scripts/worktree.sh remove <slug>`. Before
+  the final message of a turn, list your background jobs and stop the ones that
+  the next step does not need. Name the ones that stay, and say why. The Stop
+  hook `.claude/hooks/stop-children.mjs` lists your old children. The reaper
+  `scripts/reaper.py` catches what is left. Fence:
+  `tests/unit/test_task_routine.py`.
 - **The reviewer hunts for the case where this is wrong.** An agent asked "is
   this correct?" says yes.
 - **Re-verify every anchor at dispatch** (file paths, line numbers, migration
