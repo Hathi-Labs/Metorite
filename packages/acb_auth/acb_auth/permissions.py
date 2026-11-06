@@ -115,8 +115,12 @@ FEATURES: tuple[str, ...] = (
     # migration named `*_studio_feature.sql` (category `apps`, sort_order 96,
     # after Workflows). The router of `/studio` checks it (WS-STU J1,
     # specs/ai_studio.md §9). `is_default true`, and migration 207's
-    # `feature:*` reaches every role except `guest`, so this slug grants
-    # nothing new.
+    # `feature:*` reaches every role except `guest`. ⚠️ One edge: a member
+    # with a `feature:workflows` DENY override got 403 on each Studio route
+    # before J1. After J1-1 that member gets Studio, because the deny does
+    # not match `feature:studio` and `feature:*` decides. The owner accepted
+    # this on 2026-11-06 (task 1199, D180). An admin can deny
+    # `feature:studio` to that member by hand.
     "studio",
     "build.agents",
     "build.apps",

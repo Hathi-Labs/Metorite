@@ -3363,12 +3363,37 @@ def _studio_open() -> bool:
         return False
 
 
+async def _studio_member_open() -> bool:
+    """True when the org is open (:func:`_studio_open`) AND the member of the
+    run holds ``feature:studio`` (STU-J1-1).
+
+    The gateway refuses a Studio route to a guest and to a member with a deny
+    override, but ``studio_draft``, ``studio_outline``, ``studio_describe``
+    and ``studio_interview`` call no route. So the pack needs the same check.
+    The member is the verified member of the run, through
+    ``in_app_path.member_features`` (one cached ``resolve_access`` read). It
+    fails closed: no member, an inactive member or a failed read is closed.
+    A closed org reads no member. Fence: ``tests/unit/test_tool_packs_registry.py``.
+    """
+    if not _studio_open():
+        return False
+    try:
+        from orchestrator import in_app_path
+
+        features = await in_app_path.member_features()
+    except Exception as exc:  # fail closed
+        _log.info("executor.studio_member_unread", error=str(exc)[:200])
+        return False
+    return features is not None and "studio" in features
+
+
 async def _drop_pack_unless_studio(
     tools: list[Any], dropped: list[str], *, held: bool = False,
 ) -> tuple[list[Any], list[str]]:
-    """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks
-    (STU-G1, :func:`_studio_open`)."""
-    if _studio_open():
+    """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks,
+    and for a member without ``feature:studio`` (STU-G1 and J1-1,
+    :func:`_studio_member_open`)."""
+    if await _studio_member_open():
         return tools, dropped
     return [], [*dropped, *(_tool_name(t) for t in tools)]
 
@@ -3985,6 +4010,9 @@ async def _plan_pack_loader(
         mcp = await _mcp_may_attach(
             agent, agent_name, no_egress=no_egress, is_authorized=is_authorized,
             held_untrusted=any(b.owner in UNTRUSTED_INPUT_AGENTS for b in builds))
+    # STU-G1 and J1-1: the one check of the studio pack filter, read once for
+    # the plan. A run whose packs hold no ``studio`` reads no member.
+    studio_ok = "studio" in allow and await _studio_member_open()
 
     def _available(owner: str) -> bool:
         if _pack_owner_module(owner) is None:
@@ -3993,9 +4021,10 @@ async def _plan_pack_loader(
         # reach the owner and the specialist stays (``_drop_pack_covered``).
         if owner == "projects-assistant" and _run_covered(owner):
             return False
-        # STU-G1: an org that STUDIO_ORGS lacks gets an empty studio pack
-        # (``_drop_pack_unless_studio``), so the loader cannot offer it.
-        if owner == "studio-builder" and not _studio_open():
+        # STU-G1 and J1-1: an org that STUDIO_ORGS lacks, and a member without
+        # feature:studio, get an empty studio pack (``_drop_pack_unless_studio``),
+        # so the loader cannot offer it.
+        if owner == "studio-builder" and not studio_ok:
             return False
         if owner in tool_packs.NO_PERSONA_BULLETS and owner not in bullets:
             return True  # by design the persona has no text of this owner (OA-8a)

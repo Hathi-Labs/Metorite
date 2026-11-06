@@ -277,6 +277,20 @@ def test_a_studio_holder_passes_the_gate_on_each_route(
     assert no_store == []
 
 
+@pytest.mark.parametrize("method,path", EXPECTED_ROUTES)
+def test_a_workflows_deny_override_no_longer_closes_studio(
+    monkeypatch: pytest.MonkeyPatch, no_store: list[str], method: str, path: str,
+) -> None:
+    """The edge that the owner accepted on 2026-11-06 (task 1199, D180). Before
+    J1-1, a member with a ``feature:workflows`` deny override got 403 here.
+    Now ``feature:*`` decides ``feature:studio``, so that member passes the
+    gate. An admin denies ``feature:studio`` by hand to close Studio for them."""
+    _open(monkeypatch, "")
+    r = _call(_client(["feature:*"], [("feature:workflows", "deny")]), method, path)
+    assert r.status_code == 404, (method, path, r.status_code)
+    assert no_store == []
+
+
 def test_an_anonymous_caller_gets_401() -> None:
     app = FastAPI()
     app.include_router(actions.router)
