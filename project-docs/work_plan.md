@@ -5478,6 +5478,22 @@ A form that makes a new record stays a dialog, and so does a confirm.
 
 This extends D172.1 from tasks to CRM records. Fence: named per slice in `one_record_card.md` §6, advisory until each slice builds.
 
+### D185 — Status sets: the nearest owner wins, and every screen names it (2026-11-06)
+
+Owner answer on Metorite task 1796 ("A: approve all three recommendations"), 2026-11-06 04:52 UTC. Owner spec: `specs/projects_settings.md` §9. Board: **WS-42**. Metorite: tasks 1798, 1799, 1800, 1790 and 1791.
+
+```text
+"We should leave no doubt in the minds of the users when they're configuring the statuses and the lanes." (2026-11-05)
+```
+
+1. **Inheritance: the nearest owner wins.** The model of migration 196 stays. A project uses the status set of the nearest node at or above it that owns one. Every screen names the owner: "Uses the statuses of User Stories & Use Cases (shared with 3)".
+2. **Settings, Statuses stays and is renamed "Space default statuses".** It shows the scope line ("27 projects use these") and lists each project that owns its own set, with a link.
+3. **The board gets a chip that names the set.** The chip reads "Statuses: Metorite (shared)", "Own statuses" or "From User Stories". A click opens the editor. The chip replaces the Statuses button of task 1792.
+
+This supersedes the owner rule of 2026-08-31 (management controls stay out of the view chrome) for statuses only. Fields, tags and lifecycle stay behind the menu.
+
+Fence: `statusSetCopy.test.ts` and `tests/unit/test_projects_status_set_read_r8.py`, named per slice in `specs/projects_settings.md` §7.1. Advisory until PST-1 builds them.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
