@@ -33,14 +33,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
-import { Checkbox } from "@/components/ui/Checkbox";
+import AccessTree from "@/components/AccessTree";
+import Tabs from "@/components/Tabs";
+import Badge from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { Switch } from "@/components/ui/Switch";
+import {
+  NO_SELECTION,
+  buildProjectTree,
+  cleanSelection,
+  grantSummary,
+  TOO_LONG_NOTICE,
+  personalSpillover,
+  projectLists,
+  projectsProblem,
+  selectedCount,
+  type ProjectMode,
+  type ProjectTree,
+  type Selection,
+} from "@/lib/accessTree";
 
 import {
   type AuthorizeRequest,
   type CheckView,
   type ParsedRequest,
-  type PinChoice,
   type Refusal,
   approveBody,
   canApprove,
@@ -50,11 +66,13 @@ import {
   initialChoice,
   isCheckView,
   isContinueView,
+  OFFLINE_ACCESS,
+  grantedScopes,
   organizationName,
-  pinChoices,
   refusalFor,
   sameScreen,
   scopeRows,
+  toggleScope,
 } from "./consent";
 
 type Phase =
@@ -271,14 +289,15 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
 }) {
   const { access, loading: accessLoading } = useAccess();
   const orgName = organizationName(access.organization);
-  const rows = useMemo(() => scopeRows(view.scopes), [view.scopes]);
+  const rows = useMemo(() => scopeRows(view.scopes).filter((r) => !r.fixed), [view.scopes]);
   const [chosen, setChosen] = useState<Set<string>>(() => initialChoice(view));
-  const [pins, setPins] = useState<string[]>([]);
+  const [mode, setMode] = useState<ProjectMode>("all");
+  const [selection, setSelection] = useState<Selection>(NO_SELECTION);
   // On by default (owner 2026-10-30, D-EA-4 as amended). The member can untick it.
   const [includePersonal, setIncludePersonal] = useState(true);
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const [projects, setProjects] = useState<PinChoice[] | null>(null);
+  const [tree, setTree] = useState<ProjectTree | null>(null);
   const [projectsFailed, setProjectsFailed] = useState(false);
   const gate = useApproveGate();
   // The screen the member approves. After a 503 the page asks `check` again
@@ -292,7 +311,7 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
     fetch("/api/projects/tree", { cache: "no-store", signal: controller.signal })
       .then(async (res) => {
         if (!res.ok) throw new Error(String(res.status));
-        setProjects(pinChoices(await res.json()));
+        setTree(buildProjectTree(await res.json()));
       })
       .catch(() => {
         if (!controller.signal.aborted) setProjectsFailed(true);
@@ -300,17 +319,26 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
     return () => controller.abort();
   }, []);
 
-  const toggle = (scope: string) =>
-    setChosen((prev) => {
-      const next = new Set(prev);
-      if (next.has(scope)) next.delete(scope);
-      else next.add(scope);
-      return next;
-    });
-  const togglePin = (id: string) =>
-    setPins((prev) => (prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]));
+  const toggle = (scope: string) => setChosen((prev) => toggleScope(view, prev, scope));
+  // A pinned connection reaches a personal project only through a pin, so in
+  // "pick" mode the personal switch pins the member's own personal roots.
+  const personalPins = mode === "pick" && includePersonal && tree ? tree.personalRoots : [];
+  const cleaned = tree ? cleanSelection(tree, selection) : NO_SELECTION;
+  // A team root under a personal project would join through the personal pin.
+  const spillover = tree && personalPins.length > 0 ? personalSpillover(tree, cleaned) : [];
+  const lists = projectLists(mode, cleaned, personalPins, spillover);
+  const projectIssue = projectsProblem(mode, tree, selection, personalPins.length, spillover.length);
+  const summary = grantSummary({
+    who: view.client.host,
+    scopes: grantedScopes(view, chosen),
+    mode,
+    picked: tree ? selectedCount(tree, selection) : 0,
+    includePersonal,
+    personalPinned: personalPins.length,
+    offline: view.scopes.includes(OFFLINE_ACCESS),
+  });
 
-  const ready = canApprove(view, chosen) && !!orgName && !sending && gate.open;
+  const ready = canApprove(view, chosen) && !projectIssue && !!orgName && !sending && gate.open;
 
   /** A fresh ticket for the same screen, or null when the flow must end. */
   /** The fresh check is busy: no approve went out, so one more try is safe. */
@@ -353,7 +381,12 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
     try {
       res = await postJson(
         APPROVE_URL,
-        approveBody(request, ticketView, { scopes: chosen, pins, includePersonal }),
+        approveBody(request, ticketView, {
+          scopes: chosen,
+          pins: lists.pins,
+          leftOut: lists.leftOut,
+          includePersonal,
+        }),
       );
     } catch {
       // ⚠️ The answer is lost, and the gateway may have made the connection.
@@ -393,7 +426,7 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
             {/* The headline names the VERIFIED host. The document's own name is
                 only a claim, so it shows second and in quotes (fix round 1). */}
             <h1 className="text-base font-semibold text-foreground">
-              <span className="break-all">{view.client.host}</span> wants to connect to Metorite
+              Connect <span className="break-all">{view.client.host}</span> to Metorite?
             </h1>
             {view.client.name && (
               <p className="mt-0.5 text-xs text-muted-foreground" data-testid="consent-claim">
@@ -401,57 +434,48 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
               </p>
             )}
             <p className="mt-1 text-sm text-muted-foreground">
-              The agent will act as you. It can never see or change more than you can.
+              It acts as you, and never sees more than you can.
             </p>
           </div>
         </div>
 
-        <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
-          <dt className="text-muted-foreground">Verified site</dt>
-          <dd className="flex min-w-0 items-center gap-1.5 text-foreground" data-testid="consent-origin">
-            <Icon name="ShieldCheck" size={14} className="shrink-0 text-success" />
-            <span className="break-all font-mono text-xs">{view.client.origin}</span>
-          </dd>
-          <dt className="text-muted-foreground">Returns to</dt>
-          <dd className="min-w-0 text-foreground" data-testid="consent-redirect">
-            <span className="break-all font-mono text-xs">{view.redirect_display}</span>
-            {view.redirect_app && (
-              <span className="ml-1.5 text-xs text-muted-foreground">an app on this computer</span>
-            )}
-          </dd>
-          <dt className="text-muted-foreground">Organization</dt>
-          <dd className="min-w-0 text-foreground" data-testid="consent-org">
-            {orgName ? (
-              <span className="break-words">{orgName}</span>
-            ) : accessLoading ? (
-              <Skeleton className="h-4 w-32" />
-            ) : (
-              <span className="text-warning">Metorite cannot name your organization. Reload the page.</span>
-            )}
-          </dd>
-        </dl>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Badge tone="success" icon="ShieldCheck" size="md" title={view.client.origin}>
+            <span data-testid="consent-origin" className="break-all">
+              {view.client.host} verified
+            </span>
+          </Badge>
+          <Badge tone="neutral" size="md" title={view.redirect_uri}>
+            <span data-testid="consent-redirect" className="whitespace-normal break-words">
+              Returns to {view.redirect_display}
+              {view.redirect_app && <> {"·"} an app on this computer</>}
+            </span>
+          </Badge>
+          <Badge tone="neutral" size="md">
+            <span data-testid="consent-org">
+              {orgName ? (
+                <>Org {orgName}</>
+              ) : accessLoading ? (
+                <Skeleton className="inline-block h-3 w-24 align-middle" />
+              ) : (
+                <span className="text-warning">Metorite cannot name your organization. Reload the page.</span>
+              )}
+            </span>
+          </Badge>
+        </div>
       </div>
 
       <fieldset className="border-b border-border p-6">
         <legend className="sr-only">What the agent may do</legend>
-        <h2 className="text-sm font-semibold text-foreground">What the agent may do</h2>
+        <h2 className="text-sm font-semibold text-foreground">What it may do</h2>
         <ul className="mt-3 space-y-3">
           {rows.map((row) => (
-            <li key={row.scope} className="flex items-start gap-2.5">
-              {row.fixed ? (
-                <Icon name="Lock" size={14} className="mt-0.5 shrink-0 text-muted-foreground" />
-              ) : (
-                <Checkbox
-                  id={`scope-${row.scope}`}
-                  className="mt-0.5"
-                  checked={chosen.has(row.scope)}
-                  onChange={() => toggle(row.scope)}
-                />
-              )}
-              <label htmlFor={row.fixed ? undefined : `scope-${row.scope}`} className="min-w-0 text-sm">
+            <li key={row.scope} className="flex items-start justify-between gap-3">
+              <div className="min-w-0 text-sm">
                 <span className="block text-foreground">{row.label}</span>
                 {row.detail && <span className="block text-xs text-muted-foreground">{row.detail}</span>}
-              </label>
+              </div>
+              <Switch label={row.label} checked={chosen.has(row.scope)} onChange={() => toggle(row.scope)} />
             </li>
           ))}
         </ul>
@@ -461,58 +485,64 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
       </fieldset>
 
       <fieldset className="border-b border-border p-6">
-        <legend className="sr-only">Projects</legend>
-        <h2 className="text-sm font-semibold text-foreground">Projects</h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {pins.length === 0
-            ? "Every project you can see. Pick projects to limit the agent to them and their subprojects."
-            : `Only ${pins.length} pinned ${pins.length === 1 ? "project" : "projects"} and their subprojects.`}
-        </p>
-        <div className="mt-3 max-h-48 overflow-auto rounded-md border border-border" data-testid="consent-pins">
-          {projects === null && !projectsFailed && (
-            <div className="space-y-2 p-3">
-              <Skeleton className="h-4 w-3/4" />
-              <Skeleton className="h-4 w-1/2" />
-            </div>
-          )}
-          {projectsFailed && (
-            <p className="p-3 text-xs text-muted-foreground">Metorite cannot list your projects now.</p>
-          )}
-          {projects !== null && projects.length === 0 && (
-            <p className="p-3 text-xs text-muted-foreground">You see no team projects.</p>
-          )}
-          {projects !== null && projects.length > 0 && (
-            <ul className="py-1">
-              {projects.map((p) => (
-                <li key={p.id}>
-                  <label
-                    className="flex cursor-pointer items-center gap-2 px-3 py-1 text-sm text-foreground hover:bg-secondary"
-                    style={{ paddingLeft: `${0.75 + p.depth * 1}rem` }}
-                  >
-                    <Checkbox size="sm" checked={pins.includes(p.id)} onChange={() => togglePin(p.id)} />
-                    <span className="truncate">{p.name}</span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-          )}
+        <legend className="sr-only">Which projects</legend>
+        <h2 className="text-sm font-semibold text-foreground">Which projects</h2>
+        <Tabs
+          chrome="inline"
+          className="mt-3"
+          tabs={[
+            { id: "all", label: "All my projects" },
+            { id: "pick", label: "Only the ones I pick" },
+          ]}
+          activeTab={mode}
+          onTabChange={(id) => setMode(id as ProjectMode)}
+        />
+        {mode === "all" ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Every team project you can see, now and later. Choose &ldquo;Only the ones I pick&rdquo; to limit it.
+          </p>
+        ) : (
+          <div className="mt-3">
+            {tree === null && !projectsFailed && (
+              <div className="space-y-2 rounded-md border border-border p-3">
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-4 w-1/2" />
+              </div>
+            )}
+            {projectsFailed && (
+              <p className="rounded-md border border-border p-3 text-xs text-muted-foreground">
+                Metorite cannot list your projects now. Choose All my projects, or reload the page.
+              </p>
+            )}
+            {tree !== null && <AccessTree tree={tree} selection={selection} onChange={setSelection} />}
+            {projectIssue && tree !== null && projectIssue !== TOO_LONG_NOTICE && (
+              <p className="mt-2 text-xs text-warning" data-testid="consent-project-issue">
+                {projectIssue}
+              </p>
+            )}
+          </div>
+        )}
+        <div className="mt-4 flex items-start justify-between gap-3">
+          <div className="min-w-0 text-sm">
+            <span className="block text-foreground">My personal projects and notes</span>
+            <span className="block text-xs text-muted-foreground">Off keeps them private from the agent.</span>
+          </div>
+          <Switch label="My personal projects and notes" checked={includePersonal} onChange={setIncludePersonal} />
         </div>
-        <label className="mt-4 flex cursor-pointer items-start gap-2.5 text-sm">
-          <Checkbox
-            className="mt-0.5"
-            checked={includePersonal}
-            onChange={(e) => setIncludePersonal(e.target.checked)}
-          />
-          <span className="min-w-0">
-            <span className="block text-foreground">Include my personal projects</span>
-            <span className="block text-xs text-muted-foreground">
-              On by default. Untick this to keep your personal projects and your own notes private.
-            </span>
-          </span>
-        </label>
       </fieldset>
 
       <div className="flex flex-col gap-3 p-6">
+        <p className="rounded-md bg-secondary/60 p-3 text-sm text-foreground" data-testid="consent-summary">
+          {summary.map((part, i) =>
+            part.strong ? (
+              <strong key={i} className="font-semibold">
+                {part.text}
+              </strong>
+            ) : (
+              <span key={i}>{part.text}</span>
+            ),
+          )}
+        </p>
         {problem && (
           <p className="text-sm text-warning" role="alert">
             {problem}
@@ -531,7 +561,7 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Approve only an agent you trust. To disconnect it later, remove it in the agent, or ask an admin.
+          Remove this access any time in <strong className="font-semibold">Integrations → AI agents</strong>.
         </p>
       </div>
     </Frame>

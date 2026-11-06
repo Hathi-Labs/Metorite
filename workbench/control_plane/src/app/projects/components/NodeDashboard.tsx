@@ -66,17 +66,10 @@ import {
   completionPercent,
 } from "../lib/progressWheel";
 import { nodeKind } from "../lib/tree";
-import { CATEGORY_LABEL } from "@/lib/statusCategory";
+import { CATEGORY_LABEL, STATUS_CATEGORIES } from "@/lib/statusCategory";
 
-/** The order lanes read in — the same left-to-right a board uses. */
-const CATEGORY_ORDER = [
-  "triage",
-  "backlog",
-  "todo",
-  "in_progress",
-  "done",
-  "cancelled",
-] as const;
+/** The order lanes read in: the one lifecycle order of `lib/statusCategory.ts`. */
+const CATEGORY_ORDER = STATUS_CATEGORIES;
 
 /** The labels are `lib/statusCategory.ts`'s. One place names a category. */
 const CATEGORY_LABELS: Record<string, string> = CATEGORY_LABEL;

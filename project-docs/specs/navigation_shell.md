@@ -293,6 +293,12 @@ from the bar. `glass_look.md` GL-12 has the detail. The paragraph below is
 the GL-11 frame it replaces. The Chat row also marks a message that Reach
 posted and the member has not opened (D177, `proactive_reach.md` §19.2).
 
+**A region the Ask bar never sits on (owner, 2026-11-06, task 1816).** A page
+marks such a region with the attribute `data-ask-clear`. The Email composers
+carry it. The bar takes the largest form that does not overlap the region, at
+any overlap. Inside the region each control counts at any scroll for the
+corner button. The shell names no app. Fence: `askBarRest.test.ts`.
+
 **The frame since 2026-11-01 (owner, GL-11).** The owner said: "the burger
 icon being outside the sidebar kind of puts me off". The sidebar now runs
 the full height, and it owns its head: the organization's lockup and the

@@ -5179,6 +5179,7 @@ function ProjectsWorkspace() {
             />
           ) : mode === "board" ? (
             <TaskBoard
+              onManageStatuses={() => setManagingStatuses(selected)}
           personLabels={personLabels}
               columnTotals={columnTotals}
               loadingColumn={loadingColumn}

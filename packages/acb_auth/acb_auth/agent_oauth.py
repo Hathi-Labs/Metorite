@@ -24,6 +24,9 @@ reader of ``agent_access_orgs``. Agent access is live for an organization
 only when the flag is on AND the list allows it. The default allows none.
 Four doors check it (spec §10.6): the consent routes, the store's token
 issue, the edge bearer check and the connection read of branch 0.
+:func:`change_access_allowed` is the one reader of
+``agent_change_access_orgs``, the dark switch of Change access (EA-17c-1,
+spec §10.8).
 
 **First-party clients (D-EA-11, spec §10.7).** :func:`is_first_party` is
 the one reader of ``agent_first_party_client_ids``, and
@@ -306,6 +309,23 @@ def org_allowed(organization_id: object) -> bool:
     if org is None:
         return False
     orgs = allowed_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def change_access_allowed(organization_id: object) -> bool:
+    """True when ``agent_change_access_orgs`` allows *organization_id*.
+
+    EA-17c-1 (D-EA-13, spec §10.8). The ONE reader of the flag. It keeps
+    ``PATCH /agent-access/connections/{id}`` dark: an organization that it
+    refuses gets 404. The list has the shape of ``agent_access_orgs`` and
+    the same parser, and the default is empty. It reads the settings at each
+    call, so a flag reload applies a change. The caller passes the
+    organization of the session, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().agent_change_access_orgs or ""))
     return ALL_ORGS in orgs or org in orgs
 
 

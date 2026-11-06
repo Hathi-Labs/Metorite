@@ -362,6 +362,9 @@ def w(world, monkeypatch):
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+    # EA-18a. These cases read the rule of D-EA-10 point (1), the rule with the
+    # flag off. `test_agent_questions_r8.py` holds the rule with it on.
+    monkeypatch.setattr(get_settings(), "agent_questions_orgs", "")
     with world.p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM pm_agent_runs"))
         c.execute(text("DELETE FROM pm_notifications"))
@@ -428,7 +431,8 @@ class TestAgentRunsOnARealDatabase:
             # A thought on awaiting keeps awaiting, and is not a 409.
             assert (await _act(call, w.agent_a, rid, type="action", action="read_file",
                                parameters={"path": "a.py"})).json()["run"]["status"] == "awaiting"
-            # Any member who can see the task answers: in_progress.
+            # With AGENT_QUESTIONS_ORGS off (the `w` fixture), any member who
+            # can see the task answers: in_progress (D-EA-10 point 1).
             answered = await _act(call, w.c, rid, type="prompt", selected=["pg"])
             assert answered.status_code == 201, answered.text
             assert answered.json()["run"]["status"] == "in_progress"
@@ -685,6 +689,48 @@ class TestAgentRunsOnARealDatabase:
                 _count(w.p, "SELECT count(*) FROM pm_activities WHERE type = 'comment'"),
                 _count(w.p, "SELECT count(*) FROM pm_notifications"),
             )
+
+    # ── CIV-14k: the "Waiting for you" list ─────────────────────────────
+
+    async def test_civ14k_waiting_list_is_oldest_first_with_task_facts_and_hides_unseen(self, w):
+        m_email = "ea12-m@runs-r8.test"
+        conn = _seed_connection(w.p, w.p.org_a, m_email)
+        agent_m = _principal(m_email, w.p.org_a, unrestricted=False, agent_connection=conn)
+        task_x = _seed_task(w.p, w.p.org_a, w.a_email, grant=m_email)
+        task_y = _seed_task(w.p, w.p.org_a, w.a_email, grant=m_email)
+        task_h = _seed_task(w.p, w.p.org_a, w.a_email, grant=m_email)
+        async with _session(w.p) as call:
+            ids = {}
+            for name, task in (("x", task_x), ("y", task_y), ("h", task_h)):
+                run = await _start(w, call, user=agent_m, task=task)
+                ids[name] = run["id"]
+                asked = await _act(call, agent_m, run["id"], **_select(f"Question {name}?"))
+                assert asked.status_code == 201, asked.text
+            # The member loses sight of the third project.
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "DELETE FROM pm_project_grants WHERE subject = :m AND project_id = "
+                    "(SELECT project_id FROM pm_tasks WHERE id = CAST(:t AS uuid))"),
+                    {"m": m_email, "t": task_h})
+            me = _principal(m_email, w.p.org_a, unrestricted=False)
+            plain = await call(me, "GET", "/projects/agent-runs?status=awaiting")
+            assert plain.status_code == 200, plain.text
+            assert "task" not in plain.json()["rows"][0], "the wire stays as it was"
+            assert [r["id"] for r in plain.json()["rows"]] == [ids["y"], ids["x"]]
+            got = await call(
+                me, "GET", "/projects/agent-runs?status=awaiting&order=oldest&with_task=true")
+            assert got.status_code == 200, got.text
+            rows = got.json()["rows"]
+            assert [r["id"] for r in rows] == [ids["x"], ids["y"]]
+            assert ids["h"] not in [r["id"] for r in rows]
+            for row in rows:
+                assert row["open_elicitation"] is not None
+                assert row["task"] == {
+                    "number": 1, "title": "Fix the extruder", "project_name": "runs",
+                }
+            assert rows[0]["task_id"] == task_x and rows[1]["task_id"] == task_y
+            bad = await call(me, "GET", "/projects/agent-runs?order=sideways")
+            assert bad.status_code == 422
 
     # ── R6 ──────────────────────────────────────────────────────────────
 
