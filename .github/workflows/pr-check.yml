@@ -25,9 +25,11 @@ on:
     # wedges the merge. So filter inside the workflow if you must, never at the
     # trigger.
     #
-    # The cost is stated rather than hidden: a docs-only PR now runs the full
-    # ~5 minute suite. That is the price of the checks meaning something at the
-    # merge button, and it is cheaper than one un-mergeable PR.
+    # The cost is stated rather than hidden: the workflow starts for every PR,
+    # and (CIV-3) the unit shards run only the tests that the diff can affect.
+    # A docs-only PR still reports every required check. That is the price of
+    # the checks meaning something at the merge button, and it is cheaper than
+    # one un-mergeable PR.
   # ── NO `push` trigger, on purpose (2026-10-16) ──────────────────────────
   #
   # A push run created a SKIPPED twin of the required check "Unit tests" on
@@ -76,10 +78,29 @@ jobs:
       operator: ${{ steps.diff.outputs.operator }}
       database: ${{ steps.diff.outputs.database }}
       caddy: ${{ steps.diff.outputs.caddy }}
+      # CIV-3. The unit tests that this diff can affect (affected_tests.py
+      # --gate). `full` is `false` ONLY when the selector ran and found no
+      # reason for a full run. The list is one line of space-separated paths
+      # in a job output, not an artifact. A typical list is 2-20 KB and the
+      # limit is 1 MB. The 6 shards and the guard need no download step, and
+      # `ci_unit_guard.py gate-output` turns a list over 200 KB into `full`.
+      full: ${{ steps.gate.outputs.full }}
+      files: ${{ steps.gate.outputs.files }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      # This step sits BEFORE `diff`, because the fence reads the LAST step
+      # for the area outputs. Plain python3, no uv: both scripts use the
+      # standard library only. A selector error, or no JSON at all, gives
+      # `full=true`.
+      - id: gate
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 scripts/affected_tests.py --gate --base "$BASE" > gate.json || rm -f gate.json
+          python3 scripts/ci_unit_guard.py gate-output --json gate.json | tee -a "$GITHUB_OUTPUT"
 
       - id: diff
         env:
@@ -250,9 +271,19 @@ jobs:
   # Refresh the timings when the split drifts (one shard much longer than the
   # rest): download the `test-durations` artifact of a green run and commit it
   # as `.test_durations`.
+  #
+  # CIV-3: a PR runs only the tests its diff can affect. The `changes` job
+  # exports `needs.changes.outputs.full` and `.files`. The shard selects only
+  # when `changes` succeeded AND `full` is the text `false`. Any other state
+  # (`true`, empty, or a failed `changes` job) runs the whole tree as before. `!cancelled()` starts the shards even when
+  # `changes` failed. Without it a failed `changes` would skip them, and
+  # `unit-tests` would then read a skipped dependency. A selection NEVER
+  # reaches pytest as an empty list, because pytest then collects everything.
   test:
     name: "Unit tests (shard ${{ matrix.shard }}/6)"
     runs-on: ubuntu-24.04
+    needs: changes
+    if: ${{ !cancelled() }}
     # `fail-fast: false`: one run reports the failures of EVERY shard.
     # Fail-fast cancelled the other five and hid their failures until the
     # next round.
@@ -307,7 +338,8 @@ jobs:
     env:
       CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
       # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
-      # This step runs the WHOLE tests/unit/ directory. Setting DATABASE_URL
+      # A full run of this job covers the WHOLE tests/unit/ directory, and a
+      # selection run covers part of it. Setting DATABASE_URL
       # here would arm test_tenant_coverage.py's two DB-gated tests, which fail
       # BY CONSTRUCTION against a freshly-replayed ladder:
       #   * test_live_catalog_has_column_force_and_policy wants FORCE-RLS
@@ -384,13 +416,51 @@ jobs:
       #     round. 18 of 70 red runs on 15-19 Oct were flakes or infra.
       #   * The process fences run in the Lint job. They are skipped here, or
       #     they would still block.
-      - name: Run unit tests (this shard)
+      # CIV-3. `mode` is `full`, `selection` or `empty`. Only the exact text
+      # `false` in `full` selects, and only after a successful `changes` job.
+      # The process fences leave the list.
+      - name: Pick this shard's tests
+        id: pick
+        env:
+          FULL: ${{ needs.changes.outputs.full }}
+          FILES: ${{ needs.changes.outputs.files }}
+          CHANGES: ${{ needs.changes.result }}
         run: |
-          uv run python -m pytest tests/unit/ -v -rs --reruns 1 \
+          python3 scripts/ci_unit_guard.py select --full "$FULL" --files "$FILES"             --changes-result "$CHANGES" \
+            "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
+
+      # An `empty` selection skips this step, because pytest with no paths
+      # collects the whole tree. With fewer tests than shards, a group can
+      # come up empty and pytest exits 5. That passes on a selection and
+      # fails on a full run.
+      - name: Run unit tests (this shard)
+        if: steps.pick.outputs.mode != 'empty'
+        env:
+          # SHARD_ names only. The tests start scripts with this env, and
+          # scripts/vps_pull.sh reads a variable named MODE.
+          # Fence: test_ci_unit_guard.py.
+          SHARD_MODE: ${{ steps.pick.outputs.mode }}
+          SHARD_TARGETS: ${{ steps.pick.outputs.paths }}
+        run: |
+          set -f
+          [ "$SHARD_MODE" = "selection" ] || SHARD_TARGETS="tests/unit/"
+          rc=0
+          uv run python -m pytest $SHARD_TARGETS -v -rs --reruns 1 \
             $(python3 scripts/fences.py pytest-ignore) \
             --splits 6 --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
-            -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml
+            -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml || rc=$?
+          if [ "$rc" -eq 5 ] && [ "$SHARD_MODE" = "selection" ]; then
+            echo "this shard drew no test from the selection"
+            rc=0
+          fi
+          exit "$rc"
+
+      # The guard in `unit-tests` fails when it finds no report. A skipped or
+      # empty shard writes a zero-test one.
+      - name: Write an empty report when no test ran
+        if: ${{ !cancelled() && steps.pick.outputs.mode != 'full' }}
+        run: python3 scripts/ci_unit_guard.py empty-report --out junit/shard-${{ matrix.shard }}.xml
 
       - name: Keep this shard's report
         if: always()
@@ -422,7 +492,7 @@ jobs:
   unit-tests:
     name: "Unit tests"
     runs-on: ubuntu-24.04
-    needs: test
+    needs: [test, changes]
     # `always()`, so a failed shard turns THIS check red instead of skipping
     # it. A skipped required check counts as satisfied.
     if: always()
@@ -440,9 +510,21 @@ jobs:
           path: junit
           merge-multiple: true
 
+      # CIV-3. On a selection run only the must-run files in the selection
+      # have to run. `--only-selected` takes the selected paths, and an empty
+      # list checks none. Anything but a successful `changes` job with
+      # `full` equal to `false` checks the whole list. Every must-run path has
+      # to exist in the tree on any run.
       - name: The R8 suites ran, and no fence skipped
+        env:
+          FULL: ${{ needs.changes.outputs.full }}
+          FILES: ${{ needs.changes.outputs.files }}
+          CHANGES: ${{ needs.changes.result }}
         run: |
-          python3 scripts/ci_unit_guard.py check --junit junit \
+          set -f
+          ONLY=""
+          if [ "$FULL" = "false" ] && [ "$CHANGES" = "success" ]; then ONLY="--only-selected $FILES"; fi
+          python3 scripts/ci_unit_guard.py check --junit junit $ONLY \
             --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
             --disarmed "TENANT_LADDER_DATABASE_URL unset" \
             --never-skip \
@@ -523,16 +605,24 @@ jobs:
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
               tests/unit/test_studio_package_routes_r8.py \
+              tests/unit/test_studio_package_delete_r8.py \
+              tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
+              tests/unit/test_project_rules.py \
               tests/unit/test_crm_change_history.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_staging_export.py
 
+      # CIV-3. A selection run holds part of the timings. Only a full run
+      # publishes them, or `.test_durations` would refresh from a fragment.
       - name: Write the measured timings
+        if: ${{ needs.changes.result == 'success' && needs.changes.outputs.full == 'true' }}
         run: python3 scripts/ci_unit_guard.py durations --junit junit --out test_durations.json
 
-      - uses: actions/upload-artifact@v4
+      - if: ${{ needs.changes.result == 'success' && needs.changes.outputs.full == 'true' }}
+        uses: actions/upload-artifact@v4
         with:
           name: test-durations
           path: test_durations.json

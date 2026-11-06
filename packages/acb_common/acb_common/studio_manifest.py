@@ -19,6 +19,7 @@ Schema export is ``studio_manifest.schema.json`` beside this file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -949,6 +950,39 @@ def validate_manifest(doc: Any, *, catalog: Mapping[str, str] | None = None) -> 
             seen.add((e.path, e.message))
             unique.append(e)
     return sorted(unique, key=lambda e: e.path)
+
+
+def _canonical(value: Any) -> Any:
+    """*value* with each zero float written as ``0.0``. A ``jsonb`` number is a
+    numeric, and a numeric has no sign of zero, so the store keeps ``-0.0`` as
+    ``0.0`` (G1c review round 2). An int stays an int."""
+    if isinstance(value, float) and value == 0.0:
+        return 0.0
+    if isinstance(value, dict):
+        return {k: _canonical(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def manifest_hash(manifest: Any) -> str:
+    """The SHA-256 of the canonical JSON of *manifest*: sorted keys, no space,
+    each zero float as ``0.0``, UTF-8. Pure, and it never raises (STU-G1c).
+
+    THE one hash of a draft. The package store compares it under its row lock
+    (``packages_store.publish_version`` and ``update_manifest``), and the chat
+    tools send it as ``based_on`` and key the approval of a plan on it.
+
+    The hash of a manifest that the store took equals the hash of the stored
+    manifest. The store keeps a manifest as ``jsonb``, which changes two
+    things: it orders the keys in its own way, and it drops the sign of a
+    zero. The sorted keys and the written zero cover both. A float keeps its
+    shortest decimal text, and the store refuses an exponent, a NaN and a
+    float of 10^15 or more (``packages_store.first_bad_value``). Fences: the
+    R8 tests a and g of ``test_studio_chat_build_r8.py``."""
+    text = json.dumps(_canonical(manifest), sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, default=repr)
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def validate_shell_manifests(directory: Path | None = None) -> list[ManifestError]:

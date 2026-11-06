@@ -127,7 +127,11 @@ second implementer to route around a block.
 **4b — Preview, then wait for the owner (D145).** Skip this step for a slice
 with nothing to see: docs, tests, a script, or a refactor with no change in
 behaviour.
-- Push the branch and open the PR as a draft, so `pr-check` runs now.
+- Push the branch and open the PR as a draft, so `pr-check` runs now. It runs
+  the tests that the diff can affect. A green `pr-check` does not mean the full
+  suite ran. `main` runs the full suite after the merge (the R8 suites only
+  after CIV-4b), and the CI tiers are
+  in `project-docs/specs/ci_velocity.md` §4 (D176).
 - Send the owner one message, in chat and with `post_agent_activity` as a
   `response`. It holds the local URL, what changed in three lines or fewer,
   where to click, and the `visual-review` captures for a UI change.
@@ -182,14 +186,15 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   numbers, H-ids and D-numbers. It names the files both sides changed. Add
   `--with-tests` to run the affected tests too, on this PC (D176). From LD-10 it also refuses a head commit with no
   `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
-  push, and run the gate and `pr-check` again. Then watch the `deploy` run to
-  green.
+  push, and run the gate and `pr-check` again. Then find the batch that holds
+  your merge, as the steps below say.
 - **Production moves at 21:30 UTC (D145).** Do not dispatch `deploy.yml` after
   a merge. Dispatch only for a hotfix that the owner asks for in this session,
   or when production is down. Then follow D144 point 3: the unit-test job on
   the tip of `main` passes first, you name every merge in
   `git log <prod applied_sha>..origin/main`, and you confirm the pre-migration
   backup for a migration.
+  The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 - Report "merged at `<sha>`, reaches production at tonight's release". After
   the release, confirm `/version` `applied_sha`. Do not call it live before you
   see that SHA.
@@ -200,6 +205,15 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   pass alone and fail together can land on `main`. A red `main` also blocks
   that night's release. If the job is red, fix forward or revert at once, and
   say so in the report. (No merge queue. Owner decision, 2026-10-16.)
+  - If that job shows as cancelled and never started, another run took your
+    merge into its batch. That run can be older or newer than yours. Find the
+    push run whose `test` job started after your merge, and check that its
+    summary names your PR. Watch that job to its end. If it is red, fix forward
+    or revert at once.
+  - A cancelled job that ran for 90 minutes, or that has the annotation "The
+    job has exceeded the maximum execution time", is a hung batch. GitHub
+    gives a timeout the same `cancelled` result as a fold. Treat a hung batch
+    as red.
 - Deploy auto-applies migrations and you cannot undo a bad one (R6). Before a
   migration reaches production, confirm the pre-migration backup completed.
 

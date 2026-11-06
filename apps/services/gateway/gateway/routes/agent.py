@@ -5302,6 +5302,21 @@ def verify_webhook_signature(source: str, body: bytes, presented: str | None) ->
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
 
 
+def _webhook_run_payload(
+    source: str, event_type: str, payload: dict[str, Any],
+) -> dict[str, Any]:
+    """The run payload of a signed webhook. A webhook run has no member. H-165.
+
+    🔴 The HMAC proves the sender holds the shared secret. It does not prove
+    a person. The executor binds the run's member from ``user_email`` or
+    ``user_id``, so the sender's claim of one would name the member without
+    proof. This function removes both keys. The trust level of a webhook run
+    is memberless (H-152). Fence: ``tests/unit/test_webhook_run_memberless.py``.
+    """
+    clean = {k: v for k, v in payload.items() if k not in _IDENTITY_CLAIMS}
+    return {**clean, "source": source, "event_type": event_type}
+
+
 @router.post("/webhook/{source}", status_code=status.HTTP_202_ACCEPTED)
 async def receive_webhook(
     source: str,
@@ -5391,7 +5406,7 @@ async def receive_webhook(
         try:
             await run_agent(
                 agent_name,
-                {"source": source, "event_type": event.event_type, **event.payload},
+                _webhook_run_payload(source, event.event_type, event.payload),
                 run_id=run_id,
             )
         except Exception as exc:  # noqa: BLE001

@@ -45,6 +45,9 @@ vi.mock("@/components/AccessProvider", () => ({
   }),
 }));
 
+// "Take the tour" goes to `/?guide=home.tour` with the router (WS-OB GD-5a).
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+
 vi.mock("next-auth/react", () => ({
   useSession: () => ({ data: { user: { name: "Asha Rao", email: "asha@example.com" } } }),
   signOut: vi.fn(async () => undefined),
@@ -213,8 +216,9 @@ describe("the foot's menu: the accounts, You, Settings, then sign-out", () => {
 
   it("draws its rows from accountMenu alone", () => {
     const foot = footSource();
-    expect(foot).toMatch(/accountMenu\(sections, \{ layout, switcher: accounts\.enabled, others: others\.length, pages, assistant \}\)/);
-    expect(foot).not.toMatch(/accountLinks|MY_ACCESS|"\/people\/me"|"\/settings\/appearance"|Change my layout/);
+    expect(foot).toMatch(/accountMenu\(sections, \{ layout, switcher: accounts\.enabled, others: others\.length, pages, assistant, tour \}\)/);
+    // GD-5a: "Take the tour" is a row of the list (`TAKE_TOUR_ITEM`), never one drawn here.
+    expect(foot).not.toMatch(/accountLinks|MY_ACCESS|"\/people\/me"|"\/settings\/appearance"|Change my layout|Take the tour/);
   });
 
   // ⚠️ Fails CLOSED (review of 2026-10-12, P1). Moved, not rewritten.
