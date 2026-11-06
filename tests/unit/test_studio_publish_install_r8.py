@@ -37,10 +37,11 @@ is not a pass.
 **R7: red first, then mutate.** Each mutation ran on 2026-11-07, and the
 build report holds the counts.
 
-* M1. ``packages._keep_install``: return at once. Tests 1, 2 and 4 go red.
+* M1. ``packages._keep_install``: return at once. 7 of the 8 tests go red.
+  Only the test of the switch off stays green.
 * M2. ``studio_app.keep_private_install``: skip ``set_version`` and always
-  call ``install``. The second-publish test goes red with 409
-  ``already_installed``.
+  call ``install``. 3 tests go red with 409 ``already_installed``: the
+  second publish, two publishes at once, and the paused install.
 """
 
 from __future__ import annotations
