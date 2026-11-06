@@ -35,7 +35,7 @@ correct in the UI and silently empties the timeline — the CRM learned this in
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -267,6 +267,23 @@ def is_runnable(project: Any) -> bool:
     return get("status") in RUNNABLE_STATUSES and get("archived_at") is None
 
 
+def _ancestor_chain_sql(seed: str) -> str:
+    """The CTE ``chain``: each project that *seed* selects, and every project
+    above it. The verdict of :data:`_ANCESTOR_RUNNABLE_SQL` and the paths of
+    :func:`visible_project_paths` read this one text (§12.8 of
+    ``external_agent_access.md``, "it adds no third walk").
+    """
+    return f"""
+WITH RECURSIVE chain AS (
+    SELECT id, parent_project_id, status, archived_at
+      FROM pm_projects WHERE {seed}
+    UNION ALL
+    SELECT p.id, p.parent_project_id, p.status, p.archived_at
+      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id
+)
+"""
+
+
 #: One project's ancestor chain, itself included, reduced to a single verdict.
 #:
 #: `bool_and` over the chain: the whole chain must be runnable for the answer to
@@ -274,14 +291,7 @@ def is_runnable(project: Any) -> bool:
 #: NULL-safe — `bool_and` of an empty chain is NULL, which :func:`
 #: is_runnable_with_ancestors` reads as False, so a project id that resolves to
 #: nothing fails closed rather than running work in a project nobody can find.
-_ANCESTOR_RUNNABLE_SQL = """
-WITH RECURSIVE chain AS (
-    SELECT id, parent_project_id, status, archived_at
-      FROM pm_projects WHERE id = CAST(:pid AS uuid)
-    UNION ALL
-    SELECT p.id, p.parent_project_id, p.status, p.archived_at
-      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id
-)
+_ANCESTOR_RUNNABLE_SQL = _ancestor_chain_sql("id = CAST(:pid AS uuid)") + """\
 SELECT bool_and(status = 'active' AND archived_at IS NULL) FROM chain
 """
 
@@ -1762,6 +1772,46 @@ async def load_visible_project(
     if row is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return row
+
+
+async def visible_project_paths(
+    db: Any, vis: Visibility, project_ids: Iterable[Any],
+) -> dict[str, list[dict[str, str]]]:
+    """For each project, ``[{id, name}, ...]`` from the root down to it, in
+    the projects the reader can see (WS-55 EA-18a, spec §12.8).
+
+    The walk is :func:`_ancestor_chain_sql`. The name of a project comes back
+    only when ``Visibility.project_clause`` keeps it. The climb then stops at
+    the first parent that is not there, so a hidden name never shows, and a
+    visible grandparent above a hidden parent does not show either. A project
+    that the reader cannot see itself, such as the project of a task they only
+    hold as its assignee, has an empty path.
+    """
+    wanted = sorted({str(p) for p in project_ids if p})
+    if not wanted:
+        return {}
+    rows = (await db.execute(
+        text(
+            _ancestor_chain_sql("id = ANY(CAST(:path_leaves AS uuid[]))")
+            + "SELECT DISTINCT c.id, c.parent_project_id, p.name"
+            "  FROM chain c JOIN pm_projects p ON p.id = c.id"
+            f" WHERE {vis.project_clause('c.id')}"
+        ),
+        {"path_leaves": wanted, **vis.params},
+    )).fetchall()
+    seen = {str(row.id): row for row in rows}
+    paths: dict[str, list[dict[str, str]]] = {}
+    for leaf in wanted:
+        path: list[dict[str, str]] = []
+        current: str | None = leaf
+        # MAX_DEPTH bounds the climb, as `root_project_id` bounds its own.
+        while current in seen and len(path) < MAX_DEPTH:
+            row = seen[current]
+            path.append({"id": current, "name": row.name})
+            current = str(row.parent_project_id) if row.parent_project_id else None
+        path.reverse()
+        paths[leaf] = path
+    return paths
 
 
 async def load_visible_task(db: Any, vis: Visibility, task_id: str) -> Any:
