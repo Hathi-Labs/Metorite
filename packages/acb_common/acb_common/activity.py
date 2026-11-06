@@ -32,8 +32,15 @@ stream for each tenant instead of one per conversation):
   ``active_runs()`` — and therefore ``/observability/active`` and
   ``/observability/roster`` — only via :func:`refresh_run_presence`.
 
-The daily cost rollup (``cc:cost:{day}``) is still deployment-global on the
-raw client. Its conversion is a separate follow-up task.
+The daily cost rollup is keyed for each tenant too (H-201e, task 1748):
+``cc:<org>:cost:<YYYY-MM-DD>``, through the same wrapper. The org of a priced
+call is captured as for the stream. A priced call with NO org (the gateway's
+``/v1/chat/completions`` under the deployment key) folds into ONE separate,
+deployment-level hash, ``cc:_unattributed:cost:<YYYY-MM-DD>``, on the raw
+client. No tenant reader reads that hash. An org id cannot start with ``_``
+(``tenant_redis._ORG_ID_RE``), so that key can never equal a tenant key. There
+is no dual read of the old global ``cc:cost:{day}`` hash. Those hashes are
+orphaned at deploy and expire by their own TTL.
 
 This is the live signal only — the durable record stays in ``agent_run``
 (migration 50) and the correlated logs. Retention here is bounded by
@@ -66,7 +73,12 @@ from acb_common.tenant_redis import (
 #: presence keys (``cc:<org>:activity:live:<run_id>``). H-201c.
 ACTIVITY_NAMESPACE = "activity"
 LIVE_PART = "live"
-COST_PREFIX = "cc:cost"        # per-day rollup hash: cc:cost:{YYYY-MM-DD}
+#: The tenant namespace of the daily cost rollup: ``cc:<org>:cost:<day>``.
+COST_NAMESPACE = "cost"
+#: The ONE deployment-level cost hash: ``cc:_unattributed:cost:<day>``. It holds
+#: the priced calls that have no tenant. No tenant route reads it. The ``_``
+#: lead is not a legal org id, so no tenant key or tenant SCAN can reach it.
+UNATTRIBUTED_COST_PREFIX = "cc:_unattributed:cost"
 STREAM_MAXLEN = 2_000          # ~ last N activations; bounds memory
 LIVE_TTL_SECONDS = 900         # presence key self-heals if an "end" is lost
 COST_TTL_SECONDS = 60 * 60 * 24 * 45   # keep ~45 days of daily cost rollups
@@ -84,14 +96,15 @@ _INHERIT = (
 )
 
 
-# ── Raw async client: the cost rollup only (created lazily on the loop) ──────
-# The stream and presence keys go through acb_common.tenant_redis. Only
-# ``cc:cost:{day}`` stays here until its own follow-up task converts it.
+# ── Raw async client: the unattributed cost hash only (created lazily) ───────
+# Every tenant key goes through acb_common.tenant_redis. Only the
+# deployment-level ``cc:_unattributed:cost:<day>`` hash is written here, because
+# it has no tenant by definition (H-201e).
 _client: aioredis.Redis | None = None
 
 
 def _get_client() -> aioredis.Redis:
-    """Return the raw pooled async Redis client of the cost rollup."""
+    """Return the raw pooled client of the unattributed cost hash."""
     global _client
     if _client is None:
         _client = aioredis.from_url(
@@ -130,18 +143,28 @@ def _capture_org(organization_id: str | None) -> str | None:
         return None
 
 
-def _cost_key(day: str) -> str:
-    return f"{COST_PREFIX}:{day}"
+def _cost_key(day: str) -> TenantKey:
+    """``cc:<org>:cost:<day>``. The caller binds the org first."""
+    return key(COST_NAMESPACE, day)
+
+
+def _unattributed_cost_key(day: str) -> str:
+    """``cc:_unattributed:cost:<day>``: the priced calls with no tenant."""
+    return f"{UNATTRIBUTED_COST_PREFIX}:{day}"
 
 
 def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-async def _record_cost(r: aioredis.Redis, evt: dict[str, Any]) -> None:
-    """Fold one priced model call into today's rollup hash. Best-effort.
+async def _record_cost(r: Any, hkey: TenantKey | str, evt: dict[str, Any]) -> None:
+    """Fold one priced model call into the rollup hash *hkey*. Best-effort.
 
-    One hash per UTC day (``cc:cost:{date}``) with additive fields so a daily
+    *r* is a :class:`TenantRedis` with *hkey* a tenant key
+    (``cc:<org>:cost:<date>``), or the raw client with *hkey* the unattributed
+    key. Both pipelines take the same commands, so the fold is written once.
+
+    One hash per UTC day with additive fields so a daily
     cost breakdown by model / app / agent / tenant partition is a single
     HGETALL — no migration, no per-call Postgres write (the deliberate default;
     LLM_USAGE_AUDIT stays the opt-in durable path). Fields:
@@ -165,23 +188,22 @@ async def _record_cost(r: aioredis.Redis, evt: dict[str, Any]) -> None:
     source = str(evt.get("source") or "unattributed")
     agent = str(evt.get("agent") or "")
     instance = str(evt.get("instance") or "")
-    key = _cost_key(_today())
     pipe = r.pipeline(transaction=False)
-    pipe.hincrbyfloat(key, "total|cost", float(cost))
-    pipe.hincrby(key, "total|tokens", tokens)
-    pipe.hincrby(key, "total|calls", 1)
-    pipe.hincrbyfloat(key, f"model|{model}|cost", float(cost))
-    pipe.hincrby(key, f"model|{model}|tokens", tokens)
-    pipe.hincrby(key, f"model|{model}|calls", 1)
-    pipe.hincrbyfloat(key, f"source|{source}|cost", float(cost))
-    pipe.hincrby(key, f"source|{source}|calls", 1)
+    pipe.hincrbyfloat(hkey, "total|cost", float(cost))
+    pipe.hincrby(hkey, "total|tokens", tokens)
+    pipe.hincrby(hkey, "total|calls", 1)
+    pipe.hincrbyfloat(hkey, f"model|{model}|cost", float(cost))
+    pipe.hincrby(hkey, f"model|{model}|tokens", tokens)
+    pipe.hincrby(hkey, f"model|{model}|calls", 1)
+    pipe.hincrbyfloat(hkey, f"source|{source}|cost", float(cost))
+    pipe.hincrby(hkey, f"source|{source}|calls", 1)
     if agent:
-        pipe.hincrbyfloat(key, f"agent|{agent}|cost", float(cost))
-        pipe.hincrby(key, f"agent|{agent}|calls", 1)
+        pipe.hincrbyfloat(hkey, f"agent|{agent}|cost", float(cost))
+        pipe.hincrby(hkey, f"agent|{agent}|calls", 1)
     if instance:
-        pipe.hincrbyfloat(key, f"instance|{instance}|cost", float(cost))
-        pipe.hincrby(key, f"instance|{instance}|calls", 1)
-    pipe.expire(key, COST_TTL_SECONDS)
+        pipe.hincrbyfloat(hkey, f"instance|{instance}|cost", float(cost))
+        pipe.hincrby(hkey, f"instance|{instance}|calls", 1)
+    pipe.expire(hkey, COST_TTL_SECONDS)
     await pipe.execute()
 
 
@@ -208,17 +230,17 @@ def _build_event(fields: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_cost_event(evt: dict[str, Any]) -> bool:
-    """A priced model call: the only event that folds into ``cc:cost:{day}``."""
+    """A priced model call: the only event that folds into the cost rollup."""
     return evt.get("kind") == "model" and evt.get("cost_usd") is not None
 
 
 async def _axadd(evt: dict[str, Any], organization_id: str | None) -> None:
     """Append one event to the tenant's stream + maintain the presence key.
 
-    With no org, the stream and the presence writes are skipped, and only the
-    cost rollup runs. The rollup is deployment-global (``cc:cost:{day}``), so
-    a priced call with no bound tenant (the gateway's deployment-key
-    ``/v1/chat/completions``) still counts, exactly as before H-201c.
+    With no org, the stream and the presence writes are skipped. A priced
+    call with no org (the gateway's deployment-key ``/v1/chat/completions``)
+    still counts: it folds into the deployment-level unattributed hash, never
+    into the hash of a tenant (H-201e).
     """
     if organization_id:
         with organization_scope(organization_id):
@@ -243,12 +265,18 @@ async def _axadd(evt: dict[str, Any], organization_id: str | None) -> None:
                                 ex=LIVE_TTL_SECONDS)
                 elif evt.get("phase") == "end":
                     await r.delete(_live_key(str(run_id)))
-    # Cost rollup: fold priced model calls into today's daily hash. It stays
-    # on the raw client (cc:cost:{day}) until its own follow-up (task 1748)
-    # converts it. It runs with or without an org.
+    # Cost rollup (H-201e): a priced call folds into the tenant's daily hash.
+    # With no org it folds into the unattributed hash, so no spend is lost and
+    # no tenant reads it.
     if _is_cost_event(evt):
         try:
-            await _record_cost(_get_client(), evt)
+            if organization_id:
+                with organization_scope(organization_id):
+                    await _record_cost(get_tenant_redis(), _cost_key(_today()), evt)
+            else:
+                await _record_cost(
+                    _get_client(), _unattributed_cost_key(_today()), evt,
+                )
         except Exception:  # noqa: BLE001 — cost rollup is best-effort
             pass
 
@@ -268,8 +296,8 @@ def publish_activity(*, organization_id: str | None = None, **fields: Any) -> No
     (``acb_common.db.current_tenant()``) is captured NOW, in the caller's
     context, and handed to the scheduled write. With neither, no stream or
     presence key is written (H-201c): an event with no tenant has no key to
-    go to. A priced model call with no tenant still folds into the global
-    ``cc:cost:{day}`` rollup, as it did before H-201c.
+    go to. A priced model call with no tenant still counts. It folds into the
+    deployment-level ``cc:_unattributed:cost:<day>`` hash (H-201e).
 
     Never raises and never blocks the caller: the Redis write is scheduled onto
     the running event loop (or a throwaway loop if none is running). A drop is
@@ -566,8 +594,40 @@ def _split_field(field: str) -> tuple[str, str, str]:
     return parts[0], "|".join(parts[1:-1]), parts[-1]
 
 
-async def cost_summary(days: int = 7) -> dict[str, Any]:
-    """Aggregate the last *days* daily cost rollups for the /observability cost view.
+async def _read_cost_hashes(
+    dates: list[str], organization_id: str | None,
+) -> list[dict[str, Any]]:
+    """The tenant's daily cost hashes for *dates*, in order. Never raises.
+
+    A falsy or invalid org reads nothing, so each day is ``{}``. The keys are
+    built under ``organization_scope``, so the read cannot leave the tenant's
+    prefix. It never reads the unattributed hash or the old global hash.
+    """
+    empty: list[dict[str, Any]] = [{} for _ in dates]
+    if not organization_id:
+        return empty
+    out: list[dict[str, Any]] = []
+    try:
+        with organization_scope(organization_id):
+            r = get_tenant_redis()
+            for d in dates:
+                try:
+                    out.append(await r.hgetall(_cost_key(d)) or {})
+                except Exception:  # noqa: BLE001
+                    out.append({})
+    except Exception:  # noqa: BLE001 — an invalid org id reads nothing
+        return empty
+    return out
+
+
+async def cost_summary(
+    days: int = 7, *, organization_id: str | None,
+) -> dict[str, Any]:
+    """Aggregate the last *days* daily cost rollups of ONE tenant.
+
+    ``organization_id`` is required (H-201e). The route passes the viewer's
+    org from the session. A falsy org gives the empty summary: every day and
+    every total is zero. The summary never includes the unattributed hash.
 
     Returns per-day totals (chronological), plus by-model, by-source, by-agent
     and by-instance rollups and grand totals. ``by_instance`` is keyed by the
@@ -576,7 +636,6 @@ async def cost_summary(days: int = 7) -> dict[str, Any]:
     litellm pricing). Never raises — missing/short history just yields zeroes.
     """
     days = max(1, min(days, 90))
-    r = _get_client()
     today = datetime.now(timezone.utc).date()
     out_days: list[dict[str, Any]] = []
     by_model: dict[str, dict[str, float]] = {}
@@ -590,12 +649,9 @@ async def cost_summary(days: int = 7) -> dict[str, Any]:
     }
     totals = {"cost": 0.0, "tokens": 0, "calls": 0}
 
-    for i in range(days):
-        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
-        try:
-            h = await r.hgetall(_cost_key(d))
-        except Exception:  # noqa: BLE001
-            h = {}
+    dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    hashes = await _read_cost_hashes(dates, organization_id)
+    for d, h in zip(dates, hashes, strict=True):
         day_rec: dict[str, Any] = {
             "date": d, "cost": 0.0, "tokens": 0, "calls": 0, "by_model": {},
         }
