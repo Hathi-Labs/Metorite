@@ -184,14 +184,20 @@ pg "ci-backup-$TAG" postgres:16 5432 postgres rehearsal postgres || exit 1
 FULL_RUN=(--ctx needs.changes.result=success --ctx needs.changes.outputs.full=true --ctx needs.changes.outputs.files=
           --ctx steps.pick.outputs.mode=full --ctx steps.pick.outputs.paths=)
 rm -rf junit
-# A selected run swaps the folder for the listed files. pytest-split still
-# divides them over the shards. The "Unit tests" guard below needs every
+# A selected run (CIV-6) gives the shard jobs a selection result in place of a
+# FULL one: pr-check's own pick step then runs the listed files, and pytest-split
+# still divides them over the shards. The "Unit tests" guard below needs every
 # shard's report for the WHOLE suite (--must-run files), so a selected run
 # skips it: each shard job already fails on a red test.
-SEL_REPLACE=()
-[ -n "$SELECT_FILE" ] && SEL_REPLACE=("--replace=tests/unit/ -v=>$(tr '\n' ' ' < "$SELECT_FILE")-v")
+SHARD_CTX=("${FULL_RUN[@]}")
+if [ -n "$SELECT_FILE" ]; then
+  SHARD_CTX=(--ctx needs.changes.result=success --ctx needs.changes.outputs.full=false
+             --ctx "needs.changes.outputs.files=$(tr '\n' ' ' < "$SELECT_FILE")"
+             --ctx steps.pick.outputs.mode=selection
+             --ctx "steps.pick.outputs.paths=$(tr '\n' ' ' < "$SELECT_FILE")")
+fi
 for i in $(seq 1 "$SHARDS"); do
-  job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "${FULL_RUN[@]}" "--replace=--splits 6=>--splits $SHARDS" "${SEL_REPLACE[@]}"
+  job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "${SHARD_CTX[@]}" "--replace=--splits 6=>--splits $SHARDS"
 done
 job lint "" lint
 job migrations "ci-ladder-$TAG" migrations

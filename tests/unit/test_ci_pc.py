@@ -199,7 +199,9 @@ def test_the_local_run_is_full_for_the_selection_jobs() -> None:
     result to both jobs, and steps.py renders them with it."""
     text = (_ROOT / "scripts" / "ci_pc" / "run_suite.sh").read_text(encoding="utf-8")
     assert "--ctx needs.changes.outputs.full=true" in text
-    assert re.search(r'job "shard-\$i" .* test .*"\$\{FULL_RUN\[@\]\}"', text)
+    # A full run passes FULL_RUN through SHARD_CTX. A selected run swaps it (CIV-6).
+    assert 'SHARD_CTX=("${FULL_RUN[@]}")' in text
+    assert re.search(r'job "shard-\$i" .* test .*"\$\{SHARD_CTX\[@\]\}"', text)
     assert re.search(r'job unit-tests .*"\$\{FULL_RUN\[@\]\}"', text)
     assert "--ctx steps.pick.outputs.mode=full" in text
     for job in ("test", "unit-tests"):
@@ -250,9 +252,17 @@ def test_the_default_run_is_the_civ2_selection_and_full_is_opt_in():
     assert "the selector says full" in _REMOTE
 
 
-def test_a_selected_run_swaps_the_folder_for_the_files_and_skips_the_whole_suite_guard():
-    out = steps.render("test", _CTX, {}, {"tests/unit/ -v": "tests/unit/test_a.py -v"})
-    assert "tests/unit/test_a.py -v -rs" in out
+def test_a_selected_run_gives_the_shards_a_selection_and_skips_the_whole_suite_guard():
+    ctx = {
+        **_CTX,
+        "needs.changes.outputs.full": "false",
+        "steps.pick.outputs.mode": "selection",
+        "steps.pick.outputs.paths": "tests/unit/test_a.py ",
+    }
+    out = steps.render("test", ctx, {})
+    assert "tests/unit/test_a.py" in out
+    assert 'SHARD_CTX=(--ctx needs.changes.result=success' in _RUN_SUITE
+    assert "--ctx steps.pick.outputs.mode=selection" in _RUN_SUITE
     # The guard wants every must-run file in the reports. A selected run has
     # not run them, so the guard job is inside the "not selected" branch.
     guard = _RUN_SUITE.index('job unit-tests "" unit-tests')
