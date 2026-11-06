@@ -13,7 +13,8 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Badge from "@/components/ui/Badge";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import FilterPills from "@/components/FilterPills";
@@ -280,15 +281,7 @@ function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => vo
         </div>
       </div>
       <div className="flex items-center gap-2 mt-auto pt-1">
-        {live ? (
-          <span className="text-[9px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full text-success bg-success/10">
-            Live
-          </span>
-        ) : (
-          <span className="text-[9px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full text-warning bg-warning/10">
-            Draft
-          </span>
-        )}
+        <Badge tone={live ? "success" : "warning"} size="xs">{live ? "Live" : "Draft"}</Badge>
       </div>
     </button>
   );
@@ -303,6 +296,7 @@ export default function AppsGallery() {
 
   const [apps, setApps] = useState<AppMeta[]>([]);
   const [loading, setLoading] = useState(true);
+  const packagesSeq = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [describe, setDescribe] = useState("");
@@ -317,9 +311,16 @@ export default function AppsGallery() {
     setError(null);
     // The packages of the member sit beside the Workshop apps. A switch that is off
     // answers 404 and shows no package and no error. Any other failure says so.
-    listPackages()
-      .then((found) => { setPackages(found); setPackagesError(false); })
+    // An answer that arrives after a newer request is dropped, so a slow old list never wins.
+    const seq = ++packagesSeq.current;
+    const packagesRead = listPackages()
+      .then((found) => {
+        if (seq !== packagesSeq.current) return;
+        setPackages(found);
+        setPackagesError(false);
+      })
       .catch((e: unknown) => {
+        if (seq !== packagesSeq.current) return;
         setPackages([]);
         setPackagesError(!(e instanceof Error && e.message === STUDIO_OFF));
       });
@@ -338,6 +339,9 @@ export default function AppsGallery() {
       setError(String(e));
       setApps([]);
     } finally {
+      // Hold the skeleton until both reads settle, so "No apps yet" never flashes
+      // while the packages are still on the way. A failure of one still shows the other.
+      await packagesRead;
       setLoading(false);
     }
   }, []);

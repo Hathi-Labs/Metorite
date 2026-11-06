@@ -9,12 +9,12 @@
  * 409 swaps in the new counts and asks again. A 503 says to try again. A 200 calls
  * `onDeleted`, and the page returns to the library. Fence: `packageDelete.test.ts`.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import {
-  DELETE_LABEL, type DeletePreview, previewCopy, progressLine, readPreview, runDelete,
+  DELETE_LABEL, type DeletePreview, deleteAndRefresh, forgetPackage, previewCopy, progressLine, readPreview,
 } from "@/lib/studio/packageDelete";
 
 export interface DeletePackageButtonProps {
@@ -32,17 +32,28 @@ export default function DeletePackageButton({ id, onDeleted }: DeletePackageButt
   // Outside the dialog: the preview failed, so no dialog opens.
   const [readProblem, setReadProblem] = useState<string | null>(null);
 
+  // The page may leave while a delete runs. The loop stops between two calls, and
+  // nothing sets state or navigates after that.
+  const stop = useRef<AbortController | null>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; stop.current?.abort(); };
+  }, []);
+  const gone = () => { forgetPackage(id); onDeleted(); };
+
   async function ask() {
     setReading(true);
     setReadProblem(null);
     const found = await readPreview(id);
+    if (!alive.current) return;
     setReading(false);
     if (found.ok) {
       setProblem(null);
       setProgress(null);
       setPreview(found.preview);
     } else if (found.gone) {
-      onDeleted();
+      gone();
     } else {
       setReadProblem(found.message);
     }
@@ -53,21 +64,26 @@ export default function DeletePackageButton({ id, onDeleted }: DeletePackageButt
     setBusy(true);
     setProblem(null);
     setProgress(null);
-    const end = await runDelete(id, preview.confirm, {
-      onProgress: (remaining, capped) => setProgress(progressLine(remaining, capped)),
+    const run = new AbortController();
+    stop.current = run;
+    const end = await deleteAndRefresh(id, preview.confirm, {
+      signal: run.signal,
+      onProgress: (remaining, capped) => { if (!run.signal.aborted) setProgress(progressLine(remaining, capped)); },
     });
+    if (!alive.current || run.signal.aborted || end.kind === "aborted") return;
     setBusy(false);
     setProgress(null);
-    if (end.kind === "done" || end.kind === "gone") {
+    if (end.kind === "done" || end.kind === "gone" || ("vanished" in end && end.vanished)) {
       setPreview(null);
-      onDeleted();
+      gone();
     } else if (end.kind === "changed") {
       if (end.preview) setPreview(end.preview);
       setProblem(end.message);
     } else {
-      // Busy or failed: keep the token of the last 202, so Confirm goes on from there.
-      setPreview((p) => (p ? { ...p, confirm: end.confirm } : p));
-      setProblem(end.message);
+      // Busy or failed: the counts moved, so the old token no longer fits. Show the counts
+      // of now, with their token. Without them, keep the dialog and let a 409 say so.
+      if ("fresh" in end && end.fresh) setPreview(end.fresh);
+      setProblem(end.kind === "busy" || end.kind === "failed" ? end.message : null);
     }
   }
 
@@ -86,7 +102,7 @@ export default function DeletePackageButton({ id, onDeleted }: DeletePackageButt
         subject={copy?.subject}
         body={copy?.body ?? ""}
         note={copy?.note}
-        confirmLabel={problem && !busy ? "Confirm delete" : DELETE_LABEL}
+        confirmLabel={DELETE_LABEL}
         busy={busy}
         onCancel={() => { if (!busy) { setPreview(null); setProblem(null); } }}
         onConfirm={() => { void confirm(); }}

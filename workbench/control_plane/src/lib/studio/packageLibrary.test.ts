@@ -119,6 +119,21 @@ describe("chat first", () => {
   });
 });
 
+describe("the gallery loads both reads before it clears the skeleton", () => {
+  it("waits for the packages, and drops an older answer", () => {
+    expect(gallery).toContain("await packagesRead;");
+    expect(gallery.indexOf("await packagesRead;")).toBeLessThan(gallery.indexOf("setLoading(false);\n    }\n  }, []);"));
+    expect(gallery).toContain("seq !== packagesSeq.current");
+  });
+  it("draws the state chip with the shared Badge", () => {
+    expect(gallery).toContain('<Badge tone={live ? "success" : "warning"}');
+  });
+  it("the chat page reads ?q= with the shell bar off, for the fallback link", () => {
+    const chat = read("../../app/chat/page.tsx");
+    expect(chat).toContain('const askParam = searchParams?.get("q") ?? null;');
+  });
+});
+
 describe("the app page", () => {
   it("is titled by the package, with no Package preview title and no Preview badge", () => {
     expect(page).not.toContain("Package preview");

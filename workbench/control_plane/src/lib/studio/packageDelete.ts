@@ -12,6 +12,7 @@
  * Pure of React. Every sentence says what happened and the next step
  * (`failure-copy-explains`). Fence: `packageDelete.test.ts`.
  */
+import { invalidate } from "@/lib/dataCache";
 import { busySentence } from "./realDoor";
 
 export interface PreviewObject {
@@ -79,7 +80,7 @@ export function previewCopy(p: DeletePreview): { heading: string; subject: strin
 
 export const DELETE_LABEL = "Delete app";
 export const GONE_LINE = "This app is already gone. Go back to the library.";
-export const OFFLINE_LINE = "The server did not answer, so nothing more was deleted. Check your connection and try again.";
+export const OFFLINE_LINE = "The server did not answer. Some records may already be deleted. Check your connection, read the counts again, then confirm.";
 export const PREVIEW_FAILED_LINE = "We could not read what the delete removes, so nothing was deleted. Try again in a moment.";
 export const DELETE_FAILED_LINE = "The delete did not finish. Records that it removed stay removed. Try again, and the delete goes on.";
 
@@ -95,12 +96,26 @@ export type StepResult =
   | { kind: "changed"; preview: DeletePreview | null; removed: number; message: string }
   | { kind: "busy"; message: string }
   | { kind: "gone" }
+  | { kind: "aborted" }
   | { kind: "failed"; message: string };
 
 const detailOf = (body: unknown): Record<string, unknown> => {
   const d = isObject(body) ? body.detail : undefined;
   return isObject(d) ? d : {};
 };
+
+/** The 409 words. `removed` is the total of the whole run, over every call. */
+export function changedText(removed: number): string {
+  const earlier = removed > 0 ? ` ${plural(removed, "record")} already went.` : "";
+  return `The app changed while you read this, so nothing more was deleted.${earlier} Check the new counts, then confirm again.`;
+}
+
+/** Drop every cached read of a package, and the list of packages, after a delete. */
+export function forgetPackage(id: string): void {
+  invalidate(`studio:package-preview:pkg:${id}`);
+  invalidate(`studio:${id}:live:`);
+  invalidate("studio:package-preview:packages");
+}
 
 /** One answer of the DELETE route, as one outcome. */
 export function classifyStep(status: number, body: unknown, retryAfter?: string | null): StepResult {
@@ -115,11 +130,7 @@ export function classifyStep(status: number, body: unknown, retryAfter?: string 
   if (status === 409) {
     const d = detailOf(body);
     const removed = num(d.records_removed);
-    const earlier = removed > 0 ? ` ${plural(removed, "record")} already went.` : "";
-    return {
-      kind: "changed", preview: parsePreview(d.preview), removed,
-      message: `The app changed while you read this, so nothing more was deleted.${earlier} Check the new counts, then confirm again.`,
-    };
+    return { kind: "changed", preview: parsePreview(d.preview), removed, message: changedText(removed) };
   }
   if (status === 503) return { kind: "busy", message: busySentence(retryAfter) };
   return { kind: "failed", message: DELETE_FAILED_LINE };
@@ -129,6 +140,8 @@ export interface DeleteDeps {
   fetchImpl?: typeof fetch;
   /** Called after each 202, with what is left. */
   onProgress?: (remaining: number, capped: boolean) => void;
+  /** A page that left stops the loop between two calls. */
+  signal?: AbortSignal;
   /** The most calls of one run. A bound, so a loop that never ends cannot run. */
   maxCalls?: number;
 }
@@ -164,10 +177,12 @@ export async function runDelete(
   let token = confirm;
   let total = 0;
   for (let call = 0; call < maxCalls; call++) {
+    if (deps.signal?.aborted) return { kind: "aborted", confirm: token, totalRemoved: total };
     let step: StepResult;
     try {
       const res = await fetchImpl(`/api/studio/packages/${encodeURIComponent(id)}`, {
         method: "DELETE",
+        signal: deps.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirm: token }),
       });
@@ -177,9 +192,32 @@ export async function runDelete(
       step = { kind: "failed", message: OFFLINE_LINE };
     }
     if ("removed" in step) total += step.removed;
+    if (deps.signal?.aborted) return { kind: "aborted", confirm: token, totalRemoved: total };
+    if (step.kind === "changed") return { ...step, message: changedText(total), confirm: token, totalRemoved: total };
     if (step.kind !== "more") return { ...step, confirm: token, totalRemoved: total };
     token = step.confirm;
     deps.onProgress?.(step.remaining, step.capped);
   }
   return { kind: "failed", message: DELETE_FAILED_LINE, confirm: token, totalRemoved: total };
+}
+
+export type SettledDelete = Awaited<ReturnType<typeof runDelete>> & {
+  /** After a busy or failed end: the counts of now, with the token that fits them. */
+  fresh?: DeletePreview;
+  /** The re-read found the package gone. */
+  vanished?: boolean;
+};
+
+/**
+ * `runDelete`, and after a busy or failed end a new read of the preview. The token is a
+ * hash of the counts, and the counts moved with the records that already went, so the token
+ * that the loop holds no longer fits. The next Confirm must send the token of the new counts.
+ */
+export async function deleteAndRefresh(id: string, confirm: string, deps: DeleteDeps = {}): Promise<SettledDelete> {
+  const end = await runDelete(id, confirm, deps);
+  if (end.kind !== "busy" && end.kind !== "failed") return end;
+  if (deps.signal?.aborted) return { kind: "aborted", confirm: end.confirm, totalRemoved: end.totalRemoved };
+  const again = await readPreview(id, deps.fetchImpl ?? fetch);
+  if (again.ok) return { ...end, fresh: again.preview };
+  return again.gone ? { ...end, vanished: true } : end;
 }

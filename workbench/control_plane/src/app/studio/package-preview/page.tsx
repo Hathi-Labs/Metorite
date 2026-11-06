@@ -97,7 +97,8 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   const [picked, setPicked] = useState("");
   const [editing, setEditing] = useState(false);
 
-  if (detail.error && detail.data === undefined) {
+  // A 404 over cached data is a package that is gone: never draw the old rows (BETA-1).
+  if (detail.error === STUDIO_OFF || (detail.error && detail.data === undefined)) {
     if (detail.error === STUDIO_OFF) {
       return <Shell><EmptyState icon="PackageOpen" message="This package is not available to you." /></Shell>;
     }
