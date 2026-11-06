@@ -21043,6 +21043,15 @@ the member's edits, and the next message is a steer again.
 The chat holds the kept form edits, so a new message no longer loses them. The view leaves a
 slot for the first live card. A rest that only the settle of 20 seconds made ends no slot.
 
+**Fix round 6 (2026-11-06, Opus review and verifier).** A card that came back says that the
+edits are on it only when its form started from them. After a chat switch or a new mount of
+the chat, it asks the member to check the people and the text. The revise writes the link
+after the spend again, so a card that came back and went out leaves no link.
+
+A 409 at the revise draws a new card, because the record is gone. A card that a chat message
+closed during its Send shows again as a new card. After the third comeback, the member hears
+that the card edits were lost.
+
 **CI gate (checked 2026-11-06).** `pr-check.yml` has no Redis service and does not set
 `HELD_R8_REDIS_URL`. So `TestTheOrderOnARealRedis` skips in pr-check, and only a local run
 holds it. A task must add the service: Metorite task 1856
@@ -21062,6 +21071,9 @@ flag of §18.10. With the flag off, nothing below runs.
 **Not in this slice.** The reply card (`compose_reply`). WhatsApp. A parked card
 (`CHAT_DURABLE_ASKS`), which is slice 4. Text edits kept across a page reload: the snapshot
 lives only in the page. The unticks of rule 7 live in the gateway, so a reload keeps them.
+The form edits after a chat switch or a new mount of the chat. Metorite task 1893 keeps
+them (https://app.metorite.com/projects?task=534f89c8-3496-4576-99b7-ba729d114ee0). Until
+then, a card that comes back with no kept edits asks the member to check it.
 
 **The problem.** While a new-mail card is open, a chat message such as "make it shorter"
 closes the card as REVISED (`close_on_steer`). The model then writes a new card from its
@@ -21108,30 +21120,38 @@ The new card also arrives with no link to the old one.
    2. reads the snapshot of that card with a plain `GET`, if there is one.
    3. keeps the people that the member unticked on that card (rule 7), with a life of 900
       seconds, under `email:card_unticked:<thread>:<member>`.
-   4. writes the link `email:card_revised:<thread>` = `{card_id, draft, to}` with a life of
+   4. spends the record (`take_record`), so a late answer finds no record.
+   5. writes the link `email:card_revised:<thread>` = `{card_id, draft, to}` with a life of
       900 seconds. `draft` is the draft number of the old card plus one. `to` is the To of
       the old card, in lower case. A link of the same member that waits becomes `many`, which
       names no card. A link of another member stays as it is, and this revise writes no link.
-      A link that already names this card stays as it is.
-   5. spends the record (`take_record`), so a late answer finds no record.
+      The link is a label and no safety write, so it comes after the spend (fix round 6).
    6. deletes the snapshot.
    7. answers the snapshot as neutral data. A snapshot that keeps only the ticks answers
       nothing.
 
    A held record goes through the same route, with the same steps.
-   - A fault of Redis in steps 1 to 5 answers 503, and nothing is spent. Each of those steps
+   - A fault of Redis in steps 1 to 4 answers 503, and nothing is spent. Each of those steps
      is safe to run twice, so the tool tries once more.
-   - A fault in step 6 only logs, because the TTL clears the snapshot.
-   - A spend that finds no record answers 409, because the act took it first. The route then
-     deletes the link of this card. The unticks stay, because an extra untick is safe.
-   - The tool reads a 409, and a 503 after its one more try, as "the revise did not run". It
-     asks the SAME card again, with `reopened` on its form, at most three times. The chat
-     puts that card back in its slot, with the member's edits and the line "Your request in
-     the chat did not reach the assistant." The next message is a steer that carries the
-     edits.
+   - A fault in step 5 only logs, and the next card is "Draft 1". A fault in step 6 only
+     logs, because the TTL clears the snapshot.
+   - A spend that finds no record answers 409, because the act took it first. No link is
+     written. The unticks stay, because an extra untick is safe.
+   - The tool reads a 503 after its one more try as "the revise did not run". It asks the
+     SAME card again, with `reopened` on its form, at most three times. The chat puts that
+     card back in its slot, with the line "Your request in the chat did not reach the
+     assistant." The next message is a steer that carries the edits.
+   - A form that started from the kept edits says "Your edits are still on this card." A
+     form with none, as after a chat switch or a new mount of the chat, says "Check the
+     people and the text before you send." A change of tab keeps that line (`startedBare`).
+   - A card that a chat message closed during its Send has no slot. Its `reopened` ask shows
+     it as a new card, unless the member answered it in this tab (`reopenable`).
+   - A 409 gives the REVISED text, and the model draws a new card (fix round 6). The record is
+     gone, so a card that came back could not send. The unticks already wait in the hash.
    - When the member answers the card that came back, the model reads `_REVISE_UNREAD` before
      the answer. It says that the card edits did not reach the model, and that the card stayed
-     open. After three times, the model draws no card.
+     open. After three times, the model draws no card. It tells the member that the card
+     edits were lost, and to check the ticks on the next card.
 5. **The model reads it.** The REVISED text of `send_email` adds the snapshot, when there is
    one, as a data block. The block passes the neutralising pass of `compose_card_answer`
    (`gateway/chat_recovery.py`). It loses each fence string and each «mark». It is capped,
@@ -21195,8 +21215,8 @@ The new card also arrives with no link to the old one.
    - At the run's end, a slot closes with no line when a card to the same people arrived after
      it. Any other slot reads "The draft did not change.", so a card to other people never
      closes the member's card with no word.
-   - The closed card in the transcript says that a new draft "can follow". The model may draw
-     none.
+   - The closed card in the transcript says that a new draft "can follow", or that the same
+     card can come back. The model may draw none.
    - The tab count does not count a slot. It counts the cards that wait on the member. A
      row of slots only reads "Updating 2 drafts", never "0 to approve".
    - The closed `send_email` card says "Draft being changed", never "Email sent", because
@@ -21306,6 +21326,11 @@ The new card also arrives with no link to the old one.
   plain message at rest keep the edits. Send on Bob after a steer about Kim does not name Geo.
 - The race (rule 7): one message re-ticks a person on one card and leaves that person unticked
   on another. The person stays unticked in either order, on a real Redis too.
+- The line of a card that came back (step 4): a form with kept edits says so. A form with
+  none asks the member to check it, also after a change of tab.
+- A Send in flight (step 4): a card that a chat message closed during its Send shows again.
+  A card that the member answered stays closed.
+- The link (step 4): a card that came back and went out leaves no link. A 409 draws a new card.
 
 **Fences.** `tests/unit/test_email_redraft_snapshot.py`. Named mutations:
 
@@ -21340,6 +21365,9 @@ The new card also arrives with no link to the old one.
 - step 4: a spend before the safety writes, or a fault of the spend that reads as no record.
 - step 4: a tool that asks for a new card after a revise that did not run.
 - step 4: a tool that asks the same card again with no cap.
+- step 4: a link written before the spend, or a fault at the link that escapes.
+- step 4: a tool that shows the card again after a 409.
+- step 4: words after the third comeback that do not say that the edits were lost.
 
 `workbench/control_plane/src/components/redraftCard.test.ts` holds the snapshot of each open
 card on a steer, the slot and the label. It holds the "Changed:" line with its people, and
@@ -21364,6 +21392,10 @@ slots only, and the cap of a steer's list. Its named mutations:
 - a card that comes back and stays a slot, or a replay that reopens an answered card.
 - a view that moves only for a NEW live card.
 - a slot that ends on the settle of `FINISH_MAX_MS` alone.
+- a kept line on a form that started with no kept edits, or with `startedBare`.
+- a card with no slot that never shows again, or an answered card that shows again.
+- a live card that takes the reopen path and loses its "Changed:" line.
+- a closed card whose words do not name the same card that comes back.
 
 `workbench/control_plane/src/components/newMailCard.test.ts` holds the nudge at rest: its words,
 and no chips.
@@ -21376,6 +21408,7 @@ runs a change of tab twice: one run ends at Send, and one ends at a steer.
 
 Fix round 5 adds the card that comes back, and a steer about Kim with Send on Bob.
 It also adds a failed Send, a refused steer and a plain message at rest.
+Fix round 6 adds a card that came back with no kept edits, and a change of tab on it.
 
 **Verify with.**
 
