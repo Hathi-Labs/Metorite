@@ -147,15 +147,6 @@ def test_a_failover_chain_applies_the_rule_for_the_model_it_really_calls():
     assert messages_for_step(wire, "anthropic/deepseek-x")[1]["content"] is None
     assert messages_for_step(wire, "deepseek/claude-like")[1]["content"] == ""
 
-    # The Router route builds every step through it (wiring, not behaviour).
-    tree = ast.parse(inspect.getsource(main))
-    kwargs_for = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "_kwargs_for"
-        and "messages_for_step" in ast.unparse(n)
-    ]
-    assert kwargs_for
-
 
 def test_a_last_user_turn_of_empty_blocks_is_never_sent_as_empty_list():
     src = [
@@ -422,3 +413,95 @@ def test_the_string_history_block_drops_the_placeholder():
     )
     assert "sanitised" not in block
     assert "Hi there." in block
+
+
+def _router_kwargs_for():
+    """The REAL `_kwargs_for` of the Router chat route, with no database.
+
+    The function is a closure inside the route, so this compiles its own
+    source (read from `main.py`) against the module globals plus fakes for the
+    two names it closes over: `credentials` and `req`. Change what the route
+    passes to `messages_for_step` and this test fails.
+    """
+    import ast
+    import inspect
+    from types import SimpleNamespace
+
+    from customer_console import main
+
+    tree = ast.parse(inspect.getsource(main))
+    node = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_kwargs_for"
+        and "passthrough" in ast.unparse(n)
+    )
+    module = ast.Module(body=[node], type_ignores=[])
+    ns: dict = dict(vars(main))
+    cred = SimpleNamespace(secret="sk-test", api_base=None, byok=False)
+    ns["credentials"] = {
+        p: cred for p in ("deepseek", "anthropic", "groq", "bedrock")
+    }
+    exec(compile(module, "main.py::_kwargs_for", "exec"), ns)  # noqa: S102
+    return ns["_kwargs_for"], ns
+
+
+def test_the_router_route_sends_each_step_its_own_empty_content():
+    """Drives the real `_kwargs_for` for a DeepSeek step then an Anthropic
+    step. Needs no database."""
+    from types import SimpleNamespace
+
+    kwargs_for, ns = _router_kwargs_for()
+    wire = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None, "tool_calls": [TOOL_CALL]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+    ]
+    ns["req"] = SimpleNamespace(
+        model_dump=lambda **_kw: {"messages": wire, "max_tokens": 64},
+    )
+    deepseek = kwargs_for(SimpleNamespace(model="deepseek/deepseek-chat"))
+    claude = kwargs_for(SimpleNamespace(model="anthropic/claude-haiku"))
+    again = kwargs_for(SimpleNamespace(model="deepseek/deepseek-chat"))
+    assert deepseek["messages"][1]["content"] == ""
+    assert claude["messages"][1]["content"] is None
+    assert again["messages"][1]["content"] == ""
+    assert deepseek["model"] == "deepseek/deepseek-chat"
+    # No step sees the edit of the step before it.
+    assert wire[1]["content"] is None
+
+
+def test_the_gateway_and_the_router_agree_on_the_empty_content():
+    """The gateway (positive Anthropic test) and the console (deny list) are
+    two codes for one rule. They must give the same content for every vendor.
+
+    Local path: the gateway sets the value itself, from `<provider> <model>`.
+    Router hop: the gateway sends "" and the console sets the value per step.
+    """
+    from customer_console.reasoning import content_for_step
+    from gateway.routes.v1_compat import (
+        _router_outbound,
+        _sanitize_messages_for_provider,
+    )
+
+    samples = {
+        "deepseek/deepseek-chat": "deepseek",
+        "groq/x": "groq",
+        "together_ai/x": "together_ai",
+        "anthropic/claude-x": "anthropic",
+        "bedrock/anthropic.claude-x": "bedrock",
+        "vertex_ai/claude-x": "vertex_ai",
+        "openai/gpt-x": "openai",
+        "claude-x": "anthropic",
+    }
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None, "tool_calls": [TOOL_CALL]},
+    ]
+    for model, provider in samples.items():
+        local = _sanitize_messages_for_provider(
+            history, f"{provider} {model}",
+        )[1]["content"]
+        hop = _router_outbound({"model": "tier-fast", "messages": history})
+        assert hop["messages"][1]["content"] == ""
+        routed = content_for_step(hop["messages"], model)[1]["content"]
+        assert local == routed, (model, local, routed)
