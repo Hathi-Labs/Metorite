@@ -8,6 +8,7 @@ import type { FileEntry } from "@/components/ArtifactSidebar";
 import { parseStoredRunError } from "@/lib/runErrors";
 import MarkdownMessage, { MarkdownBody } from "@/components/MarkdownMessage";
 import MessageActionBar from "@/components/MessageActionBar";
+import { isHelloRow } from "@/lib/shell/buddyHello";
 import GenerativeUIPanel from "@/components/GenerativeUIPanel";
 import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
 import { fileCardsOf } from "@/lib/artifactCards";
@@ -428,8 +429,11 @@ function MessageBubble({
   const handleEditSubmit = async () => {
     if (editPending) return;
     const trimmed = editText.trim();
-    // An unchanged text is no edit: close the composer and keep the reply.
-    if (!trimmed || !onEditLast || trimmed === message.content.trim()) {
+    // An unchanged text is a RESEND (owner, task 1653): it takes the same
+    // supersede path as a changed one, so the old answer is replaced and the
+    // model reads the note of the writes that already ran. Retry cannot do
+    // that: it sends a new turn with no note and keeps the old rows.
+    if (!trimmed || !onEditLast) {
       setEditing(false);
       return;
     }
@@ -814,7 +818,9 @@ function MessageBubble({
       />
       {!message.streaming && (
         <div className="flex items-center gap-2 mt-1.5 opacity-100 transition-opacity">
-          {message.content.trim() && (
+          {/* The hello is words that code wrote, not a model answer: no Copy
+              and no feedback under it (BUD-1). */}
+          {message.content.trim() && !isHelloRow(message.id) && (
             <MessageActionBar
               content={message.content}
               messageId={message.id}

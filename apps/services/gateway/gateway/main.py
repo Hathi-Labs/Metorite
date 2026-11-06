@@ -1473,9 +1473,18 @@ if _HAS_MAF:
             import time as _obs_time
             _obs_run_id = assistant_message_id or _thread_id or None
             _obs_started = _obs_time.monotonic()
+            # H-201c: the feed is keyed for each tenant. Capture the org of
+            # the request NOW, because the end event fires from the detached
+            # on_complete, which may run after the middleware released it.
+            try:
+                from acb_common.db import current_tenant as _obs_tenant
+                _obs_org = _obs_tenant()
+            except Exception:
+                _obs_org = None
             try:
                 from acb_common import publish_activity
                 publish_activity(
+                    organization_id=_obs_org,
                     kind="agent", phase="start", agent="orchestrator",
                     run_id=_obs_run_id, thread_id=_thread_id or None,
                     user=user_id or None, model=(_resolved_model or model or None),
@@ -1494,6 +1503,7 @@ if _HAS_MAF:
                     try:
                         from acb_common import publish_activity
                         publish_activity(
+                            organization_id=_obs_org,
                             kind="agent", phase="end", agent="orchestrator",
                             run_id=_obs_run_id, thread_id=_thread_id or None,
                             status="completed",
@@ -2166,6 +2176,17 @@ try:
     from gateway.routes.agent_guidance import router as _agent_guidance_router
 
     app.include_router(_agent_guidance_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-ALN ALN-5a — the rules of a project (project_alignment.md §4.2), on
+    # the one guidance store: create, accept, edit, retire, the level, the
+    # list and the history. Ships dark: 404 while `PROJECT_RULES_ORGS` does
+    # not hold the caller's org.
+    from gateway.routes.project_rules import router as _project_rules_router
+
+    app.include_router(_project_rules_router)
 except Exception:  # pragma: no cover
     pass
 

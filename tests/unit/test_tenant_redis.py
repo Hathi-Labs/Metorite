@@ -663,9 +663,12 @@ _ALLOWED_DIRECT_REDIS: dict[str, str] = {
         "the wrapper itself — the one place redis-py is reached",
 
     # ── MT-1e follow-up: convert these to acb_common.tenant_redis ──
+    # H-201c moved cc:activity and cc:activity:live onto the wrapper. What
+    # remains is the cost rollup and the short-lived clients of the no-loop
+    # paths, which the wrapper wraps but which still open through redis-py.
     "packages/acb_common/acb_common/activity.py":
-        "FOLLOW-UP: cc:activity, cc:activity:live:{run_id}, cc:cost:{day}; pooled "
-        "client at :66 plus two one-shot clients at :226/:317",
+        "FOLLOW-UP: cc:cost:{day} on the pooled client at :90-103, and the "
+        "one-shot clients at :287/:390 (wrapped in TenantRedis)",
     "apps/services/orchestrator/orchestrator/stream_relay.py":
         "FOLLOW-UP: cc:stream, cc:active, cc:runactor, cc:runsource, cc:runfloor, "
         "cc:control, cc:ctrl-ack — 31 key call sites, the largest conversion",
@@ -769,7 +772,7 @@ def test_allowlist_entries_say_why() -> None:
 
 _ALLOWED_CC_LITERALS: dict[str, str] = {
     "packages/acb_common/acb_common/activity.py":
-        "FOLLOW-UP: ACTIVITY_STREAM / LIVE_PREFIX / COST_PREFIX (:45-47)",
+        "FOLLOW-UP: COST_PREFIX (:69), the cc:cost:{day} rollup",
     "apps/services/orchestrator/orchestrator/stream_relay.py":
         "FOLLOW-UP: seven PREFIX constants (:53, :54, :65, :71, :76, :557, :558)",
     "apps/services/orchestrator/orchestrator/steer.py":

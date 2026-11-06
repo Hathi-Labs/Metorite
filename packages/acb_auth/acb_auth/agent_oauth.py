@@ -184,6 +184,15 @@ def runs_enabled() -> bool:
     return bool(get_settings().agent_runs_enabled)
 
 
+def answer_change_enabled() -> bool:
+    """True when ``agent_answer_change_enabled`` is on (SW-43).
+
+    The ONE reader of the flag. While it is false, the withdraw route of an
+    answer answers 404 and the runs wire has no ``answer`` field.
+    """
+    return bool(get_settings().agent_answer_change_enabled)
+
+
 @functools.lru_cache(maxsize=16)
 def _parse_door_apps(raw: str) -> frozenset[str]:
     """The door app ids that *raw* names. An entry that names no door app

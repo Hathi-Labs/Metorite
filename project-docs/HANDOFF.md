@@ -627,14 +627,6 @@ line — never reclaim a number by deleting the other entry.
   open.
 - **Added:** 2026-09-23 · the CP-13a deploy check
 
-### H-165 · CP-13 is built through CP-13d. Stop the gateway taking the member from the body, so `decide` serves a shared box · [AGENT]
-- **Metorite:** #559. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n 'member=None' packages/acb_skills/acb_skills/decide_tools.py`
-  → a hit means the `decide` tool still sends no member, and this is open.
-  CP-13a to CP-13d are BUILT (2026-09-23 and 2026-09-24).
-- **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
-  when CP-13d was built
-
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
 - **Metorite:** #549. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** a signed-in member opens My Tasks on app.metorite.com. The
@@ -1355,8 +1347,15 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-201 · Bind the tenant in the other readers that still open an unbound session · [AGENT]
 - **Metorite:** #612. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/observability.py apps/services/gateway/gateway/routes/debug.py apps/services/gateway/gateway/routes/integrations_skills.py`.
-  A hit means this is open.
+- **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/agent.py packages/acb_skills/acb_skills/loader.py`.
+  A hit means this is open. The Redis activity feeds are task 1718, and the
+  `agent_avatars` key is task 1719.
+- **Part 2:** closed the Postgres reads of `observability.py`, `debug.py`,
+  `integrations_skills.py` and the two plugin routes of `integrations.py` on
+  2026-11-05.
+- **Part 3 (task 1718, H-201c):** keys the Redis feed of `observability.py`
+  for each tenant. Built 2026-11-05 on branch `h201c-mt-dea97a06`, not merged.
+  `/cost` still reads the global `cc:cost:{day}`. A follow-up task owns it.
 - **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
 
 ### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
@@ -1435,12 +1434,6 @@ line — never reclaim a number by deleting the other entry.
 - **Metorite:** #686. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** read-only, on the box: `SELECT name FROM dynamic_agents WHERE lower(name)='metorite';`
   → no row means the name is free, and an `agents:manage` holder could register another agent under it.
-- **Added:** 2026-10-04 · fix round 2 of PR #598
-
-### H-232 · Compare the member's organization with the run's in `_first_party_admin_runs` · [AGENT]
-- **Metorite:** #616. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -n "member_org\|membership" apps/services/orchestrator/orchestrator/executor.py`
-  → no hit means the gate does not compare the two organizations.
 - **Added:** 2026-10-04 · fix round 2 of PR #598
 
 ### H-233 · Make the refused root agent look absent everywhere · [AGENT]
@@ -1660,17 +1653,6 @@ line — never reclaim a number by deleting the other entry.
   the Files pane. Measure the message column. A width under 400 px means
   this is open.
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
-
-### H-334 · Three email mailbox list reads name no tenant · [AGENT]
-- **Metorite:** #1692. Task 563 closed the owner check: `_assert_account_owner` names the
-  bound tenant by default (WS-29, 2026-11-04). Three list reads stay open: `list_accounts`
-  and `feed_mailboxes` in `transport/accounts.py`, and `resolve_self_addresses` in
-  `automation/identity.py` through `_MEMBER_MAILBOXES_SQL`.
-- **Check:** run this from the repo root. It prints the reads that name no tenant.
-  `uv run python -c "import inspect as I; from gateway.routes.email.transport import accounts as a; from gateway.routes.email.automation import identity as i; S={'list_accounts': I.getsource(a.list_accounts), 'feed_mailboxes': I.getsource(a.feed_mailboxes), 'resolve_self_addresses': i._MEMBER_MAILBOXES_SQL}; print([k for k, s in S.items() if not any(t in s for t in ('app.tenant_id', '_bound_org', '_BOUND_ORG'))])"`
-  A name in the list means this entry stays. An empty list closes it.
-- **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review ·
-  narrowed 2026-11-04, WS-29 task 563
 
 ### H-336 · W10: the chat's unmount save can copy mail into Mem0, so WS-7 keeps Mem0 off · [AGENT]
 - **Metorite:** #694. The task holds the full entry (moved 2026-10-28, D118).

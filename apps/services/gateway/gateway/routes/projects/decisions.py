@@ -334,6 +334,23 @@ async def answer_decision(
         db, activity_type="comment", created_by=me, task_id=task_id, body=body,
         meta={"decision_id": did, "decision_answer": answer_key},
     )
+    # ALN-2b: the answer closes the card at once. The bell row of this ask is
+    # read in the same transaction, so My Day keeps no card for a question
+    # that is answered. The row has no decision id, and a column for one needs
+    # a migration (``activity_id`` is a foreign key to a comment). So the
+    # excerpt (the question, which ``ask_decision`` gave ``notify`` whole)
+    # picks the ask, and ONE row closes for ONE answer: two asks with the same
+    # question close one after the other, never together.
+    await db.execute(
+        text(
+            "UPDATE pm_notifications SET read_at = now() "
+            "WHERE id = (SELECT n.id FROM pm_notifications n"
+            " WHERE n.recipient = :me AND n.kind = 'decision' AND n.read_at IS NULL"
+            " AND n.task_id = CAST(:tid AS uuid) AND n.excerpt IS NOT DISTINCT FROM :ex"
+            " ORDER BY n.created_at, n.id LIMIT 1)"
+        ),
+        {"me": me, "tid": task_id, "ex": won.question},
+    )
     return _wire(won), task_id
 
 
@@ -345,8 +362,10 @@ def _iso(value: Any) -> str | None:
 
 
 def _wire(row: Any) -> dict[str, Any]:
-    """One decision as the routes show it. ``payload`` stays server-side."""
-    return {
+    """One decision as the routes show it. ``payload`` stays server-side.
+    ``task_title`` is there only when the read joined it (the decider's open
+    list, for the My Day card)."""
+    out = {
         "id": str(row.id),
         "subject_kind": row.subject_kind,
         "subject_id": str(row.subject_id),
@@ -363,6 +382,10 @@ def _wire(row: Any) -> dict[str, Any]:
         "answer_reason": row.answer_reason,
         "answered_at": _iso(row.answered_at),
     }
+    title = getattr(row, "task_title", None)
+    if title is not None:
+        out["task_title"] = title
+    return out
 
 
 class AnswerIn(BaseModel):
@@ -402,10 +425,27 @@ async def list_decisions(
                 ),
                 {"tid": tid, "me": actor(user).strip().lower(), "lim": LIST_LIMIT},
             )).fetchall()
+            # ALN-2b: a member who can open the task learns THAT a decision
+            # waits, on whom, and until when. Never the question, the options
+            # or the answer. The task was loaded through the member's own
+            # visibility above, so a member who cannot open it gets the same
+            # 404 as for a task with no decision.
+            waiting = (await db.execute(
+                text(
+                    "SELECT d.decider, d.expires_at FROM pm_decisions d"
+                    " WHERE d.subject_kind = 'task' AND d.subject_id = CAST(:tid AS uuid)"
+                    " AND lower(d.decider) <> :me AND d.answered_at IS NULL"
+                    " AND d.expires_at > now() ORDER BY d.expires_at, d.id LIMIT :lim"
+                ),
+                {"tid": tid, "me": actor(user).strip().lower(), "lim": LIST_LIMIT},
+            )).fetchall()
         else:
             rows = (await db.execute(
                 text(
-                    f"{_SELECT} WHERE lower(d.decider) = :me AND d.answered_at IS NULL"
+                    "SELECT d.*, (d.expires_at <= now()) AS is_expired,"
+                    " (SELECT t.title FROM pm_tasks t WHERE t.id = d.subject_id) AS task_title"
+                    " FROM pm_decisions d"
+                    " WHERE lower(d.decider) = :me AND d.answered_at IS NULL"
                     " AND d.expires_at > now() AND d.subject_kind = 'task'"
                     " ORDER BY d.created_at DESC LIMIT :lim"
                 ),
@@ -414,12 +454,24 @@ async def list_decisions(
         # §7.2: of the tasks listed for the decider, drop one they cannot open.
         wire = [_wire(r) for r in rows]
         if task_id is None:
+            # The asker by the directory name that the panel shows, from the
+            # one resolver (``people.core.names_of``). A system actor has none.
+            from gateway.routes.people.core import names_of
+
+            names = await names_of(db, [i["asked_by"] for i in wire if "@" in i["asked_by"]])
+            for item in wire:
+                item["asked_by_name"] = names.get(item["asked_by"].strip().lower())
             keep: list[dict[str, Any]] = []
             for item in wire:
                 if await deliverable(db, [actor(user).strip().lower()], item["subject_id"]):
                     keep.append(item)
             wire = keep
-    return {"decisions": wire}
+    out: dict[str, Any] = {"decisions": wire}
+    if task_id is not None:
+        out["waiting_on"] = [
+            {"decider": str(w.decider), "expires_at": _iso(w.expires_at)} for w in waiting
+        ]
+    return out
 
 
 @router.post("/decisions/{decision_id}/answer", dependencies=_ENABLED)
@@ -434,4 +486,8 @@ async def answer(
             db, user, decision_id, payload.answer_key, payload.reason,
         )
     await emit("pm.task.comment_added", {"task_id": task_id})
+    # ALN-2b: the answer read the bell row, so My Day moves its version.
+    from gateway.routes.projects.personal import bump_my_day
+
+    await bump_my_day(user.organization_id, actor(user).strip().lower())
     return {"decision": out}
