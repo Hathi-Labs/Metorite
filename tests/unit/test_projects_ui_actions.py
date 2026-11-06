@@ -501,6 +501,7 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "agentRunsApi.enabled": [("GET", "/projects/agent-runs")],
         "agentRunsApi.summary": [("GET", "/projects/{}/agent-summary")],
         "agentRunsApi.resume": [("POST", "/projects/agent-runs/{}/resume")],
+        "agentRunsApi.withdrawAnswer": [("POST", "/projects/agent-runs/{}/answer/withdraw")],
         "attentionApi.list": [("GET", "/projects/needs-attention")],
     }
     for name, calls in shapes.items():
