@@ -8,6 +8,11 @@
 //   * `email-row-keys`: Up, Down, Home and End move and wrap.
 //   * `email-row-per-message`: each card of a thread and the single email get
 //     the same row, and each handler gets THAT message.
+//   * `email-reply-bar`: a single email and each open card draw Reply, Reply
+//     all and Forward below the body, each for its own message, and the message
+//     that the composer answers hides them (owner, 2026-11-06).
+//   * `email-files-above-body`: the file chips draw above the body in both
+//     views, with no heading and no divider (owner, 2026-11-06).
 //   * `email-capture-thread-message`: Add to My work opens for a message of a
 //     thread that is not a row of the list, in that message's mailbox.
 //   * `email-loading-per-message`: "Loading message…" belongs to one fetch of
@@ -33,7 +38,8 @@ import { isKnownIcon } from "@/lib/icons";
 import { useEmailStore, withPatch } from "./emailStore";
 import type { Email } from "./types";
 import {
-  ICONS_MIN_PX, LABELS_MIN_PX, actionRowTier, lightToggleInRow, menuStep, messageMenuGroups,
+  ICONS_MIN_PX, LABELS_MIN_PX, REPLY_ACTIONS, actionRowTier, lightToggleInRow, menuStep,
+  messageMenuGroups, showsReplyBar,
   type MenuState,
 } from "./messageActions";
 
@@ -121,6 +127,59 @@ describe("email-row-keys", () => {
     expect(src).toContain('panelProps={{ role: "menu", "aria-label": "More actions", onKeyDown: onMenuKey }}');
     expect(src).toContain('aria-haspopup="menu"');
     expect(src).toContain("aria-expanded={open}");
+  });
+});
+
+describe("email-reply-bar", () => {
+  const detail = codeOnly(read("components/EmailDetail.tsx"));
+  const conversation = codeOnly(read("components/ConversationView.tsx"));
+
+  it("draws the three replies in the owner's order, in both rows", () => {
+    expect(REPLY_ACTIONS.map((a) => a.label)).toEqual(["Reply", "Reply all", "Forward"]);
+    expect(REPLY_ACTIONS.map((a) => a.mode)).toEqual(["reply", "reply-all", "forward"]);
+    for (const a of REPLY_ACTIONS) expect(isKnownIcon(a.icon)).toBe(true);
+    for (const a of REPLY_ACTIONS) expect(isKnownIcon(a.icon)).toBe(true);
+    const actions = codeOnly(read("components/MessageActions.tsx"));
+    expect(actions.split("REPLY_ACTIONS").length - 1).toBe(3); // The import and the two rows.
+  });
+
+  it("hides only on the message that the composer answers", () => {
+    expect(showsReplyBar("a", null, null)).toBe(true);
+    // A closed composer keeps its target id. The buttons come back.
+    expect(showsReplyBar("a", null, "a")).toBe(true);
+    for (const mode of ["reply", "reply-all", "forward"] as const) {
+      expect(showsReplyBar("a", mode, "a")).toBe(false);
+      expect(showsReplyBar("b", mode, "a")).toBe(true);
+    }
+  });
+
+  it("draws on the single email and on each open card, for that message", () => {
+    expect(detail).toContain("const replyBar = (m: Email) =>");
+    expect(detail).toContain("<MessageReplyBar message={m} onReply={(mode) => startReply(mode, m)} />");
+    expect(detail).toContain("{!loadingDetail && replyBar(view)}");
+    expect(detail).toContain("renderReplyBar={replyBar}");
+    expect(conversation).toContain("{renderReplyBar?.(view)}");
+  });
+});
+
+describe("email-files-above-body", () => {
+  const list = codeOnly(read("components/AttachmentList.tsx"));
+
+  it.each(["components/EmailDetail.tsx", "components/ConversationView.tsx"])(
+    "%s draws the chips before the body, with no divider",
+    (file) => {
+      const src = codeOnly(read(file));
+      const chips = src.indexOf("<AttachmentList");
+      expect(chips).toBeGreaterThan(-1);
+      expect(src.match(/<AttachmentList/g)).toHaveLength(1);
+      expect(chips).toBeLessThan(src.indexOf("<MessageContent"));
+      expect(src.slice(chips, src.indexOf("/>", chips))).not.toContain("border-t");
+    },
+  );
+
+  it("keeps a name for a screen reader, and no heading on the screen", () => {
+    expect(list).toContain("aria-label={`Attachments (${total})`}");
+    expect(list).not.toContain("Attachments ({total})");
   });
 });
 
