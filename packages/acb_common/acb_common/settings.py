@@ -630,6 +630,14 @@ class Settings(BaseSettings):
     # spends credits, so a flip on production is OWNER-GATE (core_brief.md
     # §10 row 4). Fence: tests/unit/test_brief_phrase.py.
     brief_compose: bool = False
+    # `brief_closeout` (WS-BRIEF BR-2b-1, 2026-11-06) is the planner's switch
+    # for the 18:30 close-out kind, default OFF. Off, the planner plans no
+    # close-out, and the 07:30 brief is as before. It needs `brief_enabled`
+    # and the org on `brief_orgs` too. The close-out makes no model call. The
+    # one reader is `gateway.brief.flags.closeout`. A flip on a box is gate
+    # `enforcement-flip`. Spec: core_brief.md §10 row 7. Fence:
+    # tests/unit/test_brief_closeout.py.
+    brief_closeout: bool = False
 
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #
