@@ -11,6 +11,11 @@ engineer answer "error X happened with agent Y" WITHOUT SSHing into the box:
 Gated to EXECUTIVE (and AGENT, for service-to-service tooling) because a run
 trace can contain message content. Every query is bounded (LIMIT) and the list
 view never returns the heavy ``trace`` blob — only ``GET /{run_id}`` does.
+
+H-201: every query binds the caller's tenant through ``acb_graph.tenant_session``
+(``agent_run`` has FORCE RLS). With no tenant, the list is empty and a get or a
+flag is 404. No route opens an unbound session, and none gives a cross-tenant
+view.
 """
 from __future__ import annotations
 
@@ -60,7 +65,7 @@ async def list_runs(
     thread_id: str | None = None,
     since_hours: int | None = None,
     limit: int = 50,
-    _admin: UserContext = _ADMIN,
+    admin: UserContext = _ADMIN,
 ) -> dict[str, Any]:
     """List recent agent runs, newest-first, with optional filters.
 
@@ -76,6 +81,9 @@ async def list_runs(
             detail=f"Invalid status '{status}'. One of: {sorted(_STATUSES)}.",
         )
     limit = max(1, min(limit, 500))
+    org = admin.organization_id
+    if not org:
+        return {"count": 0, "runs": []}
 
     where: list[str] = []
     params: dict[str, Any] = {"limit": limit}
@@ -97,10 +105,10 @@ async def list_runs(
     clause = (" WHERE " + " AND ".join(where)) if where else ""
 
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
-        with get_session() as s:
+        with tenant_session(org) as s:
             rows = s.execute(
                 text(
                     "SELECT run_id, thread_id, agent_name, user_id, model, "
@@ -120,7 +128,7 @@ async def list_runs(
 @router.get("/runs/{run_id}")
 async def get_run(
     run_id: str,
-    _admin: UserContext = _ADMIN,
+    admin: UserContext = _ADMIN,
 ) -> dict[str, Any]:
     """Full record for one run: metadata + error + traceback + folded trace.
 
@@ -128,11 +136,14 @@ async def get_run(
     for runs the retention policy kept it for (errored / cancelled / flagged);
     it's ``null`` for a clean successful run.
     """
+    org = admin.organization_id
+    if not org:
+        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
-        with get_session() as s:
+        with tenant_session(org) as s:
             r = s.execute(
                 text(
                     "SELECT run_id, thread_id, agent_name, user_id, model, "
@@ -164,7 +175,7 @@ async def get_run(
 @router.post("/runs/{run_id}/flag")
 async def flag_run(
     run_id: str,
-    _admin: UserContext = _ADMIN,
+    admin: UserContext = _ADMIN,
 ) -> dict[str, Any]:
     """Mark a run ``flagged`` so its full trace is retained going forward.
 
@@ -172,12 +183,18 @@ async def flag_run(
     any future trace-pruning and marks it for review. (Note: the full ``trace``
     blob is only captured for errored/cancelled/flagged runs AT WRITE TIME; a
     late flag on a clean run marks it but cannot resurrect a body never stored.)
+
+    ``tenant_session`` commits on exit, so the UPDATE lands. Another tenant's
+    run is not visible to the UPDATE, so it is 404 and no row changes.
     """
+    org = admin.organization_id
+    if not org:
+        raise HTTPException(status_code=404, detail=f"run '{run_id}' not found")
     try:
-        from acb_graph import get_session
+        from acb_graph import tenant_session
         from sqlalchemy import text
 
-        with get_session() as s:
+        with tenant_session(org) as s:
             res = s.execute(
                 text(
                     "UPDATE agent_run SET flagged = true "

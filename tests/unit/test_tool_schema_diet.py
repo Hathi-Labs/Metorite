@@ -216,7 +216,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                   'required': ['fact', 'path']},
     'save_org_memory': {'params': {'fact': 'string'}, 'required': ['fact']},
     'share_artifact': {'params': {'path': 'string'}, 'required': ['path']},
-    'web_search': {'params': {'max_results': 'integer', 'query': 'string'},
+    'web_search': {'params': {'max_results': 'integer', 'query': 'string', 'source': 'string'},
                    'required': ['query']},
     'write_artifact': {'params': {'content': 'string',
                                   'encoding': 'string',
@@ -271,7 +271,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # tools now say "name the file, and paste no link". share_artifact
     # measured 196 (was 201) and write_artifact 533 (was 575).
     "share_artifact": 210,
-    "web_search": 280,
+    "web_search": 320,  # WEB-4: + source (web, papers, wiki)
     "write_artifact": 550,
 }
 
@@ -281,7 +281,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
 #: 2026-10-15, agent reads page part 2: recall_notes gained an `offset`
 #: (193 -> 215, +22), and paid for it itself. Its worked example left the
 #: docstring, so it measured 180, and the floor 6,693 -> 6,680.
-CORE_SCHEMA_TOTAL_CEILING = 6_700
+CORE_SCHEMA_TOTAL_CEILING = 6_740  # WEB-4 added `source` to web_search (+28)
 
 
 def _tools_by_name() -> dict[str, object]:

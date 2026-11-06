@@ -705,6 +705,47 @@ async def latest_version(db: Any, user: UserContext, page_id: str) -> int:
     )).scalar() or 0)
 
 
+async def page_version_text(
+    db: Any, user: UserContext, page: Any, version: int, *, space: Any = None,
+) -> str | None:
+    """The text of one version of a page that the caller sees, or None.
+
+    THE one read of the text of a page version for a quote check (ALN-5a,
+    ``project_alignment.md`` §4.2 rule 3). The caller loaded *page* through
+    :func:`load_page` first, so the one visibility rule ran. *space* is the
+    space of the page, for :func:`history_floor`. None for a version under
+    the history floor, as ``history.get_version`` answers 404, so a quote
+    check cannot read a private draft from before a move. None for a version
+    that does not exist too.
+    """
+    ver = int(version)
+    if ver < 1 or ver > MAX_VERSION or ver < history_floor(user, page, space):
+        return None
+    row = (await db.execute(
+        text("SELECT v.body_md FROM kb_page_versions v "
+             "WHERE v.organization_id = CAST(:org AS uuid) "
+             "AND v.page_id = CAST(:pid AS uuid) AND v.version = :ver"),
+        {"org": org_of(user), "pid": str(page.id), "ver": ver},
+    )).first()
+    return None if row is None else str(row.body_md or "")
+
+
+def same_line_ends(value: str) -> str:
+    """*value* with each CRLF and each lone CR made LF. No other change."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def quote_occurs(quote: str, body: str) -> bool:
+    """True when *quote* is an exact substring of *body* (ALN-5a).
+
+    Both get one form of line end first (:func:`same_line_ends`). There is no
+    other change: no case fold, no space fold, no fuzzy match and no model.
+    An empty quote never occurs.
+    """
+    wanted = same_line_ends(quote)
+    return bool(wanted) and wanted in same_line_ends(body)
+
+
 async def pin_currency(
     db: Any, user: UserContext, page_id: str, page_version: int,
 ) -> dict[str, Any]:
@@ -810,6 +851,43 @@ async def visible_page_heads(
     return {
         str(r.id): {"title": r.title, "space_id": str(r.space_id)} for r in rows
     }
+
+
+async def readable_page_versions(
+    db: Any, user: UserContext, pairs: list[tuple[str, int]],
+) -> set[tuple[str, int]]:
+    """The ``(page id, version)`` pairs of *pairs* that the CALLER can read.
+
+    ALN-5a (``project_alignment.md`` §4.2, §7.2 point 2): a rule shows its
+    quote only to a reader of the page AND of that version. Two steps, the
+    rule of ``history.get_version``: :func:`visible_pages_clause` for the
+    page, then :func:`history_floor` for the version. So a version from
+    before a move to a wider space stays hidden from the readers of the new
+    space, as its history route answers 404 for it. A pair that fails either
+    step is left out.
+    """
+    wanted: dict[str, set[int]] = {}
+    for page_id, version in pairs:
+        pid = parse_id(page_id)
+        if pid is not None and version is not None:
+            wanted.setdefault(pid, set()).add(int(version))
+    if not wanted:
+        return set()
+    vis, params = visible_pages_clause(user, "p")
+    rows = (await db.execute(
+        text("SELECT p.id, p.history_from, s.kind, s.owner_email FROM kb_pages p "
+             "JOIN kb_spaces s ON s.id = p.space_id "
+             "AND s.organization_id = p.organization_id "
+             f"WHERE p.id = ANY(CAST(:pids AS uuid[])) AND {vis}"),
+        {**params, "pids": sorted(wanted)},
+    )).fetchall()
+    out: set[tuple[str, int]] = set()
+    for row in rows:
+        # The row holds the page column and the two space columns that
+        # history_floor reads, so it serves as both.
+        floor = history_floor(user, row, row)
+        out.update((str(row.id), v) for v in wanted.get(str(row.id), ()) if v >= floor)
+    return out
 
 
 async def sibling_rows(

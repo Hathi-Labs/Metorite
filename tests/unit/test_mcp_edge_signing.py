@@ -60,6 +60,9 @@ ORG_A = "0a0a0a0a-0000-4000-8000-00000000000a"
 ORG_B = "0b0b0b0b-0000-4000-8000-00000000000b"
 CONN = "c0c0c0c0-0000-4000-8000-0000000000c0"
 PIN = "a1a1a1a1-0000-4000-8000-0000000000a1"
+#: EA-17a (D-EA-12): a left-out project of the connection. Branch 0 copies it
+#: from the row into the scope, as it copies the pins.
+LEFT_OUT = "a2a2a2a2-0000-4000-8000-0000000000a2"
 MEMBER = "agent-member@signing.test"
 OTHER = "somebody-else@signing.test"
 ORIGIN = "https://client.example"
@@ -82,6 +85,7 @@ class _World:
                 scopes=("projects:read",),
                 pinned_projects=(PIN,),
                 include_personal=False,
+                left_out_projects=(LEFT_OUT,),
             ),
         }
         #: email → (organization, is_active)
@@ -241,6 +245,7 @@ async def test_a_valid_signed_request_resolves_to_the_connections_member(world):
         "scopes": ["projects:read"],
         "pinned_projects": [PIN],
         "include_personal": False,
+        "left_out_projects": [LEFT_OUT],
         "client_origin": ORIGIN,
         "actor_via": VIA,
         # SW-7: no signed X-Agent-Session, so no session key.

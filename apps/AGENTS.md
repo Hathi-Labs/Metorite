@@ -19,6 +19,7 @@ under `project-docs/specs/`.
 - whatsapp_ingestion/ -- WhatsApp ingestion over the official Meta WhatsApp Business Cloud API.
 - whatsapp_bridge/ -- The unofficial WhatsApp transport (Go, whatsmeow) that pairs a personal number by QR code.
 - meeting_bot/ -- A self-hosted headless-Chrome worker that joins a meeting, records the audio and hands it to Metorite.
+- web_worker/ -- WEB-6, spec `web_research.md` §5.1. A Playwright worker that renders a page to Markdown. Chromium fetches nothing itself. `egress.route_handler` gives each request to `fetch.pinned_fetch`, which checks each hop with `acb_common.public_address` and connects to that address. It refuses to start with an empty `WEB_WORKER_TOKEN`. Fences: `test_web_worker.py`, `test_no_agpl_dependency.py`.
 - ingestion/ -- Zoho and Gmail webhook receivers, MCP servers, the Redis-Streams producer (`queue.py`), the drain loop (`consumer.py`) and the sink registry (`event_hooks.py`). The design record is `FOUNDATION_BUILDOUT_CHECKLIST.md` §BO-20.
   - ⚠️ `sources/zoho/writer.py` is the only outward-WRITE client in this package, and the only Zoho write surface in the repo. Its one caller is `gateway/routes/crm/sync_zoho.py::execute_push`. Do not import it from anywhere else, and do not add a second write client. Fence: `test_crm_zoho_sync.py`.
   - Its sibling `client.py` stays read-only. `SETTINGS_API_VERSION` names the settings API version ONCE. A tenant that refuses it raises `ZohoApiVersionError`, and nothing tries a ladder of older versions.

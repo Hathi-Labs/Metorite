@@ -112,7 +112,7 @@ export const GENERATED_GUIDES: readonly Guide[] = [
     feature: null,
     adminOnly: false,
     title: "Take the tour",
-    asks: ["give me a tour", "show me around", "take the tour", "how does this app work", "where do I start"],
+    asks: ["give me a tour", "show me around", "take the tour", "how does this app work", "where do I start", "tour"],
     steps: [
       { kind: "point", say: "Your apps live here. You see only the ones your company turned on.", anchor: "home.app-list" },
       { kind: "point", say: "Type here to find any app, any job, or to ask a question.", anchor: "home.ask" },

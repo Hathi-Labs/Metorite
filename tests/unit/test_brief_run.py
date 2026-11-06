@@ -306,10 +306,12 @@ def test_main_imports_the_brief_before_the_worker_starts_in_its_own_try() -> Non
     assert brief[0].handlers and any(holds(t, "start_job_worker") for t in tries)
 
 
-def test_the_store_moves_are_the_four_of_the_run_and_the_delivery() -> None:
+def test_the_store_moves_are_those_of_the_run_the_phrase_and_the_delivery() -> None:
     # BR-2c-1 adds ready to delivered: the run makes it when BRIEF_IN_APP is on.
+    # BR-2a-2 adds gathered to phrasing and phrasing to ready.
     assert {("planned", "gathered"), ("gathered", "ready"), ("planned", "empty"),
-            ("planned", "failed"), ("ready", "delivered")} == store.TRANSITIONS
+            ("planned", "failed"), ("ready", "delivered"), ("gathered", "phrasing"),
+            ("phrasing", "ready")} == store.TRANSITIONS
     assert store.LEAD_SOURCES == ("template", "model")
 
 
@@ -332,8 +334,17 @@ def test_the_run_payload_is_strict() -> None:
     assert member == "ana@b" and local_date == D and slot_at.utcoffset() == timedelta(hours=5, minutes=30)
 
 
-def test_the_gather_imports_no_model_and_no_send() -> None:
-    """The slice calls no model and sends nothing (``core_brief.md`` §10)."""
-    for name in ("gather.py", "planner.py", "run.py"):
-        src = (_ROOT / "apps/services/gateway/gateway/brief" / name).read_text(encoding="utf-8")
-        assert "acompletion" not in src and "outbox" not in src and "whatsapp" not in src
+def test_phrase_is_the_one_model_site_and_the_brief_sends_nothing() -> None:
+    """BR-2a-2: ``phrase.py`` is the ONE model site of ``gateway/brief/``.
+    No other module of the package names the model seam, and no module
+    sends (``core_brief.md`` §4.4 and §8)."""
+    package = _ROOT / "apps/services/gateway/gateway/brief"
+    sites = []
+    for path in sorted(package.glob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        assert "outbox" not in src and "whatsapp" not in src, path.name
+        if "acompletion" in src:
+            sites.append(path.name)
+    assert sites == ["phrase.py"]
+    src = (package / "phrase.py").read_text(encoding="utf-8")
+    assert src.count("acompletion_with_fallback(") == 1

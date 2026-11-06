@@ -218,6 +218,13 @@ class ApproveRequest(AuthorizeRequest):
     #: Project ids that limit the connection. Empty means every project the
     #: member sees (spec §7).
     pinned_projects: list[UUID] = Field(default_factory=list, max_length=_MAX_PINS)
+    #: D-EA-12 (spec §10.8, EA-17a): project ids that the reach stops at.
+    #: Each id and every project beneath it stay out, unless a pin beneath
+    #: it starts again. The cap is the cap of the pins. An id that the
+    #: member cannot see is stored as a bad pin is. It can only narrow the
+    #: reach: a hidden parent left out also removes the projects beneath
+    #: it, and the member's live access still bounds the rest (§7.1).
+    left_out_projects: list[UUID] = Field(default_factory=list, max_length=_MAX_PINS)
     #: D-EA-4 (amended 2026-10-30): the consent page ticks it by default and
     #: always sends it. A body that leaves it out reads as false.
     include_personal: bool = False
@@ -736,6 +743,10 @@ async def approve_authorize(
         scopes=granted.split(" "),
         pinned_projects=[str(p) for p in req.pinned_projects],
         include_personal=req.include_personal,
+        left_out_projects=[str(p) for p in req.left_out_projects],
+        # D-EA-13: what the agent asked for, before the member cleared a box.
+        # The ticket bound this same request, so it is the screen's list.
+        requested_scopes=list(validated.scopes),
         # Rule 13: a first-party approval replaces the member's older
         # connection of this client. False for every other client.
         replace_same_client=agent_oauth.is_first_party(req.client_id),
@@ -786,6 +797,7 @@ class AgentConnectionOut(BaseModel):
     client_origin: str
     scopes: list[str]
     pinned_projects: list[str]
+    left_out_projects: list[str]
     include_personal: bool
     created_at: str
     last_used_at: str | None
@@ -805,6 +817,7 @@ def connection_out(row: agent_tokens.ConnectionRow) -> AgentConnectionOut:
         client_origin=row.client_origin,
         scopes=list(row.scopes),
         pinned_projects=list(row.pinned_projects),
+        left_out_projects=list(row.left_out_projects),
         include_personal=row.include_personal,
         created_at=row.created_at.isoformat(),
         last_used_at=row.last_used_at.isoformat() if row.last_used_at else None,

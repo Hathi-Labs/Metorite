@@ -26,6 +26,7 @@ not write a second copy of that seam. A bare test file name is under
    - Jina Reader gets the URL of the call only after the walk ends. Each hop that the walk reached passes the guard first. For an org off `WEB_RESEARCH_ORGS`, Jina's text wins, and the direct read is the fallback.
    - `frame_page` wraps the output in a `WEB PAGE` block of `UntrustedFrame`. The URL, the title, the date and the type sit inside it. A refusal is one line that names the host of the URL of the call. It never names the path or the host of a redirect.
    - Fence: `test_web_fetch_guard.py`.
+   - WEB-4: with `WEB_RESEARCH_ORGS` on, `web_search` calls `web_search_providers.search` (SearXNG, SerpAPI, ddgs; `papers` and `wiki` sources). It skips a provider that failed in the last 5 minutes. Off, the old chain runs. Do not add a provider outside that module. Fence: `test_web_search_providers.py`.
    - WEB-2: `web_research_on(org)` is the ONE reader of `WEB_RESEARCH_ORGS`. `fetch_page` reads it on each call, with the org of the run binding. Off, the output is the WEB-1 output, byte for byte.
    - On, Trafilatura reads an HTML type. Only `web_reader_worker._extract_markdown` imports it, as `from trafilatura import extract`, with no `url=`. It gets text, never bytes, of at most `MAX_LOCAL_HTML_BYTES`.
    - Trafilatura work runs in a child process, because a regex holds the GIL, so a thread cannot bound it. `web_tools.py` never imports it. WEB-3 and each later parser must run the same way.
@@ -142,6 +143,13 @@ not write a second copy of that seam. A bare test file name is under
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (spec `email_app_master_plan.md` §12.3.13.8).
    - Make one `UntrustedFrame` for each model call. Do not add a tag regex or an exemption to `defang_trusted`.
    - Do not build a `<<<` marker anywhere else. Fences: `test_untrusted_frame.py`, `evals/email_injection/`.
+   - `is_invisible` is the ONE rule of a character with no glyph. The gateway's approval store (`gateway/app_requests.py`, MCP-P1b-1) refuses each one in a request, less ZWJ and ZWNJ. Do not write a second set.
+5m-1. hidden_text.py -- the ONE rule of a hidden character in owner text that a store keeps (WS-STU F1b, spec `ai_studio.md` §14 F1b).
+   - `find_hidden`, `strip_hidden`, `hidden_problem` and `body_hidden_problem`. The base is `reply_card.is_invisible_char`, which is wider than `untrusted.is_invisible`. A new line, a tab and a carriage return are legal.
+   - A ZWNJ or a ZWJ is legal between two visible characters. At a word end, ONE joiner is legal directly after a virama (combining class 9). A Malayalam chillu, a Bengali khanda ta and an explicit halant need it. So Persian, Hindi, Bengali, Malayalam and emoji keep theirs.
+   - U+FE0E and U+FE0F are legal only after one visible symbol of category S, or in a keycap. The five emoji bases outside category S (`_EMOJI_BASES_NOT_S`) take one too. The rule refuses a selector after other punctuation.
+   - The skill store refuses with the one sentence of `hidden_problem`, and it never strips. A chat read of an old row calls `strip_hidden`. The F3 loader must call `strip_hidden` on each skill text.
+   - `skills_store.py` and `studio_tools.py` keep no code point list of their own. Do not use `reply_card.clean_reply_body` for owner text, because it cleans in silence and breaks Indic text. Fence: `test_hidden_text.py`, with `tests/fixtures/hidden_text_cases.json`.
 5n. company_search_tools.py -- `search_company`, the assistant's one read over every app (D105, spec `knowledge_base.md` §20.5).
    - It reads as the run's member through `core_tools` only, behind `COMPANY_SEARCH_ENABLED`. Fence: `test_company_search_tool.py`.
 5n-a. handoff.py + chat_constraints.py -- what crosses a handoff, and the member's limits of one chat (D116, spec `one_assistant_context.md` §4).
@@ -163,6 +171,10 @@ not write a second copy of that seam. A bare test file name is under
    - Fence: `test_chat_parity.py`.
 5o. reports.py -- `make_report`, the ONE report tool of the chat (spec `projects_ai_chat.md` §14.10). It keeps no copy of the checks of `documents.py`.
    - `by_code` is the ONE gate of a report that a tool builds from its own reads. Fences: `test_chat_reports.py`, `test_reports_by_code.py`.
+5p. studio_tools.py -- the chat tools of the `studio` pack (spec `ai_studio.md` §14 G1, G2, F2d and G1c). Each tool calls a `/studio` route over HTTP as the member of the run, and takes no org or member argument.
+   - G1c: `studio_plan` writes the approval record of a plan to tenant Redis only on `approved`. The key holds a hash of the member and a hash of the manifest id, the value is `manifest_hash`, and it lives 2 hours (`PLAN_NAMESPACE`). A stopped or revised plan card writes a withdraw stamp for the member, and a record from before it gives no plan. When the stamp write fails, `_UNWITHDRAWN` (process memory, bounded) makes the publish of that process refuse.
+   - `studio_publish` reads the record of the stored draft and fails closed. It sends that hash as `based_on`, and the store compares it under its row lock. After a 201 it deletes the record that names the published draft. No other code reads or writes the record. `acb_common.studio_manifest.manifest_hash` is the ONE hash of a draft.
+   - Fences: `test_studio_package_tools.py`, `test_studio_chat_build_r8.py` (R8), `test_studio_interview_plan.py`, `test_studio_skill_tools.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox. It is advisory only: it never blocks a write and never raises.
    - `CC_CLASSES` mirrors the stylesheet in `SandboxedHtml.tsx`, so register a new `cc-` block in BOTH places. Fence: `test_artifact_lint.py`.
 
