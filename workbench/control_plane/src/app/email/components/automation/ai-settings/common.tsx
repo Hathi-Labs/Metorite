@@ -215,12 +215,12 @@ export function RuleResultPill({
         {reason && (
           <div className="text-[10px] text-muted-foreground/80 bg-secondary/40 rounded-md px-2 py-1.5 italic">
             <span className="not-italic text-muted-foreground/60">
-              Reason for choosing this rule:{" "}
+              {gone ? "What happened:" : "Reason for choosing this rule:"}{" "}
             </span>
             {reason}
           </div>
         )}
-        {errs.length > 0 && (
+        {!gone && errs.length > 0 && (
           <div className="text-[10px] text-destructive bg-destructive/10 rounded-md px-2 py-1.5">
             <div className="font-medium mb-0.5 flex items-center gap-1">
               <Icon name="AlertTriangle" size={10} /> Action issues

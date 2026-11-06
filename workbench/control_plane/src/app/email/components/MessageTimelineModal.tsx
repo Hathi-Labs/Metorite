@@ -146,7 +146,7 @@ function TimelineRow({
             ))}
           </div>
         )}
-        {ev.action_errors && ev.action_errors.length > 0 && (
+        {!isGoneMailSkip(ev) && ev.action_errors && ev.action_errors.length > 0 && (
           <div className="mt-1 space-y-0.5">
             {ev.action_errors.map((e, i) => (
               <div key={i} className="text-[10px] text-destructive">
