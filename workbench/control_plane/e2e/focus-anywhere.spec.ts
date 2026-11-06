@@ -167,6 +167,16 @@ test.describe("start focus from anywhere (CC-4)", () => {
     await expect.poll(() => calls.taskPatches.map((p) => p.body.status_id)).toEqual(["s-prog", "s-todo"]);
   });
 
+  test("a double click starts once: one status PATCH (in-flight guard)", async ({ page }) => {
+    // Mutation, run by hand: drop the `starting` guard in focusStart.ts and two PATCHes go out.
+    const calls = await setup(page, { t1: raw("t1", "Send the quote", -5) });
+    await page.goto("/");
+    await page.getByTestId("now-start").dblclick();
+    await expect(dock(page)).toContainText("Send the quote");
+    await page.waitForTimeout(800);
+    expect(calls.taskPatches).toEqual([{ id: "t1", body: { status_id: "s-prog" } }]);
+  });
+
   test("a task already in progress sends no status PATCH", async ({ page }) => {
     const calls = await setup(page, {
       t1: raw("t1", "Already going", -5, { status_id: "s-prog", status_category: "in_progress" }),

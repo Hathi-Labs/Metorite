@@ -93,7 +93,7 @@ export default function TodayCard({
                   {task.title}
                 </span>
               </Link>
-              {over ? null : (
+              {task.disposition === "DONE" ? null : (
                 <Button
                   variant="ghost"
                   size="icon-sm"

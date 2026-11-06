@@ -217,7 +217,7 @@ export default function MyDay() {
       ) : null}
 
       {/* The Now card (CC-4): the running focus session, or one offer to start. */}
-      {cards.today && !accessLoading ? <NowCard today={today} now={now} className="mt-6 -mb-2" /> : null}
+      {!accessLoading ? <NowCard today={today} now={now} className="mt-6 -mb-2" /> : null}
 
       {/* The AI runs that wait on the member (owner, 2026-11-01: Needs you
           folds into My Day). The feed holds it in its column. The cards

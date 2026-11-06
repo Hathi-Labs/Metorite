@@ -8,7 +8,7 @@
 
 import { useCallback } from "react";
 
-import { projectsApi } from "@/app/projects/lib/api";
+import { ProjectsApiError, projectsApi } from "@/app/projects/lib/api";
 import { landingLane, type Placeable } from "@/app/projects/lib/statusOrder";
 import { useToast } from "@/components/ui/Toast";
 
@@ -59,6 +59,30 @@ async function lanesOf(projectId: string): Promise<Placeable[]> {
 type Toast = ReturnType<typeof useToast>;
 
 /**
+ * Take the focus move back, unless the task moved on since. The row is read
+ * first: a status other than the lane we wrote means a teammate moved it, so
+ * we leave it. The write carries `If-Match`, so a move that lands between the
+ * read and the write answers 412 and is kept too (D-PM-20).
+ */
+export async function undoFocusMove(
+  taskId: string,
+  movedToId: string,
+  before: Pick<MyTask, "statusId" | "workflowStage" | "statusCategory">,
+  patchLocal: (p: Partial<MyTask>) => void,
+): Promise<"undone" | "changed" | "failed"> {
+  if (!before.statusId) return "failed";
+  try {
+    const now = await lensGetItem(taskId);
+    if (now.statusId !== movedToId) return "changed";
+    await lensSetStatusId(taskId, before.statusId, { ifMatch: now.updatedAt || undefined });
+  } catch (e) {
+    return e instanceof ProjectsApiError && (e.status === 412 || e.status === 409) ? "changed" : "failed";
+  }
+  patchLocal(before);
+  return "undone";
+}
+
+/**
  * Move a company task out of its to-do stage onto In progress (MD-Q6), then
  * say so with an Undo. It does nothing for any other task, and a failed read
  * or write leaves the task where it is. Focus starts either way.
@@ -97,13 +121,20 @@ async function moveToInProgress(item: MyTask, toast: Toast): Promise<void> {
       label: "Undo",
       onClick: () => {
         if (!before.statusId) return;
-        patchLocal(before);
-        void lensSetStatusId(taskId, before.statusId).catch(() => {
-          toast.show({
-            variant: "error",
-            title: "Could not undo the move",
-            description: "Set the status on the board.",
-          });
+        void undoFocusMove(taskId, lane.id, before, patchLocal).then((outcome) => {
+          if (outcome === "changed") {
+            toast.show({
+              variant: "error",
+              title: "The task changed since",
+              description: "Someone moved it after you started focus. Set the status on the board.",
+            });
+          } else if (outcome === "failed") {
+            toast.show({
+              variant: "error",
+              title: "Could not undo the move",
+              description: "Set the status on the board.",
+            });
+          }
         });
       },
     },
@@ -114,6 +145,9 @@ async function moveToInProgress(item: MyTask, toast: Toast): Promise<void> {
  * Returns `start(taskId, opts)`. `minimized` starts the session as the dock,
  * for a start where the Now card shows the timer (My Day).
  */
+/** Task ids whose start is still running. A double click starts once. */
+const starting = new Set<string>();
+
 export function useStartFocus(): (
   taskId: string,
   opts?: { minimized?: boolean },
@@ -121,43 +155,57 @@ export function useStartFocus(): (
   const toast = useToast();
   return useCallback(
     async (taskId, opts) => {
-      // The same task again only changes how the room shows.
-      if (useTaskStore.getState().focusSessionId === taskId) {
-        useTaskStore.setState({ focusMinimized: opts?.minimized ?? false });
-        return;
+      if (starting.has(taskId)) return;
+      starting.add(taskId);
+      try {
+        await startOne(taskId, opts, toast);
+      } finally {
+        starting.delete(taskId);
       }
-      await useTaskStore.getState().ensureLive();
-      let item = useTaskStore.getState().items.find((i) => i.id === taskId);
-      if (!item) {
-        try {
-          item = await lensGetItem(taskId);
-          useTaskStore.getState().adoptItem(item);
-        } catch {
-          toast.show({
-            key: "focus:start",
-            variant: "error",
-            title: "Could not start focus",
-            description: "The task did not load. Try again in a moment.",
-          });
-          return;
-        }
-      }
-      // The board move runs FIRST. The room's own writes (the actual start)
-      // answer with the task row, and a row read before the move commits
-      // would put the old stage back into the store.
-      await moveToInProgress(item, toast);
-
-      // One session at a time: a second start ends the first and stamps its
-      // actual end, as the room's own end does.
-      const prev = useTaskStore.getState().focusSessionId;
-      if (prev && prev !== taskId) {
-        const cur = useTaskStore.getState().items.find((i) => i.id === prev);
-        if (cur?.actualStart && !cur.actualEnd) {
-          useTaskStore.getState().updateItem(prev, { actualEnd: new Date().toISOString() });
-        }
-      }
-      useTaskStore.getState().enterFocusSession(taskId, opts);
     },
     [toast],
   );
+}
+
+async function startOne(
+  taskId: string,
+  opts: { minimized?: boolean } | undefined,
+  toast: Toast,
+): Promise<void> {
+  // The same task again only changes how the room shows.
+  if (useTaskStore.getState().focusSessionId === taskId) {
+    useTaskStore.setState({ focusMinimized: opts?.minimized ?? false });
+    return;
+  }
+  await useTaskStore.getState().ensureLive();
+  let item = useTaskStore.getState().items.find((i) => i.id === taskId);
+  if (!item) {
+    try {
+      item = await lensGetItem(taskId);
+      useTaskStore.getState().adoptItem(item);
+    } catch {
+      toast.show({
+        key: "focus:start",
+        variant: "error",
+        title: "Could not start focus",
+        description: "The task did not load. Try again in a moment.",
+      });
+      return;
+    }
+  }
+  // The board move runs FIRST. The room's own writes (the actual start)
+  // answer with the task row, and a row read before the move commits
+  // would put the old stage back into the store.
+  await moveToInProgress(item, toast);
+
+  // One session at a time: a second start ends the first and stamps its
+  // actual end, as the room's own end does.
+  const prev = useTaskStore.getState().focusSessionId;
+  if (prev && prev !== taskId) {
+    const cur = useTaskStore.getState().items.find((i) => i.id === prev);
+    if (cur?.actualStart && !cur.actualEnd) {
+      useTaskStore.getState().updateItem(prev, { actualEnd: new Date().toISOString() });
+    }
+  }
+  useTaskStore.getState().enterFocusSession(taskId, opts);
 }

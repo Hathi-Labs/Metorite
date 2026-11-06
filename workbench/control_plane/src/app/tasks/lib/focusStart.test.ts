@@ -44,3 +44,46 @@ describe("focusMoveLane", () => {
     expect(focusMoveLane(task(undefined), "root-me", [], LANES)).toBeNull();
   });
 });
+
+/**
+ * The Undo of a focus move (CC-4 fix round). Mutations, run by hand:
+ *  - drop the `now.statusId !== movedToId` test: the "moved on" case writes, and fails.
+ *  - drop `ifMatch`: the first case fails.
+ */
+import { vi } from "vitest";
+
+vi.mock("./lens", () => ({
+  lensGetItem: vi.fn(),
+  lensSetStatusId: vi.fn(),
+}));
+import { ProjectsApiError } from "@/app/projects/lib/api";
+import { lensGetItem, lensSetStatusId } from "./lens";
+import { undoFocusMove } from "./focusStart";
+
+const before = { statusId: "s-todo", workflowStage: "To do", statusCategory: "todo" };
+
+describe("undoFocusMove", () => {
+  it("writes the old status with If-Match from a fresh read", async () => {
+    vi.mocked(lensGetItem).mockResolvedValue({ statusId: "s-prog", updatedAt: "v7" } as never);
+    vi.mocked(lensSetStatusId).mockResolvedValue(undefined);
+    const patch = vi.fn();
+    expect(await undoFocusMove("t1", "s-prog", before, patch)).toBe("undone");
+    expect(lensSetStatusId).toHaveBeenCalledWith("t1", "s-todo", { ifMatch: "v7" });
+    expect(patch).toHaveBeenCalledWith(before);
+  });
+  it("leaves a task that a teammate moved on", async () => {
+    vi.mocked(lensSetStatusId).mockClear();
+    vi.mocked(lensGetItem).mockResolvedValue({ statusId: "s-review", updatedAt: "v8" } as never);
+    const patch = vi.fn();
+    expect(await undoFocusMove("t1", "s-prog", before, patch)).toBe("changed");
+    expect(lensSetStatusId).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+  });
+  it("keeps a move that lands between the read and the write (412)", async () => {
+    vi.mocked(lensGetItem).mockResolvedValue({ statusId: "s-prog", updatedAt: "v7" } as never);
+    vi.mocked(lensSetStatusId).mockRejectedValue(new ProjectsApiError("changed", 412));
+    const patch = vi.fn();
+    expect(await undoFocusMove("t1", "s-prog", before, patch)).toBe("changed");
+    expect(patch).not.toHaveBeenCalled();
+  });
+});
