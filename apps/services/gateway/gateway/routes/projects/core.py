@@ -314,24 +314,26 @@ async def is_runnable_with_ancestors(db: Any, project_id: Any) -> bool:
     )).scalar()
     return bool(row)
 
+#: The five stages in lifecycle order. This is the ONE list the two orders
+#: below derive from (task 1792, ``test_projects_status_order_r8.py``).
+_LIFECYCLE: tuple[str, ...] = ("backlog", "todo", "in_progress", "done", "cancelled")
+
 #: `pm_task_statuses.category` — the machine-readable half of a status. Name and
 #: colour are the owner's; this is what completion, the personal mirror (§6.1)
 #: and automation gates (§6.3) key off. `triage` (WS-27u, migration 164) is the
 #: parked-at-the-front-door value that :func:`triage_exclusion_clause` keys off.
-STATUS_CATEGORIES: tuple[str, ...] = (
-    "backlog", "todo", "in_progress", "done", "cancelled", "triage",
-)
+#: Triage sits LAST here, which is what the list sort by Status shows
+#: (``_CATEGORY_RANK_ARRAY``).
+STATUS_CATEGORIES: tuple[str, ...] = (*_LIFECYCLE, "triage")
 
-#: The LIFECYCLE order of the stages (task 1792). ONE rule orders status lanes
-#: everywhere: stage rank, then ``position``, then ``name``. Position orders
-#: lanes INSIDE a stage and never moves a lane into another stage, so a Done
-#: row with the lowest position still draws after In progress. Mirrors
-#: ``STATUS_CATEGORIES`` in ``workbench/control_plane/src/lib/statusCategory.ts``
-#: (``test_projects_status_order_r8.py`` fails if the two disagree). An unknown
-#: stage sorts last.
-STATUS_STAGE_ORDER: tuple[str, ...] = (
-    "triage", "backlog", "todo", "in_progress", "done", "cancelled",
-)
+#: The order a BOARD draws its lanes (task 1792): triage first, then the
+#: lifecycle. ONE rule orders status lanes everywhere: stage rank, then
+#: ``position``, then ``name``. Position orders lanes INSIDE a stage and never
+#: moves a lane into another stage, so a Done row with the lowest position
+#: still draws after In progress. Mirrors ``STATUS_CATEGORIES`` in
+#: ``workbench/control_plane/src/lib/statusCategory.ts``. An unknown stage
+#: sorts last.
+STATUS_STAGE_ORDER: tuple[str, ...] = ("triage", *_LIFECYCLE)
 
 
 def status_order_sql(alias: str = "") -> str:
@@ -348,17 +350,6 @@ def status_order_sql(alias: str = "") -> str:
         f"CASE {a}category {whens} ELSE {len(STATUS_STAGE_ORDER)} END, "
         f"{a}position, {a}name"
     )
-
-
-def status_sort_key(category: Any, position: Any, name: Any) -> tuple[int, int, str]:
-    """The Python twin of :func:`status_order_sql`, for a list in memory."""
-    c = str(category or "")
-    rank = (
-        STATUS_STAGE_ORDER.index(c)
-        if c in STATUS_STAGE_ORDER
-        else len(STATUS_STAGE_ORDER)
-    )
-    return (rank, int(position or 0), str(name or ""))
 
 
 #: The one category the default list reads exclude (WS-27u). A constant rather
@@ -3291,7 +3282,7 @@ async def reserve_task_numbers(db: Any, root_id: str, count: int) -> int:
 async def load_default_status(
     db: Any, root_id: str, category: str | None = None,
 ) -> Any:
-    """The status a task lands in: the FIRST lane, by position.
+    """The status a task lands in: the first OPEN lane in stage order.
 
     ⚠️ **There is no "default status" setting any more** (owner directive
     2026-09-06). ``is_default`` used to be consulted first and the position was
@@ -3305,8 +3296,9 @@ async def load_default_status(
     four category columns therefore had no flagged answer at all and fell
     through to the position anyway. The fallback was doing the work.
 
-    So position IS the rule, and position is a thing people already see and
-    already drag. The column stays on the table under R6 and goes in a later
+    So the lane order IS the rule: stage, then position, then name
+    (:func:`status_order_sql`, task 1792). Position is a thing people already
+    see and already drag, and it orders lanes inside a stage. The column stays on the table under R6 and goes in a later
     release; nothing reads it for a status any more. Task TYPES keep their own
     ``is_default`` — a type list has no order to read the answer out of.
 
@@ -3350,17 +3342,12 @@ async def load_default_status(
                 "Backlog, To do or In progress status first."
             ),
         )
-    if category is not None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"This project has no {category.replace('_', ' ')} status; "
-                "add one first."
-            ),
-        )
     raise HTTPException(
         status_code=422,
-        detail="No task statuses are configured for this project; create one first.",
+        detail=(
+            f"This project has no {category.replace('_', ' ')} status; "
+            "add one first."
+        ),
     )
 
 

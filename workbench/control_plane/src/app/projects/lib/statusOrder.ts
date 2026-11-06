@@ -2,7 +2,8 @@
  * Projects · where a status SITS — the position arithmetic for the editor.
  *
  * `pm_task_statuses.position` is a plain integer, root-scoped. Every read
- * orders by stage, then `position`, then `name` (task 1792). It decides board column order, list section order
+ * orders by stage, then `position`, then `name` (task 1792). Position orders
+ * lanes inside a stage. It decides board column order, list section order
  * and the order of the status picker, so it is not decoration.
  *
  * Two things made this a module with a test rather than inline arithmetic.
@@ -40,7 +41,7 @@ export interface Placeable {
  * #834. A parent board draws the lanes of its own status set. Since migration
  * 196 a subproject may keep its own lanes, and a task in one of them matched no
  * column and vanished from the parent board with no word. Such a task now
- * lands in the first lane (by position) of the same stage, which the server
+ * lands in the first lane (in the one lane order) of the same stage, which the server
  * stamps on each row (`status_category`). A task with no known stage lands in
  * the first lane, so it is still on the board.
  */
@@ -109,7 +110,7 @@ export interface Placement {
  * `lastSibling.position + STEP`. On the seeded 10/20/30/40 board, adding a
  * second `in_progress` lane returned 40 — the position Done already held. The
  * editor still looked right, because it groups by category. The BOARD does not:
- * it orders columns by `position, name`, so it drew Backlog · To do · In
+ * it ordered columns by `position, name` at the time, so it drew Backlog · To do · In
  * progress · **Done** · **In review**, with an in-progress lane to the right of
  * the done lane. Verified against the database: two rows at 40.
  *

@@ -399,7 +399,12 @@ async def reopen_if_closed(
     try:
         lane = await load_default_status(db, owner, "todo")
     except HTTPException:
-        lane = await load_default_status(db, owner)
+        try:
+            lane = await load_default_status(db, owner)
+        except HTTPException:
+            # No open lane in the set (task 1792). The task stays closed and
+            # the overlay write still succeeds, as it did before.
+            return None
     if getattr(lane, "category", None) in CLOSING_CATEGORIES:
         return None
     moved = await apply_status_transition(db, task, str(lane.id), created_by=email)

@@ -24,11 +24,14 @@ pytest.importorskip("sqlalchemy")
 
 from fastapi import HTTPException
 from gateway.routes.projects.core import (
+    _CATEGORY_RANK_ARRAY,
+    _LIFECYCLE,
+    STATUS_CATEGORIES,
     STATUS_STAGE_ORDER,
     load_default_status,
     status_order_sql,
-    status_sort_key,
 )
+from gateway.routes.projects.personal import reopen_if_closed
 from sqlalchemy import create_engine, text
 
 from tests.unit._tenant_ladder import apply_ladder
@@ -53,11 +56,13 @@ def test_stage_order_matches_the_typescript_vocabulary():
     assert tuple(re.findall(r'"([a-z_]+)"', block.group(1))) == STATUS_STAGE_ORDER
 
 
-def test_python_key_orders_stage_then_position_then_name():
-    rows = [("done", 1, "Done"), ("todo", 5, "B"), ("todo", 5, "A"),
-            ("in_progress", 2, "Doing"), ("odd", 0, "X")]
-    got = [r[2] for r in sorted(rows, key=lambda r: status_sort_key(*r))]
-    assert got == ["A", "B", "Doing", "Done", "X"]
+def test_both_orders_and_the_rank_array_derive_from_one_list():
+    # Board order: triage first. List sort by Status: triage last. One source.
+    assert STATUS_STAGE_ORDER == ("triage", *_LIFECYCLE)
+    assert STATUS_CATEGORIES == (*_LIFECYCLE, "triage")
+    expected = "ARRAY[" + ", ".join(f"'{c}'" for c in STATUS_CATEGORIES) + "]"
+    assert _CATEGORY_RANK_ARRAY == expected
+    assert _CATEGORY_RANK_ARRAY.index("'triage'") > _CATEGORY_RANK_ARRAY.index("'cancelled'")
 
 
 @pytest.fixture(scope="module")
@@ -182,5 +187,26 @@ def test_a_set_with_only_closing_lanes_refuses(db):
             _default(db, pid)
         assert err.value.status_code == 422
         assert "no open status" in err.value.detail
+    finally:
+        _drop(db, pid)
+
+
+@_DB_GATE
+def test_reopen_leaves_a_task_closed_when_the_set_has_no_open_lane(db):
+    """A NEXT/INBOX/WAITING write on a closed task must not fail (task 1792)."""
+    from types import SimpleNamespace
+
+    pid = _project(db, [("Inbox", "triage", 1), ("Done", "done", 2),
+                        ("Dropped", "cancelled", 3)])
+    try:
+        with db.begin() as conn:
+            done = conn.execute(text(
+                "SELECT id FROM pm_task_statuses WHERE project_id ="
+                " CAST(:p AS uuid) AND category = 'done'"), {"p": pid}).scalar_one()
+            task = SimpleNamespace(id=str(uuid.uuid4()), status_id=str(done),
+                                   project_id=pid)
+            moved = asyncio.run(
+                reopen_if_closed(_AsyncShim(conn), task, "a@example.test", "NEXT"))
+        assert moved is None
     finally:
         _drop(db, pid)

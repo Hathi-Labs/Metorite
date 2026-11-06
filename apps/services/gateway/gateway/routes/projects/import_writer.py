@@ -214,7 +214,7 @@ LIVE_NODES_SQL = (
     " WHERE organization_id = CAST(:org AS uuid) AND id = ANY(CAST(:ids AS uuid[])) "
     "   AND archived_at IS NULL"
 )
-#: In position order, as ``core.load_default_status`` reads a set. That
+#: In stage order, then position, as ``core.load_default_status`` reads a set. That
 #: helper, never ``is_default``, decides where a task with no status lands.
 STATUSES_OF_SQL = (
     "SELECT id, name, category, position FROM pm_task_statuses "

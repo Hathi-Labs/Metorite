@@ -56,6 +56,7 @@ import SelectButton from "@/components/ui/SelectButton";
 import { Input } from "@/components/ui/Input";
 import ManagerFrame from "./ManagerFrame";
 import { StageTip } from "./StageHelp";
+import { StatusOrderArrows } from "./StatusOrderArrows";
 import {
   ACCENT_HUES,
   type AccentHue,
@@ -593,11 +594,12 @@ export function StatusManager({
                           {counts[status.id] ?? 0}
                         </span>
 
-                        {/* Everything else this row can do, behind ONE control.
+                        {/* Everything else this row can do, behind the ⋯ menu. The two order arrows
+                            sit beside it in plain sight (task 1792).
 
                             ⚠️ The row used to carry five: a Default chip or a
                             "Set default" button, a stage dropdown, two arrows
-                            and a bin. The dropdown was the worst of them — it
+                            and a bin. The arrows are back, as buttons. The dropdown was the worst of them — it
                             named the stage the row was ALREADY filed under by
                             sitting inside that group's heading, so every row
                             stated its category twice and the name, which is the
@@ -607,21 +609,12 @@ export function StatusManager({
                             one arrow up and one down, inside the stage group.
                             The same `reorder()` the row menu calls, so a move
                             can never leave its stage. */}
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          icon="ChevronUp"
-                          aria-label={`Move ${status.name} up`}
-                          disabled={busy || index === 0}
-                          onClick={() => move(status, "up")}
-                        />
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          icon="ChevronDown"
-                          aria-label={`Move ${status.name} down`}
-                          disabled={busy || index === group.rows.length - 1}
-                          onClick={() => move(status, "down")}
+                        <StatusOrderArrows
+                          name={status.name}
+                          index={index}
+                          count={group.rows.length}
+                          busy={busy}
+                          onMove={(direction) => move(status, direction)}
                         />
                         <Button
                           variant="ghost"

@@ -11,8 +11,7 @@
  * nothing in it) and each of those is one assertion here.
  */
 
-import { STATUS_CATEGORIES, categoryLabel } from "@/lib/statusCategory";
-import { orderedLanes } from "@/lib/statusCategory";
+import { STATUS_CATEGORIES, categoryLabel, orderedLanes } from "@/lib/statusCategory";
 import { statusLaneOf } from "./statusOrder";
 import { personDisplayName } from "@/lib/personName";
 

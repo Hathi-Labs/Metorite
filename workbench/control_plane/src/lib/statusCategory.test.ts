@@ -39,14 +39,18 @@ const CORE_PY = fileURLToPath(
   )
 );
 
-/** The `STATUS_CATEGORIES` tuple as the gateway declares it. */
+/** The `STATUS_CATEGORIES` tuple as the gateway declares it: the lifecycle
+ *  list (`_LIFECYCLE`) it spreads, then the literals after the spread. */
 function serverCategories(): string[] {
   const source = readFileSync(CORE_PY, "utf8");
+  const life = source.match(/^_LIFECYCLE:\s*tuple\[str,\s*\.\.\.\]\s*=\s*\(([\s\S]*?)\)/m);
+  if (!life) throw new Error(`No _LIFECYCLE tuple found in ${CORE_PY}`);
   const block = source.match(
-    /^STATUS_CATEGORIES:\s*tuple\[str,\s*\.\.\.\]\s*=\s*\(([\s\S]*?)\)/m
+    /^STATUS_CATEGORIES:\s*tuple\[str,\s*\.\.\.\]\s*=\s*\(\*_LIFECYCLE,([\s\S]*?)\)/m
   );
   if (!block) throw new Error(`No STATUS_CATEGORIES tuple found in ${CORE_PY}`);
-  return [...block[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+  const words = (text: string) => [...text.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+  return [...words(life[1]), ...words(block[1])];
 }
 
 /** The `CLOSING_CATEGORIES` frozenset as the gateway declares it. */
