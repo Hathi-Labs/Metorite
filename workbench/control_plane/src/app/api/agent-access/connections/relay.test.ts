@@ -5,11 +5,17 @@
 // A same-origin DELETE reaches the right gateway route, a list needs no origin
 // check, no answer is a 3xx, and every answer says `no-store`.
 //
+// EA-17c-1 (D-EA-13): the PATCH of a grant follows the same rules. It is
+// same origin only, and the body that leaves holds the four fields of a
+// grant and nothing else.
+//
 // Mutations, each one red here:
-// - drop the `sameOrigin` check in `relay.ts`: the cross-site cases fail;
+// - drop the `sameOrigin` check in `relay.ts`: the cross-site cases fail,
+//   for the DELETE and for the PATCH;
 // - accept `same-site` too: the `same-site` case fails;
 // - drop `refuseBadSegment`: the dot-dot case fails;
-// - pass a gateway 3xx through: the 3xx case fails.
+// - pass a gateway 3xx through: the 3xx case fails;
+// - send the browser's body as it came: the PATCH body case fails.
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -31,7 +37,8 @@ vi.mock("@/lib/gateway", () => {
 });
 
 import { GET as mineGET } from "./route";
-import { DELETE as mineDELETE } from "./[id]/route";
+import { DELETE as mineDELETE, PATCH as minePATCH } from "./[id]/route";
+import { MAX_CHANGE_BODY } from "./relay";
 import { GET as orgGET } from "@/app/api/integrations/agent-connections/route";
 import { DELETE as orgDELETE } from "@/app/api/integrations/agent-connections/[id]/route";
 
@@ -123,5 +130,96 @@ describe("the two lists", () => {
   it("keeps a gateway 403 a 403", async () => {
     stubGateway(() => Response.json({ detail: "Forbidden" }, { status: 403 }));
     expect((await orgGET()).status).toBe(403);
+  });
+});
+
+const GRANT = {
+  scopes: ["projects:read"],
+  pinned_projects: [ID],
+  left_out_projects: [],
+  include_personal: true,
+};
+
+function patch(fetchSite: string | null, body: unknown = GRANT) {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (fetchSite !== null) headers["sec-fetch-site"] = fetchSite;
+  return new NextRequest(`http://app.test/api/agent-access/connections/${ID}`, {
+    method: "PATCH",
+    headers,
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+}
+
+describe("the member's PATCH of a grant (EA-17c-1)", () => {
+  beforeEach(() => {
+    stubGateway(() => Response.json({ id: ID, scopes: ["projects:read"] }, { status: 200 }));
+  });
+
+  it.each([["cross-site"], ["same-site"], ["none"], [null]])(
+    "refuses Sec-Fetch-Site %s with 403, and never calls the gateway",
+    async (site) => {
+      const res = await minePATCH(patch(site), params(ID));
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: "cross_site" });
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(asked).toEqual([]);
+    },
+  );
+
+  it("sends the four fields of the grant only, to the gateway route", async () => {
+    const res = await minePATCH(
+      patch("same-origin", { ...GRANT, organization_id: "other-org", member_email: "x@example.com" }),
+      params(ID),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: ID, scopes: ["projects:read"] });
+    expect(asked.map((a) => [a.url, a.init?.method])).toEqual([
+      [`http://gw.test/agent-access/connections/${ID}`, "PATCH"],
+    ]);
+    expect(JSON.parse(String(asked[0].init?.body))).toEqual(GRANT);
+    expect((asked[0].init?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+    expect(asked[0].init?.redirect).toBe("manual");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("leaves a missing field missing, so the gateway refuses it", async () => {
+    const { include_personal: _dropped, ...partial } = GRANT;
+    await minePATCH(patch("same-origin", partial), params(ID));
+    expect(JSON.parse(String(asked[0].init?.body))).toEqual(partial);
+  });
+
+  it.each([["not json"], ["[1, 2]"], ["null"], ["7"]])(
+    "refuses the body %s with 400 before any fetch",
+    async (body) => {
+      const res = await minePATCH(patch("same-origin", body), params(ID));
+      expect(res.status).toBe(400);
+      expect(asked).toEqual([]);
+    },
+  );
+
+  it("refuses a body over the cap with 413 before any fetch", async () => {
+    const res = await minePATCH(patch("same-origin", "x".repeat(MAX_CHANGE_BODY + 1)), params(ID));
+    expect(res.status).toBe(413);
+    expect(asked).toEqual([]);
+  });
+
+  it("refuses a dot-dot id before any fetch", async () => {
+    const res = await minePATCH(patch("same-origin"), params(".."));
+    expect(res.status).toBe(400);
+    expect(asked).toEqual([]);
+  });
+
+  it("passes a gateway 422 back as it is", async () => {
+    const detail = { detail: { error: "scope_above_ceiling", scopes: ["projects:write"] } };
+    stubGateway(() => Response.json(detail, { status: 422 }));
+    const res = await minePATCH(patch("same-origin"), params(ID));
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual(detail);
+  });
+
+  it("turns a gateway 3xx into a 502, and never follows it", async () => {
+    stubGateway(() => new Response(null, { status: 302, headers: { location: "https://evil.example" } }));
+    const res = await minePATCH(patch("same-origin"), params(ID));
+    expect(res.status).toBe(502);
   });
 });

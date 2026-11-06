@@ -1,24 +1,33 @@
 /**
- * The shared half of the four agent-connection BFF routes (WS-55 EA-4b).
- * Server only.
+ * The shared half of the five agent-connection BFF routes (WS-55 EA-4b,
+ * EA-17c-1). Server only.
  *
- * Spec: `project-docs/specs/external_agent_access.md` §5.4 and §15 EA-4b.
+ * Spec: `project-docs/specs/external_agent_access.md` §5.4, §10.8 and §15
+ * EA-4b and EA-17c-1.
  *
  *     GET    /api/agent-access/connections            → gateway GET    /agent-access/connections
  *     DELETE /api/agent-access/connections/<id>       → gateway DELETE /agent-access/connections/<id>
+ *     PATCH  /api/agent-access/connections/<id>       → gateway PATCH  /agent-access/connections/<id>
  *     GET    /api/integrations/agent-connections      → gateway GET    /integrations/agent-connections
  *     DELETE /api/integrations/agent-connections/<id> → gateway DELETE /integrations/agent-connections/<id>
  *
- * Three rules, each with a test in `relay.test.ts`:
+ * Four rules, each with a test in `relay.test.ts`:
  *
- * 1. ⚠️ **A DELETE is same origin only.** A DELETE whose `Sec-Fetch-Site`
- *    is not `same-origin` gets 403, and so does one with no such header
- *    (`sameOrigin` in `lib/accountsServer.ts`, as the consent relay does). The
- *    gateway sees only this route's server call, so it cannot check that.
+ * 1. ⚠️ **A DELETE and a PATCH are same origin only.** A write whose
+ *    `Sec-Fetch-Site` is not `same-origin` gets 403, and so does one with no
+ *    such header (`sameOrigin` in `lib/accountsServer.ts`, as the consent
+ *    relay does). The gateway sees only this route's server call, so it
+ *    cannot check that.
  * 2. **The member and the organization come from the session** at the
  *    gateway (R11). The request carries only the id, in the path, through
  *    `refuseBadSegment`.
- * 3. **Never a 3xx, and never cached.** The relay does not follow a gateway
+ * 3. **A PATCH body holds the four fields of a grant, and nothing else**
+ *    (EA-17c-1, D-EA-13). The relay builds the body that it sends from
+ *    `scopes`, `pinned_projects`, `left_out_projects` and `include_personal`.
+ *    Any other field, such as an org or a member, never reaches the gateway.
+ *    A body over `MAX_CHANGE_BODY` gets 413, and one that is not a JSON
+ *    object gets 400. The gateway checks each value.
+ * 4. **Never a 3xx, and never cached.** The relay does not follow a gateway
  *    redirect, and turns one into a 502. Each answer carries
  *    `Cache-Control: no-store`.
  */
@@ -38,6 +47,12 @@ export type AgentList = "/agent-access/connections" | "/integrations/agent-conne
 
 const GATEWAY_TIMEOUT_MS = 10_000;
 
+/** A change body is far under this: two lists of 50 ids and the scopes. */
+export const MAX_CHANGE_BODY = 16_384;
+
+/** The four fields of a grant that a PATCH may send (rule 3). */
+const CHANGE_FIELDS = ["scopes", "pinned_projects", "left_out_projects", "include_personal"] as const;
+
 const NO_STORE = { "Cache-Control": "no-store" };
 
 function refuse(error: string, status: number): NextResponse {
@@ -48,12 +63,12 @@ function isRedirectAnswer(res: Response): boolean {
   return res.type === "opaqueredirect" || res.status === 0 || (res.status >= 300 && res.status < 400);
 }
 
-async function relay(path: string, method: "GET" | "DELETE"): Promise<NextResponse> {
+async function relay(path: string, method: "GET" | "DELETE" | "PATCH", body?: string): Promise<NextResponse> {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return refuse("unauthenticated", 401);
   let headers: Record<string, string>;
   try {
-    headers = await gatewayHeaders();
+    headers = await gatewayHeaders(body === undefined ? {} : { "Content-Type": "application/json" });
   } catch (err) {
     if (err instanceof NoIdentityError) return refuse("unauthenticated", 401);
     throw err;
@@ -63,6 +78,7 @@ async function relay(path: string, method: "GET" | "DELETE"): Promise<NextRespon
     res = await gatewayFetch(`${GATEWAY_URL}${path}`, {
       method,
       headers,
+      body,
       cache: "no-store",
       redirect: "manual",
       signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
@@ -90,4 +106,35 @@ export async function relayRevoke(req: NextRequest, list: AgentList, id: string)
   const bad = refuseBadSegment(id);
   if (bad) return bad;
   return relay(`${list}/${encodeURIComponent(id)}`, "DELETE");
+}
+
+/**
+ * PATCH the grant of one of the member's own connections (EA-17c-1). Same
+ * origin only (rule 1), and the body that leaves holds the four fields of a
+ * grant only (rule 3).
+ */
+export async function relayChange(req: NextRequest, id: string): Promise<NextResponse> {
+  // Rule 1 comes first, before the session read and before the body.
+  if (!sameOrigin(req)) return refuse("cross_site", 403);
+  const bad = refuseBadSegment(id);
+  if (bad) return bad;
+  const raw = await req.text();
+  if (raw.length > MAX_CHANGE_BODY) return refuse("too_large", 413);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return refuse("bad_body", 400);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return refuse("bad_body", 400);
+  }
+  // Rule 3: own keys of the four fields only. A missing field stays missing,
+  // so the gateway answers its 422 and never reads it as empty.
+  const given = parsed as Record<string, unknown>;
+  const grant: Record<string, unknown> = {};
+  for (const field of CHANGE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(given, field)) grant[field] = given[field];
+  }
+  return relay(`/agent-access/connections/${encodeURIComponent(id)}`, "PATCH", JSON.stringify(grant));
 }

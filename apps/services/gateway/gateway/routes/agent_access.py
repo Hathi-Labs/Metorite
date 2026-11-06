@@ -105,6 +105,24 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
     the list: the screen, the ticket and the approve gate of the page stay.
     Fence: ``tests/unit/test_agent_first_party.py``.
 
+14. ⚠️ **Change access (EA-17c-1, D-EA-13, spec §10.8).**
+    ``PATCH /agent-access/connections/{connection_id}`` changes the scopes,
+    the pins, the left-out list and the personal switch of one of the
+    member's own connections, with no reconnect. It ships dark: while
+    ``agent_oauth.change_access_allowed`` refuses the organization of the
+    session, each request gets 404, a malformed one too. The member is
+    :func:`_member` and the organization is ``current_tenant()``, never
+    input. A signed agent gets 404. Each pin and each left-out id must be a
+    project that the member sees (``tree.grantable_project_ids``), else 422,
+    and the scopes of the agent play no part. The store then refuses an id
+    of another member, of another organization, a revoked one or an unknown
+    one with 404, and a scope outside the ceiling of the live tokens, a
+    grant with no scope and a change to ``offline_access`` with 422. The
+    answer is the new row. The log line ``agent_access.connection_changed``
+    holds the id and the counts. It does not call
+    :func:`_require_org_allowed`, as the list and the revoke do not. Fence:
+    ``tests/unit/test_agent_change_access.py``.
+
 What is not here: dynamic client registration (EA-2b), pre-registered
 clients, the organization switch and the client allow list (EA-4c), the audit
 row of each agent call (EA-8) and any rate limit (EA-7). The CSRF check of
@@ -119,18 +137,19 @@ import json
 import secrets
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Annotated, Any, NamedTuple
 from uuid import UUID
 
 import httpx
 from acb_auth import UserContext, agent_oauth, agent_tokens, get_current_user
 from acb_common import get_logger, get_settings
 from acb_common.tenant_redis import OUTAGE_ERRORS, get_tenant_redis, key, organization_scope
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from gateway import outbound_guard
 from gateway.db import current_tenant
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 _log = get_logger("gateway.agent_access")
 
@@ -802,6 +821,12 @@ class AgentConnectionOut(BaseModel):
     created_at: str
     last_used_at: str | None
     expires_at: str
+    #: What the agent asked for at the connect (EA-17a, D-EA-13). ``None`` on
+    #: a connection from before EA-17a.
+    requested_scopes: list[str] | None
+    #: The resource scopes that Change access may turn on: the scopes that
+    #: every live token of the connection covers (D-EA-13 rule 2, EA-17c-1).
+    ceiling_scopes: list[str]
 
 
 class AgentConnectionsOut(BaseModel):
@@ -822,6 +847,9 @@ def connection_out(row: agent_tokens.ConnectionRow) -> AgentConnectionOut:
         created_at=row.created_at.isoformat(),
         last_used_at=row.last_used_at.isoformat() if row.last_used_at else None,
         expires_at=row.expires_at.isoformat(),
+        requested_scopes=(
+            None if row.requested_scopes is None else list(row.requested_scopes)),
+        ceiling_scopes=list(row.ceiling_scopes),
     )
 
 
@@ -882,3 +910,160 @@ async def revoke_my_connection(
     if not revoked:
         raise _not_found()
     audit_revoke(email, org, str(connection_id), admin=False)
+
+
+# ── Change access (rule 14, EA-17c-1, D-EA-13) ──────────────────────────────
+
+
+#: The longest body of a change. Two lists of 50 ids and every scope need
+#: about 5 KiB, so this leaves room and still bounds the read.
+_MAX_CHANGE_BODY = 16_384
+
+#: The longest scope name that a change may send. A real one is far shorter.
+_MAX_SCOPE_NAME = 64
+
+
+class ChangeAccessRequest(BaseModel):
+    """The new grant of one connection (rule 14).
+
+    ⚠️ ``extra="forbid"``: a field that this model does not name is a 422.
+    So a body cannot name an organization, a member or ``requested_scopes``.
+    ⚠️ Each of the four fields is required. A missing list must not read as
+    an empty one, because no pin means every project the member sees.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The new scopes. ``offline_access`` must be in it exactly when the
+    #: connection holds it now (D-EA-13 rule 3).
+    scopes: list[Annotated[str, Field(max_length=_MAX_SCOPE_NAME)]] = Field(
+        max_length=len(agent_oauth.SUPPORTED_SCOPES))
+    pinned_projects: list[UUID] = Field(max_length=_MAX_PINS)
+    left_out_projects: list[UUID] = Field(max_length=_MAX_PINS)
+    include_personal: bool
+
+
+async def _require_change_access(
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    """404 unless ``agent_change_access_orgs`` holds the session's
+    organization (rule 14). The organization is the bound tenant.
+
+    ⚠️ A dependency of the route, so it runs before FastAPI reads the path
+    id. The handler reads the body itself, after it. So an organization off
+    the list gets the 404 for each request, a malformed id or body too.
+    """
+    del user  # only so that the tenant is bound first
+    if not agent_oauth.change_access_allowed(current_tenant()):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def _change_body(request: Request) -> ChangeAccessRequest:
+    """The body of a change, read with a cap and checked by the model.
+
+    Past :data:`_MAX_CHANGE_BODY` bytes the answer is 413. A body that is
+    not JSON, or that the model refuses, is the 422 of FastAPI, with no
+    input echoed back.
+    """
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > _MAX_CHANGE_BODY:
+            raise HTTPException(status_code=413, detail="The body is too large.")
+    try:
+        return ChangeAccessRequest.model_validate_json(bytes(raw))
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors(
+            include_url=False, include_context=False, include_input=False,
+        )) from None
+
+
+def _unprocessable(error: str, description: str, **extra: Any) -> HTTPException:
+    """A 422 of rule 14, with a code that the AI agents view reads."""
+    return HTTPException(
+        status_code=422,
+        detail={"error": error, "error_description": description, **extra},
+        headers=_NO_STORE,
+    )
+
+
+#: The words of each 422 of the store, by its reason.
+_CHANGE_REFUSALS: dict[str, str] = {
+    agent_tokens.CHANGE_NO_SCOPE: "Choose one scope or more.",
+    agent_tokens.CHANGE_OFFLINE_ACCESS: (
+        "Offline access stays as it is. Keep it as the connection has it."),
+    agent_tokens.CHANGE_ABOVE_CEILING: (
+        "The agent's token does not carry this scope. Reconnect the agent to "
+        "turn it on."),
+}
+
+
+@router.patch(
+    "/connections/{connection_id}",
+    response_model=AgentConnectionOut,
+    dependencies=[Depends(_require_change_access)],
+)
+async def change_my_connection(
+    connection_id: UUID,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """Change the grant of one of the member's own connections (rule 14).
+
+    The checks run in this order, and each refusal writes nothing:
+
+    1. The organization on ``agent_change_access_orgs``, else 404.
+    2. The member of the session (:func:`_member`), else 403. A signed
+       agent is refused with 404: only its member changes a grant.
+    3. The body (:class:`ChangeAccessRequest`), else 413 or 422.
+    4. Each pin and each left-out id is a project that the member of the
+       session sees (``tree.grantable_project_ids``), else 422
+       ``project_not_seen``. The scopes of the agent play no part.
+    5. The store, in one transaction (``agent_tokens.update_connection_grant``):
+       a live connection of this member in this organization, else 404, then
+       the scope rules of D-EA-13, else 422.
+
+    The answer is the new row, in the shape of the list.
+    """
+    email = _member(user)
+    if user.agent is not None:
+        raise _not_found()
+    change = await _change_body(request)
+    pins = [str(p) for p in change.pinned_projects]
+    left_out = [str(p) for p in change.left_out_projects]
+    from gateway.routes.projects.tree import grantable_project_ids
+
+    seen = await grantable_project_ids(user) if pins or left_out else frozenset()
+    unseen = [p for p in dict.fromkeys([*pins, *left_out]) if p not in seen]
+    if unseen:
+        raise _unprocessable(
+            "project_not_seen",
+            "You can only choose a project that you can see.",
+            projects=unseen,
+        )
+    result = await agent_tokens.update_connection_grant(
+        str(current_tenant()),
+        str(connection_id),
+        member_email=email,
+        scopes=change.scopes,
+        pinned_projects=pins,
+        left_out_projects=left_out,
+        include_personal=change.include_personal,
+    )
+    if isinstance(result, agent_tokens.ChangeRefused):
+        if result.reason == agent_tokens.CHANGE_NOT_FOUND:
+            raise _not_found()
+        raise _unprocessable(
+            result.reason, _CHANGE_REFUSALS[result.reason],
+            scopes=list(result.scopes),
+        )
+    # Ids and counts only. A project name never goes into a log line.
+    _log.info(
+        "agent_access.connection_changed",
+        connection_id=result.id,
+        scopes=len(result.scopes),
+        pinned=len(result.pinned_projects),
+        left_out=len(result.left_out_projects),
+        include_personal=result.include_personal,
+    )
+    return JSONResponse(connection_out(result).model_dump(), headers=_NO_STORE)

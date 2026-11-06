@@ -412,11 +412,16 @@ class TestTheMembersList:
         assert set(row) == {
             "id", "member_email", "client_name", "client_origin", "scopes",
             "pinned_projects", "left_out_projects", "include_personal",
-            "created_at", "last_used_at", "expires_at"}
+            "created_at", "last_used_at", "expires_at",
+            # EA-17c-1 (D-EA-13): what the agent asked for, and the scopes
+            # that the live tokens carry.
+            "requested_scopes", "ceiling_scopes"}
         assert row["left_out_projects"] == []
         assert row["client_origin"] == ORIGIN
         assert row["scopes"] == ["projects:read"]
         assert row["include_personal"] is False
+        assert row["requested_scopes"] is None, "a seeded row from before EA-17a"
+        assert row["ceiling_scopes"] == ["projects:read"]
 
     async def test_a_row_carries_its_left_out_list(self, live):
         # EA-17b: a screen must not claim more reach than the agent has.

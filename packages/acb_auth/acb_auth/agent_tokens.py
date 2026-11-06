@@ -102,9 +102,21 @@ store that must work before a tenant is known.
    Both run in the bound tenant and take the member from the caller, who
    passes the session's member. No other caller passes ``True``.
 
+10. ⚠️ **Change access (EA-17c-1, D-EA-13, spec §10.8).**
+    :func:`update_connection_grant` changes the scopes, the pins, the
+    left-out list and the personal switch of ONE live connection, in one
+    transaction. Its WHERE names the id, the organization AND the member,
+    and the caller passes the member of the session. It locks the connection
+    row first, as rule 3 says. A resource scope must be in the ceiling, the
+    scopes that every live token of the connection covers
+    (:func:`ceiling_of`), because the edge intersects the token scope with
+    the connection scopes. ``offline_access`` and ``requested_scopes`` never
+    change here.
+
 Fence: ``tests/unit/test_agent_connection_tokens.py`` (R8, a phase-4-promoted
 catalog, as a NON-privileged role). D-EA-11:
-``tests/unit/test_agent_first_party.py`` (R8).
+``tests/unit/test_agent_first_party.py`` (R8). EA-17c-1:
+``tests/unit/test_agent_change_access.py`` (R8).
 """
 from __future__ import annotations
 
@@ -783,24 +795,91 @@ class ConnectionRow:
     #: The left-out list of D-EA-12 (EA-17b). A screen that shows the reach
     #: of an agent needs it, or it claims more reach than the agent has.
     left_out_projects: tuple[str, ...] = ()
+    #: What the agent asked for at the connect (EA-17a). ``None`` on a
+    #: connection from before EA-17a. Change access never writes it.
+    requested_scopes: tuple[str, ...] | None = None
+    #: The resource scopes that a change may turn on (D-EA-13 rule 2,
+    #: EA-17c-1): :func:`ceiling_of` the live tokens of the connection.
+    #: Empty when no token is live.
+    ceiling_scopes: tuple[str, ...] = ()
 
+
+#: The ``scope`` of each live token of the connection ``c``, as an array.
+#: A code, an access token and a refresh token all count, because each one
+#: is or becomes a token at its scope. The organization is in the WHERE, and
+#: ``idx_agent_token_connection`` of migration 248 serves the read.
+_LIVE_TOKEN_SCOPES_EXPR = """ARRAY(
+           SELECT t.scope FROM agent_token t
+            WHERE t.connection_id = c.id
+              AND t.organization_id = c.organization_id
+              AND t.used_at IS NULL
+              AND t.revoked_at IS NULL
+              AND t.expires_at > now())"""
 
 #: The live connections of one organization, or of one member in it. Runs
 #: bound to the tenant. The organization is in the WHERE as well as in the
 #: GUC, for the reason of :data:`_CONNECTION_LIVE_SQL`. The partial index
 #: ``idx_agent_connection_member_live`` of migration 248 serves both reads.
-_LIST_CONNECTIONS_SQL = """
-SELECT CAST(id AS TEXT) AS id, member_email, client_name, client_origin,
-       scopes, CAST(pinned_projects AS TEXT[]) AS pinned_projects,
-       include_personal, created_at, last_used_at, expires_at,
-       CAST(left_out_projects AS TEXT[]) AS left_out_projects
-  FROM agent_connection
- WHERE organization_id = CAST(:org AS UUID)
-   AND revoked_at IS NULL
-   AND expires_at > now()
-   AND (CAST(:member AS TEXT) IS NULL OR member_email = CAST(:member AS TEXT))
- ORDER BY created_at DESC, id
+_LIST_CONNECTIONS_SQL = f"""
+SELECT CAST(c.id AS TEXT) AS id, c.member_email, c.client_name,
+       c.client_origin, c.scopes,
+       CAST(c.pinned_projects AS TEXT[]) AS pinned_projects,
+       c.include_personal, c.created_at, c.last_used_at, c.expires_at,
+       CAST(c.left_out_projects AS TEXT[]) AS left_out_projects,
+       c.requested_scopes,
+       {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes
+  FROM agent_connection c
+ WHERE c.organization_id = CAST(:org AS UUID)
+   AND c.revoked_at IS NULL
+   AND c.expires_at > now()
+   AND (CAST(:member AS TEXT) IS NULL OR c.member_email = CAST(:member AS TEXT))
+ ORDER BY c.created_at DESC, c.id
 """
+
+
+def ceiling_of(token_scopes: Sequence[str | None]) -> tuple[str, ...]:
+    """The resource scopes that every live token in *token_scopes* covers.
+
+    D-EA-13 rule 2 (EA-17c-1). The edge takes the token scope intersected
+    with the connection scopes, so a connection scope above the token scope
+    is never live. Each token gives ``agent_oauth.covered_scopes`` of its
+    scope, the cover rule of the edge, and two tokens that differ give their
+    intersection. No token gives no scope. A token with no scope, or with a
+    malformed one, gives no scope, as ``bearer.effective_scopes`` reads it.
+    ``offline_access`` is never in the answer. The order is canonical.
+    """
+    ceiling: set[str] | None = None
+    for raw in token_scopes:
+        try:
+            covered = agent_oauth.covered_scopes(agent_oauth.parse_scope(raw))
+        except ValueError:
+            covered = set()
+        ceiling = covered if ceiling is None else ceiling & covered
+    held = ceiling or set()
+    return tuple(s for s in agent_oauth.SUPPORTED_SCOPES if s in held)
+
+
+def _connection_row(row: Any) -> ConnectionRow:
+    """The :class:`ConnectionRow` of a row of :data:`_LIST_CONNECTIONS_SQL`
+    or :data:`_CHANGE_GRANT_SQL`. Both name the same columns."""
+    return ConnectionRow(
+        id=row.id,
+        member_email=row.member_email,
+        client_name=row.client_name or "",
+        client_origin=row.client_origin or "",
+        scopes=tuple(row.scopes or ()),
+        pinned_projects=tuple(str(p) for p in row.pinned_projects or ()),
+        include_personal=bool(row.include_personal),
+        created_at=row.created_at,
+        last_used_at=row.last_used_at,
+        expires_at=row.expires_at,
+        left_out_projects=tuple(str(p) for p in row.left_out_projects or ()),
+        requested_scopes=(
+            None if row.requested_scopes is None
+            else tuple(row.requested_scopes)
+        ),
+        ceiling_scopes=ceiling_of(tuple(row.token_scopes or ())),
+    )
 
 #: Revoke ONE connection, only when the caller may: the organization always,
 #: and the member too for a member's own revoke. ``RETURNING`` tells the
@@ -857,22 +936,7 @@ async def list_connections(
                 text(_LIST_CONNECTIONS_SQL), {"org": org, "member": member}
             )
         ).all()
-    return [
-        ConnectionRow(
-            id=row.id,
-            member_email=row.member_email,
-            client_name=row.client_name or "",
-            client_origin=row.client_origin or "",
-            scopes=tuple(row.scopes or ()),
-            pinned_projects=tuple(str(p) for p in row.pinned_projects or ()),
-            include_personal=bool(row.include_personal),
-            created_at=row.created_at,
-            last_used_at=row.last_used_at,
-            expires_at=row.expires_at,
-            left_out_projects=tuple(str(p) for p in row.left_out_projects or ()),
-        )
-        for row in rows
-    ]
+    return [_connection_row(row) for row in rows]
 
 
 async def revoke_connection_scoped(
@@ -916,6 +980,171 @@ async def revoke_connection_scoped(
         reason="admin" if member is None else "member",
     )
     return True
+
+
+# ── Change access: the member changes the grant (EA-17c-1, D-EA-13) ─────────
+
+#: Why :func:`update_connection_grant` changed nothing. The route maps
+#: :data:`CHANGE_NOT_FOUND` to 404 and each other reason to 422.
+#:
+#: * :data:`CHANGE_NOT_FOUND`: no live connection of this member and this
+#:   organization has the id. That covers an unknown id, a revoked or
+#:   expired one, and one of another member or organization alike.
+#: * :data:`CHANGE_NO_SCOPE`: the new grant holds no resource scope (rule 4).
+#: * :data:`CHANGE_OFFLINE_ACCESS`: the new grant adds or drops
+#:   ``offline_access`` (rule 3).
+#: * :data:`CHANGE_ABOVE_CEILING`: a resource scope is outside
+#:   :attr:`ConnectionRow.ceiling_scopes` (rule 2).
+CHANGE_NOT_FOUND = "not_found"
+CHANGE_NO_SCOPE = "no_scope"
+CHANGE_OFFLINE_ACCESS = "offline_access_fixed"
+CHANGE_ABOVE_CEILING = "scope_above_ceiling"
+
+
+@dataclass(frozen=True)
+class ChangeRefused:
+    """A change of a grant that did not happen, and why. Nothing was written.
+
+    ``scopes`` holds the scopes above the ceiling for
+    :data:`CHANGE_ABOVE_CEILING`, in the order of the request, and is empty
+    for each other reason.
+    """
+
+    reason: str
+    scopes: tuple[str, ...] = ()
+
+
+#: Lock the ONE live connection of this member in this organization, and
+#: read what the change needs: its scopes and the scope of each live token.
+#: ⚠️ The lock order of rule 3 holds: the connection row first
+#: (``FOR NO KEY UPDATE``, as an issue takes it), and the tokens are only
+#: read. While the lock holds, no issue and no rotation can add a token, so
+#: the ceiling that this reads stays true until the UPDATE commits.
+_LOCK_MEMBER_CONNECTION_SQL = f"""
+SELECT c.scopes, {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes
+  FROM agent_connection c
+ WHERE c.id = CAST(:connection_id AS UUID)
+   AND c.organization_id = CAST(:org AS UUID)
+   AND c.member_email = CAST(:member AS TEXT)
+   AND c.revoked_at IS NULL
+   AND c.expires_at > now()
+   FOR NO KEY UPDATE OF c
+"""
+
+#: Write the new grant. ⚠️ The WHERE names the id, the organization AND the
+#: member, as :data:`_REVOKE_CONNECTION_SCOPED_SQL` does, with no NULL arm
+#: for the member: only the member of the connection changes it (D-EA-13
+#: rule 5). ``requested_scopes``, ``client_id`` and the idle window stay as
+#: they are. ``RETURNING`` gives the row in the shape of the list.
+_CHANGE_GRANT_SQL = f"""
+UPDATE agent_connection c
+   SET scopes = CAST(:scopes AS TEXT[]),
+       pinned_projects = CAST(:pins AS UUID[]),
+       left_out_projects = CAST(:left_out AS UUID[]),
+       include_personal = CAST(:personal AS BOOLEAN)
+ WHERE c.id = CAST(:connection_id AS UUID)
+   AND c.organization_id = CAST(:org AS UUID)
+   AND c.member_email = CAST(:member AS TEXT)
+   AND c.revoked_at IS NULL
+   AND c.expires_at > now()
+RETURNING CAST(c.id AS TEXT) AS id, c.member_email, c.client_name,
+          c.client_origin, c.scopes,
+          CAST(c.pinned_projects AS TEXT[]) AS pinned_projects,
+          c.include_personal, c.created_at, c.last_used_at, c.expires_at,
+          CAST(c.left_out_projects AS TEXT[]) AS left_out_projects,
+          c.requested_scopes,
+          {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes
+"""
+
+
+def _scope_refusal(
+    asked: Sequence[str], held: Sequence[str], ceiling: Sequence[str]
+) -> ChangeRefused | None:
+    """The scope rules of D-EA-13 for a change from *held* to *asked*.
+
+    Rule 4: one resource scope at least. Rule 3: ``offline_access`` is in
+    *asked* exactly when it is in *held*. Rule 2: each resource scope is in
+    *ceiling*. A scope that the server does not know is outside the ceiling.
+    """
+    offline = agent_oauth.OFFLINE_ACCESS
+    wanted = [s for s in dict.fromkeys(asked) if s != offline]
+    if not wanted:
+        return ChangeRefused(CHANGE_NO_SCOPE)
+    if (offline in asked) != (offline in held):
+        return ChangeRefused(CHANGE_OFFLINE_ACCESS)
+    allowed = set(ceiling)
+    above = tuple(s for s in wanted if s not in allowed)
+    if above:
+        return ChangeRefused(CHANGE_ABOVE_CEILING, above)
+    return None
+
+
+async def update_connection_grant(
+    organization_id: str,
+    connection_id: str,
+    *,
+    member_email: str,
+    scopes: Sequence[str],
+    pinned_projects: Sequence[str],
+    left_out_projects: Sequence[str],
+    include_personal: bool,
+) -> ConnectionRow | ChangeRefused:
+    """Change the grant of one connection of *member_email* (EA-17c-1).
+
+    D-EA-13, spec §10.8. The caller passes the bound tenant and the member
+    of the session, never request input (R11). In ONE transaction the store
+    locks the live connection of this member in this organization, reads
+    the scopes of its live tokens, checks the scope rules
+    (:func:`_scope_refusal`) and writes the scopes, the pins, the left-out
+    list and the personal switch. It answers the new row, or
+    :class:`ChangeRefused` with nothing written.
+
+    The ceiling is :func:`ceiling_of` the live tokens, read under the lock.
+    The token scope is fixed at the connect and a rotation copies it, so a
+    change can turn a scope back on only up to what the member granted then.
+
+    The edge and branch 0 read the row at each call, with no cache, so the
+    next agent call sees the change. The tokens stay. The caller checks the
+    project ids first: the store keeps them as it gets them.
+
+    An empty member raises, because it would match no row.
+    """
+    from sqlalchemy import text
+
+    member = _member_filter(member_email)
+    if member is None:
+        raise ValueError("a change of a grant needs the member's email")
+    org = _canonical_uuid(str(organization_id))
+    connection = _canonical_uuid(str(connection_id).lower())
+    if org is None or connection is None:
+        return ChangeRefused(CHANGE_NOT_FOUND)
+    where = {"connection_id": connection, "org": org, "member": member}
+    async with _tenant_session(org) as db:
+        locked = (
+            await db.execute(text(_LOCK_MEMBER_CONNECTION_SQL), where)
+        ).one_or_none()
+        if locked is None:
+            return ChangeRefused(CHANGE_NOT_FOUND)
+        ceiling = ceiling_of(tuple(locked.token_scopes or ()))
+        refused = _scope_refusal(list(scopes), tuple(locked.scopes or ()), ceiling)
+        if refused is not None:
+            return refused
+        row = (
+            await db.execute(
+                text(_CHANGE_GRANT_SQL),
+                {
+                    **where,
+                    "scopes": agent_oauth.scope_string(scopes).split(" "),
+                    "pins": [str(p) for p in pinned_projects],
+                    "left_out": [str(p) for p in left_out_projects],
+                    "personal": bool(include_personal),
+                },
+            )
+        ).one_or_none()
+    if row is None:
+        # The lock held the row, so only a bug reaches this line.
+        return ChangeRefused(CHANGE_NOT_FOUND)
+    return _connection_row(row)
 
 
 # ── Authorization codes ─────────────────────────────────────────────────────
