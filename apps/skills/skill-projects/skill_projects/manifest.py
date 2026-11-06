@@ -509,6 +509,11 @@ MANIFEST: tuple[Route, ...] = (
     # over the tasks the caller can see. A read, so class A, and the chat asks
     # nothing for it.
     Route("GET", "/projects/needs-attention", "needs_attention", "A"),
+    # ── agent_questions.py — Questions for me (WS-55 EA-18a, spec §12.8) ─────
+    # The agent questions that wait on the reader. A read, so class A. The chat
+    # has no tool yet: a read tool for "what questions wait on me" is a later
+    # slice (D109), with the other run tools.
+    Route("GET", "/projects/agent-questions", "agent_questions", "A"),
     Route("PUT", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("DELETE", "/projects/tasks/{task_id}/watch", "watch", "B"),
     Route("GET", "/projects/tasks/{task_id}/watchers", "watchers", "A"),
@@ -563,6 +568,9 @@ PLANNED: dict[str, str] = {
     # WS-55 MCP-G15 (2026-11-04) added the outside decision for an outside
     # agent. The chat acts as the member, who answers on the task.
     "record_outside_decision": "WS-55, in-product chat parity, after EA-12e",
+    # WS-55 EA-18a (2026-11-06) added the list of the questions that wait on a
+    # person. It adds no chat tool (spec §12.8, D109).
+    "agent_questions": "WS-55, in-product chat parity, after EA-12e",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
     # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
@@ -1482,6 +1490,10 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     # WS-55 MCP-G15: the outside decision, with the other run tools.
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"): {
         "decision": "G23", "where": "G23", "selected": "G23", "idempotency_key": "G23",
+    },
+    # WS-55 EA-18a: the list of the questions, with the other run tools.
+    ("GET", "/projects/agent-questions"): {
+        "scope": "G23", "project": "G23", "sort": "G23", "offset": "G23", "limit": "G23",
     },
 }
 

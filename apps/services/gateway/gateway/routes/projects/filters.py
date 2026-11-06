@@ -24,6 +24,8 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from acb_common import get_settings
+from acb_common.db import current_tenant
 from fastapi import HTTPException
 from gateway.routes.projects import due_day
 from gateway.routes.projects.core import CLOSING_CATEGORIES, task_visibility_clause, wire
@@ -1251,6 +1253,24 @@ def agent_runs_enabled() -> bool:
     return agent_oauth.runs_enabled()
 
 
+def agent_questions_allowed(organization_id: str | None) -> bool:
+    """True when ``AGENT_QUESTIONS_ORGS`` holds the org, or holds ``*``.
+    Default OFF (WS-55 EA-18a, ``external_agent_access.md`` §12.8).
+
+    The one reader of the flag. The list, the write rule, the audience of
+    ``agent_question`` and the ``waiting`` focus each ask here, so a flip moves
+    all four together. The org comes from the session, a bound tenant or the
+    run's row, never from request input (R5). It reads ``get_settings()`` on
+    each call, so a flag reload applies a change with no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "agent_questions_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
 def held_by_of(hit: Any) -> dict[str, Any]:
     """The ``held_by`` of a task: who keeps it, through which client, since
     when, and whether the lease ended (EA-14a). ``stale`` here is the LEASE
@@ -1436,7 +1456,11 @@ def agent_focus_clause(focus: str) -> str:
       fills the card pill.
     * ``waiting``: the "Waiting on me" rule of §12.1. The pill state is
       ``awaiting`` and the run is the caller's (``:af_me``, bound by the
-      route), or the caller is assigned to the task.
+      route), or the caller is assigned to the task. With
+      ``AGENT_QUESTIONS_ORGS`` on for the bound tenant, it reads
+      ``agent_runs.person_may_answer_sql`` instead, so "Waiting on me" and the
+      list "For me" name the same people (§12.8, D-EA-14). The creator of the
+      task then counts too.
     * ``review``: an open or draft GitHub pull request, and the task is not in
       a closing category. ``merged``: a pull request merged in the last 7 days.
 
@@ -1454,6 +1478,13 @@ def agent_focus_clause(focus: str) -> str:
         working = ", ".join(f"'{s}'" for s in WORKING_STATES)
         return _state_exists(f"s.state IN ({working})")
     if focus == "waiting":
+        if agent_questions_allowed(current_tenant()):
+            # A lazy import: `agent_runs` imports this module.
+            from gateway.routes.projects.agent_runs import person_may_answer_sql
+
+            return _state_exists(
+                f"s.state = 'awaiting' AND {person_may_answer_sql('s', me=AGENT_FOCUS_ME)}"
+            )
         return _state_exists(
             "s.state = 'awaiting'"
             f" AND (lower(s.member_email) = :{AGENT_FOCUS_ME}"
