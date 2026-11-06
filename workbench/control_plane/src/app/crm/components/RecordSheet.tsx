@@ -38,7 +38,7 @@ import { useCrmModeValue } from "../lib/modeContext";
 import { useFieldDefs, useFieldLayout } from "../lib/useCrmMode";
 import { ENTITY_NOUN, sourceSingular, type SourceLabels } from "../lib/views";
 import FieldsPanel from "./FieldsPanel";
-import { RecordFacts, RecordModal, RecordTabBar } from "./RecordShell";
+import { RecordCard, RecordFacts, RecordTabBar } from "./RecordShell";
 import StatusPill from "./StatusPill";
 import Timeline, { TimelineItem } from "./Timeline";
 import type { DealContact, EntitySlug, Status, TimelineEntry } from "../lib/types";
@@ -172,15 +172,17 @@ export default function RecordSheet({
     : "Loading…";
 
   const zoho = zohoLink(record);
+  const steps = order && recordId ? <RecordSteps order={order} id={recordId} onStep={onStep} /> : null;
 
   return (
     // The page mounts it from `?deal=` and the rest, and every way out runs
     // `onClose`, which is `closeRecord`. Back closes it too, because Back
-    // drops the parameter. The drawer is the shared shell (`RecordShell`).
-    <RecordModal
+    // drops the parameter. The card is the shared shell (`RecordShell`).
+    <RecordCard
       title={title}
       noun={sourceSingular(entity, labels) ?? ENTITY_NOUN[entity]}
       zoho={zoho}
+      actions={steps}
       onClose={onClose}
     >
       {record === null ? (
@@ -199,8 +201,6 @@ export default function RecordSheet({
           refusal={refusal}
           tab={tab}
           onTab={onTab}
-          order={order}
-          onStep={onStep}
           companyName={companyName}
           labels={labels}
           onAttach={
@@ -212,7 +212,49 @@ export default function RecordSheet({
           {...actions}
         />
       )}
-    </RecordModal>
+    </RecordCard>
+  );
+}
+
+/**
+ * The place in the list, and the two steps for a mouse or a touch. `j` and `k`
+ * do the same from the keyboard. It sits in the header row, in the slot of the
+ * app's own controls, as a task's do (ORC-1, D181).
+ */
+export function RecordSteps({
+  order,
+  id,
+  onStep,
+}: {
+  order: string[];
+  id: string;
+  onStep: (id: string) => void;
+}) {
+  const place = navLabel(order, id);
+  const previous = neighbour(order, id, -1);
+  const next = neighbour(order, id, 1);
+  return (
+    <div className="flex shrink-0 items-center gap-0.5">
+      {place && <span className="px-1 text-[11px] tabular-nums text-muted-foreground">{place}</span>}
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        icon="ChevronUp"
+        aria-label="Previous record"
+        title="Previous record (k)"
+        disabled={!previous}
+        onClick={() => previous && onStep(previous)}
+      />
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        icon="ChevronDown"
+        aria-label="Next record"
+        title="Next record (j)"
+        disabled={!next}
+        onClick={() => next && onStep(next)}
+      />
+    </div>
   );
 }
 
@@ -233,8 +275,6 @@ export function RecordPage({
   refusal = null,
   tab,
   onTab,
-  order,
-  onStep,
   companyName,
   labels = null,
   onAttach,
@@ -275,18 +315,13 @@ export function RecordPage({
   onAttach?: (contactId: string) => void;
   /** Today, for the due dates and the next activities. A test passes a fixed one. */
   now?: Date;
-} & RecordActions &
-  RecordOrder) {
+} & RecordActions) {
   const mode = useCrmModeValue();
   const mirrored = isLocked(record, mode);
   const imported = importedLine(record, mode);
   const shown = shownRecordTab(entity, tab);
   const status = statuses.find((s) => s.id === record.status_id) ?? null;
   const facts = summaryFacts(entity, record, companyName);
-  const id = String(record.id ?? "");
-  const place = order ? navLabel(order, id) : null;
-  const previous = order ? neighbour(order, id, -1) : null;
-  const next = order ? neighbour(order, id, 1) : null;
   const upcoming = shown === "overview" ? nextOpenActivities(timeline, now) : [];
 
   const panel = {
@@ -315,8 +350,8 @@ export function RecordPage({
     // The mark of the record page (`RECORD_PAGE_ATTR`): `navStep` reads it to
     // tell the sheet's own dialog from a dialog over it.
     <div className="flex min-h-0 flex-1 flex-col" {...{ [RECORD_PAGE_ATTR]: "" }}>
-      {/* The summary header (CRM-X4 item 1). It wraps on a phone. */}
-      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
+      {/* The summary header (CRM-X4 item 1). It wraps in a narrow card. */}
+      <div className="@container flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3">
         {statuses.length > 0 && (
           // The one stage control. In Mirror mode Zoho owns the stage, so the
           // pill is a badge (spec section 3.3).
@@ -331,38 +366,11 @@ export function RecordPage({
         )}
         <RecordFacts facts={facts} />
         {imported && <span className="text-[11px] text-muted-foreground">{imported}</span>}
-        {order && (
-          // The place in the list, and the two steps for a mouse or a touch.
-          // `j` and `k` do the same from the keyboard.
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            {place && (
-              <span className="text-[11px] tabular-nums text-muted-foreground">{place}</span>
-            )}
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              icon="ChevronUp"
-              aria-label="Previous record"
-              title="Previous record (k)"
-              disabled={!previous}
-              onClick={() => previous && onStep(previous)}
-            />
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              icon="ChevronDown"
-              aria-label="Next record"
-              title="Next record (j)"
-              disabled={!next}
-              onClick={() => next && onStep(next)}
-            />
-          </div>
-        )}
       </div>
 
       <RecordTabBar tabs={recordTabsFor(entity)} active={shown} onTab={onTab} />
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="pb-askbar min-h-0 flex-1 overflow-y-auto">
         {shown === "timeline" ? (
           <Timeline
             entries={timeline}

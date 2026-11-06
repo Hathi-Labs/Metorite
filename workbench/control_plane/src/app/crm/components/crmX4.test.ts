@@ -17,7 +17,7 @@ import type { RecordTab } from "../lib/urlState";
 import type { EntitySlug, Status, TimelineEntry } from "../lib/types";
 import FieldValue from "./FieldValue";
 import FieldsPanel from "./FieldsPanel";
-import { RecordPage } from "./RecordSheet";
+import { RecordPage, RecordSteps } from "./RecordSheet";
 
 const noop = () => undefined;
 const CRM = fileURLToPath(new URL("..", import.meta.url));
@@ -236,8 +236,6 @@ function page(over: {
       fieldDefs: null,
       tab: over.tab ?? "overview",
       onTab: noop,
-      order: over.order ?? null,
-      onStep: noop,
       companyName: over.companyName ?? null,
       now: new Date("2026-10-12T06:00:00Z"),
       onPatch: noop,
@@ -324,7 +322,9 @@ describe("the record page in Mirror mode (CRM-X4 item 7)", () => {
 
 describe("the place in the list (CRM-X4 item 5)", () => {
   it("shows 2 of 3 and two arrows when a list is behind the record", () => {
-    const html = page({ order: ["d1", "d2", "d3"] });
+    const html = renderToStaticMarkup(
+      createElement(RecordSteps, { order: ["d1", "d2", "d3"], id: "d2", onStep: noop }),
+    );
     expect(html).toContain("2 of 3");
     expect(html).toContain('aria-label="Previous record"');
     expect(html).toContain('aria-label="Next record"');
@@ -336,9 +336,11 @@ describe("the place in the list (CRM-X4 item 5)", () => {
   });
 
   it("shows no arrows when no list is behind the record", () => {
-    const html = page({ order: null });
-    expect(html).not.toContain("Previous record");
-    expect(html).not.toContain(" of ");
+    // The sheet draws the steps in the card's header, and only with a list.
+    const sheet = readFileSync(new URL("./RecordSheet.tsx", import.meta.url), "utf8");
+    expect(sheet).toMatch(/order && recordId \? <RecordSteps/);
+    // The body never draws them, so a narrow card keeps the facts whole (ORC-1).
+    expect(page({})).not.toContain("Previous record");
   });
 
   it("listens for j and k only through navStep, which checks that no modifier is down", () => {

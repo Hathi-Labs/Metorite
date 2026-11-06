@@ -151,6 +151,7 @@ export default function RecordList({
   sort,
   direction,
   onSort,
+  selectedId = null,
   onOpen,
   fieldDefs = null,
   columnKeys,
@@ -175,6 +176,8 @@ export default function RecordList({
   sort: string | null;
   direction: "asc" | "desc";
   onSort: (key: string) => void;
+  /** The record that the card shows. Its row is marked (ORC-1, D181). */
+  selectedId?: string | null;
   onOpen: (id: string) => void;
   /** What each custom field means (CRM-Q4). The member may show up to five as columns. */
   fieldDefs?: FieldDef[] | null;
@@ -321,7 +324,10 @@ export default function RecordList({
                 <tr
                   key={String(row.id)}
                   onClick={() => onOpen(String(row.id))}
-                  className="cursor-pointer border-b border-border/60 hover:bg-secondary/40 tech-transition"
+                  aria-current={String(row.id) === selectedId ? "true" : undefined}
+                  className={`cursor-pointer border-b border-border/60 hover:bg-secondary/40 tech-transition ${
+                    String(row.id) === selectedId ? "bg-accent/40" : ""
+                  }`}
                 >
                   {columns.map((column, index) => {
                     const content = cell(column.key, row, { statuses, mode });

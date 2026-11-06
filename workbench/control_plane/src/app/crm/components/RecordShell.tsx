@@ -7,14 +7,16 @@
  * (`RecordSheet`) and the generic Zoho records (`ModuleRecordSheet`). One
  * record page with one look, so a Product reads like a Deal.
  *
- * - `RecordModal`: the drawer at the right edge (a sheet on a phone), with the
- *   title, the noun of the record and "Open in Zoho".
+ * - `RecordCard`: the shared card frame (`CardPanel`, ORC-1, D181): a side
+ *   panel, a centered card, or the whole screen on a phone. Its header is the
+ *   Projects header, with the noun of the record, "Open in Zoho" and the title.
  * - `RecordFacts`: the facts of the summary header.
  * - `RecordTabBar`: the tabs under the header, drawn with the shared `Tabs`.
  */
 
+import CardPanel, { useCardStop } from "@/components/CardPanel";
 import Tabs from "@/components/Tabs";
-import Modal from "@/components/ui/Modal";
+import { TaskHeaderRow } from "@/components/TaskPanelHeader";
 import { useViewMode } from "@/components/ViewModeProvider";
 import type { ReactNode } from "react";
 import type { FieldRow } from "../lib/fields";
@@ -30,64 +32,72 @@ export const TAB_LABEL = {
 
 export type ShellTab = keyof typeof TAB_LABEL;
 
-export function RecordModal({
+export function RecordCard({
   title,
   noun,
   zoho,
+  actions,
   onClose,
   children,
 }: {
   title: string;
-  /** What the record is, said under its title ("Deal", "Product"). */
+  /** What the record is, said over its title ("Deal", "Product"). */
   noun: string;
   /** The checked "Open in Zoho" address (`zohoLink`), or null. */
   zoho: string | null;
+  /** The record's own controls, in the header row: the steps of `j` and `k`. */
+  actions?: ReactNode;
   onClose: () => void;
   children: ReactNode;
 }) {
   const { isMobile } = useViewMode();
+  const { stop, expand, asideRef } = useCardStop(isMobile);
   return (
-    // On `Modal` (CRM-U2), as a drawer at the right edge on a desktop and as
-    // a sheet from the bottom on a phone. The URL owns whether it is open, and
-    // every way out (Escape, the scrim, the close button) runs `onClose`.
-    <Modal
-      open
-      onClose={onClose}
-      title={title}
-      description={
-        <>
-          {noun}
-          {zoho && (
-            // The record header carries the way back to Zoho (CRM-Q1).
-            <>
-              {" · "}
+    // The URL owns whether it is open, and every way out (Escape, the scrim,
+    // the close button) runs `onClose`.
+    <CardPanel stop={stop} label={`${noun}: ${title}`} onClose={onClose} asideRef={asideRef}>
+      <header className="shrink-0 border-b border-border bg-card px-3 py-3">
+        <TaskHeaderRow
+          taskRef={noun}
+          noun="record"
+          // The URL of the page holds the record, and the list behind it.
+          linkFor={() => window.location.href}
+          chips={
+            zoho ? (
+              // The record header carries the way back to Zoho (CRM-Q1).
               <a
                 href={zoho}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-primary underline underline-offset-2"
+                className="text-xs text-primary underline underline-offset-2"
               >
                 Open in Zoho
               </a>
-            </>
-          )}
-        </>
-      }
-      size="4xl"
-      placement={isMobile ? "sheet" : "end"}
-      closeLabel="Close record"
-      className="h-full"
-    >
+            ) : null
+          }
+          actions={actions}
+          expand={expand}
+          onClose={onClose}
+        />
+        {/* Wraps and never cuts: the name is what the member opened this for. */}
+        <h2 className="break-words text-base font-semibold leading-snug text-foreground">{title}</h2>
+      </header>
       {children}
-    </Modal>
+    </CardPanel>
   );
 }
 
-/** The facts of the summary header (CRM-X4 item 1). Nothing for no fact. */
+/**
+ * The facts of the summary header (CRM-X4 item 1). Nothing for no fact.
+ *
+ * The card decides, not the viewport (ORC-1): in a narrow card the facts take
+ * their own line, because beside the stage pill they cut an amount to
+ * "₹11,00,…". The row that holds them is the `@container`.
+ */
 export function RecordFacts({ facts }: { facts: FieldRow[] }) {
   if (facts.length === 0) return null;
   return (
-    <dl className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1">
+    <dl className="flex min-w-0 flex-1 basis-full flex-wrap items-center gap-x-4 gap-y-1 @lg:basis-0">
       {facts.map((fact) => (
         <div key={fact.key} className="flex min-w-0 items-baseline gap-1.5">
           <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">
