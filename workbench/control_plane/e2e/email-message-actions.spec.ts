@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { ACCOUNT, IDS, installEmailMocks } from "./email-message-fixtures";
+import { ACCOUNT, IDS, SIX_FILES, installEmailMocks } from "./email-message-fixtures";
 
 /**
  * The reading pane, after the owner's two asks of 2026-10-10.
@@ -132,7 +132,7 @@ test.describe("The files and the buttons of a message", () => {
     await expect(box).toBeFocused();
     await expect(below).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Close the reply" }).click();
+    await page.getByRole("button", { name: "Close the draft" }).click();
     await expect(below).toBeVisible();
   });
 
@@ -219,6 +219,56 @@ test.describe("The files and the buttons of a message", () => {
     });
     expect(seen.scroll).toBeLessThanOrEqual(seen.client);
   });
+
+  // UI review P1, 2026-11-06. Mutation caught: with no focus call, the second
+  // press removed the pressed button, the composer stayed mounted, and the
+  // focus fell to the page.
+  test("a second press below another card puts the focus in the reply box", async ({ page }) => {
+    await installEmailMocks(page, [IDS.threadNew]);
+    await open(page, IDS.threadNew);
+    await page.getByText("Can we run the trial on Friday?").first().click();
+    await expect(bar(page, IDS.threadOld)).toBeVisible();
+    await bar(page, IDS.threadNew).getByRole("button", { name: "Reply", exact: true }).click();
+    await expect(page.getByPlaceholder("Write your reply…")).toBeFocused();
+    await bar(page, IDS.threadOld).getByRole("button", { name: "Reply all", exact: true }).click();
+    await expect(page.getByPlaceholder("Write your reply all…")).toBeFocused();
+  });
+
+  // UI review P2, 2026-11-06. Mutation caught: with a list that wraps, six
+  // files arrived on two rows and pushed the text down by 66 px.
+  for (const size of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    test(`six late files keep one row at ${size.width} px, and +N more opens the rest`, async ({ page }) => {
+      await page.setViewportSize(size);
+      await installEmailMocks(page, [IDS.files]);
+      let answer = () => {};
+      const held = new Promise<void>((done) => { answer = done; });
+      await page.route(`**/api/email/messages/${IDS.files}*`, async (r) => {
+        await held;
+        await r.fallback();
+      });
+      if (size.width < 600) {
+        await page.goto(`/email?account=${ACCOUNT.id}`);
+        await page.locator(`[data-email-row="${IDS.files}"]`).click({ timeout: 60_000 });
+      } else {
+        await page.goto(`/email?email=${IDS.files}&account=${ACCOUNT.id}`);
+      }
+      const body = page.getByText("The six files of the September return are attached.").first();
+      await expect(body).toBeVisible({ timeout: 60_000 });
+      await expect(page.locator("[data-message-files-pending]")).toBeVisible();
+      const before = await top(body);
+
+      answer();
+      const more = page.getByRole("button", { name: /^\+\d+ more$/ });
+      await expect(more).toBeVisible();
+      await expect(page.locator("[data-message-files-pending]")).toHaveCount(0);
+      expect(Math.abs((await top(body)) - before)).toBeLessThanOrEqual(1);
+
+      await more.click();
+      for (const file of SIX_FILES) await expect(page.getByText(file.filename).first()).toBeVisible();
+      await page.getByRole("button", { name: "Show fewer" }).click();
+      await expect(more).toBeVisible();
+    });
+  }
 
   // A failed fetch must not leave the shape for good.
   test("a failed file list gives the space back", async ({ page }) => {

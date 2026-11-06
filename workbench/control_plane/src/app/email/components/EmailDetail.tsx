@@ -173,6 +173,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // The reply/forward composer block — scrolled into view when opened from a
   // conversation card so the draft box isn't off-screen below a long thread.
   const composerRef = useRef<HTMLDivElement>(null);
+  // The text box of the reply. A new reply puts the focus there (UI review,
+  // 2026-11-06).
+  const replyBoxRef = useRef<HTMLTextAreaElement>(null);
   // The thread scroller. The composer reveal scrolls this box and no other.
   const threadRef = useRef<HTMLDivElement>(null);
   // The size of the reply body: auto-grow, a dragged height, or the whole
@@ -780,7 +783,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // Bring the composer into view (it renders below a possibly-long thread).
     // Scroll the thread only. `scrollIntoView` also scrolls each box above it,
     // and that moved the app shell (owner report, 2026-10-10).
-    setTimeout(() => revealWithin(threadRef.current, composerRef.current, "smooth"), 60);
+    // The focus goes to the text box. A press below another message keeps the
+    // composer mounted, so `autoFocus` does not run again, and the pressed
+    // button is gone: the focus fell to the page (UI review, 2026-11-06).
+    setTimeout(() => {
+      revealWithin(threadRef.current, composerRef.current, "smooth");
+      replyBoxRef.current?.focus({ preventScroll: true });
+    }, 60);
   };
 
   /** Switch reply mode without resetting the body/draft — only rebuilds recipients. */
@@ -1681,7 +1690,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 />
                 <button
                   type="button"
-                  aria-label="Close the reply"
+                  aria-label="Close the draft"
                   className="text-muted-foreground hover:text-foreground transition-colors"
                   onClick={() => {
                     // The X keeps the draft, so the pending save runs at once
@@ -1766,6 +1775,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             )}
             <ComposerBody size={composerSize} value={replyBody}>
             <textarea
+              ref={replyBoxRef}
               value={replyBody}
               readOnly={forwarding}
               onChange={(e) => { replyDirty.current = true; setReplyBody(e.target.value); }}
