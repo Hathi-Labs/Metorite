@@ -75,6 +75,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 _REPO = Path(__file__).resolve().parents[2]
 _MIGRATIONS = _REPO / "infra" / "postgres"
 _SERVICE = _REPO / "apps/services/gateway/gateway/routes/projects/decisions.py"
+_WAITING = _REPO / "apps/services/gateway/gateway/routes/shell/waiting.py"
 
 #: Every bound on a wait. Broken code goes red and never hangs.
 _WAIT = 60
@@ -192,11 +193,14 @@ def test_the_table_keeps_no_score_for_any_person() -> None:
     }, columns
     for index in re.findall(r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]*;", sql, re.IGNORECASE):
         assert not re.search(r"decider|answered_by|asked_by", index), index
-    code = re.sub(r"#.*", "", _SERVICE.read_text(encoding="utf-8"))
-    code = re.sub(r'""".*?"""', "", code, flags=re.DOTALL)
-    for forbidden in (r"group\s+by", r"count\s*\(", r"\brank\b", r"\bscore\b",
-                      r"\bsum\s*\(", r"\bavg\s*\("):
-        assert not re.search(forbidden, code, re.IGNORECASE), forbidden
+    # WS-AP V6 (waiting_on_me.md §4.4): the read seam of "Waiting" keeps no
+    # score for any person either.
+    for source in (_SERVICE, _WAITING):
+        code = re.sub(r"#.*", "", source.read_text(encoding="utf-8"))
+        code = re.sub(r'""".*?"""', "", code, flags=re.DOTALL)
+        for forbidden in (r"group\s+by", r"count\s*\(", r"\brank\b", r"\bscore\b",
+                          r"\bsum\s*\(", r"\bavg\s*\("):
+            assert not re.search(forbidden, code, re.IGNORECASE), (source.name, forbidden)
 
 
 def test_the_member_purge_keeps_decisions_as_it_keeps_every_pm_row() -> None:
