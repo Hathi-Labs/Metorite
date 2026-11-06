@@ -31,14 +31,15 @@ keep org B. Only RLS keeps them out of org A's count.
 Mutations (R7), each turns the named test red. ``A`` is
 ``routes/projects/admin.py`` and ``C`` is ``routes/projects/core.py``.
 
-* M1. ``C`` ``_STATUS_USERS_SQL``: move ``NOT p.owns_statuses`` out of the
-  recursive arm, to a WHERE after the CTE. ``test_case_1_the_space_owns_the_set``
-  and ``test_case_3_an_ancestor_project_owns_the_set``.
+* M1. ``C`` ``_STATUS_USERS_SQL``: take ``NOT p.owns_statuses`` out of the
+  recursive arm. ``test_case_1_the_space_owns_the_set``,
+  ``test_case_3_an_ancestor_project_owns_the_set`` and four more.
 * M2. ``A`` ``_status_set_reach``: list every breakaway, not only the visible
   ones. ``test_a_hidden_override_is_counted_and_never_named``.
 * M3. ``A`` ``visible_path``: keep each name. ``test_a_visible_override_under_a_hidden_parent``.
-* M4. ``A`` ``_OVERRIDES_BELOW_SQL`` or ``C`` ``_STATUS_USERS_SQL`` read on a
-  session that RLS does not bind. ``test_tenant_b_changes_nothing_in_tenant_a``.
+* M4. A read that RLS does not bind. ``test_the_tenant_seed_has_teeth`` runs the
+  same SQL as the superuser and counts org B's rows, so
+  ``test_tenant_b_changes_nothing_in_tenant_a`` passes because of RLS.
 
 The gate is ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass. Run::
 
@@ -51,6 +52,7 @@ from __future__ import annotations
 import contextlib
 import re
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -69,6 +71,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     promoted,
 )
 
+_ROOT = Path(__file__).resolve().parents[2]
 ELIDED = "…"
 
 
@@ -95,6 +98,15 @@ def test_a_project_named_with_the_mark_is_not_a_hidden_run() -> None:
 
     assert visible_path([(ELIDED, True), ("Hidden", False)]) == [ELIDED, ELIDED]
     assert visible_path([("Hidden", False), (ELIDED, True)]) == [ELIDED, ELIDED]
+
+
+def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
+    """An R8 suite that CI does not list still skips in silence when the
+    database gate is disarmed. Match the argument line, not a mention."""
+    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
+    assert re.search(
+        r"^\s+tests/unit/test_projects_status_set_read_r8\.py \\?$", workflow, re.M,
+    )
 
 
 def test_the_count_stops_at_an_owner_in_the_recursive_arm() -> None:
@@ -369,3 +381,19 @@ async def test_tenant_b_changes_nothing_in_tenant_a(world) -> None:
     # Org B's own space counts nothing of org A.
     assert b_own["owner_kind"] == "space" and b_own["used_by"] == 0
     assert b_own["overrides"] == [] and b_own["hidden_overrides"] == 0
+
+
+@_DB_GATE
+def test_the_tenant_seed_has_teeth(world) -> None:
+    """The same SQL, on the superuser that RLS does not bind, DOES count org
+    B's rows. So the test above passes because of RLS, and not because the
+    seed put nothing in the way (M4)."""
+    from gateway.routes.projects.admin import _OVERRIDES_BELOW_SQL
+    from gateway.routes.projects.core import _STATUS_USERS_SQL
+
+    w = world
+    with w.p.admin_engine.connect() as c:
+        used = c.execute(text(_STATUS_USERS_SQL), {"owners": [w.space]}).one()
+        below = [r.name for r in c.execute(text(_OVERRIDES_BELOW_SQL), {"pid": w.space})]
+    assert used.used_by == 7
+    assert "B OVERRIDE" in below
