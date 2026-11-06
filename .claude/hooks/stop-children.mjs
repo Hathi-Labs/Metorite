@@ -18,7 +18,11 @@
  *
  * MCP SERVERS STAY. The session starts its stdio MCP servers as children
  * (`codegraph serve --mcp`, for example). They live as long as the session,
- * so the hook never lists them or their workers.
+ * so the hook never lists them or their workers. Only a direct child of the
+ * root whose argv0 is not a shell or a wrapper can match.
+ *
+ * THE LABEL. A job of the Bash tool runs inside a long `bash -c` preamble.
+ * The report shows the text inside its `eval`, with obvious secrets masked.
  *
  * ⚠️ FAILS OPEN AND SILENT. No `ps` (Windows), no `claude` ancestor, a parse
  * error or a crash all end in exit 0.
@@ -100,15 +104,63 @@ export function mcpNeedles(configs) {
   return [...out]
 }
 
-/** True when `cmd` is a stdio MCP server that the session keeps. */
+/**
+ * A process whose argv0 is one of these words is never an MCP server. A shell
+ * or a wrapper holds the command of an agent, and that text can name `mcp` or
+ * `codegraph` by chance (a test file, a wait loop on `.codegraph/`).
+ */
+const WRAPPERS = new Set(['bash', 'sh', 'dash', 'zsh', 'timeout', 'env', 'uv', 'nohup', 'nice', 'pytest', 'xargs', 'watch'])
+
+/**
+ * True when `cmd` is a stdio MCP server that the session keeps. The test reads
+ * only argv0 and its arguments. It never reads the `-c` text of a shell.
+ */
 export function isMcpServer(cmd, needles = []) {
-  if (MCP_PATTERNS.some((re) => re.test(cmd))) return true
-  return needles.some((n) => cmd.includes(n))
+  const argv = cmd.trim().split(/\s+/)
+  const argv0 = path.basename(argv[0] || '').replace(/\.exe$/i, '')
+  if (!argv0 || WRAPPERS.has(argv0)) return false
+  // `python -m pytest tests/unit/test_mcp_x.py` is a test run, not a server.
+  if (argv.includes('pytest') && argv[argv.indexOf('pytest') - 1] === '-m') return false
+  const text = [argv0, ...argv.slice(1)].join(' ')
+  if (MCP_PATTERNS.some((re) => re.test(text))) return true
+  return needles.some((n) => text.includes(n))
+}
+
+const SECRET_PATTERNS = [
+  [/\b(\w*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)\w*)=("[^"]*"|'[^']*'|\S+)/gi, '$1=***'],
+  [/\bBearer\s+\S+/gi, 'Bearer ***'],
+  [/\bsk-[A-Za-z0-9_-]{6,}/g, 'sk-***'],
+  [/(:\/\/[^\s:/@]+):[^\s@/]+@/g, '$1:***@'],
+]
+
+/**
+ * A short label for a command, at most 100 characters. A job that the Bash
+ * tool started runs as `bash -c source <snapshot> ... && eval '<command>' ...`.
+ * The label is the text inside the eval. The label masks obvious secrets.
+ */
+export function commandLabel(cmd) {
+  let text = String(cmd)
+  const m = text.match(/\beval (['"])/)
+  if (m) {
+    const q = m[1]
+    let body = text.slice(m.index + m[0].length)
+    const cut = [`${q} < /dev/null`, `${q} && pwd -P`]
+      .map((s) => body.indexOf(s))
+      .filter((i) => i >= 0)
+    if (cut.length) body = body.slice(0, Math.min(...cut))
+    else if (body.endsWith(q)) body = body.slice(0, -1)
+    // The Bash tool escapes a single quote as '\'' or as '"'"'.
+    text = q === "'" ? body.replaceAll(`'\\''`, `'`).replaceAll(`'"'"'`, `'`) : body
+  }
+  text = text.replace(/\s+/g, ' ').trim()
+  for (const [re, to] of SECRET_PATTERNS) text = text.replace(re, to)
+  return text.slice(0, 100)
 }
 
 /**
  * The descendants of `root` that are older than `minAge`, oldest first.
- * The hook never lists an MCP server or a worker under it.
+ * The hook never lists an MCP server or a worker under it. Only a direct
+ * child of `root` can be an MCP server, because the session starts them.
  */
 export function oldChildren(rows, root, minAge = MIN_AGE_SECONDS, self = process.pid, needles = []) {
   const kids = new Map()
@@ -123,7 +175,7 @@ export function oldChildren(rows, root, minAge = MIN_AGE_SECONDS, self = process
     for (const c of kids.get(stack.pop()) || []) {
       if (seen.has(c.pid)) continue
       seen.add(c.pid)
-      if (isMcpServer(c.cmd, needles)) continue
+      if (c.ppid === root && isMcpServer(c.cmd, needles)) continue
       stack.push(c.pid)
       if (c.pid !== self && c.age >= minAge) out.push(c)
     }
@@ -134,7 +186,7 @@ export function oldChildren(rows, root, minAge = MIN_AGE_SECONDS, self = process
 export function report(list, minAge = MIN_AGE_SECONDS) {
   const lines = list.slice(0, 12).map((p) => {
     const hours = (p.age / 3600).toFixed(1)
-    return `  pid ${p.pid}  ${hours} h  ${p.cmd.slice(0, 100)}`
+    return `  pid ${p.pid}  ${hours} h  ${commandLabel(p.cmd)}`
   })
   return (
     `You still have ${list.length} child process(es) older than ` +

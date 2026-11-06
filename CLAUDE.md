@@ -307,8 +307,8 @@ Rules that make it work:
   under `timeout`. Stop each background job, tunnel, tmux session, preview server
   and container that you started, when you no longer need it. Remove your
   worktree after the merge with `bash scripts/worktree.sh remove <slug>`. Before
-  the final message of a turn, list your background jobs and stop the ones that
-  the next step does not need. Name the ones that stay, and say why. The Stop
+  the final message of a turn, list your background jobs. Then stop each one
+  that the next step does not need. Name the ones that stay, and say why. The Stop
   hook `.claude/hooks/stop-children.mjs` lists your old children. The reaper
   `scripts/reaper.py` catches what is left. Fence:
   `tests/unit/test_task_routine.py`.

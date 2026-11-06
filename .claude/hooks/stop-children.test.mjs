@@ -15,6 +15,7 @@ import {
   isClaude,
   isMcpServer,
   mcpNeedles,
+  commandLabel,
   main,
 } from './stop-children.mjs'
 
@@ -94,6 +95,62 @@ test('(e) no claude ancestor gives exit 0', () => {
 
 test('(f) stop_hook_active true gives exit 0', () => {
   assert.deepEqual(main('{"stop_hook_active": true}', PS), { code: 0 })
+})
+
+// The real form of a job that the Bash tool starts (copied from a live row).
+const SNAP = '/bin/bash -c source /home/dev/.claude/shell-snapshots/snapshot-bash-1794002587456-1ebbn6.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \\builtin unalias -- \'which\'; \\builtin unset -f -- \'which\'; } >/dev/null 2>&1 || true && { \\builtin unalias -- \'unsetenv\'; \\builtin unset -f -- \'unsetenv\'; } >/dev/null 2>&1 || true && eval '
+const wrap = (inner) => `${SNAP}'${inner}' < /dev/null && pwd -P >| /tmp/claude-9ef4-cwd`
+
+test('the label shows the eval text of a Bash tool job', () => {
+  const a = wrap('until [ -s .codegraph/codegraph.db ]; do sleep 5; done')
+  const b = wrap('timeout 900 uv run pytest tests/unit/test_x.py -q')
+  const c = wrap("cd /w && grep -n '\\''foo bar'\\'' x.py")
+  const rows = parsePs(`10 1 90000 claude\n40 10 36000 ${a}\n41 10 36000 ${b}\n42 10 36000 ${c}\n`)
+  const old = oldChildren(rows, 10, 1800, 30)
+  assert.deepEqual(old.map((r) => r.pid).sort(), [40, 41, 42], 'all three are listed')
+  const labels = old.map((r) => commandLabel(r.cmd))
+  assert.equal(new Set(labels).size, 3, 'three jobs give three labels')
+  assert.equal(commandLabel(a), 'until [ -s .codegraph/codegraph.db ]; do sleep 5; done')
+  assert.equal(commandLabel(c), "cd /w && grep -n 'foo bar' x.py")
+  // The live form of 2026-11-06 also escapes a single quote as '"'"'.
+  assert.equal(commandLabel(wrap(`bash -c '"'"'sleep 5'"'"' & wait`)), "bash -c 'sleep 5' & wait")
+  for (const l of labels) assert.ok(l.length <= 100)
+  assert.ok(commandLabel(wrap('x'.repeat(500))).length <= 100)
+  assert.ok(commandLabel('x '.repeat(500)).length <= 100, 'a plain command is cut too')
+  assert.equal(commandLabel('sleep   99'), 'sleep 99', 'a plain command keeps the old form')
+  assert.match(report(old), /until \[ -s \.codegraph/)
+})
+
+test('the label masks obvious secrets', () => {
+  assert.equal(commandLabel('TOKEN=abc123 cmd'), 'TOKEN=*** cmd')
+  const l = commandLabel(wrap('GH_API_KEY=xyz9 DB_PASSWORD="p w" curl -H "Authorization: Bearer abc.def" postgresql://u:pw@h/db sk-abcdef123456'))
+  for (const s of ['abc123', 'xyz9', 'p w', 'abc.def', ':pw@', 'abcdef123456']) assert.ok(!l.includes(s), `${s} is masked in: ${l}`)
+  assert.match(l, /GH_API_KEY=\*\*\*/)
+})
+
+test('the MCP test reads only a direct non-shell child of the root', () => {
+  const rows = parsePs(
+    '10 1 90000 claude\n' +
+      `40 10 36000 ${wrap('until [ -s .codegraph/codegraph.db ]; do sleep 5; done')}\n` +
+      "41 10 36000 bash -c until [ -s .codegraph/codegraph.db ]; do sleep 5; done\n" +
+      '42 10 36000 timeout 900 uv run pytest tests/unit/test_mcp_servers_org_scope.py\n' +
+      '43 42 36000 uv run pytest tests/unit/test_mcp_servers_org_scope.py\n' +
+      '44 10 36000 /repo/.venv/bin/python -m pytest tests/unit/test_mcp_servers_org_scope.py\n' +
+      '50 10 36000 node /home/dev/.local/bin/codegraph serve --mcp\n' +
+      '51 10 36000 node /x/mcp-server.js\n' +
+      '52 10 36000 node /opt/tools/acme-tracker/dist/index.js stdio\n' +
+      '53 52 36000 /usr/bin/helper-worker\n' +
+      '60 40 36000 node /x/mcp-server.js\n',
+  )
+  const needles = ['acme-tracker']
+  const old = oldChildren(rows, 10, 1800, 30, needles).map((r) => r.pid)
+  for (const pid of [40, 41, 42, 43, 44]) assert.ok(old.includes(pid), `job ${pid} is listed`)
+  for (const pid of [50, 51, 52, 53]) assert.ok(!old.includes(pid), `MCP pid ${pid} is not listed`)
+  assert.ok(old.includes(60), 'a grandchild is never taken as an MCP server')
+  assert.ok(!isMcpServer('bash -c codegraph serve --mcp'), 'the -c text of a shell is never read')
+  assert.ok(!isMcpServer('timeout 900 uv run pytest tests/unit/test_mcp_servers_org_scope.py'))
+  assert.ok(isMcpServer('codegraph serve --mcp'))
+  assert.ok(isMcpServer('/opt/x/acme-tracker serve', ['acme-tracker']))
 })
 
 // The CLI tests put a fake `ps` first on PATH. It prints a tree in which the
