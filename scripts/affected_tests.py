@@ -4,9 +4,10 @@
     uv run python scripts/affected_tests.py --run      # run them with pytest
     uv run python scripts/affected_tests.py --base origin/main --run
 
-This is NOT the merge gate. pr-check runs the WHOLE suite on every PR. This
-script exists so that an agent, or a person, does not run all 27,000 tests
-locally to check a 3-file change.
+``--gate`` is the merge gate's selection: pr-check runs these tests, and the
+full suite when the diff is FULL (specs/ci_velocity.md, D176). The plain list
+and ``--run`` are for the inner loop, so that an agent, or a person, does not
+run all 27,000 tests locally to check a 3-file change.
 
 A test file is picked when it:
 
@@ -14,7 +15,9 @@ A test file is picked when it:
 2. names a changed file by its path (many tests read docs, workflows, SQL),
 3. imports a changed module (``import a.b``, ``from a import b``, an alias,
    or a dotted string such as ``patch("a.b.fn")``), or
-4. imports a module that imports a changed module (one level, see HUB_LIMIT).
+4. imports a module that imports a changed module (one level, see HUB_LIMIT),
+5. lists a folder of the changed file (``glob``, ``rglob``, ``iterdir``), or
+6. scans the whole tree, when any Python file changed (tests/ and workbench/ too).
 
 Imports are read with ``ast``, not a regex: a regex lost 38% of the real
 import pairs to multi-line imports and ``as`` aliases (measured 2026-10-16).
@@ -75,12 +78,54 @@ def module_name(path: str, root: Path = ROOT) -> str | None:
     p = root / path
     if p.suffix != ".py":
         return None
+    # The import root is the folder of the nearest pyproject.toml below the
+    # repo root (apps/services/gateway, packages/acb_common). A folder with no
+    # __init__.py inside a package (gateway/routes) is a namespace package. An
+    # __init__ chain stops there and gives a short name that no test imports
+    # (CIV-3 review, P0).
+    anc = p.parent
+    while anc != root and anc != anc.parent:
+        if (anc / "pyproject.toml").is_file():
+            rel = list(p.relative_to(anc).with_suffix("").parts)
+            if rel and rel[-1] == "__init__":
+                rel.pop()
+            return ".".join(rel) if rel else None
+        anc = anc.parent
     parts = [p.stem] if p.name != "__init__.py" else []
     d = p.parent
     while (d / "__init__.py").is_file():
         parts.insert(0, d.name)
         d = d.parent
     return ".".join(parts) if parts else None
+
+
+def module_names(path: str, root: Path = ROOT) -> set[str]:
+    """Every dotted name a test could import this file by.
+
+    A file outside any pyproject root also has its repo-root-relative name:
+    `evals/x/y.py` is `evals.x.y` when `evals` has no `__init__.py` (CIV-3
+    review round 2, P1). The short name stays, so no match is lost.
+    """
+    names: set[str] = set()
+    first = module_name(path, root)
+    if first:
+        names.add(first)
+    p = root / path
+    if p.suffix == ".py":
+        anc = p.parent
+        held = False
+        while anc != root and anc != anc.parent:
+            if (anc / "pyproject.toml").is_file():
+                held = True
+                break
+            anc = anc.parent
+        if not held:
+            rel = list(Path(path).with_suffix("").parts)
+            if rel and rel[-1] == "__init__":
+                rel.pop()
+            if rel:
+                names.add(".".join(rel))
+    return names
 
 
 # `patch("gateway.routes.crm.fn")`, `import_module("x.y")` and the like.
@@ -180,6 +225,52 @@ def _import_index(
     return src_users, test_users
 
 
+def _composed_path_readers(path: str, tests: dict[str, str]) -> set[str]:
+    """Tests that build the path from parts, as in ``DIR / "guarded.py"``.
+
+    The full path and a short basename are not in such a test. It holds the
+    QUOTED basename and a folder of the path. The folder is the parent in a
+    path context (``"app"``, ``/app/``) or the grandparent as plain text.
+    A false hit costs only time (CIV-3 review round 3, P1).
+    """
+    p = Path(path)
+    name = p.name
+    if p.suffix != ".py" or len(p.parts) < 3:
+        return set()
+    parent, grand = p.parent.name, p.parent.parent.name
+    quoted = (f'"{name}"', f"'{name}'")
+    ctx = re.compile(rf"""["'/]{re.escape(parent)}["'/]""")
+    # A name written as part of a path, as in "google_drive/auth.py" (round 4).
+    slashed = re.compile(rf"""["'/]{re.escape(name)}["']""")
+    return {
+        t
+        for t, body in tests.items()
+        if (any(q in body for q in quoted) or slashed.search(body))
+        and (ctx.search(body) or grand in body)
+    }
+
+
+# Every way a unit test lists files it never names (CIV-3 round 5, owner option A).
+# A test with one reads the source tree, so any Python change selects it.
+_SCAN_IDIOM = re.compile(
+    r"\.r?glob\(|\bi?glob\(|\.iterdir\(|\bos\.walk\(|(?<!ast)(?<!os)\.walk\(\s*\)"
+    r"|\blistdir\(|\bscandir\(|\bls-files\b|\bls-tree\b|\bgit\W+grep\b|\bfnmatch"
+    r"|\biter_modules\(|\bwalk_packages\(|\bimportlib\.resources\b"
+    r"""|["'](?:grep|rg)["']\s*[,\]]"""
+)
+
+
+def scanning_tests(tests: dict[str, str]) -> set[str]:
+    """Every test that lists files by a scan idiom (CIV-3 round 5).
+
+    No text rule can say which file such a test reads. A change to any Python
+    file selects all of them. A docs-only change selects none.
+    A false hit costs only time. Helpers under tests/unit/_*.py scan only SQL,
+    TypeScript and JSON, so an import of one does not make a test a scanner.
+    """
+    return {t for t, body in tests.items() if _SCAN_IDIOM.search(body)}
+
+
 def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str], list[str]]:
     """Return (test files, reasons for a full run, frontend files)."""
     tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
@@ -196,8 +287,11 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
     frontend = [c for c in changed if c.startswith(FRONTEND_APPS)]
     picked: set[str] = {c for c in changed if c in tests}
 
-    changed_mods = {m for m in (module_name(c, root) for c in changed) if m}
+    changed_mods = {m for c in changed for m in module_names(c, root)}
     src_users, test_users = _import_index(changed_mods, sources, tests, root)
+
+    if any(c.endswith(".py") for c in changed):
+        picked |= scanning_tests(tests)
 
     for path in changed:
         if path.startswith(FRONTEND_APPS) and not path.endswith(".md"):
@@ -208,16 +302,15 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
         if len(name) >= 12 and name not in {"__init__.py", "package.json", "README.md"}:
             needles.append(name)
         picked |= {t for t, body in tests.items() if any(n in body for n in needles)}
+        picked |= _composed_path_readers(path, tests)
 
-        dotted = module_name(path, root)
-        if not dotted:
-            continue
-        picked |= test_users.get(dotted, set())
-        # One level up: source modules that import the changed module.
-        for upstream in src_users.get(dotted, set()) - {dotted}:
-            users = test_users.get(upstream, set())
-            if len(users) <= HUB_LIMIT:
-                picked |= users
+        for dotted in module_names(path, root):
+            picked |= test_users.get(dotted, set())
+            # One level up: source modules that import the changed module.
+            for upstream in src_users.get(dotted, set()) - {dotted}:
+                users = test_users.get(upstream, set())
+                if len(users) <= HUB_LIMIT:
+                    picked |= users
 
     if any(c.startswith("infra/postgres/") and c.endswith(".sql") for c in changed):
         picked.add("tests/unit/test_migration_prefixes.py")
@@ -237,6 +330,15 @@ GATE_FULL_NAMES = {
 }
 GATE_FULL_PREFIXES = (".github/", "scripts/ci_pc/", "packages/acb_common/")
 GATE_DB_MARK = "_DB_GATE"
+# An R8 suite is a test file that builds a real database from a ladder, or
+# names a database URL variable. 109 of 339 ladder suites carry no _DB_GATE.
+CONSOLE_R8_MARKS = ("_customer_console_ladder", "CUSTOMER_CONSOLE_DATABASE_URL")
+R8_MARKS = (
+    GATE_DB_MARK,
+    "_tenant_ladder",
+    "TENANT_LADDER_DATABASE_URL",
+    *CONSOLE_R8_MARKS,
+)
 
 
 # ── --r8: the R8 files (CIV-2 and CIV-4b) ──────────────────────────────────
@@ -326,6 +428,9 @@ def _gate(changed: list[str], root: Path) -> dict:
 
     py = [c for c in changed if c.endswith(".py") and not c.startswith(FRONTEND_APPS)]
     other = [c for c in changed if c not in py]
+    # A Python file in a Next app skips `select`, but a scanner still reads it.
+    if any(c.endswith(".py") for c in changed):
+        picked |= scanning_tests(tests)
     if py:
         picked |= set(select(py, root)[0])
         # A hub: a changed module that more than HUB_LIMIT test files import.
@@ -338,7 +443,7 @@ def _gate(changed: list[str], root: Path) -> dict:
             ],
             root,
         )
-        mods = {m for m in (module_name(c, root) for c in py) if m}
+        mods = {m for c in py for m in module_names(c, root)}
         _, test_users = _import_index(mods, sources, tests, root)
         for m in sorted(mods):
             n = len(test_users.get(m, set()))
@@ -348,8 +453,18 @@ def _gate(changed: list[str], root: Path) -> dict:
     for path in other:
         picked |= {t for t, body in tests.items() if path in body}
     if any(c.startswith("infra/postgres/") for c in changed):
+        # The release gate's R8 list (CIV-4b), and CIV-3's marks: a suite
+        # that names a ladder helper counts too. The union keeps both.
         picked |= set(r8_files(root))
+        picked |= {t for t, body in tests.items() if any(m in body for m in R8_MARKS)}
         picked.add("tests/unit/test_migration_prefixes.py")
+    if any(c.startswith("infra/customer_console/") for c in changed):
+        picked |= {
+            t
+            for t, body in tests.items()
+            if t.rsplit("/", 1)[-1].startswith("test_customer_console_")
+            or any(m in body for m in CONSOLE_R8_MARKS)
+        }
     files = sorted(p for p in picked if (root / p).is_file())
     return {"full": bool(reasons), "files": files, "reasons": reasons}
 
