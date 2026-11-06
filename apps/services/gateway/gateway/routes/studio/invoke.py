@@ -265,7 +265,7 @@ SPEND_REFUSALS: dict[str, tuple[int, str, str]] = {
                 "approval."),
     "mismatch": (409, "request_mismatch",
                  "This approval does not match this action, or its change cannot run as "
-                 "stored (a number of 1e16 or more), so change the input."),
+                 "stored (a value of 1e16 or more), so change the input."),
 }
 
 #: The answer of a refusal of ``open_request`` that names no code of its own.
