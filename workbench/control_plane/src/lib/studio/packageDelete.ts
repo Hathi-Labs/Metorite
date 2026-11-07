@@ -31,6 +31,8 @@ export interface DeletePreview {
   versions: number;
   installs: number;
   otherMemberInstalls: number;
+  /** The sidebar entry of the owner: an active private install of the owner (`own_entries`). */
+  ownEntries: number;
   confirm: string;
 }
 
@@ -56,6 +58,7 @@ export function parsePreview(body: unknown): DeletePreview | null {
     versions: num(totals.versions),
     installs: num(totals.installs),
     otherMemberInstalls: num(totals.other_member_installs),
+    ownEntries: num(totals.own_entries),
     confirm: body.confirm,
   };
 }
@@ -69,12 +72,12 @@ export function previewCopy(p: DeletePreview): { heading: string; subject: strin
     `This deletes the app and all its data for good: ${plural(p.objects.length, "object")}, ${records}, ${plural(p.versions, "version")}.`,
     "You cannot undo this.",
   ];
-  // `otherMemberInstalls` leaves out the owner's own private install that no one else
-  // sees (`_DELETE_COUNTS_SQL`). That one is the entry in the owner's sidebar (PKG-8a).
-  const others = Math.min(p.otherMemberInstalls, p.installs);
-  const own = p.installs - others;
+  // The server counts the owner's sidebar entry itself (`own_entries`, an active private
+  // install of the owner), so a paused or archived install never reads as an entry
+  // (PKG-8a fix round 2). An answer with no count gives no sidebar sentence.
+  const others = p.otherMemberInstalls;
   const parts: string[] = [];
-  if (own > 0) parts.push("Its entry in your sidebar goes too.");
+  if (p.ownEntries > 0) parts.push("Its entry in your sidebar goes too.");
   if (others > 0) {
     parts.push(others === 1
       ? "1 install reaches another member, who loses the app."

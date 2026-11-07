@@ -588,7 +588,8 @@ def _preview_out(found: store.DeletePreview) -> dict[str, Any]:
         "totals": {"objects": len(found.objects), "fields": found.fields,
                    "records": found.records, "records_capped": found.capped,
                    "versions": found.versions, "installs": found.installs,
-                   "other_member_installs": found.other_member_installs},
+                   "other_member_installs": found.other_member_installs,
+                   "own_entries": found.own_entries},
         "confirm": found.confirm,
     }
 

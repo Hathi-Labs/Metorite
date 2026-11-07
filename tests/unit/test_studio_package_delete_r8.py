@@ -467,7 +467,7 @@ def test_r8_every_row_of_the_package_goes_and_the_audit_rows_stay(world) -> None
     assert status == 200 and seen == [200]
     assert preview["totals"] == {"objects": 2, "fields": 3, "records": 3,
                                  "records_capped": False, "versions": 2, "installs": 2,
-                                 "other_member_installs": 2}
+                                 "other_member_installs": 2, "own_entries": 0}
     assert _footprint(world, pid, oids, installs) == dict.fromkeys(before, 0)
     audits = _audits(world, pid)
     assert len(audits) == kept_audits + 1

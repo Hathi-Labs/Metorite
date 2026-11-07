@@ -396,3 +396,32 @@ def test_r8_the_shell_manifest_shows_the_entry_to_the_owner_only(world, monkeypa
         assert other.status == 200 and href not in other.nav, who
     # A member who lacks the feature of the app page does not see the entry.
     assert href not in _view(world, ANA, world.a, ("feature:projects",)).nav
+
+
+# ── 5. The delete dialog counts the owner's entry (fix round 2) ────────────
+
+
+def test_r8_the_delete_preview_counts_the_owners_active_entry_only(world) -> None:
+    """The dialog says "Its entry in your sidebar goes too." only for an active
+    private install of the owner. A paused or an archived install is no entry,
+    and it still counts in ``installs``."""
+    async def go() -> str:
+        pid = await _new(world.a, ANA, _manifest(_mid()))
+        assert (await _publish(world.a, ANA, pid))[0] == 200
+        return pid
+
+    pid = _run(world, go)
+
+    def totals() -> dict[str, Any]:
+        status, got = _run(world, lambda: _call("delete_preview", world.a, ANA, pid))
+        assert status == 200, got
+        return got["totals"]
+
+    first = totals()
+    assert (first["installs"], first["other_member_installs"], first["own_entries"]) == (1, 0, 1)
+    for state, extra in (("paused", ""), ("archived", ", archived_at = now()")):
+        with world.p.admin_engine.begin() as c:
+            c.execute(text(f"UPDATE package_install SET state = :s{extra} "
+                           "WHERE app_id = CAST(:p AS uuid)"), {"s": state, "p": pid})
+        got = totals()
+        assert (got["installs"], got["own_entries"]) == (1, 0), state

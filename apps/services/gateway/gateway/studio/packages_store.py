@@ -271,7 +271,10 @@ _TOKEN_HEX = frozenset("0123456789abcdef")
 #: private install of the owner reaches another member only when the owner
 #: shared it: ``sharing.OTHERS_SEE_THE_INSTALL``, the one rule, which the
 #: member purge and the resolve read too. That rule names ``package_install``
-#: with no alias, so the third count does too.
+#: with no alias, so the third count does too. The fourth count (PKG-8a fix
+#: round 2) is the sidebar entry of the owner: a private install of the owner
+#: that the resolve shows, so active and not expired. Only the delete dialog
+#: reads it, so it is not in the token.
 _DELETE_COUNTS_SQL = (
     "SELECT (SELECT count(*) FROM app_versions v WHERE v.app_id = a.id), "
     "(SELECT count(*) FROM package_install i "
@@ -281,7 +284,12 @@ _DELETE_COUNTS_SQL = (
     "AND package_install.app_id = a.id AND package_install.state <> 'archived' "
     "AND NOT (package_install.scope_kind = 'private' "
     "AND package_install.scope_subject = a.owner_email "
-    f"AND NOT {OTHERS_SEE_THE_INSTALL})) "
+    f"AND NOT {OTHERS_SEE_THE_INSTALL})), "
+    "(SELECT count(*) FROM package_install o "
+    "WHERE o.organization_id = a.organization_id AND o.app_id = a.id "
+    "AND o.state = 'active' AND o.scope_kind = 'private' "
+    "AND o.scope_subject = a.owner_email "
+    "AND (o.ends_at IS NULL OR o.ends_at > now())) "
     f"FROM apps a WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
     "AND a.owner_email = :m AND a.id = CAST(:id AS uuid)"
 )
@@ -836,6 +844,9 @@ class DeletePreview:
     installs: int
     other_member_installs: int
     confirm: str
+    #: The sidebar entry of the owner: an active private install of the owner
+    #: (PKG-8a fix round 2). The dialog alone reads it, and the token does not.
+    own_entries: int = 0
 
     @property
     def fields(self) -> int:
@@ -931,12 +942,12 @@ async def _preview(db: Any, m: str, current: Package) -> DeletePreview | None:
     row = (await db.execute(text(_DELETE_COUNTS_SQL), {"m": m, "id": current.id})).first()
     if row is None:
         return None
-    versions, installs, other = (int(v) for v in row)
+    versions, installs, other, own = (int(v) for v in row)
     found = tuple(objects)
     return DeletePreview(
         id=current.id, name=current.name, slug=current.slug, objects=found,
         versions=versions, installs=installs, other_member_installs=other,
-        confirm=confirm_token(current.id, found, versions, installs, other))
+        confirm=confirm_token(current.id, found, versions, installs, other), own_entries=own)
 
 
 async def delete_preview(db: Any, member: str, package_id: str) -> DeletePreview | None:
