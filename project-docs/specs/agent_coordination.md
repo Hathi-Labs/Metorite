@@ -1,6 +1,10 @@
 # Agent coordination — many agents and many people on one board
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.** **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`. **P9 (§3.10, §5.10, D183) was planned on 2026-11-06. No P9 slice is built.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.**
+
+**P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
+
+**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. No other P9 slice is built.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -1014,6 +1018,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** An MCP client lists and reads the three resources. A resource that the member cannot see answers not found.
 - **Fence.** A transport test beside `test_mcp_edge_session.py`, and the coverage fence.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
+- **As built (2026-11-07, first part).** `edge/resources.py` serves `resources/list`, `resources/templates/list` and `resources/read` for `metorite://project/{id}` and `metorite://task/{id}`. Each read runs the tool `get_project` or `get_task`, so the authority is the tool's. `resources/list` holds no concrete row. A hidden or unknown resource answers `-32002`. It is dark behind `agent_resources_orgs`. `metorite://company/context` is not built: it needs the tool `get_company_context` (EA-5, D-EA-6). Fence: `tests/unit/test_mcp_edge_resources.py`.
 
 #### SW-34b · A read-only door
 
@@ -1401,6 +1406,7 @@ They keep their own gates.
 - **Done when.** R8: a claim of a parent with 2 open subtasks carries the warning and works. A claim of a leaf has no warning.
 - **Fence.** `test_mcp_edge_claim.py` and `test_agent_run_exclusive.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
+- **Built 2026-11-06.** SW-63 is built and live under `agent_runs_enabled`, because it only adds the optional result fields `warning` and `open_subtasks`. The gateway counts only the subtasks that the caller can see. The fence is `TestAClaimOfAnEpicWarns` in `test_mcp_edge_claim.py`.
 
 ### 5.11 P10 — Metorite runs the fleet and teaches it
 
