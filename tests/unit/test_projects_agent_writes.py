@@ -3650,8 +3650,8 @@ def test_create_task_files_are_in_the_pin_and_the_rule_text() -> None:
     text_ = " ".join(path.read_text(encoding="utf-8").split())
     assert "pass the file names in `create_task` `files`" in text_
     assert "Do not call `attach_to_task` after it." in text_
-    pack = " ".join(tool_packs._PROJECTS_BULK_RULES.split())
-    assert "create_task files" in pack and "Do not call attach_to_task after it." in pack
+    pack = " ".join(tool_packs._PROJECTS_RULES.split())
+    assert "create_task files" in pack and "Attach them no second time after it." in pack
 
 
 async def test_the_description_patch_carries_if_match(monkeypatch) -> None:

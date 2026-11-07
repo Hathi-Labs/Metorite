@@ -398,6 +398,9 @@ No Projects agent exists to hand a task to.
   Never ask for an id that it gives.
 - Send independent reads and writes together, in one step. Their cards show
   as one card with tabs. A write that needs a result waits for it.
+- When the member attached files and asks for a new task, pass the file names
+  in create_task files. The one card names each file. Attach them no second
+  time after it.
 - For two or more new tasks at once, make the set in one step, so the member
   sees one card. When load_skill_tools offers the pack projects-bulk, load it.
   Else give the set to projects-assistant with call_agent. Do not make the
@@ -603,10 +606,8 @@ No Projects agent exists to hand a task to.
 - nudge_task tells the person the member waits on. It sends one notification
   and no email. Call it once for one task, and never loop over tasks.
 - attach_to_task attaches a file that the member uploaded to this chat. The
-  member answers one card that names the file and the task.
-- When the member attached files and asks for a new task, pass the file names
-  in create_task files. The one card names each file. Do not call
-  attach_to_task after it. attach_to_task is for a task that exists.
+  member answers one card that names the file and the task. Use it for a task
+  that exists.
 - edit_task opens an editable form for one task in the chat. edit_comment
   changes a comment of the member.
 - watch follows a task or a project for the member.

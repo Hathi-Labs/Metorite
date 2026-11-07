@@ -599,9 +599,7 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # WS-IMG IMG-2: `files` posts each file through `attach_to_task`'s route
     # and then patches the description through `update_task`'s, under the
     # same card. Its own row makes it class B. A held chat refuses `files`.
-    "create_task": frozenset(
-        {"assign", "set_recurrence", "my_work", "attach_to_task", "update_task"}
-    ),
+    "create_task": frozenset({"assign", "set_recurrence", "my_work", "attach_to_task"}),
     "set_recurrence": frozenset({"my_work"}),
     # WS-46 P7: a block time with no offset is read in the member's zone.
     "set_my_overlay": frozenset({"my_work"}),
@@ -1734,9 +1732,19 @@ def tools_by_class(cls: str) -> set[str]:
     return direct | {t for t in COMPOSITE if tool_class(t) == cls}
 
 
+#: A tool that also writes through another tool's route, but is NOT a composite
+#: of it. ``create_task`` with ``files`` patches the description once, to put
+#: each image in it (IMG-2). Its values go in the create itself, with no PATCH
+#: (``test_projects_task_fields.py`` holds that), so ``update_task`` stays out
+#: of COMPOSITE.
+ALSO_WRITES_THROUGH: dict[str, frozenset[str]] = {
+    "create_task": frozenset({"update_task"}),
+}
+
+
 def reaches(tool: str, route_tool: str) -> bool:
     """May ``tool`` issue a call on a route the manifest gives ``route_tool``?"""
-    if tool == route_tool:
+    if tool == route_tool or route_tool in ALSO_WRITES_THROUGH.get(tool, ()):
         return True
     return any(reaches(t, route_tool) for t in COMPOSITE.get(tool, ()))
 
