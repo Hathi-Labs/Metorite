@@ -18,12 +18,14 @@ superuser, no BYPASSRLS). It pins:
 * The settings save cleans a new HTML signature and hosts its ``data:`` image
   through the real child, and a save of the stored signature changes no byte.
 
-Skips cleanly without ``TENANT_LADDER_DATABASE_URL`` (``_DB_GATE``). The
-migration is found by CONTENT, never by number (R1).
+Each database class skips cleanly without ``TENANT_LADDER_DATABASE_URL``
+(``_DB_GATE``). The CI list check and the migration check need no database.
+The migration is found by CONTENT, never by number (R1).
 """
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import uuid
 from base64 import b64encode
@@ -52,8 +54,6 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     app_engine,
     promoted,
 )
-
-pytestmark = _DB_GATE
 
 _ROOT = Path(__file__).resolve().parents[2]
 _BASE = "https://api.example.test"
@@ -101,6 +101,17 @@ def test_the_migration_is_tenant_scoped_with_force_rls() -> None:
     assert "UNIQUE (organization_id, sha256)" in body
 
 
+def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
+    """An R8 suite that CI does not list still skips in silence when the
+    database gate is disarmed. Match the argument line, not a mention. The
+    release gate in deploy.yml holds a copy of the list."""
+    for name in ("pr-check.yml", "deploy.yml"):
+        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert re.search(
+            r"^\s+tests/unit/test_email_signature_images_r8\.py \\?$", workflow, re.M), name
+
+
+@_DB_GATE
 class TestTheTableUnderForceRls:
 
     def test_org_b_cannot_read_an_image_of_org_a(self, promoted, app_engine):  # noqa: F811
@@ -129,6 +140,7 @@ class TestTheTableUnderForceRls:
                      "t": secrets.token_urlsafe(32)})
 
 
+@_DB_GATE
 class TestThePublicRoute:
 
     async def test_the_owner_org_gets_the_bytes_and_the_headers(self, promoted, app_engine):  # noqa: F811
@@ -180,6 +192,7 @@ def _encoded(data: bytes) -> si.Encoded:
                       dark_share=0.0, clear_share=0.0)
 
 
+@_DB_GATE
 class TestTheStore:
 
     async def test_one_copy_of_each_image_and_the_url_opens(self, promoted, app_engine):  # noqa: F811
@@ -223,6 +236,7 @@ class TestTheStore:
         assert caught.value.detail.startswith("You have uploaded 20 signature images")
 
 
+@_DB_GATE
 class TestTheSettingsSave:
 
     async def test_a_new_signature_is_cleaned_and_its_data_image_hosted(
