@@ -187,3 +187,27 @@ def test_the_units_are_a_user_timer_of_ten_minutes():
     assert "OnUnitActiveSec=10min" in (d / "metorite-lane-keeper.timer").read_text(encoding="utf-8")
     svc = (d / "metorite-lane-keeper.service").read_text(encoding="utf-8")
     assert "lane_keeper.py" in svc and "Type=oneshot" in svc
+
+
+def test_a_state_file_that_is_not_an_object_is_ignored(keeper, monkeypatch):
+    mod, home = keeper
+    _transcript(home, "s-ci", 1200)
+    (home / "lanes").mkdir()
+    (home / "lanes" / "keeper-state.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    agents = json.dumps([_agent("lane-ci", "s-ci", "done")])
+    assert len(mod.run_pass(agents, now=NOW)) == 1
+
+
+def test_a_failed_account_change_wake_repeats(keeper, monkeypatch):
+    mod, home = keeper
+    _transcript(home, "s-ci", 1200)
+    agents = json.dumps([_agent("lane-ci", "s-ci", "done")])
+    _account(home, "a@x.io")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    mod.run_pass(agents, now=NOW)
+    _account(home, "b@x.io")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([], rc=1))
+    assert [w[2] for w in mod.run_pass(agents, now=NOW + 60)] == ["account change"]
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    assert [w[2] for w in mod.run_pass(agents, now=NOW + 120)] == ["account change"]

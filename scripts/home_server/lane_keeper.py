@@ -127,6 +127,8 @@ def run_pass(
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         state = {}
+    if not isinstance(state, dict):
+        state = {}
     skip_accounts = _csv("KEEPER_SKIP_ACCOUNTS", "vjvarada@hathilabs.com")
     email = account_email()
     cmd = os.environ.get("KEEPER_SWITCH_CMD", "").strip()
@@ -144,7 +146,6 @@ def run_pass(
     elif cmd:
         log(f"switch skipped: box account {email} is on the skip list")
     force_all = bool(email) and state.get("_account") not in (None, email)
-    state["_account"] = email
     raw = (
         agents_json
         if agents_json is not None
@@ -168,6 +169,7 @@ def run_pass(
         only_lanes=_csv("KEEPER_LANES"),
         force_all=force_all,
     )
+    failed_forced = False
     for name, sid, reason in wakes:
         r = subprocess.run(
             ["claude", "--bg", "--resume", sid, NOTE], capture_output=True, text=True, timeout=120
@@ -175,6 +177,10 @@ def run_pass(
         log(f"wake {name} session={sid[:8]} reason={reason} exit={r.returncode}")
         if r.returncode == 0:
             state[name] = now
+        elif reason == "account change":
+            failed_forced = True
+    if not failed_forced:
+        state["_account"] = email
     LANES_DIR.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state), encoding="utf-8")
     return wakes
