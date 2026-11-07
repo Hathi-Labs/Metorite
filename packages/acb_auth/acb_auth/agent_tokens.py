@@ -2246,13 +2246,21 @@ UPDATE agent_connection
 #: ⚠️ The use stamp of a box (spec §10.9 question 5). At most once a minute:
 #: the NULL branch stamps a new connection, which has no stamp yet. Only a
 #: box: an OAuth connection keeps ``last_used_at`` as the last issue
-#: (EA3-7). The address always moves to the new one. A change marks
-#: ``addr_changed_at`` at most once an hour. A first address is no change.
+#: (EA3-7). A change marks ``addr_changed_at`` at most once an hour, and the
+#: address that set the mark STAYS in ``last_seen_addr`` for that hour, so the
+#: audit row and the list name the address that raised the alarm, not the
+#: box that called a minute later (review of 2026-11-07). After the hour the
+#: address moves again. A first address is no change.
 #: ``expires_at`` is not in the SET: use never extends a box.
 _TOUCH_BOX_SQL = """
 UPDATE agent_connection
    SET last_used_at = now(),
-       last_seen_addr = COALESCE(CAST(:addr AS TEXT), last_seen_addr),
+       last_seen_addr = CASE
+           WHEN addr_changed_at IS NOT NULL
+            AND addr_changed_at >= now() - interval '1 hour'
+           THEN last_seen_addr
+           ELSE COALESCE(CAST(:addr AS TEXT), last_seen_addr)
+       END,
        addr_changed_at = CASE
            WHEN CAST(:addr AS TEXT) IS NOT NULL
             AND last_seen_addr IS NOT NULL

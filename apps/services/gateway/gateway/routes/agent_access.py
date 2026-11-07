@@ -936,14 +936,14 @@ _EDGE_ACTOR = "system:agent_edge"
 
 
 async def audit_new_addresses(org: str, rows: list[agent_tokens.ConnectionRow]) -> None:
-    """Write the audit row ``box_token.new_address`` once for each mark (rule 15).
+    """Write the audit row ``box_token.new_address`` for the newest mark of each live box (rule 15).
 
     The edge marks ``addr_changed_at`` and writes no audit row, because the
     audit writer opens a sync engine that the edge must not hold. So both
     list routes call this. The row id comes from the connection and the time
     of the mark (``agent_tokens.box_address_event_id``). A mark whose row
     exists already writes nothing, and the primary key holds one row when
-    two reads race. It never blocks the list: a failure only logs.
+    two reads race. A mark that a later mark replaces before any list read gets no row, and neither does a mark on a box that is revoked or expired first. It never blocks the list: a failure only logs.
     """
     marks = {
         agent_tokens.box_address_event_id(row.id, row.addr_changed_at): row

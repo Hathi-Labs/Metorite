@@ -12,7 +12,7 @@ person reaches the routes, and the mint answers the raw token once. While
 ``agent_box_tokens_enabled`` is off, the three routes answer 404, but the
 list, the revoke of one connection and "Revoke all box tokens" stay live.
 The list carries ``credential``, ``last_seen_addr`` and ``addr_changed_at``,
-and writes the audit row ``box_token.new_address`` once for each mark.
+and writes the audit row ``box_token.new_address`` for the newest mark of a live box, once.
 Change access refuses a box.
 
 The routes run on the REAL gateway app (``gateway.main.app``) through
@@ -939,6 +939,29 @@ class TestTheList:
         _mark(live, cid, "198.51.100.11", ago_s=1)
         assert (await _as(live, MEMBER, "GET", LIST)).status_code == 200
         assert _address_rows(live, cid) == 2
+
+    async def test_the_row_names_the_address_that_set_the_mark(self, live, monkeypatch):
+        """Review of 2026-11-07: a thief at A sets the mark, the real box at B
+        calls a minute later, and then a member reads the list. The row and
+        the list must name A, not B."""
+        seen, record = _persisting(live)
+        monkeypatch.setattr(acb_audit, "record", record)
+        made = await _mint(live, _box("thief"))
+        cid = made["connection_id"]
+
+        def touch(addr: str) -> None:
+            _admin(live, "UPDATE agent_connection SET last_used_at = now() - interval '2 minutes'"
+                         " WHERE id = CAST(:i AS uuid) RETURNING id", i=cid)
+            _admin(live, agent_tokens._TOUCH_BOX_SQL, addr=addr, connection_id=cid, org=live.org)
+
+        touch("198.51.100.1")   # the box: the first address, no mark
+        touch("203.0.113.66")   # the thief: a change, the mark
+        touch("198.51.100.1")   # the box again, a minute later
+        rows = (await _as(live, MEMBER, "GET", LIST)).json()["connections"]
+        row = next(r for r in rows if r["id"] == cid)
+        assert row["last_seen_addr"] == "203.0.113.66"
+        written = [e for e in seen if e.action == agent_tokens.BOX_NEW_ADDRESS_ACTION]
+        assert [e.payload["addr"] for e in written] == ["203.0.113.66"]
 
     async def test_a_failed_audit_read_never_fails_the_list(self, live, monkeypatch):
         made = await _mint(live, _box("audit-down"))
