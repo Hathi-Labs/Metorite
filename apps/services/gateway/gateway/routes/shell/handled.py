@@ -64,6 +64,9 @@ class HandledRun:
     #: What each source did: ``ok``, ``failed`` or ``absent``. The log and the
     #: tests read it. The answer carries only ``ok``.
     sources: dict[str, str] = field(default_factory=dict)
+    #: The rows behind ``entries``, in the same order, with their ``key``
+    #: (BR-2b-1: the close-out names the record). The answer never carries it.
+    closed: list[Closed] = field(default_factory=list)
 
 
 def handled_providers() -> list[Provider]:
@@ -166,5 +169,6 @@ async def handled_run(user: UserContext, now: datetime, *, budget_s: float) -> H
         # cut holds when a read gives more.
         found.extend(_newest(list(closed or []))[:PER_APP])
     run.ok = all(v != "failed" for v in run.sources.values())
-    run.entries = [c.entry() for c in _newest(found)]
+    run.closed = _newest(found)
+    run.entries = [c.entry() for c in run.closed]
     return run

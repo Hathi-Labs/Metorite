@@ -34,9 +34,11 @@ export function approvalRowDomId(id: string): string {
 /**
  * How the last load of the queue ended. `pending` is before the first
  * answer. `failed` is a load that did not give a queue: the route answered
- * an error, or the request did not arrive.
+ * an error, or the request did not arrive. `closed` is a 403: only an org
+ * admin reads the queue (AP-BUG-2, task 1896), so the page shows no queue and
+ * no error to any other member.
  */
-export type QueueLoad = "pending" | "ok" | "failed";
+export type QueueLoad = "pending" | "ok" | "failed" | "closed";
 
 /** The queue the page shows, and how its last load ended. */
 export interface QueueState<R> {
@@ -44,16 +46,18 @@ export interface QueueState<R> {
   load: QueueLoad;
 }
 
-/** What one load gave: the queue, or nothing. */
-export type LoadResult<R> = { ok: true; rows: R[] } | { ok: false };
+/** What one load gave: the queue, nothing, or a refusal (403). */
+export type LoadResult<R> = { ok: true; rows: R[] } | { ok: false; closed?: boolean };
 
 /**
  * The queue after one load. A good load replaces the rows. A failed load
  * keeps the rows the member already sees, and never empties them, because an
- * empty queue reads as "nothing waits" (MD-3a review).
+ * empty queue reads as "nothing waits" (MD-3a review). A refusal empties the
+ * rows, because this member may not read them.
  */
 export function afterLoad<R>(prev: QueueState<R>, result: LoadResult<R>): QueueState<R> {
-  return result.ok ? { rows: result.rows, load: "ok" } : { rows: prev.rows, load: "failed" };
+  if (result.ok) return { rows: result.rows, load: "ok" };
+  return result.closed ? { rows: [], load: "closed" } : { rows: prev.rows, load: "failed" };
 }
 
 /**

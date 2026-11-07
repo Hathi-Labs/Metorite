@@ -533,6 +533,16 @@ def _is_held_off(tool: Any, owner: str | None = None) -> bool:
     return is_held_off_write(tool, owner=owner)
 
 
+def _is_held_off_pack(tool: Any, slug: str) -> bool:
+    """True for a write of pack *slug* that a held chat holds off by pack slug
+    (CAL-1a): ``acb_skills.egress.is_held_off_pack_write``."""
+    try:
+        from acb_skills.egress import is_held_off_pack_write
+    except ImportError:
+        return False
+    return is_held_off_pack_write(tool, slug)
+
+
 def _covered_hold(agent_name: str | None) -> bool:
     """True when a covered run alone holds this run (H-236, RX-1).
 
@@ -3279,7 +3289,7 @@ async def _pack_tools(
         # ``func`` is one (the Projects ``_StrictTool``). Any other shape skips.
         if name in taken or not inspect.iscoroutinefunction(_pack_func(fn)):
             skipped.append(name)
-        elif held and (_is_egress(fn) or _is_held_off(fn)):
+        elif held and (_is_egress(fn) or _is_held_off(fn) or _is_held_off_pack(fn, slug)):
             dropped.append(name)
         else:
             tools.append(_pack_call(fn, owner, held, run_key, slug))
@@ -3566,7 +3576,8 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
             _log.warning("executor.pack_call_refused", tool=name, owner=owner)
             return PACK_CALL_REFUSED.format(tool=name)
         held_now = held or read_untrusted_answer(ctx)
-        if held_now and not held and (_is_egress(fn) or _is_held_off(fn)):
+        if held_now and not held and (
+                _is_egress(fn) or _is_held_off(fn) or _is_held_off_pack(fn, slug)):
             return _held_in_turn(owner, name)
         twice = pack_write_refusal(owner, name, ctx)  # OA-8i, before any await
         if twice is not None:
