@@ -367,6 +367,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # cannot see that gap. chat_parity.md section 4 names it.
     "GET /api/studio/packages": "studio_package_get",
     "GET /api/studio/packages/{}": "studio_package_get",
+    # STU-G3a: "Build it" in the Studio IDE makes a draft package first
+    # (lib/studio/packageDraft.ts createDraftPackage). studio_save makes one with
+    # the same POST when it gets no package_id.
+    "POST /api/studio/packages": "studio_save",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
