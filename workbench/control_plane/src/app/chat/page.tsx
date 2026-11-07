@@ -1211,10 +1211,10 @@ function ChatPageInner() {
         />
       )}
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-x-auto overflow-y-hidden" data-chat-row="">
       {/* ── Desktop: conversations sidebar ────────────────────────────── */}
       {!isMobile && sessionPanelOpen && (
-        <aside className="w-72 shrink-0 border-r border-border bg-sidebar flex flex-col overflow-hidden">
+        <aside className="w-72 min-w-44 shrink border-r border-border bg-sidebar flex flex-col overflow-hidden">
           <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <div className="text-sm font-semibold text-sidebar-foreground">Conversations</div>
           </div>
@@ -1258,7 +1258,9 @@ function ChatPageInner() {
       {!isMobile && <SidePanelEditor />}
 
       {/* ── Chat area ──────────────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden min-w-0">
+      {/* H-332 (task 757): the message column keeps a floor. With the panes open
+          the row scrolls sideways before the column is crushed under a card. */}
+      <div data-chat-column="" className="flex flex-1 overflow-hidden min-w-[min(100%,26rem)]">
         <div className="flex flex-1 flex-col overflow-hidden min-w-0">
 
           {activeSession ? (
