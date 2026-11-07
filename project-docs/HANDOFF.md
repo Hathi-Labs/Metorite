@@ -260,13 +260,6 @@ line — never reclaim a number by deleting the other entry.
   A count above 0 means this is open.
 - **Added:** 2026-10-08 · branch `sec-bh1-child-env` (WS-49 BH-1, fix round 1).
 
-### H-280 · A single route param can still move a gateway call to another route under its prefix · [AGENT]
-- **Metorite:** #621. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n '\$\{(sessionId|subject|agentName|provider|threadId)\}' workbench/control_plane/src/app/api`.
-  A hit that puts the raw param into a gateway URL, with no `refuseUnsafePath([...])`
-  in that handler, means this is open.
-- **Added:** 2026-10-08 · branch `proxy-path-guard`.
-
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Metorite:** #499. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
