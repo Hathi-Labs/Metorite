@@ -207,6 +207,70 @@ def _encoded(data: bytes) -> si.Encoded:
 
 
 @_DB_GATE
+class TestTheRetire:
+    """Fix round 1, P3: the retire SQL binds who may call it, as the app role
+    under FORCE RLS. A member who did not upload gets 404, the uploader and an
+    admin (admin:settings:manage) retire the image, and it stays served."""
+
+    async def _retire(self, promoted, image_id: str, user: UserContext):  # noqa: F811
+        token = bind_tenant(promoted.org_b)
+        try:
+            async with tenant_engine_scope(_app_dsn(promoted)):
+                return await routes.retire_signature_image(image_id, user=user)
+        finally:
+            release_tenant(token)
+
+    def _retired(self, promoted, image_id: str) -> bool:  # noqa: F811
+        with promoted.admin_engine.connect() as c:
+            return c.execute(text(
+                "SELECT retired_at IS NOT NULL FROM email_signature_images "
+                "WHERE id = CAST(:i AS uuid)"), {"i": image_id}).scalar_one()
+
+    async def test_a_member_who_did_not_upload_gets_404(self, promoted, app_engine):  # noqa: F811
+        image_id, _, _ = _seed_image(promoted.admin_engine, org=promoted.org_b,
+                                     member="uploader@sig.test")
+        with pytest.raises(HTTPException) as caught:
+            await self._retire(promoted, image_id, _member("other@sig.test", promoted.org_b))
+        assert caught.value.status_code == 404
+        assert self._retired(promoted, image_id) is False
+
+    async def test_the_uploader_retires_and_the_image_stays_served(self, promoted, app_engine):  # noqa: F811
+        image_id, token, data = _seed_image(promoted.admin_engine, org=promoted.org_b,
+                                            member="uploader@sig.test")
+        out = await self._retire(promoted, image_id, _member("uploader@sig.test", promoted.org_b))
+        assert out == {"id": image_id, "retired": True}
+        assert self._retired(promoted, image_id) is True
+        async with tenant_engine_scope(_app_dsn(promoted)):
+            res = await routes.signature_image_file(promoted.org_b, token, "png")
+        assert res.body == data
+
+    async def test_an_admin_retires_an_image_of_another_member(self, promoted, app_engine):  # noqa: F811
+        image_id, _, _ = _seed_image(promoted.admin_engine, org=promoted.org_b,
+                                     member="uploader@sig.test")
+        admin = UserContext(
+            email="admin@sig.test", role=UserRole.EMPLOYEE, organization_id=promoted.org_b,
+            access=EffectiveAccess(role_granted=frozenset(
+                {"feature:email", routes.ADMIN_CAPABILITY})))
+        out = await self._retire(promoted, image_id, admin)
+        assert out["retired"] is True
+        assert self._retired(promoted, image_id) is True
+
+    async def test_an_image_of_another_org_is_404_even_for_an_admin(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        image_id, _, _ = _seed_image(promoted.admin_engine, org=promoted.org_a,
+                                     member="uploader@sig.test")
+        admin = UserContext(
+            email="admin@sig.test", role=UserRole.EMPLOYEE, organization_id=promoted.org_b,
+            access=EffectiveAccess(role_granted=frozenset(
+                {"feature:email", routes.ADMIN_CAPABILITY})))
+        with pytest.raises(HTTPException) as caught:
+            await self._retire(promoted, image_id, admin)
+        assert caught.value.status_code == 404
+        assert self._retired(promoted, image_id) is False
+
+
+@_DB_GATE
 class TestTheStore:
 
     async def test_one_copy_of_each_image_and_the_url_opens(self, promoted, app_engine):  # noqa: F811
