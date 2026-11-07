@@ -101,6 +101,13 @@ _WRITE_TOOLS = ["create_lead", "update_deal_status", "log_activity",
                 "convert_lead", "crm_update_record", "crm_update_task"]
 
 _TASK_ID = str(uuid4())
+_COMPANY_A = str(uuid4())
+_COMPANY_B = str(uuid4())
+#: The task as ``GET /crm/activities/{id}`` serves it: open, due 2026-11-30,
+#: on the Acme AMC deal.
+_TASK = {"id": _TASK_ID, "type": "task", "subject": "Send quote",
+         "completed_at": None, "due_at": "2026-11-30T00:00:00+00:00",
+         "deal_id": _DEAL_ID}
 
 
 def _responder(call: dict) -> Any:
@@ -126,8 +133,12 @@ def _responder(call: dict) -> Any:
             "contact": {"id": _CONTACT_ID},
             "organization": {"id": _ORG_ID},
         }
-    if path == f"/crm/activities/{_TASK_ID}" and method == "PATCH":
-        return {"id": _TASK_ID, "type": "task", "subject": "Send quote", **body}
+    if path == f"/crm/activities/{_TASK_ID}":
+        return {**_TASK, **body} if method == "PATCH" else dict(_TASK)
+    if path == f"/crm/organizations/{_COMPANY_A}" and method == "GET":
+        return {"id": _COMPANY_A, "name": "Alpha Pumps"}
+    if path == f"/crm/organizations/{_COMPANY_B}" and method == "GET":
+        return {"id": _COMPANY_B, "name": "Beta Valves"}
     if path.endswith("/activities") and method == "POST":
         return {"id": str(uuid4()), **body}
     if path == "/crm/leads" and method == "POST":
@@ -186,7 +197,7 @@ _CARD_MUST_NAME: dict[str, str] = {
     "log_activity": "Acme AMC",        # the record being written to
     "convert_lead": "Ravi Menon",      # the lead being converted
     "crm_update_record": "Acme AMC",   # the deal being edited
-    "crm_update_task": _TASK_ID,       # the task being changed
+    "crm_update_task": "Send quote",   # the task being changed (its subject)
 }
 
 
@@ -964,6 +975,11 @@ async def test_a_task_completion_shows_one_card_and_sends_completed_at(monkeypat
     calls = _gateway(monkeypatch)
     out = await _M.crm_update_task(_TASK_ID, completed=True)
     assert len(asked) == 1 and "field Done: no → yes" in asked[0]["context"]
+    assert "field Task: Send quote" in asked[0]["context"]
+    assert "deal: Acme AMC" in asked[0]["context"]
+    assert _TASK_ID not in asked[0]["context"] and _TASK_ID not in asked[0]["detail"]
+    assert [(c["method"], c["path"]) for c in calls][:2] == [
+        ("GET", f"/crm/activities/{_TASK_ID}"), ("GET", f"/crm/deals/{_DEAL_ID}")]
     assert calls[-1]["method"] == "PATCH" and calls[-1]["path"] == f"/crm/activities/{_TASK_ID}"
     assert set(calls[-1]["json"]) == {"completed_at"} and calls[-1]["json"]["completed_at"]
     assert "Send quote" in out
@@ -974,10 +990,11 @@ async def test_a_task_due_date_is_sent_as_the_midnight_of_that_day(monkeypatch) 
     calls = _gateway(monkeypatch)
     await _M.crm_update_task(_TASK_ID, due_at="2026-12-31")
     assert calls[-1]["json"] == {"due_at": "2026-12-31T00:00:00+00:00"}
-    assert "due: 2026-12-31" in asked[0]["context"]
+    assert "field Due date: 2026-11-30 → 2026-12-31" in asked[0]["context"]
 
 
 async def test_reopening_a_task_sends_a_null_completed_at(monkeypatch) -> None:
+    monkeypatch.setitem(_TASK, "completed_at", "2026-11-01T09:00:00+00:00")
     approve(monkeypatch)
     calls = _gateway(monkeypatch)
     await _M.crm_update_task(_TASK_ID, completed=False)
@@ -1001,3 +1018,97 @@ async def test_log_activity_takes_a_due_date_for_a_task(monkeypatch) -> None:
     assert calls[-1]["json"]["due_at"] == "2026-12-01T00:00:00+00:00"
     assert "not a date" in await _M.log_activity(
         "deals", _DEAL_ID, "task", "x", due_at="soon")
+
+
+async def test_completing_a_done_task_shows_its_real_before_and_sends_nothing(
+    monkeypatch,
+) -> None:
+    """The card never states a false before value (repair round 1, P2)."""
+    monkeypatch.setitem(_TASK, "completed_at", "2026-11-01T09:00:00+00:00")
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_task(_TASK_ID, completed=True)
+    assert "already has those values" in out and asked == [] and writes(calls) == []
+
+
+async def test_a_done_task_reopened_with_a_new_due_date_shows_both_real_befores(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(_TASK, "completed_at", "2026-11-01T09:00:00+00:00")
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_task(_TASK_ID, completed=False, due_at="2026-12-05")
+    context = asked[0]["context"]
+    assert "field Done: yes → no (reopened)" in context
+    assert "field Due date: 2026-11-30 → 2026-12-05" in context
+    assert calls[-1]["json"]["completed_at"] is None
+
+
+async def test_a_task_change_sends_only_the_part_that_differs(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_task(_TASK_ID, completed=True, due_at="2026-11-30")
+    assert set(calls[-1]["json"]) == {"completed_at"}
+
+
+async def test_a_company_change_shows_names_never_ids_and_sends_only_changes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(_DEAL, "company_id", _COMPANY_A)
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record(
+        "deals", _DEAL_ID,
+        {"company_id": _COMPANY_B, "amount": 250000, "name": "Acme AMC 2"},
+    )
+    context = asked[0]["context"]
+    assert "field Company: Alpha Pumps → Beta Valves" in context
+    assert "field Name: Acme AMC → Acme AMC 2" in context
+    assert "Amount" not in context, "an unchanged field is not on the card"
+    assert _COMPANY_A not in context + out and _COMPANY_B not in context + out
+    assert calls[-1]["json"] == {"company_id": _COMPANY_B, "name": "Acme AMC 2"}
+
+
+async def test_an_unchanged_custom_field_is_not_sent(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_record("deals", _DEAL_ID, {"region": "South", "amount": 1})
+    assert calls[-1]["json"] == {"amount": 1, "custom": {"region": "South"}}
+
+
+@pytest.mark.parametrize("tool", ["crm_update_record", "crm_update_task"])
+async def test_a_card_that_errors_sends_nothing(tool: str, monkeypatch) -> None:
+    """If the card cannot be asked, the tool raises before any write."""
+    import acb_skills.ask_tools as ask_tools
+
+    async def _boom(**_kw: Any) -> bool:
+        raise RuntimeError("the relay is down")
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", _boom)
+    calls = _gateway(monkeypatch)
+    with pytest.raises(RuntimeError):
+        await _CALLS[tool]()
+    assert writes(calls) == []
+
+
+@pytest.mark.parametrize("tool", ["crm_update_record", "crm_update_task"])
+async def test_a_card_that_times_out_sends_nothing(tool: str, monkeypatch) -> None:
+    """The REAL ``request_confirmation``: a timeout on the wait answers False
+    (``_block_on`` maps ``TimeoutError`` to ``TIMEOUT``), so the tool cancels."""
+    import asyncio
+
+    import orchestrator.executor as executor
+
+    queue: asyncio.Queue = asyncio.Queue()
+    token = executor._active_run_queue.set(queue)
+
+    async def _late(_fut: Any, _secs: Any) -> Any:
+        raise TimeoutError
+
+    monkeypatch.setattr(executor, "wait_user_future", _late)
+    calls = _gateway(monkeypatch)
+    try:
+        out = await _CALLS[tool]()
+    finally:
+        executor._active_run_queue.reset(token)
+    assert "cancelled" in out.lower() and writes(calls) == []

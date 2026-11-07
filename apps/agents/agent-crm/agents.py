@@ -1145,11 +1145,30 @@ def _shown(value: Any) -> str:
     return "(empty)" if value in (None, "") else str(value)
 
 
+#: A field whose key reads better as a word than as its column name.
+_FIELD_WORDS: dict[str, str] = {"company_id": "Company"}
+
+
 def _human(key: str) -> str:
     """A field key in the member's words: ``expected_close_date`` reads
     "Expected close date". The card never prints a wire name."""
+    if key in _FIELD_WORDS:
+        return _FIELD_WORDS[key]
     words = key.replace("_", " ").strip()
     return words[:1].upper() + words[1:]
+
+
+async def _company_name(company_id: Any) -> str:
+    """The company's name for a card, or a plain fallback. Never a raw id."""
+    if company_id in (None, ""):
+        return "(empty)"
+    record = _record_uuid(company_id)
+    try:
+        row = await _get(f"/crm/organizations/{record}")
+    except GatewayRefusal:
+        return "(a company I cannot read)"
+    name = str(row.get("name") or "").strip() if isinstance(row, dict) else ""
+    return name or "(unnamed company)"
 
 
 @_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
@@ -1163,9 +1182,10 @@ async def crm_update_record(
     current values.
 
     The person you are acting for sees ONE card with the old and the new value
-    of each field, and nothing changes if they decline. This tool does not
-    change the owner, the stage or the lost reason. Use update_deal_status for
-    the stage and the lost reason. The owner changes in a later slice."""
+    of each field, and nothing changes if they decline. Only the fields that
+    differ are sent. This tool does not change the owner, the stage or the
+    lost reason. Use update_deal_status for the stage and the lost reason. The
+    owner changes in a later slice."""
     slug = _entity_slug(entity)
     record = _record_uuid(record_id)
     if not isinstance(fields, dict) or not fields:
@@ -1175,42 +1195,52 @@ async def crm_update_record(
         if refusal:
             return f"I cannot set '{key}' here. {refusal} Nothing was changed."
     columns = _EDITABLE_COLUMNS[slug]
-    payload: dict[str, Any] = {}
-    custom: dict[str, Any] = {}
+    asked: dict[str, Any] = {}
+    asked_custom: dict[str, Any] = {}
     for key, value in fields.items():
         name = str(key).strip()
         if name:
-            (payload if name in columns else custom)[name] = value
-    if custom:
-        payload["custom"] = custom
+            (asked if name in columns else asked_custom)[name] = value
 
     # Read first: the card shows the old value beside the new one.
     row = await _get(f"/crm/{slug}/{record}")
     current = row if isinstance(row, dict) else {}
     held = current.get("custom") if isinstance(current.get("custom"), dict) else {}
-    changes: dict[str, tuple[Any, Any]] = {}
-    for key, value in payload.items():
-        if key == "custom":
-            pairs = [(k, held.get(k), v) for k, v in value.items()]
-        else:
-            pairs = [(key, current.get(key), value)]
-        for name, old, new in pairs:
-            if _shown(old) != _shown(new):
-                changes[name] = (old, new)
-    if not changes:
+    # Only the fields that differ go on the card and on the wire.
+    changed: dict[str, Any] = {}
+    changed_custom: dict[str, Any] = {}
+    shown: dict[str, tuple[str, str]] = {}
+    for name, new in asked.items():
+        old = current.get(name)
+        if _shown(old) != _shown(new):
+            changed[name] = new
+            shown[name] = (_shown(old), _shown(new))
+    for name, new in asked_custom.items():
+        old = held.get(name)
+        if _shown(old) != _shown(new):
+            changed_custom[name] = new
+            shown[name] = (_shown(old), _shown(new))
+    if not shown:
         return "Those fields already hold those values, so nothing was changed."
+    if "company_id" in shown:
+        shown["company_id"] = (
+            await _company_name(current.get("company_id")),
+            await _company_name(changed["company_id"]),
+        )
+    payload: dict[str, Any] = dict(changed)
+    if changed_custom:
+        payload["custom"] = changed_custom
 
     target = _row_title(slug, current)
     label = ENTITY_LABELS[slug].lower()
     from acb_skills.ask_tools import request_confirmation
     if not await request_confirmation(
         title=f"Change this {label}?",
-        detail=f"{target} · " + ", ".join(_human(k) for k in changes),
+        detail=f"{target} · " + ", ".join(_human(k) for k in shown),
         context=await _held_fields_block({
             label: target,
             # `field <Name>` is the card's key for a field it has no line for.
-            **{f"field {_human(k)}": f"{_shown(o)} → {_shown(n)}"
-               for k, (o, n) in changes.items()},
+            **{f"field {_human(k)}": f"{o} → {n}" for k, (o, n) in shown.items()},
         }),
     ):
         return f"Cancelled — {target} was not changed."
@@ -1219,8 +1249,29 @@ async def crm_update_record(
     except _MirrorBlocked as blocked:
         return _mirror_message(blocked)
     return f"Changed {target}: " + "; ".join(
-        f"{_human(k)} {_shown(o)} → {_shown(n)}" for k, (o, n) in changes.items()
+        f"{_human(k)} {o} → {n}" for k, (o, n) in shown.items()
     ) + "."
+
+
+async def _linked_title(task: dict[str, Any]) -> dict[str, str]:
+    """The record a task hangs on, as ``{"deal": "Acme AMC"}``, or nothing."""
+    for key, slug in (("deal_id", "deals"), ("lead_id", "leads"),
+                      ("contact_id", "contacts"), ("company_id", "organizations")):
+        if task.get(key):
+            record = _record_uuid(task[key])
+            try:
+                found = await _get(f"/crm/{slug}/{record}")
+            except GatewayRefusal:
+                return {}
+            return {ENTITY_LABELS[slug].lower(): _row_title(
+                slug, found if isinstance(found, dict) else {})}
+    return {}
+
+
+def _day(value: Any) -> str:
+    """The date of a stored due instant, as the member reads it."""
+    text = str(value or "").strip()
+    return text[:10] if text else "(empty)"
 
 
 @_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
@@ -1231,19 +1282,12 @@ async def crm_update_task(
     id of the task (from get_timeline). Pass completed true to complete it and
     false to reopen it. Pass due_at (YYYY-MM-DD) to set the due date.
 
-    The person you are acting for approves on one card, and nothing changes if
+    The task is read first. The person you are acting for sees ONE card with
+    the task's subject and its real before and after, and nothing changes if
     they decline. This changes tasks and notes only. The pipeline writes the
     stage changes."""
     record = _record_uuid(activity_id)
-    payload: dict[str, Any] = {}
-    lines: dict[str, str] = {}
-    if completed is not None:
-        if completed:
-            payload["completed_at"] = datetime.now(UTC).isoformat()
-            lines["field Done"] = "no → yes"
-        else:
-            payload["completed_at"] = None
-            lines["field Done"] = "yes → no (reopened)"
+    stamp = None
     if str(due_at or "").strip():
         stamp = _due_stamp(due_at)
         if stamp is None:
@@ -1251,33 +1295,44 @@ async def crm_update_task(
                 f"'{due_at}' is not a date I can read. Give the due date as "
                 "YYYY-MM-DD. Nothing was changed."
             )
-        payload["due_at"] = stamp
-        lines["due"] = str(due_at).strip()
-    if not payload:
+    if completed is None and stamp is None:
         return (
             "Say what to change on the task: completed (true or false), or a "
             "due_at date. Nothing was changed."
         )
-    # No route reads one activity by id, so the card names the id.
+    # Read first: the card shows what the task is now, never a guess.
+    row = await _get(f"/crm/activities/{record}")
+    task = row if isinstance(row, dict) else {}
+    if task.get("type") in ("status_change", "system"):
+        return "The pipeline wrote that entry, so it cannot be edited. Nothing was changed."
+    subject = str(task.get("subject") or "").strip() or "(no subject)"
+    payload: dict[str, Any] = {}
+    lines: dict[str, str] = {}
+    is_done = bool(task.get("completed_at"))
+    if completed is not None and bool(completed) != is_done:
+        payload["completed_at"] = datetime.now(UTC).isoformat() if completed else None
+        lines["field Done"] = "no → yes" if completed else "yes → no (reopened)"
+    if stamp is not None and _day(task.get("due_at")) != _day(stamp):
+        payload["due_at"] = stamp
+        lines["field Due date"] = f"{_day(task.get('due_at'))} → {_day(stamp)}"
+    if not payload:
+        return f"{subject} already has those values, so nothing was changed."
+    link = await _linked_title(task)
+    names = {"field Done": "Done", "field Due date": "Due date"}
     from acb_skills.ask_tools import request_confirmation
     if not await request_confirmation(
         title="Change this CRM task?",
-        detail=f"task {record} · " + ", ".join(
-            "Done" if k == "field Done" else "Due date" for k in lines),
-        context=await _held_fields_block({"field Task": record, **lines}),
+        detail=f"{subject} · " + ", ".join(names[k] for k in lines),
+        context=await _held_fields_block({"field Task": subject, **link, **lines}),
     ):
-        return f"Cancelled — task {record} was not changed."
+        return f"Cancelled — {subject} was not changed."
     try:
-        row = await _patch(f"/crm/activities/{record}", payload)
+        await _patch(f"/crm/activities/{record}", payload)
     except _MirrorBlocked as blocked:
         return _mirror_message(blocked)
-    made = row if isinstance(row, dict) else {}
-    return (
-        f"Changed task {made.get('subject') or record}: "
-        + ", ".join(
-            f"{'done' if k == 'field Done' else 'due'} {v}" for k, v in lines.items()
-        ) + "."
-    )
+    return f"Changed task {subject}: " + ", ".join(
+        f"{names[k].lower()} {v}" for k, v in lines.items()
+    ) + "."
 
 
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────
