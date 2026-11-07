@@ -7148,6 +7148,12 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
   clause now names `a.organization_id = app.tenant_id`, so `SELF_ADDRESSES_SQL`,
   `SELF_MAILBOX_IDS_SQL` and `resolve_self` read one tenant. A session with no bind reads
   an empty set. `tests/unit/test_email_mailbox_list_tenant_r8.py` is the fence.
+  **Closed 2026-11-07, H-334d (task 1990):** the pair set read the same member clause with a
+  column anchor, and named no bound tenant. `_member_mailboxes_from` now holds the tenant
+  predicate, so `PAIRED_MAILBOX_IDS_SQL`, `ALSO_IN_SQL`, "also in" and the draft dedupe read
+  one tenant, as the self set does. Each caller reads inside `_tenant_session`. A session
+  with no bind reads no pair, so "also in" is empty and the dedupe takes no lock.
+  `tests/unit/test_email_self_reader_tenant_fence.py` keeps each reader on `tenant_session`.
 - **The callers.** The rule match payload, the thread status, the conversation check, the
   digest, the pin guard, the cleanup scope and the sender categories use the set. The recipient
   role uses it too, so a member in To under mailbox B is a direct recipient in mailbox A.
