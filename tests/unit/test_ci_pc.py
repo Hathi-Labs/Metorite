@@ -324,38 +324,80 @@ def test_the_timed_frontend_tests_do_not_share_the_cpu_with_another_run():
     assert '[ "$label" = frontend ] && lk=(flock "$HOME/.ci-frontend.lock")' in _RUN_SUITE
 
 
-def test_a_stop_signal_ends_the_suite_before_the_worktree_goes(tmp_path: Path) -> None:
-    """CIV-6b. A dropped client sends TERM to ci_remote_run. The suite must be
-    stopped and reaped BEFORE the EXIT trap removes the worktree, or the job
-    containers lose the folder they run in. The harness runs the block of
-    remote_run.sh that starts the suite, with a stub suite that sleeps."""
-    import signal
+def _stop_harness(tmp_path: Path, stub_body: str, grace: int = 60) -> tuple[object, Path]:
+    """Run the block of remote_run.sh that starts the suite, with a stub suite.
+    The log records the order: stub events, `f-returned <rc>`, then the EXIT
+    trap (`worktree-removed`)."""
     import subprocess
-    import time
 
-    block = _REMOTE.split("  local suite_pid rc=0\n", 1)[1].split("\n}\n", 1)[0]
+    block = _REMOTE.split("  local suite_pid=", 1)[1].split("\n}\n", 1)[0]
     stub = tmp_path / "scripts" / "ci_pc"
     stub.mkdir(parents=True)
-    (stub / "run_suite.sh").write_text(
+    (stub / "run_suite.sh").write_text(stub_body, encoding="utf-8")
+    log = tmp_path / "log"
+    script = (
+        f'cd "{tmp_path}"; export LOG="{log}" CI_STOP_GRACE_S={grace};'
+        " CI_SHARDS_GRANTED=1; sel_args=(); fwd=()\n"
+        'f() {\n  local suite_pid=' + block + '\n}\n'
+        'trap "echo worktree-removed >> $LOG" EXIT\n'
+        'f; echo "f-returned $?" >> $LOG\n'
+    )
+    return subprocess.Popen(["bash", "-c", script], start_new_session=True), log
+
+
+def _wait_for(log: Path, text: str) -> None:
+    import time
+
+    for _ in range(100):
+        if log.exists() and text in log.read_text(encoding="utf-8"):
+            return
+        time.sleep(0.1)
+
+
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGHUP", "SIGINT"])
+def test_a_stop_signal_ends_the_suite_before_the_worktree_goes(tmp_path: Path, sig: str) -> None:
+    """CIV-6b. A dropped client sends HUP, INT or TERM to ci_remote_run. The
+    suite must be stopped and reaped BEFORE the EXIT trap removes the worktree,
+    or the job containers lose the folder they run in."""
+    import signal
+
+    proc, log = _stop_harness(
+        tmp_path,
         'trap "echo suite-stopped >> $LOG; exit 7" TERM\n'
         "echo suite-started >> $LOG\n"
         "while true; do sleep 0.1; done\n",
-        encoding="utf-8",
     )
-    log = tmp_path / "log"
-    script = (
-        f'cd "{tmp_path}"; export LOG="{log}"; CI_SHARDS_GRANTED=1; sel_args=(); fwd=()\n'
-        'f() {\n  local suite_pid rc=0\n' + block + '\n}\n'
-        'trap "echo worktree-removed >> $LOG" EXIT\n'
-        "f; echo \"f-returned $?\" >> $LOG\n"
-    )
-    proc = subprocess.Popen(["bash", "-c", script], start_new_session=True)
-    for _ in range(100):
-        if log.exists() and "suite-started" in log.read_text(encoding="utf-8"):
-            break
-        time.sleep(0.1)
-    proc.send_signal(signal.SIGTERM)
+    _wait_for(log, "suite-started")
+    proc.send_signal(getattr(signal, sig))
     proc.wait(timeout=30)
     lines = log.read_text(encoding="utf-8").split()
     assert lines == ["suite-started", "suite-stopped", "f-returned", "7", "worktree-removed"]
-    assert lines.index("suite-stopped") < lines.index("worktree-removed")
+
+
+def test_a_suite_that_ignores_term_is_killed_after_the_grace_period(tmp_path: Path) -> None:
+    """CIV-6b review. The wait is bounded: TERM, then KILL after the grace."""
+    import signal
+    import time
+
+    proc, log = _stop_harness(
+        tmp_path,
+        'trap "" TERM\necho suite-started >> $LOG\nwhile true; do sleep 0.1; done\n',
+        grace=2,
+    )
+    _wait_for(log, "suite-started")
+    start = time.monotonic()
+    proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=30)
+    assert time.monotonic() - start < 20
+    lines = log.read_text(encoding="utf-8").split()
+    assert lines[0] == "suite-started" and lines[-1] == "worktree-removed"
+    assert "f-returned" in lines
+
+
+def test_a_signal_before_the_launch_still_stops_the_suite(tmp_path: Path) -> None:
+    """CIV-6b review. The trap is installed before the suite starts, so a
+    signal in that gap does not meet the default action (the shell dying and
+    the worktree going under a live suite)."""
+    block = _REMOTE.split("  local suite_pid=", 1)[1]
+    assert block.index("trap '") < block.index("setsid bash scripts/ci_pc/run_suite.sh")
+    assert '[ "$stopping" = 1 ] && kill -TERM' in block  # the signal that came first
