@@ -58,7 +58,7 @@ async def _private_parts(user_id: str, message: str, has_user: bool) -> list[str
 
 async def _scoped_parts(clearance: Any, agent_name: str, message: str) -> list[str]:
     """The room, the preferences, the agent's and the org's memory."""
-    from acb_memory import get_scoped_context, scope_key
+    from acb_memory import get_scoped_context, org_scope, scope_key
 
     # The four lookups do not depend on each other, so they run together.
     # gather keeps the order, so the block is byte-identical to a serial read.
@@ -72,8 +72,9 @@ async def _scoped_parts(clearance: Any, agent_name: str, message: str) -> list[s
         if clearance.prefs else _none(),
         _limited(get_scoped_context(
             scope_key(agent=agent_name), message, header="Agent memory")),
+        # KG-9: ``org:<bound tenant>``. No tenant gives "" and no read.
         _limited(get_scoped_context(
-            scope_key(org=True), message, header="Organisation memory")),
+            org_scope(), message, header="Organisation memory")),
     )
     parts: list[str] = []
     # What this room has established. Replaces the personal compartment

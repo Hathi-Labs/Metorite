@@ -42,7 +42,12 @@ window and has no row. Only those get the identity and day reads. One
 member whose read fails is logged and skipped, and the next tick tries
 again: the window is wider than two ticks.
 
-The close-out time is stored and read here, and BR-2b uses it.
+**The close-out** (BR-2b-1, ``core_brief.md`` §4.3). With ``flags.closeout``
+on for the org, the plan finds the slot of ``closeout_time`` too, by the same
+rules. A close-out run is ``brief.run`` with ``kind: "closeout"`` in the
+payload, and the dedupe key ``brief:<member>:closeout:<local_date>``. A
+payload with no ``kind`` is a ``brief``: jobs that were queued before this
+slice have none. Off, the planner plans no close-out.
 """
 
 from __future__ import annotations
@@ -64,8 +69,10 @@ _log = get_logger("brief.planner")
 #: The two kinds of the queue.
 PLAN_KIND = "brief.plan"
 RUN_KIND = "brief.run"
-#: The kind of the run that this slice plans (``store.KINDS``).
+#: The kind of the 07:30 run (``store.KINDS``).
 KIND = "brief"
+#: The kind of the 18:30 run (BR-2b-1, ``store.KINDS``).
+CLOSEOUT = "closeout"
 #: The app whose preferences the brief reads (``APP_PREFERENCES``). The
 #: close-out of BR-2b reads the same app.
 APP = "brief"
@@ -114,6 +121,7 @@ class Slot:
     local_date: date
     at: datetime
     missed: bool = False
+    kind: str = KIND
 
 
 def _time(value: str) -> time:
@@ -143,6 +151,17 @@ def member_zone(tz: ZoneInfo, org_zone: ZoneInfo) -> ZoneInfo:
     return org_zone if tz.key == "UTC" else tz
 
 
+def time_of(m: Member, kind: str) -> time:
+    """The preferred time of *m* for a run of *kind*."""
+    return m.closeout_time if kind == CLOSEOUT else m.brief_time
+
+
+def kinds_of(org: str) -> tuple[str, ...]:
+    """The kinds that the plan covers for *org*: the brief, and the
+    close-out when ``flags.closeout(org)`` is on."""
+    return (KIND, CLOSEOUT) if flags.closeout(org) else (KIND,)
+
+
 def slot(tz: ZoneInfo, at: time, now: datetime) -> tuple[date, datetime] | None:
     """The slot of *at* on the member's calendar date in *tz*, when it falls
     in ``[now - LOOKBACK, now + HORIZON)``: the date and the instant. The
@@ -167,6 +186,17 @@ def missed(tz: ZoneInfo, at: time, now: datetime) -> tuple[date, datetime] | Non
     return None
 
 
+def payload_of(s: Slot) -> dict[str, str]:
+    """The ``brief.run`` payload of slot *s*. A close-out names its ``kind``.
+    A brief names none, as before BR-2b-1: a payload with no ``kind`` is a
+    brief."""
+    out = {"member": s.member.email, "local_date": s.local_date.isoformat(),
+           "slot_at": s.at.isoformat()}
+    if s.kind != KIND:
+        out["kind"] = s.kind
+    return out
+
+
 def dedupe_key(member: str, kind: str, local_date: date) -> str:
     """``brief:<member>:<kind>:<local_date>`` (``core_brief.md`` §4.1)."""
     return f"brief:{member}:{kind}:{local_date.isoformat()}"
@@ -176,11 +206,13 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _found(tz: ZoneInfo, m: Member, now: datetime) -> list[tuple[date, datetime, bool]]:
-    """The slot in the window and the missed slot of *m* in *tz*."""
+def _found(tz: ZoneInfo, m: Member, now: datetime,
+           kind: str = KIND) -> list[tuple[date, datetime, bool]]:
+    """The slot in the window and the missed slot of *m* in *tz*, for
+    the time of *kind*."""
     out: list[tuple[date, datetime, bool]] = []
-    for found, is_missed in ((slot(tz, m.brief_time, now), False),
-                             (missed(tz, m.brief_time, now), True)):
+    at = time_of(m, kind)
+    for found, is_missed in ((slot(tz, at, now), False), (missed(tz, at, now), True)):
         if found is not None:
             out.append((found[0], found[1], is_missed))
     return out
@@ -212,11 +244,14 @@ async def _candidates(db: Any, org: str, now: datetime) -> tuple[list[Member], Z
         if not m.enabled:
             continue
         zones = {member_zone(zone_of(z), org_zone) for z in stored.get(m.email, set())}
-        dates = {d for tz in zones | {org_zone} for d, _at, _m in _found(tz, m, now)}
-        for d in sorted(dates):
-            if await store.read_run(db, m.email, kind=KIND, local_date=d) is None:
-                out.append(m)
-                break
+        due = False
+        for kind in kinds_of(org):
+            dates = {d for tz in zones | {org_zone} for d, _at, _m in _found(tz, m, now, kind)}
+            for d in sorted(dates):
+                if await store.read_run(db, m.email, kind=kind, local_date=d) is None:
+                    due = True
+        if due:
+            out.append(m)
     return out, org_zone
 
 
@@ -235,9 +270,10 @@ async def _member_slots(org: str, m: Member, org_zone: ZoneInfo,
     day = await my_day_loop._read_day(org, user)
     tz = member_zone(day.tz, org_zone)
     out: list[Slot] = []
-    for local_date, when, is_missed in _found(tz, m, now):
-        if await feed._working_day(user, local_date):
-            out.append(Slot(m, local_date, when, is_missed))
+    for kind in kinds_of(org):
+        for local_date, when, is_missed in _found(tz, m, now, kind):
+            if await feed._working_day(user, local_date):
+                out.append(Slot(m, local_date, when, is_missed, kind))
     return out
 
 
@@ -257,10 +293,10 @@ async def _due(org: str, people: list[Member], org_zone: ZoneInfo,
 async def _write(db: Any, s: Slot, now: datetime) -> bool:
     """Enqueue the run of slot *s*, or record it as missed. True when a new
     job or a new row went in. A slot that has its row gets nothing."""
-    if await store.read_run(db, s.member.email, kind=KIND, local_date=s.local_date) is not None:
+    if await store.read_run(db, s.member.email, kind=s.kind, local_date=s.local_date) is not None:
         return False  # the slot ran, or its job runs now
     if s.missed:
-        created = await store.create_run(db, s.member.email, kind=KIND,
+        created = await store.create_run(db, s.member.email, kind=s.kind,
                                          local_date=s.local_date, slot_at=s.at)
         if not created.created:
             return False
@@ -271,9 +307,8 @@ async def _write(db: Any, s: Slot, now: datetime) -> bool:
         return True
     out = await queue.enqueue(
         db, RUN_KIND,
-        {"member": s.member.email, "local_date": s.local_date.isoformat(),
-         "slot_at": s.at.isoformat()},
-        run_at=s.at - LEAD, dedupe_key=dedupe_key(s.member.email, KIND, s.local_date),
+        payload_of(s),
+        run_at=s.at - LEAD, dedupe_key=dedupe_key(s.member.email, s.kind, s.local_date),
         max_attempts=RUN_ATTEMPTS, now=now)
     return out.created
 
