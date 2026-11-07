@@ -320,24 +320,28 @@ async def host_data_images(sources: list[str], *, member: str) -> dict[str, str]
     return hosted
 
 
-async def signature_for_save(account_id: str, member: str, new: str | None) -> str | None:
-    """The signature that ``PUT /email/assistant/settings`` stores.
+async def signature_for_save(
+    account_id: str, member: str, new: str | None,
+) -> tuple[str | None, list[dict[str, str]]]:
+    """The signature that ``PUT /email/assistant/settings`` stores, and each
+    link or image address that the clean removed from it.
 
     D-EM-70: the server cleans each signature HTML on save, and it hosts
     each ``data:`` image first. A plain-text signature is escaped at the send,
     so it stays as it is. A signature equal to the stored one is no new save:
     it stays byte for byte (§23.0 rule 7), so a change of another setting
     never changes a signature. The caller has checked the mailbox, and this
-    checks it again in its own session."""
+    checks it again in its own session. The removed list goes back to the
+    member as ``signature_removed``, so no link leaves without a word."""
     if not new or not sig.looks_html(new):
-        return new
+        return new, []
     async with _tenant_session() as db:
         await _assert_account_owner(db, account_id, member or "anonymous")
         stored = await sig.stored_signature(db, account_id)
     if new == stored:
-        return new
+        return new, []
     hosted = await host_data_images(sig.data_image_sources(new), member=member)
-    return sig.clean_signature_html(new, hosted=hosted)
+    return sig.clean_signature_report(new, hosted=hosted)
 
 
 __all__ = [

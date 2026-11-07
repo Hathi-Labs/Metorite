@@ -828,14 +828,17 @@ function SignatureDialog({
 }) {
   const [draft, setDraft] = useState(settings.signature || "");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
     setError(null);
+    setNotice(null);
     const next = dialogAfterSave(draft, await onSave(draft));
     setBusy(false);
     setDraft(next.draft);
     setError(next.error);
+    setNotice(next.notice);
     if (!next.open) onClose();
   };
   return (
@@ -852,6 +855,12 @@ function SignatureDialog({
       {error && (
         <p role="alert" data-signature-error className="mb-2 text-[11px] text-destructive">
           {error}
+        </p>
+      )}
+      {/* Saved, and the clean took out each link or image that is not https. */}
+      {notice && (
+        <p role="status" data-signature-removed className="mb-2 text-[11px] text-muted-foreground">
+          {notice}
         </p>
       )}
       <SignatureEditor

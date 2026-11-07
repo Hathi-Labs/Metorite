@@ -17,7 +17,11 @@ from pathlib import Path
 
 import pytest
 from gateway.routes.email import signature as sig
-from gateway.routes.email.signature import clean_signature_html, data_image_sources
+from gateway.routes.email.signature import (
+    clean_signature_html,
+    clean_signature_report,
+    data_image_sources,
+)
 
 _EDITOR = (
     Path(__file__).resolve().parents[2]
@@ -190,3 +194,28 @@ def test_the_server_lists_equal_the_editor_lists() -> None:
     assert uri, "SIG_ALLOWED_URI is gone"
     assert set(uri.group(1).split("|")) == {"https:", "mailto:", "tel:"}
     assert "data:" not in uri.group(1) and "https?" not in uri.group(1)
+
+
+def test_the_report_names_each_refused_address_once() -> None:
+    """Fix round 1, P2: the save answers what the clean removed."""
+    long = "http://track.example/" + "x" * 300
+    html = ('<a href="http://a.example">a</a><a href="http://a.example">again</a>'
+            '<a href="javascript:alert(1)">j</a><img src="http://cdn.example/l.png">'
+            f'<img src="{long}"><a href="https://ok.example">ok</a><a href="">empty</a>')
+    out, removed = clean_signature_report(html)
+    assert out == clean_signature_html(html)
+    assert removed[:3] == [
+        {"kind": "link", "value": "http://a.example"},
+        {"kind": "link", "value": "javascript:alert(1)"},
+        {"kind": "image", "value": "http://cdn.example/l.png"},
+    ]
+    assert removed[3]["kind"] == "image"
+    assert len(removed[3]["value"]) == 120 and removed[3]["value"].endswith("…")
+    assert len(removed) == 4, "a kept link and an empty one are not reported"
+
+
+def test_a_hosted_data_image_is_not_reported() -> None:
+    src = "data:image/png;base64,iVBORw0KGgo="
+    _, removed = clean_signature_report(
+        f'<img src="{src}">', hosted={src: "https://h.example/x.png"})
+    assert removed == []

@@ -267,6 +267,9 @@ _URL_CONTROLS = re.compile(r"[\x00-\x1f\x7f]")
 #: What a browser trims at each end of a URL: the C0 controls and space.
 _URL_TRIM = "".join(chr(c) for c in range(0x21))
 _DATA_IMAGE = re.compile(r"data:image/[a-z0-9.+-]+;base64,", re.IGNORECASE)
+#: The removed addresses that a save reports, and the length of each one.
+_REMOVED_MAX = 20
+_REMOVED_CHARS = 120
 
 
 def _clean_url(value: str) -> str | None:
@@ -348,6 +351,9 @@ class _SignatureCleaner(HTMLParser):
         self._skip = 0
         self._open: list[str] = []
         self._hosted = hosted
+        #: Each link or image address that the URL rule refused, in order
+        #: (fix round 1, P2): the save tells the member what went.
+        self.removed: list[dict[str, str]] = []
 
     def _attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> list[str] | None:
         """The kept attributes, or ``None`` when the tag itself goes."""
@@ -358,16 +364,29 @@ class _SignatureCleaner(HTMLParser):
             if name not in _SIG_ATTRS or value is None or name in seen:
                 continue
             seen.add(name)
+            given = value
             if name == "src" and _DATA_IMAGE.match(value.strip()):
                 value = self._hosted.get(value.strip(), "")
             clean = _clean_attr(name, value)
             if clean is None:
+                if name in ("href", "src") and given.strip():
+                    self._note_removed("image" if name == "src" else "link", given)
                 continue
             has_src = has_src or name == "src"
             kept.append(f' {name}="{_html.escape(clean, quote=True)}"')
         if tag == "img" and not has_src:
             return None
         return kept
+
+    def _note_removed(self, kind: str, value: str) -> None:
+        """Note one refused address, at most :data:`_REMOVED_MAX` of them,
+        each cut to :data:`_REMOVED_CHARS` characters."""
+        shown = _URL_CONTROLS.sub("", value.strip())
+        if len(shown) > _REMOVED_CHARS:
+            shown = shown[: _REMOVED_CHARS - 1] + "…"
+        item = {"kind": kind, "value": shown}
+        if item not in self.removed and len(self.removed) < _REMOVED_MAX:
+            self.removed.append(item)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in _DROP_WITH_CONTENT:
@@ -445,6 +464,19 @@ def data_image_sources(signature: str) -> list[str]:
     return finder.found
 
 
+def clean_signature_report(
+    signature: str, *, hosted: Mapping[str, str] | None = None,
+) -> tuple[str, list[dict[str, str]]]:
+    """:func:`clean_signature_html`, and each address that it removed.
+
+    Each item is ``{"kind": "link" | "image", "value": <the address>}``. The
+    settings save answers them as ``signature_removed``, so the dialog can say
+    "We removed 2 items that do not use https" (fix round 1, P2)."""
+    cleaner = _SignatureCleaner(hosted or {})
+    cleaner.feed(signature or "")
+    return cleaner.finish(), cleaner.removed
+
+
 def clean_signature_html(
     signature: str, *, hosted: Mapping[str, str] | None = None,
 ) -> str:
@@ -456,6 +488,4 @@ def clean_signature_html(
     ``javascript:``, ``http:`` or ``data:`` URL go. ``hosted`` maps a
     ``data:image`` source to its hosted URL. A second run gives the same text.
     """
-    cleaner = _SignatureCleaner(hosted or {})
-    cleaner.feed(signature or "")
-    return cleaner.finish()
+    return clean_signature_report(signature, hosted=hosted)[0]

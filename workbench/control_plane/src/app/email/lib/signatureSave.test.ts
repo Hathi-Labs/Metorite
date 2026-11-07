@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  dialogAfterSave, patchBody, saveSignature, settingsAfterSave,
+  dialogAfterSave, patchBody, removedLine, saveSignature, settingsAfterSave,
 } from "./signatureSave";
 import type { AssistantSettings } from "./types";
 
@@ -25,7 +25,7 @@ describe("a refused signature save", () => {
   it("keeps the dialog open, with the server's sentence and the member's edit", async () => {
     const result = await saveSignature(STORED, EDIT, refuse);
     expect(result).toEqual({ ok: false, error: REFUSAL });
-    expect(dialogAfterSave(EDIT, result)).toEqual({ open: true, draft: EDIT, error: REFUSAL });
+    expect(dialogAfterSave(EDIT, result)).toEqual({ open: true, draft: EDIT, error: REFUSAL, notice: null });
   });
 
   it("keeps the STORED signature in the settings, so the card shows what saved", async () => {
@@ -49,9 +49,46 @@ describe("a saved signature", () => {
   it("closes the dialog and keeps the server's cleaned signature", async () => {
     const result = await saveSignature(STORED, EDIT, accept);
     expect(dialogAfterSave(EDIT, result)).toEqual({
-      open: false, draft: "<p>Jane Doe, CEO</p>", error: null,
+      open: false, draft: "<p>Jane Doe, CEO</p>", error: null, notice: null,
     });
     expect(settingsAfterSave(STORED, result).signature).toBe("<p>Jane Doe, CEO</p>");
+  });
+});
+
+describe("the clean removed something (D-EM-70 stays strict)", () => {
+  const removed = [
+    { kind: "link" as const, value: "http://acme.example/about" },
+    { kind: "image" as const, value: "http://cdn.example/logo.png" },
+  ];
+
+  it("says what went, in one plain line", () => {
+    expect(removedLine(removed)).toBe(
+      "We removed 2 items that do not use https: http://acme.example/about, http://cdn.example/logo.png",
+    );
+    expect(removedLine([removed[0]])).toBe(
+      "We removed 1 item that does not use https: http://acme.example/about",
+    );
+    expect(removedLine([])).toBeNull();
+    expect(removedLine(undefined)).toBeNull();
+  });
+
+  it("keeps the dialog open on the saved signature, with that line", async () => {
+    const save = vi.fn(async (next: AssistantSettings) => ({
+      ...next, signature: "<p>Jane</p>", signature_removed: removed,
+    }));
+    const result = await saveSignature(STORED, EDIT, save);
+    expect(dialogAfterSave(EDIT, result)).toEqual({
+      open: true, draft: "<p>Jane</p>", error: null, notice: removedLine(removed),
+    });
+    expect(settingsAfterSave(STORED, result).signature).toBe("<p>Jane</p>");
+  });
+
+  it("draws the line in the dialog", () => {
+    const tab = readFileSync(
+      new URL("../components/automation/ai-settings/SettingsTab.tsx", import.meta.url), "utf8",
+    );
+    expect(tab).toMatch(/setNotice\(next\.notice\)/);
+    expect(tab).toMatch(/\{notice && \(\s*<p role="status" data-signature-removed/);
   });
 });
 

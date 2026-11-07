@@ -416,6 +416,9 @@ async def get_assistant_settings(
             # https address to host a signature image. The editor turns its
             # upload button off.
             "signature_image_upload": _signature_upload_on(),
+            # Only a save removes anything (the PUT answer). The key is here so
+            # the GET and the PUT carry the same keys.
+            "signature_removed": [],
         }
 
 
@@ -433,7 +436,7 @@ async def put_assistant_settings(
     from gateway.routes.email.signature_images import (
         signature_for_save,
     )
-    signature = await signature_for_save(
+    signature, signature_removed = await signature_for_save(
         req.account_id, user.email or "anonymous", req.signature)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
@@ -562,6 +565,9 @@ async def put_assistant_settings(
             "insights_enabled": req.insights_enabled,
             "own_domain": own_domain,
             "signature_image_upload": _signature_upload_on(),
+            # WS-17 SG-1 (D-EM-70): each link or image address that the clean
+            # of THIS save removed, so the dialog can name it.
+            "signature_removed": signature_removed,
         }
 
 

@@ -683,10 +683,33 @@ def stored_legacy(monkeypatch):
 async def test_an_edit_hosts_the_legacy_image_and_keeps_the_edit(
     monkeypatch, base_url, stored_legacy,
 ):
-    out = await routes.signature_for_save(_ACCOUNT, _ME, _EDITED)
+    out, removed = await routes.signature_for_save(_ACCOUNT, _ME, _EDITED)
     assert out == (f'<p>Jane Doe, CEO</p><img src="{_BASE}/email/signature-image/'
                    f'{_ORG}/{"h" * 43}.png" width="64">')
+    assert removed == []
     assert stored_legacy == [_ME], "the real child ran once and the image was stored"
+
+
+async def test_the_save_names_each_address_that_the_clean_removed(
+    monkeypatch, base_url, stored_legacy,
+):
+    """Fix round 1, P2: D-EM-70 stays strict, and the member hears what went."""
+    edited = ('<p>Jane</p><a href="http://acme.example/about">About</a>'
+              '<img src="http://cdn.example/logo.png"><a href="https://ok.example">ok</a>')
+    out, removed = await routes.signature_for_save(_ACCOUNT, _ME, edited)
+    assert out == '<p>Jane</p><a>About</a><a href="https://ok.example">ok</a>'
+    assert removed == [
+        {"kind": "link", "value": "http://acme.example/about"},
+        {"kind": "image", "value": "http://cdn.example/logo.png"},
+    ]
+
+
+def test_the_put_answer_carries_the_removed_list() -> None:
+    from gateway.routes.email.automation import assistant as assistant_mod
+
+    source = Path(assistant_mod.__file__).read_text(encoding="utf-8")
+    assert '"signature_removed": signature_removed,' in source
+    assert "signature, signature_removed = await signature_for_save(" in source
 
 
 async def test_with_no_https_base_an_edit_refuses_and_drops_nothing(
@@ -705,5 +728,5 @@ async def test_a_save_of_the_stored_legacy_signature_changes_nothing(
     monkeypatch, stored_legacy,
 ):
     monkeypatch.delenv("GATEWAY_PUBLIC_URL", raising=False)
-    assert await routes.signature_for_save(_ACCOUNT, _ME, _LEGACY) == _LEGACY
+    assert await routes.signature_for_save(_ACCOUNT, _ME, _LEGACY) == (_LEGACY, [])
     assert stored_legacy == []

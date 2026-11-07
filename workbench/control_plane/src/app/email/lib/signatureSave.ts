@@ -12,7 +12,7 @@
 //    edit that did not save, because it builds on the settings state.
 //
 // Pure functions, so the runner (no DOM) tests each rule. SettingsTab wires them.
-import type { AssistantSettings } from "./types";
+import type { AssistantSettings, SignatureRemoved } from "./types";
 
 export type SignatureSave =
   | { ok: true; settings: AssistantSettings }
@@ -50,13 +50,28 @@ export interface SignatureDialogState {
   draft: string;
   /** The server's sentence of a refused save, shown inside the dialog. */
   error: string | null;
+  /** The one line that names what the server's clean removed. */
+  notice: string | null;
+}
+
+/** The one line for the links and images that the clean removed (D-EM-70:
+ *  https, mailto and tel only), or null when it removed nothing. */
+export function removedLine(removed: SignatureRemoved[] | undefined): string | null {
+  const items = removed ?? [];
+  if (!items.length) return null;
+  const n = items.length;
+  const what = n === 1 ? "1 item that does" : `${n} items that do`;
+  return `We removed ${what} not use https: ${items.map((r) => r.value).join(", ")}`;
 }
 
 /** A refused save keeps the dialog open with the edit and the sentence. A
- *  saved one closes it. */
+ *  saved one closes it, unless the clean removed something: then it stays
+ *  open on the saved signature and says what went, once. */
 export function dialogAfterSave(draft: string, result: SignatureSave): SignatureDialogState {
-  if (!result.ok) return { open: true, draft, error: result.error };
-  return { open: false, draft: result.settings.signature ?? "", error: null };
+  if (!result.ok) return { open: true, draft, error: result.error, notice: null };
+  const saved = result.settings.signature ?? "";
+  const notice = removedLine(result.settings.signature_removed);
+  return { open: notice !== null, draft: saved, error: null, notice };
 }
 
 /** The body of a save of OTHER settings (a toggle): it builds on the settings
