@@ -1302,7 +1302,7 @@ They keep their own gates.
 - **Done when.** R8: with the master on and organization B off the list, a delivery for B writes nothing, and one for A links its pull request.
 - **Fence.** `test_github_webhook_r8.py` (new cases) and `test_github_reconcile_r8.py`.
 - **Risk.** HIGH (webhook ingress, tenancy). **Gate.** AGENT-SAFE dark. The turn-on is GH-8. **Depends on.** GH-4 to GH-6.
-- **Built.** 2026-11-07, dark. `GITHUB_APP_ORGS` is in `settings.py`, and `github_app.github_app_org_allowed` is its one reader. With the master on, an empty list turns every org off. The backfill is NOT built, and it stays an OWNER-GATE production one-off.
+- **Built.** 2026-11-07, dark. `GITHUB_APP_ORGS` is in `settings.py`, and `github_app.github_app_org_allowed` is its one reader. With the master on, an empty list turns every org off. `github.installation_of` asks it too, so it is the single gate, and no lazy App-mode reader writes for an org off the list. The backfill is NOT built, and it stays an OWNER-GATE production one-off.
 
 #### SW-54 · Required checks on the task
 

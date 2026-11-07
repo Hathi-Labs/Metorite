@@ -51,6 +51,10 @@ Fix round 1, each one red when run:
   ``test_f4_a_cancelled_confirm_does_not_expire_the_next_connect``.
 * F5-M3 ``installation_of`` ignores the flag ->
   ``test_f5_the_flag_off_stops_every_app_reader_and_keeps_a_token_row``.
+* SW53-M4 ``installation_of`` ignores ``GITHUB_APP_ORGS`` ->
+  ``test_sw53_installation_of_is_the_single_gate_of_the_org_list``.
+* SW53-M5 the account card reads only the master ->
+  ``test_sw53_the_account_card_offers_connect_only_on_the_list``.
 
 Run (real Postgres, private Redis)::
 
@@ -280,6 +284,47 @@ async def test_sw53_an_org_off_the_list_cannot_connect(world, monkeypatch) -> No
     assert w.gh.requests == []
     resp = await _call(w, g.user(ADMIN_A, w.p.org_a), "POST", "/integrations/github/app/start")
     assert resp.status_code == 200, resp.text
+
+
+async def test_sw53_installation_of_is_the_single_gate_of_the_org_list(world, monkeypatch) -> None:
+    """SW-53 fix round 1 (P1): ``installation_of`` reads ``GITHUB_APP_ORGS``.
+    A live App row of an org off the list gives ``None``, so the token path
+    asks GitHub for nothing. The same row on the list gives its id."""
+    from acb_common import get_settings
+    from gateway.connections import github as github_connection
+    from gateway.connections import store as connection_store
+    from gateway.db import tenant_session
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    w = world
+    g.seed_github_row(w.p, w.p.org_a, INSTALL_ORG)
+    async with tenant_engine_scope(g.app_dsn(w.p)), tenant_session(w.p.org_a) as db:
+        row = await connection_store.get(
+            db, w.p.org_a, github_connection.PROVIDER, github_connection.OWNING_APP)
+    assert row is not None and row.organization_id == w.p.org_a
+    monkeypatch.setattr(get_settings(), "github_app_orgs", w.p.org_b)
+    assert github_connection.installation_of(row) is None
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        assert await github_connection.token_or_none(w.p.org_a) is None
+    assert w.gh.token_requests == 0, "no installation token for an org off the list"
+    monkeypatch.setattr(get_settings(), "github_app_orgs", w.p.org_a)
+    assert github_connection.installation_of(row) == INSTALL_ORG
+
+
+async def test_sw53_the_account_card_offers_connect_only_on_the_list(world, monkeypatch) -> None:
+    """SW-53 fix round 1 (P2): with the master on, an org off the list sees no
+    Connect GitHub button. The org on the list sees it."""
+    from acb_common import get_settings
+
+    w = world
+    monkeypatch.setattr(get_settings(), "github_app_orgs", w.p.org_a)
+    off = await _call(w, g.user(ADMIN_B, w.p.org_b), "GET", "/integrations/github/account")
+    on = await _call(w, g.user(ADMIN_A, w.p.org_a), "GET", "/integrations/github/account")
+    assert off.status_code == 200 and on.status_code == 200, (off.text, on.text)
+    assert off.json()["app_available"] is False
+    assert on.json()["app_available"] is True
+    assert w.gh.requests == []
 
 
 # ── C2, C3 ──────────────────────────────────────────────────────────────────

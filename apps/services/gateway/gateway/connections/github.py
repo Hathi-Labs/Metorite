@@ -202,12 +202,21 @@ def installation_of(row: store.Connection | None) -> int | None:
     :func:`token_or_none`, the refs reads, the checks reads, the poll and the
     connection test. A ``token`` row does not pass through here, so it keeps
     working.
+
+    ⚠️ **The org switch (SW-53, task 1886).** This is the single gate of
+    ``GITHUB_APP_ORGS`` for the lazy readers too. An org off the list gets
+    ``None``, so the refs refresh, the checks read, the token and the
+    connection test write nothing and call nothing. The org is the row's own
+    ``organization_id``, read under the bound tenant, never request input
+    (R5). Fence: ``tests/unit/test_github_per_org_r8.py``.
     """
     from gateway.connections import github_app
 
     if not github_app.app_enabled():
         return None
     if not is_app_row(row) or row is None or row.status != store.STATUS_CONNECTED:
+        return None
+    if not github_app.github_app_org_allowed(row.organization_id):
         return None
     return github_app.installation_id_of(row.provider_meta.get("installation_id"))
 
