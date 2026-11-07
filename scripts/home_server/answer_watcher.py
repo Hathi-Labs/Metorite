@@ -188,16 +188,51 @@ def last_prompt_member(msg: Any) -> str | None:
     return str(prompts[-1].get("member") or "") or None
 
 
+#: The most pages the vet reads for one run (200 rows a page). A run that
+#: needs more is left alone: the vet cannot see its newest prompt.
+VET_MAX_PAGES = 10
+
+
+def vet_member(read: Callable[[int | None], Any]) -> str | None:
+    """The member of the newest person prompt over ALL pages of a run.
+
+    *read* takes the cursor (``None`` for the first page) and returns one
+    ``get_agent_run`` answer. A page holds the OLDEST rows after the cursor,
+    so the newest prompt may sit on a later page (review of CIV-14g). Raises
+    when the run needs more than :data:`VET_MAX_PAGES` pages.
+    """
+    who: str | None = None
+    cursor: int | None = None
+    for _ in range(VET_MAX_PAGES):
+        msg = read(cursor)
+        found = last_prompt_member(msg)
+        if found is not None:
+            who = found
+        body = _payload(msg)
+        acts = body.get("activities")
+        nxt = body.get("cursor")
+        if not isinstance(acts, list) or not acts or not isinstance(nxt, int) or nxt == cursor:
+            return who
+        cursor = nxt
+    raise RuntimeError("the run has too many pages to vet")
+
+
 def make_vet(token: str, sid: str | None) -> Callable[[dict[str, Any]], bool]:
     """A run passes when its newest person prompt is by the member of the run.
 
     A run with no person prompt (a ``queued`` run: a member asked an agent)
     passes: the member of the run made it. A prompt by ANOTHER member does not.
+    The vet reads every page of the run, not only the first.
     """
 
     def vet(run: dict[str, Any]) -> bool:
-        msg = _rpc(token, sid, 3, "get_agent_run", {"run_id": run["id"]})
-        who = last_prompt_member(msg)
+        def read(after: int | None) -> Any:
+            args: dict[str, Any] = {"run_id": run["id"]}
+            if after is not None:
+                args["after"] = after
+            return _rpc(token, sid, 3, "get_agent_run", args)
+
+        who = vet_member(read)
         return who is None or who == run.get("member")
 
     return vet
@@ -329,7 +364,7 @@ def prompt_for(run: dict[str, Any], worktree: str = "(your current directory)") 
         "You are a fresh session that the answer watcher of metorite-home started "
         "for this agent run. "
         "The session that asked ended its turn, and a person answered or queued work. "
-        "Call get_agent_run on this run, and read the answer. "
+        "Call get_agent_run on this run, and read EVERY page (pass after set to the cursor of the page before) until a page has no activities, and then pick the newest prompt of a person. "
         "Call claim_task on the task, then get_task_context with comments all. "
         "Act on the answer only when it is the newest prompt of a person, its member "
         "is the member of the run, and no later activity withdrew it. "

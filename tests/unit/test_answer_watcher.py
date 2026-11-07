@@ -291,3 +291,38 @@ def test_the_units():
     assert "systemctl --user enable" not in install
     assert '"600"' in script  # enable refuses a token file that is not mode 0600
     assert "mbt_" not in script and "mbt_" not in service
+
+
+
+def test_the_vet_reads_every_page_and_takes_the_newest_prompt():
+    """Review of CIV-14g: a page holds the OLDEST rows. The newest person
+    prompt may be on a later page, and it may be by another member."""
+    pages = {
+        None: {"result": {"structuredContent": {"cursor": 5, "activities": [
+            {"type": "prompt", "author": "person", "member": OWNER}]}}},
+        5: {"result": {"structuredContent": {"cursor": 9, "activities": [
+            {"type": "prompt", "author": "person", "member": "other@example.com"}]}}},
+        9: {"result": {"structuredContent": {"cursor": 9, "activities": []}}},
+    }
+    seen: list = []
+
+    def read(cursor):
+        seen.append(cursor)
+        return pages[cursor]
+
+    assert aw.vet_member(read) == "other@example.com"
+    assert seen == [None, 5, 9]
+
+
+def test_a_run_with_too_many_pages_is_not_vetted():
+    def endless(cursor):
+        n = (cursor or 0) + 1
+        return {"result": {"structuredContent": {"cursor": n, "activities": [{"type": "thought"}]}}}
+
+    with pytest.raises(RuntimeError):
+        aw.vet_member(endless)
+
+
+def test_the_prompt_tells_the_session_to_read_every_page():
+    text = aw.prompt_for(run())
+    assert "EVERY page" in text and "cursor" in text
