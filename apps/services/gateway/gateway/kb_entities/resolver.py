@@ -19,6 +19,14 @@ ask. The PZ-5 helpers ``fold``, ``email_in_org`` and ``_directory_tier`` are
 imported, never copied. ``acb_graph`` resolves a different Person model,
 and this module never calls it.
 
+**An entity by a name or a citation (KG-7).** :func:`resolve_entity` maps
+the words of ``get_entity`` to the entities the caller sees. A citation
+(:data:`CITATIONS`) reads one row. A name goes through three tiers: an alias
+equal to the words, then a name equal to the words, then a name or an alias
+that holds the words. The first tier with a row wins. Each read runs under
+the owner rule of its type, through ``registry``. :func:`find_entity` opens
+the tenant session for ``gateway/retrieval/``, which holds no SQL.
+
 **A viewer only.** Each function takes the caller's ``UserContext`` and
 returns names that the caller may read. A background caller (KC-6, KC-9)
 has no viewer and gets entity ids only, from a later door.
@@ -37,7 +45,16 @@ from gateway.routes.admin.assistant_profile_people import (
     fold,
 )
 
-__all__ = ["fold", "matches_query", "resolve_alias", "resolve_person"]
+__all__ = [
+    "CITATIONS",
+    "find_entity",
+    "fold",
+    "matches_query",
+    "parse_citation",
+    "resolve_alias",
+    "resolve_entity",
+    "resolve_person",
+]
 
 #: The rows that hold one alias or more. A code constant, never input.
 _HAS_ALIASES = "cardinality(e.aliases) > 0"
@@ -124,3 +141,99 @@ async def resolve_person(db: Any, user: UserContext, words: str) -> dict[str, An
         return {**empty, "via": None}
     status = "one" if len(matches) == 1 else "ask"
     return {"status": status, "via": via, "matches": matches, "directory": True}
+
+
+# ── An entity by a name or a citation (WS-KG KG-7) ──────────────────────────
+
+#: Each citation prefix that names an entity, and the type and owner table it
+#: reads. ``entity:<id>`` is the row of ``kb_entities`` itself. ``company`` is
+#: the node kind of a CRM company (``knowledge_graph.md`` §3.1), so it names
+#: a ``customer``.
+CITATIONS: dict[str, tuple[str, str] | None] = {
+    "entity": None,
+    "person": ("person", "people"),
+    "company": ("customer", "crm_companies"),
+    "workstream": ("workstream", "pm_projects"),
+    "workflow": ("workflow", "workflows"),
+}
+
+#: The most rows of one type that the name tiers read.
+NAME_READ_CAP = 200
+
+#: The most entities that :func:`resolve_entity` answers.
+RESOLVE_MAX = 20
+
+
+def parse_citation(words: str) -> tuple[str, str] | None:
+    """``(prefix, id)`` when *words* is a citation of :data:`CITATIONS`, or None.
+
+    Brackets around the citation are dropped. An id that is not a UUID is no
+    citation, so the words then go to the name tiers.
+    """
+    raw = str(words or "").strip().strip("[]()<>").strip()
+    prefix, sep, rest = raw.partition(":")
+    prefix = prefix.strip().lower()
+    if not sep or prefix not in CITATIONS:
+        return None
+    from gateway.routes.knowledge import core
+
+    ident = core.parse_id(rest.strip())
+    return (prefix, ident) if ident else None
+
+
+def _unique(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The rows once each, by their owner row, in their order."""
+    seen: dict[tuple[Any, Any], dict[str, Any]] = {}
+    for row in rows:
+        key = (row.get("ref_table"), row.get("ref_id") or row.get("id"))
+        seen.setdefault(key, row)
+    return list(seen.values())[:RESOLVE_MAX]
+
+
+async def resolve_entity(db: Any, user: UserContext, words: str) -> list[dict[str, Any]]:
+    """The entities that *words* names, each under its owner rule (§6.4).
+
+    A citation reads its one row. A name reads three tiers, and the first
+    tier with a row wins: an alias equal to the folded words
+    (:func:`resolve_alias`), a name equal to them, then a name or an alias
+    that holds them. A row the caller cannot see is never read, so an
+    unknown name and a hidden entity give the same empty answer.
+    """
+    cited = parse_citation(words)
+    if cited is not None:
+        prefix, ident = cited
+        if CITATIONS[prefix] is None:
+            row = await registry.get_entity(db, user, ident)
+            return [row] if row else []
+        kind, table = CITATIONS[prefix]  # type: ignore[misc]
+        rows, _ = await registry.directory_rows(
+            db, user, kind, ref_table=table, ref_id=ident, cap=1)
+        return rows[:1]
+    wanted = fold(words)
+    if not wanted:
+        return []
+    alias = _unique(await resolve_alias(db, user, words))
+    if alias:
+        return alias
+    exact: list[dict[str, Any]] = []
+    partial: list[dict[str, Any]] = []
+    for each in registry.ENTITY_TYPES:
+        rows, _ = await registry.directory_rows(db, user, each, q=wanted, cap=NAME_READ_CAP)
+        for row in rows:
+            if fold(row.get("name")) == wanted:
+                exact.append(row)
+            elif matches_query(row, wanted):
+                partial.append(row)
+    return _unique(exact) or _unique(partial)
+
+
+async def find_entity(user: UserContext, words: str) -> list[dict[str, Any]]:
+    """:func:`resolve_entity` in its own tenant session (KG-7).
+
+    Row level security binds the tenant of the request, and each rule also
+    names ``user.organization_id``. So ``gateway/retrieval/`` holds no SQL.
+    """
+    from gateway.db import tenant_session
+
+    async with tenant_session() as db:
+        return await resolve_entity(db, user, words)

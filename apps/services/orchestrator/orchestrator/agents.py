@@ -509,6 +509,31 @@ def _profile_card_writes_enabled(org: str | None = None) -> bool:
         return False
 
 
+def _graph_search_enabled(org: str | None = None) -> bool:
+    """True when ``GRAPH_SEARCH_ORGS`` names this assistant's organization (KG-7).
+
+    The rule is ``acb_skills.company_search_tools.graph_search_enabled``, the
+    one reader that the gateway's graph step reads too. *org* is the
+    organization of the caller's server-side ``UserContext``. With none, the
+    bound tenant and then the run's org answer, as for the profile. A caller
+    with none of them fails closed. Never raises.
+    """
+    try:
+        from acb_skills.company_search_tools import graph_search_enabled
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return graph_search_enabled(org)
+    except Exception:
+        return False
+
+
 def _spawn_subagents_enabled(org: str | None = None) -> bool:
     """True when ``spawn_subagents`` is on for this assistant's organization.
 
@@ -1165,7 +1190,11 @@ def build_orchestrator_agent(
     # KB-5a: the two proposals too, and only with KNOWLEDGE_PROPOSALS on. Each
     # asks with a card and never publishes.
     if company_search:
-        from acb_skills.company_search_tools import search_company, search_company_dated
+        from acb_skills.company_search_tools import (
+            get_entity,
+            search_company,
+            search_company_dated,
+        )
         from acb_skills.knowledge_tools import (
             list_spaces,
             propose_edit,
@@ -1176,7 +1205,12 @@ def build_orchestrator_agent(
         # CX-1: with CONTEXT_RECENCY on, the tool of the same name that takes
         # `after` and prints the stamp.
         company_tool = search_company_dated if recency else search_company
-        retrieval_tools: list[Any] = [company_tool, read_page, list_spaces]
+        # WS-KG KG-7: the entity card, beside the search, only while
+        # GRAPH_SEARCH_ORGS names the org. Off, the list does not change.
+        # Fence: tests/unit/test_get_entity_tool.py.
+        entity_tools: list[Any] = (
+            [get_entity] if _graph_search_enabled(organization_id) else [])
+        retrieval_tools: list[Any] = [company_tool, *entity_tools, read_page, list_spaces]
         if proposals:
             retrieval_tools += [propose_page, propose_edit]
     else:

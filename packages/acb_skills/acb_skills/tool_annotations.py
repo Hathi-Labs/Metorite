@@ -167,6 +167,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # WS-61 KR-2: company retrieval (`company_search_tools.py`). It reads
     # `GET /search/company` as the member, and nothing leaves the platform.
     "search_company":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-KG KG-7: the entity card (`company_search_tools.py`). It reads
+    # `GET /search/entity` as the member, and nothing leaves the platform.
+    "get_entity":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-63 PZ-5: a name to one colleague (`profile_tools.py`). It reads
     # `GET /auth/me/assistant-profile/resolve-person` as the member, and
     # nothing leaves the platform.
@@ -260,6 +263,9 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # holds it, behind COMPANY_SEARCH_ENABLED. So every risk block stays
     # byte-identical.
     "search_company",
+    # WS-KG KG-7: the entity card only reads, and only the orchestrator holds
+    # it, behind COMPANY_SEARCH_ENABLED and GRAPH_SEARCH_ORGS.
+    "get_entity",
     # WS-61 KB-4a: the two Knowledge reads, on the same terms.
     "read_page",
     "list_spaces",

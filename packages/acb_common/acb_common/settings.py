@@ -576,6 +576,22 @@ class Settings(BaseSettings):
     # is `gateway.routes.knowledge.flags`. A flip on production is the owner's.
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_sync: str = ""
+    # WS-KG KG-4 (knowledge_graph.md §4.1 and §8). The organization ids whose
+    # records the graph sweep joins each night, in the grammar of
+    # `knowledge_orgs`. `*` is each org. Empty, the default, means no
+    # organization: the seed hook enqueues no job and the job writes no edge.
+    # The one reader is `gateway.kb_entities.graph.sweep_allowed`. It calls no
+    # model and spends nothing. AGENT-SAFE: a flip is gate `enforcement-flip`.
+    # Fences: tests/unit/test_kg_links_writer.py, test_kg_links_r8.py.
+    graph_sweep_orgs: str = ""
+    # WS-KG KG-6 (knowledge_graph.md §5 and §8). The organization ids whose
+    # `GET /search/company` adds the neighbours of its first hits, in the
+    # grammar of `knowledge_orgs`. `*` is each org. Empty, the default, means no
+    # organization: the route reads no edge and its answer does not change.
+    # The one reader is `gateway.kb_entities.graph.search_allowed`. It calls no
+    # model and spends nothing. AGENT-SAFE: a flip is gate `enforcement-flip`.
+    # Fences: tests/unit/test_company_search_graph.py, test_kg_neighbours_r8.py.
+    graph_search_orgs: str = ""
 
     # H-328 part (b): the orgs whose UNATTENDED workflow runs may start. A
     # schedule tick, a matured wait and the startup sweep act only for an org

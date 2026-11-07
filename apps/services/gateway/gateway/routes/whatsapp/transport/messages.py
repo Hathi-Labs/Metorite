@@ -190,6 +190,50 @@ _WA_FTS = (
 )
 
 
+def _own_accounts(params: dict[str, Any], account_id: str | None = None) -> str:
+    """The ONE scope of a message read: the member's own accounts.
+
+    ``params["uid"]`` must hold the member's email. *account_id* narrows the
+    scope to that account, and binds ``:aid``. The search and the read by id
+    (WS-KG KG-6) both call it, so the two cannot drift.
+    """
+    scope = "m.account_id IN (SELECT id FROM wa_accounts WHERE user_id = :uid"
+    if account_id:
+        scope += " AND id = :aid"
+        params["aid"] = account_id
+    return scope + ")"
+
+
+#: The most ids one read by id takes (WS-KG KG-6).
+MAX_OPEN = 50
+
+
+async def open_messages(user: UserContext, ids: list[str]) -> list[WhatsAppMessageModel]:
+    """The messages of *ids* in the member's own accounts (WS-KG KG-6).
+
+    The read by id of company retrieval (``knowledge_graph.md`` §6). The
+    scope is the one of :func:`search_messages`, so a neighbour never names a
+    message that the search would hide. The caller checks
+    ``feature:whatsapp`` first, as the router does. A bad id, and a message
+    of another member, are left out.
+    """
+    wanted = [m for m in (_uuid_or_none(i) for i in ids or []) if m]
+    wanted = list(dict.fromkeys(wanted))[:MAX_OPEN]
+    if not wanted:
+        return []
+    params: dict[str, Any] = {"uid": user.email or "anonymous", "ids": wanted}
+    async with _tenant_session() as db:
+        rows = (await db.execute(
+            text(f"""SELECT {_COLUMNS}
+                     FROM wa_messages m
+                     JOIN wa_chats c ON c.id = m.chat_id
+                     WHERE {_own_accounts(params)}
+                       AND m.id = ANY(CAST(:ids AS uuid[]))"""),
+            params,
+        )).fetchall()
+    return [_message_model(r) for r in rows]
+
+
 def _like(value: str) -> str:
     """*value* as an ILIKE pattern of a substring, with its wildcards escaped."""
     escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -279,11 +323,7 @@ async def search_messages(
         raise HTTPException(status_code=422, detail="Give q or a filter.")
 
     async with _tenant_session() as db:
-        scope = "m.account_id IN (SELECT id FROM wa_accounts WHERE user_id = :uid"
-        if account_id:
-            scope += " AND id = :aid"
-            params["aid"] = account_id
-        scope += ")"
+        scope = _own_accounts(params, account_id)
 
         tsquery = (
             "websearch_to_tsquery('simple', :q)" if websearch
