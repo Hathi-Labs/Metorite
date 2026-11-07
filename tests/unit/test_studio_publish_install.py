@@ -155,3 +155,18 @@ def test_the_switch_of_the_package_host_decides_and_the_install_follows_the_sync
     lines = {ast.unparse(n.func): n.lineno for n in ast.walk(publish) if isinstance(n, ast.Call)}
     assert lines["objects_store.sync_objects"] < lines["_keep_install"]
     assert lines["store.publish_version"] < lines["_keep_install"]
+
+
+# ── 6. The lock of a new version (fix round 1) ─────────────────────────────
+
+
+def test_set_version_takes_the_org_lock_through_the_one_helper() -> None:
+    """PKG-9 merged first, so set_version calls _lock_org and keeps no copy
+    of the lock block. It runs no _APP_SQL, and its comment says why."""
+    import inspect
+
+    src = inspect.getsource(store.set_version)
+    assert '_lock_org(db, "a new version")' in src
+    for copied in ("_LOCK_SQL", "_ORG_SQL", "transaction_isolation"):
+        assert copied not in src, copied
+    assert "_APP_SQL" in src and "check the app first" in src
