@@ -1692,13 +1692,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-18 · PR #1128 and its review
 
-### H-367 · No R8 test drives a connection with no slug through branch 0 · [AGENT]
-- **Metorite:** #695. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -n "slugless\|no_slug" tests/unit/test_agent_client_stamp.py`.
-  When an R8 test there signs a call for a DCR connection row and gets 200,
-  delete this entry.
-- **Added:** 2026-10-20 · PR #1184 review, P3
-
 ### H-409 · Harden EA-14a: a task that closes, and two small gaps · [AGENT]
 - **Metorite:** #748. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `grep -n "organization_id" apps/services/gateway/gateway/routes/projects/filters.py`
