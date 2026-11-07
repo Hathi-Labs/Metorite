@@ -1692,13 +1692,6 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-18 · PR #1128 and its review
 
-### H-367 · No R8 test drives a connection with no slug through branch 0 · [AGENT]
-- **Metorite:** #695. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -n "slugless\|no_slug" tests/unit/test_agent_client_stamp.py`.
-  When an R8 test there signs a call for a DCR connection row and gets 200,
-  delete this entry.
-- **Added:** 2026-10-20 · PR #1184 review, P3
-
 ### H-409 · Harden EA-14a: a task that closes, and two small gaps · [AGENT]
 - **Metorite:** #748. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `grep -n "organization_id" apps/services/gateway/gateway/routes/projects/filters.py`
@@ -1936,7 +1929,3 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** in `apps/services/orchestrator/orchestrator/executor.py`, `async def _integration_authorizer` takes only `event_payload` and `thread_id`, and reads the member from the payload → still open. That one read sets two things: the credential filter, and the memory permission gate through `_set_memory_permission`.
 - **Added:** 2026-10-30 · H-337 session
 
-### H-438 · Take the /pull member from the session before Mem0 turns on · [AGENT] · security
-- **Metorite:** #1127. The task holds the full entry.
-- **Check:** `grep -n "req.user_email or" apps/services/gateway/gateway/main.py`. A hit in the `/pull` handler (2026-10-30: `user_id: str = req.user_email or ...`) means still open.
-- **Added:** 2026-10-30 · H-337 session
