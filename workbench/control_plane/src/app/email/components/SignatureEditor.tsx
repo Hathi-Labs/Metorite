@@ -117,9 +117,16 @@ function ResizableImageView({ node, updateAttributes, selected }: NodeViewProps)
 
 /** Tiptap Image extended with a width attribute (the resize handle writes it;
  *  <img width> is the one sizing every mail client honours) and the resizable
- *  node view. Inline, so a logo can sit beside text. No `data:` URI: an
- *  upload is a hosted https image (WS-17 SG-1). */
-const SigImage = TiptapImage.extend({
+ *  node view. Inline, so a logo can sit beside text.
+ *
+ *  WS-17 SG-1: a new upload is a hosted https image, and the editor makes no
+ *  `data:` URI. `allowBase64` stays TRUE for a LEGACY `data:` image only. With
+ *  false, Tiptap drops that image at load, and an edit then saves the
+ *  signature without the member's logo. The save hosts each `data:` image of
+ *  a changed signature (`signature_for_save`), or refuses with a plain
+ *  sentence, so the image is converted and never lost. DOMPurify keeps a
+ *  `data:` `src` on `img` by its default `DATA_URI_TAGS`. */
+export const SigImage = TiptapImage.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
@@ -134,7 +141,7 @@ const SigImage = TiptapImage.extend({
   addNodeView() {
     return ReactNodeViewRenderer(ResizableImageView);
   },
-}).configure({ inline: true, allowBase64: false });
+}).configure({ inline: true, allowBase64: true });
 
 // ── Toolbar chrome ────────────────────────────────────────────────────────────
 

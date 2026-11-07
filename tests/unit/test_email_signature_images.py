@@ -565,3 +565,70 @@ async def test_a_truncated_png_is_a_plain_refusal() -> None:
         await si.encode(_png(50, 50)[:40], "logo")
     assert str(caught.value).startswith("That image could not be read.")
     assert caught.value.status == 400
+
+
+# ── 9. The save of a signature that holds a legacy data: image ─────────────
+# The editor keeps a legacy `data:` image (allowBase64 true), so an edit of the
+# text sends it back. The save must host it, or refuse in plain words. It must
+# never drop it with no word.
+
+_LEGACY_SRC = "data:image/png;base64," + base64.b64encode(_png(64, 32)).decode("ascii")
+_LEGACY = f'<p>Jane Doe</p><img src="{_LEGACY_SRC}" width="64">'
+_EDITED = f'<p>Jane Doe, CEO</p><img src="{_LEGACY_SRC}" width="64">'
+
+
+class _StoredDb:
+    """Answers the stored-signature read with ``stored``."""
+
+    def __init__(self, stored: str) -> None:
+        self.stored = stored
+
+    async def execute(self, sql, params=None):
+        return MagicMock(fetchone=MagicMock(return_value=SimpleNamespace(signature=self.stored)))
+
+
+@pytest.fixture
+def stored_legacy(monkeypatch):
+    @asynccontextmanager
+    async def _session(org=None):
+        yield _StoredDb(_LEGACY)
+
+    monkeypatch.setattr(routes, "_tenant_session", _session)
+    monkeypatch.setattr(routes, "_assert_account_owner", AsyncMock())
+    hosted: list[str] = []
+
+    async def _store(encoded, *, kind, member, base):
+        hosted.append(member)
+        return {"url": f"{base}/email/signature-image/{_ORG}/{'h' * 43}.png"}
+
+    monkeypatch.setattr(routes, "store_image", _store)
+    return hosted
+
+
+async def test_an_edit_hosts_the_legacy_image_and_keeps_the_edit(
+    monkeypatch, base_url, stored_legacy,
+):
+    out = await routes.signature_for_save(_ACCOUNT, _ME, _EDITED)
+    assert out == (f'<p>Jane Doe, CEO</p><img src="{_BASE}/email/signature-image/'
+                   f'{_ORG}/{"h" * 43}.png" width="64">')
+    assert stored_legacy == [_ME], "the real child ran once and the image was stored"
+
+
+async def test_with_no_https_base_an_edit_refuses_and_drops_nothing(
+    monkeypatch, stored_legacy,
+):
+    monkeypatch.delenv("GATEWAY_PUBLIC_URL", raising=False)
+    with pytest.raises(HTTPException) as caught:
+        await routes.signature_for_save(_ACCOUNT, _ME, _EDITED)
+    assert caught.value.status_code == 503
+    assert caught.value.detail.startswith(
+        "Your signature holds an embedded image, and this server cannot host it.")
+    assert stored_legacy == []
+
+
+async def test_a_save_of_the_stored_legacy_signature_changes_nothing(
+    monkeypatch, stored_legacy,
+):
+    monkeypatch.delenv("GATEWAY_PUBLIC_URL", raising=False)
+    assert await routes.signature_for_save(_ACCOUNT, _ME, _LEGACY) == _LEGACY
+    assert stored_legacy == []

@@ -4,10 +4,11 @@
 // source, and the upload call and the URL rule run as plain functions.
 import { readFileSync } from "node:fs";
 
+import { getExtensionField } from "@tiptap/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { uploadSignatureImage } from "../lib/api";
-import { SIG_ALLOWED_URI } from "./SignatureEditor";
+import { SIG_ALLOWED_URI, SigImage } from "./SignatureEditor";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const editor = read("./SignatureEditor.tsx");
@@ -18,9 +19,26 @@ describe("signature editor: no data: image", () => {
     expect(editor).not.toMatch(/new FileReader/);
   });
 
-  it("tells Tiptap to refuse a base64 image", () => {
-    expect(editor).toMatch(/configure\(\{ inline: true, allowBase64: false \}\)/);
-    expect(editor).not.toMatch(/allowBase64: true/);
+  it("keeps a legacy data:image/png at load, so an edit cannot drop the logo", () => {
+    // The parse rule that Tiptap gives the editor schema. With allowBase64
+    // false it is `img[src]:not([src^="data:"])`, and a legacy image is gone
+    // from the editor HTML after load. The save hosts the image instead.
+    const parseHTML = getExtensionField(SigImage, "parseHTML", {
+      name: SigImage.name, options: SigImage.options, storage: SigImage.storage,
+    }) as () => { tag: string }[];
+    const [rule] = parseHTML();
+    expect(SigImage.options.allowBase64).toBe(true);
+    expect(rule.tag).toBe("img[src]");
+    expect(rule.tag).not.toContain("data:");
+    // DOMPurify keeps a data: src on img by its default DATA_URI_TAGS. The
+    // editor must not narrow that list.
+    expect(editor).not.toMatch(/DATA_URI_TAGS:|ADD_DATA_URI_TAGS/);
+  });
+
+  it("the upload path never reads a file as a data URL", () => {
+    const upload = editor.slice(editor.indexOf("const onPickImage"), editor.indexOf("if (!editor) {"));
+    expect(upload).toMatch(/await upload\(accountId, file\)/);
+    expect(upload).not.toMatch(/readAsDataURL|FileReader|data:/);
   });
 
   it("inserts the hosted URL that the upload answers", () => {
