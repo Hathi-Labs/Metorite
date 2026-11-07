@@ -272,6 +272,13 @@ class AssistantSettingsModel(BaseModel):
     insights_enabled: bool = False
 
 
+def _signature_upload_on() -> bool:
+    """True when this server can host a signature image (WS-17 SG-1)."""
+    from gateway.routes.email.signature_images import public_base_url
+
+    return public_base_url() is not None
+
+
 @router.get("/assistant/settings")
 async def get_assistant_settings(
     account_id: str = Query(...),
@@ -405,6 +412,10 @@ async def get_assistant_settings(
             ),
             # Read-only: the account's own domain, always treated as internal.
             "own_domain": own_domain,
+            # Read-only (WS-17 SG-1, §23.3.9): False when this server has no
+            # https address to host a signature image. The editor turns its
+            # upload button off.
+            "signature_image_upload": _signature_upload_on(),
         }
 
 
@@ -550,6 +561,7 @@ async def put_assistant_settings(
             "org_domains": org_domains,
             "insights_enabled": req.insights_enabled,
             "own_domain": own_domain,
+            "signature_image_upload": _signature_upload_on(),
         }
 
 

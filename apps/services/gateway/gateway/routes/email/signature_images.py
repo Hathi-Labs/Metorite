@@ -46,7 +46,7 @@ from gateway import signature_image
 from gateway.avatar import MAX_UPLOAD_BYTES
 from gateway.routes.email import signature as sig
 from gateway.routes.email.account_ref import resolve_account_filter
-from gateway.routes.email.core import _assert_account_owner, _tenant_session, router
+from gateway.routes.email.core import _assert_account_owner, _log, _tenant_session, router
 from sqlalchemy import text
 
 #: The images that one organization holds, and that one member uploads. A
@@ -74,10 +74,9 @@ PUBLIC_HEADERS: Mapping[str, str] = {
     "Cross-Origin-Resource-Policy": "cross-origin",
 }
 
-_NOT_SET_UP = (
-    "Image upload is not set up on this server. It needs a public https "
-    "address (GATEWAY_PUBLIC_URL). Ask your administrator."
-)
+#: The member's sentence when the server has no https base (§23.3.9). It names
+#: no setting: the operator detail goes to the log (``_no_base``).
+NOT_SET_UP = "Image upload is not set up on this server yet. Ask your admin."
 _ORG_FULL = (
     f"Your organization has {ORG_CAP} signature images, the limit. "
     "Use an image that is in a signature already."
@@ -140,6 +139,14 @@ def public_base_url() -> str | None:
     base is no base."""
     base = os.environ.get("GATEWAY_PUBLIC_URL", "").strip().rstrip("/")
     return base if base.lower().startswith("https://") and len(base) > 8 else None
+
+
+def _no_base(lead: str = "") -> HTTPException:
+    """The 503 of a server with no https base. The member reads a plain
+    sentence. The operator reads the setting in the log."""
+    _log.warning("email.signature_image_no_base",
+                 detail="GATEWAY_PUBLIC_URL is unset or is not https")
+    return HTTPException(status_code=503, detail=lead + NOT_SET_UP)
 
 
 def image_url(base: str, org: str, token: str, content_type: str) -> str:
@@ -217,7 +224,7 @@ async def upload_signature_image(
         await _assert_account_owner(db, account_id, member or "anonymous", level="send")
     base = public_base_url()
     if base is None:
-        raise HTTPException(status_code=503, detail=_NOT_SET_UP)
+        raise _no_base()
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     try:
         encoded = await signature_image.encode(data, kind)
@@ -298,9 +305,8 @@ async def host_data_images(sources: list[str], *, member: str) -> dict[str, str]
         return {}
     base = public_base_url()
     if base is None:
-        raise HTTPException(status_code=503, detail=(
-            "Your signature holds an embedded image, and this server cannot "
-            "host it. " + _NOT_SET_UP))
+        raise _no_base(
+            "Your signature holds an embedded image, and this server cannot host it. ")
     hosted: dict[str, str] = {}
     for src in sources:
         data = _decode_data_image(src)

@@ -180,12 +180,17 @@ function Divider() {
 
 const FONT_SIZES = ["12px", "13px", "14px", "16px", "18px", "22px"];
 
+/** The sentence of a server with no https address to host an image
+ *  (§23.3.9). The server's 503 says the same words. */
+export const UPLOAD_OFF = "Image upload is not set up on this server yet. Ask your admin.";
+
 // ── The editor ────────────────────────────────────────────────────────────────
 
 export function SignatureEditor({
   value,
   onChange,
   accountId,
+  uploadAvailable = true,
   upload = uploadSignatureImage,
 }: {
   value: string;
@@ -193,6 +198,9 @@ export function SignatureEditor({
   /** The mailbox whose signature this is. The upload needs it, because only
    *  a member who may send from the mailbox may upload. */
   accountId?: string;
+  /** False when the server cannot host an image (`signature_image_upload`).
+   *  The upload button is then off, with {@link UPLOAD_OFF}. */
+  uploadAvailable?: boolean;
   /** The upload call. A test passes a fake. */
   upload?: typeof uploadSignatureImage;
 }) {
@@ -399,8 +407,8 @@ export function SignatureEditor({
           <Icon name="Image" size={14} />
         </TBtn>
         <TBtn
-          title={uploading ? "Uploading the image…" : "Upload an image"}
-          disabled={uploading || !accountId}
+          title={!uploadAvailable ? UPLOAD_OFF : uploading ? "Uploading the image…" : "Upload an image"}
+          disabled={!uploadAvailable || uploading || !accountId}
           onClick={() => fileRef.current?.click()}
         >
           <Icon name="Upload" size={14} />
@@ -462,6 +470,13 @@ export function SignatureEditor({
             Delete table
           </button>
         </div>
+      )}
+
+      {/* No https address on this server: the upload is off, and says why. */}
+      {!uploadAvailable && (
+        <p data-upload-off className="px-2 py-1 border-b border-border text-[11px] text-muted-foreground">
+          {UPLOAD_OFF}
+        </p>
       )}
 
       {/* A refused upload says what failed and what to do (the server's words). */}

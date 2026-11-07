@@ -858,6 +858,7 @@ function SignatureDialog({
         value={draft}
         onChange={setDraft}
         accountId={settings.account_id}
+        uploadAvailable={settings.signature_image_upload !== false}
       />
     </Modal>
   );

@@ -33,6 +33,7 @@ import os
 import sys
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -371,7 +372,9 @@ async def test_with_no_https_base_url_the_upload_refuses_and_says_why(
         await routes.upload_signature_image(
             file=_upload(_png(10, 10)), account_id=_ACCOUNT, kind="logo", user=_user())
     assert caught.value.status_code == 503
-    assert caught.value.detail.startswith("Image upload is not set up on this server")
+    # The member's words name no setting (§23.3.9). The log names it.
+    assert caught.value.detail == "Image upload is not set up on this server yet. Ask your admin."
+    assert "GATEWAY_PUBLIC_URL" not in caught.value.detail
     assert fake_encode == [], "the child ran with nowhere to host the image"
     assert db.sql("INSERT") == []
 
@@ -379,6 +382,21 @@ async def test_with_no_https_base_url_the_upload_refuses_and_says_why(
 def test_the_base_url_is_the_https_gateway_url(monkeypatch) -> None:
     monkeypatch.setenv("GATEWAY_PUBLIC_URL", " https://api.metorite.com/ ")
     assert routes.public_base_url() == "https://api.metorite.com"
+
+
+def test_the_settings_answer_says_whether_upload_is_on(monkeypatch) -> None:
+    """The editor turns its upload button off from this key (§23.3.9)."""
+    from gateway.routes.email.automation import assistant as assistant_mod
+
+    monkeypatch.setenv("GATEWAY_PUBLIC_URL", "https://api.metorite.com")
+    assert assistant_mod._signature_upload_on() is True
+    monkeypatch.setenv("GATEWAY_PUBLIC_URL", "http://localhost:8000")
+    assert assistant_mod._signature_upload_on() is False
+    monkeypatch.delenv("GATEWAY_PUBLIC_URL")
+    assert assistant_mod._signature_upload_on() is False
+    source = Path(assistant_mod.__file__).read_text(encoding="utf-8")
+    assert source.count('"signature_image_upload": _signature_upload_on()') == 2, (
+        "the GET and the PUT answer each carry the key")
 
 
 # ── 5. The retire ───────────────────────────────────────────────────────────

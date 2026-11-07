@@ -8,10 +8,31 @@ import { getExtensionField } from "@tiptap/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { uploadSignatureImage } from "../lib/api";
-import { SIG_ALLOWED_URI, SigImage } from "./SignatureEditor";
+import { SIG_ALLOWED_URI, SigImage, UPLOAD_OFF } from "./SignatureEditor";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const editor = read("./SignatureEditor.tsx");
+
+describe("signature editor: no https address on the server (§23.3.9)", () => {
+  it("turns the upload button off, with the plain sentence", () => {
+    expect(editor).toMatch(/disabled=\{!uploadAvailable \|\| uploading \|\| !accountId\}/);
+    expect(editor).toMatch(/title=\{!uploadAvailable \? UPLOAD_OFF :/);
+    expect(editor).toMatch(/\{!uploadAvailable && \(\s*<p data-upload-off/);
+  });
+
+  it("says the server's words, and names no setting", () => {
+    const server = read(
+      "../../../../../../apps/services/gateway/gateway/routes/email/signature_images.py",
+    );
+    expect(server).toContain(`NOT_SET_UP = "${UPLOAD_OFF}"`);
+    expect(UPLOAD_OFF).not.toMatch(/GATEWAY_PUBLIC_URL/);
+  });
+
+  it("takes the switch from the settings answer", () => {
+    const tab = read("./automation/ai-settings/SettingsTab.tsx");
+    expect(tab).toMatch(/uploadAvailable=\{settings\.signature_image_upload !== false\}/);
+  });
+});
 
 describe("signature editor: no data: image", () => {
   it("no longer reads a file as a data URL", () => {
