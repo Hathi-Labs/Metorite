@@ -311,6 +311,46 @@ _SCAN_IDIOM = re.compile(
     r"|\biter_modules\(|\bwalk_packages\(|\bimportlib\.resources\b"
     r"""|["'](?:grep|rg)["']\s*[,\]]"""
 )
+# CIV-3d (task 2200, 2026-11-07). The idioms above, except a glob. A glob whose
+# pattern is a LITERAL that ends in a data extension cannot list a Python
+# file, so a Python change cannot change what it finds. 146 of the 363 scanners
+# were R8 files with `glob("*.sql")` and the like: they cost 2,233 s of the
+# 5,062 s suite on every Python PR. A pattern that is not a literal, or ends in
+# `.py`, `*` or anything else, still counts. A file that does not parse counts.
+_SCAN_NON_GLOB = re.compile(
+    r"\.iterdir\(|\bos\.walk\(|(?<!ast)(?<!os)\.walk\(\s*\)"
+    r"|\blistdir\(|\bscandir\(|\bls-files\b|\bls-tree\b|\bgit\W+grep\b|\bfnmatch"
+    r"|\biter_modules\(|\bwalk_packages\(|\bimportlib\.resources\b"
+    r"""|["'](?:grep|rg)["']\s*[,\]]"""
+)
+_SCAN_GLOB_CALL = re.compile(r"\.r?glob\(|\bi?glob\(")
+_DATA_GLOB = re.compile(r"\.(?:sql|json|md|ts|tsx|js|mjs|cjs|css|ya?ml|toml|txt|sh|html|csv|lock|conf|ini)$")
+
+
+def _is_scanner(body: str) -> bool:
+    """True when the test may list Python files. Fails to True."""
+    if _SCAN_NON_GLOB.search(body):
+        return True
+    if not _SCAN_GLOB_CALL.search(body):
+        return False
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(body)
+    except (SyntaxError, ValueError):
+        return True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+        if name not in ("glob", "rglob", "iglob"):
+            continue
+        arg = node.args[0] if node.args else None
+        literal = isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+        if not (literal and _DATA_GLOB.search(arg.value)):
+            return True
+    return False
 
 
 def scanning_tests(tests: dict[str, str]) -> set[str]:
@@ -321,7 +361,7 @@ def scanning_tests(tests: dict[str, str]) -> set[str]:
     A false hit costs only time. Helpers under tests/unit/_*.py scan only SQL,
     TypeScript and JSON, so an import of one does not make a test a scanner.
     """
-    return {t for t, body in tests.items() if _SCAN_IDIOM.search(body)}
+    return {t for t, body in tests.items() if _SCAN_IDIOM.search(body) and _is_scanner(body)}
 
 
 def _package_router_tests(
