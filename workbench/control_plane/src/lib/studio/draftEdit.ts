@@ -8,11 +8,16 @@
  * **What a delete does.** The draft is only text, so a delete first removes the item from the
  * draft. The parts that name it go too, so the draft stays valid for the server check: the record
  * actions of a deleted object, the views that show it, the page cells of a deleted view, and the
- * names of a deleted field in the views. A relation field of another object that links to a
- * deleted object blocks the delete, because that field is the member's data model to change.
+ * names of a deleted field in the views and in the `set` of the actions. The same holds for the
+ * shell jobs, the skill actions, examples and cards, the workflow triggers, `shell.needs` and
+ * `shell.search`. A relation field of another object that links to a deleted object blocks the
+ * delete, because that field is the member's data model to change.
  * What happens at publish is in `publishEffect`.
  */
 import type { FieldType } from "./manifest";
+
+/** The field types that may be hot (`studio_fields.HOT_TYPES`). */
+const HOT_TYPES: readonly string[] = ["text", "select", "number", "money", "date", "datetime", "checkbox", "email", "relation"];
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -108,46 +113,92 @@ export function linksTo(m: unknown, name: string): string[] {
   return out;
 }
 
+/** The references to a set of views that live outside `views`: page cells, the side view, shell jobs, skill cards. */
 function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
   if (ids.size === 0) return m;
   const cells = (cs: unknown) => (Array.isArray(cs) ? cs.filter((c) => !(isObj(c) && ids.has(str(c.view)))) : cs);
-  const pages = Array.isArray(m.pages)
-    ? m.pages.map((p) => {
-        if (!isObj(p)) return p;
-        const next: Obj = { ...p };
-        if ("cells" in p) next.cells = cells(p.cells);
-        if (Array.isArray(p.tabs)) next.tabs = p.tabs.map((t) => (isObj(t) ? { ...t, cells: cells(t.cells) } : t));
-        if (isObj(p.side) && ids.has(str(p.side.view))) delete next.side;
-        return next;
-      })
-    : m.pages;
-  const views = Array.isArray(m.views) ? m.views.filter((v) => !(isObj(v) && ids.has(str(v.id)))) : m.views;
-  return { ...m, views, ...(pages !== undefined ? { pages } : {}) };
+  const out: Obj = { ...m };
+  if (Array.isArray(m.views)) out.views = m.views.filter((v) => !(isObj(v) && ids.has(str(v.id))));
+  if (Array.isArray(m.pages)) {
+    out.pages = m.pages.map((p) => {
+      if (!isObj(p)) return p;
+      const next: Obj = { ...p };
+      if ("cells" in p) next.cells = cells(p.cells);
+      if (Array.isArray(p.tabs)) next.tabs = p.tabs.map((t) => (isObj(t) ? { ...t, cells: cells(t.cells) } : t));
+      if (isObj(p.side) && ids.has(str(p.side.view))) delete next.side;
+      return next;
+    });
+  }
+  if (isObj(m.shell) && Array.isArray(m.shell.jobs)) {
+    out.shell = { ...m.shell, jobs: m.shell.jobs.filter((j) => !(isObj(j) && ids.has(str(j.view)))) };
+  }
+  if (isObj(m.skill) && Array.isArray(m.skill.cards)) {
+    out.skill = { ...(m.skill as Obj), cards: m.skill.cards.filter((c) => !ids.has(str(c))) };
+  }
+  return out;
 }
 
-/** Delete an object, its record actions, the views that show it, and the page cells of those views. */
-export function removeObject(m: unknown, name: string): unknown {
-  if (!isObj(m) || linksTo(m, name).length > 0) return m;
-  const cut = objectCut(m, name);
-  const withoutActions: Obj = {
-    ...m,
-    objects: objectsOf(m).filter((o) => str(o.name) !== name),
-    ...(Array.isArray(m.actions) ? { actions: m.actions.filter((a) => !(isObj(a) && usesObject(a.uses, name))) } : {}),
-  };
-  const gone = new Set([...cut.actions]);
-  const done = dropViews(withoutActions, new Set(cut.views));
-  // A view that stays may list a deleted action in `actions`, or name it in `submit`.
-  if (!Array.isArray(done.views) || gone.size === 0) return done;
-  return {
-    ...done,
-    views: done.views.map((v) => {
+/** The references to a set of actions: view `actions`, `submit` and `source.action`, and the skill. */
+function dropActions(m: Obj, gone: ReadonlySet<string>): Obj {
+  if (gone.size === 0) return m;
+  const out: Obj = { ...m };
+  if (Array.isArray(m.views)) {
+    out.views = m.views.map((v) => {
       if (!isObj(v)) return v;
       const next: Obj = { ...v };
       if (Array.isArray(v.actions)) next.actions = v.actions.filter((a) => !gone.has(str(a)));
       if (gone.has(str(v.submit))) delete next.submit;
+      if (isObj(v.source) && gone.has(str(v.source.action))) {
+        const { action: _a, ...rest } = v.source;
+        void _a;
+        if (Object.keys(rest).length > 0) next.source = rest;
+        else delete next.source;
+      }
       return next;
-    }),
+    });
+  }
+  if (isObj(m.skill)) {
+    const skill: Obj = { ...(m.skill as Obj) };
+    if (Array.isArray(skill.actions)) skill.actions = skill.actions.filter((a) => !gone.has(str(a)));
+    if (Array.isArray(skill.examples)) {
+      skill.examples = skill.examples.map((e) => {
+        if (!isObj(e) || !gone.has(str(e.action))) return e;
+        const { action: _a, ...rest } = e;
+        void _a;
+        return rest;
+      });
+    }
+    out.skill = skill;
+  }
+  return out;
+}
+
+/** Delete an object and everything in the manifest that names it, so the server check still passes. */
+export function removeObject(m: unknown, name: string): unknown {
+  if (!isObj(m) || linksTo(m, name).length > 0) return m;
+  const cut = objectCut(m, name);
+  let out: Obj = {
+    ...m,
+    objects: objectsOf(m).filter((o) => str(o.name) !== name),
+    ...(Array.isArray(m.actions) ? { actions: m.actions.filter((a) => !(isObj(a) && usesObject(a.uses, name))) } : {}),
   };
+  out = dropViews(out, new Set(cut.views));
+  out = dropActions(out, new Set(cut.actions));
+  if (Array.isArray(m.workflows)) {
+    out.workflows = m.workflows.map((w) => {
+      if (!isObj(w) || !isObj(w.trigger) || w.trigger.record !== name) return w;
+      const { record: _r, ...trigger } = w.trigger;
+      void _r;
+      return { ...w, trigger };
+    });
+  }
+  if (isObj(m.shell)) {
+    const shell: Obj = { ...(out.shell as Obj) };
+    if (Array.isArray(shell.needs)) shell.needs = shell.needs.filter((n) => !(isObj(n) && n.object === name));
+    if (Array.isArray(shell.search)) shell.search = shell.search.filter((s) => s !== name);
+    out.shell = shell;
+  }
+  return out;
 }
 
 // ── Fields ──────────────────────────────────────────────────────────────────
@@ -177,6 +228,22 @@ export function addField(m: unknown, object: string, label: string, type: FieldT
 
 /** Change the label, the type, the required flag or the options of one field. */
 export function updateField(m: unknown, object: string, key: string, patch: FieldPatch): unknown {
+  const out = changeField(m, object, key, patch);
+  // A Board groups by a select field. A field that stops being one cannot be the lanes.
+  if (patch.type === undefined || patch.type === "select" || !isObj(out) || !Array.isArray(out.views)) return out;
+  return {
+    ...out,
+    views: out.views.map((v) => (isObj(v) && viewObject(v) === object && v.group_by === key ? withoutKey(v, "group_by") : v)),
+  };
+}
+
+function withoutKey(v: Obj, key: string): Obj {
+  const next: Obj = { ...v };
+  delete next[key];
+  return next;
+}
+
+function changeField(m: unknown, object: string, key: string, patch: FieldPatch): unknown {
   return mapObject(m, object, (o) => ({
     ...o,
     fields: (Array.isArray(o.fields) ? o.fields : []).map((f) => {
@@ -193,6 +260,9 @@ export function updateField(m: unknown, object: string, key: string, patch: Fiel
       }
       if (patch.type !== undefined && patch.type !== f.type) {
         next.type = patch.type;
+        // The store refuses `many` on a multiSelect or a checkbox, and `hot` on a type that cannot be hot.
+        if (patch.type === "multiSelect" || patch.type === "checkbox") delete next.many;
+        if (!HOT_TYPES.includes(patch.type) || next.many === true) delete next.hot;
         if (patch.type === "select" || patch.type === "multiSelect") {
           if (!Array.isArray(next.options) || next.options.length === 0) next.options = ["Option 1", "Option 2"];
         } else {
@@ -216,10 +286,22 @@ export function removeField(m: unknown, object: string, key: string): unknown {
     ...o,
     fields: (Array.isArray(o.fields) ? o.fields : []).filter((f) => !(isObj(f) && str(f.key) === key)),
   })) as Obj;
-  if (!Array.isArray(removed.views)) return removed;
+  // An action of this object may name the field in its `set`. The check refuses a key that is no field.
+  const cleaned: Obj = Array.isArray(removed.actions)
+    ? {
+        ...removed,
+        actions: removed.actions.map((a) => {
+          if (!isObj(a) || !usesObject(a.uses, object) || !isObj(a.set) || !(key in a.set)) return a;
+          const set = { ...a.set };
+          delete set[key];
+          return Object.keys(set).length > 0 ? { ...a, set } : withoutKey(a, "set");
+        }),
+      }
+    : removed;
+  if (!Array.isArray(cleaned.views)) return cleaned;
   return {
-    ...removed,
-    views: removed.views.map((v) => {
+    ...cleaned,
+    views: cleaned.views.map((v) => {
       if (!isObj(v) || viewObject(v) !== object) return v;
       const next: Obj = { ...v };
       for (const a of ["fields", "columns"] as const) if (Array.isArray(v[a])) next[a] = v[a].filter((x) => x !== key);
@@ -326,7 +408,7 @@ export interface LiveObject {
  * in the draft, and a publish stays blocked until the object is back or the app is made again.
  */
 export function publishEffect(kind: "object" | "field", live: boolean): string {
-  if (!live) return kind === "object" ? "It was never published, so the delete only changes this draft." : "It was never published, so the delete only changes this draft.";
+  if (!live) return "It was never published, so the delete only changes this draft.";
   return kind === "object"
     ? "This object is live. The delete changes this draft only. Publish is refused while the object is missing (A published object cannot go yet), and the live app and its records stay as they are."
     : "This field is live. The delete changes this draft only. Publish is refused while the field is missing (A published field cannot go yet), and the live app and its records stay as they are.";
@@ -342,3 +424,13 @@ export function isLiveField(live: readonly LiveObject[], object: string, key: st
 }
 
 export const isLiveObject = (live: readonly LiveObject[], name: string): boolean => live.some((o) => o.name === name);
+
+/**
+ * What a text control commits on blur or Enter: the trimmed text, or null when it equals the shown
+ * value. The control keeps the raw text while the member types, so a space between two words
+ * is never eaten by a trim on each key.
+ */
+export function commitText(shown: string, typed: string): string | null {
+  const next = typed.replace(/\s+/g, " ").trim();
+  return next === shown.trim() ? null : next;
+}

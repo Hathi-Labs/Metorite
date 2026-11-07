@@ -14,7 +14,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { CLEAN, commitSave, isDirty, newerDraft, reduce, shownManifest, type EditState } from "./draftEditor";
+import { NEWER_LINE, CLEAN, codeKey, codeValue, commitSave, countChanges, editLocked, isDirty, newerDraft, reduce, shownManifest, type EditState } from "./draftEditor";
 import { SAVE_FAILED, SAVE_STALE, parseManifestText } from "./draftSave";
 import { ideFacts } from "./ideFacts";
 import type { PackageDraft } from "./packageDraft";
@@ -185,5 +185,89 @@ describe("Mira and the member together", () => {
     const facts = ideFacts({ id: ID, name: "Y" }, r.adopt?.manifest, r.adopt?.manifestHash ?? null);
     expect(facts.facts.join(" ")).toContain(`The based_on of this draft is ${H2}.`);
     expect(facts.facts.join(" ")).not.toContain(H1);
+  });
+});
+
+// ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+describe("an edit while a save is in flight (P1-b)", () => {
+  it("ignores an edit and Code text while saving, so the saved answer never drops one", () => {
+    const saving = reduce(edited(), { type: "saving" });
+    expect(reduce(saving, { type: "edit", manifest: { ...m1, purpose: "late" }, draft: draft() })).toBe(saving);
+    expect(reduce(saving, { type: "code", text: "{}", draft: draft() })).toBe(saving);
+  });
+
+  it("takes edits again after the save settles", () => {
+    const settled = reduce(reduce(edited(), { type: "saving" }), { type: "settled", notice: { kind: "stale", text: "x" } });
+    expect(reduce(settled, { type: "edit", manifest: { ...m1, purpose: "again" }, draft: draft() }).working).toEqual({ ...m1, purpose: "again" });
+  });
+
+  it("locks the tabs while saving", () => {
+    expect(editLocked(reduce(edited(), { type: "saving" }))).toBe(true);
+    expect(editLocked(CLEAN)).toBe(false);
+    expect(editLocked(reduce(CLEAN, { type: "code", text: "{ no", draft: draft() }))).toBe(true);
+  });
+});
+
+describe("a Code edit and a newer draft (P1-c)", () => {
+  const text0 = JSON.stringify(m0, null, 2);
+  it("keeps the base of Code text that equals the stored draft, and drops that text when the draft moves", () => {
+    const s = reduce(CLEAN, { type: "code", text: text0, draft: draft() });
+    expect(s.base).toBe(H1);
+    expect(codeValue(s, draft())).toBe(text0);
+    expect(codeValue(s, draft({ ...m0, purpose: "Mira" }, H2))).toBeNull();
+  });
+
+  it("starts a new edit on the draft that the member sees, never on a stale base", () => {
+    const stale = reduce(CLEAN, { type: "code", text: text0, draft: draft() });
+    const moved = draft({ ...m0, purpose: "Mira" }, H2);
+    const s = reduce(stale, { type: "code", text: JSON.stringify({ ...m0, purpose: "Mira", name: "Z" }), draft: moved });
+    expect(s.base).toBe(H2);
+    const e = reduce(stale, { type: "edit", manifest: { ...m1 }, draft: moved });
+    expect(e.base).toBe(H2);
+  });
+
+  it("shows a newer draft for an open Code edit, and the save still names the first hash", async () => {
+    const open = reduce(CLEAN, { type: "code", text: JSON.stringify(m1, null, 2), draft: draft() });
+    const moved = draft({ ...m0, purpose: "Mira" }, H2);
+    expect(newerDraft(open, moved)).toBe(true);
+    const fetchImpl = reply(409, {});
+    await commitSave(ID, open, moved, fetchImpl as unknown as typeof fetch);
+    expect((fetchImpl.mock.calls[0] as unknown as [string])[0]).toContain(`based_on=${H1}`);
+  });
+
+  it("remounts the editor when the draft moves with no edit open, and keeps it while one is open (no undo into old text)", () => {
+    const open = reduce(CLEAN, { type: "code", text: JSON.stringify(m1), draft: draft() });
+    expect(codeKey(open, draft({ ...m0, purpose: "Mira" }, H2))).toBe(H1);
+    expect(codeKey(CLEAN, draft())).toBe(H1);
+    expect(codeKey(CLEAN, draft(m0, H2))).toBe(H2);
+  });
+});
+
+describe("the number of changes (P2-a)", () => {
+  it("counts the leaves that differ", () => {
+    expect(countChanges(m0, m0)).toBe(0);
+    expect(countChanges(m0, { ...m0, name: "Y" })).toBe(1);
+    expect(countChanges({ a: [1, 2, 3] }, { a: [1, 9] })).toBe(2);
+    expect(countChanges({ a: 1 }, { a: 1, b: { c: 1, d: 2 } })).toBe(1);
+  });
+});
+
+describe("the words of a refusal (P3)", () => {
+  it("keeps the server message on a 422 with no errors", async () => {
+    const fetchImpl = reply(422, { detail: { message: "The body must be a JSON object.", errors: [] } });
+    const r = await commitSave(ID, edited(), draft(), fetchImpl as unknown as typeof fetch);
+    expect(r.action.type === "settled" && r.action.notice.text).toContain("The body must be a JSON object.");
+  });
+
+  it("says a save with no answer may have been saved, and that Reload shows the stored draft", () => {
+    expect(SAVE_FAILED).toContain("may have been saved");
+    expect(SAVE_FAILED).toContain("Reload");
+    expect(SAVE_FAILED).not.toContain("Nothing was saved");
+  });
+
+  it("says that Reload drops the edit, in the stale line and in the newer-draft line", () => {
+    expect(SAVE_STALE).toContain("Reload drops your edit");
+    expect(NEWER_LINE).toContain("Reload drops your edit");
   });
 });

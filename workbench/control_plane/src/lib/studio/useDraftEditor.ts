@@ -7,7 +7,7 @@
 import { useCallback, useReducer, useRef } from "react";
 
 import type { DraftWatch } from "./draftWatch";
-import { CLEAN, commitSave, isDirty, newerDraft, reduce, shownManifest, type EditState } from "./draftEditor";
+import { CLEAN, codeKey, codeValue, commitSave, countChanges, editLocked, isDirty, newerDraft, reduce, shownManifest, type EditState } from "./draftEditor";
 import { useLeaveGuard } from "./useLeaveGuard";
 
 export interface DraftEditor {
@@ -21,6 +21,16 @@ export interface DraftEditor {
   edit: (manifest: unknown) => void;
   /** The text of the Code tab. */
   typeCode: (text: string) => void;
+  /** The tabs take no edit: the Code text does not parse, or a save is in flight. */
+  locked: boolean;
+  /** The text of the Code tab, or null to show the manifest. */
+  codeText: string | null;
+  /** The key of the Code editor: a new key is a new editor with no undo history. */
+  codeKey: string;
+  /** How many places differ from the stored draft. */
+  changes: number;
+  /** The text of the edit, for "Copy my JSON". */
+  editText: string;
   save: () => void;
   revert: () => void;
   /** Drop the edit and read the stored draft again. */
@@ -54,6 +64,9 @@ export function useDraftEditor(pkg: string, watch: DraftWatch): DraftEditor {
 
   return {
     state, dirty, shown: shownManifest(state, draft), newer: newerDraft(state, draft),
+    locked: editLocked(state), codeText: codeValue(state, draft), codeKey: codeKey(state, draft),
+    changes: countChanges(draft?.manifest, shownManifest(state, draft)),
+    editText: state.code ?? JSON.stringify(shownManifest(state, draft), null, 2),
     edit, typeCode, save, revert, reload,
   };
 }

@@ -15,6 +15,7 @@
  * Mutation 10: drop `useLeaveGuard` from the hook. "asks before a member leaves" turns red.
  * Mutation 11: drop `UnsavedMark` from the bar or the Workshop page. "shares the unsaved mark" turns red.
  * Mutation 12: put a `PUT` in a tab or in the page. "writes only through the one save" turns red.
+ * Fix round 1: add `addCommand(` to `CodeEditor`, drop `key={editorKey}`, use a bare `Input` for a label, or call `onRevert` with no question. The fences of P1-b to P2-a turn red.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -85,7 +86,9 @@ describe("/studio/build", () => {
 
   it("draws an editable editor for the Code tab", () => {
     const code = read("components/CodeTab.tsx");
-    expect(code).not.toContain("readOnly");
+    // Read only only while a save is in flight (fix round 1, P1-b), never by itself.
+    expect(code).toContain("readOnly={readOnly}");
+    expect(code).not.toContain("readOnly: true");
     expect(code).toContain("<CodeEditor");
     expect(code).toContain("onChange={onText}");
   });
@@ -160,5 +163,60 @@ describe("/studio/build", () => {
   it("shows a pending state on the Build it buttons of the library", () => {
     const gallery = readFileSync(new URL("../components/AppsGallery.tsx", here), "utf8");
     expect(gallery).toContain("loading={building}");
+  });
+
+  // ── Fix round 1 ──
+  it("binds the save key per editor, only when a caller asks, and disposes it (P1-d)", () => {
+    const wrapper = readFileSync(new URL("../../../components/CodeEditor.tsx", here), "utf8");
+    expect(wrapper).not.toContain("addCommand(");
+    expect(wrapper).toContain("if (save.current)");
+    expect(wrapper).toContain("ed.onKeyDown(");
+    expect(wrapper).toContain("bound.current?.dispose()");
+    // The Workshop passes no onSave, so its own document handler still gets Ctrl+S.
+    const workshop = readFileSync(new URL("../../build/apps/[slug]/edit/page.tsx", here), "utf8");
+    expect(workshop).not.toMatch(/<CodeEditor[^>]*onSave/);
+    expect(workshop).toContain('(e.metaKey || e.ctrlKey) && e.key === "s"');
+    expect(workshop).toContain("if (fileDirty) saveFile()");
+  });
+
+  it("reads the save key by the key code, with Ctrl or Cmd (P1-d)", async () => {
+    const { isSaveKey } = await import("../../../components/CodeEditor");
+    expect(isSaveKey({ ctrlKey: true, metaKey: false, keyCode: 49 }, 49)).toBe(true);
+    expect(isSaveKey({ ctrlKey: false, metaKey: true, keyCode: 49 }, 49)).toBe(true);
+    expect(isSaveKey({ ctrlKey: false, metaKey: false, keyCode: 49 }, 49)).toBe(false);
+    expect(isSaveKey({ ctrlKey: true, metaKey: false, keyCode: 50 }, 49)).toBe(false);
+  });
+
+  it("keeps the label controls local until blur or Enter (P1-e)", () => {
+    for (const f of ["DataTab.tsx", "ViewsTab.tsx"]) {
+      const src = read("components/" + f);
+      expect(src).toContain("<CommitInput");
+      expect(src).not.toContain("onChange={(e) => onChange(updateField(manifest, name, key, { label");
+      expect(src).not.toContain("onChange={(e) => onChange(updateView(manifest, id, { title");
+      expect(src).not.toContain("onChange={(e) => onChange(renameObject(");
+    }
+    const commit = read("components/CommitInput.tsx");
+    expect(commit).toContain("onBlur={commit}");
+    expect(commit).toContain("onSubmit=");
+  });
+
+  it("locks the tabs and the Code editor while a save is in flight (P1-b)", () => {
+    expect(page).toContain("const locked = editor.locked");
+    expect(page).toContain("readOnly={editor.state.saving}");
+  });
+
+  it("asks before Revert and Reload drop an edit, and offers Copy my JSON (P2-a)", () => {
+    const bar = read("components/EditBar.tsx");
+    expect(bar).toContain("<ConfirmDialog");
+    expect(bar).toContain("Copy my JSON");
+    expect(bar).toContain('setAsk("revert")');
+    expect(bar).not.toContain("onClick={onRevert}");
+    expect(bar).not.toContain("onClick={onReload}");
+  });
+
+  it("keys the Code editor by the draft, so Undo cannot bring back older text (P1-c)", () => {
+    expect(read("components/CodeTab.tsx")).toContain("key={editorKey}");
+    expect(page).toContain("editorKey={editor.codeKey}");
+    expect(page).toContain("text={editor.codeText}");
   });
 });

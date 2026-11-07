@@ -15,9 +15,9 @@ import { StudioOff } from "./realDoor";
 import type { PackageDraft } from "./packageDraft";
 
 export const SAVE_STALE =
-  "The draft changed after you opened it. Mira or another tab saved it. Nothing was saved, and your edit is still here. Press Reload to see the newer draft.";
+  "The draft changed after you opened it. Mira or another tab saved it. Nothing was saved, and your edit is still here. Reload drops your edit and shows the newer draft, so copy your JSON first if you need it.";
 export const SAVE_FAILED =
-  "The save did not reach Studio. Nothing was saved, and your edit is still here. Check your connection, then press Save again.";
+  "The save got no answer. It may have been saved. Your edit is still here. Check your connection, then press Reload to see the stored draft. Copy your JSON first if you need it.";
 export const SAVE_BUSY = "Studio is busy with another save. Nothing was saved, and your edit is still here. Press Save again in a few seconds.";
 export const SAVE_BIG = "The draft is too large to save. Nothing was saved, and your edit is still here. Remove some of it, then press Save again.";
 export const SAVE_NO_BASE =
@@ -33,6 +33,13 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
 /** The refusals of a 422, as Problems at their JSON paths. At most 50. */
+/** The words of a refusal that the server sent, or null. */
+export function serverMessage(body: unknown): string | null {
+  const detail = isObject(body) ? body.detail : null;
+  const m = isObject(detail) ? detail.message : typeof detail === "string" ? detail : null;
+  return typeof m === "string" && m.trim() ? m.trim().slice(0, 300) : null;
+}
+
 export function serverProblems(body: unknown): Problem[] {
   const detail = isObject(body) ? body.detail : null;
   const errors = isObject(detail) && Array.isArray(detail.errors) ? detail.errors : [];
@@ -64,7 +71,8 @@ export async function saveDraft(
   if (res.status === 422) {
     const problems = serverProblems(body);
     const n = problems.length;
-    const where = n === 0 ? "" : ` ${n} problem${n === 1 ? " is" : "s are"} in the Problems panel.`;
+    const said = n === 0 ? serverMessage(body) : null;
+    const where = n === 0 ? (said ? ` ${said}` : "") : ` ${n} problem${n === 1 ? " is" : "s are"} in the Problems panel.`;
     return { kind: "invalid", problems, message: `Studio refused the draft.${where} Nothing was saved, and your edit is still here. Fix ${n === 1 ? "it" : "them"}, then press Save again.` };
   }
   if (res.status === 413) return { kind: "failed", message: SAVE_BIG };

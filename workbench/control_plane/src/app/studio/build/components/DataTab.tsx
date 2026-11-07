@@ -27,6 +27,7 @@ import {
 } from "@/lib/studio/draftEdit";
 import type { FieldType } from "@/lib/studio/manifest";
 
+import CommitInput from "./CommitInput";
 import OptionsInput from "./OptionsInput";
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -138,9 +139,9 @@ export default function DataTab({ manifest, object, onObject, onChange, live, lo
       <div className="flex flex-wrap items-center gap-2">
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
           Label
-          <Input inputSize="sm" className="w-56" aria-label={`Label of the ${name} object`} value={str(picked.label)}
-            placeholder={name} maxLength={120} disabled={locked}
-            onChange={(e) => onChange(renameObject(manifest, name, e.target.value))} />
+          <CommitInput className="w-56" label={`Label of the ${name} object`} value={str(picked.label)}
+            placeholder={name} disabled={locked}
+            onCommit={(t) => onChange(renameObject(manifest, name, t))} />
         </label>
         <span className="text-xs text-muted-foreground">The name <code>{name}</code> stays, because actions and records use it.</span>
         {isLiveObject(live, name) ? <Badge tone="neutral" size="xs">Live</Badge> : null}
@@ -150,64 +151,45 @@ export default function DataTab({ manifest, object, onObject, onChange, live, lo
       {fields.length === 0 ? (
         <p className="text-xs text-muted-foreground">This object has no field yet. Add one below, or ask Mira.</p>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-border bg-card">
-          <table className="w-full min-w-[40rem] text-left text-sm">
-            <caption className="sr-only">Fields of {str(picked.label) || name}</caption>
-            <thead className="border-b border-border text-xs text-muted-foreground">
-              <tr>
-                <th scope="col" className="px-3 py-2 font-medium">Label</th>
-                <th scope="col" className="px-3 py-2 font-medium">Type</th>
-                <th scope="col" className="px-3 py-2 font-medium">Required</th>
-                <th scope="col" className="px-3 py-2 font-medium">Options</th>
-                <th scope="col" className="px-3 py-2"><span className="sr-only">Delete</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {fields.map((f) => {
-                const key = str(f.key);
-                const type = str(f.type);
-                const isLive = isLiveField(live, name, key);
-                const choice = type === "select" || type === "multiSelect";
-                const known = (SAFE_TYPES as readonly string[]).includes(type);
-                return (
-                  <tr key={key} className="border-b border-border align-top last:border-0">
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <Input inputSize="sm" className="w-40" aria-label={`Label of ${key}`} value={str(f.label)} placeholder={key}
-                          maxLength={120} disabled={locked}
-                          onChange={(e) => onChange(updateField(manifest, name, key, { label: e.target.value }))} />
-                        {isLive ? <span title={LIVE_FIELD_NOTE}><Badge tone="neutral" size="xs">Live</Badge></span> : null}
-                      </div>
-                      <span className="mt-0.5 block text-xs text-muted-foreground">{key}</span>
-                    </td>
-                    <td className="px-3 py-2">
-                      {known ? (
-                        <SelectButton label={`Type of ${key}`} value={type} widthClass="w-32" disabled={locked} options={TYPE_OPTIONS}
-                          onChange={(v) => onChange(updateField(manifest, name, key, { type: v as FieldType }))} />
-                      ) : (
-                        <span className="text-muted-foreground" title="Mira sets this type. Change it in the Code tab.">{TYPE_LABELS[type] ?? type}</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      <Checkbox aria-label={`${key} is required`} checked={f.required === true} disabled={locked}
-                        onChange={(e) => onChange(updateField(manifest, name, key, { required: e.target.checked }))} />
-                    </td>
-                    <td className="px-3 py-2">
-                      {choice ? (
-                        <OptionsInput label={`Options of ${key}`} options={Array.isArray(f.options) ? f.options.map(String) : []} disabled={locked}
-                          onCommit={(options) => onChange(updateField(manifest, name, key, { options }))} />
-                      ) : str(f.to) ? <span className="text-muted-foreground">links to {str(f.to)}</span> : <span className="text-muted-foreground">-</span>}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <Button size="icon-sm" variant="ghost" icon="Trash2" aria-label={`Delete the ${key} field`} disabled={locked}
-                        onClick={() => setAsk({ kind: "field", key })} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <ul aria-label={`Fields of ${str(picked.label) || name}`} className="rounded-xl border border-border bg-card">
+          {fields.map((f) => {
+            const key = str(f.key);
+            const type = str(f.type);
+            const isLive = isLiveField(live, name, key);
+            const choice = type === "select" || type === "multiSelect";
+            const known = (SAFE_TYPES as readonly string[]).includes(type);
+            return (
+              <li key={key} className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-border px-3 py-2 last:border-0">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <CommitInput className="w-40" label={`Label of ${key}`} value={str(f.label)} placeholder={key}
+                      disabled={locked} onCommit={(t) => onChange(updateField(manifest, name, key, { label: t }))} />
+                    {isLive ? <span title={LIVE_FIELD_NOTE}><Badge tone="neutral" size="xs">Live</Badge></span> : null}
+                  </div>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">{key}</span>
+                </div>
+                {known ? (
+                  <SelectButton label={`Type of ${key}`} value={type} widthClass="w-32" disabled={locked} options={TYPE_OPTIONS}
+                    onChange={(v) => onChange(updateField(manifest, name, key, { type: v as FieldType }))} />
+                ) : (
+                  <span className="py-1 text-sm text-muted-foreground" title="Mira sets this type. Change it in the Code tab.">{TYPE_LABELS[type] ?? type}</span>
+                )}
+                <label className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground">
+                  <Checkbox aria-label={`${key} is required`} checked={f.required === true} disabled={locked}
+                    onChange={(e) => onChange(updateField(manifest, name, key, { required: e.target.checked }))} />
+                  Required
+                </label>
+                {choice ? (
+                  <OptionsInput label={`Options of ${key}`} options={Array.isArray(f.options) ? f.options.map(String) : []} disabled={locked}
+                    onCommit={(options) => onChange(updateField(manifest, name, key, { options }))} />
+                ) : str(f.to) ? <span className="py-1 text-xs text-muted-foreground">links to {str(f.to)}</span> : null}
+                <span className="flex-1" />
+                <Button size="icon-sm" variant="ghost" icon="Trash2" aria-label={`Delete the ${key} field`} disabled={locked}
+                  onClick={() => setAsk({ kind: "field", key })} />
+              </li>
+            );
+          })}
+        </ul>
       )}
 
       <div className="flex flex-wrap items-center gap-2">

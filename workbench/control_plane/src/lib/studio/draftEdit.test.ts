@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 
 import { checkDraft } from "./draftProblems";
 import {
-  SAFE_TYPES, addField, addObject, addView, isLiveField, laneField, linksTo, nameFrom, objectCut, objectsFor, publishEffect,
+  SAFE_TYPES, commitText, addField, addObject, addView, isLiveField, laneField, linksTo, nameFrom, objectCut, objectsFor, publishEffect,
   removeField, removeObject, removeView, renameObject, updateField, updateView, viewUses,
 } from "./draftEdit";
 
@@ -211,5 +211,74 @@ describe("what a publish does", () => {
     expect(publishEffect("object", true)).toContain("records stay");
     expect(publishEffect("field", true)).toContain("A published field cannot go yet");
     expect(publishEffect("field", false)).toContain("only changes this draft");
+  });
+});
+
+describe("every reference that the validator checks (P2-b)", () => {
+  const rich = () => {
+    const m = base();
+    m.views[2].source = { object: "site", action: "visit_get" };
+    m.skill = { actions: ["visit_get", "site_get"], examples: [{ prompt: "p", action: "visit_list" }, { prompt: "q", action: "site_get" }], cards: ["visit-table", "site-table"] };
+    m.shell = { jobs: [{ id: "j1", view: "visit-board" }, { id: "j2", view: "site-table" }], needs: [{ object: "visit" }, { object: "site" }], search: ["visit", "site"] };
+    m.workflows = [{ id: "w1", trigger: { record: "visit" } }, { id: "w2", trigger: { record: "site" } }];
+    return m;
+  };
+
+  it("removeObject clears the skill, the shell, the workflows and a view source", () => {
+    const out = removeObject(rich(), "visit") as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(out.skill.actions).toEqual(["site_get"]);
+    expect(out.skill.examples).toEqual([{ prompt: "p" }, { prompt: "q", action: "site_get" }]);
+    expect(out.skill.cards).toEqual(["site-table"]);
+    expect(out.shell.jobs).toEqual([{ id: "j2", view: "site-table" }]);
+    expect(out.shell.needs).toEqual([{ object: "site" }]);
+    expect(out.shell.search).toEqual(["site"]);
+    expect(out.workflows).toEqual([{ id: "w1", trigger: {} }, { id: "w2", trigger: { record: "site" } }]);
+    expect(out.views[0].source).toEqual({ object: "site" });
+  });
+
+  it("removeView clears the shell jobs and the skill cards that show it", () => {
+    const out = removeView(rich(), "site-table") as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(out.shell.jobs).toEqual([{ id: "j1", view: "visit-board" }]);
+    expect(out.skill.cards).toEqual(["visit-table"]);
+  });
+
+  it("removeField takes the key out of the set of an action of that object", () => {
+    const m = base();
+    m.actions.push({ id: "visit_done", uses: "object:visit.update", set: { status: "done", title: "x" } }, { id: "only", uses: "object:visit.update", set: { status: "done" } });
+    const out = removeField(m, "visit", "status") as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect(out.actions.find((a: { id: string }) => a.id === "visit_done").set).toEqual({ title: "x" });
+    expect("set" in out.actions.find((a: { id: string }) => a.id === "only")).toBe(false);
+  });
+
+  it("a type change drops many and hot that the new type cannot hold", () => {
+    const m = base();
+    m.objects[0].fields[1] = { key: "status", type: "select", options: ["a"], hot: true, many: true };
+    const multi = updateField(m, "visit", "status", { type: "multiSelect" }) as ReturnType<typeof base>;
+    expect(multi.objects[0].fields[1]).toEqual({ key: "status", type: "multiSelect", options: ["a"] });
+    const url = updateField(multi, "visit", "status", { type: "url" }) as ReturnType<typeof base>;
+    expect(url.objects[0].fields[1]).toEqual({ key: "status", type: "url" });
+  });
+
+  it("a Board loses group_by when its lane field stops being a select", () => {
+    const out = updateField(base(), "visit", "status", { type: "text" }) as ReturnType<typeof base>;
+    expect(out.views[1].group_by).toBeUndefined();
+    expect(out.views[1].block).toBe("board");
+    const keep = updateField(base(), "visit", "title", { type: "number" }) as ReturnType<typeof base>;
+    expect(keep.views[1].group_by).toBe("status");
+  });
+});
+
+describe("a label keeps its spaces until it is committed (P1-e)", () => {
+  it("keeps the inner space of a label", () => {
+    const m = renameObject(base(), "site", "Site visit") as ReturnType<typeof base>;
+    expect(m.objects[1].label).toBe("Site visit");
+    const f = updateField(base(), "visit", "title", { label: "Due date" }) as ReturnType<typeof base>;
+    expect(f.objects[0].fields[0].label).toBe("Due date");
+  });
+
+  it("commits the trimmed text, and only when it changed", () => {
+    expect(commitText("Site", "Site visit ")).toBe("Site visit");
+    expect(commitText("Site visit", " Site visit ")).toBeNull();
+    expect(commitText("Site", "")).toBe("");
   });
 });

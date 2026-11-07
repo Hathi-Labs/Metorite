@@ -17,6 +17,7 @@ import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
+import CommitInput from "./CommitInput";
 import { VIEW_BLOCKS, addView, objectsFor, removeView, updateView, viewUses, type ViewBlock } from "@/lib/studio/draftEdit";
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -80,8 +81,8 @@ export default function ViewsTab({ manifest, onChange, locked }: ViewsTabProps) 
             return (
               <li key={`${id}-${i}`} className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card px-3 py-2">
                 <Badge tone="neutral" size="xs">{BLOCK_LABEL[str(v.block)] ?? (str(v.block) || "no block")}</Badge>
-                <Input inputSize="sm" className="w-48" aria-label={`Title of the ${id} view`} value={str(v.title)} placeholder={id}
-                  maxLength={120} disabled={locked} onChange={(e) => onChange(updateView(manifest, id, { title: e.target.value }))} />
+                <CommitInput className="w-48" label={`Title of the ${id} view`} value={str(v.title)} placeholder={id}
+                  disabled={locked} onCommit={(t) => onChange(updateView(manifest, id, { title: t }))} />
                 {editable ? (
                   <SelectButton label={`Object of the ${id} view`} value={fits.includes(own) ? own : ""} widthClass="w-44" disabled={locked}
                     prompt={own ? `${own} (no select field)` : "No object"} options={fits.map((n) => ({ value: n, label: label(n) }))}

@@ -17,12 +17,16 @@ export interface CodeTabProps {
   /** The text that the member typed, or null to show the manifest. */
   text: string | null;
   fault: JsonFault | null;
+  /** A new key mounts a new editor, so Undo cannot bring back text of an older draft. */
+  editorKey: string;
+  /** A save is in flight: the text holds still until the answer comes. */
+  readOnly?: boolean;
   reveal?: (Reveal & { seq: number }) | null;
   onText: (text: string) => void;
   onSave: () => void;
 }
 
-export default function CodeTab({ manifest, text, fault, reveal, onText, onSave }: CodeTabProps) {
+export default function CodeTab({ manifest, text, fault, editorKey, readOnly = false, reveal, onText, onSave }: CodeTabProps) {
   const pretty = useMemo(() => JSON.stringify(manifest ?? null, null, 2), [manifest]);
   const value = text ?? pretty;
   const editorRef = useRef<EditorInstance | null>(null);
@@ -42,7 +46,7 @@ export default function CodeTab({ manifest, text, fault, reveal, onText, onSave 
   return (
     <div className="flex h-full min-h-64 flex-col">
       <div className="min-h-0 flex-1" data-code-editor>
-        <CodeEditor language="json" value={value} onChange={onText} onSave={onSave}
+        <CodeEditor key={editorKey} language="json" value={value} readOnly={readOnly} onChange={onText} onSave={onSave}
           onMount={(ed) => { editorRef.current = ed; show(); }} />
       </div>
       {fault ? (
