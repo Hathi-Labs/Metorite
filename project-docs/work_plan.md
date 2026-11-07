@@ -5550,6 +5550,31 @@ It extends D140 and D183. It amends earlier rules in five points (items 10 to 14
 
 Fence: `test_playbook_org_neutral.py` (PB-1 creates it, PB-5 widens it, and it blocks from the PB-1 merge) and the fences named per slice in `specs/agent_coordination.md` §7.1. Advisory until the slices build them.
 
+### D192 — The owner's answers to ALN-Q1 to ALN-Q5 and AUTO-Q1: the recommended option of each (2026-11-06)
+
+Owner directive, 2026-11-06, in chat. Board: **WS-ALN** and **WS-AUTO**. Owning specs: `specs/project_alignment.md` §14 and `specs/proactive_agent.md` §12. Metorite: tasks 1370 to 1374 and 1395 hold each answer, and task 1829 records them here.
+
+```text
+"go ahead with your recomendations for all the decisions"
+```
+
+D160 and D161 left these six questions open, and the build ran on a working default for each. The owner chose the recommended option of each question. This record closes the "What stays open" items of D160 and D161. It changes no other rule of them.
+
+1. **ALN-Q1, who hears first.** The person hears first. The lead hears after 2 working days with no action, or at once for a hard rule. It sets ALN-9 and ALN-10.
+2. **ALN-Q2, a block.** A deviation warns by default. A lead can mark one rule "needs approval". Then ALN-12 holds a move to Done, and never a capture. ALN-12 is now in scope, and it waits for the eval gate of ALN-8.
+3. **ALN-Q3, the move of a task.** Metorite suggests the project of a task, and one tap accepts. It never moves a task by itself. It sets ALN-3.
+4. **ALN-Q4, the payer and the cap.** The org's AI allowance pays, under a daily cap for each org that an admin can see. A text that did not change is never checked twice. A check over the cap waits for the next day.
+5. **ALN-Q5, no score for a person.** Metorite keeps no score for each person, and checks no personal task. Counts are for each project and each rule. An org admin can turn the feature off.
+6. **AUTO-Q1, proactive Mira.** Each member gets it on day one, at the safest level. A member has at most 10 standing watches, and a higher plan can raise it. The member's own allowance pays for a watch.
+
+**What stays open.** The number of the ALN-Q4 cap. ALN-7 starts at 300 checks for each org each day. It measures the real cost in a week of shadow data on our own org. Then the owner sets the number.
+
+**What this does not change.** Each slice ships dark. A slice that changes what a member sees needs a D145 preview and the owner's approval. The flags that spend credits stay the owner's flip. An eval over USD 0.50 needs the owner's OK.
+
+**Re-check this number at merge.** The first merge wins a D-number. Other branches held D187 to D191 when task 1829 wrote this record.
+
+Fence: none new. The fences of `project_alignment.md` §13 and `proactive_agent.md` bind the slices that build these answers. Advisory.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
