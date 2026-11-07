@@ -311,11 +311,11 @@ _SCAN_IDIOM = re.compile(
     r"|\biter_modules\(|\bwalk_packages\(|\bimportlib\.resources\b"
     r"""|["'](?:grep|rg)["']\s*[,\]]"""
 )
-# CIV-3d (task 2200, 2026-11-07). The idioms above, except a glob. A glob whose
+# CIV-3d (task 2196, 2026-11-07). The idioms above, except a glob. A glob whose
 # pattern is a LITERAL that ends in a data extension cannot list a Python
-# file, so a Python change cannot change what it finds. 146 of the 363 scanners
-# were R8 files with `glob("*.sql")` and the like: they cost 2,233 s of the
-# 5,062 s suite on every Python PR. A pattern that is not a literal, or ends in
+# file, so a Python change cannot change what it finds. 122 of the 363 scanners
+# (80 of them R8 files) only glob `*.sql` and the like: the scanner set cost
+# 2,780 s of the 5,062 s suite on every Python PR, and now costs 866 s. A pattern that is not a literal, or ends in
 # `.py`, `*` or anything else, still counts. A file that does not parse counts.
 _SCAN_NON_GLOB = re.compile(
     r"\.iterdir\(|\bos\.walk\(|(?<!ast)(?<!os)\.walk\(\s*\)"
