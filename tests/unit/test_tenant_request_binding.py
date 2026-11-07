@@ -1137,8 +1137,11 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: the request: the scan and the tripwire are as before. The pins before it
 #: were 3.12 ``8eff3015…1f25d2bc9`` and 3.13 ``340a6d01…d2bd756a``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "c737e1f19f504f87f62fea3f76428c02c0a4861b23299dad137501ed0ae25127",
-    (3, 13): "034c2925beaec3fae77ed31ae84a05ad7917a2a32269fd8337164b209155f094",
+    # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
+    # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
+    # This pin needs the diff-reviewer review and the independent verification.
+    (3, 12): "ec7a40ebd2470eefb69b9184e2a96d310cf70fe1303b285c6658fe92a945b693",
+    (3, 13): "792f53b413454a414a80a9b262efbf44189929bbfa749b61a04783e1a4c1ea5e",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

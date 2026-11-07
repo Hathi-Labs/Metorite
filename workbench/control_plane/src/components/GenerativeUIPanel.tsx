@@ -122,6 +122,9 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // An app update cut the run (incident 2026-10-09). The chat draws the
   // "interrupted" notice with Continue for it (`lib/chatRecovery.ts`).
   "run_interrupted",
+  // The offer of the pill "Continue in a fresh chat" (WT-2). The chat draws
+  // the pill, and the fold must not show the event as data.
+  "chat_continue_offer",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body
