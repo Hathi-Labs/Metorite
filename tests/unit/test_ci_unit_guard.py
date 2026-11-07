@@ -448,6 +448,24 @@ def test_r8_covered_reads_a_real_collection_skip(tmp_path: Path) -> None:
     assert guard.r8_covered(junit, _list(tmp_path, "test_gated.py")) == []
 
 
+_TEST_SKIP = """
+import pytest
+
+
+def test_needs_the_database():
+    pytest.skip("TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres")
+"""
+
+
+def test_r8_covered_reads_a_real_test_skip(tmp_path: Path) -> None:
+    """CIV-4c review P2. A skip inside a test, written by a real pytest run: if
+    pytest changed the `message` of a normal skip, the guard would read nothing
+    and pass with 0 files. Here that shows as a red test."""
+    junit = _report(tmp_path, _TEST_SKIP, "test_needs_db.py")
+    assert any("test_needs_db.py" in p for p in guard.r8_covered(junit, _list(tmp_path, "other.py")))
+    assert guard.r8_covered(junit, _list(tmp_path, "test_needs_db.py")) == []
+
+
 @pytest.mark.parametrize(
     "reason",
     [
