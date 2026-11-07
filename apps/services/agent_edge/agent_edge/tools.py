@@ -2759,6 +2759,14 @@ GUIDANCE_REFS_ROUTE = "/agent-guidance/refs"
 #: The key that carries the guidance. It is absent while the org's flag is off.
 GUIDANCE_KEY = "guidance"
 
+#: The keys of ``guidance``: ``blocks``, nearest first, and ``dropped``, the
+#: number of the farthest blocks that the cap of the gateway cut. A
+#: ``dropped`` above 0 tells the agent that rules are missing.
+GUIDANCE_KEYS: tuple[str, ...] = ("blocks", "dropped")
+#: The key of one ``my_work`` row that names the nearest block. No body.
+GUIDANCE_REF_KEY = "guidance_ref"
+#: The levels of a block.
+GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company")
 #: SW-56 (agent_coordination.md §3.10.9). The protocol block of the results of
 #: ``claim_task`` and ``my_work``: fixed server text, so a client that drops the
 #: instructions and the prompts still reads the rules when it claims. At most
@@ -2798,14 +2806,6 @@ def _protocol(ctx: Context) -> dict[str, Any] | None:
             and agent_oauth.protocol_allowed(ctx.caller.lookup.organization_id)):
         return None
     return {"version": PROTOCOL_VERSION, "lines": list(PROTOCOL_LINES)}
-#: The keys of ``guidance``: ``blocks``, nearest first, and ``dropped``, the
-#: number of the farthest blocks that the cap of the gateway cut. A
-#: ``dropped`` above 0 tells the agent that rules are missing.
-GUIDANCE_KEYS: tuple[str, ...] = ("blocks", "dropped")
-#: The key of one ``my_work`` row that names the nearest block. No body.
-GUIDANCE_REF_KEY = "guidance_ref"
-#: The levels of a block.
-GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company")
 #: The most projects of one refs read (the route's own cap).
 GUIDANCE_REFS_MAX = 25
 
@@ -7450,11 +7450,6 @@ __all__ = [
     "GET_TASK_KEYS",
     "GET_TASK_TIMELINE",
     "GUIDANCE_KEY",
-    "PROTOCOL_KEY",
-    "PROTOCOL_LINES",
-    "PROTOCOL_LINES_MAX",
-    "PROTOCOL_LINE_MAX",
-    "PROTOCOL_VERSION",
     "GUIDANCE_KEYS",
     "GUIDANCE_LEVELS",
     "GUIDANCE_REFS_MAX",
@@ -7508,6 +7503,11 @@ __all__ = [
     "PROJECT_KEYS",
     "PROJECT_ROW_KEYS",
     "PROJECT_UPDATE_BODY_KEYS",
+    "PROTOCOL_KEY",
+    "PROTOCOL_LINES",
+    "PROTOCOL_LINES_MAX",
+    "PROTOCOL_LINE_MAX",
+    "PROTOCOL_VERSION",
     "READ_ANNOTATIONS",
     "RECORD_OUTSIDE_DECISION",
     "REF_KEYS",
