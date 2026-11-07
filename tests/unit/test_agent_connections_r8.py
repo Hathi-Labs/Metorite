@@ -416,7 +416,12 @@ class TestTheMembersList:
             "created_at", "last_used_at", "expires_at",
             # EA-17c-1 (D-EA-13): what the agent asked for, and the scopes
             # that the live tokens carry.
-            "requested_scopes", "ceiling_scopes"}
+            "requested_scopes", "ceiling_scopes",
+            # EA-19c (spec §10.9): the kind of the credential, and the
+            # address and the mark of a box.
+            "credential", "last_seen_addr", "addr_changed_at"}
+        assert row["credential"] == "oauth"
+        assert row["last_seen_addr"] is None and row["addr_changed_at"] is None
         assert row["left_out_projects"] == []
         assert row["client_origin"] == ORIGIN
         assert row["scopes"] == ["projects:read"]
