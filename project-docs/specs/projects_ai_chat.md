@@ -6797,6 +6797,25 @@ them. The upload over the MCP still waits (task 413).
 **IMG-1 (task 1998). The composer shows a chip, and takes paste and drop.**
 STANDARD. Frontend only.
 
+✅ built 2026-11-07, branch `mt-10bf2e89-img1`.
+
+**Built.** The build differs from the plan in five ways.
+1. The composer state is a pure reducer in `lib/chatAttachments.ts`. The hook
+   `hooks/useChatAttachments.ts` runs the uploads. The vitest rig has no DOM,
+   so `chatAttachments.test.ts` drives the reducer, and the browser half was
+   driven by hand. No `e2e/chat-attach-chip.spec.ts` exists, because that rig
+   stubs every route of the shell.
+2. A failed chip blocks Send until the member retries or removes it. The plan
+   did not say. A silent drop of a file is worse.
+3. `FileUploadButton` has a new `onPick` prop. The Files drawer drop zone
+   keeps its old upload.
+4. `wordsOfMessage` (beside `parseUploadNote`) gives the thread title and the
+   Copy action the words only. Edit still opens the whole message, note
+   included. Chat search reads the saved text on the server, so it can show
+   the raw note. Neither is changed here.
+5. A paste that carries text stays text, so a copy from a page does not
+   attach its picture.
+
 - **Files:** `components/AgentChat.tsx` (composer and message bubble),
   `components/FileUploadButton.tsx`, `lib/chatUpload.ts`, and a new
   `components/ChatAttachmentChips.tsx`.
