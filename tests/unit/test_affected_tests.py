@@ -676,3 +676,43 @@ def test_a_function_level_router_import_of_a_hub_package_is_picked(tmp_path: Pat
     assert "tests/unit/test_mounts_router_r8.py" in picked
     # The rule is narrow: other importers of a hub package stay out.
     assert "tests/unit/test_reads_pkg_a.py" not in picked
+
+
+def _router_repo(tmp_path: Path) -> Path:
+    """A package `pkg.api` whose __init__ registers `routes` (which imports
+    `deep` through a sibling) and exposes `router`. The package is a hub."""
+    root = _repo(tmp_path)
+    base = "packages/pkg/pkg/api"
+    _write(root, f"{base}/deep.py", "Y = 1\n")
+    _write(root, f"{base}/routes.py", "from pkg.api import deep\n")
+    _write(root, f"{base}/__init__.py", "from pkg.api import routes as _r\nrouter = object()\n")
+    _write(root, "tests/unit/test_hub_a.py", "import pkg.api\n")
+    _write(root, "tests/unit/test_hub_b.py", "import pkg.api\n")
+    return root
+
+
+def test_a_module_alias_router_read_is_picked(tmp_path: Path, monkeypatch) -> None:
+    """CIV-18 review P1. `from parent import pkg as p` then `p.router`."""
+    monkeypatch.setattr(sel, "HUB_LIMIT", 1)
+    root = _router_repo(tmp_path)
+    _write(root, "tests/unit/test_alias_r8.py", "from pkg import api as p\napp = p.router\n")
+    _write(root, "tests/unit/test_alias2_r8.py", "import pkg.api as q\napp = q.router\n")
+    picked, _, _ = sel.select(["packages/pkg/pkg/api/routes.py"], root)
+    assert "tests/unit/test_alias_r8.py" in picked
+    assert "tests/unit/test_alias2_r8.py" in picked
+    assert "tests/unit/test_hub_a.py" not in picked
+    assert "pkg.api.router" in sel.imports("import pkg.api as q\napp = q.router\n")
+    assert "pkg.api.router" in sel.imports("from pkg import api as p\napp = p.router\n")
+
+
+def test_a_module_that_reaches_the_package_through_a_sibling_is_picked(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """CIV-18 review P1. `deep` is imported by `routes`, `routes` by the
+    package. The router importer must run when `deep` changes."""
+    monkeypatch.setattr(sel, "HUB_LIMIT", 1)
+    root = _router_repo(tmp_path)
+    _write(root, "tests/unit/test_mounts_r8.py", "def _a():\n    from pkg.api import router\n    return router\n")
+    picked, _, _ = sel.select(["packages/pkg/pkg/api/deep.py"], root)
+    assert "tests/unit/test_mounts_r8.py" in picked
+    assert "tests/unit/test_hub_a.py" not in picked
