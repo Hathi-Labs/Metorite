@@ -78,8 +78,11 @@ export function PendingChips({
 
 export function SentChips({ files, sessionId }: { files: readonly NotedFile[]; sessionId: string }) {
   const [open, setOpen] = useState<NotedFile | null>(null);
+  // The full-size Modal renders in a portal, but React still bubbles its
+  // events through this tree. Stop a double-click here, so neither a chip
+  // nor the open image starts the bubble's Edit (MessageBubble onDoubleClick).
   return (
-    <>
+    <div className="contents" data-chat-chips-root="sent" onDoubleClick={(e) => e.stopPropagation()}>
       <ul data-chat-chips="sent" className="mt-2 flex flex-wrap gap-1.5">
         {files.map((f) => {
           const src = isImageName(f.name) ? workspaceFileUrl(sessionId, f.path) : undefined;
@@ -108,6 +111,6 @@ export function SentChips({ files, sessionId }: { files: readonly NotedFile[]; s
           <img src={workspaceFileUrl(sessionId, open.path)} alt={open.name} className="mx-auto h-[75vh] w-full max-w-full object-contain" />
         )}
       </Modal>
-    </>
+    </div>
   );
 }
