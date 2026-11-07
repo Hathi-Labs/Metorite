@@ -101,6 +101,11 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
 #: rules 3 and 4 read them as any other tool.
 DOOR_ROUTED_TOOLS = frozenset({"app_read", "app_write"})
 
+#: PB-3a (D186). ``read_playbook`` reads the ``acb_playbook`` package and makes
+#: no gateway request, so it has no route. Each such tool leaves rules 3 and 4
+#: by its name here, and :func:`test_only_read_playbook_has_no_route` pins it.
+PLAYBOOK_TOOLS = frozenset({"read_playbook"})
+
 #: The pairs of ``MCP_WRITE_ROUTES`` that are class X in the manifest, each
 #: with its reason. The chat never reaches them. A new entry needs a spec
 #: amendment (§9.5).
@@ -364,7 +369,8 @@ def _tools() -> list:
     from agent_edge.tools import TOOLS
 
     assert TOOLS, "an empty tool list would make rules 3 and 4 vacuous"
-    return [t for t in TOOLS.values() if t.name not in DOOR_ROUTED_TOOLS]
+    return [t for t in TOOLS.values()
+            if t.name not in DOOR_ROUTED_TOOLS and t.name not in PLAYBOOK_TOOLS]
 
 
 def test_only_the_two_door_tools_leave_rules_3_and_4():
@@ -382,6 +388,25 @@ def test_only_the_two_door_tools_leave_rules_3_and_4():
         assert tool.required_scope is None, name
     door = {name for name, tool in TOOLS.items() if tool.door}
     assert door == {"list_apps", "describe_app", *DOOR_ROUTED_TOOLS}
+
+
+def test_only_read_playbook_has_no_route():
+    """PB-3a. A tool with no gateway route is the playbook tool and nothing
+    else. It needs ``projects:read``, it has the hints of a read, and it makes
+    no gateway request. Mutation: give ``get_task`` an empty route, or drop the
+    ``playbook`` flag of ``read_playbook``, and this test fails."""
+    from agent_edge.tools import READ_ANNOTATIONS, TOOLS
+
+    no_route = {name for name, tool in TOOLS.items()
+                if not tool.route and name not in DOOR_ROUTED_TOOLS}
+    assert no_route == PLAYBOOK_TOOLS
+    for name in PLAYBOOK_TOOLS:
+        tool = TOOLS[name]
+        assert tool.playbook and not tool.door and not tool.app_scope, name
+        assert tool.required_scope == "projects:read", name
+        assert tool.method == "GET" and not tool.routes and not tool.params, name
+        assert dict(tool.annotations) == dict(READ_ANNOTATIONS), name
+    assert {n for n, t in TOOLS.items() if t.playbook} == PLAYBOOK_TOOLS
 
 
 def _body_fields(dependant) -> set[str]:

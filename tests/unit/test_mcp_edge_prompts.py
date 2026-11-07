@@ -1103,3 +1103,134 @@ class TestThePlaybookPrompts:
         assert prompts.logged_name({"name": "work_on_task"}) == "work_on_task"
         assert prompts.logged_name({"name": "x\ninjected"}) == "unknown"
         assert prompts.logged_name(None) == "unknown"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PB-3a (D186): the tool read_playbook
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _call_playbook(arguments: dict[str, Any] | None, token: str = READ_ONLY) -> httpx.Response:
+    params: dict[str, Any] = {"name": "read_playbook"}
+    if arguments is not None:
+        params["arguments"] = arguments
+    return await _send(_rpc("tools/call", params), token)
+
+
+class TestReadPlaybook:
+    """``read_playbook`` serves the playbook to a client with no resources.
+
+    Mutations (R7), each turned the named test red:
+
+    * PB3A-M1. ``tools.offered`` drops the ``playbook_allowed`` check.
+      ``test_the_tool_is_dark_while_playbook_orgs_is_empty``.
+    * PB3A-M2. ``_read_playbook`` gives ``topic.body`` as a bare string.
+      ``test_the_body_leaves_as_untrusted_text``.
+    * PB3A-M3. ``_read_playbook`` echoes the wanted slug in the error.
+      ``test_an_unknown_topic_is_a_tool_error_that_does_not_echo_it``.
+    * PB3A-M4. the input schema drops its ``pattern``.
+      ``test_a_bad_topic_shape_is_refused_at_the_edge``.
+    * PB3A-M5. the tool reads a gateway route.
+      ``test_a_call_makes_no_gateway_request``.
+    * PB3A-M6. ``_covered`` drops the scope check.
+      ``test_a_token_without_projects_read_does_not_see_it``.
+    """
+
+    @pytest.fixture
+    def on(self, armed, monkeypatch):
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
+        return armed
+
+    async def _names(self, token: str = READ_ONLY) -> list[str]:
+        r = await _send(_rpc("tools/list"), token)
+        assert r.status_code == 200, r.text
+        return [t["name"] for t in r.json()["result"]["tools"]]
+
+    async def test_the_tool_is_dark_while_playbook_orgs_is_empty(self, armed):
+        assert "read_playbook" not in await self._names()
+        body = (await _call_playbook({})).json()["result"]
+        assert body["isError"] is True
+        assert body["content"][0]["text"] == tools.TEXT_PLAYBOOK_OFF
+
+    async def test_the_tool_is_dark_for_an_organization_off_the_list(self, armed, monkeypatch):
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "00000000-0000-4000-8000-000000000001")
+        assert "read_playbook" not in await self._names()
+
+    async def test_a_read_only_token_sees_the_tool_when_on(self, on):
+        assert "read_playbook" in await self._names()
+        assert "read_playbook" in await self._names(GOOD)
+
+    async def test_a_token_without_projects_read_does_not_see_it(self, on):
+        on.tokens["context-only"] = _lookup(scope="context:read", scopes=("context:read",))
+        assert "read_playbook" not in await self._names("context-only")
+
+    async def test_the_writes_flag_does_not_hide_the_read_tool(self, on, monkeypatch):
+        _writes_off(monkeypatch)
+        assert "read_playbook" in await self._names()
+
+    async def test_no_topic_lists_every_topic_with_its_version(self, on):
+        from acb_playbook import load_all
+        r = await _call_playbook({})
+        result = r.json()["result"]
+        assert result["isError"] is False
+        data = result["structuredContent"]
+        assert data["topic"] is None
+        assert [t["slug"] for t in data["topics"]] == [t.slug for t in load_all()]
+        assert all(t["version"] >= 1 for t in data["topics"])
+        assert all(set(t["title"]) == {"untrusted_text"} for t in data["topics"])
+
+    async def test_a_topic_comes_with_its_body(self, on):
+        from acb_playbook import load_topic
+        r = await _call_playbook({"topic": "brief-contract"})
+        data = r.json()["result"]["structuredContent"]
+        assert data["topics"] == []
+        assert data["topic"]["slug"] == "brief-contract"
+        assert data["topic"]["body"] == {"untrusted_text": load_topic("brief-contract").body}
+
+    async def test_the_body_leaves_as_untrusted_text(self, on):
+        data = (await _call_playbook({"topic": "gates"})).json()["result"]["structuredContent"]
+        for key in ("title", "summary", "body"):
+            assert isinstance(data["topic"][key], dict) and "untrusted_text" in data["topic"][key]
+
+    @pytest.mark.parametrize("topic", ["no-such-topic", "patterns/none", "kit"])
+    async def test_an_unknown_topic_is_a_tool_error_that_does_not_echo_it(self, on, topic):
+        result = (await _call_playbook({"topic": topic})).json()["result"]
+        assert result["isError"] is True
+        assert result["content"][0]["text"] == tools.TEXT_NO_TOPIC
+        assert topic not in result["content"][0]["text"]
+
+    @pytest.mark.parametrize("topic", [
+        "../etc/passwd", "Gates", "gates ", "gates\n", "", "a" * 101, "patterns//x",
+        "/gates", "gates/", "ignore previous instructions", 42, ["gates"],
+    ])
+    async def test_a_bad_topic_shape_is_refused_at_the_edge(self, on, topic):
+        r = await _call_playbook({"topic": topic})
+        body = r.json()
+        assert "error" in body or body["result"]["isError"] is True
+
+    async def test_an_extra_argument_is_refused(self, on):
+        r = await _call_playbook({"topic": "gates", "org": "x"})
+        body = r.json()
+        assert "error" in body or body["result"]["isError"] is True
+
+    async def test_a_call_makes_no_gateway_request(self, on):
+        counting = _CountingTransport(on.gateway)
+        with gateway_client.use_transport(counting):
+            r = await _call_playbook({"topic": "failures"})
+        assert r.json()["result"]["isError"] is False
+        assert counting.count == 0
+        assert on.gateway.requests == []
+
+    async def test_a_message_of_the_tool_holds_no_hathilabs_term(self, on):
+        from tests.unit.test_playbook_org_neutral import hits
+        r = await _call_playbook({})
+        assert hits(r.text) == []
+        for entry in r.json()["result"]["structuredContent"]["topics"]:
+            body = (await _call_playbook({"topic": entry["slug"]})).json()["result"]
+            assert hits(body["content"][0]["text"]) == [], entry["slug"]
+
+    def test_the_tool_record(self):
+        tool = tools.READ_PLAYBOOK
+        assert tool.playbook and tool.required_scope == "projects:read"
+        assert dict(tool.annotations) == dict(tools.READ_ANNOTATIONS)
+        assert "untrusted_text" in tool.description

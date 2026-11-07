@@ -1071,6 +1071,11 @@ class Tool:
     #: 3 and 4 of ``test_mcp_edge_coverage.py`` do not read them, and
     #: ``tests/unit/test_mcp_edge_app_door.py`` holds them.
     app_scope: str = ""
+    #: PB-3a (D186). True for ``read_playbook``. It reads the playbook package
+    #: and no gateway route, so it has no fixed route and the rules 3 and 4 of
+    #: ``test_mcp_edge_coverage.py`` do not read it. It shows only for an
+    #: organization on ``playbook_orgs`` (:func:`offered`).
+    playbook: bool = False
 
     def describe(self) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool."""
@@ -6482,6 +6487,11 @@ TEXT_NO_APP = "Metorite has no app with that name. Call list_apps."
 TEXT_TOOLS_APP = "This app has tools of its own. Use those tools, not app_read or app_write."
 TEXT_APP_OFF = "Agents cannot use this app in this organization."
 TEXT_APPS_OFF = "Agents cannot use the apps of this organization now."
+
+#: PB-3a. The playbook is dark for an organization off ``playbook_orgs``.
+TEXT_PLAYBOOK_OFF = "The playbook is not on for this organization."
+#: PB-3a. A topic that the playbook does not hold. It never echoes the input.
+TEXT_NO_TOPIC = "The playbook has no topic with that name. Call read_playbook with no topic to list them."
 TEXT_NO_OP = "This app has no operation with that name. Call describe_app."
 TEXT_USE_WRITE = "Use app_write for a change."
 TEXT_USE_READ = "Use app_read for a read."
@@ -7212,6 +7222,85 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 
 # ── The registry ────────────────────────────────────────────────────────────
 
+# ── PB-3a: read_playbook (D186, orchestration_playbook.md §5 and §7) ─────────
+
+_READ_PLAYBOOK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {"topic": {
+        "type": "string", "minLength": 1, "maxLength": 100,
+        "pattern": "^[a-z0-9]+([/-][a-z0-9]+)*$",
+        "description": "The topic to read, such as brief-contract or patterns/one-agent-first."
+                       " Leave it out to list the topics."}},
+    "additionalProperties": False,
+}
+
+_PLAYBOOK_TOPIC_PROPS: dict[str, Any] = {
+    "slug": {"type": "string"}, "version": {"type": "integer"},
+    "title": _UNTRUSTED_SCHEMA, "summary": _UNTRUSTED_SCHEMA,
+    "audience": {"type": "string"},
+}
+
+_READ_PLAYBOOK_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "topics": {"type": "array", "items": {
+            "type": "object", "properties": _PLAYBOOK_TOPIC_PROPS,
+            "required": list(_PLAYBOOK_TOPIC_PROPS), "additionalProperties": False}},
+        "topic": {"type": ["object", "null"], "properties": {
+            **_PLAYBOOK_TOPIC_PROPS, "body": _UNTRUSTED_SCHEMA},
+            "required": [*_PLAYBOOK_TOPIC_PROPS, "body"], "additionalProperties": False},
+    },
+    "required": ["topics", "topic"],
+    "additionalProperties": False,
+}
+
+
+def _playbook_entry(topic: Any) -> dict[str, Any]:
+    return {"slug": topic.slug, "version": topic.version, "title": untrusted(topic.title),
+            "summary": untrusted(topic.summary), "audience": topic.audience}
+
+
+async def _read_playbook(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``read_playbook``: the topics of the playbook, or one topic with its body.
+
+    No gateway request. The text is the playbook of ``acb_playbook``, the same
+    for every organization, and it leaves as untrusted text (§9.4).
+    """
+    from acb_playbook import load_all
+
+    topics = load_all()
+    wanted = args.get("topic")
+    if wanted is None:
+        return {"topics": [_playbook_entry(t) for t in topics], "topic": None}
+    for topic in topics:
+        if topic.slug == wanted:
+            return {"topics": [], "topic": {**_playbook_entry(topic),
+                                            "body": untrusted(topic.body)}}
+    raise ToolError(TEXT_NO_TOPIC)
+
+
+READ_PLAYBOOK = Tool(
+    name="read_playbook",
+    title="Read the playbook",
+    description=(
+        "Read the orchestration playbook of Metorite: patterns for agent teams,"
+        " the brief contract, gates, failure causes, the cost model and starter"
+        " files. Leave topic out to list the topics, each with its version and"
+        " summary. Send a topic to read it. The text is the same for every"
+        " organization. Use it when your client shows no MCP resources."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_READ_PLAYBOOK_INPUT,
+    output_schema=_READ_PLAYBOOK_OUTPUT,
+    route="",
+    params={},
+    not_found=TEXT_NO_TOPIC,
+    run=_read_playbook,
+    playbook=True,
+)
+
+
 #: Every tool of the edge, by name, in the order of ``tools/list``. The two
 #: reads of EA-15 (``get_task_context`` and ``my_work``) follow the seven
 #: reads of EA-3. The write
@@ -7236,38 +7325,44 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
     RELEASE_TASK, DELETE_TASK,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
+    READ_PLAYBOOK,
 )}
 
 
-def offered(tool: Tool) -> bool:
+def offered(tool: Tool, organization_id: object = None) -> bool:
     """A read always. A write only while the writes flag is on (fix round 1),
     read through the ONE reader, ``agent_oauth.writes_enabled``. An
     agent-run tool only while the runs flag is on too (EA-12b), read through
     the ONE reader, ``agent_oauth.runs_enabled``. A tool of the app door only
-    while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15)."""
+    while ``agent_oauth.door_apps`` names an app (MCP-P1a, AD-15). The playbook
+    tool only for an organization that ``playbook_orgs`` names (PB-3a)."""
     if tool.door and not agent_oauth.door_apps():
+        return False
+    if tool.playbook and not agent_oauth.playbook_allowed(organization_id):
         return False
     if tool.runs and not agent_oauth.runs_enabled():
         return False
     return tool.method == "GET" or agent_oauth.writes_enabled()
 
 
-def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
+def _covered(tool: Tool, scopes: frozenset[str], organization_id: object = None) -> bool:
     """True when *scopes* hold the tool's scope and the tool is offered.
     ``app_read`` and ``app_write`` show with no app scope, because their scope
     is the one of the app in each call (:func:`scope_of`), and check 8 asks
     for it then (MCP-P1a, §19.4)."""
-    return (tool.required_scope is None or tool.required_scope in scopes) and offered(tool)
+    return ((tool.required_scope is None or tool.required_scope in scopes)
+            and offered(tool, organization_id))
 
 
-def listed(scopes: frozenset[str], *, delete_on: bool = False) -> list[dict[str, Any]]:
+def listed(scopes: frozenset[str], *, delete_on: bool = False,
+           organization_id: object = None) -> list[dict[str, Any]]:
     """The ``tools/list`` entries that *scopes* cover. Varies by scope, a
     write tool shows only while the writes flag is on (EA-6a), and an
     agent-run tool only while the runs flag is on (EA-12b). ``delete_task``
     shows only with *delete_on*, the member's switch (EA-6h)."""
     return [
         t.describe() for t in TOOLS.values()
-        if _covered(t, scopes) and (delete_on or not t.switch)
+        if _covered(t, scopes, organization_id) and (delete_on or not t.switch)
     ]
 
 
@@ -7290,8 +7385,10 @@ async def listed_for(ctx: Context) -> list[dict[str, Any]]:
     switch only when the scopes and the flags would show ``delete_task``,
     so a read connection sends no request."""
     scopes = frozenset(ctx.caller.scopes)
-    wants = any(t.switch and _covered(t, scopes) for t in TOOLS.values())
-    return listed(scopes, delete_on=wants and await delete_switch_on(ctx))
+    org = ctx.caller.lookup.organization_id
+    wants = any(t.switch and _covered(t, scopes, org) for t in TOOLS.values())
+    return listed(scopes, delete_on=wants and await delete_switch_on(ctx),
+                  organization_id=org)
 
 
 def call_timeout(tool: Tool, args: Mapping[str, Any]) -> float:
@@ -7311,7 +7408,9 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     :data:`TEXT_WRITES_OFF`, and an agent-run tool while the runs flag is
     off answers :data:`TEXT_RUNS_OFF`. Neither makes a gateway request.
     """
-    if not offered(tool):
+    if not offered(tool, ctx.caller.lookup.organization_id):
+        if tool.playbook and not agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id):
+            return error_result(TEXT_PLAYBOOK_OFF)
         if tool.door and not agent_oauth.door_apps():
             return error_result(TEXT_APPS_OFF)
         if tool.runs and not agent_oauth.runs_enabled():
@@ -7456,6 +7555,7 @@ __all__ = [
     "PROJECT_ROW_KEYS",
     "PROJECT_UPDATE_BODY_KEYS",
     "READ_ANNOTATIONS",
+    "READ_PLAYBOOK",
     "RECORD_OUTSIDE_DECISION",
     "REF_KEYS",
     "RELEASE_TASK",
@@ -7479,6 +7579,8 @@ __all__ = [
     "SUBTASK_WORDS",
     "TAG_KEYS",
     "TEXT_APPS_OFF",
+    "TEXT_NO_TOPIC",
+    "TEXT_PLAYBOOK_OFF",
     "TEXT_APP_OFF",
     "TEXT_ARCHIVE_CONFLICT",
     "TEXT_ASSIGNEES_PERSONAL",
