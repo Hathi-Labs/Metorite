@@ -1303,7 +1303,8 @@ OA-5 §7 named OA-4 as the home of the rule (report `:324-326`). The owner chose
 - **`TOOL_PACKS`** is a comma list of pack slugs, or `*`. Empty means off.
 - **`TOOL_PACKS_ORGS`** lists the organization ids that may use packs, or `*`. Empty allows none.
 - **The one reader** is `acb_skills.tool_packs.packs_on(org)`. It fails closed.
-- **A pack follows its parent** (owner decisions "Inherit", 2026-11-04, task 1479). `packs_on` adds each pack of `tool_packs.FOLLOWS` wherever the list names its parent. `projects-reports` follows `projects-plan` (PJP-2), and `projects-authority` follows `projects` (ALN-4). See `project_planning.md` §3.3. So a new pack of an owner turns no tool off on a box with an explicit list. An admin who turns a parent family off for an agent turns its following pack off too (`with_followers`). Fence: `tests/unit/test_tool_packs_registry.py`.
+- **A pack follows its parent** (owner decisions "Inherit", 2026-11-04, task 1479). `packs_on` adds each pack of `tool_packs.FOLLOWS` wherever the list names its parent. `projects-reports` follows `projects-plan` (PJP-2), `projects-authority` follows `projects` (ALN-4), and `calendar-day` follows `projects` (CAL-1a, task 1675). See `project_planning.md` §3.3. So a new pack of an owner turns no tool off on a box with an explicit list. An admin who turns a parent family off for an agent turns its following pack off too (`with_followers`). Fence: `tests/unit/test_tool_packs_registry.py`.
+- **CAL-1a: the `calendar-day` pack** (BUILT, 2026-11-07, task 1675). The pack is NOT dark. It follows `projects`, and production's `TOOL_PACKS` names `projects`, so the pack is on at the next release. The main chat gets the day planner. The pack holds eight `skill_my_tasks` tools: `my_tasks_plan_day`, `my_tasks_replan_day`, `my_tasks_rollover`, `my_tasks_day_digest`, `my_tasks_set_one_thing`, `my_tasks_schedule`, `my_tasks_unschedule` and `my_tasks_list_schedule`. The owner is `projects-assistant`. Its `_agent_tools()` builds them, and its `_own_tools()` stays `skill_projects.__all__`, so the specialist and `own_tool_scope` do not change. The pack comes before `studio` in `PACKS`, so the cap drops `studio` first and this pack second. `REACH_MIN_TOOLS` is 9, so these eight tools do not count as a way to reach the owner. In a held chat the pack keeps its two reads and holds off its six writes (`egress.HELD_OFF_PACK_WRITES`). The Tasks assistant keeps all eight. Fences: `tests/unit/test_calendar_day_pack.py` and `tests/unit/test_calendar_day_held.py`.
 - **The gate** is OWNER-GATE in production, and `work_plan.md` §6 D4 names it. The flag moves the guards and the spend.
 
 **Off leaves these byte-identical:**
@@ -2458,7 +2459,7 @@ must stay green with `test_crm_answer_check.py`,
 
 ## 9. A way through a held chat (task 1648, owner brief 2026-11-05)
 
-**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). The rest is design
+**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). WT-2 BUILT, dark (2026-11-05, task 1686). The rest is design
 (2026-11-04). Task 1648. The review below is checked against
 the code on 2026-11-04 at `origin/main` `7ad8dc559`. It changes no guard. The slices
 in §9.4 build it, and the first one is dark. Owner of `chat_session.continued_from`:
@@ -2546,7 +2547,7 @@ separate HIGH design, and it is out of scope here.
 |---|---|---|---|
 | WT-1 | 🔨 **BUILT, dark (2026-11-05, task 1684).** Migration 345 (`345_chat_session_continued_from.sql`) adds `continued_from`, with its foreign key NOT VALID. A later release validates it. Route `continue_session`, flag reader `continue_allowed`. Fences: `test_continue_carry.py` (R8), `test_continued_from_readers.py`. Migration (next free number at build. It was 344 on 2026-11-04) for `continued_from`. Route `POST /chat/sessions/{id}/continue` in `routes/chat.py` by §9.3. Flag `CHAT_CONTINUE_ORGS` in `settings.py` and `env_guard.py`, default empty. | HIGH | AGENT-SAFE, dark |
 | WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. | HIGH | AGENT-SAFE, dark |
-| WT-2 | The tap. A `Continue in a fresh chat` pill on the refusal and the hold note. The web shell opens the new chat and fills the composer. | STANDARD | AGENT-SAFE, dark |
+| WT-2 | 🔨 **BUILT, dark (2026-11-05, task 1686).** The tap: a `Continue in a fresh chat` pill. The server marks a held turn with the event `chat_continue_offer`. Only an org on `CHAT_CONTINUE_ORGS` gets it. The dock opens the new chat and fills the composer, and never sends. WT-1 fix: a failed room lookup answers 503. Fences: `test_continue_offer.py`, `chatContinue.test.ts`. | STANDARD | AGENT-SAFE, dark |
 | WT-3 | Copy: the two `NO_WRITES` texts offer the tap, and no copy says "open a new chat". Update the pinned tests. | HIGH | AGENT-SAFE |
 | WT-4 | Topic change (not held): a suggestion chip, and a swap in place through `persona_for` and `load_tool`. Line: "Switched to Calendar". | STANDARD | AGENT-SAFE |
 | WT-5 | The flips: `CHAT_CONTINUE_ORGS`, `HELD_CARD_WRITES_ORGS`, `EMAIL_HELD_CARD_SEND`. | — | **OWNER-GATE** (`work_plan.md` §6 D4) |

@@ -36,8 +36,8 @@ Headers (set by Next.js SSO proxy):
                      Falls back to "employee" if missing/unrecognised.
 
 Both are INTERNAL-ONLY headers and nothing in this module can tell a forwarded
-one from a forged one — the Bearer token beside them is the whole of the proof,
-and that token falls back to the widely-held ``LITELLM_MASTER_KEY`` (below).
+one from a forged one — the Bearer token beside them is the whole of the proof.
+That token is ``GATEWAY_INTERNAL_TOKEN`` only. It has no fallback (WS-24b).
 The boundary therefore has to be the reverse proxy: the public vhost must
 delete ``X-User-Email`` and ``X-User-Role`` from every inbound request, so they
 can only ever be set by a caller already on the box. As of 2026-08-03
@@ -59,9 +59,13 @@ Two secrets, deliberately distinct (BO-2 residual #4):
 They used to be one value: the identity token fell back to the LLM key, and
 the orchestrator handed agents whichever it resolved to. Every agent therefore
 held the identity token and could call /admin/* to grant itself anything.
+WS-24b (2026-11-06) removed that fallback.
 
-Empty string disables Bearer auth (never accept all callers — use SSO headers
-instead).
+An unset ``GATEWAY_INTERNAL_TOKEN`` FAILS CLOSED outside ``ACB_ENV=dev``: no
+Bearer is service identity, ``require_internal_auth`` answers 401, and a bare
+``X-User-Email`` resolves anonymous. On ``ACB_ENV=dev`` an unset token is
+open, the same rule as ``require_llm_api_auth``. This is new: the old
+``sk-local`` default kept a dev box with no token closed.
 
 Branch 0 (WS-55 EA-3a, ``external_agent_access.md`` §10.1): a request that
 carries an ``X-Agent-*`` header or an ``mcp:`` actor stamp is an outside
@@ -119,20 +123,20 @@ def _get_llm_api_token() -> str:
     return tok
 
 
-def _resolve_internal_token() -> tuple[str, bool]:
-    """``(token, is_llm_fallback)`` — the service-identity ladder, once.
+def _get_internal_token() -> str:
+    """The SERVICE IDENTITY token: proof that a caller *is* the platform.
 
-    THE ladder. :func:`_get_internal_token` and
-    :func:`_internal_token_is_llm_fallback` are both thin readers of this
-    tuple, deliberately: the second used to re-implement the precedence, and a
-    later change to one copy would have left the flag answering about a
-    resolution that no longer happens. The consequence of that drift is not
-    academic — ``get_current_user`` uses the flag to REFUSE identity, so a
-    stale copy would start refusing a legitimately provisioned token, which on
-    a flagged box is every member locked out.
+    Grants ``SERVICE_ACCESS`` (everything), so it must never be given to code
+    that runs untrusted input. That is why it is separate from the ``/v1`` API
+    key (BO-2 residual #4).
 
-    Silent by design: the warning belongs to the caller that actually resolves
-    a token for use, not to every predicate that asks about it.
+    It reads ``GATEWAY_INTERNAL_TOKEN``, then the settings field of the same
+    name. There is NO other rung. Before WS-24b (2026-11-06) an unset token
+    fell back to ``LITELLM_MASTER_KEY``, the key that every agent's BYOK client
+    holds, so any agent could authenticate as the platform. ``""`` means
+    unprovisioned. Then no Bearer is service identity, and
+    :func:`_unset_token_is_open` decides the rest. Fence:
+    ``tests/unit/test_service_identity_and_webhook_auth.py``.
     """
     tok = os.getenv("GATEWAY_INTERNAL_TOKEN", "").strip()
     if not tok:
@@ -141,93 +145,21 @@ def _resolve_internal_token() -> tuple[str, bool]:
             tok = (get_settings().gateway_internal_token or "").strip()
         except Exception:  # noqa: BLE001
             pass
-    if tok:
-        return tok, False
-    return _get_llm_api_token(), True
-
-
-def _get_internal_token() -> str:
-    """The SERVICE IDENTITY token: proof that a caller *is* the platform.
-
-    Grants ``SERVICE_ACCESS`` (everything), so it must never be given to code
-    that runs untrusted input — which is exactly why it is now separate from
-    the ``/v1`` API key. Previously this fell back to ``LITELLM_MASTER_KEY``,
-    and the orchestrator handed agents whichever value this resolved to, so
-    every agent held the identity token and could call ``/admin/*`` to grant
-    itself anything. That is BO-2 residual #4.
-
-    Precedence: ``GATEWAY_INTERNAL_TOKEN`` → (unprovisioned only)
-    ``LITELLM_MASTER_KEY`` with a warning → ``""``, which disables Bearer
-    auth entirely.
-
-    The fallback is retained ONLY so a deployment that has not set
-    ``GATEWAY_INTERNAL_TOKEN`` keeps working rather than 401ing every internal
-    call on upgrade. While it is in effect the two secrets are the same value
-    and the separation does not exist, so it warns on every resolution — a
-    silent fallback here would be the vulnerability wearing a fix's clothes.
-    """
-    tok, is_fallback = _resolve_internal_token()
-    if is_fallback and tok:
-        _log.warning(
-            "gateway_internal_token_unset",
-            detail=(
-                "Falling back to LITELLM_MASTER_KEY for service identity. That "
-                "key is handed to every agent, so any agent can currently "
-                "authenticate as the platform. Set GATEWAY_INTERNAL_TOKEN to a "
-                "distinct secret."
-            ),
-        )
     return tok
 
 
-def _internal_token_is_llm_fallback() -> bool:
-    """True when service identity is currently BORROWING the ``/v1`` API key.
+def _unset_token_is_open() -> bool:
+    """May an unprovisioned box trust a caller that it cannot check?
 
-    i.e. ``GATEWAY_INTERNAL_TOKEN`` is unprovisioned and
-    :func:`_get_internal_token` is therefore returning ``LITELLM_MASTER_KEY``.
-    While that holds, the two secrets are one value and "proves it is the
-    platform" means no more than "holds the key every agent holds".
-
-    DERIVED from :func:`_resolve_internal_token`, never re-derived: this
-    predicate and the token it describes have to be two readings of one
-    resolution, or they can disagree.
+    True only when ``ACB_ENV`` is ``dev``. A laptop has nothing to protect,
+    and the rule is the one of :func:`require_llm_api_auth`. On every other
+    box an unset ``GATEWAY_INTERNAL_TOKEN`` FAILS CLOSED:
+    :func:`require_internal_auth` answers 401, and :func:`get_current_user`
+    refuses a bare ``X-User-Email``. Before WS-24b the ``LITELLM_MASTER_KEY``
+    fallback kept the token non-empty, so these two checks were closed on
+    every real box. This rule keeps them closed with the fallback gone.
     """
-    tok, is_fallback = _resolve_internal_token()
-    return is_fallback and bool(tok)
-
-
-def _refuse_llm_key_identity() -> bool:
-    """Opt-in hardening: the ``/v1`` API key may not stand in for identity.
-
-    ``_get_internal_token``'s fallback to ``LITELLM_MASTER_KEY`` keeps an
-    un-migrated deployment working, but while it is in effect that key — which
-    every agent's BYOK client holds, and which is therefore semi-public within
-    the deployment — authenticates a caller as the platform. Such a caller can
-    then either assert any colleague's ``X-User-Email`` (branch 1a) or act as
-    the platform itself with ``SERVICE_ACCESS`` (branch 1b).
-
-    Setting ``GATEWAY_REFUSE_LLM_KEY_IDENTITY=1`` makes that fallback refusable
-    for *identity* purposes: a Bearer that only matches because the fallback is
-    in effect no longer establishes any identity at all, and the caller resolves
-    exactly as an unauthenticated one would.
-
-    **Default is FALSE — today's behaviour.** Flipping it is an OWNER-GATE
-    action (``work_plan.md`` §6: "any deploy that changes auth behaviour"), and
-    it is only safe once ``GATEWAY_INTERNAL_TOKEN`` is provisioned in BOTH
-    ``/opt/acb/app/.env`` and the workbench's ``.env.local`` — the Next.js BFF
-    mirrors the same fallback (``workbench/control_plane/src/lib/gateway.ts``),
-    so flipping this while the token is unset would 401 every signed-in member.
-    Once the token IS provisioned the flag is inert, because the fallback is
-    then never in effect.
-
-    ``require_internal_auth`` and ``require_llm_api_auth`` are deliberately NOT
-    covered: they answer "may this call happen", and a mis-provisioned box
-    should degrade to "nobody is anybody" rather than to "the Bearer check is
-    disabled", which is what an empty expected token would mean.
-    """
-    return os.getenv(
-        "GATEWAY_REFUSE_LLM_KEY_IDENTITY", ""
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    return _acb_env() == "dev"
 
 
 def allowed_email_domain() -> str:
@@ -1035,26 +967,6 @@ async def get_current_user(
         if expected and secrets.compare_digest(submitted, expected):
             bearer_ok = True
 
-    # 1'. Opt-in: a Bearer that only matched because service identity fell back
-    #     to LITELLM_MASTER_KEY establishes NOTHING. Dropping bearer_ok here
-    #     rather than in each branch means the caller then resolves exactly as
-    #     an unauthenticated one — branch 2 refuses their X-User-Email because
-    #     an internal token IS configured (the fallback), and a bare Bearer
-    #     resolves anonymous instead of to SERVICE_ACCESS. Default off, so this
-    #     is one os.getenv on bearer-matched calls and nothing else.
-    if bearer_ok and _refuse_llm_key_identity() and _internal_token_is_llm_fallback():
-        _log.warning(
-            "auth.llm_key_identity_refused",
-            asserted_email=(x_user_email or "")[:64],
-            detail=(
-                "GATEWAY_REFUSE_LLM_KEY_IDENTITY is set and "
-                "GATEWAY_INTERNAL_TOKEN is not, so the Bearer presented is the "
-                "LLM API key every agent holds. Refusing to treat it as "
-                "service identity. Provision GATEWAY_INTERNAL_TOKEN."
-            ),
-        )
-        bearer_ok = False
-
     # 1a. Bearer-matched call WITH user identity headers → real user context.
     #     This is the normal browser flow: Next.js proxy authenticates the
     #     session (NextAuth Google SSO) and forwards the verified email + role
@@ -1103,12 +1015,12 @@ async def get_current_user(
     #    spoofable by anyone who can reach the gateway directly (it is exposed via
     #    Caddy), so trusting it was a full cross-account auth bypass. When an
     #    internal token IS configured we refuse to authenticate such a caller.
-    #    When none is configured we preserve the old trust to avoid bricking an
-    #    unprovisioned/dev gateway (mirroring require_internal_auth's fail-open
-    #    contract); the escape hatch forces trust for a token-mismatch rollback.
+    #    When none is configured we refuse it too, except on a dev laptop
+    #    (_unset_token_is_open, WS-24b). The escape hatch forces trust for a
+    #    token-mismatch rollback.
     if (
         x_user_email
-        and _get_internal_token()
+        and (_get_internal_token() or not _unset_token_is_open())
         and not _trust_unverified_sso_headers()
     ):
         return UserContext(email=None, role=UserRole.EMPLOYEE, access=NO_ACCESS)
@@ -1142,15 +1054,25 @@ async def require_internal_auth(
     routes) already forwards ``Authorization: Bearer <internal token>``.
 
     If no internal token is configured (``_get_internal_token()`` returns ""),
-    Bearer auth is disabled and the call is allowed — matching that function's
-    documented contract. This means a mis-provisioned deployment fails OPEN
-    rather than bricking; since the endpoint was fully open before this guard,
-    that is strictly no worse, while any real deployment (which always sets
-    ``LITELLM_MASTER_KEY``) is now closed.
+    this FAILS CLOSED with a 401, except on a dev laptop
+    (:func:`_unset_token_is_open`). Before WS-24b (2026-11-06) the
+    ``LITELLM_MASTER_KEY`` fallback kept the token non-empty on every real box.
+    With that fallback gone, an open answer here would open every internal
+    route of a box that forgot the token.
     """
     expected = _get_internal_token()
     if not expected:
-        return  # Bearer auth disabled (unconfigured) — preserve prior behaviour.
+        if _unset_token_is_open():
+            return
+        _log.warning(
+            "gateway_internal_token_unset",
+            detail=(
+                "GATEWAY_INTERNAL_TOKEN is not set, so no caller can prove it "
+                "is the platform. Refusing. Set GATEWAY_INTERNAL_TOKEN in the "
+                "gateway .env and in the workbench .env.local."
+            ),
+        )
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if authorization and authorization.startswith("Bearer "):
         submitted = authorization.removeprefix("Bearer ").strip()
         if submitted and secrets.compare_digest(submitted, expected):

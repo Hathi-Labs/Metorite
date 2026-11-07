@@ -1141,10 +1141,18 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: (`_audit_door`) also holds ``policy``, the app scope that the door
 #: checks (``door.scope``). The value comes from the manifest, never from
 #: the request, and no step of branch 0 changes. The pins before it were
-#: 3.12 ``c737e1f1…0ae25127`` and 3.13 ``034c2925…9155f094``.
+#: 3.12 ``ec7a40eb…a945b693`` and 3.13 ``792f53b4…a1c4ea5e`` (WS-24b). The
+#: pins of the BR-7b build before the merge with WS-24b were 3.12
+#: ``7c955afa…6a81b34b`` and 3.13 ``b16fc2b1…7fabf2``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "7c955afae9f3e40a14e91c44c446696133a4abe42c071a32ef72d11e6a81b34b",
-    (3, 13): "b16fc2b17bbe3873ce2a4214ef1bd377c45598c90427a0437b900cf32c7fabf2",
+    # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
+    # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
+    # This pin needs the diff-reviewer review and the independent verification.
+    # BR-7b (2026-11-07): `_audit_door` adds the `policy` key of the audit
+    # payload (door.scope). No step of branch 0 changed. This pin needs the
+    # diff-reviewer review and the independent verification.
+    (3, 12): "0d985579bd3804a7abe64a526a37fbfbf86cdcb3ec1adae8f4c8b902c8485d17",
+    (3, 13): "b86e1ea6da4f783f4eeb41baea4c531f62c6c0e7f9b02a4e28170da2e35846de",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
