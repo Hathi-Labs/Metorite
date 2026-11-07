@@ -1155,7 +1155,10 @@ export function TaskBoard({
       className="outline-none"
       aria-label="Task board — arrow keys move, Shift extends the selection, Enter opens"
     >
-      {onManageStatuses && groupBy === "status" ? (
+      {/* MOB-11 (task 2004): a phone draws no Statuses row. The status tabs are
+          its first row, and "Manage this project" in the title row holds the
+          Statuses item. Desktop keeps the button. */}
+      {onManageStatuses && groupBy === "status" && !phone ? (
         <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
           <Button
             variant="ghost"
