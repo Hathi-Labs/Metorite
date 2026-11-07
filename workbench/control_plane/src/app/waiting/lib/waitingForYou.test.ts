@@ -4,10 +4,11 @@ import type { AgentActivity } from "@/app/projects/lib/agentRuns";
 
 import {
   answersInPlace,
+  askedAt,
   rowAgent,
   rowTitle,
   taskHref,
-  waitingCount,
+  unanswered,
   waitingRuns,
   type WaitingRun,
 } from "./waitingForYou";
@@ -60,10 +61,13 @@ describe("waitingRuns", () => {
   });
 });
 
-describe("the counts and titles", () => {
-  it("adds both lists", () => {
-    expect(waitingCount(4, 0)).toBe(4);
-    expect(waitingCount(2, 3)).toBe(5);
+describe("the times and titles", () => {
+  it("reads the time of the open question, else the last activity", () => {
+    expect(askedAt(run("q", "2026-11-01T10:00:00Z"))).toBe("2026-11-01T10:00:00Z");
+    expect(askedAt(run("n", null, { last_activity_at: "2026-11-02T09:00:00Z" }))).toBe(
+      "2026-11-02T09:00:00Z",
+    );
+    expect(askedAt(run("x", null))).toBeNull();
   });
 
   it("builds the row title from the task facts", () => {
@@ -90,5 +94,23 @@ describe("answersInPlace", () => {
       } as Partial<AgentActivity>),
     });
     expect(answersInPlace(archive)).toBe(false);
+  });
+});
+
+describe("unanswered", () => {
+  it("hides the question the page answered, and shows a new question of the same run", () => {
+    const first = run("r", "2026-11-01T10:00:00Z");
+    const firstId = first.open_elicitation!.id;
+    expect(unanswered([first], new Set([firstId]))).toEqual([]);
+    // The run asks again: same run id, a new open question.
+    const again = run("r", "2026-11-02T10:00:00Z");
+    expect(again.id).toBe(first.id);
+    expect(again.open_elicitation!.id).not.toBe(firstId);
+    expect(unanswered([again], new Set([firstId])).map((r) => r.id)).toEqual(["r"]);
+  });
+
+  it("never hides a run by its run id", () => {
+    const r = run("r", "2026-11-01T10:00:00Z");
+    expect(unanswered([r], new Set(["r"])).map((x) => x.id)).toEqual(["r"]);
   });
 });
