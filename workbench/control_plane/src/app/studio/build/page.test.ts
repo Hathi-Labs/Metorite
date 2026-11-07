@@ -204,7 +204,7 @@ describe("/studio/build", () => {
 
   it("locks the tabs and the Code editor while a save is in flight (P1-b)", () => {
     expect(page).toContain("const locked = editor.locked");
-    expect(page).toContain("readOnly={editor.state.saving}");
+    expect(page).toContain("readOnly={editor.state.saving || change.undoing}");
   });
 
   it("asks before Revert and Reload drop an edit, and offers Copy my JSON (P2-a)", () => {

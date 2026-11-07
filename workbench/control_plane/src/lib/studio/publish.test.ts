@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  PUBLISH_BUSY, PUBLISH_STALE, PUBLISH_UNKNOWN, getVersionManifest, publishBlock, publishDraft, publishedWords, syncProblems,
+  guardedClose, PUBLISH_BUSY, PUBLISH_STALE, PUBLISH_UNKNOWN, getVersionManifest, publishBlock, publishDraft, publishedWords, syncProblems,
 } from "./publish";
 import { StudioOff } from "./realDoor";
 
@@ -71,5 +71,15 @@ describe("publishBlock", () => {
     expect(publishBlock({ ...ok, errors: 2 })).toMatch(/2 errors/);
     expect(publishBlock({ ...ok, fault: true })).toMatch(/does not parse/);
     expect(publishBlock({ ...ok, hash: null })).toMatch(/Reload/);
+  });
+});
+
+describe("guardedClose", () => {
+  it("ignores Escape and an outside press while a publish runs", () => {
+    let closed = 0;
+    guardedClose(true, () => { closed++; });
+    expect(closed).toBe(0);
+    guardedClose(false, () => { closed++; });
+    expect(closed).toBe(1);
   });
 });

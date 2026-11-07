@@ -18,15 +18,20 @@ export interface ChangeBarProps {
   fault: boolean;
   undoing: boolean;
   note: string | null;
+  /** Why Undo would drop something that is live, or null. */
+  liveBlock?: string | null;
   onUndo: () => void;
   onReload: () => void;
 }
 
-export default function ChangeBar({ landed, dirty, saving, fault, undoing, note, onUndo, onReload }: ChangeBarProps) {
+export default function ChangeBar({ landed, dirty, saving, fault, undoing, note, liveBlock = null, onUndo, onReload }: ChangeBarProps) {
   const [all, setAll] = useState(false);
+  // A new change starts with the short list again.
+  const [seen, setSeen] = useState(landed);
+  if (landed !== seen) { setSeen(landed); setAll(false); }
   if (!landed) return null;
   const { lines, hidden } = barLines(landed, all);
-  const block = undoBlock({ dirty, saving, fault, working: undoing });
+  const block = undoBlock({ dirty, saving, fault, working: undoing, liveDrop: liveBlock });
   const label = undoLabel(landed.who);
   return (
     <div data-change-bar className="border-b border-border bg-secondary/40 px-3 py-1.5 text-xs">

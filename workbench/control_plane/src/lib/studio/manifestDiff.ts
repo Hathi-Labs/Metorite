@@ -21,6 +21,7 @@ export type ChangeKind =
   | "action-add" | "action-remove" | "action-other" | "record-actions-add" | "record-actions-remove"
   | "page-add" | "page-remove" | "page-other"
   | "workflow-add" | "workflow-remove" | "workflow-other"
+  | "order" | "other-parts"
   | "part";
 
 export interface Change {
@@ -73,6 +74,21 @@ const PART_WORDS: Record<string, string> = {
   contributes: "contributions", extends: "base app", slots: "slots", needs: "needs", overrides: "overrides",
 };
 
+/**
+ * True when the items that both lists hold stand in another order. The app draws these lists in
+ * manifest order (views and pages in `pageModel.ts`, records and fields in the Data tab, actions in
+ * the Explorer), so a move is a real change. An add or a remove moves no common item.
+ */
+function reordered(before: unknown, after: unknown, key: string): boolean {
+  const b = list(before).map((x) => str(x[key])).filter(Boolean);
+  const a = list(after).map((x) => str(x[key])).filter(Boolean);
+  const inA = new Set(a);
+  const inB = new Set(b);
+  const bs = b.filter((k) => inA.has(k));
+  const as = a.filter((k) => inB.has(k));
+  return bs.length === as.length && bs.some((k, i) => k !== as[i]);
+}
+
 /** Compare two lists of items with a key. `add`, `remove` and `both` make the changes. */
 function compareKeyed(
   before: Record<string, unknown>[], after: Record<string, unknown>[], key: string,
@@ -113,6 +129,7 @@ function diffObjects(out: Change[], before: unknown, after: unknown): void {
       const name = shown(a, "name");
       if (str(b.label) !== str(a.label)) out.push({ kind: "object-label", name: cleanName(str(b.label) || str(b.name)), from: cleanName(str(b.label) || str(b.name)), to: cleanName(str(a.label) || str(a.name)) });
       diffFields(out, name, b.fields, a.fields);
+      if (reordered(b.fields, a.fields, "key")) out.push({ kind: "order", name: `the fields of ${q(name)}` });
       if (!same(b.rules, a.rules)) out.push({ kind: "object-rules", name });
     },
   });
@@ -199,14 +216,20 @@ export function diffManifests(before: unknown, after: unknown): Change[] {
   if (str(b.name) !== str(a.name)) out.push({ kind: "app-name", name: cleanName(b.name), from: cleanName(b.name), to: cleanName(a.name) });
   if (str(b.purpose) !== str(a.purpose)) out.push({ kind: "app-purpose", name: "purpose" });
   diffObjects(out, b.objects, a.objects);
+  if (reordered(b.objects, a.objects, "name")) out.push({ kind: "order", name: "the record types" });
   diffViews(out, b.views, a.views);
+  if (reordered(b.views, a.views, "id")) out.push({ kind: "order", name: "the views" });
   diffActions(out, b.actions, a.actions, b.objects, a.objects);
   diffSimple(out, b.pages, a.pages, "page");
+  if (reordered(b.pages, a.pages, "id")) out.push({ kind: "order", name: "the pages" });
+  if (reordered(b.actions, a.actions, "id")) out.push({ kind: "order", name: "the actions" });
   diffSimple(out, b.workflows, a.workflows, "workflow");
   for (const key of [...new Set([...Object.keys(b), ...Object.keys(a)])].sort()) {
     if (HANDLED.has(key)) continue;
     if (!same(b[key], a[key])) out.push({ kind: "part", name: PART_WORDS[key] ?? cleanName(key) });
   }
+  // The backstop: the manifests differ, and no rule above found a line. Say so, so a change never reads as "no change".
+  if (out.length === 0 && stableJson(b) !== stableJson(a)) out.push({ kind: "other-parts", name: "" });
   return out;
 }
 
@@ -248,6 +271,8 @@ export function changeLine(c: Change, first = false): string {
     case "workflow-other": return `changes the workflow ${n}`;
     case "record-actions-add": return `${first ? "makes" : "adds"} the record actions of ${n} (${(c.verbs ?? []).map((v) => VERB_WORDS[v] ?? v).join(", ")})`;
     case "record-actions-remove": return `removes the record actions of ${n} (${(c.verbs ?? []).map((v) => VERB_WORDS[v] ?? v).join(", ")})`;
+    case "order": return `changes the order of ${c.name}`;
+    case "other-parts": return "changes other parts of the app";
     case "part": return `changes the ${c.name}`;
   }
 }
