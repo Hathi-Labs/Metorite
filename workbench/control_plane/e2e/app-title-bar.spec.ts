@@ -10,7 +10,7 @@ import { stubApi } from "./visual/harness";
  * source, so it cannot see a bar behind a branch that never renders. This one
  * opens each page and counts.
  *
- *   1. Every live pane, My Day, and the four Settings sub-pages draw exactly
+ *   1. Every live pane, My Day, and the Settings sub-pages draw exactly
  *      one `<h1>` and exactly one app bar, at 1440 and at 390.
  *   2. At 1024 with the sidebar OPEN, Calendar (with every tool up), Email,
  *      Projects and the CRM keep every control of the bar inside the window,
@@ -188,6 +188,8 @@ const PAGES: Array<[string, string]> = [
   ["Roles", "/settings/roles"],
   ["Billing", "/settings/billing"],
   ["a member", "/settings/members/priya%40acme.example"],
+  // SW-31b. The page draws its bar in each state, the dark 404 too.
+  ["Agents", "/settings/agents"],
 ];
 
 /**

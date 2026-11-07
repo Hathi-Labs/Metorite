@@ -162,6 +162,8 @@ const SUB_PAGE_HOME: Record<string, string> = {
   "/settings/roles": "app/settings/roles/page.tsx",
   "/settings/billing": "app/settings/billing/page.tsx",
   "/settings/members/[email]": "app/settings/members/[email]/page.tsx",
+  // SW-31b: Settings → Agents opens from the Organisation bar, as Teams does.
+  "/settings/agents": "app/settings/agents/page.tsx",
 };
 
 /** The route's page, its layout, and the layout of every route above it. */
