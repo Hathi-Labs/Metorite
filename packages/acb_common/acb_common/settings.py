@@ -938,6 +938,18 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_agent_questions_r8.py.
     agent_questions_orgs: str = ""
 
+    # ── The app lead acts on a teammate's run (WS-MCP SW-48) ────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default, and the rule of Release stays as it was. On, a lead of the
+    # project of a run's task, or of an ancestor project, may Release and
+    # Resume the run (agent_coordination.md §3.10.2, Q9). It never lets the
+    # lead answer a question. The one reader is
+    # `gateway.routes.projects.filters.app_lead_runs_allowed`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_runs_r8.py.
+    app_lead_runs_orgs: str = ""
+
     # ── Waiting: what waits on you (WS-AP AP-1a) ────────────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

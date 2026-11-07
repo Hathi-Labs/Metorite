@@ -223,6 +223,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-MCP SW-48: APP_LEAD_RUNS_ORGS lets the app lead Release and Resume a
+    # teammate's agent run. It widens who may write to a run, so only the
+    # owner writes it.
+    "APP_LEAD_RUNS_ORGS",
     # WS-AP AP-1a: WAITING_ORGS opens the list of what waits on a member for
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.

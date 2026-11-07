@@ -1,6 +1,10 @@
 # Agent coordination — many agents and many people on one board
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.** **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`. **P9 (§3.10, §5.10, D183) was planned on 2026-11-06. No P9 slice is built.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.**
+
+**P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
+
+**P9 (§3.10, §5.10, D183) was planned on 2026-11-06. SW-48 is built and dark on 2026-11-07, and no other P9 slice is built.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -1247,6 +1251,7 @@ They keep their own gates.
 - **Done when.** R8: the lead of the app gets 200 on Release and Resume. A member who is not the run's member and not the lead gets 403. A lead of another app gets 403. `can_act` on Needs attention agrees with the route.
 - **Fence.** `test_agent_runs_r8.py`, `test_agent_run_exclusive.py` and `test_needs_attention_r8.py`.
 - **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-44. Q5 and Q9.
+- **Built.** 2026-11-07, dark and not merged (branch `mt-23faedbe-sw48-lead-release-resume`). `authority.led_subtree_sql` is the public walk, and `person_may_end_sql` embeds it behind `:lead_runs`. The flag `APP_LEAD_RUNS_ORGS` is empty by default, so the rule stays as it was. `RELEASE_ADMIN_PERMISSION` did not change, and the lead does not answer. The new fence `test_app_ownership_seam.py` refuses a lead test outside `authority.py`. The flip is an `enforcement-flip`.
 
 #### SW-49 · Review capacity
 

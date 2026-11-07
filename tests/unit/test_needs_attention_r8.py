@@ -810,3 +810,124 @@ class TestClose:
         assert got.status_code == 403, got.text
         [row] = (await _list(w, w.dave, proj))["rows"]
         assert row["can_act"] is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SW-48: the app lead acts on a teammate's run (agent_coordination.md §3.10.2)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _lead(w: Any, proj: dict, email: str | None) -> None:
+    """Name *email* the lead of *proj*, as the RLS-bypassing admin."""
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_projects SET lead = :e WHERE id = CAST(:p AS uuid)"),
+                  {"e": email, "p": proj["id"]})
+
+
+def _lead_runs(monkeypatch: Any, value: str) -> None:
+    """Set ``APP_LEAD_RUNS_ORGS``. The one reader reads it on each call."""
+    monkeypatch.setattr(get_settings(), "app_lead_runs_orgs", value)
+
+
+@_DB_GATE
+class TestTheAppLead:
+    """SW-48. Dave leads the root, so he leads the subproject too (the walk of
+    ``authority.led_subtree_sql``). Erin leads another app. Alice is the run's
+    member. With ``APP_LEAD_RUNS_ORGS`` on, the lead may Resume and Close, and
+    ``can_act`` agrees with the route. Off, nothing changes."""
+
+    def _apps(self, w: Any) -> tuple[dict, dict, dict]:
+        root = _project(w)
+        sub = _project(w, parent=root)
+        other = _project(w)
+        _lead(w, root, DAVE)
+        _lead(w, other, ERIN)
+        return root, sub, other
+
+    async def test_l1_flag_off_the_lead_is_refused_as_today(self, w, monkeypatch):
+        _lead_runs(monkeypatch, "")
+        root, sub, _ = self._apps(w)
+        task = _task(w, sub)
+        rid = await _stalled(w, task)
+        [row] = (await _list(w, w.dave, root))["rows"]
+        assert row["can_act"] is False and row["can_resume"] is False
+        got = await _post(w, w.dave, f"/projects/agent-runs/{rid}/resume",
+                          {"idempotency_key": _key()})
+        assert got.status_code == 403, got.text
+        got = await _post(w, w.dave, f"/projects/agent-runs/{rid}/release")
+        assert got.status_code == 403, got.text
+        # The flag of ANOTHER org does not open org A.
+        _lead_runs(monkeypatch, w.b)
+        got = await _post(w, w.dave, f"/projects/agent-runs/{rid}/release")
+        assert got.status_code == 403, got.text
+
+    async def test_l2_the_lead_of_an_ancestor_resumes_and_closes(self, w, monkeypatch):
+        _lead_runs(monkeypatch, w.a)
+        root, sub, _ = self._apps(w)
+        task = _task(w, sub)
+        rid = await _stalled(w, task)
+        [row] = (await _list(w, w.dave, root))["rows"]
+        assert row["can_act"] is True and row["can_resume"] is True
+        got = await _post(w, w.dave, f"/projects/agent-runs/{rid}/resume",
+                          {"idempotency_key": _key()})
+        assert got.status_code == 200, got.text
+        assert got.json()["resumed"] is True
+        got = await _post(w, w.dave, f"/projects/agent-runs/{rid}/release")
+        assert got.status_code == 200, got.text
+        assert got.json()["run"]["status"] == "released"
+
+    async def test_l3_the_lead_of_the_project_itself_closes(self, w, monkeypatch):
+        _lead_runs(monkeypatch, "*")
+        root, _, _ = self._apps(w)
+        task = _task(w, root)
+        _move(w, task, root, "done")
+        rid = b.run(w.p, w.a, task, ALICE, "in_progress")
+        [row] = (await _list(w, w.dave, root))["rows"]
+        assert row["can_act"] is True
+        got = await _post(w, w.dave, f"/projects/agent-runs/{rid}/release")
+        assert got.status_code == 200, got.text
+
+    async def test_l4_a_lead_of_another_app_and_a_plain_member_are_refused(
+        self, w, monkeypatch,
+    ):
+        _lead_runs(monkeypatch, w.a)
+        root, sub, _ = self._apps(w)
+        task = _task(w, sub)
+        rid = await _stalled(w, task)
+        # Erin leads another app, and that gives her nothing here.
+        [row] = (await _list(w, w.erin, root))["rows"]
+        assert row["can_act"] is False
+        for path, body in ((f"/projects/agent-runs/{rid}/resume", {"idempotency_key": _key()}),
+                           (f"/projects/agent-runs/{rid}/release", None)):
+            got = await _post(w, w.erin, path, body)
+            assert got.status_code == 403, (path, got.text)
+        # A plain member: Dave once the lead of the root is cleared.
+        _lead(w, root, None)
+        [row] = (await _list(w, w.dave, root))["rows"]
+        assert row["can_act"] is False
+        got = await _post(w, w.dave, f"/projects/agent-runs/{rid}/release")
+        assert got.status_code == 403, got.text
+        # The lead of a SUBPROJECT does not lead its parent's tasks.
+        _lead(w, sub, None)
+        parent_task = _task(w, root)
+        _move(w, parent_task, root, "done")
+        parent_run = b.run(w.p, w.a, parent_task, ALICE, "in_progress")
+        _lead(w, sub, DAVE)
+        got = await _post(w, w.dave, f"/projects/agent-runs/{parent_run}/release")
+        assert got.status_code == 403, got.text
+
+    async def test_l5_a_lead_in_organization_b_gets_nothing_of_a(self, w, monkeypatch):
+        _lead_runs(monkeypatch, "*")
+        root, sub, _ = self._apps(w)
+        task = _task(w, sub)
+        rid = await _stalled(w, task)
+        b_app = _project(w, org=w.b, owner=BOB)
+        _lead(w, b_app, BOB)
+        # Bob's address as the lead of org A's root is not a member of org A,
+        # and his session binds org B, so RLS hides the run.
+        _lead(w, root, BOB)
+        for path, body in ((f"/projects/agent-runs/{rid}/resume", {"idempotency_key": _key()}),
+                           (f"/projects/agent-runs/{rid}/release", None)):
+            got = await _post(w, w.bob, path, body)
+            assert got.status_code == 404, (path, got.text)
+        assert (await _list(w, w.bob))["rows"] == []

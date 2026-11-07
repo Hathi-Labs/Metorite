@@ -19,6 +19,12 @@ the value again on each call.
 it does not change who may flip it. The flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`APP_LEAD_RUNS_ORGS` lets the lead of a project, or of a project above it,
+Release and Resume an agent run on that project (`agent_coordination.md`
+§3.10.2, SW-48). Its one reader is
+`gateway.routes.projects.filters.app_lead_runs_allowed`. The flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
 (`waiting_on_me.md` §7.3). Its one reader is
 `gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
