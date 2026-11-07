@@ -48,6 +48,12 @@ l. A promotion deletes the share rows of the install in its transaction,
    install of the app then shows to no old grantee.
 m. A promotion by a member other than the owner is refused (``not_owner``).
    A grantee who is not active does not block a promotion.
+n. A removal of a private install deletes its share rows in its
+   transaction, and keeps a consent row and a row of another sharer. A new
+   private install of the app then shows to no old grantee, and another
+   owner can share with that grantee. A removal of an org or a group
+   install deletes no row of ``app_grants``. A removal that fails deletes
+   nothing. Two removals at once give one winner and leave no share row.
 """
 
 from __future__ import annotations
@@ -730,4 +736,152 @@ def test_r8_a_grantee_who_is_not_active_does_not_block(world) -> None:
     assert isinstance(got, PromotionRefused) and got.code == "grantee_outside_group", got
     _admin_write(world, "UPDATE app_user SET status = 'suspended' WHERE email = :e", {"e": CAT})
     assert isinstance(_promote(world, mine.id, OPS), store.Install)
+    assert _grants(world, "a1") == []
+
+
+# ── n. A removal deletes the share rows ────────────────────────────────────
+
+
+def _remove(world: Any, install_id: str, *, org: str = "a") -> Any:
+    """One removal as the app role. Answers True or the refusal."""
+
+    async def go() -> Any:
+        try:
+            async with tenant_session(_org(world, org)) as db:
+                return await store.remove_install(db, install_id=install_id)
+        except InstallError as exc:
+            return exc
+
+    return _go(world, go)
+
+
+def _consent(world: Any, app: str, who: str) -> None:
+    """A consent row of *who*: the subject and ``granted_by`` are one."""
+    _admin_write(world, (
+        "INSERT INTO app_grants (app_id, subject, role, consented_scope_hash, granted_by, "
+        "organization_id) VALUES (CAST(:a AS uuid), :s, 'edit', 'hash-1', :s, "
+        "CAST(:o AS uuid))"), {"a": world.apps[app], "s": who, "o": world.p.org_a})
+
+
+def test_r8_a_new_private_install_after_a_removal_shows_to_no_old_grantee(world) -> None:
+    """The probe of the review. Ana installs a1, shares with Cat, removes the
+    install, and installs a1 again with version 2. Cat must not see it, and
+    Ben must be able to share his install of a1 with Cat."""
+    mine = _install(world, "a1", ANA, [_claim(_k("n1"))])
+    assert _share(world, mine.id, [CAT]) == (CAT,)
+    assert _sees(world, CAT, mine.id)
+    assert _remove(world, mine.id) is True
+    assert _row(world, mine.id) is None and _grants(world, "a1") == []
+    _admin_write(world, (
+        "INSERT INTO app_versions (app_id, version, manifest, bundle_html, bundle_sha256, "
+        "published_by, organization_id) SELECT id, 2, manifest, '', 'sha2', :by, "
+        "organization_id FROM apps WHERE id = CAST(:a AS uuid)"),
+        {"a": world.apps["a1"], "by": ANA})
+    again = _install(world, "a1", ANA, [_claim(_k("n1b"))], version=2)
+    assert isinstance(again, store.Install) and again.version == 2, again
+    assert not _sees(world, CAT, again.id)
+    assert _purge_counts(world, ANA) == {"private_app_installs": 1,
+                                         "shared_private_app_installs": 0}
+    bens = _install(world, "a1", BEN, [_claim(_k("n1c"))])
+    assert isinstance(bens, store.Install), bens
+    assert _share(world, bens.id, [CAT], sharer=BEN) == (CAT,)
+    assert _grants(world, "a1") == [(CAT, "use", "", BEN)]
+    assert _sees(world, CAT, bens.id) and not _sees(world, CAT, again.id)
+
+
+def test_r8_a_removal_keeps_a_consent_row_and_a_row_of_another_sharer(world) -> None:
+    mine = _install(world, "a1", ANA, [_claim(_k("n2"))])
+    bens = _install(world, "a1", BEN, [_claim(_k("n2"))])
+    assert isinstance(bens, store.Install), bens
+    _consent(world, "a1", CAT)
+    assert _share(world, bens.id, [EVE], sharer=BEN) == (EVE,)
+    assert _share(world, mine.id, [DAN]) == (DAN.lower(),)
+    assert _remove(world, mine.id) is True
+    assert _grants(world, "a1") == sorted([(CAT, "edit", "hash-1", CAT),
+                                           (EVE, "use", "", BEN)])
+    assert _sees(world, EVE, bens.id)
+
+
+def test_r8_a_removal_of_an_org_or_group_install_deletes_no_share_row(world) -> None:
+    """Ana has a private install of a1 that she shares with Cat, and an org
+    install and a group install of a1. Ben shares his own install of a1 with
+    Eve. The removal of the org and the group installs keeps each row."""
+    private = _install(world, "a1", ANA, [_claim(_k("n3"))])
+    at_org = _install(world, "a1", "org", [_claim(_k("n3"))])
+    at_ops = _install(world, "a1", OPS, [_claim(_k("n3"))])
+    bens = _install(world, "a1", BEN, [_claim(_k("n3"))])
+    for got in (private, at_org, at_ops, bens):
+        assert isinstance(got, store.Install), got
+    assert _share(world, private.id, [CAT]) == (CAT,)
+    assert _share(world, bens.id, [EVE], sharer=BEN) == (EVE,)
+    before = _grants(world, "a1")
+    assert before == sorted([(CAT, "use", "", ANA), (EVE, "use", "", BEN)])
+    assert _remove(world, at_org.id) is True
+    assert _remove(world, at_ops.id) is True
+    assert _row(world, at_org.id) is None and _row(world, at_ops.id) is None
+    assert _grants(world, "a1") == before
+    assert _sees(world, CAT, private.id) and _sees(world, EVE, bens.id)
+
+
+def test_r8_a_removal_that_fails_deletes_nothing(world) -> None:
+    mine = _install(world, "a1", ANA, [_claim(_k("n4"))])
+    assert _share(world, mine.id, [CAT]) == (CAT,)
+    before, claims = _row(world, mine.id), _claim_rows(world, mine.id)
+    got = _remove(world, mine.id, org="b")
+    assert isinstance(got, InstallNotFound) and got.status == 404, got
+    got = _remove(world, str(uuid.uuid4()))
+    assert isinstance(got, InstallNotFound), got
+    _unchanged(world, mine.id, before, claims)
+    assert _grants(world, "a1") == [(CAT, "use", "", ANA)]
+    assert _sees(world, CAT, mine.id)
+
+
+def test_r8_two_removals_at_once_give_one_winner(world) -> None:
+    """Removal 1 takes the lock, deletes, and keeps its transaction open.
+    Removal 2 must wait on the lock. The test sees the wait on the server
+    before it lets removal 1 commit. Then removal 2 finds no install and
+    raises ``InstallNotFound``. No share row stays."""
+    a = world.p.org_a
+    mine = _install(world, "a1", ANA, [_claim(_k("n5"))])
+    assert _share(world, mine.id, [CAT, BEN]) == (CAT, BEN)
+
+    async def go() -> SimpleNamespace:
+        done, release, started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        pid: dict[str, int] = {}
+
+        async def first() -> Any:
+            async with tenant_session(a) as db:
+                out = await store.remove_install(db, install_id=mine.id)
+                done.set()
+                await release.wait()
+                return out
+
+        async def second() -> Any:
+            try:
+                async with tenant_session(a) as db:
+                    pid["pid"] = int(
+                        (await db.execute(text("SELECT pg_backend_pid()"))).scalar_one())
+                    started.set()
+                    return await store.remove_install(db, install_id=mine.id)
+            except InstallError as exc:
+                return exc
+
+        one = asyncio.create_task(first())
+        await asyncio.wait_for(done.wait(), 30)
+        two = asyncio.create_task(second())
+        await asyncio.wait_for(started.wait(), 30)
+        state = ""
+        end = time.monotonic() + 30
+        while not state and time.monotonic() < end:
+            state = await asyncio.to_thread(_waits_on_the_lock, world, pid["pid"], two)
+            if not state:
+                await asyncio.sleep(0.02)
+        release.set()
+        return SimpleNamespace(state=state, one=await one, two=await two)
+
+    out = _go(world, go)
+    assert out.state == "waited", "removal 2 did not wait on the advisory lock"
+    assert out.one is True
+    assert isinstance(out.two, InstallNotFound), out.two
+    assert _row(world, mine.id) is None and _claim_rows(world, mine.id) == []
     assert _grants(world, "a1") == []

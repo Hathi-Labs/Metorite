@@ -18,7 +18,9 @@ d. Every statement names the bound org. ``promotion.py`` writes
    ``app_versions``. The share keeps the role and the consent hash on a
    conflict, and sets ``granted_by`` (PK-7) only on a consent row or a row
    of the sharer. The one write of ``app_grants`` in ``store.py`` is the
-   DELETE of the share rows of the promoted install.
+   DELETE of the share rows of an install. The promotion and the removal
+   of a private install run it, under the org lock, before the DELETE of
+   the install.
 e. The R8 twin is in the ``--must-run`` lists of pr-check.yml and
    deploy.yml.
 """
@@ -97,6 +99,8 @@ class _FakeDb:
             return _Result([(self.org, "read committed")])
         if sql == store._INSTALL_FOR_UPDATE_SQL:
             return _Result([self.row] if self.row != () else [])
+        if sql == store._DELETE_INSTALL_SQL:
+            return _Result([(1,)] if self.row != () else [])
         if sql == store._MEMBER_IN_GROUP_SQL:
             return _Result([(1,)] if self.in_group else [])
         if sql == store._GRANTEE_OUTSIDE_SQL:
@@ -254,8 +258,43 @@ def test_the_share_reads_under_the_same_locks_then_writes_once() -> None:
     assert db.calls[1][1] == {"key": f"package_install:{ORG}"}
 
 
+def _remove(db: _FakeDb, install: str = INSTALL) -> Any:
+    return _run(store.remove_install(db, install_id=install))
+
+
+def test_the_removal_of_a_private_install_deletes_its_share_rows_first() -> None:
+    """The lock, the read under the row lock, the DELETE of the share rows,
+    then the DELETE of the install. The share DELETE joins the install row,
+    so it must run first."""
+    db = _FakeDb()
+    assert _remove(db) is True
+    order = ["SELECT CAST(CAST(NULLIF", "SELECT pg_advisory_xact_lock(",
+             store._INSTALL_FOR_UPDATE_SQL, store._UNSHARE_SQL, store._DELETE_INSTALL_SQL]
+    assert len(db.calls) == len(order)
+    for (sql, _), head in zip(db.calls, order, strict=True):
+        assert sql.startswith(head), (head, sql)
+    assert db.calls[1][1] == {"key": f"package_install:{ORG}"}
+    assert db.calls[3][1] == {"install": INSTALL} and db.calls[4][1] == {"install": INSTALL}
+
+
+@pytest.mark.parametrize("row", [(APP, 1, "group", OPS, ANA, None, "active"),
+                                 (APP, 1, "org", "org", ANA, None, "paused")])
+def test_the_removal_of_an_org_or_group_install_deletes_no_share_row(
+        row: tuple[Any, ...]) -> None:
+    db = _FakeDb(row=row)
+    assert _remove(db) is True
+    assert _writes(db) == [store._DELETE_INSTALL_SQL]
+
+
+def test_the_removal_of_a_missing_install_writes_nothing() -> None:
+    db = _FakeDb(row=())
+    with pytest.raises(InstallNotFound):
+        _remove(db)
+    assert _writes(db) == []
+
+
 def test_an_unbound_session_writes_nothing() -> None:
-    for call in (_promote, _share):
+    for call in (_promote, _share, _remove):
         db = _FakeDb(org=None)
         with pytest.raises(TenantUnbound):
             call(db)
@@ -399,7 +438,7 @@ def test_a_person_outside_the_org_is_refused() -> None:
 def test_every_statement_names_the_bound_org() -> None:
     for sql in (store._INSTALL_FOR_UPDATE_SQL, store._CLAIMS_OF_SQL, store._PROMOTE_SQL,
                 store._MEMBER_IN_GROUP_SQL, promotion._ACTIVE_MEMBERS_SQL,
-                promotion._MET_ROWS_SQL, promotion._SHARE_SQL):
+                promotion._MET_ROWS_SQL, promotion._SHARE_SQL, store._DELETE_INSTALL_SQL):
         assert BOUND in sql, sql
     # The grantee read names the bound org for its three tables and the
     # groups. The DELETE names it for both tables.
@@ -414,7 +453,8 @@ def test_the_grantee_read_is_the_one_share_rule() -> None:
     assert sharing.SHARE_ROW in store._GRANTEE_OUTSIDE_SQL
     # Only an active member of the org blocks (a suspended grantee does not).
     assert "AND u.status = 'active'" in store._GRANTEE_OUTSIDE_SQL
-    # The DELETE of the promotion takes exactly the rows of the share rule.
+    # The DELETE of the promotion and the removal takes exactly the rows of
+    # the share rule.
     assert store._UNSHARE_SQL.startswith("DELETE FROM app_grants AS g USING package_install ")
     assert store._UNSHARE_SQL.endswith(f"AND {sharing.SHARE_ROW}")
     assert store._groups_of("shared.who") in store._GRANTEE_OUTSIDE_SQL
@@ -460,13 +500,18 @@ def test_promotion_writes_app_grants_only() -> None:
 
 def test_the_store_writes_app_grants_only_to_delete_the_share_rows() -> None:
     """The narrow allowance of PKG-11a: ``store.py`` deletes the share rows
-    of a promoted install in the transaction of the promotion, and writes
+    of an install through ONE constant, ``_UNSHARE_SQL``. The promotion and
+    the removal each run it once, in their own transaction. The store writes
     ``app_grants`` in no other way."""
+    import inspect
+
     source = _source("store.py")
     writes = re.findall(r"\b(INSERT\s+INTO|DELETE\s+FROM|(?<!DO )UPDATE)\s+app_grants\b",
                         source, re.I)
     assert writes == ["DELETE FROM"]
-    assert source.count("text(_UNSHARE_SQL)") == 1
+    assert source.count("text(_UNSHARE_SQL)") == 2
+    for fn in (store.promote_to_group, store.remove_install):
+        assert inspect.getsource(fn).count("text(_UNSHARE_SQL)") == 1, fn.__name__
 
 
 def test_neither_module_writes_apps_or_app_versions() -> None:

@@ -35,8 +35,15 @@ row of another sharer, because test 3 of ``SHARE_ROW`` refuses both. The
 DELETE is in this module, and not in ``promotion.py``, on purpose. A thin
 wrapper in ``promotion.py`` would leave this function able to promote with
 no DELETE. Here one function holds the org lock, the checks and both writes.
-``promotion.py`` keeps the only INSERT of ``app_grants`` (fence:
-``tests/unit/test_package_promotion.py``).
+``promotion.py`` keeps the only INSERT of ``app_grants`` for a Studio
+package. ``routes/apps/grants.py`` also inserts, for App Workshop apps
+(fence: ``tests/unit/test_package_promotion.py``).
+
+**A removal deletes the share rows too.** :func:`remove_install` runs the
+same DELETE (:data:`_UNSHARE_SQL`) for a private install, under the same org
+lock and in the same transaction, before the DELETE of the install. So no
+exit of a private install leaves a share row behind. One SQL constant serves
+both functions.
 
 **The disposal.** Each of the three takes the org lock of :func:`install`
 and its two guards, and finds the install in the bound org only. An id of
@@ -272,8 +279,8 @@ _SET_STATE_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) AND state = :was"
 )
 
-#: One install of the bound org, with the row lock (PKG-11a). The promotion
-#: and ``promotion.share_with_people`` read it after the org lock.
+#: One install of the bound org, with the row lock (PKG-11a). The promotion,
+#: ``promotion.share_with_people`` and the removal read it after the org lock.
 _INSTALL_FOR_UPDATE_SQL = (
     "SELECT CAST(app_id AS text), version, scope_kind, scope_subject, installed_by, "
     "ends_at, state FROM package_install "
@@ -323,7 +330,8 @@ _PROMOTE_SQL = (
 
 #: The share rows of one install of the bound org: exactly the rows that the
 #: three tests of ``sharing.SHARE_ROW`` count. A consent row and a row of
-#: another sharer fail test 3, so they stay. The promotion runs it.
+#: another sharer fail test 3, so they stay. The promotion and the removal of
+#: a private install run it.
 _UNSHARE_SQL = (
     "DELETE FROM app_grants AS g USING package_install "
     f"WHERE g.organization_id = {_BOUND_ORG} "
@@ -776,9 +784,28 @@ async def remove_install(db: Any, *, install_id: str) -> bool:
     raises :class:`InstallNotFound` and writes nothing. The store does not
     check that the member may remove the install. The routes own that check.
     Answers True.
+
+    **The share rows go too (PKG-11a).** The removal takes the org lock and
+    reads the install with the row lock (:func:`locked_install`). For a
+    private install, it then deletes the share rows of the install
+    (:data:`_UNSHARE_SQL`), before the DELETE of the install, because the
+    DELETE of the share rows joins the install row. Without it, a new private
+    install of the app by the owner shows to each old grantee, and the old
+    rows block the share of another owner. A consent row and a row of another
+    sharer stay. An org or a group install has no share rows, so the removal
+    deletes no row of ``app_grants`` for it. The PKG-10 expiry job calls this
+    function, so an expired install loses its share rows in the same way.
+
+    The member purge (``routes/admin/members.py``) does not call this
+    function. It deletes the rows of ``app_grants`` whose subject is the
+    member, and a private install of the member only when
+    ``sharing.OTHERS_SEE_THE_INSTALL`` is false. So this DELETE does not
+    change a count of the purge.
     """
     install = _install_id(install_id)
-    await _lock_org(db, "a removal")
+    row = await locked_install(db, install, "a removal")
+    if row[2] == "private":
+        await db.execute(text(_UNSHARE_SQL), {"install": install})
     if (await db.execute(text(_DELETE_INSTALL_SQL), {"install": install})).first() is None:
         raise InstallNotFound("install_not_found", "No install has this id.")
     return True
@@ -844,8 +871,9 @@ def _group(group: object) -> str:
 async def locked_install(db: Any, install: str, act: str) -> tuple[Any, ...]:
     """Take the org lock, then read the install *install* with the row lock.
 
-    The promotion and ``promotion.share_with_people`` both call it, so a
-    share and a promotion of one org run one at a time. An id that no
+    The promotion, ``promotion.share_with_people`` and :func:`remove_install`
+    call it, so a share, a promotion and a removal of one org run one at a
+    time. An id that no
     install of the bound org has raises :class:`InstallNotFound`. Answers
     the row of :data:`_INSTALL_FOR_UPDATE_SQL`.
     """
