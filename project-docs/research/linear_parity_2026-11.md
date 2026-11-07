@@ -249,7 +249,7 @@ Sizes: S under 1 day of agent work, M a few days, L a week or more. "Owning area
 | P12 | **Slack and a support-desk door.** Slack intake with `/ask`, Slack notifications and view subscriptions, and project channels. Then one support-desk connector chosen by demand. Reach (D103) stays the one outbound seam. | Asks, Slack, Zendesk, Intercom, Front, Sentry, project Slack channels | Platform Core | #995 (LP-8) | L |
 | P13 | **More importers.** Jira CSV, Asana CSV and a Linear export adapter on the I-1 to I-3 pipeline. | Jira, Asana, GitHub Issues, Linear importers | Projects/Tasks App | `project_import.md` §4.2 (no task found) | M |
 | P14 | **Views, subscriptions and favorites.** View tabs and display options (OP-12 to OP-14). Add subscriptions to a view or project and a favorites list. | Custom views, display options, subscriptions, favorites | Projects/Tasks App | #839 (OP-12) | M |
-| P15 | **A free Insights builder.** Pick a measure, a slice and a segment. Add percentile markers and a cumulative flow chart. Keep it inside Reports, with no second analytics seam. | Insights, burn-up, cumulative flow, lead and triage time | Projects/Tasks App | RA-1 to RA-6 built; no task for the builder | M |
+| P15 | **A free Insights builder.** Pick a measure, a slice and a segment. Add percentile markers and a cumulative flow chart. Keep it inside Reports, with no second analytics seam. | Insights, burn-up, cumulative flow, lead and triage time | Projects/Tasks App | RA-1 to RA-6 are built. No task holds the builder | M |
 
 **Order.** P7, P3, P5, P11 and P14 are small and unblock a lot. P1 and P2 are the big planning gap, and P8 grows as they land. P10 and P12 serve the outside world and should wait for the dark flags on the current work.
 
@@ -310,4 +310,5 @@ Metorite:
 - `apps/services/agent_edge/agent_edge/tools.py`, `resources.py`
 - `apps/skills/skill-projects/skill_projects/writes.py`
 - `workbench/control_plane/src/app/projects/components/`
-- Metorite tasks: 2211, 978 and LP-0 to LP-8 (987 to 995), 19, 959, 977, 981, 18, 1046, 1047, 1048, 1051, 1052, 1949, 1957, 843, 413, 844, 751, 1562, 839, 1377
+- Metorite tasks, part 1: 2211, 978 and LP-0 to LP-8 (987 to 995), 19, 959, 977, 981, 18.
+- Metorite tasks, part 2: 1046, 1047, 1048, 1051, 1052, 1949, 1957, 843, 413, 844, 751, 1562, 839, 1377
