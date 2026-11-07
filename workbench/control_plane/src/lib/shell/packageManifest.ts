@@ -102,6 +102,32 @@ function systemOwns(href: string): boolean {
   );
 }
 
+/**
+ * The `extends` of an entry: the id of the host package of a sub-app
+ * (`package_host.md` §8.2, PKG-15a). The resolve sets it on each entry of an
+ * install whose manifest extends a host. Null for any other entry.
+ */
+export function extendsOf(e: ManifestEntry): string | null {
+  return text(e.payload.extends);
+}
+
+/**
+ * The nav href of the system pane that a host package owns, or null. The
+ * resolve lists a system entry only when the viewer can use it, and it names
+ * the package of the entry in `package`. The first nav entry of the package
+ * is the host pane. Only a system pane can be a host here, because an install
+ * entry carries no package id of its own. So a sub-app nests ONE level.
+ */
+function systemHostHref(m: PackageManifest, host: string): string | null {
+  for (const e of m.contributions.nav ?? []) {
+    if (e.source !== "system" || e.installId !== null) continue;
+    if (text(e.payload.package) !== host) continue;
+    const href = safeHref(e.key);
+    if (href) return href;
+  }
+  return null;
+}
+
 /** The team of an install pane. `TEAM_GROUPS` names it "Apps". */
 export const INSTALL_TEAM = "apps";
 
@@ -115,6 +141,10 @@ export function installNavPanes(m: PackageManifest, features: readonly string[] 
     if (!href || !label || !holds(e.payload.feature, features)) continue;
     if (systemOwns(href) || seen.has(href)) continue;
     seen.add(href);
+    // A sub-app names its host. With no host pane in the manifest, `parent`
+    // stays unset and the pane draws as a normal "Apps" pane (needs_setup).
+    const extendsId = extendsOf(e);
+    const parent = extendsId ? systemHostHref(m, extendsId) : null;
     out.push({
       href,
       label,
@@ -127,6 +157,7 @@ export function installNavPanes(m: PackageManifest, features: readonly string[] 
       // and the launcher group "Apps" holds the same panes (`TEAM_GROUPS`).
       team: INSTALL_TEAM,
       ...(typeof e.payload.feature === "string" ? { feature: e.payload.feature } : {}),
+      ...(parent ? { parent } : {}),
     });
   }
   return out;
@@ -136,18 +167,43 @@ export function installNavPanes(m: PackageManifest, features: readonly string[] 
  * Add the install panes to the "Apps" section, AFTER `visibleSections` ran.
  * With nothing to add, the SAME array comes back, so the flag-off shell is
  * the shell it was.
+ *
+ * A pane with a `parent` goes right after its host, in the section of the
+ * host (PKG-15b, `package_host.md` §8.2). The host must be a pane of
+ * `sections`: the viewer sees it, and it is no sub-entry itself. With any
+ * other host the pane loses its `parent` and goes to the "Apps" tail, as a
+ * pane without a host does. So a sub-app nests ONE level.
  */
 export function mergeInstallNav(sections: readonly NavSection[], panes: readonly NavPane[]): NavSection[] {
   if (panes.length === 0) return sections as NavSection[];
   const taken = new Set(sections.flatMap((s) => s.items.map((p) => p.href)));
-  const fresh = panes.filter((p) => !taken.has(p.href));
+  const hosts = new Set(sections.flatMap((s) => s.items.filter((p) => !p.parent).map((p) => p.href)));
+  const fresh = panes
+    .filter((p) => !taken.has(p.href))
+    .map((p): NavPane => {
+      if (p.parent === undefined || hosts.has(p.parent)) return p;
+      const { parent: _gone, ...flat } = p;
+      return flat;
+    });
   if (fresh.length === 0) return sections as NavSection[];
-  if (sections.some((s) => s.id === "apps")) {
-    return sections.map((s) => (s.id === "apps" ? { ...s, items: [...s.items, ...fresh] } : s));
+  const subs = fresh.filter((p) => p.parent !== undefined);
+  const tail = fresh.filter((p) => p.parent === undefined);
+  let out: NavSection[] = sections as NavSection[];
+  if (tail.length > 0) {
+    if (sections.some((s) => s.id === "apps")) {
+      out = sections.map((s) => (s.id === "apps" ? { ...s, items: [...s.items, ...tail] } : s));
+    } else {
+      const at = sections.findIndex((s) => s.id === "ai-studio" || s.id === "admin");
+      const apps: NavSection = { id: "apps", label: "Apps", items: tail };
+      out = at < 0 ? [...sections, apps] : [...sections.slice(0, at), apps, ...sections.slice(at)];
+    }
   }
-  const at = sections.findIndex((s) => s.id === "ai-studio" || s.id === "admin");
-  const apps: NavSection = { id: "apps", label: "Apps", items: fresh };
-  return at < 0 ? [...sections, apps] : [...sections.slice(0, at), apps, ...sections.slice(at)];
+  if (subs.length === 0) return out;
+  return out.map((s) =>
+    s.items.some((p) => subs.some((c) => c.parent === p.href))
+      ? { ...s, items: s.items.flatMap((p) => [p, ...subs.filter((c) => c.parent === p.href)]) }
+      : s,
+  );
 }
 
 export interface InstallJob {

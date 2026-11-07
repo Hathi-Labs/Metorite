@@ -12,7 +12,9 @@ c. A feature that the viewer lacks hides the entry. No feature is open, and
    a feature that is not text fails closed. System entries pass the same
    check.
 d. ``needs_setup`` follows the needs. A malformed need fails closed. A
-   package need is met by a system package or by a visible install only.
+   package need is met by a system package that the viewer can use, or by a
+   visible install only. A system package counts when one of its entries
+   passes the feature check. A sub-app of a gated host shows its setup card.
 e. The order in a point: the system entries in file order, then the claims
    by position and key. A payload cannot replace a fixed field.
 f. The version is 16 hex digits, stable, and changes with the content.
@@ -28,6 +30,9 @@ h. The SQL reads the one share rule and the one group read, and keeps no
   ``test_a_malformed_need_fails_closed`` goes red.
 * M3. ``resolve.resolve``: put the payload after the fixed fields.
   ``test_a_payload_cannot_replace_a_fixed_field`` goes red.
+* M4. ``resolve.system_package_ids``: drop the ``feature_ok`` check.
+  ``test_a_gated_system_host_is_missing_when_the_viewer_cannot_use_it`` goes
+  red.
 """
 
 from __future__ import annotations
@@ -195,6 +200,140 @@ def test_a_need_of_an_app_the_viewer_cannot_see_is_unmet() -> None:
     installs = [_inst("o", "a", manifest={"id": "m", "needs": [{"package": "hidden"}]})]
     out = resolve.resolve({}, installs, [_claim("o", "k")], _all)
     assert out["jobs"][0]["needs_setup"] is True
+
+
+# ── d2. The host of a sub-app (PKG-15a) ───────────────────────────────────
+
+_CRM = {"nav": (SystemContribution("nav", "/crm", "crm", None),)}
+
+
+def _sub(extends: Any, iid: str = "s", app: str = "sub") -> InstallRow:
+    return _inst(iid, app, manifest={"id": app, "extends": extends})
+
+
+def _sub_out(installs: list[InstallRow], system: Any = None) -> dict[str, Any]:
+    out = resolve.resolve(_CRM if system is None else system, installs,
+                          [_claim(i.id, f"k-{i.id}") for i in installs], _all)
+    return {e["install_id"]: e for e in out["jobs"]}
+
+
+def test_a_host_that_is_a_system_package_is_met() -> None:
+    entry = _sub_out([_sub("crm")])["s"]
+    assert entry["needs_setup"] is False
+    assert entry["extends"] == "crm"
+
+
+def test_a_host_that_is_an_active_install_of_the_viewer_is_met() -> None:
+    host = _inst("h", "hostapp", "private")
+    assert _sub_out([_sub("hostapp"), host], {})["s"]["needs_setup"] is False
+
+
+def test_a_host_that_is_absent_is_missing() -> None:
+    entry = _sub_out([_sub("nohost")])["s"]
+    assert entry["needs_setup"] is True
+    assert entry["extends"] == "nohost"
+
+
+# A paused or archived host, and a host that only another org holds, are
+# facts of the SQL of step 2. The R8 twins prove them on a database:
+# ``test_r8_a_host_in_the_own_org_is_met_until_it_is_paused`` and
+# ``test_r8_a_host_that_only_another_org_holds_is_missing``.
+
+_GATED_CRM = {"jobs": (SystemContribution("jobs", "crm.lead", "crm", "crm"),),
+              "nav": (SystemContribution("nav", "/crm", "crm", "crm"),)}
+
+
+def _gated(extends: Any, can_use: Any, system: Any = None) -> dict[str, Any]:
+    out = resolve.resolve(_GATED_CRM if system is None else system,
+                          [_sub(extends)], [_claim("s", "k-s")], can_use)
+    return {e["install_id"]: e for e in out["jobs"]}
+
+
+def test_a_gated_system_host_is_met_when_the_viewer_can_use_it() -> None:
+    entry = _gated("crm", {"crm"}.__contains__)["s"]
+    assert entry["needs_setup"] is False
+    assert entry["extends"] == "crm"
+
+
+def test_a_gated_system_host_is_missing_when_the_viewer_cannot_use_it() -> None:
+    """The gate hides each CRM entry, so CRM is not present for this viewer.
+    The sub-app shows its setup card, and still names its host."""
+    out = _gated("crm", _none)
+    assert set(out) == {"s"}
+    assert out["s"]["needs_setup"] is True
+    assert out["s"]["extends"] == "crm"
+
+
+def test_one_usable_entry_makes_a_system_host_present() -> None:
+    system = {"nav": (SystemContribution("nav", "/crm", "crm", "crm"),
+                      SystemContribution("nav", "/crm/open", "crm", None))}
+    assert _gated("crm", _none, system)["s"]["needs_setup"] is False
+
+
+def test_a_system_host_with_no_feature_is_met_for_each_viewer() -> None:
+    system = {"nav": (SystemContribution("nav", "/home", "home", None),)}
+    assert _gated("home", _none, system)["s"]["needs_setup"] is False
+
+
+def test_a_bad_feature_on_a_system_entry_fails_closed() -> None:
+    system = {"nav": (SystemContribution("nav", "/crm", "crm", ""),)}  # type: ignore[arg-type]
+    assert _gated("crm", _all, system)["s"]["needs_setup"] is True
+
+
+@pytest.mark.parametrize(("can_use", "setup"), [({"crm"}.__contains__, False), (_none, True)])
+def test_a_package_need_of_a_gated_system_package_follows_the_gate(can_use, setup) -> None:
+    man = {"id": "mine", "needs": [{"package": "crm"}]}
+    out = resolve.resolve(_GATED_CRM, [_inst("o", "a", manifest=man)], [_claim("o", "k")],
+                          can_use)
+    assert _keys(out) == ([("crm.lead", None)] if setup is False else []) + [("k", "o")]
+    assert out["jobs"][-1]["needs_setup"] is setup
+
+
+@pytest.mark.parametrize("extends", [3, "", "Bad Id", "UPPER", "a" * 60, ["crm"], {"id": "crm"}, True])
+def test_a_malformed_extends_fails_closed(extends: Any) -> None:
+    entry = _sub_out([_sub(extends)])["s"]
+    assert entry["needs_setup"] is True
+    assert "extends" not in entry
+
+
+def test_a_null_extends_is_no_host() -> None:
+    entry = _sub_out([_sub(None)])["s"]
+    assert entry["needs_setup"] is False
+    assert "extends" not in entry
+
+
+def test_a_sub_app_is_never_its_own_host() -> None:
+    entry = _sub_out([_sub("sub")], {})["s"]
+    assert entry["needs_setup"] is True
+
+
+def test_the_host_adds_one_need_to_the_other_needs() -> None:
+    man = {"id": "sub", "extends": "crm", "needs": [{"feature": "hr"}]}
+    out = resolve.resolve(_CRM, [_inst("s", "sub", manifest=man)], [_claim("s", "k")],
+                          {"crm"}.__contains__)
+    assert out["jobs"][0]["needs_setup"] is True
+
+
+def test_only_an_install_with_extends_carries_the_extends_key() -> None:
+    plain = _inst("p", "plain")
+    sub = _sub("crm")
+    out = _sub_out([plain, sub])
+    assert out["p"] == {"key": "k-p", "source": "org", "install_id": "p", "needs_setup": False}
+    assert out["s"]["extends"] == "crm"
+
+
+def test_a_payload_cannot_set_the_extends_key() -> None:
+    out = resolve.resolve({}, [_inst("p", "plain")], [_claim("p", "k", extends="crm")], _all)
+    assert "extends" not in out["jobs"][0]
+
+
+def test_the_version_changes_only_for_an_install_with_extends() -> None:
+    plain = [_inst("p", "plain")]
+    before = resolve.version_of(resolve.resolve({}, plain, [_claim("p", "k")], _all))
+    again = resolve.version_of(resolve.resolve({}, plain, [_claim("p", "k")], _all))
+    assert before == again
+    sub = [_inst("p", "plain", manifest={"id": "plain", "extends": "crm"})]
+    assert before != resolve.version_of(resolve.resolve({}, sub, [_claim("p", "k")], _all))
 
 
 # ── e. The order ───────────────────────────────────────────────────────────

@@ -1191,3 +1191,15 @@ def test_a_tab_title_is_not_empty_or_blank(title):
     tab = {"id": "plan", "title": title, "cells": [{"view": "board"}]}
     d = _with_pages({"id": "main", "tabs": [tab]})
     assert _at(d, "$.pages[0].tabs[0].title"), validate_manifest(d)
+
+
+def test_a_package_cannot_extend_itself():
+    """PKG-15a. The host of a sub-app is another package (package_host.md §8.2)."""
+    ok = copy.deepcopy(EXAMPLE)
+    ok["extends"] = "crm"
+    assert validate_manifest(ok) == []
+    bad = copy.deepcopy(EXAMPLE)
+    bad["extends"] = bad["id"]
+    errors = validate_manifest(bad)
+    assert [e.path for e in errors] == ["$.extends"]
+    assert "cannot extend itself" in errors[0].message
