@@ -192,6 +192,53 @@ class TestTheClaimProtocolBlock:
         assert "ask_on_task" in " ".join(text["protocol"]["lines"])
 
 
+class TestTheClaimTips:
+    """PB-4. ``claim_task`` carries the brief tip while the runs flag is on and the
+    organization is on ``playbook_orgs``, when the task has little text, once for
+    each run. The text, the limits and the dark rules are in
+    ``test_mcp_edge_context.py`` ``TestTheTips``.
+    Mutation: ``_tip_applies`` is true for every task, and
+    ``test_a_task_with_a_real_description_gets_no_brief_tip`` fails."""
+
+    @pytest.fixture
+    def on(self, edge, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
+        return edge
+
+    async def _claim_result(self) -> dict[str, Any]:
+        result = await _tool("claim_task", _claim_args())
+        assert result["isError"] is False, result
+        return result["structuredContent"]
+
+    async def test_a_task_with_no_description_gets_the_brief_tip(self, on):
+        on.gateway.task["description"] = None
+        tips = (await self._claim_result())["tips"]
+        assert [t["id"] for t in tips] == ["brief"]
+        assert tips[0]["topic"] == "brief-contract"
+
+    async def test_a_task_with_a_real_description_gets_no_brief_tip(self, on):
+        on.gateway.task["description"] = "x" * 200
+        assert "tips" not in await self._claim_result()
+
+    async def test_the_tip_shows_once_for_a_run(self, on):
+        on.gateway.task["description"] = ""
+        first = await self._claim_result()
+        second = await self._claim_result()
+        assert "tips" in first and "tips" not in second
+
+    async def test_the_tips_are_dark_while_playbook_orgs_is_empty(self, edge, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        edge.gateway.task["description"] = None
+        assert "tips" not in await self._claim_result()
+
+    async def test_the_tips_do_not_hide_the_protocol_block(self, on, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        on.gateway.task["description"] = None
+        body = await self._claim_result()
+        assert "tips" in body and body["protocol"]["lines"]
+
+
 class TestClaimTaskAtTheEdge:
     """§9.2 and §9.5 for ``claim_task``, database-free."""
 

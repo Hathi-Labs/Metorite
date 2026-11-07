@@ -86,7 +86,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import agent_oauth
-from acb_common import app_manifests, get_logger, get_settings
+from acb_common import app_manifests, get_logger, get_settings, tenant_redis
 from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
@@ -2790,6 +2790,108 @@ PROTOCOL_LINES: tuple[str, ...] = (
     "End each turn with one result: review or done, a question, or release_task.",
     "Hand off with evidence: what is done, what is left, and the proof.",
 )
+#: PB-4 (D186, orchestration_playbook.md §5, §7). The tips of the results of
+#: ``claim_task`` and ``my_work``: at most :data:`TIPS_MAX` short lines of fixed
+#: server text, each naming one playbook topic. A tip shows once for each run.
+#: They are apart from the protocol block, which holds the safety lines. They
+#: show only while the runs flag is on and the organization is on
+#: ``playbook_orgs``, the flag of the playbook content. The edge keeps no state
+#: of its own, so "once" is one ``SET NX`` key in the tenant Redis wrapper for
+#: each connection, run and tip. That is a hint, not an authority: a lost key
+#: only shows a tip again, and a store outage shows none. Fence:
+#: ``test_mcp_edge_context.py`` ``TestTheTips``.
+TIPS_KEY = "tips"
+TIPS_MAX = 2
+TIP_LINE_MAX = 120
+TIPS_NAMESPACE = "agent_tips"
+#: A key lives three days, longer than a run holds a task.
+TIPS_TTL_S = 3 * 24 * 60 * 60
+#: A task with a description shorter than this has no brief yet. SW-70 gives the
+#: task a real brief, and this test then reads it.
+TIP_BRIEF_MIN_CHARS = 40
+
+
+@dataclass(frozen=True)
+class Tip:
+    id: str
+    tool: str
+    topic: str
+    text: str
+
+
+#: The rule table. Each row names the tool, and :func:`_tip_applies` holds the
+#: context test. Order is the order of preference when two apply.
+TIP_RULES: tuple[Tip, ...] = (
+    Tip("brief", "claim_task", "brief-contract",
+        "This task has little text. Write its brief first: read_playbook topic brief-contract."),
+    Tip("stalled", "my_work", "failures",
+        "A run of yours went quiet. Name its cause: read_playbook topic failures."),
+)
+
+_TIP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"id": {"type": "string"}, "topic": {"type": "string"},
+                   "text": {"type": "string", "maxLength": TIP_LINE_MAX}},
+    "required": ["id", "topic", "text"],
+    "additionalProperties": False,
+}
+_TIPS_SCHEMA: dict[str, Any] = {"type": "array", "maxItems": TIPS_MAX, "items": _TIP_SCHEMA}
+
+
+def _description_chars(task: Any) -> int:
+    """The length of the description of a task of a result, 0 for none."""
+    found = task.get("description") if isinstance(task, dict) else None
+    text = found.get("untrusted_text") if isinstance(found, dict) else None
+    return len(text.strip()) if isinstance(text, str) else 0
+
+
+def _tip_applies(tip: Tip, result: Mapping[str, Any]) -> bool:
+    if tip.id == "brief":
+        return _description_chars(result.get("task")) < TIP_BRIEF_MIN_CHARS
+    if tip.id == "stalled":
+        rows = result.get("rows")
+        return isinstance(rows, list) and any(
+            isinstance(r, dict) and r.get("reason") == REASON_HELD for r in rows)
+    return False
+
+
+async def _tip_unseen(ctx: Context, scope: str, tip: Tip) -> bool:
+    """True the first time this connection sees *tip* for *scope* (a run id, or
+    the session). A store failure reads as seen: no tip, no error."""
+    lookup = ctx.caller.lookup
+    try:
+        async with asyncio.timeout(2.0):
+            client = tenant_redis.get_tenant_redis()
+            with tenant_redis.organization_scope(str(lookup.organization_id)):
+                slot = tenant_redis.key(TIPS_NAMESPACE, str(lookup.connection_id), scope, tip.id)
+                return bool(await client.set(slot, "1", nx=True, ex=TIPS_TTL_S))
+    except Exception as exc:
+        _log.warning("agent_edge.tips_unavailable", tip=tip.id, error=type(exc).__name__,
+                     connection_id=lookup.connection_id)
+        return False
+
+
+async def _tips(ctx: Context, tool: str, result: Mapping[str, Any],
+                run_id: str | None) -> list[dict[str, str]] | None:
+    """The tips of one result, or ``None``: the key is then left out.
+
+    ``None`` while the runs flag is off, the organization of the token row is not
+    on ``playbook_orgs``, no rule applies, or every applying tip was shown for
+    this run. *run_id* is the run of the claim. ``my_work`` has no single run, so
+    its tips show once for each MCP session, or for the connection."""
+    if not (agent_oauth.runs_enabled()
+            and agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id)):
+        return None
+    scope = run_id or ctx.session or "connection"
+    shown: list[dict[str, str]] = []
+    for tip in TIP_RULES:
+        if len(shown) >= TIPS_MAX:
+            break
+        if tip.tool == tool and _tip_applies(tip, result) and await _tip_unseen(ctx, scope, tip):
+            shown.append({"id": tip.id, "topic": tip.topic, "text": tip.text})
+    return shown or None
+
+
 _PROTOCOL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -3328,6 +3430,7 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
 _MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
 }), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
+_MY_WORK_OUTPUT = _optional(_MY_WORK_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
 
 
 async def _my_runs(ctx: Context, via: str, *, needs_agent: bool = False,
@@ -3565,6 +3668,9 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     protocol = _protocol(ctx)
     if protocol is not None:
         answer[PROTOCOL_KEY] = protocol
+    tips = await _tips(ctx, "my_work", answer, None)
+    if tips is not None:
+        answer[TIPS_KEY] = tips
     return answer
 
 
@@ -4614,6 +4720,7 @@ _CLAIM_OUTPUT: dict[str, Any] = _optional(_object({
     "agent_run_id": _NULLABLE_STRING,
 }), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
 _CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, PROTOCOL_KEY, _PROTOCOL_SCHEMA)
+_CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, TIPS_KEY, _TIPS_SCHEMA)
 
 
 async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -4655,6 +4762,9 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     protocol = _protocol(ctx)
     if protocol is not None:
         result[PROTOCOL_KEY] = protocol
+    tips = await _tips(ctx, "claim_task", result, result["agent_run_id"])
+    if tips is not None:
+        result[TIPS_KEY] = tips
     return result
 
 
@@ -7730,6 +7840,13 @@ __all__ = [
     "TEXT_WRITES_OFF",
     "TEXT_WRITE_FORBIDDEN",
     "TIMELINE_ROW_KEYS",
+    "TIPS_KEY",
+    "TIPS_MAX",
+    "TIPS_NAMESPACE",
+    "TIPS_TTL_S",
+    "TIP_BRIEF_MIN_CHARS",
+    "TIP_LINE_MAX",
+    "TIP_RULES",
     "TOOLS",
     "TOOL_TIMEOUT_S",
     "TREE_RACE_DETAIL",
@@ -7745,6 +7862,7 @@ __all__ = [
     "WRITE_ANNOTATIONS",
     "Context",
     "GatewayUnauthorized",
+    "Tip",
     "Tool",
     "ToolError",
     "agent_run",

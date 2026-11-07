@@ -88,6 +88,7 @@ from tests.unit.test_mcp_edge_writes import (  # noqa: F401 — fixtures
     _tool,
     _uuid,
     edge,
+    redis_fake,
 )
 
 ME = "agent-member@context.test"
@@ -1192,3 +1193,128 @@ class TestTheProtocolBlock:
         monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
         await self._result()
         assert board.paths() == before
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PB-4: the tips of my_work (and of claim_task, see test_mcp_edge_claim.py)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTheTips:
+    """``tips`` in the ``my_work`` result: at most two lines of fixed server text,
+    each naming a playbook topic, shown once for each session.
+
+    Dark: the runs flag, and the organization on ``playbook_orgs``. A tip is a
+    hint. The key that records "shown" is one ``SET NX`` in the tenant Redis.
+
+    Mutations (R7), each turned the named test red:
+
+    * PB4-M1. ``tools._tips`` drops the ``playbook_allowed`` check.
+      ``test_the_tips_are_dark_while_playbook_orgs_is_empty``.
+    * PB4-M2. ``tools._tips`` drops the ``runs_enabled`` check.
+      ``test_the_tips_are_dark_with_the_runs_flag_off``.
+    * PB4-M3. ``_tip_unseen`` always returns true.
+      ``test_a_tip_shows_once_for_a_session``.
+    * PB4-M4. ``_tip_unseen`` returns true on a store failure.
+      ``test_a_store_outage_shows_no_tip_and_no_error``.
+    * PB4-M5. ``_tip_applies`` is always true for ``stalled``.
+      ``test_no_stalled_tip_without_a_quiet_run``.
+    * PB4-M6. ``_tips`` drops the cap.
+      ``test_the_text_is_fixed_and_within_its_limits``.
+    * PB4-M7. the tips key joins the protocol block.
+      ``test_the_tips_are_apart_from_the_protocol_block``.
+    """
+
+    HELD = _uuid(7500)
+
+    @pytest.fixture
+    def quiet(self, board, redis_fake, monkeypatch):
+        """A run of this client went quiet, so ``my_work`` lists it as held."""
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
+        board.tasks[self.HELD] = _task_row(self.HELD)
+        board.runs = [_run(_uuid(5500), self.HELD, state="stale")]
+        return board
+
+    async def _result(self) -> dict[str, Any]:
+        return _structured(await _tool("my_work", {}))
+
+    async def test_the_tips_are_dark_while_playbook_orgs_is_empty(self, board, redis_fake):
+        board.tasks[self.HELD] = _task_row(self.HELD)
+        board.runs = [_run(_uuid(5500), self.HELD, state="stale")]
+        assert "tips" not in await self._result()
+        assert redis_fake.calls == []
+
+    async def test_the_tips_stay_dark_for_an_organization_off_the_list(self, quiet, monkeypatch):
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "00000000-0000-4000-8000-000000000001")
+        assert "tips" not in await self._result()
+
+    async def test_the_tips_are_dark_with_the_runs_flag_off(self, quiet, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+        assert "tips" not in await self._result()
+
+    async def test_a_quiet_run_gets_the_stalled_tip(self, quiet):
+        result = await self._result()
+        assert [t["id"] for t in result["tips"]] == ["stalled"]
+        assert result["tips"][0]["topic"] == "failures"
+        assert "read_playbook" in result["tips"][0]["text"]
+
+    async def test_a_tip_shows_once_for_a_session(self, quiet):
+        assert "tips" in await self._result()
+        assert "tips" not in await self._result()
+
+    async def test_no_stalled_tip_without_a_quiet_run(self, board, redis_fake, monkeypatch):
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
+        _assign(board, _uuid(7501))
+        assert "tips" not in await self._result()
+
+    async def test_a_store_outage_shows_no_tip_and_no_error(self, quiet, redis_fake):
+        redis_fake.fail = ConnectionError("redis is down")
+        result = await self._result()
+        assert "tips" not in result and result["rows"]
+
+    async def test_the_key_is_in_the_tenant_namespace_and_holds_no_text(self, quiet, redis_fake):
+        await self._result()
+        names = [name for op, name in redis_fake.calls if op == "set"]
+        assert names and all("agent_tips" in n for n in names)
+        assert not any("quiet" in n or "failures" in n for n in names)
+
+    def test_the_text_is_fixed_and_within_its_limits(self):
+        rules = tools.TIP_RULES
+        assert 1 <= len(rules) and tools.TIPS_MAX == 2
+        assert len({r.id for r in rules}) == len(rules)
+        for rule in rules:
+            assert 0 < len(rule.text) <= tools.TIP_LINE_MAX == 120, rule.id
+            assert rule.topic in rule.text, rule.id
+            assert rule.tool in {"claim_task", "my_work"}, rule.id
+
+    def test_each_tip_names_a_topic_that_the_playbook_holds(self):
+        pytest.importorskip("acb_playbook")
+        from acb_playbook import load_topic
+        for rule in tools.TIP_RULES:
+            assert load_topic(rule.topic) is not None, rule.topic
+
+    def test_the_tips_hold_no_organization_rule(self):
+        for rule in tools.TIP_RULES:
+            for term in ("HathiLabs", "STE", "OWNER-GATE", "AGENT-SAFE", "21:30", "premerge"):
+                assert term not in rule.text, (rule.id, term)
+
+    async def test_the_tips_are_apart_from_the_protocol_block(self, quiet, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        result = await self._result()
+        assert set(result["protocol"]) == {"version", "lines"}
+        assert "tips" in result and "tips" not in result["protocol"]
+
+    async def test_an_organization_that_has_no_tips_still_gets_the_safety_lines(
+            self, board, redis_fake, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        result = await self._result()
+        assert "tips" not in result and result["protocol"]["lines"]
+
+    def test_the_schema_pins_the_tips_and_leaves_them_optional(self):
+        for tool in (tools.MY_WORK, tools.CLAIM_TASK):
+            schema = tool.output_schema
+            assert "tips" in schema["properties"] and "tips" not in schema["required"]
+            tips = schema["properties"]["tips"]
+            assert tips["maxItems"] == 2
+            assert tips["items"]["properties"]["text"]["maxLength"] == 120
+            assert tips["items"]["additionalProperties"] is False
