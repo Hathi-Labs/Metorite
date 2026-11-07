@@ -56,7 +56,8 @@ More mutations of this slice:
 
 * R10. Change access reads a box: ``_LOCK_MEMBER_CONNECTION_SQL`` and
   ``_CHANGE_GRANT_SQL`` without ``credential <> 'box'``.
-  ``TestChangeAccessRefusesABox``.
+  ``TestChangeAccessRefusesABox``. Each predicate alone still gives 404, so
+  ``test_change_access_names_the_credential`` holds each one as source.
 * R11. A second audit row for one mark: ``audit_new_addresses`` skips the
   ``done`` check. ``TestTheList::test_the_new_address_row_is_written_once``.
 * R12. A ticket of the consent namespace: ``_BOX_TICKET_NAMESPACE`` set to
@@ -187,6 +188,12 @@ class TestOnlyAPersonBySource:
             with pytest.raises(HTTPException) as caught:
                 await call()
             assert caught.value.status_code == 404
+
+    def test_change_access_names_the_credential(self):
+        """R10, as source: both statements of a change refuse a box."""
+        for sql in (agent_tokens._LOCK_MEMBER_CONNECTION_SQL,
+                    agent_tokens._CHANGE_GRANT_SQL):
+            assert "c.credential <> 'box'" in " ".join(sql.split())
 
     def test_the_two_namespaces_differ(self):
         assert agent_access._BOX_TICKET_NAMESPACE == "box-mint"
