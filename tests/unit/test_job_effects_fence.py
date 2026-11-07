@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -129,8 +130,10 @@ def _ok(module: str, name: str | None) -> bool:
 def _registry() -> dict[str, tuple[str | None, str | None]]:
     code = ("import json\n" + "".join(f"import {m}\n" for m in _MODULES)
             + "from gateway.jobs import worker\nprint(json.dumps(worker.effects()))\n")
+    # JOB_QUEUE on: a kind that registers only with the queue on (``auto.turn``)
+    # must show in the registry too, or this fence cannot see it.
     done = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True,
-                          check=True, cwd=_ROOT, env=None)
+                          check=True, cwd=_ROOT, env={**os.environ, "JOB_QUEUE": "1"})
     return {k: tuple(v) for k, v in json.loads(done.stdout.splitlines()[-1]).items()}
 
 
@@ -139,7 +142,7 @@ def _registry() -> dict[str, tuple[str | None, str | None]]:
 
 def test_every_registered_kind_states_its_effect_and_its_policy() -> None:
     effects = _registry()
-    assert {"brief.plan", "brief.run", "brief.slo", "jobs.prune"} <= set(effects)
+    assert {"brief.plan", "brief.run", "brief.slo", "jobs.prune", "auto.turn"} <= set(effects)
     assert violations(effects) == []
 
 
