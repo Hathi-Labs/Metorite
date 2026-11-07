@@ -23,7 +23,7 @@
  * An org outside `STUDIO_ORGS` gets 404 from the gateway, and the page shows "not on".
  */
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppTopBar } from "@/components/AppTopBar";
 import { EmptyState } from "@/components/EmptyState";
@@ -39,6 +39,7 @@ import { sendHeldBrief } from "@/lib/studio/buildHandoff";
 import { buildOutline, type OutlineTab } from "@/lib/studio/buildOutline";
 import type { Reveal } from "@/lib/studio/codeReveal";
 import { checkDraft } from "@/lib/studio/draftProblems";
+import { PendingTextContext } from "@/lib/studio/pendingText";
 import { useDraftEditor } from "@/lib/studio/useDraftEditor";
 import type { LiveObject } from "@/lib/studio/draftEdit";
 import { useDraftWatch } from "@/lib/studio/draftWatch";
@@ -98,7 +99,9 @@ function Ide({ pkg }: { pkg: string }) {
   const { isMobile } = useViewMode();
   const watch = useDraftWatch(pkg);
   const { draft } = watch;
-  const editor = useDraftEditor(pkg, watch);
+  const [pendingText, setPendingText] = useState(0);
+  const editor = useDraftEditor(pkg, watch, pendingText);
+  const reportPending = useCallback((d: 1 | -1) => setPendingText((n) => Math.max(0, n + d)), []);
   const [tab, setTab] = useState<string>("preview");
   const [phoneTab, setPhoneTab] = useState<string>("editor");
   const [explorerOpen, setExplorerOpen] = useState(true);
@@ -214,6 +217,7 @@ function Ide({ pkg }: { pkg: string }) {
     </p>
   ) : null;
   const body = (
+    <PendingTextContext.Provider value={reportPending}>
     <div className="min-h-0 flex-1 overflow-y-auto">
       {tab === "preview" ? <PreviewTab manifest={manifest} hash={hash} pkg={pkg} object={object} onObject={setObject} /> : null}
       {tab === "data" ? <DataTab manifest={manifest} object={object} onObject={setObject} onChange={editor.edit} live={liveRows} locked={locked} /> : null}
@@ -221,6 +225,7 @@ function Ide({ pkg }: { pkg: string }) {
       {tab === "code" ? <CodeTab manifest={manifest} text={editor.codeText} editorKey={editor.codeKey} readOnly={editor.state.saving} fault={editor.state.fault} reveal={reveal}
         onText={editor.typeCode} onSave={editor.save} /> : null}
     </div>
+    </PendingTextContext.Provider>
   );
   const editorPane = (
     <>

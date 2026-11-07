@@ -51,7 +51,8 @@ export default function EditBar({ state, dirty, newer, onSave, onRevert, onReloa
   const reload = () => (dirty ? setAsk("reload") : onReload());
   const words = ask ? discardWords(ask, changes) : null;
   const copy = () => {
-    navigator.clipboard?.writeText(editText).then(() => setCopied("yes"), () => setCopied("no"));
+    if (!navigator.clipboard) { setCopied("no"); return; }
+    navigator.clipboard.writeText(editText).then(() => setCopied("yes"), () => setCopied("no"));
   };
   const close = () => { setAsk(null); setCopied(null); };
   return (
@@ -65,7 +66,7 @@ export default function EditBar({ state, dirty, newer, onSave, onRevert, onReloa
       {newer && !(notice?.kind === "stale") ? (
         <div role="status" className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-1.5 text-xs text-warning">
           <span className="min-w-0 break-words">{NEWER_LINE}</span>
-          <Button size="sm" variant="secondary" icon="RefreshCw" onClick={reload}>Reload</Button>
+          <Button size="sm" variant="secondary" icon="RefreshCw" disabled={saving} onClick={reload}>Reload</Button>
         </div>
       ) : null}
       {notice ? (

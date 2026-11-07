@@ -174,3 +174,9 @@ export function countChanges(a: unknown, b: unknown): number {
   }
   return same(a, b) ? 0 : 1;
 }
+
+/** The number of changes for the dialog. A Code text that does not parse is one change, though the manifest has none yet. */
+export function changeCount(s: EditState, draft: PackageDraft | null): number {
+  const n = countChanges(draft?.manifest, shownManifest(s, draft));
+  return s.fault ? Math.max(1, n) : n;
+}

@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import {
   LIVE_FIELD_NOTE, SAFE_TYPES, TYPE_LABELS, addField, addObject, isLiveField, isLiveObject, linksTo, objectCut,
-  publishEffect, removeField, removeObject, renameObject, updateField, type LiveObject,
+  publishEffect, removeField, rulesNaming, removeObject, renameObject, updateField, type LiveObject,
 } from "@/lib/studio/draftEdit";
 import type { FieldType } from "@/lib/studio/manifest";
 
@@ -63,10 +63,13 @@ function dropWords(m: unknown, ask: NonNullable<Ask>, object: string, live: read
       blocked: links.length > 0,
     };
   }
+  const rules = rulesNaming(m, object, ask.key);
   return {
     title: "Delete this field?",
-    body: `The field leaves this draft, and its name leaves the views of this object. ${publishEffect("field", isLiveField(live, object, ask.key))}`,
-    blocked: false,
+    body: rules.length > 0
+      ? `Not yet: ${rules.join(", ")} name${rules.length === 1 ? "s" : ""} this field. Change the rule first, in the Code tab or with Mira.`
+      : `The field leaves this draft, and its name leaves the views of this object. ${publishEffect("field", isLiveField(live, object, ask.key))}`,
+    blocked: rules.length > 0,
   };
 }
 

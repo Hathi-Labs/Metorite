@@ -16,6 +16,37 @@
  */
 import type { FieldType } from "./manifest";
 
+/** Every string inside a rule, for a scan. */
+function ruleStrings(v: unknown, out: string[] = []): string[] {
+  if (typeof v === "string") out.push(v);
+  else if (Array.isArray(v)) v.forEach((x) => ruleStrings(x, out));
+  else if (isObj(v)) for (const [k, x] of Object.entries(v)) if (k !== "message" && k !== "name") ruleStrings(x, out);
+  return out;
+}
+
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The rules that name a field, as `object: rule`. A rule names it as a key (`field`, `fields`, `target`,
+ * `group_by`, a `where` atom) or inside a formula text. Rules of this object count, and so do the
+ * roll-ups of other objects that read this object (`source`). A delete of such a field is blocked,
+ * because the rule is the member's own logic to change.
+ */
+export function rulesNaming(m: unknown, object: string, key: string): string[] {
+  const out: string[] = [];
+  const word = new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(key)}($|[^A-Za-z0-9_])`);
+  for (const o of objectsOf(m)) {
+    for (const r of list(o.rules)) {
+      const own = str(o.name) === object;
+      const reads = isObj(r) && str(r.source) === object;
+      if (!own && !reads) continue;
+      const hit = ruleStrings(r).some((t) => t === key || word.test(t));
+      if (hit) out.push(`${str(o.name)}: ${str(r.name) || str(r.kind) || "rule"}`);
+    }
+  }
+  return out;
+}
+
 /** The field types that may be hot (`studio_fields.HOT_TYPES`). */
 const HOT_TYPES: readonly string[] = ["text", "select", "number", "money", "date", "datetime", "checkbox", "email", "relation"];
 
@@ -128,6 +159,9 @@ function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
       if (isObj(p.side) && ids.has(str(p.side.view))) delete next.side;
       return next;
     });
+    // A page that loses its last cell has no layout, and the check refuses it. It goes with its views.
+    const held = (p: unknown) => isObj(p) && ((Array.isArray(p.tabs) && p.tabs.length > 0) || (Array.isArray(p.cells) && p.cells.length > 0));
+    out.pages = (out.pages as unknown[]).filter((p, i) => held(p) || !held((m.pages as unknown[])[i]));
   }
   if (isObj(m.shell) && Array.isArray(m.shell.jobs)) {
     out.shell = { ...m.shell, jobs: m.shell.jobs.filter((j) => !(isObj(j) && ids.has(str(j.view)))) };
@@ -139,8 +173,10 @@ function dropViews(m: Obj, ids: ReadonlySet<string>): Obj {
 }
 
 /** The references to a set of actions: view `actions`, `submit` and `source.action`, and the skill. */
-function dropActions(m: Obj, gone: ReadonlySet<string>): Obj {
-  if (gone.size === 0) return m;
+function dropActions(m: Obj, gone: ReadonlySet<string>, object?: string): Obj {
+  // A skill names an action by its id, or by its `uses` (such as `object:visit.create`).
+  const isGone = (a: unknown) => gone.has(str(a)) || (object !== undefined && usesObject(a, object));
+  if (gone.size === 0 && object === undefined) return m;
   const out: Obj = { ...m };
   if (Array.isArray(m.views)) {
     out.views = m.views.map((v) => {
@@ -159,10 +195,10 @@ function dropActions(m: Obj, gone: ReadonlySet<string>): Obj {
   }
   if (isObj(m.skill)) {
     const skill: Obj = { ...(m.skill as Obj) };
-    if (Array.isArray(skill.actions)) skill.actions = skill.actions.filter((a) => !gone.has(str(a)));
+    if (Array.isArray(skill.actions)) skill.actions = skill.actions.filter((a) => !isGone(a));
     if (Array.isArray(skill.examples)) {
       skill.examples = skill.examples.map((e) => {
-        if (!isObj(e) || !gone.has(str(e.action))) return e;
+        if (!isObj(e) || !isGone(e.action)) return e;
         const { action: _a, ...rest } = e;
         void _a;
         return rest;
@@ -183,7 +219,7 @@ export function removeObject(m: unknown, name: string): unknown {
     ...(Array.isArray(m.actions) ? { actions: m.actions.filter((a) => !(isObj(a) && usesObject(a.uses, name))) } : {}),
   };
   out = dropViews(out, new Set(cut.views));
-  out = dropActions(out, new Set(cut.actions));
+  out = dropActions(out, new Set(cut.actions), name);
   if (Array.isArray(m.workflows)) {
     out.workflows = m.workflows.map((w) => {
       if (!isObj(w) || !isObj(w.trigger) || w.trigger.record !== name) return w;
@@ -281,7 +317,7 @@ const FIELD_REFS = ["group_by", "start", "end", "sort"] as const;
 
 /** Delete a field, and its name from the views of that object. */
 export function removeField(m: unknown, object: string, key: string): unknown {
-  if (!isObj(m)) return m;
+  if (!isObj(m) || rulesNaming(m, object, key).length > 0) return m;
   const removed = mapObject(m, object, (o) => ({
     ...o,
     fields: (Array.isArray(o.fields) ? o.fields : []).filter((f) => !(isObj(f) && str(f.key) === key)),

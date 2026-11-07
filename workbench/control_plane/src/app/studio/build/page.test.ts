@@ -41,7 +41,9 @@ describe("/studio/build", () => {
   });
 
   it("mounts no shell part of its own", () => {
-    expect(all).not.toMatch(/NotificationBell|AgentChat|AssistantRail|SearchPalette|CommandPalette|keydown|onKeyDown|isOpenShortcut/);
+    // `CommitInput` handles Escape on its own text field. That is a local control, not a shell key handler.
+    const shellScan = [page, ...parts.filter((p) => !p.includes("export default function CommitInput"))].join("\n");
+    expect(shellScan).not.toMatch(/NotificationBell|AgentChat|AssistantRail|SearchPalette|CommandPalette|keydown|onKeyDown|isOpenShortcut/);
     expect(all).not.toMatch(/addEventListener\(\s*["']key/);
   });
 
@@ -218,5 +220,27 @@ describe("/studio/build", () => {
     expect(read("components/CodeTab.tsx")).toContain("key={editorKey}");
     expect(page).toContain("editorKey={editor.codeKey}");
     expect(page).toContain("text={editor.codeText}");
+  });
+
+  it("tells the page about typed text that is not committed, and Escape resets it (fix 2)", () => {
+    const c = read("components/CommitInput.tsx");
+    expect(c).toContain("usePendingText()");
+    expect(c).toContain("report(1)");
+    expect(c).toContain("report(-1)");
+    expect(c).toContain('e.key === "Escape"');
+    expect(page).toContain("PendingTextContext.Provider");
+    expect(page).toContain("useDraftEditor(pkg, watch, pendingText)");
+    const hook = readFileSync(new URL("../../../lib/studio/useDraftEditor.ts", here), "utf8");
+    expect(hook).toContain("|| pendingText > 0");
+  });
+
+  it("disables Reload while a save runs, and says so when the clipboard is absent (fix 2)", () => {
+    const bar = read("components/EditBar.tsx");
+    expect(bar).toContain("disabled={saving} onClick={reload}");
+    expect(bar).toContain("if (!navigator.clipboard)");
+  });
+
+  it("blocks the delete of a field that a rule names (fix 2)", () => {
+    expect(read("components/DataTab.tsx")).toContain("rulesNaming(m, object, ask.key)");
   });
 });

@@ -14,7 +14,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { NEWER_LINE, CLEAN, codeKey, codeValue, commitSave, countChanges, editLocked, isDirty, newerDraft, reduce, shownManifest, type EditState } from "./draftEditor";
+import { NEWER_LINE, changeCount, CLEAN, codeKey, codeValue, commitSave, countChanges, editLocked, isDirty, newerDraft, reduce, shownManifest, type EditState } from "./draftEditor";
 import { SAVE_FAILED, SAVE_STALE, parseManifestText } from "./draftSave";
 import { ideFacts } from "./ideFacts";
 import type { PackageDraft } from "./packageDraft";
@@ -277,5 +277,14 @@ describe("a broken Code text and a newer draft (P1-c)", () => {
     const broken = reduce(CLEAN, { type: "code", text: "{ no", draft: draft() });
     expect(newerDraft(broken, draft({ ...m0, purpose: "Mira" }, H2))).toBe(true);
     expect(newerDraft(broken, draft())).toBe(false);
+  });
+});
+
+describe("the count of changes with a broken Code text (P3)", () => {
+  it("counts 1, never 0", () => {
+    const broken = reduce(CLEAN, { type: "code", text: "{ no", draft: draft() });
+    expect(changeCount(broken, draft())).toBe(1);
+    expect(changeCount(CLEAN, draft())).toBe(0);
+    expect(changeCount(edited(), draft())).toBe(1);
   });
 });

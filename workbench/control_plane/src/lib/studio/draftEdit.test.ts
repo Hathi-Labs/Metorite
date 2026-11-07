@@ -12,11 +12,12 @@
  * Mutation 8: mutate the input in `addField`. "never changes its input" turns red.
  * Mutation 9: say a live delete changes the live app in `publishEffect`. "tells the true effect of a delete" turns red.
  */
+import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { checkDraft } from "./draftProblems";
 import {
-  SAFE_TYPES, commitText, addField, addObject, addView, isLiveField, laneField, linksTo, nameFrom, objectCut, objectsFor, publishEffect,
+  SAFE_TYPES, rulesNaming, commitText, addField, addObject, addView, isLiveField, laneField, linksTo, nameFrom, objectCut, objectsFor, publishEffect,
   removeField, removeObject, removeView, renameObject, updateField, updateView, viewUses,
 } from "./draftEdit";
 
@@ -280,5 +281,73 @@ describe("a label keeps its spaces until it is committed (P1-e)", () => {
     expect(commitText("Site", "Site visit ")).toBe("Site visit");
     expect(commitText("Site visit", " Site visit ")).toBeNull();
     expect(commitText("Site", "")).toBe("");
+  });
+});
+
+// ── Fix round 2: the cascade output must pass the validator ─────────────────
+
+const ops = (op: string) => `__${op}`;
+void ops;
+const acts = (o: string) => ["list", "get", "create", "update", "delete"].map((v) => ({ id: `${o}_${v}`, uses: `object:${o}.${v}` }));
+const validBase = () => ({
+  studio: 1, id: "field-visits", name: "Field visits", purpose: "Plan and close site visits.",
+  objects: [
+    { name: "visit", label: "Visit", fields: [
+      { key: "title", type: "text", label: "Title" },
+      { key: "status", type: "select", options: ["planned", "done"] },
+    ], rules: [{ name: "visit_flow", kind: "state_machine", field: "status", initial: "planned", moves: [{ from: "planned", to: "done" }] }] },
+    { name: "site", fields: [{ key: "city", type: "text" }, { key: "zip", type: "text" }] },
+  ],
+  actions: [...acts("visit"), ...acts("site")],
+  views: [
+    { id: "visit-table", block: "table", title: "Visits", source: { object: "visit" }, columns: ["title", "status"] },
+    { id: "site-table", block: "table", source: { object: "site" } },
+  ],
+  pages: [{ id: "home", cols: 2, cells: [{ view: "visit-table" }] }, { id: "sites", cols: 2, cells: [{ view: "site-table" }] }],
+  skill: { description: "Answers about visits", actions: ["visit_list", "object:visit.create", "site_get"], examples: [{ prompt: "p", action: "object:visit.update" }, { prompt: "q", action: "site_get" }], cards: ["visit-table", "site-table"] },
+  shell: { jobs: [{ verb: "open", view: "visit-table" }, { verb: "open sites", view: "site-table" }], needs: [{ object: "visit" }, { object: "site" }], search: ["visit", "site"] },
+  workflows: [{ id: "w1", trigger: { record: "visit" } }],
+});
+
+describe("the cascade output passes the validator (P2 round 2)", () => {
+  const FIXTURE = new URL("../../../../../tests/fixtures/studio_cascade_cases.json", import.meta.url);
+  const cases = () => ({
+    base: validBase(),
+    cases: [
+      { name: "delete the visit object", output: removeObject(validBase(), "visit") },
+      { name: "delete the visit-table view", output: removeView(validBase(), "visit-table") },
+      { name: "delete the zip field", output: removeField(validBase(), "site", "zip") },
+    ],
+  });
+
+  it("writes the fixture that the Python validator reads, and keeps it equal to the output", () => {
+    const now = cases();
+    if (process.env.G3C_WRITE_FIXTURE) writeFileSync(FIXTURE, JSON.stringify(now, null, 2) + "\n");
+    expect(JSON.parse(readFileSync(FIXTURE, "utf8"))).toEqual(JSON.parse(JSON.stringify(now)));
+  });
+
+  it("drops the skill actions and examples that name the deleted object by their uses", () => {
+    const out = removeObject(validBase(), "visit") as ReturnType<typeof validBase>;
+    expect(out.skill.actions).toEqual(["site_get"]);
+    expect(out.skill.examples).toEqual([{ prompt: "p" }, { prompt: "q", action: "site_get" }]);
+  });
+
+  it("drops a page that is left with no tabs and no cells", () => {
+    const out = removeView(validBase(), "visit-table") as ReturnType<typeof validBase>;
+    expect(out.pages.map((p) => p.id)).toEqual(["sites"]);
+    const keep = removeObject(validBase(), "site") as ReturnType<typeof validBase>;
+    expect(keep.pages.map((p) => p.id)).toEqual(["home"]);
+  });
+
+  it("blocks the delete of a field that a rule names, and names the rule", () => {
+    const m = validBase();
+    expect(rulesNaming(m, "visit", "status")).toEqual(["visit: visit_flow"]);
+    expect(rulesNaming(m, "visit", "title")).toEqual([]);
+    expect(removeField(m, "visit", "status")).toBe(m);
+    const formula = { ...m, objects: [m.objects[0], { ...m.objects[1], rules: [{ name: "lbl", kind: "formula", target: "city", expr: "zip + 1" }] }] };
+    expect(rulesNaming(formula, "site", "zip")).toEqual(["site: lbl"]);
+    expect(rulesNaming(formula, "site", "zi")).toEqual([]);
+    const rollup = { ...m, objects: [{ ...m.objects[0], rules: [{ name: "n", kind: "rollup", target: "title", source: "site", via: "x", agg: "sum", field: "zip" }] }, m.objects[1]] };
+    expect(rulesNaming(rollup, "site", "zip")).toEqual(["visit: n"]);
   });
 });

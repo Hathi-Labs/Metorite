@@ -7,7 +7,7 @@
 import { useCallback, useReducer, useRef } from "react";
 
 import type { DraftWatch } from "./draftWatch";
-import { CLEAN, codeKey, codeValue, commitSave, countChanges, editLocked, isDirty, newerDraft, reduce, shownManifest, type EditState } from "./draftEditor";
+import { CLEAN, codeKey, changeCount, codeValue, commitSave, editLocked, isDirty, newerDraft, reduce, shownManifest, type EditState } from "./draftEditor";
 import { useLeaveGuard } from "./useLeaveGuard";
 
 export interface DraftEditor {
@@ -37,10 +37,11 @@ export interface DraftEditor {
   reload: () => void;
 }
 
-export function useDraftEditor(pkg: string, watch: DraftWatch): DraftEditor {
+export function useDraftEditor(pkg: string, watch: DraftWatch, pendingText = 0): DraftEditor {
   const [state, dispatch] = useReducer(reduce, CLEAN);
   const { draft } = watch;
-  const dirty = isDirty(state, draft);
+  // Text typed in a field and not yet committed counts as an edit: the bar and the leave guard see it.
+  const dirty = isDirty(state, draft) || pendingText > 0;
   // Leaving with an edit asks first: the browser's prompt for a reload or a closed tab, and a confirm for an in-app link.
   const never = useRef(false);
   useLeaveGuard(dirty, never);
@@ -65,7 +66,7 @@ export function useDraftEditor(pkg: string, watch: DraftWatch): DraftEditor {
   return {
     state, dirty, shown: shownManifest(state, draft), newer: newerDraft(state, draft),
     locked: editLocked(state), codeText: codeValue(state, draft), codeKey: codeKey(state, draft),
-    changes: countChanges(draft?.manifest, shownManifest(state, draft)),
+    changes: changeCount(state, draft),
     editText: state.code ?? JSON.stringify(shownManifest(state, draft), null, 2),
     edit, typeCode, save, revert, reload,
   };
