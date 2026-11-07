@@ -778,8 +778,11 @@ class TestTheProtocolRules:
             result = r.json()["result"]
             assert result["protocolVersion"] == asked
             # EA-6e (EA3-39): the prompts capability, whatever the flags.
+            # SW-34a: the resources capability too, whatever the flags.
             assert result["capabilities"] == {"tools": {"listChanged": False},
-                                              "prompts": {"listChanged": False}}
+                                              "prompts": {"listChanged": False},
+                                              "resources": {"subscribe": False,
+                                                            "listChanged": False}}
             assert result["serverInfo"]["name"] == "metorite"
 
     @pytest.mark.parametrize("asked", ["2026-07-28", "2025-03-26", "garbage", None])
@@ -822,7 +825,8 @@ class TestTheProtocolRules:
         assert r.headers["www-authenticate"] == CHALLENGE_401
 
     # EA-6e serves prompts/list and prompts/get, so they leave this list.
-    @pytest.mark.parametrize("method", ["resources/list", "resources/templates/list",
+    # SW-34a serves resources/list, resources/templates/list and resources/read.
+    @pytest.mark.parametrize("method", ["resources/subscribe", "resources/unsubscribe",
                                         "completion/complete", "logging/setLevel",
                                         "prompts/unknown", "sampling/createMessage"])
     async def test_any_other_method_gets_minus_32601(self, armed, method):

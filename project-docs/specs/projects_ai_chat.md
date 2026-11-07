@@ -6717,10 +6717,10 @@ The node suite holds its pure rule.
 
 ## 30. An image from the chat goes onto a task, and the agent sees it (2026-11-07)
 
-**Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 and IMG-2
-are AGENT-SAFE. IMG-3 is BUILT 2026-11-07 on branch `mt-2d62220d-img3`, and
-it waits for its review and merge. IMG-4 needs an audit before a build. No
-migration.
+**Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 is BUILT and
+merged (cb38e1473). IMG-2 is AGENT-SAFE. IMG-3 is BUILT 2026-11-07 on branch
+`mt-2d62220d-img3`, and it waits for its merge. IMG-4 needs an audit before a
+build. No migration.
 
 ### 30.1 The request
 
@@ -6803,6 +6803,30 @@ the MCP still waits (task 413).
 
 **IMG-1 (task 1998). The composer shows a chip, and takes paste and drop.**
 STANDARD. Frontend only.
+
+✅ built 2026-11-07, branch `mt-10bf2e89-img1`.
+
+**Built.** The build differs from the plan in seven ways.
+1. The composer state is a pure reducer in `lib/chatAttachments.ts`. The hook
+   `hooks/useChatAttachments.ts` runs the uploads. The vitest rig has no DOM,
+   so `chatAttachments.test.ts` drives the reducer, and the browser half was
+   driven by hand. No `e2e/chat-attach-chip.spec.ts` exists, because that rig
+   stubs every route of the shell.
+2. A failed chip blocks Send until the member retries or removes it. The plan
+   did not say. A silent drop of a file is worse.
+3. `FileUploadButton` has a new `onPick` prop. The Files drawer drop zone
+   keeps its old upload.
+4. `wordsOfMessage` (beside `parseUploadNote`) gives the thread title and the
+   Copy action the words only. Edit opens the words, and the files come back
+   as ready chips with a remove control (`editStart`). A save sends the words
+   and the note of the kept files. A note that does not parse edits as raw
+   text. Chat search reads the saved text on the server, so it can show the
+   raw note. That is not changed here.
+5. A paste that carries text stays text, so a copy from a page does not
+   attach its picture.
+6. The send trims the member's words before the note.
+7. A backtick in a file name becomes an apostrophe before the upload. An
+   upload keeps the thread that was open when the file was attached.
 
 - **Files:** `components/AgentChat.tsx` (composer and message bubble),
   `components/FileUploadButton.tsx`, `lib/chatUpload.ts`, and a new

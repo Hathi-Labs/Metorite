@@ -192,7 +192,8 @@ class TestTheCapabilities:
         r = await _send(_rpc("initialize", {"protocolVersion": "2025-11-25"}), token)
         assert r.status_code == 200, r.text
         assert r.json()["result"]["capabilities"] == {
-            "tools": {"listChanged": False}, "prompts": {"listChanged": False}}
+            "tools": {"listChanged": False}, "prompts": {"listChanged": False},
+            "resources": {"subscribe": False, "listChanged": False}}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -661,7 +662,7 @@ class TestTheChecks:
         assert r.status_code == 200, r.text
         assert [p["name"] for p in r.json()["result"]["prompts"]] == ["work_on_task"]
 
-    @pytest.mark.parametrize("method", ["resources/list", "resources/templates/list",
+    @pytest.mark.parametrize("method", ["resources/subscribe", "resources/unsubscribe",
                                         "completion/complete", "logging/setLevel",
                                         "server/discover", "prompts/unknown",
                                         "prompts/list_changed"])
@@ -670,10 +671,11 @@ class TestTheChecks:
         assert r.status_code == 200
         assert r.json()["error"] == {"code": -32601, "message": "Method not found"}
 
-    def test_p12_the_served_methods_are_the_six(self):
+    def test_p12_the_served_methods_are_the_nine(self):
         served = set(mcp.SERVED_METHODS)
         assert served == {"initialize", "ping", "tools/list", "tools/call", "prompts/list",
-                          "prompts/get"}
+                          "prompts/get", "resources/list", "resources/templates/list",
+                          "resources/read"}
 
     def test_ci14a_the_claim_step_tells_the_agent_to_pass_its_session_link(self):
         for runs in (True, False):
