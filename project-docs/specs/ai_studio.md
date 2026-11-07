@@ -373,7 +373,7 @@ Some needs no block covers: a custom chart, a scanner, a bespoke calculator. The
 
 ### 6.3 The Studio IDE
 
-**Owner decision, 2026-11-06, in chat.** The owner tried Studio, then "Build it". The owner expected a contained IDE like VS Code, as in the old App Workshop. The owner chose "New Studio IDE".
+**Owner decision, 2026-11-06, in chat (D193).** The owner tried Studio, then "Build it". The owner expected a contained IDE like VS Code, as in the old App Workshop. The owner chose "New Studio IDE".
 
 "Build it" opens a full-page IDE. The Explorer tree of the parts of the app is on the left. The Preview, Data, Views and Code tabs are in the centre, with the problems below. Mira is on the right and works on THIS app only.
 
