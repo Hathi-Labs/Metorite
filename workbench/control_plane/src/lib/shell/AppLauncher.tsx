@@ -26,18 +26,20 @@
  */
 import Link from "next/link";
 import { useRef, useState } from "react";
+import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { NavSection } from "@/lib/nav";
 import { EMPTY_SHELL, STARRABLE, isStarred, toggleStar } from "@/lib/shell/presets";
+import { installNavPanes, mergeInstallNav, usePackageManifest } from "@/lib/shell/packageManifest";
 import { isActive, launcherGroups } from "@/lib/shell/shellNav";
 import { latestShell, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
 export default function AppLauncher({
   open,
   onClose,
-  sections,
+  sections: held,
   pathname,
   hint,
 }: {
@@ -49,6 +51,13 @@ export default function AppLauncher({
   /** One line at the top, for a member who came here to add an app. */
   hint?: string;
 }) {
+  // PKG-6b: the panes an install gives list here too, in "Apps". Stars use
+  // `held` alone, and an install pane has no star: the stored layout
+  // holds only the panes of `nav.ts`. With the package host off, the list is
+  // empty and the SAME array comes back.
+  const { access } = useAccess();
+  const manifest = usePackageManifest();
+  const sections = mergeInstallNav(held, installNavPanes(manifest, access.features));
   const groups = launcherGroups(sections);
   // ⚠️ Focus the app the member is in, else the first app. Without this the
   // dialog focuses its first tabbable, the header's Close button, and Enter
@@ -63,7 +72,7 @@ export default function AppLauncher({
     setStarError(null);
     // The latest value, not this render's: two quick clicks must both land.
     const base = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
-    const next = { ...base, ...toggleStar(base, sections, href) };
+    const next = { ...base, ...toggleStar(base, held, href) };
     saveShellPrefs(next).catch(() => setStarError("Your sidebar was not saved. Try again."));
   };
   return (
@@ -110,7 +119,7 @@ export default function AppLauncher({
               {g.items.map((p) => {
                 const here = isActive(pathname, p.href);
                 const starrable = canStar && STARRABLE.has(p.href);
-                const shown = starrable && isStarred(shell.layout, sections, p.href);
+                const shown = starrable && isStarred(shell.layout, held, p.href);
                 return (
                   <li key={p.href} className="relative">
                     <Link

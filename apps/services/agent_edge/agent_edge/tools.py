@@ -4559,11 +4559,15 @@ _CLAIM_INPUT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_CLAIM_OUTPUT: dict[str, Any] = _optional(_object({
+_CLAIM_OUTPUT: dict[str, Any] = _optional(_optional(_optional(_object({
     "task": _TASK_SCHEMA, "moved": {"type": "boolean"},
     # EA-13c (EA3-42): the run that the claim opened or found, or null.
     "agent_run_id": _NULLABLE_STRING,
-}), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
+}), "warning", {"type": "string"}),
+    # SW-63: both keys are set only when the task has open subtasks that the
+    # member can see.
+    "open_subtasks", {"type": "array", "maxItems": 5, "items": {"type": "string"}},
+), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
 
 
 async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -4600,6 +4604,15 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {
         "task": _task(current, names), "moved": written.get("moved") is True,
         "agent_run_id": _id(written.get("agent_run_id"))}
+    # SW-63: the gateway's warning for a task with open subtasks. The text is
+    # fixed on the gateway, and the ids leave only in the shape of an id.
+    ids = [i for i in (_id(v) for v in
+                       (written.get("open_subtasks") or [])[:5]) if i]
+    if ids and isinstance(written.get("warning"), str) and re.fullmatch(
+            r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not"
+            r" the epic\.", written["warning"]):
+        result["warning"] = written["warning"]
+        result["open_subtasks"] = ids
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
     return result
@@ -4620,7 +4633,9 @@ CLAIM_TASK = Tool(
         " nothing. Returns the task with its new version, and agent_run_id:"
         " the agent run that the claim opened, or your own open run from"
         " [[OWN]] that it found, or null when agent"
-        " runs are off. Only one AI session may hold a task. When another"
+        " runs are off. A task with open subtasks still claims, and the result"
+        " also has warning and open_subtasks, up to 5 ids: claim the slice,"
+        " not the epic. Only one AI session may hold a task. When another"
         " session holds it, the tool refuses: pick another task, and do not"
         " claim this one again.[[SHARED]] Send external_link, an https link to"
         " your session, when you have one. The run then shows it. A new link"
