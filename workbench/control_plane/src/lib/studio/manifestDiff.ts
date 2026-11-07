@@ -18,7 +18,7 @@ export type ChangeKind =
   | "field-add" | "field-remove" | "field-label" | "field-type" | "field-required" | "field-optional"
   | "field-options" | "field-other"
   | "view-add" | "view-remove" | "view-title" | "view-object" | "view-block" | "view-other"
-  | "action-add" | "action-remove" | "action-other"
+  | "action-add" | "action-remove" | "action-other" | "record-actions-add" | "record-actions-remove"
   | "page-add" | "page-remove" | "page-other"
   | "workflow-add" | "workflow-remove" | "workflow-other"
   | "part";
@@ -32,6 +32,8 @@ export interface Change {
   /** The value before and after, for a rename or a retype. */
   from?: string;
   to?: string;
+  /** The record actions that one line folds: list, get, create, update, delete. */
+  verbs?: string[];
 }
 
 export const MAX_NAME = 36;
@@ -131,8 +133,51 @@ function diffViews(out: Change[], before: unknown, after: unknown): void {
   });
 }
 
-function diffSimple(out: Change[], before: unknown, after: unknown, key: "action" | "page" | "workflow"): void {
-  const shownBy = key === "workflow" ? (x: Record<string, unknown>) => cleanName(str(x.id)) : actionShown;
+/**
+ * The record actions of a record type: the ones that `complete_record_actions` adds
+ * (`packages/acb_skills/acb_skills/studio_tools.py`, `OBJECT_OPS`). Each has `uses` of the form
+ * `object:<record>.<verb>`. The match reads `uses`, never the id, so a renamed id still folds.
+ */
+export const RECORD_VERBS = ["list", "get", "create", "update", "delete"] as const;
+const VERB_WORDS: Record<string, string> = { list: "list", get: "open", create: "create", update: "change", delete: "delete" };
+const RECORD_USES = /^object:([^.]+)\.(list|get|create|update|delete)$/;
+const recordUse = (a: Record<string, unknown>): { object: string; verb: string } | null => {
+  const m = RECORD_USES.exec(str(a.uses));
+  return m ? { object: m[1], verb: m[2] } : null;
+};
+
+/** One change for each record type whose record actions came or went, in the order of the first action. */
+function foldRecordActions(items: Record<string, unknown>[], objects: unknown, kind: "record-actions-add" | "record-actions-remove"): Change[] {
+  const labels = new Map(list(objects).map((o) => [str(o.name), shown(o, "name")]));
+  const byObject = new Map<string, Set<string>>();
+  for (const a of items) {
+    const u = recordUse(a);
+    if (!u) continue;
+    if (!byObject.has(u.object)) byObject.set(u.object, new Set());
+    byObject.get(u.object)!.add(u.verb);
+  }
+  return [...byObject].map(([obj, have]) => ({
+    kind, name: labels.get(obj) ?? cleanName(obj), verbs: RECORD_VERBS.filter((v) => have.has(v)),
+  }));
+}
+
+function diffActions(out: Change[], before: unknown, after: unknown, beforeObjects: unknown, afterObjects: unknown): void {
+  const b = byKey(list(before), "id");
+  const a = byKey(list(after), "id");
+  const added = [...a].filter(([k]) => !b.has(k)).map(([, v]) => v);
+  const removed = [...b].filter(([k]) => !a.has(k)).map(([, v]) => v);
+  out.push(...foldRecordActions(added, afterObjects, "record-actions-add"));
+  out.push(...foldRecordActions(removed, beforeObjects, "record-actions-remove"));
+  for (const x of added) if (!recordUse(x)) out.push({ kind: "action-add", name: actionShown(x) });
+  for (const x of removed) if (!recordUse(x)) out.push({ kind: "action-remove", name: actionShown(x) });
+  for (const [k, item] of a) {
+    const old = b.get(k);
+    if (old && !same(old, item)) out.push({ kind: "action-other", name: actionShown(item) });
+  }
+}
+
+function diffSimple(out: Change[], before: unknown, after: unknown, key: "page" | "workflow"): void {
+  const shownBy = (x: Record<string, unknown>) => (key === "workflow" ? cleanName(str(x.id)) : actionShown(x));
   compareKeyed(list(before), list(after), "id", {
     add: (x) => out.push({ kind: `${key}-add` as ChangeKind, name: shownBy(x) }),
     remove: (x) => out.push({ kind: `${key}-remove` as ChangeKind, name: shownBy(x) }),
@@ -148,14 +193,14 @@ export function diffManifests(before: unknown, after: unknown): Change[] {
   if (!b) {
     for (const o of list(a.objects)) out.push({ kind: "object-add", name: shown(o, "name") });
     for (const v of list(a.views)) out.push({ kind: "view-add", name: viewShown(v) });
-    for (const x of list(a.actions)) out.push({ kind: "action-add", name: actionShown(x) });
+    diffActions(out, [], a.actions, null, a.objects);
     return out;
   }
   if (str(b.name) !== str(a.name)) out.push({ kind: "app-name", name: cleanName(b.name), from: cleanName(b.name), to: cleanName(a.name) });
   if (str(b.purpose) !== str(a.purpose)) out.push({ kind: "app-purpose", name: "purpose" });
   diffObjects(out, b.objects, a.objects);
   diffViews(out, b.views, a.views);
-  diffSimple(out, b.actions, a.actions, "action");
+  diffActions(out, b.actions, a.actions, b.objects, a.objects);
   diffSimple(out, b.pages, a.pages, "page");
   diffSimple(out, b.workflows, a.workflows, "workflow");
   for (const key of [...new Set([...Object.keys(b), ...Object.keys(a)])].sort()) {
@@ -201,6 +246,8 @@ export function changeLine(c: Change, first = false): string {
     case "workflow-add": return `adds the workflow ${n}`;
     case "workflow-remove": return `removes the workflow ${n}`;
     case "workflow-other": return `changes the workflow ${n}`;
+    case "record-actions-add": return `${first ? "makes" : "adds"} the record actions of ${n} (${(c.verbs ?? []).map((v) => VERB_WORDS[v] ?? v).join(", ")})`;
+    case "record-actions-remove": return `removes the record actions of ${n} (${(c.verbs ?? []).map((v) => VERB_WORDS[v] ?? v).join(", ")})`;
     case "part": return `changes the ${c.name}`;
   }
 }
