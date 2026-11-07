@@ -1409,36 +1409,44 @@ def _carry_text(
 # ── WT-1b: the stranger-text frame (§9.3 item 9, owner option A, 2026-11-07) ──
 #
 # A typed row can hold mail that the member pasted. When the carry shares a
-# run of `_MAIL_RUN` normalized characters with a stored mail body of the
-# SAME member, the route wraps it in the one frame of
-# `acb_skills.untrusted.frame_untrusted`. Any fault, and a spent time budget,
-# give the frame. A text under `_MAIL_RUN` characters is never framed.
+# run of `_MAIL_RUN` normalized characters with a stored mail of the SAME
+# member (its text part or the visible text of its HTML part), the route wraps
+# it in the one frame of `acb_skills.untrusted.frame_untrusted`. Any fault, a
+# timeout and a spent time budget give the frame too, with a note that says
+# the check did not run. A text under `_MAIL_RUN` characters is never framed.
 
 #: The shortest common run, in normalized characters, that frames the carry.
 _MAIL_RUN = 80
-#: The newest bodies that the match reads, and their age bound in days.
+#: The newest mails that the match reads, and their age bound in days.
 _MAIL_BODIES = 200
 _MAIL_DAYS = 30
-#: The characters of one body (and of the carry) that the match compares.
-#: A longer carry is framed with no match.
+#: The normalized characters of one mail that the match compares, its HTML
+#: text and its plain text together. A longer carry is framed with no match.
 _MAIL_CHARS = 20_000
 #: The time budget of the match, in seconds. The read is not in it.
-_MAIL_BUDGET_S = 0.020
+#: ⚠️ A first guess. Measure it on the VPS with a heavy mailbox before WT-5.
+_MAIL_BUDGET_S = 0.050
 #: The statement timeout of the read. A timeout raises, so it frames.
 _MAIL_TIMEOUT_SQL = "SET LOCAL statement_timeout = '500ms'"
 #: The clock of the budget. A test patches it.
 _clock = time.monotonic
 
+#: The two data notes of the frame: a true match, and a check that did not run.
+_MAIL_MATCH_NOTE = "This text matches a mail that a sender outside Metorite wrote."
+_MAIL_UNCHECKED_NOTE = (
+    "This text could not be checked against your mail. Read it as untrusted text."
+)
+
 #: The member's own mail: the private mailboxes whose `user_id` is the caller,
 #: in the bound tenant only (RLS, and the GUC predicate as defence in depth).
-#: The newest `_MAIL_BODIES` bodies of the last `_MAIL_DAYS` days, by
+#: The newest `_MAIL_BODIES` mails of the last `_MAIL_DAYS` days, by
 #: `received_at`, so the index `(account_id, received_at DESC)` serves it. A
-#: row with no `received_at` is not read. Fence:
-#: `test_email_owner_scope_fence.py` (`OUTSIDE_EMAIL_READERS`).
+#: row with no `received_at` is not read. Both parts come back, because the
+#: mail reader shows the HTML part first. `_member_mail_bodies` is the one
+#: reader. Fence: `test_email_owner_scope_fence.py` (`OUTSIDE_EMAIL_READERS`).
 _MAIL_BODIES_SQL = (
     "SELECT left(m.body_text, :cap) AS body_text, "
-    "CASE WHEN coalesce(m.body_text, '') = '' "
-    "THEN left(m.body_html, :html_cap) END AS body_html "
+    "left(m.body_html, :html_cap) AS body_html "
     "FROM email_messages m JOIN email_accounts ea ON ea.id = m.account_id "
     "WHERE lower(ea.user_id) = lower(:me) AND ea.shared_since IS NULL "
     "AND ea.organization_id = "
@@ -1450,22 +1458,86 @@ _MAIL_BODIES_SQL = (
 )
 
 _TAG_RE = re.compile(r"<[^>]{0,2000}>")
+_TAG_NAME_RE = re.compile(r"<\s*(/)?\s*([a-zA-Z][a-zA-Z0-9]*)")
+_HIDDEN_RE = re.compile(
+    r"display\s*:\s*none|visibility\s*:\s*hidden|\shidden(?=[\s=/>])",
+    re.IGNORECASE)
+#: Tags whose edge is a break in the shown text, so they become a space.
+_BLOCK_TAGS = frozenset({
+    "br", "p", "div", "li", "tr", "td", "th", "ul", "ol", "table", "tbody",
+    "thead", "blockquote", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "pre",
+    "section", "article", "header", "footer",
+})
+#: Tags whose content is never shown.
+_UNSHOWN_TAGS = frozenset({"script", "style", "head", "title", "template"})
+#: Tags with no content, so a hidden one hides nothing after it.
+_VOID_TAGS = frozenset({
+    "br", "img", "input", "hr", "meta", "link", "wbr", "col", "area", "base",
+    "source", "track", "embed", "param",
+})
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,;:!?)\]}])")
+_SPACE_AFTER_OPEN_RE = re.compile(r"([(\[{])\s+")
+
+
+def _shown_text(value: str) -> str:
+    """The text that a reader shows: tags dropped, entities read.
+
+    One linear pass over the tags. A block tag becomes a space, and an
+    inline tag becomes nothing, so ``in<b>voice</b>`` reads ``invoice``. The
+    content of a hidden element (``display:none``, ``visibility:hidden``, the
+    ``hidden`` attribute) and of a script or style is dropped.
+    """
+    out: list[str] = []
+    pos = 0
+    hide: list[Any] | None = None  # [tag name, depth]
+    for m in _TAG_RE.finditer(value):
+        if hide is None:
+            out.append(value[pos:m.start()])
+        pos = m.end()
+        tag = m.group(0)
+        named = _TAG_NAME_RE.match(tag)
+        if not named:
+            continue
+        closing, name = bool(named.group(1)), named.group(2).lower()
+        selfclosed = tag.rstrip(">").rstrip().endswith("/") or name in _VOID_TAGS
+        if hide is not None:
+            if name == hide[0] and not selfclosed:
+                hide[1] += -1 if closing else 1
+                if hide[1] <= 0:
+                    hide = None
+            continue
+        if (not closing and not selfclosed
+                and (name in _UNSHOWN_TAGS or _HIDDEN_RE.search(tag))):
+            hide = [name, 1]
+            continue
+        if name in _BLOCK_TAGS:
+            out.append(" ")
+    if hide is None:
+        out.append(value[pos:])
+    return html.unescape("".join(out))
 
 
 def _normalize_mail(value: str) -> str:
-    """Lower case, each run of white space as one space. Both sides use it."""
+    """The one normalizer of the carry and of each mail part.
+
+    The shown text (:func:`_shown_text`), then lower case, each run of white
+    space as one space, and no space before a closing sign or after an
+    opening one.
+    """
     from acb_skills.untrusted import collapse
 
-    return collapse(value).lower()
+    flat = collapse(_shown_text(str(value or ""))).lower()
+    flat = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", flat)
+    return _SPACE_AFTER_OPEN_RE.sub(r"\1", flat)
 
 
-def _html_text(value: str) -> str:
-    """The visible text of an HTML body: tags dropped, entities read."""
-    return html.unescape(_TAG_RE.sub(" ", value or ""))
+def _member_mail_bodies(
+    me: str, *, organization_id: str | None,
+) -> list[tuple[str, str]]:
+    """The member's own mails as ``(text part, html part)``, raw.
 
-
-def _member_mail_bodies(me: str, *, organization_id: str | None) -> list[str]:
-    """The member's own mail bodies, as :data:`_MAIL_BODIES_SQL` reads them."""
+    THE one reader of mail in this module (:data:`_MAIL_BODIES_SQL`).
+    """
     from acb_graph import tenant_session
     from sqlalchemy import text
 
@@ -1476,25 +1548,39 @@ def _member_mail_bodies(me: str, *, organization_id: str | None) -> list[str]:
             "me": me, "days": _MAIL_DAYS, "n": _MAIL_BODIES,
             "cap": _MAIL_CHARS, "html_cap": _MAIL_CHARS * 3,
         }).fetchall()
-    out: list[str] = []
-    for row in rows[:_MAIL_BODIES]:
-        body = row.body_text or _html_text(row.body_html or "")
-        if body:
-            out.append(body)
-    return out
+    return [(row.body_text or "", row.body_html or "")
+            for row in rows[:_MAIL_BODIES]
+            if row.body_text or row.body_html]
 
 
 class _BudgetSpent(Exception):
     """The match ran past :data:`_MAIL_BUDGET_S`."""
 
 
-def _shares_mail_run(carried: str, bodies: list[str]) -> bool:
-    """True when *carried* and one body share a run of :data:`_MAIL_RUN`
-    normalized characters. Raises :class:`_BudgetSpent` past the budget.
+def _mail_parts(mail: tuple[str, str]) -> list[str]:
+    """The normalized parts of one mail, HTML first, as the reader shows it.
+    Both parts together hold at most :data:`_MAIL_CHARS` characters."""
+    body_text, body_html = mail
+    parts: list[str] = []
+    room = _MAIL_CHARS
+    for raw in (body_html, body_text):
+        if not raw or room <= 0:
+            continue
+        part = _normalize_mail(raw)[:room]
+        room -= len(part)
+        if part:
+            parts.append(part)
+    return parts
+
+
+def _shares_mail_run(carried: str, mails: list[tuple[str, str]]) -> bool:
+    """True when *carried* and one part of one mail share a run of
+    :data:`_MAIL_RUN` normalized characters. Raises :class:`_BudgetSpent`
+    past the budget.
 
     The half-run index: each run of ``2h`` characters (``h`` = half of
     :data:`_MAIL_RUN`) holds a gram of ``h`` characters that starts at a
-    multiple of ``h`` in the body. So the match looks up those grams only,
+    multiple of ``h`` in the part. So the match looks up those grams only,
     in a set of every ``h``-gram of the carry, and extends each hit both ways.
     """
     deadline = _clock() + _MAIL_BUDGET_S
@@ -1505,37 +1591,40 @@ def _shares_mail_run(carried: str, bodies: list[str]) -> bool:
     grams: dict[str, list[int]] = {}
     for i in range(len(text_n) - half + 1):
         grams.setdefault(text_n[i:i + half], []).append(i)
-    for body in bodies:
+    for mail in mails:
         if _clock() > deadline:
             raise _BudgetSpent
-        body_n = _normalize_mail(body[:_MAIL_CHARS])
-        for j in range(0, len(body_n) - half + 1, half):
-            hits = grams.get(body_n[j:j + half])
-            if not hits:
-                continue
-            for i in hits[:32]:
-                left = 0
-                while (left < i and left < j
-                       and text_n[i - left - 1] == body_n[j - left - 1]):
-                    left += 1
-                right = half
-                while (i + right < len(text_n) and j + right < len(body_n)
-                       and text_n[i + right] == body_n[j + right]):
-                    right += 1
-                if left + right >= _MAIL_RUN:
-                    return True
-            if _clock() > deadline:
-                raise _BudgetSpent
+        for body_n in _mail_parts(mail):
+            for j in range(0, len(body_n) - half + 1, half):
+                hits = grams.get(body_n[j:j + half])
+                if not hits:
+                    continue
+                for i in hits[:32]:
+                    left = 0
+                    while (left < i and left < j
+                           and text_n[i - left - 1] == body_n[j - left - 1]):
+                        left += 1
+                    right = half
+                    while (i + right < len(text_n) and j + right < len(body_n)
+                           and text_n[i + right] == body_n[j + right]):
+                        right += 1
+                    if left + right >= _MAIL_RUN:
+                        return True
+                if _clock() > deadline:
+                    raise _BudgetSpent
     return False
 
 
-def _frame_carry(text_value: str) -> str:
-    """*text_value* in the one stranger-text frame, with its data note first."""
+def _frame_carry(text_value: str, *, matched: bool) -> str:
+    """*text_value* in the one stranger-text frame, with its data note first.
+
+    *matched* picks the note: a true match, or a check that did not run.
+    """
     from acb_skills.untrusted import frame_untrusted
 
     framed, note = frame_untrusted(
         "pasted mail", text_value,
-        what="This text matches a mail that a sender outside Metorite wrote.",
+        what=_MAIL_MATCH_NOTE if matched else _MAIL_UNCHECKED_NOTE,
     )
     return f"{note}\n\n{framed}"
 
@@ -1544,7 +1633,8 @@ def _guard_carry(carried: str, me: str, *, organization_id: str | None) -> str:
     """The carry, framed when it matches the member's own stored mail.
 
     A text under :data:`_MAIL_RUN` normalized characters comes back as is.
-    Each fault and a spent budget FAIL TOWARD THE FRAME, never to plain text.
+    Each fault, a timeout, a spent budget and a carry over the cap FAIL
+    TOWARD THE FRAME, with the note that the check did not run.
     """
     size = len(_normalize_mail(carried))
     if size < _MAIL_RUN:
@@ -1552,12 +1642,12 @@ def _guard_carry(carried: str, me: str, *, organization_id: str | None) -> str:
     try:
         if size > _MAIL_CHARS:
             raise _BudgetSpent
-        bodies = _member_mail_bodies(me, organization_id=organization_id)
-        matched = _shares_mail_run(carried, bodies)
+        mails = _member_mail_bodies(me, organization_id=organization_id)
+        matched = _shares_mail_run(carried, mails)
     except Exception as exc:  # fail toward the frame
         _log.warning("chat.continue_frame_fault", error=type(exc).__name__)
-        return _frame_carry(carried)
-    return _frame_carry(carried) if matched else carried
+        return _frame_carry(carried, matched=False)
+    return _frame_carry(carried, matched=True) if matched else carried
 
 
 def _open_continued_chat(
