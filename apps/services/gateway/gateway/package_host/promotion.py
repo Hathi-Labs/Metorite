@@ -10,7 +10,9 @@ rules of a promotion") and the PKG-11a row of §10. The R8 suite is
 shows it to each grantee that passes the three tests of
 ``sharing.SHARE_ROW``. The promotion to a group is
 ``store.promote_to_group``. This module never writes ``package_install``,
-because ``store.py`` is the one writer of that table.
+because ``store.py`` is the one writer of that table. The promotion deletes
+the share rows of the install in its own transaction, so ``store.py`` holds
+that DELETE (see its docstring).
 
 **The PK-7 requirement.** A row of ``app_grants`` can exist already: the
 consent row of a colleague, or the grant of another editor. Test 3 of
@@ -18,6 +20,17 @@ consent row of a colleague, or the grant of another editor. Test 3 of
 this module sets ``granted_by`` to the sharer on a conflict, and keeps the
 role and ``consented_scope_hash`` of the row. ``routes/apps/grants.py``
 keeps its own statement, and this module does not call it.
+
+**One sharer for each person (fail closed).** The key of ``app_grants`` is
+the app and the person, not the install. Two members can each have a private
+install of one app. If the second sharer took the row of the first, the
+first grantee would lose the first install in silence, and the purge of the
+first owner would delete it. So the share reads the rows that it meets with
+the row lock. It sets ``granted_by`` only on a consent row (``granted_by`` is
+the subject) or on a row of this sharer. A row of another sharer refuses the
+whole call with ``shared_by_another_owner``, and no row is written. The guard
+of the conflict clause holds the same rule. This is a known limit: PKG-11
+notes it for J2.
 
 **The locks.** The share takes the org lock and the row lock of
 ``store.locked_install``, as the promotion does. So a share cannot land
@@ -45,6 +58,7 @@ from gateway.package_host.store import (
     _BOUND_ORG,
     MAX_SUBJECT_BYTES,
     InstallError,
+    NotTheOwner,
     _install_id,
     _member,
     _plain,
@@ -66,13 +80,25 @@ _ACTIVE_MEMBERS_SQL = (
     "AND lower(email) = ANY(CAST(:emails AS text[]))"
 )
 
+#: The rows of the app that the share meets, with the row lock. The key of
+#: the conflict is ``(app_id, subject)``, so the read matches the subject
+#: exactly.
+_MET_ROWS_SQL = (
+    "SELECT subject, granted_by FROM app_grants "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:app AS uuid) "
+    "AND subject = ANY(CAST(:people AS text[])) FOR UPDATE"
+)
+
 #: One share. A conflict keeps the role and the consent hash, and sets
-#: ``granted_by`` to the sharer (PK-7). The guard names the bound org.
+#: ``granted_by`` to the sharer (PK-7). The guard names the bound org, and
+#: it changes only a consent row or a row of this sharer.
 _SHARE_SQL = (
     "INSERT INTO app_grants (app_id, subject, role, granted_by) "
     "VALUES (CAST(:app AS uuid), :subject, 'use', :sharer) "
     "ON CONFLICT (app_id, subject) DO UPDATE SET granted_by = excluded.granted_by "
-    f"WHERE app_grants.organization_id = {_BOUND_ORG}"
+    f"WHERE app_grants.organization_id = {_BOUND_ORG} "
+    "AND (lower(app_grants.granted_by) = lower(app_grants.subject) "
+    "OR lower(app_grants.granted_by) = excluded.granted_by)"
 )
 
 
@@ -80,15 +106,9 @@ class ShareRefused(InstallError):
     """A share that the store refuses (422). Nothing is written.
 
     The codes: ``bad_people``, ``no_people``, ``too_many_people``,
-    ``not_a_person``, ``own_address`` and ``not_a_member``. No message names
-    an address.
+    ``not_a_person``, ``own_address``, ``not_a_member`` and
+    ``shared_by_another_owner``. No message names an address.
     """
-
-
-class NotTheOwner(InstallError):
-    """The sharer is not the owner of the install (403). Nothing is written."""
-
-    status = 403
 
 
 def _people(emails: object, sharer: str) -> tuple[str, ...]:
@@ -124,8 +144,11 @@ async def share_with_people(db: Any, *, install_id: str, emails: Sequence[str],
     *db* is a session that the caller opened with ``tenant_session(org)``.
     *sharer* is the address of the session member, who must own the
     install. Each person must be an active member of the bound org. The
-    install must be private, active and kept (PKG-Q11). Each refusal writes
-    nothing. Answers the normalised addresses, in order.
+    install must be private, active and kept (PKG-Q11). A person whom another
+    member already shares the app with refuses the whole call
+    (``shared_by_another_owner``). Each refusal writes nothing. Answers the
+    normalised addresses, in order. :class:`NotTheOwner` comes from
+    ``store.py``, which the promotion shares.
     """
     install = _install_id(install_id)
     by = _member(sharer)
@@ -138,6 +161,12 @@ async def share_with_people(db: Any, *, install_id: str, emails: Sequence[str],
         text(_ACTIVE_MEMBERS_SQL), {"emails": list(people)})).all()}
     if any(p not in found for p in people):
         raise ShareRefused("not_a_member", "Each person must be an active member of the org.")
+    met = (await db.execute(text(_MET_ROWS_SQL), {"app": str(row[0]),
+                                                  "people": list(people)})).all()
+    if any(str(r[1]).lower() not in (str(r[0]).lower(), by) for r in met):
+        raise ShareRefused(
+            "shared_by_another_owner",
+            "Another member of the org shares this app with a person in the list already.")
     await db.execute(text(_SHARE_SQL), [
         {"app": str(row[0]), "subject": p, "sharer": by} for p in people])
     return people

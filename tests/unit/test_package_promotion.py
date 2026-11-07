@@ -16,7 +16,9 @@ c. Each refusal of the install row has its own code and writes nothing.
 d. Every statement names the bound org. ``promotion.py`` writes
    ``app_grants`` only, and neither module writes ``apps`` or
    ``app_versions``. The share keeps the role and the consent hash on a
-   conflict, and sets ``granted_by`` (PK-7).
+   conflict, and sets ``granted_by`` (PK-7) only on a consent row or a row
+   of the sharer. The one write of ``app_grants`` in ``store.py`` is the
+   DELETE of the share rows of the promoted install.
 e. The R8 twin is in the ``--must-run`` lists of pr-check.yml and
    deploy.yml.
 """
@@ -75,7 +77,8 @@ class _FakeDb:
     def __init__(self, *, org: str | None = ORG, row: tuple[Any, ...] | None = None,
                  in_group: bool = True, outside: bool = False, taken: bool = False,
                  claims: tuple[tuple[Any, ...], ...] = (), held: tuple[Any, ...] | None = None,
-                 members: tuple[str, ...] = (BEN, "cat@x.test")) -> None:
+                 members: tuple[str, ...] = (BEN, "cat@x.test"),
+                 met: tuple[tuple[str, str], ...] = ()) -> None:
         self.calls: list[tuple[str, Any]] = []
         self.org = org
         self.row = row if row is not None else (APP, 1, "private", ANA, ANA, None, "active")
@@ -85,6 +88,7 @@ class _FakeDb:
         self.claims = claims
         self.held = held
         self.members = members
+        self.met = met
 
     async def execute(self, stmt: Any, params: Any = None) -> _Result:
         sql = str(stmt)
@@ -105,6 +109,8 @@ class _FakeDb:
             return _Result([self.held] if self.held else [])
         if sql == promotion._ACTIVE_MEMBERS_SQL:
             return _Result([(m,) for m in self.members if m in params["emails"]])
+        if sql == promotion._MET_ROWS_SQL:
+            return _Result([r for r in self.met if r[0] in params["people"]])
         return _Result([])
 
 
@@ -118,8 +124,8 @@ def _writes(db: _FakeDb) -> list[str]:
     return [s for s, _ in db.calls if s.startswith(("UPDATE", "INSERT", "DELETE"))]
 
 
-def _promote(db: _FakeDb, group: str = OPS, install: str = INSTALL) -> Any:
-    return _run(store.promote_to_group(db, install_id=install, group=group))
+def _promote(db: _FakeDb, group: str = OPS, install: str = INSTALL, actor: Any = ANA) -> Any:
+    return _run(store.promote_to_group(db, install_id=install, group=group, actor=actor))
 
 
 def _share(db: _FakeDb, emails: Any = (BEN,), sharer: str = ANA) -> Any:
@@ -218,6 +224,7 @@ def test_the_promotion_reads_under_the_locks_then_writes_once() -> None:
         "SELECT CAST(CAST(NULLIF", "SELECT pg_advisory_xact_lock(", store._INSTALL_FOR_UPDATE_SQL,
         store._MEMBER_IN_GROUP_SQL, store._GRANTEE_OUTSIDE_SQL, store._SCOPE_TAKEN_SQL,
         store._CLAIMS_OF_SQL, "SELECT c.point, c.key,", store._PROMOTE_SQL,
+        store._UNSHARE_SQL,
     ]
     assert len(db.calls) == len(order)
     for (sql, _), head in zip(db.calls, order, strict=True):
@@ -240,7 +247,8 @@ def test_the_share_reads_under_the_same_locks_then_writes_once() -> None:
     db = _FakeDb()
     _share(db)
     order = ["SELECT CAST(CAST(NULLIF", "SELECT pg_advisory_xact_lock(",
-             store._INSTALL_FOR_UPDATE_SQL, promotion._ACTIVE_MEMBERS_SQL, promotion._SHARE_SQL]
+             store._INSTALL_FOR_UPDATE_SQL, promotion._ACTIVE_MEMBERS_SQL,
+             promotion._MET_ROWS_SQL, promotion._SHARE_SQL]
     assert [s for s, _ in db.calls][2:] == order[2:]
     assert db.calls[0][0].startswith(order[0]) and db.calls[1][0].startswith(order[1])
     assert db.calls[1][1] == {"key": f"package_install:{ORG}"}
@@ -336,6 +344,47 @@ def test_a_share_by_another_member_is_refused() -> None:
     assert _writes(db) == []
 
 
+def test_a_promotion_by_another_member_is_refused() -> None:
+    db = _FakeDb()
+    with pytest.raises(NotTheOwner) as exc:
+        _promote(db, actor=BEN)
+    assert (exc.value.code, exc.value.status) == ("not_owner", 403)
+    assert _writes(db) == []
+    # The owner passes, in any case of the address.
+    assert _promote(_FakeDb(), actor=" ANA@x.test ").installed_by == ANA
+
+
+def test_a_bad_actor_is_refused_before_the_database() -> None:
+    for actor in ("org", "group:ops", "", None):
+        db = _FakeDb()
+        with pytest.raises(ScopeRefused):
+            _promote(db, actor=actor)
+        assert db.calls == []
+
+
+def test_not_the_owner_is_one_class() -> None:
+    assert promotion.NotTheOwner is store.NotTheOwner
+
+
+@pytest.mark.parametrize("met", [
+    (("ben@x.test", "ben@x.test"),),
+    (("ben@x.test", "ANA@x.test"),),
+])
+def test_a_share_onto_a_consent_row_or_its_own_row_is_written(met: tuple[Any, ...]) -> None:
+    db = _FakeDb(met=met)
+    assert _share(db) == (BEN,)
+    assert any(s == promotion._SHARE_SQL for s in _writes(db))
+
+
+def test_a_share_onto_a_row_of_another_sharer_writes_no_row() -> None:
+    db = _FakeDb(met=(("cat@x.test", "ben@x.test"),))
+    with pytest.raises(ShareRefused) as exc:
+        _share(db, emails=[BEN, "cat@x.test"])
+    assert (exc.value.code, exc.value.status) == ("shared_by_another_owner", 422)
+    assert _writes(db) == []
+    assert "cat" not in str(exc.value) and "ben" not in str(exc.value)
+
+
 def test_a_person_outside_the_org_is_refused() -> None:
     db = _FakeDb(members=(BEN,))
     with pytest.raises(ShareRefused) as exc:
@@ -350,16 +399,24 @@ def test_a_person_outside_the_org_is_refused() -> None:
 def test_every_statement_names_the_bound_org() -> None:
     for sql in (store._INSTALL_FOR_UPDATE_SQL, store._CLAIMS_OF_SQL, store._PROMOTE_SQL,
                 store._MEMBER_IN_GROUP_SQL, promotion._ACTIVE_MEMBERS_SQL,
-                promotion._SHARE_SQL):
+                promotion._MET_ROWS_SQL, promotion._SHARE_SQL):
         assert BOUND in sql, sql
-    # The grantee read names the bound org for both tables and the groups.
-    assert store._GRANTEE_OUTSIDE_SQL.count(BOUND) == 3
+    # The grantee read names the bound org for its three tables and the
+    # groups. The DELETE names it for both tables.
+    assert store._GRANTEE_OUTSIDE_SQL.count(BOUND) == 4
+    assert store._UNSHARE_SQL.count(BOUND) == 2
+    assert "FOR UPDATE" in promotion._MET_ROWS_SQL
     assert "FOR UPDATE" in store._INSTALL_FOR_UPDATE_SQL
     assert "organization_id" not in promotion._SHARE_SQL.split("ON CONFLICT")[0]
 
 
 def test_the_grantee_read_is_the_one_share_rule() -> None:
     assert sharing.SHARE_ROW in store._GRANTEE_OUTSIDE_SQL
+    # Only an active member of the org blocks (a suspended grantee does not).
+    assert "AND u.status = 'active'" in store._GRANTEE_OUTSIDE_SQL
+    # The DELETE of the promotion takes exactly the rows of the share rule.
+    assert store._UNSHARE_SQL.startswith("DELETE FROM app_grants AS g USING package_install ")
+    assert store._UNSHARE_SQL.endswith(f"AND {sharing.SHARE_ROW}")
     assert store._groups_of("shared.who") in store._GRANTEE_OUTSIDE_SQL
     assert store._groups_of(":by") in store._MEMBER_IN_GROUP_SQL
 
@@ -380,6 +437,9 @@ def test_the_share_keeps_the_role_and_the_consent_hash_on_a_conflict() -> None:
     update = sql.split("DO UPDATE SET")[1]
     assert update.startswith(" granted_by = excluded.granted_by ")
     assert "role" not in update and "consented_scope_hash" not in update
+    # The guard changes only a consent row or a row of this sharer.
+    assert update.endswith("AND (lower(app_grants.granted_by) = lower(app_grants.subject) "
+                           "OR lower(app_grants.granted_by) = excluded.granted_by)")
 
 
 _ANY_WRITE = re.compile(r"\b(?:INSERT\s+INTO|DELETE\s+FROM|(?<!DO )UPDATE)\s+(\w+)", re.I)
@@ -396,6 +456,17 @@ def test_promotion_writes_app_grants_only() -> None:
     source = _source("promotion.py")
     assert set(_ANY_WRITE.findall(source)) == {"app_grants"}
     assert "routes.apps" not in source and "grants import" not in source
+
+
+def test_the_store_writes_app_grants_only_to_delete_the_share_rows() -> None:
+    """The narrow allowance of PKG-11a: ``store.py`` deletes the share rows
+    of a promoted install in the transaction of the promotion, and writes
+    ``app_grants`` in no other way."""
+    source = _source("store.py")
+    writes = re.findall(r"\b(INSERT\s+INTO|DELETE\s+FROM|(?<!DO )UPDATE)\s+app_grants\b",
+                        source, re.I)
+    assert writes == ["DELETE FROM"]
+    assert source.count("text(_UNSHARE_SQL)") == 1
 
 
 def test_neither_module_writes_apps_or_app_versions() -> None:

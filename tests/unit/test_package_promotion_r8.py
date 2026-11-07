@@ -40,6 +40,14 @@ i. A share onto an existing consent row counts for the resolve and for the
 j. A share by a member other than the owner, a share with the owner's own
    address, and a share with an address outside the org are refused, and
    no row is written.
+k. A share with a person whom another member already shares the app with
+   is refused (``shared_by_another_owner``), and the whole call writes no
+   row. The row of the first sharer stays.
+l. A promotion deletes the share rows of the install in its transaction,
+   and keeps a consent row and a row of another sharer. A new private
+   install of the app then shows to no old grantee.
+m. A promotion by a member other than the owner is refused (``not_owner``).
+   A grantee who is not active does not block a promotion.
 """
 
 from __future__ import annotations
@@ -58,6 +66,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common.db import TenantUnbound, get_session_factory, tenant_session
 from gateway.package_host import promotion, store
+from gateway.package_host.promotion import ShareRefused
 from gateway.package_host.resolve import resolve_for
 from gateway.package_host.store import (
     AlreadyInstalled,
@@ -65,6 +74,7 @@ from gateway.package_host.store import (
     Contribution,
     InstallError,
     InstallNotFound,
+    NotTheOwner,
     PromotionRefused,
 )
 from sqlalchemy import text
@@ -197,13 +207,15 @@ def _install(world: Any, app: str, scope: str, claims: list[Contribution], *, or
     return _go(world, go)
 
 
-def _promote(world: Any, install_id: str, group: str, *, org: str = "a") -> Any:
+def _promote(world: Any, install_id: str, group: str, *, org: str = "a",
+             actor: str = ANA) -> Any:
     """One promotion as the app role. Answers the install or the refusal."""
 
     async def go() -> Any:
         try:
             async with tenant_session(_org(world, org)) as db:
-                return await store.promote_to_group(db, install_id=install_id, group=group)
+                return await store.promote_to_group(db, install_id=install_id, group=group,
+                                                    actor=actor)
         except InstallError as exc:
             return exc
 
@@ -445,7 +457,8 @@ def test_r8_an_unbound_session_raises_and_writes_nothing(world) -> None:
 
     async def go() -> list[Any]:
         out: list[Any] = []
-        calls = (lambda db: store.promote_to_group(db, install_id=mine.id, group=OPS),
+        calls = (lambda db: store.promote_to_group(db, install_id=mine.id, group=OPS,
+                                                   actor=ANA),
                  lambda db: promotion.share_with_people(db, install_id=mine.id, emails=[BEN],
                                                         sharer=ANA))
         for call in calls:
@@ -492,7 +505,8 @@ def test_r8_two_promotions_at_once_give_one_winner(world) -> None:
 
         async def first() -> Any:
             async with tenant_session(a) as db:
-                out = await store.promote_to_group(db, install_id=mine.id, group=OPS)
+                out = await store.promote_to_group(db, install_id=mine.id, group=OPS,
+                                                              actor=ANA)
                 done.set()
                 await release.wait()
                 return out
@@ -503,7 +517,8 @@ def test_r8_two_promotions_at_once_give_one_winner(world) -> None:
                     pid["pid"] = int(
                         (await db.execute(text("SELECT pg_backend_pid()"))).scalar_one())
                     started.set()
-                    return await store.promote_to_group(db, install_id=mine.id, group=OPS)
+                    return await store.promote_to_group(db, install_id=mine.id, group=OPS,
+                                                              actor=ANA)
             except InstallError as exc:
                 return exc
 
@@ -597,4 +612,122 @@ def test_r8_a_share_that_is_refused_writes_no_row(world) -> None:
     _admin_write(world, "UPDATE app_user SET status = 'removed' WHERE email = :e", {"e": EVE})
     got = _share(world, mine.id, [EVE])
     assert isinstance(got, InstallError) and got.code == "not_a_member", got
+    assert _grants(world, "a1") == []
+
+
+# ── k. One sharer for each person ──────────────────────────────────────────
+
+
+def test_r8_a_share_with_a_person_of_another_sharer_is_refused(world) -> None:
+    """Ana and Ben each have a private install of a1. Ana shares with Cat.
+    Ben must not take the row of Cat, or Cat loses Ana's install."""
+    anas = _install(world, "a1", ANA, [_claim(_k("k1"))])
+    bens = _install(world, "a1", BEN, [_claim(_k("k1"))])
+    assert isinstance(anas, store.Install) and isinstance(bens, store.Install), (anas, bens)
+    assert _share(world, anas.id, [CAT]) == (CAT,)
+    got = _share(world, bens.id, [CAT], sharer=BEN)
+    assert isinstance(got, ShareRefused), got
+    assert (got.code, got.status) == ("shared_by_another_owner", 422)
+    assert CAT not in str(got) and ANA not in str(got)
+    assert _grants(world, "a1") == [(CAT, "use", "", ANA)]
+    assert _sees(world, CAT, anas.id) and not _sees(world, CAT, bens.id)
+    assert _purge_counts(world, ANA) == {"private_app_installs": 0,
+                                         "shared_private_app_installs": 1}
+
+
+def test_r8_a_share_twice_is_idempotent(world) -> None:
+    mine = _install(world, "a1", ANA, [_claim(_k("k2"))])
+    assert _share(world, mine.id, [CAT]) == (CAT,)
+    assert _share(world, mine.id, [CAT.upper()]) == (CAT,)
+    assert _grants(world, "a1") == [(CAT, "use", "", ANA)]
+
+
+def test_r8_a_call_where_one_person_conflicts_writes_no_row(world) -> None:
+    anas = _install(world, "a1", ANA, [_claim(_k("k3"))])
+    bens = _install(world, "a1", BEN, [_claim(_k("k3"))])
+    assert _share(world, anas.id, [CAT]) == (CAT,)
+    got = _share(world, bens.id, [DAN, CAT], sharer=BEN)
+    assert isinstance(got, ShareRefused) and got.code == "shared_by_another_owner", got
+    assert _grants(world, "a1") == [(CAT, "use", "", ANA)]
+
+
+# ── l. A promotion deletes the share rows ──────────────────────────────────
+
+
+def _leave(world: Any, email: str, group: str) -> None:
+    _admin_write(world, (
+        "DELETE FROM org_group_member WHERE user_id = (SELECT id FROM app_user WHERE email = :e) "
+        "AND group_id = (SELECT id FROM org_group WHERE slug = :s)"),
+        {"e": email, "s": group.removeprefix("group:")})
+
+
+def test_r8_a_new_private_install_after_a_promotion_shows_to_no_old_grantee(world) -> None:
+    mine = _install(world, "a1", ANA, [_claim(_k("l1"))])
+    assert _share(world, mine.id, [BEN]) == (BEN,)
+    assert isinstance(_promote(world, mine.id, OPS), store.Install)
+    assert _grants(world, "a1") == []
+    again = _install(world, "a1", ANA, [_claim(_k("l1b"))])
+    assert isinstance(again, store.Install), again
+    assert not _sees(world, BEN, again.id)
+    _leave(world, BEN, OPS)
+    assert not _sees(world, BEN, again.id) and not _sees(world, BEN, mine.id)
+    assert _purge_counts(world, ANA) == {"private_app_installs": 1,
+                                         "shared_private_app_installs": 0}
+
+
+def test_r8_a_promotion_keeps_a_consent_row_and_a_row_of_another_sharer(world) -> None:
+    mine = _install(world, "a1", ANA, [_claim(_k("l2"))])
+    bens = _install(world, "a1", BEN, [_claim(_k("l2"))])
+    assert isinstance(bens, store.Install), bens
+    _admin_write(world, (
+        "INSERT INTO app_grants (app_id, subject, role, consented_scope_hash, granted_by, "
+        "organization_id) VALUES (CAST(:a AS uuid), :s, 'edit', 'hash-1', :s, "
+        "CAST(:o AS uuid))"), {"a": world.apps["a1"], "s": CAT, "o": world.p.org_a})
+    assert _share(world, bens.id, [EVE], sharer=BEN) == (EVE,)
+    assert _share(world, mine.id, [DAN]) == (DAN.lower(),)
+    assert isinstance(_promote(world, mine.id, OPS), store.Install)
+    assert _grants(world, "a1") == sorted([(CAT, "edit", "hash-1", CAT),
+                                           (EVE, "use", "", BEN)])
+    assert _sees(world, EVE, bens.id)
+
+
+def test_r8_a_promotion_that_is_refused_deletes_no_share_row(world) -> None:
+    mine = _install(world, "a1", ANA, [_claim(_k("l3"))])
+    bens = _install(world, "a2", BEN, [_claim(_k("l3"))])
+    assert isinstance(bens, store.Install), bens
+    assert _share(world, mine.id, [DAN]) == (DAN.lower(),)
+    before, claims = _row(world, mine.id), _claim_rows(world, mine.id)
+    got = _promote(world, mine.id, OPS)
+    assert isinstance(got, ClaimTaken), got
+    _unchanged(world, mine.id, before, claims)
+    assert _grants(world, "a1") == [(DAN.lower(), "use", "", ANA)]
+    assert _sees(world, DAN, mine.id)
+
+
+# ── m. The owner promotes, and a grantee who is not active does not block ──
+
+
+def test_r8_a_promotion_by_another_member_is_refused(world) -> None:
+    mine = _install(world, "a1", ANA, [_claim(_k("m1"))])
+    assert _share(world, mine.id, [BEN]) == (BEN,)
+    before, claims = _row(world, mine.id), _claim_rows(world, mine.id)
+    got = _promote(world, mine.id, OPS, actor=BEN)
+    assert isinstance(got, NotTheOwner), got
+    assert (got.code, got.status) == ("not_owner", 403)
+    _unchanged(world, mine.id, before, claims)
+    assert _grants(world, "a1") == [(BEN, "use", "", ANA)]
+    assert isinstance(_promote(world, mine.id, OPS, actor=ANA.upper()), store.Install)
+
+
+def test_r8_a_grantee_who_is_not_active_does_not_block(world) -> None:
+    """Ben (in OPS) and Cat (outside OPS) hold shares. While Cat is active,
+    Cat blocks. When both are suspended, neither blocks, and the promotion
+    deletes both share rows."""
+    mine = _install(world, "a1", ANA, [_claim(_k("m2"))])
+    assert _share(world, mine.id, [BEN, CAT]) == (BEN, CAT)
+    _admin_write(world, "UPDATE app_user SET status = 'suspended' WHERE email = :e", {"e": BEN})
+    got = _promote(world, mine.id, OPS)
+    assert isinstance(got, PromotionRefused) and got.code == "grantee_outside_group", got
+    _admin_write(world, "UPDATE app_user SET status = 'suspended' WHERE email = :e", {"e": CAT})
+    assert isinstance(_promote(world, mine.id, OPS), store.Install)
     assert _grants(world, "a1") == []

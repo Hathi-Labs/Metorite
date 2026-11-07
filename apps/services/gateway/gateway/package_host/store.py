@@ -20,10 +20,23 @@ and that stays legal.
 the install with the row lock (:func:`locked_install`). It moves only a
 private install that is active, not a draft, and kept (``ends_at`` null).
 The owner and each person who holds a share must be active members of the
-group (PKG-Q9). The claims of §4 are checked again for the group scope. One
-UPDATE changes the scope and keeps the id, the version, ``installed_by``,
-``created_at`` and the claim rows. ``promotion.share_with_people`` takes the
-same locks, so a share cannot race the group check.
+group (PKG-Q9). A grantee who is not active does not count. The claims of
+§4 are checked again for the group scope. One UPDATE changes the scope and
+keeps the id, the version, ``installed_by``, ``created_at`` and the claim
+rows. ``promotion.share_with_people`` takes the same locks, so a share cannot
+race the group check.
+
+**The promotion deletes the share rows.** In the same transaction, the
+promotion deletes each row of ``app_grants`` that ``sharing.SHARE_ROW``
+counts for the install (:data:`_UNSHARE_SQL`). Without it, a new private
+install of the app by the owner shows to each old grantee, because the share
+key is the app and the person. The DELETE never touches a consent row or a
+row of another sharer, because test 3 of ``SHARE_ROW`` refuses both. The
+DELETE is in this module, and not in ``promotion.py``, on purpose. A thin
+wrapper in ``promotion.py`` would leave this function able to promote with
+no DELETE. Here one function holds the org lock, the checks and both writes.
+``promotion.py`` keeps the only INSERT of ``app_grants`` (fence:
+``tests/unit/test_package_promotion.py``).
 
 **The disposal.** Each of the three takes the org lock of :func:`install`
 and its two guards, and finds the install in the bound org only. An id of
@@ -278,14 +291,20 @@ _CLAIMS_OF_SQL = (
 _MEMBER_IN_GROUP_SQL = f"SELECT 1 WHERE :subject IN ({_groups_of(':by')})"
 
 #: The first share of the private install ``:install`` (the three tests of
-#: ``sharing.SHARE_ROW``) whose grantee is not an active member of the group
-#: ``:subject``. The rule of PKG-Q9: nobody loses the app in silence.
+#: ``sharing.SHARE_ROW``) whose grantee is an ACTIVE member of the org and
+#: not a member of the group ``:subject``. The rule of PKG-Q9: nobody loses
+#: the app in silence. A grantee who is suspended or removed does not block,
+#: because the promotion deletes the share row (:data:`_UNSHARE_SQL`) and 11a
+#: has no route to remove a share.
 #: The grantees go through a CTE, because the group query names its own
 #: ``g`` (``org_group``), which would hide the ``g`` of ``SHARE_ROW``.
 _GRANTEE_OUTSIDE_SQL = (
     "WITH shared AS (SELECT lower(g.subject) AS who"
     " FROM package_install JOIN app_grants AS g"
     f" ON g.organization_id = {_BOUND_ORG} AND {SHARE_ROW}"
+    " JOIN app_user AS u"
+    f" ON u.organization_id = {_BOUND_ORG} AND lower(u.email) = lower(g.subject)"
+    " AND u.status = 'active'"
     f" WHERE package_install.organization_id = {_BOUND_ORG}"
     " AND package_install.id = CAST(:install AS uuid))"
     f" SELECT 1 FROM shared WHERE :subject NOT IN ({_groups_of('shared.who')}) LIMIT 1"
@@ -300,6 +319,16 @@ _PROMOTE_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) "
     "AND scope_kind = 'private' AND state = 'active' AND version IS NOT NULL "
     "AND ends_at IS NULL"
+)
+
+#: The share rows of one install of the bound org: exactly the rows that the
+#: three tests of ``sharing.SHARE_ROW`` count. A consent row and a row of
+#: another sharer fail test 3, so they stay. The promotion runs it.
+_UNSHARE_SQL = (
+    "DELETE FROM app_grants AS g USING package_install "
+    f"WHERE g.organization_id = {_BOUND_ORG} "
+    f"AND package_install.organization_id = {_BOUND_ORG} "
+    f"AND package_install.id = CAST(:install AS uuid) AND {SHARE_ROW}"
 )
 
 
@@ -378,6 +407,16 @@ class PromotionRefused(InstallError):
     """
 
     status = 409
+
+
+class NotTheOwner(InstallError):
+    """The actor is not the owner of the install (403). Nothing is written.
+
+    The promotion and ``promotion.share_with_people`` raise it with the code
+    ``not_owner``.
+    """
+
+    status = 403
 
 
 @dataclass(frozen=True)
@@ -835,19 +874,24 @@ def refuse_unless_kept_private(row: Sequence[Any], *, allow_draft: bool) -> None
         raise PromotionRefused("not_kept", "Keep the install first. It still has an end date.")
 
 
-async def promote_to_group(db: Any, *, install_id: str, group: str) -> Install:
+async def promote_to_group(db: Any, *, install_id: str, group: str, actor: str) -> Install:
     """Move the private install *install_id* of the bound org to *group*.
 
     *db* is a session that the caller opened with ``tenant_session(org)``.
-    The install keeps its id, its version, ``installed_by``, ``created_at``
-    and each claim row. Only the scope and ``updated_at`` change (§6.2).
-    Each refusal writes nothing:
+    *actor* is the address of the session member, from the authenticated
+    ``UserContext`` (contract R11). The install keeps its id, its version,
+    ``installed_by``, ``created_at`` and each claim row. Only the scope and
+    ``updated_at`` change (§6.2). In the same transaction, the promotion
+    deletes the share rows of the install (:data:`_UNSHARE_SQL`). Each
+    refusal writes nothing:
 
     * an id of no install of the bound org: :class:`InstallNotFound`;
+    * an actor who is not the owner of the install: :class:`NotTheOwner`;
     * an install that is not private, not active, a draft, or not kept:
       :class:`PromotionRefused`;
-    * an owner who is not an active member of the group, or a share with a
-      person who is not one: :class:`PromotionRefused` (PKG-Q9);
+    * an owner who is not an active member of the group, or a share with an
+      active member of the org who is not one: :class:`PromotionRefused`
+      (PKG-Q9);
     * an install of the app at the group already: :class:`AlreadyInstalled`;
     * a claim that overlaps a claim of another app at the group scope (§4):
       :class:`ClaimTaken`.
@@ -857,7 +901,10 @@ async def promote_to_group(db: Any, *, install_id: str, group: str) -> Install:
     """
     install = _install_id(install_id)
     subject = _group(group)
+    who = _member(actor)
     row = await locked_install(db, install, "a promotion")
+    if str(row[4]) != who:
+        raise NotTheOwner("not_owner", "Only the owner of the install can promote it.")
     refuse_unless_kept_private(row, allow_draft=False)
     app, version, by, ends_at = str(row[0]), row[1], str(row[4]), row[5]
     if (await db.execute(text(_MEMBER_IN_GROUP_SQL), {
@@ -868,7 +915,7 @@ async def promote_to_group(db: Any, *, install_id: str, group: str) -> Install:
             "subject": subject, "install": install})).first() is not None:
         raise PromotionRefused(
             "grantee_outside_group",
-            "A person who holds a share is not a member of the group. Remove the share first.")
+            "A person who holds a share is not a member of the group.")
     if (await db.execute(text(_SCOPE_TAKEN_SQL), {
             "app": app, "kind": "group", "subject": subject})).first() is not None:
         raise AlreadyInstalled("already_installed", "The app has an install at this scope.")
@@ -879,6 +926,7 @@ async def promote_to_group(db: Any, *, install_id: str, group: str) -> Install:
     _check_system(claims)
     await _check_held(db, "group", subject, app, claims)
     await db.execute(text(_PROMOTE_SQL), {"install": install, "subject": subject})
+    await db.execute(text(_UNSHARE_SQL), {"install": install})
     return Install(
         id=install, app_id=app, version=version, scope_kind="group", scope_subject=subject,
         installed_by=by, ends_at=ends_at, contributions=claims)
