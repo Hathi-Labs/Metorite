@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from gateway.kb_index import query as kb_query
@@ -236,6 +236,60 @@ class TestTheVectorHalf:
             __import__("gateway.routes.email.transport.search",
                        fromlist=["semantic_messages"]).semantic_messages).parameters
         assert not {"org", "organization_id", "tenant", "email"} & set(params)
+
+
+# ── The deadline of the vector half ─────────────────────────────────────────
+
+class TestTheVectorDeadline:
+    LEX: ClassVar[list] = [{"id": "m-lex", "subject": "Bill", "from_address": {}, "snippet": "x",
+            "received_at": None, "highlight": ""}]
+
+    def test_a_slow_vector_half_leaves_the_lexical_hits(self, monkeypatch):
+        import gateway.routes.email.transport.search as email_search
+
+        _Mail(monkeypatch, lexical=self.LEX)
+
+        async def slow(**_kw):
+            await asyncio.sleep(5)
+            return []
+
+        monkeypatch.setattr(email_search, "semantic_messages", slow)
+        monkeypatch.setattr(kb_query, "QUERY_EMBED_TIMEOUT_S", 0.05)
+        assert [h.id for h in _email(member("email"), True)] == ["m-lex"]
+
+    def test_the_source_is_not_skipped_when_the_vector_half_is_slow(self, world, recency, monkeypatch):  # noqa: F811
+        import gateway.routes.email.transport.search as email_search
+
+        recency(True)
+
+        async def slow(**_kw):
+            await asyncio.sleep(5)
+            return []
+
+        monkeypatch.setattr(email_search, "semantic_messages", slow)
+        monkeypatch.setattr(kb_query, "QUERY_EMBED_TIMEOUT_S", 0.05)
+        answer = run(member(*ALL))
+        assert "email" not in answer["skipped"]
+        assert {"m-1", "m-2"} <= {h["id"] for h in answer["hits"]}
+
+    def test_a_raising_vector_half_leaves_the_lexical_hits(self, monkeypatch):
+        import gateway.routes.email.transport.search as email_search
+
+        _Mail(monkeypatch, lexical=self.LEX)
+
+        async def boom(**_kw):
+            raise RuntimeError("no")
+
+        monkeypatch.setattr(email_search, "semantic_messages", boom)
+        assert [h.id for h in _email(member("email"), True)] == ["m-lex"]
+
+    def test_the_budget_is_below_the_source_timeout_and_the_call_is_under_wait_for(self):
+        assert kb_query.QUERY_EMBED_TIMEOUT_S < company.SOURCE_TIMEOUT_S
+        src = inspect.getsource(sources._email)
+        import re
+
+        assert re.search(r"asyncio\.wait_for\(\s*semantic_messages\(", src)
+        assert src.count("semantic_messages(") == 1
 
 
 # ── One embed call per turn ─────────────────────────────────────────────────

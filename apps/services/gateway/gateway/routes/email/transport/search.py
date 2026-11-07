@@ -437,7 +437,6 @@ async def semantic_messages(
         where_sql, params = await scope(db)
         params["qvec"] = "[" + ",".join(f"{x:.7f}" for x in qvec) + "]"
         params["limit"] = max(1, int(k))
-        params["min_sim"] = VECTOR_MIN_SIM
         rows = (await db.execute(text(
             f"""SELECT em.id, em.provider_message_id, em.thread_id,
                        em.account_id, em.folder, em.labels,
@@ -453,10 +452,16 @@ async def semantic_messages(
                   FROM email_messages em
                   JOIN email_embeddings ee ON ee.message_id = em.id
                  WHERE {where_sql}
-                   AND 1 - (ee.embedding <=> CAST(:qvec AS vector)) >= :min_sim
-                 ORDER BY ee.embedding <=> CAST(:qvec AS vector), em.received_at DESC
+                 ORDER BY ee.embedding <=> CAST(:qvec AS vector)
                  LIMIT :limit"""
         ), params)).fetchall()
+    # The floor and the tie-break run here: a second sort key or a WHERE on the
+    # distance would stop Postgres from using the ivfflat ordering scan.
+    rows = sorted(
+        (r for r in rows if float(getattr(r, "sim", 0.0) or 0.0) >= VECTOR_MIN_SIM),
+        key=lambda r: (-float(r.sim), -(r.received_at.timestamp() if r.received_at else 0.0),
+                       str(r.id)),
+    )
     out = []
     for row in rows:
         m = _row_to_message(row)

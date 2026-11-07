@@ -46,6 +46,7 @@ takes ``reviewed`` and ranks a page past its review date lower. Only
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -290,6 +291,7 @@ async def _email(
     # KG-3b: the vector half, fused with the lexical one by reciprocal rank
     # fusion. A failure of the vector half leaves the lexical answer.
     try:
+        from gateway.kb_index.query import QUERY_EMBED_TIMEOUT_S as VECTOR_HALF_TIMEOUT_S
         from gateway.kb_index.query import rrf_scores
         from gateway.retrieval import turn_vector
         from gateway.routes.email.transport.search import semantic_messages
@@ -304,10 +306,18 @@ async def _email(
             turn_vector.remember(user.organization_id, words, vector)
             return vector
 
-        found = await semantic_messages(
-            user=user, words=q, k=k, embed=embed,
-            received_after=after.isoformat() if after is not None else None,
+        # The lexical hits are held above. The vector half has its own budget,
+        # below SOURCE_TIMEOUT_S, so a slow embed or read never drops them.
+        found = await asyncio.wait_for(
+            semantic_messages(
+                user=user, words=q, k=k, embed=embed,
+                received_after=after.isoformat() if after is not None else None,
+            ),
+            VECTOR_HALF_TIMEOUT_S,
         )
+    except TimeoutError:
+        logger.info("search.company email vectors timed out")
+        return lexical
     except Exception as exc:
         logger.warning("search.company email vectors failed",
                        extra={"error": type(exc).__name__})
