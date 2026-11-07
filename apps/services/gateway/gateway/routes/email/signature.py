@@ -259,7 +259,7 @@ _CLASS = re.compile(r"[A-Za-z0-9 _-]{1,200}")
 _REL_WORDS = frozenset({"noopener", "noreferrer", "nofollow"})
 _CSS_PROPERTY = re.compile(r"-?[a-z][a-z0-9-]{0,40}")
 #: A CSS value with one of these can load a resource or run code.
-_CSS_REFUSED = ("url(", "expression", "javascript:", "vbscript:", "@import",
+_CSS_REFUSED = ("url(", "src(", "expression", "javascript:", "vbscript:", "@import",
                 "behavior", "-moz-binding", "\\", "/*", "<", ">", "image(",
                 "image-set(", "element(")
 #: The C0 controls and DEL. A kept URL holds none of them.

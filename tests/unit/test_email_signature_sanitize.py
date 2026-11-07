@@ -219,3 +219,14 @@ def test_a_hosted_data_image_is_not_reported() -> None:
     _, removed = clean_signature_report(
         f'<img src="{src}">', hosted={src: "https://h.example/x.png"})
     assert removed == []
+
+
+@pytest.mark.parametrize("value", [
+    'src("https://t.example/p.png")',
+    "SRC( https://t.example/p.png )",
+    'image-set(src("https://t.example/a.png") 1x)',
+])
+def test_the_css_src_function_is_refused_as_url_is(value: str) -> None:
+    """Fix round 1, P3: CSS ``src()`` loads a resource, as ``url()`` does."""
+    out = clean_signature_html(f'<span style="color: #111111; background-image: {value}">x</span>')
+    assert out == '<span style="color: #111111">x</span>'
