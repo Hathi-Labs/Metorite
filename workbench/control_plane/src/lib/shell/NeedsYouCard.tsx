@@ -44,6 +44,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import ReminderActs from "./ReminderActs";
+import type { InstallNeed } from "./packageManifest";
 import { rowOfNeeds } from "./reminderActions";
 import { isReminderKind } from "./reminderKinds";
 import { appIcon, emptyNeedsLine, failedLines, keepApprovals, rowTime, shownNeeds } from "./myDay";
@@ -182,6 +183,7 @@ export function NeedsList({
   needs,
   now,
   first,
+  extra,
 }: {
   needs: NeedsYou;
   /** The page's clock, by the minute. A render reads no clock itself. */
@@ -191,6 +193,12 @@ export function NeedsList({
    * it. The bell's panel does not, so it keeps the server's order.
    */
   first?: string;
+  /**
+   * Setup rows that installs give (PKG-6b). The bell's panel passes them and
+   * My Day's card does not. They draw above the feed's groups. With none,
+   * the list is the one it was.
+   */
+  extra?: readonly InstallNeed[];
 }) {
   const [expanded, setExpanded] = useState(false);
   // The card and the bell's panel can both be on screen, so each list names
@@ -263,6 +271,13 @@ export function NeedsList({
   const failed = failedLines(needs.sources);
   return (
     <div data-needs-list="">
+      {extra && extra.length > 0 ? (
+        <ul className="flex flex-col" data-needs-install="">
+          {extra.map((n) => (
+            <InstallNeedRow key={n.installId} need={n} />
+          ))}
+        </ul>
+      ) : null}
       {body}
       {/* The caveat, said ONCE and where the gap is: one muted line per
           silent source, or one for a refresh that failed, and one Retry. */}
@@ -288,6 +303,38 @@ export function NeedsList({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * One "Finish setting up" row for an install (PKG-6b). It has the look of a
+ * feed row and no act. It links to the setup page, or it is plain text when
+ * the install names none.
+ */
+export function InstallNeedRow({ need }: { need: InstallNeed }) {
+  const inner = (
+    <>
+      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${accentForHue("amber").soft} ${accentForHue("amber").text}`}>
+        <Icon name="Box" size={14} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm text-foreground">{need.title}</span>
+      </span>
+    </>
+  );
+  const row = "flex min-w-0 flex-1 items-center gap-3 rounded-lg py-1.5 pl-2";
+  return (
+    <li data-install-need={need.installId}>
+      <div className="flex min-h-11 items-center gap-2 rounded-lg pr-1 hover:bg-secondary/60 tech-transition">
+        {need.href ? (
+          <Link href={need.href} className={row}>
+            {inner}
+          </Link>
+        ) : (
+          <div className={row}>{inner}</div>
+        )}
+      </div>
+    </li>
   );
 }
 

@@ -194,6 +194,23 @@ export function installNeeds(m: PackageManifest): InstallNeed[] {
   return out;
 }
 
+/**
+ * The feature slugs that installs declare, over every point. /auth/me
+ * `features` holds them while the package host is on, so the access report
+ * reads this list to know they have a home (PKG-6b).
+ */
+export function installFeatureSlugs(m: PackageManifest): string[] {
+  const out = new Set<string>();
+  for (const list of Object.values(m.contributions)) {
+    for (const e of list) {
+      if (e.source === "system" || e.installId === null) continue;
+      const f = text(e.payload.feature);
+      if (f) out.add(f);
+    }
+  }
+  return [...out].sort();
+}
+
 export const MANIFEST_CACHE = "shell/manifest";
 export const manifestKey = (): string => cacheKey(MANIFEST_CACHE);
 /** A paused install leaves the shell within this time (`package_host.md` §5.2). */

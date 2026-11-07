@@ -58,6 +58,7 @@ import { usePanelHeld } from "./panelHold";
 import { cardsFor, seesApprovals } from "./myDay";
 import { needsKey } from "./needs";
 import { NeedsList, type NeedsYou, useNeedsYou } from "./NeedsYouCard";
+import { installNeeds, usePackageManifest, type InstallNeed } from "./packageManifest";
 import { homePane } from "./shellNav";
 
 // ── Whether the panel is up ──────────────────────────────────────────────────
@@ -199,10 +200,12 @@ export function ShellBell({
   const { allowed, approvals } = useNeedsAllowed();
   const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
+  // PKG-6b: one setup row for each install that needs setup counts too.
+  const setup = installNeeds(usePackageManifest()).length;
   if (!allowed) return null;
   return (
     <BellButton
-      count={needs.total}
+      count={needs.total === undefined ? undefined : needs.total + setup}
       open={open}
       onOpen={() => {
         onBeforeOpen?.();
@@ -337,11 +340,14 @@ export function BellPanel({
   open,
   onClose,
   needs,
+  extra,
   placement = "end",
 }: {
   open: boolean;
   onClose: () => void;
   needs: NeedsYou;
+  /** Setup rows that installs give (PKG-6b). None draws the panel as it was. */
+  extra?: readonly InstallNeed[];
   /** `end` under the shell bar's right end, `top` beside a sidebar, `sheet` on a phone. */
   placement?: ModalPlacement;
 }) {
@@ -397,7 +403,7 @@ export function BellPanel({
         }}
       >
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          <NeedsList needs={panelNeeds} now={now} />
+          <NeedsList needs={panelNeeds} now={now} extra={extra} />
         </div>
         <footer className="flex items-center justify-between gap-3 border-t border-border px-4 py-2">
           <Link
@@ -433,6 +439,7 @@ export function ShellBellHost({ placement }: { placement: ModalPlacement }) {
   const { allowed, approvals } = useNeedsAllowed();
   const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
+  const extra = installNeeds(usePackageManifest());
   const { refresh } = needs;
   // While the sidebar is on screen, it shows the needs beside its row.
   const barHolds = usePanelHeld("needs");
@@ -446,7 +453,7 @@ export function ShellBellHost({ placement }: { placement: ModalPlacement }) {
   if (!allowed) return null;
   return (
     <>
-      <BellPanel open={open && !barHolds} onClose={closeBell} needs={needs} placement={placement} />
+      <BellPanel open={open && !barHolds} onClose={closeBell} needs={needs} extra={extra} placement={placement} />
       <UndoToastFallback />
     </>
   );

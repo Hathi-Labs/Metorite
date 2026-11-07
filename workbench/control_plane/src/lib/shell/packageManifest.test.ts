@@ -1,8 +1,15 @@
+import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { InstallNeedRow } from "./NeedsYouCard";
+import { isStarred } from "./presets";
+import { launcherGroups } from "./shellNav";
 import { NAV_SECTIONS, visibleSections } from "@/lib/nav";
 import { JOBS, addInstallJobs, buildItems, heldPanes } from "./registry";
 import {
   EMPTY_MANIFEST,
+  installFeatureSlugs,
   installJobs,
   installNavPanes,
   installNeeds,
@@ -113,5 +120,61 @@ describe("PKG-6 packageManifest", () => {
       jobs: [entry("j", { href: "/zz-crm", label: "J" }, { needs_setup: true })],
     });
     expect(installNeeds(m)).toEqual([{ installId: "i-1", title: "Finish setting up CRM", href: "/zz-crm/setup" }]);
+  });
+
+  // ── PKG-6b: the bell row, the launcher and the report ──────────────────────
+
+  it("the bell row: one row for each install, none for an empty manifest", () => {
+    const m = manifest({
+      nav: [entry("crm", { href: "/zz-crm", label: "CRM", name: "CRM", setup_href: "/zz-crm/setup" }, { needs_setup: true })],
+      jobs: [entry("j", { href: "/zz-crm", label: "J" }, { needs_setup: true })],
+    });
+    const needs = installNeeds(m);
+    expect(needs).toHaveLength(1);
+    const html = renderToStaticMarkup(createElement(InstallNeedRow, { need: needs[0] }));
+    expect(html).toContain("Finish setting up CRM");
+    expect(html).toContain('href="/zz-crm/setup"');
+    expect(installNeeds(EMPTY_MANIFEST)).toHaveLength(0);
+  });
+
+  it("the bell row with no href is plain text, not a link", () => {
+    const html = renderToStaticMarkup(
+      createElement(InstallNeedRow, { need: { installId: "i-2", title: "Finish setting up X", href: null } }),
+    );
+    expect(html).toContain("Finish setting up X");
+    expect(html).not.toContain("<a ");
+  });
+
+  it("the bell counts the install rows and hands them to the panel", () => {
+    const src = readFileSync(new URL("./ShellBell.tsx", import.meta.url), "utf-8");
+    expect(src).toMatch(/needs\.total === undefined \? undefined : needs\.total \+ setup/);
+    expect(src).toMatch(/<BellPanel [^>]*extra=\{extra\}/);
+    // The My Day card passes no `extra`, so it is unchanged.
+    const card = readFileSync(new URL("./NeedsYouCard.tsx", import.meta.url), "utf-8");
+    expect(card).toMatch(/<NeedsList needs=\{needs\} now=\{now\}( first=\{first\})? \/>/);
+  });
+
+  it("All apps lists an install pane, and the stars ignore it", () => {
+    const base = visibleSections(NAV_SECTIONS.flatMap((s) => s.items.map((p) => p.feature ?? "")), true);
+    const m = manifest({ nav: [entry("crm", { href: "/zz-crm", label: "CRM" })] });
+    const merged = mergeInstallNav(base, installNavPanes(m));
+    const listed = launcherGroups(merged).flatMap((g) => g.items.map((p) => p.href));
+    expect(listed).toContain("/zz-crm");
+    // The stars read the held sections, so a save never names an install href.
+    expect(isStarred({ pins: [], known: [] }, base, "/zz-crm")).toBe(false);
+    const src = readFileSync(new URL("./AppLauncher.tsx", import.meta.url), "utf-8");
+    expect(src).toMatch(/toggleStar\(base, held, href\)/);
+    expect(src).toMatch(/isStarred\(shell\.layout, held, p\.href\)/);
+    // Empty manifest: the same array, so All apps is as it was.
+    expect(launcherGroups(mergeInstallNav(base, installNavPanes(EMPTY_MANIFEST)))).toEqual(launcherGroups(base));
+  });
+
+  it("installFeatureSlugs reads the slugs that installs declare", () => {
+    const m = manifest({
+      nav: [entry("crm", { href: "/zz-crm", label: "CRM", feature: "zz_crm" })],
+      jobs: [entry("j", { href: "/zz-crm", label: "J", feature: "zz_jobs" }, { source: "system", install_id: null })],
+    });
+    expect(installFeatureSlugs(m)).toEqual(["zz_crm"]);
+    expect(installFeatureSlugs(EMPTY_MANIFEST)).toEqual([]);
   });
 });
