@@ -220,7 +220,7 @@ function Ide({ pkg }: { pkg: string }) {
   });
   const actions = (
     <>
-      <Badge tone={live ? "success" : "warning"} size="xs">{live ? `Live v${draft.liveVersion}` : "Not published"}</Badge>
+      <Badge tone={live ? "success" : "warning"} size="xs">{live ? `Live v${draft.liveVersion}` : "Draft"}</Badge>
       <Button variant="primary" size={isMobile ? "icon" : "sm"} icon="Rocket" disabled={block !== null}
         aria-label={block ? `Publish. ${block}` : "Publish"} title={block ?? "Publish the saved draft"}
         onClick={() => { setPublishProblems([]); setPublishOpen(true); }}>
@@ -236,7 +236,7 @@ function Ide({ pkg }: { pkg: string }) {
   const stale = watch.stale ? (
     <p role="status" className="border-b border-border px-3 py-1 text-xs text-muted-foreground">{watch.stale}</p>
   ) : null;
-  const locked = editor.locked;
+  const locked = editor.locked || change.undoing;
   const lockedLine = editor.state.fault !== null && tab !== "code" ? (
     <p role="status" className="border-b border-border px-3 py-1 text-xs text-warning">
       The Code tab holds JSON that does not parse. Fix it there, or press Revert, before you edit here.
@@ -248,7 +248,7 @@ function Ide({ pkg }: { pkg: string }) {
       {tab === "preview" ? <PreviewTab manifest={manifest} hash={hash} pkg={pkg} object={object} onObject={setObject} /> : null}
       {tab === "data" ? <DataTab manifest={manifest} object={object} onObject={setObject} onChange={editor.edit} live={liveRows} locked={locked} /> : null}
       {tab === "views" ? <ViewsTab manifest={manifest} onChange={editor.edit} locked={locked} /> : null}
-      {tab === "code" ? <CodeTab manifest={manifest} text={editor.codeText} editorKey={editor.codeKey} readOnly={editor.state.saving} fault={editor.state.fault} reveal={reveal}
+      {tab === "code" ? <CodeTab manifest={manifest} text={editor.codeText} editorKey={editor.codeKey} readOnly={editor.state.saving || change.undoing} fault={editor.state.fault} reveal={reveal}
         onText={editor.typeCode} onSave={editor.save} /> : null}
     </div>
     </PendingTextContext.Provider>
@@ -256,7 +256,7 @@ function Ide({ pkg }: { pkg: string }) {
   const editorPane = (
     <>
       <ChangeBar landed={change.landed} dirty={editor.dirty} saving={editor.state.saving} fault={editor.state.fault !== null}
-        undoing={change.undoing} note={change.note} onUndo={change.undo} onReload={editor.reload} />
+        undoing={change.undoing} note={change.note} liveBlock={change.liveBlock} onUndo={change.undo} onReload={editor.reload} />
       <Tabs tabs={TABS} activeTab={tab} onTabChange={setTab} variant="underline" chrome="inline" className="px-2 pt-1" />
       <EditBar state={editor.state} dirty={editor.dirty} newer={editor.newer} onSave={editor.save} onRevert={editor.revert} onReload={editor.reload} hideJson={tab === "code"}
         changes={editor.changes} editText={editor.editText} />

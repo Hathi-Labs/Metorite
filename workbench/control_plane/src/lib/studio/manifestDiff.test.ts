@@ -18,9 +18,25 @@ describe("diffManifests", () => {
   it("finds nothing when nothing changed", () => {
     expect(diffManifests(base(), base())).toEqual([]);
   });
-  it("does not call a reorder a change", () => {
-    const re = edit((m) => { m.objects.reverse(); m.objects[1].fields.reverse(); });
-    expect(diffManifests(base(), re)).toEqual([]);
+  it("says an order change, because the app draws these lists in order", () => {
+    expect(lines(base(), edit((m) => { m.objects.reverse(); }))).toEqual(["changes the order of the record types"]);
+    expect(lines(base(), edit((m) => { m.objects[0].fields.reverse(); }))).toEqual(["changes the order of the fields of «Units»"]);
+    const two = edit((m) => { m.views.push({ id: "t", block: "table", title: "All", object: "visits" }); });
+    const flipped = JSON.parse(JSON.stringify(two)); flipped.views.reverse();
+    expect(lines(two, flipped)).toEqual(["changes the order of the views"]);
+    const pg = { ...base(), pages: [{ id: "a" }, { id: "b" }] };
+    expect(lines(pg, { ...base(), pages: [{ id: "b" }, { id: "a" }] })).toEqual(["changes the order of the pages"]);
+    const ac = edit((m) => { m.actions.push({ id: "z", uses: "x", title: "Z" }); m.actions.push({ id: "y", uses: "x", title: "Y" }); });
+    const acr = JSON.parse(JSON.stringify(ac)); acr.actions.reverse();
+    expect(lines(ac, acr)).toEqual(["changes the order of the actions"]);
+  });
+  it("says no order change for an add, and no change for the same order", () => {
+    expect(lines(base(), edit((m) => { m.objects.unshift({ name: "new", fields: [] } as never); }))).toEqual(["adds the record type «new»"]);
+    expect(diffManifests(base(), base())).toEqual([]);
+  });
+  it("backstops a difference that no rule reads", () => {
+    expect(lines(base(), { ...base(), id: "other" })).toEqual(["changes other parts of the app"]);
+    expect(lines(base(), { ...base(), studio: 2 })).toEqual(["changes other parts of the app"]);
   });
   it("names the app and its purpose", () => {
     expect(lines(base(), edit((m) => { m.name = "Trips"; }))).toEqual(["renames the app from «Visits» to «Trips»"]);

@@ -7,7 +7,8 @@
  * that last one, so the bar says "Mira or another tab".
  */
 import type { PackageDraft } from "./packageDraft";
-import { SAVE_BUSY } from "./draftSave";
+import { publishEffect, type LiveObject } from "./draftEdit";
+import { SAVE_BUSY, saveDraft } from "./draftSave";
 import { diffLines, diffManifests, type Change } from "./manifestDiff";
 import { stableJson } from "./dataDoor";
 
@@ -49,11 +50,11 @@ export function undoLabel(who: Who): string {
 }
 
 /** The reason that Undo is off, or null. */
-export function undoBlock(s: { dirty: boolean; saving: boolean; fault: boolean; working: boolean }): string | null {
+export function undoBlock(s: { dirty: boolean; saving: boolean; fault: boolean; working: boolean; liveDrop?: string | null }): string | null {
   if (s.fault) return "The Code tab holds JSON that does not parse. Fix it or press Revert first.";
   if (s.saving || s.working) return "A save is running. Wait for it to end.";
   if (s.dirty) return "You have unsaved edits. Save or revert them first.";
-  return null;
+  return s.liveDrop ?? null;
 }
 
 export const UNDO_STALE =
@@ -76,4 +77,69 @@ export function barLines(l: Landed, all: boolean): { lines: string[]; hidden: nu
   const full = diffLines(l.changes, 12);
   if (all || full.length <= BAR_LINES) return { lines: full, hidden: 0 };
   return { lines: full.slice(0, BAR_LINES), hidden: full.length - BAR_LINES };
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * The reason that Undo would drop something that is live, or null. A publish makes each record type
+ * and field a table or a column that no member can remove yet (`objects_store._plan_sync`). So an
+ * Undo that brings back a manifest with no such record type or field would make the next publish
+ * fail. The words are the ones of G3c (`publishEffect`).
+ */
+export function undoDropsLive(before: unknown, live: readonly LiveObject[]): string | null {
+  if (live.length === 0) return null;
+  const objects = isObj(before) && Array.isArray(before.objects) ? before.objects.filter(isObj) : [];
+  for (const lo of live) {
+    const o = objects.find((x) => x.name === lo.name);
+    if (!o) return `Undo is off. ${publishEffect("object", true)}`;
+    const keys = new Set((Array.isArray(o.fields) ? o.fields.filter(isObj) : []).map((f) => f.key));
+    if (lo.fields.some((f) => !keys.has(f.key))) return `Undo is off. ${publishEffect("field", true)}`;
+  }
+  return null;
+}
+
+// ── The tracker: what the page remembers about the newest change ─────────────
+
+export interface Tracker {
+  /** The draft that the page saw last. */
+  prev: PackageDraft | null;
+  /** The newest change that landed, or null. */
+  landed: Landed | null;
+  /** The next draft with this hash is the page's own write. */
+  own: { who: "you" | "undo" | "redo"; hash: string | null } | null;
+}
+
+export const NEW_TRACKER: Tracker = { prev: null, landed: null, own: null };
+
+export function markOwn(t: Tracker, who: "you" | "undo" | "redo", hash: string | null): Tracker {
+  return { ...t, own: { who, hash } };
+}
+
+/**
+ * Take the draft that the page shows now.
+ * - A manifest that moved lands a change, or clears `landed` when it has no line. A kept `landed`
+ *   would hold a manifest older than the draft, and Undo would wipe the newer save.
+ * - A new live version clears `landed`: the change is live, so Undo of it is no draft undo.
+ * - Anything else keeps `landed`.
+ */
+export function observe(t: Tracker, draft: PackageDraft | null): Tracker {
+  const prev = t.prev;
+  if (!draft) return { ...t, prev: null };
+  if (!prev) return { ...t, prev: draft };
+  const moved = stableJson(prev.manifest ?? null) !== stableJson(draft.manifest ?? null);
+  const mine = t.own && t.own.hash !== null && t.own.hash === draft.manifestHash ? t.own.who : null;
+  const own = mine ? null : t.own;
+  if (moved) return { prev: draft, landed: landChange(prev, draft, mine ?? "other"), own };
+  if (prev.liveVersion !== draft.liveVersion) return { prev: draft, landed: null, own };
+  return { prev: draft, landed: t.landed, own };
+}
+
+/** Send the earlier manifest back through the one save. The words say why when it did not land. */
+export async function runUndo(
+  pkg: string, draft: PackageDraft, landed: Landed, save: typeof saveDraft = saveDraft,
+): Promise<{ kind: "saved"; draft: PackageDraft; who: "undo" | "redo" } | { kind: "note"; text: string }> {
+  const r = await save(pkg, landed.before, draft.manifestHash, draft);
+  if (r.kind === "saved") return { kind: "saved", draft: r.draft, who: landed.who === "undo" ? "redo" : "undo" };
+  return { kind: "note", text: undoFailure(r) };
 }

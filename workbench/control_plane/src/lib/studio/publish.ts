@@ -126,3 +126,8 @@ export async function getVersionManifest(
   if (!v || !isObject(v.manifest)) throw new Error(LIVE_READ_FAILED);
   return v.manifest;
 }
+
+/** Escape and a press outside close the box. While a publish runs they must not, or the member could press Publish twice. */
+export function guardedClose(busy: boolean, close: () => void): void {
+  if (!busy) close();
+}

@@ -11,10 +11,10 @@ import { useEffect, useState } from "react";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import type { Problem } from "@/lib/studio/draftProblems";
-import { diffLines, diffManifests } from "@/lib/studio/manifestDiff";
+import { cleanName, diffLines, diffManifests } from "@/lib/studio/manifestDiff";
 import { previewHref } from "@/lib/studio/packagePreview";
 import {
-  HONEST_LINE, MAX_NOTES, getVersionManifest, publishDraft, publishedWords, type PublishResult,
+  HONEST_LINE, MAX_NOTES, guardedClose, getVersionManifest, publishDraft, publishedWords, type PublishResult,
 } from "@/lib/studio/publish";
 import { StudioOff } from "@/lib/studio/realDoor";
 
@@ -43,14 +43,15 @@ export default function PublishDialog(p: PublishDialogProps) {
   const [all, setAll] = useState(false);
   // The draft the member saw when the box opened. A later poll never swaps it, so Publish sends THIS
   // hash and a draft that changed meanwhile gets 409.
-  const [snap, setSnap] = useState<{ hash: string | null; manifest: unknown } | null>(null);
+  const [snap, setSnap] = useState<{ hash: string | null; manifest: unknown; liveVersion: number | null } | null>(null);
   const { open, pkg, liveVersion } = p;
 
   // Reading the live version again each time the box opens keeps the diff true.
   useEffect(() => {
     if (!open) return;
-    setResult(null); setNotes(""); setAll(false); setBusy(false);
-    setSnap({ hash: p.hash, manifest: p.manifest });
+    // `busy` is not reset here: the box cannot close while a publish runs, so a reopen never meets a stale one.
+    setResult(null); setNotes(""); setAll(false);
+    setSnap({ hash: p.hash, manifest: p.manifest, liveVersion });
     if (liveVersion === null) { setLive({ state: "ready", manifest: null }); return; }
     setLive({ state: "loading" });
     let stop = false;
@@ -66,10 +67,11 @@ export default function PublishDialog(p: PublishDialogProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, pkg]);
 
-  const seen = snap ?? { hash: p.hash, manifest: p.manifest };
+  const seen = snap ?? { hash: p.hash, manifest: p.manifest, liveVersion };
+  const seenLive = seen.liveVersion;
   const done = result?.kind === "published" ? result : null;
-  const next = done ? done.version : (liveVersion ?? 0) + 1;
-  const first = liveVersion === null;
+  const next = done ? done.version : (seenLive ?? 0) + 1;
+  const first = seenLive === null;
   const changes = live.state === "ready" ? diffManifests(live.manifest, seen.manifest) : [];
   const lines = diffLines(changes, all ? 100 : 12, first);
   const nothing = live.state === "ready" && !first && changes.length === 0;
@@ -92,20 +94,20 @@ export default function PublishDialog(p: PublishDialogProps) {
   };
 
   return (
-    <Modal open={open} onClose={p.onClose} title={`Publish «${p.name.trim().slice(0, 60) || "this app"}» as version ${next}`} icon="Rocket" size="md">
+    <Modal open={open} onClose={() => guardedClose(busy, p.onClose)} title={`Publish «${cleanName(p.name) || "this app"}» as version ${next}`} icon="Rocket" size="md">
       <div className="space-y-3 px-3 py-3 text-xs" data-publish-dialog>
         {!done ? (
           <section aria-label="What changes in the live app">
             <h3 className="mb-1 font-medium text-foreground">What changes in the live app</h3>
             {live.state === "loading" ? <p role="status" className="text-muted-foreground">Reading the live version…</p> : null}
             {live.state === "error" ? <p role="alert" className="text-destructive">{live.text}</p> : null}
-            {nothing ? <p className="text-muted-foreground">Nothing would change. The draft equals live version {liveVersion}.</p> : null}
+            {nothing ? <p className="text-muted-foreground">Nothing would change. The draft equals live version {seenLive}.</p> : null}
             {live.state === "ready" && !nothing && lines.length === 0 ? (
               <p className="text-muted-foreground">The app has no record types, views or actions yet. Publish still makes version {next}.</p>
             ) : null}
             {lines.length > 0 ? (
               <>
-                <p className="mb-1 text-muted-foreground">{first ? "This first version makes:" : `This version, against live version ${liveVersion}:`}</p>
+                <p className="mb-1 text-muted-foreground">{first ? "This first version makes:" : `This version, against live version ${seenLive}:`}</p>
                 <ul className="list-disc space-y-0.5 pl-4 text-foreground">
                   {lines.map((l, i) => <li key={i} className="break-words">{l}</li>)}
                 </ul>
