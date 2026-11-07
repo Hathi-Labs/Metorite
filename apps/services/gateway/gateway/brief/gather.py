@@ -20,6 +20,12 @@ for each ``Closed`` row of Handled, and ``moved`` is one for each shown open
 card. The brief's :func:`claim_of` still refuses a section outside
 ``plan.BRIEF_GROUPS``: the close-out passes its own section as an argument.
 
+**The acts** (BR-7b-2, ``core_brief.md`` §8) make the section ``acted``
+with :func:`acted_claims`: one claim for each allow-listed ``audit_event``
+act (``audit:<id>``) and each sent ``reach_outbox`` row (``reach:<id>``).
+Each line names its policy, or says :data:`NO_POLICY`. The link rule is
+§8.2 item 4: :func:`audit_href` and :func:`reach_href`.
+
 A card with no in-app href, or a prefix that no provider writes, gets no
 claim. The gather logs ``brief.claim_skipped`` with the kind only, and the
 other cards keep their claims. The gather invents no link.
@@ -43,9 +49,16 @@ from gateway.reach import plan
 
 _log = get_logger("brief.gather")
 
-#: The prefixes of ``signal_id`` that the feed's providers write.
+#: The prefix of an act from ``audit_event`` (BR-7b-2): ``audit:<id>``.
+AUDIT = "audit"
+#: The prefix of an act from ``reach_outbox`` (BR-7b-2): ``reach:<id>``.
+REACH = "reach"
+
+#: The prefixes of ``signal_id`` that the feed's providers write, and the
+#: two prefixes of an act (``core_brief.md`` §8.2 item 3).
 SOURCE_APPS: frozenset[str] = frozenset({
-    "tasks", "email", "approvals", "crm", "calendar", "chat", "knowledge", "reminders"})
+    "tasks", "email", "approvals", "crm", "calendar", "chat", "knowledge", "reminders",
+    AUDIT, REACH})
 
 
 def source_app(signal_id: Any) -> str | None:
@@ -155,11 +168,150 @@ def closeout_claims(closed: list[Any], cards: list[dict[str, Any]],
 
 def closeout_lead(local_date: Any, claims: list[store.ClaimIn]) -> str | None:
     """The template lead of the close-out, from the counts of the claims:
-    ``Your close-out, Thu 15 Oct. 2 done and 1 moved to tomorrow.`` A count
-    of 0 is left out. None with no claim."""
+    ``Your close-out, Thu 15 Oct. 2 done and 1 moved to tomorrow.`` With
+    acts (BR-7b-2): ``2 done, 1 moved to tomorrow and 3 acts for you.`` A
+    count of 0 is left out. None with no claim."""
     done = sum(1 for c in claims if c.section == "done")
     moved = sum(1 for c in claims if c.section == "moved")
-    parts = ([f"{done} done"] if done else []) + ([f"{moved} moved to tomorrow"] if moved else [])
+    acted = sum(1 for c in claims if c.section == ACTED)
+    parts = (([f"{done} done"] if done else [])
+             + ([f"{moved} moved to tomorrow"] if moved else [])
+             + ([f"{acted} act{'' if acted == 1 else 's'} for you"] if acted else []))
     if not parts:
         return None
-    return f"Your close-out, {plan._date_words(local_date)}. {' and '.join(parts)}."
+    words = parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
+    return f"Your close-out, {plan._date_words(local_date)}. {words}."
+
+
+# ── The acts of the day (BR-7b-2, ``core_brief.md`` §8) ─────────────────────
+
+#: The section of an act.
+ACTED = "acted"
+#: The ``source_kind`` of a Reach row. An audit act takes its action.
+OUTBOX_KIND = "outbox"
+#: The words of an act whose writer stored no policy (§8.2 item 2).
+NO_POLICY = "no policy recorded"
+#: The policy of a Reach row of the kind ``brief`` (§8.2 item 2). Another
+#: kind takes ``reach_signal_log.rule_id`` once BR-5 slice 2b-1 stores it.
+#: Until then it has no policy.
+REACH_BRIEF_POLICY = "brief"
+#: The My Day path (``app/page.tsx``): the Handled view lives there. An act
+#: whose target has no in-app page links here (§8.2 item 4).
+MY_DAY_PATH = "/"
+#: The longest part of a line that comes from a row.
+_PART_MAX = 60
+
+_REACH_WORDS: dict[str, str] = {
+    "brief": "Sent your brief",
+    "interrupt": "Sent you an alert",
+    "request": "Sent you a request",
+    "reminder_due": "Sent you a reminder",
+    "reminder_check": "Sent you a reminder check",
+    "reminder_unconfirmed": "Sent you a reminder that waits for you",
+    "due_summary": "Sent you the summary of what is due",
+}
+_CHANNEL_WORDS: dict[str, str] = {"whatsapp": "on WhatsApp", "web_push": "as a push"}
+
+
+def _part(value: Any) -> str:
+    """A short, plain part of a line from a row value: one line, cut."""
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= _PART_MAX else text[:_PART_MAX - 1] + "…"
+
+
+def _with_policy(what: str, policy: str | None) -> str:
+    """The line of an act: what ran, and the policy that allowed it."""
+    return f"{what} ({NO_POLICY})" if not policy else f"{what} (policy: {_part(policy)})"
+
+
+def audit_href(target: Any) -> str:
+    """The link of an audit act (§8.2 item 4). A door call's target is
+    ``app:<app id>.<op>``, and its page is ``/<app id>`` when that is a live
+    pane (``orchestrator.in_app_path.pane_of``). Every other target has no
+    in-app page, so it takes :data:`MY_DAY_PATH`."""
+    from orchestrator.in_app_path import pane_of
+
+    if isinstance(target, str) and target.startswith("app:"):
+        path = "/" + target[len("app:"):].split(".", 1)[0]
+        pane = pane_of(path)
+        if pane is not None and pane.href == path and in_app_href(path):
+            return path
+    return MY_DAY_PATH
+
+
+def reach_href(signal_ids: Any, cards: list[dict[str, Any]], closed: list[Any]) -> str:
+    """The link of a Reach act (§8.2 item 4): the href of the card of its
+    first signal. The card is an open card of the snapshot, or a Handled row
+    with that key, because a card that was closed today is not open now. A
+    row with no signal, or whose card is in neither list, takes
+    :data:`MY_DAY_PATH`."""
+    first = next(iter(signal_ids or ()), None)
+    if first:
+        for card in cards:
+            if card.get("signal_id") == first and (href := in_app_href(card.get("href"))):
+                return href
+        for row in closed:
+            if getattr(row, "key", None) == first and (href := in_app_href(row.href)):
+                return href
+    return MY_DAY_PATH
+
+
+def act_line(act: Any) -> str:
+    """The line of an audit act (``acb_audit.read.Act``), built by code from
+    the action, the target and the policy. It holds no body and no
+    argument value."""
+    action, payload = str(act.action), act.payload if isinstance(act.payload, dict) else {}
+    agent = _part(str(act.target).removeprefix("agent:"))
+    if action == "agent_door_call":
+        what = f"An outside agent used {_part(payload.get('app'))}: {_part(payload.get('op'))}"
+    elif action == "agent_push_by_reviewer":
+        what = f"Mira pushed the reviewed changes of the agent {agent}"
+    elif action == "mutation_commit_auto_pushed":
+        what = f"Mira pushed a repair of the agent {agent}"
+    elif action.startswith("execute:"):
+        what = f"The Action Broker ran {_part(action.removeprefix('execute:'))}"
+    else:
+        what = f"Mira ran {_part(action)}"
+    return _with_policy(what, act.policy)
+
+
+def sent_line(row: Any) -> str:
+    """The line of a Reach row (``outbox.SentRow``). The body is not read."""
+    what = _REACH_WORDS.get(str(row.kind), "Sent you a message")
+    channel = _CHANNEL_WORDS.get(str(row.channel))
+    what = f"{what} {channel}" if channel else what
+    return _with_policy(what, REACH_BRIEF_POLICY if row.kind == "brief" else None)
+
+
+def acted_claims(acts: list[Any], sent: list[Any], cards: list[dict[str, Any]],
+                 closed: list[Any], start: int) -> list[store.ClaimIn]:
+    """The ``acted`` claims of the close-out (BR-7b-2): one for each audit
+    act and each sent Reach row, the oldest first, cut to
+    ``plan.BRIEF_LINES``. The positions start at *start*, after ``done`` and
+    ``moved``. A line with no valid href is skipped (``brief.claim_skipped``).
+    A line with no policy says :data:`NO_POLICY`, and the run logs the count
+    (``brief.acted_no_policy``)."""
+    items: list[tuple[Any, str, str, str, str, str]] = []
+    for act in acts:
+        items.append((act.at, AUDIT, f"{AUDIT}:{act.id}", str(act.action),
+                      act_line(act), audit_href(act.target)))
+    for row in sent:
+        items.append((row.sent_at, REACH, f"{REACH}:{row.id}", OUTBOX_KIND,
+                      sent_line(row), reach_href(row.signal_ids, cards, closed)))
+    items.sort(key=lambda i: (i[0], i[2]))
+    out: list[store.ClaimIn] = []
+    for _at, app, source_id, kind, text, href in items[:plan.BRIEF_LINES]:
+        if in_app_href(href) is None:
+            _log.info("brief.claim_skipped", kind=kind, reason="no_href")
+            continue
+        out.append(store.ClaimIn(position=start + len(out), section=ACTED, text=text,
+                                 source_app=app, source_kind=kind, source_id=source_id,
+                                 href=href))
+    if len(items) > plan.BRIEF_LINES:
+        _log.info("brief.acted_cut", left_out=len(items) - plan.BRIEF_LINES)
+    return out
+
+
+def no_policy_count(claims: list[store.ClaimIn]) -> int:
+    """How many ``acted`` claims say :data:`NO_POLICY`. The run logs it."""
+    return sum(1 for c in claims if c.section == ACTED and c.text.endswith(f"({NO_POLICY})"))

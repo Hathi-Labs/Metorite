@@ -337,12 +337,24 @@ def test_the_run_payload_is_strict() -> None:
 def test_phrase_is_the_one_model_site_and_the_brief_sends_nothing() -> None:
     """BR-2a-2: ``phrase.py`` is the ONE model site of ``gateway/brief/``.
     No other module of the package names the model seam, and no module
-    sends (``core_brief.md`` §4.4 and §8)."""
+    sends (``core_brief.md`` §4.4 and §8).
+
+    BR-7b-2: the close-out READS the sent rows of Reach, so ``gather.py``
+    and ``run.py`` name ``outbox`` and the channel ``whatsapp``. The one
+    name that the package takes from ``reach.outbox`` is ``sent_rows``
+    (``test_job_effects_fence.py`` holds it on the AST). No module imports
+    the WhatsApp sender."""
+    import re
+
     package = _ROOT / "apps/services/gateway/gateway/brief"
     sites = []
     for path in sorted(package.glob("*.py")):
         src = path.read_text(encoding="utf-8")
-        assert "outbox" not in src and "whatsapp" not in src, path.name
+        assert "reach.whatsapp" not in src and "import whatsapp" not in src, path.name
+        if path.name not in {"gather.py", "run.py"}:
+            assert "outbox" not in src and "whatsapp" not in src, path.name
+        assert set(re.findall(r"outbox import (\w+)", src)) <= {"sent_rows"}, path.name
+        assert not re.search(r"\boutbox\.(?!sent_rows\b)\w+\(", src), path.name
         if "acompletion" in src:
             sites.append(path.name)
     assert sites == ["phrase.py"]

@@ -70,6 +70,26 @@ TC1 = datetime(2099, 3, 10, 12, 56, tzinfo=UTC)
 SLOT = datetime(2099, 3, 10, 18, 30, tzinfo=KOLKATA)
 
 
+@pytest.fixture(autouse=True)
+def acted_graph(promoted, monkeypatch):
+    """BR-7b-2: the close-out reads the acts of ``audit_event`` through the
+    sync ``acb_graph`` engine. Point it at the promoted catalog as the app
+    role, so the real read runs here under FORCE RLS, as the reach read
+    does."""
+    from acb_graph import db as graph_db
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import NullPool
+
+    eng = create_engine(_dsn(promoted.app_url), future=True, poolclass=NullPool)
+    factory = sessionmaker(bind=eng, expire_on_commit=False, future=True)
+    monkeypatch.setattr(graph_db, "_session_factory", lambda: factory)
+    try:
+        yield eng
+    finally:
+        eng.dispose()
+
+
 def _on(world: Any, monkeypatch: Any, **kw: Any) -> None:
     monkeypatch.setattr(flags, "get_settings", lambda: SimpleNamespace(**{
         "brief_enabled": True, "brief_orgs": world.p.org_a, "brief_closeout": True, **kw}))

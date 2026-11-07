@@ -50,14 +50,18 @@ _MODULES = ("gateway.jobs.worker", "gateway.brief.run", "gateway.brief.monitor",
 #: send seam is refused until someone adds it here on purpose). ``reach.loop``
 #: serves the reads ``resolve`` and ``snapshot``, and its senders stay out
 #: (:data:`_ALLOWED_NAMES`). ``routes.shell.feed``, ``.state`` and ``.handled`` (BR-2b-1) are reads.
+#: ``reach.outbox`` serves the read ``sent_rows`` of the acts (BR-7b-2), and
+#: its writers stay out.
 _ALLOWED = ("gateway.brief", "gateway.jobs", "gateway.reach.plan", "gateway.reach.loop",
+            "gateway.reach.outbox",
             "gateway.my_day_loop", "gateway.routes.shell.feed", "gateway.routes.shell.state",
             "gateway.routes.shell.handled",
             "gateway.work_schedule", "gateway.db")
 #: The names that the brief may take from a module of :data:`_ALLOWED` that
 #: also holds a sender.
 _ALLOWED_NAMES: dict[str, frozenset[str]] = {
-    "gateway.reach.loop": frozenset({"resolve", "snapshot", "Snapshot"})}
+    "gateway.reach.loop": frozenset({"resolve", "snapshot", "Snapshot"}),
+    "gateway.reach.outbox": frozenset({"sent_rows", "SentRow"})}
 #: ``from gateway.reach import <name>``: only these modules.
 _PACKAGE_NAMES: dict[str, frozenset[str]] = {
     "gateway.reach": frozenset({"plan", "loop"}),
@@ -124,7 +128,9 @@ def _ok(module: str, name: str | None) -> bool:
     if not any(module == a or module.startswith(a + ".") for a in _ALLOWED):
         return False
     allowed = _ALLOWED_NAMES.get(module)
-    return allowed is None or name is None or name in allowed
+    # A module that also holds a sender gives its named reads only: a bare
+    # ``import`` of it would reach the senders too (BR-7b-2).
+    return allowed is None or (name is not None and name in allowed)
 
 
 def _registry() -> dict[str, tuple[str | None, str | None]]:
@@ -222,6 +228,11 @@ def test_the_fences_see_a_planted_violation() -> None:
     assert forbidden_imports("from ..reach.loop import member_pass") != []
     assert forbidden_imports("from gateway.reach import plan") == []
     assert forbidden_imports("from gateway.reach.loop import resolve, snapshot") == []
+    assert forbidden_imports("from gateway.reach.outbox import sent_rows") == []
+    assert forbidden_imports("from gateway.reach.outbox import plan") == [
+        "gateway.reach.outbox.plan"]
+    assert forbidden_imports("from gateway.reach import outbox") == ["gateway.reach.outbox"]
+    assert forbidden_imports("import gateway.reach.outbox") == ["gateway.reach.outbox"]
     assert forbidden_imports("from . import store\nfrom ..jobs import queue") == []
     assert unlabelled_calls("w.register('a.b', h)") == [1]
     assert unlabelled_calls("register('a.b', h, effect=None)") == [1]
