@@ -125,8 +125,11 @@ def test_each_projects_tool_is_in_exactly_one_row() -> None:
 
 @pytest.fixture(scope="module")
 def projects_tools() -> dict[str, Any]:
-    """The owner's own tool objects: the ``_StrictTool`` that a pack builds on."""
-    return {_name(t): t for t in load_projects_module("rx1_projects")._agent_tools()}
+    """The owner's own tool objects: the ``_StrictTool`` that a pack builds on.
+
+    CAL-1a: ``_own_tools()`` is the specialist's list. ``_agent_tools()`` adds the
+    eight planner tools of the ``calendar-day`` pack, which this table does not name."""
+    return {_name(t): t for t in load_projects_module("rx1_projects")._own_tools()}
 
 
 @pytest.fixture(scope="module")

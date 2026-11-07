@@ -128,21 +128,14 @@ def _current_user_email() -> str:
 
 
 def _internal_token() -> str:
-    """The gateway's internal bearer token.
+    """The gateway's internal bearer token: ``GATEWAY_INTERNAL_TOKEN`` only.
 
-    ``gateway_internal_token`` IS a real Settings field
-    (``acb_common/settings.py``) — it is the service-identity/LLM-key split, and
-    it ships empty, which is why ``litellm_master_key`` is the fallback rather
-    than the primary. The order below is load-bearing in that direction: on a
-    box where the split HAS been provisioned, "simplifying" this to read
-    ``litellm_master_key`` first sends the wrong token and 403s every CRM call.
+    There is no ``litellm_master_key`` rung (WS-24b, 2026-11-06). The gateway
+    no longer accepts the LLM key as service identity, so that rung would only
+    send a token that 401s. Unset gives ``""``, and the gateway refuses it.
     """
     settings = get_settings()
-    return (
-        getattr(settings, "gateway_internal_token", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
+    return (getattr(settings, "gateway_internal_token", "") or "").strip()
 
 
 def _headers() -> dict[str, str]:
