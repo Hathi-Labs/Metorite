@@ -440,8 +440,14 @@ def _save_avatar(
     H-201: the write binds the tenant, and the column default stamps the row
     with it. ``tenant_session`` commits on exit and refuses no tenant.
 
-    ⚠️ The conflict key is still ``agent_name`` alone. Under FORCE RLS, an
-    upsert of a name that another org holds fails. Task 1719 owns that key.
+    H-201d (task 1719): the conflict target is ``(organization_id,
+    agent_name)``, the unique index of migration 354. A save never matches
+    a row of another org.
+
+    ⚠️ Expand phase. The old primary key on ``agent_name`` alone still
+    exists, so a save of a name that another org holds fails with a unique
+    violation on ``agent_avatars_pkey``. The contract release drops that
+    key (HANDOFF H-201d), and then the save succeeds.
     """
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -451,7 +457,7 @@ def _save_avatar(
             text(
                 "INSERT INTO agent_avatars (agent_name, config, sprite, updated_at) "
                 "VALUES (:n, CAST(:c AS jsonb), :s, now()) "
-                "ON CONFLICT (agent_name) DO UPDATE SET "
+                "ON CONFLICT (organization_id, agent_name) DO UPDATE SET "
                 "config = CAST(:c AS jsonb), sprite = :s, updated_at = now()"
             ),
             {"n": name, "c": json.dumps(config or {}), "s": sprite},
