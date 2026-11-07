@@ -726,6 +726,10 @@ _PROFILE_AGENT = "orchestrator"
 _PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any, bool]] = {}
 _PROFILE_TTL_SECONDS = 60.0
 _PROFILE_CACHE_MAX = 4096
+#: PZ-43: by ``(org, member)``, whether the stored ``celebrations`` key sets
+#: anything, as of the last profile read. The celebration prime asks it first,
+#: so a member with nothing set costs no query.
+_CELEBRATIONS_SET: dict[tuple[str, str], bool] = {}
 
 
 def _read_member_profile(org: str, member: str) -> tuple[Any, str, str, str] | None:
@@ -807,6 +811,10 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
         if read is not None:
             raw, preferred, zone, display = read
             stored = assistant_profile.stored_profile(raw)
+            _CELEBRATIONS_SET.pop(key, None)
+            _CELEBRATIONS_SET[key] = "celebrations" in stored
+            while len(_CELEBRATIONS_SET) > _PROFILE_CACHE_MAX:
+                _CELEBRATIONS_SET.pop(next(iter(_CELEBRATIONS_SET)))
             has_stored = assistant_profile.has_stored_content(raw)
             block = assistant_profile.member_block(raw, preferred, display)
             greeting = assistant_profile.effective_greeting(raw) if block else ""
@@ -1645,6 +1653,11 @@ async def _prime_celebrations(
         from acb_skills.write_artifact import artifact_context, derive_artifact_context
 
         if not celebrations.celebrations_for(org):
+            return
+        # The profile of this run (cached, one read a minute) says whether
+        # anything is set. Nothing set: no query. Unknown: ask the database.
+        _member_profile_entry(agent_name)
+        if _CELEBRATIONS_SET.get((org, member)) is False:
             return
         ctx = artifact_context()
         run_id = str(ctx.get("run_id") or "")

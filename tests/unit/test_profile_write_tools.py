@@ -456,6 +456,18 @@ class TestSet:
         assert pt.CELEBRATIONS_OFF in out
         assert own_chat.writes() == [] and own_chat.cards == []
 
+    def test_celebrations_off_still_accepts_a_clear(self, own_chat, monkeypatch) -> None:
+        """PZ-43 repair: a saved value can always be deleted (§7 rule 2)."""
+        from acb_common import celebrations
+
+        monkeypatch.setattr(celebrations, "celebrations_for", lambda org: False)
+        own_chat.profile["celebrations"] = {
+            "birthday": {"month": 3, "day": 12}, "festivals": [], "work_anniversary": False}
+        _run(pt.profile_set("celebrations", {"birthday": None}))
+        (put,) = own_chat.writes()
+        assert json.loads(put.content)["value"] == {"festivals": [], "work_anniversary": False}
+        assert own_chat.cards == []
+
     def test_celebrations_on_asks_a_card_and_then_writes(self, own_chat, monkeypatch) -> None:
         from acb_common import celebrations
 

@@ -985,9 +985,10 @@ async def put_assistant_profile(
     uid = _member(user)
     via = _via(x_profile_via)
     put = _validate(ProfilePut, body)
-    if put.key == "celebrations" and not celebrations.celebrations_for(
-            getattr(user, "organization_id", None)):
-        # PZ-43: off for this org, so the key does not exist for the member.
+    if (put.key == "celebrations" and not celebrations.is_clear(put.value)
+            and not celebrations.celebrations_for(getattr(user, "organization_id", None))):
+        # PZ-43: off for this org, so the member cannot SET it. A write that
+        # only clears stays open, so a saved value can still be deleted (§7).
         raise _refuse("celebrations are not on for your organization")
     if via is not None and put.key in SETTINGS_ONLY_KEYS:
         raise _refuse(f"{put.key} is set in Settings, not from the chat")

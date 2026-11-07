@@ -136,6 +136,8 @@ def clean_celebrations(value: Any) -> dict[str, Any]:
     of the catalogue) and ``work_anniversary`` (true or false). Any other key,
     a year, an impossible date or a wrong type raises ValueError. An unknown
     festival id drops. The write replaces the whole key."""
+    if value is None:
+        return empty()  # a clear
     if not isinstance(value, dict):
         raise ValueError("celebrations is an object")
     unknown = [k for k in value if k not in ("birthday", "festivals", "work_anniversary")]
@@ -152,6 +154,12 @@ def clean_celebrations(value: Any) -> dict[str, Any]:
             raise ValueError("work_anniversary is true or false")
         out["work_anniversary"] = value["work_anniversary"]
     return out
+
+
+def is_clear(celebrations: Any) -> bool:
+    """True when a value sets nothing: no birthday, no festival, anniversary off.
+    A write of such a value only clears, so it stays open with the flag off."""
+    return not has_content(stored_celebrations(celebrations))
 
 
 def stored_celebrations(raw: Any) -> dict[str, Any]:

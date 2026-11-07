@@ -441,3 +441,66 @@ def test_the_profile_route_validates_and_gates_the_key(settings) -> None:
         route.ProfilePut(key="celebrations", value={"birthday": {"month": 3, "day": 12,
                                                                   "year": 1990}})
     assert "celebrations" not in route.SETTINGS_ONLY_KEYS  # the chat may write it too
+
+
+# ── Repair round: no query when nothing is set, and a clear with the flag off ──
+
+
+def _profile_read(monkeypatch, raw):
+    ex._PROFILE_CACHE.clear()
+    ex._CELEBRATIONS_SET.clear()
+    monkeypatch.setattr(ex, "_read_member_profile", lambda org, m: (raw, "", "", ""))
+    monkeypatch.setattr(ex, "_read_member_display_name", lambda org, m: "Ana")
+
+
+def test_a_member_with_nothing_set_costs_no_query(run, monkeypatch) -> None:
+    for raw in ({"v": 1, "address": {"name": "Ana"}},
+                {"v": 1, "celebrations": {"festivals": [], "work_anniversary": False}}):
+        _profile_read(monkeypatch, raw)
+        run["reads"].clear()
+        assert _turn(run) == ""
+        assert run["reads"] == []
+
+
+def test_a_member_with_a_birthday_still_reads_and_greets(run, monkeypatch) -> None:
+    _profile_read(monkeypatch, {"v": 1, "address": {"name": "Ana"},
+                                "celebrations": {"birthday": {"month": 3, "day": 12}}})
+    assert "birthday" in _turn(run)
+    assert run["reads"] == [(ORG, MEMBER)]
+
+
+def test_is_clear_and_a_null_write_clear() -> None:
+    assert c.clean_celebrations(None) == c.empty()
+    assert c.is_clear(None) and c.is_clear({}) and c.is_clear(c.empty())
+    assert not c.is_clear({"birthday": {"month": 3, "day": 12}})
+    assert not c.is_clear({"work_anniversary": True})
+
+
+def test_the_gateway_with_the_flag_off_accepts_a_clear_and_refuses_a_set(settings) -> None:
+    from gateway.routes.admin import assistant_profile as route
+
+    _flag("")
+    seen: list[Any] = []
+
+    async def fake_write(uid, op, fn):
+        seen.append(op)
+        return {}, None
+
+    class U:
+        email = MEMBER
+        organization_id = ORG
+
+    async def go(value):
+        return await route.put_assistant_profile(
+            body={"key": "celebrations", "value": value}, user=U(), x_profile_via=None)
+
+    import unittest.mock as m
+
+    with m.patch.object(route, "_write", fake_write), m.patch.object(route, "_member",
+                                                                    lambda u: MEMBER):
+        asyncio.run(go(None))
+        asyncio.run(go({"festivals": [], "work_anniversary": False}))
+        assert seen == ["write", "write"]
+        with pytest.raises(route.HTTPException) as err:
+            asyncio.run(go({"birthday": {"month": 3, "day": 12}}))
+        assert err.value.status_code == 422

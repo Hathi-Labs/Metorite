@@ -1204,11 +1204,6 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     """
     if key not in ("address", "style", "celebrations"):
         raise _Refused("The key is address, style or celebrations. Nothing saved.")
-    if key == "celebrations":
-        from acb_common.celebrations import celebrations_for
-
-        if not celebrations_for(_run_org()):
-            raise _Refused(CELEBRATIONS_OFF)
     if not isinstance(value, dict) or not value:
         raise _Refused("Give at least one field to change. Nothing saved.")
     headers = await _write_gate()
@@ -1223,9 +1218,17 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
         raise _Refused("Already set.", "duplicate")
     reasons = [*typed, *_reasons(free, sensitive)]
     if key == "celebrations":
-        # PZ-43: a birthday and a festival pick are personal data (D-PZ-41).
-        # The member always says yes on a card that shows the exact value.
-        reasons.append(ASK_CELEBRATIONS)
+        from acb_common.celebrations import celebrations_for, is_clear
+
+        clearing = is_clear(merged)
+        # PZ-43: with the flag off the member can still CLEAR a saved value
+        # (§7 rule 2), and can set nothing.
+        if not clearing and not celebrations_for(_run_org()):
+            raise _Refused(CELEBRATIONS_OFF)
+        if not clearing:
+            # A birthday and a festival pick are personal data (D-PZ-41).
+            # The member says yes on a card that shows the exact value.
+            reasons.append(ASK_CELEBRATIONS)
     if reasons or _confirming():
         await _cards(f"{key}: {json.dumps(merged, ensure_ascii=False, sort_keys=True)}",
                      reasons, second=ASK_NOT_TYPED in reasons)
