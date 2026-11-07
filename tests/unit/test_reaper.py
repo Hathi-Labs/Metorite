@@ -127,8 +127,7 @@ def test_matchers_name_loops_and_pytest_and_nothing_else():
         "bash -c echo hi; sleep 5", CLAUDE,
     ]:
         assert not (reaper.is_wait_loop(cmd) or reaper.is_pytest(cmd)), cmd
-    # The quoted grep above is a shell whose text holds a loop. It counts as a
-    # loop only because it has the full `while ... do sleep ... done` shape.
+    # The quoted grep above holds the loop as data: the shell does not run it.
     assert not reaper.is_wait_loop("bash -c grep -c 'while' f; sleep 1")
 
 
@@ -152,7 +151,9 @@ def test_loop_under_an_ended_session_is_listed_after_2h():
     # Only the wrapper at the top has a readable environment. The loop takes it.
     wrapper = "/bin/bash -c source snap.sh && eval 'timeout 590 bash -c \"until x; do sleep 5; done\"'"
     chain = [P(20, 1, 7, wrapper), P(21, 20, 7, "timeout 590 bash -c until x; do sleep 5; done"), P(22, 21, 7, LOOP)]
-    assert stale(chain, environ={20: of(DEAD)}) == [20, 22]
+    # The wrapper (20) only passes the loop text to `bash -c` as a quoted word.
+    # It does not run the loop itself, so the loop (22) alone is listed.
+    assert stale(chain, environ={20: of(DEAD)}) == [22]
 
 
 def test_loop_under_an_idle_session_is_listed_after_6h():
@@ -527,3 +528,132 @@ def test_apply_stops_a_process_still_listed_and_names_the_children_it_leaves():
                  recheck=lambda a: reaper.recheck_process(a, Path("x"), collect=same))
     assert sent == [(33, 330)]
     assert log[0].startswith("reaper: stop pid 33 (test run") and log[0].endswith("[children left: 34 35]")
+
+
+# The real shape of a Bash-tool job, from /proc/<pid>/cmdline of a Bash-tool shell.
+_BASH_TOOL = (
+    "/bin/bash -c source /home/dev/.claude/shell-snapshots/snapshot-bash-1794020937185-48mf2w.sh 2>/dev/null || true"
+    " && shopt -u extglob 2>/dev/null || true && { \\builtin unalias -- 'which'; \\builtin unset -f -- 'which'; }"
+    " >/dev/null 2>&1 || true && { \\builtin unalias -- 'unsetenv'; \\builtin unset -f -- 'unsetenv'; }"
+    " >/dev/null 2>&1 || true && eval "
+)
+
+
+def bash_tool(command: str) -> str:
+    """`command` as the Bash tool runs it: single-quoted inside `eval`."""
+    return _BASH_TOOL + "'" + command.replace("'", "'\"'\"'") + "' < /dev/null && pwd -P >| /tmp/claude-5975-cwd"
+
+
+_COMMIT = "git" + " commit"  # split, so a commit hook does not read this file as a command
+
+DATA_LOOPS = [
+    "cat > /tmp/w.sh <<'EOF'\nuntil curl -s x; do sleep 5; done\nEOF\nuv run long_server",
+    'echo "a; while x; do sleep 1; done"',
+    _COMMIT + " -m 'fix x\n\nwhile the gate runs, do not sleep, we are done'",
+    "gh pr create --body 'Steps:\nwhile CI runs, do nothing. sleep. done.'",
+    "cat <<EOF\nwhile true; do sleep 1; done\nEOF",
+    "cat <<-EOF\n\twhile true; do sleep 1; done\n\tEOF\necho ok",
+    "uv run pytest tests -q  # while x; do sleep 1; done",
+]
+
+
+def test_a_shell_that_holds_a_loop_as_data_is_no_wait_loop():
+    for cmd in DATA_LOOPS:
+        assert not reaper.is_wait_loop(bash_tool(cmd)), cmd
+        assert not reaper.is_wait_loop("bash -c " + cmd), cmd
+        # `ps` shows a new line as a space.
+        assert not reaper.is_wait_loop(bash_tool(cmd.replace("\n", " "))), cmd
+
+
+def test_a_loop_that_the_shell_runs_is_still_a_wait_loop():
+    for cmd in [
+        "until gh pr checks 1; do sleep 30; done",
+        "while true; do sleep 60; done",
+        "cd /x; (until [ -f done.txt ]; do sleep 60; done) &",
+        "set -e\nwhile pgrep x\ndo\n  sleep 5\ndone",
+        "echo 'start'; until curl -s \"http://x/a b\"; do echo .; sleep 2; done",
+        "cat > f <<'EOF'\ndata\nEOF\nuntil [ -f f ]; do sleep 1; done",
+        "x && until y; do sleep 1; done",
+    ]:
+        assert reaper.is_wait_loop("bash -c " + cmd), cmd
+        assert reaper.is_wait_loop(bash_tool(cmd)), cmd
+    assert reaper.is_wait_loop('bash -c eval "until x; do sleep 2; done"')
+    assert reaper.is_wait_loop("sh -lc until x; do sleep 2; done")
+    # Not after `-c`: a script file, or a shell with no script text.
+    assert not reaper.is_wait_loop("bash /tmp/until.sh while do sleep done")
+
+
+def test_wait_loop_match_stays_linear_on_hostile_text():
+    t0 = time.perf_counter()
+    assert not reaper.is_wait_loop("bash -c " + "; while x do sleep 1 " * 1200)
+    assert not reaper.is_wait_loop("bash -c " + " " * 20_000 + "x")
+    assert not reaper.is_wait_loop(bash_tool("cat <<'EOF'\n" + "while the gate runs do sleep then done\n" * 340 + "EOF"))
+    assert not reaper.is_wait_loop("bash -c echo '" + "until x; do sleep 1; done " * 800)
+    assert not reaper.is_wait_loop('bash -c echo "' + "a\\\" " * 5000)
+    assert not reaper.is_wait_loop("bash -c cat <<EOF\n" + "while x; do sleep 1; done\n" * 800)
+    assert not reaper.is_wait_loop("bash -c " + "cat <<EOF " * 2000)
+    assert time.perf_counter() - t0 < 1.0
+
+
+def test_young_child_of_a_false_loop_keeps_its_session_active():
+    procs, sess = session(idle_h=9)
+    wrapper = bash_tool(DATA_LOOPS[0])
+    procs += [P(102, 100, 8, wrapper), P(103, 102, 2 / 60, "uv run long_server")]
+    assert not reaper.is_wait_loop(wrapper)
+    assert stale([*procs, P(33, 100, 4, PYTEST)], sess) == []
+    # A true loop: its young `sleep` child does not count, a young other child does.
+    procs, sess = session(idle_h=9)
+    procs += [P(10, 100, 7, LOOP), P(11, 10, 1 / 3600, "sleep 5")]
+    assert stale([*procs, P(33, 100, 4, PYTEST)], sess) == [10, 33]
+    procs.append(P(12, 10, 1 / 3600, "curl -s x"))
+    assert stale([*procs, P(33, 100, 4, PYTEST)], sess) == []
+
+
+def test_orphan_with_no_claude_pid_is_kept_while_any_session_is_busy():
+    sess_procs = [P(200, 1, 10, "claude --resume"), P(201, 200, 3, "bash -c uv run long_thing")]
+    loop = P(500, 1, 5, "bash -c until curl -s x; do sleep 5; done")
+    for busy, want in ((True, []), (False, [500])):
+        sessions = {200: reaper.Session(3 * H, busy, "/home/dev/Metorite")}
+        assert stale([loop, *sess_procs], sessions) == want, busy
+
+
+def test_command_label_masks_tokens_headers_and_user_passwords():
+    cases = {
+        "curl -H 'Authorization: token ghp_ABCDEFGHIJKLMNOP1234' x": ("ghp_ABCD", "Authorization: token ***'"),
+        "curl -H 'Authorization: Bearer abc.def' x": ("abc.def", "Authorization: Bearer ***'"),
+        "curl -H 'Authorization: Basic dXNlcjpwYXNz' x": ("dXNlcjpwYXNz", "Authorization: Basic ***'"),
+        "gh api x --raw ghp_" + "A" * 36: ("A" * 20, "ghp_***"),
+        "echo gho_" + "b" * 30 + " ghs_" + "c" * 30 + " ghu_" + "d" * 30: ("bbbb", "ghu_***"),
+        "echo github_pat_11ABCDEFG0123456789_abcdefghij": ("11ABCDEFG", "github_pat_***"),
+        "curl -d token=x https://slack.com xoxb-1234-5678-abcdefgh": ("abcdefgh", "xoxb-***"),
+        "curl -u admin:hunter2pass https://x": ("hunter2pass", "-u admin:***"),
+        "curl --user 'admin:hunter2pass' https://x": ("hunter2pass", "--user 'admin:***'"),
+        "curl --user=admin:hunter2pass https://x": ("hunter2pass", "--user=admin:***"),
+        "curl -H 'X-Api-Key: abcdef123456' x": ("abcdef123456", "X-Api-Key: ***'"),
+        "curl -H 'X-Auth-Token: qwerty98765' x": ("qwerty98765", "X-Auth-Token: ***'"),
+        "curl -H 'Private-Token: zzz111222' x": ("zzz111222", "Private-Token: ***"),
+        "OPENAI=1 x sk-abcdef1234567": ("abcdef1234567", "sk-***"),
+    }
+    for cmd, (secret, shown) in cases.items():
+        for raw in (cmd, bash_tool(cmd)):
+            label = reaper.command_label(raw)
+            assert secret not in label and shown in label, (raw, label)
+    for plain in ["uv run pytest tests/unit/test_x.py -q", "git push -u origin main",
+                  "curl -H 'Accept: application/json' https://x", "python -u scripts/x.py --key-file k.pem"]:
+        assert reaper.command_label(plain) == plain
+    t0 = time.perf_counter()
+    reaper.command_label("curl -H 'X-" + "a-" * 5000 + "' -u " + "b" * 5000)
+    assert time.perf_counter() - t0 < 1.0
+
+
+def test_a_worktree_is_not_inside_a_worktree_whose_name_it_starts_with():
+    assert not reaper._contains("/home/dev/wt-a", "/home/dev/wt-ab")
+    assert reaper._contains("/home/dev/wt-a", "/home/dev/wt-a/apps")
+    procs, _ = session()
+    env = reaper.Env(now=NOW, procs=procs, uid=ME, sessions={100: reaper.Session(H, True, "/home/dev/wt-a")},
+                     cwd_of={101: "/home/dev/wt-a/x"}.get)
+    kids = {}
+    for p in procs:
+        kids.setdefault(p.ppid, []).append(p)
+    assert not reaper._works_in(env, procs[0], kids, "/home/dev/wt-ab/apps")
+    assert reaper._works_in(env, procs[0], kids, "/home/dev/wt-a/apps")

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import os
 import re
@@ -68,16 +69,21 @@ WRAPPERS = SHELLS | {"timeout", "env", "nohup", "setsid", "nice", "uv", "xargs"}
 # A `claude` process with one of these subcommands is not a session. The
 # daemon, a pty host and remote control sit above sessions.
 CLAUDE_INFRA = {"daemon", "bg-pty-host", "remote-control"}
-# The `until`/`while` must stand where a command starts: after `-c`, `eval '`,
-# `;`, `&&`, `|`, `(`, `{`, a new line or `do`. So `grep 'while ...'` is no loop.
-# The match is linear: one start regex with no nested quantifier, then one
-# plain search for each of `do`, `sleep` and `done`, in order. A chain of lazy
-# `.*?` took 74 s on a 13 KB heredoc. The text is cut to LOOP_CAP first.
-LOOP_START_RE = re.compile(
-    r"(?:^|[;&|(){}\n]|(?:\beval|\s-c|\bdo|\bthen|\belse)(?:\s+['\"]|\s))\s*(?:until|while)\s"
-)
-LOOP_TOKENS = (re.compile(r"\bdo\b"), re.compile(r"\bsleep\b"), re.compile(r"\bdone\b"))
+# A wait loop is an `until`/`while` that the shell itself RUNS. `_shell_words`
+# reads the script after `-c` in one pass. It drops quoted text, heredoc bodies
+# and comments, because they are data. So `echo "while x; do sleep 1; done"`,
+# a commit message and a heredoc are no loop. The keyword must start a command:
+# at the start, or after `;`, `&&`, `||`, `|`, `&`, `(`, `{`, `then`, `do` or a
+# new line. Then the words `do`, `sleep` and `done` must follow, in order.
+# The text of an `eval` (the Bash tool wraps each command in one) is read once
+# more, unquoted. Each step is linear. A chain of lazy `.*?` once took 74 s on
+# a 13 KB heredoc. The text is cut to LOOP_CAP first.
 LOOP_CAP = 4096
+_SHELL_C_RE = re.compile(r"\S+((?:[ \t]+-[A-Za-z]+)*)[ \t]+")
+_OPS = ";&|()"
+# After one of these words, the next word starts a command again.
+_KEEP_START = {"then", "do", "else", "elif", "{", "!", "time", "while", "until", "if"}
+_HEREDOC_DELIM_RE = re.compile(r"[ \t]*((?:'[^']*'|\"[^\"]*\"|\\.|[^\s;&|()<>'\"\\])+)")
 # command_label masks secrets in this much text only. Its label is 100 characters.
 LABEL_CAP = 1000
 PYTEST_NAMES = {"pytest", "py.test"}
@@ -189,22 +195,172 @@ def is_claude_session(cmd: str) -> bool:
     return is_claude(cmd) and not (len(argv) > 1 and argv[1] in CLAUDE_INFRA)
 
 
+def _skip_heredocs(text: str, i: int, pending: list[tuple[str, bool]]) -> int:
+    """Skip each heredoc body from `i`, up to its delimiter line. Return the new index."""
+    n = len(text)
+    for delim, tabs in pending:
+        while i < n:
+            j = text.find("\n", i)
+            line = text[i:] if j < 0 else text[i:j]
+            i = n if j < 0 else j + 1
+            if (line.lstrip("\t") if tabs else line) == delim:
+                break
+    pending.clear()
+    return i
+
+
+def _read_quoted(text: str, i: int, buf: list[str]) -> int:
+    """Read the quoted text at `i` into `buf`. Return the index after the close quote."""
+    n = len(text)
+    if text[i] == "'":
+        j = text.find("'", i + 1)
+        j = n if j < 0 else j
+        buf.append(text[i + 1:j])
+        return j + 1
+    i += 1
+    while i < n and text[i] != '"':
+        if text[i] == "\\" and i + 1 < n and text[i + 1] in '"\\$`':
+            i += 1
+        buf.append(text[i])
+        i += 1
+    return i + 1
+
+
+def _read_redirect(text: str, i: int, out: list, pending: list[tuple[str, bool]], last_nl: int) -> int:
+    """Read the redirect at `i`. Return the new index, or -1 when the rest is a heredoc body."""
+    n = len(text)
+    if text.startswith("<<<", i):
+        out.append(("redir", "<<<", False))
+        return i + 3
+    if text.startswith("<<", i):
+        i += 2
+        tabs = i < n and text[i] == "-"
+        i += tabs
+        m = _HEREDOC_DELIM_RE.match(text, i)
+        if m is None or m.end() > last_nl:
+            return -1  # no body end can follow: the rest is data
+        pending.append((re.sub(r"['\"\\]", "", m.group(1)), tabs))
+        out.append(("redir", "<<", False))
+        return m.end()
+    j = i + 1
+    while j < n and text[j] in "<>&|":
+        j += 1
+    out.append(("redir", text[i:j], False))
+    return j
+
+
+def _shell_words(text: str) -> list[tuple[str, str, bool]]:
+    """Split shell text into ("word" | "op" | "redir", value, quoted), in one pass.
+
+    Quotes are removed, and a quoted word has quoted=True. A heredoc body and
+    a comment are left out. `ps` shows a new line as a space, so a heredoc
+    with no new line after it hides the rest of the text: the reaper cannot
+    tell where the body ends, and it keeps the process.
+    """
+    out: list[tuple[str, str, bool]] = []
+    n, i = len(text), 0
+    last_nl = text.rfind("\n")
+    buf: list[str] = []
+    quoted = in_word = False
+    pending: list[tuple[str, bool]] = []  # heredoc (delimiter, strip tabs)
+
+    def end_word() -> None:
+        nonlocal buf, quoted, in_word
+        if in_word:
+            out.append(("word", "".join(buf), quoted))
+        buf, quoted, in_word = [], False, False
+
+    while i < n:
+        ch = text[i]
+        if ch in " \t\n":
+            end_word()
+            i += 1
+            if ch == "\n":
+                out.append(("op", "\n", False))
+                i = _skip_heredocs(text, i, pending)
+        elif ch == "#" and not in_word:
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif ch in "'\"":
+            quoted = in_word = True
+            i = _read_quoted(text, i, buf)
+        elif ch == "\\":
+            if i + 1 < n and text[i + 1] != "\n":
+                buf.append(text[i + 1])
+                in_word = True
+            i += 2
+        elif ch in _OPS:
+            end_word()
+            j = i + 1
+            while ch not in "()" and j < n and text[j] in ";&|":
+                j += 1
+            out.append(("op", text[i:j], False))
+            i = j
+        elif ch in "<>":
+            end_word()
+            i = _read_redirect(text, i, out, pending, last_nl)
+            if i < 0:
+                return out
+        else:
+            buf.append(ch)
+            in_word = True
+            i += 1
+    end_word()
+    return out
+
+
+def _runs_loop(text: str, depth: int = 0) -> bool:
+    """True when the shell text runs `until`/`while` ... `do` ... `sleep` ... `done`.
+
+    Only the first loop keyword counts. When it has no `do`, `sleep` and
+    `done` after it, no later keyword has them either. The words of an
+    `eval` are read once more, as shell text.
+    """
+    toks = _shell_words(text)
+    start, phase, need = True, 0, ("do", "sleep", "done")
+    i = 0
+    while i < len(toks):
+        kind, val, q = toks[i]
+        if kind == "op":
+            start = True
+        elif kind == "redir":
+            if val != "<<":
+                i += 1  # its target word
+        else:
+            if phase and not q and val == need[phase - 1]:
+                phase += 1
+                if phase > len(need):
+                    return True
+            if start and not q and not phase and val in ("until", "while"):
+                phase = 1
+            elif start and not q and val == "eval" and depth == 0:
+                j = i + 1
+                while j < len(toks) and toks[j][0] == "word":
+                    j += 1
+                if _runs_loop(" ".join(t[1] for t in toks[i + 1:j]), depth + 1):
+                    return True
+                i = j
+                start = False
+                continue
+            start = start and not q and val in _KEEP_START
+        i += 1
+    return False
+
+
+@functools.lru_cache(maxsize=4096)
 def is_wait_loop(cmd: str) -> bool:
-    """A shell whose command is an `until`/`while` loop with `sleep` in it."""
+    """A shell that runs an `until`/`while` loop with `sleep` in it.
+
+    The script is the text after `-c`. Quoted text, a heredoc body and a
+    comment are data, so a loop inside them does not count.
+    """
     if _argv0(cmd) not in SHELLS:
         return False
     text = cmd[:LOOP_CAP]
-    m = LOOP_START_RE.search(text)
-    if m is None:
+    m = _SHELL_C_RE.match(text)
+    if m is None or not any(f[1:2] != "-" and "c" in f for f in m.group(1).split()):
         return False
-    # `.+?` of the old form: at least one character between the keyword and `do`.
-    pos = m.end() + 1
-    for tok in LOOP_TOKENS:
-        found = tok.search(text, pos)
-        if found is None:
-            return False
-        pos = found.end()
-    return True
+    return _runs_loop(text[m.end():])
 
 
 def is_pytest(cmd: str) -> bool:
@@ -223,8 +379,17 @@ def is_pytest(cmd: str) -> bool:
 
 
 SECRET_PATTERNS = [
+    # A header value: `Authorization: token x`, `Authorization: Bearer x`, `X-Api-Key: x`, `X-Auth-Token: x`.
+    (re.compile(r"\b(Authorization:\s*)(?:(Bearer|token|Basic)\s+)?[^\s'\"]+", re.I),
+     lambda m: f"{m.group(1)}{m.group(2) + ' ' if m.group(2) else ''}***"),
+    (re.compile(r"(?<![\w-])([A-Za-z0-9-]+-(?:Key|Token|Secret)):\s*[^\s'\"]+", re.I), r"\1: ***"),
+    # GitHub and Slack tokens.
+    (re.compile(r"\b(gh[opsu]_|github_pat_)\w{20,}"), r"\1***"),
+    (re.compile(r"\b(xox[abprs]-)[\w-]+"), r"\1***"),
+    # `curl -u user:pass`, `--user user:pass`: the password goes.
+    (re.compile(r"(?<!\S)(-u|--user)(\s+|=)(['\"]?)([^\s:'\"]+):[^\s'\"]+"), r"\1\2\3\4:***"),
     (re.compile(r"\b(\w*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD)\w*)=(\"[^\"]*\"|'[^']*'|\S+)", re.I), r"\1=***"),
-    (re.compile(r"\bBearer\s+\S+", re.I), "Bearer ***"),
+    (re.compile(r"\bBearer\s+[^\s'\"]+", re.I), "Bearer ***"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{6,}"), "sk-***"),
     (re.compile(r"(://[^\s:/@]+):[^\s@/]+@"), r"\1:***@"),
     # A secret as the next word of a known long flag: `--token abc`, `--api-key abc`.
@@ -274,20 +439,28 @@ def _ancestors(by_pid: dict[int, Proc], pid: int) -> list[Proc] | None:
 def _has_young_process(root: int, kids: dict[int, list[Proc]], young_s: float) -> bool:
     """True when a process under `root` is younger than `young_s`.
 
-    The walk does not go under a wait loop. Its `sleep` child is always young,
-    so it says nothing about the session.
+    The walk skips only the `sleep` child of a true wait loop. That child is
+    always young, so it says nothing about the session. The walk goes under
+    every other process, and a shell that only holds loop text as data is no
+    loop. So its young children count.
     """
     stack = [root]
     seen = {root}
+    by_pid: dict[int, Proc] = {}
     while stack:
-        for c in kids.get(stack.pop(), []):
+        pid = stack.pop()
+        parent = by_pid.get(pid)
+        in_loop = parent is not None and is_wait_loop(parent.cmd)
+        for c in kids.get(pid, []):
             if c.pid in seen:
                 continue
             seen.add(c.pid)
+            if in_loop and _argv0(c.cmd) == "sleep":
+                continue
             if c.age < young_s:
                 return True
-            if not is_wait_loop(c.cmd):
-                stack.append(c.pid)
+            by_pid[c.pid] = c
+            stack.append(c.pid)
     return False
 
 
@@ -377,7 +550,9 @@ def _orphan_state(env: Env, p: Proc, chain: list[Proc], limit_s: float, limits: 
         return "unknown", "orphan, no CLAUDE_PID, under twice its limit"
     for s in sessions:
         info = env.sessions.get(s.pid)
-        if info is None or info.idle_s is None or info.idle_s < limit_s or _has_young_process(s.pid, kids, limit_s):
+        # A busy session (its status is not "idle") is not quiet, however old its transcript.
+        if (info is None or info.idle_s is None or info.busy or info.idle_s < limit_s
+                or _has_young_process(s.pid, kids, limit_s)):
             return "unknown", f"orphan, no CLAUDE_PID, session {s.pid} is not quiet"
     return "ended", "orphan, no CLAUDE_PID, over twice its limit, no session works"
 
