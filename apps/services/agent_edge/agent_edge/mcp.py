@@ -573,6 +573,14 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
             params.get("arguments"))
     except tools.GatewayUnauthorized:
         return challenge_401(sent=True)
+    # MCP-G10: a refusal that names a wait also sends `Retry-After`, where the
+    # transport allows it. The answer stays HTTP 200 with `isError: true`.
+    wait = None
+    if result.get("isError"):
+        wait = (result.get("structuredContent") or {}).get("retry_after")
+    if isinstance(wait, int):
+        return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result},
+                            headers={"Retry-After": str(wait)})
     return _result(request_id, result)
 
 
