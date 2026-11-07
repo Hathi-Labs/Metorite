@@ -53,6 +53,9 @@ from sqlalchemy import text
 #: retired image counts, because it stays stored and served (D-EM-67).
 ORG_CAP = 100
 MEMBER_CAP = 20
+#: The embedded ``data:`` images that one settings save hosts. Each one runs
+#: the child, so a save with more is refused before any decode (fix round 3).
+MAX_DATA_IMAGES = 5
 
 #: The route template of the public image, as FastAPI registers it. The same
 #: string is in ``main.PUBLIC_ROUTES`` and in the email router's ``exempt``.
@@ -190,11 +193,7 @@ async def _store_in(
         content_type, width, height = same.content_type, same.width, same.height
         kind = same.kind
     else:
-        counts = (await db.execute(text(_COUNT_SQL), {"me": member})).fetchone()
-        if int(getattr(counts, "org_count", 0) or 0) >= ORG_CAP:
-            raise HTTPException(status_code=409, detail=_ORG_FULL)
-        if int(getattr(counts, "mine", 0) or 0) >= MEMBER_CAP:
-            raise HTTPException(status_code=409, detail=_MEMBER_FULL)
+        _refuse_full((await db.execute(text(_COUNT_SQL), {"me": member})).fetchone())
         token = secrets.token_urlsafe(32)
         row = (await db.execute(text(_INSERT_SQL), {
             "me": member, "kind": kind, "ct": encoded.content_type,
@@ -217,6 +216,14 @@ async def _store_in(
 
 def _refusal(exc: signature_image.SignatureImageError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=str(exc))
+
+
+def _refuse_full(counts: Any) -> None:
+    """The one cap rule: 409 when the org or the member holds the cap."""
+    if int(getattr(counts, "org_count", 0) or 0) >= ORG_CAP:
+        raise HTTPException(status_code=409, detail=_ORG_FULL)
+    if int(getattr(counts, "mine", 0) or 0) >= MEMBER_CAP:
+        raise HTTPException(status_code=409, detail=_MEMBER_FULL)
 
 
 @router.post("/signature/images")
@@ -329,13 +336,24 @@ async def host_data_images(sources: list[str], *, member: str) -> dict[str, str]
 
     All or none (fix round 1, P3): every source is decoded and re-encoded
     first, with no session open. Then ONE transaction, under the lock of the
-    org, writes every row. A refusal at any step, a cap too, writes no row."""
+    org, writes every row. A refusal at any step, a cap too, writes no row.
+
+    Bounded (fix round 3): a save with more than :data:`MAX_DATA_IMAGES`
+    images is refused, and an org or a member at its cap is refused, both
+    before any child runs. The transaction checks the caps again."""
     if not sources:
         return {}
     base = public_base_url()
     if base is None:
         raise _no_base(
             "Your signature holds an embedded image, and this server cannot host it. ")
+    if len(sources) > MAX_DATA_IMAGES:
+        raise HTTPException(status_code=422, detail=(
+            f"Your signature holds {len(sources)} embedded images. A signature can "
+            f"hold at most {MAX_DATA_IMAGES}. Remove some, then save again."))
+    async with _tenant_session() as db:
+        _refuse_full((await db.execute(
+            text(_COUNT_SQL), {"me": (member or "").strip().lower()})).fetchone())
     encoded_all: list[tuple[str, signature_image.Encoded]] = []
     for src in sources:
         data = _decode_data_image(src)

@@ -931,3 +931,38 @@ def test_the_child_turns_the_mupdf_prints_off() -> None:
     source = inspect.getsource(worker._preload)
     assert "mupdf_display_errors(False)" in source
     assert "mupdf_display_warnings(False)" in source
+
+
+async def test_a_save_with_more_than_5_data_images_is_refused_before_any_child(
+    monkeypatch, base_url, stored_legacy, no_child,
+):
+    """Fix round 3, P3: each data: image runs the child, so a save holds at
+    most 5. The sixth refuses the save in plain words, before any decode."""
+    srcs = [
+        "data:image/png;base64," + base64.b64encode(_png(10 + i, 10)).decode("ascii")
+        for i in range(6)
+    ]
+    with pytest.raises(HTTPException) as caught:
+        await routes.signature_for_save(
+            _ACCOUNT, _ME, "<p>Jane</p>" + "".join(f'<img src="{s}">' for s in srcs))
+    assert caught.value.status_code == 422
+    assert caught.value.detail == (
+        "Your signature holds 6 embedded images. A signature can hold at most 5. "
+        "Remove some, then save again.")
+    assert no_child == [] and stored_legacy == []
+
+
+async def test_a_member_at_the_cap_is_refused_before_any_child(
+    monkeypatch, base_url, no_child,
+):
+    """Fix round 3, P3: the caps are read before the first decode."""
+    @asynccontextmanager
+    async def _session(org=None):
+        yield _FakeDb(org_count=routes.MEMBER_CAP, mine=routes.MEMBER_CAP)
+
+    monkeypatch.setattr(routes, "_tenant_session", _session)
+    with pytest.raises(HTTPException) as caught:
+        await routes.host_data_images([_LEGACY_SRC], member="Jane@Acme.Example")
+    assert caught.value.status_code == 409
+    assert caught.value.detail.startswith("You have uploaded 20 signature images")
+    assert no_child == []
