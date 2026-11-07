@@ -8,6 +8,21 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
+**PZ-39 BUILT 2026-11-06, in the working tree, not merged** (task 1823). One
+greeting table (`acb_common.today.GREETING_TABLE`) is mirrored in `myDay.ts`.
+Fence: `tests/unit/test_greeting_table.py`. The part-of-day line uses the zone
+of the "now" line. The late hours say "Hello", never "Good night".
+
+The chat greets in the first reply and after a gap of 4 hours or more
+(`today.GREET_GAP_HOURS`). The gap comes from the server time `created_at` of the stored `chat_message`
+rows. A regenerate never greets.
+
+The `brief` and `warm` greetings follow the greeting rule of the part-of-day
+line. A run with no decision (WhatsApp, delegated, batch, group) keeps the old
+rule: the first reply of the conversation only. So §5.1 and D-PZ-6 below read
+"first reply of a chat" as that rule. The buddy
+hello opens with the greeting for the member's time of day.
+
 **PZ-35 BUILT 2026-11-01, dark** (task 1133). The switch `apps.chat.summaries`,
 the three routes, the section "Recent chats", the relays, Forget, removal,
 export and the staging blank are in. The section shows only with

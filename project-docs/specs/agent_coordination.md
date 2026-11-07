@@ -1179,6 +1179,19 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Fence.** `test_mcp_edge_claim.py` (`ci14a` tests, including the real database), `test_mcp_edge_agent_runs.py`, `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. No migration: the column exists since the table.
 
+#### CIV-14f · An answer watcher on the home box (Metorite task 1731, G2b)
+
+- **Scope.** A systemd user timer on `metorite-home` runs `scripts/home_server/answer_watcher.py` every 2 minutes. The script calls `list_agent_runs` with `needs_agent` true. For each run that needs an agent, it starts ONE fresh headless session in a new worktree `wt-answer-<run id 8>-<wake 6>`, with the run id in the prompt. The owner chose a fresh session for each run (task 1731, 2026-11-06). The watcher never wakes an old session, because no tool can reach a session that ended its turn.
+- **Which runs.** The list already holds only runs that wait for an agent. The state is not a filter, because an answered run reads `stale` five minutes after its answer, and the edge wire carries no reason. The watcher skips a run that is `stopping`, a `stranded` run (a nudge, not an answer), a run with a bad id, and a run with activity in the last 2 minutes, so a live session of the owner acts first. **The vet:** before a start it reads the run, and starts only when the newest person prompt is by the member of the run. A prompt by another member starts nothing.
+- **One session for one wake.** A wake is a run id plus its `last_activity_at`. An attempt file with `O_CREAT | O_EXCL` per wake means a second tick starts nothing. A new answer changes the stamp, so it is a new wake. A wake that no session took up is tried again after 2 hours, at most 3 times.
+- **Each session is a transient unit.** The watcher runs as a `oneshot` unit, and systemd kills what stays in its cgroup. So each session starts with `systemd-run --user --collect --unit=answer-<slug>`. The live count is the number of running `answer-*` units, and the cap is 2. It starts nothing when less than 5000 MB is free (lane rule 11). A sweep removes a `wt-answer-*` worktree that holds no change and no commit, after 24 hours, and only when no session runs.
+- **The credential (decided by the owner, 2026-11-06, task 1731).** The watcher has its own read-only token: a box token (D-EA-5, `external_agent_access.md` §10.9) with the scope `projects:read` only. The owner makes it in Integrations, AI agents once EA-19c and EA-19d merge. The owner drops it in `~/.config/metorite/watcher.env` (mode 0600) through the secrets drop (`docs/secrets_drop.md`). The script reads it from the environment and never prints it, and no child gets it. A session that the watcher starts uses the login of its own lane. The default session command allows the Metorite tools only (`--allowedTools mcp__metorite__*`), and `WATCHER_CLAUDE_CMD` overrides it.
+- **A known gap: other clients.** `list_agent_runs` lists the runs of every client of the member. The watcher cannot tell a run of the owner's PC from a run of the box, so the 2-minute quiet window is its only guard. A session that cannot claim the run (another connection holds it) ends with `release_task`.
+- **OPEN, the answer rule (owner, task 1731).** The platform says a session acts on an answer only when `yours` is true and it asked the question itself. A fresh session did not ask. So the session the watcher starts reads the run and, under today's rule, must not act on the answer. The question is on the task.
+- **Status.** BUILT 2026-11-06, dark, not merged (Metorite task 1731). `answer_watcher.sh install` copies the script and the units and enables nothing. `enable` refuses a token file that is not mode 0600. Enabling the timer is OWNER-GATE (`deploy`). Two Opus readers reviewed the first draft. They found the oneshot kill, the lost `stale` answers, a second answer that never started, a lock cap that did not cap, and the answer rule above. The text and the code now fix all but the last.
+- **Fence.** `uv run pytest tests/unit/test_answer_watcher.py`, with a fake `list_agent_runs`, a fake starter and a fake live count. It covers one start for one wake, a new answer, a `stale` run, the skips, the live cap, the vet, the retries, a failed read, the transient unit, the token never in a child, and the sweep.
+- **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. OWNER-GATE to enable the timer (`deploy`) and to mint the token.
+
 ### 5.9 P8 — deferred, the owner decides
 
 | Slice | What | Waits on | Gate |
@@ -1327,6 +1340,7 @@ They keep their own gates.
 - **Done when.** A client that ignores instructions and prompts still reads the block in the claim result.
 - **Fence.** `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`. The 3500-character budget fence belongs to task 1803.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** Task 1803 (no spec).
+- **As built (2026-11-07).** `tools.PROTOCOL_LINES` holds five lines. The key `protocol` is optional in the output schema of both tools. It shows only while the runs flag is on, because each line names a run tool, and only for an organization on `agent_protocol_orgs` (`agent_oauth.protocol_allowed`). The park-on-CI line waits for SW-60. Fence: `test_mcp_edge_context.py` `TestTheProtocolBlock` and `test_mcp_edge_claim.py` `TestTheClaimProtocolBlock`.
 
 #### SW-57 · The evidence of a pull request is a GitHub check
 

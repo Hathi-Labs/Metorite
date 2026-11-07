@@ -1,7 +1,7 @@
 """CRM · stage_metadata — repairing the pipeline from Zoho's own settings.
 
 Spec: ``project-docs/specs/crm_app.md`` §5.1 (system 1) · ticket WS-26f
-f1 + f4 · decisions D-CRM-10 (probability) and D-CRM-11 (one pipeline).
+f1 + f4 · decisions D-CRM-10 (probability) and D-CRM-11 (one Zoho pipeline per repair).
 
     POST /crm/import/zoho/stages            → dry run: the full report, no writes
     POST /crm/import/zoho/stages?apply=true → the same report, applied
@@ -617,7 +617,7 @@ async def import_zoho_stages(
             layout_name=_text_of(meta.layout.get("name")) or None,
             pipelines=names,
             stop_reason=(
-                f"This layout has {len(names)} pipelines. The native CRM models "
+                f"This layout has {len(names)} pipelines. The stage repair works on "
                 "one pipeline (D-CRM-11) and a name-match repair against the "
                 "wrong one would scramble the board — nothing was written. "
                 "Adding a second pipeline is an owner decision, not a repair."
