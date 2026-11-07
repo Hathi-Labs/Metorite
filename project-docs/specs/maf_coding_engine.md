@@ -5973,9 +5973,11 @@ acceptance, fence and risk tier. The risk follows the item.
      It never adds a loop.
   3. AI Studio (D127) streams the same CA-8 events into its own pane. It shows
      the same CA-9 approval cards.
-  4. A Studio object that the harness builds (a tool, a workflow or an app)
-     is saved through the SBX registry, with the versions and the org-sharing
-     approval of D130.3. It is not saved as a file in the workspace.
+  4. (D187) The SBX registry is the Studio package store. A Studio object
+     that the harness builds (a tool, a workflow or an app) is a package. A
+     tool version is an `app_versions` row, and a holder of `studio:publish`
+     approves a share (`agent_sandbox.md` §7, §8). It is not saved as a file
+     in the workspace.
   5. The STU-0 spec (WS-STU, epic 491) and `agent_sandbox.md` §6 cite this
      harness. They do not describe a runner of their own.
 - **Acceptance.** On staging, the Studio tool builder and `code_task` both run
