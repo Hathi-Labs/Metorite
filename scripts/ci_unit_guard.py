@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -228,21 +229,44 @@ def durations(junit_dir: Path) -> dict[str, float]:
     return dict(sorted(out.items()))
 
 
-# CIV-17. How many unit shards a selection needs. A tier is (the most test
-# files it takes, the shards it gets). A larger selection, and a full run,
-# take ALL_SHARDS. The limits are a first guess, not a measurement: pr-check
-# prints the count in each run, so re-pick them from the next 10 PRs.
+# CIV-17. How many unit shards a selection needs. CIV-17b (2026-11-07) counts
+# measured SECONDS, not files: a Python PR selected 400 to 500 files, so a file
+# count gave 6 shards for every one of them, and the tiers never applied. The
+# seconds come from `.test_durations`, the file that pytest-split uses to cut
+# the shards. A file with no timing counts DEFAULT_FILE_S. Without the timing
+# file, the old tiers by file count apply, so `changes` and the shards still
+# agree on the count.
 ALL_SHARDS = 6
 SHARD_TIERS = ((40, 1), (120, 3))
+SHARD_TARGET_S = 600
+DEFAULT_FILE_S = 10.0
+DURATIONS_PATH = Path(".test_durations")
 
 
-def shard_count(mode: str, paths: list[str]) -> int:
+def file_seconds(path: Path | None = None) -> dict[str, float] | None:
+    """Seconds of each test file, summed over its tests. None when unreadable."""
+    path = path or DURATIONS_PATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        out: dict[str, float] = {}
+        for node, secs in data.items():
+            out[node.split("::", 1)[0]] = out.get(node.split("::", 1)[0], 0.0) + float(secs)
+        return out or None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def shard_count(mode: str, paths: list[str], seconds: dict[str, float] | None = None) -> int:
     """The shards that ``mode`` (from ``select_shard``) needs: 0 for an empty
-    selection, ALL_SHARDS for a full run or a large selection."""
+    selection, ALL_SHARDS for a full run. A selection takes one shard for each
+    SHARD_TARGET_S of measured time, at most ALL_SHARDS."""
     if mode == "empty":
         return 0
     if mode != "selection":
         return ALL_SHARDS
+    if seconds:
+        total = sum(seconds.get(p, DEFAULT_FILE_S) for p in paths)
+        return max(1, min(ALL_SHARDS, math.ceil(total / SHARD_TARGET_S)))
     for limit, shards in SHARD_TIERS:
         if len(paths) <= limit:
             return shards
@@ -264,7 +288,7 @@ def gate_output(gate_json: Path, ignored: str = "") -> list[str]:
     full = lines[0].partition("=")[2]
     files = lines[1].partition("=")[2]
     mode, paths = select_shard(full, files, ignored, "success")
-    return [*lines, f"shards={shard_list(shard_count(mode, paths))}"]
+    return [*lines, f"shards={shard_list(shard_count(mode, paths, file_seconds()))}"]
 
 
 def _gate_lines(gate_json: Path) -> list[str]:
@@ -370,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         mode, paths = select_shard(args.full, args.files, args.ignored, args.changes_result)
         print(f"mode={mode}")
         print(f"paths={' '.join(paths)}")
-        print(f"splits={shard_count(mode, paths) or ALL_SHARDS}")
+        print(f"splits={shard_count(mode, paths, file_seconds()) or ALL_SHARDS}")
         return 0
     if args.cmd == "empty-report":
         print("wrote an empty report" if empty_report(args.out) else "report exists")
