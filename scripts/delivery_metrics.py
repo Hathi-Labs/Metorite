@@ -215,7 +215,7 @@ def collect(gh, days=7, max_runs=200, now=None, durations=None):
     trunc: list[str] = []
     pr_runs = None
     try:
-        pr_runs = _finished(_fetch_runs(gh, PR_WORKFLOW, "", since, max_runs, trunc=trunc))
+        pr_runs = _finished(_fetch_runs(gh, PR_WORKFLOW, "&event=pull_request", since, max_runs, trunc=trunc))
     except Exception as e:
         errors.append(f"pr_check runs: {e}")
     jobs = {}
@@ -227,7 +227,7 @@ def collect(gh, days=7, max_runs=200, now=None, durations=None):
         live = []
         for st in ("queued", "in_progress"):
             try:
-                live += _fetch_runs(gh, PR_WORKFLOW, "", since, LIVE_RUNS, status=st)[:LIVE_RUNS]
+                live += _fetch_runs(gh, PR_WORKFLOW, "&event=pull_request", since, LIVE_RUNS, status=st)[:LIVE_RUNS]
             except Exception as e:
                 errors.append(f"queue_wait {st} runs: {e}")
         live_jobs = _jobs(gh, [r for r in live if r["id"] not in jobs], errors)

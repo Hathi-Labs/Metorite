@@ -22,11 +22,13 @@ trap cleanup EXIT
 git -C "$REPO_DIR" worktree add --quiet --detach "$WORK" origin/main
 cd "$WORK"
 
+# A path with two slashes is an absolute path in a permission rule. One slash
+# is relative to the project root. OWNER: confirm with one dry run.
 # No --permission-mode: a headless session cannot answer a prompt, so any tool
 # outside the list below is denied. The session writes no file.
 claude -p "/delivery-review" --allowedTools \
   "Bash(python3 scripts/delivery_metrics.py --days 7 --out /tmp/delivery_now.json)" \
   "Bash(python3 scripts/delivery_metrics.py --days 7 --compare /tmp/delivery_prev.json --out /tmp/delivery_now.json)" \
-  "Read(/tmp/delivery_now.json)" "Read(/tmp/delivery_prev.json)" "Write(/tmp/delivery_prev.json)" \
+  "Read(//tmp/delivery_now.json)" "Read(//tmp/delivery_prev.json)" "Write(//tmp/delivery_prev.json)" \
   "mcp__metorite__search_tasks" "mcp__metorite__list_tasks" "mcp__metorite__get_task" \
-  "mcp__metorite__get_project" "mcp__metorite__list_agent_runs" "mcp__metorite__create_task"
+  "mcp__metorite__get_project" "mcp__metorite__list_agent_runs" "mcp__metorite__create_task" "mcp__metorite__add_comment"

@@ -1,6 +1,6 @@
 ---
 description: Weekly delivery review (CIV-10). Measure CI and the workflow, post one report task, and open one fix task for each item over its threshold.
-argument-hint: "[days, default 7]"
+argument-hint: ""
 ---
 
 # /delivery-review — the weekly check on delivery speed
