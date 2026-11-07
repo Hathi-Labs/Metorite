@@ -31,7 +31,11 @@ Mutations this file catches (R7):
 * the route takes an org or a member from the query -> ``TestTheRouteTakesNoTenant``;
 * a source module imports a session opener -> ``TestNoDataPathOfItsOwn``;
 * knowledge leaves ``BAR_APPS``, or artifacts or whatsapp joins it -> ``TestTheRegistry``;
-* the knowledge source drops its kill switch -> ``TestTheKnowledgeSwitch``.
+* the knowledge source drops its kill switch -> ``TestTheKnowledgeSwitch``;
+* a source loses its read by id, or ``open`` skips the feature or the app's
+  switch, or calls a read that is not the app's own -> ``TestTheOpen``
+  (WS-KG KG-6, ``knowledge_graph.md`` §6);
+* a module of ``retrieval/`` holds SQL text -> ``TestNoDataPathOfItsOwn``.
 """
 
 from __future__ import annotations
@@ -402,6 +406,27 @@ class TestNoDataPathOfItsOwn:
                     found.append(f"{path.name}:{node.lineno} imports {name}")
         assert found == []
 
+    def test_no_module_holds_sql_text(self):
+        """KG-6: the edge read lives in ``kb_entities/graph.py``. A string of
+        ``retrieval/`` that reads a table is SQL, and SQL does not live here."""
+        import re
+
+        sql = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE)\b[\s\S]*\b(FROM|INTO|SET)\b"
+                         r"|\bkb_links\b")
+        found = []
+        for path in sorted(RETRIEVAL.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            docs = {id(n.body[0].value) for n in ast.walk(tree)
+                    if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                                      ast.ClassDef))
+                    and n.body and isinstance(n.body[0], ast.Expr)
+                    and isinstance(n.body[0].value, ast.Constant)}
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and id(node) not in docs and sql.search(node.value)):
+                    found.append(f"{path.name}:{node.lineno}")
+        assert found == []
+
 
 # ── No tenant from input ────────────────────────────────────────────────────
 
@@ -635,3 +660,182 @@ class TestMeaningIsTheConsumers:
         items = asyncio.run(provider(member("knowledge"), "refund"))
         assert items, "non-vacuity: the provider ran"
         assert self._hybrid(apps) == [False]
+
+
+# ── The read by id (WS-KG KG-6) ─────────────────────────────────────────────
+
+#: source key → the node kinds of the graph that it opens (§3.1, §6).
+KINDS = {
+    "tasks": ("task",),
+    "email": ("email",),
+    "people": ("person",),
+    "crm": ("lead", "deal", "contact", "company"),
+    "artifacts": ("artifact",),
+    "whatsapp": ("whatsapp",),
+    "knowledge": ("page",),
+}
+
+ID = "00000000-0000-4000-8000-000000000001"
+
+
+class Opens:
+    """Stand-ins for the app reads by id. They record who called."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object, tuple]] = []
+        self.fail: dict[str, BaseException] = {}
+
+    def _note(self, name: str, user: object, *args: object) -> None:
+        self.calls.append((name, user, args))
+        if name in self.fail:
+            raise self.fail[name]
+
+    def called(self) -> list[str]:
+        return [name for name, _, _ in self.calls]
+
+    async def tasks(self, user, ids):
+        self._note("tasks", user, tuple(ids))
+        return [{"id": i, "title": "T", "project_name": "P", "due_at": None,
+                 "updated_at": "2026-10-01T00:00:00+00:00"} for i in ids]
+
+    async def email(self, req, user):
+        self._note("email", user, tuple(req.ids))
+        return {"summaries": [{"id": i, "subject": "S", "from": "Priya",
+                               "received_at": "2026-10-01T00:00:00+00:00"} for i in req.ids]}
+
+    async def people(self, user, ids):
+        self._note("people", user, tuple(ids))
+        return [{"id": i, "name": "Priya", "title": "Lead"} for i in ids]
+
+    async def crm(self, user, kind, ids):
+        self._note("crm", user, kind, tuple(ids))
+        return [{"id": i, "name": "Acme"} for i in ids]
+
+    async def crm_access(self, user):
+        self._note("crm_access", user)
+
+    async def artifacts(self, ids, email):
+        self._note("artifacts", email, tuple(ids))
+        return [{"id": i, "title": "Deck", "kind": "pdf"} for i in ids]
+
+    async def whatsapp(self, user, ids):
+        self._note("whatsapp", user, tuple(ids))
+        return [{"id": i, "chat_name": "Acme", "sender_name": "Ravi"} for i in ids]
+
+    async def knowledge(self, user, ids):
+        self._note("knowledge", user, tuple(ids))
+        return [{"page_id": i, "title": "Policy", "space_name": "Company"} for i in ids]
+
+
+@pytest.fixture()
+def opens(monkeypatch) -> Opens:
+    import acb_memory.artifacts as registry
+    import gateway.routes.email.transport.messages as email_messages
+    import gateway.routes.knowledge.search as kb_search
+    import gateway.routes.people.directory as directory
+    import gateway.routes.projects.search as projects_search
+    import gateway.routes.whatsapp.transport.messages as wa_messages
+    from acb_common import get_settings
+    from gateway.routes.crm import access, records
+
+    f = Opens()
+    monkeypatch.setattr(projects_search, "open_tasks", f.tasks)
+    monkeypatch.setattr(email_messages, "message_summaries", f.email)
+    monkeypatch.setattr(directory, "open_people", f.people)
+    monkeypatch.setattr(records, "open_records", f.crm)
+    monkeypatch.setattr(access, "require_crm_access", f.crm_access)
+    monkeypatch.setattr(registry, "open_artifacts", f.artifacts)
+    monkeypatch.setattr(registry, "enabled", lambda: True)
+    monkeypatch.setattr(wa_messages, "open_messages", f.whatsapp)
+    monkeypatch.setattr(kb_search, "open_pages", f.knowledge)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "crm_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "crm_orgs", ORG, raising=False)
+    monkeypatch.setattr(settings, "knowledge_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "knowledge_orgs", ORG, raising=False)
+    return f
+
+
+def opened(key: str, user: UserContext, ids: list[str] | None = None,
+           kind: str | None = None) -> list[sources.Hit]:
+    return asyncio.run(sources.REGISTRY[key].open(user, ids or [ID], kind=kind))
+
+
+class TestTheOpen:
+    def test_every_source_defines_open_and_its_kinds(self):
+        """The fence of §6: each source of REGISTRY has a read by id."""
+        for key, source in sources.REGISTRY.items():
+            assert source.opener is not None, f"{key} has no read by id"
+            assert source.kinds == KINDS[key]
+            assert callable(source.open)
+
+    def test_each_kind_has_one_source_and_entity_and_meeting_none(self):
+        from gateway.kb_entities.graph import NODE_KINDS
+
+        owned = [k for s in sources.REGISTRY.values() for k in s.kinds]
+        assert len(owned) == len(set(owned))
+        assert set(owned) == set(NODE_KINDS) - {"entity", "meeting"}
+        for kind in ("entity", "meeting", "project", "url"):
+            assert sources.source_of_kind(kind) is None
+
+    @pytest.mark.parametrize("key", list(FEATURES))
+    def test_a_member_without_the_app_opens_nothing_and_calls_nothing(self, opens, key):
+        user = member(*[f for f in ALL if f != FEATURES[key]])
+        assert opened(key, user) == []
+        assert opens.calls == []
+
+    @pytest.mark.parametrize("key", list(FEATURES))
+    def test_a_member_with_the_app_gets_the_apps_own_read(self, opens, key):
+        user = member(FEATURES[key])
+        hits = opened(key, user, kind=KINDS[key][0])
+        assert [(h.app, h.kind, h.id) for h in hits] == [(key, KINDS[key][0], ID)]
+        assert key in opens.called()
+        # The member of the session goes to the app, never another.
+        for name, who, _ in opens.calls:
+            assert who in (user, user.email), name
+        # An opened record carries no snippet: no query matched it.
+        assert hits[0].snippet == ""
+
+    def test_a_kind_the_source_does_not_open_gives_nothing(self, opens):
+        assert opened("tasks", member(*ALL), kind="deal") == []
+        assert opens.calls == []
+
+    def test_each_crm_kind_goes_to_the_crm_read(self, opens):
+        user = member("crm")
+        for kind in KINDS["crm"]:
+            assert [h.kind for h in opened("crm", user, kind=kind)] == [kind]
+        kinds = [args[0] for name, _, args in opens.calls if name == "crm"]
+        assert kinds == list(KINDS["crm"])
+
+    def test_the_crm_kill_switch_answers_before_the_access_rule(self, opens, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "crm_enabled", False, raising=False)
+        assert opened("crm", member("crm"), kind="deal") == []
+        assert opens.calls == []
+
+    def test_the_crm_access_rule_runs_before_the_read(self, opens):
+        opens.fail["crm_access"] = HTTPException(status_code=403, detail="no access")
+        with pytest.raises(HTTPException):
+            opened("crm", member("crm"), kind="deal")
+        assert opens.called() == ["crm_access"]
+
+    def test_with_the_artifact_registry_off_nothing_opens(self, opens, monkeypatch):
+        import acb_memory.artifacts as registry
+
+        monkeypatch.setattr(registry, "enabled", lambda: False)
+        assert opened("artifacts", member("artifacts")) == []
+        assert opens.calls == []
+
+    def test_an_org_off_the_knowledge_list_opens_no_page(self, opens):
+        assert opened("knowledge", member("knowledge", org=OTHER_ORG)) == []
+        assert opens.calls == []
+
+    def test_the_email_read_is_the_owner_scope_of_the_app(self):
+        """The email source opens through ``message_summaries``, the app's
+        read by mail id. It keeps the owner scope at the read level (D-EM-30)."""
+        from gateway.routes.email.transport import messages
+
+        src = inspect.getsource(messages.message_summaries)
+        assert 'mailbox_predicate("ea", uid="user_id", level="read")' in src
+        assert "message_summaries" in inspect.getsource(sources._open_email)

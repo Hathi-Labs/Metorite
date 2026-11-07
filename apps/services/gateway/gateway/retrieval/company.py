@@ -56,6 +56,20 @@ settings, so a change of the env file needs a restart. With it on:
 With it off, the route does not read ``after`` at all, not even its
 length, and the answer is the one of KR-1, byte for byte.
 
+**The neighbours, behind ``GRAPH_SEARCH_ORGS``** (WS-KG KG-6,
+``knowledge_graph.md`` §5, §6 and §7). For an org that the flag names, the
+route reads the edges of the first :data:`GRAPH_HITS` hits after the
+fusion, in both directions, through ``gateway/kb_entities/graph.py``. Each
+source then opens its own kind by id, as the member, in one call. An id that
+the app does not return is the same as no edge, and it leaves no trace. A
+record that is already a hit is left out, each hit keeps at most
+:data:`PER_HIT`, and the items go in order until :data:`NEIGHBOUR_TOKENS`
+is spent. The answer gains ``neighbours``. The step gets at most
+:data:`GRAPH_TIMEOUT_S` of the time the sources left. When it runs out or
+fails, the answer has no neighbours and names ``graph`` in ``skipped``.
+Off, the route reads no edge, and the answer is the one before KG-6, byte
+for byte.
+
 **A gap, behind ``KNOWLEDGE_GAPS``** (WS-61 KB-9a, ``knowledge_base.md``
 §8.4 door 3). When Knowledge answered with zero hits, the route hands the
 words to ``routes/knowledge/gaps.schedule_gap``. That function checks the
@@ -77,7 +91,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from gateway.retrieval import turn_vector
-from gateway.retrieval.sources import REGISTRY, Hit, holds
+from gateway.retrieval.sources import REGISTRY, Hit, holds, source_of_kind
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +124,140 @@ TAU_DAYS: dict[str, float] = {
     "artifacts": 180.0,
     "chat": 120.0,
 }
+
+
+#: The hits of the fused list whose neighbours the graph step reads (§5).
+GRAPH_HITS = 5
+#: The most neighbours of one hit (§5 step 5).
+PER_HIT = 3
+#: The budget of the neighbours, in tokens (§7.1). The count is the
+#: characters of the printed lines divided by 4. No tokenizer runs.
+NEIGHBOUR_TOKENS = 1500
+#: The characters of one token, for :data:`NEIGHBOUR_TOKENS`.
+CHARS_PER_TOKEN = 4
+#: The most seconds of the graph step, from what the sources left (§7.3).
+GRAPH_TIMEOUT_S = 1.0
+#: The name of the graph step in ``skipped``.
+GRAPH_SKIP = "graph"
+
+
+def graph_enabled(user: UserContext) -> bool:
+    """True when ``GRAPH_SEARCH_ORGS`` names the member's org (KG-6).
+
+    The org comes from the session's ``UserContext``. The one reader of the
+    flag lives beside the edge read, and this module reads it at call time.
+    """
+    from gateway.kb_entities import graph
+
+    return graph.search_allowed(user.organization_id)
+
+
+def _edge_rank(provenance: str, confidence: float, stamp: str | None,
+               order: int) -> tuple[int, float, float, int]:
+    """The sort key of §5 step 3: EXTRACTED first, then INFERRED by
+    confidence, then the newer stamp of the record, then the edge's place."""
+    when = _instant(stamp)
+    return (0 if provenance == "EXTRACTED" else 1, -confidence,
+            -(when.timestamp() if when is not None else float("-inf")), order)
+
+
+async def neighbours(user: UserContext, hits: list[Hit], *, stamp: bool) -> list[dict[str, Any]]:
+    """The neighbours of the first hits, opened as the member (§5, §6).
+
+    1. The first :data:`GRAPH_HITS` hits. 2. Their usable edges, from the
+    graph's own read. 3. One ``open`` call for each kind, by the source that
+    owns the kind. An id that the app does not return is dropped, and so is
+    each kind with no source, or whose app refuses. 4. A record that is
+    already a hit is dropped, and a record that an earlier hit already took.
+    5. At most :data:`PER_HIT` for each hit, in the order of
+    :func:`_edge_rank`. 6. Items in order until :data:`NEIGHBOUR_TOKENS` is
+    spent. A hidden record leaves no count, no relation and no marker.
+    """
+    from acb_skills.company_search_tools import NEIGHBOURS_HEADER, neighbour_line
+
+    from gateway.kb_entities import graph
+
+    first = hits[:GRAPH_HITS]
+    if not first:
+        return []
+    edges = await graph.neighbour_edges(user, [(h.kind, h.id) for h in first])
+    shown = {(h.kind, h.id) for h in hits}
+    wanted: dict[str, list[str]] = {}
+    for e in edges:
+        if (e.kind, e.id) not in shown:
+            wanted.setdefault(e.kind, []).append(e.id)
+    opened: dict[tuple[str, str], Hit] = {}
+    for kind, ids in wanted.items():
+        source = source_of_kind(kind)
+        if source is None:
+            continue  # no reader for the kind (§3.1): it never shows
+        try:
+            found = await source.open(user, list(dict.fromkeys(ids)), kind=kind)
+        except HTTPException:
+            continue  # the app's own refusal, such as the CRM access rule
+        except Exception as exc:
+            logger.warning("search.company graph open failed",
+                           extra={"kind": kind, "error": type(exc).__name__})
+            continue
+        for h in found:
+            opened[(kind, h.id)] = h
+
+    taken: set[tuple[str, str]] = set()
+    items: list[dict[str, Any]] = []
+    for hit in first:
+        mine = [e for e in edges
+                if (e.hit_kind, e.hit_id) == (hit.kind, hit.id) and (e.kind, e.id) in opened]
+        mine.sort(key=lambda e: _edge_rank(e.provenance, e.confidence,
+                                           opened[(e.kind, e.id)].stamp, e.order))
+        kept = 0
+        for e in mine:
+            key = (e.kind, e.id)
+            if key in taken or kept >= PER_HIT:
+                continue
+            taken.add(key)
+            kept += 1
+            item = opened[key].as_dict(stamp=stamp)
+            item["edge"] = {"from": f"{hit.kind}:{hit.id}", "relation": e.relation,
+                            "provenance": e.provenance}
+            items.append(item)
+
+    budget = NEIGHBOUR_TOKENS * CHARS_PER_TOKEN
+    spent = len(NEIGHBOURS_HEADER) + 1
+    out: list[dict[str, Any]] = []
+    for item in items:
+        cost = len(neighbour_line(item)) + 1
+        if spent + cost > budget:
+            break
+        spent += cost
+        out.append(item)
+    return out
+
+
+async def _graph_step(user: UserContext, hits: list[Hit], *, stamp: bool,
+                      left: float, skipped: list[str]) -> list[dict[str, Any]] | None:
+    """:func:`neighbours` inside its time (§7.3). It never raises.
+
+    ``None`` when ``GRAPH_SEARCH_ORGS`` does not name the org: then no edge
+    is read, and the answer gets no ``neighbours`` key. The step gets the
+    lesser of :data:`GRAPH_TIMEOUT_S` and *left*, the time the sources left.
+    When the time runs out, or the step fails, the answer has no neighbours
+    and ``skipped`` names :data:`GRAPH_SKIP`.
+    """
+    if not graph_enabled(user):
+        return None
+    allowed = min(GRAPH_TIMEOUT_S, left)
+    if allowed <= 0.05:
+        skipped.append(GRAPH_SKIP)
+        return []
+    try:
+        return await asyncio.wait_for(neighbours(user, hits, stamp=stamp), allowed)
+    except TimeoutError:
+        logger.info("search.company graph timed out")
+    except Exception as exc:
+        # The error's TYPE only, for the reason of the sources.
+        logger.warning("search.company graph failed", extra={"error": type(exc).__name__})
+    skipped.append(GRAPH_SKIP)
+    return []
 
 
 def recency_enabled() -> bool:
@@ -368,16 +516,16 @@ async def company_search(
     # A filtered search that finds nothing says nothing about a gap (KB-AI-4).
     _note_gap(background, user, words, None if only_verified else knowledge_hits)
 
-    if not recency:
-        return {
-            "query": words,
-            "hits": [h.as_dict() for h in _interleave(order, found)],
-            "skipped": skipped,
-        }
-    now = datetime.now(UTC)
-    return {
-        "query": words,
-        "hits": [h.as_dict(stamp=True) for h in by_fusion(order, found, now)],
-        "searched": [key for key in order if key in found and REGISTRY[key].reaches(user)],
-        "skipped": skipped,
-    }
+    ranked = _interleave(order, found) if not recency else by_fusion(
+        order, found, datetime.now(UTC))
+    # KG-6: off, no edge is read and the answer has no `neighbours` key.
+    near = await _graph_step(user, ranked, stamp=recency,
+                             left=deadline - loop.time(), skipped=skipped)
+
+    answer: dict[str, Any] = {"query": words, "hits": [h.as_dict(stamp=recency) for h in ranked]}
+    if recency:
+        answer["searched"] = [a for a in order if a in found and REGISTRY[a].reaches(user)]
+    if near is not None:
+        answer["neighbours"] = near
+    answer["skipped"] = skipped
+    return answer
