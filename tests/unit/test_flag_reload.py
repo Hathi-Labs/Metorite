@@ -104,6 +104,29 @@ def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not waiting_allowed("globex")
 
 
+def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-MCP SW-53, agent_coordination.md. The reload list holds the key, and
+    the one reader sees a change with no restart. The master stays a restart
+    key, and it gates the list."""
+    from gateway.connections.github_app import github_app_org_allowed
+
+    assert fr.reloadable("GITHUB_APP_ORGS")
+    assert not fr.reloadable("GITHUB_APP_ENABLED")
+    # `setenv` records each key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("GITHUB_APP_ORGS", "")
+    monkeypatch.setenv("GITHUB_APP_ENABLED", "true")
+    env(**{**_START, "GITHUB_APP_ENABLED": "true"})
+    fr._state["loaded"] = fr._read(fr._state["path"])
+    get_settings.cache_clear()
+    assert not github_app_org_allowed("acme"), "an empty list is off (fail closed)"
+    env(**{**_START, "GITHUB_APP_ENABLED": "true", "GITHUB_APP_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("GITHUB_APP_ORGS",)
+    assert github_app_org_allowed("acme")
+    assert not github_app_org_allowed("globex")
+    monkeypatch.setattr(get_settings(), "github_app_enabled", False)
+    assert not github_app_org_allowed("acme"), "the master off is off for all"
+
+
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
     """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
     break that map, and ``str`` keeps every value valid."""

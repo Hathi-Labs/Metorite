@@ -24,6 +24,13 @@ it does not change who may flip it. The flip stays OWNER-GATE
 `gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
 flip stays OWNER-GATE (`enforcement-flip`).
 
+`GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
+(`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
+reload does not apply the master. With the master on, an empty list turns
+every org off. Its one reader is
+`gateway.connections.github_app.github_app_org_allowed`. A reload applies a
+change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:
 

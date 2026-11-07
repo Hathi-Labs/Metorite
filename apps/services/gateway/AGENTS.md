@@ -138,6 +138,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - ⚠️ The installation token lives in PROCESS MEMORY only. It never goes to Redis, the database, a log or an answer.
    - `connections/github.py` is the ONE reader of a connection. `PUT /integrations/github/token` is the ONE writer of a pasted token.
    - `POST /webhooks/github` has a fixed order of checks: the size cap, the HMAC over the raw bytes, the headers, the org, then the delivery key.
+   - **`GITHUB_APP_ORGS` turns the App on for each org (SW-53).** `GITHUB_APP_ENABLED` stays the master. With the master on, an empty list turns every org off. `github_app.github_app_org_allowed` is the ONE reader. The webhook asks after the org lookup and before the delivery key. The connect routes and `github_reconcile_loop.run_org` ask too.
    - Merge-to-Done moves a task only when an agent worked it. `agent_worked.AGENT_WORKED_SQL` is the one copy of that rule. A checks read holds no session across a GitHub call.
    - Fences: `test_github_app_auth.py`, `test_github_connect_r8.py`, `test_github_per_org_r8.py`, `test_github_webhook_r8.py`, `test_github_merge_r8.py`, `test_github_reconcile_r8.py`.
 6. routes/memory.py -- **Memory search and management.** The path parameter is a SCOPE KEY (`acb_memory.scope_key`), not a user id. `_authorize_scope` has one rule for each shape, and refuses an unknown shape.

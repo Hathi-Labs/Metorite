@@ -38,6 +38,8 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
 * C-M7 ``_github_connected`` asks for a token in ``app`` mode -> ``test_c13_*``.
 * C-M8 ``_org_github_token`` reads ``token_or_none`` -> ``test_c13_*``.
 * C-M9 drop ``require_permission`` from the callback -> ``test_c9_*``.
+* SW53-M3 drop ``_require_org_on`` from a route ->
+  ``test_sw53_an_org_off_the_list_cannot_connect``.
 
 Fix round 1, each one red when run:
 
@@ -258,6 +260,26 @@ async def test_the_flag_off_answers_404_everywhere(world, monkeypatch) -> None:
                          ("POST", "/integrations/github/app/confirm")):
         resp = await _call(world, g.user(ADMIN_A, world.p.org_a), method, path)
         assert resp.status_code == 404, (path, resp.status_code)
+
+
+async def test_sw53_an_org_off_the_list_cannot_connect(world, monkeypatch) -> None:
+    """SW-53: with the master on, an org that GITHUB_APP_ORGS does not name
+    gets the 404 of the master off at start, callback and confirm. It writes
+    no pending key and no row. The org on the list still starts."""
+    from acb_common import get_settings
+
+    w = world
+    monkeypatch.setattr(get_settings(), "github_app_orgs", w.p.org_a)
+    for method, path in (("POST", "/integrations/github/app/start"),
+                         ("GET", "/integrations/github/app/callback"),
+                         ("POST", "/integrations/github/app/confirm")):
+        resp = await _call(w, g.user(ADMIN_B, w.p.org_b), method, path)
+        assert resp.status_code == 404, (path, resp.status_code)
+    assert w.redis.items() == {}
+    assert _github_rows(w, w.p.org_b) == []
+    assert w.gh.requests == []
+    resp = await _call(w, g.user(ADMIN_A, w.p.org_a), "POST", "/integrations/github/app/start")
+    assert resp.status_code == 200, resp.text
 
 
 # ── C2, C3 ──────────────────────────────────────────────────────────────────
