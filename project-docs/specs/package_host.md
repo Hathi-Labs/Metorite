@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. The bell part is not built. The rest of this spec is not built.
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. The bell part is not built. PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `787269f0a`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
@@ -43,7 +43,7 @@ This spec does not add a second app model. It grows the AI Studio package (`ai_s
 5. **No app-local look.** A package names no colour, font or pixel size (`ai_studio.md` §1.2).
 6. **No move without consent.** The AI never moves a stable region (§9.2).
 7. **No schema change for each tenant.** A field extension is a row, never a column (§8.3).
-8. **No cross-company marketplace.** That needs its own spec.
+8. **No cross-company marketplace.** That needs its own spec. A `system` install from reviewed repo code is not a marketplace (D187, `agent_sandbox.md` §6.8).
 
 ---
 
@@ -266,7 +266,7 @@ The workbench caches the answer through `useCachedResource`. A change to an inst
 
 ### 5.3 Disposal
 
-**Removal deletes every contribution of the install, in one transaction, by `install_id`.** Expiry and the kill switch use the same path. No point keeps a list of its own, so no point can keep a stale row. A paused install shows nothing within 10 seconds (`ai_studio.md` J3).
+**Removal deletes the install row in one transaction, by `install_id`, and the FK cascade of `324_package_registry.sql` deletes every contribution of it.** No point keeps a list of its own, so no point can keep a stale row. `store.remove_install` is the one path, and the expiry job of PKG-10 calls it at the end of the 30 days in the archive. **A pause is a state, not a removal.** `store.pause_install` moves one install from `active` to `paused`, and `store.resume_install` moves it back. A paused install keeps its claims and their keys (§4). The resolve hides it at the next read, because it shows only `active` installs (§5.2 step 2). The kill switch of `ai_studio.md` J3 calls `pause_install` for each install of the package, and J3 owns the stop of new actions. Each function takes the lock of `install` and works only in the bound org. The routes of PKG-8, PKG-12 and J3 decide who may call it.
 
 ### 5.4 Needs
 
@@ -284,6 +284,8 @@ A package names what it needs: a connection, a feature, or another package. A mi
 | `org` | Every member with the feature | A holder of `studio:publish`, one approved version (`ai_studio.md` J2) |
 | `group:<slug>` | The members of the group | A member of the group with `feature:studio` |
 | `private` | One member | Any member with `feature:studio` |
+
+**A package that holds code (D187).** A package with a member-authored logic module (`ai_studio.md` B5) runs code for each viewer. So each install for named people, a group or the org needs the `studio:publish` approval of one version first (`agent_sandbox.md` §8.1).
 
 ### 6.2 The lifecycle of an app made in chat (D147, PKG-Q2)
 
@@ -420,7 +422,7 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **PKG-9** | Disposal by install id (§5.3), with the kill switch | A test removes an install and finds no row of it at any point. A paused install shows nothing within 10 seconds | HIGH | AGENT-SAFE |
+| **PKG-9** | The store functions `remove_install`, `pause_install` and `resume_install` (§5.3), with no route, no flag and no migration. The lock and the tenant rules of `install`. The writer fence of `test_package_host_store.py` also covers UPDATE and DELETE | `tests/unit/test_package_disposal_r8.py` (named in the `--must-run` list of `pr-check.yml`): a removed install leaves no row in `package_install` or `package_contribution`. Org B cannot remove, pause or resume an install of org A. After a pause, the next `resolve_for` shows no claim of the install and the version returns to its value before the install. A resume brings the claims back. A paused install still blocks an overlapping claim, and a removed one does not. A pause or resume of an archived install is refused and writes nothing. Two removes at once give one deletion and one not-found | HIGH | AGENT-SAFE. The admin kill switch for a whole package and the stop of actions are J3. The 10-second re-read of the workbench is PKG-6 |
 | **PKG-10** | `ends_at`, Keep, and the expiry job with the archive and the restore (§6.2) | An install expires on its date. A restore within 30 days brings it back whole. The bell note comes 3 days before each step | HIGH | AGENT-SAFE |
 | **PKG-11** | Promotion: private → people or a group → org, on the same install. It joins `ai_studio.md` J2 | A promotion keeps the install id. A share to the org without approval stays pending | HIGH | AGENT-SAFE |
 | **PKG-12** | "Make it an app": Mira builds a private package from chat (`ai_studio.md` M1, grown) | A chat request makes a private install with `ends_at`. It opens by link after the chat ends | STD | AGENT-SAFE |
@@ -546,7 +548,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A refusal never names the private install of another member | `tests/unit/test_package_host_store.py`, `tests/unit/test_package_host_store_r8.py` |
 | The resolve shows an install only to the viewers of §5.2, and reads the one share rule | New with PKG-5b part 2: `tests/unit/test_package_host_resolve_r8.py`, `tests/unit/test_package_host_resolve.py` |
 | `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` leaves the org out | New with PKG-5b part 2: `tests/unit/test_package_host_flag.py` |
-| Removal leaves no contribution | New with PKG-9: `tests/unit/test_package_disposal_r8.py` |
+| Removal leaves no contribution, and a pause hides the install at the next read | New with PKG-9: `tests/unit/test_package_disposal_r8.py` |
 | A stable region moves only on a member action | New with PKG-18: `src/lib/shell/arrangement.test.ts` |
 
 ---

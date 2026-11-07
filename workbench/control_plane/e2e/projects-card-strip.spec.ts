@@ -154,12 +154,12 @@ test("Enter on a strip button runs the action, and does not open the task", asyn
   ).toContain('"status_id":"s4"');
 
   // The other half of the same defect: the key must not ALSO reach the card.
-  // The panel mounts a comment field and a task heading; neither should be
-  // here, because nothing asked to open anything. The FIELD, not the Comment
-  // button: the button shows only once the composer opens (2026-10-19), so a
-  // check on it would pass with the panel open.
+  // The panel mounts its tab bar on every tab; it should not be here,
+  // because nothing asked to open anything. The BAR, not the comment field:
+  // since ORC-3 the field hides on Overview, so a check on it would pass with
+  // the panel open.
   await expect(
-    page.getByRole("textbox", { name: "Add a comment" }),
+    page.locator("[data-record-tab-bar]"),
     "Enter on a strip button opened the task panel as well as (or instead " +
       "of) running the action.",
   ).toHaveCount(0);
