@@ -2206,6 +2206,17 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-ALN ALN-5b — Mira proposes the rules of one pinned page
+    # (project_alignment.md §4.2): one model call with no tools, each quote
+    # checked, at most 12 proposals for each page version. Ships dark behind
+    # the same `PROJECT_RULES_ORGS` (404 while the org is not listed).
+    from gateway.routes.project_rules_propose import router as _project_rules_propose_router
+
+    app.include_router(_project_rules_propose_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):

@@ -61,6 +61,10 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
     # WS-63 PZ-33b: the summary of a private chat, a note the member reads.
     "apps/services/gateway/gateway/chat_summary_job.py::_ask": (
         ("summary",), "apps/services/gateway/gateway/chat_summary_job.py::SYSTEM"),
+    # WS-ALN ALN-5b: the rules that Mira proposes from a page. A lead reads
+    # each one-line rule, so it takes the voice of a title.
+    GW + "project_rules_propose.py::_ask": (
+        ("title",), GW + "project_rules_propose.py::SYSTEM"),
     # WS-53 CRM-Q28: the weekly CRM digest, prose a member reads on Reports.
     "apps/services/gateway/gateway/crm_sync/digest.py::_complete": (
         ("summary",), "apps/services/gateway/gateway/crm_sync/digest.py::SYSTEM"),
