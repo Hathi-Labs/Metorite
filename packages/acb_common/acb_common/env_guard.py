@@ -187,6 +187,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the member's other chats into a run, so only the operator writes it. The
     # `ASSISTANT_PROFILE_` prefix below does not cover it.
     "ASSISTANT_BRIEFING_ORGS",
+    # WS-63 PZ-43: the orgs where a member sets a birthday and festivals and
+    # the chat greets on the day. It adds a line to each turn, so only the
+    # operator writes it.
+    "CELEBRATIONS_ORGS",
     # H-328 part (b): the orgs whose unattended workflow runs may start. A run
     # can send mail or WhatsApp and spend credits with no person present, so
     # only the operator writes it. The `WORKFLOW_` prefix covers it too, and
