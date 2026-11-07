@@ -19,9 +19,10 @@ The child writes ONE JSON line on stdout and exits 0:
 
 * ``{"ok": {"content_type", "width", "height", "dark_share", "clear_share",
   "data", "confined"}}``. ``data`` is the stored image as base64.
-  ``confined`` is true only after ``confine`` and ``close_limits`` ran on
-  Linux. On another system the answer carries ``unconfined_os`` in its place.
-  The parent refuses an answer with neither (fix round 1, P2).
+  ``confined`` is true only when, after ``confine`` and ``close_limits`` on
+  Linux, the kernel refused a new socket and a new file under ``/tmp``
+  (``_prove_confined``, fix round 2). On another system the answer carries
+  ``unconfined_os`` in its place. The parent refuses an answer with neither.
 * ``{"refused": "<code>"}``. The parent owns every sentence for the member, so
   the child sends a code only: ``broken``, ``pixels``, ``too_big``, ``size``,
   ``unavailable`` or ``failed``.
@@ -59,7 +60,9 @@ import contextlib
 import importlib.util
 import json
 import os
+import socket
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -288,16 +291,14 @@ def _emit(item: dict[str, Any]) -> None:
 
 
 def _confine(cc: Any, spec: dict[str, Any], state: dict[str, Any]) -> None:
-    """Landlock and the seccomp filter, then the mark of the answer.
+    """Landlock and the seccomp filter.
 
-    On Linux ``confine`` raises when a step fails, so the mark ``confined``
-    is set only after it returned. On another system ``confine`` does
-    nothing, and the mark ``unconfined_os`` says so: the parent accepts such
-    an answer only on that same system, never on Linux (fix round 1, P2)."""
+    It sets NO proof of confinement on Linux: :func:`_prove_confined` does,
+    from the kernel's answers (fix round 2). On another system ``confine``
+    does nothing, and the mark ``unconfined_os`` says so. The parent accepts
+    such an answer only on that same system, never on Linux."""
     cc.confine(spec["landlock_abi"])
-    if sys.platform == "linux":
-        state["confined"] = True
-    else:
+    if sys.platform != "linux":
         state["unconfined_os"] = sys.platform
 
 
@@ -307,11 +308,49 @@ def _close_limits(cc: Any, state: dict[str, Any]) -> None:
     state["limits"] = True
 
 
+#: The file that the self-test tries to make. Landlock grants no write
+#: anywhere, so the kernel refuses it.
+_PROBE_DIR = "/tmp"
+
+
+def _prove_confined(state: dict[str, Any]) -> None:
+    """On Linux, prove the confinement by two acts it must refuse.
+
+    A mark set after a line of code proves only that the line ran. A deleted
+    ``confine`` call, or a kernel that ignored it, would still set it (the
+    verifier's mutant, round 2). So the child asks the kernel: a new socket
+    (the seccomp filter refuses ``socket``) and a new file for write under
+    ``/tmp`` (Landlock grants no write). Only when the kernel refuses both
+    does ``proven`` go into the state. Else the child answers
+    ``unavailable``. It does nothing off Linux."""
+    if sys.platform != "linux":
+        return
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        pass
+    else:
+        sock.close()
+        raise _Refused("unavailable")
+    probe = os.path.join(_PROBE_DIR, f"signature-image-probe-{os.getpid()}-{time.monotonic_ns()}")
+    try:
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError:
+        pass
+    else:
+        os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(probe)
+        raise _Refused("unavailable")
+    state["proven"] = True
+
+
 def _marks(state: dict[str, Any]) -> dict[str, Any]:
     """The confinement marks of the answer. ``confined`` is true only when
-    both steps ran on Linux."""
+    the kernel refused both acts of :func:`_prove_confined` after the
+    limits closed."""
     marks: dict[str, Any] = {
-        "confined": bool(state.get("confined") and state.get("limits")),
+        "confined": bool(state.get("proven") and state.get("limits")),
     }
     if state.get("unconfined_os") and state.get("limits"):
         marks["unconfined_os"] = state["unconfined_os"]
@@ -331,6 +370,8 @@ def main(argv: list[str]) -> int:
         _confine(cc, spec, state)
         pymupdf = _preload()
         _close_limits(cc, state)
+        # The kernel proves the confinement, or the child reads nothing.
+        _prove_confined(state)
         # The untrusted bytes arrive only now, after the confinement.
         data = sys.stdin.buffer.read(spec["max_bytes"] + 1)
         if not data:

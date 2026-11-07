@@ -359,8 +359,10 @@ def _size(value: object) -> int:
 def _was_confined(value: dict[str, Any]) -> bool:
     """True when the child decoded inside its confinement (fix round 1, P2).
 
-    On Linux the child marks ``confined`` only after ``confine`` and
-    ``close_limits`` returned, and the parent takes nothing else. On a dev
+    On Linux the child marks ``confined`` only when the kernel refused a new
+    socket and a new file after ``confine`` and ``close_limits``
+    (``signature_image_worker._prove_confined``), and the parent takes
+    nothing else. On a dev
     box with no Landlock (Windows), it takes an answer that names this same
     system in ``unconfined_os``. A child that skipped the confinement sends
     neither mark, so its answer is refused on every system."""

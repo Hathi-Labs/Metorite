@@ -46,6 +46,7 @@ from sqlalchemy.exc import DBAPIError
 
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_email_scheduler_tenancy import _assert_non_priv, _seed_account
+from tests.unit.test_email_signature_images import needs_child
 
 # ``promoted`` and ``app_engine`` are used by name for fixture injection, so
 # the import is load-bearing even though it reads as unused.
@@ -317,6 +318,7 @@ class TestTheStore:
 @_DB_GATE
 class TestTheSettingsSave:
 
+    @needs_child
     async def test_a_new_signature_is_cleaned_and_its_data_image_hosted(
         self, promoted, app_engine, monkeypatch,  # noqa: F811
     ):
@@ -354,6 +356,7 @@ class TestTheSettingsSave:
         assert saved == stored
         assert hosted == 1
 
+    @needs_child
     async def test_a_mixed_case_member_hosts_an_image_in_lower_case(
         self, promoted, app_engine, monkeypatch,  # noqa: F811
     ):
@@ -380,6 +383,7 @@ class TestTheSettingsSave:
                 {"o": promoted.org_b, "me": owner}).scalars().all()
         assert who == [owner.lower()]
 
+    @needs_child
     async def test_a_cap_at_the_second_image_writes_no_row(
         self, promoted, app_engine, monkeypatch,  # noqa: F811
     ):

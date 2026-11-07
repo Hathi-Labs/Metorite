@@ -41,7 +41,32 @@ import pymupdf
 import pytest
 from fastapi import HTTPException, UploadFile
 from gateway import signature_image as si
+from gateway import signature_image_worker as worker
 from gateway.routes.email import signature_images as routes
+
+
+def _confinable() -> bool:
+    """True where the real child can confine itself: any dev box, or Linux
+    x86-64 with Landlock at the ABI that the parent asks."""
+    if sys.platform != "linux":
+        return True
+    import platform
+
+    cc = worker._load_confine(si._confine_path())
+    return platform.machine() == "x86_64" and cc.landlock_abi() >= si.MIN_LANDLOCK_ABI
+
+
+#: A real decode needs a confinable child, because the parent refuses any
+#: other answer on Linux. The box and the CI runners have Landlock.
+needs_child = pytest.mark.skipif(
+    not _confinable(),
+    reason="this Linux kernel cannot confine the child, so it fails closed here",
+)
+#: The proof that a child with no confinement is refused needs Linux.
+linux_only = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Landlock and seccomp exist on Linux only; the box and CI run Linux",
+)
 
 _ORG = "1111aaaa-2222-4333-8444-5555bbbb5555"
 _ACCOUNT = "a0000000-0000-4000-8000-000000000001"
@@ -588,9 +613,70 @@ async def test_a_child_with_its_confine_step_deleted_is_refused(monkeypatch) -> 
         await si.encode(_png(40, 20), "logo")
     assert caught.value.status == 503
     assert "cannot isolate the image reader" in str(caught.value)
-    # The untouched worker is taken on this system.
-    monkeypatch.setattr(si, "_worker_argv", real)
+
+
+@needs_child
+async def test_the_untouched_worker_is_taken_on_this_system() -> None:
     assert (await si.encode(_png(40, 20), "logo")).width == 40
+
+
+def _patched_child(monkeypatch, patch: str) -> None:
+    """Run the REAL worker with one line of ``patch`` applied to it inside the
+    child, the hook of the no-op test above."""
+    script = (
+        "import importlib.util, sys\n"
+        f"s = importlib.util.spec_from_file_location('w', {str(worker.__file__)!r})\n"
+        "w = importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
+        f"{patch}\n"
+        "sys.exit(w.main(['w', sys.argv[1]]))\n"
+    )
+    real = si._worker_argv
+    monkeypatch.setattr(si, "_worker_argv", lambda spec: [
+        *real(spec)[:2], "-c", script, real(spec)[-1]])
+
+
+@linux_only
+async def test_linux_a_child_that_asks_abi_99_answers_unavailable(monkeypatch) -> None:
+    """Fix round 2, P2: no kernel offers Landlock ABI 99, so ``confine``
+    refuses and the child reads nothing."""
+    monkeypatch.setattr(si, "MIN_LANDLOCK_ABI", 99)
+    with pytest.raises(si.SignatureImageError) as caught:
+        await si.encode(_png(40, 20), "logo")
+    assert caught.value.status == 503
+    assert "cannot isolate the image reader" in str(caught.value)
+
+
+@linux_only
+async def test_linux_a_child_whose_confine_is_a_noop_is_refused(monkeypatch) -> None:
+    """Fix round 2, P2, the verifier's mutant: ``cc.confine`` does nothing and
+    the spec asks ABI 99. No mark of the code can pass: the kernel lets the
+    child open a socket and a file, so the self-test answers ``unavailable``."""
+    monkeypatch.setattr(si, "MIN_LANDLOCK_ABI", 99)
+    _patched_child(monkeypatch, (
+        "_load = w._load_confine\n"
+        "def _noop_confine(path):\n"
+        "    cc = _load(path)\n"
+        "    cc.confine = lambda abi: None\n"
+        "    return cc\n"
+        "w._load_confine = _noop_confine"))
+    with pytest.raises(si.SignatureImageError) as caught:
+        await si.encode(_png(40, 20), "logo")
+    assert caught.value.status == 503
+    assert "cannot isolate the image reader" in str(caught.value)
+
+
+def test_an_unconfined_process_fails_the_self_test(monkeypatch) -> None:
+    """The self-test itself, in this test process, which nothing confines. It
+    reads as Linux, opens a socket and makes a file, so it refuses."""
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    import tempfile
+
+    monkeypatch.setattr(worker, "_PROBE_DIR", tempfile.gettempdir())
+    state: dict = {"limits": True}
+    with pytest.raises(worker._Refused) as caught:
+        worker._prove_confined(state)
+    assert caught.value.reason == "unavailable"
+    assert worker._marks(state)["confined"] is False
 
 
 async def test_a_child_that_floods_its_answer_is_killed(monkeypatch):
@@ -605,6 +691,7 @@ async def test_a_child_that_floods_its_answer_is_killed(monkeypatch):
 # ── 8. The real child ───────────────────────────────────────────────────────
 
 
+@needs_child
 async def test_a_logo_keeps_its_shape_and_goes_to_480() -> None:
     out = await si.encode(_png(1000, 400), "logo")
     assert (out.width, out.height) == (480, 192)
@@ -613,11 +700,13 @@ async def test_a_logo_keeps_its_shape_and_goes_to_480() -> None:
     assert page.get_image_info()[0]["width"] == 480
 
 
+@needs_child
 async def test_a_small_logo_is_never_scaled_up() -> None:
     out = await si.encode(_png(100, 40), "logo")
     assert (out.width, out.height) == (100, 40)
 
 
+@needs_child
 async def test_a_photo_is_a_square_jpeg_when_it_is_opaque() -> None:
     out = await si.encode(_png(640, 480, alpha=False), "photo")
     assert (out.width, out.height) == (480, 480)
@@ -625,18 +714,21 @@ async def test_a_photo_is_a_square_jpeg_when_it_is_opaque() -> None:
     assert out.data.startswith(b"\xff\xd8\xff")
 
 
+@needs_child
 async def test_a_photo_with_a_clear_pixel_stays_png() -> None:
     out = await si.encode(_dark_on_clear_png(), "photo")
     assert out.content_type == "image/png"
     assert out.width == out.height == 100
 
 
+@needs_child
 async def test_trailing_bytes_do_not_survive() -> None:
     data = _png(60, 30) + b"TRAILING-SECRET-PAYLOAD"
     out = await si.encode(data, "logo")
     assert b"TRAILING-SECRET-PAYLOAD" not in out.data
 
 
+@needs_child
 async def test_a_dark_logo_on_a_clear_ground_is_reported() -> None:
     out = await si.encode(_dark_on_clear_png(), "logo")
     assert out.clear_share > 0.5
@@ -660,6 +752,7 @@ def test_the_child_steps_the_edge_down_to_fit() -> None:
     assert len(base64.b64decode(second["data"])) < size_480
 
 
+@needs_child
 async def test_a_gif_is_taken_and_stored_as_png() -> None:
     """Fix round 1, P3: MuPDF 1.28.2 opens GIF (measured), so a legacy
     data:image/gif no longer blocks a save."""
@@ -671,6 +764,7 @@ async def test_a_gif_is_taken_and_stored_as_png() -> None:
     assert out.content_type == "image/png" and (out.width, out.height) == (120, 40)
 
 
+@needs_child
 async def test_an_image_that_never_fits_steps_down_and_refuses(monkeypatch) -> None:
     """The real child, with the cap lowered so no step can fit."""
     monkeypatch.setattr(si, "MAX_OUTPUT_BYTES", 2000)
@@ -680,6 +774,7 @@ async def test_an_image_that_never_fits_steps_down_and_refuses(monkeypatch) -> N
     assert caught.value.status == 400
 
 
+@needs_child
 async def test_a_truncated_png_is_a_plain_refusal() -> None:
     with pytest.raises(si.SignatureImageError) as caught:
         await si.encode(_png(50, 50)[:40], "logo")
@@ -736,6 +831,7 @@ async def test_a_save_with_one_bad_image_stores_none(monkeypatch, base_url, stor
     assert stored_legacy == [], "a row was written before the bad image refused"
 
 
+@needs_child
 async def test_an_edit_hosts_the_legacy_image_and_keeps_the_edit(
     monkeypatch, base_url, stored_legacy,
 ):
