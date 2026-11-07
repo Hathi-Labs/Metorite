@@ -47,6 +47,17 @@ describe("the count on the Waiting row", () => {
     expect(readWaitingCount({ count: -3 })).toEqual({ count: 0, floor: false });
   });
 
+  it("shows no number when a source failed: the sum leaves it out", () => {
+    const read = readWaitingCount({ count: 2, capped: [], sources: { decision: "ok", held_write: "failed" } });
+    expect(read).toBeNull();
+    expect(withWaitingCount({}, new Set(), read, false).counts).toEqual({});
+    // An absent source is not a failure.
+    expect(readWaitingCount({ count: 2, capped: [], sources: { decision: "ok", chat_ask: "absent" } })).toEqual({
+      count: 2,
+      floor: false,
+    });
+  });
+
   it("puts the number on the row, and draws it as the needs pill does", () => {
     const out = withWaitingCount({ "/email": 2 }, new Set(), { count: 4, floor: false }, false);
     expect(out.counts).toEqual({ "/email": 2, "/waiting": 4 });

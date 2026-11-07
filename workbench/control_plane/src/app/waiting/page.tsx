@@ -39,6 +39,7 @@ import {
   rowAgent,
   rowTitle,
   taskHref,
+  unanswered,
   waitingRuns,
   type WaitingRun,
 } from "./lib/waitingForYou";
@@ -58,7 +59,9 @@ async function fetchAgentQuestions(): Promise<WaitingRun[] | null> {
 export default function WaitingPage() {
   const seam = useCachedResource<SeamRead>(SEAM_KEY, fetchWaiting);
   const agent = useCachedResource<WaitingRun[] | null>(AGENT_KEY, fetchAgentQuestions);
-  // The questions this page answered. They leave at once, before the next
+  // The ids of the QUESTIONS this page answered (never the run ids). They
+  // leave at once, before the next read confirms it. A new question of the
+  // same run has a new id, so it shows (`unanswered`).
   // read confirms it.
   const [answered, setAnswered] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -75,7 +78,7 @@ export default function WaitingPage() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  const runs = agent.data ? agent.data.filter((r) => !answered.has(r.id)) : agent.data;
+  const runs = agent.data ? unanswered(agent.data, answered) : agent.data;
   const page = forYou({ data: seam.data, error: seam.error }, { data: runs, error: agent.error });
   const reading = seam.refreshing || agent.refreshing || seam.loading || agent.loading;
 
@@ -90,7 +93,7 @@ export default function WaitingPage() {
     });
     try {
       await agentRunsApi.post(run.id, answerPayload(question, answers));
-      setAnswered((s) => new Set([...s, run.id]));
+      setAnswered((s) => new Set([...s, question.id]));
     } catch (err) {
       setAnswerErrors((e) => ({
         ...e,

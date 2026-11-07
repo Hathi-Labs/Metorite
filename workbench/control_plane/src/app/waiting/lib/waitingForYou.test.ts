@@ -8,6 +8,7 @@ import {
   rowAgent,
   rowTitle,
   taskHref,
+  unanswered,
   waitingRuns,
   type WaitingRun,
 } from "./waitingForYou";
@@ -93,5 +94,23 @@ describe("answersInPlace", () => {
       } as Partial<AgentActivity>),
     });
     expect(answersInPlace(archive)).toBe(false);
+  });
+});
+
+describe("unanswered", () => {
+  it("hides the question the page answered, and shows a new question of the same run", () => {
+    const first = run("r", "2026-11-01T10:00:00Z");
+    const firstId = first.open_elicitation!.id;
+    expect(unanswered([first], new Set([firstId]))).toEqual([]);
+    // The run asks again: same run id, a new open question.
+    const again = run("r", "2026-11-02T10:00:00Z");
+    expect(again.id).toBe(first.id);
+    expect(again.open_elicitation!.id).not.toBe(firstId);
+    expect(unanswered([again], new Set([firstId])).map((r) => r.id)).toEqual(["r"]);
+  });
+
+  it("never hides a run by its run id", () => {
+    const r = run("r", "2026-11-01T10:00:00Z");
+    expect(unanswered([r], new Set(["r"])).map((x) => x.id)).toEqual(["r"]);
   });
 });

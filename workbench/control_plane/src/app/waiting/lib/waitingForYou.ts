@@ -75,3 +75,19 @@ export function taskHref(run: WaitingRun): string {
 export function answersInPlace(run: WaitingRun): boolean {
   return archiveRequestOf(openQuestion(run)) === null;
 }
+
+/**
+ * The runs whose OPEN question the page has not answered yet. The page keys
+ * an answer by the question's id, never by the run's id: a run that gets an
+ * answer goes back to work and can ask again (`awaiting` -> `in_progress` ->
+ * `awaiting`). Its new question has a new id, so it shows at once.
+ */
+export function unanswered(
+  runs: readonly WaitingRun[],
+  answered: ReadonlySet<string>,
+): WaitingRun[] {
+  return runs.filter((run) => {
+    const id = openQuestion(run)?.id;
+    return !id || !answered.has(id);
+  });
+}

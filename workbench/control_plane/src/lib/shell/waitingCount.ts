@@ -13,6 +13,9 @@
  * - **A 404 shows no count.** `WAITING_ORGS` does not hold the org. The row
  *   stays, because no second nav filter hides a row (`launch_surface.md`
  *   §8.4). A failed read shows no count either, never a 0 or a stale one.
+ * - **A failed source shows no number.** The gateway then sums only the
+ *   sources that answered, so the total is too low. The needs feed gives a
+ *   failed source no count either (`countsByApp`), so the row shows none.
  * - **A floor prints "15+".** `capped` names a source whose total is a
  *   floor, and `navNeeds.ts` draws it as it draws a needs floor.
  * - **Read only when the row is held.** The pane is `preview`, so the read
@@ -39,16 +42,22 @@ export interface WaitingCount {
   floor: boolean;
 }
 
-/** Read the count's answer. A field the server left out reads as 0. */
-export function readWaitingCount(raw: unknown): WaitingCount {
+/**
+ * Read the count's answer. A field the server left out reads as 0. `null`
+ * when a source failed: the sum leaves that source out, so no number shows.
+ */
+export function readWaitingCount(raw: unknown): WaitingCount | null {
   const body = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const sources = body.sources && typeof body.sources === "object" ? (body.sources as Record<string, unknown>) : {};
+  if (Object.values(sources).some((state) => state === "failed")) return null;
   const n = typeof body.count === "number" && Number.isFinite(body.count) ? Math.max(0, Math.floor(body.count)) : 0;
   const floor = Array.isArray(body.capped) && body.capped.length > 0;
   return { count: n, floor };
 }
 
 /**
- * Read the count through the BFF. `null` is the OFF state (404). Any other
+ * Read the count through the BFF. `null` is the OFF state (404), or an
+ * answer with a failed source: both show no number. Any other
  * refusal or failure throws, so the row shows no number.
  */
 export async function fetchWaitingCount(): Promise<WaitingCount | null> {
