@@ -58,6 +58,7 @@ Fence: ``tests/unit/test_agent_guidance.py`` and, on a real database,
 
 from __future__ import annotations
 
+import functools
 import uuid
 from typing import Any
 
@@ -255,6 +256,16 @@ async def _latest(db: Any, project_ids: list[str]) -> dict[str | None, Any]:
     return {(str(r.project_id) if r.project_id is not None else None): r for r in rows}
 
 
+@functools.lru_cache(maxsize=1)
+def _default_topic() -> Any:
+    """The default topic, read once. The text is the same for every org."""
+    try:
+        return load_topic(DEFAULT_TOPIC)
+    except PlaybookError:
+        _log.warning("playbook default topic unreadable")
+        return None
+
+
 def default_block(organization_id: str | None) -> dict[str, Any] | None:
     """The Metorite default block for an org, or ``None``.
 
@@ -262,10 +273,7 @@ def default_block(organization_id: str | None) -> dict[str, Any] | None:
     cannot be read. The org is the bound tenant, never request input (R5)."""
     if not agent_oauth.playbook_allowed(organization_id):
         return None
-    try:
-        topic = load_topic(DEFAULT_TOPIC)
-    except PlaybookError:
-        return None
+    topic = _default_topic()
     if topic is None or not topic.body.strip():
         return None
     return {"id": DEFAULT_BLOCK_ID, "level": DEFAULT_LEVEL, "source": dict(DEFAULT_SOURCE),

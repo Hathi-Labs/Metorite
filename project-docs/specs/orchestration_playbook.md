@@ -1,6 +1,6 @@
 # Orchestration playbook — the know-how that Metorite ships to every organization that connects
 
-**Status: ACTIVE (PB-0, 2026-11-06). Nothing is built.** The decision is **D186** in `work_plan.md` §3. This spec was planned in task 1906 (SW-P10). Its slices are PB-1 to PB-10. Each has a task in Backlog under epic 321.
+**Status: ACTIVE (PB-0, 2026-11-06). Built so far: PB-1, PB-2, PB-3a, PB-5.** The decision is **D186** in `work_plan.md` §3. This spec was planned in task 1906 (SW-P10). Its slices are PB-1 to PB-10. Each has a task in Backlog under epic 321.
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Owner direction (2026-11-06):** Metorite "not only becomes a place we use for orchestrating multiple agents". It "also contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP." **Price:** part of the flat seat (`launch_surface.md` §4). No SKU and no add-on (D186.3).
 
