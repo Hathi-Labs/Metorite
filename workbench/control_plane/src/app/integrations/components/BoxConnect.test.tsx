@@ -157,3 +157,11 @@ describe("where the token may live", () => {
     expect(sources[0]).toMatch(/\{open \? \(\s*<div className="p-4">\s*<ConnectForm/);
   });
 });
+
+describe("the wiring of Revoke all in the view", () => {
+  it("passes the real admin flag, never a literal", () => {
+    const src = readFileSync(new URL("./AgentsView.tsx", import.meta.url), "utf8");
+    expect(src).toContain("showRevokeAll(canManageOrg, org.data)");
+    expect(src).not.toMatch(/showRevokeAll\(\s*true/);
+  });
+});
