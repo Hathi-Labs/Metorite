@@ -101,7 +101,7 @@ function accentOf(value: unknown): string | null {
 export function currentAppearance(): AppearanceRecord {
   const s = useAppearanceStore.getState();
   return {
-    mode: sync.memberMode ?? modeOf(themeStorage.getMode()),
+    mode: modeOf(themeStorage.getMode() ?? sync.memberMode),
     // The member's own choice, also when the org locks the density.
     density: densityOf(s.userDensity),
     accent: accentOf(s.accent),

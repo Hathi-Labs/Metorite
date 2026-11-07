@@ -276,6 +276,19 @@ describe("the write of the server copy", () => {
     expect(puts()[0]).toMatchObject({ url: APPEARANCE_URL, body: { mode: "light", density: "compact", accent: ROSE } });
   });
 
+  it("sends the mode the tab shows after another tab of the account changed it", async () => {
+    bindA();
+    stubFetch(() => json({ mode: null, density: null, accent: null, updated_at: null }));
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    noteMemberMode("dark");
+    ls.setItem(scopedKey(MODE_STORAGE_KEY, SCOPE_A), "light");
+    ls.setItem(MODE_STORAGE_KEY, "light");
+    onAppearanceStorage({ key: MODE_STORAGE_KEY, newValue: "light" } as StorageEvent);
+    useAppearanceStore.getState().setAccent("#0ea5e9");
+    vi.advanceTimersByTime(WRITE_DELAY_MS);
+    expect(puts()[0]).toMatchObject({ body: { mode: "light" } });
+  });
+
   it("writes the browser copy first, and a failed PUT is silent", async () => {
     bindA();
     calls = [];
