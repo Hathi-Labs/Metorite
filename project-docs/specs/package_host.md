@@ -282,7 +282,7 @@ A package names what it needs: a connection, a feature, or another package. A mi
 
 **A limit of the redirect.** After the redirect, the sidebar marks Studio as the open pane, not the entry of the app. A later slice can draw the app page at `/apps/<id>` itself.
 
-**Both navs and no reload (fix round 1).** The desktop sidebar and the phone drawer get the entries from one hook, `useInstallNav` in `lib/shell/packageManifest.ts`. A Studio write of the assistant reads the manifest again at once (`useLiveRefresh(refreshManifest, "studio")`). A delete on the app page drops it through `forgetPackage`. The delete dialog names the owner's own entry once ("Its entry in your sidebar goes too.") and counts only the installs that reach other members.
+**Both navs and no reload (fix round 1).** The desktop sidebar and the phone drawer get the entries from one hook, `useInstallNav` in `lib/shell/packageManifest.ts`. A Studio write of the assistant reads the manifest again at once (`useLiveRefresh(refreshManifest, "studio")`). A delete on the app page drops it through `forgetPackage`. The delete dialog names the owner's own entry once ("Its entry in your sidebar goes too.") and counts only the installs that reach other members. The server counts the entry itself, as `own_entries` of the delete preview: an active private install of the owner, so a paused or archived install is no entry (fix round 2). The shell modules of every page import no component. So `PROJECTS_CHANGED_EVENT` lives in `lib/projectsEvents.ts`, and `liveRefresh.ts` does not pull the chat renderer into the shell.
 
 **Three limits of PKG-8a.**
 1. There is no backfill. An app that the owner published before `PACKAGE_HOST_ORGS` held the org gets its entry at its next publish. PKG-8b owns a backfill.
@@ -504,7 +504,7 @@ Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch
 - `lib/shell/registry.ts` (`ShellJob`, `JOBS`), `lib/shell/presets.ts` (`CARD_KEYS`), `lib/shell/assistant.ts` (`ALSO_SERVES`), `lib/shell/gates.generated.ts`, `lib/shell/seams.test.ts`
 - `lib/access.ts` (`HREF_FEATURES`, `ALWAYS_ALLOWED`)
 - `lib/theme/storage.ts` (appearance in the browser)
-- New with PKG-8a: `app/apps/[id]/page.tsx` (the redirect to the app page), `lib/shell/installedApp.ts` (`INSTALLED_APP_PREFIX`, `installedAppTarget`), `lib/shell/packageManifest.ts` (`installNavPanes`, `systemOwns`, `useInstallNav`), `lib/shell/manifestCache.ts` (`manifestKey`, `refreshManifest`), `lib/studio/packagePreview.ts` (`previewHref`), `lib/studio/packageDelete.ts` (`forgetPackage`, `previewCopy`), `components/Sidebar.tsx` and `components/AppShell.tsx` (`MobileBottomNavInner`)
+- New with PKG-8a: `app/apps/[id]/page.tsx` (the redirect to the app page), `lib/shell/installedApp.ts` (`INSTALLED_APP_PREFIX`, `installedAppTarget`), `lib/shell/packageManifest.ts` (`installNavPanes`, `systemOwns`, `useInstallNav`), `lib/shell/manifestCache.ts` (`manifestKey`, `refreshManifest`), `lib/projectsEvents.ts` (`PROJECTS_CHANGED_EVENT`), `lib/studio/packagePreview.ts` (`previewHref`), `lib/studio/packageDelete.ts` (`forgetPackage`, `previewCopy`), `components/Sidebar.tsx` and `components/AppShell.tsx` (`MobileBottomNavInner`)
 - `components/GenerativeUINode.tsx`, `lib/useCachedResource.ts`
 
 **Gateway** (`apps/services/gateway/gateway/`)
@@ -583,6 +583,7 @@ cd workbench/control_plane && npx vitest run src/lib/shell/installedApp.test.ts 
 | `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` leaves the org out | New with PKG-5b part 2: `tests/unit/test_package_host_flag.py` |
 | A publish keeps one private install of the owner, moves it on the next publish, and a refusal rolls the publish back | New with PKG-8a: `tests/unit/test_studio_publish_install_r8.py` (in the `--must-run` lists of `pr-check.yml` and `deploy.yml`), `tests/unit/test_studio_publish_install.py` |
 | The sidebar keeps the entry of an installed Studio app, and `/apps` has the gate of the app page | New with PKG-8a: `src/lib/shell/installedApp.test.ts`, `tests/unit/test_shell_manifests.py` |
+| The shell modules of every page (`packageManifest.ts`, `liveRefresh.ts`, `manifestCache.ts`) reach no component and no chat renderer, through any chain of value imports | New with PKG-8a fix round 2: `src/lib/shell/shellImports.test.ts` |
 | Removal leaves no contribution, and a pause hides the install at the next read | New with PKG-9: `tests/unit/test_package_disposal_r8.py` |
 | A stable region moves only on a member action | New with PKG-18: `src/lib/shell/arrangement.test.ts` |
 
