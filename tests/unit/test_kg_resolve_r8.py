@@ -14,14 +14,17 @@ role (no superuser, no BYPASSRLS):
    alias of the customer entity. ``WWW.Client`` matches ``client``;
 2. the ambiguous case: two candidates give one AMBIGUOUS row for each, at
    0.5, and never a guess. A host that two companies share gives no row;
-3. the free-mail and site cases: a free-mail sender, a linkedin.com website
-   and a company address (not a website) map to no company;
+3. the free-mail and site cases: a free-mail sender, a linkedin.com or a
+   github.com website and a company address (not a website) map to no
+   company;
 4. privacy: a phone on ``people`` (a private field) gives no edge, and it
    does not make a contact match AMBIGUOUS;
 5. the rows follow the data: EXTRACTED turns AMBIGUOUS and back, a stale row
    goes, a removed row stays removed, and a sweep with no change changes 0
    rows. A host alias goes when two companies share the host;
-6. the alias batch moves on each night;
+6. the alias batch moves on each night, and a host that can never be an
+   alias takes no place in it. A company that moves its website loses the
+   old host alias, and the company that takes the host gets it;
 7. tenant isolation: org B holds the same addresses, and no sweep reads or
    writes across the orgs.
 """
@@ -84,7 +87,7 @@ def _seed_org(c: Any, org: str, who: str) -> dict[str, str]:
     ids = {k: _id() for k in (
         "ravi", "dup_person", "free_person", "meera", "dup_contact",
         "client", "shared1", "shared2", "freemail_co", "linked_co", "mailonly_co",
-        "account", "e1", "e2", "e3", "e4", "e5", "wa_account", "chat", "wa1",
+        "github_co", "account", "e1", "e2", "e3", "e4", "e5", "e6", "wa_account", "chat", "wa1",
         "meeting")}
     p = {**ids, "o": org, "me": who, "tag": TAG, "acme": ACME, "client_d": CLIENT,
          "shared": SHARED, "shared2_site": f"http://www.{SHARED}:8080/", "mailonly": MAILONLY, "phone": PHONE, "wa_id": WA_ID}
@@ -109,6 +112,8 @@ def _seed_org(c: Any, org: str, who: str) -> dict[str, str]:
         "INSERT INTO crm_companies (id, name, website, organization_id) VALUES "
         "(CAST(:linked_co AS uuid), 'Linked Co', 'https://www.linkedin.com/company/x', "
         "CAST(:o AS uuid))",
+        "INSERT INTO crm_companies (id, name, website, organization_id) VALUES "
+        "(CAST(:github_co AS uuid), 'Git Co', 'https://github.com/acme', CAST(:o AS uuid))",
         "INSERT INTO crm_companies (id, name, email, organization_id) VALUES "
         "(CAST(:mailonly_co AS uuid), 'Mail only', 'info@' || :mailonly, CAST(:o AS uuid))",
         "INSERT INTO crm_contacts (id, first_name, email, mobile, company_id, "
@@ -147,6 +152,8 @@ def _seed_org(c: Any, org: str, who: str) -> dict[str, str]:
     _mail(c, org, acct, ids["e4"], f"li-{TAG}@linkedin.com", [])
     # E5: a sender at a domain that only a company address holds.
     _mail(c, org, acct, ids["e5"], f"x@{MAILONLY}", [])
+    # E6: a sender at github.com, which a company names as its website.
+    _mail(c, org, acct, ids["e6"], f"notify-{TAG}@github.com", [])
     return ids
 
 
@@ -256,11 +263,12 @@ async def test_the_exact_ambiguous_free_mail_and_site_cases(kg, app_engine) -> N
     assert result.written["participant"] == 6
     assert result.written["domain_company"] == 1
     assert not any(k[4] in {a["shared1"], a["shared2"], a["freemail_co"], a["linked_co"],
-                            a["mailonly_co"]} for k in got)
+                            a["mailonly_co"], a["github_co"]} for k in got)
+    assert not any(k[1] in {a["e4"], a["e5"], a["e6"]} for k in got)
     # The private phone of Ravi gives no WhatsApp edge to a person.
     assert not any(k[0] == "whatsapp" and k[3] == "person" for k in got)
     # Only the one-company host is an alias. The shared, free-mail and
-    # linkedin.com hosts are aliases of nothing.
+    # linkedin.com and github.com hosts are aliases of nothing.
     assert result.aliases == 1
     assert _aliases(kg, kg.org_a) == {a["client"]: [CLIENT]}
 
@@ -450,3 +458,82 @@ async def test_the_alias_writers_change_once_and_never_across_orgs(kg) -> None:
     assert await _in_org(kg, kg.org_a,
                          lambda db: registry.remove_aliases(db, eid, ["CLIENT  co"])) == 1
     assert _aliases(kg, kg.org_a) == {a["client"]: []}
+
+
+LONG = f"{'a' * 60}.{'b' * 55}-{TAG}.test"  # 130 characters: never an alias
+
+
+@_DB_GATE
+async def test_a_host_that_can_never_be_an_alias_takes_no_place_in_the_batch(
+        kg, monkeypatch) -> None:
+    from gateway.kb_entities import graph
+
+    assert len(LONG) == 130
+    a, o = kg.seeded["a"], kg.org_a
+    # The long host sorts first in the batch, by its company id.
+    long_co = "00000000-0000-4000-8000-" + uuid.uuid4().hex[:12]
+    extra_host, extra_co = f"b9-{TAG}.test", _id()
+    mails = [_id(), _id()]
+    monkeypatch.setattr(graph, "ALIAS_BATCH", 2)
+    try:
+        with kg.admin_engine.begin() as c:
+            for company, host, mail in ((long_co, LONG, mails[0]),
+                                        (extra_co, extra_host, mails[1])):
+                c.execute(text(
+                    "INSERT INTO crm_companies (id, name, website, organization_id) "
+                    "VALUES (CAST(:i AS uuid), 'Batch', :h, CAST(:o AS uuid))"),
+                    {"i": company, "h": host, "o": o})
+                _mail(c, o, a["account"], mail, f"x@{host}", [])
+        first = await _sweep(kg, o)
+        assert first.aliases == 2
+        assert _aliases(kg, o) == {a["client"]: [CLIENT], extra_co: [extra_host]}
+    finally:
+        with kg.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM email_messages WHERE id = ANY(CAST(:i AS uuid[]))"),
+                      {"i": mails})
+            c.execute(text("DELETE FROM crm_companies WHERE id = ANY(CAST(:i AS uuid[]))"),
+                      {"i": [long_co, extra_co]})
+
+
+@_DB_GATE
+async def test_a_company_that_moves_its_website_loses_the_old_alias(
+        kg, monkeypatch) -> None:
+    from acb_common import get_settings
+    from gateway.kb_entities import resolver
+
+    a, o = kg.seeded["a"], kg.org_a
+    moved = f"client-{TAG}.io"
+    taker, mail = _id(), _id()
+    settings = get_settings()
+    monkeypatch.setattr(settings, "crm_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "crm_orgs", "*", raising=False)
+    await _sweep(kg, o)
+    assert _aliases(kg, o) == {a["client"]: [CLIENT]}
+    try:
+        # The client moves to a new host, and another company takes the old.
+        with kg.admin_engine.begin() as c:
+            c.execute(text("UPDATE crm_companies SET website = :w "
+                           "WHERE id = CAST(:i AS uuid)"),
+                      {"w": f"https://{moved}", "i": a["client"]})
+            c.execute(text(
+                "INSERT INTO crm_companies (id, name, website, organization_id) "
+                "VALUES (CAST(:i AS uuid), 'Taker', :w, CAST(:o AS uuid))"),
+                {"i": taker, "w": CLIENT, "o": o})
+            _mail(c, o, a["account"], mail, f"hello@{moved}", [])
+        r = await _sweep(kg, o)
+        assert (r.aliases, r.aliases_removed) == (2, 1)
+        assert _aliases(kg, o) == {a["client"]: [moved], taker: [CLIENT]}
+        member = _principal(_address("crm"), o, "feature:crm", "admin:access:manage")
+        hits = await _in_org(kg, o, lambda db: resolver.resolve_alias(
+            db, member, CLIENT, "customer"))
+        assert [h["ref_id"] for h in hits] == [taker]
+        assert (await _sweep(kg, o)).changes == 0
+    finally:
+        with kg.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM email_messages WHERE id = CAST(:i AS uuid)"),
+                      {"i": mail})
+            c.execute(text("DELETE FROM crm_companies WHERE id = CAST(:i AS uuid)"),
+                      {"i": taker})
+            c.execute(text("UPDATE crm_companies SET website = :w "
+                           "WHERE id = CAST(:i AS uuid)"),
+                      {"w": f"HTTPS://WWW.{CLIENT.upper()}/about", "i": a["client"]})

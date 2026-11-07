@@ -199,6 +199,10 @@ Re-verify each column name at dispatch, because the code is the fact.
   To, Cc and Bcc. A WhatsApp message gives the `wa_id` of its sender only.
   The candidates of an address are `people.email` and `crm_contacts.email`.
   A person and a contact with one address are two candidates.
+- **A phone with no country code never matches.** The sweep compares the
+  digits only, and a `wa_id` always holds the country code. So a contact
+  phone saved as `98765 43210` gives no edge. A later slice may add a
+  default country for each org.
 - **No private field is a candidate.** The candidates of a phone are
   `crm_contacts.phone` and `crm_contacts.mobile` only. `people.phone`,
   `personal_email`, `birthday` and `emergency_contact` are the private tier
@@ -210,10 +214,16 @@ Re-verify each column name at dispatch, because the code is the fact.
   rule. A host that two companies of the org share names no company, so it
   gives no row. So `domain_company` is never AMBIGUOUS. A free-mail domain
   of `CONSUMER_DOMAINS` is never a host. Nor is a host of `SITE_HOSTS` in
-  `graph.py`, or a host under one: profile and site-builder hosts such as
-  `linkedin.com` and `wixsite.com`. No form reads `crm_companies.email`,
+  `graph.py`, or a host under one. That list holds profile and
+  site-builder hosts such as `linkedin.com`. It also holds platforms that
+  send mail for many orgs, such as `github.com`. No form reads `crm_companies.email`,
   because many companies use an address at a free-mail host that the list
   does not hold.
+- **`SITE_HOSTS` is a floor, not a proof.** A host that the list does not
+  hold can still send mail for many orgs. Then a company that uses a page of
+  that platform as its website gets a wrong `domain_company` edge. This is
+  a known limit. A holder of `knowledge:manage` removes the wrong edge
+  (§4.4), and the list grows when one is found.
 - **`CONSUMER_DOMAINS` must grow.** It does not hold `rediffmail.com`,
   `yahoo.in` or `yahoo.co.uk`. The email app owns the list
   (`routes/email/mailbox_identity.py`), so add them there and never copy it
@@ -225,11 +235,17 @@ Re-verify each column name at dispatch, because the code is the fact.
   changes, because its id is a stored key. A sweep with no change in the
   data changes 0 rows.
 - **A domain alias follows the data too.** The sweep adds a sender host
-  that names one company to the aliases of its customer entity. It removes
-  that alias when two companies share the host. It does not remove an
-  alias when a company changes its website, because a member may have
-  typed that alias. Each batch holds 1000 hosts, and it leaves out a host
-  that the entity holds already, so the next night goes on.
+  that names one company to the aliases of its customer entity. On an
+  entity of `ref_table = 'crm_companies'`, only the sweep writes aliases.
+  The create route writes aliases for a product or a topic only, and
+  `ensure_by_ref` writes none. So the sweep owns each host-shaped alias
+  there. It removes one that is not the one-company host of its company
+  today. That covers a changed website and a host that two companies
+  share. It also covers a free-mail host and a site host. It never touches an alias that is
+  not host-shaped, or an entity of another table. Each batch holds 1000
+  hosts. It leaves out a host that the entity holds already, a host longer
+  than 120 characters and an entity that holds 50 aliases. So the next
+  night goes on.
 - `pm_task_refs` (migration 255) holds outside links only: a pull request,
   an issue, a commit, a branch, a comment, a document or a URL. So no task
   to page and no task to artifact edge exists. See Q6.

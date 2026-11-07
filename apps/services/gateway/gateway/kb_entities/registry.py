@@ -162,6 +162,9 @@ def page_title(name: Any) -> str:
 #: The bound tenant, as ``people/core.py::has_login`` writes it. ``NULLIF``
 #: fails closed: an unbound GUC matches no row.
 _BOUND = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+#: The bound tenant, for a caller outside this module that must compare an
+#: org with the tenant that :func:`ensure_entity` writes in.
+BOUND_TENANT_SQL = _BOUND
 
 #: Is the owner row in the bound tenant? One check for each ``ref_table``.
 #: ``organization`` has no row level security, so it compares its own id. A
@@ -350,8 +353,9 @@ async def remove_aliases(db: Any, entity_id: Any, aliases: list[str] | None) -> 
     number removed.
 
     An alias goes when ``fold()`` of it equals ``fold()`` of one of
-    *aliases*. The KG-5 sweep calls it for a host that two companies now
-    share, because that alias would name the wrong company. The tenant is the
+    *aliases*. The KG-5 sweep calls it for a host alias that no longer
+    names its company: the website changed, or two companies share the
+    host. The tenant is the
     bound ``app.tenant_id``, so an entity of another org gives 0.
     """
     from gateway.kb_entities.resolver import fold

@@ -198,13 +198,55 @@ def test_the_domain_forms_never_map_a_free_mail_or_site_host() -> None:
     assert "co.email" not in src  # the website host only (KG-5 review)
 
 
+#: The pinned site hosts. A change here is a change of what names a company.
+_SITE_HOSTS = frozenset({
+    "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
+    "youtube.com", "sites.google.com", "wixsite.com", "business.site",
+    "github.io", "wordpress.com", "medium.com", "linktr.ee", "behance.net",
+    "dribbble.com", "pinterest.com", "tiktok.com", "quora.com",
+    "vercel.app", "netlify.app", "herokuapp.com",
+    "github.com", "gitlab.com", "bitbucket.org", "google.com", "goo.gl",
+    "docs.google.com", "drive.google.com", "play.google.com", "notion.so",
+    "slack.com", "zoom.us", "calendly.com", "apple.com", "microsoft.com",
+    "office.com", "live.com", "outlook.com", "amazon.com", "amazonaws.com",
+    "cloudfront.net",
+    "crunchbase.com", "glassdoor.com", "indeed.com", "naukri.com",
+    "justdial.com", "indiamart.com", "tradeindia.com",
+    "whatsapp.com", "t.me", "telegram.me", "wa.me", "bit.ly", "tinyurl.com",
+})
+
+
 def test_the_site_hosts_are_pinned() -> None:
-    assert frozenset({
-        "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
-        "youtube.com", "sites.google.com", "wixsite.com", "business.site",
-        "github.io", "wordpress.com",
-    }) == graph.SITE_HOSTS
-    assert not graph.SITE_HOSTS & CONSUMER_DOMAINS
+    assert _SITE_HOSTS == graph.SITE_HOSTS
+    # A host under a site host is left out too.
+    assert "LIKE '%.' || sh.v" in graph._COMPANY_HOSTS
+
+
+def test_no_not_in_over_a_select_in_the_graph() -> None:
+    """A ``NOT IN (SELECT`` over a form is quadratic on a big org. The graph
+    uses ``NOT EXISTS``, which Postgres plans as a hash anti-join."""
+    for name in ("graph.py", "registry.py"):
+        src = (_GATEWAY / "kb_entities" / name).read_text(encoding="utf-8")
+        assert not re.search(r"NOT\s+IN\s*\(\s*SELECT", src, re.IGNORECASE), name
+    assert "AND NOT EXISTS (SELECT 1 FROM ({select}) AS x" in graph._DELETE_STALE_SQL
+
+
+def test_the_alias_remove_reads_host_aliases_of_crm_companies_only() -> None:
+    sql = graph._alias_remove_sql()
+    assert "e.ref_table = 'crm_companies'" in sql
+    assert f"lower(ea.v) ~ '{graph._HOST_SHAPE}'" in sql
+    assert re.fullmatch(graph._HOST_SHAPE, "acme.co.in")
+    assert not re.fullmatch(graph._HOST_SHAPE, "the penrose")
+    assert not re.fullmatch(graph._HOST_SHAPE, "px-1")
+
+
+def test_the_alias_add_leaves_out_rows_that_can_never_be_written() -> None:
+    from gateway.kb_entities import registry
+
+    sql = graph._alias_add_sql()
+    assert f"length(o.k) <= {registry.ALIAS_MAX}" in sql
+    assert f"cardinality(e.aliases) >= {registry.ALIASES_MAX}" in sql
+    assert f"CAST(:org AS uuid) = {registry.BOUND_TENANT_SQL}" in sql
 
 
 def test_no_form_reads_a_private_field_of_people() -> None:

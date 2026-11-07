@@ -39,8 +39,9 @@ entity, through ``registry.add_aliases``.
 **Identifier rows follow the data.** An identifier row carries ``created_by``
 :data:`RESOLVER`. Each sweep sets its provenance and confidence to the match
 of today and deletes it when the match is gone (:func:`_reconcile`). A
-removed row (§4.4), a structural row and a page row never change. A host
-alias that two companies now share is removed, through
+removed row (§4.4), a structural row and a page row never change. On a
+customer entity the sweep owns each host-shaped alias, and it removes one
+that is not the one-company host of its company today, through
 ``registry.remove_aliases``.
 
 **When it runs.** The job kind :data:`SWEEP_KIND` runs on the shared job
@@ -267,12 +268,28 @@ def _phone_key(expr: str) -> str:
 #: A shorter run is an extension, and a longer run is no phone.
 _PHONE_OK = "BETWEEN 8 AND 15"
 
-#: Hosts that many companies share for a profile or a site, so a website
-#: there names no company. A host under one of them is left out too.
+#: Hosts that many companies share for a profile, a page or a site, and
+#: hosts that send mail for many orgs. A website there names no company. A
+#: host under one of them is left out too. The list is a floor, not a proof:
+#: a member removes a wrong edge with ``knowledge:manage`` (§4.4).
 SITE_HOSTS: frozenset[str] = frozenset({
+    # Profiles and site builders.
     "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
     "youtube.com", "sites.google.com", "wixsite.com", "business.site",
-    "github.io", "wordpress.com",
+    "github.io", "wordpress.com", "medium.com", "linktr.ee", "behance.net",
+    "dribbble.com", "pinterest.com", "tiktok.com", "quora.com",
+    "vercel.app", "netlify.app", "herokuapp.com",
+    # Platforms and tools that send mail for many orgs.
+    "github.com", "gitlab.com", "bitbucket.org", "google.com", "goo.gl",
+    "docs.google.com", "drive.google.com", "play.google.com", "notion.so",
+    "slack.com", "zoom.us", "calendly.com", "apple.com", "microsoft.com",
+    "office.com", "live.com", "outlook.com", "amazon.com", "amazonaws.com",
+    "cloudfront.net",
+    # Directories, job boards and marketplaces.
+    "crunchbase.com", "glassdoor.com", "indeed.com", "naukri.com",
+    "justdial.com", "indiamart.com", "tradeindia.com",
+    # Messengers and short links.
+    "whatsapp.com", "t.me", "telegram.me", "wa.me", "bit.ly", "tinyurl.com",
 })
 
 
@@ -468,11 +485,12 @@ _UPDATE_EDGES_SQL = (
     f"AND (l.provenance IS DISTINCT FROM {_PROV} OR l.confidence IS DISTINCT FROM {_CONF})"
 )
 
-#: Delete each row whose match no longer holds.
+#: Delete each row whose match no longer holds. ``NOT EXISTS`` lets
+#: Postgres plan a hash anti-join over the form, never a row by row scan.
 _DELETE_STALE_SQL = (
     f"DELETE FROM kb_links l WHERE {_OWN_ROWS} "
-    "AND (l.source_id, l.target_id) NOT IN (SELECT x.s, x.t FROM ({select}) AS x "
-    "WHERE x.s IS NOT NULL AND x.t IS NOT NULL)"
+    "AND NOT EXISTS (SELECT 1 FROM ({select}) AS x "
+    "WHERE x.s = l.source_id AND x.t = l.target_id)"
 )
 
 
@@ -559,39 +577,57 @@ class SweepResult:
 ALIAS_BATCH = 1000
 
 
+#: An alias that looks like a host. On an entity of a CRM company, only the
+#: sweep writes such an alias, so the sweep owns it.
+_HOST_SHAPE = "^[a-z0-9-]+([.][a-z0-9-]+)+$"
+
+
 def _alias_add_sql() -> str:
     """Each one-company host that an email of the org sends from, and that
-    the customer entity of that company does not hold as an alias yet. So
-    each night's batch moves on. Ids and hosts only."""
+    can still become an alias of the customer entity of that company.
+
+    It leaves out a host that the entity holds already, a host longer than
+    ``registry.ALIAS_MAX``, an entity at ``registry.ALIASES_MAX`` and an org
+    that is not the bound tenant, where ``ensure_entity`` makes nothing. So
+    no row that can never be written takes a place in the batch, and each
+    night's batch moves on. Ids and hosts only."""
     return (
         f"SELECT o.t AS company_id, o.k AS domain FROM ({_ONE_COMPANY_HOSTS}) AS o "
-        f"WHERE o.k IN (SELECT d.k FROM ({_SENDER_DOMAINS}) AS d) "
+        f"WHERE length(o.k) <= {int(registry.ALIAS_MAX)} "
+        f"AND CAST(:org AS uuid) = {registry.BOUND_TENANT_SQL} "
+        f"AND o.k IN (SELECT d.k FROM ({_SENDER_DOMAINS}) AS d) "
         "AND NOT EXISTS (SELECT 1 FROM kb_entities e "
         "WHERE e.organization_id = CAST(:org AS uuid) AND e.ref_table = 'crm_companies' "
-        "AND e.ref_id = CAST(o.t AS uuid) AND EXISTS (SELECT 1 FROM unnest(e.aliases) "
-        "AS ea(v) WHERE lower(ea.v) = o.k)) "
+        "AND e.ref_id = CAST(o.t AS uuid) "
+        f"AND (cardinality(e.aliases) >= {int(registry.ALIASES_MAX)} "
+        "OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS ea(v) WHERE lower(ea.v) = o.k))) "
         "ORDER BY o.t, o.k LIMIT :n"
     )
 
 
 def _alias_remove_sql() -> str:
-    """Each customer entity that holds a host as an alias that two companies
-    of the org now share. Ids and hosts only."""
+    """Each host-shaped alias of a customer entity that is not the host of
+    its company today.
+
+    That covers a company that changed its website, a host that two
+    companies now share, and a host of ``SITE_HOSTS`` or ``CONSUMER_DOMAINS``,
+    because none of them is a one-company host. An alias that does not look
+    like a host, and an entity of any other ``ref_table``, are never read
+    here. Ids and aliases only."""
     return (
-        "SELECT e.id::text AS entity_id, c.k AS domain "
-        f"FROM ({_COMPANY_HOSTS}) AS c JOIN kb_entities e "
-        "ON e.organization_id = CAST(:org AS uuid) AND e.ref_table = 'crm_companies' "
-        "AND e.ref_id = CAST(c.t AS uuid) "
-        f"WHERE c.k IN ({_SHARED_HOSTS}) "
-        "AND EXISTS (SELECT 1 FROM unnest(e.aliases) AS ea(v) WHERE lower(ea.v) = c.k) "
+        "SELECT e.id::text AS entity_id, ea.v AS domain "
+        "FROM kb_entities e CROSS JOIN LATERAL unnest(e.aliases) AS ea(v) "
+        f"LEFT JOIN ({_ONE_COMPANY_HOSTS}) AS o ON o.t = e.ref_id::text "
+        "WHERE e.organization_id = CAST(:org AS uuid) AND e.ref_table = 'crm_companies' "
+        f"AND lower(ea.v) ~ '{_HOST_SHAPE}' AND (o.k IS NULL OR lower(ea.v) <> o.k) "
         "ORDER BY 1, 2 LIMIT :n"
     )
 
 
 async def _sync_domain_aliases(db: Any, org: str) -> tuple[int, int]:
-    """Add each one-company sender host to the aliases of its customer
-    entity, and remove each host alias that two companies now share. Both go
-    through the registry. Answers ``(added, removed)``."""
+    """Remove each host alias that no longer names its company, then add
+    each one-company sender host to the aliases of its customer entity. Both
+    go through the registry. Answers ``(added, removed)``."""
     gone = (await db.execute(text(_alias_remove_sql()),
                              {"org": org, "n": ALIAS_BATCH})).fetchall()
     removed = 0
@@ -601,8 +637,6 @@ async def _sync_domain_aliases(db: Any, org: str) -> tuple[int, int]:
                              {"org": org, "n": ALIAS_BATCH})).fetchall()
     added = 0
     for row in rows:
-        if len(row.domain) > registry.ALIAS_MAX:
-            continue
         entity = await registry.ensure_entity(db, "crm_companies", row.company_id)
         if entity is not None:
             added += await registry.add_aliases(db, entity, [row.domain])
