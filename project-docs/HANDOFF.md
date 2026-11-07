@@ -1936,7 +1936,3 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** in `apps/services/orchestrator/orchestrator/executor.py`, `async def _integration_authorizer` takes only `event_payload` and `thread_id`, and reads the member from the payload → still open. That one read sets two things: the credential filter, and the memory permission gate through `_set_memory_permission`.
 - **Added:** 2026-10-30 · H-337 session
 
-### H-438 · Take the /pull member from the session before Mem0 turns on · [AGENT] · security
-- **Metorite:** #1127. The task holds the full entry.
-- **Check:** `grep -n "req.user_email or" apps/services/gateway/gateway/main.py`. A hit in the `/pull` handler (2026-10-30: `user_id: str = req.user_email or ...`) means still open.
-- **Added:** 2026-10-30 · H-337 session
