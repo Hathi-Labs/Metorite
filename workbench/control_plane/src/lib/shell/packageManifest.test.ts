@@ -279,6 +279,23 @@ describe("PKG-6 packageManifest", () => {
       expect(isStarred({ pins: [], known: [] }, base(), "/zz-sub")).toBe(false);
     });
 
+    it("the sub-entry row has the classes of an ordinary row, and its label truncates", () => {
+      const merged = mergeInstallNav(base(), installNavPanes(manifest({ nav: [host(), sub()] })));
+      const section = merged.find((s) => s.items.some((p) => p.href === "/zz-sub"))!;
+      const html = renderToStaticMarkup(
+        createElement(NavSectionBlock, { section, pathname: "/", collapsed: false, folded: false, onToggle: () => {}, onNavigate: () => {}, shellNav: true }),
+      );
+      const classOf = (href: string) => new RegExp(`<a[^>]*data-nav-row="${href}"[^>]*class="([^"]*)"|<a[^>]*class="([^"]*)"[^>]*data-nav-row="${href}"`).exec(html);
+      const cls = (href: string) => {
+        const m = classOf(href)!;
+        return (m[1] ?? m[2]).split(/\s+/).sort().join(" ");
+      };
+      expect(cls("/zz-sub")).toBe(cls(hostPane().href));
+      // The wrapper is a flex column, so the link is a flex item and not inline.
+      expect(html).toMatch(/data-nav-sub="[^"]*" class="flex flex-col /);
+      expect(html).toMatch(/class="min-w-0 truncate font-medium[^"]*">Sub|class="min-w-0 truncate font-medium/);
+    });
+
     it("the sidebar draws the sub-entry indented under its host", () => {
       const merged = mergeInstallNav(base(), installNavPanes(manifest({ nav: [host(), sub()] })));
       const section = merged.find((s) => s.items.some((p) => p.href === "/zz-sub"))!;

@@ -1047,11 +1047,13 @@ export function NavSectionBlock({
               />
             );
             // A sub-app sits under its host: the same row, one step in, with
-            // the house rule line (PKG-15b, `package_host.md` §8.2).
+            // the house rule line (PKG-15b, `package_host.md` §8.2). The
+            // wrapper is a flex column, so the row is a flex item as in the
+            // section list. A plain block would leave the link inline.
             return p.parent === undefined ? (
               link
             ) : (
-              <div key={p.href} data-nav-sub={p.parent} className="ml-4 border-l border-sidebar-border/50 pl-1">
+              <div key={p.href} data-nav-sub={p.parent} className="flex flex-col ml-4 border-l border-sidebar-border pl-1">
                 {link}
               </div>
             );
@@ -1227,8 +1229,8 @@ export function NavLink({
         className={`rounded-lg glass:rounded-row tech-transition px-3 py-2 text-sm ${onRowMenu ? "min-w-0 flex-1" : tone}`}
       >
         <div className="flex items-center gap-2.5">
-          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className={active ? "glass:text-sidebar-foreground" : "glass:text-muted-foreground"} />
-          <span className="font-medium text-[13px] glass:text-subhead">{pane.label}</span>
+          <Icon name={pane.icon} size={16} strokeWidth={active ? 2.5 : 2} className={`shrink-0 ${active ? "glass:text-sidebar-foreground" : "glass:text-muted-foreground"}`} />
+          <span className="min-w-0 truncate font-medium text-[13px] glass:text-subhead">{pane.label}</span>
           {/* With a menu, the badge gives its place to the "···" on hover or
               focus, as a `RailRow` count does (`rail-row-meta`). It is
               hidden from sight only, so it stays in the link's name. The
