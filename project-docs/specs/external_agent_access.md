@@ -1996,6 +1996,10 @@ The instructions, the prompt and the `my_work` text give one rule. Act on an ans
 
 A claim does not make an answer yours, because a claim writes the key on a run with no key. A Resume prompt is a hand-off to continue the work, never an answer. The edge marks it with `resume` true on the activity, and only the gateway sets that mark. The task prompt and the `list_agent_runs` text carry the same rule. The server instructions carry one pointer sentence only, because the client cuts them at 4096 characters. A run with no key after a Resume is not left alone.
 
+**One exception: the watcher hand-off (CIV-14g, owner decision A, task 1731, 2026-11-07).** The answer watcher starts a fresh session, and that session did not ask. Its first prompt starts with `ANSWER WATCHER HAND-OFF for run` and a run id. For that named run only, the session may act on the newest person prompt. Its member must be the member of the run, and no later activity may have withdrawn it. The exception never allows a restart, an erase or a stop.
+
+`prompts.WATCHER_EXCEPTION` holds the text. Fence: `test_mcp_edge_prompts.py` `TestTheAnswerRule`.
+
 `list_agent_runs` takes `mine_only`. It reads on past a page of sibling runs. A call with no session gets an empty list with no gateway read. A gateway fix for the adopt case is still open.
 
 While the flag is off, `yours` is false in every row. Fences: `test_mcp_edge_context.py` `TestYoursAndMineOnly` and `test_mcp_edge_prompts.py` `TestTheAnswerRule`.
