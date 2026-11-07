@@ -110,8 +110,11 @@ _CARD_ANSWER_REASON = (
 _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no view to keep."
 #: The day planner belongs to the Calendar app and the Tasks assistant
 #: (``calendar_ai_review.md`` §4). A second caller would be a second planner.
+#: CAL-1a (task 1675): the main chat reaches it through the ``calendar-day``
+#: pack, which holds the My Tasks planner tools. No Projects tool calls these routes.
 _PLANNER_REASON = (
-    "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4)."
+    "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4). "
+    "The chat reaches it through the calendar-day pack (my_tasks_plan_day and its siblings)."
 )
 #: A file import is an admin's upload through a wizard (project_import.md §7.7).
 _IMPORT_REASON = (
@@ -1658,6 +1661,11 @@ UI_ACTIONS: dict[str, str] = {
     # (`withdraw_agent_answer`, PLANNED for SW-43c).
     "agentRunsApi.withdrawAnswer": "withdraw_agent_answer",
     "attentionApi.list": "needs_attention",
+    # The Needs attention lens of My tasks: the same route with `mine=true`.
+    "attentionApi.mine": "needs_attention",
+    # The decisions of one task and the answer of one decision (D173).
+    "decisionsApi.forTask": "my_decisions",
+    "decisionsApi.answer": "answer_decision",
     # EA-6g: the run's member approves or declines an archive request. It is in
     # UI_EXEMPT: the chat never answers one (D-OP-13).
     # ── notificationsApi ─────────────────────────────────────────────────
@@ -1695,6 +1703,11 @@ UI_EXEMPT: dict[str, str] = {
     ),
     "projectsApi.setPositions": (
         "The hand-dragged order of cards on a saved view. " + _UI_STATE_REASON
+    ),
+    "projectsApi.mySummary": (
+        "The counts that the Overview tab of My tasks draws (WS-64 OP-11). The "
+        "route is class X: the chat reads the same tasks with my_work and "
+        "list_tasks, and it counts them in its answer."
     ),
     "projectsApi.vocabulary": (
         "The shared vocabulary list of Projects settings. The chat reads a "

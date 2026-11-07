@@ -4055,7 +4055,9 @@ The first production run PASSED on 2026-09-29, all four steps, on
 ### 21.13 H-201 — the other readers bind the tenant
 
 **Status: BUILT 2026-09-30, part 1 of H-201, with fix rounds 1 and 2. The
-observability, debug, skills and plugin rows BUILT 2026-11-05 (task 612).** This part binds the readers
+observability, debug, skills and plugin rows BUILT 2026-11-05 (task 612).
+The expand half of the `agent_avatars` key BUILT 2026-11-07 (H-201d, task
+1719, migration 354). The contract half is OPEN (HANDOFF H-443).** This part binds the readers
 that are nearest to chat. It also adds the room check on the answer path.
 H-201 in `HANDOFF.md` lists the work that is still open.
 
@@ -4076,9 +4078,29 @@ policy on each table below.
 | `routes/integrations.py` `GET /plugins`, `DELETE /plugins/{id}` | `plugins` | a request | `current_tenant()` | bound 2026-11-05 |
 
 With no tenant, each 2026-11-05 reader gives an empty answer, and a debug get
-or flag gives 404. An avatar write gives 403, and a plugin delete gives 404. `agent_avatars` keeps the key
-`agent_name` alone, so org B cannot save a name that org A holds. Task 1719
-owns that key.
+or flag gives 404. An avatar write gives 403, and a plugin delete gives 404.
+
+**The `agent_avatars` key (H-201d, task 1719).** Migration 64 made
+`agent_name` alone the primary key, so org B cannot save a name that org A
+holds. The fix is an expand/contract pair (R6), because the deploy applies
+migrations before it restarts the services.
+
+1. **Expand, migration 354 (built).** It adds the unique index
+   `uq_agent_avatars_org_agent` on `(organization_id, agent_name)` and keeps
+   the old key. `_save_avatar` names the new index in `ON CONFLICT`. A
+   same-org save updates the row. A save of a name that another org holds
+   still fails, on `agent_avatars_pkey`, and never reaches the other row.
+2. **Contract, a later release (open, HANDOFF H-443).** It drops
+   `agent_avatars_pkey`. Then each org keeps its own avatar for one name.
+   It cannot ship with 354. The old gateway runs on the new schema until the
+   restart, and its `ON CONFLICT (agent_name)` needs a unique rule on
+   exactly `(agent_name)`.
+
+Production holds no row with a NULL `organization_id`, because tenancy
+phase 3 sets the column NOT NULL. A unique index treats each NULL as
+distinct, so on a database without the tenancy phases it does not constrain
+a NULL row. `tests/unit/test_agent_avatars_key_per_tenant_r8.py` proves both
+states as the app role under FORCE RLS.
 
 **The rules.**
 
