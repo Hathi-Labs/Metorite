@@ -152,10 +152,17 @@ async function openHome(page: Page, width: number, height: number, opts: Install
 }
 
 async function openPanel(page: Page) {
-  const toggle = page.locator("[data-assistant-toggle]");
+  // The top-bar toggle is gone (GL-12, 30e72d332). The Ask bar's side-panel
+  // button opens the dock.
+  const toggle = page.getByRole("button", { name: "Open the chat beside the page" });
   await expect(toggle).toBeVisible({ timeout: 60_000 });
-  await toggle.click();
-  await expect(panel(page)).toHaveAttribute("data-panel-phase", "open");
+  // A press before the bar hydrates does nothing, so press again while the
+  // button is still there. It leaves the bar once the panel is asked for, so
+  // a press that worked is never repeated. The panel's chunk loads on demand.
+  await expect(async () => {
+    if (await toggle.isVisible()) await toggle.click();
+    await expect(panel(page)).toHaveAttribute("data-panel-phase", "open", { timeout: 4_000 });
+  }).toPass({ timeout: 60_000 });
   await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
 }
 

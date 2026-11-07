@@ -127,20 +127,27 @@ _SEARCH_OFF: dict[str, Any] = {
 class TestThePairSet:
     """Item 4: one SQL constant in ``identity.py``, beside the self set."""
 
+    #: The tenant predicate of the self set (H-334c). The pair set does not
+    #: name it yet, so the two texts differ by this clause only.
+    _BOUND = (" AND a.organization_id = "
+              "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)")
+
     def test_it_is_the_self_set_less_this_mailbox_and_each_separate_one(self):
-        assert identity.PAIRED_MAILBOX_IDS_SQL == (
-            identity.SELF_MAILBOX_IDS_SQL
-            + " AND o.id <> a.id AND a.in_all_inboxes AND o.in_all_inboxes")
+        unbound_self = identity.SELF_MAILBOX_IDS_SQL.removesuffix(self._BOUND)
+        pair = identity.PAIRED_MAILBOX_IDS_SQL
+        assert pair == (
+            unbound_self + " AND o.id <> a.id AND a.in_all_inboxes AND o.in_all_inboxes")
 
     def test_the_self_text_did_not_change(self):
         """WS-65 SM-2 (D-SM-5): a shared mailbox is never "self". With no
-        shared row the set is the set of before."""
+        shared row the set is the set of before. H-334c adds the bound
+        tenant on ``a``."""
         assert identity.SELF_MAILBOX_IDS_SQL == (
             "SELECT o.id FROM email_accounts a "
             "JOIN email_accounts o ON (o.id = a.id OR (o.user_id = a.user_id "
             "AND o.shared_since IS NULL AND a.shared_since IS NULL)) "
             "AND o.organization_id IS NOT DISTINCT FROM a.organization_id "
-            "WHERE a.id = :aid")
+            "WHERE a.id = :aid" + self._BOUND)
 
     def test_a_column_anchors_it_for_a_page_and_nothing_else_does(self):
         assert "WHERE a.id = m.account_id AND" in identity.paired_mailbox_ids_sql(
