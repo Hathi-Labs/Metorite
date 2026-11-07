@@ -228,8 +228,46 @@ def durations(junit_dir: Path) -> dict[str, float]:
     return dict(sorted(out.items()))
 
 
-def gate_output(gate_json: Path) -> list[str]:
-    """``full=`` and ``files=`` lines for $GITHUB_OUTPUT. Fails open to full."""
+# CIV-17. How many unit shards a selection needs. A tier is (the most test
+# files it takes, the shards it gets). A larger selection, and a full run,
+# take ALL_SHARDS. The limits are a first guess, not a measurement: pr-check
+# prints the count in each run, so re-pick them from the next 10 PRs.
+ALL_SHARDS = 6
+SHARD_TIERS = ((40, 1), (120, 3))
+
+
+def shard_count(mode: str, paths: list[str]) -> int:
+    """The shards that ``mode`` (from ``select_shard``) needs: 0 for an empty
+    selection, ALL_SHARDS for a full run or a large selection."""
+    if mode == "empty":
+        return 0
+    if mode != "selection":
+        return ALL_SHARDS
+    for limit, shards in SHARD_TIERS:
+        if len(paths) <= limit:
+            return shards
+    return ALL_SHARDS
+
+
+def shard_list(count: int) -> str:
+    """The ``shards`` job output: a JSON list that the ``test`` matrix reads."""
+    return json.dumps(list(range(1, count + 1)), separators=(",", ":"))
+
+
+def gate_output(gate_json: Path, ignored: str = "") -> list[str]:
+    """``full=``, ``files=`` and ``shards=`` lines for $GITHUB_OUTPUT.
+
+    Fails open to full (and so to all shards). ``ignored`` is the output of
+    ``fences.py pytest-ignore``: a shard drops those files from the selection,
+    so the count has to drop them too."""
+    lines = _gate_lines(gate_json)
+    full = lines[0].partition("=")[2]
+    files = lines[1].partition("=")[2]
+    mode, paths = select_shard(full, files, ignored, "success")
+    return [*lines, f"shards={shard_list(shard_count(mode, paths))}"]
+
+
+def _gate_lines(gate_json: Path) -> list[str]:
     try:
         data = json.loads(gate_json.read_text(encoding="utf-8"))
         full = bool(data["full"])
@@ -307,6 +345,7 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--out", type=Path, required=True)
     g = sub.add_parser("gate-output", help="turn affected_tests.py --gate JSON into step outputs")
     g.add_argument("--json", type=Path, required=True)
+    g.add_argument("--ignored", default="", help="the output of fences.py pytest-ignore")
     sel = sub.add_parser("select", help="what this shard runs, as step outputs")
     sel.add_argument("--full", default="")
     sel.add_argument("--files", default="")
@@ -325,12 +364,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"::error::{p}")
         return 1 if problems else 0
     if args.cmd == "gate-output":
-        print(chr(10).join(gate_output(args.json)))
+        print(chr(10).join(gate_output(args.json, args.ignored)))
         return 0
     if args.cmd == "select":
         mode, paths = select_shard(args.full, args.files, args.ignored, args.changes_result)
         print(f"mode={mode}")
         print(f"paths={' '.join(paths)}")
+        print(f"splits={shard_count(mode, paths) or ALL_SHARDS}")
         return 0
     if args.cmd == "empty-report":
         print("wrote an empty report" if empty_report(args.out) else "report exists")

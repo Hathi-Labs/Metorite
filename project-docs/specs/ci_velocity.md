@@ -529,6 +529,37 @@ order.
 The Metorite epic is task 1628, under the Developer Workflow project. Each
 slice has one subtask:
 
+### CIV-17 · pr-check sizes its unit shards to the selection (task 1988)
+
+The org is on GitHub Free: 20 jobs at once for every repo. One pr-check run
+used about 17, and 13 box lanes pushed at once on 2026-11-06. Runs queued for
+1 to 3 hours. CIV-3 made a shard run only the selected tests, but all six
+shard jobs still started for an empty selection.
+
+**What changes.**
+- The `changes` job also puts out `shards`, a JSON list: `[]` for an empty
+  selection, `[1]` for 40 test files or fewer, `[1,2,3]` for 120 or fewer, and
+  `[1,2,3,4,5,6]` otherwise. `scripts/ci_unit_guard.py` owns the rule
+  (`SHARD_TIERS`). The limits are a first guess. Re-pick them from the next 10
+  PRs.
+- The `test` matrix reads `fromJSON(needs.changes.outputs.shards ||
+  '[1,2,3,4,5,6]')`, so a failed `changes` job runs all six. `--splits` comes
+  from the pick step, which calls the same function.
+- The `test` job does not start for `[]`, because GitHub fails a matrix with
+  no values. `Unit tests` still runs (`if: always()`). It passes a skipped
+  `test` job ONLY when `changes` succeeded and `shards` is `[]`. Any other skip
+  stays red (#1077).
+- Drafts are NOT skipped. The first design skipped the heavy jobs on a draft.
+  A skipped required check leaves a passing twin on the head SHA (#1077), and
+  skipping the browser suite breaks D-PM-21. So every job runs on a draft too.
+
+**Fence:** `tests/unit/test_ci_unit_guard.py`, `tests/unit/test_fence_lists.py`.
+**Verify:** a docs-only PR starts no shard and `Unit tests` passes. A PR that
+breaks one test turns `Unit tests` red. Compare jobs per PR before and after
+on 10 PRs.
+AGENT-SAFE. STANDARD tier, with an Opus diff review.
+
+
 | Slice | Task | Slice | Task |
 |---|---|---|---|
 | CIV-1 | 1629 | CIV-6 | 1634 |
@@ -536,4 +567,5 @@ slice has one subtask:
 | CIV-3 | 1631 | CIV-8 | 1636 |
 | CIV-4 | 1632 | CIV-9 | 1637 |
 | CIV-5 | 1633 | CIV-4b | 1711 |
-| CIV-4c | 1736 | CIV-13 | 1721 |
+| CIV-17 | 1988 | CIV-13 | 1721 |
+| CIV-4c | 1736 | | |

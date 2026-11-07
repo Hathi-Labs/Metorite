@@ -889,7 +889,9 @@ def test_each_r8_shard_runs_the_r8_files_in_pr_checks_split(parsed: dict, pr_che
     assert "--reruns 1" in run
     assert " -x " not in f" {run} ", "no -x: one run must report every failure"
     pr_run = _job_step(pr_check, "test", "Run unit tests (this shard)")["run"]
-    assert "--splits 6" in pr_run and "--splitting-algorithm duration_based_chunks" in pr_run
+    # CIV-17: pr-check sizes the split to the selection. A full run is 6.
+    assert "--splits ${{ steps.pick.outputs.splits }}" in pr_run
+    assert "--splitting-algorithm duration_based_chunks" in pr_run
     keep = _job_step(parsed, R8_SUITE, "Keep this shard's report")
     assert keep["if"] == "always()", "a red shard keeps its report too"
     assert keep["with"]["name"] == "r8-junit-shard-${{ matrix.shard }}"
