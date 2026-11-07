@@ -2562,7 +2562,7 @@ answer is 404, and the verification commands of §9.6 pass.
   assistant row and in a tool result. The new chat holds none of it. A `NULL`
   row and a `FALSE` row do not cross. The test runs on a real database (R8).
 - `tests/unit/test_no_new_chat_copy.py`: no `EGRESS_HOLD_NOTE_*` or
-  `EGRESS_HELD_*` text holds "new chat". Each text holds the tap.
+  `EGRESS_HELD_*` text holds "new chat". Only a `_CONTINUE` text holds the tap, and it names the exact `CONTINUE_LABEL`.
 - `test_delegation_no_egress.py:1708` stays green: a fresh chat has no mark.
 - `tests/unit/test_continue_carry.py` also holds these cases:
   - The newest typed row of ANOTHER member in a shared room does not cross.
