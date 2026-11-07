@@ -6,7 +6,8 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  * bell (`src/lib/shell/navNeeds.ts`, `useNavNeeds.ts`).
  *
  * Each test is written so the obvious wrong build fails it:
- *   1. Email 3 and Tasks 2: the rows say 3 and 2, in a quiet number, and the
+ *   1. Email 3 and Tasks 2: the rows say 3 and 2, in a pill as My Day's is
+ *      (owner, 2026-11-01, 53a965c3e), and the
  *      link names say ", 3 need you" and ", 2 need you".
  *   2. A failed email source: no number on Email, never a 0. A source that
  *      fails on a later poll drops its number, and never keeps the old one.
@@ -189,7 +190,7 @@ test.describe("desktop", () => {
 
   // OP-4 (2026-10-25): My Tasks left the nav, and the member's due tasks count
   // on the Projects row (`NEEDS_APP_HREF`). The stub's Projects source adds 0.
-  test("Email 3 and Tasks 2 (on Projects): each row says its number, quietly, and its name says it in words", async ({ page }) => {
+  test("Email 3 and Tasks 2 (on Projects): each row says its number in a pill, and its name says it in words", async ({ page }) => {
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(count(page, "/email")).toHaveText("3");
@@ -198,9 +199,10 @@ test.describe("desktop", () => {
     await expect(sidebar(page).getByRole("link", { name: "Projects, 2 need you", exact: true })).toBeVisible();
     // My Tasks is a preview pane, so it has no row of its own.
     await expect(row(page, "/tasks")).toHaveCount(0);
-    // Quiet: the muted text token, no fill, and never the badge vocabulary.
-    await expect(count(page, "/email")).toHaveClass(/text-muted-foreground/);
-    await expect(count(page, "/email")).not.toHaveClass(/bg-/);
+    // A pill, as My Day's is (53a965c3e, 2026-11-01: it was a quiet number
+    // until then), and never the badge vocabulary.
+    await expect(count(page, "/email")).toHaveClass(/bg-primary\/15/);
+    await expect(count(page, "/email")).toHaveClass(/text-primary/);
     await expect(row(page, "/email").locator("[data-nav-badge]")).toHaveCount(0);
   });
 
@@ -275,7 +277,9 @@ test.describe("desktop", () => {
     await page.goto("/settings/appearance");
     await expect(count(page, "/projects")).toHaveText("2");
     const myDay = sidebar(page).locator("[data-nav-my-day]");
-    const before = await myDay.innerText();
+    // `textContent`: the label and the pill sit on one line now, so
+    // `innerText` gave "Home\n5" where the matcher reads "Home5".
+    const before = await myDay.textContent();
 
     await row(page, "/projects").getByRole("link").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Hide from sidebar" }).click();
