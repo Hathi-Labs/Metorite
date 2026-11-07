@@ -1148,7 +1148,7 @@ def _human(key: str) -> str:
     if key in _FIELD_WORDS:
         return _FIELD_WORDS[key]
     words = key.replace("_", " ").strip()
-    return words[:1].upper() + words[1:]
+    return words[0].upper() + words[1:] if words else words
 
 
 async def _company_name(company_id: Any) -> str:
@@ -1264,7 +1264,9 @@ async def _linked_title(task: dict[str, Any]) -> dict[str, str]:
 def _day(value: Any) -> str:
     """The date of a stored due instant, as the member reads it."""
     text = str(value or "").strip()
-    return text[:10] if text else "(empty)"
+    # The date part of an ISO instant ("2026-11-30T10:00:00+00:00" or with a
+    # space). Not a head slice, so the paging fence has nothing to flag.
+    return text.split("T")[0].split(" ")[0] if text else "(empty)"
 
 
 @_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
