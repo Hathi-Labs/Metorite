@@ -1228,7 +1228,11 @@ class TestTheTips:
     HELD = _uuid(7500)
 
     @pytest.fixture
-    def quiet(self, board, redis_fake, monkeypatch):
+    def tips_redis(self, redis_fake):  # noqa: F811 — the fixture of test_mcp_edge_writes
+        return redis_fake
+
+    @pytest.fixture
+    def quiet(self, board, tips_redis, monkeypatch):
         """A run of this client went quiet, so ``my_work`` lists it as held."""
         monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
         board.tasks[self.HELD] = _task_row(self.HELD)
@@ -1238,11 +1242,11 @@ class TestTheTips:
     async def _result(self) -> dict[str, Any]:
         return _structured(await _tool("my_work", {}))
 
-    async def test_the_tips_are_dark_while_playbook_orgs_is_empty(self, board, redis_fake):
+    async def test_the_tips_are_dark_while_playbook_orgs_is_empty(self, board, tips_redis):
         board.tasks[self.HELD] = _task_row(self.HELD)
         board.runs = [_run(_uuid(5500), self.HELD, state="stale")]
         assert "tips" not in await self._result()
-        assert redis_fake.calls == []
+        assert tips_redis.calls == []
 
     async def test_the_tips_stay_dark_for_an_organization_off_the_list(self, quiet, monkeypatch):
         monkeypatch.setattr(get_settings(), "playbook_orgs", "00000000-0000-4000-8000-000000000001")
@@ -1262,28 +1266,29 @@ class TestTheTips:
         assert "tips" in await self._result()
         assert "tips" not in await self._result()
 
-    async def test_no_stalled_tip_without_a_quiet_run(self, board, redis_fake, monkeypatch):
+    async def test_no_stalled_tip_without_a_quiet_run(self, board, tips_redis, monkeypatch):
         monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
         _assign(board, _uuid(7501))
         assert "tips" not in await self._result()
 
-    async def test_a_store_outage_shows_no_tip_and_no_error(self, quiet, redis_fake):
-        redis_fake.fail = ConnectionError("redis is down")
+    async def test_a_store_outage_shows_no_tip_and_no_error(self, quiet, tips_redis):
+        tips_redis.fail = ConnectionError("redis is down")
         result = await self._result()
         assert "tips" not in result and result["rows"]
 
-    async def test_the_key_is_in_the_tenant_namespace_and_holds_no_text(self, quiet, redis_fake):
+    async def test_the_key_is_in_the_tenant_namespace_and_holds_no_text(self, quiet, tips_redis):
         await self._result()
-        names = [name for op, name in redis_fake.calls if op == "set"]
+        names = [name for op, name in tips_redis.calls if op == "set"]
         assert names and all("agent_tips" in n for n in names)
         assert not any("quiet" in n or "failures" in n for n in names)
 
     def test_the_text_is_fixed_and_within_its_limits(self):
         rules = tools.TIP_RULES
-        assert 1 <= len(rules) and tools.TIPS_MAX == 2
+        assert len(rules) >= 1
+        assert tools.TIPS_MAX == 2 and tools.TIP_LINE_MAX == 120
         assert len({r.id for r in rules}) == len(rules)
         for rule in rules:
-            assert 0 < len(rule.text) <= tools.TIP_LINE_MAX == 120, rule.id
+            assert 0 < len(rule.text) <= tools.TIP_LINE_MAX, rule.id
             assert rule.topic in rule.text, rule.id
             assert rule.tool in {"claim_task", "my_work"}, rule.id
 
@@ -1305,7 +1310,7 @@ class TestTheTips:
         assert "tips" in result and "tips" not in result["protocol"]
 
     async def test_an_organization_that_has_no_tips_still_gets_the_safety_lines(
-            self, board, redis_fake, monkeypatch):
+            self, board, tips_redis, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
         result = await self._result()
         assert "tips" not in result and result["protocol"]["lines"]

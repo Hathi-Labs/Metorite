@@ -232,6 +232,12 @@ class TestTheClaimTips:
         edge.gateway.task["description"] = None
         assert "tips" not in await self._claim_result()
 
+    async def test_a_store_outage_shows_no_tip_and_the_claim_still_lands(self, on, redis_fake):
+        on.gateway.task["description"] = None
+        redis_fake.fail = ConnectionError("redis is down")
+        body = await self._claim_result()
+        assert "tips" not in body and body["task"]["id"] == TASK
+
     async def test_the_tips_do_not_hide_the_protocol_block(self, on, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
         on.gateway.task["description"] = None
