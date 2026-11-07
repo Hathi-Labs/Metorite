@@ -40,6 +40,20 @@ from skill_my_tasks.core import (
     my_tasks_update_calendar_settings,
 )
 
+#: Tools that only the main chat's `calendar-day` pack holds (CAL-2 to CAL-4).
+#: They are in ``__all__`` so the pack builder, the card routing and the parity
+#: fences see them. A declarative agent (``orchestrator.declarative``) skips them,
+#: so the Tasks assistant keeps the tools that it has on main. Fence:
+#: ``tests/unit/test_declarative_builder.py``.
+PACK_ONLY_TOOLS = (
+    "my_tasks_get_calendar_settings",
+    "my_tasks_update_calendar_settings",
+    "my_tasks_list_day_rules",
+    "my_tasks_add_day_rule",
+    "my_tasks_edit_day_rule",
+    "my_tasks_delete_day_rule",
+)
+
 __all__ = [
     "my_tasks_accounts",
     "my_tasks_add_day_rule",

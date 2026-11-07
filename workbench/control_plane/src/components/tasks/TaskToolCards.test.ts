@@ -31,8 +31,8 @@ function skillTools(): string[] {
 
 describe("TaskToolCards — the legacy tool names (S9)", () => {
   it("maps one old name to each of the 29 tools that S9 renamed", () => {
-    // Tools added after S9 (the calendar-day pack tools, CAL-2 onward) never
-    // had a `gtd_` name, so they have no entry here. A tool that S9 renamed and
+    // Tools added after S9 (the calendar-day pack tools, CAL-2 onward) have
+    // no legacy name, so they have no entry here. A tool that S9 renamed and
     // the skill dropped still fails: its new name leaves `__all__`.
     const tools = new Set(skillTools());
     expect(Object.keys(LEGACY_TOOL_NAMES)).toHaveLength(29);
