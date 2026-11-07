@@ -1076,8 +1076,10 @@ class Settings(BaseSettings):
     # `held_class_c_orgs` lists the organization ids where a held chat also
     # keeps `archive_task` and `archive_project`, or `*` for each one. The
     # receipt of each archive offers Undo. Empty means off, and a held chat
-    # refuses both, as before. It acts only where `held_card_writes_orgs` is on
-    # too: `held_card_writes_orgs` alone never opens class C (owner, 2026-11-07).
+    # refuses both, as before. Keeping the tool in a held chat needs
+    # `held_card_writes_orgs` too: that flag alone never opens class C (owner,
+    # 2026-11-07). The Undo line needs this flag only, so an open chat of the org
+    # also shows it.
     # The one reader is `egress.held_class_c_on`, and it fails closed. The name
     # ends in `_orgs`, so a SIGHUP applies a change with no restart.
     #
