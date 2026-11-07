@@ -129,8 +129,9 @@ class Hit:
 Reader = Callable[..., Awaitable[list[Hit]]]
 
 #: ``open(user, kind, ids)``: the records of *ids* that the member can open,
-#: as hits. It calls the app's own read by id (KG-6).
-Opener = Callable[[UserContext, str, list[str]], Awaitable[list[Hit]]]
+#: as hits. It calls the app's own read by id (KG-6). The opener of a source
+#: with ``reviewed=True`` also takes ``verified_only=`` by name.
+Opener = Callable[..., Awaitable[list[Hit]]]
 
 #: The most ids that one call of ``open`` takes.
 MAX_OPEN = 50
@@ -211,6 +212,7 @@ class Source:
 
     async def open(
         self, user: UserContext, ids: list[str], *, kind: str | None = None,
+        verified_only: bool = False,
     ) -> list[Hit]:
         """The records of *ids* that *user* can open, as hits (KG-6, §6).
 
@@ -218,7 +220,11 @@ class Source:
         :attr:`kinds`, and the first one by default. A kind the source does
         not open gives nothing. The app's read applies the app's own rule,
         and this method keeps only hits of that kind among *ids*, so a
-        reader can never widen the answer.
+        reader can never widen the answer. *verified_only* reaches only the
+        opener of a source with ``reviewed`` (KB-AI-4), as in ``find``.
+
+        At most :data:`MAX_OPEN` ids, the first ones. The caller orders them so
+        that each hit gets its share (``company.neighbours``).
         """
         if self.opener is None or not self.reaches(user):
             return []
@@ -229,7 +235,8 @@ class Source:
         if not asked:
             return []
         wanted = set(asked)
-        hits = await self.opener(user, want, asked)
+        options = {"verified_only": True} if self.reviewed and verified_only else {}
+        hits = await self.opener(user, want, asked, **options)
         return [h for h in hits if h.kind == want and h.id in wanted]
 
 
@@ -405,34 +412,13 @@ async def _email(
 
 
 async def _open_email(user: UserContext, kind: str, ids: list[str]) -> list[Hit]:
-    """The owner scope of a read by mail id (D-EM-30), through the app's
-    own ``message_summaries``. Another member's mail is left out (KG-6)."""
-    import uuid
+    """The scope of Email search, by id (KG-6, §6): the member's mailboxes
+    with a separate mailbox left out, and All folders with junk and trash
+    left out. The app's ``open_found`` applies it, next to the search."""
+    from gateway.routes.email.transport.search import open_found
 
-    from gateway.routes.email.transport.messages import (
-        MessageSummariesRequest,
-        message_summaries,
-    )
-
-    wanted: list[str] = []
-    for raw in ids:
-        try:
-            wanted.append(str(uuid.UUID(str(raw))))
-        except (ValueError, TypeError):
-            continue
-    if not wanted:
-        return []
-    answer = await message_summaries(req=MessageSummariesRequest(ids=wanted), user=user)
-    out = []
-    for row in answer.get("summaries") or []:
-        who = row.get("from") or "someone"
-        out.append(Hit(
-            app="email", kind="email", id=str(row["id"]),
-            title=_title(row.get("subject") or "(no subject)"),
-            hint=f"Email · from {who}", href=f"/email?email={quote(str(row['id']))}",
-            when=_when(row.get("received_at")), stamp=_when(row.get("received_at")),
-        ))
-    return out
+    return [_email_hit({**row, "highlight": "", "snippet": None})
+            for row in await open_found(user=user, ids=ids)]
 
 
 # ── people ──────────────────────────────────────────────────────────────────
@@ -718,7 +704,9 @@ async def _knowledge(
     return out[:k]
 
 
-async def _open_knowledge(user: UserContext, kind: str, ids: list[str]) -> list[Hit]:
+async def _open_knowledge(
+    user: UserContext, kind: str, ids: list[str], *, verified_only: bool = False,
+) -> list[Hit]:
     """The Knowledge kill switch, then ``visible_pages_clause`` (KG-6, §6)."""
     from gateway.routes.knowledge import flags
     from gateway.routes.knowledge import search as kb_search
@@ -733,7 +721,7 @@ async def _open_knowledge(user: UserContext, kind: str, ids: list[str]) -> list[
             href=f"/knowledge/pages/{quote(str(row['page_id']))}",
             when=_when(row.get("updated_at")), stamp=_when(row.get("updated_at")),
         )
-        for row in await kb_search.open_pages(user, ids)
+        for row in await kb_search.open_pages(user, ids, verified_only=verified_only)
     ]
 
 

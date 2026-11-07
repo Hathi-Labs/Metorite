@@ -22,7 +22,13 @@ edges to records that the member cannot open:
 4. org B reads no edge of org A, and opens no record of org A, with the ids
    of org A in hand;
 5. the whole route, with ``GRAPH_SEARCH_ORGS`` on, answers ``neighbours``
-   with the open records only. Off, it has no ``neighbours`` key.
+   with the open records only, and ``apps=`` keeps the kinds of the named
+   sources. Off, it has no ``neighbours`` key;
+6. a mail in a separate mailbox (``in_all_inboxes`` false) and a trashed
+   mail never appear, as Email search hides them, and an inbox mail does;
+7. the artifact read and the WhatsApp read open the member's own records
+   on the real database, and not another member's;
+8. 40 edges to a kind that no app opens do not push out the one task link.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
@@ -60,7 +66,7 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 WORD = f"kingfisher{TAG}"
-FEATURES = ("projects", "email", "people", "crm", "knowledge", "whatsapp")
+FEATURES = ("projects", "email", "people", "crm", "knowledge", "whatsapp", "artifacts")
 
 
 def _id() -> str:
@@ -109,19 +115,24 @@ def _task(c: Any, org: str, who: str, project: tuple[str, str], title: str) -> s
     return task
 
 
-def _mail(c: Any, org: str, owner: str, subject: str) -> str:
+def _mail(c: Any, org: str, owner: str, subject: str, *, folder: str = "inbox",
+          separate: bool = False) -> str:
+    """One mail in a new mailbox of *owner*. *separate* is a mailbox that the
+    member keeps out of All inboxes (``in_all_inboxes`` false, D-EM-28)."""
     account = str(c.execute(text(
         "INSERT INTO email_accounts (user_id, provider, email_address, "
-        "credentials_encrypted, organization_id) VALUES (:u, 'microsoft', :m, 'x', "
-        "CAST(:o AS uuid)) RETURNING id"),
-        {"u": owner, "m": f"box-{uuid.uuid4().hex[:8]}@kg6.test", "o": org}).scalar_one())
+        "credentials_encrypted, in_all_inboxes, organization_id) VALUES (:u, "
+        "'microsoft', :m, 'x', :pooled, CAST(:o AS uuid)) RETURNING id"),
+        {"u": owner, "m": f"box-{uuid.uuid4().hex[:8]}@kg6.test", "o": org,
+         "pooled": not separate}).scalar_one())
     return str(c.execute(text(
         "INSERT INTO email_messages (account_id, provider_message_id, folder, "
         "from_address, to_addresses, subject, body_text, received_at, organization_id) "
-        "VALUES (CAST(:a AS uuid), :p, 'inbox', "
+        "VALUES (CAST(:a AS uuid), :p, :f, "
         "'{\"name\": \"S\", \"email\": \"s@x.test\"}'::jsonb, '[]'::jsonb, :s, 'body', now(), "
         "CAST(:o AS uuid)) RETURNING id"),
-        {"a": account, "p": uuid.uuid4().hex, "s": subject, "o": org}).scalar_one())
+        {"a": account, "p": uuid.uuid4().hex, "s": subject, "o": org,
+         "f": folder}).scalar_one())
 
 
 def _whatsapp(c: Any, org: str, owner: str) -> str:
@@ -140,6 +151,16 @@ def _whatsapp(c: Any, org: str, owner: str) -> str:
         "sent_at, organization_id) VALUES (CAST(:m AS uuid), CAST(:a AS uuid), "
         "CAST(:c AS uuid), 'wamid-' || :m, 'hello', now(), CAST(:o AS uuid))"), p)
     return message
+
+
+def _artifact(c: Any, org: str, owner: str, title: str) -> str:
+    """One active artifact of *owner*, with the personal scope."""
+    return str(c.execute(text(
+        "INSERT INTO artifacts (organization_id, owner_email, agent_name, path, sha256, "
+        "kind, title, made_by, scope) VALUES (CAST(:o AS uuid), :me, 'mira', :p, 'x', "
+        "'document', :t, 'mira', 'personal') RETURNING id"),
+        {"o": org, "me": owner, "p": f"outputs/{uuid.uuid4().hex}.md", "t": title},
+    ).scalar_one())
 
 
 def _person(c: Any, org: str, status: str) -> str:
@@ -186,6 +207,7 @@ async def world(ns, monkeypatch):  # noqa: F811 — a fixture
     monkeypatch.setattr(settings, "crm_orgs", "*", raising=False)
     monkeypatch.setattr(settings, "graph_search_orgs", "*", raising=False)
     monkeypatch.setattr(settings, "context_recency", False, raising=False)
+    monkeypatch.setattr(settings, "artifact_registry_enabled", True, raising=False)
 
     org, org_b = ns.org_a, ns.org_b
     me, other = _address("me"), _address("other")
@@ -216,6 +238,14 @@ async def world(ns, monkeypatch):  # noqa: F811 — a fixture
         w["my_mail"] = _mail(c, org, me, "My mail")
         w["their_mail"] = _mail(c, org, other, "Their mail")
         w["their_wa"] = _whatsapp(c, org, other)
+        # KG-6 fix round: the scope of Email search, and the other openers.
+        w["hit2"] = _task(c, org, me, open_p, "Second hit")
+        w["separate_mail"] = _mail(c, org, me, "NDA mail", separate=True)
+        w["trashed_mail"] = _mail(c, org, me, "Thrown away", folder="trash")
+        w["my_wa"] = _whatsapp(c, org, me)
+        w["my_artifact"] = _artifact(c, org, me, "My deck")
+        w["their_artifact"] = _artifact(c, org, other, "Their deck")
+        w["crowded"] = _task(c, org, me, open_p, "Crowded hit")
         w["active"] = _person(c, org, "active")
         w["alumni"] = _person(c, org, "alumni")
         w["deal"] = _deal(c, org)
@@ -257,9 +287,23 @@ async def world(ns, monkeypatch):  # noqa: F811 — a fixture
         _edge(c, org, "task", f, "task_link", "task", w["low"], "INFERRED", 0.4)
         _edge(c, org, "task", f, "task_link", "task", w["floor"], "INFERRED", 0.5)
         _edge(c, org_b, "task", w["b_task"], "task_link", "task", w["b_other"])
+        h2 = w["hit2"]
+        _edge(c, org, "task", h2, "origin", "email", w["separate_mail"])
+        _edge(c, org, "task", h2, "origin", "email", w["trashed_mail"])
+        _edge(c, org, "task", h2, "origin", "whatsapp", w["my_wa"])
+        _edge(c, org, "task", h2, "mentions", "artifact", w["my_artifact"])
+        _edge(c, org, "task", h2, "mentions", "artifact", w["their_artifact"])
+        # P2: more edges to a kind that no app opens than the cap of a hit,
+        # written AFTER the one task link, so each ranks before it by age.
+        cr = w["crowded"]
+        _edge(c, org, "task", cr, "task_link", "task", w["seen"])
+        for _ in range(40):
+            _edge(c, org, "task", cr, "attendee", "meeting", _id())
     yield w
     with ns.admin_engine.begin() as c:
         c.execute(text("DELETE FROM kb_links WHERE page_id IS NULL"))
+        c.execute(text("DELETE FROM artifacts WHERE owner_email IN (:a, :b)"),
+                  {"a": me, "b": other})
         c.execute(text("DELETE FROM people WHERE source = :s"), {"s": f"kg6-{TAG}"})
         c.execute(text("DELETE FROM crm_deals WHERE name = 'Deal ' || :t"), {"t": TAG})
         c.execute(text("DELETE FROM crm_deal_statuses WHERE name = 'Open ' || :t"), {"t": TAG})
@@ -304,11 +348,12 @@ def _hit(kind: str, ident: str) -> Any:
     return Hit(app="x", kind=kind, id=ident, title="", hint="", href="")
 
 
-async def _neighbours(p: Any, user: Any, *hits: tuple[str, str]) -> list[dict]:
+async def _neighbours(p: Any, user: Any, *hits: tuple[str, str],
+                      apps: list[str] | None = None) -> list[dict]:
     from gateway.retrieval import company
 
     return await _as(p, user, lambda: company.neighbours(
-        user, [_hit(k, i) for k, i in hits], stamp=False))
+        user, [_hit(k, i) for k, i in hits], stamp=False, apps=apps))
 
 
 def _keys(items: list[dict]) -> set[tuple[str, str]]:
@@ -321,13 +366,16 @@ async def test_a_hidden_record_never_appears_and_an_open_one_does(
     _assert_non_priv(app_engine)
     w = world
     me = _user(w["me"], w["org"])
-    got = await _neighbours(ns, me, ("task", w["hit"]), ("page", w["page"]))
+    got = await _neighbours(ns, me, ("task", w["hit"]), ("page", w["page"]),
+                            ("task", w["hit2"]))
     assert _keys(got) == {
         ("task", w["seen"]), ("email", w["my_mail"]), ("person", w["active"]),
+        ("whatsapp", w["my_wa"]), ("artifact", w["my_artifact"]),
     }
     shown = repr(got)
     for hidden in ("group_task", "private_task", "their_mail", "their_wa", "deal",
-                   "closed_page", "alumni"):
+                   "closed_page", "alumni", "separate_mail", "trashed_mail",
+                   "their_artifact"):
         assert w[hidden] not in shown, hidden
     for project in w["projects"]:
         assert project not in shown
@@ -335,6 +383,61 @@ async def test_a_hidden_record_never_appears_and_an_open_one_does(
     assert by_id[w["seen"]]["edge"] == {"from": f"task:{w['hit']}", "relation": "task_link",
                                          "provenance": "EXTRACTED"}
     assert by_id[w["active"]]["edge"]["from"] == f"page:{w['page']}"
+
+
+@_DB_GATE
+async def test_a_separate_mailbox_and_the_trash_stay_out_as_in_search(ns, world) -> None:  # noqa: F811
+    """The verifier's live case: a mail in a mailbox with ``in_all_inboxes``
+    false (the NDA case, D-EM-28) and a mail with ``folder = 'trash'``. Email
+    search hides both, so a neighbour never names them. The member's inbox
+    mail does show, and the app's owner read by id DOES open both, so the
+    scope of the search is the reason."""
+    from gateway.routes.email.transport.messages import (
+        MessageSummariesRequest,
+        message_summaries,
+    )
+
+    w = world
+    me = _user(w["me"], w["org"])
+    got = await _neighbours(ns, me, ("task", w["hit"]), ("task", w["hit2"]))
+    keys = _keys(got)
+    assert ("email", w["my_mail"]) in keys
+    assert ("email", w["separate_mail"]) not in keys
+    assert ("email", w["trashed_mail"]) not in keys
+    owner = await _as(ns, me, lambda: message_summaries(
+        req=MessageSummariesRequest(ids=[w["separate_mail"], w["trashed_mail"]]), user=me))
+    assert {s["id"] for s in owner["summaries"]} == {w["separate_mail"], w["trashed_mail"]}
+
+
+@_DB_GATE
+async def test_the_artifact_and_whatsapp_reads_open_on_the_real_db(ns, world) -> None:  # noqa: F811
+    from acb_memory import artifacts as registry
+    from gateway.routes.whatsapp.transport.messages import open_messages
+
+    w = world
+    me = _user(w["me"], w["org"])
+    arts = await _as(ns, me, lambda: registry.open_artifacts(
+        [w["my_artifact"], w["their_artifact"]], me.email))
+    assert [a["id"] for a in arts] == [w["my_artifact"]]
+    msgs = await _as(ns, me, lambda: open_messages(me, [w["my_wa"], w["their_wa"]]))
+    assert [m.id for m in msgs] == [w["my_wa"]]
+    other = _user(w["other"], w["org"])
+    got = await _neighbours(ns, other, ("task", w["hit2"]))
+    assert ("artifact", w["their_artifact"]) in _keys(got)
+    assert ("artifact", w["my_artifact"]) not in _keys(got)
+
+
+@_DB_GATE
+async def test_edges_no_app_opens_do_not_use_the_cap_of_a_hit(ns, world) -> None:  # noqa: F811
+    from gateway.kb_entities import graph
+
+    w = world
+    me = _user(w["me"], w["org"])
+    edges = await _as(ns, me, lambda: graph.neighbour_edges(
+        me, [("task", w["crowded"])], kinds=["task"], per_hit=30))
+    assert [(e.kind, e.id) for e in edges] == [("task", w["seen"])]
+    got = await _neighbours(ns, me, ("task", w["crowded"]))
+    assert _keys(got) == {("task", w["seen"])}
 
 
 @_DB_GATE
@@ -356,11 +459,14 @@ async def test_the_other_member_opens_the_closed_page_and_the_group_task(
     """Non-vacuity: the hidden records exist and open for their audience."""
     w = world
     other = _user(w["other"], w["org"])
-    got = await _neighbours(ns, other, ("task", w["hit"]), ("page", w["page"]))
+    # Tasks and pages only, so the cap of 3 holds both hidden tasks.
+    got = await _neighbours(ns, other, ("task", w["hit"]), ("page", w["page"]),
+                            apps=["tasks", "knowledge"])
     keys = _keys(got)
     assert ("page", w["closed_page"]) in keys
-    assert {("task", w["group_task"]), ("task", w["private_task"])} & keys
-    assert ("email", w["my_mail"]) not in keys
+    assert {("task", w["group_task"]), ("task", w["private_task"])} <= keys
+    mail = await _neighbours(ns, other, ("task", w["hit"]), apps=["email"])
+    assert _keys(mail) == {("email", w["their_mail"])}
 
 
 @_DB_GATE
@@ -370,7 +476,8 @@ async def test_the_read_drops_ambiguous_removed_and_low_inferred(
 
     w = world
     me = _user(w["me"], w["org"])
-    edges = await _as(ns, me, lambda: graph.neighbour_edges(me, [("task", w["filter_hit"])]))
+    edges = await _as(ns, me, lambda: graph.neighbour_edges(
+        me, [("task", w["filter_hit"])], kinds=graph.NODE_KINDS))
     assert {e.id for e in edges} == {w["floor"]}
     got = await _neighbours(ns, me, ("task", w["filter_hit"]))
     assert [n["id"] for n in got] == [w["floor"]]
@@ -385,7 +492,8 @@ async def test_org_b_reads_no_edge_and_opens_no_record_of_org_a(
     w = world
     b = _user(w["member_b"], w["org_b"])
     a_nodes = [("task", w["hit"]), ("page", w["page"]), ("task", w["filter_hit"])]
-    assert await _as(ns, b, lambda: graph.neighbour_edges(b, a_nodes)) == []
+    assert await _as(ns, b, lambda: graph.neighbour_edges(
+        b, a_nodes, kinds=graph.NODE_KINDS)) == []
     assert await _neighbours(ns, b, *a_nodes) == []
     # Non-vacuity: B reads its own edge.
     own = await _neighbours(ns, b, ("task", w["b_task"]))
@@ -412,7 +520,7 @@ async def test_the_route_answers_neighbours_with_the_flag_and_none_without(
     w = world
     me = _user(w["me"], w["org"])
 
-    async def ask() -> dict:
+    async def ask(apps: str | None = None) -> dict:
         async def _caller() -> Any:
             bind_tenant(me.organization_id)
             return me
@@ -422,7 +530,8 @@ async def test_the_route_answers_neighbours_with_the_flag_and_none_without(
         app.dependency_overrides[get_current_user] = _caller
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://kg6.test") as client:
-            res = await client.get("/search/company", params={"q": WORD, "apps": "tasks"})
+            params = {"q": WORD, **({"apps": apps} if apps else {})}
+            res = await client.get("/search/company", params=params)
         assert res.status_code == 200, res.text
         return res.json()
 
@@ -430,6 +539,9 @@ async def test_the_route_answers_neighbours_with_the_flag_and_none_without(
     assert [h["id"] for h in on["hits"]] == [w["hit"]]
     assert "graph" not in on["skipped"]
     assert _keys(on["neighbours"]) == {("task", w["seen"]), ("email", w["my_mail"])}
+    # `apps=` names the sources whose kinds a neighbour may have.
+    only = await _as(ns, me, lambda: ask("tasks"))
+    assert _keys(only["neighbours"]) == {("task", w["seen"])}
     monkeypatch.setattr(get_settings(), "graph_search_orgs", "", raising=False)
     off = await _as(ns, me, ask)
     assert "neighbours" not in off

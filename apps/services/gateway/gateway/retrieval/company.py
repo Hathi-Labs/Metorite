@@ -67,8 +67,10 @@ record that is already a hit is left out, each hit keeps at most
 is spent. The answer gains ``neighbours``. The step gets at most
 :data:`GRAPH_TIMEOUT_S` of the time the sources left. When it runs out or
 fails, the answer has no neighbours and names ``graph`` in ``skipped``.
-Off, the route reads no edge, and the answer is the one before KG-6, byte
-for byte.
+The filters of the request narrow the neighbours too: ``apps=`` keeps the
+kinds of the named sources, and with ``CONTEXT_RECENCY`` on, ``after`` and
+``verified`` apply as they do to the hits. Off, the route reads no edge,
+and the answer is the one before KG-6, byte for byte.
 
 **A gap, behind ``KNOWLEDGE_GAPS``** (WS-61 KB-9a, ``knowledge_base.md``
 §8.4 door 3). When Knowledge answered with zero hits, the route hands the
@@ -161,30 +163,45 @@ def _edge_rank(provenance: str, confidence: float, stamp: str | None,
             -(when.timestamp() if when is not None else float("-inf")), order)
 
 
-async def neighbours(user: UserContext, hits: list[Hit], *, stamp: bool) -> list[dict[str, Any]]:
+async def neighbours(
+    user: UserContext, hits: list[Hit], *, stamp: bool,
+    apps: list[str] | None = None, after: datetime | None = None, verified: bool = False,
+) -> list[dict[str, Any]]:
     """The neighbours of the first hits, opened as the member (§5, §6).
 
     1. The first :data:`GRAPH_HITS` hits. 2. Their usable edges, from the
-    graph's own read. 3. One ``open`` call for each kind, by the source that
-    owns the kind. An id that the app does not return is dropped, and so is
-    each kind with no source, or whose app refuses. 4. A record that is
-    already a hit is dropped, and a record that an earlier hit already took.
-    5. At most :data:`PER_HIT` for each hit, in the order of
-    :func:`_edge_rank`. 6. Items in order until :data:`NEIGHBOUR_TOKENS` is
-    spent. A hidden record leaves no count, no relation and no marker.
+    graph's own read, to the kinds of the sources this request may add. 3.
+    One ``open`` call for each kind, by the source that owns the kind. An id
+    that the app does not return is dropped, and so is each kind whose app
+    refuses. 4. A record that is already a hit is dropped, and a record that
+    an earlier hit already took. 5. At most :data:`PER_HIT` for each hit, in
+    the order of :func:`_edge_rank`. 6. Items in order until
+    :data:`NEIGHBOUR_TOKENS` is spent. A hidden record leaves no count, no
+    relation and no marker.
+
+    The filters of the request apply too. *apps* (the keys named in
+    ``apps=``) keeps the kinds of those sources only. ``None`` keeps every
+    source. *after* drops a record stamped before it, as :func:`_kept` does
+    for a hit. *verified* asks the Knowledge source for verified pages only.
     """
     from acb_skills.company_search_tools import NEIGHBOURS_HEADER, neighbour_line
 
     from gateway.kb_entities import graph
 
     first = hits[:GRAPH_HITS]
-    if not first:
+    keys = [k for k in (apps or list(REGISTRY)) if k in REGISTRY]
+    kinds = [kind for key in keys for kind in REGISTRY[key].kinds]
+    if not first or not kinds:
         return []
-    edges = await graph.neighbour_edges(user, [(h.kind, h.id) for h in first])
+    edges = await graph.neighbour_edges(user, [(h.kind, h.id) for h in first], kinds=kinds)
     shown = {(h.kind, h.id) for h in hits}
+    place = {(h.kind, h.id): i for i, h in enumerate(first)}
+    # Each kind's ids in turns: every hit's best edge, then every hit's second.
+    # So the cap of one `open` call (sources.MAX_OPEN) never starves a later hit.
+    turns = sorted(edges, key=lambda e: (e.order, place.get((e.hit_kind, e.hit_id), 0)))
     wanted: dict[str, list[str]] = {}
-    for e in edges:
-        if (e.kind, e.id) not in shown:
+    for e in turns:
+        if (e.kind, e.id) not in shown and e.kind in kinds:
             wanted.setdefault(e.kind, []).append(e.id)
     opened: dict[tuple[str, str], Hit] = {}
     for kind, ids in wanted.items():
@@ -192,7 +209,8 @@ async def neighbours(user: UserContext, hits: list[Hit], *, stamp: bool) -> list
         if source is None:
             continue  # no reader for the kind (§3.1): it never shows
         try:
-            found = await source.open(user, list(dict.fromkeys(ids)), kind=kind)
+            found = await source.open(user, list(dict.fromkeys(ids)), kind=kind,
+                                      verified_only=verified)
         except HTTPException:
             continue  # the app's own refusal, such as the CRM access rule
         except Exception as exc:
@@ -200,7 +218,8 @@ async def neighbours(user: UserContext, hits: list[Hit], *, stamp: bool) -> list
                            extra={"kind": kind, "error": type(exc).__name__})
             continue
         for h in found:
-            opened[(kind, h.id)] = h
+            if after is None or _kept(h, after):
+                opened[(kind, h.id)] = h
 
     taken: set[tuple[str, str]] = set()
     items: list[dict[str, Any]] = []
@@ -234,14 +253,16 @@ async def neighbours(user: UserContext, hits: list[Hit], *, stamp: bool) -> list
 
 
 async def _graph_step(user: UserContext, hits: list[Hit], *, stamp: bool,
-                      left: float, skipped: list[str]) -> list[dict[str, Any]] | None:
+                      left: float, skipped: list[str],
+                      narrow: dict[str, Any] | None = None) -> list[dict[str, Any]] | None:
     """:func:`neighbours` inside its time (§7.3). It never raises.
 
     ``None`` when ``GRAPH_SEARCH_ORGS`` does not name the org: then no edge
     is read, and the answer gets no ``neighbours`` key. The step gets the
     lesser of :data:`GRAPH_TIMEOUT_S` and *left*, the time the sources left.
     When the time runs out, or the step fails, the answer has no neighbours
-    and ``skipped`` names :data:`GRAPH_SKIP`.
+    and ``skipped`` names :data:`GRAPH_SKIP`. *narrow* holds the filters of
+    the request for :func:`neighbours`: ``apps``, ``after`` and ``verified``.
     """
     if not graph_enabled(user):
         return None
@@ -250,7 +271,8 @@ async def _graph_step(user: UserContext, hits: list[Hit], *, stamp: bool,
         skipped.append(GRAPH_SKIP)
         return []
     try:
-        return await asyncio.wait_for(neighbours(user, hits, stamp=stamp), allowed)
+        return await asyncio.wait_for(
+            neighbours(user, hits, stamp=stamp, **(narrow or {})), allowed)
     except TimeoutError:
         logger.info("search.company graph timed out")
     except Exception as exc:
@@ -356,9 +378,14 @@ def _kept(hit: Hit, after: datetime) -> bool:
     return stamped is None or stamped >= after
 
 
+def _named(apps: str | None) -> list[str]:
+    """The keys named in ``apps``, in lower case, each once, in their order."""
+    return list(dict.fromkeys(a.strip().lower() for a in (apps or "").split(",") if a.strip()))
+
+
 def _order(apps: str | None) -> list[str]:
     """The source keys to ask, the named ones first. An unknown key is a 422."""
-    named = [a.strip().lower() for a in (apps or "").split(",") if a.strip()]
+    named = _named(apps)
     unknown = [a for a in named if a not in REGISTRY]
     if unknown:
         raise HTTPException(
@@ -519,8 +546,9 @@ async def company_search(
     ranked = _interleave(order, found) if not recency else by_fusion(
         order, found, datetime.now(UTC))
     # KG-6: off, no edge is read and the answer has no `neighbours` key.
-    near = await _graph_step(user, ranked, stamp=recency,
-                             left=deadline - loop.time(), skipped=skipped)
+    near = await _graph_step(
+        user, ranked, stamp=recency, left=deadline - loop.time(), skipped=skipped,
+        narrow={"apps": _named(apps) or None, "after": since, "verified": only_verified})
 
     answer: dict[str, Any] = {"query": words, "hits": [h.as_dict(stamp=recency) for h in ranked]}
     if recency:

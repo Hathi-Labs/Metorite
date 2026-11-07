@@ -698,10 +698,10 @@ class Opens:
         return [{"id": i, "title": "T", "project_name": "P", "due_at": None,
                  "updated_at": "2026-10-01T00:00:00+00:00"} for i in ids]
 
-    async def email(self, req, user):
-        self._note("email", user, tuple(req.ids))
-        return {"summaries": [{"id": i, "subject": "S", "from": "Priya",
-                               "received_at": "2026-10-01T00:00:00+00:00"} for i in req.ids]}
+    async def email(self, *, user, ids, received_after=None):
+        self._note("email", user, tuple(ids))
+        return [{"id": i, "subject": "S", "from_address": {"name": "Priya"},
+                 "received_at": "2026-10-01T00:00:00+00:00"} for i in ids]
 
     async def people(self, user, ids):
         self._note("people", user, tuple(ids))
@@ -722,15 +722,15 @@ class Opens:
         self._note("whatsapp", user, tuple(ids))
         return [{"id": i, "chat_name": "Acme", "sender_name": "Ravi"} for i in ids]
 
-    async def knowledge(self, user, ids):
-        self._note("knowledge", user, tuple(ids))
+    async def knowledge(self, user, ids, *, verified_only=False):
+        self._note("knowledge", user, tuple(ids), verified_only)
         return [{"page_id": i, "title": "Policy", "space_name": "Company"} for i in ids]
 
 
 @pytest.fixture()
 def opens(monkeypatch) -> Opens:
     import acb_memory.artifacts as registry
-    import gateway.routes.email.transport.messages as email_messages
+    import gateway.routes.email.transport.search as email_search
     import gateway.routes.knowledge.search as kb_search
     import gateway.routes.people.directory as directory
     import gateway.routes.projects.search as projects_search
@@ -740,7 +740,7 @@ def opens(monkeypatch) -> Opens:
 
     f = Opens()
     monkeypatch.setattr(projects_search, "open_tasks", f.tasks)
-    monkeypatch.setattr(email_messages, "message_summaries", f.email)
+    monkeypatch.setattr(email_search, "open_found", f.email)
     monkeypatch.setattr(directory, "open_people", f.people)
     monkeypatch.setattr(records, "open_records", f.crm)
     monkeypatch.setattr(access, "require_crm_access", f.crm_access)
@@ -831,11 +831,28 @@ class TestTheOpen:
         assert opened("knowledge", member("knowledge", org=OTHER_ORG)) == []
         assert opens.calls == []
 
-    def test_the_email_read_is_the_owner_scope_of_the_app(self):
-        """The email source opens through ``message_summaries``, the app's
-        read by mail id. It keeps the owner scope at the read level (D-EM-30)."""
-        from gateway.routes.email.transport import messages
+    def test_the_email_read_is_the_scope_of_the_search(self):
+        """The email source opens through ``open_found``, which applies the
+        scope of Email search: no separate mailbox, no junk and no trash.
+        It does NOT use ``message_summaries``, the owner scope (KG-6 fix)."""
+        from gateway.routes.email.transport import search
 
-        src = inspect.getsource(messages.message_summaries)
-        assert 'mailbox_predicate("ea", uid="user_id", level="read")' in src
-        assert "message_summaries" in inspect.getsource(sources._open_email)
+        scope = inspect.getsource(search._all_scope)
+        assert '_account_scope(account_id, params, pooled_only=True, level="read")' in scope
+        assert 'folder_scope("all", params, include_sent=True)' in scope
+        assert "_state_filters(" in scope
+        assert "_all_scope(" in inspect.getsource(search.open_found)
+        assert "_all_scope(" in inspect.getsource(search.semantic_messages)
+        opener = inspect.getsource(sources._open_email)
+        assert "open_found" in opener and "message_summaries" not in opener
+
+    def test_verified_reaches_the_knowledge_read_only(self, opens):
+        opened_k = asyncio.run(sources.REGISTRY["knowledge"].open(
+            member("knowledge"), [ID], kind="page", verified_only=True))
+        assert opened_k
+        assert opens.calls[-1][2][-1] is True
+        asyncio.run(sources.REGISTRY["knowledge"].open(member("knowledge"), [ID], kind="page"))
+        assert opens.calls[-1][2][-1] is False
+        # A source with no review state takes no such option.
+        assert asyncio.run(sources.REGISTRY["tasks"].open(
+            member("projects"), [ID], kind="task", verified_only=True))

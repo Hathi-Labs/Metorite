@@ -81,6 +81,7 @@ class World:
         self.edges: list[graph.Neighbour] = []
         self.records: dict[str, Hit] = {}
         self.edge_calls: list[list[tuple[str, str]]] = []
+        self.kind_calls: list[list[str]] = []
         self.open_calls: list[tuple[str, str, tuple[str, ...]]] = []
         self.edge_delay = 0.0
         self.edge_error: BaseException | None = None
@@ -92,13 +93,16 @@ class World:
     async def read_none(self, user: Any, q: str, k: int, **_: Any) -> list[Hit]:
         return []
 
-    async def edges_of(self, user: Any, nodes: list[tuple[str, str]], **_: Any):
+    async def edges_of(self, user: Any, nodes: list[tuple[str, str]], *, kinds: Any,
+                       **_: Any):
         self.edge_calls.append(list(nodes))
+        self.kind_calls.append(list(kinds))
         if self.edge_delay:
             await asyncio.sleep(self.edge_delay)
         if self.edge_error is not None:
             raise self.edge_error
-        return list(self.edges)
+        # As the SQL does: only the kinds that the caller can open.
+        return [e for e in self.edges if e.kind in kinds]
 
     def opener(self, key: str):
         async def _open(user: Any, kind: str, ids: list[str]) -> list[Hit]:
@@ -132,8 +136,10 @@ def world(monkeypatch) -> World:
     return w
 
 
-def run(user: UserContext | None = None) -> dict:
-    return asyncio.run(company.company_search(q="acme", apps=None, k=10, user=user or member()))
+def run(user: UserContext | None = None, apps: str | None = None,
+        after: str | None = None, verified: bool = False) -> dict:
+    return asyncio.run(company.company_search(
+        q="acme", apps=apps, k=10, user=user or member(), after=after, verified=verified))
 
 
 def _ids(answer: dict) -> list[str]:
@@ -411,9 +417,23 @@ class TestTheReadFilter:
                 return None
 
         monkeypatch.setattr(graph, "tenant_session", lambda *a, **k: Session())
-        asyncio.run(graph.neighbour_edges(member(), [("task", "h1"), ("bogus", "x")]))
+        asyncio.run(graph.neighbour_edges(member(), [("task", "h1"), ("bogus", "x")],
+                                          kinds=["task", "deal", "nonsense"]))
         assert seen["org"] == ORG
         assert seen["kinds"] == ["task"] and seen["rids"] == ["h1"]
+        assert seen["open_kinds"] == ["deal", "task"]
+        seen.clear()
+        assert asyncio.run(graph.neighbour_edges(member(), [("task", "h1")], kinds=[])) == []
+        assert seen == {}
+
+    def test_the_kind_filter_runs_before_the_cap_of_each_hit(self):
+        sql = graph._NEIGHBOURS_SQL
+        kept = sql[sql.index("kept AS ("):]
+        # The WHERE of the SELECT that numbers the rows holds the kind filter,
+        # so the row number counts openable edges only. The cap reads it after.
+        where = kept.index("WHERE e.removed_at IS NULL")
+        assert where < kept.index("e.kind = ANY(CAST(:open_kinds") < kept.index(") SELECT")
+        assert kept.index(") SELECT") < kept.index("WHERE k <= :per")
 
 
 class TestTheTool:
@@ -436,3 +456,87 @@ class TestTheTool:
         body = {"query": "acme", "hits": [_task("h1").as_dict()], "skipped": []}
         assert format_answer({**body, "neighbours": []}) == format_answer(body)
         assert NEIGHBOURS_HEADER not in format_answer(body)
+
+
+# ── The fix round: the filters of the request and the share of each hit ────
+
+class TestTheRequestFilters:
+    def test_the_kinds_come_from_the_registry(self, world):
+        run()
+        assert set(world.kind_calls[-1]) == {
+            k for src in sources.REGISTRY.values() for k in src.kinds}
+
+    def test_apps_keeps_the_kinds_of_the_named_sources(self, world):
+        world.edges = [_edge("h1", "task", "n1"), _edge("h1", "deal", "d1")]
+        world.records = {"n1": _task("n1"),
+                         "d1": dataclasses.replace(_task("d1"), app="crm", kind="deal")}
+        answer = run(apps="tasks")
+        assert world.kind_calls[-1] == ["task"]
+        assert _ids(answer) == ["n1"]
+        assert ("crm", "deal") not in world.opened()
+        both = run(apps="crm,tasks")
+        assert set(world.kind_calls[-1]) == {"lead", "deal", "contact", "company", "task"}
+        assert set(_ids(both)) == {"n1", "d1"}
+
+    def test_after_drops_an_older_neighbour_with_recency_on(self, world, monkeypatch):
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "context_recency", True, raising=False)
+        world.hits = [_task("h1", stamp="2026-10-10T00:00:00+00:00")]
+        world.edges = [_edge("h1", "task", "old"), _edge("h1", "task", "new"),
+                       _edge("h1", "person", "p1")]
+        world.records = {
+            "old": _task("old", stamp="2026-01-01T00:00:00+00:00"),
+            "new": _task("new", stamp="2026-10-05T00:00:00+00:00"),
+            "p1": dataclasses.replace(_task("p1"), app="people", kind="person"),
+        }
+        answer = run(after="2026-10-01")
+        # A record with no stamp is kept, as a hit with no stamp is.
+        assert set(_ids(answer)) == {"new", "p1"}
+        assert set(_ids(run())) == {"old", "new", "p1"}
+
+    def test_after_is_not_read_with_recency_off(self, world):
+        world.edges = [_edge("h1", "task", "old")]
+        world.records = {"old": _task("old", stamp="2026-01-01T00:00:00+00:00")}
+        assert _ids(run(after="2026-10-01")) == ["old"]
+
+    def test_verified_reaches_the_page_opener_with_recency_on(self, world, monkeypatch):
+        from acb_common import get_settings
+
+        seen: list[bool] = []
+
+        async def pages(user: Any, kind: str, ids: list[str], *, verified_only=False):
+            seen.append(verified_only)
+            return []
+
+        monkeypatch.setitem(sources.REGISTRY, "knowledge", dataclasses.replace(
+            sources.REGISTRY["knowledge"], opener=pages, reviewed=True))
+        monkeypatch.setattr(get_settings(), "context_recency", True, raising=False)
+        world.edges = [_edge("h1", "page", "k1", relation="links_to")]
+        run(verified=True)
+        run()
+        assert seen == [True, False]
+
+
+class TestEachHitGetsItsShare:
+    def test_five_hits_with_many_edges_each_get_three(self, world):
+        world.hits = [_task(f"h{i}") for i in range(1, 6)]
+        world.edges = [_edge(f"h{h}", "task", f"n{h}-{i}", order=i)
+                       for h in range(1, 6) for i in range(1, 21)]
+        world.records = {e.id: _task(e.id) for e in world.edges}
+        answer = run()
+        per_hit: dict[str, int] = {}
+        for n in answer["neighbours"]:
+            per_hit[n["edge"]["from"]] = per_hit.get(n["edge"]["from"], 0) + 1
+        assert per_hit == {f"task:h{h}": 3 for h in range(1, 6)}
+        # One call for the kind, inside the cap of `open`.
+        (call,) = [c for c in world.open_calls if c[1] == "task"]
+        assert len(call[2]) == sources.MAX_OPEN
+
+    def test_edges_to_kinds_no_app_opens_take_no_place(self, world):
+        world.edges = [_edge("h1", "meeting", f"m{i}", relation="attendee", order=i)
+                       for i in range(1, 40)]
+        world.edges.append(_edge("h1", "task", "n1", order=40))
+        world.records = {"n1": _task("n1")}
+        assert _ids(run()) == ["n1"]
+        assert "meeting" not in world.kind_calls[-1]
