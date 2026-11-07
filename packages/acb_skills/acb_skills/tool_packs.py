@@ -1005,8 +1005,8 @@ PACKS: dict[str, Pack] = {
         loader_route=_PROJECTS_LOAD_LINE,
     ),
     # CAL-1a (task 1675): after the Projects packs and before studio. The cap drops
-    # packs from the end, so it drops calendar-day before the Projects packs
-    # that the member holds more often. It follows `projects` (FOLLOWS).
+    # packs from the end, so it drops studio first and this pack second. It
+    # follows `projects` (FOLLOWS).
     "calendar-day": Pack(
         slug="calendar-day",
         when=("Load to rebuild or replan the day, start my day, fit what is left, "
