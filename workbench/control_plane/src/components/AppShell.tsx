@@ -72,6 +72,7 @@ import {
   shellSidebar,
 } from "@/lib/shell/shellNav";
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
+import { useAgentGuidanceEnabled } from "@/lib/useAgentGuidanceEnabled";
 import { rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -474,6 +475,7 @@ function MobileBottomNavInner({
   const [shellNav] = useState(() => shellNavOn());
   // WS-63 PZ-25: the "Assistant settings" account row, only with the profile on for this org.
   const assistant = useAssistantProfileEnabled();
+  const agents = useAgentGuidanceEnabled();
   // "Home", or "My Day" with that flag on (NS-3). Read once, as above.
   // ⚠️ Read in `useState`, as `shellNavOn` is: with the dev-only
   // `localStorage` override the server and the browser can disagree, and
@@ -678,7 +680,7 @@ function MobileBottomNavInner({
       {/* The rare acts, after the apps: the member's pages, the settings and
           sign-out, in one list (owner review, 2026-10-09). */}
       <div className="mt-auto border-t border-border px-2 py-3">
-        <DrawerAccountFoot you={shellNav ? accountLinks(navSections, { assistant }) : undefined} onNavigate={close}>
+        <DrawerAccountFoot you={shellNav ? accountLinks(navSections, { assistant, agents }) : undefined} onNavigate={close}>
           <ThemeToggleMenuItem onClick={close} />
           <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { toggleView(); close(); }} className="w-full gap-3 px-3 py-2.5 text-sm">
             <AppIcon name="Monitor" size={16} className="shrink-0" />
