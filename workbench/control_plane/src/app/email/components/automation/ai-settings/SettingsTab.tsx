@@ -21,6 +21,9 @@ import {
 } from "../../../lib/api";
 import { AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn } from "../../../lib/assistantSettings";
 import {
+  dialogAfterSave, patchBody, saveSignature, settingsAfterSave, type SignatureSave,
+} from "../../../lib/signatureSave";
+import {
   AssistantSettings, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
   DraftConfidence, KnowledgeEntry, LearnedPattern,
   LearnedRulePattern, RuleGuidance, VoiceProfile, WEEKDAYS,
@@ -326,7 +329,16 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
   if (loading || !settings) return <Spinner label="Loading settings…" />;
 
   const s = settings; // narrowed
-  const persistPatch = (p: Partial<AssistantSettings>) => persist({ ...s, ...p });
+  // Builds on the settings state, which holds the STORED signature, so a
+  // toggle never sends a signature edit that did not save (WS-17 SG-1).
+  const persistPatch = (p: Partial<AssistantSettings>) => persist(patchBody(s, p));
+  // A signature save changes the state only on success. A refusal leaves the
+  // stored signature in the state and on the card (signatureSave.ts).
+  const persistSignature = async (signature: string): Promise<SignatureSave> => {
+    const result = await saveSignature(s, signature, saveAssistantSettings);
+    setSettings((now) => (now ? settingsAfterSave(now, result) : now));
+    return result;
+  };
   const followUpOn = s.follow_up_awaiting_days > 0 || s.follow_up_needs_reply_days > 0;
   const digestOn = s.digest_frequency !== "OFF";
 
@@ -647,10 +659,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
       {dialog === "signature" && (
         <SignatureDialog
           settings={s}
-          onSave={(next) => {
-            persist(next);
-            setDialog(null);
-          }}
+          onSave={persistSignature}
           onClose={() => setDialog(null)}
         />
       )}
@@ -804,30 +813,50 @@ function PersonalInstructionsDialog({
   );
 }
 
+/** The signature dialog. A save that the server refuses keeps the dialog
+ *  open, with the member's edit in the editor and the server's sentence inside
+ *  the dialog (WS-17 SG-1, `lib/signatureSave.ts`). Only a saved signature
+ *  closes it. */
 function SignatureDialog({
   settings,
   onSave,
   onClose,
 }: {
   settings: AssistantSettings;
-  onSave: (next: AssistantSettings) => void;
+  onSave: (signature: string) => Promise<SignatureSave>;
   onClose: () => void;
 }) {
-  const [draft, setDraft] = useState(settings);
+  const [draft, setDraft] = useState(settings.signature || "");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    const next = dialogAfterSave(draft, await onSave(draft));
+    setBusy(false);
+    setDraft(next.draft);
+    setError(next.error);
+    if (!next.open) onClose();
+  };
   return (
     <Modal
       title="Email signature"
       description="Appended to the bottom of your replies. Use rich text or full HTML — links and images supported."
       onClose={onClose}
       footer={
-        <Button layout="flex items-center" onClick={() => onSave(draft)} className="ml-auto">
-          <Icon name="Check" size={13} /> Save
+        <Button layout="flex items-center" onClick={() => void save()} disabled={busy} className="ml-auto">
+          <Icon name="Check" size={13} /> {busy ? "Saving…" : "Save"}
         </Button>
       }
     >
+      {error && (
+        <p role="alert" data-signature-error className="mb-2 text-[11px] text-destructive">
+          {error}
+        </p>
+      )}
       <SignatureEditor
-        value={draft.signature || ""}
-        onChange={(html) => setDraft({ ...draft, signature: html })}
+        value={draft}
+        onChange={setDraft}
         accountId={settings.account_id}
       />
     </Modal>
