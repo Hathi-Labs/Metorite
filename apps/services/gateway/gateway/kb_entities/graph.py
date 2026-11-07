@@ -29,10 +29,19 @@ identifier, with no model: an email address or a WhatsApp phone to a person
 or a contact (``participant``), a sender domain to a CRM company
 (``domain_company``), and an address of ``meeting.attendees`` to a person
 (``attendee``). One candidate gives EXTRACTED at 1.0. Two or more give one
-AMBIGUOUS row for each candidate, at 1/n (§4.2). A free-mail domain of
-``CONSUMER_DOMAINS`` never maps to a company. A sender domain that names one
-company also becomes an alias of its customer entity, through
-``registry.add_aliases``.
+AMBIGUOUS row for each candidate, at 1/n (§4.2). The candidates are directory
+fields only, never a private field of ``people``. A company domain is the
+host of its website. A free-mail domain of ``CONSUMER_DOMAINS``, a host of
+:data:`SITE_HOSTS` and a host that two companies share map to no company. A
+sender host that names one company also becomes an alias of its customer
+entity, through ``registry.add_aliases``.
+
+**Identifier rows follow the data.** An identifier row carries ``created_by``
+:data:`RESOLVER`. Each sweep sets its provenance and confidence to the match
+of today and deletes it when the match is gone (:func:`_reconcile`). A
+removed row (§4.4), a structural row and a page row never change. A host
+alias that two companies now share is removed, through
+``registry.remove_aliases``.
 
 **When it runs.** The job kind :data:`SWEEP_KIND` runs on the shared job
 queue. :func:`seed` is a ``worker.seed_hooks`` hook. It enqueues one job for
@@ -128,8 +137,7 @@ RELATIONS: dict[str, Relation] = {r.name: r for r in (
              ambiguous=True),
     Relation("participant", ("email", "whatsapp"), ("person", "contact"),
              "EXTRACTED", "source", ambiguous=True),
-    Relation("domain_company", ("email",), ("company",), "EXTRACTED", "source",
-             ambiguous=True),
+    Relation("domain_company", ("email",), ("company",), "EXTRACTED", "source"),
 )}
 
 #: The node kinds of each app whose one access rule covers both ends.
@@ -148,17 +156,31 @@ class EdgeForm:
     """One statement of the sweep. ``select`` answers the columns ``s`` and
     ``t``, the ids of the two ends, and names ``:org`` in its own WHERE.
 
-    An ``ambiguous`` form (KG-5) also answers ``n``: the number of
-    candidates of the identifier that gave the row. The writer keeps the
-    lowest ``n`` of each pair of ends. ``n`` = 1 gives EXTRACTED at 1.0, and
-    more gives AMBIGUOUS at 1/n (§4.2)."""
+    An ``identifier`` form (KG-5) also answers ``n``: the number of
+    candidates of the identifier that gave the row. Its rows carry
+    ``created_by`` :data:`RESOLVER`, and each sweep sets them to the match of
+    today (:func:`_reconcile`). A structural row never changes.
+
+    An ``ambiguous`` form keeps the lowest ``n`` of each pair of ends.
+    ``n`` = 1 gives EXTRACTED at 1.0, and more gives AMBIGUOUS at 1/n
+    (§4.2). A form that is not ``ambiguous`` writes EXTRACTED only."""
 
     relation: str
     source_kind: str
     target_kind: str
     select: str
     ambiguous: bool = False
+    identifier: bool = False
 
+
+#: The ids of `meeting.attendee_ids` that are a row of `people` in the org.
+#: The column has no foreign key, so each id is checked (§4.1).
+_ATTENDEE_IDS = (
+    "SELECT m.id::text AS s, p.id::text AS t FROM meeting m "
+    "CROSS JOIN LATERAL unnest(m.attendee_ids) AS a(pid) "
+    "JOIN people p ON p.id = a.pid AND p.organization_id = m.organization_id "
+    "WHERE m.organization_id = CAST(:org AS uuid)"
+)
 
 #: Each structural edge of KG-4, from a stored id (§4.1). The source end of
 #: each form holds the id, or the CRM app holds both ends (§4.3).
@@ -205,13 +227,7 @@ STRUCTURAL_FORMS: tuple[EdgeForm, ...] = (
     EdgeForm("task_link", "task", "task",
              "SELECT l.source_task_id::text AS s, l.target_task_id::text AS t "
              "FROM pm_task_links l WHERE l.organization_id = CAST(:org AS uuid)"),
-    # `meeting.attendee_ids` has no foreign key, so each id must be a row of
-    # `people` in the same org before it gives an edge (§4.1).
-    EdgeForm("attendee", "meeting", "person",
-             "SELECT m.id::text AS s, p.id::text AS t FROM meeting m "
-             "CROSS JOIN LATERAL unnest(m.attendee_ids) AS a(pid) "
-             "JOIN people p ON p.id = a.pid AND p.organization_id = m.organization_id "
-             "WHERE m.organization_id = CAST(:org AS uuid)"),
+    EdgeForm("attendee", "meeting", "person", _ATTENDEE_IDS),
 )
 
 # ── The KG-5 forms: one exact identifier to its records ─────────────────────
@@ -220,7 +236,15 @@ STRUCTURAL_FORMS: tuple[EdgeForm, ...] = (
 # joins the record that holds the identifier to the records that hold the
 # same one, and to nothing else. So no third record joins the two ends
 # (§4.3). Each form counts the candidates of each identifier in the org, and
-# two or more give AMBIGUOUS rows, never a guess.
+# two or more give AMBIGUOUS rows, never a guess. A form reads no private
+# field of `people`: `phone`, `personal_email`, `birthday` and
+# `emergency_contact` are the private tier (`routes/tasks/people.py`
+# PRIVATE_FIELDS). `people.email` is a directory field.
+
+#: The ``created_by`` of a row that an identifier form writes. Only these
+#: rows change after they are written (:func:`_reconcile`).
+RESOLVER = "system:identifier"
+
 
 #: An address in its match form: trimmed and in lower case, never casefolded
 #: (PZ-5, as ``resolver.resolve_person`` and the email app compare it).
@@ -243,21 +267,32 @@ def _phone_key(expr: str) -> str:
 #: A shorter run is an extension, and a longer run is no phone.
 _PHONE_OK = "BETWEEN 8 AND 15"
 
+#: Hosts that many companies share for a profile or a site, so a website
+#: there names no company. A host under one of them is left out too.
+SITE_HOSTS: frozenset[str] = frozenset({
+    "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
+    "youtube.com", "sites.google.com", "wixsite.com", "business.site",
+    "github.io", "wordpress.com",
+})
 
-def _consumer_list() -> str:
-    """``CONSUMER_DOMAINS`` as a SQL list. Imported, never copied (§4.2)."""
-    for d in CONSUMER_DOMAINS:
+
+def _host_list(hosts: frozenset[str]) -> str:
+    """*hosts* as a SQL list. Each one is a plain host, checked here."""
+    for d in hosts:
         if not re.fullmatch(r"[a-z0-9.-]+", d):
-            raise ValueError(f"a consumer domain is not a plain host: {d!r}")
-    return ", ".join(f"'{d}'" for d in sorted(CONSUMER_DOMAINS))
+            raise ValueError(f"not a plain host: {d!r}")
+    return ", ".join(f"'{d}'" for d in sorted(hosts))
 
 
-_CONSUMER_SQL = _consumer_list()
+#: ``CONSUMER_DOMAINS`` as a SQL list. Imported, never copied (§4.2).
+_CONSUMER_SQL = _host_list(CONSUMER_DOMAINS)
+_SITE_SQL = _host_list(SITE_HOSTS)
 
-#: The host of a CRM company website: no scheme, no ``www.``, no port or path.
+#: The host of a CRM company website: lower case first, then no scheme, no
+#: ``www.``, no port and no path.
 _WEBSITE_HOST = (
-    "lower(regexp_replace(regexp_replace(btrim(co.website), "
-    "'^[A-Za-z][A-Za-z0-9+.-]*://', ''), '^www[.]|[/:?#].*$', '', 'g'))"
+    "regexp_replace(regexp_replace(lower(btrim(co.website)), "
+    "'^[a-z][a-z0-9+.-]*://', ''), '^www[.]|[/:?#].*$', '', 'g')"
 )
 
 #: The addresses that an email row holds: its sender, and To, Cc and Bcc
@@ -282,13 +317,12 @@ _ADDRESS_CANDIDATES = (
     "AND c.email LIKE '%_@_%'"
 )
 
-#: The phone candidates of the org: people, and CRM contacts by phone and
-#: by mobile. One contact with both numbers is one candidate.
+#: The phone candidates of the org: CRM contacts by phone and by mobile. One
+#: contact with both numbers is one candidate. ``people.phone`` is private,
+#: so it is never a candidate.
 _PHONE_CANDIDATES = (
     "SELECT x.tk, x.t, x.k FROM ("
-    "SELECT 'person' AS tk, p.id::text AS t, " + _phone_key("p.phone") + " AS k "
-    "FROM people p WHERE p.organization_id = CAST(:org AS uuid) "
-    "UNION SELECT 'contact', c.id::text, " + _phone_key("c.phone") + " "
+    "SELECT 'contact' AS tk, c.id::text AS t, " + _phone_key("c.phone") + " AS k "
     "FROM crm_contacts c WHERE c.organization_id = CAST(:org AS uuid) "
     "UNION SELECT 'contact', c.id::text, " + _phone_key("c.mobile") + " "
     "FROM crm_contacts c WHERE c.organization_id = CAST(:org AS uuid)"
@@ -320,16 +354,27 @@ _SENDER_DOMAINS = (
     f"WHERE x.k LIKE '%_._%' AND x.k NOT IN ({_CONSUMER_SQL})"
 )
 
-#: The domain candidates of the org: the host of a CRM company website and
-#: the domain of its address. A free-mail domain is never a candidate.
-_DOMAIN_CANDIDATES = (
-    "SELECT x.tk, x.t, x.k FROM ("
-    "SELECT 'company' AS tk, co.id::text AS t, " + _WEBSITE_HOST + " AS k "
+#: The website host of each CRM company of the org. Never a free-mail
+#: domain, and never a host of :data:`SITE_HOSTS` or under one.
+_COMPANY_HOSTS = (
+    "SELECT h.t, h.k FROM (SELECT co.id::text AS t, " + _WEBSITE_HOST + " AS k "
     "FROM crm_companies co WHERE co.organization_id = CAST(:org AS uuid) "
-    "AND co.website IS NOT NULL "
-    "UNION SELECT 'company', co.id::text, " + _domain_of_sql("co.email") + " "
-    "FROM crm_companies co WHERE co.organization_id = CAST(:org AS uuid) "
-    f") AS x WHERE x.k LIKE '%_._%' AND x.k NOT IN ({_CONSUMER_SQL})"
+    "AND co.website IS NOT NULL) AS h "
+    f"WHERE h.k LIKE '%_._%' AND h.k NOT IN ({_CONSUMER_SQL}) "
+    f"AND h.k NOT IN ({_SITE_SQL}) AND NOT EXISTS (SELECT 1 FROM "
+    f"unnest(ARRAY[{_SITE_SQL}]) AS sh(v) WHERE h.k LIKE '%.' || sh.v)"
+)
+
+#: Each host that exactly one company of the org holds. A host that two
+#: companies share names no company, so it gives no edge and no alias.
+_ONE_COMPANY_HOSTS = (
+    f"SELECT min(c.t) AS t, c.k FROM ({_COMPANY_HOSTS}) AS c "
+    "GROUP BY c.k HAVING count(DISTINCT c.t) = 1"
+)
+
+#: Each host that two companies of the org or more hold.
+_SHARED_HOSTS = (
+    f"SELECT c.k FROM ({_COMPANY_HOSTS}) AS c GROUP BY c.k HAVING count(DISTINCT c.t) > 1"
 )
 
 
@@ -350,45 +395,84 @@ def _resolve_select(identifiers: str, candidates: str, target_kind: str) -> str:
     )
 
 
+#: The address half of `attendee`, with the id half at ``n`` = 1. So a person
+#: that `attendee_ids` names stays EXTRACTED, and its row is never stale.
+_ATTENDEE_SELECT = (
+    "SELECT r.s AS s, r.t AS t, r.n AS n FROM ("
+    + _resolve_select(
+        _MEETING_ADDRESSES,
+        "SELECT 'person' AS tk, p.id::text AS t, " + _address_key("p.email")
+        + " AS k FROM people p WHERE p.organization_id = CAST(:org AS uuid) "
+        "AND p.email LIKE '%_@_%'",
+        "person")
+    + ") AS r UNION ALL SELECT i.s, i.t, 1 FROM (" + _ATTENDEE_IDS + ") AS i"
+)
+
 #: Each KG-5 form (§4.1). The source end holds the identifier (§4.3).
 RESOLVE_FORMS: tuple[EdgeForm, ...] = (
     EdgeForm("participant", "email", "person",
-             _resolve_select(_EMAIL_ADDRESSES, _ADDRESS_CANDIDATES, "person"), True),
+             _resolve_select(_EMAIL_ADDRESSES, _ADDRESS_CANDIDATES, "person"),
+             ambiguous=True, identifier=True),
     EdgeForm("participant", "email", "contact",
-             _resolve_select(_EMAIL_ADDRESSES, _ADDRESS_CANDIDATES, "contact"), True),
-    EdgeForm("participant", "whatsapp", "person",
-             _resolve_select(_WHATSAPP_PHONES, _PHONE_CANDIDATES, "person"), True),
+             _resolve_select(_EMAIL_ADDRESSES, _ADDRESS_CANDIDATES, "contact"),
+             ambiguous=True, identifier=True),
     EdgeForm("participant", "whatsapp", "contact",
-             _resolve_select(_WHATSAPP_PHONES, _PHONE_CANDIDATES, "contact"), True),
+             _resolve_select(_WHATSAPP_PHONES, _PHONE_CANDIDATES, "contact"),
+             ambiguous=True, identifier=True),
+    # A shared host gives no row at all, so this form is never AMBIGUOUS.
     EdgeForm("domain_company", "email", "company",
-             _resolve_select(_SENDER_DOMAINS, _DOMAIN_CANDIDATES, "company"), True),
-    # The address half of `attendee`. It runs after the id half of KG-4, so
-    # a person that `attendee_ids` names keeps its EXTRACTED row.
-    EdgeForm("attendee", "meeting", "person",
-             _resolve_select(
-                 _MEETING_ADDRESSES,
-                 "SELECT 'person' AS tk, p.id::text AS t, " + _address_key("p.email")
-                 + " AS k FROM people p WHERE p.organization_id = CAST(:org AS uuid) "
-                 "AND p.email LIKE '%_@_%'",
-                 "person"), True),
+             f"SELECT d.s AS s, o.t AS t, 1 AS n FROM ({_SENDER_DOMAINS}) AS d "
+             f"JOIN ({_ONE_COMPANY_HOSTS}) AS o ON o.k = d.k",
+             identifier=True),
+    # It runs after the id half of KG-4, so a person that `attendee_ids`
+    # names keeps its structural row.
+    EdgeForm("attendee", "meeting", "person", _ATTENDEE_SELECT,
+             ambiguous=True, identifier=True),
 )
 
 #: Every form of the sweep, in order: the stored ids first, then KG-5.
 SWEEP_FORMS: tuple[EdgeForm, ...] = STRUCTURAL_FORMS + RESOLVE_FORMS
 
+#: The pairs of one form, with the lowest ``n`` of each pair. ``{count}`` is
+#: ``1`` for a form that is not ``ambiguous``, or ``x.n``.
+_PAIRS = "SELECT x.s, x.t, min({count}) AS n FROM ({select}) AS x GROUP BY x.s, x.t"
+_PROV = "CASE WHEN e.n > 1 THEN 'AMBIGUOUS' ELSE CAST(:prov AS text) END"
+_CONF = "CAST(CAST(:conf AS real) / GREATEST(e.n, 1) AS real)"
+
 #: The one INSERT of a graph row. ``page_id`` is always NULL. The conflict
-#: target is the partial unique index ``kb_links_graph_key``. ``{count}`` is
-#: ``1`` for a stored id, or the lowest ``x.n`` for an identifier form.
+#: target is the partial unique index ``kb_links_graph_key``.
 _INSERT_EDGES_SQL = (
     "INSERT INTO kb_links (organization_id, page_id, source_kind, source_id, "
     "relation, target_kind, target_id, provenance, confidence, created_by) "
     "SELECT DISTINCT CAST(:org AS uuid), CAST(NULL AS uuid), :sk, e.s, :rel, :tk, e.t, "
-    "CAST(CASE WHEN e.n > 1 THEN 'AMBIGUOUS' ELSE CAST(:prov AS text) END AS text), "
-    "CAST(CAST(:conf AS real) / GREATEST(e.n, 1) AS real), :by "
-    "FROM (SELECT x.s, x.t, min({count}) AS n FROM ({select}) AS x "
-    "GROUP BY x.s, x.t) AS e WHERE e.s IS NOT NULL AND e.t IS NOT NULL "
+    f"CAST({_PROV} AS text), {_CONF}, :by "
+    f"FROM ({_PAIRS}) AS e WHERE e.s IS NOT NULL AND e.t IS NOT NULL "
     "ON CONFLICT (organization_id, source_kind, source_id, relation, target_kind, "
     "target_id) WHERE page_id IS NULL DO NOTHING"
+)
+
+#: The rows of one identifier form that the sweep may change: its own rows,
+#: never a removed row (§4.4), never a structural or a page row.
+_OWN_ROWS = (
+    "l.organization_id = CAST(:org AS uuid) AND l.page_id IS NULL "
+    "AND l.removed_at IS NULL AND l.created_by = :by AND l.source_kind = :sk "
+    "AND l.relation = :rel AND l.target_kind = :tk"
+)
+
+#: Set the provenance and the confidence of today on each row that still
+#: matches. A row that holds them already is not touched.
+_UPDATE_EDGES_SQL = (
+    f"UPDATE kb_links l SET provenance = {_PROV}, confidence = {_CONF} "
+    f"FROM ({_PAIRS}) AS e WHERE {_OWN_ROWS} "
+    "AND l.source_id = e.s AND l.target_id = e.t "
+    f"AND (l.provenance IS DISTINCT FROM {_PROV} OR l.confidence IS DISTINCT FROM {_CONF})"
+)
+
+#: Delete each row whose match no longer holds.
+_DELETE_STALE_SQL = (
+    f"DELETE FROM kb_links l WHERE {_OWN_ROWS} "
+    "AND (l.source_id, l.target_id) NOT IN (SELECT x.s, x.t FROM ({select}) AS x "
+    "WHERE x.s IS NOT NULL AND x.t IS NOT NULL)"
 )
 
 
@@ -406,55 +490,114 @@ def check_form(form: EdgeForm) -> Relation:
             f"{form.relation} does not join {form.source_kind} to {form.target_kind}")
     if form.ambiguous and not rel.ambiguous:
         raise ValueError(f"{form.relation} is never AMBIGUOUS, so no form may count candidates")
+    if form.ambiguous and not form.identifier:
+        raise ValueError("only an identifier form counts candidates")
     return rel
+
+
+def _params(org: str, form: EdgeForm, rel: Relation) -> dict[str, Any]:
+    return {"org": org, "sk": form.source_kind, "rel": rel.name, "tk": form.target_kind,
+            "prov": rel.provenance, "conf": EXTRACTED_CONFIDENCE,
+            "by": RESOLVER if form.identifier else SYSTEM}
+
+
+def _sql(template: str, form: EdgeForm) -> str:
+    return template.format(select=form.select, count="x.n" if form.ambiguous else "1")
 
 
 async def _write_edges(db: Any, org: str, form: EdgeForm) -> int:
     """Write the edges of one form for *org*. Answers the rows written."""
     rel = check_form(form)
-    count = "x.n" if form.ambiguous else "1"
-    result = await db.execute(
-        text(_INSERT_EDGES_SQL.format(select=form.select, count=count)),
-        {"org": org, "sk": form.source_kind, "rel": rel.name, "tk": form.target_kind,
-         "prov": rel.provenance, "conf": EXTRACTED_CONFIDENCE, "by": SYSTEM},
-    )
+    result = await db.execute(text(_sql(_INSERT_EDGES_SQL, form)), _params(org, form, rel))
     return int(result.rowcount or 0)
+
+
+async def _reconcile(db: Any, org: str, form: EdgeForm) -> tuple[int, int]:
+    """Bring the rows of one identifier form to the match of today.
+
+    It deletes each own row whose match no longer holds, and it sets the
+    provenance and the confidence of each other own row to 1/n of today.
+    A removed row and a structural row are never touched. Answers
+    ``(updated, deleted)``.
+    """
+    rel = check_form(form)
+    if not form.identifier:
+        raise ValueError("only an identifier form changes its rows")
+    params = _params(org, form, rel)
+    deleted = await db.execute(text(_sql(_DELETE_STALE_SQL, form)), params)
+    updated = await db.execute(text(_sql(_UPDATE_EDGES_SQL, form)), params)
+    return int(updated.rowcount or 0), int(deleted.rowcount or 0)
 
 
 @dataclass
 class SweepResult:
-    """What one sweep of one org wrote, by relation. Counts only.
+    """What one sweep of one org changed. Counts only.
 
-    ``aliases`` counts the domains that the sweep added to the aliases of a
-    customer entity. ``total`` counts edges only."""
+    ``written``, ``updated`` and ``deleted`` count edges by relation.
+    ``aliases`` and ``aliases_removed`` count the domain aliases of customer
+    entities. ``total`` counts the edges written. ``changes`` counts every
+    row that the sweep changed, so a sweep with no change gives 0."""
 
     written: dict[str, int] = field(default_factory=dict)
+    updated: dict[str, int] = field(default_factory=dict)
+    deleted: dict[str, int] = field(default_factory=dict)
     aliases: int = 0
+    aliases_removed: int = 0
 
     @property
     def total(self) -> int:
         return sum(self.written.values())
 
+    @property
+    def changes(self) -> int:
+        return (self.total + sum(self.updated.values()) + sum(self.deleted.values())
+                + self.aliases + self.aliases_removed)
 
-#: The most domain aliases that one sweep looks at.
+
+#: The most domain aliases that one sweep adds, and the most that it
+#: removes. Read at call time, so a test can lower it.
 ALIAS_BATCH = 1000
 
-#: Each sender domain of the org that names exactly one CRM company. The
-#: sweep adds the domain to the aliases of that customer entity, so a later
-#: code match (KG-10) finds the company by its domain. Ids and domains only.
-_ALIAS_DOMAINS_SQL = (
-    f"WITH cand AS ({_DOMAIN_CANDIDATES}), "
-    "counted AS (SELECT c.t, c.k, count(*) OVER (PARTITION BY c.k) AS n FROM cand c) "
-    "SELECT DISTINCT c.t AS company_id, c.k AS domain FROM counted c "
-    f"WHERE c.n = 1 AND c.k IN (SELECT d.k FROM ({_SENDER_DOMAINS}) AS d) "
-    "ORDER BY c.t, c.k LIMIT :n"
-)
+
+def _alias_add_sql() -> str:
+    """Each one-company host that an email of the org sends from, and that
+    the customer entity of that company does not hold as an alias yet. So
+    each night's batch moves on. Ids and hosts only."""
+    return (
+        f"SELECT o.t AS company_id, o.k AS domain FROM ({_ONE_COMPANY_HOSTS}) AS o "
+        f"WHERE o.k IN (SELECT d.k FROM ({_SENDER_DOMAINS}) AS d) "
+        "AND NOT EXISTS (SELECT 1 FROM kb_entities e "
+        "WHERE e.organization_id = CAST(:org AS uuid) AND e.ref_table = 'crm_companies' "
+        "AND e.ref_id = CAST(o.t AS uuid) AND EXISTS (SELECT 1 FROM unnest(e.aliases) "
+        "AS ea(v) WHERE lower(ea.v) = o.k)) "
+        "ORDER BY o.t, o.k LIMIT :n"
+    )
 
 
-async def _write_domain_aliases(db: Any, org: str) -> int:
-    """Add each one-company sender domain to the aliases of its customer
-    entity, through the registry. Answers the aliases added."""
-    rows = (await db.execute(text(_ALIAS_DOMAINS_SQL),
+def _alias_remove_sql() -> str:
+    """Each customer entity that holds a host as an alias that two companies
+    of the org now share. Ids and hosts only."""
+    return (
+        "SELECT e.id::text AS entity_id, c.k AS domain "
+        f"FROM ({_COMPANY_HOSTS}) AS c JOIN kb_entities e "
+        "ON e.organization_id = CAST(:org AS uuid) AND e.ref_table = 'crm_companies' "
+        "AND e.ref_id = CAST(c.t AS uuid) "
+        f"WHERE c.k IN ({_SHARED_HOSTS}) "
+        "AND EXISTS (SELECT 1 FROM unnest(e.aliases) AS ea(v) WHERE lower(ea.v) = c.k) "
+        "ORDER BY 1, 2 LIMIT :n"
+    )
+
+
+async def _sync_domain_aliases(db: Any, org: str) -> tuple[int, int]:
+    """Add each one-company sender host to the aliases of its customer
+    entity, and remove each host alias that two companies now share. Both go
+    through the registry. Answers ``(added, removed)``."""
+    gone = (await db.execute(text(_alias_remove_sql()),
+                             {"org": org, "n": ALIAS_BATCH})).fetchall()
+    removed = 0
+    for row in gone:
+        removed += await registry.remove_aliases(db, row.entity_id, [row.domain])
+    rows = (await db.execute(text(_alias_add_sql()),
                              {"org": org, "n": ALIAS_BATCH})).fetchall()
     added = 0
     for row in rows:
@@ -463,31 +606,39 @@ async def _write_domain_aliases(db: Any, org: str) -> int:
         entity = await registry.ensure_entity(db, "crm_companies", row.company_id)
         if entity is not None:
             added += await registry.add_aliases(db, entity, [row.domain])
-    return added
+    return added, removed
 
 
 async def sweep_org(db: Any, org: str) -> SweepResult:
-    """Write each edge of *org* that is not in ``kb_links`` yet, then the
-    domain aliases of KG-5.
+    """Bring the graph rows of *org* to today, then the domain aliases.
 
-    *db* is a session bound to *org*. Each form runs in a savepoint, so a
-    form whose source table is absent or fails loses its own rows only.
+    A structural form writes each edge that is not in ``kb_links`` yet. An
+    identifier form first reconciles its own rows, then writes. *db* is a
+    session bound to *org*. Each form runs in a savepoint, so a form whose
+    source table is absent or fails loses its own rows only.
     """
     result = SweepResult()
     for form in SWEEP_FORMS:
         check_form(form)  # a bad form is a code defect: it raises, never logs
         try:
             async with db.begin_nested():
+                updated = deleted = 0
+                if form.identifier:
+                    updated, deleted = await _reconcile(db, org, form)
                 made = await _write_edges(db, org, form)
         except Exception as exc:  # one form must not stop the others
             _log.warning("graph.sweep.form_failed", relation=form.relation,
                          source_kind=form.source_kind, target_kind=form.target_kind,
                          error=type(exc).__name__)
             continue
-        result.written[form.relation] = result.written.get(form.relation, 0) + made
+        name = form.relation
+        result.written[name] = result.written.get(name, 0) + made
+        if form.identifier:
+            result.updated[name] = result.updated.get(name, 0) + updated
+            result.deleted[name] = result.deleted.get(name, 0) + deleted
     try:
         async with db.begin_nested():
-            result.aliases = await _write_domain_aliases(db, org)
+            result.aliases, result.aliases_removed = await _sync_domain_aliases(db, org)
     except Exception as exc:  # the edges stay when the aliases fail
         _log.warning("graph.sweep.aliases_failed", error=type(exc).__name__)
     return result
@@ -527,7 +678,8 @@ async def sweep_job(db: Any, payload: dict[str, Any]) -> None:
     if not sweep_allowed(org):
         return
     result = await sweep_org(db, str(org))
-    _log.info("graph.sweep.done", total=result.total, aliases=result.aliases,
+    _log.info("graph.sweep.done", total=result.total, changes=result.changes,
+              aliases=result.aliases, aliases_removed=result.aliases_removed,
               **result.written)
 
 
@@ -653,7 +805,9 @@ __all__ = [
     "NODE_KINDS",
     "PROVENANCES",
     "RELATIONS",
+    "RESOLVER",
     "RESOLVE_FORMS",
+    "SITE_HOSTS",
     "STRUCTURAL_FORMS",
     "SWEEP_FORMS",
     "SWEEP_KIND",

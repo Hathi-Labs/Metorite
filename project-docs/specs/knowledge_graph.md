@@ -185,7 +185,7 @@ evidence (§4.3).
 | `task_link` | `task` → `task` | `pm_task_links` (migration 146: `source_task_id`, `target_task_id`, `link_type`). `organization_id` is NOT NULL with FORCE RLS since migration 161 | KG-4 | EXTRACTED |
 | `attendee` | `meeting` → `person` | KG-4: an id of `meeting.attendee_ids` that is a row of `people`. KG-5: an exact match on the addresses of `meeting.attendees` (migration 99) | KG-4, KG-5 | EXTRACTED, or AMBIGUOUS |
 | `participant` | `email` or `whatsapp` → `person` or `contact` | An exact address or phone match. No email or WhatsApp table holds a person or contact id | KG-5 | EXTRACTED, or AMBIGUOUS with two candidates |
-| `domain_company` | `email` → `company` | the sender domain against the CRM company domain | KG-5 | EXTRACTED, or AMBIGUOUS |
+| `domain_company` | `email` → `company` | the sender domain against the website host of a CRM company | KG-5 | EXTRACTED. A host that two companies share gives no row |
 | `mentions` | `page` or `email` → any node | a code match on aliases and names | KG-10 | INFERRED |
 | `relates_to` | `page` → `entity` or a record | the cheap tier, on a Knowledge page save | KG-10 | INFERRED |
 
@@ -198,11 +198,38 @@ Re-verify each column name at dispatch, because the code is the fact.
   phone matches on its digits, from 8 to 15. An email gives its sender,
   To, Cc and Bcc. A WhatsApp message gives the `wa_id` of its sender only.
   The candidates of an address are `people.email` and `crm_contacts.email`.
-  The candidates of a phone are `people.phone`, `crm_contacts.phone` and
-  `crm_contacts.mobile`. A person and a contact with one address are two
-  candidates. No CRM column holds a domain. So the domain of a company is
-  the host of `crm_companies.website` or the domain of
-  `crm_companies.email`, as an exact match with no subdomain rule.
+  A person and a contact with one address are two candidates.
+- **No private field is a candidate.** The candidates of a phone are
+  `crm_contacts.phone` and `crm_contacts.mobile` only. `people.phone`,
+  `personal_email`, `birthday` and `emergency_contact` are the private tier
+  (`routes/tasks/people.py` `PRIVATE_FIELDS`). No form reads them, and the
+  fence is `test_kg_links_writer.py`.
+- **The domain of a company is the host of `crm_companies.website` only.**
+  The sweep makes it lower case, then strips the scheme, `www.`, the port
+  and the path. It matches the sender domain exactly, with no subdomain
+  rule. A host that two companies of the org share names no company, so it
+  gives no row. So `domain_company` is never AMBIGUOUS. A free-mail domain
+  of `CONSUMER_DOMAINS` is never a host. Nor is a host of `SITE_HOSTS` in
+  `graph.py`, or a host under one: profile and site-builder hosts such as
+  `linkedin.com` and `wixsite.com`. No form reads `crm_companies.email`,
+  because many companies use an address at a free-mail host that the list
+  does not hold.
+- **`CONSUMER_DOMAINS` must grow.** It does not hold `rediffmail.com`,
+  `yahoo.in` or `yahoo.co.uk`. The email app owns the list
+  (`routes/email/mailbox_identity.py`), so add them there and never copy it
+  here.
+- **An identifier row follows the data.** Its `created_by` is
+  `system:identifier`. Each sweep sets its provenance and confidence to 1/n
+  of today. It deletes the row when the match no longer holds. A row with
+  `removed_at` stays as it is (§4.4). A structural row of KG-4 never
+  changes, because its id is a stored key. A sweep with no change in the
+  data changes 0 rows.
+- **A domain alias follows the data too.** The sweep adds a sender host
+  that names one company to the aliases of its customer entity. It removes
+  that alias when two companies share the host. It does not remove an
+  alias when a company changes its website, because a member may have
+  typed that alias. Each batch holds 1000 hosts, and it leaves out a host
+  that the entity holds already, so the next night goes on.
 - `pm_task_refs` (migration 255) holds outside links only: a pull request,
   an issue, a commit, a branch, a comment, a document or a URL. So no task
   to page and no task to artifact edge exists. See Q6.
@@ -439,6 +466,10 @@ Each slice adds its own line from §9.
 # KG-4
 uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py \
   tests/unit/test_kb_backlinks_r8.py tests/unit/test_tenant_coverage.py -p no:xdist -rs -q
+
+# KG-5
+uv run pytest tests/unit/test_kg_resolve_r8.py tests/unit/test_kg_links_r8.py \
+  tests/unit/test_kg_links_writer.py tests/unit/test_kc_entities.py -p no:xdist -rs -q
 ```
 
 ---
@@ -469,7 +500,9 @@ the owner or a decision gives one. Build to the default.
   company, the old `contact_company` row stays. KG-6 opens each end through
   its app, so the row shows no hidden record. A later slice must decide
   whether the sweep deletes an EXTRACTED row whose source no longer holds
-  the id. Found at KG-4, 2026-11-05.
+  the id. Found at KG-4, 2026-11-05. The KG-5 identifier rows do not have
+  this gap: each sweep deletes a stale one (§4.1, "An identifier row
+  follows the data"). The KG-4 structural rows still have it.
 - **The KG rows of `company_context.md` §12** are the as-built record of
   KG-1, KG-2 and KG-3a. From today this spec owns every KG slice, and the
   KG-3b row there points here.

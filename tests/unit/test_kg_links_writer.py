@@ -106,8 +106,10 @@ def test_every_relation_is_extracted_or_ambiguous_as_the_spec_says() -> None:
         assert rel.provenance in graph.PROVENANCES
         assert rel.provenance == "EXTRACTED"
         assert rel.ambiguous == ("AMBIGUOUS" in table[rel.name][1]), rel.name
+    # A host that two companies share gives no row, so `domain_company` is
+    # never AMBIGUOUS (KG-5 review).
     assert {r.name for r in graph.RELATIONS.values() if r.ambiguous} == {
-        "attendee", "participant", "domain_company"}
+        "attendee", "participant"}
 
 
 def test_every_relation_names_its_evidence_end() -> None:
@@ -135,20 +137,23 @@ def test_each_sweep_form_is_a_listed_relation_and_passes_the_check() -> None:
 
 
 def test_only_the_kg5_forms_count_candidates() -> None:
-    assert not any(f.ambiguous for f in graph.STRUCTURAL_FORMS)
-    assert all(f.ambiguous for f in graph.RESOLVE_FORMS)
+    assert not any(f.ambiguous or f.identifier for f in graph.STRUCTURAL_FORMS)
+    assert all(f.identifier for f in graph.RESOLVE_FORMS)
     for form in graph.RESOLVE_FORMS:
         assert re.search(r"\bAS n\b", form.select), form
+        assert form.ambiguous == graph.RELATIONS[form.relation].ambiguous, form
     assert {(f.relation, f.source_kind, f.target_kind) for f in graph.RESOLVE_FORMS} == {
         ("participant", "email", "person"), ("participant", "email", "contact"),
-        ("participant", "whatsapp", "person"), ("participant", "whatsapp", "contact"),
+        ("participant", "whatsapp", "contact"),
         ("domain_company", "email", "company"), ("attendee", "meeting", "person"),
     }
 
 
 def test_the_address_attendee_form_runs_after_the_id_form() -> None:
-    order = [(f.relation, f.ambiguous) for f in graph.SWEEP_FORMS]
+    order = [(f.relation, f.identifier) for f in graph.SWEEP_FORMS]
     assert order.index(("attendee", False)) < order.index(("attendee", True))
+    (form,) = [f for f in graph.RESOLVE_FORMS if f.relation == "attendee"]
+    assert graph._ATTENDEE_IDS in form.select  # an id pair stays at n = 1
 
 
 def test_the_insert_gives_ambiguous_rows_at_one_over_n() -> None:
@@ -158,15 +163,58 @@ def test_the_insert_gives_ambiguous_rows_at_one_over_n() -> None:
     assert "min({count}) AS n" in sql and "GROUP BY x.s, x.t" in sql
 
 
-def test_the_domain_forms_never_map_a_free_mail_domain() -> None:
+def test_the_reconcile_touches_own_live_identifier_rows_only() -> None:
+    """§4.4 and the KG-5 review: only a row of an identifier form, with no
+    `removed_at`, changes after it is written."""
+    for sql in (graph._UPDATE_EDGES_SQL, graph._DELETE_STALE_SQL):
+        assert graph._OWN_ROWS in sql
+    for clause in ("l.removed_at IS NULL", "l.created_by = :by", "l.page_id IS NULL",
+                   "l.organization_id = CAST(:org AS uuid)"):
+        assert clause in graph._OWN_ROWS
+    form = graph.STRUCTURAL_FORMS[0]
+    assert graph._params("o", form, graph.check_form(form))["by"] == graph.SYSTEM
+    for form in graph.RESOLVE_FORMS:
+        assert graph._params("o", form, graph.check_form(form))["by"] == graph.RESOLVER
+    assert graph.RESOLVER != graph.SYSTEM
+    # The update writes only a row whose value differs, so a sweep with no
+    # change counts 0.
+    assert "IS DISTINCT FROM" in graph._UPDATE_EDGES_SQL
+
+
+async def test_the_reconcile_refuses_a_structural_form() -> None:
+    with pytest.raises(ValueError):
+        await graph._reconcile(object(), "o", graph.STRUCTURAL_FORMS[0])
+
+
+def test_the_domain_forms_never_map_a_free_mail_or_site_host() -> None:
     src = (_GATEWAY / "kb_entities/graph.py").read_text(encoding="utf-8")
     assert "from gateway.routes.email.mailbox_identity import CONSUMER_DOMAINS" in src
     assert "gmail.com" not in src  # imported, never copied (§4.2)
     (form,) = [f for f in graph.RESOLVE_FORMS if f.relation == "domain_company"]
-    for domain in CONSUMER_DOMAINS:
+    for domain in CONSUMER_DOMAINS | graph.SITE_HOSTS:
         assert f"'{domain}'" in form.select
-        assert f"'{domain}'" in graph._ALIAS_DOMAINS_SQL
-    assert form.select.count("NOT IN (") == 2  # the sender side and the company side
+        assert f"'{domain}'" in graph._alias_add_sql()
+    assert "HAVING count(DISTINCT c.t) = 1" in form.select  # a shared host names none
+    assert "co.email" not in src  # the website host only (KG-5 review)
+
+
+def test_the_site_hosts_are_pinned() -> None:
+    assert frozenset({
+        "linkedin.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
+        "youtube.com", "sites.google.com", "wixsite.com", "business.site",
+        "github.io", "wordpress.com",
+    }) == graph.SITE_HOSTS
+    assert not graph.SITE_HOSTS & CONSUMER_DOMAINS
+
+
+def test_no_form_reads_a_private_field_of_people() -> None:
+    """`routes/tasks/people.py` PRIVATE_FIELDS: the graph never reads one."""
+    from gateway.routes.tasks.people import PRIVATE_FIELDS
+
+    sql = " ".join(f.select for f in graph.SWEEP_FORMS)
+    for name in PRIVATE_FIELDS:
+        assert not re.search(rf"\bp\.{name}\b", sql), name
+    assert "p.phone" not in sql and "p.personal_email" not in sql
 
 
 def test_the_kg5_forms_hold_no_third_record() -> None:
@@ -174,19 +222,20 @@ def test_the_kg5_forms_hold_no_third_record() -> None:
     records of the candidates, and no other table."""
     tables = {
         ("participant", "email"): {"email_messages", "people", "crm_contacts"},
-        ("participant", "whatsapp"): {"wa_messages", "people", "crm_contacts"},
+        ("participant", "whatsapp"): {"wa_messages", "crm_contacts"},
         ("domain_company", "email"): {"email_messages", "crm_companies"},
         ("attendee", "meeting"): {"meeting", "people"},
     }
     for form in graph.RESOLVE_FORMS:
         named = set(re.findall(r"\b(?:FROM|JOIN)\s+([a-z_]+)\b", form.select))
-        named -= {"ids", "cand", "counted"}
+        named -= {"ids", "cand", "counted", "unnest"}
         assert named == tables[(form.relation, form.source_kind)], form
 
 
 @pytest.mark.parametrize("form", [
     graph.EdgeForm("mentions", "page", "task", "SELECT 1 AS s, 1 AS t"),
     graph.EdgeForm("participant", "task", "person", "SELECT 1 AS s, 1 AS t", True),
+    graph.EdgeForm("participant", "email", "person", "SELECT 1 AS s, 1 AS t", True),
     graph.EdgeForm("deal_company", "deal", "company", "SELECT 1 AS s, 1 AS t", True),
     graph.EdgeForm("made_up", "task", "task", "SELECT 1 AS s, 1 AS t"),
     graph.EdgeForm("links_to", "page", "page", "SELECT 1 AS s, 1 AS t"),

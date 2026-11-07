@@ -98,6 +98,25 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "fold them in Python before the UPDATE. It returns a count, never a "
         "name or an alias, and the sweep has no caller to show one to."
     ),
+    ("registry.py", "remove_aliases"): (
+        "The KG-5 sweep removes a host alias that two companies now share. "
+        "The read locks that one row in the bound tenant and reads its "
+        "aliases, to fold them in Python before the UPDATE. It returns a "
+        "count, never a name or an alias."
+    ),
+    ("graph.py", "_alias_add_sql"): (
+        "The KG-5 sweep leaves out a host that the customer entity holds as "
+        "an alias already, so its batch moves on each night. The statement "
+        "reads the aliases array only to filter, in the session org. It "
+        "answers company ids and hosts, never a name, to the sweep, which "
+        "has no caller."
+    ),
+    ("graph.py", "_alias_remove_sql"): (
+        "The KG-5 sweep finds the customer entities that hold a host alias "
+        "that two companies now share. It answers entity ids and hosts, "
+        "never a name, to the sweep, which has no caller. The removal goes "
+        "through registry.remove_aliases."
+    ),
     ("registry.py", "lock_page_slot"): (
         "The lazy page route locks the entity row and reads its raw page_id, "
         "so two first writes make one page and a hidden page is never "
