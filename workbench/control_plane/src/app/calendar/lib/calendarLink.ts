@@ -68,6 +68,20 @@ export function parseLinkClock(raw: string | null | undefined): ClockTime | null
   return m ? { hour: Number(m[1]), minute: Number(m[2]) } : null;
 }
 
+/**
+ * The query string of a Calendar link's own keys, in a fixed order. The
+ * reader keys its effect on this, so a change of another key (the task
+ * card's `?ttab=`, ORC-3) does not open the linked day again.
+ */
+export function linkQuery(params: { get(name: string): string | null } | null): string {
+  const keys = new URLSearchParams();
+  for (const name of [DATE_PARAM, AT_PARAM, REMINDER_PARAM]) {
+    const value = params?.get(name);
+    if (value !== null && value !== undefined) keys.set(name, value);
+  }
+  return keys.toString();
+}
+
 /** The link a query string names, or `null` when it names nothing good. */
 export function calendarLinkFromSearch(
   search: { get(name: string): string | null } | null,
