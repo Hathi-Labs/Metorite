@@ -2894,6 +2894,7 @@ class GmailProvider(BaseEmailProvider):
         complete = True
         held_at: int | None = None
         failed_ids: list[str] = []
+        listed: list[str] = []
         for page in range(self.DEEP_SYNC_MAX_PAGES):
             kept = (len(result.messages), result.messages_synced,
                     len(result.errors))
@@ -2913,13 +2914,14 @@ class GmailProvider(BaseEmailProvider):
                 return self._cut_reset(
                     seed, after, until, result.messages[first:], result,
                     held_at=None if held_at is None else held_at - first,
-                    failed=failed_ids, held=held)
+                    failed=failed_ids, listed=listed, held=held)
             except Exception as exc:
                 logger.warning("gmail.reset_sweep_failed error=%s status=%s",
                                type(exc).__name__, getattr(
                                    getattr(exc, "response", None),
                                    "status_code", None))
                 return False
+            listed.extend(ids)
             if failed:
                 complete = False
                 failed_ids.extend(failed)
@@ -2933,7 +2935,7 @@ class GmailProvider(BaseEmailProvider):
                 return self._cut_reset(
                     seed, after, until, result.messages[first:], result,
                     held_at=None if held_at is None else held_at - first,
-                    failed=failed_ids, held=held)
+                    failed=failed_ids, listed=listed, held=held)
             params["pageToken"] = token
         return False
 
@@ -2941,7 +2943,7 @@ class GmailProvider(BaseEmailProvider):
         self, seed: str, after: datetime | None, until: datetime | None,
         read: list[EmailMessage], result: SyncResult, *,
         held_at: int | None = None, failed: list[str] | None = None,
-        held: int = 0,
+        listed: list[str] | None = None, held: int = 0,
     ) -> bool:
         """Stop a reset sweep, and return False for a sweep that did not move.
 
@@ -2952,10 +2954,13 @@ class GmailProvider(BaseEmailProvider):
         A failed fetch at the top of the read cannot move the bound. The
         bound then stays, and the cycle counts in ``held`` (EM-G4b-f4). On
         the cycle that reaches ``GMAIL_FETCH_HOLD_CYCLES``, the bound moves
-        to the oldest mail of the whole read, past each mail in *failed*.
-        Each gets the log ``gmail.fetch_abandoned`` and a record in
-        ``result.errors``, with its id only, as ``_cursor_after_read`` does.
-        Before EM-G4b-f4 the sweep counted as short, and the abandon after
+        to the oldest mail of the whole read. A mail of *failed* that
+        *listed*, the ids of the finished pages, names before the last mail
+        of the read is passed. It gets the log ``gmail.fetch_abandoned`` and
+        a record in ``result.errors``, with its id only, as
+        ``_cursor_after_read`` does. A failed mail below the last mail of the
+        read is older than the bound, so the next cycle reads it again, and
+        it gets no record (verifier finding, task 1448). Before EM-G4b-f4 the sweep counted as short, and the abandon after
         ``CATCH_UP_MAX_MISSES`` dropped the older mail with no record.
 
         A sweep that still cannot move counts as short, and the stored cursor
@@ -2973,7 +2978,11 @@ class GmailProvider(BaseEmailProvider):
                 return True
             bound = _older_bound(read, until)
             if bound is not None:
-                for mid in failed or []:
+                last = read[-1].provider_message_id
+                above = (set(listed[:listed.index(last)])
+                         if listed and last in listed else None)
+                for mid in (m for m in failed or []
+                            if above is None or m in above):
                     logger.warning(
                         "gmail.fetch_abandoned message_id=%s held_cycles=%d",
                         mid, cycles)

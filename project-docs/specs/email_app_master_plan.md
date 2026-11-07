@@ -13936,9 +13936,12 @@ read. The `sync_error` note reaches the API only, so the member never knew.
   `{"v":1,"seed":...,"reset":[after,until],"held":n}`, and `held` is absent at 0. A process before
   this slice ignores `held`, so a rollback loses the count and nothing else.
 - **D-G4b-f4-2. The cap is `GMAIL_FETCH_HOLD_CYCLES` (3), as on the history path.** On the cycle
-  that reaches it, the bound moves to the oldest mail of the whole read, past each failed mail.
-  Each one gets the log `gmail.fetch_abandoned message_id=<id> held_cycles=<n>` and a record in
-  `errors`, with its id only. That is the same line and record as `_cursor_after_read`.
+  that reaches it, the bound moves to the oldest mail of the whole read. The sweep then passes each
+  failed mail that the list names before the last mail of the read. Each one gets the log
+  `gmail.fetch_abandoned message_id=<id> held_cycles=<n>` and a record in `errors`, with its id
+  only. That is the same line and record as `_cursor_after_read`. A failed mail below the last mail
+  of the read is older than the bound, so the next cycle reads it again, and it gets no record
+  (verifier finding).
 - **D-G4b-f4-3. The count belongs to the bound.** A cycle that moves the bound in the normal way
   stores no `held`. So a failed mail holds the sweep for 3 cycles in a row at most.
 - **D-G4b-f4-4. A held cycle is a cut, not a short sweep.** It sets `rate_limited` and stores the
@@ -13954,12 +13957,30 @@ read. The `sync_error` note reaches the API only, so the member never knew.
    cycle moves the bound past it and logs `gmail.fetch_abandoned` once. The fourth reads the older
    mail and ends with the first seed (`test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep`).
 2. The abandon goes into `errors` at the cap only, and the moved bound stores no `held`
-   (`test_a_held_reset_bound_records_the_abandoned_mail`).
+   (`test_a_held_reset_bound_records_the_abandoned_mail`). A failed mail below the last mail of
+   the read gets no abandon record (`test_the_cap_records_only_the_failed_mail_that_it_passes`).
 3. A bound that moves clears the count (`test_a_bound_that_moves_clears_the_held_count`).
 4. A failed mail at the top of the first cycle stores `held` 1, and the sweep still reads one page
    (`test_a_failed_fetch_does_not_lift_the_share`).
 5. A bad `held` is no reset cursor, and a held cursor is no other cursor
    (`test_text_that_is_no_reset_cursor`, `test_a_reset_cursor_is_no_other_cursor`).
+
+**The mutations.** Each mutation patched a copy of the package, and a fence went red. All 11 went
+red. The worktree was never written.
+
+| Mutation | Fence that failed |
+|---|---|
+| A The held count never grows | `test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep` |
+| B The cap is one cycle late | `test_a_held_reset_bound_records_the_abandoned_mail` |
+| C The cap stays above the failed mail | `test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep` |
+| D The abandon writes no record | `test_a_held_reset_bound_records_the_abandoned_mail` |
+| D2 The abandon writes no log line | `test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep` |
+| E A bound that moves keeps the count | `test_a_bound_that_moves_clears_the_held_count` |
+| F The parse drops `held` | `test_a_reset_cursor_is_no_other_cursor` |
+| G The format drops `held` | `test_a_failed_fetch_does_not_lift_the_share` |
+| H The old defect: a held cycle is short | `test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep` |
+| I The cap records a mail below the read | `test_the_cap_records_only_the_failed_mail_that_it_passes` |
+| D (fix round) The abandon writes no record | `test_the_cap_records_only_the_failed_mail_that_it_passes` |
 
 **Verify on production, after the release.** After a `gmail.reset_held` line, the log shows a
 `gmail.fetch_abandoned` line or a `gmail.reset_partial` line, at the latest 2 cycles later.
