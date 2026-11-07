@@ -20,7 +20,7 @@ import statistics
 import subprocess
 import sys
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO = "Hathi-Labs/Metorite"
@@ -46,7 +46,7 @@ def gh_json(path: str):
 
 
 def _t(s):
-    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
 
 def _p90(vals):
@@ -64,16 +64,25 @@ def _run_minutes(run):
     return (_t(run["updated_at"]) - _t(run["run_started_at"])).total_seconds() / 60
 
 
-def _fetch_runs(gh, workflow, extra, since, max_runs):
+LIVE_RUNS = 30  # queued and in-progress runs read for the queue wait, per state
+
+
+def _fetch_runs(gh, workflow, extra, since, max_runs, status="completed", trunc=None):
+    """Runs of one workflow in the window. `status=completed` is part of the
+    query, so a CI backlog (hundreds of queued runs) cannot fill the cap and
+    leave no finished run (verifier finding, 2026-11-07). `trunc` gets a note
+    when the cap cut the list before the window ended."""
     runs, page = [], 1
     while len(runs) < max_runs:
         path = (f"repos/{REPO}/actions/workflows/{workflow}/runs?per_page=100"
-                f"&created=%3E%3D{since}&page={page}{extra}")
+                f"&created=%3E%3D{since}&status={status}&page={page}{extra}")
         batch = gh(path).get("workflow_runs", [])
         if not batch:
             break
         runs.extend(batch)
         page += 1
+    if len(runs) > max_runs and trunc is not None:
+        trunc.append(f"{workflow} {status}: more than {max_runs} runs in the window, newest {max_runs} used")
     return runs[:max_runs]
 
 
@@ -88,7 +97,7 @@ def _jobs(gh, runs, errors):
     for r in runs:
         try:
             out[r["id"]] = gh(f"repos/{REPO}/actions/runs/{r['id']}/jobs?per_page=100").get("jobs", [])
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             errors.append(f"jobs of run {r['id']}: {e}")
     return out
 
@@ -110,12 +119,23 @@ def _pr_check(pr_runs, jobs):
             "top_failing_jobs": [{"name": n, "count": c} for n, c in top]}
 
 
-def _queue_wait(jobs):
+def _queue_wait(jobs, now=None):
+    """Seconds from job creation to start. A job that has not started yet waits
+    until `now`: the longest waits are the ones still in the queue, and leaving
+    them out would bias the p90 low. A negative value counts as 0."""
+    now = now or datetime.now(UTC)
     waits = []
     for js in jobs.values():
         for j in js:
-            if j.get("started_at") and j.get("created_at"):
-                waits.append((_t(j["started_at"]) - _t(j["created_at"])).total_seconds())
+            if not j.get("created_at"):
+                continue
+            if j.get("started_at"):
+                end = _t(j["started_at"])
+            elif j.get("status") in ("queued", "waiting", "pending"):
+                end = now
+            else:
+                continue
+            waits.append(max(0.0, (end - _t(j["created_at"])).total_seconds()))
     if not waits:
         return {"jobs": 0, "median_min": None, "p90_min": None, "max_min": None}
     return {"jobs": len(waits), **_stats(waits, 60.0), "max_min": round(max(waits) / 60, 2)}
@@ -180,7 +200,7 @@ def _old_prs(gh, now):
 
 
 def collect(gh, days=7, max_runs=200, now=None, durations=None):
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     since = (now - timedelta(days=days)).strftime("%Y-%m-%d")
     errors: list[str] = []
     out: dict = {"generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "days": days}
@@ -188,28 +208,37 @@ def collect(gh, days=7, max_runs=200, now=None, durations=None):
     def guard(key, fn):
         try:
             out[key] = fn()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             out[key] = None
             errors.append(f"{key}: {e}")
 
+    trunc: list[str] = []
     pr_runs = None
     try:
-        pr_runs = _finished(_fetch_runs(gh, PR_WORKFLOW, "", since, max_runs))
-    except Exception as e:  # noqa: BLE001
+        pr_runs = _finished(_fetch_runs(gh, PR_WORKFLOW, "", since, max_runs, trunc=trunc))
+    except Exception as e:
         errors.append(f"pr_check runs: {e}")
     jobs = {}
     if pr_runs is not None:
         # One jobs call per run, capped by max_runs through the run list.
         jobs = _jobs(gh, pr_runs, errors)
         guard("pr_check", lambda: _pr_check(pr_runs, jobs))
-        guard("queue_wait", lambda: _queue_wait(jobs))
+        # Runs that wait or run now: their queued jobs are the longest waits.
+        live = []
+        for st in ("queued", "in_progress"):
+            try:
+                live += _fetch_runs(gh, PR_WORKFLOW, "", since, LIVE_RUNS, status=st)[:LIVE_RUNS]
+            except Exception as e:
+                errors.append(f"queue_wait {st} runs: {e}")
+        live_jobs = _jobs(gh, [r for r in live if r["id"] not in jobs], errors)
+        guard("queue_wait", lambda: _queue_wait({**jobs, **live_jobs}, now))
     else:
         out["pr_check"] = out["queue_wait"] = None
 
     batch = None
     try:
-        batch = _finished(_fetch_runs(gh, BATCH_WORKFLOW, "&event=push&branch=main", since, max_runs))
-    except Exception as e:  # noqa: BLE001
+        batch = _finished(_fetch_runs(gh, BATCH_WORKFLOW, "&event=push&branch=main", since, max_runs, trunc=trunc))
+    except Exception as e:
         errors.append(f"batch_main: {e}")
     if batch is not None:
         guard("batch_main", lambda: _batch_main(batch))
@@ -223,6 +252,7 @@ def collect(gh, days=7, max_runs=200, now=None, durations=None):
     else:
         out["selection_misses"] = None
         errors.append("selection_misses: needs both the pr-check and batch runs")
+    out["truncated"] = trunc
     out["errors"] = errors
     return out
 
@@ -254,7 +284,7 @@ def main(argv=None):
         try:
             prev = json.loads(Path(a.compare).read_text(encoding="utf-8"))
             res["delta"] = compute_delta({k: v for k, v in res.items() if k not in ("days", "errors")}, prev)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             res["delta"] = None
             res["errors"].append(f"compare: {e}")
     text = json.dumps(res, indent=2)

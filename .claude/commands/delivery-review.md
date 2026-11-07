@@ -32,8 +32,11 @@ Change it here and nowhere else.
 
 ## Rules for the headless session
 
-1. Use only these tools: Bash (for `scripts/delivery_metrics.py` and read-only
-   `gh` calls) and the Metorite MCP.
+1. Use only these tools. Use Bash for the one `scripts/delivery_metrics.py`
+   command of step 1. Use Read and Write for the two `/tmp/delivery_*.json`
+   files. Use the Metorite tools that read tasks and create a task.
+   The script makes all GitHub calls, and it only reads. The session makes no
+   `gh` call.
 2. Never cancel or rerun a GitHub run. Never merge. Never push.
 3. Never write to a task that you did not create. Create only the report task
    and the fix tasks of step 4.
@@ -49,7 +52,8 @@ Change it here and nowhere else.
 Find the last report. Call `search_tasks` with "Delivery review" in project
 Developer Workflow, take the newest report task, and read its description. The
 last JSON sits there in a fenced `json` block. Write it to
-`/tmp/delivery_prev.json`. If no report task exists, skip `--compare`.
+`/tmp/delivery_prev.json` with the Write tool. If no report task exists, run
+the command without `--compare`.
 
 ```bash
 python3 scripts/delivery_metrics.py --days 7 --compare /tmp/delivery_prev.json --out /tmp/delivery_now.json
@@ -67,6 +71,7 @@ The script prints one JSON object. Its keys:
 - `open_prs_older_than_2d`: `number`, `title`, `age_days`.
 - `delta`: this week minus last week, for every number. It exists only with
   `--compare`.
+- `truncated`: a note for each list that the run cap cut short.
 - `errors`: the calls that failed. Their metrics are `null`.
 
 ### 2. Measure the Metorite items

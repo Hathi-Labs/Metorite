@@ -7,7 +7,7 @@ import importlib.util
 import json
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "delivery_metrics.py"
 COMMAND = ROOT / ".claude" / "commands" / "delivery-review.md"
 
-NOW = datetime(2026, 11, 7, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 7, 12, 0, 0, tzinfo=UTC)
 
 
 def _load():
@@ -73,11 +73,19 @@ class FakeGh:
         for needle in self.fail:
             if needle in path:
                 raise RuntimeError(f"gh failed for {needle}")
+        st = re.search(r"status=(\w+)", path)
+        want = st.group(1) if st else None
+
+        def serve(runs):
+            if not re.search(r"page=1(?!\d)", path):
+                return {"workflow_runs": []}
+            return {"workflow_runs": [r for r in runs if want is None or r.get("status") == want]}
+
         if "workflows/pr-check.yml/runs" in path:
-            return {"workflow_runs": self.pr_runs if re.search(r"page=1(?!\d)", path) else []}
+            return serve(self.pr_runs)
         if "workflows/deploy.yml/runs" in path:
             assert "event=push" in path and "branch=main" in path
-            return {"workflow_runs": self.batch_runs if re.search(r"page=1(?!\d)", path) else []}
+            return serve(self.batch_runs)
         m = re.search(r"actions/runs/(\d+)/jobs", path)
         if m:
             return {"jobs": self.jobs.get(int(m.group(1)), [])}
@@ -150,7 +158,7 @@ def test_queue_wait(dm, tmp_path):
 
 def test_batch_main_and_selection_miss(dm, tmp_path):
     runs, jobs = _pr_fixture()
-    pr_runs = runs + [_run(7, 12, "success", sha="prhead")]
+    pr_runs = [*runs, _run(7, 12, "success", sha="prhead")]
     jobs[7] = [_job("lint", "success", 0)]
     batch = [
         _run(100, 60, "success", sha="m1", event="push"),
@@ -272,3 +280,38 @@ def test_command_file_names_every_metric_key_and_holds_thresholds():
     for word in ("1628", "ed3027f8-bf27-4f56-9a40-2c89141606d0",
                  "519d9f0d-8dde-4910-b733-b4fa2ed3c2b9", "Owner queue"):
         assert word in text
+
+
+def test_a_backlog_of_queued_runs_does_not_hide_the_finished_ones(dm, tmp_path):
+    """Verifier finding 2026-11-07: the cap cut the newest runs (all queued)
+    before the finished filter, so the report showed 'no data'."""
+    queued = [_run(1000 + i, 0, None, status="queued") for i in range(150)]
+    done = [_run(i, 10, "success") for i in range(1, 4)]
+    gh = FakeGh([*queued, *done], {})
+    out = dm.collect(gh, days=7, max_runs=20, now=NOW, durations=_durations_file(tmp_path, {}))
+    assert out["pr_check"]["runs"] == 3
+    assert out["pr_check"]["median_min"] == 10.0
+    assert any("status=completed" in c for c in gh.calls)
+
+
+def test_a_job_that_still_waits_counts_until_now(dm, tmp_path):
+    """Queued jobs are the longest waits. Leaving them out biased the p90 low."""
+    runs = [_run(1, 10, "success"), _run(2, 0, None, status="queued")]
+    waiting = {"name": "unit", "status": "queued", "conclusion": None,
+               "created_at": _iso(NOW - timedelta(minutes=90)), "started_at": None}
+    out = dm.collect(FakeGh(runs, {1: [_job("lint", "success", 60)], 2: [waiting]}), days=7,
+                     max_runs=20, now=NOW, durations=_durations_file(tmp_path, {}))
+    qw = out["queue_wait"]
+    assert qw["jobs"] == 2 and qw["max_min"] == 90.0
+
+
+def test_the_cap_is_reported_as_truncated(dm, tmp_path):
+    runs = [_run(i, 10, "success") for i in range(1, 31)]
+    out = dm.collect(FakeGh(runs, {}), days=7, max_runs=7, now=NOW,
+                     durations=_durations_file(tmp_path, {}))
+    assert out["truncated"] and "more than 7 runs" in out["truncated"][0]
+
+
+def test_a_negative_wait_counts_as_zero(dm):
+    job = {"created_at": "2026-11-07T10:00:10Z", "started_at": "2026-11-07T10:00:00Z", "status": "completed"}
+    assert dm._queue_wait({1: [job]}, NOW)["max_min"] == 0.0

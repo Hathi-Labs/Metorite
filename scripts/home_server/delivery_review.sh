@@ -24,5 +24,9 @@ cd "$WORK"
 
 # No --permission-mode: a headless session cannot answer a prompt, so any tool
 # outside the list below is denied. The session writes no file.
-claude -p "/delivery-review" \
-  --allowedTools "Bash(python3 scripts/delivery_metrics.py:*)" "Bash(gh api:*)" "Bash(cat:*)" "Edit(/tmp/delivery_prev.json)" "mcp__metorite"
+claude -p "/delivery-review" --allowedTools \
+  "Bash(python3 scripts/delivery_metrics.py --days 7 --out /tmp/delivery_now.json)" \
+  "Bash(python3 scripts/delivery_metrics.py --days 7 --compare /tmp/delivery_prev.json --out /tmp/delivery_now.json)" \
+  "Read(/tmp/delivery_now.json)" "Read(/tmp/delivery_prev.json)" "Write(/tmp/delivery_prev.json)" \
+  "mcp__metorite__search_tasks" "mcp__metorite__list_tasks" "mcp__metorite__get_task" \
+  "mcp__metorite__get_project" "mcp__metorite__list_agent_runs" "mcp__metorite__create_task"
