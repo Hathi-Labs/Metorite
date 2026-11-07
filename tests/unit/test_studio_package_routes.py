@@ -206,6 +206,12 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
                       key=lambda v: -v["version"])
         return [_version(pid, v, manifest=False) for v in rows[:limit]]
 
+    async def get_version(db, member, pid, version):
+        if db.mine(member, pid) is None:
+            return None
+        found = [v for v in w.versions if v["app"] == pid and v["version"] == version]
+        return _version(pid, found[0]) if found else None
+
     async def sync_objects(db, actor, *, package_id, objects):
         w.log.append("sync")
         w.sync_calls.append({"actor": actor, "package_id": package_id,
@@ -240,7 +246,8 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
     monkeypatch.setattr(actions, "catalog_rows", catalog_rows)
     for name, fn in (("get_package", get_package), ("list_summaries", list_summaries),
                      ("create_package", create_package), ("update_manifest", update_manifest),
-                     ("publish_version", publish_version), ("list_versions", list_versions)):
+                     ("publish_version", publish_version), ("list_versions", list_versions),
+                     ("get_version", get_version)):
         monkeypatch.setattr(store, name, fn)
     monkeypatch.setattr(objects_store, "sync_objects", sync_objects)
     monkeypatch.setattr(objects_store, "list_objects", list_objects)
@@ -832,6 +839,46 @@ def test_a_cursor_does_not_open_the_versions_of_a_stranger(world, monkeypatch):
     assert (r.status_code, r.json()) == (404, NOT_FOUND)
 
 
+def test_one_version_reads_with_its_manifest_and_hash(world):
+    from acb_common.studio_manifest import manifest_hash
+
+    c = _client(world)
+    pid = _create(c)
+    c.post(f"/studio/packages/{pid}/versions", json={"notes": "first"})
+    r = c.get(f"/studio/packages/{pid}/versions/1")
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["version"]["version"] == 1 and got["version"]["notes"] == "first"
+    assert got["version"]["manifest"]["id"] == "visits"
+    assert got["manifest_hash"] == manifest_hash(got["version"]["manifest"])
+    assert world.log.count("publish") == 1  # the read published and synced nothing
+
+
+def test_a_missing_version_and_a_stranger_get_404(world, monkeypatch):
+    pid = _create(_client(world))
+    _client(world).post(f"/studio/packages/{pid}/versions", json={})
+    assert _client(world).get(f"/studio/packages/{pid}/versions/2").status_code == 404
+    for c in (_client(world, email=BEN), _client(world, org=OTHER)):
+        r = c.get(f"/studio/packages/{pid}/versions/1")
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    assert _client(world).get(f"/studio/packages/{uuid.uuid4()}/versions/1").status_code == 404
+    monkeypatch.setattr(get_settings(), "studio_orgs", "")
+    r = _client(world).get(f"/studio/packages/{pid}/versions/1")
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
+
+
+@pytest.mark.parametrize("bad", ["0", "x", "1.5", "-1", str(2**31), "9" * 40])
+def test_a_bad_version_is_422_and_reads_nothing(world, bad):
+    c = _client(world)
+    pid = _create(c)
+    opened = world.sessions
+    r = c.get(f"/studio/packages/{pid}/versions/{bad}")
+    assert r.status_code in (404, 422), r.text
+    if r.status_code == 422:
+        assert r.json()["detail"]["errors"][0]["path"] == "version"
+        assert world.sessions == opened
+
+
 # ── The fences (R7) ────────────────────────────────────────────────────────
 
 
@@ -850,11 +897,11 @@ def _handlers(tree: ast.Module) -> list[ast.AsyncFunctionDef]:
     return out
 
 
-def test_there_are_eight_handlers():
-    """A5 holds six, and A5c-1 adds the delete preview and the delete."""
+def test_there_are_nine_handlers():
+    """A5 holds six, A5c-1 adds the delete preview and the delete, and G5 adds one version read."""
     names = sorted(h.name for h in _handlers(_tree()))
     assert names == ["create_package", "delete_package", "delete_preview", "get_package",
-                     "list_packages", "list_versions", "publish", "save_draft"]
+                     "get_version", "list_packages", "list_versions", "publish", "save_draft"]
 
 
 def test_each_handler_checks_the_switch_first():

@@ -1,6 +1,6 @@
 """The package routes of AI Studio (STU-A5, ``ai_studio.md`` §14 A5 and A5c-1).
 
-Eight routes over the package store (A3 and A4, ``studio/packages_store.py``)
+Nine routes over the package store (A3 and A4, ``studio/packages_store.py``)
 and the object store (C1, ``studio/objects_store.py``). They register on the
 router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``main.py`` mounts no second router. The gate ``require_feature_router
@@ -13,6 +13,7 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``PUT /packages/{id}/draft``             replace the draft manifest
 ``POST /packages/{id}/versions``         publish the draft, project its objects
 ``GET /packages/{id}/versions``          a page of 100 versions, no manifest
+``GET /packages/{id}/versions/{n}``      one version, its manifest and hash
 ``GET /packages/{id}/delete-preview``    what a delete removes, and its token
 ``DELETE /packages/{id}``                delete the package (200 or 202)
 =======================================  ======================================
@@ -194,6 +195,7 @@ BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
 NOT_JSON = "The body must be a JSON object."
 TOO_DEEP = "The body nests too deep to read. Flatten it."
 BAD_CURSOR = "The cursor before is a version number, so send a whole number from 1."
+BAD_VERSION = "The version is a whole number from 1, so send a version that the list names."
 BAD_HASH = ("based_on is the hash of the draft that you read: 64 hexadecimal digits. Send it, "
             "or leave it out.")
 BAD_CONFIRM = ("confirm is the token of the delete preview: 64 hexadecimal digits. Read the "
@@ -554,6 +556,32 @@ async def list_versions(
     more = len(found) == VERSIONS_PAGE and found[-1].version > 1
     return {"versions": [_version_out(v) for v in found],
             "next_before": found[-1].version if more else None}
+
+
+@router.get("/packages/{package_id}/versions/{version}")
+async def get_version(
+    package_id: str,
+    version: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """One version of a package of the caller, with its manifest and the
+    ``manifest_hash`` of that manifest (STU-G5). The Studio IDE reads the live
+    version with it, to show what a publish changes. It writes nothing. A
+    package of another member or org, and a version that does not exist, answer
+    404. A version that is not a whole number from 1 is 422."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    pid = _package_id(package_id)
+    if not (_DIGITS.fullmatch(version) and 1 <= int(version) <= store.MAX_VERSION):
+        raise _unprocessable(BAD_VERSION, [{"path": "version", "message": BAD_VERSION}])
+    async with _tenant_session() as db:
+        if await store.get_package(db, user.email, pid) is None:
+            raise _not_found()
+        found = await store.get_version(db, user.email, pid, int(version))
+    if found is None or found.manifest is None:
+        raise _not_found()
+    return {"version": {**_version_out(found), "manifest": found.manifest},
+            "manifest_hash": manifest_hash(found.manifest)}
 
 
 # ── The delete (A5c-1) ─────────────────────────────────────────────────────

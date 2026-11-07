@@ -373,6 +373,8 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/studio/packages": "studio_save",
     # STU-G3c: the IDE saves a draft with the PUT that studio_save sends (based_on in the query).
     "PUT /api/studio/packages/{}/draft": "studio_save",
+    # STU-G5: the IDE publishes with the POST that studio_publish sends (notes and based_on in the body).
+    "POST /api/studio/packages/{}/versions": "studio_publish",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
@@ -643,6 +645,8 @@ DEBT: dict[str, str] = {
     # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
     "DELETE /api/studio/packages/{}": "P-9",
     "GET /api/studio/packages/{}/delete-preview": "P-9",
+    # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
+    "GET /api/studio/packages/{}/versions/{}": "P-9",
     # ── Tasks ──
     "GET /api/tasks/settings": "P-1",
     "POST /api/tasks/ai/backfill-context": "P-1",
@@ -1080,7 +1084,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
     "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
-    "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2.
+    "studio": 3,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. G5 adds the version read.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new
