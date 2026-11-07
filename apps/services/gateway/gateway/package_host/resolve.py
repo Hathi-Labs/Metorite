@@ -32,7 +32,12 @@ PKG-5b row of §10. The route is ``GET /shell/manifest`` in
 4. ``needs_setup`` comes from the needs of the manifest, and is never
    stored. A need is ``{"feature": <slug>}`` or ``{"package": <id>}``. Any
    other shape counts as unmet (fail closed). A package need is met only by
-   a system package or by an install that this viewer sees.
+   a system package that the viewer can use, or by an install that this
+   viewer sees. A system package counts when one of its entries passes the
+   feature check of step 3. The ``extends``
+   of a sub-app (§8.2, PKG-15a) is one more package need. A host that is
+   missing, paused, not text or the sub-app itself leaves the need unmet.
+   Each entry of an install with ``extends`` carries ``"extends": <host>``.
 5. The arrangement of §9 is not in PKG-5b.
 
 **One app.** A viewer can see one app at two scopes (§4 lets them both
@@ -62,6 +67,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -80,6 +86,9 @@ SCOPE_RANK: dict[str, int] = {"org": 0, "group": 1, "private": 2}
 VERSION_HEX = 16
 #: The two shapes of a need in PKG-5b (§5.2 step 4).
 NEED_KINDS = frozenset({"feature", "package"})
+
+#: The shape of a package id. It is the pattern of ``Manifest.extends``.
+PACKAGE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,47}$")
 
 CanUse = Callable[[str], bool]
 
@@ -142,14 +151,43 @@ def manifest_id(manifest: Any) -> str | None:
     return None
 
 
+def host_of(manifest: Any) -> str | None:
+    """The host package id of a sub-app, or None (§8.2, PKG-15a).
+
+    None means the manifest has no ``extends``, or its ``extends`` is not a
+    valid package id. :func:`needs_met` treats the second case as unmet.
+    """
+    if not isinstance(manifest, Mapping):
+        return None
+    host = manifest.get("extends")
+    if isinstance(host, str) and PACKAGE_ID.fullmatch(host):
+        return host
+    return None
+
+
+def host_met(manifest: Mapping[str, Any], packages: frozenset[str] | set[str]) -> bool:
+    """True when the ``extends`` of *manifest* is absent or its host is present.
+
+    A null ``extends`` means no host. Any other value that is not a valid
+    package id fails closed. The sub-app is never its own host.
+    """
+    if manifest.get("extends") is None:
+        return True
+    host = host_of(manifest)
+    return host is not None and host != manifest_id(manifest) and host in packages
+
+
 def needs_met(manifest: Any, can_use: CanUse, packages: frozenset[str] | set[str]) -> bool:
     """True when each need of *manifest* is met (§5.2 step 4).
 
     A manifest that is not an object, a ``needs`` that is not a list, and a
     need of any other shape are unmet. A need is an object with one key,
-    ``feature`` or ``package``, and a text value that is not empty.
+    ``feature`` or ``package``, and a text value that is not empty. The
+    ``extends`` of the manifest adds one package need (:func:`host_met`).
     """
     if not isinstance(manifest, Mapping):
+        return False
+    if not host_met(manifest, packages):
         return False
     needs = manifest.get("needs", [])
     if not isinstance(needs, list):
@@ -180,9 +218,18 @@ def feature_ok(feature: Any, can_use: CanUse) -> bool:
     return can_use(feature)
 
 
-def system_package_ids(system: Mapping[str, Sequence[SystemContribution]]) -> frozenset[str]:
-    """The id of each system package that holds an entry."""
-    return frozenset(c.package for entries in system.values() for c in entries)
+def system_package_ids(
+    system: Mapping[str, Sequence[SystemContribution]], can_use: CanUse,
+) -> frozenset[str]:
+    """The id of each system package that the viewer can use (§8.2).
+
+    A system package counts only when at least one of its entries passes
+    :func:`feature_ok`, the gate that hides its entries. So a package whose
+    entries the viewer cannot see is not present. A package whose entries
+    name no feature is present for each viewer.
+    """
+    return frozenset(c.package for entries in system.values() for c in entries
+                     if feature_ok(c.feature, can_use))
 
 
 def resolve(
@@ -198,7 +245,7 @@ def resolve(
     """
     kept = widest_per_app(installs)
     by_id = {i.id: i for i in kept}
-    packages = system_package_ids(system) | {
+    packages = system_package_ids(system, can_use) | {
         mid for i in kept if (mid := manifest_id(i.manifest)) is not None}
     setup = {i.id: not needs_met(i.manifest, can_use, packages) for i in kept}
 
@@ -231,9 +278,13 @@ def resolve(
               if feature_ok(c.payload.get("feature"), can_use)]
     chosen.sort(key=lambda ci: (ci[0].position, ci[0].key, order_key(ci[1])))
     for c, inst in chosen:
+        host = host_of(inst.manifest)
+        # ``extends`` is reserved. Only the manifest of the install sets it.
+        payload = {k: v for k, v in c.payload.items() if k != "extends"}
         out.setdefault(c.point, []).append({
-            **dict(c.payload), "key": c.key, "source": inst.scope_kind,
-            "install_id": inst.id, "needs_setup": setup[inst.id]})
+            **payload, "key": c.key, "source": inst.scope_kind,
+            "install_id": inst.id, "needs_setup": setup[inst.id],
+            **({"extends": host} if host else {})})
     return out
 
 

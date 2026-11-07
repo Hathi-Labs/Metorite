@@ -919,6 +919,9 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
     _check_links(m, objects, catalog, out)
+    if m.extends is not None and m.extends == m.id:
+        out.append(_err("$.extends", "A package cannot extend itself. Name the host package."
+                        + _got(m.extends)))
     return out
 
 
