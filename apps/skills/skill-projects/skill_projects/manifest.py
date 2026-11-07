@@ -599,7 +599,10 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # the custom values in the create itself, which checks them (#679).
     # WS-46 P7: a weekly rule with no day takes today in the member's zone,
     # from my_work's `GET /projects/my/today`.
-    "create_task": frozenset({"assign", "set_recurrence", "my_work"}),
+    # WS-IMG IMG-2: `files` posts each file through `attach_to_task`'s route
+    # and then patches the description through `update_task`'s, under the
+    # same card. Its own row makes it class B. A held chat refuses `files`.
+    "create_task": frozenset({"assign", "set_recurrence", "my_work", "attach_to_task"}),
     "set_recurrence": frozenset({"my_work"}),
     # WS-46 P7: a block time with no offset is read in the member's zone.
     "set_my_overlay": frozenset({"my_work"}),
@@ -1315,7 +1318,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         ),
     },
     ("PATCH", "/projects/tasks/{task_id}"): {
-        "If-Match": "The browser's edit guard (D-PM-20). A chat write reads the row first.",
+        "If-Match": (
+            "The browser's edit guard (D-PM-20). A chat edit reads the row first. "
+            "The one chat write that sends it is the image PATCH of create_task with "
+            "files, and the witness fence cannot run it, because the stub upload is a PDF."
+        ),
         "project_id": "The route refuses it: a move goes through move_task.",
         "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
         "source": "Where a task came from is a fact of its create. An edit keeps it.",
@@ -1755,9 +1762,19 @@ def tools_by_class(cls: str) -> set[str]:
     return direct | {t for t in COMPOSITE if tool_class(t) == cls}
 
 
+#: A tool that also writes through another tool's route, but is NOT a composite
+#: of it. ``create_task`` with ``files`` patches the description once, to put
+#: each image in it (IMG-2). Its values go in the create itself, with no PATCH
+#: (``test_projects_task_fields.py`` holds that), so ``update_task`` stays out
+#: of COMPOSITE.
+ALSO_WRITES_THROUGH: dict[str, frozenset[str]] = {
+    "create_task": frozenset({"update_task"}),
+}
+
+
 def reaches(tool: str, route_tool: str) -> bool:
     """May ``tool`` issue a call on a route the manifest gives ``route_tool``?"""
-    if tool == route_tool:
+    if tool == route_tool or route_tool in ALSO_WRITES_THROUGH.get(tool, ()):
         return True
     return any(reaches(t, route_tool) for t in COMPOSITE.get(tool, ()))
 

@@ -4,7 +4,7 @@
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
-**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. No other P9 slice is built.**
+**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -1316,6 +1316,7 @@ They keep their own gates.
 - **Done when.** R8: with the master on and organization B off the list, a delivery for B writes nothing, and one for A links its pull request.
 - **Fence.** `test_github_webhook_r8.py` (new cases) and `test_github_reconcile_r8.py`.
 - **Risk.** HIGH (webhook ingress, tenancy). **Gate.** AGENT-SAFE dark. The turn-on is GH-8. **Depends on.** GH-4 to GH-6.
+- **Built.** 2026-11-07, dark. `GITHUB_APP_ORGS` is in `settings.py`, and `github_app.github_app_org_allowed` is its one reader. With the master on, an empty list turns every org off. `github.installation_of` asks it too, so it is the single gate, and no lazy App-mode reader writes for an org off the list. The backfill is NOT built, and it stays an OWNER-GATE production one-off.
 
 #### SW-54 · Required checks on the task
 

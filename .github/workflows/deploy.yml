@@ -419,6 +419,22 @@ jobs:
           fi
           python3 scripts/ci_unit_guard.py r8-covered --junit junit --list r8_files.txt
 
+      # CIV-5b (task 1633). The bisect poller on the home box reads this report
+      # when a push batch of `main` goes red, and it needs the failed test ids.
+      # `always()` so a RED run keeps its report: that is the run it reads.
+      # The artifact name is also the default of scripts/home_server/bisect_poll.sh.
+      - name: Keep the unit report for the bisect poller
+        if: always()
+        # An upload error must never turn the release gate red.
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-junit
+          path: junit/test.xml
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 7
+
   # ── The R8 gate of a release (CIV-4b, spec ci_velocity.md §5) ──────────
   #
   # The `test` job above has no database, so every R8 suite skips there. A
@@ -691,6 +707,7 @@ jobs:
               tests/unit/test_studio_rollup_r8.py \
               tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
+              tests/unit/test_studio_publish_install_r8.py \
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
@@ -704,9 +721,11 @@ jobs:
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
+              tests/unit/test_project_rules_propose.py \
               tests/unit/test_crm_change_history.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_projects_status_set_read_r8.py \
+              tests/unit/test_mcp_edge_attachment_r8.py \
               tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_staging_export.py
 

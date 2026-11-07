@@ -392,7 +392,8 @@ CRM_NINE = set(sf.SKILL_FAMILIES["crm-records"]["tools"])
 
 
 @pytest.mark.parametrize(("mode", "dropped"), [
-    ("mirror", {"create_lead", "update_deal_status", "convert_lead"}),
+    ("mirror", {"create_lead", "update_deal_status", "convert_lead",
+                "crm_update_record"}),
     ("live", set()),
 ])
 @pytest.mark.usefixtures("store")
