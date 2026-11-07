@@ -716,3 +716,35 @@ def test_a_module_that_reaches_the_package_through_a_sibling_is_picked(
     picked, _, _ = sel.select(["packages/pkg/pkg/api/deep.py"], root)
     assert "tests/unit/test_mounts_r8.py" in picked
     assert "tests/unit/test_hub_a.py" not in picked
+
+
+def test_a_test_helper_that_imports_a_test_module_carries_the_change(tmp_path: Path) -> None:
+    """CIV-3c (task 1720). `_board.py` imports `test_runs`, and a suite imports
+    `_board`. A change to `test_runs` must select the suite."""
+    root = _repo(tmp_path)
+    _write(root, "tests/__init__.py")
+    _write(root, "tests/unit/__init__.py")
+    _write(root, "tests/unit/test_runs.py", "X = 1\n")
+    _write(root, "tests/unit/_board.py", "from tests.unit.test_runs import X\n")
+    _write(root, "tests/unit/test_board_user.py", "from tests.unit._board import X\n")
+    _write(root, "tests/unit/test_unrelated.py", "import os\n")
+    picked, _, _ = sel.select(["tests/unit/test_runs.py"], root)
+    assert "tests/unit/test_board_user.py" in picked
+    assert "tests/unit/test_unrelated.py" not in picked
+
+
+def test_the_gate_selects_every_suite_behind_the_agent_board_helper() -> None:
+    """CIV-3c acceptance, on the real tree. `_agent_board_r8` imports
+    `test_agent_runs_r8`, and every suite that imports the helper must come
+    with a change to that module."""
+    root = sel.ROOT
+    helper = "_agent_board_r8"
+    importers = {
+        f.relative_to(root).as_posix()
+        for f in (root / "tests" / "unit").glob("test_*.py")
+        if helper in f.read_text(encoding="utf-8", errors="replace")
+    }
+    assert len(importers) >= 10, "the helper is imported by many suites"
+    result = sel.gate(["tests/unit/test_agent_runs_r8.py"], root)
+    assert not result["full"], result["reasons"]
+    assert importers <= set(result["files"]), sorted(importers - set(result["files"]))
