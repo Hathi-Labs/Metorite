@@ -194,6 +194,21 @@ def test_the_server_lists_equal_the_editor_lists() -> None:
     assert uri, "SIG_ALLOWED_URI is gone"
     assert set(uri.group(1).split("|")) == {"https:", "mailto:", "tel:"}
     assert "data:" not in uri.group(1) and "https?" not in uri.group(1)
+    # Fix round 3: the editor LOADS with a wider list, so an http: address or
+    # a legacy data: image reaches the save, and the server judges it here.
+    load = re.search(r"SIG_LOAD_URI =\s*/\^\(\?:(.*?)\)/i;", source)
+    assert load, "SIG_LOAD_URI is gone"
+    assert load.group(1).startswith("https?:|mailto:|tel:|data:image")
+    assert "ALLOWED_URI_REGEXP: SIG_LOAD_URI" in source
+
+
+def test_a_typo_fix_names_the_http_logo_that_the_save_removed() -> None:
+    """Fix round 3: the editor keeps an http: logo at load, so the save sees
+    it. The clean removes it, and the report names it for the dialog."""
+    html = '<p>Jane Doe, CEO</p><img src="http://acme.com/logo.png" width="120">'
+    out, removed = clean_signature_report(html)
+    assert out == "<p>Jane Doe, CEO</p>"
+    assert removed == [{"kind": "image", "value": "http://acme.com/logo.png"}]
 
 
 def test_the_report_names_each_refused_address_once() -> None:

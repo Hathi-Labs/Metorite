@@ -47,18 +47,27 @@ const SIG_ALLOWED_ATTR = [
   "color", "align", "border", "cellpadding", "cellspacing", "class",
   "colspan", "rowspan",
 ];
-/** The URL schemes of a kept `href` or `src`. The server's `_clean_url`
- *  keeps the same three. */
+/** The URL schemes that a SAVE keeps in an `href` or `src` (D-EM-70). The
+ *  server's `_clean_url` keeps the same three. */
 export const SIG_ALLOWED_URI = /^(?:https:|mailto:|tel:)/i;
+
+/** The URL schemes that the editor keeps when it LOADS a signature (fix round
+ *  3). It keeps `http:` and a legacy `data:image` too, so a signature edit
+ *  sends them back and the SERVER decides: it hosts a `data:` image, and it
+ *  removes an `http:` address and names it in `signature_removed`, so the
+ *  dialog says what went. With the save list here, DOMPurify dropped an
+ *  `http:` logo at load and the member lost it with no word. */
+export const SIG_LOAD_URI =
+  /^(?:https?:|mailto:|tel:|data:image\/(?:png|jpe?g|gif|webp);base64,)/i;
 
 export function cleanSignatureHtml(html: string): string {
   if (typeof window === "undefined") return html || "";
   return DOMPurify.sanitize(html || "", {
     ALLOWED_TAGS: SIG_ALLOWED_TAGS,
     ALLOWED_ATTR: SIG_ALLOWED_ATTR,
-    // https, mailto and tel only, for links and images alike (D-EM-70). Gmail
-    // draws no `data:` image, and a plain `http:` image is a tracking risk.
-    ALLOWED_URI_REGEXP: SIG_ALLOWED_URI,
+    // The load list, not the save list: the server removes what a save may
+    // not keep, and reports it (D-EM-70). No script and no handler pass.
+    ALLOWED_URI_REGEXP: SIG_LOAD_URI,
     ADD_ATTR: ["target"],
   });
 }

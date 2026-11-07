@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { uploadSignatureImage } from "../lib/api";
 import { shownError } from "../lib/signatureSave";
-import { SIG_ALLOWED_URI, SigImage, UPLOAD_OFF } from "./SignatureEditor";
+import { SIG_ALLOWED_URI, SIG_LOAD_URI, SigImage, UPLOAD_OFF } from "./SignatureEditor";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const editor = read("./SignatureEditor.tsx");
@@ -104,8 +104,30 @@ describe("signature editor: the URL rule is the server's (D-EM-70)", () => {
     expect(SIG_ALLOWED_URI.test(url)).toBe(false);
   });
 
-  it("is the regex that the sanitiser uses", () => {
-    expect(editor).toMatch(/ALLOWED_URI_REGEXP: SIG_ALLOWED_URI/);
+});
+
+describe("signature editor: the load keeps what the server must judge (fix round 3)", () => {
+  it.each([
+    "http://acme.com/logo.png",
+    "https://acme.com/logo.png",
+    "mailto:jane@acme.example",
+    "tel:+91987",
+    "data:image/png;base64,iVBORw0KGgo=",
+    "data:image/gif;base64,R0lGOD",
+  ])("an editor load keeps %s, so a save sends it to the server", (url) => {
+    expect(SIG_LOAD_URI.test(url)).toBe(true);
+  });
+
+  it.each(["javascript:alert(1)", "vbscript:x", "data:text/html;base64,PGI+", "//evil.example/x"])(
+    "an editor load still drops %s", (url) => {
+      expect(SIG_LOAD_URI.test(url)).toBe(false);
+    },
+  );
+
+  it("an http: img survives the load: DOMPurify takes the load list", () => {
+    expect(editor).toMatch(/ALLOWED_URI_REGEXP: SIG_LOAD_URI/);
+    expect(editor).not.toMatch(/ALLOWED_URI_REGEXP: SIG_ALLOWED_URI/);
+    // The image node of Tiptap parses any src (`img[src]`), see above.
   });
 });
 
