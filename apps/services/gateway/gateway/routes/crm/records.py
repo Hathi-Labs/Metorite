@@ -66,8 +66,9 @@ from gateway.routes.crm.core import (
     insert_row,
     lead_name_is_derived,
     list_contract,
-    load_default_status,
+    load_pipeline_start_status,
     now,
+    pipeline_takes_unset,
     record_zoho_tombstone,
     related_filters,
     require_row,
@@ -256,7 +257,11 @@ async def list_query(
         q=params.q, sort=params.sort, direction=params.direction,
         page=params.page, page_size=params.page_size,
         status_id=params.status_id, owner=owner, source=params.source,
-        pipeline_id=params.pipeline_id, extra_where=(*extra, *more_where),
+        pipeline_id=params.pipeline_id,
+        pipeline_takes_unset=(
+            entity is DEALS and await pipeline_takes_unset(db, params.pipeline_id)
+        ),
+        extra_where=(*extra, *more_where),
         extra_params={**extra_params, **more_params},
     )
 
@@ -341,7 +346,9 @@ async def _resolve_status(
     status = (
         await require_row(db, entity.status_table, str(chosen), "Status")
         if chosen
-        else await load_default_status(db, entity.status_table)
+        else await load_pipeline_start_status(
+            db, entity.status_table, values.get("pipeline_id"),
+        )
     )
     if status.type == "lost" and not values.get("lost_reason_id"):
         raise HTTPException(
