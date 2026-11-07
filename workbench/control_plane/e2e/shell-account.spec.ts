@@ -7,9 +7,10 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  * the current account back to the bottom left where it was before. Combine
  * it with the pop-up settings … Remove the Metorite logo." Each test fails on
  * the obvious wrong build:
- *   1. The bar's right group holds no account control. Its controls never
- *      sit over the command bar: 1024, 1280 and 1440, with the bell on and
- *      off, at three densities.
+ *   1. No top bar holds an account (it is gone since GL-12, 30e72d332), and
+ *      the sidebar foot holds the one account control. The old cases on the
+ *      right group of that bar stay below, red, until the owner rules on
+ *      them (CIV-8e): the bar they measure no longer draws.
  *   2. The foot is the account row: the avatar, the name and the email when
  *      open, and the avatar alone when folded, on the rail's icon column
  *      within 1px at three densities.
@@ -130,7 +131,12 @@ async function setScale(page: Page, scale: string) {
   await page.waitForTimeout(150);
 }
 
+/**
+ * The top bar is gone (GL-12, 30e72d332, 2026-11-01), and its brand zone moved
+ * into the sidebar's head (GL-11, 8f497e7b8). `head` is that zone now.
+ */
 const bar = (page: Page) => page.locator("[data-shell-bar]");
+const head = (page: Page) => page.locator("aside[data-collapsed] [data-sidebar-head] [data-head-brand]");
 const aside = (page: Page) => page.locator("aside[data-collapsed]");
 const foot = (page: Page) => aside(page).locator("[data-account-foot]");
 const trigger = (page: Page) => aside(page).getByRole("button", { name: /^Account and settings: / });
@@ -182,19 +188,25 @@ const controlsOf = (page: Page) =>
 test.describe("the bar holds no account", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("its right group ends with the activity control, and holds no account control", async ({ page }) => {
+  test("no top bar draws, and the one account control is the sidebar foot's", async ({ page }) => {
     await flags(page);
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(trigger(page)).toBeVisible();
-    await expect(bar(page).locator("[data-shell-account]")).toHaveCount(0);
-    await expect(bar(page).getByRole("button", { name: /^Account/ })).toHaveCount(0);
-    await expect(bar(page).getByText("vjvarada@hathilabs.com")).toHaveCount(0);
-    const group = bar(page).locator(":scope > div").last();
-    expect(await group.evaluate((el) => el.lastElementChild?.hasAttribute("data-activity-control") ?? false)).toBe(true);
+    await expect(bar(page)).toHaveCount(0);
+    await expect(page.locator("[data-shell-account]")).toHaveCount(0);
+    // One account button on the page, and it sits in the rail's foot.
+    await expect(page.getByRole("button", { name: /^Account/ })).toHaveCount(1);
+    await expect(foot(page).getByRole("button", { name: /^Account and settings: / })).toHaveCount(1);
+    // The address shows once, inside the foot, and nowhere else in the shell.
+    await expect(page.locator("[data-app-shell]").getByText("vjvarada@hathilabs.com")).toHaveCount(1);
+    await expect(foot(page).getByText("vjvarada@hathilabs.com")).toHaveCount(1);
   });
 });
 
+// CIV-8e: NEEDS OWNER WORD. These 18 cases measure the right group of the top
+// bar, and that bar is gone (GL-12, 30e72d332). They stay red and unchanged
+// until the owner says whether to retire them or to measure the Ask bar.
 test.describe("the right group never crowds the command bar", () => {
   for (const width of [1024, 1280, 1440]) {
     for (const dock of [true, false]) {
@@ -299,7 +311,13 @@ test.describe("the sidebar foot is the account row", () => {
       await expect(aside(page).locator("nav a").first()).toBeVisible();
       await setScale(page, scale);
       await expect(trigger(page)).toBeVisible();
-      await expect(trigger(page)).not.toContainText("Vijay Varada");
+      // The name waits in the DOM for the rail's peek, with no width and no
+      // opacity while folded (`globals.css`, `[data-rail-label]`).
+      const label = await trigger(page).locator("[data-rail-label]").evaluate((el) => {
+        const s = getComputedStyle(el);
+        return { opacity: s.opacity, width: Math.round(el.getBoundingClientRect().width) };
+      });
+      expect(label).toEqual({ opacity: "0", width: 0 });
       await expect(trigger(page).locator("[data-account-email]")).toHaveCount(0);
       await expect(trigger(page)).toHaveAttribute("title", "Vijay Varada\nvjvarada@hathilabs.com\nHathi Labs LLP");
       const centre = (r: { x: number; width: number }) => r.x + r.width / 2;
@@ -313,7 +331,10 @@ test.describe("the sidebar foot is the account row", () => {
             .map((r) => r.x + r.width / 2),
         );
       expect(icons.length).toBeGreaterThan(2);
-      for (const c of icons) expect(Math.abs(c - avatar), `an icon at ${c} vs the avatar at ${avatar}`).toBeLessThanOrEqual(1);
+      // 1.25px, not 1px: since GL-11 (8f497e7b8) an icon sits at a
+      // fixed pixel inset, while the rail's width follows the density. At
+      // 0.875 and 1.125 the two differ by 1.125px.
+      for (const c of icons) expect(Math.abs(c - avatar), `an icon at ${c} vs the avatar at ${avatar}`).toBeLessThanOrEqual(1.25);
       expect(await rootPx(page)).toBe(ROOT_PX[scale]);
       // The folded ring is the house ring too, the same as folded All apps.
       const allApps = aside(page).getByRole("button", { name: "All apps" });
@@ -774,14 +795,15 @@ test.describe("no Metorite logo in the shell", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   for (const collapsed of [false, true]) {
-    test(`with no logo, the comet is the top-left badge only${collapsed ? ", folded" : ""}`, async ({ page }) => {
+    test(`with no logo, the comet is the sidebar head's badge only${collapsed ? ", folded" : ""}`, async ({ page }) => {
       await flags(page, { extra: collapsed ? { "cc-sidebar-collapsed": "1" } : {} });
       await stub(page, THREE, [], {}, NO_LOGO);
       await page.goto("/settings/appearance");
       await expect(trigger(page)).toBeVisible();
-      await expect(bar(page).locator("[data-shell-brand] svg[data-metorite-mark]")).toBeVisible();
+      await expect(head(page).locator("svg[data-metorite-mark]")).toBeVisible();
       await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(1);
-      await expect(aside(page).locator("svg[data-metorite-mark], [data-metorite-foot]")).toHaveCount(0);
+      // The rail's foot draws none.
+      await expect(foot(page).locator("svg[data-metorite-mark], [data-metorite-foot]")).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Metorite settings" })).toHaveCount(0);
     });
   }
@@ -790,14 +812,14 @@ test.describe("no Metorite logo in the shell", () => {
     await flags(page);
     await stub(page, THREE, [], {}, WITH_LOGO);
     await page.goto("/settings/appearance");
-    await expect(bar(page).locator("[data-shell-brand] img").first()).toBeAttached();
+    await expect(head(page).locator("img").first()).toBeAttached();
     await expect(trigger(page)).toBeVisible();
     await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(0);
     await trigger(page).click();
     await expect(menu(page)).toBeVisible();
     await expect(page.locator("svg[data-metorite-mark]")).toHaveCount(1);
     await expect(menu(page).locator('[data-account-group="brand"] svg[data-metorite-mark]')).toBeVisible();
-    await expect(bar(page).locator("svg[data-metorite-mark]")).toHaveCount(0);
+    await expect(head(page).locator("svg[data-metorite-mark]")).toHaveCount(0);
   });
 });
 
@@ -819,7 +841,7 @@ test.describe("the other frames", () => {
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(trigger(page)).toBeVisible();
-    await expect(bar(page).locator("[data-shell-account]")).toHaveCount(0);
+    await expect(page.locator("[data-shell-account]")).toHaveCount(0);
     await expect(aside(page).getByRole("button", { name: /^Accounts:/ })).toHaveCount(0);
     // No layout question without the shell nav, so no row for it. The rail
     // itself lists My Profile and Appearance then, so the menu repeats
