@@ -11,7 +11,7 @@ import { SAVE_BUSY } from "./draftSave";
 import { diffLines, diffManifests, type Change } from "./manifestDiff";
 import { stableJson } from "./dataDoor";
 
-export type Who = "you" | "undo" | "other";
+export type Who = "you" | "undo" | "redo" | "other";
 
 export interface Landed {
   /** The manifest before the change. Undo sends it back. */
@@ -39,6 +39,7 @@ export function landChange(prev: PackageDraft | null, next: PackageDraft, who: W
 export function barHeading(who: Who): string {
   if (who === "you") return "You saved:";
   if (who === "undo") return "You undid the last change:";
+  if (who === "redo") return "You put the change back:";
   return "Mira or another tab changed the draft:";
 }
 
