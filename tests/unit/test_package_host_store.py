@@ -26,6 +26,8 @@ i. The lifetime of PKG-10a: ``notice_times`` gives the two note times, each
    lifetime statement names the bound org, and a time with no zone is
    refused before the database. ``test_package_lifetime_r8.py`` is named in
    the ``--must-run`` list of ``pr-check.yml`` and of ``deploy.yml``.
+j. The expiry loop of PKG-10b: ``test_package_expiry_loop_r8.py`` is named
+   in the same two ``--must-run`` lists.
 """
 
 from __future__ import annotations
@@ -569,3 +571,20 @@ def test_the_lifetime_r8_suite_is_named_in_each_must_run_list(workflow: str) -> 
             break
     assert "tests/unit/test_package_lifetime_r8.py" in listed
     assert "tests/unit/test_package_disposal_r8.py" in listed
+
+
+@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
+def test_the_expiry_loop_r8_suite_is_named_in_each_must_run_list(workflow: str) -> None:
+    """PKG-10b. Without the entry, ``test_package_expiry_loop_r8.py`` skips
+    in CI with no database and the job stays green. The name must be in the
+    ``--must-run`` list itself, next to the PKG-10a suite."""
+    lines = (_ROOT / ".github" / "workflows" / workflow).read_text(
+        encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
+    listed: list[str] = []
+    for line in lines[start + 1:]:
+        listed.append(line.strip().removesuffix("\\").strip())
+        if not line.rstrip().endswith("\\"):
+            break
+    assert "tests/unit/test_package_expiry_loop_r8.py" in listed
+    assert "tests/unit/test_package_lifetime_r8.py" in listed
