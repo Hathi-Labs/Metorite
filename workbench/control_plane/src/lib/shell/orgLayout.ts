@@ -4,9 +4,17 @@
  *
  * `GET /api/shell/layout` proxies the gateway's `GET /shell/layout`. That
  * route answers 404 for an organization outside `PACKAGE_HOST_ORGS`. So the
- * flag is the SERVER's, and this file adds none. A 404, any error and a body
- * that is not a layout all read as "no org default". Then the shell draws
- * exactly what it drew before.
+ * flag is the SERVER's, and this file adds none. A 404 and a body that is not
+ * a layout read as "no org default". Then the shell draws exactly what it drew
+ * before. Any other failure throws, so the cache keeps the last good answer.
+ *
+ * The org default has a browser copy per account, as the member's layout has
+ * (`shellCache.ts`). The copy draws the first frame, and the read confirms it
+ * or replaces it. A 404 or an empty answer clears the copy.
+ *
+ * With no copy yet, the shell holds its skeleton for a member with null pins
+ * until the read answers, for `ORG_LAYOUT_WAIT_MS` at most
+ * (`orgLayoutSettled`). So that member does not see every app first.
  *
  * The default is a FALLBACK. It applies to a member with no stored choice
  * and to nobody else (`shellLayout` in `presets.ts`). It follows the
@@ -20,13 +28,20 @@
  *   reads `visibleSections` alone.
  *
  * The highest role that has an entry wins: owner, admin, manager, member,
- * guest. Every helper is pure and defensive. A shape it does not know is
+ * guest. Every parse helper is pure and defensive. A shape it does not know is
  * dropped and never thrown.
  *
  * Fence (R7): `orgLayout.test.ts`.
  */
+import { useEffect, useMemo } from "react";
+
 import { cacheKey } from "@/lib/dataCache";
 import { STARRABLE, presetById, type PresetId } from "@/lib/shell/presets";
+import {
+  clearCachedOrgLayout,
+  readCachedOrgLayoutRaw,
+  writeCachedOrgLayout,
+} from "@/lib/shell/shellCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 /** The roles a person holds, the highest first (`shell_layout.ROLE_ORDER`). */
@@ -95,22 +110,124 @@ export const orgLayoutKey = (): string => cacheKey(ORG_LAYOUT_CACHE);
 /** An admin's change reaches a member within this time. */
 export const ORG_LAYOUT_TTL_MS = 60_000;
 
-/** Read the org default. A 404 (flag off) or any failure is "no org default". */
+/** True when the layout has no entry for any role. */
+export const isEmptyOrgLayout = (layout: OrgLayout): boolean => Object.keys(layout.roles).length === 0;
+
+/**
+ * Read the org default.
+ *
+ * - A 404 (the host is off for this org) is "no org default".
+ * - A 200 with a body it can read is the layout. A shape it does not know
+ *   reads as "no org default".
+ * - Every other status, a body that is not JSON and a network fault THROW.
+ *   `useCachedResource` then keeps the last good answer (`applyError`), so a
+ *   gateway restart never replaces a good default with "no default".
+ */
 export async function fetchOrgLayout(): Promise<OrgLayout> {
-  try {
-    const res = await fetch("/api/shell/layout", { cache: "no-store" });
-    if (!res.ok) return EMPTY_ORG_LAYOUT;
-    return parseOrgLayout(await res.json());
-  } catch {
-    return EMPTY_ORG_LAYOUT;
-  }
+  const res = await fetch("/api/shell/layout", { cache: "no-store" });
+  if (res.status === 404) return EMPTY_ORG_LAYOUT;
+  if (!res.ok) throw new Error(`org layout ${res.status}`);
+  return parseOrgLayout(await res.json());
 }
 
-/** The org default, from the cache. It is empty while it loads and when the flag is off. */
-export function useOrgLayout(enabled: boolean = true): OrgLayout {
+/** The account's browser copy of the org default, or undefined. A bad or empty copy is no copy. */
+export function readCachedOrgLayout(scope: string | null | undefined): OrgLayout | undefined {
+  const raw = readCachedOrgLayoutRaw(scope);
+  if (raw === undefined) return undefined;
+  const layout = parseOrgLayout(raw);
+  return isEmptyOrgLayout(layout) ? undefined : layout;
+}
+
+/**
+ * Keep the server's answer in the browser copy. An answer with a default is
+ * written. A 404 or an empty answer clears the copy, so a default that an
+ * admin removed does not come back on the next page load.
+ */
+export function keepOrgLayoutCopy(scope: string | null | undefined, answer: OrgLayout): void {
+  if (isEmptyOrgLayout(answer)) clearCachedOrgLayout(scope);
+  else writeCachedOrgLayout(scope, answer);
+}
+
+/**
+ * How much the shell knows of the org default.
+ *
+ * - `pending`: no answer, no failure and no browser copy yet.
+ * - `copy`: the browser copy draws, and the read may still be out.
+ * - `answered`: the read answered or failed. A failure with no copy and no
+ *   earlier answer is "no org default", as before PKG-17b.
+ */
+export type OrgLayoutState = "pending" | "copy" | "answered";
+
+export function orgLayoutState(a: {
+  data: OrgLayout | undefined;
+  error: string | null;
+  copy: OrgLayout | undefined;
+}): OrgLayoutState {
+  if (a.data !== undefined || a.error !== null) return "answered";
+  return a.copy !== undefined ? "copy" : "pending";
+}
+
+/**
+ * The longest time the shell waits for the org default, from the first
+ * render. The sidebar keeps its skeleton for this time at most. It is less
+ * than `SHELL_WAIT_MS`, so the skeleton never runs out first.
+ */
+export const ORG_LAYOUT_WAIT_MS = 1_500;
+
+/**
+ * Whether the shell may settle, as far as the org default goes (the hold).
+ *
+ * The shell holds only while ALL of these are true:
+ *
+ * - the member's stored `pins` are null, or the member read has not answered
+ *   (`undefined`). A member with their own pins never waits.
+ * - the org default is `pending`: no browser copy and no answer.
+ * - `elapsedMs` is less than `ORG_LAYOUT_WAIT_MS`.
+ *
+ * Without the hold, a member with null pins saw every held app and then the
+ * default stars. After the wait the shell settles with what it has.
+ */
+export function orgLayoutSettled(a: {
+  storedPins: readonly string[] | null | undefined;
+  orgState: OrgLayoutState;
+  elapsedMs: number;
+}): boolean {
+  if (Array.isArray(a.storedPins)) return true;
+  if (a.orgState !== "pending") return true;
+  return a.elapsedMs >= ORG_LAYOUT_WAIT_MS;
+}
+
+export interface OrgLayoutRead {
+  /** The default to draw: the answer, else the browser copy, else none. */
+  layout: OrgLayout;
+  state: OrgLayoutState;
+}
+
+/**
+ * What the shell draws from. The answer wins, a failed read keeps the copy,
+ * and with neither there is no org default. Pure, so the fence can drive it.
+ */
+export function orgLayoutRead(a: {
+  data: OrgLayout | undefined;
+  error: string | null;
+  copy: OrgLayout | undefined;
+}): OrgLayoutRead {
+  return { layout: a.data ?? a.copy ?? EMPTY_ORG_LAYOUT, state: orgLayoutState(a) };
+}
+
+/**
+ * The org default for this account. The browser copy draws the first frame,
+ * and the read through the cache confirms it or replaces it.
+ */
+export function useOrgLayout(enabled: boolean, scope: string | null | undefined): OrgLayoutRead {
   const res = useCachedResource<OrgLayout>(enabled ? orgLayoutKey() : null, fetchOrgLayout, {
     ttl: ORG_LAYOUT_TTL_MS,
     revalidateOnFocus: true,
   });
-  return res.data ?? EMPTY_ORG_LAYOUT;
+  const copy = useMemo(() => (enabled ? readCachedOrgLayout(scope) : undefined), [enabled, scope]);
+  useEffect(() => {
+    if (enabled && scope && res.data !== undefined) keepOrgLayoutCopy(scope, res.data);
+  }, [enabled, scope, res.data]);
+  if (!enabled) return { layout: EMPTY_ORG_LAYOUT, state: "answered" };
+  return orgLayoutRead({ data: res.data, error: res.error, copy });
 }

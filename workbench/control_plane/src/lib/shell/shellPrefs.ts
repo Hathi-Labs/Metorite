@@ -31,6 +31,11 @@
  *   answer to the question that the server refuses STAYS for this page
  *   (`keep`), so a fault never traps the member in the question. The browser
  *   copy keeps only what the server confirmed.
+ * - **The org default does not flash** (PKG-17b). It has its own browser
+ *   copy per account (`orgLayout.ts`), and that copy draws the first frame.
+ *   With no copy yet, `loading` stays true for a member with null pins until
+ *   the org default answers, for `ORG_LAYOUT_WAIT_MS` at most
+ *   (`orgLayoutSettled`). A member with their own pins never waits.
  */
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
@@ -42,7 +47,7 @@ import { chatScope, type ChatSession } from "@/lib/sessions";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { setGuideAllowed, setGuideHold } from "./guide";
-import { orgDefaultFor, useOrgLayout } from "./orgLayout";
+import { ORG_LAYOUT_WAIT_MS, orgDefaultFor, orgLayoutSettled, useOrgLayout } from "./orgLayout";
 import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
 import { asLayout, readCachedLayout, writeCachedLayout, writeNudgeRetired } from "./shellCache";
 import { shellNavOn } from "./shellNav";
@@ -469,7 +474,11 @@ export interface ShellPrefsState {
   fresh: StoredShell | undefined;
   /** What to draw. The role's preset when nothing is known. */
   layout: ShellLayout;
-  /** True while nothing is known: no read answered, and no copy. */
+  /**
+   * True while nothing is known: no read answered, and no copy. Also true
+   * while the org default holds the shell (`orgLayoutSettled`): null pins,
+   * no copy and no answer of the org default, for `ORG_LAYOUT_WAIT_MS` at most.
+   */
   loading: boolean;
   /** True when the last read failed and nothing else is known. */
   failed: boolean;
@@ -531,14 +540,28 @@ export function useShellPrefs(): ShellPrefsState {
   }, [scope, res.data]);
 
   // The org default (PKG-17b): a fallback for a member with no stored choice.
-  const orgLayout = useOrgLayout(enabled);
+  // Its browser copy draws the first frame. With no copy, the hold below
+  // waits for the read, for `ORG_LAYOUT_WAIT_MS` at most.
+  const org = useOrgLayout(enabled, scope);
+  const [orgWaited, setOrgWaited] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setOrgWaited(true), ORG_LAYOUT_WAIT_MS);
+    return () => clearTimeout(t);
+  }, []);
   const fresh = enabled ? (unsaved ?? res.data) : undefined;
   const stored = enabled ? (fresh ?? cached) : undefined;
+  const orgHold =
+    stored !== undefined &&
+    !orgLayoutSettled({
+      storedPins: stored.pins,
+      orgState: org.state,
+      elapsedMs: orgWaited ? ORG_LAYOUT_WAIT_MS : 0,
+    });
   return {
     stored,
     fresh,
-    layout: shellLayout(stored, access.roles ?? [], orgDefaultFor(orgLayout, access.roles ?? [])),
-    loading: enabled && stored === undefined && res.loading,
+    layout: shellLayout(stored, access.roles ?? [], orgDefaultFor(org.layout, access.roles ?? [])),
+    loading: enabled && ((stored === undefined && res.loading) || orgHold),
     failed: enabled && stored === undefined && !res.loading && res.error !== null,
     enabled,
     answered: enabled && !res.loading && (res.data !== undefined || res.error !== null),

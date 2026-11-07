@@ -267,9 +267,15 @@ export interface ShellLayout {
  * The member's own `pins` win, even an empty list. Null `pins` take the
  * default's pins, and the default stars exactly those apps (`known` holds
  * every starrable app, so no other app reads as new). The member's own preset
- * wins, else the default's, else the role's. The default never applies
- * before the member's own read has answered, so a failed read keeps today's
- * sidebar. `starredHrefs` still hides a pane the member does not hold.
+ * wins, else the default's, else the role's. The default applies only when
+ * `stored` is known. `stored` is the member's answer, or the browser copy of
+ * an earlier answer (`shellCache.ts`). With neither, as after a failed first
+ * read, the sidebar is today's. `starredHrefs` still hides a pane the member
+ * does not hold.
+ *
+ * The default does not flash. Its own browser copy draws the first frame.
+ * With no copy, `useShellPrefs` holds the skeleton for null pins until the
+ * default answers, for `ORG_LAYOUT_WAIT_MS` at most (`orgLayoutSettled`).
  */
 export function shellLayout(
   stored: StoredShell | null | undefined,

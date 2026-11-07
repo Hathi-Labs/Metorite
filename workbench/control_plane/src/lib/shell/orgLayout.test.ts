@@ -1,7 +1,25 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { clearAll, peek, read } from "@/lib/dataCache";
 import { NAV_SECTIONS, visibleSections } from "@/lib/nav";
-import { EMPTY_ORG_LAYOUT, fetchOrgLayout, orgDefaultFor, parseOrgLayout } from "./orgLayout";
+import { applyData, applyError, initialState } from "@/lib/useCachedResource";
+import {
+  EMPTY_ORG_LAYOUT,
+  ORG_LAYOUT_WAIT_MS,
+  fetchOrgLayout,
+  keepOrgLayoutCopy,
+  orgDefaultFor,
+  orgLayoutKey,
+  orgLayoutRead,
+  orgLayoutSettled,
+  parseOrgLayout,
+  readCachedOrgLayout,
+  type OrgLayout,
+} from "./orgLayout";
+import { clearCachedLayouts, orgLayoutCacheKey, shellCacheKey } from "./shellCache";
+import { SHELL_WAIT_MS } from "./shellPrefs";
 import { EMPTY_SHELL, STARRABLE, shellLayout, starBase, starrableHeld, starredHrefs, toggleStar, type StoredShell } from "./presets";
 import { shellSidebar } from "./shellNav";
 
@@ -178,16 +196,234 @@ describe("fetchOrgLayout", () => {
     reply(() => new Response(JSON.stringify(doc), { status: 200 }));
     expect((await fetchOrgLayout()).roles.member?.pins).toEqual([A, B]);
   });
-  it.each([404, 500, 502])("a %i is no org default", async (status) => {
-    reply(() => new Response(JSON.stringify(doc), { status }));
+  it("a 404 (the host is off) is no org default", async () => {
+    reply(() => new Response(JSON.stringify(doc), { status: 404 }));
     expect(await fetchOrgLayout()).toEqual(EMPTY_ORG_LAYOUT);
   });
-  it("a malformed body and a network fault are no org default and never throw", async () => {
-    reply(() => new Response("not json", { status: 200 }));
+  it("a 200 with a shape it does not know is no org default", async () => {
+    reply(() => new Response(JSON.stringify({ roles: "bad" }), { status: 200 }));
     expect(await fetchOrgLayout()).toEqual(EMPTY_ORG_LAYOUT);
+  });
+  it.each([400, 401, 403, 500, 502, 503])("a %i throws, so the cache keeps the last good answer", async (status) => {
+    reply(() => new Response(JSON.stringify(doc), { status }));
+    await expect(fetchOrgLayout()).rejects.toThrow();
+  });
+  it("a network fault and a body that is not JSON throw", async () => {
     reply(() => {
       throw new TypeError("fetch failed");
     });
-    expect(await fetchOrgLayout()).toEqual(EMPTY_ORG_LAYOUT);
+    await expect(fetchOrgLayout()).rejects.toThrow();
+    reply(() => new Response("not json", { status: 200 }));
+    await expect(fetchOrgLayout()).rejects.toThrow();
+  });
+});
+
+describe("a failed refresh keeps the previous default (P1-b)", () => {
+  const reply = (r: () => Response | Promise<Response>) => vi.stubGlobal("fetch", vi.fn(async () => r()));
+  beforeEach(() => clearAll());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    clearAll();
+  });
+
+  it("the cache and the hook state keep the default after a 502", async () => {
+    const key = orgLayoutKey();
+    reply(() => new Response(JSON.stringify(doc), { status: 200 }));
+    const first = applyData(await read(key, fetchOrgLayout, { force: true }));
+    reply(() => new Response("{}", { status: 502 }));
+    const next = await read(key, fetchOrgLayout, { force: true }).then(
+      (d) => applyData(d),
+      (e: unknown) => applyError(first, String(e)),
+    );
+    expect(peek<OrgLayout>(key)?.data).toEqual(layout);
+    expect(next.data).toEqual(layout);
+    const drawn = orgLayoutRead({ data: next.data, error: next.error, copy: undefined });
+    expect(drawn.layout).toEqual(layout);
+    expect(drawn.state).toBe("answered");
+  });
+
+  it("with no earlier answer and no copy, a failure is no org default and settles", async () => {
+    reply(() => {
+      throw new TypeError("fetch failed");
+    });
+    const start = initialState<OrgLayout>(undefined);
+    const next = await fetchOrgLayout().then(applyData, (e: unknown) => applyError(start, String(e)));
+    const drawn = orgLayoutRead({ data: next.data, error: next.error, copy: undefined });
+    expect(drawn).toEqual({ layout: EMPTY_ORG_LAYOUT, state: "answered" });
+    expect(orgLayoutSettled({ storedPins: null, orgState: drawn.state, elapsedMs: 0 })).toBe(true);
+    expect(shellLayout(stored(), ["member"], orgDefaultFor(drawn.layout, ["member"]))).toEqual(
+      shellLayout(stored(), ["member"]),
+    );
+  });
+
+  it("a failure with a browser copy keeps the copy", () => {
+    expect(orgLayoutRead({ data: undefined, error: "org layout 502", copy: layout }).layout).toEqual(layout);
+  });
+});
+
+class MemoryStorage {
+  private map = new Map<string, string>();
+  get length(): number {
+    return this.map.size;
+  }
+  key(i: number): string | null {
+    return [...this.map.keys()][i] ?? null;
+  }
+  getItem(k: string): string | null {
+    return this.map.has(k) ? (this.map.get(k) as string) : null;
+  }
+  setItem(k: string, v: string): void {
+    this.map.set(k, String(v));
+  }
+  removeItem(k: string): void {
+    this.map.delete(k);
+  }
+}
+
+describe("the browser copy of the org default (P1-a)", () => {
+  const SCOPE = "priya@acme.example|org-acme";
+  const OTHER = "ben@beta.example|org-beta";
+  let storage: MemoryStorage;
+  beforeEach(() => {
+    storage = new MemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("is keyed per account, apart from the member's layout", () => {
+    expect(orgLayoutCacheKey(SCOPE)).toBe(`cc-shell-org-layout:${SCOPE}`);
+    expect(orgLayoutCacheKey(SCOPE)).not.toBe(shellCacheKey(SCOPE));
+    expect(orgLayoutCacheKey(null)).toBeNull();
+    expect(orgLayoutCacheKey("no-scope")).toBeNull();
+  });
+
+  it("an answer with a default is kept, and only for that account", () => {
+    keepOrgLayoutCopy(SCOPE, layout);
+    expect(readCachedOrgLayout(SCOPE)).toEqual(layout);
+    expect(readCachedOrgLayout(OTHER)).toBeUndefined();
+  });
+
+  it("a 404 or an empty answer clears the copy", () => {
+    keepOrgLayoutCopy(SCOPE, layout);
+    keepOrgLayoutCopy(SCOPE, EMPTY_ORG_LAYOUT);
+    expect(readCachedOrgLayout(SCOPE)).toBeUndefined();
+    expect(storage.getItem(orgLayoutCacheKey(SCOPE)!)).toBeNull();
+  });
+
+  it("a bad copy reads as no copy and never throws", () => {
+    for (const bad of ["{not json", "7", "null", JSON.stringify({ roles: "bad" })]) {
+      storage.setItem(orgLayoutCacheKey(SCOPE)!, bad);
+      expect(readCachedOrgLayout(SCOPE)).toBeUndefined();
+    }
+    vi.stubGlobal("window", undefined);
+    expect(() => keepOrgLayoutCopy(SCOPE, layout)).not.toThrow();
+    expect(readCachedOrgLayout(SCOPE)).toBeUndefined();
+  });
+
+  it("a sign-out clears it with the member's layout, in every org of that email", () => {
+    keepOrgLayoutCopy(SCOPE, layout);
+    keepOrgLayoutCopy("priya@acme.example|org-beta", layout);
+    keepOrgLayoutCopy(OTHER, layout);
+    clearCachedLayouts(["Priya@Acme.example"]);
+    expect(readCachedOrgLayout(SCOPE)).toBeUndefined();
+    expect(readCachedOrgLayout("priya@acme.example|org-beta")).toBeUndefined();
+    expect(readCachedOrgLayout(OTHER)).toEqual(layout);
+  });
+
+  it("the copy draws the first frame, before any answer, and the shell need not wait", () => {
+    keepOrgLayoutCopy(SCOPE, layout);
+    const first = orgLayoutRead({ data: undefined, error: null, copy: readCachedOrgLayout(SCOPE) });
+    expect(first).toEqual({ layout, state: "copy" });
+    expect(orgLayoutSettled({ storedPins: null, orgState: first.state, elapsedMs: 0 })).toBe(true);
+    const stars = starredHrefs(shellLayout(stored(), ["member"], orgDefaultFor(first.layout, ["member"])), everything);
+    expect(stars).toEqual(new Set([A, B]));
+  });
+
+  it("the answer wins over the copy", () => {
+    const newer = parseOrgLayout({ roles: { member: { pins: [C] } } });
+    expect(orgLayoutRead({ data: newer, error: null, copy: layout }).layout).toEqual(newer);
+  });
+
+  it("the hook reads the copy for its first render and keeps each answer (source fence)", () => {
+    const src = readFileSync(fileURLToPath(new URL("./orgLayout.ts", import.meta.url)), "utf-8");
+    const hook = src.slice(src.indexOf("export function useOrgLayout"));
+    expect(hook).toMatch(/useMemo\(\(\) => \(enabled \? readCachedOrgLayout\(scope\) : undefined\)/);
+    expect(hook).toMatch(/keepOrgLayoutCopy\(scope, res\.data\)/);
+    expect(hook).toMatch(/orgLayoutRead\(\{ data: res\.data, error: res\.error, copy \}\)/);
+  });
+});
+
+describe("the hold while the org default is out (P1-a, cold case)", () => {
+  const W = ORG_LAYOUT_WAIT_MS;
+  it("the wait is short, and shorter than the sidebar's own wait", () => {
+    expect(W).toBe(1_500);
+    expect(W).toBeLessThan(SHELL_WAIT_MS);
+  });
+  it.each([
+    // storedPins, orgState, elapsedMs, settled
+    [null, "pending", 0, false],
+    [null, "pending", W - 1, false],
+    [undefined, "pending", 0, false],
+    [null, "pending", W, true],
+    [null, "pending", W * 10, true],
+    [undefined, "pending", W, true],
+    [null, "copy", 0, true],
+    [null, "answered", 0, true],
+    [undefined, "answered", 0, true],
+    [[], "pending", 0, true],
+    [["/tasks"], "pending", 0, true],
+    [["/tasks"], "answered", 0, true],
+  ] as const)("pins %j, org %s, %i ms: settled %s", (storedPins, orgState, elapsedMs, settled) => {
+    expect(orgLayoutSettled({ storedPins, orgState, elapsedMs })).toBe(settled);
+  });
+  it("useShellPrefs holds only through this rule, and only with a stored layout (source fence)", () => {
+    const src = readFileSync(fileURLToPath(new URL("./shellPrefs.ts", import.meta.url)), "utf-8");
+    expect(src).toMatch(/setTimeout\(\(\) => setOrgWaited\(true\), ORG_LAYOUT_WAIT_MS\)/);
+    expect(src).toMatch(/storedPins: stored\.pins,\s*orgState: org\.state,\s*elapsedMs: orgWaited \? ORG_LAYOUT_WAIT_MS : 0/);
+    expect(src).toMatch(/loading: enabled && \(\(stored === undefined && res\.loading\) \|\| orgHold\)/);
+    expect(src).toMatch(/const org = useOrgLayout\(enabled, scope\)/);
+  });
+});
+
+describe("case C: a member with their own three stars", () => {
+  const all = [...STARRABLE];
+  const own = stored({ pins: ["/calendar", "/people", "/approvals"], known: all });
+  it("the member's three win, not the org default and not every app", () => {
+    const l = shellLayout(own, ["member"], orgDefaultFor(layout, ["member"]));
+    const held = new Set(everything.flatMap((s) => s.items.map((p) => p.href)));
+    const expected = new Set(["/calendar", "/people", "/approvals"].filter((h) => held.has(h)));
+    expect(expected.size).toBeGreaterThan(0);
+    expect(starredHrefs(l, everything)).toEqual(expected);
+    expect(starredHrefs(l, everything)).not.toEqual(new Set([A, B]));
+  });
+  it("an app outside a short `known` reads as new and shows (behaviour of `starredHrefs`, kept)", () => {
+    const short = stored({ pins: ["/calendar"], known: ["/calendar", "/people"] });
+    const stars = starredHrefs(shellLayout(short, ["member"], orgDefaultFor(layout, ["member"])), everything)!;
+    const outside = starrableHeld(everything).map((p) => p.href).filter((h) => h !== "/calendar" && h !== "/people");
+    expect(outside.length).toBeGreaterThan(0);
+    for (const h of outside) expect(stars.has(h)).toBe(true);
+    expect(stars.has("/people")).toBe(false);
+  });
+});
+
+describe("a star toggle builds on the stars on screen (P2 fence)", () => {
+  const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf-8");
+  const BASE = /const base = starBase\(\{ \.\.\.EMPTY_SHELL, \.\.\.\(latestShell\(\) \?\? shell\.stored\) \}, shell\.layout\);/;
+  it.each(["../../components/Sidebar.tsx", "./AppLauncher.tsx"])("%s builds the toggle on starBase", (rel) => {
+    const src = read(rel);
+    expect(src).toMatch(BASE);
+    // The one toggle reads that base, and no other call builds on a raw value.
+    expect(src.match(/toggleStar\(/g)?.length).toBe(1);
+    expect(src).toMatch(/toggleStar\(base, /);
+  });
+  it("the toggle path: null pins with an org default unstar one default app and keep the other", () => {
+    const l = shellLayout(stored(), ["member"], orgDefaultFor(layout, ["member"]));
+    const base = starBase({ ...EMPTY_SHELL, ...stored() }, l);
+    const next = { ...base, ...toggleStar(base, everything, B) };
+    expect(starredHrefs(next, everything)).toEqual(new Set([A]));
+    // Without starBase, the same click starts from every app.
+    const raw = { ...EMPTY_SHELL, ...stored() };
+    const wrong = { ...raw, ...toggleStar(raw, everything, B) };
+    expect(starredHrefs(wrong, everything)?.size ?? 0).toBeGreaterThan(1);
   });
 });

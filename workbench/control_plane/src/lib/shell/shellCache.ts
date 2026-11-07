@@ -23,8 +23,11 @@
  * - ⚠️ **It never opens the first sign-in question.** A cached "never asked"
  *   may be out of date, so only the server's own answer opens it
  *   (`useShellPrefs().fresh`).
+ * - **The org default has a copy too** (PKG-17b), under
+ *   `cc-shell-org-layout:<email>|<organizationId>`, with the same rules. A
+ *   404 or an empty answer clears it. `orgLayout.ts` reads and writes it.
  *
- * Fence: `shellCache.test.ts`.
+ * Fence: `shellCache.test.ts` and `orgLayout.test.ts`.
  */
 import { EMPTY_SHELL, type StoredShell } from "./presets";
 
@@ -140,9 +143,69 @@ export function shellAccountPrefix(email: string): string {
   return `${SHELL_CACHE_PREFIX}${email}|`;
 }
 
-/** Remove the layouts of these emails, in every organization. Never throws. */
+/**
+ * Remove the layouts of these emails, in every organization. Never throws.
+ * It also removes the copies of the org default (PKG-17b), so the two copies
+ * share one sign-out rule.
+ */
 export function clearCachedLayouts(emails: readonly string[]): void {
   clearAccountKeys(SHELL_CACHE_PREFIX, emails);
+  clearAccountKeys(ORG_LAYOUT_PREFIX, emails);
+}
+
+// ── The org default's browser copy (PKG-17b, `package_host.md` §9.1) ───────
+// The same rules as the layout's copy above. One key per account, and only
+// an answer of the server is kept. `clearCachedLayouts` clears it on a
+// sign-out. The copy is raw JSON here. `orgLayout.ts` parses it with
+// `parseOrgLayout`, so a bad copy reads as no copy.
+
+/**
+ * The key prefix of the copy, `cc-shell-org-layout:<email>|<org>`.
+ * ⚠️ It keeps the shell prefix, as `NUDGE_PREFIX` does.
+ */
+export const ORG_LAYOUT_PREFIX = "cc-shell-org-layout:";
+
+/** The key of one account's copy, or null with no account to name. */
+export function orgLayoutCacheKey(scope: string | null | undefined): string | null {
+  if (!scope || !scope.includes("|")) return null;
+  return `${ORG_LAYOUT_PREFIX}${scope}`;
+}
+
+/** The account's stored copy, not yet parsed, or undefined. Never throws. */
+export function readCachedOrgLayoutRaw(scope: string | null | undefined): unknown {
+  const key = orgLayoutCacheKey(scope);
+  const store = storage();
+  if (!key || !store) return undefined;
+  try {
+    const raw = store.getItem(key);
+    return raw ? (JSON.parse(raw) as unknown) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Keep an org default that the server answered. Never throws. */
+export function writeCachedOrgLayout(scope: string | null | undefined, layout: unknown): void {
+  const key = orgLayoutCacheKey(scope);
+  const store = storage();
+  if (!key || !store) return;
+  try {
+    store.setItem(key, JSON.stringify(layout));
+  } catch {
+    /* storage full or off: the next visit reads the server, as before */
+  }
+}
+
+/** Remove the copy of one account, after a 404 or an empty answer. Never throws. */
+export function clearCachedOrgLayout(scope: string | null | undefined): void {
+  const key = orgLayoutCacheKey(scope);
+  const store = storage();
+  if (!key || !store) return;
+  try {
+    store.removeItem(key);
+  } catch {
+    /* storage off: nothing is stored */
+  }
 }
 
 /**
