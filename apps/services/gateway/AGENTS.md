@@ -487,6 +487,7 @@ Every AI call names its job (task 1128). Pass `job="structured"`, `"writing"` or
 2. Approve: POST /agent/mutations/pending/{id}/approve -> git push (GitHub) or keep (local)
 3. Reject: POST /agent/mutations/pending/{id}/reject -> git reset HEAD~1
 4. Local-only repos detected via git remote get-url origin check
+5. ⚠️ Each decision row (approve, PR opened, reject, re-mutate) goes through `_mutation_audit`, stamped with `user.organization_id` (task 2221). Never call `record` bare in these routes. Fence: `test_mutation_queue_audit_org_r8.py` (R8).
 
 ### Agent registration
 1. POST /agent with repo_url or local_path

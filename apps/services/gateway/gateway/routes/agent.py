@@ -4245,6 +4245,26 @@ def _member_graph_session(user: UserContext) -> Any:
     return tenant_session(getattr(user, "organization_id", None))
 
 
+def _mutation_audit(user: UserContext, event: Any) -> None:
+    """Record one mutation-queue decision in the reviewer's tenant (task 2221).
+
+    The approve, reject and re-mutate rows name the reviewer, the agent, the
+    commit and the PR. This stamps ``user.organization_id``, the tenant that
+    ``get_current_user`` resolved from the identity and that
+    ``_member_graph_session`` wrote the ``pending_commit`` row in. It never
+    reads a request field (R5). With no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips the row, so it never lands under the operator
+    org. Fence: ``tests/unit/test_mutation_queue_audit_org_r8.py`` (R8).
+    """
+    import acb_audit
+
+    org = getattr(user, "organization_id", None)
+    event.organization_id = str(org) if org else None
+    if acb_audit.refuse_tenantless(event):
+        return
+    acb_audit.record(event)
+
+
 @router.get("/run/{run_id}/status")
 async def get_run_status(
     run_id: str,
@@ -4494,7 +4514,7 @@ async def approve_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -4629,7 +4649,8 @@ async def approve_pending_commit(
                         },
                     )
                     sess.commit()
-                record(
+                _mutation_audit(
+                    user,
                     AuditEvent(
                         actor=f"human:{reviewer}",
                         action="mutation_monorepo_pr_opened",
@@ -4732,7 +4753,8 @@ async def approve_pending_commit(
             # Non-fatal — the primary commit is already approved
             _log.warning("mutation.cascade_failed", error=str(_cascade_exc))
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_approved",
@@ -4778,7 +4800,7 @@ async def reject_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -4826,7 +4848,8 @@ async def reject_pending_commit(
             )
             sess.commit()
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_rejected",
@@ -4873,7 +4896,7 @@ async def remutate_pending_commit(
     """
     import asyncio  # noqa: PLC0415
 
-    from acb_audit import AuditEvent, record  # noqa: PLC0415
+    from acb_audit import AuditEvent  # noqa: PLC0415
 
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -4921,7 +4944,8 @@ async def remutate_pending_commit(
             )
             sess.commit()
 
-        record(
+        _mutation_audit(
+            user,
             AuditEvent(
                 actor=f"human:{reviewer}",
                 action="mutation_commit_remutate_requested",
