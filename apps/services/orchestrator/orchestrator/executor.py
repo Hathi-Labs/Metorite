@@ -4444,6 +4444,8 @@ def _audit_agent_push(
                 "branch": str(details.get("branch") or ""),
                 "shas": [str(x)[:40] for x in details.get("shas") or []],
                 "reviewed_by": "chat:autopush",
+                # BR-7b (core_brief.md §8.2): the policy that allowed it.
+                "policy": "chat:autopush",
             },
             organization_id=org,
         ))
