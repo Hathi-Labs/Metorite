@@ -115,9 +115,8 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
     "app-builder": frozenset({"web_search", "fetch_page", "run_workflow", "save_note"}),
     "apis-config": frozenset({"web_search", "fetch_page", "run_workflow", "save_note"}),
     "orchestrator": frozenset({
-        # (B) a specialist or a Copilot session starts a run with no hold.
-        # app_builder left on 2026-11-07: the owner retired it (task 1909).
-        "apis_config", "crm_assistant", "email_assistant",
+        # (B) a specialist or a Copilot session starts a run with no hold
+        "apis_config", "app_builder", "crm_assistant", "email_assistant",
         "projects_assistant", "whatsapp_assistant", "spawn_copilot_agent",
         "web_search", "fetch_page", "run_workflow",
         "save_memory", "save_episode", "save_note",

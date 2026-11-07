@@ -113,16 +113,14 @@ class AgentRuntimeUnsupported(AgentLoadError):
     """
 
 
-#: The Copilot agents that may still run as a specialist of another run. It is
-#: EMPTY. Owner call, 2026-11-07 (chat, task 1909): app-builder is retired as a
-#: main-chat specialist. On 2026-11-06 the chat gave a Studio build to it in
-#: place of the Studio tools, and it no longer has working tools. A request to
-#: build an app now goes to the `studio` tool pack. The owner call of
-#: 2026-10-19 (review of PR #1161) that kept it is closed. app-builder still
-#: runs as the agent of its own Workshop page. A new name needs an owner call
-#: and a test. Fence: ``tests/unit/test_copilot_specialist_refused.py``
-#: (``test_the_allow_list_is_empty``).
-COPILOT_SPECIALIST_ALLOWED: frozenset[str] = frozenset()
+#: The ONLY Copilot agents that may still run as a specialist of another run.
+#: Owner call, 2026-10-19 (review of PR #1161): app-builder stays a main-chat
+#: specialist until it is ported to MAF (WS-43h, then WS-43j). Delete its name
+#: in the PR that ports it. Every other Copilot agent is refused: task-manager,
+#: the root metorite agent and any repo agent on that runtime. A new name needs an owner
+#: call and a test. Fence: ``tests/unit/test_copilot_specialist_refused.py``
+#: (``test_the_allow_list_holds_app_builder_only``).
+COPILOT_SPECIALIST_ALLOWED: frozenset[str] = frozenset({"app-builder"})
 
 
 def is_copilot_runtime_label(label: Any) -> bool:

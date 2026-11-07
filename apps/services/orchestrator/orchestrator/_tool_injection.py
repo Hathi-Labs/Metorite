@@ -1585,7 +1585,7 @@ def _build_registry_block() -> str:
             name = a.get("name", "")
             # D84, D92: a Copilot agent does not run as a specialist
             # (loader.refuse_copilot_specialist), so no run is told to call it.
-            # app-builder was retired as a specialist on 2026-11-07 (owner, task 1909).
+            # app-builder stays, by owner call (loader.COPILOT_SPECIALIST_ALLOWED).
             if name and may_delegate_to(name, a.get("agent_runtime")):
                 agent_lines.append(_registry_line(name, a.get("description", "")))
     except Exception:  # noqa: BLE001

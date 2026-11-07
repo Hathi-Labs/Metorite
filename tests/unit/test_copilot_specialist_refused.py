@@ -25,9 +25,8 @@ Paths:
    top-level run. No self-mutation follows.
 4. The orchestrator offers no Copilot agent: no specialist tool, and no line
    of the registry block.
-5. No exception. The owner call of 2026-10-19 kept app-builder as a
-   specialist. The owner retired it on 2026-11-07 (task 1909), so
-   ``loader.COPILOT_SPECIALIST_ALLOWED`` is empty.
+5. The one exception, by owner call of 2026-10-19: app-builder stays a
+   specialist until it is ported (``loader.COPILOT_SPECIALIST_ALLOWED``).
 
 Hermetic: no SQL, no network, no model. R8 binds nothing here.
 
@@ -42,11 +41,11 @@ Mutations this suite catches (R7), each run red by hand:
 * the batch path drops the delegation check ->
   ``test_a_delegated_batch_run_is_refused_and_never_self_mutates``;
 * ``_load_specialist_agents_as_tools`` or ``_build_registry_block`` lists a
-  refused Copilot agent, app-builder among them ->
-  ``test_the_orchestrator_offers_no_copilot_agent``;
-* a name joins the allow-list (app-builder comes back) ->
-  ``test_the_allow_list_is_empty``, ``test_app_builder_is_refused`` and
-  ``test_app_builder_delegated_from_the_main_chat_is_refused``.
+  refused Copilot agent, or drops app-builder ->
+  ``test_the_orchestrator_offers_no_copilot_agent_but_app_builder``;
+* the allow-list check is dropped, or a name joins it ->
+  ``test_app_builder_delegated_from_the_main_chat_still_runs`` and
+  ``test_the_allow_list_holds_app_builder_only``.
 """
 from __future__ import annotations
 
@@ -271,7 +270,7 @@ def test_a_top_level_batch_run_is_not_refused(monkeypatch, stubs) -> None:
 # ── 4. The orchestrator offers no Copilot agent ─────────────────────────────
 
 
-def test_the_orchestrator_offers_no_copilot_agent(monkeypatch) -> None:
+def test_the_orchestrator_offers_no_copilot_agent_but_app_builder(monkeypatch) -> None:
     import orchestrator._tool_injection as ti
     from orchestrator.agents import _mod as orchestrator_agents
 
@@ -286,8 +285,7 @@ def test_the_orchestrator_offers_no_copilot_agent(monkeypatch) -> None:
     refused = (copilot | {"acme-copilot-agent"}) - loader.COPILOT_SPECIALIST_ALLOWED
 
     tools = {t.name for t in _load_specialist_agents_as_tools()}
-    assert "projects_assistant" in tools, tools
-    assert "app_builder" not in tools, tools
+    assert {"projects_assistant", "app_builder"} <= tools, tools
     assert not {n.replace("-", "_") for n in refused} & tools, tools
 
     ti._build_registry_block.cache_clear()
@@ -296,30 +294,27 @@ def test_the_orchestrator_offers_no_copilot_agent(monkeypatch) -> None:
     finally:
         ti._build_registry_block.cache_clear()
     assert "'projects-assistant'" in block
-    assert "'app-builder'" not in block
+    assert "'app-builder'" in block
     for name in refused:
         assert f"'{name}'" not in block, block
 
 
-# ── 5. No exception: app-builder is retired (owner, 2026-11-07) ─────────────
+# ── 5. The owner's one exception: app-builder (2026-10-19) ──────────────────
 
 
-def test_the_allow_list_is_empty() -> None:
-    """A name needs an owner call AND a test. This assertion fails the moment
-    a name joins without one. app-builder left on 2026-11-07 (task 1909)."""
-    assert frozenset() == loader.COPILOT_SPECIALIST_ALLOWED
+def test_the_allow_list_holds_app_builder_only() -> None:
+    """A second name needs an owner call AND a test. This assertion fails the
+    moment a name joins without one. Delete app-builder when it is ported."""
+    assert frozenset({"app-builder"}) == loader.COPILOT_SPECIALIST_ALLOWED
 
 
-def test_app_builder_is_refused() -> None:
-    """The chat never hands a Studio build to the old Workshop agent again."""
-    assert not loader.may_delegate_to("app-builder", "github-copilot")
-    with pytest.raises(loader.AgentRuntimeUnsupported):
-        loader.refuse_copilot_specialist("app-builder", label="github-copilot")
-    with pytest.raises(loader.AgentRuntimeUnsupported):
-        loader.refuse_copilot_specialist("app-builder", label="maf", built=[_Copilot()])
+def test_app_builder_passes_the_refusal() -> None:
+    loader.refuse_copilot_specialist("app-builder", label="github-copilot")
+    loader.refuse_copilot_specialist("app-builder", label="maf", built=[_Copilot()])
+    assert loader.may_delegate_to("app-builder", "github-copilot")
 
 
-@pytest.mark.parametrize("name", ["task-manager", "metorite", "acme-copilot-agent", "app-builder"])
+@pytest.mark.parametrize("name", ["task-manager", "metorite", "acme-copilot-agent"])
 def test_every_other_copilot_agent_is_refused(name: str) -> None:
     assert not loader.may_delegate_to(name, "github-copilot")
     with pytest.raises(loader.AgentRuntimeUnsupported):
@@ -328,9 +323,9 @@ def test_every_other_copilot_agent_is_refused(name: str) -> None:
         loader.refuse_copilot_specialist(name, label="maf", built=[_Copilot()])
 
 
-def test_app_builder_delegated_from_the_main_chat_is_refused(monkeypatch, stubs) -> None:
-    """A streamed delegation to app-builder is refused before the load, as
-    task-manager is: the loader never runs for either (owner, 2026-11-07)."""
+def test_app_builder_delegated_from_the_main_chat_still_runs(monkeypatch, stubs) -> None:
+    """The streamed delegation reaches the loader for app-builder (the loader
+    stops it here with a sentinel), and refuses task-manager before it."""
     monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [])
 
     class _Ctx:
@@ -345,9 +340,9 @@ def test_app_builder_delegated_from_the_main_chat_is_refused(monkeypatch, stubs)
     text = _as_parent(lambda: executor._run_sub_agent_streaming(
         "app-builder", "build me an app", "r-sub", event_queue=asyncio.Queue(),
     ))
-    assert loader.COPILOT_SPECIALIST_TEXT in text and stubs.count == 0, text
+    assert "LOADED" in text and stubs.count == 1, text
 
     text = _as_parent(lambda: executor._run_sub_agent_streaming(
         "task-manager", "file my inbox", "r-sub-2", event_queue=asyncio.Queue(),
     ))
-    assert loader.COPILOT_SPECIALIST_TEXT in text and stubs.count == 0, text
+    assert loader.COPILOT_SPECIALIST_TEXT in text and stubs.count == 1, text

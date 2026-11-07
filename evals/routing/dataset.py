@@ -163,13 +163,12 @@ CASES: tuple[Case, ...] = (
     Case("I1", "Help me set up the API key for our SendGrid account.",
          "/integrations", "apis-config"),
     Case("B1", "Build me a small app that tracks visitor sign-ins at the front desk.",
-         "/chat", None,
-         note="The orchestrator builds it with the studio tool pack. The owner "
-              "retired app-builder as a specialist on 2026-11-07 (task 1909)"),
+         "/chat", "app-builder",
+         note="App Workshop is a preview pane, so the page does not move. "
+              "app-builder is the one Copilot specialist left (owner, 2026-10-19)"),
     Case("B2", "Build me an app to track site visits.",
-         "/studio", None,
-         note="Studio is live since 2026-11-05 (D179). The studio tool pack builds "
-              "the app, and no specialist runs (owner, 2026-11-07, task 1909)"),
+         "/studio", "app-builder",
+         note="Studio is a live pane since 2026-11-05 (D179), and app-builder is its agent"),
 
     # ── orchestrator answers itself ────────────────────────────────────────
     Case("N1", "What can you do?", "/chat", None),
