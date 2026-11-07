@@ -45,6 +45,7 @@ from fastapi.responses import Response
 from gateway import signature_image
 from gateway.avatar import MAX_UPLOAD_BYTES
 from gateway.routes.email import signature as sig
+from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import _assert_account_owner, _tenant_session, router
 from sqlalchemy import text
 
@@ -210,6 +211,9 @@ async def upload_signature_image(
     """Upload one logo or photo for a signature, and answer its public URL."""
     member = _member(user)
     async with _tenant_session() as db:
+        # The one reader of an account reference (an id or an address).
+        account_id = await resolve_account_filter(
+            db, account_id, member or "anonymous", required=True)
         await _assert_account_owner(db, account_id, member or "anonymous", level="send")
     base = public_base_url()
     if base is None:
