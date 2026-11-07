@@ -9,8 +9,20 @@ database.
 
 **The one writer.** :func:`install` holds the only ``INSERT INTO
 package_install`` and the only ``INSERT INTO package_contribution`` of
-``apps/`` and ``packages/``. The hermetic suite scans for a second one. The
-member purge deletes rows, and that stays legal.
+``apps/`` and ``packages/``. Every UPDATE and DELETE of the two tables is in
+this module too. The disposal of §5.3 (PKG-9) holds the moves of ``state``
+and the delete of an install: :func:`remove_install`, :func:`pause_install`
+and :func:`resume_install`. :func:`set_version` (PKG-8a) holds the UPDATE of
+``version`` and the DELETE of the claims of one install. The hermetic suite
+scans ``apps/`` and ``packages/`` for a write outside this module. The member
+purge deletes rows, and that stays legal.
+
+**The disposal.** Each of the three takes the org lock of :func:`install`
+and its two guards, and finds the install in the bound org only. An id of
+another org is :class:`InstallNotFound`, as a missing id is. A pause keeps
+the claims and their keys. A move from ``archived`` is
+:class:`StateRefused`. The routes of PKG-8, PKG-12 and J3 decide who may
+call each one.
 
 **Tenancy (R5).** :func:`install` takes a session that the caller opened with
 ``tenant_session(org)``. It opens no session and commits nothing. No function
@@ -83,9 +95,11 @@ row and waits for this lock. PKG-8b adds the second caller (advisory: no
 fence holds this order yet).
 
 **A new version (PKG-8a).** :func:`set_version` moves an install to a new
-version and replaces its claims. It holds the one UPDATE of
-``package_install.version`` and a DELETE of the claims of one install. It
-writes the new claims with the INSERT of :func:`install`.
+version and replaces its claims. It takes the org lock through
+:func:`_lock_org`, as each writer does. It writes the new claims with the
+INSERT of :func:`install`. ⚠️ It does not run ``_APP_SQL``, because its one
+caller, the publish, holds the ``apps`` row of a live package. A later caller
+checks the app first.
 
 **READ COMMITTED.** The conflict reads rely on READ COMMITTED, so the
 snapshot of each read comes after the lock. Under REPEATABLE READ a second
@@ -230,6 +244,26 @@ _INSERT_CONTRIBUTION_SQL = (
     "VALUES (CAST(:install AS uuid), :point, :key, CAST(:payload AS jsonb), :position)"
 )
 
+#: The removal of one install of the bound org (§5.3, PKG-9). The FK of
+#: ``package_contribution`` is ``ON DELETE CASCADE``, so its claims go too.
+_DELETE_INSTALL_SQL = (
+    "DELETE FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) RETURNING 1"
+)
+
+#: The state of one install of the bound org, with the row lock.
+_STATE_SQL = (
+    "SELECT state FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) FOR UPDATE"
+)
+
+#: One state move of one install of the bound org. ``:was`` is the state
+#: that the read under the lock found.
+_SET_STATE_SQL = (
+    "UPDATE package_install SET state = :to, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) AND state = :was"
+)
+
 
 # ── The types ───────────────────────────────────────────────────────────────
 
@@ -273,6 +307,26 @@ class AppNotInstallable(InstallError):
 
 class AlreadyInstalled(InstallError):
     """The app has an install at this scope already (409)."""
+
+    status = 409
+
+
+class InstallNotFound(InstallError):
+    """No install of the bound org has the id (404, PKG-9).
+
+    An install of another org gives the same answer, so a route never shows
+    that the id exists.
+    """
+
+    status = 404
+
+
+class StateRefused(InstallError):
+    """A state move that §5.3 does not allow (409, PKG-9).
+
+    A pause and a resume move between ``active`` and ``paused`` only. An
+    ``archived`` install stays archived.
+    """
 
     status = 409
 
@@ -435,6 +489,13 @@ def _app_id(app_id: object) -> str:
         raise InstallError("bad_app_id", "The app id must be a UUID.") from exc
 
 
+def _install_id(install_id: object) -> str:
+    try:
+        return str(uuid.UUID(str(install_id)))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise InstallError("bad_install_id", "The install id must be a UUID.") from exc
+
+
 def _ends_at(ends_at: object) -> datetime | None:
     if ends_at is None:
         return None
@@ -549,6 +610,22 @@ async def _check_held(db: Any, kind: str, subject: str, app: str,
 # ── The writer ──────────────────────────────────────────────────────────────
 
 
+async def _lock_org(db: Any, act: str) -> None:
+    """Read the bound org and the isolation level, then take the org lock.
+
+    Each writer calls this first, so each write of one org runs after the
+    lock. *act* names the write in the refusal.
+    """
+    bound = (await db.execute(text(_ORG_SQL))).first()
+    org, level = (bound[0], bound[1]) if bound is not None else (None, None)
+    if not org:
+        raise TenantUnbound(f"{act} needs a session bound to a tenant")
+    if level != ISOLATION:
+        raise RuntimeError(
+            f"{act} needs a {ISOLATION} transaction, and this one is {level}")
+    await db.execute(text(_LOCK_SQL), {"key": f"package_install:{org}"})
+
+
 async def install(
     db: Any,
     *,
@@ -573,15 +650,8 @@ async def install(
     app = _app_id(app_id)
     ends = _ends_at(ends_at)
     claims = _claims(contributions)
-    bound = (await db.execute(text(_ORG_SQL))).first()
-    org, level = (bound[0], bound[1]) if bound is not None else (None, None)
-    if not org:
-        raise TenantUnbound("an install needs a session bound to a tenant")
-    if level != ISOLATION:
-        raise RuntimeError(
-            f"an install needs a {ISOLATION} transaction, and this one is {level}")
     # The lock comes first. Each read below decides the write.
-    await db.execute(text(_LOCK_SQL), {"key": f"package_install:{org}"})
+    await _lock_org(db, "an install")
     if (await db.execute(text(_APP_SQL), {"app": app})).first() is None:
         raise AppNotInstallable(
             "app_not_installable", "No Studio package that is not archived has this id.")
@@ -603,6 +673,67 @@ async def install(
     return Install(
         id=install_id, app_id=app, version=ver, scope_kind=kind, scope_subject=subject,
         installed_by=member, ends_at=ends, contributions=tuple(wanted))
+
+
+# ── The disposal (§5.3, PKG-9) ──────────────────────────────────────────────
+
+
+async def remove_install(db: Any, *, install_id: str) -> bool:
+    """Delete the install *install_id* of the bound org, with its claims.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    The FK cascade of ``package_contribution`` deletes each claim, so each
+    key of the install is free when the caller's transaction commits. An
+    install in any state can go. An id that no install of the bound org has
+    raises :class:`InstallNotFound` and writes nothing. The store does not
+    check that the member may remove the install. The routes own that check.
+    Answers True.
+    """
+    install = _install_id(install_id)
+    await _lock_org(db, "a removal")
+    if (await db.execute(text(_DELETE_INSTALL_SQL), {"install": install})).first() is None:
+        raise InstallNotFound("install_not_found", "No install has this id.")
+    return True
+
+
+async def _move_state(db: Any, install: str, was: str, to: str, act: str) -> bool:
+    """Move one install from *was* to *to*, under the org lock and the row
+    lock. Answers False when the install is in *to* already."""
+    await _lock_org(db, act)
+    row = (await db.execute(text(_STATE_SQL), {"install": install})).first()
+    if row is None:
+        raise InstallNotFound("install_not_found", "No install has this id.")
+    state = str(row[0])
+    if state == to:
+        return False
+    if state != was:
+        raise StateRefused(
+            "state_refused", f"An install that is {state} cannot move to {to}.")
+    await db.execute(text(_SET_STATE_SQL), {"install": install, "to": to, "was": was})
+    return True
+
+
+async def pause_install(db: Any, *, install_id: str) -> bool:
+    """Move the install *install_id* of the bound org from active to paused.
+
+    The install keeps its claims, and each claim keeps its key (§4). The
+    resolve shows only an active install, so the claims go from the next
+    read. A pause of a paused install changes nothing and answers False. An
+    archived install raises :class:`StateRefused` (409) and writes nothing.
+    Answers True when the state changed.
+    """
+    return await _move_state(db, _install_id(install_id), "active", "paused", "a pause")
+
+
+async def resume_install(db: Any, *, install_id: str) -> bool:
+    """Move the install *install_id* of the bound org from paused to active.
+
+    The claims of a paused install still hold their keys, so a resume makes
+    no check of the claims. A resume of an active install changes nothing
+    and answers False. An archived install raises :class:`StateRefused` (409)
+    and writes nothing. Answers True when the state changed.
+    """
+    return await _move_state(db, _install_id(install_id), "paused", "active", "a resume")
 
 
 # ── The version of an install (PKG-8a) ──────────────────────────────────────
@@ -668,15 +799,12 @@ async def set_version(
     kind, subject = _scope(scope_subject, scope_kind, owner, ver)
     app = _app_id(app_id)
     claims = _claims(contributions)
-    bound = (await db.execute(text(_ORG_SQL))).first()
-    org, level = (bound[0], bound[1]) if bound is not None else (None, None)
-    if not org:
-        raise TenantUnbound("a new version needs a session bound to a tenant")
-    if level != ISOLATION:
-        raise RuntimeError(
-            f"a new version needs a {ISOLATION} transaction, and this one is {level}")
     # The lock comes first, as in install. Each read below decides the write.
-    await db.execute(text(_LOCK_SQL), {"key": f"package_install:{org}"})
+    await _lock_org(db, "a new version")
+    # ⚠️ No _APP_SQL here. The one caller is the publish, which holds the
+    # ``apps`` row FOR UPDATE and has just made it live, so the app is a Studio
+    # package of the bound org that is not archived. A later caller (PKG-8b,
+    # a rollback) must check the app first, as install does.
     row = (await db.execute(text(_INSTALL_AT_SCOPE_SQL), {
         "app": app, "kind": kind, "subject": subject})).first()
     if row is None:

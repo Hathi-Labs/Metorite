@@ -1052,6 +1052,63 @@ def _clean_new_mail_form(form: dict) -> dict:
         out["marks"] = _reply_marks(form["marks"], people)
     if isinstance(form.get("file_rows"), list) and form["file_rows"]:
         out["file_rows"] = _new_mail_file_rows(form["file_rows"])
+    # §18.11 rule 7: the people that start unticked because the member
+    # unticked them on the draft before. The gateway names them, and the card
+    # says so. Each is a person of the card that starts unticked, or no card shows.
+    if "unticked" in form:
+        out["unticked"] = _new_mail_unticked(form["unticked"], people, out.get("ticked"))
+    out.update(_new_mail_redraft(form))
+    return out
+
+
+def _new_mail_redraft(form: dict) -> dict:
+    """The redraft fields of a new-mail form (§18.11), checked.
+
+    ``revises`` and ``draft`` (step 6): the card that this card replaces, and
+    its draft number. The gateway sets both, and the tool copies them from its
+    answer. The client draws the card in that card's slot, as "Draft <n>". A
+    bad pair raises ``ValueError``.
+
+    ``reopened`` (fix round 5): the SAME card, shown again because a revise
+    did not run. The client puts it back in its slot, with the member's edits.
+    Only ``True`` stands."""
+    out: dict = {"reopened": True} if form.get("reopened") is True else {}
+    if "revises" in form or "draft" in form:
+        revises, draft = form.get("revises"), form.get("draft")
+        if (not isinstance(revises, str) or not _CARD_ID_RE.fullmatch(revises)
+                or not isinstance(draft, int) or isinstance(draft, bool)
+                or not 1 < draft <= _NEW_MAIL_DRAFT_MAX):
+            raise ValueError("a new-mail form names the card it revises and its draft")
+        out["revises"], out["draft"] = revises, draft
+    return out
+
+
+#: The highest draft number of a new-mail card (``redraft.MAX_DRAFT``).
+_NEW_MAIL_DRAFT_MAX = 99
+
+
+def _new_mail_unticked(value: Any, people: dict, ticked: dict | None) -> list[str]:
+    """The kept unticks of a new-mail form (§18.11 rule 7), in lower case.
+
+    Each name is a person of the card, and none of them starts ticked, so the
+    note never names a person that the card ticks. A form
+    with no ticked start ticks each person, so it can name nobody. A bad name
+    raises ``ValueError`` before any card is drawn."""
+    from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
+
+    if not isinstance(value, list) or len(value) > 3 * MAX_REPLY_RECIPIENTS:
+        raise ValueError("a new-mail form names its unticked people as a list")
+    have = {a.lower() for part in people.values() for a in part}
+    start = (ticked or {}).get("reply_all") if ticked else None
+    on = ({a.lower() for part in start.values() for a in part} if isinstance(start, dict)
+          else have)
+    out: list[str] = []
+    for item in value:
+        addr = " ".join(str(item or "").split()).lower()
+        if addr not in have or addr in on:
+            raise ValueError("an unticked person is a person of the card who starts unticked")
+        if addr not in out:
+            out.append(addr)
     return out
 
 
