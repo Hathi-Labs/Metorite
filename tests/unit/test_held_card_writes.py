@@ -1023,6 +1023,379 @@ async def test_the_rules_of_a_held_reminder_pack_say_that_the_write_works(store)
     assert "new chat" not in block
 
 
+# ── 12. WT-6a: the class C archive behind HELD_CLASS_C_ORGS ────────────────
+#
+# one_assistant_context.md §9.4, owner decision of 2026-11-07. Only the two
+# archive tools join, behind their own flag. HELD_CARD_WRITES_ORGS alone never
+# opens class C. The receipt offers Undo, which the browser runs.
+
+CLASS_C_KEPT = frozenset({"archive_task", "archive_project"})
+
+
+def _class_c(monkeypatch, value: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_class_c_orgs", value)
+
+
+def test_the_class_c_set_is_the_two_archive_tools() -> None:
+    """Mutation: add ``delete_task`` or ``merge_tasks`` to the set -> red. A delete,
+    a merge, a move of a project and a revert stay off until a restore exists."""
+    assert set(eg.HELD_CLASS_C_TOOLS) == CLASS_C_KEPT
+    assert not set(eg.HELD_CLASS_C_TOOLS) & set(eg.HELD_CARD_WRITE_TOOLS)
+    assert CLASS_C_KEPT <= OFF_PROJECTS
+    assert {manifest.tool_class(n) for n in CLASS_C_KEPT} == {"C"}
+
+
+def test_the_class_c_flag_is_off_by_default() -> None:
+    """Mutation: a default of ``*`` -> red."""
+    from acb_common.settings import Settings
+
+    assert Settings.model_fields["held_class_c_orgs"].default == ""
+
+
+def test_the_class_c_flag_reloads_and_no_tenant_writes_it() -> None:
+    """Mutation: a name with no ``_orgs`` -> a SIGHUP applies nothing -> red."""
+    from acb_common.env_guard import is_platform_env
+    from gateway.flag_reload import reloadable
+
+    assert reloadable("HELD_CLASS_C_ORGS")
+    assert is_platform_env("HELD_CLASS_C_ORGS")
+    example = (REPO / ".env.example").read_text(encoding="utf-8")
+    assert "\nHELD_CLASS_C_ORGS=\n" in example.replace("\r\n", "\n")
+
+
+@pytest.mark.parametrize("name", sorted(CLASS_C_KEPT))
+def test_flag_off_an_archive_is_refused_in_a_held_chat(
+    name: str, projects_tools: dict[str, Any], monkeypatch,
+) -> None:
+    """``HELD_CARD_WRITES_ORGS`` is on (``*``) and the class C flag is empty.
+    Mutation: read ``HELD_CARD_WRITES_ORGS`` in place of the class C flag -> red."""
+    _class_c(monkeypatch, "")
+    tool = projects_tools[name]
+    assert tool.func.__tool_risk__[eg.CARD_WRITE_KEY] is True, "non-vacuity: it is marked"
+    assert eg.is_held_card_write(tool) is False
+    assert eg.is_held_off_write(tool) is True
+    assert eg.is_held_chat_off(tool) is True
+
+
+@pytest.mark.parametrize("name", sorted(CLASS_C_KEPT))
+def test_flag_on_for_the_org_an_archive_stays(
+    name: str, projects_tools: dict[str, Any], monkeypatch,
+) -> None:
+    """Mutation: drop the class C set from ``is_held_card_write`` -> red."""
+    from tests.unit.test_tool_packs_choice import ORG
+
+    _class_c(monkeypatch, f"org-x, {ORG.upper()}")
+    tool = projects_tools[name]
+    with _tenant(ORG):
+        assert eg.is_held_card_write(tool) is True
+        assert eg.is_held_off_write(tool) is False
+        assert eg.is_held_chat_off(tool) is False
+        assert eg.is_egress_tool(tool) is False
+    with _tenant("0a0a0a0a-0000-4000-8000-0000000000cc"):
+        assert eg.is_held_chat_off(tool) is True, "another org stays off"
+
+
+@pytest.mark.parametrize("name", sorted(CLASS_C_KEPT))
+def test_the_class_c_flag_alone_opens_nothing(
+    name: str, projects_tools: dict[str, Any], monkeypatch,
+) -> None:
+    """With ``HELD_CARD_WRITES_ORGS`` off the held rule is off, as before RX-1.
+    The class C flag adds no write to that state. Mutation: read the class C
+    flag alone in ``is_held_card_write`` -> red."""
+    _switch(monkeypatch, "")
+    _class_c(monkeypatch, "*")
+    assert eg.is_held_card_write(projects_tools[name]) is False
+
+
+def test_flag_on_each_other_class_c_tool_stays_off(projects_tools, monkeypatch) -> None:
+    """Mutation: read every class C tool through the flag -> ``delete_task`` stays -> red."""
+    _class_c(monkeypatch, "*")
+    still_off = {n for n in OFF_PROJECTS - CLASS_C_KEPT if eg.is_held_chat_off(projects_tools[n])}
+    assert still_off == OFF_PROJECTS - CLASS_C_KEPT
+    for name in ("delete_task", "delete_project", "merge_tasks", "move_project",
+                 "revert_activity", "unarchive_project"):
+        assert name in still_off, name
+
+
+def test_a_fault_of_the_class_c_settings_reads_off(monkeypatch) -> None:
+    """Mutation: read a fault as on -> red."""
+    import acb_common
+
+    def boom() -> Any:
+        raise RuntimeError("settings")
+
+    monkeypatch.setattr(acb_common, "get_settings", boom)
+    assert eg.held_class_c_on("org-a") is False
+    assert eg.held_class_c_on() is False
+
+
+@pytest.mark.parametrize(("value", "org", "on"), [
+    ("", "org-a", False),
+    ("*", "", True),
+    ("org-a", "org-a", True),
+    ("org-b,  ORG-A ", "org-a", True),
+    ("org-b", "org-a", False),
+    ("org-b", "", False),
+    (" , ", "org-a", False),
+])
+def test_the_reader_of_the_class_c_flag(value: str, org: str, on: bool, monkeypatch) -> None:
+    """Mutation: read a list as ``*`` -> red."""
+    _class_c(monkeypatch, value)
+    if org:
+        assert eg.held_class_c_on(org) is on
+        with _tenant(org):
+            assert eg.held_class_c_on() is on
+    else:
+        assert eg.held_class_c_on() is on
+
+
+def test_the_class_c_reader_does_not_read_the_class_b_flag(monkeypatch) -> None:
+    """Mutation: fall back to ``held_card_writes_orgs`` -> red."""
+    _switch(monkeypatch, "*")
+    _class_c(monkeypatch, "")
+    assert eg.held_class_c_on("org-a") is False
+
+
+@pytest.mark.parametrize("params", [("task_id",), ("task_id", "include_subtasks", "note")],
+                         ids=["a-lost-parameter", "a-new-parameter"])
+def test_a_changed_archive_parameter_list_breaks_the_pin(params, monkeypatch) -> None:
+    """Mutation: drop the pin compare for the class C set -> red."""
+    _class_c(monkeypatch, "*")
+    fn = _writer("archive_task", params, open_world=False, **{eg.CARD_WRITE_KEY: True})
+    assert eg.is_held_card_write(fn) is False
+    good = _writer("archive_task", ("task_id", "include_subtasks"),
+                   open_world=False, **{eg.CARD_WRITE_KEY: True})
+    assert eg.is_held_card_write(good) is True, "non-vacuity: the pinned set passes"
+
+
+def test_an_archive_with_no_mark_stays_off(monkeypatch) -> None:
+    """Mutation: drop the mark test for the class C set -> red."""
+    _class_c(monkeypatch, "*")
+    fn = _writer("archive_project", ("project_id",), open_world=False)
+    assert eg.is_held_card_write(fn) is False
+
+
+def test_a_bare_archive_name_holds_to_its_registered_pin(monkeypatch) -> None:
+    """``permission_policy`` passes a bare name. Mutation: answer True for it -> red."""
+    from acb_skills import tool_annotations as ta
+
+    _class_c(monkeypatch, "*")
+    assert eg.is_held_card_write("archive_task") is True
+    assert eg.is_held_card_write("archive_project") is True
+    monkeypatch.setitem(ta.CARD_WRITE_PARAMS, "archive_task", frozenset({"task_id"}))
+    assert eg.is_held_card_write("archive_task") is False
+    _class_c(monkeypatch, "")
+    assert eg.is_held_card_write("archive_project") is False
+
+
+@pytest.mark.parametrize("name", sorted(CLASS_C_KEPT))
+def test_a_kept_archive_awaits_its_card_before_any_write(name: str) -> None:
+    """Mutation: post before ``_confirm`` -> red."""
+    fn = _skill_functions()[name]
+    doors = _calls(fn, _DOORS)
+    writes_at = _calls(fn, _WRITES)
+    assert doors and writes_at and doors[0] < writes_at[0], name
+
+
+async def test_flag_on_a_held_pack_keeps_the_two_archives(store, monkeypatch) -> None:
+    """THE acceptance at the pack seam. Mutation: skip the class C set -> red."""
+    _class_c(monkeypatch, "*")
+    await _mark_chat()
+    tools: set[str] = set()
+    gone: set[str] = set()
+    for slug in PROJECT_PACKS:
+        build = await _build(slug)
+        assert build.held is True, slug
+        tools |= {_name(t) for t in build.tools}
+        gone |= set(build.dropped)
+    assert tools >= CLASS_C_KEPT
+    assert gone == OFF_PROJECTS - CLASS_C_KEPT
+
+
+# ── 13. WT-6a: the receipt's Undo ───────────────────────────────────────────
+
+TID = "11111111-1111-4111-8111-111111111111"
+PID = "22222222-2222-4222-8222-222222222222"
+STAMP = "2026-11-07T10:00:00.123456+00:00"
+
+
+def _undo_spy(monkeypatch) -> list[tuple[str, str, Any]]:
+    seen: list[tuple[str, str, Any]] = []
+
+    async def spy(kind: str, row_id: str, version: Any) -> bool:
+        seen.append((kind, row_id, version))
+        return True
+
+    monkeypatch.setattr("acb_skills.ask_tools.publish_card_undo", spy)
+    return seen
+
+
+def _archive_gateway(monkeypatch, *, subtasks: bool = False) -> list[dict[str, Any]]:
+    def responder(call: dict[str, Any]) -> Any:
+        path, method = call["path"], call["method"]
+        if path.endswith(f"/tasks/{TID}") and method == "GET":
+            return {"id": TID, "title": "Fix it", "task_number": 7, "project_id": PID,
+                    "status_id": "s1", "archived_at": None}
+        if path.endswith(f"/tasks/{TID}/archive"):
+            row = {"id": TID, "archived_at": STAMP, "updated_at": STAMP}
+            if subtasks:
+                row |= {"subtasks_archived": 1, "subtask_ids": ["c1"]}
+            return row
+        if path.endswith(f"/nodes/{PID}") and method == "GET":
+            return {"id": PID, "name": "Ops", "archived_at": None, "updated_at": STAMP}
+        if path.endswith(f"/nodes/{PID}/archive"):
+            return {"project_id": PID, "archived": True, "projects": 1, "open_tasks": 0}
+        if path.endswith(f"/nodes/{PID}/summary"):
+            return {}
+        return {"rows": [], "total": 0}
+
+    return fake_gateway(monkeypatch, responder)
+
+
+async def test_flag_on_an_approved_archive_offers_undo_with_its_version(monkeypatch) -> None:
+    """Mutation: drop ``_offer_undo`` from ``archive_task`` -> red."""
+    from skill_projects import guarded
+
+    _class_c(monkeypatch, "*")
+    _archive_gateway(monkeypatch)
+    approve(monkeypatch)
+    seen = _undo_spy(monkeypatch)
+    answer = await guarded.archive_task(TID)
+    assert answer.startswith("Archived"), answer
+    assert seen == [("task", TID, STAMP)]
+
+
+async def test_flag_on_an_approved_project_archive_offers_undo(monkeypatch) -> None:
+    """The project's version comes from a read after the archive."""
+    from skill_projects import guarded
+
+    _class_c(monkeypatch, "*")
+    _archive_gateway(monkeypatch)
+    approve(monkeypatch)
+    seen = _undo_spy(monkeypatch)
+    await guarded.archive_project(PID)
+    assert seen == [("project", PID, STAMP)]
+
+
+async def test_flag_off_no_receipt_offers_undo(monkeypatch) -> None:
+    """The receipt line stays dark with the flag. Mutation: drop the flag test
+    from ``_offer_undo`` -> red."""
+    from skill_projects import guarded
+
+    _class_c(monkeypatch, "")
+    _archive_gateway(monkeypatch)
+    approve(monkeypatch)
+    seen = _undo_spy(monkeypatch)
+    await guarded.archive_task(TID)
+    assert seen == []
+
+
+async def test_a_declined_archive_offers_no_undo(monkeypatch) -> None:
+    """Mutation: offer before the card -> red."""
+    from skill_projects import guarded
+
+    from tests.unit._projects_agent_fakes import deny
+
+    _class_c(monkeypatch, "*")
+    calls = _archive_gateway(monkeypatch)
+    deny(monkeypatch)
+    seen = _undo_spy(monkeypatch)
+    await guarded.archive_task(TID)
+    assert seen == [] and not [c for c in calls if c["method"] == "POST"]
+
+
+async def test_an_archive_that_filed_subtasks_offers_no_undo(monkeypatch) -> None:
+    """Undo restores ONE task, as the route does. Mutation: offer it anyway -> red."""
+    from skill_projects import guarded
+
+    _class_c(monkeypatch, "*")
+    _archive_gateway(monkeypatch, subtasks=True)
+    approve(monkeypatch)
+    seen = _undo_spy(monkeypatch)
+    await guarded.archive_task(TID, include_subtasks="yes")
+    assert seen == []
+
+
+@pytest.mark.parametrize(("kind", "row_id", "version", "ok"), [
+    ("task", TID, STAMP, True),
+    ("project", PID.upper(), "2026-11-07T10:00:00Z", True),
+    ("note", TID, STAMP, False),
+    ("task", "../../members", STAMP, False),
+    ("task", TID, None, False),
+    ("task", TID, "2026-11-07T10:00:00", False),
+    ("task", TID, "yesterday", False),
+])
+def test_the_undo_value_takes_only_a_row_and_a_version(kind, row_id, version, ok) -> None:
+    """The id goes into a path, and the version into If-Match. Mutation: pass any
+    id -> red."""
+    from acb_skills.ask_tools import undo_value
+
+    value = undo_value(kind, row_id, version)
+    assert (value is not None) is ok
+    if ok:
+        assert set(value) == {"kind", "id", "version"}
+        assert value["id"] == row_id.lower()
+
+
+async def test_the_undo_names_the_card_that_the_member_approved() -> None:
+    """The tool names no card. Mutation: publish with no approved card -> red."""
+    from acb_skills import ask_tools as at
+
+    sent: list[dict[str, Any]] = []
+
+    async def publish(ev: dict[str, Any]) -> None:
+        sent.append(ev)
+
+    assert await at.publish_card_undo("task", TID, STAMP) is False, "no approved card"
+    token = at._APPROVED_CARD.set(("a" * 32, publish))
+    try:
+        assert await at.publish_card_undo("task", TID, STAMP) is True
+        assert await at.publish_card_undo("task", TID, STAMP) is False, "spent"
+    finally:
+        at._APPROVED_CARD.reset(token)
+    assert len(sent) == 1, "one card gives one Undo"
+    assert sent == [{"type": "CUSTOM", "name": at.CONFIRMATION_UNDO,
+                     "value": {"request_id": "a" * 32, "kind": "task", "id": TID,
+                               "version": STAMP}}]
+    assert "token" not in str(sent)
+
+
+async def test_a_card_with_no_chat_channel_clears_the_card_of_an_earlier_call() -> None:
+    """A card of an earlier call must never take the Undo of this one. Mutation:
+    drop the clear at the top of ``request_confirmation`` -> red."""
+    from acb_skills import ask_tools as at
+
+    sent: list[dict[str, Any]] = []
+
+    async def publish(ev: dict[str, Any]) -> None:
+        sent.append(ev)
+
+    token = at._APPROVED_CARD.set(("c" * 32, publish))
+    try:
+        # No run queue and no relay thread: the non-interactive default.
+        assert await at.request_confirmation(
+            "Archive this task?", non_interactive_default="approve") is True
+        assert await at.publish_card_undo("task", TID, STAMP) is False
+    finally:
+        at._APPROVED_CARD.reset(token)
+    assert sent == []
+
+
+async def test_a_fault_of_the_channel_gives_false(monkeypatch) -> None:
+    from acb_skills import ask_tools as at
+
+    async def publish(_ev: dict[str, Any]) -> None:
+        raise ConnectionError("gone")
+
+    token = at._APPROVED_CARD.set(("b" * 32, publish))
+    try:
+        assert await at.publish_card_undo("task", TID, STAMP) is False
+    finally:
+        at._APPROVED_CARD.reset(token)
+
+
 @pytest.fixture(autouse=True)
 def _held_card_writes_on(monkeypatch) -> None:
     """RX-1: this file tests the rule with the switch on. The switch off has its

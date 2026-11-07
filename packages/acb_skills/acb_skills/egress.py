@@ -35,7 +35,9 @@ Such a run holds only:
    it, keeps the older rule: D169 speaks of a chat that read outside mail.
    ``HELD_CARD_WRITES_ORGS`` is the kill switch (:func:`held_card_writes_on`).
    With the org off, no write joins this list, and a held chat works as it did
-   before the slice.
+   before the slice. The two archive tools of :data:`HELD_CLASS_C_TOOLS` join
+   too, only where ``HELD_CLASS_C_ORGS`` holds the org as well
+   (:func:`held_class_c_on`, WT-6a). Their receipt offers Undo.
 
 A tool with no annotation, or with no ``open_world`` key, counts as an
 egress tool (:func:`is_egress_tool`). So an agent from another repo, whose
@@ -88,6 +90,7 @@ __all__ = [
     "EGRESS_WITHHELD_ANSWER",
     "HELD_CARD_SEND_TOOLS",
     "HELD_CARD_WRITE_TOOLS",
+    "HELD_CLASS_C_TOOLS",
     "HELD_OWNER_CHAT_FILES",
     "HELD_PARAM_REASONS",
     "HELD_REFUSED_PARAMS",
@@ -116,6 +119,7 @@ __all__ = [
     "egress_tool_names",
     "has_explicit_open_world",
     "held_card_writes_on",
+    "held_class_c_on",
     "held_param_refusal",
     "hold_is_for_mail",
     "is_card_bound_send",
@@ -1290,9 +1294,11 @@ CARD_WRITE_KEY = "card_write"
 #:
 #: **What is not here, on purpose** (:func:`is_held_off_write` holds them off).
 #: The class C Projects tools. Each is hard to undo or acts on many rows, so a
-#: steered model should not reach it with one hasty click: archive, delete,
-#: merge, a bulk update, a move of a project, a revert, a status set, a change
-#: of access (``grant_access``, ``revoke_access``). ``nudge_task`` tells another
+#: steered model should not reach it with one hasty click: delete, merge, a
+#: bulk update, a move of a project, a revert, a status set, a change of access
+#: (``grant_access``, ``revoke_access``). The archive is the one class C
+#: exception, and it is not on this list either: :data:`HELD_CLASS_C_TOOLS`
+#: holds it behind its own flag. ``nudge_task`` tells another
 #: person. ``add_report_recipient``, ``remove_report_recipient`` and
 #: ``set_report_schedule`` change who gets mail later, so they are paths out.
 #: ``attach_to_task`` moves a file of the chat onto a shared task. A store write
@@ -1396,6 +1402,27 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
 }
 
+#: The class C writes that a held chat keeps, each with its whole parameter
+#: set, EXACTLY (one_assistant_context.md §9.4 WT-6a, owner decision of
+#: 2026-11-07). The three tests of :func:`is_held_card_write` hold them too.
+#:
+#: **Why the archive alone.** An archive hides a row and deletes nothing. The
+#: existing unarchive route puts back exactly the rows that it filed, so the
+#: member can take it back with one tap. The chat receipt offers that Undo: the
+#: browser calls the unarchive route under the member's own session, with
+#: ``If-Match``, and a 412 says that the row changed since. No server token and
+#: no name of the model reaches it. A delete, a merge, a move of a project and a
+#: revert have no such restore, so each stays off until a restore exists.
+#:
+#: **The gate.** ``HELD_CLASS_C_ORGS`` (:func:`held_class_c_on`), and it acts
+#: only where ``HELD_CARD_WRITES_ORGS`` is on too. ``HELD_CARD_WRITES_ORGS``
+#: alone never opens class C: the owner approved it for class B only (D169).
+#: Fence: ``tests/unit/test_held_card_writes.py``.
+HELD_CLASS_C_TOOLS: Mapping[str, frozenset[str]] = {
+    "archive_task": _pin("task_id include_subtasks"),
+    "archive_project": _pin("project_id"),
+}
+
 #: The pack owners whose every write needs the list. Their tools say
 #: ``open_world=False`` for a true reason: a Projects write stays in Metorite.
 #: So that claim alone would keep a new write, or a delete, in a held chat.
@@ -1469,12 +1496,14 @@ def is_held_card_write(item: Any) -> bool:
     :func:`is_egress_tool` does for a bare name, and it holds the pin to the
     parameters that the tool registered. A tool of an MCP server never passes,
     also with a borrowed name and a borrowed annotation. With the org off
-    (:func:`held_card_writes_on`), no tool passes.
+    (:func:`held_card_writes_on`), no tool passes. A tool of
+    :data:`HELD_CLASS_C_TOOLS` passes only while :func:`held_class_c_on` is on
+    for the org too (WT-6a).
     """
     if not isinstance(item, str) and _from_mcp(item):
         return False
     name = item if isinstance(item, str) else tool_name(item)
-    allowed = HELD_CARD_WRITE_TOOLS.get(name)
+    allowed = _held_write_pin(name)
     if allowed is None or not held_card_writes_on():
         return False
     hints = _risk_of(None if isinstance(item, str) else item, name)
@@ -1485,6 +1514,17 @@ def is_held_card_write(item: Any) -> bool:
 
         return CARD_WRITE_PARAMS.get(name) == allowed
     return _tool_params(item) == allowed
+
+
+def _held_write_pin(name: str) -> frozenset[str] | None:
+    """The pinned parameters of a held card write called *name*, or None.
+
+    A tool of :data:`HELD_CLASS_C_TOOLS` has a pin only while
+    :func:`held_class_c_on` is on. Only those names read that flag (WT-6a)."""
+    allowed = HELD_CARD_WRITE_TOOLS.get(name)
+    if allowed is not None or name not in HELD_CLASS_C_TOOLS:
+        return allowed
+    return HELD_CLASS_C_TOOLS[name] if held_class_c_on() else None
 
 
 @functools.lru_cache(maxsize=1)
@@ -1643,6 +1683,44 @@ async def write_must_show_card(ctx: Mapping[str, Any] | None = None) -> bool:
         return True
 
 
+def _org_listed(raw: str, org: object) -> bool:
+    """True when the comma list *raw* holds organization *org*, or ``*``.
+
+    *org* None reads the bound tenant of the run. A frame with no tenant under
+    a list of ids reads False, so it fails closed."""
+    entries = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if not entries or "*" in entries:
+        return bool(entries)
+    if org is None:
+        try:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        except Exception:
+            return False
+    return str(org or "").strip().lower() in entries
+
+
+def held_class_c_on(org: object = None) -> bool:
+    """True when a held chat of organization *org* keeps the class C archive.
+
+    THE reader of ``HELD_CLASS_C_ORGS`` (one_assistant_context.md §9.4 WT-6a).
+    It is a comma list of organization ids, or ``*`` for each one. Empty means
+    off. *org* defaults to the bound tenant of the run, and no request field
+    reaches this function (R5). It fails closed: a fault of the settings read,
+    or a frame with no tenant under a list of ids, reads as off. It does not
+    read ``HELD_CARD_WRITES_ORGS``. :func:`is_held_card_write` needs both.
+    Fence: ``tests/unit/test_held_card_writes.py``.
+    """
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "held_class_c_orgs", "") or "")
+    except Exception:
+        return False
+    return _org_listed(raw, org)
+
+
 def held_card_writes_on(org: object = None) -> bool:
     """True when D169 binds organization *org*. THE reader of the kill switch.
 
@@ -1660,17 +1738,7 @@ def held_card_writes_on(org: object = None) -> bool:
         raw = str(getattr(get_settings(), "held_card_writes_orgs", "") or "")
     except Exception:
         return False
-    entries = {part.strip().lower() for part in raw.split(",") if part.strip()}
-    if not entries or "*" in entries:
-        return bool(entries)
-    if org is None:
-        try:
-            from acb_common.db import current_tenant
-
-            org = current_tenant()
-        except Exception:
-            return False
-    return str(org or "").strip().lower() in entries
+    return _org_listed(raw, org)
 
 
 async def chat_is_held(ctx: Mapping[str, Any] | None = None) -> bool:

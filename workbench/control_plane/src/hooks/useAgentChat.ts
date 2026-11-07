@@ -104,6 +104,9 @@ const HITL_CONTROL_EVENTS = new Set([
   // A card the server closed (`lib/confirmationQueue.ts`). It drives the
   // queue, and is no data to draw.
   "confirmation_resolved",
+  // WT-6a: the Undo of an approved archive card (`lib/archiveUndo.ts`). It
+  // drives the receipt line, and is no data to draw or to keep.
+  "confirmation_undo",
   // A dispatched browser action (H-164): a side effect, never a view. Kept
   // off the message so it neither draws a raw-JSON fold nor is saved.
   "frontend_tool",

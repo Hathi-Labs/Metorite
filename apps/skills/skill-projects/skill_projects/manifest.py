@@ -1323,6 +1323,19 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
             "write reads the row first."
         ),
     },
+    # one_assistant_context.md §9.4 WT-6a: the browser's Undo of a chat receipt.
+    ("POST", "/projects/tasks/{task_id}/unarchive"): {
+        "If-Match": (
+            "The Undo of an archive receipt in the chat (WT-6a). The browser sends "
+            "the version that the archive gave. The unarchive tool reads the row first."
+        ),
+    },
+    ("POST", "/projects/nodes/{project_id}/unarchive"): {
+        "If-Match": (
+            "The Undo of an archive receipt in the chat (WT-6a). The browser sends "
+            "the version after the archive. The unarchive tool reads the row first."
+        ),
+    },
     ("POST", "/projects/tasks/move/preview"): {
         "status_map": _MAPPING_CARD_REASON,
         "field_map": _MAPPING_CARD_REASON,

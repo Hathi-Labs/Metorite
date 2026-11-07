@@ -2068,6 +2068,7 @@ async def archive_task(
 @router.post("/tasks/{task_id}/unarchive")
 async def unarchive_task(
     task_id: str, user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
     """Bring an archived task back onto its board.
 
@@ -2081,10 +2082,17 @@ async def unarchive_task(
     on the shelf for its own reason, and nothing on the row says whether its
     parent took it there. The client restores the exact ids an archive
     cascade reported, and nothing else.
+
+    ``If-Match`` (one_assistant_context.md §9.4 WT-6a) is
+    :func:`_check_version`. The Undo of a chat receipt sends the version that
+    the archive answered, so a change since answers 412 and restores nothing.
+    An absent header passes (D-PM-20), so each app call is unchanged.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        # After the visibility load, so a hidden task stays a 404 (R5).
+        _check_version(task, if_match)
         if getattr(task, "archived_at", None) is None:
             return await _with_agent_state(db, row_to_dict(task, TaskModel))
         # ⚠️ A MERGED task loses its pointer here, and it must: migration

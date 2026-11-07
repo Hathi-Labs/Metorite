@@ -80,6 +80,13 @@ import {
 } from "@/lib/redraftCard";
 import { sendRespondInputResult } from "@/lib/respondInput";
 import { createRejectHold } from "@/lib/rejectHold";
+import {
+  CONFIRMATION_UNDO,
+  archiveUndoEntry,
+  archiveUndoFromEvent,
+  browserArchiveIo,
+} from "@/lib/archiveUndo";
+import type { UndoEntry } from "@/lib/undo";
 import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
 import { planCardRedraw } from "@/lib/cardReplay";
 import { identity as boundIdentity } from "@/lib/dataCache";
@@ -1200,6 +1207,12 @@ export default function AgentChat({
           setAskAnswers((prev) => new Map(prev).set(String(rid), answer));
         }
       }
+      // WT-6a: an approved archive card names its row. The receipt of that
+      // card, in this chat only, offers Undo (`lib/archiveUndo.ts`).
+      if (name === CONFIRMATION_UNDO) {
+        const offer = archiveUndoFromEvent(value);
+        if (offer) dispatchConfirmation({ type: "undoOffered", ...offer });
+      }
       if (name === "elicitation_requested" && value && typeof value === "object") {
         const v = value as Record<string, unknown>;
         const qs = v.questions;
@@ -2140,6 +2153,22 @@ export default function AgentChat({
     heldCardsRef.current.delete(key);
     dispatchConfirmation({ type: "restore", card });
   };
+  // WT-6a: the Undo of an approved archive. The browser calls the unarchive
+  // route under the member's own session, with the version as If-Match. One
+  // entry per line, so a double click sends one write.
+  const archiveUndosRef = useRef(new Map<string, UndoEntry>());
+  useEffect(() => { archiveUndosRef.current.clear(); }, [sessionId]);
+  const undoArchive = (key: string) => {
+    const receipt = confirmations.receipts.find((r) => r.key === key);
+    if (!receipt?.archive) return;
+    let entry = archiveUndosRef.current.get(key);
+    if (!entry) {
+      entry = archiveUndoEntry(browserArchiveIo(), receipt.archive, receipt.label, (state) =>
+        dispatchConfirmation({ type: "undoState", key, state }));
+      archiveUndosRef.current.set(key, entry);
+    }
+    void entry.undo();
+  };
   const hasConfirmations = confirmations.cards.length > 0;
   // No card pins above the composer (owner report, 2026-10-23). A reply
   // card, a draft and a question card each draw in the thread, at the foot
@@ -2626,6 +2655,7 @@ export default function AgentChat({
                 <ConfirmationReceipts
                   receipts={confirmations.receipts.filter((r) => r.afterId === msg.id)}
                   onUndo={undoReject}
+                  onUndoArchive={undoArchive}
                 />
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
@@ -2641,6 +2671,7 @@ export default function AgentChat({
               message above the shown slice keeps its line in the history. */}
           <ConfirmationReceipts
             onUndo={undoReject}
+            onUndoArchive={undoArchive}
             receipts={confirmations.receipts.filter(
               (r) => !r.afterId || !messages.some((m) => m.id === r.afterId),
             )}

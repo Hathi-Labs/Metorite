@@ -748,6 +748,66 @@ CONFIRMATION_ANSWERS: frozenset[str] = frozenset(
     {"APPROVE", "REJECT", "TIMEOUT", "CANCELLED"}
 )
 
+#: The event that gives the receipt of an approved card its Undo
+#: (one_assistant_context.md §9.4 WT-6a). The value names the card's
+#: ``request_id``, the kind and the id of the row, and the row's version after
+#: the write. The browser then calls the unarchive route itself, under the
+#: member's own session, with that version as ``If-Match``. The event carries
+#: no token. ``workbench/control_plane/src/lib/archiveUndo.ts`` reads it.
+CONFIRMATION_UNDO = "confirmation_undo"
+#: The kinds of row that a receipt can restore, each with its unarchive route.
+UNDO_KINDS: frozenset[str] = frozenset({"task", "project"})
+_UUID_RE = _re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+#: The card that the member approved in the last call of
+#: :func:`request_confirmation` in this frame, and the channel that carried
+#: it: ``(request_id, publish)``. Each call clears it first, and only an
+#: APPROVE of a chat card sets it. :func:`publish_card_undo` reads it once. A
+#: ContextVar, so two tools that run at once each read their own card.
+_APPROVED_CARD: _contextvars.ContextVar[tuple[str, Any] | None] = _contextvars.ContextVar(
+    "acb_approved_card", default=None)
+
+
+def undo_value(kind: str, row_id: str, version: str | None) -> dict[str, Any] | None:
+    """The value of a :data:`CONFIRMATION_UNDO` event, or None.
+
+    *kind* is one of :data:`UNDO_KINDS`, *row_id* a UUID and *version* the
+    row's ``updated_at`` with a UTC offset. The Undo sends that version as
+    ``If-Match``, so a missing one gives None too. Any other value gives None,
+    so no line offers an Undo that cannot work."""
+    rid = str(row_id or "").strip().lower()
+    if kind not in UNDO_KINDS or not _UUID_RE.fullmatch(rid):
+        return None
+    stamp = str(version or "").strip()
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:?\d{2})", stamp):
+        return None
+    return {"kind": kind, "id": rid, "version": stamp}
+
+
+async def publish_card_undo(kind: str, row_id: str, version: str | None) -> bool:
+    """Offer Undo on the receipt of the card that the member just approved.
+
+    WT-6a. A tool calls it after the write that its card approved. It sends
+    one :data:`CONFIRMATION_UNDO` event on the channel that carried the card,
+    keyed by that card's ``request_id``. The tool names no card: the id comes
+    from :data:`_APPROVED_CARD`. True when the event went out. A frame with no
+    approved card, a value that :func:`undo_value` refuses, or a fault gives
+    False, and the receipt then offers no Undo. It never raises."""
+    card = _APPROVED_CARD.get()
+    # One card gives one Undo. A second call names no card.
+    _APPROVED_CARD.set(None)
+    value = undo_value(kind, row_id, version)
+    if card is None or value is None:
+        return False
+    request_id, publish = card
+    try:
+        await publish({"type": "CUSTOM", "name": CONFIRMATION_UNDO,
+                       "value": {"request_id": request_id, **value}})
+    except Exception:  # the receipt then offers no Undo
+        return False
+    return True
+
 
 #: A confirmation card with ROWS (WS-46 P13 one-card). The member ticks the
 #: rows the act covers, and the answer names them:
@@ -1675,6 +1735,9 @@ async def request_confirmation(
         or Save to Drafts, and ``None`` for Discard, a timeout, an answer
         that is not a reply answer, and a run with no card.
     """
+    # WT-6a: a card of an earlier call is never the card of this one. A path
+    # with no chat card (WhatsApp, no channel) leaves this None.
+    _APPROVED_CARD.set(None)
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
@@ -1825,6 +1888,8 @@ async def request_confirmation(
             if _watch is not None:
                 _watch.cancel()
             _pending.pop(_rid, None)
+            # WT-6a: only an APPROVE of this card lets a later Undo name it.
+            _APPROVED_CARD.set((_rid, _publish) if _answer == "APPROVE" else None)
             # Best effort: the run's end clears a blocking card too. A PARKED
             # card (WS-51 S2) is not closed: it stays open for a late answer,
             # which a new run takes (``orchestrator.pending_ask``).

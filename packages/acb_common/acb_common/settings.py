@@ -1071,6 +1071,20 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_held_card_writes.py.
     held_card_writes_orgs: str = ""
 
+    # ── The class C archive of a held chat (one_assistant_context.md §9.4 WT-6a) ─
+    #
+    # `held_class_c_orgs` lists the organization ids where a held chat also
+    # keeps `archive_task` and `archive_project`, or `*` for each one. The
+    # receipt of each archive offers Undo. Empty means off, and a held chat
+    # refuses both, as before. It acts only where `held_card_writes_orgs` is on
+    # too: `held_card_writes_orgs` alone never opens class C (owner, 2026-11-07).
+    # The one reader is `egress.held_class_c_on`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart.
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6 D4).
+    # Fence: tests/unit/test_held_card_writes.py.
+    held_class_c_orgs: str = ""
+
     # ── Continue a held chat in a fresh chat (one_assistant_context.md §9, WT-1) ─
     #
     # `chat_continue_orgs` lists the organization ids where

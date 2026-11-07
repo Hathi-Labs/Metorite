@@ -1810,6 +1810,7 @@ async def archive_node(
 @router.post("/nodes/{project_id}/unarchive")
 async def unarchive_node(
     project_id: str, user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> ArchiveResponse:
     """Bring a project and everything its archive filed back.
 
@@ -1825,10 +1826,18 @@ async def unarchive_node(
     need explaining forever. Refusing it and naming the ancestor is the same
     move ``_refuse_lifecycle_on_child`` makes: keep the incoherent case
     unreachable rather than merely documented.
+
+    ``If-Match`` (one_assistant_context.md §9.4 WT-6a) is the rule of
+    :func:`patch_node`: strict equality on ``updated_at``. The Undo of a chat
+    receipt sends the version that it read after the archive, so a change
+    since answers 412 and restores nothing. An absent header passes (D-PM-20).
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
+        # After the visibility load: a caller who cannot see the node gets
+        # 404 and never learns from a 412 that it exists (R5).
+        require_precondition(row, if_match, row_to_dict(row, ProjectModel))
 
         if getattr(row, "archived_at", None) is None:
             return ArchiveResponse(
