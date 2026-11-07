@@ -191,6 +191,22 @@ export const NAV_SECTIONS: NavSection[] = [
     id: "personal",
     label: "Personal Center",
     items: [
+      // WS-AP AP-2a (`waiting_on_me.md` §5.1). The first item of Personal
+      // Center, so it sits under My Day. Team `personal`, never `across`.
+      // ⚠️ `preview` while `WAITING_ORGS` is off in production. AP-2c makes
+      // it `live`, with `LIVE_SET` and `launch_surface.md` §2 in the same PR.
+      // No `feature`: every member has a list of their own, as `/integrations`
+      // has no gate. The gateway answers 404 for an org that is off, and the
+      // page shows its off state. No nav filter hides the row on a 404.
+      {
+        href: "/waiting",
+        team: "personal",
+        blurb: "What waits on you: agents, approvals, decisions",
+        label: "Waiting",
+        icon: "Hourglass",
+        note: "Every agent question, approval and decision that waits on you",
+        launch: "preview",
+      },
       {
         href: "/tasks",
         team: "personal",

@@ -19,13 +19,28 @@
  * failed as a whole, the cache keeps the last answer, and My Day keeps it
  * with a caveat. A row has no room for a caveat, so it shows nothing.
  *
- * Fence (R7): `navNeeds.test.ts`.
+ * **The Waiting row has its own count** (WS-AP AP-2a). It is not a row of
+ * the needs feed. It reads `GET /shell/waiting/count` through the cache, at
+ * its own key, and joins the same one poll (`joinNeedsPoll`), so it adds no
+ * timer. It reads only while the member holds the row. `waitingCount.ts`
+ * holds its rules.
+ *
+ * Fence (R7): `navNeeds.test.ts` and `waitingCount.test.ts`.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
+
+import { useCachedResource } from "@/lib/useCachedResource";
 
 import { floorHrefs, needsByHref } from "./needs";
 import { useNeedsYou } from "./NeedsYouCard";
-import { useNeedsAllowed, useNeedsPoll } from "./ShellBell";
+import { joinNeedsPoll, useNeedsAllowed, useNeedsPoll } from "./ShellBell";
+import {
+  WAITING_COUNT_KEY,
+  WAITING_HREF,
+  type WaitingCount,
+  fetchWaitingCount,
+  withWaitingCount,
+} from "./waitingCount";
 
 /** At most one read in this many ms because of writes elsewhere. */
 export const NAV_WAKE_MS = 15_000;
@@ -58,9 +73,28 @@ export function useNavNeeds(on: boolean, held: readonly string[]): NavNeeds {
   const heldKey = held.join(",");
   const { byApp, floors, count } = needs;
   const failed = needs.error !== null;
-  return useMemo(() => {
+  const fromFeed = useMemo(() => {
     if (!on || !allowed || failed) return NONE;
     const set = new Set(heldKey.split(",").filter(Boolean));
     return { counts: needsByHref(byApp, set), floors: floorHrefs(floors, set), total: count ?? 0 };
   }, [on, allowed, failed, byApp, floors, count, heldKey]);
+
+  // The Waiting row: its own read, the one poll, and only while it is held.
+  const waitingHeld = on && held.includes(WAITING_HREF);
+  const waiting = useCachedResource<WaitingCount | null>(
+    waitingHeld ? WAITING_COUNT_KEY : null,
+    () => fetchWaitingCount(),
+    { wakeEveryMs: NAV_WAKE_MS },
+  );
+  const waitingRefresh = waiting.refresh;
+  useEffect(
+    () => (waitingHeld ? joinNeedsPoll(waitingRefresh, WAITING_COUNT_KEY) : undefined),
+    [waitingHeld, waitingRefresh],
+  );
+  const waitingData = waitingHeld ? waiting.data : undefined;
+  const waitingFailed = waiting.error !== null;
+  return useMemo(() => {
+    const out = withWaitingCount(fromFeed.counts, fromFeed.floors, waitingData, waitingFailed);
+    return out.counts === fromFeed.counts ? fromFeed : { ...fromFeed, ...out };
+  }, [fromFeed, waitingData, waitingFailed]);
 }

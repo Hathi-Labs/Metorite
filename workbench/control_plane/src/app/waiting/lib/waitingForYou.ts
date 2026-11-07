@@ -1,8 +1,10 @@
 /**
- * The "Waiting for you" list of /approvals (CIV-14k): every open agent
- * question of the member, across all projects, oldest first, until it has an
- * answer. The rows come from `GET /projects/agent-runs?status=awaiting
- * &order=oldest&with_task=true`. These are the pure rules the page reads.
+ * The agent questions of the page `/waiting` (CIV-14k, moved from
+ * `/approvals` by WS-AP AP-2a): every open agent question of the member,
+ * across all projects, oldest first, until it has an answer. The rows come
+ * from `GET /projects/agent-runs?status=awaiting&order=oldest&with_task=true`,
+ * which lists the runs where `member_email` is the caller (AP-Q2 rule a).
+ * These are the pure rules the page reads.
  *
  * Fence: `waitingForYou.test.ts`.
  */
@@ -28,8 +30,13 @@ export function openQuestion(run: WaitingRun): AgentActivity | null {
   return run.open_elicitation ?? run.elicitation ?? null;
 }
 
+/** When the run started to wait: its open question, else its last activity. */
+export function askedAt(run: WaitingRun): string | null {
+  return openQuestion(run)?.created_at ?? run.last_activity_at ?? null;
+}
+
 function askedAtMs(run: WaitingRun): number {
-  const stamp = openQuestion(run)?.created_at ?? run.last_activity_at ?? null;
+  const stamp = askedAt(run);
   const ms = stamp ? Date.parse(stamp) : NaN;
   return Number.isNaN(ms) ? Number.MAX_SAFE_INTEGER : ms;
 }
@@ -41,11 +48,6 @@ export function waitingRuns(runs: readonly WaitingRun[]): WaitingRun[] {
     .map((run, index) => ({ run, index }))
     .sort((a, b) => askedAtMs(a.run) - askedAtMs(b.run) || a.index - b.index)
     .map((x) => x.run);
-}
-
-/** The count in the page title: the questions plus the broker proposals. */
-export function waitingCount(questions: number, proposals: number): number {
-  return questions + proposals;
 }
 
 /** "#12 Fix the extruder", or the plain "Task" when the facts are absent. */

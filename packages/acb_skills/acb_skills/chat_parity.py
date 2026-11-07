@@ -570,6 +570,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "health",
         "The gateway health ping that the chat recovery and the service banner read.",
     ),
+    "GET /api/shell/waiting/count": (
+        "stream",
+        "The poll of the count on the Waiting row of the sidebar (WS-AP AP-2a). The chat reads the same seam.",
+    ),
     # ── Settings and the assistant profile ──
     "GET /api/accounts": (
         "session",
@@ -945,6 +949,8 @@ DEBT: dict[str, str] = {
     "GET /api/shell/feed/prefs": "P-7",
     "GET /api/shell/needs": "P-7",
     "GET /api/shell/search": "P-7",
+    # WS-AP AP-2a: the list "For you" of /waiting. AP-10 (`my_waits`) pays it.
+    "GET /api/shell/waiting": "P-7",
     "POST /api/actions/pending/{}/{}": "P-7",
     "POST /api/push/subscriptions": "P-7",
     "POST /api/push/subscriptions/status": "P-7",
@@ -1061,7 +1067,7 @@ DEBT_CEILING: dict[str, int] = {
     "apps": 28,
     "agents": 20,
     "chat": 25,
-    "shell": 15,
+    "shell": 16,  # WS-AP AP-2a added GET /api/shell/waiting. The chat tool my_waits of AP-10 (task 1860) pays it.
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
     "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
