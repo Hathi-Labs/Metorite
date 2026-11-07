@@ -466,6 +466,25 @@ def test_r8_covered_reads_a_real_test_skip(tmp_path: Path) -> None:
     assert guard.r8_covered(junit, _list(tmp_path, "test_needs_db.py")) == []
 
 
+def test_r8_covered_names_the_module_that_collects_an_inherited_gated_class(tmp_path: Path) -> None:
+    """CIV-4c verifier. `test_reuse.py` subclasses a gated class of
+    `test_base.py`. JUnit `file` says test_base.py, `classname` says
+    test_reuse. With only test_base.py in the list, test_reuse.py runs nowhere
+    and the guard must say so."""
+    (tmp_path / "test_base.py").write_text(
+        "import pytest\n\n\nclass TestBaseR8:\n    def test_it(self):\n"
+        "        pytest.skip('TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres')\n",
+        encoding="utf-8",
+    )
+    junit = _report(
+        tmp_path, "from test_base import TestBaseR8\n\n\nclass TestReuse(TestBaseR8):\n    pass\n",
+        "test_reuse.py",
+    )
+    only_base = guard.r8_covered(junit, _list(tmp_path, "test_base.py"))
+    assert len(only_base) == 1 and "test_reuse.py" in only_base[0], only_base
+    assert guard.r8_covered(junit, _list(tmp_path, "test_base.py", "test_reuse.py")) == []
+
+
 @pytest.mark.parametrize(
     "reason",
     [

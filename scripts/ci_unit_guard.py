@@ -159,6 +159,22 @@ def is_r8_reason(reason: str) -> bool:
     return any(v in text for v in R8_VARS) or bool(_REAL_POSTGRES.search(text))
 
 
+def _skip_paths(case: ET.Element) -> list[str]:
+    """The files that own a skipped case: where the test is DEFINED (``file``)
+    and the module that COLLECTED it (read from ``classname``). They differ when
+    a module subclasses a gated class of another module. Both must be in the
+    --r8 list, or the collecting module runs nowhere (CIV-4c verifier)."""
+    paths = [_file(case)]
+    parts = case.get("classname", "").split(".")
+    while parts and not parts[-1].startswith("test"):
+        parts.pop()
+    if parts:
+        collected = "/".join(parts) + ".py"
+        if collected not in paths:
+            paths.append(collected)
+    return paths
+
+
 def r8_covered(junit_dir: Path, r8_list: Path) -> list[str]:
     """Each file that skipped for an R8 reason and is not in ``r8_list``.
 
@@ -188,7 +204,8 @@ def r8_covered(junit_dir: Path, r8_list: Path) -> list[str]:
     for case in cases:
         reason = _skip_reason(case)
         if reason is not None and is_r8_reason(reason):
-            skipped.setdefault(_file(case), f"{case.get('name')}: {reason}")
+            for path in _skip_paths(case):
+                skipped.setdefault(path, f"{case.get('name')}: {reason}")
     missed = sorted(p for p in skipped if p not in listed)
     if not missed:
         print(f"R8 skips checked: {len(skipped)} files, all in the --r8 list")
