@@ -5550,6 +5550,39 @@ It extends D140 and D183. It amends earlier rules in five points (items 10 to 14
 
 Fence: `test_playbook_org_neutral.py` (PB-1 creates it, PB-5 widens it, and it blocks from the PB-1 merge) and the fences named per slice in `specs/agent_coordination.md` §7.1. Advisory until the slices build them.
 
+### D187 — A user tool is a Studio package: a short-lived sandbox per thread, a repair loop, and platform adoption only through reviewed code (2026-11-07)
+
+The owner asked on 2026-11-06, in chat, for four things. The assistant builds a tool from the chat when no tool exists. It repairs a tool that fails, and uses the new version. Created and repaired tools stay reusable in the organization. A useful tool can serve all of Metorite, most of all when the fix of one member could fix a failed built-in tool for everyone.
+
+The owner accepted each recommendation on 2026-11-07. Owner spec: `specs/agent_sandbox.md` §0a. Board: **WS-TO**. Metorite: epic 521, task 1962 (SBX-0b). It extends D127.2, D139, D146 and D147. It amends D130.1 for production only, the name of the permission of D130.3, and the non-goal of `agent_sandbox.md` §3.2 ("A tool never leaves its organization").
+
+```text
+"go ahead with your recommendation" (2026-11-07)
+```
+
+1. **A sandbox per chat thread, short-lived. No sandbox per member.** The broker key stays (organization, `user-tool`, thread). A tool version is an immutable stored copy, and a container never holds a tool between runs.
+   - A sandbox that lives long gathers data, and an injected prompt could leave something behind in it.
+   - Idle containers cost CPU. Sharing works by a version, not by a machine.
+2. **One library: a user tool is an AI Studio package.** Its code is a member-authored logic module (`ai_studio.md` B5), and the catalog serves it as an action. So it gets the scopes of the package host and the promotion of the same install (`package_host.md` §6).
+   - `agent_sandbox.md` drops its tables `user_tools` and `user_tool_versions`. A version is a row of `app_versions`. Its five files live in a new nullable column, `app_versions.files`, an expand-only change of SBX-5.
+   - `find_tool` first asks whether catalog actions can do the need as a Studio skill or workflow, with no code.
+   - A holder of `studio:publish` reads the code and approves one version before an install for named people, a group or the org. This replaces the name `tools:approve` of D130.3, because D180.3 already gates the share of a package. Each viewer runs the tool with their own rights.
+3. **A repair loop at three levels.** Three signals start a repair. A run exits non-zero, an output fails the schema, or a door call answers 5xx. One failed run gets at most 1 repair build.
+   - (a) My own tool fails. The assistant builds the next version, runs it, and keeps it only if that run succeeds.
+   - (b) An org tool fails for me. The same steps, and the new version runs for me only. Other members keep the approved version until a holder of `studio:publish` moves the pin.
+   - (c) A built-in tool fails. The assistant never changes platform code at run time. It may build a private workaround, and it files the error to the tool failure log (task 1793, no spec yet). A coding agent turns the report into a reviewed PR. The next release fixes every organization, and the workaround retires.
+4. **Platform adoption only through reviewed repo code.** A tool serves all of Metorite only as first-party code, a Studio B4 module or a platform tool. It goes through a PR and a review, and a release ships it as a `system` install.
+   - Nobody copies a running tool from one organization into another. The source organization must consent, because the code and its business rules are theirs.
+   - Only counts cross tenants: runs, the success rate and the number of organizations with the same gap. A platform admin view shows them, in a later slice (SBX-16).
+5. **Production runs on a dedicated sandbox box.** A separate small VPS runs the Docker backend of the broker under gVisor (`runsc`). Only a private network reaches it. The broker keeps one seam, with a new backend value, `docker-remote`.
+   - Member data stays with the hosting provider that already processes it, so no new processor joins.
+   - The `e2b` backend stays the alternative, after a data processing agreement (D130.7). The dev stack keeps the local Docker backend.
+   - The owner buys the box and sets up its network and DNS (`agent_sandbox.md` SBX-G9 and SBX-G10). **This amends D130.1 for production only.**
+
+**Re-check this number at merge.** The first merge wins a D-number. Re-check D187 at merge. The branch mt-90c28fde-pz44-tone-spec also holds a D187 (tone of voice), so the second of the two to merge takes the next free number.
+
+Fence: SBX-F17 to SBX-F22 of `agent_sandbox.md` §11, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D187 entries merge.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
