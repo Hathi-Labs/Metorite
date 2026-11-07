@@ -1454,9 +1454,11 @@ async def is_active_member(email: str | None, org_id: str | None) -> bool:
       the RLS-EXEMPT ``user_identity ⋈ org_membership``. An invited, suspended
       or removed membership answers False.
     * ``IDENTITY_CUTOVER`` **OFF**: reads :data:`_MEMBER_OF_ORG_APP_USER_SQL`,
-      the same ``app_user`` table and unbound session as the flag-OFF
-      :func:`resolve_identity`. ``app_user`` holds one org per person, so the
-      answer is that of H-232's org compare.
+      the same ``app_user`` table as the flag-OFF :func:`resolve_identity`,
+      with the org and the active status as predicates. The read runs on
+      ``tenant_session(org_id)`` (see below), not on an unbound session.
+      ``app_user`` holds one org per person, so the answer is that of H-232's
+      org compare.
 
     Both run on ``tenant_session(org_id)``. The GUC changes nothing for the
     RLS-EXEMPT tables. For ``app_user`` it keeps the read working under

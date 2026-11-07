@@ -3674,8 +3674,9 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
     The member must be an active member of the run's org
     (``acb_auth.access.is_active_member``), and the admin permission is read
     in the run's org (``acb_auth.access.resolve_access_in_org``). A person
-    with an active membership in two orgs passes (PLN-Q5, H-232b). A failed
-    read or a mismatch answers no.
+    with an active membership in two orgs passes only when their role row is
+    in the run's org (PLN-Q5, H-232b). Roles live on one ``app_user`` row, in
+    one org (D48 moves them). A failed read or a mismatch answers no.
     """
     from acb_common import get_run_context
 
