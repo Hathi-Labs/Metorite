@@ -168,7 +168,7 @@ def identity_cutover_enabled() -> bool:
     as are H3 phase-4 promotion and the prod backfill. Read here (not the
     Next-side ``CUSTOMER_CONSOLE_RESOLVE_ENABLED``): the two-phase resolve is
     entirely server-side in ``acb_auth``. The env idiom matches
-    ``deps._refuse_llm_key_identity`` / ``_trust_unverified_sso_headers``.
+    ``deps._trust_unverified_sso_headers``.
     """
     return os.getenv("IDENTITY_CUTOVER", "").strip().lower() in {
         "1", "true", "yes", "on",

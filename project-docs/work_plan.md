@@ -6285,13 +6285,12 @@ The fence refuses a new hash until the owner records
 to `_BASELINE` in that test defeats the fence. Treat that change as this gate.
 
 **(b) provisioning `GATEWAY_INTERNAL_TOKEN`** — a credential, and it must land
-in **both** `/opt/acb/app/.env` and the workbench's `.env.local`, because the
-Next BFF mirrors the same `LITELLM_MASTER_KEY` fallback
-(`workbench/control_plane/src/lib/gateway.ts:58-61`); a mismatch turns every
-proxied browser call anonymous. **`GATEWAY_REFUSE_LLM_KEY_IDENTITY` is a
-separate owner gate of its own** — it ships OFF, defaults to today's behaviour
-exactly, and flipping it while the token is unset **401s every signed-in
-member** ·
+in **both** `/opt/acb/app/.env` and the workbench's `.env.local`. A mismatch
+turns every proxied browser call anonymous. **WS-24b (2026-11-06) removed the
+`LITELLM_MASTER_KEY` fallback** on both sides, and the
+`GATEWAY_REFUSE_LLM_KEY_IDENTITY` flag with it. An unset token now fails closed:
+internal calls get 401. Production had the token set and distinct on
+2026-11-06, so it needs no env change. A new box must set the token ·
 **(c) installing/scheduling the BO-23 backup timer** — building the dump
 script, the manifest and the restore runbook is AGENT-SAFE; installing the
 systemd unit and pointing it at prod data is not ·
