@@ -2,6 +2,8 @@
 
 **Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.**
 
+**CIV-14g (the watcher hand-off of the answer rule, §5.8) is built, not merged, 2026-11-07.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. No other P9 slice is built.**
@@ -1187,10 +1189,19 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Each session is a transient unit.** The watcher runs as a `oneshot` unit, and systemd kills what stays in its cgroup. So each session starts with `systemd-run --user --collect --unit=answer-<slug>`. The live count is the number of running `answer-*` units, and the cap is 2. It starts nothing when less than 5000 MB is free (lane rule 11). A sweep removes a `wt-answer-*` worktree that holds no change and no commit, after 24 hours, and only when no session runs.
 - **The credential (decided by the owner, 2026-11-06, task 1731).** The watcher has its own read-only token: a box token (D-EA-5, `external_agent_access.md` §10.9) with the scope `projects:read` only. The owner makes it in Integrations, AI agents once EA-19c and EA-19d merge. The owner drops it in `~/.config/metorite/watcher.env` (mode 0600) through the secrets drop (`docs/secrets_drop.md`). The script reads it from the environment and never prints it, and no child gets it. A session that the watcher starts uses the login of its own lane. The default session command allows the Metorite tools only (`--allowedTools mcp__metorite__*`), and `WATCHER_CLAUDE_CMD` overrides it.
 - **A known gap: other clients.** `list_agent_runs` lists the runs of every client of the member. The watcher cannot tell a run of the owner's PC from a run of the box, so the 2-minute quiet window is its only guard. A session that cannot claim the run (another connection holds it) ends with `release_task`.
-- **OPEN, the answer rule (owner, task 1731).** The platform says a session acts on an answer only when `yours` is true and it asked the question itself. A fresh session did not ask. So the session the watcher starts reads the run and, under today's rule, must not act on the answer. The question is on the task.
+- **DECIDED, the answer rule (owner, option A, task 1731, 2026-11-07).** A session that the watcher started may act on an answer when three things are true. The answer is the newest person prompt on the run, and its `member` is the member of the run. The run is the one that the first prompt of the session names. No later activity withdrew the answer. A restart, erase or stop answer still needs a session that asked it itself. CIV-14g builds this exception.
 - **Status.** BUILT 2026-11-06, dark, not merged (Metorite task 1731). `answer_watcher.sh install` copies the script and the units and enables nothing. `enable` refuses a token file that is not mode 0600. Enabling the timer is OWNER-GATE (`deploy`). Two Opus readers reviewed the first draft. They found the oneshot kill, the lost `stale` answers, a second answer that never started, a lock cap that did not cap, and the answer rule above. The text and the code now fix all but the last.
 - **Fence.** `uv run pytest tests/unit/test_answer_watcher.py`, with a fake `list_agent_runs`, a fake starter and a fake live count. It covers one start for one wake, a new answer, a `stale` run, the skips, the live cap, the vet, the retries, a failed read, the transient unit, the token never in a child, and the sweep.
 - **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. OWNER-GATE to enable the timer (`deploy`) and to mint the token.
+
+#### CIV-14g · The answer rule names the watcher hand-off (Metorite task 2197)
+
+- **Scope.** The edge text of the answer rule names one exception, `prompts.WATCHER_EXCEPTION`. It shows in `ANSWER_BODY_ON` and `ANSWER_BODY_OFF`, so `my_work`, `list_agent_runs` and `work_on_task` carry it. Each short pointer of the instructions names "a watcher hand-off". The watcher prompt starts with the fixed text `ANSWER WATCHER HAND-OFF for run`, then the run id. It holds ids only.
+- **The exception is narrow.** It holds only for the run that the first prompt names. It holds only for the newest person prompt, when its member is the member of the run and no later activity withdrew it. It never allows a restart, an erase or a stop.
+- **The cut.** Claude Code cuts the instructions at 4096 characters. With sessions off, the cut left 3 characters, so the off pointer is shorter now. The last kept sentence ends at 4093 (off) and 4091 (on).
+- **Status.** BUILT 2026-11-07, not merged (Metorite task 2197). It changes text only.
+- **Fence.** `tests/unit/test_mcp_edge_prompts.py` `TestTheAnswerRule`: the watcher tests and the cut test. `tests/unit/test_answer_watcher.py`: the prompt starts with the marker, and the marker of the watcher equals the marker of the edge.
+- **Risk.** HIGH (the answer rule, MCP-G4). **Gate.** AGENT-SAFE. Enabling the watcher timer stays OWNER-GATE (`deploy`).
 
 ### 5.9 P8 — deferred, the owner decides
 
