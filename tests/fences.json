@@ -47,6 +47,7 @@
       "tests/unit/test_email_follow_up_scan.py",
       "tests/unit/test_email_owner_scope_fence.py",
       "tests/unit/test_email_retry_and_uncategorized.py",
+      "tests/unit/test_email_self_reader_tenant_fence.py",
       "tests/unit/test_email_thread_status_parity.py",
       "tests/unit/test_email_upsert_unsubscribe_parity.py",
       "tests/unit/test_fence_lists.py",

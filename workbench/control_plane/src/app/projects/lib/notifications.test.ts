@@ -303,4 +303,9 @@ suite("every kind the gateway can write has its own verb (task 1054)", () => {
     expect(line).toBe("Claude Code has gone quiet on #12 Fix the extruder. Resume or release it.");
     expect(line).not.toContain("since");
   });
+
+  it("reads a person's nudge as a nudge, not as a quiet run", () => {
+    const line = describe(row({ kind: "nudge", actor: "priya@fracktal.in" }));
+    expect(line).toBe("priya nudged you about #12 Fix the extruder");
+  });
 });

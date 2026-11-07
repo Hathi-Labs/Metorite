@@ -630,6 +630,14 @@ class Settings(BaseSettings):
     # spends credits, so a flip on production is OWNER-GATE (core_brief.md
     # §10 row 4). Fence: tests/unit/test_brief_phrase.py.
     brief_compose: bool = False
+    # `brief_closeout` (WS-BRIEF BR-2b-1, 2026-11-06) is the planner's switch
+    # for the 18:30 close-out kind, default OFF. Off, the planner plans no
+    # close-out, and the 07:30 brief is as before. It needs `brief_enabled`
+    # and the org on `brief_orgs` too. The close-out makes no model call. The
+    # one reader is `gateway.brief.flags.closeout`. A flip on a box is gate
+    # `enforcement-flip`. Spec: core_brief.md §10 row 7. Fence:
+    # tests/unit/test_brief_closeout.py.
+    brief_closeout: bool = False
 
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #
@@ -871,6 +879,17 @@ class Settings(BaseSettings):
     # change (`gateway/flag_reload.py`). It calls no model. Fences:
     # tests/unit/test_executor_briefing_block.py, tests/unit/test_chat_summary.py.
     assistant_briefing_orgs: str = ""
+
+    # ── Celebrations (WS-63 PZ-43, personalization.md §16.6) ────────────────
+    #
+    # CELEBRATIONS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default. On, the member can set a birthday (no year), festival picks
+    # and the work-anniversary switch, and the first chat reply of a day on
+    # which one falls opens with one wish. The profile switch must be on too.
+    # The one reader is `acb_common.celebrations.celebrations_for`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fences: tests/unit/test_celebrations.py.
+    celebrations_orgs: str = ""
 
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
@@ -2046,6 +2065,14 @@ class Settings(BaseSettings):
     # the edge both read it, so both units need the same value. 🔴 A change
     # on a box is gate `enforcement-flip`.
     agent_access_orgs: str = ""
+    # SW-34a (agent_coordination.md SW-34a, external_agent_access.md §9.3): the
+    # organizations where the edge serves MCP resources (`resources/list`,
+    # `resources/templates/list`, `resources/read`). The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps them dark: the list is empty and a read is not found.
+    # `acb_auth.agent_oauth.resources_allowed` is the one reader, at each call.
+    # 🔴 A change on a box is gate `enforcement-flip`.
+    agent_resources_orgs: str = ""
     # EA-17c-1 (D-EA-13, spec §10.8): the organizations where a member may
     # change the grant of their own agent connection, through
     # `PATCH /agent-access/connections/{id}`. The same shape as

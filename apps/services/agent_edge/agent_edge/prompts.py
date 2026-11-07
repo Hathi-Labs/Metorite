@@ -307,7 +307,9 @@ def _queued_text() -> str:
         " activity ends a stopping run. When its reason is run_queued or"
         " run_answered, call get_agent_run with its run_id to read the request."
         " Then call claim_task with the task_id and the version of the row."
-        + _LINK_HINT,
+        + _LINK_HINT +
+        " When claim_task returns a warning about open subtasks, claim a"
+        " subtask from the list, not the epic.",
         "When claim_task says that another session holds the task (a 409"
         " task_held), do not try that task again. Take the next row, and do"
         " step 2 again. When claim_task refuses for another reason, tell me"

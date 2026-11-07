@@ -58,6 +58,7 @@ import { usePanelHeld } from "./panelHold";
 import { cardsFor, seesApprovals } from "./myDay";
 import { needsKey } from "./needs";
 import { NeedsList, type NeedsYou, useNeedsYou } from "./NeedsYouCard";
+import { EMPTY_MANIFEST, installNeeds, usePackageManifestResource, usePackageManifest, type InstallNeed } from "./packageManifest";
 import { homePane } from "./shellNav";
 
 // ── Whether the panel is up ──────────────────────────────────────────────────
@@ -111,6 +112,15 @@ export function bellBadge(count: number | undefined): string | null {
 }
 
 /**
+ * The bell's count: the feed's rows plus the install setup rows. `undefined`
+ * stays `undefined` until the feed answers. The badge and the panel read one
+ * list of setup rows (PKG-6b).
+ */
+export function bellCount(total: number | undefined, setupRows: readonly InstallNeed[]): number | undefined {
+  return total === undefined ? undefined : total + setupRows.length;
+}
+
+/**
  * The bell's spoken name: what it is, then how many rows need the member.
  * It says the real number, also past the badge's cap.
  */
@@ -124,7 +134,9 @@ export function bellLabel(count: number | undefined): string {
 /**
  * Whether this member can have a feed at all, and whether it holds the
  * approvals group. Both are My Day's own rules (`cardsFor`, `seesApprovals`),
- * so the bell, the card and the sidebar's row counts show the same rows.
+ * so the bell, the card and the sidebar's row counts show the same feed rows.
+ * The bell badge also counts the install setup rows (PKG-6b). The sidebar row
+ * counts do not, because a setup row belongs to no app row.
  */
 export function useNeedsAllowed(): { allowed: boolean; approvals: boolean } {
   const { access, loading } = useAccess();
@@ -199,10 +211,12 @@ export function ShellBell({
   const { allowed, approvals } = useNeedsAllowed();
   const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
+  // PKG-6b: one setup row for each install that needs setup counts too.
+  const setup = installNeeds(usePackageManifest());
   if (!allowed) return null;
   return (
     <BellButton
-      count={needs.total}
+      count={bellCount(needs.total, setup)}
       open={open}
       onOpen={() => {
         onBeforeOpen?.();
@@ -337,11 +351,14 @@ export function BellPanel({
   open,
   onClose,
   needs,
+  extra,
   placement = "end",
 }: {
   open: boolean;
   onClose: () => void;
   needs: NeedsYou;
+  /** Setup rows that installs give (PKG-6b). None draws the panel as it was. */
+  extra?: readonly InstallNeed[];
   /** `end` under the shell bar's right end, `top` beside a sidebar, `sheet` on a phone. */
   placement?: ModalPlacement;
 }) {
@@ -397,7 +414,7 @@ export function BellPanel({
         }}
       >
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          <NeedsList needs={panelNeeds} now={now} />
+          <NeedsList needs={panelNeeds} now={now} extra={extra} />
         </div>
         <footer className="flex items-center justify-between gap-3 border-t border-border px-4 py-2">
           <Link
@@ -433,20 +450,26 @@ export function ShellBellHost({ placement }: { placement: ModalPlacement }) {
   const { allowed, approvals } = useNeedsAllowed();
   const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
+  const manifest = usePackageManifestResource();
+  const extra = installNeeds(manifest.data ?? EMPTY_MANIFEST);
   const { refresh } = needs;
+  const refreshManifest = manifest.refresh;
   // While the sidebar is on screen, it shows the needs beside its row.
   const barHolds = usePanelHeld("needs");
 
   useNeedsPoll(allowed, refresh);
 
   useEffect(() => {
-    if (allowed && open) refresh();
-  }, [allowed, open, refresh]);
+    if (!(allowed && open)) return;
+    refresh();
+    // A setup row may be stale too: read the manifest again on open.
+    refreshManifest();
+  }, [allowed, open, refresh, refreshManifest]);
 
   if (!allowed) return null;
   return (
     <>
-      <BellPanel open={open && !barHolds} onClose={closeBell} needs={needs} placement={placement} />
+      <BellPanel open={open && !barHolds} onClose={closeBell} needs={needs} extra={extra} placement={placement} />
       <UndoToastFallback />
     </>
   );
