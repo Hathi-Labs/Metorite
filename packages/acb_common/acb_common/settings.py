@@ -1095,7 +1095,7 @@ class Settings(BaseSettings):
     # `chat_continue_orgs` lists the organization ids where
     # `POST /chat/sessions/{id}/continue` answers, or `*` for each one. Empty
     # means off, and the route answers 404 for each caller. The one reader is
-    # `gateway.routes.chat.continue_allowed`, and it fails closed. The name
+    # `acb_common.chat_continue_flag.continue_allowed`, and it fails closed. The name
     # ends in `_orgs`, so a SIGHUP applies a change with no restart
     # (`docs/flag_reload.md`).
     #

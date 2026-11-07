@@ -72,6 +72,7 @@ __all__ = [
     "CARD_BOUND_SEND_TOOLS",
     "CARD_WRITE_KEY",
     "CHAT_MARK_KEY",
+    "CONTINUE_OFFER_EVENT",
     "COVERED_CHAIN_KEY",
     "DELEGATION_TOOLS",
     "EGRESS_HELD_MAIL_ANSWER",
@@ -127,6 +128,7 @@ __all__ = [
     "mark_untrusted_answer",
     "mark_untrusted_session",
     "no_egress_for_this_run",
+    "offer_continue",
     "read_untrusted_answer",
     "run_holds_mail",
     "session_is_known_marked",
@@ -887,6 +889,47 @@ def hold_is_for_mail(ctx: Mapping[str, Any] | None = None) -> bool:
     return read_untrusted_answer(ctx)
 
 
+#: The CUSTOM event that tells the web chat to draw the pill "Continue in a
+#: fresh chat" under the answer of a held chat (``one_assistant_context.md``
+#: §9.4, WT-2). The client twin is ``CONTINUE_OFFER_EVENT`` in
+#: ``workbench/control_plane/src/lib/chatContinue.ts``. The value is empty:
+#: the pill carries no text, and the route ``POST /chat/sessions/{id}/continue``
+#: gives the words. Fence: ``tests/unit/test_continue_offer.py``.
+CONTINUE_OFFER_EVENT = "chat_continue_offer"
+
+
+def offer_continue() -> bool:
+    """Put one :data:`CONTINUE_OFFER_EVENT` on the stream of this run.
+
+    The server decides, not the client. The event goes out only while
+    ``CHAT_CONTINUE_ORGS`` holds the org of the run, so with the flag off no
+    event exists and the chat draws nothing new. The org is the bound tenant,
+    never a request field (R5). It never raises and it returns True when the
+    event was queued. A frame with no run stream sends nothing. Several
+    sends in one turn are harmless, because the chat draws one pill for a turn.
+    """
+    try:
+        from acb_common.chat_continue_flag import continue_allowed
+        from acb_common.db import current_tenant
+
+        if not continue_allowed(current_tenant()):
+            return False
+        import sys
+
+        executor = sys.modules.get("orchestrator.executor")
+        if executor is None:
+            return False
+        from acb_skills.write_artifact import artifact_context
+
+        queue = executor.resolve_run_queue(artifact_context().get("session_id"))
+        if queue is None:
+            return False
+        queue.put_nowait({"type": "CUSTOM", "name": CONTINUE_OFFER_EVENT, "value": {}})
+        return True
+    except Exception:  # an offer never breaks a run
+        return False
+
+
 def egress_held_answer(name: str, ctx: Mapping[str, Any] | None = None) -> str:
     """The answer to an act that a ``no_egress`` run may not do. *name* is a
     tool name or a short name of the act. The text says why, for this run.
@@ -902,9 +945,10 @@ def egress_held_answer(name: str, ctx: Mapping[str, Any] | None = None) -> str:
     cards = held_card_send_enabled()
     if _in_pack_call(ctx):
         if not _owner_reads_mail(ctx):
-            other = (EGRESS_HELD_PACK_ANSWER_OTHER if held_card_writes_on()
-                     else EGRESS_HELD_PACK_ANSWER_NO_WRITES)
-            return other.format(name=name)
+            if held_card_writes_on():
+                return EGRESS_HELD_PACK_ANSWER_OTHER.format(name=name)
+            offer_continue()
+            return EGRESS_HELD_PACK_ANSWER_NO_WRITES.format(name=name)
         template = EGRESS_HELD_PACK_ANSWER_CARDS if cards else EGRESS_HELD_PACK_ANSWER
     else:
         template = EGRESS_HELD_MAIL_ANSWER_CARDS if cards else EGRESS_HELD_MAIL_ANSWER
@@ -938,8 +982,10 @@ def egress_hold_note(ctx: Mapping[str, Any] | None = None) -> str:
     cards = held_card_send_enabled()
     if _in_pack_call(ctx):
         if not _owner_reads_mail(ctx):
-            return (EGRESS_HOLD_NOTE_PACK_OTHER if held_card_writes_on()
-                    else EGRESS_HOLD_NOTE_PACK_NO_WRITES)
+            if held_card_writes_on():
+                return EGRESS_HOLD_NOTE_PACK_OTHER
+            offer_continue()
+            return EGRESS_HOLD_NOTE_PACK_NO_WRITES
         return EGRESS_HOLD_NOTE_PACK_CARDS if cards else EGRESS_HOLD_NOTE_PACK
     return EGRESS_HOLD_NOTE_MAIL_CARDS if cards else EGRESS_HOLD_NOTE_MAIL
 
