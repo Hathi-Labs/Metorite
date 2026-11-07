@@ -435,13 +435,11 @@ def test_an_empty_selection_skips_the_shards_and_only_that_reads_as_a_pass() -> 
     assert steps["Empty selection report"]["if"] == "needs.changes.outputs.shards == '[]'"
 
 
-def test_a_draft_skips_only_jobs_that_no_branch_rule_requires() -> None:
-    """#1077. A skipped REQUIRED check on a draft's head SHA reads as passed
-    until the ready_for_review run posts its own. So only the two jobs that
-    branch protection does not require may skip on a draft."""
-    jobs = _jobs()
-    draft = "github.event.pull_request.draft != true"
-    for name, job in jobs.items():
-        assert (draft in str(job.get("if", ""))) == (name in ("e2e", "caddy")), name
-    on = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))[True]
-    assert "ready_for_review" in on["pull_request"]["types"]
+def test_no_job_skips_on_a_draft() -> None:
+    """D-PM-21 and #1077. No browser test is skipped without the owner's word,
+    and a skipped REQUIRED check on a draft's head SHA reads as passed. So no
+    job reads the draft flag, and the PR trigger keeps its default types."""
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    assert "pull_request.draft" not in text
+    on = yaml.safe_load(text)[True]
+    assert "types" not in (on["pull_request"] or {})

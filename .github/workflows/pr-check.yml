@@ -7,11 +7,6 @@ name: pr-check
 
 on:
   pull_request:
-    # CIV-17: `ready_for_review` starts a new run when a draft is marked ready.
-    # A draft run skips ONLY the two jobs that no branch rule requires: the
-    # browser suite (3 runners) and the Caddy check. A skipped REQUIRED job
-    # would leave a passing twin on the head SHA (#1077).
-    types: [opened, synchronize, reopened, ready_for_review]
     # Deliberately NOT restricted to `branches: [main]`. With that filter a
     # stacked PR (one targeting another feature branch) ran no checks at all,
     # and GitHub renders "no checks" the same as "nothing failing" — so broken
@@ -515,9 +510,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [test, changes]
     # `always()`, so a failed shard turns THIS check red instead of skipping
-    # it. A skipped required check counts as satisfied (#1077). So no draft
-    # rule skips this job, or any other required check: a skipped twin on the
-    # head SHA would read as passed until the `ready_for_review` run caught up.
+    # it. A skipped required check counts as satisfied (#1077).
     if: always()
     steps:
       # CIV-17. `test` is `skipped` ONLY for an empty selection: `changes`
@@ -1028,7 +1021,7 @@ jobs:
     # 2026-10-19: and only when the PR touches the control plane. A skipped
     # e2e frees three runners for the other PRs.
     needs: changes
-    if: "!cancelled() && github.event.pull_request.draft != true && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true')"
+    if: "!cancelled() && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true')"
     # A hung dev server must cost minutes, not the runner's six-hour default.
     #
     # 🔴 THE CAP WAS THE FAULT, NOT THE CODE. It was 20 minutes, set when the
@@ -1096,7 +1089,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: changes
-    if: "!cancelled() && github.event.pull_request.draft != true && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
     # H-60: the deploy installs deploy/hostinger/caddy/Caddyfile on the box by
     # itself. The apply validates it there and refuses a bad file, but then the
     # deploy is red AFTER the merge. This job refuses it BEFORE the merge.

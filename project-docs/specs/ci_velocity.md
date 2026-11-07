@@ -509,10 +509,9 @@ shard jobs still started for an empty selection.
   no values. `Unit tests` still runs (`if: always()`). It passes a skipped
   `test` job ONLY when `changes` succeeded and `shards` is `[]`. Any other skip
   stays red (#1077).
-- A draft PR skips only the browser suite and the Caddy check. No branch rule
-  requires them. A skipped REQUIRED check would leave a passing twin on the
-  head SHA until the `ready_for_review` run posted its own (#1077). So the
-  required checks run on a draft too.
+- Drafts are NOT skipped. The first design skipped the heavy jobs on a draft.
+  A skipped required check leaves a passing twin on the head SHA (#1077), and
+  skipping the browser suite breaks D-PM-21. So every job runs on a draft too.
 
 **Fence:** `tests/unit/test_ci_unit_guard.py`, `tests/unit/test_fence_lists.py`.
 **Verify:** a docs-only PR starts no shard and `Unit tests` passes. A PR that
