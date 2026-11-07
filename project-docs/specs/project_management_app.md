@@ -902,8 +902,9 @@ guarantee.
 > `pm.task.assigned` as `assigned_by`. The emitter reads the verified session,
 > never the body (`agent_dispatch.assigning_member`). The sink passes that
 > member to `run_agent` as `session_user` and as the run's `user_email`. So
-> each `skill-projects` call reaches this API as the member. The server then
-> limits each call to what the member may do.
+> each call that reaches this API comes as the member. The server then limits
+> it to what the member may do. A `skill-projects` write shows a card first, and
+> a run with no chat cannot pass it (gap 3 below).
 >
 > The event names nobody when the assigner is a signed outside agent, a
 > service caller or a suspended member. That run has no acting user, as before. A second run of one
