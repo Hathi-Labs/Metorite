@@ -424,6 +424,7 @@ jobs:
           name: unit-junit
           path: junit/test.xml
           if-no-files-found: ignore
+          overwrite: true
           retention-days: 7
 
   # ── The R8 gate of a release (CIV-4b, spec ci_velocity.md §5) ──────────
