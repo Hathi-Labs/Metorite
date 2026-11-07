@@ -169,9 +169,9 @@ class Settings(BaseSettings):
     # GATEWAY_INTERNAL_TOKEN. Distinct from litellm_master_key ON PURPOSE:
     # the LLM key is handed to every agent's BYOK client, so while the two
     # were one value any agent could authenticate as the platform (BO-2
-    # residual #4). When this is unset the gateway still falls back to
-    # litellm_master_key so an un-migrated deployment keeps working, but it
-    # logs a warning on every resolution because the separation is then absent.
+    # residual #4). There is NO fallback to litellm_master_key (WS-24b,
+    # 2026-11-06). Unset fails closed outside ACB_ENV=dev: no Bearer is
+    # service identity, and require_internal_auth answers 401.
     #
     # Never hand this to a /v1 client — use `llm_api_key` below.
     gateway_internal_token: str = ""
@@ -979,6 +979,18 @@ class Settings(BaseSettings):
     # applies a change (`gateway/flag_reload.py`). Only the owner writes the
     # value. Fence: tests/unit/test_needs_attention_r8.py.
     app_owner_root_orgs: str = ""
+    # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the chat tools `create_status`, `update_status` and
+    # `delete_status` refuse to change a status set that the project shares,
+    # unless the member says so, and they send a `slot` and never a raw
+    # `position`. The one reader is `gateway.routes.projects.admin.
+    # status_set_guard_allowed`. It returns `guard_on` on the status-set read,
+    # and the tools read that. A SIGHUP reload applies a change. A flip is
+    # OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_projects_status_chat.py.
+    status_set_guard_orgs: str = ""
 
     # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
     #
@@ -1108,7 +1120,7 @@ class Settings(BaseSettings):
     # `chat_continue_orgs` lists the organization ids where
     # `POST /chat/sessions/{id}/continue` answers, or `*` for each one. Empty
     # means off, and the route answers 404 for each caller. The one reader is
-    # `gateway.routes.chat.continue_allowed`, and it fails closed. The name
+    # `acb_common.chat_continue_flag.continue_allowed`, and it fails closed. The name
     # ends in `_orgs`, so a SIGHUP applies a change with no restart
     # (`docs/flag_reload.md`).
     #

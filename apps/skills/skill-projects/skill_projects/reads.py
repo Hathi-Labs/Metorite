@@ -906,6 +906,19 @@ async def vocabulary(project_id: str) -> str:
             else " · the server says you may not edit it" if may is False
             else ""
         )
+        # PST-4: with the guard on, a project that uses a shared set says so,
+        # and the read stops saying "you may edit it" for a set the tools
+        # refuse to change. `guard_on` is the route's answer (§9.4).
+        if (
+            status_set.get("guard_on") is True
+            and status_set.get("owns") is False
+            and may is not False
+        ):
+            n = int(status_set.get("reach") or status_set.get("used_by") or 1)
+            verdict = (
+                f" · shared by {n} project{'' if n == 1 else 's'}. This project needs "
+                "its own set (set_status_set mode=own) before a change"
+            )
         out.append(f"Status set owned by {owner}{verdict}")
         if may is False and status_set.get("edit_refusal"):
             out.append(f"  Gateway said: {data(status_set.get('edit_refusal'))}")
