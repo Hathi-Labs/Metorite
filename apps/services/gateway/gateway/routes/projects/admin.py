@@ -22,12 +22,14 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_settings
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
     EPIC_TYPE_NAME,
     LAST_DONE_REFUSAL,
+    MAX_DEPTH,
     SETTINGS_REFUSAL,
     STATUS_CATEGORIES,
     TRIAGE_CATEGORY,
@@ -39,6 +41,7 @@ from gateway.routes.projects.core import (
     can_manage_settings,
     clean_payload,
     count_where,
+    holds_lanes,
     hue_values,
     is_org_wide,
     load_visible_project,
@@ -61,6 +64,7 @@ from gateway.routes.projects.core import (
     status_order_sql,
     status_owner_id,
     status_scope_ids,
+    status_users,
     update_row,
     validate_choice,
     vocabulary_scope,
@@ -75,6 +79,13 @@ class StatusIn(BaseModel):
     color: str | None = None
     position: int | None = None
     category: str | None = None
+    #: PST-4. A place in the stage of the lane, never a sort key. ``slot`` is
+    #: 1-based inside the stage group. ``after`` names a lane of the same
+    #: stage. The server renumbers the group (:func:`stage_placement`). The
+    #: old ``position`` keeps working, so this is additive. Not a column:
+    #: both are removed before the row is written.
+    slot: int | None = None
+    after: str | None = None
     #: ⚠️ ``is_default`` is GONE from a status (owner directive 2026-09-06).
     #: The first open lane in stage order is where work starts — see
     #: ``core.load_default_status`` for why the flag was the wrong answer.
@@ -154,6 +165,136 @@ async def _clear_other_defaults(
 
 # ── Statuses ────────────────────────────────────────────────────────────────
 
+#: Gap between two lanes after a renumber, so a later hand edit has room.
+_SLOT_STEP = 10
+
+
+def status_set_guard_allowed(organization_id: str | None) -> bool:
+    """True when ``STATUS_SET_GUARD_ORGS`` holds the org, or holds ``*``.
+    Default OFF (WS-42 PST-4, ``projects_settings.md`` §7.1).
+
+    The ONE reader of the flag. It sets ``guard_on`` on the status-set read,
+    and the chat tools read that and never the setting. The org comes from
+    the session, never from request input (R5). It reads ``get_settings()``
+    on each call, so a flag reload applies a change with no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "status_set_guard_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+def _one_placement(values: dict[str, Any], slot: Any, after: Any) -> None:
+    """Refuse a body that places a lane two ways."""
+    if (slot is not None or after) and values.get("position") is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Send a slot, a lane name in 'after', or a position, not more than one.",
+        )
+
+
+def _slot_refusal(stage: str, size: int, names: list[str], why: str) -> HTTPException:
+    """The 422 for a bad ``slot`` or ``after``: what happened, the range, the
+    lanes in order, and the next step."""
+    others = f" The other lanes of this stage, in order: {', '.join(names)}." if names else ""
+    return HTTPException(
+        status_code=422,
+        detail=(
+            f"{why} The {stage.replace('_', ' ')} stage has {size} place"
+            f"{'' if size == 1 else 's'} for this lane.{others} "
+            f"Use a slot from 1 to {size}, or name a lane of this stage in "
+            "'after'."
+        ),
+    )
+
+
+def stage_placement(
+    others: list[tuple[str, str]],
+    stage: str,
+    *,
+    slot: int | None,
+    after: str | None,
+) -> int:
+    """Where a lane goes inside its stage group, as a 0-based index into
+    ``others``. ``others`` is the stage group in order, without the lane.
+
+    ``slot`` is 1-based. The lane then stands at that place, so slot 1 is first
+    and the last slot is the group size, which is ``len(others) + 1``. ``after``
+    names a lane of the same stage, and the lane goes right behind it. A slot
+    outside ``1..len(others) + 1`` is refused with the allowed range. A lane
+    never leaves its stage, so the order rule (stage, then position, then
+    name) holds after the renumber.
+    """
+    size = len(others) + 1
+    names = [name for _id, name in others]
+    if slot is not None and after:
+        raise HTTPException(
+            status_code=422,
+            detail="Send a slot or a lane name in 'after', not both.",
+        )
+    if after:
+        wanted = after.strip().lower()
+        hit = next(
+            (i for i, (_id, name) in enumerate(others) if name.strip().lower() == wanted),
+            None,
+        )
+        if hit is None:
+            raise _slot_refusal(
+                stage, size, names,
+                f"No lane named '{after.strip()}' is in the {stage.replace('_', ' ')} stage.",
+            )
+        return hit + 1
+    assert slot is not None
+    if slot < 1 or slot > size:
+        raise _slot_refusal(stage, size, names, f"Slot {slot} is outside the stage.")
+    return slot - 1
+
+
+async def _renumber_stage(
+    db: Any, owner: str, stage: str, keep_id: str | None,
+    *, slot: int | None, after: str | None,
+) -> int:
+    """Place a lane in its stage group and return its new ``position``.
+
+    Locks the whole set first (D79), reads the stage group in the one order
+    (:func:`core.status_order_sql`), and renumbers the lanes of THIS stage
+    only: 10, 20, 30. Other stages keep their positions. The lane being
+    placed (``keep_id``, or a new one) takes the gap.
+    """
+    await _lock_status_sets(db, [owner])
+    rows = (await db.execute(
+        text(
+            "SELECT id, name, position FROM pm_task_statuses "
+            " WHERE project_id = CAST(:owner AS uuid) AND category = :stage "
+            f" ORDER BY {status_order_sql()}"
+        ),
+        {"owner": owner, "stage": stage},
+    )).fetchall()
+    others = [(str(r.id), str(r.name)) for r in rows if str(r.id) != str(keep_id)]
+    own_name = next(
+        (str(r.name).strip().lower() for r in rows if str(r.id) == str(keep_id)), "",
+    )
+    if after and own_name and after.strip().lower() == own_name:
+        raise HTTPException(
+            status_code=422, detail="A lane cannot go after itself. Name another lane.",
+        )
+    at = stage_placement(others, stage, slot=slot, after=after)
+    old = {str(r.id): int(r.position or 0) for r in rows}
+    for i, (lane_id, _name) in enumerate(others):
+        new = (i + (2 if i >= at else 1)) * _SLOT_STEP
+        if old.get(lane_id) != new:
+            await db.execute(
+                text(
+                    "UPDATE pm_task_statuses SET position = :p, updated_at = now() "
+                    " WHERE id = CAST(:id AS uuid)"
+                ),
+                {"p": new, "id": lane_id},
+            )
+    return (at + 1) * _SLOT_STEP
+
+
 @router.get("/nodes/{project_id}/statuses")
 async def list_statuses(
     project_id: str, user: UserContext = Depends(get_current_user),
@@ -202,15 +343,21 @@ async def create_status(
 ) -> dict:
     assert_can_manage_settings(user)
     values = hue_values(clean_payload(payload))
+    slot, after = values.pop("slot", None), values.pop("after", None)
     name = str(values.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="A status needs a name.")
     category = values.get("category") or "todo"
     validate_choice(category, STATUS_CATEGORIES, "status category")
+    _one_placement(values, slot, after)
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         root = await _status_owner_for(db, vis, project_id)
+        if slot is not None or after:
+            values["position"] = await _renumber_stage(
+                db, root, category, None, slot=slot, after=after,
+            )
         row = (await db.execute(
             text(
                 "INSERT INTO pm_task_statuses "
@@ -235,11 +382,20 @@ async def patch_status(
 ) -> dict:
     assert_can_manage_settings(user)
     values = hue_values(clean_payload(payload))
+    slot, after = values.pop("slot", None), values.pop("after", None)
     validate_choice(values.get("category"), STATUS_CATEGORIES, "status category")
+    _one_placement(values, slot, after)
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_task_statuses", status_id, "Status")
         vis = await resolve_visibility(db, user)
         await load_visible_project(db, vis, str(existing.project_id))
+        if slot is not None or after:
+            # The lane keeps its stage unless the same body moves it.
+            stage = str(values.get("category") or existing.category)
+            values["position"] = await _renumber_stage(
+                db, str(existing.project_id), stage, str(existing.id),
+                slot=slot, after=after,
+            )
         if not values:
             return row_to_dict(existing, StatusModel)
         # D79: the last Done status cannot leave the Done category. Asked
@@ -621,6 +777,110 @@ async def _overrides_below(db: Any, project_id: str) -> list[dict]:
     return [{"id": str(r.id), "name": r.name} for r in rows]
 
 
+#: The mark that stands for one or more hidden names in a ``path``.
+ELIDED = "…"
+
+#: Each breakaway and the chain above it, for the ``path`` of §9.4 (PST-1).
+#: Depth 0 is the breakaway itself, and depth 1 is its parent. Each row says
+#: if the caller may see that node, through ``{visible}``, which is
+#: ``Visibility.project_clause``, the rule of ``load_visible_project``. One
+#: query for the whole list, never one for each row. The walk stops at
+#: :data:`core.MAX_DEPTH`, as ``status_owner_id`` does.
+_OVERRIDE_CHAINS_SQL = """
+WITH RECURSIVE override_chain AS (
+    SELECT p.id AS leaf, p.id AS id, 0 AS depth
+      FROM pm_projects p WHERE p.id = ANY(CAST(:ids AS uuid[]))
+    UNION ALL
+    SELECT c.leaf, a.parent_project_id, c.depth + 1
+      FROM override_chain c JOIN pm_projects a ON a.id = c.id
+     WHERE a.parent_project_id IS NOT NULL AND c.depth < :max_depth
+)
+SELECT c.leaf, c.depth, a.name, ({visible}) AS visible
+  FROM override_chain c JOIN pm_projects a ON a.id = c.id
+ ORDER BY c.leaf, c.depth DESC
+"""
+
+
+def visible_path(chain: list[tuple[str, bool]]) -> list[str]:
+    """The names above a breakaway, with no name the caller cannot see.
+
+    ``chain`` is ``(name, visible)`` from the top, and the breakaway itself is
+    not in it. The path starts at the first node the caller can see (§9.4),
+    so a LEADING hidden run leaves no mark. A hidden run after a visible name
+    becomes one :data:`ELIDED`, so a hidden ancestor never shows its name. A
+    test of the flag, not of the text, keeps a project that is named "…"
+    apart from a hidden run.
+
+    ⚠️ Not ``core.visible_project_paths``. That climb stops at the first
+    hidden parent, so it drops a visible grandparent above it. §9.4 shows
+    that grandparent, with a mark for the hidden part.
+    """
+    path: list[str] = []
+    hidden_run = False
+    for name, visible in chain:
+        if visible:
+            path.append(str(name))
+            hidden_run = False
+        elif path and not hidden_run:
+            path.append(ELIDED)
+            hidden_run = True
+    return path
+
+
+async def _status_set_reach(db: Any, vis: Any, owner_id: str) -> dict:
+    """Who uses the set of ``owner_id``, and who left it (§9.4, PST-1).
+
+    * ``used_by`` counts every project that uses the set, the owner left out.
+      It counts a project the caller cannot see, because an edit changes it.
+      It leaves a folder out, because a folder holds no lanes.
+    * ``overrides`` holds only the breakaways of :func:`_overrides_below`
+      that the caller can see, each with its ``path`` and its own
+      ``used_by``. A path holds no hidden name.
+    * ``hidden_overrides`` counts the breakaways the caller cannot see. The
+      UI says "and N more that you cannot see", and names none of them.
+
+    The tenant session binds every read to one organization (RLS). Nothing
+    here takes a tenant or an identity from the request.
+    """
+    breakaways = await _overrides_below(db, owner_id)
+    ids = [row["id"] for row in breakaways]
+    chains: dict[str, list[Any]] = {}
+    if ids:
+        rows = (await db.execute(
+            text(_OVERRIDE_CHAINS_SQL.replace(
+                "{visible}", vis.project_clause("a.id"),
+            )),
+            {"ids": ids, "max_depth": MAX_DEPTH, **vis.params},
+        )).fetchall()
+        for row in rows:
+            chains.setdefault(str(row.leaf), []).append(row)
+
+    def _seen(pid: str) -> bool:
+        return any(r.depth == 0 and bool(r.visible) for r in chains.get(pid, []))
+
+    shown = [row for row in breakaways if _seen(row["id"])]
+    counts = await status_users(db, [owner_id, *(row["id"] for row in shown)])
+    overrides = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            # Ordered from the top by the query. Depth 0 is the breakaway
+            # itself, and its name is in `name`, so the path stops above it.
+            "path": visible_path([
+                (r.name, bool(r.visible))
+                for r in chains.get(row["id"], []) if r.depth > 0
+            ]),
+            "used_by": counts.get(row["id"], 0),
+        }
+        for row in shown
+    ]
+    return {
+        "used_by": counts.get(owner_id, 0),
+        "overrides": overrides,
+        "hidden_overrides": len(breakaways) - len(shown),
+    }
+
+
 async def _inherit_target(db: Any, node: Any) -> tuple[str | None, str | None]:
     """Where inheriting would take ``node`` — its PARENT's status owner.
 
@@ -664,24 +924,42 @@ async def describe_status_set(
             db, project_id,
         )
         may_edit = can_manage_settings(user)
+        # ⚠️ Asked of the OWNER, not of this node. The question the reader
+        # has is "I am about to edit these lanes — who sees the change?",
+        # and the answer is the owner's scope. A project that inherits is
+        # editing its ancestor's set, so the breakaways that matter are the
+        # ones that broke away from THAT. PST-1 (projects_settings.md §9.4)
+        # adds the counts, the paths and the hidden count.
+        reach = await _status_set_reach(db, vis, owner)
         return {
             "project_id": project_id,
             "owns": bool(getattr(node, "owns_statuses", False)),
             "owner_id": owner,
             "owner_name": owner_row.name,
+            # A space is a root. Migration 196's CHECK makes it own its set.
+            "owner_kind": (
+                "space" if owner_row.parent_project_id is None else "project"
+            ),
+            # The number in "shared with N" for the owner and for each user.
+            "used_by": reach["used_by"],
+            # Every board that an edit changes: the users, and the owner when
+            # its own board shows lanes (`core.holds_lanes`). A team space
+            # shows none. The N of "A change here changes the lanes of N".
+            "reach": reach["used_by"] + (1 if holds_lanes(owner_row) else 0),
             "inherit_from_id": inherit_from,
             "inherit_from_name": inherit_name,
-            # ⚠️ Asked of the OWNER, not of this node. The question the reader
-            # has is "I am about to edit these lanes — who sees the change?",
-            # and the answer is the owner's scope. A project that inherits is
-            # editing its ancestor's set, so the breakaways that matter are the
-            # ones that broke away from THAT.
-            "overrides": await _overrides_below(db, owner),
+            "overrides": reach["overrides"],
+            "hidden_overrides": reach["hidden_overrides"],
             # A space has nothing above it, so "inherit" is not a choice it can
             # make. The UI disables the control and says why rather than hiding
             # it — an absent option reads as a missing feature.
             "can_inherit": node.parent_project_id is not None,
             "has_dormant_set": bool(dormant),
+            # PST-4. True when STATUS_SET_GUARD_ORGS holds the caller's org.
+            # The chat tools read this and never the setting (§9.4).
+            "guard_on": status_set_guard_allowed(
+                getattr(user, "organization_id", None)
+            ),
             # The write's own predicate (`core.can_manage_settings`), and the
             # write's own words when it says no. A chat tool reads both before
             # its card and quotes them (owner directive 2026-10-07).

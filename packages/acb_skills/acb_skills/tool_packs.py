@@ -486,6 +486,11 @@ No Projects agent exists to hand a task to.
   create_status for each one in one step, so the cards show as one card with
   tabs. A status in a project that is not made yet waits for the receipt of
   the write that makes the project.
+- To move a lane, pass slot (1-based, inside its stage) or after (a lane
+  name). Never guess a position. When a status tool refuses because the set is
+  shared, give the project its own set with set_status_set mode=own, or ask the
+  member whether to change the whole set. Pass change_whole_set=true only when
+  the member says so.
 - Read project_access before grant_access or revoke_access. A subject is org,
   group:<slug>, or one member's email address. A grant covers the project and
   every sub-project under it. Each change is one card.
@@ -1977,8 +1982,15 @@ def choose(
             victim = min(olds, key=_sticky_key).slug
             evicted.append(victim)
         else:
+            # Task 1573: the open app is only a hint. A pack that came in by
+            # the surface alone leaves before a pack the member's words asked for.
+            hinted = [slug for slug in order if layers.get(slug) == "surface"
+                      and matched_layer(slug, turn.words) is None]
             replacing = [slug for slug in order if _replaces_specialist(slug)]
-            victim = replacing[-1] if replacing and len(order) > 1 else order[-1]
+            if hinted and len(hinted) < len(order):
+                victim = hinted[-1]
+            else:
+                victim = replacing[-1] if replacing and len(order) > 1 else order[-1]
             skipped.append(victim)
         order.remove(victim)
         layers.pop(victim, None)

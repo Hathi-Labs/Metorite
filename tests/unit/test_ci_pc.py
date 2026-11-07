@@ -38,6 +38,8 @@ _CTX = {
     "needs.changes.outputs.files": "",
     "steps.pick.outputs.mode": "full",
     "steps.pick.outputs.paths": "",
+    "steps.pick.outputs.splits": "6",
+    "needs.changes.outputs.shards": "[1,2,3,4,5,6]",
     "github.event.pull_request.base.sha": "abc",
 }
 
@@ -157,7 +159,8 @@ def test_the_summary_reads_the_verdict_not_a_test_name():
 
 
 def test_run_suite_refuses_a_starved_vm():
-    assert re.search(r'if \[ "\$avail_gb" -lt 8 \]; then', _RUN_SUITE)
+    # Run by hand (no slot grant), a VM with under 8 GB free is refused.
+    assert re.search(r'\[ "\$avail_gb" -lt 8 \]; then', _RUN_SUITE)
 
 
 _DOCTOR = (_ROOT / "scripts/ci_pc/doctor.sh").read_text(encoding="utf-8")
@@ -198,10 +201,205 @@ def test_the_local_run_is_full_for_the_selection_jobs() -> None:
     result to both jobs, and steps.py renders them with it."""
     text = (_ROOT / "scripts" / "ci_pc" / "run_suite.sh").read_text(encoding="utf-8")
     assert "--ctx needs.changes.outputs.full=true" in text
-    assert re.search(r'job "shard-\$i" .* test .*"\$\{FULL_RUN\[@\]\}"', text)
+    # A full run passes FULL_RUN through SHARD_CTX. A selected run swaps it (CIV-6).
+    assert 'SHARD_CTX=("${FULL_RUN[@]}")' in text
+    assert re.search(r'job "shard-\$i" .* test .*"\$\{SHARD_CTX\[@\]\}"', text)
     assert re.search(r'job unit-tests .*"\$\{FULL_RUN\[@\]\}"', text)
     assert "--ctx steps.pick.outputs.mode=full" in text
     for job in ("test", "unit-tests"):
         out = steps.render(job, _CTX, {})
         # The pick step appends to $GITHUB_OUTPUT. Unset, `tee -a ""` fails.
         assert 'export GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"' in out
+
+
+# ── CIV-6: several runs at once on one lane (task 1634) ─────────────────────
+_CI_LOCAL = (_ROOT / "scripts/ci_local.sh").read_text(encoding="utf-8")
+_REMOTE = (_ROOT / "scripts/ci_pc/remote_run.sh").read_text(encoding="utf-8")
+
+
+def test_each_run_gets_its_own_worktree():
+    # Two runs in one working tree overwrite each other's checkout, `.next`
+    # and `junit/`. The run's worktree is named by its pid.
+    assert 'git -C "$CI_BASE" worktree add -q --detach "$wt" "$sha"' in _REMOTE
+    assert 'wt="$CI_WT_DIR/${sha:0:12}-$$-$(date +%s)"' in _REMOTE
+    # No run checks out into the shared clone any more.
+    assert "checkout -q -f" not in _CI_LOCAL
+    assert "git clean -fdxq" not in _CI_LOCAL
+
+
+def test_ci_local_no_longer_holds_the_lane_exclusively():
+    assert "flock -w 3600 9" not in _CI_LOCAL
+    # A new run holds the old lane lock SHARED, so an older ci_local.sh (which
+    # holds it exclusive and works in ~/metorite) cannot overlap with it.
+    assert 'flock -s -w 3600 9' in _REMOTE
+    assert "ci_slot_acquire" in _REMOTE
+
+
+def test_ci_local_ships_the_slot_code_with_the_run():
+    assert "scripts/ci_pc/slots.sh scripts/ci_pc/remote_run.sh" in _CI_LOCAL
+    assert "ci_remote_run $sha$args" in _CI_LOCAL
+
+
+def test_the_shared_clone_has_one_git_writer_at_a_time():
+    assert _CI_LOCAL.count("$GITLOCK") >= 2
+    assert "flock -w 300 5" in _REMOTE
+
+
+def test_the_default_run_is_the_civ2_selection_and_full_is_opt_in():
+    assert "affected_tests.py --gate --base" in _REMOTE and "origin/main" in _REMOTE
+    assert "--full) full=yes" in _REMOTE
+    assert "--select-file" in _RUN_SUITE
+    # A selector that fails, or says full, runs every test (it fails open).
+    assert 'sel_args=(--select-file' in _REMOTE
+    assert "the selector says full" in _REMOTE
+
+
+def test_a_selected_run_gives_the_shards_a_selection_and_skips_the_whole_suite_guard():
+    ctx = {
+        **_CTX,
+        "needs.changes.outputs.full": "false",
+        "steps.pick.outputs.mode": "selection",
+        "steps.pick.outputs.paths": "tests/unit/test_a.py ",
+    }
+    out = steps.render("test", ctx, {})
+    assert "tests/unit/test_a.py" in out
+    assert 'SHARD_CTX=(--ctx needs.changes.result=success' in _RUN_SUITE
+    assert "--ctx steps.pick.outputs.mode=selection" in _RUN_SUITE
+    # The guard wants every must-run file in the reports. A selected run has
+    # not run them, so the guard job is inside the "not selected" branch.
+    guard = _RUN_SUITE.index('job unit-tests "" unit-tests')
+    assert _RUN_SUITE.rindex('if [ -z "$SELECT_FILE" ]; then', 0, guard) > _RUN_SUITE.index("shards_ok=success")
+
+
+def test_two_runs_started_in_one_second_do_not_share_a_name():
+    # Container names and the log folder carry the pid.
+    assert re.search(r'^TAG="\$\(date \+%H%M%S\)-\$\$"', _RUN_SUITE, re.M)
+    assert re.search(r'^RUN="\$HOME/runs/.*-\$SHA-\$\$"', _RUN_SUITE, re.M)
+
+
+def test_a_run_under_slots_does_not_use_the_one_run_memory_refusal():
+    # Another run lowers MemAvailable on purpose; slots.sh has reserved room.
+    assert 'if [ -z "${CI_SLOT_GRANTED:-}" ] && [ "$avail_gb" -lt 8 ]; then' in _RUN_SUITE
+
+
+def test_node_modules_come_from_a_store_keyed_by_the_lockfile():
+    assert 'store="$CI_DEPS_DIR/$app-${lock:0:16}"' in _RUN_SUITE
+    # A hard-linked tool cache must not be written through the link.
+    assert 'rm -rf "$store/node_modules/.cache"' in _RUN_SUITE
+
+
+def test_the_lane_choice_asks_for_room_not_for_an_idle_lane():
+    assert "has_room" in _CI_LOCAL
+    assert "lock_free" not in _CI_LOCAL
+
+
+def test_every_job_container_runs_in_this_runs_checkout():
+    # The image's WORKDIR is ~/metorite. A job without `-w "$PWD"` tests the
+    # shared clone, not the run's own worktree (CIV-6, found 2026-11-04: a
+    # selected run could not find a test file that its commit had added).
+    joined = re.sub(r"\\\r?\n", " ", _RUN_SUITE)
+    jobs = [ln for ln in joined.splitlines() if "docker run --rm" in ln]
+    assert len(jobs) >= 2
+    for cmd in jobs:
+        assert '-w "$PWD"' in cmd, cmd[:90]
+
+
+def test_the_exit_trap_expands_the_worktree_path_when_it_is_set():
+    # `$wt` is a local of ci_remote_run. In a single-quoted trap it is empty
+    # at exit, so no worktree was ever removed (found 2026-11-04).
+    trap = next(ln for ln in _REMOTE.splitlines() if ln.strip().startswith("trap "))
+    assert trap.strip().startswith('trap "')
+    assert '\\"$wt\\"' in trap
+
+
+def test_one_backup_job_runs_at_a_time_on_the_daemon():
+    # rehearse_verify_scratch.sh counts the verify containers of the whole
+    # Docker daemon. A second run's container made two runs fail (2026-11-04).
+    assert 'lk=(flock "$HOME/.ci-backup-restore.lock")' in _RUN_SUITE
+    assert '"${lk[@]}" docker run --rm --name "ci-job-$label-$TAG"' in _RUN_SUITE
+    count = (_ROOT / "scripts/rehearse_verify_scratch.sh").read_text(encoding="utf-8")
+    assert "docker ps -aq --filter label=acb.backup-verify=1" in count
+
+
+def test_the_timed_frontend_tests_do_not_share_the_cpu_with_another_run():
+    # bodyLook.test.ts asserts "under 100 ms". Two runs at once gave 110 ms.
+    assert '[ "$label" = frontend ] && lk=(flock "$HOME/.ci-frontend.lock")' in _RUN_SUITE
+
+
+def _stop_harness(tmp_path: Path, stub_body: str, grace: int = 60) -> tuple[object, Path]:
+    """Run the block of remote_run.sh that starts the suite, with a stub suite.
+    The log records the order: stub events, `f-returned <rc>`, then the EXIT
+    trap (`worktree-removed`)."""
+    import subprocess
+
+    block = _REMOTE.split("  local suite_pid=", 1)[1].split("\n}\n", 1)[0]
+    stub = tmp_path / "scripts" / "ci_pc"
+    stub.mkdir(parents=True)
+    (stub / "run_suite.sh").write_text(stub_body, encoding="utf-8")
+    log = tmp_path / "log"
+    script = (
+        f'cd "{tmp_path}"; export LOG="{log}" CI_STOP_GRACE_S={grace};'
+        " CI_SHARDS_GRANTED=1; sel_args=(); fwd=()\n"
+        'f() {\n  local suite_pid=' + block + '\n}\n'
+        'trap "echo worktree-removed >> $LOG" EXIT\n'
+        'f; echo "f-returned $?" >> $LOG\n'
+    )
+    return subprocess.Popen(["bash", "-c", script], start_new_session=True), log
+
+
+def _wait_for(log: Path, text: str) -> None:
+    import time
+
+    for _ in range(100):
+        if log.exists() and text in log.read_text(encoding="utf-8"):
+            return
+        time.sleep(0.1)
+
+
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGHUP", "SIGINT"])
+def test_a_stop_signal_ends_the_suite_before_the_worktree_goes(tmp_path: Path, sig: str) -> None:
+    """CIV-6b. A dropped client sends HUP, INT or TERM to ci_remote_run. The
+    suite must be stopped and reaped BEFORE the EXIT trap removes the worktree,
+    or the job containers lose the folder they run in."""
+    import signal
+
+    proc, log = _stop_harness(
+        tmp_path,
+        'trap "echo suite-stopped >> $LOG; exit 7" TERM\n'
+        "echo suite-started >> $LOG\n"
+        "while true; do sleep 0.1; done\n",
+    )
+    _wait_for(log, "suite-started")
+    proc.send_signal(getattr(signal, sig))
+    proc.wait(timeout=30)
+    lines = log.read_text(encoding="utf-8").split()
+    assert lines == ["suite-started", "suite-stopped", "f-returned", "7", "worktree-removed"]
+
+
+def test_a_suite_that_ignores_term_is_killed_after_the_grace_period(tmp_path: Path) -> None:
+    """CIV-6b review. The wait is bounded: TERM, then KILL after the grace."""
+    import signal
+    import time
+
+    proc, log = _stop_harness(
+        tmp_path,
+        'trap "" TERM\necho suite-started >> $LOG\nwhile true; do sleep 0.1; done\n',
+        grace=2,
+    )
+    _wait_for(log, "suite-started")
+    start = time.monotonic()
+    proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=30)
+    assert time.monotonic() - start < 20
+    lines = log.read_text(encoding="utf-8").split()
+    assert lines[0] == "suite-started" and lines[-1] == "worktree-removed"
+    assert "f-returned" in lines
+
+
+def test_a_signal_before_the_launch_still_stops_the_suite(tmp_path: Path) -> None:
+    """CIV-6b review. The trap is installed before the suite starts, so a
+    signal in that gap does not meet the default action (the shell dying and
+    the worktree going under a live suite)."""
+    block = _REMOTE.split("  local suite_pid=", 1)[1]
+    assert block.index("trap '") < block.index("setsid bash scripts/ci_pc/run_suite.sh")
+    assert '[ "$stopping" = 1 ] && kill -TERM' in block  # the signal that came first

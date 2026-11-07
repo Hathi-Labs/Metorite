@@ -3,9 +3,9 @@
 **Status:** ACTIVE (owner directive, 2026-11-04). Verified against code on
 2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 and CIV-2 are
 done. CIV-3 and CIV-7 are built on branch `civ3-pr-tier` (2026-11-05), and
-they are done at merge. CIV-4 to CIV-6, CIV-8 and CIV-9 are AGENT-SAFE.
+they are done at merge. CIV-4, CIV-8 and CIV-9 are AGENT-SAFE.
 CIV-4, CIV-4b and CIV-13 are HIGH tier, because they change the deploy path.
-CIV-4b merged on 2026-11-05 (task 1711). CIV-13 (D178) is BUILT on
+CIV-6 is built (task 1634, PR open). CIV-4b merged on 2026-11-05 (task 1711). CIV-13 (D178) is BUILT on
 2026-11-05: the home box starts the 21:30 release. The owner installs its timer.
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
@@ -348,6 +348,42 @@ AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
 repo in which one known commit breaks one test.
 AGENT-SAFE. STANDARD tier.
 
+**Status: BUILT 2026-11-07** (task 1633, branch `civ5-bisect`). Not live: the
+owner has not installed the timer.
+
+**Built.**
+- `scripts/bisect_main.sh <good> <bad> <test id>...` searches the first-parent
+  commits in (good, bad]. It does not call `git bisect`. Each probe has a
+  detached worktree in a temp dir, and the EXIT trap removes it. It checks
+  first that the good commit passes and the bad commit fails, else it exits 3.
+  A probe exit code of 0 is good and 1 is bad. Any other code skips the commit.
+  Adjacent commits that cannot be judged give exit 4 and the range. The cap
+  is 12 probes (exit 5). It prints `FIRST_BAD <sha> <subject> PR=<n or none>`.
+- `scripts/home_server/bisect_poll.sh` is one poll pass. It acts only when the
+  newest completed batch run is red and new. It finds the last green batch as
+  the good sha, reads the failed ids with `scripts/junit_failed_ids.py`, runs
+  the bisect and prints `BISECT_RESULT <json>`. State is `handled` in
+  `~/.cache/metorite-bisect`. It never reruns or cancels a run.
+- `scripts/home_server/systemd/metorite-bisect-poll.{service,timer}` are unit
+  files. Nobody installed them.
+- Fence: `tests/unit/test_bisect_main.py` (18 tests, a fixture repo and a
+  shimmed `gh_cmd`).
+
+**By hand.** `bash scripts/bisect_main.sh <good> <bad> tests/unit/test_x.py::test_y`.
+The default probe is `uv run python -m pytest -x -q -p no:cacheprovider "$@"`.
+Set `BISECT_TEST_CMD` to reuse a prepared lane or venv. `BISECT_TIMEOUT_S` and
+`BISECT_MAX_PROBES` set the limits.
+
+**Left for the owner.**
+- Install the timer (steps in the service file).
+- A lane session reads the `BISECT_RESULT` line in the journal and posts it on
+  a Metorite task. The script has no Metorite credentials.
+- Known gap: the push batch job writes no JUnit file. Only the R8 shards
+  upload one (`r8-junit-shard-N`). The poller reads an artifact named
+  `unit-junit` (`BISECT_ARTIFACT`). A later slice must add
+  `--junitxml` and an upload step to `test` in `deploy.yml`. Until then the
+  poller records a red run with "no failed test id".
+
 ### CIV-6 · Local tier: the affected tests by default, several runs at once on the box
 
 **Done when:**
@@ -361,6 +397,18 @@ AGENT-SAFE. STANDARD tier.
 **Verify:** `uv run pytest tests/unit/test_ci_pc.py -q`, then two runs at
 once on the box, both green.
 AGENT-SAFE. STANDARD tier.
+
+**Built (2026-11-04).** Measured on the home box with cgroup `memory.peak`: a
+shard is 3.2 to 4.4 GB, a full run of 5 shards peaked at 17.7 GB, and the jobs
+around the shards add about 5 GB. The slot defaults are 3 GB per shard and 5 GB
+fixed (`scripts/ci_pc/slots.sh`). A 23 GB box takes two selected runs at once,
+or one full run. Evidence: two selected runs at once, both green, in 245 s and
+252 s. A selected run alone took 184 s. Two jobs run one at a time across runs,
+because they read the whole Docker daemon or the CPU clock: `backup-restore`
+and `frontend`. Two tests fail in every full run on the box, before and after
+this slice: `test_attachment_ocr.py` and `test_web_reader_confine.py`
+(`test_each_attack_works_unconfined`). That is a finding for the board. The PC
+lane is unchanged in kind, but nobody ran `--pc` from Windows yet.
 
 ### CIV-7 · The harness says it (BUILT 2026-11-05 with CIV-3, done at merge)
 
@@ -463,6 +511,33 @@ on linger, copies the script, and enables the timer. In WSL, the Windows
 task "Metorite WSL keep-alive" keeps the distro up.
 HIGH tier.
 
+### CIV-10: the weekly delivery review (task 1643)
+
+**Status: BUILT 2026-11-07** (task 1643, branch `civ10-review`). STANDARD tier.
+Owner directive, 2026-11-04: revisit the workflow and CI each week.
+
+A box user timer runs `/delivery-review` each Monday at 07:00 UTC. The command
+measures CI, reads the Metorite items through the MCP, and posts one report
+task. It opens one fix task for each item over its threshold, under epic
+task 1628. The thresholds live in the command file.
+
+**Files:** `scripts/delivery_metrics.py` (read-only, stdlib, prints one JSON
+object), `.claude/commands/delivery-review.md`,
+`scripts/home_server/delivery_review.sh`,
+`scripts/home_server/metorite-delivery-review.service`,
+`scripts/home_server/metorite-delivery-review.timer`.
+**Fence:** `tests/unit/test_delivery_metrics.py`.
+
+**The owner does two things.** Install the timer (the unit header says how).
+Confirm the headless command in `delivery_review.sh`, because the repo holds
+no tested launcher. The first run is manual:
+`python3 scripts/delivery_metrics.py --days 7` on the box.
+
+**Known limits.** A selection miss is matched through `commits/<sha>/pulls`,
+because a squash merge gives main a new sha. A red batch with no PR run in the
+window is not counted. Run time is `updated_at` minus `run_started_at`, so a
+rerun adds to it.
+
 ## 6. Order
 
 CIV-2 and CIV-4 start now, beside each other. CIV-4b follows CIV-4. It is a
@@ -477,6 +552,37 @@ order.
 The Metorite epic is task 1628, under the Developer Workflow project. Each
 slice has one subtask:
 
+### CIV-17 · pr-check sizes its unit shards to the selection (task 1988)
+
+The org is on GitHub Free: 20 jobs at once for every repo. One pr-check run
+used about 17, and 13 box lanes pushed at once on 2026-11-06. Runs queued for
+1 to 3 hours. CIV-3 made a shard run only the selected tests, but all six
+shard jobs still started for an empty selection.
+
+**What changes.**
+- The `changes` job also puts out `shards`, a JSON list: `[]` for an empty
+  selection, `[1]` for 40 test files or fewer, `[1,2,3]` for 120 or fewer, and
+  `[1,2,3,4,5,6]` otherwise. `scripts/ci_unit_guard.py` owns the rule
+  (`SHARD_TIERS`). The limits are a first guess. Re-pick them from the next 10
+  PRs.
+- The `test` matrix reads `fromJSON(needs.changes.outputs.shards ||
+  '[1,2,3,4,5,6]')`, so a failed `changes` job runs all six. `--splits` comes
+  from the pick step, which calls the same function.
+- The `test` job does not start for `[]`, because GitHub fails a matrix with
+  no values. `Unit tests` still runs (`if: always()`). It passes a skipped
+  `test` job ONLY when `changes` succeeded and `shards` is `[]`. Any other skip
+  stays red (#1077).
+- Drafts are NOT skipped. The first design skipped the heavy jobs on a draft.
+  A skipped required check leaves a passing twin on the head SHA (#1077), and
+  skipping the browser suite breaks D-PM-21. So every job runs on a draft too.
+
+**Fence:** `tests/unit/test_ci_unit_guard.py`, `tests/unit/test_fence_lists.py`.
+**Verify:** a docs-only PR starts no shard and `Unit tests` passes. A PR that
+breaks one test turns `Unit tests` red. Compare jobs per PR before and after
+on 10 PRs.
+AGENT-SAFE. STANDARD tier, with an Opus diff review.
+
+
 | Slice | Task | Slice | Task |
 |---|---|---|---|
 | CIV-1 | 1629 | CIV-6 | 1634 |
@@ -484,4 +590,5 @@ slice has one subtask:
 | CIV-3 | 1631 | CIV-8 | 1636 |
 | CIV-4 | 1632 | CIV-9 | 1637 |
 | CIV-5 | 1633 | CIV-4b | 1711 |
-| | | CIV-13 | 1721 |
+| CIV-17 | 1988 | CIV-13 | 1721 |
+| CIV-10 | 1643 |  |  |

@@ -14,6 +14,12 @@ Every claim is built by code from one card of the My Day feed:
   the one check, ``orchestrator.in_app_path.is_in_app_path``.
 * ``fingerprint`` is the card's, when it has one.
 
+**The close-out** (BR-2b-1, ``core_brief.md`` §4.3) builds the sections
+``done`` and ``moved`` with :func:`closeout_claims`. ``done`` is one claim
+for each ``Closed`` row of Handled, and ``moved`` is one for each shown open
+card. The brief's :func:`claim_of` still refuses a section outside
+``plan.BRIEF_GROUPS``: the close-out passes its own section as an argument.
+
 A card with no in-app href, or a prefix that no provider writes, gets no
 claim. The gather logs ``brief.claim_skipped`` with the kind only, and the
 other cards keep their claims. The gather invents no link.
@@ -61,14 +67,21 @@ def in_app_href(value: Any) -> str | None:
     return value if isinstance(value, str) and is_in_app_path(value) else None
 
 
-def claim_of(card: dict[str, Any], position: int, now: datetime) -> store.ClaimIn | None:
+def claim_of(card: dict[str, Any], position: int, now: datetime, *,
+             section: str | None = None) -> store.ClaimIn | None:
     """One claim of *card* at *position*, or None when the card cannot make
-    one. The section is the card's group, which must be a brief group."""
+    one. The section is the card's group, which must be a brief group. The
+    close-out passes *section* (``moved``), and then the group is not
+    checked: the caller chose the cards."""
     app = source_app(card.get("signal_id"))
     href = in_app_href(card.get("href"))
-    section = str(card.get("group") or "")
+    if section is None:
+        section = str(card.get("group") or "")
+        in_section = section in plan.BRIEF_GROUPS
+    else:
+        in_section = section in store.SECTIONS
     kind = str(card.get("kind") or "")
-    if app is None or href is None or section not in plan.BRIEF_GROUPS or not kind:
+    if app is None or href is None or not in_section or not kind:
         _log.info("brief.claim_skipped", kind=kind or None,
                   reason="no_source" if app is None else "no_href" if href is None else "shape")
         return None
@@ -99,3 +112,54 @@ def claims(cards: list[dict[str, Any]], now: datetime) -> list[store.ClaimIn]:
         if claim is not None:
             out.append(claim)
     return out
+
+
+#: The ``source_kind`` of a ``done`` claim: the row came from Handled.
+HANDLED_KIND = "handled"
+
+
+def done_claim(closed: Any, position: int) -> store.ClaimIn | None:
+    """One ``done`` claim of a Handled row (``needs.Closed``), or None when
+    the row cannot make one: no known source prefix in its key, no in-app
+    href, or no title. ``source_id`` is the key of the row."""
+    app = source_app(closed.key)
+    href = in_app_href(closed.href)
+    text = str(closed.title or "").strip()
+    if app is None or href is None or not text:
+        _log.info("brief.claim_skipped", kind=HANDLED_KIND,
+                  reason="no_source" if app is None else "no_href" if href is None
+                  else "no_text")
+        return None
+    return store.ClaimIn(
+        position=position, section="done", text=text, source_app=str(closed.app or app),
+        source_kind=HANDLED_KIND, source_id=str(closed.key), href=href)
+
+
+def closeout_claims(closed: list[Any], cards: list[dict[str, Any]],
+                    now: datetime) -> list[store.ClaimIn]:
+    """The claims of the close-out: ``done`` for each Handled row, then
+    ``moved`` for each shown open card (:func:`shown`), each cut to
+    ``plan.BRIEF_LINES``. The positions are continuous from 0, ``done``
+    first, so a retry with the same reads gives the same positions."""
+    out: list[store.ClaimIn] = []
+    for row in closed[:plan.BRIEF_LINES]:
+        claim = done_claim(row, len(out))
+        if claim is not None:
+            out.append(claim)
+    for card in shown(cards):
+        claim = claim_of(card, len(out), now, section="moved")
+        if claim is not None:
+            out.append(claim)
+    return out
+
+
+def closeout_lead(local_date: Any, claims: list[store.ClaimIn]) -> str | None:
+    """The template lead of the close-out, from the counts of the claims:
+    ``Your close-out, Thu 15 Oct. 2 done and 1 moved to tomorrow.`` A count
+    of 0 is left out. None with no claim."""
+    done = sum(1 for c in claims if c.section == "done")
+    moved = sum(1 for c in claims if c.section == "moved")
+    parts = ([f"{done} done"] if done else []) + ([f"{moved} moved to tomorrow"] if moved else [])
+    if not parts:
+        return None
+    return f"Your close-out, {plan._date_words(local_date)}. {' and '.join(parts)}."

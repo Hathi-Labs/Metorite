@@ -67,6 +67,7 @@ from fastapi import FastAPI
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database  # noqa: E402
 from tests.unit._tenant_ladder import _LADDER_DIR, apply_ladder, tenant_engine_scope
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -96,6 +97,8 @@ OWNER = f"owner@{DOMAIN}"
 READER = f"reader@{DOMAIN}"
 PADMIN = f"padmin@{DOMAIN}"
 MEMBER = f"member@{DOMAIN}"
+#: MCP-G18: a member of ANOTHER organization, who may read every project there.
+OUTSIDER = f"outsider@{DOMAIN}"
 #: A word in every task title, so one search reaches every task.
 WORD = "wombat"
 
@@ -214,18 +217,9 @@ def world():
     """A private promoted catalog, one tenant, two personal trees."""
     admin_url = make_url(_URL)
     dedicated = f"{admin_url.database}_op9priv"
-    _drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    _clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql",
-                  "03_constraints.sql", "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(_GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            _exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE "
@@ -251,6 +245,14 @@ def world():
     a.member(READER, ["feature:projects", "data:org:read"])
     a.member(PADMIN, ["feature:projects", "projects:settings:write"])
     a.member(MEMBER, ["feature:projects"])
+
+    # MCP-G18: a second organization with one member, to try the attachment
+    # list across the tenant line.
+    org2 = str(uuid.uuid4())
+    with eng.begin() as c:
+        c.execute(text("INSERT INTO organization (id, slug, display_name) "
+                       "VALUES (:id, 'op9-other', 'op9-other')"), {"id": org2})
+    _Seeder(eng, org2).member(OUTSIDER, ["feature:projects", "data:org:read"])
 
     w = SimpleNamespace(admin=eng, org=org, p={}, t={}, n={})
     p = w.p
@@ -812,6 +814,60 @@ class TestTheScopeColumnIsTheTasksOwnNode:
             r = await _call(armed, OWNER, "GET",
                             f"/projects/attachments/{armed.files[key]}/f.txt")
             assert r.status_code == 200, (key, r.text)
+
+
+class TestTheAttachmentListOfMcpG17:
+    """MCP-G18. ``get_task_context`` reads ``GET /projects/tasks/{id}/attachments``
+    and no other rule. The list has the one visibility read of the task.
+    Mutation (R7): drop ``load_visible_task`` from ``list_attachments``, and
+    the 404 tests go red."""
+
+    @pytest.mark.parametrize("who", [OWNER, READER, MEMBER],
+                             ids=["owner", "org_reader", "member"])
+    async def test_a_visible_task_lists_its_file(self, armed, who):
+        body = (await _ok(armed, who,
+                          f"/projects/tasks/{armed.t['team_under']}/attachments")).json()
+        (row,) = body["rows"]
+        assert row["attachment_id"] == armed.files["team_under"]
+        assert row["name"] == "team_under.txt" and row["kind"] == "file"
+
+    async def test_the_edge_keeps_the_pinned_keys_and_drops_the_cookie_url(self, armed):
+        from agent_edge import tools
+
+        body = (await _ok(armed, OWNER,
+                          f"/projects/tasks/{armed.t['team_under']}/attachments")).json()
+        raw = body["rows"][0]
+        assert set(tools.ATTACHMENT_KEYS) <= set(raw)  # the route feeds every key
+        assert "/api/projects/attachments" in raw["url"]  # the row has the cookie URL
+        shown = tools._attachment(raw)
+        assert tuple(shown) == tools.ATTACHMENT_KEYS
+        assert shown["name"] == {"untrusted_text": "team_under.txt"}
+        assert "/api/projects/attachments" not in repr(shown)
+
+    @pytest.mark.parametrize("who", [READER, MEMBER, PADMIN],
+                             ids=["org_reader", "member", "padmin"])
+    async def test_a_personal_task_of_another_member_is_the_404(self, armed, who):
+        r = await _call(armed, who, "GET",
+                        f"/projects/tasks/{armed.t['owner_private']}/attachments")
+        assert r.status_code == 404, (who, r.text)
+        assert "owner_private.txt" not in r.text
+
+    async def test_the_owner_lists_the_file_of_the_personal_task(self, armed):
+        body = (await _ok(armed, OWNER,
+                          f"/projects/tasks/{armed.t['owner_private']}/attachments")).json()
+        assert [r["attachment_id"] for r in body["rows"]] == [armed.files["owner_private"]]
+
+    async def test_a_task_with_no_file_lists_nothing(self, armed):
+        body = (await _ok(armed, OWNER,
+                          f"/projects/tasks/{armed.t['team']}/attachments")).json()
+        assert body["rows"] == [] and body["total"] == 0
+
+    @pytest.mark.parametrize("key", ["team_under", "owner_private", "team"])
+    async def test_another_organization_gets_the_404(self, armed, key):
+        r = await _call(armed, OUTSIDER, "GET",
+                        f"/projects/tasks/{armed.t[key]}/attachments")
+        assert r.status_code == 404, (key, r.text)
+        assert ".txt" not in r.text
 
 
 # ═══════════════════════════════════════════════════════════════════════════

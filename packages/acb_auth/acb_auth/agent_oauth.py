@@ -312,6 +312,22 @@ def org_allowed(organization_id: object) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def resources_allowed(organization_id: object) -> bool:
+    """True when ``agent_resources_orgs`` allows *organization_id*.
+
+    SW-34a. The ONE reader of the flag. It keeps the MCP resources dark: an
+    organization that it refuses gets an empty list and a not-found read. The
+    list has the shape of ``agent_access_orgs`` and the same parser, and the
+    default is empty. It reads the settings at each call. The caller passes
+    the organization of the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().agent_resources_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
 def change_access_allowed(organization_id: object) -> bool:
     """True when ``agent_change_access_orgs`` allows *organization_id*.
 
@@ -799,6 +815,9 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks/{task_id}/relations"),
     ("GET", "/projects/tasks/{task_id}/timeline"),
     ("GET", "/projects/tasks/{task_id}/refs"),
+    # MCP-G18: the metadata of the files on a task, for `get_task_context`.
+    # The row also holds a cookie URL, which the edge never returns.
+    ("GET", "/projects/tasks/{task_id}/attachments"),
     ("GET", "/projects/search"),
     ("GET", "/projects/tasks/{task_id}/agent-runs"),
     ("GET", "/projects/agent-runs"),
@@ -1084,6 +1103,7 @@ __all__ = [
     "redirect_host",
     "redirect_uri_matches",
     "resource",
+    "resources_allowed",
     "revocation_endpoint",
     "runs_enabled",
     "s256",

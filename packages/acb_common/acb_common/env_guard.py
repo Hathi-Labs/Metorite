@@ -187,6 +187,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the member's other chats into a run, so only the operator writes it. The
     # `ASSISTANT_PROFILE_` prefix below does not cover it.
     "ASSISTANT_BRIEFING_ORGS",
+    # WS-63 PZ-43: the orgs where a member sets a birthday and festivals and
+    # the chat greets on the day. It adds a line to each turn, so only the
+    # operator writes it.
+    "CELEBRATIONS_ORGS",
     # H-328 part (b): the orgs whose unattended workflow runs may start. A run
     # can send mail or WhatsApp and spend credits with no person present, so
     # only the operator writes it. The `WORKFLOW_` prefix covers it too, and
@@ -223,6 +227,14 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-AP AP-1a: WAITING_ORGS opens the list of what waits on a member for
+    # an org. The list reads held writes, chat questions, app requests and
+    # decisions, so only the owner writes it.
+    "WAITING_ORGS",
+    # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
+    # chat status tools. It changes what a chat write may do, so only the owner
+    # writes it.
+    "STATUS_SET_GUARD_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",

@@ -244,6 +244,21 @@ async def _route_incoming_turn(
     )
 
 
+async def _keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> None:
+    """Hand a steer's ``card_draft`` to the email module (§18.11 step 2).
+
+    The tenant and the member are the session's (*user*), never the body's.
+    ``keep_card_draft`` checks the snapshot against the card's own record, and
+    the flag (``EMAIL_EDIT_CARD_ORGS``). A fault keeps nothing and never stops
+    the steer."""
+    try:
+        from gateway.routes.email.automation.redraft import keep_card_draft
+
+        await keep_card_draft(user, thread_id, raw)
+    except Exception as exc:  # a snapshot never stops a steer
+        _log.warning("agent.card_draft_failed", error=type(exc).__name__)
+
+
 def _followup_refused(thread_id: str, reason: str) -> Response:
     """The 202 of a steer follow-up that starts no run. The chat drops its
     placeholder on it, as it does for a steer."""
@@ -689,13 +704,18 @@ _AGENT_REGISTRY: list[dict] = [
     },
     {
         "name": "app-builder",
+        # Owner, 2026-11-07 (task 1909): the chat gave a Studio build to this
+        # agent. The description now keeps every new app away from it. The
+        # tool stays, so the base count of the chat and the pack budget do
+        # not move (test_projects_packs.py pins them).
         "description": (
-            "App Workshop builder — turns chat into small internal web apps "
-            "(Custom Apps). Each Workshop session is bound to its app's "
-            "workspace; the agent edits index.html and the app.json manifest "
-            "and keeps the preview renderable after every round."
+            "Legacy App Workshop editor. Use it ONLY when the member names an "
+            "existing App Workshop app (an index.html app) and asks to change "
+            "that app. NEVER use it to build a new app, tracker, board, form "
+            "or tool: AI Studio builds those with the studio tools "
+            "(studio_plan, studio_draft, studio_save)."
         ),
-        "tags": ["apps", "builder", "workshop"],
+        "tags": ["workshop", "legacy"],
         "status": "live",
         # Copilot-SDK engine: the builder needs native file/shell tools to
         # edit the app workspace. BYOK-routed through the gateway tiers (no
@@ -2773,7 +2793,7 @@ async def _extract_run_memory(
                 name=f"agent:{agent_name}:{member[:20]}",
                 content=message[:500],
                 source_description=f"agent_{agent_name}",
-                group_id=member,
+                # KG-9: the bound tenant names the episode's group.
             )
         except Exception:  # an episode must never kill the relay
             _log.warning("agent.run_end_episode_failed", thread_id=thread_id[:12])
@@ -2879,6 +2899,11 @@ async def run_agent_stream_endpoint(
     # The display of a card answer that went as a new message. It is for the
     # saved turn only, and never reaches the executor.
     _card_answer = req.payload.pop("card_answer", None)
+    # §18.11: the member's own version of an open new-mail card, sent with a
+    # message during the run. Popped HERE, so it never reaches the executor.
+    # Only a STEER keeps it (`_keep_card_draft` below), and the email module
+    # checks it against the card's own record.
+    _card_draft = req.payload.pop("card_draft", None)
     # WS-67 OA-7d: the app slug of the dock, a hint for the tool packs. Popped
     # so the payload never carries it on. Cleaned against the packs that name
     # an app, bound for the run below, and never read for a tenant or a member.
@@ -3063,6 +3088,12 @@ async def run_agent_stream_endpoint(
     # a paste send none, so they never get that card (PZ-32 repair 1).
     _sent_text = (_sent_words
                   if _card_answer is None and not _resume and not _followup else "")
+    # §18.11 step 2: a steer of the web chat keeps the member's version of an
+    # open new-mail card BEFORE the steer goes out, so the tool that the
+    # steer wakes finds it. This door is the web chat's: no WhatsApp turn
+    # reaches it. Any other route drops it.
+    if _card_draft is not None and _decision.route.name == "STEER":
+        await _keep_card_draft(user, req.thread_id or "", _card_draft)
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -3128,6 +3159,8 @@ async def run_agent_stream_endpoint(
         agent_name=agent_name,
         thread_id=req.thread_id,
         shared=_room_is_shared,
+        # KG-9: the org compartment is this member's org, from the session.
+        organization_id=_room_org,
     )
 
     try:

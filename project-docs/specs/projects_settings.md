@@ -1,6 +1,6 @@
 # Projects settings — one place for every setting of the Projects app
 
-**Status: ACTIVE — PS-1 and PS-2 built 2026-09-29. On 2026-11-06 the owner specified PST-1 to PST-5 (§9). Nothing of them is built.** Owner directive, 2026-09-29. Board row
+**Status: ACTIVE — PS-1 and PS-2 built 2026-09-29. On 2026-11-06 the owner specified PST-1 to PST-5 (§9). PST-1 is built (2026-11-06), and PST-2 to PST-5 are not.** Owner directive, 2026-09-29. Board row
 **WS-42**. This spec records **D81**. §9 records **D185**. The first merge wins a D-number, so the author of the PR must re-check that D185 is still free at merge.
 
 Verified against code on 2026-09-29 at `main` `02658314`. The author checked §9 against code on 2026-11-06 at `main` `06cfc43f8`.
@@ -179,7 +179,7 @@ in a manager changes.
 
 Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice skips the audit when its Metorite task states the acceptance criteria. A slice that changes a screen needs the visual-review walk of §6. No slice adds a migration.
 
-**PST-1 (task 1798). Goes first.**
+**PST-1 (task 1798). Goes first.** ✅ built 2026-11-06, branch `mt-73383eb6-pst1`.
 
 - **Does:** the extended read of §9.4. The copy module of §9.5. The scope line on every Statuses screen (the dialog and the pane). The list of projects that own their own set, with links. The pane section gets the name "Space default statuses". The text "Client Projects's set" is fixed.
 - **Files:** `apps/services/gateway/gateway/routes/projects/admin.py` (`describe_status_set`, `_OVERRIDES_BELOW_SQL`). A count query beside `_STATUS_SCOPE_SQL` in `routes/projects/core.py`. In `workbench/control_plane/src/app/projects`: `lib/statusSetCopy.ts` (new), `components/StatusManager.tsx`, `components/StatusSetControl.tsx`, `components/ProjectsSettings.tsx:69` (the "Statuses" label), `lib/commands.ts:293` (the palette entry) and `lib/projectMenu.ts:343` (the row-menu label).
@@ -189,10 +189,11 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
   2. The Space default statuses section of a space with 27 users shows "27 projects use these statuses." It lists the projects that own their own set. Each row links to that project's editor.
   3. The dialog of a subproject shows "Uses the statuses of {owner} (shared with {N})".
   4. A project named "Client Projects" never reads "Client Projects's set".
-  5. The section list, the heading, the palette entry and the row-menu label use "Space default statuses".
+  5. The section list, the heading and the palette entry use "Space default statuses" (§9.5). The row-menu label stays "Statuses". On every level, the row menu opens the set of the clicked node. That set is not always the space default. `projectsSettings.test.ts` pins the label.
   6. The read returns `hidden_overrides`. The screen shows "and {N} more that you cannot see" only when N is more than 0.
   7. `path` of an override never holds a name that the member cannot see.
 - **Fence (R7):** `tests/unit/test_projects_status_set_read_r8.py` on Postgres. It checks the counts for cases 1, 2 and 3. It checks a nested owner that the count must skip. It checks that tenant B cannot change the count of tenant A. It checks a hidden project that the list leaves out and the count includes, and `hidden_overrides` for it. It checks a visible override under a hidden parent: its `path` shows no hidden name. It fails when the `NOT p.owns_statuses` test leaves the recursive arm. Also `statusSetCopy.test.ts` and `projectsSettings.test.ts` (§6).
+- **Built (2026-11-06):** the read is `_status_set_reach()` in `admin.py` and `status_users()` in `core.py`. One query reads every override chain with its visibility. The palette entry opens the pane section of the space, not the dialog of the selected node. §9.5 does not give two lines, so the build chose them. With no visible row, the hidden line reads "You cannot see it" or "You cannot see them". Each row adds "Shared with {N} projects". `owner_name` still names an owner that the member cannot see. That is the old behaviour, and the §9.5 sentence needs the name. `reach` counts each board that an edit changes: `used_by`, with no folder, plus the owner when it shows lanes. A `path` starts at the first name that the member can see, and a later hidden run is one "…".
 
 **PST-2 (task 1799). After PST-1. Parallel with PST-4.**
 
@@ -216,10 +217,10 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
   4. The chip does not show when the board does not group by status.
 - **Fence (R7):** `statusChip.test.ts` (text per case, absent when not grouped by status). `StatusManager.arrows.test.ts` gets a case: no arrows when `may_edit` is false. `tests/unit/test_projects_agent_grants.py` stays green. It holds the server side of the same predicate.
 
-**PST-4 (task 1790, the chat half). After PST-1. Parallel with PST-2.**
+**PST-4 (task 1790, the chat half). After PST-1. Parallel with PST-2.** ✅ built 2026-11-06, branch `mt-cb6479be-pst4`.
 
-- **Flag (decided by the session lead, 2026-11-06):** `STATUS_SET_GUARD_ORGS`, a per-organization list in `Settings`. It is off by default. A flip reloads with no restart (`docs/flag_reload.md`). The only reader is `describe_status_set` in `admin.py`, which returns `guard_on` (§9.4). With the flag off, the three tools behave as they do today: no refusal, no shared-set text on the card, and the raw `position` argument.
-- **Choice on `position`:** the server accepts `slot` and `after` at all times, and the old `position` field keeps working there (additive, so unflagged). The change in the TOOL is behind the same flag. With the flag on, the tool takes `slot` or `after` and no longer sends `position`. With the flag off, the tool keeps `position`.
+- **Flag (decided by the session lead, 2026-11-06):** `STATUS_SET_GUARD_ORGS`, a per-organization list in `Settings`. It is off by default. A flip reloads with no restart (`docs/flag_reload.md`). The only reader is `describe_status_set` in `admin.py`, which returns `guard_on` (§9.4). With the flag off, the three tools add no refusal and no shared-set text on the card, and they pass `position` through. `slot` and `after` work with the flag off too.
+- **Choice on `position`:** the server accepts `slot` and `after` at all times, and the old `position` field keeps working there (additive, so unflagged). A tool schema cannot be dark, so the tools take `slot` and `after` in every organization, flag on or off. The flag gates only the shared-set refusal, the shared-set card line and the refusal of a raw `position`. With the flag off, `position` still passes through as before, and a call with no place sends the old last-in-set position.
 - **Does (with the flag on):** `create_status`, `update_status` and `delete_status` read the §9.4 read first.
   1. When the project does not own its set, the tool refuses. It says that the set belongs to {owner} and that N projects share it. It offers `set_status_set` mode=own first.
   2. The member can ask on purpose to change the shared set. Then the card names the set and the count: "Changes the statuses of {owner} for {N} projects".
@@ -233,8 +234,9 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
   4. The server refuses a slot outside the stage of the lane, and gives the allowed range.
   5. With the flag on, the tool does not send a raw position from the model any more.
   6. The Settings field `status_set_guard_orgs` exists, and its key is in the `for key in (...)` loop of `tests/unit/test_flag_reload.py` (about line 66).
-  7. With the flag off, all five behaviours above are absent and the tools act as before this slice.
+  7. With the flag off, behaviours 1, 2 and 5 are absent. The tools add no refusal, no card line, and they still pass `position` through. `slot` and `after` work in every organization.
 - **Fence (R7):** `tests/unit/test_projects_status_chat.py` (refusal, card text, slot and after, and a case that the flag off keeps today's behaviour, including `position`). `tests/unit/test_flag_reload.py` gets `status_set_guard_orgs` in its `for key in (...)` loop. `tests/unit/test_projects_status_slot_r8.py` on Postgres (the renumbering keeps the stage rule). The new chat tool fence set applies: claim strings, pack summary and pinned tables.
+- **Built (2026-11-06):** the flag reader is `status_set_guard_allowed()` in `admin.py`. It sets `guard_on` on the status-set read. `stage_placement()` and `_renumber_stage()` place a lane by `slot` or `after`. They lock the set and renumber only the stage group of the lane, to 10, 20, 30. A slot outside the group gets a 422 with the range. The tools say the same range before any card. `status_edit_refusal()` in `writes.py` gets `guard_shared` and `change_shared`. The tools add the argument `change_whole_set`. Slot and after are open in all organizations, because a tool schema cannot be dark. The flag gates three things. These are the shared-set refusal, the shared-set card line and the refusal of a raw `position`. The refusal names the owner and N, and offers `set_status_set` mode=own. With the flag on, a call with no place goes last in its stage. The vocabulary read says that a shared set needs mode=own before a change. The card shows a slot as "3 of 4 in its stage" under the existing key Position, so no UI file changed. The rule text is flag-neutral. It sits in the `projects-structure` pack rules and in `agent-projects/instructions.md`. No migration.
 
 **PST-5 (task 1791, the delete flow). The server read can start after PST-1. The UI goes after PST-2.**
 
@@ -266,7 +268,7 @@ change is not done: nothing else tests layout.
 ## 9. Status sets: which set, who shares it
 
 Owner request: 2026-11-05, Metorite epic task 1796. Owner decisions: 2026-11-06, **D185**.
-Verified against code on 2026-11-06 at `main` `06cfc43f8`. **Nothing in this section is built yet.**
+Verified against code on 2026-11-06 at `main` `06cfc43f8`. **PST-1 is built (2026-11-06), and PST-2 to PST-5 are not.**
 Slices: PST-1 to PST-5 (§9.8). Gate label of every slice: **AGENT-SAFE**.
 
 ### 9.1 What the owner asked
