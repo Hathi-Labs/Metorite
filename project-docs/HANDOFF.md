@@ -83,7 +83,7 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-444 · Finish the WS-24c token follow-ups that slice 2 left out · [AGENT]
+### H-445 · Finish the WS-24c token follow-ups that slice 2 left out · [AGENT]
 - **Metorite:** #1843. The task holds the slice record. No own task yet, so the full entry is here.
 - **Why:** Slice 2 made one reader of the internal token. Three gaps stay:
   - The deploy does not copy `GATEWAY_INTERNAL_TOKEN` into `workbench/operator_console/.env.local`. This needs the `deploy-write` grant.

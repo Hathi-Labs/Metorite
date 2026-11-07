@@ -94,7 +94,7 @@ token through `acb_common.settings.internal_service_token()` only. It sends
 `internal_auth_headers()`, which gives no `Authorization` header when the
 token is empty. The scanner of `test_no_llm_key_identity_fence.py` moved into
 `test_service_identity_and_webhook_auth.py`, and no known-debt set stays. The
-follow-ups are in HANDOFF H-444. ·
+follow-ups are in HANDOFF H-445. ·
 **Board row:** WS-24 ·
 **Owner:** vjvarada · **Date:** 2026-08-05 ·
 **Verified against code on 2026-08-05** (branch `ws-24-onboarding-readiness`,
