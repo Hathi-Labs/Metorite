@@ -95,6 +95,9 @@ Audit event recording.
 - ⚠️ That fallback is for SYSTEM events only. A writer whose event belongs to one tenant stamps `organization_id` from `current_tenant()` and calls `refuse_tenantless(event)` before `record(event)` (task 2189). With the bind on and no org, it skips the row and logs `audit.skipped_no_tenant`. Fences: `test_action_broker_audit_org_r8.py`, `test_llm_usage_audit_org_r8.py`, `test_notes_dispatch_audit_org_r8.py` (R8).
 - The same rule covers the admin audit writer, the mutation queue routes and the agent skill toggles (task 2221). A writer with no bound tenant passes the org of the row that it wrote, never a request field. Fences: `test_admin_audit_org_r8.py`, `test_mutation_queue_audit_org_r8.py`, `test_agent_skills_audit_org_r8.py` (R8).
 - Do not add `organization_id` to the ORM `AuditEvent` model, or SQLAlchemy sends a NULL that defeats the DEFAULT. Fence: `tests/unit/test_acb_graph_audit_bind.py` (R8).
+- `read.py` is the ONE reader of the acts of a member's day (WS-BRIEF BR-7b-1, `core_brief.md` §8). `ACT_ACTIONS` and `ACT_PREFIXES` are the allow-list, and `EXCLUDED` names the rows that stay out. A new action is not an act until a person adds it.
+  - ⚠️ `acts(org, member, since, until)` opens `acb_graph.tenant_session(org)` and filters on the bound org and on `payload.member`. The caller takes both from its run, never from request input. A row with no member, or with a `decision` other than `allowed`, is never listed.
+  - The read is sync, so an async caller uses `asyncio.to_thread`. It needs the phase-4 column `organization_id`, and it never falls back to an unbound read. Fence: `tests/unit/test_audit_acts_read_r8.py` (R8).
 
 ### acb_auth/
 Authentication, roles and org access control.

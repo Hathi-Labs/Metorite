@@ -211,3 +211,25 @@ def test_a_failed_account_change_wake_repeats(keeper, monkeypatch):
     assert [w[2] for w in mod.run_pass(agents, now=NOW + 60)] == ["account change"]
     monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
     assert [w[2] for w in mod.run_pass(agents, now=NOW + 120)] == ["account change"]
+
+
+def test_the_wake_runs_in_the_directory_of_the_lane(keeper, monkeypatch):
+    mod, home = keeper
+    _transcript(home, "s-ci", 1200)
+    lane_dir = home / "proj"
+    lane_dir.mkdir()
+    seen: list = []
+
+    def run(argv, **kw):
+        seen.append(kw.get("cwd"))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    agent = {**_agent("lane-ci", "s-ci", "done"), "cwd": str(lane_dir)}
+    mod.run_pass(json.dumps([agent]), now=NOW)
+    assert seen == [str(lane_dir)]
+
+
+def test_the_service_starts_in_a_project_directory():
+    svc = (ROOT / "scripts" / "home_server" / "metorite-lane-keeper.service").read_text(encoding="utf-8")
+    assert "WorkingDirectory=%h/Metorite" in svc

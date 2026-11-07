@@ -1146,15 +1146,25 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: ``agent_tokens.read_live_connection``, which this digest does not cover.
 #: The pins before it were 3.12 ``c737e1f1…0ae25127`` and 3.13
 #: ``034c2925…9155f094``.
+#:
+#: BR-7b-1 (2026-11-07, core_brief.md §8.2): the audit row of a door call
+#: (`_audit_door`) also holds ``policy``, the app scope that the door
+#: checks (``door.scope``). The value comes from the manifest, never from
+#: the request, and no step of branch 0 changes. The pins before it were
+#: 3.12 ``ec7a40eb…a945b693`` and 3.13 ``792f53b4…a1c4ea5e`` (WS-24b). The
+#: pins of the BR-7b build before the merge with WS-24b were 3.12
+#: ``7c955afa…6a81b34b`` and 3.13 ``b16fc2b1…7fabf2``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
     # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
     # This pin needs the diff-reviewer review and the independent verification.
-    # EA-19b (2026-11-07): the merge of main (the WS-24b pins above) with the
-    # EA-19b change of step 5 (see the EA-19b note above). Both digests were
-    # computed with this test's own function under 3.12 and 3.13.
-    (3, 12): "7ae2658e018e98f617808bc84cef63bd9c81151a79397f0b5a756c2c20167b95",
-    (3, 13): "6b30c96217c8d90841037ed617ce06b7ba397262c7b3d990d269b07b6cde0e96",
+    # BR-7b (2026-11-07): the merge of main (the EA-19b pins above) with the BR-7b
+    # change of `_audit_door`: it adds the `policy` key of the audit payload
+    # (door.scope). No step of branch 0 changed. Both digests were computed
+    # with this test's own function under 3.12 and 3.13. This pin needs the
+    # diff-reviewer review and the independent verification.
+    (3, 12): "29b8aaad9bc2b3ffc2f9e8a747835a1e4a674622096afeca886d98107ba0a9a2",
+    (3, 13): "187571d8c6dbac8f05cf131dcea9a476289ebb2ae03ef6f58870fa49cbd721f7",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

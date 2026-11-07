@@ -170,11 +170,20 @@ def run_pass(
         force_all=force_all,
     )
     failed_forced = False
+    cwds = {a["sessionId"]: a.get("cwd") for a in agents if a.get("sessionId")}
     for name, sid, reason in wakes:
+        # Claude refuses to resume from an untrusted directory such as the home
+        # directory ("Workspace not trusted", exit 1). Resume from the cwd of the lane.
+        cwd = cwds.get(sid)
         r = subprocess.run(
-            ["claude", "--bg", "--resume", sid, NOTE], capture_output=True, text=True, timeout=120
+            ["claude", "--bg", "--resume", sid, NOTE],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=cwd if cwd and Path(cwd).is_dir() else None,
         )
-        log(f"wake {name} session={sid[:8]} reason={reason} exit={r.returncode}")
+        why = f" {r.stderr.strip()[:120]!r}" if r.returncode and r.stderr else ""
+        log(f"wake {name} session={sid[:8]} reason={reason} exit={r.returncode}{why}")
         if r.returncode == 0:
             state[name] = now
         elif reason == "account change":
