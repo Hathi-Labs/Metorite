@@ -129,6 +129,9 @@ export default function MyDay() {
   // The feed's sources are the needs sources and Calendar, and Calendar
   // needs what Today needs, so a member with no needs card gets no feed.
   const feed = useFeed(feedOn && !accessLoading && cards.needs);
+  // The column's visit number. It goes up when the member takes in the new
+  // cards, and the Do first band then starts a new hold (PKG-Q15).
+  const [feedVisit, setFeedVisit] = useState(0);
   const sections = visibleSections(accessLoading ? null : access.features, access.is_admin);
   // The member's preset orders the cards (NS-7, §8.1). It hides none: a card
   // the preset does not name follows the named ones. With the shell nav off,
@@ -251,13 +254,18 @@ export default function MyDay() {
         // FIRST, so "You are caught up" ends the page (visual review). The
         // start classes place each one at `xl`, whatever the order.
         <>
-        {showTodayBand(bandOn, feedOn, cards.needs) ? <TodayBand feed={feed} className="mt-6" /> : null}
+        {showTodayBand(bandOn, feedOn, cards.needs) ? <TodayBand feed={feed} visit={feedVisit} className="mt-6" /> : null}
         <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
           {cards.today ? (
             <TodayCard today={today} now={now} className="xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1" />
           ) : null}
           {cards.needs ? (
-            <FeedColumn feed={feed} now={now} ai={aiWaiting} className="xl:col-span-2 xl:col-start-1 xl:row-start-1" />
+            <FeedColumn
+              feed={feed}
+              now={now}
+              ai={aiWaiting}
+              onTakeNew={() => setFeedVisit((n) => n + 1)}
+              className="xl:col-span-2 xl:col-start-1 xl:row-start-1" />
           ) : null}
         </div>
         </>

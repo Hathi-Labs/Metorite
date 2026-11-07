@@ -7,7 +7,9 @@
  *   - take `max-sm:break-words` or `min-w-0` out of `BAND_WRAP`: "wraps the
  *     title and the reason" fails;
  *   - draw the reason with no `BAND_WRAP`: the same test fails;
- *   - `TodayBand` calls `todayBand` with no hold: the hold fence fails.
+ *   - `TodayBand` calls `todayBand` with no hold: the hold fence fails;
+ *   - My Day gives the band no visit number, or the column no `onTakeNew`:
+ *     "My Day shares the column's visit number" fails.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -94,8 +96,21 @@ describe("TodayBand hold", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const code = readFileSync(join(here, "TodayBand.tsx"), "utf8");
     expect(code).toMatch(/useState<BandHold \| null>\(null\)/);
-    expect(code).toMatch(/bandStep\(hold, feed\.answer, feed\.marked, feed\.hidden\)/);
-    expect(code).toMatch(/if \(hold === null && step\.hold !== null\) setHold\(step\.hold\)/);
+    expect(code).toMatch(
+      /bandStep\(hold, feed\.answer, feed\.marked, feed\.hidden, \{ fresh: !feed\.refreshing, visit \}\)/,
+    );
+    expect(code).toMatch(/if \(step\.hold !== hold\) setHold\(step\.hold\)/);
     expect(code).not.toMatch(/\btodayBand\(/);
+  });
+});
+
+describe("the visit number", () => {
+  it("My Day shares the column's visit number with the band", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const page = readFileSync(join(here, "MyDayPage.tsx"), "utf8");
+    expect(page).toMatch(/<TodayBand feed=\{feed\} visit=\{feedVisit\}/);
+    expect(page).toMatch(/onTakeNew=\{\(\) => setFeedVisit\(\(n\) => n \+ 1\)\}/);
+    const column = readFileSync(join(here, "FeedCard.tsx"), "utf8");
+    expect(column).toMatch(/const takeNew = \(\) => \{\s*setVisit\([^;]+;\s*onTakeNew\?\.\(\);/);
   });
 });

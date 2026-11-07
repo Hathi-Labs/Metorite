@@ -10,7 +10,10 @@
  *
  * The items hold for the visit (`bandStep`, PKG-Q15). A poll adds no item,
  * so the column under the band does not move. A done, snoozed or hidden card
- * leaves at once. A reload starts a new hold.
+ * leaves at once. Only a fresh answer starts a hold, so a cached answer of
+ * an earlier visit is not frozen. The `visit` prop is the column's visit
+ * number (`FeedColumn` `onTakeNew`). A new number starts a new hold. A
+ * reload starts a new hold too.
  *
  * The title and the reason wrap as the column's title does (`FeedCard.tsx`):
  * two lines on a phone, one truncated line from `sm`. So the same text has
@@ -30,16 +33,20 @@ import { BAND_HEADING, BAND_WRAP, type BandHold, bandStep } from "./todayBand";
 
 export default function TodayBand({
   feed,
+  visit = 0,
   className = "",
 }: {
-  feed: Pick<Feed, "answer" | "marked" | "hidden">;
+  feed: Pick<Feed, "answer" | "marked" | "hidden" | "refreshing">;
+  /** The column's visit number. It goes up when the member takes in new cards. */
+  visit?: number;
   className?: string;
 }) {
   const [hold, setHold] = useState<BandHold | null>(null);
-  const step = bandStep(hold, feed.answer, feed.marked, feed.hidden);
-  // The first answer with a card starts the hold: state from the render, as
-  // the column starts its visit (`FeedColumn`).
-  if (hold === null && step.hold !== null) setHold(step.hold);
+  const step = bandStep(hold, feed.answer, feed.marked, feed.hidden, { fresh: !feed.refreshing, visit });
+  // `bandStep` gives back the same hold while it lasts, so this sets state
+  // only when a hold starts or ends: state from the render, as the column
+  // starts its visit (`FeedColumn`).
+  if (step.hold !== hold) setHold(step.hold);
   const { items } = step;
   if (items.length === 0) return null;
   return (

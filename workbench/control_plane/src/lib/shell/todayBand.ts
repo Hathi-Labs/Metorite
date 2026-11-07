@@ -12,15 +12,24 @@
  * **The band is stable within a visit** (PKG-Q15). The band sits above the
  * column, and the column holds its order during a visit (`my_day_feed.md`
  * §7 rule 4). So a poll must not add a band row. A new row moves the held
- * column down under the pointer. The rule:
+ * column down under the pointer. The rule (`bandStep`):
  *
- *   - The first answer that holds a card starts the hold. The hold is the
- *     ids of the items that answer gives, in their order.
+ *   - Only a FRESH answer that gives an item starts the hold. The hold is
+ *     the ids of those items, in their order. An answer that gives no item
+ *     starts no hold.
+ *   - A cached answer from an earlier visit is not fresh. The band draws
+ *     its items, and holds none. The first fresh answer then starts the
+ *     hold. So the band changes once at most before it settles.
  *   - A later answer adds no item and reorders none. A held item takes the
  *     new content of its card.
  *   - A card that the member marks done, snoozes or hides leaves at once.
  *     That is a member action. A card that left the answer goes at once, as
  *     it does in the column (`visitCards`).
+ *   - A hold with no item left is empty. The next fresh answer that gives
+ *     an item starts a new hold. A hold with an item never gains one.
+ *   - The member takes in the column's new cards (the "N new" pill). The
+ *     column counts that act in a visit number, and a new number starts
+ *     a new hold from the current answer.
  *   - A reload mounts the band again, so the hold starts again.
  *
  * Fence: `todayBand.test.ts`, "the hold".
@@ -53,9 +62,20 @@ export interface BandItem {
   reason: string;
 }
 
-/** The items of one visit, by signal id, in the order of the first answer. */
+/** The items of one visit, by signal id, in the order of the answer that started it. */
 export interface BandHold {
   readonly ids: readonly string[];
+  /** The visit number of the column when the hold started. */
+  readonly visit: number;
+}
+
+/** What `bandStep` reads, apart from the feed. */
+export interface BandRead {
+  /** False while a newer answer is on its way over a cached one (`refreshing`). */
+  fresh: boolean;
+  /** The visit number of the column. It goes up when the member takes in new cards. */
+  visit: number;
+  limit?: number;
 }
 
 /** Whether a card may be an item: not hidden, not closed, not a reminder, and with a reason. */
@@ -113,19 +133,25 @@ export function todayBand(
 }
 
 /**
- * One render of the band: the hold to keep, and the items to draw. With no
- * hold, the first answer that holds a card starts one. The component keeps
- * the hold it returns in state, so each later poll reads the same ids.
+ * One render of the band: the hold to keep, and the items to draw. The
+ * component keeps the hold in state, so each later poll reads the same ids.
+ * The rule is in the header of this file.
  */
 export function bandStep(
   hold: BandHold | null,
   answer: FeedAnswer | undefined,
   marked: ReadonlySet<string>,
   hidden: ReadonlySet<string>,
-  limit: number = BAND_LIMIT,
+  read: BandRead,
 ): { hold: BandHold | null; items: BandItem[] } {
-  if (hold) return { hold, items: todayBand(answer, marked, hidden, limit, hold) };
-  if (!answer || answer.cards.length === 0) return { hold: null, items: [] };
+  const limit = read.limit ?? BAND_LIMIT;
+  // A hold of this visit with an item left keeps its ids. A hold of an
+  // earlier visit, or a hold with no item left, is no hold.
+  if (hold && hold.visit === read.visit) {
+    const items = todayBand(answer, marked, hidden, limit, hold);
+    if (items.length > 0) return { hold, items };
+  }
   const items = todayBand(answer, marked, hidden, limit);
-  return { hold: { ids: items.map((i) => i.signalId) }, items };
+  if (items.length === 0 || !read.fresh) return { hold: null, items };
+  return { hold: { ids: items.map((i) => i.signalId), visit: read.visit }, items };
 }
