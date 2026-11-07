@@ -216,7 +216,8 @@ describe("the review fixes (ORC-3)", () => {
   it("a pasted file lands in Files on any tab, and focus clears the bar (M4)", () => {
     const body = code("app/projects/components/TaskBody.tsx");
     expect(body).toMatch(/onPaste=\{\(e\) => \{\s*if \(inline\.pasteOnCard\(e\)\) showTab\("files"\);/);
-    expect(body).toMatch(/className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto"/);
+    // ... and a focused field at the bottom edge shows its whole ring.
+    expect(body).toMatch(/className="min-h-0 flex-1 scroll-pt-12 scroll-pb-2 overflow-y-auto"/);
     // A field that took the paste inline prevented its default first.
     expect(code("app/projects/components/useInlineUploads.ts")).toMatch(
       /if \(e\.defaultPrevented\) return false;/,

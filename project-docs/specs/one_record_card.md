@@ -98,7 +98,7 @@ ORC-2 waits on ORC-1. ORC-3 lands before ORC-2. `?ttab=` keeps the tab when expa
 - **The composer** shows on Discussion, under Comments. On another tab, it hides with the comments.
 - **A file dropped or pasted on the card** lands in Files, and Files opens, so the member sees it go up. A drop or a paste on the description or the composer stays inline.
 - **The agent row keeps its space (M1).** Until its first read answers, the agent run panel holds the height of its "Ask an agent" row. So the Add row and the bar do not move when the row arrives.
-- **Focus clears the bar (M4).** The scroll region sets `scroll-pt-12`, so a field that Tab reaches never stops under the bar.
+- **Focus clears the bar (M4).** The scroll region sets `scroll-pt-12`, so a field that Tab reaches never stops under the bar. It also sets `scroll-pb-2`, so a focused field at the bottom edge shows its whole focus ring. Fence: `e2e/projects-focus-ring.spec.ts`.
 - **Related counts each task once.** The gateway builds `blocked_by` from `links`, so the count is the subtasks and the links (`relatedCount`).
 - **Files and Discussion** draw no section heading of their own, because the tab is the heading. Overview and Related keep their folds.
 - **The URL.** `history.replaceState` writes `?ttab=`, and Overview takes the key out. The key leaves one tick after the last card closes. Until ORC-2, expand mounts the body again in the same commit, and that tick keeps the tab.

@@ -959,10 +959,13 @@ export function TaskBody({
           stops at the field, so this never sees it. A pasted file does the
           same, unless the description or the composer took it inline. */}
       {/* M4 — `scroll-pt-12` keeps a focused field clear of the sticky tab
-          bar (about 2.5rem tall), when Tab or Shift+Tab moves through it. */}
+          bar (about 2.5rem tall), when Tab or Shift+Tab moves through it.
+          `scroll-pb-2` leaves room under a focused field at the bottom edge,
+          so its whole focus ring shows (2px outline after a 2px offset).
+          Fence: e2e/projects-focus-ring.spec.ts. */}
       <div
         ref={scrollRegion}
-        className="min-h-0 flex-1 scroll-pt-12 overflow-y-auto"
+        className="min-h-0 flex-1 scroll-pt-12 scroll-pb-2 overflow-y-auto"
         onDragOver={inline.allowDrop}
         onDrop={(e) => {
           const dropped = (e.dataTransfer?.files?.length ?? 0) > 0;
