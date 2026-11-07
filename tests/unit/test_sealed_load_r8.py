@@ -41,6 +41,7 @@ pytest.importorskip("sqlalchemy")
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database  # noqa: E402
 from tests.unit._tenant_ladder import _LADDER_DIR, apply_ladder
 
 _SNAPSHOT = os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
@@ -177,18 +178,9 @@ def world():
     """Org A has the leaver's tree SEALED. Org B holds the same tasks, LIVE."""
     admin_url = make_url(_URL)
     dedicated = f"{admin_url.database}_sealedload"
-    _drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    _clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql",
-                  "03_constraints.sql", "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(_GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            _exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE "

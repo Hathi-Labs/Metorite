@@ -4,9 +4,11 @@
 2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 and CIV-2 are
 done. CIV-3 and CIV-7 are built on branch `civ3-pr-tier` (2026-11-05), and
 they are done at merge. CIV-4, CIV-8 and CIV-9 are AGENT-SAFE.
-CIV-4, CIV-4b and CIV-13 are HIGH tier, because they change the deploy path.
+CIV-4, CIV-4b, CIV-4c and CIV-13 are HIGH tier, because they change the deploy path.
 CIV-6 is built (task 1634, PR open). CIV-4b merged on 2026-11-05 (task 1711). CIV-13 (D178) is BUILT on
 2026-11-05: the home box starts the 21:30 release. The owner installs its timer.
+
+CIV-4c is BUILT on 2026-11-07 (task 1736, branch `civ4c-r8-cover`).
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
@@ -332,6 +334,44 @@ After the merge, the live evidence is the first 21:30 UTC run: six green R8
 shards, a green `r8-gate`, and a moved `release` ref.
 AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
 
+### CIV-4c · Every R8 skip of a release runs in the R8 gate (HIGH: deploy path)
+
+**Status: BUILT (2026-11-07).** Branch `civ4c-r8-cover`. Task 1736.
+
+**Why.** `r8_files()` finds an R8 file by a text match, one level deep. A
+new file can get its database gate by import only, and name no mark. Then
+`--r8` leaves it out. The `test` job skips it, and the R8 gate never runs
+it. On 2026-11-07 the list held each such file, but no fence proved it.
+
+**Built:**
+- The `test` job of deploy.yml writes a JUnit report to `junit/test.xml`.
+  Its pytest command keeps `-x`, `-v`, `--reruns 1` and the fence ignore.
+- A new step after the unit run writes `affected_tests.py --r8` to
+  `r8_files.txt`. Then it runs `ci_unit_guard.py r8-covered`.
+- The step has no `if:`. It runs only after a green unit run, so a red run
+  stays red.
+- `r8-covered` fails for each file that skipped for an R8 reason and is not
+  in the list. A module that skipped at collection counts.
+- An R8 reason starts with `CUSTOMER_CONSOLE_DATABASE_URL` or
+  `TENANT_LADDER_DATABASE_URL`. Or it names `R8` and also a variable or
+  "real Postgres". A Redis or platform skip is not an R8 reason.
+- It fails closed. No report, a report with no test, a missing list and an
+  empty list each fail. The step also stops on an empty list before the
+  guard starts.
+- pr-check.yml gets no copy. Its shards have both databases, and its guard
+  already fails on each R8 skip.
+- `r8-suite`, `r8-gate`, `publish-release` and the release window do not
+  change.
+
+**Fence:** `tests/unit/test_ci_unit_guard.py` covers the rule with JUnit
+reports in a temporary folder. `tests/unit/test_deploy_pipeline.py` covers
+the step, its place, the old flags and the unchanged jobs.
+
+**Files:** `.github/workflows/deploy.yml`, `scripts/ci_unit_guard.py`,
+`tests/unit/test_ci_unit_guard.py`, `tests/unit/test_deploy_pipeline.py`.
+**Verify:** `uv run pytest tests/unit/test_ci_unit_guard.py tests/unit/test_deploy_pipeline.py -q`.
+AGENT-SAFE. **HIGH tier.**
+
 ### CIV-5 · A red batch names the PR that broke it
 
 **Done when:**
@@ -347,6 +387,42 @@ AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
 **Verify:** `uv run pytest tests/unit/test_bisect_main.py -q`, with a fixture
 repo in which one known commit breaks one test.
 AGENT-SAFE. STANDARD tier.
+
+**Status: BUILT 2026-11-07** (task 1633, branch `civ5-bisect`). Not live: the
+owner has not installed the timer.
+
+**Built.**
+- `scripts/bisect_main.sh <good> <bad> <test id>...` searches the first-parent
+  commits in (good, bad]. It does not call `git bisect`. Each probe has a
+  detached worktree in a temp dir, and the EXIT trap removes it. It checks
+  first that the good commit passes and the bad commit fails, else it exits 3.
+  A probe exit code of 0 is good and 1 is bad. Any other code skips the commit.
+  Adjacent commits that cannot be judged give exit 4 and the range. The cap
+  is 12 probes (exit 5). It prints `FIRST_BAD <sha> <subject> PR=<n or none>`.
+- `scripts/home_server/bisect_poll.sh` is one poll pass. It acts only when the
+  newest completed batch run is red and new. It finds the last green batch as
+  the good sha, reads the failed ids with `scripts/junit_failed_ids.py`, runs
+  the bisect and prints `BISECT_RESULT <json>`. State is `handled` in
+  `~/.cache/metorite-bisect`. It never reruns or cancels a run.
+- `scripts/home_server/systemd/metorite-bisect-poll.{service,timer}` are unit
+  files. Nobody installed them.
+- Fence: `tests/unit/test_bisect_main.py` (18 tests, a fixture repo and a
+  shimmed `gh_cmd`).
+
+**By hand.** `bash scripts/bisect_main.sh <good> <bad> tests/unit/test_x.py::test_y`.
+The default probe is `uv run python -m pytest -x -q -p no:cacheprovider "$@"`.
+Set `BISECT_TEST_CMD` to reuse a prepared lane or venv. `BISECT_TIMEOUT_S` and
+`BISECT_MAX_PROBES` set the limits.
+
+**Left for the owner.**
+- Install the timer (steps in the service file).
+- A lane session reads the `BISECT_RESULT` line in the journal and posts it on
+  a Metorite task. The script has no Metorite credentials.
+- Known gap: the push batch job writes no JUnit file. Only the R8 shards
+  upload one (`r8-junit-shard-N`). The poller reads an artifact named
+  `unit-junit` (`BISECT_ARTIFACT`). A later slice must add
+  `--junitxml` and an upload step to `test` in `deploy.yml`. Until then the
+  poller records a red run with "no failed test id".
 
 ### CIV-6 · Local tier: the affected tests by default, several runs at once on the box
 
@@ -475,6 +551,33 @@ on linger, copies the script, and enables the timer. In WSL, the Windows
 task "Metorite WSL keep-alive" keeps the distro up.
 HIGH tier.
 
+### CIV-10: the weekly delivery review (task 1643)
+
+**Status: BUILT 2026-11-07** (task 1643, branch `civ10-review`). STANDARD tier.
+Owner directive, 2026-11-04: revisit the workflow and CI each week.
+
+A box user timer runs `/delivery-review` each Monday at 07:00 UTC. The command
+measures CI, reads the Metorite items through the MCP, and posts one report
+task. It opens one fix task for each item over its threshold, under epic
+task 1628. The thresholds live in the command file.
+
+**Files:** `scripts/delivery_metrics.py` (read-only, stdlib, prints one JSON
+object), `.claude/commands/delivery-review.md`,
+`scripts/home_server/delivery_review.sh`,
+`scripts/home_server/metorite-delivery-review.service`,
+`scripts/home_server/metorite-delivery-review.timer`.
+**Fence:** `tests/unit/test_delivery_metrics.py`.
+
+**The owner does two things.** Install the timer (the unit header says how).
+Confirm the headless command in `delivery_review.sh`, because the repo holds
+no tested launcher. The first run is manual:
+`python3 scripts/delivery_metrics.py --days 7` on the box.
+
+**Known limits.** A selection miss is matched through `commits/<sha>/pulls`,
+because a squash merge gives main a new sha. A red batch with no PR run in the
+window is not counted. Run time is `updated_at` minus `run_started_at`, so a
+rerun adds to it.
+
 ## 6. Order
 
 CIV-2 and CIV-4 start now, beside each other. CIV-4b follows CIV-4. It is a
@@ -528,3 +631,4 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-4 | 1632 | CIV-9 | 1637 |
 | CIV-5 | 1633 | CIV-4b | 1711 |
 | CIV-17 | 1988 | CIV-13 | 1721 |
+| CIV-10 | 1643 | CIV-4c | 1736 |
