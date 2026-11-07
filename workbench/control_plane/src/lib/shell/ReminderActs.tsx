@@ -68,7 +68,10 @@ export default function ReminderActs({
         onClick={() => void acts.done(row)}
         className="min-h-9"
       >
-        <span className={quiet ? "hidden sm:inline" : undefined}>Done</span>
+        {/* Below `sm` the word goes, as Snooze's does, so the row's text
+            keeps the width (task 1898). A due row keeps its filled look,
+            and the label stays in `aria-label`. */}
+        <span className="hidden sm:inline">Done</span>
       </Button>
       <Button
         variant="ghost"

@@ -91,6 +91,13 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "forward_email joins user_id, and a file comes through "
         "_fetch_owned_attachment."
     ),
+    "revise_new_mail_card": (
+        "§18.11. Reads no email table and no mailbox. It peeks and then spends "
+        "the caller's own card record of one thread (peek_record and "
+        "take_record check the owner of the record), and its own snapshot and "
+        "link in tenant Redis. It sends and saves nothing "
+        "(test_email_redraft_snapshot.py)."
+    ),
     "cleanup_status": (
         "Reads the in-process _SWEEP_JOBS registry, and answers idle unless "
         "the job's owner is the caller. No table read."

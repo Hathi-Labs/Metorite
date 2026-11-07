@@ -26,9 +26,12 @@ durable timeline.
 Tenancy (H-201c). The feed, the stream and the presence set are keyed for each
 tenant. Each route takes the org from the authenticated session
 (``viewer.organization_id``), never from the request, and passes it to the
-reader. A viewer with no org gets an empty answer. The cost view
-(``/cost``) still reads the deployment-global ``cc:cost:{day}`` rollup. Its
-conversion is a separate follow-up task.
+reader. A viewer with no org gets an empty answer.
+
+The cost view (``/cost``) is keyed for each tenant too (H-201e). It reads
+``cc:<viewer org>:cost:<day>`` only. A viewer with no org gets the empty
+summary. The deployment-level hash of the priced calls with no tenant
+(``cc:_unattributed:cost:<day>``) is never read here.
 """
 from __future__ import annotations
 
@@ -249,14 +252,15 @@ def _load_app_details(
 @router.get("/cost")
 async def cost(
     days: int = 7,
-    _viewer: UserContext = _VIEWER,
+    viewer: UserContext = _VIEWER,
 ) -> dict[str, Any]:
-    """Daily LLM cost rollup (USD) for the last *days* days.
+    """Daily LLM cost rollup (USD) of the viewer's tenant for the last *days* days.
 
     Per-day totals + by-model + by-source breakdowns, from the always-on Redis
     rollup (best-effort litellm pricing). ``days`` is clamped to [1, 90].
+    H-201e: the org comes from the session, never from the request.
     """
-    return await cost_summary(days=days)
+    return await cost_summary(days=days, organization_id=viewer.organization_id)
 
 
 _RUN_STATUSES = frozenset({"running", "completed", "error", "cancelled"})
