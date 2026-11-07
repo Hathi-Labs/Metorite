@@ -6718,8 +6718,9 @@ The node suite holds its pure rule.
 ## 30. An image from the chat goes onto a task, and the agent sees it (2026-11-07)
 
 **Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 and IMG-2
-are AGENT-SAFE. IMG-3 is AGENT-SAFE, since the owner answer of 2026-11-07.
-IMG-4 needs an audit before a build. No migration.
+are AGENT-SAFE. IMG-3 is BUILT 2026-11-07 on branch `mt-2d62220d-img3`, and
+it waits for its review and merge. IMG-4 needs an audit before a build. No
+migration.
 
 ### 30.1 The request
 
@@ -6874,7 +6875,8 @@ STANDARD. Frontend only.
 
 **IMG-3 (task 1999). The MCP gives an image on a task to the agent.** HIGH,
 because file bytes leave the platform for an outside agent. Spec audit and
-the Opus reviewer. **Gate:** cleared. The owner answered the transport
+the Opus reviewer. **BUILT 2026-11-07** on branch `mt-2d62220d-img3`, with the
+R8 cases in `test_mcp_edge_attachment_r8.py`. **Gate:** cleared. The owner answered the transport
 question on task 1999 on 2026-11-07 (§30.3). The audit of 2026-11-07 gave GO-NARROWED on the read half
 only, after the edits below.
 
