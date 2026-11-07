@@ -596,7 +596,12 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # the custom values in the create itself, which checks them (#679).
     # WS-46 P7: a weekly rule with no day takes today in the member's zone,
     # from my_work's `GET /projects/my/today`.
-    "create_task": frozenset({"assign", "set_recurrence", "my_work"}),
+    # WS-IMG IMG-2: `files` posts each file through `attach_to_task`'s route
+    # and then patches the description through `update_task`'s, under the
+    # same card. Its own row makes it class B. A held chat refuses `files`.
+    "create_task": frozenset(
+        {"assign", "set_recurrence", "my_work", "attach_to_task", "update_task"}
+    ),
     "set_recurrence": frozenset({"my_work"}),
     # WS-46 P7: a block time with no offset is read in the member's zone.
     "set_my_overlay": frozenset({"my_work"}),

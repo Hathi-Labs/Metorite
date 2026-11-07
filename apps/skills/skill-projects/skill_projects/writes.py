@@ -56,7 +56,7 @@ from acb_common.card_body import (
 )
 from acb_common.mentions import mention_targets, new_mentions
 
-from skill_projects import choices
+from skill_projects import choices, task_files
 from skill_projects.client import (
     GatewayRefusal,
     data,
@@ -64,6 +64,7 @@ from skill_projects.client import (
     get,
     patch,
     post,
+    post_file,
     put,
     uuid_of,
 )
@@ -1020,6 +1021,7 @@ async def create_task(
     type: str = "",
     fields: str = "",
     source: str = "",
+    files: list[str] | None = None,
 ) -> str:
     """Create one task in a project. project_id is a `full_id` from
     projects_tree (a project or subproject, never a folder). status is by
@@ -1048,6 +1050,12 @@ async def create_task(
     it out for work the member typed. Use email only for a task made from a
     mail that email-assistant described. The card then says that the text
     leaves the mailbox.
+    files are the names of files the member attached in THIS chat, as the
+    upload message shows them. When the member attached files and asks for a
+    task, pass them here, and do not call attach_to_task after it. The one
+    card names each file. An image also goes at the end of the description.
+    A file that is empty, of a blocked type, or past the 10 MB a task holds
+    is refused before the card.
     The card may flag an open task that looks the same."""
     pid, by_name = await _project_ref(project_id)
     name = str(title or "").strip()
@@ -1076,6 +1084,9 @@ async def create_task(
     stop = await space_refusal(pid, node)
     if stop:
         return stop
+    chat_files = await _chat_files_for_new_task(files)
+    if isinstance(chat_files, str):
+        return chat_files
     new = await _prepare_new_task(
         pid,
         name,
@@ -1112,6 +1123,8 @@ async def create_task(
     card = {"project": place, **{k: v for k, v in card.items() if k not in hidden}}
     if new.parent is not None:
         card["parent"] = _ref(new.parent)
+    if chat_files:
+        card["files"] = task_files.card_line(chat_files)
     where = f" · in {place}"
     held = await _held_chat()
     if held:
@@ -1142,7 +1155,87 @@ async def create_task(
     lines = [*_task_line(task, status_label), *level_note(priority, task)]
     if twin is not None:
         lines.append(f"  note: {choices.twin_note(twin)}")
-    return repeating.receipt(task, lines, saved, failed, new.extra)
+    receipt = repeating.receipt(task, lines, saved, failed, new.extra)
+    if chat_files:
+        receipt += await _attach_new_files(task, chat_files, str(new.payload.get("description") or ""))
+    return receipt
+
+
+async def _chat_files_for_new_task(files: list[str] | None) -> list[task_files.ChatFile] | str:
+    """The files of ``create_task``, read and checked BEFORE the card, or the
+    refusal that names the file and the reason (IMG-2). ``[]`` for none.
+
+    A held chat refuses ``files``: a file on a shared task is one more person's
+    reach, and ``attach_to_task`` is off there too (``egress.HELD_REFUSED_PARAMS``).
+    The total is checked against an empty task, because the task is new.
+    """
+    names = task_files.split_names(files)
+    if not names:
+        return []
+    refused = await _held_param_refusal("create_task", "files")
+    if refused:
+        return refused
+    got = await task_files.read_checked(names)
+    if isinstance(got, str):
+        return got
+    return task_files.budget_refusal(got, 0, "The new task") or got
+
+
+async def _attach_new_files(
+    task: dict[str, Any], chat_files: list[task_files.ChatFile], description: str
+) -> str:
+    """The posts after the create: each file, then ONE description PATCH that
+    puts each image at the end (IMG-2, as TR-4 does for a paste).
+
+    The task exists, so nothing here raises. A file that fails is named with
+    its reason and ``attach_to_task`` finishes it. A failed PATCH leaves the
+    files in place, and the receipt says the description has no inline image.
+    """
+    tid = uuid_of(str(task.get("id")), "task_id")
+    landed: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for name, content in chat_files:
+        try:
+            row = (
+                await post_file(
+                    f"/projects/tasks/{tid}/attachments", "file", name, content,
+                    task_files.mime_of(name),
+                )
+            ) or {}
+        except _WRITE_FAILED as exc:
+            lines.append(
+                f"not attached: {data(name)}. {_file_failure(exc)} "
+                f"Next: call attach_to_task with task_id {tid} and file_name "
+                f"{data(name)} to try this file again."
+            )
+            continue
+        row.setdefault("name", name)
+        landed.append(row)
+    out = ["Files attached:"] if landed else []
+    out += [f"  {data(r.get('name'))} · attachment_id: {r.get('attachment_id')}" for r in landed]
+    images = [md for md in (task_files.image_markdown(r) for r in landed) if md]
+    if images:
+        text = "\n\n".join(([description.rstrip()] if description.strip() else []) + images)
+        try:
+            await patch(f"/projects/tasks/{tid}", {"description": text})
+        except _WRITE_FAILED as exc:
+            lines.append(
+                f"The description has no inline image. {_file_failure(exc)} The files "
+                "are on the task."
+            )
+    return "\n" + "\n".join([*out, *lines]) if (out or lines) else ""
+
+
+def _file_failure(exc: Exception) -> str:
+    """Why a write after the create failed, for the receipt."""
+    if isinstance(exc, httpx.TransportError):
+        return (
+            f"The connection to the gateway broke ({type(exc).__name__}), so it may or "
+            "may not have landed. Read the task first."
+        )
+    if isinstance(exc, GatewayRefusal):
+        return f"Gateway said: {_refusal_words(exc)}."
+    return str(exc)
 
 
 #: WS-46 P9 (G10). Where a new task came from: the values of

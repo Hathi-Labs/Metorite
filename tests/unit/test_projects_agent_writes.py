@@ -3451,3 +3451,177 @@ async def test_cancel_on_the_plan_card_writes_nothing(monkeypatch) -> None:
     out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
     assert out == F.NOT_SUBMITTED
     assert asked == [] and writes(calls) == []
+
+
+# ── IMG-2: one card makes a task with its files (projects_ai_chat.md §30.4) ──
+
+PNG = ("shot.png", b"\x89PNG" + b"x" * 240 * 1024)
+PDF = ("spec.pdf", b"%PDF-1.4" + b"x" * 1100 * 1024)
+SERVED_ID = "ef8fad5b-d9cb-469f-a165-70867728950e"
+
+
+def _chat_files(monkeypatch: Any, *uploads: tuple[str, bytes]) -> None:
+    """Each file the member attached to THIS chat, by name."""
+    from acb_skills import attachment_tools
+
+    held = {u[0]: u for u in uploads}
+
+    async def _bytes(name: str) -> Any:
+        if str(name).strip() in held:
+            return held[str(name).strip()]
+        return f"No file named {name} was attached in this chat. Files attached here: {', '.join(held)}."
+
+    monkeypatch.setattr(attachment_tools, "read_attachment_bytes", _bytes)
+
+
+def _files_gateway(*, fail_on: str = "", patch_fails: bool = False) -> Any:
+    """The create, the file posts and the description PATCH of a new task."""
+
+    def answer(call: dict) -> Any:
+        from tests.unit._projects_agent_fakes import FakeResponse
+
+        path, method = call["path"], call["method"]
+        if path == f"/projects/tasks/{OTHER}/attachments" and method == "POST":
+            name = call["files"]["file"][0]
+            if name == fail_on:
+                return FakeResponse({"detail": "That file type is not accepted."}, status_code=422)
+            mime = call["files"]["file"][2]
+            return {
+                "attachment_id": SERVED_ID, "name": name, "mime": mime,
+                "size": len(call["files"]["file"][1]),
+                "kind": "image" if mime.startswith("image/") else "file",
+                "url": f"/api/projects/attachments/{SERVED_ID}/{name}",
+            }
+        if path == f"/projects/tasks/{OTHER}" and method == "PATCH":
+            if patch_fails:
+                return FakeResponse({"detail": "Not saved."}, status_code=500)
+            return {**TASK, "id": OTHER}
+        return responder(call)
+
+    return answer
+
+
+def _kinds(calls: list[dict]) -> list[str]:
+    return [f"{c['method']} {c['path']}" for c in writes(calls)]
+
+
+async def test_create_task_with_files_is_one_card_with_the_files_on_it(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG, PDF)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    out = await skill_projects.create_task(UUID, "Fix the bug", files=[PNG[0], PDF[0]])
+    [card] = asked
+    assert (
+        "files: «shot.png» (240 KB), «spec.pdf» (1.1 MB) · everyone who can open "
+        "the task can open them"
+    ) in card["context"]
+    # The order: the task, each file, then ONE description PATCH.
+    assert _kinds(calls) == [
+        "POST /projects/tasks",
+        f"POST /projects/tasks/{OTHER}/attachments",
+        f"POST /projects/tasks/{OTHER}/attachments",
+        f"PATCH /projects/tasks/{OTHER}",
+    ]
+    posted = [c for c in calls if c["method"] == "POST" and c.get("files")]
+    assert [c["files"]["file"][0] for c in posted] == [PNG[0], PDF[0]]
+    assert "Content-Type" not in posted[0]["headers"]
+    [edit] = [c for c in calls if c["method"] == "PATCH"]
+    # Only the image goes in the description, as TR-4 writes it for a paste.
+    assert edit["json"] == {
+        "description": f"![shot.png](/api/projects/attachments/{SERVED_ID}/shot.png)"
+    }
+    assert "Files attached:" in out and "shot.png" in out and "not attached" not in out
+
+
+async def test_the_image_goes_after_the_words_of_the_description(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    [edit] = [c for c in calls if c["method"] == "PATCH"]
+    assert edit["json"]["description"].startswith("It breaks.\n\n![shot.png](")
+
+
+async def test_a_file_that_is_not_an_image_makes_no_description_patch(monkeypatch) -> None:
+    _chat_files(monkeypatch, PDF)
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Read the spec", files=[PDF[0]])
+    assert _kinds(calls) == ["POST /projects/tasks", f"POST /projects/tasks/{OTHER}/attachments"]
+
+
+async def test_a_task_with_no_files_calls_no_file_route(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Plain", files=[])
+    assert _kinds(calls) == ["POST /projects/tasks"]
+
+
+@pytest.mark.parametrize(
+    ("uploads", "asked_for", "words"),
+    [
+        ([("empty.txt", b"")], ["empty.txt"], "«empty.txt» is empty"),
+        ([("setup.exe", b"MZ")], ["setup.exe"], "File type not allowed: «setup.exe»."),
+        ([PNG], ["nope.png"], "No file named nope.png was attached in this chat."),
+        (
+            [("a.bin", b"x" * (6 * 1024 * 1024)), ("b.bin", b"x" * (5 * 1024 * 1024))],
+            ["a.bin", "b.bin"],
+            "would hold 11.0 MB with «a.bin», «b.bin», and the limit is 10.0 MB",
+        ),
+        ([("big.bin", b"x" * (11 * 1024 * 1024))], ["big.bin"], "«big.bin» is 11.0 MB"),
+    ],
+    ids=["empty", "blocked", "missing", "total-over", "one-over"],
+)
+async def test_a_bad_file_is_refused_before_the_card_with_no_post(
+    uploads: list, asked_for: list, words: str, monkeypatch
+) -> None:
+    _chat_files(monkeypatch, *uploads)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    out = await skill_projects.create_task(UUID, "Fix", files=asked_for)
+    assert words in out, out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_one_file_that_fails_leaves_the_task_and_names_the_file(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG, PDF)
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway(fail_on=PDF[0]))
+    out = await skill_projects.create_task(UUID, "Fix", files=[PNG[0], PDF[0]])
+    assert "not attached: «spec.pdf»" in out and "attach_to_task" in out
+    assert "That file type is not accepted." in out
+    assert OTHER in out, "the task stays, and the reply says its id"
+    assert "shot.png" in out.split("not attached")[0]
+    # The image that landed is still put in the description.
+    assert any(c["method"] == "PATCH" for c in calls)
+
+
+async def test_a_failed_description_patch_keeps_the_files_and_says_so(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _files_gateway(patch_fails=True))
+    out = await skill_projects.create_task(UUID, "Fix", files=[PNG[0]])
+    assert "The description has no inline image." in out
+    assert "Files attached:" in out and "The files are on the task." in out
+
+
+async def test_a_declined_card_with_files_writes_nothing(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    deny(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    assert await skill_projects.create_task(UUID, "Fix", files=[PNG[0]]) == W.CANCELLED
+    assert writes(calls) == []
+
+
+def test_create_task_files_are_in_the_pin_and_the_rule_text() -> None:
+    """Mutation: drop `files` from the pin or from a rule text -> red."""
+    from acb_skills import egress, tool_packs
+
+    assert "files" in egress.HELD_CARD_WRITE_TOOLS["create_task"]
+    root = SKILL_DIR.parents[2]
+    path = root / "agents/agent-projects/instructions.md"
+    text_ = " ".join(path.read_text(encoding="utf-8").split())
+    assert "pass the file names in `create_task` `files`" in text_
+    assert "Do not call `attach_to_task` after it." in text_
+    pack = " ".join(tool_packs._PROJECTS_BULK_RULES.split())
+    assert "create_task files" in pack and "Do not call attach_to_task after it." in pack
