@@ -178,6 +178,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
+    # WS-17 task 1966: the orgs whose Outlook push watches all mail. It changes
+    # what Microsoft sends to the box, so only the operator writes it.
+    "OUTLOOK_ALL_MAIL_WEBHOOK_ORGS",
     # WS-63 PZ-33: the orgs that get a summary of each private chat. The job
     # spends the org's AI credits with no request of the member, so only the
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
