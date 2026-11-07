@@ -475,11 +475,23 @@ export default function MyTasksSpace({
   const todayIds = useMemo(() => todayIdsOf(summary.data), [summary.data]);
   const todaySet = useMyTodaySet(Boolean(todayIds) && chip === "today");
   const setRows = useMemo(() => todaySet.data?.rows.map((row) => row.task) ?? null, [todaySet.data]);
+  useEffect(() => {
+    // The lanes of a project that only the Today set names, so its rows draw
+    // their status as the list rows do.
+    for (const id of new Set((setRows ?? []).map((row) => row.project_id))) {
+      if (!id || asked.current.has(id)) continue;
+      asked.current.add(id);
+      void ownStatuses(id);
+    }
+  }, [setRows, ownStatuses]);
   const shown = useMemo(
     () => chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows),
     [list.rows, chip, today, zone, todayIds, setRows],
   );
-  const statuses = useMemo(() => mineStatuses(list.rows, known), [list.rows, known]);
+  const statuses = useMemo(
+    () => mineStatuses(setRows ? [...list.rows, ...setRows] : list.rows, known),
+    [list.rows, setRows, known],
+  );
   // A status is a lane of ONE project, so the roll-up groups by stage instead.
   // The same holds for the lanes: a status lane would name one project's
   // status for cards of every project.
