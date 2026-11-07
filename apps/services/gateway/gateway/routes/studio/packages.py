@@ -57,6 +57,13 @@ caller. Fences: ``test_define_object_has_one_caller`` and
 ``test_each_publish_or_rollback_is_followed_by_a_sync``. A5b adds ``rollback``
 here and must call ``sync_objects`` after it.
 
+**The install (WS-PKG PKG-8a).** While ``PACKAGE_HOST_ORGS`` holds the org, a
+publish keeps one private install of the owner at the new version, after the
+sync and in the same session (``package_host/studio_app.py``). The org lock of
+the install store comes after the two locks above. A refusal of the install
+store is 409 or 422 with its ``detail_for`` of the member, and it rolls the
+publish back. With the switch off, a publish writes no install.
+
 **The answers.** 422 holds ``{message, errors: [{path, message}]}`` with at
 most :data:`MAX_PROBLEMS` errors. 409 holds ``{code, message, ...}``:
 ``package_exists`` and ``package_limit`` at create, and ``objects_out_of_sync``
@@ -134,6 +141,9 @@ from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import Depends, HTTPException, Request, Response
 from gateway.db import tenant_session as _tenant_session
+from gateway.package_host import store as host_store
+from gateway.package_host import studio_app
+from gateway.package_host.flags import package_host_allowed
 from gateway.routes.apps._common import record_app_audit_bound
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
@@ -375,6 +385,22 @@ def _sync_out(result: objects_store.SyncResult) -> dict[str, Any]:
     }
 
 
+async def _keep_install(db: Any, user: UserContext, pid: str,
+                        version: store.PackageVersion) -> None:
+    """PKG-8a: the private install of the owner follows the publish, in its
+    session. With ``PACKAGE_HOST_ORGS`` off for the org, it writes nothing.
+    A refusal of the install store is its ``detail_for`` of the member and
+    nothing else, and the raise rolls the publish back."""
+    if not package_host_allowed(user.organization_id) or version.manifest is None:
+        return
+    try:
+        await studio_app.keep_private_install(
+            db, app_id=pid, version=version.version, owner=user.email,
+            manifest=version.manifest)
+    except host_store.InstallError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail_for(user.email)) from None
+
+
 def _sync_audit(version: int, result: objects_store.SyncResult) -> dict[str, Any]:
     """The audit detail of a sync that changed rows: names and counts, no value."""
     return {
@@ -506,6 +532,7 @@ async def publish(
                 db, user.email, package_id=pid, objects=version.manifest.get("objects") or [])
             if result is None:
                 raise _not_found()
+            await _keep_install(db, user, pid, version)
             rows = await objects_store.list_objects(db, pid)
     if result.changed:
         await record_app_audit_bound(
@@ -561,7 +588,8 @@ def _preview_out(found: store.DeletePreview) -> dict[str, Any]:
         "totals": {"objects": len(found.objects), "fields": found.fields,
                    "records": found.records, "records_capped": found.capped,
                    "versions": found.versions, "installs": found.installs,
-                   "other_member_installs": found.other_member_installs},
+                   "other_member_installs": found.other_member_installs,
+                   "own_entries": found.own_entries},
         "confirm": found.confirm,
     }
 

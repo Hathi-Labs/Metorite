@@ -692,7 +692,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **H1** | **Carried by WS-PKG PKG-8** (`package_host.md`, D147). Installed apps in the sidebar, per org, through the one run-time registry. Studio builds no list of its own | An installed app shows for a member who may open it, and for no one else. `nav.test.ts` still counts only the built-in live panes | STD | AGENT-SAFE |
+| **H1** | **Carried by WS-PKG PKG-8** (`package_host.md`, D147). Installed apps in the sidebar, per org, through the one run-time registry. Studio builds no list of its own. **PKG-8a is built dark (2026-11-07):** a publish keeps a private sidebar entry of the owner at `/apps/<package id>` (`package_host.md` §5.5). PKG-8b adds the org and group scopes | An installed app shows for a member who may open it, and for no one else. `nav.test.ts` still counts only the built-in live panes | STD | AGENT-SAFE |
 | **H2** | **Carried by WS-PKG PKG-8** (`package_host.md`, D147). App jobs, needs, Home cards and search from the manifest into the shell seams | A job of an installed app shows in ⌘K "Do". A need shows in the bell | STD | AGENT-SAFE |
 | **H3** | Phone and WhatsApp: a skill's cards over WhatsApp | A skill's write on WhatsApp still asks once | STD | AGENT-SAFE |
 

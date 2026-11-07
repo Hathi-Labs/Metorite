@@ -48,6 +48,7 @@ import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 import { ActivityControl, ActivityHost } from "@/lib/shell/ActivityControl";
 import { shellDockOn } from "@/lib/shell/dockFlag";
+import { useInstallNav } from "@/lib/shell/packageManifest";
 import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import { shellChatOn } from "@/lib/shell/chatFlag";
@@ -490,9 +491,12 @@ function MobileBottomNavInner({
   // The member's stars (owner, 2026-10-11), the same model as the desktop
   // sidebar: each category lists only the apps they starred.
   const shell = useShellPrefs();
-  const drawerSections = shellNav
-    ? shellSidebar(navSections, shell.loading ? undefined : shell.layout)
-    : navSections;
+  // PKG-8a: the panes of the installs join "Apps" here too, through the hook that
+  // the desktop sidebar calls, so the phone shows the same installs.
+  const drawerSections = useInstallNav(
+    shellNav ? shellSidebar(navSections, shell.loading ? undefined : shell.layout) : navSections,
+    access.features,
+  );
   // The skeleton holds the place while the first layout read is out, as on
   // the desktop sidebar (`useShellPending`).
   const shellPending = useShellPending(shellNav && shell.loading);
