@@ -355,6 +355,8 @@ Deploy order makes fail-closed safe: `apply_migrations.sh` runs before the gatew
 
 ## 8a. Integration credentials and org memory (seam 3, authorization half)
 
+> **Status, 2026-11-07 (task 1120, H-437):** 🟢 A web chat run gets the filter of its session member. MCP-C1 shipped this on 2026-11-04 with no flag. `_integration_authorizer` takes the member as the keyword `session_user`, and the stream route passes the session member. A run with no session keeps the body's claim. Fence: `tests/unit/test_org_access_credentials.py`.
+
 ### What is enforced
 
 An agent's `config.json` declares which integrations it *wants*. Which of those the platform actually resolves is now decided by the **acting member**, via `integrations:use:<service>`:
