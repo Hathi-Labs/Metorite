@@ -1,8 +1,8 @@
 # Waiting — one list of what waits on you, and of what you wait on (WS-AP)
 
-**Product:** Metorite · **Feature:** one list of what waits on a member, and of what the member waits on · **Updated:** 2026-11-06 · **Owner:** vjvarada
+**Product:** Metorite · **Feature:** one list of what waits on a member, and of what the member waits on · **Updated:** 2026-11-07 · **Owner:** vjvarada
 
-**Status:** 🟡 **SPEC, ACCEPTED. AP-1a BUILT, dark, not merged** (task 1616, branch `pro-ap1`). AP-1a is the read seam of §7.3 with four kinds, behind `WAITING_ORGS` (empty by default). The other slices are not built, except the parts that §2 names.
+**Status:** 🟡 **SPEC, ACCEPTED. AP-1a MERGED** as `bf0ece44b` (PR 1797, task 1616). AP-1a is the read seam of §7.3 with four kinds, dark behind `WAITING_ORGS` (empty by default). **AP-8a** is PR 1829 (migration 352), in the merge queue and not merged. **AP-2a BUILT, dark** (task 1617, branch `pro-ap2`): the page `/waiting` and its `preview` pane. The other slices are not built, except the parts that §2 names.
 
 On 2026-11-06 the owner accepted the recommended answers to AP-Q1 to AP-Q8 (§13). AP-Q9 has a working default. The owner answered AP-Q10, so AP-16 is open to build after AP-15.
 
@@ -12,7 +12,7 @@ On 2026-11-06 the owner accepted the recommended answers to AP-Q1 to AP-Q8 (§13
 
 **Metorite:** project "Proactive Intelligence", epic 1615. This spec is task 1855 (AP-0). The slices are listed in §8 with their task numbers.
 
-**Gate summary:** every slice is AGENT-SAFE to build dark. The owner accepted the new sidebar row (AP-Q1), so AP-2 adds the live pane to `launch_surface.md` §2 in its PR. Each production flag flip is named in its PR with the box and the evidence.
+**Gate summary:** every slice is AGENT-SAFE to build dark. The owner accepted the new sidebar row (AP-Q1), so AP-2c adds the live pane to `launch_surface.md` §2 in its PR. Each production flag flip is named in its PR with the box and the evidence.
 
 ---
 
@@ -263,12 +263,18 @@ If Vijay had left the org at step 1, step 1 of the ladder fails. The task has no
 
 A new row **"Waiting"** in Personal Center, right under My Day. Its count is the number of open waits in "For you". The count never shows 0, and it shows "99+" past 99, as the needs pill does.
 
+**Where the row goes.** The row is a `NavPane` in `nav.ts`, with team `personal`. It is the first item of the Personal Center group, so it sits under My Day. It is not a row of the top block beside `MyDayRow`. Team `across` puts a pane in "Across teams" (`shellNav.ts` `byTeam`), so the pane does not use `across`.
+
+**The count, until AP-1b lands.** The lead decided option (a). The count holds the AP-1a kinds only, and it equals `GET /shell/waiting/count`. The client never adds the agent-run total to the seam count (§7.3, one count path). AP-2c, the live flip, waits for AP-1b or an owner word.
+
+**Dark.** The pane stays `preview` while `WAITING_ORGS` is off in production. No second nav filter hides the row on a 404 (`launch_surface.md` §8.4). On a 404 the row shows no count. The pane has no gate, as `/integrations` has none.
+
 ```text
 ┌──────────────────────────┐
 │  ◉ Metorite              │
 │                          │
-│  PERSONAL                │
 │  ☀ My Day            12  │   ← the feed total, minus the waits (AP-3)
+│  PERSONAL                │
 │  ⏳ Waiting           4  │   ← NEW. Open waits "For you". Amber pill
 │  🗓 Calendar          2  │
 │  ✉ My Email              │
@@ -563,7 +569,9 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-1a** | 1616 | The read seam of §7.3, with its count, for four kinds: `held_write` (admins only), `chat_ask`, `app_request` and `decision` | The 4 kinds come from one route, each with kind, title (as data), waiter, href, since and acts. Each act is a link. A failed source reads `failed`. R8 tests hold V1, V2, V3 and V6. **Built, dark, not merged** | HIGH (tenancy, identity) |
 | **AP-1b** | 1616 | The kinds `agent_question` and `archive_request` | The same shape. **Waits on an owner decision:** D-EA-14 point 1 or AP-Q2 (§2.2 item 2a) | HIGH (identity) |
 | **AP-1c** | 1616 | The kind `person_ask` | The same shape. Needs AP-8 | HIGH (identity) |
-| **AP-2** | 1617 | The page `/waiting` and the sidebar row. The PR 1741 section on `/approvals` moves here, and `/approvals` links to it | The row shows the count of "For you". The page lists both directions and answers in place. `nav.test.ts` holds the new live pane, and `launch_surface.md` §2 lists it. Captures at 1440 and 390, light and dark, compact, a changed accent | MEDIUM |
+| **AP-2a** | 1617 | The page `/waiting` ("For you" only) and the sidebar row, as a `preview` pane. The PR 1741 section on `/approvals` moves here, and `/approvals` links to it | `/waiting` lists the AP-1a kinds and the member's own awaiting agent runs, oldest first. A failed source reads failed. A 404 shows the off state. The row's count equals `/shell/waiting/count`. `/approvals` shows no agent question list and links to `/waiting`. The pane is `preview`. Captures at 1440 and 390, light and dark, compact, a changed accent. **Built, dark** | MEDIUM |
+| **AP-2b** | none yet | "On others" on the page | The list shows the person asks that the member sent, and the member's private hand-offs. Needs AP-1c, AP-8 and a `waiting_for` provider | MEDIUM |
+| **AP-2c** | none yet | The live flip: the pane goes `live` | `nav.test.ts` `LIVE_SET` holds the pane, and `launch_surface.md` §2 lists it. The `answer-wait` link job ships (§12). Waits for AP-1b or an owner word (§5.1) | MEDIUM |
 | **AP-3** | 1618 | My Day "Needs you" reads AP-1, top 5, "See all". The My Day row stops counting waits | No wait counts in two rows. A test reads both counts from one fixture | STANDARD |
 | **AP-4** | 1623 | One `WaitCard` for every kind, with the acts of its kind | The card draws in My Day, on the page and in the chat. The text is fenced (V8) | MEDIUM |
 | **AP-5** | 1624 | Reach for waits (= BUD-7). An agent question and a person ask that is due today or overdue are interrupts. Other person asks are brief | The class table of `reach/classes.py` holds `waiting_on_you`. The 3-a-day budget holds | HIGH |
@@ -584,7 +592,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 
 1. AP-BUG-1 at once.
 2. AP-1 and AP-8, in parallel.
-3. AP-2, AP-4 and AP-9.
+3. AP-2a, AP-4 and AP-9. Then AP-2b after AP-1c and AP-8, and AP-2c after AP-1b.
 4. AP-3, AP-10 and AP-11.
 5. AP-15, then AP-12, AP-5 and AP-6.
 6. AP-13. Then AP-16, after AP-15 (AP-Q10 is answered). AP-14 waits (AP-Q7).
@@ -607,7 +615,11 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | The overlay wait and the nudge | `apps/services/gateway/gateway/routes/projects/personal.py` (`set_personal` `:1009`, `nudge_task` `:3147`), `infra/postgres/188_projects_personal_overlay_fields.sql` |
 | The filter and the panel | `routes/projects/filters.py:1478`, `routes/projects/analytics_waiting.py`, `workbench/control_plane/src/app/projects/lib/waiting.ts` |
 | The bell | `routes/projects/notifications.py` (`NOTIFICATION_KINDS` `:75`, `notify`, `deliverable`), `workbench/control_plane/src/app/projects/lib/notifications.ts:79` |
-| The sidebar | `workbench/control_plane/src/lib/nav.ts`, `nav.test.ts`, `src/lib/shell/Sidebar.tsx` (`MyDayRow` `:1322`, `paneBadge` `:1053`) |
+| Agent runs, the list of the member | `apps/services/gateway/gateway/routes/projects/agent_runs.py` (`list_my_agent_runs` `:1862`), read by `agentRunsApi.waiting()` in `workbench/control_plane/src/app/projects/lib/api.ts:3317` |
+| The read seam | `apps/services/gateway/gateway/routes/shell/waiting.py`. The BFF routes are `workbench/control_plane/src/app/api/shell/waiting/route.ts` and `waiting/count/route.ts` |
+| The page | `workbench/control_plane/src/app/waiting/page.tsx`, with its rules in `src/app/waiting/lib/` |
+| The sidebar | `workbench/control_plane/src/lib/nav.ts`, `nav.test.ts`, `src/components/Sidebar.tsx` (`MyDayRow` `:1322`, `paneBadge` `:1053`), `src/lib/shell/useNavNeeds.ts`, `src/lib/shell/navNeeds.ts`, `e2e/sidebar-row-counts.spec.ts` |
+| The shell manifest | `packages/acb_common/acb_common/app_manifests/shell/waiting.json`, `scripts/gen_shell_manifests.py`, the `*.generated.ts` files of `workbench/control_plane/src/lib/shell/`, `src/lib/shell/registry.ts`, `apps/services/gateway/gateway/routes/shell/intent.py`, `tests/unit/test_shell_manifests.py`, `tests/unit/test_shell_intent.py` |
 | The chat tools | `apps/skills/skill-projects/skill_projects/reads.py:1834`, `writes.py`, `guarded.py`, `manifest.py` |
 | Reach classes | `apps/services/gateway/gateway/reach/classes.py` |
 
@@ -619,7 +631,8 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_decisions.py tests/unit/test_waiting_seam_r8.py tests/unit/test_person_asks_r8.py -q
 uv run pytest tests/unit/test_agent_runs_r8.py -q
-cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/nav.test.ts src/app/waiting src/lib/shell
+uv run pytest tests/unit/test_shell_manifests.py tests/unit/test_shell_intent.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/nav.test.ts src/app/waiting src/app/approvals src/app/api/shell src/lib/shell
 uv run python scripts/affected_tests.py --run
 ```
 
@@ -638,7 +651,8 @@ A run that SKIPS the R8 suites proves nothing (843 tests skip with no database).
 | V8 | `src/app/waiting/lib/waitCard.test.ts` (new, AP-4) | Advisory until AP-4 |
 | V9, V10, the circle half of V1 | `tests/unit/test_waiting_seam_r8.py` (AP-15 cases) | Advisory until AP-15 |
 | V11 | `tests/unit/test_agent_ask_for_r8.py` (new, AP-16) | Advisory until AP-16 |
-| The live pane | `src/lib/nav.test.ts` `LIVE_SET` | Binds when AP-2 merges |
+| The pane stays `preview` | `src/lib/nav.test.ts` (AP-2a case) | Binds when AP-2a merges |
+| The live pane | `src/lib/nav.test.ts` `LIVE_SET` | Binds when AP-2c merges |
 | No app-local bell or palette | `src/lib/shell/seams.test.ts` | Binds now |
 
 ---
@@ -647,11 +661,11 @@ A run that SKIPS the R8 suites proves nothing (843 tests skip with no database).
 
 | Field | Value |
 |---|---|
-| Team | `across` |
+| Team | `personal`. The pane is the first item of the Personal Center group (§5.1) |
 | Purpose | "Everything that waits on you, and everyone you wait on." |
-| Jobs | `ask-person`: verb "Ask", fields who, need and by when, form on the task card. `answer-wait`: verb "Answer", from the row |
+| Jobs | AP-2a declares none. AP-2c adds `answer-wait`: a link job, verb "Answer", that opens `/waiting`. AP-9 adds `ask-person`: verb "Ask", fields who, need and by when, a form on the task card |
 | Search provider | None. ⌘K finds the task |
-| Needs | The kinds of §3.2 that fill "For you". They feed the one needs registry (§7.3) |
+| Needs | The kinds of §3.2 that fill "For you". They come from the read seam of §7.3, which does not register in `needs.REGISTRY`. AP-3 decides how My Day reads them |
 | Home cards | My Day "Needs you", altitude `me` |
 | Agent | Mira, through the AP-10 tools |
 
@@ -687,3 +701,4 @@ Each open question has a recommended answer. The build uses it as a working defa
 - 2026-11-06 — AP-0 written (task 1855). The research read `97da742ae` and the branch `l6s-waiting-list`. It found the store for person asks (`pm_decisions`), the nudge text defect (AP-BUG-1), and the open `/approvals` gateway read (§2.1).
 - 2026-11-06 — The owner accepted AP-Q1 to AP-Q8 on task 1855. The owner then asked, in chat, that a wait on a task with no assignee reach the right people. Added §4.5 (the ladder, the circle and the open wait), V9 to V11, AP-15 (task 1875), AP-16 (task 1876), AP-Q9 and AP-Q10.
 - 2026-11-06 — AP-1a built on branch `pro-ap1` (task 1616), dark behind `WAITING_ORGS`. Four kinds: `held_write`, `chat_ask`, `app_request` and `decision`. §7.3 now says that the providers stay in `waiting.py` and holds the wire shape. §8 splits AP-1 into AP-1a, AP-1b and AP-1c. §5.2 shows no question text for `chat_ask`. §2.2 records that PR 1741 and EA-18a merged, and the conflict of D-EA-14 with AP-Q2.
+- 2026-11-07 — AP-1a merged as `bf0ece44b`. AP-2a built on branch `pro-ap2` (task 1617). §8 splits AP-2 into AP-2a, AP-2b and AP-2c. §5.1 places the row in the Personal Center group, and it holds the lead's count rule (option (a)) and the dark rule. §9, §10 and §12 name the files of AP-2a.
