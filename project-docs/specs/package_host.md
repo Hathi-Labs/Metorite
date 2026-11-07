@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. The bell part is not built. PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. The rest of this spec is not built.
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. The bell part is not built. PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. PKG-17a (the org default, backend only) is built dark: `GET` and `PUT /shell/layout` store the default star set and preset for each role, behind `PACKAGE_HOST_ORGS`. No client reads them yet (PKG-17b). The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `787269f0a`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
@@ -364,6 +364,14 @@ An overlay may not change an action's class, remove a permission check, or reach
 
 A nearer level wins: me, then the team lens, then the org default, then the system order.
 
+**What "sidebar order" means (PKG-17a, default of PKG-Q13).** The sidebar has no order that a member or an admin sets. The star model of `navigation_shell.md` §3.2b keeps the order of `nav.ts`. So the org default is the **default star set** (`pins`) and the **preset** for each role. The role keys are the system roles that a person holds: `owner`, `admin`, `manager`, `member` and `guest`.
+
+**The team lens stores nothing.** The team lens is the existing `scope=<slug>` filter (`navigation_shell.md` §4.2). It is a view, so it has no stored layer. The stored layers are two: the org default (`org_settings` key `shell_layout`) and the member (`user_settings.shell_prefs`).
+
+**The rule of precedence (`shell_layout.resolve_layout`).** The member's own `pins` win when they are a list, and an empty list counts. A member with `null` pins gets the `pins` of the default for their role. The member's `preset` wins when it is set. Else the default preset for the role applies. Else the client falls back to `roleDefault`.
+
+A member with many roles gets the default of the highest role that has an entry. The order is `owner`, `admin`, `manager`, `member`, `guest`. A pane in a default that the member does not hold stays hidden. The client's `visibleSections` subset rule (PKG-17b) owns that rule, not this module.
+
 ### 9.2 Stable and adaptive regions
 
 | Region | Where | How it changes |
@@ -440,7 +448,8 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **PKG-17** | The org default and the team lens of §9.1 | An admin sets a sidebar order for a role. A member's own pins still win | STD | AGENT-SAFE |
+| **PKG-17a** | The org default of §9.1, backend only: `GET` and `PUT /shell/layout`, the key `shell_layout` in `org_settings`, and the pure `resolve_layout` (no migration) | An admin PUT stores a per-role default. A member with stored pins gets their own. A member with null pins gets the role default. Org B reads none of org A's default. A non-admin PUT is 403. The flag off leaves the answer unchanged | STD | AGENT-SAFE |
+| **PKG-17b** | The client reads the org default (`shellNav.ts`, `packageManifest.ts`). It starts after the PR that edits those two files. The team lens needs no slice: it is the `scope=<slug>` filter | A member with null pins sees the starred apps of the role default, and a member with pins sees their own | STD | AGENT-SAFE |
 | **PKG-18** | The Today band, with a reason for each item (§9.3) | The band shows at most five items, each with a reason. A test shows that no stable region moves without a member action. D145 preview first | STD | AGENT-SAFE |
 | **PKG-19** | Pin suggestions with a reason, and generated personal views (§9.3, §9.4) | Yes writes the pin. No hides that suggestion for 30 days. A generated view is a private install with an end date | STD | AGENT-SAFE |
 | **PKG-20** | Appearance in `user_settings` (§9.5) | A second browser opens with the member's mode, density and accent | STD | AGENT-SAFE |
@@ -529,6 +538,12 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/nav.tes
 bash scripts/ci_local.sh
 ```
 
+PKG-17a adds:
+
+```bash
+uv run pytest tests/unit/test_shell_layout.py tests/unit/test_shell_layout_r8.py tests/unit/test_auth_me_shell.py tests/unit/test_chat_parity.py -q -p no:xdist -rs
+```
+
 A slice that changes UI also runs the `visual-review` skill in light mode, at compact density, under a changed accent and at four widths.
 
 ---
@@ -565,6 +580,7 @@ The owner accepted PKG-Q1 to PKG-Q5 as recommended on 2026-11-01 (D147).
 | PKG-Q4 | How far may the product rearrange itself for each person? | **It suggests and never moves** a stable region (§9.2) |
 | PKG-Q5 | Which harness lessons go first? | **Replay tests and logged model inputs**, then the goal record. `web_research.md` §8 carries them |
 | PKG-Q6 | May the private claim of a member, for a DIFFERENT app, block an org install? | **OPEN.** PKG-8 decides it before its install route ships. The two options are below |
+| PKG-Q13 | Does "sidebar order" mean the default star set per role (default, built in PKG-17a) or a real order (this amends the star-model rule of `navigation_shell.md` §3.2b)? And does the default apply only to a member with null pins (default) or also to new apps? | **OPEN.** The defaults are built. The owner may change them |
 
 **PKG-Q6 in detail.** Today the private claim blocks the org install, because an org claim conflicts with every claim (§4). So a member can squat on a key, and no route removes the install before PKG-9. PKG-8 picks one of two options:
 1. **The org wins.** The org install goes in, and the resolve shows the org claim in place of the private claim (§5.2).
