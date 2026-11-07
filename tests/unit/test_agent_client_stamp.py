@@ -111,6 +111,13 @@ CLAUDE_ORIGIN = "https://claude.ai"
 NEW = "mcp:claude.ai:claude-code"
 LEGACY = "mcp:claude.ai"
 
+#: H-367. A DCR client id is opaque, not a URL, so it gives no slug, and the
+#: row's own stamp is the host stamp. EA-2b is not built yet, so the id takes
+#: the shape that N3 uses.
+DCR_CLIENT = "mt_dcr_8f3a2c"
+DCR_ORIGIN = "https://dcr.example"
+SLUGLESS = "mcp:dcr.example"
+
 _CASES = Path(__file__).resolve().parents[1] / "fixtures" / "agent_client_names.json"
 
 
@@ -229,26 +236,39 @@ _APP_ROLE = "acb_app_mcpstamp"
 _APP_PW = "mcpstamp_scratch_pw"
 
 
-def _claude_connection(a) -> tuple[str, str]:
-    """A live connection of Claude Code and one access token for it."""
+def _connection(a, *, client: str, name: str, origin: str) -> tuple[str, str]:
+    """A live connection of the client *client* at *origin*, and one access
+    token for it."""
     from acb_auth import agent_tokens
 
     cid = str(a.one(
         "INSERT INTO agent_connection (organization_id, member_email, client_id,"
         " client_name, client_origin, scopes, pinned_projects, include_personal,"
-        " expires_at) VALUES (CAST(:o AS uuid), :m, :client, 'Claude Code', :origin,"
+        " expires_at) VALUES (CAST(:o AS uuid), :m, :client, :name, :origin,"
         " CAST(:scopes AS text[]), CAST('{}' AS uuid[]), false,"
         " now() + interval '1 day') RETURNING id",
-        o=a.org, m=MEMBER, client=CLAUDE_CODE, origin=CLAUDE_ORIGIN,
+        o=a.org, m=MEMBER, client=client, name=name, origin=origin,
         scopes=list(w.WRITE_SCOPES)))
     raw = agent_tokens.new_token()
     a.one("INSERT INTO agent_token (organization_id, connection_id, kind, token_hash,"
           " expires_at, client_id, resource, scope) VALUES (CAST(:o AS uuid),"
           " CAST(:c AS uuid), 'access', :h, now() + interval '1 hour', :client, :r, :s)"
           " RETURNING id",
-          o=a.org, c=cid, h=agent_tokens.hash_token(raw), client=CLAUDE_CODE,
+          o=a.org, c=cid, h=agent_tokens.hash_token(raw), client=client,
           r=w.RESOURCE, s=" ".join(w.WRITE_SCOPES))
     return cid, raw
+
+
+def _claude_connection(a) -> tuple[str, str]:
+    """A live connection of Claude Code and one access token for it."""
+    return _connection(a, client=CLAUDE_CODE, name="Claude Code", origin=CLAUDE_ORIGIN)
+
+
+def _dcr_connection(a) -> tuple[str, str]:
+    """H-367. A live connection whose client id gives NO slug: the opaque id
+    that a dynamic client registration gives (the shape of N3). Its stamp is
+    the host stamp ``mcp:<host>``."""
+    return _connection(a, client=DCR_CLIENT, name="A DCR client", origin=DCR_ORIGIN)
 
 
 @pytest.fixture(scope="module")
@@ -300,6 +320,7 @@ def world():
     # `write` is the generic connection that `tw.live` warms up with.
     world_.c["write"], world_.tok["write"] = a.connection(scopes=w.WRITE_SCOPES)
     world_.c["claude"], world_.tok["claude"] = _claude_connection(a)
+    world_.c["dcr"], world_.tok["dcr"] = _dcr_connection(a)
     world_.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
@@ -455,3 +476,101 @@ class TestTheStampOnARealDatabase:
             "task_id": task, "idempotency_key": "ms-agent-1"})
         assert again["structuredContent"]["created"] is False, again
         assert len(_runs(live, task)) == 1
+
+
+class _Recorder(httpx.AsyncBaseTransport):
+    """The edge's transport to the gateway app, which records each request
+    the edge sent: its method, its path, its signed ``X-Actor-Via`` and the
+    status that the gateway answered."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self.inner = inner
+        self.seen: list[tuple[str, str, str | None, int]] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await self.inner.handle_async_request(request)
+        self.seen.append((request.method, request.url.path,
+                          request.headers.get(agent_signing.HEADER_ACTOR_VIA),
+                          response.status_code))
+        return response
+
+
+async def _through_the_edge(world, name: str, tool: str, arguments: dict[str, Any]
+                            ) -> tuple[dict[str, Any], list[tuple[str, str, str | None, int]]]:
+    """One ``tools/call`` through the REAL edge app. The edge signs each
+    gateway request with ``gateway_client.signed_request_headers``, the signer
+    of production. Returns the tool result and what the gateway answered."""
+    from agent_edge import gateway_client
+    from gateway.main import app as gateway_app
+
+    recorder = _Recorder(httpx.ASGITransport(app=gateway_app))
+    with gateway_client.use_transport(recorder):
+        result = await tw._mcp(world, name, tool, arguments)
+    return result, recorder.seen
+
+
+class TestASluglessConnectionOnARealDatabase:
+    """H-367 (PR #1184 review, P3). For a connection whose client id gives
+    no slug, the edge and branch 0 must compute the SAME stamp,
+    ``mcp:<host>``. Until H-356 the legacy arm of branch 0 hid a drift
+    between them. Now a drift gives every such client a 401.
+
+    The observable is the status that the gateway gives to the request that
+    the real edge signed, which ``_Recorder`` reads on the wire. A tool result
+    alone could hide a 401 behind an error text.
+
+    **The mutations (R7).** Each one is a temporary edit of ``A/deps.py``
+    branch 0, step 5. Each one turned
+    ``test_a_slugless_dcr_connection_gets_200_through_branch_0`` red, and
+    left ``test_a_slugless_control_a_row_with_a_slug_gets_200`` green.
+
+    * H3. Refuse the host stamp ``actor_via_for(client_origin,
+      client_id=None)`` too, an over-reach of the H-356 removal.
+    * H4. A forced slug: append ``:dcr`` to an expected stamp that has no
+      slug.
+    """
+
+    pytestmark = _DB_GATE
+
+    async def test_a_slugless_dcr_connection_gets_200_through_branch_0(self, live):
+        # The row really has no slug, so this is not the slug case again.
+        assert agent_oauth.client_slug(DCR_CLIENT) == ""
+        assert agent_oauth.actor_via_for(DCR_ORIGIN, client_id=DCR_CLIENT) == SLUGLESS
+        task = live.task(live.team, live.s.todo, "h367 slugless")
+        path = f"/projects/tasks/{task}"
+
+        read, seen = await _through_the_edge(live, "dcr", "get_task", {"task_id": task})
+        assert read["isError"] is False, read
+        assert ("GET", path, SLUGLESS, 200) in seen, seen
+        assert all(via == SLUGLESS and status == 200 for _, _, via, status in seen), seen
+
+        wrote, seen = await _through_the_edge(live, "dcr", "add_comment", {
+            "task_id": task, "body": "Slugless.", "idempotency_key": "h367-comment-1"})
+        assert wrote["isError"] is False, wrote
+        assert seen and all(via == SLUGLESS and 200 <= status < 300
+                            for _, _, via, status in seen), seen
+        with live.admin.begin() as c:
+            via = c.execute(text(
+                "SELECT meta->>'via' FROM pm_activities WHERE task_id = CAST(:t AS uuid)"
+                " AND type = 'comment'"), {"t": task}).scalar()
+        assert via == SLUGLESS
+
+    async def test_a_slugless_dcr_connection_refuses_another_stamp(self, live):
+        """Branch 0 compares the stamp. It does not accept any stamp for a
+        row with no slug."""
+        task = live.task(live.team, live.s.todo, "h367 wrong stamp")
+        path = f"/projects/tasks/{task}"
+        assert (await _signed(live, "dcr", "GET", path, SLUGLESS)).status_code == 200
+        for wrong in ("mcp:dcr.example:mt-dcr-8f3a2c", "mcp:dcr.example:dcr",
+                      "mcp:other.example", NEW):
+            r = await _signed(live, "dcr", "GET", path, wrong)
+            assert r.status_code == 401, (wrong, r.text)
+
+    async def test_a_slugless_control_a_row_with_a_slug_gets_200(self, live):
+        """The control. The same edge path gives 200 to a row WITH a slug,
+        under its slug stamp, so the slugless test cannot pass for a reason
+        that is not the stamp."""
+        task = live.task(live.team, live.s.todo, "h367 control")
+        read, seen = await _through_the_edge(live, "claude", "get_task", {"task_id": task})
+        assert read["isError"] is False, read
+        assert ("GET", f"/projects/tasks/{task}", NEW, 200) in seen, seen
