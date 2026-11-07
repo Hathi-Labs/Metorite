@@ -22527,7 +22527,7 @@ count of opens. No change to the table `email_assistant_settings`.
 | **D-EM-68** | The public image URL carries the organization and a random token of 256 bits that the row stores. The route binds `tenant_session(org)` and selects the one row whose token matches, under RLS. It uses no MAC | The token is the capability, and RLS stops a token of one organization under the id of another. A MAC keyed by `gateway_session_secret` dies when that secret rotates, which breaks every logo already sent. A dedicated never-rotated key would be a second secret to keep for ever. A stored token needs neither. The design needs no `SECURITY DEFINER` function |
 | **D-EM-69** | The company signature is one key, `email_signature_brand`, in `org_settings`. `admin:settings:manage` writes it. Its logo starts as a copy of the Branding logo | The per-organization settings seam exists. A new table would be a second one |
 | **D-EM-70** | The server cleans each signature HTML on save, with one allowlist in `signature.py`, built on the standard-library `html.parser` as `pdf_render._Sanitizer` is. No new dependency. Each `src` and `href` must be https, `mailto:` or `tel:`. The save converts a `data:` image into a hosted image first. The client DOMPurify list in `SignatureEditor.tsx` changes to the same schemes | Today nothing cleans the HTML on the server. The chat card will draw it, so the server must own the rule. Two lists that differ let the editor show what the server then removes |
-| **D-EM-71** | A mailbox has `reply_mode`: `full`, `short` or `none`. `short` is the `compact` layout of the same fields. Each existing mailbox starts at `full` | Outlook offers a second signature for replies. Rule 7 keeps today's mail the same |
+| **D-EM-71** | A mailbox has `reply_mode`: `full`, `short` or `none`. `short` is the `compact` layout of the same fields. Each existing mailbox starts at `full`. A new signature starts at `short` (SG-Q2, owner, 2026-11-07) | Outlook offers a second signature for replies. Rule 7 keeps today's mail the same |
 | **D-EM-72** | The chat gets `get_signature` (a read, no card) and `set_signature` (one card with the before and after preview). A held run refuses `set_signature` | Chat parity. A signature changes outbound mail, so it stays out of the held set, as `signature` is today |
 
 ### 23.3 The design
@@ -22694,7 +22694,8 @@ image in your signature may not show in Gmail" with a one-click "Fix it".
   `company`.
 - **What a member can change.** In `company` mode, the member edits the personal fields only:
   name, title, phone, mobile and photo. To change more, the member switches to an own layout
-  (`template`), unless owner question SG-Q1 says otherwise.
+  (`template`). The owner answered SG-Q1 on 2026-11-07: an admin cannot require the company
+  signature in v1.
 - **A change.** The admin saves, and the next send of each `company` mailbox carries the new
   version (D-EM-66).
 
@@ -22856,7 +22857,10 @@ bash scripts/ci_local.sh && bash scripts/premerge.sh
 
 ### 23.10 Owner questions
 
-| Id | Question | Recommendation |
+The owner answered both on task 1959 on 2026-11-07 at 08:30 UTC, with "Accept both". Each
+recommendation below is now the decision.
+
+| Id | Question | Answer |
 |---|---|---|
 | **SG-Q1** | May an admin require the company signature, so a member cannot switch to an own layout? | No, in v1. The company signature is the first choice for each mailbox, one click away. A "required" switch can come later |
 | **SG-Q2** | For a new signature, should replies and forwards get the full or the short signature? | Short (name, title, company, phone), as most companies use. Each existing mailbox keeps full |
