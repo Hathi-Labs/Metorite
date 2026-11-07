@@ -9,12 +9,14 @@ import {
   attachReducer,
   canSend,
   composeMessage,
+  editStart,
+  safeFileName,
   hasFiles,
   pastedImageName,
   readyFiles,
   type PendingFile,
 } from "./chatAttachments";
-import { uploadNote } from "./chatUpload";
+import { parseUploadNote, uploadNote } from "./chatUpload";
 
 const chip = (id: string, name: string, state: PendingFile["state"] = "uploading"): PendingFile => ({
   id, name, size: 100, state,
@@ -82,5 +84,47 @@ describe("composer attachments", () => {
     expect(hasFiles(["text/plain", "Files"])).toBe(true);
     expect(hasFiles(["text/plain"])).toBe(false);
     expect(hasFiles(undefined)).toBe(false);
+  });
+});
+
+describe("edit of a sent message (IMG-1 fix round)", () => {
+  const files = [
+    { name: "a.png", path: "inputs/t/a.png" },
+    { name: "b.pdf", path: "inputs/t/b.pdf" },
+  ];
+  const sent = `Make a task.\n\n${uploadNote(files)}`;
+
+  it("opens the words and the files as ready chips", () => {
+    const e = editStart(sent, (p) => `/f?path=${p}`);
+    expect(e.words).toBe("Make a task.");
+    expect(e.items.map((i) => [i.name, i.state, i.path])).toEqual([
+      ["a.png", "ready", "inputs/t/a.png"],
+      ["b.pdf", "ready", "inputs/t/b.pdf"],
+    ]);
+    expect(e.items[0].previewUrl).toBe("/f?path=inputs/t/a.png");
+    expect(e.items[1].previewUrl).toBeUndefined();
+  });
+
+  it("saves the words and the note of the kept files", () => {
+    const e = editStart(sent);
+    const kept = attachReducer(e.items, { type: "remove", id: e.items[0].id });
+    expect(composeMessage("Edited.", kept)).toBe(`Edited.\n\n${uploadNote([files[1]])}`);
+    const none = attachReducer(kept, { type: "remove", id: kept[0].id });
+    expect(composeMessage("Edited.", none)).toBe("Edited.");
+    expect(canSend("", none)).toBe(false);
+    expect(canSend("", kept)).toBe(true);
+  });
+
+  it("keeps the raw text of a message whose note does not parse", () => {
+    const raw = "x\n\n📎 Uploaded 2 file(s): a.png";
+    expect(editStart(raw)).toEqual({ words: raw, items: [] });
+  });
+});
+
+describe("file names", () => {
+  it("swaps a backtick for an apostrophe, so the note still parses", () => {
+    expect(safeFileName("my`file.png")).toBe("my'file.png");
+    const name = safeFileName("my`file.png");
+    expect(parseUploadNote(uploadNote([{ name, path: `inputs/t/${name}` }]))?.files[0].name).toBe("my'file.png");
   });
 });

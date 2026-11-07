@@ -12,7 +12,7 @@
  *
  * Fence: `src/lib/chatAttachments.test.ts`.
  */
-import { uploadNote, type NotedFile } from "@/lib/chatUpload";
+import { isImageName, parseUploadNote, uploadNote, type NotedFile } from "@/lib/chatUpload";
 
 export type ChipState = "uploading" | "ready" | "failed";
 
@@ -80,6 +80,38 @@ export function composeMessage(words: string, items: readonly PendingFile[]): st
   const w = words.trim();
   if (files.length === 0) return w;
   return w ? `${w}\n\n${uploadNote(files)}` : uploadNote(files);
+}
+
+/**
+ * A backtick in a name would end its path in the note, and the note would not
+ * parse. The name gets an apostrophe before the upload (attach, paste, drop).
+ */
+export function safeFileName(name: string): string {
+  return name.replace(/`/g, "'");
+}
+
+/**
+ * What an edit of a sent message opens: the words, and the files of its note
+ * as READY chips (no upload, no object URL). A message whose note does not
+ * parse opens as its raw text, with no chips.
+ */
+export function editStart(
+  content: string,
+  urlFor?: (path: string) => string,
+): { words: string; items: PendingFile[] } {
+  const note = parseUploadNote(content);
+  if (!note) return { words: content, items: [] };
+  return {
+    words: note.words,
+    items: note.files.map((f, i) => ({
+      id: `edit-${i}-${f.path}`,
+      name: f.name,
+      size: 0,
+      state: "ready" as const,
+      path: f.path,
+      previewUrl: urlFor && isImageName(f.name) ? urlFor(f.path) : undefined,
+    })),
+  };
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");

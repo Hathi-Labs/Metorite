@@ -61,7 +61,7 @@ export function PendingChips({
               <span role="alert" className="block text-[11px] text-destructive">{p.error}</span>
             ) : (
               <span className="block text-[11px] text-muted-foreground">
-                {p.state === "uploading" ? "Uploading…" : formatFileSize(p.size)}
+                {p.state === "uploading" ? "Uploading…" : p.size > 0 ? formatFileSize(p.size) : "Attached"}
               </span>
             )}
           </span>

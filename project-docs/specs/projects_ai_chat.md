@@ -6799,7 +6799,7 @@ STANDARD. Frontend only.
 
 ✅ built 2026-11-07, branch `mt-10bf2e89-img1`.
 
-**Built.** The build differs from the plan in five ways.
+**Built.** The build differs from the plan in seven ways.
 1. The composer state is a pure reducer in `lib/chatAttachments.ts`. The hook
    `hooks/useChatAttachments.ts` runs the uploads. The vitest rig has no DOM,
    so `chatAttachments.test.ts` drives the reducer, and the browser half was
@@ -6810,11 +6810,16 @@ STANDARD. Frontend only.
 3. `FileUploadButton` has a new `onPick` prop. The Files drawer drop zone
    keeps its old upload.
 4. `wordsOfMessage` (beside `parseUploadNote`) gives the thread title and the
-   Copy action the words only. Edit still opens the whole message, note
-   included. Chat search reads the saved text on the server, so it can show
-   the raw note. Neither is changed here.
+   Copy action the words only. Edit opens the words, and the files come back
+   as ready chips with a remove control (`editStart`). A save sends the words
+   and the note of the kept files. A note that does not parse edits as raw
+   text. Chat search reads the saved text on the server, so it can show the
+   raw note. That is not changed here.
 5. A paste that carries text stays text, so a copy from a page does not
    attach its picture.
+6. The send trims the member's words before the note.
+7. A backtick in a file name becomes an apostrophe before the upload. An
+   upload keeps the thread that was open when the file was attached.
 
 - **Files:** `components/AgentChat.tsx` (composer and message bubble),
   `components/FileUploadButton.tsx`, `lib/chatUpload.ts`, and a new
