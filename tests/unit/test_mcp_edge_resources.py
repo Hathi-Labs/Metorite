@@ -247,7 +247,7 @@ class TestThePlaybookResources:
         error = (await _read("metorite://playbook/gates"))["error"]
         assert error == {"code": -32002, "message": "Resource not found"}
 
-    async def test_the_playbook_is_dark_while_agent_resources_orgs_is_empty(self, armed, monkeypatch):
+    async def test_the_playbook_is_dark_while_agent_resources_orgs_is_empty(self, armed, monkeypatch):  # noqa: F811
         monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
         assert (await _method("resources/list"))["result"] == {"resources": []}
         assert (await _read("metorite://playbook/gates"))["error"]["code"] == -32002
