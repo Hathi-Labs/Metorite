@@ -417,7 +417,7 @@ The orchestrator took the two engineering decisions below from the audit. Neithe
 
 **EA3-39 in full.**
 
-1. **One prompt.** The edge serves one prompt, `work_on_task`, with one argument, `task`. The argument is optional while the runs flag is on, and required while it is off. So the `prompts/list` entry differs by flag.
+1. **One prompt.** The edge serves one prompt, `work_on_task`, with one argument, `task`. The argument is optional while the runs flag is on, and required while it is off. So the `prompts/list` entry differs by flag. **PB-2 (D186) widens this:** the edge also serves five read-only playbook prompts for an organization on `playbook_orgs`, with `projects:read` (`orchestration_playbook.md` §5, `agent_coordination.md` §4.2 item 13).
 2. **The shapes.** The argument is a UUID, or `#N` or `N` (ASCII digits, at most 18). The edge refuses each other shape, `PRJ-42` included, until the product has a task key. Today `task_number` is unique only inside one root, and nothing checks `task_prefix`.
 3. **No gateway request.** `prompts/get` returns fixed server text and the validated argument only. It makes no gateway request. It never holds member text, because Claude Code puts the prompt into the session as a user turn.
 4. **The routine with an argument.** The message gives the agent these steps, in this order:
