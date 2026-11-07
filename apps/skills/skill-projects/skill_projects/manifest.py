@@ -1661,6 +1661,11 @@ UI_ACTIONS: dict[str, str] = {
     # (`withdraw_agent_answer`, PLANNED for SW-43c).
     "agentRunsApi.withdrawAnswer": "withdraw_agent_answer",
     "attentionApi.list": "needs_attention",
+    # The Needs attention lens of My tasks: the same route with `mine=true`.
+    "attentionApi.mine": "needs_attention",
+    # The decisions of one task and the answer of one decision (D173).
+    "decisionsApi.forTask": "my_decisions",
+    "decisionsApi.answer": "answer_decision",
     # EA-6g: the run's member approves or declines an archive request. It is in
     # UI_EXEMPT: the chat never answers one (D-OP-13).
     # ── notificationsApi ─────────────────────────────────────────────────
@@ -1698,6 +1703,11 @@ UI_EXEMPT: dict[str, str] = {
     ),
     "projectsApi.setPositions": (
         "The hand-dragged order of cards on a saved view. " + _UI_STATE_REASON
+    ),
+    "projectsApi.mySummary": (
+        "The counts that the Overview tab of My tasks draws (WS-64 OP-11). The "
+        "route is class X: the chat reads the same tasks with my_work and "
+        "list_tasks, and it counts them in its answer."
     ),
     "projectsApi.vocabulary": (
         "The shared vocabulary list of Projects settings. The chat reads a "
