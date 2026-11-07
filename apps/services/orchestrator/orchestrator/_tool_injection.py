@@ -3401,16 +3401,22 @@ async def _drop_pack_unless_studio(
 
 
 def _studio_requests_open() -> bool:
-    """True when ``APP_REQUESTS_ORGS`` holds the org of this run (STU-B2c-2b).
+    """True when ``APP_REQUESTS_ORGS`` holds the org of this run AND agent
+    access is on (STU-B2c-2b, fix round 1).
 
-    The reader is ``gateway.app_requests.requests_allowed``, the one that the
-    door reads before it opens a request. The org is the run's own
-    (:func:`_run_org_or_none`), never an argument (R5). It fails closed: no
-    org, no gateway or an error reads as closed.
+    ``gateway.app_requests.requests_allowed`` is the reader that the door
+    reads before it opens a request. ``acb_auth.agent_oauth.enabled`` is the
+    second flag of the member's list, Integrations, AI agents, Waiting for
+    you (``routes.agent_requests._require_access`` needs both). Without it,
+    the member cannot see a request to approve it, so a write tool would only
+    ask in vain. The org is the run's own (:func:`_run_org_or_none`), never
+    an argument (R5). It fails closed: no org, no gateway or an error reads
+    as closed.
     """
     try:
+        from acb_auth import agent_oauth
         from gateway.app_requests import requests_allowed
-        return bool(requests_allowed(_run_org_or_none()))
+        return bool(agent_oauth.enabled()) and bool(requests_allowed(_run_org_or_none()))
     except Exception as exc:  # fail closed
         _log.info("executor.studio_requests_unread", error=str(exc)[:200])
         return False

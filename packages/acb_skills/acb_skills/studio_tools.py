@@ -3171,6 +3171,22 @@ _BAD_DATA_KEY = ("Each key of data is a field key: lower case letters, digits an
                  "underscores. Read the package for the keys. Nothing was sent.")
 _NO_WRITE_ACTION = ("This package declares no plain action for {uses}. Add an action with that "
                     "uses string and no set to the manifest in Studio, then try again.")
+#: The most field keys that one refusal names. Each key and the object name
+#: hold at most 48 characters (the grammar of the manifest), so the sentence
+#: stays under :data:`MAX_ERROR_MESSAGE_CHARS`, and no cut hides the step.
+MAX_FIELD_NAMES = 2
+#: The refusals of an ask that the package read sees (fix round 1, P2). The
+#: door of B2c-2a checks only the keys of the body at the ask, so the store
+#: would give these only at the resend, after the member approved the card.
+_UNKNOWN_FIELD = ("The object {object} has no field {keys}, so nothing was sent and no approval "
+                  "was asked. Read the package for the field keys, then call again.")
+_MISSING_FIELD = ("A new {object} record needs a value for {keys}, so nothing was sent and no "
+                  "approval was asked. Ask the member for the value, then call again.")
+#: A resend that carries values (fix round 1, P3). The resend runs the stored call.
+_RESEND_HAS_VALUES = (
+    "A call with a request_id sends no values: the approved request saves the approved values. "
+    "Nothing was sent. Call again with only the package id, the object name and the request_id. "
+    "To change the values, call with no request_id, and the member approves the new change.")
 #: The sentences of a network fault. A repeat of an ask gives the same open
 #: request, and a repeat of a resend of a saved change answers request_spent.
 _ASK_MAYBE = ("The ask may have reached the app. Nothing is saved until the member approves. "
@@ -3340,6 +3356,52 @@ def _write_body(verb: str, record_id: Any, data: Any) -> dict[str, Any] | str:
     return body
 
 
+def _resend_problem(record_id: Any, data: Any) -> str | None:
+    """The refusal of a resend that carries values (fix round 1, P3). A resend
+    runs the STORED call that the member approved, so a value with it would
+    change nothing. The sentence names the step that changes the values."""
+    if str(record_id or "").strip() or _json_arg(data, dict) is not None:
+        return _RESEND_HAS_VALUES
+    return None
+
+
+def _fields_problem(package: _Reply, name: str, verb: str,
+                    body: dict[str, Any]) -> str | None:
+    """The field error of an ask that the store would give only after the
+    member approved it (fix round 1, P2), or None.
+
+    It reads the object, its fields and its rules from the package read: an
+    object that the package does not hold (each verb), a key that is no field
+    of the object, and on a create a required field with no value. A state machine fills its field on a create, as the store
+    does (``studio_rules.with_initial``), and ``studio_fields.is_blank`` is
+    the one rule of no value. The door stays the authority: a read with no
+    field list checks nothing here, and the store checks again at the resend.
+    """
+    found = package.data.get("objects") if isinstance(package.data, dict) else None
+    if not isinstance(found, list):
+        return None
+    obj = next((o for o in found if isinstance(o, dict) and o.get("name") == name), None)
+    if obj is None:
+        return WRITE_REFUSALS["object_missing"]
+    data, fields = body.get("data"), obj.get("fields")
+    if verb == "delete" or not isinstance(data, dict) or not isinstance(fields, list):
+        return None
+    specs = {f["key"]: f for f in fields if isinstance(f, dict) and _ident(f.get("key"))}
+    unknown = sorted(k for k in data if k not in specs)
+    if unknown:
+        return _UNKNOWN_FIELD.format(object=name, keys=", ".join(unknown[:MAX_FIELD_NAMES]))
+    if verb != "create":
+        return None
+    rules = obj.get("rules")
+    filled = studio_rules.with_initial(
+        studio_rules.stored_rules(rules if isinstance(rules, list) else []), data)
+    missing = [k for k, f in specs.items()
+               if f.get("required") is True and studio_fields.is_blank(filled.get(k))]
+    if missing:
+        return _MISSING_FIELD.format(object=name, keys=", ".join(missing[:MAX_FIELD_NAMES]))
+    return None
+
+
 async def _record_write(verb: str, package_id: Any, object: Any, request_id: Any,
                         record_id: Any = "", data: Any = None) -> dict[str, Any]:
     """The ask or the resend of one write of *verb*. See the section above."""
@@ -3355,6 +3417,9 @@ async def _record_write(verb: str, package_id: Any, object: Any, request_id: Any
         rid = _skill_path(request_id)
         if rid is None:
             return _not_saved(_NO_REQUEST_ID)
+        carried = _resend_problem(record_id, data)
+        if carried is not None:
+            return _not_saved(carried)
     else:
         body = _write_body(verb, record_id, data)
         if isinstance(body, str):
@@ -3368,6 +3433,9 @@ async def _record_write(verb: str, package_id: Any, object: Any, request_id: Any
         if declared is None:
             return _not_saved(_NO_WRITE_ACTION.format(uses=uses))
         if rid is None:
+            wrong = _fields_problem(package, name, verb, body) if isinstance(body, dict) else None
+            if wrong is not None:
+                return _not_saved(wrong)
             key, value = _ASK_MARKER
             reply = await _send("POST", f"/studio/apps/{pid}/actions/{declared}?{key}={value}",
                                 body, miss=_ASK_MAYBE)

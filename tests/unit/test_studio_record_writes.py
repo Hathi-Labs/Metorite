@@ -73,6 +73,27 @@ ACTION_OF = {"create": "add", "update": "change", "delete": "remove"}
 VERB_OF = {v: k for k, v in ACTION_OF.items()}
 DATA = {"title": "Install the press", "qty": 2}
 
+
+def _field(key: str, kind: str, required: bool = False, **more: Any) -> dict[str, Any]:
+    """One field in the shape of ``packages._object_out``."""
+    out = {"key": key, "type": kind, "label": None, "required": required, "many": False,
+           "options": None, "to": None, "hot": False}
+    out.update(more)
+    return out
+
+
+#: The object of the package read, in the shape of ``packages._object_out``.
+#: ``title`` is required. ``status`` is required too, and its state machine
+#: fills it on a create (``studio_rules.with_initial``).
+OBJECTS = [{
+    "id": "o1", "name": "visit", "label": "Visit",
+    "fields": [_field("title", "text", True), _field("qty", "number"),
+               _field("status", "select", True, options=["planned", "done"]),
+               _field("notes", "text")],
+    "rules": [{"name": "flow", "kind": "state_machine", "field": "status",
+               "initial": "planned", "moves": [{"from": "planned", "to": "done"}]}],
+}]
+
 TOOLS = {
     "create": st.studio_record_create,
     "update": st.studio_record_update,
@@ -110,6 +131,7 @@ class Gateway:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = list(ACTIONS)
+        self.objects: list[dict[str, Any]] = list(OBJECTS)
         self.package_status = 200
         #: The answer of the door, or None for the default answer.
         self.door: tuple[int, Any] | None = None
@@ -140,7 +162,7 @@ class Gateway:
             return self._r(200, {
                 "package": {"id": parts[2], "name": "Field visits", "status": "published",
                             "live_version": 1, "manifest": {"actions": self.actions}},
-                "objects": []})
+                "objects": self.objects})
         assert method == "POST" and parts[:2] == ["studio", "apps"] and len(parts) == 5, path
         verb = VERB_OF[parts[4]]
         if "request_id" in call["query"]:
@@ -288,11 +310,26 @@ async def test_a_resend_names_the_request_and_sends_no_body(gw, verb) -> None:
     assert out["record_id"] == REC and out["request_id"] == RID
 
 
-async def test_a_resend_needs_no_body_fields_and_ignores_them(gw) -> None:
-    out = await st.studio_record_update(PID, "visit", record_id="not a uuid", data="x",
-                                        request_id=RID)
-    assert out["saved"] is True
-    assert gw.posts()[0]["body"] is None
+@pytest.mark.parametrize("verb,values", [
+    ("create", {"data": DATA}), ("update", {"data": DATA}),
+    ("update", {"record_id": REC}), ("delete", {"record_id": REC}),
+    ("update", {"record_id": "not a uuid", "data": "x"}),
+])
+async def test_a_resend_that_carries_values_is_refused_and_sends_nothing(gw, verb, values) -> None:
+    """Fix round 1 (P3): a resend runs the STORED call, so values with it are
+    refused, not ignored. The sentence names the next step. Mutation: drop the
+    check -> the resend goes -> red."""
+    out = await TOOLS[verb](PID, "visit", request_id=RID, **values)
+    assert out["ok"] is False and out["saved"] is False
+    assert _message(out) == st._RESEND_HAS_VALUES
+    assert "no request_id" in _message(out) and "approved values" in _message(out)
+    assert gw.calls == []
+
+
+@pytest.mark.parametrize("values", [{}, {"data": {}}, {"data": ""}, {"record_id": "  "}])
+async def test_a_resend_with_empty_values_still_goes(gw, values) -> None:
+    out = await st.studio_record_update(PID, "visit", request_id=RID, **values)
+    assert out["saved"] is True and gw.posts()[0]["body"] is None
 
 
 async def test_a_saved_record_comes_inside_one_frame(gw) -> None:
@@ -474,6 +511,74 @@ async def test_a_bad_input_sends_nothing(gw, verb, args, sentence) -> None:
 async def test_data_as_json_text_is_read(gw) -> None:
     await st.studio_record_create(PID, "visit", data=json.dumps(DATA))
     assert gw.posts()[0]["body"] == {"data": DATA}
+
+
+# -- 6. The fields before the ask (fix round 1, P2) --------------------------
+#
+# The door of B2c-2a checks only the keys of the body at the ask, so a field
+# error would show only after the member approved. The tool checks the field
+# keys, and the required fields of a create, against the package read first.
+
+
+@pytest.mark.parametrize("verb", ["create", "update"])
+async def test_an_unknown_field_key_opens_no_request(gw, verb) -> None:
+    """Mutation: drop ``_fields_problem`` -> the ask goes -> red."""
+    args = {**_first(verb), "data": {"title": "x", "titel": "y", "colour": "z"}}
+    out = await TOOLS[verb](**args)
+    text = _message(out)
+    assert out["saved"] is False and text == st._UNKNOWN_FIELD.format(
+        object="visit", keys="colour, titel")
+    assert "no approval was asked" in text and "Read the package" in text
+    assert gw.posts() == []
+
+
+def test_the_widest_field_refusal_fits_under_the_cut() -> None:
+    """An object name and the named keys hold at most 48 characters each, so
+    no cut hides the step. Mutation: name 3 keys -> red."""
+    name, keys = "o" * 48, ", ".join(["k" * 48] * st.MAX_FIELD_NAMES)
+    for text in (st._UNKNOWN_FIELD, st._MISSING_FIELD):
+        assert len(text.format(object=name, keys=keys)) <= st.MAX_ERROR_MESSAGE_CHARS
+    assert len(st._RESEND_HAS_VALUES) <= st.MAX_ERROR_MESSAGE_CHARS
+
+
+@pytest.mark.parametrize("data", [{"qty": 2}, {"title": "   ", "qty": 2}, {"title": None}])
+async def test_a_create_with_a_missing_required_field_opens_no_request(gw, data) -> None:
+    """A blank value is no value (``studio_fields.is_blank``). Mutation: skip
+    the required check -> the ask goes -> red."""
+    out = await st.studio_record_create(PID, "visit", data=data)
+    text = _message(out)
+    assert out["saved"] is False and text == st._MISSING_FIELD.format(
+        object="visit", keys="title")
+    assert "no approval was asked" in text and "Ask the member" in text
+    assert gw.posts() == []
+
+
+async def test_a_required_field_that_the_state_machine_fills_is_not_missing(gw) -> None:
+    """``status`` is required, and its machine gives it ``initial`` on a
+    create, as the store does. Mutation: read ``required`` alone -> red."""
+    out = await st.studio_record_create(PID, "visit", data={"title": "Only the title"})
+    assert out["state"] == "awaiting" and len(gw.posts()) == 1
+
+
+async def test_an_update_may_leave_a_required_field_out(gw) -> None:
+    out = await st.studio_record_update(PID, "visit", record_id=REC, data={"qty": 3})
+    assert out["state"] == "awaiting" and gw.posts()[0]["body"] == {"id": REC, "data": {"qty": 3}}
+
+
+async def test_an_object_that_the_package_does_not_hold_opens_no_request(gw) -> None:
+    gw.objects = [{**OBJECTS[0], "name": "site"}]
+    for verb in st.WRITE_VERBS:
+        out = await TOOLS[verb](**_first(verb))
+        assert out["saved"] is False and _message(out) == st.WRITE_REFUSALS["object_missing"]
+    assert gw.posts() == []
+
+
+async def test_a_package_read_with_no_readable_fields_leaves_the_check_to_the_door(gw) -> None:
+    """The check only spares the member a card. When the read holds no field
+    list, the door checks at the resend, so the ask goes."""
+    gw.objects = [{"id": "o1", "name": "visit", "label": "Visit"}]
+    out = await st.studio_record_create(PID, "visit", data={"anything": 1})
+    assert out["state"] == "awaiting" and len(gw.posts()) == 1
 
 
 @pytest.mark.parametrize("verb", st.WRITE_VERBS)

@@ -785,23 +785,31 @@ def _record_tools() -> list[Any]:
     return [_named(n) for n in (*RECORD_READS, *RECORD_WRITES)]
 
 
-@pytest.mark.parametrize("listed,kept", [
-    ("", RECORD_READS), ("org-2", RECORD_READS), ("org-1", RECORD_READS + RECORD_WRITES),
-    ("*", RECORD_READS + RECORD_WRITES),
+@pytest.mark.parametrize("access,listed,kept", [
+    (True, "", RECORD_READS), (True, "org-2", RECORD_READS),
+    (True, "org-1", RECORD_READS + RECORD_WRITES), (True, "*", RECORD_READS + RECORD_WRITES),
+    # Fix round 1 (P3): the member's list of Waiting for you needs agent access
+    # too (`agent_requests._require_access`). Without it, no write tool.
+    (False, "org-1", RECORD_READS), (False, "*", RECORD_READS), (False, "", RECORD_READS),
 ])
 async def test_the_studio_pack_holds_the_record_writes_only_where_requests_are_open(
-    monkeypatch, listed: str, kept: tuple[str, ...],
+    monkeypatch, access: bool, listed: str, kept: tuple[str, ...],
 ) -> None:
     """Criterion 5: an org that ``APP_REQUESTS_ORGS`` leaves out gets the read
-    tools only, and an org in it gets all five. The reader is the one that the
-    door reads. Mutation: make ``_drop_studio_writes_unless_requests`` return
-    the tools unchanged -> the dark cases keep the writes -> red."""
+    tools only, and an org in it gets all five, while ``AGENT_ACCESS_ENABLED``
+    is on. With agent access off, the read tools only, whatever the org flag.
+    The readers are the ones of the door and of the list route. Mutation:
+    make ``_drop_studio_writes_unless_requests`` return the tools unchanged ->
+    the dark cases keep the writes -> red. Mutation: drop the
+    ``agent_oauth.enabled()`` check -> the access-off cases keep the writes ->
+    red."""
     from acb_common import get_settings
 
     monkeypatch.setattr(ti, "_studio_open", lambda: True)
     _member_holds(monkeypatch, HOLDER)
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-1")
     monkeypatch.setattr(get_settings(), "app_requests_orgs", listed)
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", access)
     tools = _record_tools()
     out, dropped = await ti._drop_pack_unless_studio(tools, ["earlier"])
     assert tuple(tool_name(t) for t in out) == kept
@@ -824,6 +832,20 @@ async def test_the_record_write_filter_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(app_requests, "requests_allowed", boom)
     out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
     assert tuple(tool_name(t) for t in out) == RECORD_READS
+
+    # A reader of agent access that raises reads as closed too (fix round 1).
+    from acb_auth import agent_oauth
+
+    def access_boom() -> bool:
+        raise RuntimeError("settings unreadable")
+
+    monkeypatch.setattr(app_requests, "requests_allowed", lambda _org: True)
+    monkeypatch.setattr(agent_oauth, "enabled", access_boom)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS
+    monkeypatch.setattr(agent_oauth, "enabled", lambda: True)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS + RECORD_WRITES, "non-vacuous"
 
 
 async def test_a_pack_with_no_record_write_reads_no_flag(monkeypatch) -> None:
