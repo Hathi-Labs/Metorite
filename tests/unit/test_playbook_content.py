@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from acb_playbook import PlaybookError, load_all, load_topic
 from acb_playbook.loader import CONTENT_DIR, parse_topic
 
