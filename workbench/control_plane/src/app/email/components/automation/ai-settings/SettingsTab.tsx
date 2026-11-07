@@ -828,6 +828,7 @@ function SignatureDialog({
       <SignatureEditor
         value={draft.signature || ""}
         onChange={(html) => setDraft({ ...draft, signature: html })}
+        accountId={settings.account_id}
       />
     </Modal>
   );

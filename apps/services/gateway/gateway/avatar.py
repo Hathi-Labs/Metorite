@@ -78,38 +78,57 @@ class AvatarError(ValueError):
     """
 
 
-def sniff(data: bytes) -> str:
+#: The name of each sniffed type, as :data:`ACCEPTED` spells it.
+_NAMES = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WebP"}
+
+#: Why an SVG is refused, for each ``what`` that a caller names. The default
+#: is the profile picture, so its sentence stays as it was.
+_SVG_REACH = {
+    "a profile picture": "this one is shown on every page",
+    "a signature image": "this one goes out in each mail you send",
+}
+
+
+def sniff(
+    data: bytes, *, what: str = "a profile picture",
+    accepted: tuple[str, ...] = ACCEPTED,
+) -> str:
     """What these bytes actually are, or refuse.
 
     **This is the type check, and it runs before the decoder**, because the
     decoder is not one: MuPDF renders SVG, and an SVG is a document that can
     carry script and external references. The multipart content-type is not
     consulted at all — the client chooses it.
+
+    ``what`` names the image in the refusal, so a signature upload never reads
+    "profile picture" (WS-17 SG-1). ``accepted`` narrows the types: a type
+    that the bytes are, but that is not in it, gets the same refusal as a file
+    that is not an image.
     """
+    use = ", ".join(accepted)
+    not_accepted = f"That file is not an image the product accepts. Use one of: {use}."
     if not data:
         raise AvatarError("The file is empty.")
     if data[:4] == b"RIFF":
         # RIFF is a container: WAV and AVI open the same way. The form is
         # 'RIFF' + 4 size bytes + 'WEBP'.
-        if len(data) < 12 or data[8:12] != b"WEBP":
-            raise AvatarError(
-                f"That file is not an image the product accepts. Use one of: "
-                f"{', '.join(ACCEPTED)}.")
+        if len(data) < 12 or data[8:12] != b"WEBP" or "WebP" not in accepted:
+            raise AvatarError(not_accepted)
         return "image/webp"
     for magic, mime in _MAGIC:
         if magic != b"RIFF" and data.startswith(magic):
+            if _NAMES[mime] not in accepted:
+                raise AvatarError(not_accepted)
             return mime
     if data.lstrip()[:5].lower() in (b"<svg ", b"<svg>", b"<?xml"):
         # Named specifically: it is the file somebody will most reasonably try,
         # and "not an image" would be a confusing thing to tell them about an
         # SVG. The refusal is deliberate, not a gap in the sniffer.
+        reach = _SVG_REACH.get(what, "other people see it")
         raise AvatarError(
-            "SVG is not accepted for a profile picture - it is a document that "
-            f"can carry script, and this one is shown on every page. Use one of: "
-            f"{', '.join(ACCEPTED)}.")
-    raise AvatarError(
-        f"That file is not an image the product accepts. Use one of: "
-        f"{', '.join(ACCEPTED)}.")
+            f"SVG is not accepted for {what} - it is a document that "
+            f"can carry script, and {reach}. Use one of: {use}.")
+    raise AvatarError(not_accepted)
 
 
 def normalise(

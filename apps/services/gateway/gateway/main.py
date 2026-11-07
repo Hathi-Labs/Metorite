@@ -950,6 +950,14 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # signed `org` in the URL, then clientState inside that tenant.
     "/email/webhook/microsoft",
 
+    # WS-17 SG-1 (D-EM-68) — a hosted signature image. Every reader of a mail
+    # fetches it with no session. The 256-bit token in the URL IS the
+    # credential: the route checks the org is a UUID, binds
+    # tenant_session(org) and reads the one row whose token matches, under
+    # RLS. Every miss is the same 404. It serves image bytes only, with
+    # nosniff and `default-src 'none'`. routes/email/signature_images.py.
+    "/email/signature-image/{org}/{token}.{ext}",
+
     # Meta webhook — verify-token on GET, signature on POST.
     "/whatsapp/webhook",
 

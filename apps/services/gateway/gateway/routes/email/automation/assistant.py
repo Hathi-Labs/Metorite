@@ -414,6 +414,16 @@ async def put_assistant_settings(
     user: UserContext = Depends(get_current_user),
 ):
     """Upsert the assistant settings for an account."""
+    # WS-17 SG-1 (D-EM-70): a new HTML signature is cleaned on save, and each
+    # `data:` image in it becomes a hosted image first. This runs BEFORE the
+    # session below, because a hosted image runs a child process for up to
+    # 10 s, and no session waits on it. A signature equal to the stored one
+    # stays byte for byte.
+    from gateway.routes.email.signature_images import (
+        signature_for_save,
+    )
+    signature = await signature_for_save(
+        req.account_id, user.email or "anonymous", req.signature)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         _log_retired_model_fields(req)
@@ -472,7 +482,7 @@ async def put_assistant_settings(
                  insights_enabled = EXCLUDED.insights_enabled,
                  updated_at = now()
                RETURNING learned_writing_style"""
-        ), {"aid": req.account_id, "about": req.about, "sig": req.signature,
+        ), {"aid": req.account_id, "about": req.about, "sig": signature,
             "auto": auto_run, "cold": req.cold_email_blocker or "OFF",
             "digest": req.digest_frequency or "OFF",
             "pi": req.personal_instructions, "ws": req.writing_style,
@@ -514,8 +524,8 @@ async def put_assistant_settings(
         return {
             "account_id": req.account_id,
             "about": req.about or "",
-            "signature": req.signature or "",
-            "signature_text": signature_text(req.signature or ""),
+            "signature": signature or "",
+            "signature_text": signature_text(signature or ""),
             "auto_run": auto_run,
             "cold_email_blocker": req.cold_email_blocker or "OFF",
             "digest_frequency": req.digest_frequency or "OFF",
