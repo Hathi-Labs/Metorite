@@ -118,6 +118,23 @@ def scope_holds(scopes: Iterable[str], required: str) -> bool:
     return required in held or any(covered_by(s) == required for s in held)
 
 
+#: SW-34b (``agent_coordination.md``). The read scopes of the resource:
+#: ``projects:read``, ``context:read`` and each ``<app>:read``. A scope that
+#: covers another scope (a write scope) is never one.
+READ_SCOPES: tuple[str, ...] = tuple(
+    s for s in RESOURCE_SCOPES if covered_by(s) is None and s.endswith(":read"))
+
+
+def read_only(scopes: Iterable[str]) -> frozenset[str]:
+    """The read scopes among *scopes* (SW-34b). The ONE narrowing rule of the
+    read-only door ``/mcp/readonly``. Call it on scopes that the cover rule
+    already expanded, so ``projects:write`` has given ``projects:read``. It
+    only removes a scope, so it can never widen a token.
+
+    Fence: ``tests/unit/test_mcp_edge_readonly.py``."""
+    return frozenset(s for s in scopes if s in READ_SCOPES)
+
+
 #: The longest ``scope`` string the server reads.
 MAX_SCOPE_CHARS = 1024
 
@@ -1064,6 +1081,7 @@ __all__ = [
     "OFFLINE_ACCESS",
     "PROJECTS_READ",
     "PROJECTS_WRITE",
+    "READ_SCOPES",
     "RESOURCE_SCOPES",
     "S256",
     "SUPPORTED_SCOPES",
@@ -1099,6 +1117,7 @@ __all__ = [
     "parse_scope",
     "path_shapes",
     "pkce_matches",
+    "read_only",
     "redirect_display",
     "redirect_host",
     "redirect_uri_matches",
