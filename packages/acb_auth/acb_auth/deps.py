@@ -864,6 +864,10 @@ async def _agent_user(request: Request) -> UserContext:
     # EA-13a fix round 1).
     expected_via = agent_oauth.actor_via_for(
         connection.client_origin, client_id=connection.client_id,
+        # EA-19b: a box connection stamps `mcp:box:<slug>-<8 hex>`.
+        credential=connection.credential,
+        connection_id=connection.connection_id,
+        client_name=connection.client_name,
     )
     if (
         not connection.client_origin
