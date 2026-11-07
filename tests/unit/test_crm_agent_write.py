@@ -98,7 +98,9 @@ _LEAD = {"id": _LEAD_ID, "lead_name": "Ravi Menon", "email": "ravi@acme.test",
          "organization_name": "Acme Industries", "owner_email": _USER}
 
 _WRITE_TOOLS = ["create_lead", "update_deal_status", "log_activity",
-                "convert_lead"]
+                "convert_lead", "crm_update_record", "crm_update_task"]
+
+_TASK_ID = str(uuid4())
 
 
 def _responder(call: dict) -> Any:
@@ -124,10 +126,15 @@ def _responder(call: dict) -> Any:
             "contact": {"id": _CONTACT_ID},
             "organization": {"id": _ORG_ID},
         }
+    if path == f"/crm/activities/{_TASK_ID}" and method == "PATCH":
+        return {"id": _TASK_ID, "type": "task", "subject": "Send quote", **body}
     if path.endswith("/activities") and method == "POST":
         return {"id": str(uuid4()), **body}
     if path == "/crm/leads" and method == "POST":
         return {**body, "id": _NEW_LEAD_ID, "owner_email": _USER}
+    if method == "PATCH" and path.count("/") == 3:
+        return {"id": path.rsplit("/", 1)[-1], "name": "Acme AMC",
+                "first_name": "Ravi", **body}
     if method == "GET" and path.count("/") == 3:
         # Any other single record — the read `log_activity` now makes so its
         # card can name what it is writing to. Carries every column
@@ -154,6 +161,11 @@ _CALLS: dict[str, Any] = {
         "deals", _DEAL_ID, "call", "Intro call", body="Discussed the AMC",
     ),
     "convert_lead": lambda: _M.convert_lead(_LEAD_ID, deal_name="Acme AMC"),
+    "crm_update_record": lambda: _M.crm_update_record(
+        "deals", _DEAL_ID,
+        {"amount": 300000, "expected_close_date": "2026-12-31"},
+    ),
+    "crm_update_task": lambda: _M.crm_update_task(_TASK_ID, completed=True),
 }
 
 #: The one tool that needs nothing from the gateway before it can describe what
@@ -173,6 +185,8 @@ _CARD_MUST_NAME: dict[str, str] = {
     "update_deal_status": "Acme AMC",  # the deal being moved
     "log_activity": "Acme AMC",        # the record being written to
     "convert_lead": "Ravi Menon",      # the lead being converted
+    "crm_update_record": "Acme AMC",   # the deal being edited
+    "crm_update_task": _TASK_ID,       # the task being changed
 }
 
 
@@ -858,3 +872,132 @@ async def test_log_activity_relays_a_mirror_mode_refusal(monkeypatch) -> None:
                  client_class=_MirrorRefusingClient)
     out = await _CALLS["log_activity"]()
     assert "Nothing was changed" in out and "read-only" in out
+
+
+# ── 7. CRM-M2b: the record edit and the task change ─────────────────────────
+
+_EDIT_ARGS = ("deals", _DEAL_ID, {"amount": 300000, "expected_close_date": "2026-12-31"})
+
+
+async def test_a_record_edit_shows_one_card_with_the_before_and_after(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record(*_EDIT_ARGS)
+    assert len(asked) == 1
+    context = asked[0]["context"]
+    assert "field Amount: 250000 → 300000" in context
+    assert "field Expected close date: (empty) → 2026-12-31" in context
+    assert "deal: Acme AMC" in context
+    assert [(c["method"], c["path"]) for c in calls] == [
+        ("GET", f"/crm/deals/{_DEAL_ID}"),
+        ("PATCH", f"/crm/deals/{_DEAL_ID}"),
+    ]
+    assert calls[-1]["json"] == {"amount": 300000, "expected_close_date": "2026-12-31"}
+    assert "Changed Acme AMC" in out
+
+
+@pytest.mark.parametrize("field, owner", [
+    ("owner_email", "later slice"),
+    ("status_id", "update_deal_status"),
+    ("stage", "update_deal_status"),
+    ("lost_reason_id", "update_deal_status"),
+    ("lost_note", "update_deal_status"),
+])
+async def test_a_record_edit_refuses_the_owner_the_stage_and_the_lost_reason(
+    field: str, owner: str, monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record("deals", _DEAL_ID, {"amount": 1, field: "x"})
+    assert owner in out and "Nothing was changed" in out
+    assert calls == [] and asked == []
+
+
+async def test_a_declined_record_edit_sends_nothing(monkeypatch) -> None:
+    deny(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record(*_EDIT_ARGS)
+    assert "Cancelled" in out and writes(calls) == []
+
+
+@pytest.mark.parametrize("entity, record, title, fields", [
+    ("leads", _LEAD_ID, "Ravi Menon", {"phone": "99"}),
+    ("contacts", _CONTACT_ID, "Ravi", {"title": "CTO"}),
+    ("companies", _ORG_ID, "Acme AMC", {"industry": "Pumps"}),
+])
+async def test_a_record_edit_reaches_leads_contacts_and_companies(
+    entity: str, record: str, title: str, fields: dict, monkeypatch,
+) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record(entity, record, fields)
+    slug = "organizations" if entity == "companies" else entity
+    assert calls[-1]["method"] == "PATCH" and calls[-1]["path"] == f"/crm/{slug}/{record}"
+    assert calls[-1]["json"] == fields
+    assert title in out
+
+
+async def test_a_custom_field_goes_in_the_custom_map(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_record("deals", _DEAL_ID, {"region": "South"})
+    assert calls[-1]["json"] == {"custom": {"region": "South"}}
+
+
+async def test_an_edit_that_changes_nothing_sends_nothing(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record("deals", _DEAL_ID, {"amount": 250000})
+    assert "nothing was changed" in out and asked == [] and writes(calls) == []
+
+
+async def test_a_mirror_mode_record_edit_comes_back_as_a_message(monkeypatch) -> None:
+    approve(monkeypatch)
+    fake_gateway(_M, monkeypatch, _responder, user=_USER,
+                 client_class=_MirrorRefusingClient)
+    out = await _CALLS["crm_update_record"]()
+    assert "Nothing was changed" in out and "read-only" in out
+
+
+async def test_a_task_completion_shows_one_card_and_sends_completed_at(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_task(_TASK_ID, completed=True)
+    assert len(asked) == 1 and "field Done: no → yes" in asked[0]["context"]
+    assert calls[-1]["method"] == "PATCH" and calls[-1]["path"] == f"/crm/activities/{_TASK_ID}"
+    assert set(calls[-1]["json"]) == {"completed_at"} and calls[-1]["json"]["completed_at"]
+    assert "Send quote" in out
+
+
+async def test_a_task_due_date_is_sent_as_the_midnight_of_that_day(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_task(_TASK_ID, due_at="2026-12-31")
+    assert calls[-1]["json"] == {"due_at": "2026-12-31T00:00:00+00:00"}
+    assert "due: 2026-12-31" in asked[0]["context"]
+
+
+async def test_reopening_a_task_sends_a_null_completed_at(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_task(_TASK_ID, completed=False)
+    assert calls[-1]["json"] == {"completed_at": None}
+
+
+async def test_a_task_change_with_nothing_to_change_or_a_bad_date_sends_nothing(
+    monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    assert "Nothing was changed" in await _M.crm_update_task(_TASK_ID)
+    assert "not a date" in await _M.crm_update_task(_TASK_ID, due_at="next week")
+    assert calls == [] and asked == []
+
+
+async def test_log_activity_takes_a_due_date_for_a_task(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.log_activity("deals", _DEAL_ID, "task", "Send quote", due_at="2026-12-01")
+    assert calls[-1]["json"]["due_at"] == "2026-12-01T00:00:00+00:00"
+    assert "not a date" in await _M.log_activity(
+        "deals", _DEAL_ID, "task", "x", due_at="soon")

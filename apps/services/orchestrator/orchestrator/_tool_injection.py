@@ -1692,9 +1692,11 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
 
 #: The CRM record write tools that Mirror mode takes from a run (WS-53
 #: CRM-C7 item 4). Zoho owns the records there, so each would answer 409.
-#: ``log_activity`` stays: a Metorite-only note saves in Mirror mode (CRM-Z6).
+#: ``log_activity`` and ``crm_update_task`` stay: a Metorite-only note or
+#: task saves in Mirror mode (CRM-Z6), and the activity route has no Mirror gate.
 MIRROR_RECORD_WRITES: frozenset[str] = frozenset({
     "create_lead", "update_deal_status", "convert_lead",
+    "crm_update_record",
 })
 
 

@@ -49,6 +49,7 @@ agent-whatsapp-assistant.
 from __future__ import annotations
 
 import os
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -936,11 +937,13 @@ async def log_activity(
     activity_type: str,
     subject: str,
     body: str | None = None,
+    due_at: str | None = None,
 ) -> str:
     """Record that something happened to a CRM record — a note, a call, a
     meeting or a task. entity is 'leads', 'deals', 'contacts' or
     'organizations' and record_id is its id (from search_crm or get_pipeline).
     subject is the one line that will show on the timeline; body is the detail.
+    For a task, due_at is the due date (YYYY-MM-DD).
 
     The person you are acting for approves before anything is written, and the
     entry is attributed to them. Log what actually happened, in their words
@@ -967,6 +970,14 @@ async def log_activity(
     detail = str(body or "").strip()
     if detail:
         payload["body"] = detail
+    if str(due_at or "").strip():
+        stamp = _due_stamp(due_at)
+        if stamp is None:
+            return (
+                f"'{due_at}' is not a date I can read. Give the due date as "
+                "YYYY-MM-DD. Nothing was logged."
+            )
+        payload["due_at"] = stamp
 
     # Read the record before asking, for the same reason `update_deal_status`
     # does — and here the reason is sharper, because this tool has no other
@@ -1068,6 +1079,207 @@ async def convert_lead(
     return " · ".join(parts) + "."
 
 
+#: Columns of each record type that ``crm_update_record`` may set at the top
+#: level. Any other key goes in ``custom`` (a custom field, CRM-C4a), and the
+#: route checks it against the field definitions.
+_EDITABLE_COLUMNS: dict[str, frozenset[str]] = {
+    "leads": frozenset({
+        "first_name", "last_name", "lead_name", "email", "phone", "mobile",
+        "organization_name", "website", "industry", "no_of_employees",
+        "annual_revenue", "lead_source", "description",
+    }),
+    "deals": frozenset({
+        "name", "company_id", "amount", "currency", "probability",
+        "expected_close_date", "next_step", "description",
+    }),
+    "contacts": frozenset({
+        "first_name", "last_name", "email", "phone", "mobile", "title",
+        "company_id", "description", "linkedin_url",
+    }),
+    "organizations": frozenset({
+        "name", "website", "industry", "no_of_employees", "annual_revenue",
+        "phone", "email", "address", "description", "linkedin_url",
+    }),
+}
+
+#: A field this tool refuses, and the words that say who owns it.
+_STAGE_REFUSAL = (
+    "Move the deal with update_deal_status, which also checks the stage name."
+)
+_OWNER_REFUSAL = (
+    "The owner changes in a later slice. Tell the member to reassign it in "
+    "the CRM."
+)
+_REFUSED_FIELDS: dict[str, str] = {
+    "owner_email": _OWNER_REFUSAL,
+    "owner": _OWNER_REFUSAL,
+    "status_id": _STAGE_REFUSAL,
+    "status_name": _STAGE_REFUSAL,
+    "status": _STAGE_REFUSAL,
+    "stage": _STAGE_REFUSAL,
+    "pipeline_id": _STAGE_REFUSAL,
+    "lost_reason_id": _STAGE_REFUSAL,
+    "lost_reason": _STAGE_REFUSAL,
+    "lost_note": _STAGE_REFUSAL,
+}
+
+
+def _due_stamp(value: Any) -> str | None:
+    """A due date as the ISO instant the route stores, or ``None`` if unreadable.
+
+    A task's ``due_at`` holds a DATE at 00:00 UTC (the one CRM day rule), so a
+    bare date becomes that midnight.
+    """
+    text = str(value or "").strip()
+    try:
+        if len(text) == 10:
+            return f"{date.fromisoformat(text).isoformat()}T00:00:00+00:00"
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        return None
+
+
+def _shown(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return "(empty)" if value in (None, "") else str(value)
+
+
+def _human(key: str) -> str:
+    """A field key in the member's words: ``expected_close_date`` reads
+    "Expected close date". The card never prints a wire name."""
+    words = key.replace("_", " ").strip()
+    return words[:1].upper() + words[1:]
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_update_record(
+    entity: str, record_id: str, fields: dict[str, Any],
+) -> str:
+    """Change fields on a CRM lead, deal, contact or company. entity is
+    'leads', 'deals', 'contacts' or 'organizations'. fields maps a field name
+    to its new value, for example {"amount": 50000, "expected_close_date":
+    "2026-12-31"}. A custom field goes in by its key. get_record shows the
+    current values.
+
+    The person you are acting for sees ONE card with the old and the new value
+    of each field, and nothing changes if they decline. This tool does not
+    change the owner, the stage or the lost reason. Use update_deal_status for
+    the stage and the lost reason. The owner changes in a later slice."""
+    slug = _entity_slug(entity)
+    record = _record_uuid(record_id)
+    if not isinstance(fields, dict) or not fields:
+        return "Which fields should change, and to what? Nothing was changed."
+    for key in fields:
+        refusal = _REFUSED_FIELDS.get(str(key).strip().lower())
+        if refusal:
+            return f"I cannot set '{key}' here. {refusal} Nothing was changed."
+    columns = _EDITABLE_COLUMNS[slug]
+    payload: dict[str, Any] = {}
+    custom: dict[str, Any] = {}
+    for key, value in fields.items():
+        name = str(key).strip()
+        if name:
+            (payload if name in columns else custom)[name] = value
+    if custom:
+        payload["custom"] = custom
+
+    # Read first: the card shows the old value beside the new one.
+    row = await _get(f"/crm/{slug}/{record}")
+    current = row if isinstance(row, dict) else {}
+    held = current.get("custom") if isinstance(current.get("custom"), dict) else {}
+    changes: dict[str, tuple[Any, Any]] = {}
+    for key, value in payload.items():
+        if key == "custom":
+            pairs = [(k, held.get(k), v) for k, v in value.items()]
+        else:
+            pairs = [(key, current.get(key), value)]
+        for name, old, new in pairs:
+            if _shown(old) != _shown(new):
+                changes[name] = (old, new)
+    if not changes:
+        return "Those fields already hold those values, so nothing was changed."
+
+    target = _row_title(slug, current)
+    label = ENTITY_LABELS[slug].lower()
+    from acb_skills.ask_tools import request_confirmation
+    if not await request_confirmation(
+        title=f"Change this {label}?",
+        detail=f"{target} · " + ", ".join(_human(k) for k in changes),
+        context=await _held_fields_block({
+            label: target,
+            # `field <Name>` is the card's key for a field it has no line for.
+            **{f"field {_human(k)}": f"{_shown(o)} → {_shown(n)}"
+               for k, (o, n) in changes.items()},
+        }),
+    ):
+        return f"Cancelled — {target} was not changed."
+    try:
+        await _patch(f"/crm/{slug}/{record}", payload)
+    except _MirrorBlocked as blocked:
+        return _mirror_message(blocked)
+    return f"Changed {target}: " + "; ".join(
+        f"{_human(k)} {_shown(o)} → {_shown(n)}" for k, (o, n) in changes.items()
+    ) + "."
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_update_task(
+    activity_id: str, completed: bool | None = None, due_at: str | None = None,
+) -> str:
+    """Complete a CRM task, reopen it, or set its due date. activity_id is the
+    id of the task (from get_timeline). Pass completed true to complete it and
+    false to reopen it. Pass due_at (YYYY-MM-DD) to set the due date.
+
+    The person you are acting for approves on one card, and nothing changes if
+    they decline. This changes tasks and notes only. The pipeline writes the
+    stage changes."""
+    record = _record_uuid(activity_id)
+    payload: dict[str, Any] = {}
+    lines: dict[str, str] = {}
+    if completed is not None:
+        if completed:
+            payload["completed_at"] = datetime.now(UTC).isoformat()
+            lines["field Done"] = "no → yes"
+        else:
+            payload["completed_at"] = None
+            lines["field Done"] = "yes → no (reopened)"
+    if str(due_at or "").strip():
+        stamp = _due_stamp(due_at)
+        if stamp is None:
+            return (
+                f"'{due_at}' is not a date I can read. Give the due date as "
+                "YYYY-MM-DD. Nothing was changed."
+            )
+        payload["due_at"] = stamp
+        lines["due"] = str(due_at).strip()
+    if not payload:
+        return (
+            "Say what to change on the task: completed (true or false), or a "
+            "due_at date. Nothing was changed."
+        )
+    # No route reads one activity by id, so the card names the id.
+    from acb_skills.ask_tools import request_confirmation
+    if not await request_confirmation(
+        title="Change this CRM task?",
+        detail=f"task {record} · " + ", ".join(
+            "Done" if k == "field Done" else "Due date" for k in lines),
+        context=await _held_fields_block({"field Task": record, **lines}),
+    ):
+        return f"Cancelled — task {record} was not changed."
+    try:
+        row = await _patch(f"/crm/activities/{record}", payload)
+    except _MirrorBlocked as blocked:
+        return _mirror_message(blocked)
+    made = row if isinstance(row, dict) else {}
+    return (
+        f"Changed task {made.get('subject') or record}: "
+        + ", ".join(
+            f"{'done' if k == 'field Done' else 'due'} {v}" for k, v in lines.items()
+        ) + "."
+    )
+
+
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────
 
 _TOOLS = [
@@ -1079,6 +1291,8 @@ _TOOLS = [
     update_deal_status,
     log_activity,
     convert_lead,
+    crm_update_record,
+    crm_update_task,
     # CRM-C7: the shared read tools (records, fields, pipelines, contacts,
     # owners, reports, totals, stage dwell and the mirrored modules).
     *CRM_TOOLS,
