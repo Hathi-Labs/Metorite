@@ -112,6 +112,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "field *": { label: "Field" },
   "field_type": { label: "Field type", kind: "words" },
   "file": { label: "File" },
+  // IMG-2: the files that `create_task` attaches, with their sizes.
+  "files": { label: "Files" },
   "filters": { label: "Filters" },
   "first due": { label: "First due" },
   "flexible": { label: "Flexible", kind: "flag" },

@@ -596,7 +596,12 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # the custom values in the create itself, which checks them (#679).
     # WS-46 P7: a weekly rule with no day takes today in the member's zone,
     # from my_work's `GET /projects/my/today`.
-    "create_task": frozenset({"assign", "set_recurrence", "my_work"}),
+    # WS-IMG IMG-2: `files` posts each file through `attach_to_task`'s route
+    # and then patches the description through `update_task`'s, under the
+    # same card. Its own row makes it class B. A held chat refuses `files`.
+    "create_task": frozenset(
+        {"assign", "set_recurrence", "my_work", "attach_to_task", "update_task"}
+    ),
     "set_recurrence": frozenset({"my_work"}),
     # WS-46 P7: a block time with no offset is read in the member's zone.
     "set_my_overlay": frozenset({"my_work"}),
@@ -1295,7 +1300,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         ),
     },
     ("PATCH", "/projects/tasks/{task_id}"): {
-        "If-Match": "The browser's edit guard (D-PM-20). A chat write reads the row first.",
+        "If-Match": (
+            "The browser's edit guard (D-PM-20). A chat edit reads the row first. "
+            "The one chat write that sends it is the image PATCH of create_task with "
+            "files, and the witness fence cannot run it, because the stub upload is a PDF."
+        ),
         "project_id": "The route refuses it: a move goes through move_task.",
         "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
         "source": "Where a task came from is a fact of its create. An edit keeps it.",
