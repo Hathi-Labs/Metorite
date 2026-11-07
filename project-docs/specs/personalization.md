@@ -26,7 +26,7 @@ with a briefing, and PZ-35 adds the Settings controls. PZ-36 turns a
 promise into a task on one yes card. PZ-22 gains dated facts, and MEM-2
 comes forward (§15).
 
-**§17 ACCEPTED 2026-11-06 (D187). No slice is built.** It adds the epic
+**§17 ACCEPTED 2026-11-06 (D189). No slice is built.** It adds the epic
 "Tone of voice" (Metorite task 1469). A member can choose a persona. The
 persona changes how the assistant sounds in four places. It never goes into
 a draft to another person, a fact or a card (D-PZ-43 to D-PZ-46).
@@ -2775,7 +2775,7 @@ answers.
 
 ## 17. Tone of voice (ACCEPTED, 2026-11-06)
 
-`work_plan.md` §3 records this section as **D187**. The epic is "Tone of
+`work_plan.md` §3 records this section as **D189**. The epic is "Tone of
 voice" (Metorite task 1469). It adds the slices PZ-44 to PZ-50. The owner
 answered all four questions of §17.8 on 2026-11-06 at 18:28 UTC. This slice
 (PZ-44) is the spec only. No other slice is built.
@@ -3018,7 +3018,7 @@ does not exist yet is advisory until its slice builds (R7).
 
 | Slice | What | Done when | Fence (R7) | Gate · tier |
 |---|---|---|---|---|
-| **PZ-44** · task 1469 | This section, D187 and the INDEX sentence | The section, D187 and the INDEX sentence are in `main`. The four doc tests still pass | Advisory. Docs only | AGENT-SAFE · LOW |
+| **PZ-44** · task 1469 | This section, D189 and the INDEX sentence | The section, D189 and the INDEX sentence are in `main`. The four doc tests still pass | Advisory. Docs only | AGENT-SAFE · LOW |
 | **PZ-45** · task 1470 | The persona record on the profile, and the tenant-scoped line-bank table (§17.8) | A persona holds a label, a preset or one line, a tick list and an off switch. A row of one tenant never shows to another tenant. Forget deletes the persona and its lines | Planned `tests/unit/test_persona_store.py` and an R8 file, advisory until PZ-45 builds | AGENT-SAFE · **HIGH** (a migration) |
 | **PZ-46** · task 1471 | An interview area for tone. It saves the answer as a persona proposal | The question reuses the one-question-a-day shape. A yes on the card saves the proposal. Nothing saves without a yes. Only typed words (D-PZ-37) can set a free-text style, and a card answer sets a preset only | Planned `tests/unit/test_persona_interview.py`, advisory until PZ-46 builds | AGENT-SAFE · STANDARD |
 | **PZ-47** · task 1472 | The picker in Settings, Assistant settings, with the presets, the free line, a preview and one switch. The chat path covers WhatsApp too | The preview shows a nudge in the chosen voice before the save. The switch turns the persona off. The save-time check of §17.5 refuses a character or a person | Planned `tests/unit/test_persona_picker.py` and a vitest file, advisory until PZ-47 builds | AGENT-SAFE · STANDARD |
@@ -3041,16 +3041,16 @@ uv run pytest tests/unit/test_persona_store.py tests/unit/test_persona_interview
 
 ### 17.10 Decisions and open questions
 
-`work_plan.md` §3 records these as **D187**. The D-PZ-n ids and the PZ-n slice
+`work_plan.md` §3 records these as **D189**. The D-PZ-n ids and the PZ-n slice
 numbers are two separate sequences. D-PZ-43 is not the decision of PZ-43.
 A check of `origin/main` at merge confirms the numbers (R1).
 
 | # | Question | Decision |
 |---|---|---|
-| **D-PZ-43** | Where does the persona apply? (Q1) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D187.** "Approve all four recommendations". Reminders, nudges, the chat's hello and encouragement, and the interview questions. Chat answers stay plain unless "chat answers too" is on. Never in a draft to another person, a fact, a card, a tool result or quoted text. One persona and one tick list. This settles PZ-50 |
-| **D-PZ-44** | Characters such as Yoda? (Q2) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D187.** Original styles only. "Sage" is the Yoda-like preset. A free line of 140 characters. A named character or a real person gets the nearest style |
-| **D-PZ-45** | Where does the quote come from? (Q3) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D187.** Original lines, about 30 for each preset. 20 model lines for a free style, written once and accepted by the member. One line for each message, no repeat within 14 days. No model at send time |
-| **D-PZ-46** | How often, and where never? (Q4) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D187.** At most 3 persona lines a day. None on a serious message or a WhatsApp template. A failed check means a plain message. An admin can turn personas off for the organization |
+| **D-PZ-43** | Where does the persona apply? (Q1) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** "Approve all four recommendations". Reminders, nudges, the chat's hello and encouragement, and the interview questions. Chat answers stay plain unless "chat answers too" is on. Never in a draft to another person, a fact, a card, a tool result or quoted text. One persona and one tick list. This settles PZ-50 |
+| **D-PZ-44** | Characters such as Yoda? (Q2) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** Original styles only. "Sage" is the Yoda-like preset. A free line of 140 characters. A named character or a real person gets the nearest style |
+| **D-PZ-45** | Where does the quote come from? (Q3) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** Original lines, about 30 for each preset. 20 model lines for a free style, written once and accepted by the member. One line for each message, no repeat within 14 days. No model at send time |
+| **D-PZ-46** | How often, and where never? (Q4) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** At most 3 persona lines a day. None on a serious message or a WhatsApp template. A failed check means a plain message. An admin can turn personas off for the organization |
 
 **Open questions.** Each has a default, and the default stands until a person
 answers.

@@ -5496,7 +5496,7 @@ This supersedes the owner rule of 2026-08-31 (management controls stay out of th
 
 Fence: `statusSetCopy.test.ts` and `tests/unit/test_projects_status_set_read_r8.py`, named per slice in `specs/projects_settings.md` §7.1. Advisory until PST-1 builds them.
 
-### D187 — Tone of voice: one persona, a tick list of places, original styles and lines (2026-11-06)
+### D189 — Tone of voice: one persona, a tick list of places, original styles and lines (2026-11-06)
 
 Owner answer on Metorite task 1469 ("Approve all four recommendations"), 2026-11-06 18:28 UTC. Owner spec: `specs/personalization.md` §17. Board: **WS-63**. Metorite: tasks 1469 to 1475. Decisions D-PZ-43 to D-PZ-46.
 
@@ -5514,7 +5514,7 @@ Owner answer on Metorite task 1469 ("Approve all four recommendations"), 2026-11
 
 The persona is a preference. No study shows it raises output. A flattery test runs before launch.
 
-**Re-check this number at merge.** The first merge wins a D-number. The branch `mt-7eecee55-sw-p10-plan` holds a D186, and the branch for salutations holds a D184.
+**Re-check this number at merge.** The first merge wins a D-number. On 2026-11-07, open branches held D184 (salutations), D187 (`mt-22261640-sbx-spec`) and D188 (`mt-7cb8e476-cc0-spec`).
 
 Fence: named per slice in `specs/personalization.md` §17.9. Advisory until PZ-45 builds them.
 
