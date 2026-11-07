@@ -732,6 +732,15 @@ function ChatPageInner() {
   }, [isMobile]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  // H-332 (task 757): the panes do not all fit on a narrow desktop. When the
+  // Files pane opens below 1400 px, the conversations list folds (its header
+  // toggle brings it back), so the message column keeps its room.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!isMobile && artifactPanelOpen && window.innerWidth < 1400) setSessionPanelOpen(false);
+  }, [artifactPanelOpen, isMobile]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
   // Auto-reveal the artifact sidebar the first time an agent writes a file
   // (desktop only — on mobile it's a drawer the user opens explicitly).
   const artifactsRevealedRef = useRef(false);

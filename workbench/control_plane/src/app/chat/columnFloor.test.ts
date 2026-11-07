@@ -20,4 +20,7 @@ describe("the /chat message column", () => {
     expect(src).toMatch(/data-chat-row=""/);
     expect(src).toMatch(/overflow-x-auto[^"]*"\s+data-chat-row/);
   });
+  it("folds the conversations list when the Files pane opens below 1400 px", () => {
+    expect(src).toMatch(/artifactPanelOpen && window\.innerWidth < 1400\) setSessionPanelOpen\(false\)/);
+  });
 });
