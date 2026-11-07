@@ -249,7 +249,7 @@ function singleParamRoutes(dir: string, names: string[] = [], out: { path: strin
     if (statSync(full).isDirectory()) {
       // Below a catch-all, the catch-all sweep above owns the route.
       if (entry.includes("...")) continue;
-      const m = /^\[(\w+)\]$/.exec(entry);
+      const m = /^\[([^\].]+)\]$/.exec(entry);
       singleParamRoutes(full, m ? [...names, m[1]] : names, out);
     } else if (entry === "route.ts" && names.length > 0) {
       out.push({ path: full, names });
@@ -268,7 +268,7 @@ describe("the single-param sweep (H-280)", () => {
     // same files, and the route of the finding must be one of them.
     const byText = allRoutes(API_DIR)
       .map(relOf)
-      .filter((rel) => /\/\[\w+\]\//.test(rel) && !rel.includes("..."));
+      .filter((rel) => /\/\[[^\].]+\]\//.test(rel) && !rel.includes("..."));
     expect(routes.map((r) => r.rel).sort()).toEqual(byText.sort());
     expect(routes.map((r) => r.rel)).toContain("/chat/sessions/[sessionId]/participants/[subject]/route.ts");
   });
