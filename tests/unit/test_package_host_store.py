@@ -397,6 +397,13 @@ def test_only_the_store_writes_an_install_or_a_claim() -> None:
     assert _WRITE.search(store._DELETE_INSTALL_SQL)
     assert _WRITE.search(store._SET_STATE_SQL)
     assert "FOR UPDATE" in store._STATE_SQL
+    # PKG-11a: the store holds the UPDATE of the scope, and the read before
+    # it takes the row lock. ``promotion.py`` writes ``app_grants`` only.
+    assert _WRITE.search(store._PROMOTE_SQL)
+    assert store._INSTALL_FOR_UPDATE_SQL.endswith("FOR UPDATE")
+    share = (_ROOT / "apps/services/gateway/gateway/package_host/promotion.py").read_text(
+        encoding="utf-8")
+    assert not _WRITE.search(share)
 
 
 def test_the_store_reads_apps_and_never_writes_it() -> None:

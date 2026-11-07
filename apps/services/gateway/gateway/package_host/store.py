@@ -10,9 +10,20 @@ database.
 **The one writer.** :func:`install` holds the only ``INSERT INTO
 package_install`` and the only ``INSERT INTO package_contribution`` of
 ``apps/`` and ``packages/``. The disposal of §5.3 (PKG-9) holds the only
-UPDATE and the only DELETE: :func:`remove_install`, :func:`pause_install`
-and :func:`resume_install`. The hermetic suite scans for a second one. The
-member purge deletes rows, and that stays legal.
+DELETE and the UPDATE of the state: :func:`remove_install`,
+:func:`pause_install` and :func:`resume_install`. The promotion of §6.2
+(PKG-11a) holds the UPDATE of the scope: :func:`promote_to_group`. The
+hermetic suite scans for a second writer. The member purge deletes rows,
+and that stays legal.
+
+**The promotion.** :func:`promote_to_group` takes the org lock, then reads
+the install with the row lock (:func:`locked_install`). It moves only a
+private install that is active, not a draft, and kept (``ends_at`` null).
+The owner and each person who holds a share must be active members of the
+group (PKG-Q9). The claims of §4 are checked again for the group scope. One
+UPDATE changes the scope and keeps the id, the version, ``installed_by``,
+``created_at`` and the claim rows. ``promotion.share_with_people`` takes the
+same locks, so a share cannot race the group check.
 
 **The disposal.** Each of the three takes the org lock of :func:`install`
 and its two guards, and finds the install in the bound org only. An id of
@@ -115,6 +126,7 @@ from acb_common.db import TenantUnbound
 from acb_common.studio_manifest import CONTRIBUTION_POINTS
 from sqlalchemy import text
 
+from gateway.package_host.sharing import SHARE_ROW
 from gateway.routes.projects.core import _MY_GROUPS_SQL
 from gateway.studio.packages_store import first_bad_value
 
@@ -247,6 +259,49 @@ _SET_STATE_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) AND state = :was"
 )
 
+#: One install of the bound org, with the row lock (PKG-11a). The promotion
+#: and ``promotion.share_with_people`` read it after the org lock.
+_INSTALL_FOR_UPDATE_SQL = (
+    "SELECT CAST(app_id AS text), version, scope_kind, scope_subject, installed_by, "
+    "ends_at, state FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) FOR UPDATE"
+)
+
+#: The claims of one install of the bound org, in a fixed order.
+_CLAIMS_OF_SQL = (
+    "SELECT point, key, payload, position FROM package_contribution "
+    f"WHERE organization_id = {_BOUND_ORG} AND install_id = CAST(:install AS uuid) "
+    "ORDER BY point, key"
+)
+
+#: A row when the active member ``:by`` is in the group ``:subject``.
+_MEMBER_IN_GROUP_SQL = f"SELECT 1 WHERE :subject IN ({_groups_of(':by')})"
+
+#: The first share of the private install ``:install`` (the three tests of
+#: ``sharing.SHARE_ROW``) whose grantee is not an active member of the group
+#: ``:subject``. The rule of PKG-Q9: nobody loses the app in silence.
+#: The grantees go through a CTE, because the group query names its own
+#: ``g`` (``org_group``), which would hide the ``g`` of ``SHARE_ROW``.
+_GRANTEE_OUTSIDE_SQL = (
+    "WITH shared AS (SELECT lower(g.subject) AS who"
+    " FROM package_install JOIN app_grants AS g"
+    f" ON g.organization_id = {_BOUND_ORG} AND {SHARE_ROW}"
+    f" WHERE package_install.organization_id = {_BOUND_ORG}"
+    " AND package_install.id = CAST(:install AS uuid))"
+    f" SELECT 1 FROM shared WHERE :subject NOT IN ({_groups_of('shared.who')}) LIMIT 1"
+)
+
+#: The promotion of one private install of the bound org to a group. It
+#: keeps the id, the version, ``installed_by``, ``created_at`` and the
+#: claims. The guards repeat what the read under the locks found.
+_PROMOTE_SQL = (
+    "UPDATE package_install SET scope_kind = 'group', scope_subject = :subject, "
+    "updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid) "
+    "AND scope_kind = 'private' AND state = 'active' AND version IS NOT NULL "
+    "AND ends_at IS NULL"
+)
+
 
 # ── The types ───────────────────────────────────────────────────────────────
 
@@ -309,6 +364,17 @@ class StateRefused(InstallError):
 
     A pause and a resume move between ``active`` and ``paused`` only. An
     ``archived`` install stays archived.
+    """
+
+    status = 409
+
+
+class PromotionRefused(InstallError):
+    """A promotion or a share that §6.2 does not allow (409, PKG-11a).
+
+    The codes: ``not_private``, ``not_active``, ``draft``, ``not_kept``,
+    ``owner_not_in_group`` and ``grantee_outside_group``. No message names
+    the address of a grantee.
     """
 
     status = 409
@@ -717,3 +783,102 @@ async def resume_install(db: Any, *, install_id: str) -> bool:
     and writes nothing. Answers True when the state changed.
     """
     return await _move_state(db, _install_id(install_id), "paused", "active", "a resume")
+
+
+# ── The promotion (§6.2, PKG-11a) ───────────────────────────────────────────
+
+
+def _group(group: object) -> str:
+    """The NORMALISED ``group:<slug>`` subject, or :class:`ScopeRefused`."""
+    refused = ScopeRefused("not_a_group", "A promotion needs a group:<slug> scope.")
+    if not _plain(group, limit=MAX_SUBJECT_BYTES):
+        raise refused
+    try:
+        subject = normalize_grant_subject(str(group))
+    except ValueError as exc:
+        raise refused from exc
+    if _kind_of(subject) != "group":
+        raise refused
+    return subject
+
+
+async def locked_install(db: Any, install: str, act: str) -> tuple[Any, ...]:
+    """Take the org lock, then read the install *install* with the row lock.
+
+    The promotion and ``promotion.share_with_people`` both call it, so a
+    share and a promotion of one org run one at a time. An id that no
+    install of the bound org has raises :class:`InstallNotFound`. Answers
+    the row of :data:`_INSTALL_FOR_UPDATE_SQL`.
+    """
+    await _lock_org(db, act)
+    row = (await db.execute(text(_INSTALL_FOR_UPDATE_SQL), {"install": install})).first()
+    if row is None:
+        raise InstallNotFound("install_not_found", "No install has this id.")
+    return tuple(row)
+
+
+def refuse_unless_kept_private(row: Sequence[Any], *, allow_draft: bool) -> None:
+    """Refuse an install that is not private, not active or not kept.
+
+    *row* is a row of :data:`_INSTALL_FOR_UPDATE_SQL`. A draft is refused
+    too, unless *allow_draft*. Each refusal is a :class:`PromotionRefused`
+    with its own code (PKG-Q11: keep comes first).
+    """
+    _app, version, kind, _subject, _by, ends_at, state = row
+    if kind != "private":
+        raise PromotionRefused("not_private", "Only a private install can move or be shared.")
+    if state != "active":
+        raise PromotionRefused("not_active", f"An install that is {state} cannot move or be shared.")
+    if version is None and not allow_draft:
+        raise PromotionRefused("draft", "A draft runs for its owner only, so it cannot move.")
+    if ends_at is not None:
+        raise PromotionRefused("not_kept", "Keep the install first. It still has an end date.")
+
+
+async def promote_to_group(db: Any, *, install_id: str, group: str) -> Install:
+    """Move the private install *install_id* of the bound org to *group*.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    The install keeps its id, its version, ``installed_by``, ``created_at``
+    and each claim row. Only the scope and ``updated_at`` change (§6.2).
+    Each refusal writes nothing:
+
+    * an id of no install of the bound org: :class:`InstallNotFound`;
+    * an install that is not private, not active, a draft, or not kept:
+      :class:`PromotionRefused`;
+    * an owner who is not an active member of the group, or a share with a
+      person who is not one: :class:`PromotionRefused` (PKG-Q9);
+    * an install of the app at the group already: :class:`AlreadyInstalled`;
+    * a claim that overlaps a claim of another app at the group scope (§4):
+      :class:`ClaimTaken`.
+
+    The store does not check rights. The route of PKG-11b or J2 checks
+    ``studio:publish``. The store never writes ``apps``.
+    """
+    install = _install_id(install_id)
+    subject = _group(group)
+    row = await locked_install(db, install, "a promotion")
+    refuse_unless_kept_private(row, allow_draft=False)
+    app, version, by, ends_at = str(row[0]), row[1], str(row[4]), row[5]
+    if (await db.execute(text(_MEMBER_IN_GROUP_SQL), {
+            "subject": subject, "by": by})).first() is None:
+        raise PromotionRefused(
+            "owner_not_in_group", "The owner must be an active member of the group.")
+    if (await db.execute(text(_GRANTEE_OUTSIDE_SQL), {
+            "subject": subject, "install": install})).first() is not None:
+        raise PromotionRefused(
+            "grantee_outside_group",
+            "A person who holds a share is not a member of the group. Remove the share first.")
+    if (await db.execute(text(_SCOPE_TAKEN_SQL), {
+            "app": app, "kind": "group", "subject": subject})).first() is not None:
+        raise AlreadyInstalled("already_installed", "The app has an install at this scope.")
+    claims = tuple(
+        Contribution(point=str(r[0]), key=str(r[1]), payload=dict(r[2] or {}),
+                     position=int(r[3]))
+        for r in (await db.execute(text(_CLAIMS_OF_SQL), {"install": install})).all())
+    _check_system(claims)
+    await _check_held(db, "group", subject, app, claims)
+    await db.execute(text(_PROMOTE_SQL), {"install": install, "subject": subject})
+    return Install(
+        id=install, app_id=app, version=version, scope_kind="group", scope_subject=subject,
+        installed_by=by, ends_at=ends_at, contributions=claims)
