@@ -4,6 +4,7 @@ import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { uploadSignatureImage } from "../lib/api";
+import { UPLOAD_OFF } from "../lib/signatureSave";
 import {
   EditorContent, ReactNodeViewRenderer, NodeViewWrapper, useEditor,
   useEditorState, type Editor, type NodeViewProps,
@@ -180,9 +181,9 @@ function Divider() {
 
 const FONT_SIZES = ["12px", "13px", "14px", "16px", "18px", "22px"];
 
-/** The sentence of a server with no https address to host an image
- *  (§23.3.9). The server's 503 says the same words. */
-export const UPLOAD_OFF = "Image upload is not set up on this server yet. Ask your admin.";
+// The sentence of a server with no https address to host an image (§23.3.9).
+// lib/signatureSave.ts holds it, so the dialog can drop it from a save error.
+export { UPLOAD_OFF };
 
 // ── The editor ────────────────────────────────────────────────────────────────
 

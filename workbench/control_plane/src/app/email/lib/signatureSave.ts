@@ -18,6 +18,19 @@ export type SignatureSave =
   | { ok: true; settings: AssistantSettings }
   | { ok: false; error: string };
 
+/** The sentence of a server with no https address to host an image
+ *  (§23.3.9). The server's 503 says the same words (`NOT_SET_UP`). */
+export const UPLOAD_OFF = "Image upload is not set up on this server yet. Ask your admin.";
+
+/** The save error that the dialog shows. When the editor already shows the
+ *  upload-off line, the error drops that sentence, so the member does not
+ *  read it twice (fix round 2, P3). */
+export function shownError(error: string | null, uploadOff: boolean): string | null {
+  if (!error || !uploadOff) return error;
+  const rest = error.replace(UPLOAD_OFF, "").replace(/\s+/g, " ").trim();
+  return rest || null;
+}
+
 /** Save one signature on top of the STORED settings. It never throws. */
 export async function saveSignature(
   stored: AssistantSettings,

@@ -21,7 +21,7 @@ import {
 } from "../../../lib/api";
 import { AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn } from "../../../lib/assistantSettings";
 import {
-  dialogAfterSave, patchBody, saveSignature, settingsAfterSave, type SignatureSave,
+  dialogAfterSave, patchBody, saveSignature, settingsAfterSave, shownError, type SignatureSave,
 } from "../../../lib/signatureSave";
 import {
   AssistantSettings, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
@@ -841,6 +841,9 @@ function SignatureDialog({
     setNotice(next.notice);
     if (!next.open) onClose();
   };
+  const uploadOff = settings.signature_image_upload === false;
+  // The editor shows the upload-off line itself, so the error drops it.
+  const errorText = shownError(error, uploadOff);
   return (
     <Modal
       title="Email signature"
@@ -852,9 +855,9 @@ function SignatureDialog({
         </Button>
       }
     >
-      {error && (
+      {errorText && (
         <p role="alert" data-signature-error className="mb-2 text-[11px] text-destructive">
-          {error}
+          {errorText}
         </p>
       )}
       {/* Saved, and the clean took out each link or image that is not https. */}
@@ -867,7 +870,7 @@ function SignatureDialog({
         value={draft}
         onChange={setDraft}
         accountId={settings.account_id}
-        uploadAvailable={settings.signature_image_upload !== false}
+        uploadAvailable={!uploadOff}
       />
     </Modal>
   );

@@ -8,6 +8,7 @@ import { getExtensionField } from "@tiptap/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { uploadSignatureImage } from "../lib/api";
+import { shownError } from "../lib/signatureSave";
 import { SIG_ALLOWED_URI, SigImage, UPLOAD_OFF } from "./SignatureEditor";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
@@ -30,7 +31,21 @@ describe("signature editor: no https address on the server (§23.3.9)", () => {
 
   it("takes the switch from the settings answer", () => {
     const tab = read("./automation/ai-settings/SettingsTab.tsx");
-    expect(tab).toMatch(/uploadAvailable=\{settings\.signature_image_upload !== false\}/);
+    expect(tab).toMatch(/const uploadOff = settings\.signature_image_upload === false;/);
+    expect(tab).toMatch(/uploadAvailable=\{!uploadOff\}/);
+  });
+
+  it("says the sentence once: the save error drops it while the line shows", () => {
+    const refused = `Your signature holds an embedded image, and this server cannot host it. ${UPLOAD_OFF}`;
+    expect(shownError(refused, true)).toBe(
+      "Your signature holds an embedded image, and this server cannot host it.");
+    expect(shownError(UPLOAD_OFF, true)).toBeNull();
+    expect(shownError(refused, false)).toBe(refused);
+    expect(shownError("That file is not a picture.", true)).toBe("That file is not a picture.");
+    expect(shownError(null, true)).toBeNull();
+    const tab = read("./automation/ai-settings/SettingsTab.tsx");
+    expect(tab).toMatch(/const errorText = shownError\(error, uploadOff\);/);
+    expect(tab).toMatch(/\{errorText && \(\s*<p role="alert" data-signature-error/);
   });
 });
 
