@@ -393,6 +393,30 @@ moment. It never drops.
 unread mark of the shell. A send outside the app is Reach, behind its own
 flags.
 
+**The rating of an alert (slice 2b-1, DECIDED 2026-11-06 07:17 UTC).** The
+owner chose to store the rating on `reach_signal_log`, with the rule id.
+Migration 348 adds three nullable columns: `rule_id`, `feedback` and
+`feedback_at`. An interrupt writes the `rule_id` of the rule that matched, with
+one log row for each rule. `feedback` holds
+`useful` or `not_useful`. One member gives one rating for each card and rule,
+and a second rating replaces the first.
+
+A rating only stores. It mutes no
+rule and changes no budget. 
+
+`proactive_reach.md` §7.1 and RE-6 (WS-59) keep
+the rating of a whole message on `reach_outbox.feedback`. The two do not
+overlap: the log rates one card for one rule, and the outbox rates a message.
+RE-6 reads the log rating, and it adds no second table.
+
+**The `notify_me` fact (slice 2b-2).** Rule 3 never fires, because no
+provider sets `notify_me`. The owner has not decided what "the member asked to
+be told" means (Q8 in §9). This row waits on that answer.
+
+**The mute screen (slice 2b-3).** A member sets a rule mute in Settings. The
+screen is STANDARD tier and needs a D145 preview. It writes `rule_mutes` in
+`my_day_prefs` through the route of slice 2a.
+
 ---
 
 ## 7. Delivery monitoring (BR-2d)
@@ -440,7 +464,7 @@ lists each act path that writes no `audit_event` row. Each one is a finding.
 
 ## 9. The owner's decisions
 
-The owner decided all seven questions on 2026-10-29 (epic #479, the comment
+The owner decided Q1 to Q7 on 2026-10-29 (epic #479, the comment
 "Owner decisions").
 
 | # | Question | DECIDED 2026-10-29 |
@@ -452,6 +476,7 @@ The owner decided all seven questions on 2026-10-29 (epic #479, the comment
 | Q5 | Fixed times, or the member's? | 07:30 and 18:30 in the member's zone by default. Each member can change both. The brief stores three preferences (`enabled`, `brief_time`, `closeout_time`) through `acb_common.assistant_profile` (`app_prefs`, and `PUT /auth/me/assistant-profile` with the key `apps`). A later slice adds the settings UI |
 | Q6 | How long to keep a brief? | 90 days. The prune hook of `brief/run.py` deletes older runs |
 | Q7 | Outside the app, when? | Web push is in v1, and it ships last, after the in-app surfaces |
+| Q8 | What does "the member asked to be told" mean for rule 3? | **OPEN, asked on task 590 on 2026-11-06.** Options: (a) one boolean in `my_day_prefs` that sets `notify_me` on every `block_soon` card, no migration (recommended), (b) only blocks that have a reminder, (c) drop rule 3, because the Notify me request (RE-5) already interrupts |
 
 ### 9.1 Gaps that the BR-2a-1 audit found
 
@@ -493,7 +518,7 @@ and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 | 6 | BR-2d: the monitor. **BUILT 2026-11-04, dark** (`brief/monitor.py`, the hourly `brief.slo` check and `GET /admin/brief/health`). The 3-minute fallback waits for BR-2a-2, because a template run is `ready` at once | 2, AUTO-2 | none | AGENT-SAFE |
 | 7 | BR-2b with BR-7b: the close-out | 2 | `BRIEF_CLOSEOUT` | AGENT-SAFE. The production flip: `enforcement-flip` |
 | 8 | BR-7a: the effect registry and its fence. **BUILT 2026-11-04** (`worker.register(effect=, policy=)`, `tests/unit/test_job_effects_fence.py`). A kind with no `effect` is a finding in the fence; `register` takes the argument as optional, so the fence is the gate | BR-1a | none | AGENT-SAFE |
-| 9 | BR-5: the exception rules. **Slice 1 BUILT 2026-11-04, dark** (`reach/exceptions.py`: the four rules, `plan.interrupt_candidates(rules=)`, `BRIEF_EXCEPTIONS`). **Slice 2a BUILT 2026-11-05, dark:** a member's mute of a rule (the `my_day_prefs` key `rule_mutes`, read by `loop.muted_rules`). **Still open:** the useful or not-useful rating of an alert, and the `notify_me` setting that rule 3 needs, because no provider gives that fact yet | 2 | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip: `enforcement-flip` (Q4 is decided) |
+| 9 | BR-5: the exception rules. **Slice 1 BUILT 2026-11-04, dark** (`reach/exceptions.py`: the four rules, `plan.interrupt_candidates(rules=)`, `BRIEF_EXCEPTIONS`). **Slice 2a BUILT 2026-11-05, dark:** a member's mute of a rule (the `my_day_prefs` key `rule_mutes`, read by `loop.muted_rules`). **Still open, in three slices (spec rows 12 to 14):** 2b-1 the useful or not-useful rating (migration 348, HIGH tier), 2b-2 the `notify_me` fact that rule 3 needs (waits on Q8), and 2b-3 the mute screen (STANDARD, D145 preview). The move of an interrupted card to the top of My Day (§6) is not built, and no module under `routes/shell/` reads `BRIEF_EXCEPTIONS` | 2 | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip: `enforcement-flip` (Q4 is decided) |
 | 10 | BR-3a: one week on pilot data | 5 | none | **OWNER-GATE**: the pilot orgs and their inboxes are the owner's |
 | 11 | Web push of the brief, through Reach | 6 | `BRIEF_PUSH` | **OWNER-GATE**: it reaches a person through a third party |
 
@@ -521,6 +546,9 @@ Each item is a "done when". Each fence runs red first, then green.
 | 9 | Between the moments, a card that no rule matches never moves to the top. A matching card does, inside the budget of `proactive_reach.md` §6.1. A rule that the member muted matches nothing | `test_reach_exceptions.py` |
 | 10 | The ledger shows one brief and one close-out for each pilot member on 5 working days. Each brief has one email claim and one calendar claim at least | The ledger, read by the owner |
 | 11 | Reach sends the stored lead with a link, and `reach_outbox` holds the row | `test_reach_loop.py` |
+| 12 | An interrupt writes a `reach_signal_log` row with the `rule_id`. A rating of `useful` or `not_useful` stores `feedback` and `feedback_at` on that row only. A second rating replaces the first. A rating by member A never changes a row of member B or of another tenant. A rating mutes no rule | `test_reach_exceptions_feedback_r8.py` (a real database, two tenants) |
+| 13 | With the `notify_me` source of Q8 on, a `block_soon` card carries `notify_me` and rule 3 fires. With it off, rule 3 matches nothing | `test_reach_exceptions.py` (waits on Q8) |
+| 14 | The Settings screen lists the four rules in words. A switch mutes or unmutes one rule, and the route of slice 2a stores it | `test_reach_rule_mutes_route.py`, and the D145 preview |
 
 All fences are under `tests/unit/`.
 

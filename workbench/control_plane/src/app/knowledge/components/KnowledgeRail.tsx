@@ -129,6 +129,11 @@ export interface KnowledgeRailProps {
    * Absent: no `+`, for a member with no space to write in.
    */
   onAddEntity?: (type: CreatableType) => void;
+  /**
+   * Open the New space form (KB-2q). The Spaces heading gets a `+`. Absent:
+   * no `+`, for a member without `knowledge:manage`.
+   */
+  onNewSpace?: () => void;
 }
 
 /** True when the member can move and add pages in this space. */
@@ -152,6 +157,7 @@ export default function KnowledgeRail({
   onNewSubPage,
   onArchive,
   onAddEntity,
+  onNewSpace,
 }: KnowledgeRailProps) {
   return (
     <div className="flex flex-col gap-0.5" onKeyDown={moveRailFocus}>
@@ -218,6 +224,8 @@ export default function KnowledgeRail({
         icon={<Icon name="LayoutGrid" className={ICON} />}
         buttonProps={{ "aria-current": atHome ? "page" : undefined }}
         onSelect={() => onNavigate(KNOWLEDGE_HOME)}
+        actions={onNewSpace ? <NewSpaceButton onNew={onNewSpace} /> : undefined}
+        phoneActions={onNewSpace ? <NewSpaceButton onNew={onNewSpace} phone /> : undefined}
       />
       {spaces.map((space) => (
         <SpaceBranch
@@ -256,6 +264,22 @@ export default function KnowledgeRail({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** The `+` of the Spaces heading (KB-2q): the New space form. */
+function NewSpaceButton({ onNew, phone = false }: { onNew: () => void; phone?: boolean }) {
+  return (
+    <Button
+      variant="ghost"
+      size={phone ? "none" : "icon-xs"}
+      radius="keep"
+      className={phone ? "h-10 w-10 rounded" : "rounded"}
+      icon="Plus"
+      aria-label="New space"
+      title={phone ? undefined : "New space"}
+      onClick={onNew}
+    />
   );
 }
 

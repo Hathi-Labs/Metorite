@@ -241,6 +241,13 @@ interface Props {
    */
   statusesFor?: (task: TaskRow) => readonly StatusRow[];
   /**
+   * Task 1792. Opens the Statuses dialog, where the order of the columns is
+   * edited. Shown above a board grouped by status, so the control sits one
+   * click from the columns it changes. Absent in My tasks, which spans many
+   * projects and has no one status set to edit.
+   */
+  onManageStatuses?: () => void;
+  /**
    * WS-64 OP-11 fix round. False hides the per-column quick add: My tasks
    * spans many projects, so a column names no home for a new task. Its one
    * add is the top Capture. Default true.
@@ -293,6 +300,7 @@ export function TaskBoard({
   projectPath,
   projectPrivate,
   statusesFor,
+  onManageStatuses,
   canQuickAdd = true,
   columnTotals = null,
   onLoadColumn,
@@ -1147,6 +1155,19 @@ export function TaskBoard({
       className="outline-none"
       aria-label="Task board — arrow keys move, Shift extends the selection, Enter opens"
     >
+      {onManageStatuses && groupBy === "status" ? (
+        <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="Columns3"
+            onClick={onManageStatuses}
+          >
+            Statuses
+          </Button>
+        </div>
+      ) : null}
+
       {laned ? (
         <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
           <Button
