@@ -7220,8 +7220,6 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
     return wanted if wanted in found.scopes else None
 
 
-# ── The registry ────────────────────────────────────────────────────────────
-
 # ── PB-3a: read_playbook (D186, orchestration_playbook.md §5 and §7) ─────────
 
 _READ_PLAYBOOK_INPUT: dict[str, Any] = {
@@ -7300,6 +7298,8 @@ READ_PLAYBOOK = Tool(
     playbook=True,
 )
 
+
+# ── The registry ────────────────────────────────────────────────────────────
 
 #: Every tool of the edge, by name, in the order of ``tools/list``. The two
 #: reads of EA-15 (``get_task_context`` and ``my_work``) follow the seven
