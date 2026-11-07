@@ -957,7 +957,7 @@ def _load_specialist_agents_as_tools() -> list[Any]:
             # D84, D92: a Copilot agent does not run as a specialist
             # (loader.refuse_copilot_specialist), so the model is not offered
             # it. It returns here when its port labels it "maf" (WS-8i).
-            # app-builder stays, by owner call (loader.COPILOT_SPECIALIST_ALLOWED).
+            # app-builder was retired as a specialist on 2026-11-07 (owner, task 1909).
             _log.info(
                 "orchestrator.specialist_tool_skipped",
                 agent=name, reason="copilot_runtime",
