@@ -73,11 +73,12 @@ say "the branch is $behind commit(s) behind $BASE"
 
 # ── 1. Migration numbers (R1) ───────────────────────────────────────────────
 num() { basename "$1" | { grep -oE '^[0-9]+' || true; } | sed 's/^0*//'; }
-main_max=0
-while IFS= read -r f; do
-  n="$(num "$f")"
-  if [ -n "$n" ] && [ "$n" -gt "$main_max" ]; then main_max="$n"; fi
-done < <(git ls-tree --name-only "$BASE" infra/postgres/ | grep -E '/[0-9]+_[^/]*\.sql$' || true)
+say "R1: reading the highest migration number on $BASE"
+# One pipeline, not one subshell per file: about 340 files took 45 min on a
+# loaded PC (CIV-12b, task 1709). Leading zeros go, so 007 reads as 7.
+main_max="$(git ls-tree --name-only "$BASE" infra/postgres/ \
+  | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
+main_max="${main_max:-0}"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   n="$(num "$f")"
