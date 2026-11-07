@@ -14221,6 +14221,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G8b | **EM-G11f3** — no copy of mail in a chat memory store, and no email chat route with no client. 🔨 Built, not merged (2026-10-16, branch `gmail-chat-copies`) | 6 | 🟢 AGENT-SAFE · security review. `deploy-write` for one line of `deploy.sh` (granted). 🔴 Merges before the WS-7 memory flips | M, about 400 added and 650 deleted | §12.3.13.9.1 |
 | PR-G9 | **EM-G11g1** — envelope encryption in the key store, dark | 5 | 🟢 AGENT-SAFE build · security review. 🔴 OWNER-GATE for KMS billing (Q-GM-8). 🔴 `enforcement-flip` for `KEY_STORE_ENVELOPE` | M, about 550 | §12.3.13.10 |
 | PR-G10 | **EM-G11g2** — the rewrap job and the rotation | 5 | 🟢 AGENT-SAFE · R8. 🔴 `deploy` to run the job on production | M, about 450 | §12.3.13.10 |
+| PR-G11 | **EM-G11h** — Gmail text leaves direct DeepSeek: the mail bit, a Router that enforces it, and ZDR hosts only. 📝 Specified 2026-11-06 (task 1400). Ten slices OR-1 to OR-10 | 4 | 🟢 AGENT-SAFE build · security review · R8. 🔴 OWNER-GATE for the key and the credit (OR-7, OR-8). 🔴 `enforcement-flip` for two flags | Ten slices | §12.3.13.16 |
 | — | **EM-G11r** — the reviewer path, the video, the publish order and the scope text | 7, 9, 10, 11 | 🔴 OWNER-GATE (Google account, money, third party). Parts are agent acts, named in each step | Runbook | §12.3.13.11 to §12.3.13.14 |
 
 **Sizes** count code and tests, as §12.3 does.
@@ -16394,6 +16395,223 @@ settings, vacation replies or any other setting.
 - **Finding (WS-17): the httpx client of `_drop_graph_subscription` is not closed**
   (`accounts.py:831-832`).
 
+##### 12.3.13.16 EM-G11h — Gmail text leaves direct DeepSeek (task 1400, design of 2026-11-06)
+
+**Status.** 📝 Specified 2026-11-06. No slice is built. Verified against code on 2026-11-06 at
+`origin/main` `06cfc43f8`. The owner decision is of 2026-11-02, and the owner approved the words on
+2026-11-04 ("Approve the words, ship after the OpenRouter move", task 1399). Task 1400 holds the work.
+Rule 5 of §12.3.13.0 and the disclosure (§12.3.13.4.1) say that mail text does not train a model.
+**This section must ship before the Google submission.** Until OR-8 below shows its evidence, no
+page, disclosure or Google form may claim "no training".
+
+**Owner of the Router half.** `specs/customer_console.md` §6B (WS-31, CP-11) owns the Router. OR-2 and
+OR-3 change the Router. This section holds the design, and §6B holds a pointer row (OR-2). The Copilot SDK
+runtime belongs to WS-43.
+
+**Paths.** `GW` is `apps/services/gateway/gateway/`. `CC` is
+`apps/services/customer_console/customer_console/`. `LLM` is `packages/acb_llm/acb_llm/`. Re-verify
+each anchor at dispatch. This section records line numbers of 2026-11-06.
+
+**Why.** Production sends mail text to direct DeepSeek. The chain of `tier-powerful` is
+`deepseek/deepseek-v4-pro` (`infra/customer_console/002_seed_catalog.sql:88-91`). The email assistant
+runs on it (`apps/agents/agent-email-assistant/agents.py:9415`). The seed binds it, and the live binding was not read. Google's API Services User Data Policy (Limited
+Use, `https://developers.google.com/workspace/workspace-api-user-data-developer-policy`, no date, read
+2026-11-06) forbids "using user data to create, train, or improve a machine learning or artificial
+intelligence model".
+
+###### 12.3.13.16.1 The vendor register (read on 2026-11-06)
+
+A term that I could not confirm reads **unknown**. Unknown counts as "may train". A page that shows
+no date reads "no date". The register is also data: slice OR-6 puts it in a file that a test reads.
+
+| Vendor on a mail path | What the source says | Source and date | Verdict |
+|---|---|---|---|
+| DeepSeek, direct | May use prompts "to train and improve our technology". Stores data in the PRC. The open platform terms hold no no-training promise, no retention term and no DPA | Privacy policy, "Last Update: Feb 10, 2026" (`https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html`). Open platform terms, effective 2026-04-29 (`https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-service.html`). The terms read on 2026-11-06 hold no no-training promise, no retention term and no DPA | **Leaves every mail path** |
+| OpenRouter, the broker | Stores no prompt or response by default. Request metadata is always stored. Prompt logging is opt-in and off. Training on prompts by OpenRouter is opt-in and off. It "has never sold or licensed prompt data" | `https://openrouter.ai/docs/guides/privacy/data-collection`. No date | Confirmed for the broker. The account must keep both opt-ins off (OR-8 checks) |
+| OpenRouter, a host chosen by the request | `data_collection: "deny"` uses only hosts that do not collect data. `zdr: true` uses only ZDR endpoints. ZDR means "no routine storage of prompts or responses after processing". **Safety Retention** endpoints are also eligible. They may keep prompts "to detect, investigate, and prevent abuse" and not for training. From 2026-10-27 OpenRouter screens all requests for child sexual abuse material | `https://openrouter.ai/docs/guides/routing/provider-selection`, `https://openrouter.ai/docs/guides/features/zdr`. No date | Confirmed for training. The two pages are the source for the CSAM screening date (the ZDR page). Retention for abuse review is a disclosed residual. The disclosure names it (OR-9, Q-GM-7) |
+| Hosts of deepseek-v4-pro on the ZDR list | `GET https://openrouter.ai/api/v1/endpoints/zdr` listed Nebius ("DeepSeek V4 Pro 0423"), Parasail (0813), Wafer (0813) and BaseTen (0813) on 2026-11-06. The list was truncated, so more may exist | The API list of 2026-11-06 | The set can change. The list names "V4 Pro 0423" on Nebius and "0813" on the others, which may be two model versions. OR-7 must prove that the bound slug reaches each host. OR-9 checks the list each week |
+| AI/ML API, the reseller of `tier-decide` and `tier-embed` | It "does not directly collect or independently store" prompt content. Content "may be used by the provider for model training, improvement or other purposes". It names no provider. It gives no retention period | Privacy policy, "Last updated: 5 November 2026" (`https://aimlapi.com/privacy-policy`). The terms page returned 404 | **Unknown. Counts as may train** |
+| TypeSafe, maker of Jev | "We will not train or fine tune any artificial intelligence or machine learning models on your prompts or other Input." It hosts in the US. It gives no retention period. The DPA holds no explicit training clause | Privacy policy, "Last updated: Nov 19, 2025". DPA, "Last updated Apr 24, 2026" (`https://typesafe.ai/legal/privacy`, `https://typesafe.ai/legal/data-processing`) | Confirmed for training in the policy. The DPA is silent. Access is by waitlist. Direct use needs a key |
+| OpenAI embeddings, direct (`GW/main.py:2397`) | Terms not read | none | **Unknown** |
+| Gemini | Not on a mail path today | Source not read. Task 1400 states that Google's unpaid terms allow training | **Unknown**. Not allowed on a mail path unless the project is billed |
+
+###### 12.3.13.16.2 Every path that reads Gmail text
+
+The sweep of 2026-11-06 found these. The column "Route" says what carries the call today.
+**R** is the Router when `router_serving_enabled` is on. The setting defaults to false
+(`packages/acb_common/acb_common/settings.py:787`), and the live value is **unknown**. With it off,
+each of these calls goes to litellm and the vendor directly. **D** is a direct vendor call that no
+setting changes.
+
+| # | Path | Call site | Tier | Route |
+|---|---|---|---|---|
+| 1 | Email assistant agent | `apps/agents/agent-email-assistant/agents.py:9415` | `tier-powerful` | R, through the gateway `/v1` |
+| 2 | Chat after a mail read, and sub-agents | `apps/services/orchestrator/orchestrator/agents.py:1076-1090`, `executor.py:9187` | `tier-balanced` and up | R |
+| 3 | Digest | `GW/routes/email/digest.py:849` | `tier-fast` | R |
+| 4 | Reply Zero status | `GW/routes/email/automation/replyzero.py:855` | `tier-balanced`, then `tier-fast` | R |
+| 5 | Triage by `decide` | `engine.py:810`, `senders.py:1415`, `learning.py:161` in `GW/routes/email/automation/` | `tier-decide` | Router `/v1/decide`. Every feature mode is off by default |
+| 6 | Old triage prompts | `engine.py:911`, `:1010`, `senders.py:1429`, `learning.py:183` | `tier-fast` | R |
+| 7 | Draft, non-stream | `drafting.py:1309` | `tier-powerful` | R |
+| 8 | **Draft and compose, streamed** | `drafting.py:1301`, `:1517` through `LLM/context.py:630` | `tier-powerful`, `tier-fast` | **D. It never uses the Router** |
+| 9 | Draft helpers: consult, reply memory, style, rule actions | `drafting.py:719`, `:904`, `:1615`, `actions.py:351` | `tier-fast` to `tier-powerful` | R |
+| 10 | Voice profile and writing style | `voice_profile.py:247`, `:286`, `:717`, `assistant.py:666` | `tier-balanced`, `tier-powerful` | R |
+| 11 | Task capture from mail | `GW/routes/tasks/capture_email.py:294`, `:1092` | `tier-fast` | R |
+| 12 | Email embeddings (index) | `apps/services/email_ingestion/email_ingestion/email_embeddings.py:121`, `GW/kb_index/embed.py:106` | `tier-embed` (`aimlapi/text-embedding-3-small`) | Router `/v1/embeddings` |
+| 13 | Embeddings of a search query and of the inbound mail | `GW/routes/email/transport/search.py:290`, `drafting.py:287-292` | `tier-embed` | Router `/v1/embeddings` |
+| 14 | **Memory (Mem0, Graphiti) embeddings** | `GW/main.py:2383-2410` | `text-embedding-3-small` | **D. Calls OpenAI with `OPENAI_API_KEY`** |
+| 15 | Insights extract and screen | `insights_extract.py:179`, `insights_screen.py:~255` | none | No production caller today |
+| 16 | **Chat on the Copilot SDK runtime** | `_copilot_session.py:246`, `copilot_agent.py:917-921` | by agent | **D. With no BYOK provider it calls `api.githubcopilot.com`. Not covered** |
+
+A path that holds no mail text: the CRM digest (`crm_sync/digest.py:578`) sends numbers only. The
+member-typed summary job (`GW/chat_summary_job.py:245`) excludes mail by design. Three facts stay
+**unknown**: whether CRM notes or brief claims ever hold Gmail text, and whether `rules_generate`
+(`rules.py:761`) ever gets mail.
+
+###### 12.3.13.16.3 Is `run_holds_mail` the seam?
+
+**No, not alone.** `run_holds_mail` (`packages/acb_skills/acb_skills/egress.py:461`) is right as the
+**predicate**: it fails closed, it reads the session mark, and it knows the email assistant. It is
+wrong as the **place of the control**, for three reasons.
+
+1. It runs at run end only. Its callers gate stores (`GW/main.py:1402`, `GW/routes/agent.py:2739`,
+   `:3261`, `GW/chat_fold.py:476`, `_tool_injection.py:1169`). No LLM call reads it.
+2. The gateway `/v1` request carries no session id. The Router cannot read the mark.
+3. Eight of the paths in §12.3.13.16.2 have no agent run. They are feature calls with no session.
+
+**The seam is the Router**, as `work_plan.md` and `ai_tier_routing.md` require. One bit travels with
+the call, and the Router enforces it. Nothing in this design is a second router, a second tier
+vocabulary or a second credential store.
+
+###### 12.3.13.16.4 The design, in eight rules
+
+1. **One bit: "this call carries mail".** The caller sets it. A new header `X-CC-Mail: 1` travels on
+   the existing attribution path (`acb_auth/console_resolve.py:2420` `_attribution_headers`,
+   `LLM/attribution.py:68`, `LLM/routed.py` `run_attribution`). The gateway `/v1` door forwards it
+   (`GW/routes/v1_compat.py:626`, `:716`). The Router reads it next to `X-CC-Run`
+   (`CC/auth.py:573-609`, in the two dependencies `organization_from_key` and
+   `organization_from_key_or_deployment`). Both bind `x_cc_mail`, and `Caller` gets a field. OR-1 adds the bit
+   to the four console functions (`console_resolve.py:2489`, `:2581`, `:2660`, `:2755`). A body key is not used, because both request
+   models are `extra="forbid"`.
+2. **One predicate sets the bit at call time.** An agent run sets it when `run_holds_mail` is true.
+   That covers the email assistant and each session with a mark. The agent path computes the bit for each
+   request in the async hook `acb_llm.attribution._stamp`. It reads the process set
+   (`read_untrusted_answer`) first, and it awaits `run_holds_mail` only when that set is clear. The header
+   builders are sync, so they never await. The Copilot SDK runtime stamps headers once for each session
+   and once for each turn (`_copilot_session.py:246`, `copilot_agent.py:917`). So a model call after a
+   mail read in the same turn has no bit (rule 10). A feature call sets it with a
+   `mail_scope()` context manager around the call. The set of feature call sites is a registry
+   (rule 7). A marked session keeps the bit for every later turn, so the chat that read one mail
+   goes to the safe chain from then on.
+3. **The bit only tightens.** The Router never reads a tenant or an identity from it (R5 e). A
+   caller that forges it only narrows its own calls. A call without it behaves as today.
+4. **A mail call reaches a mail-safe step only.** A step is mail-safe when its provider prefix is
+   in `MAIL_SAFE_PROVIDERS`, a constant in code that starts as `{"openrouter"}`. The Router removes
+   every other step from the chain for that call. No migration and no new tier is needed. The
+   operator binds `tier-powerful` as `[openrouter/deepseek/deepseek-v4-pro, deepseek/deepseek-v4-pro]`.
+   A mail call uses the first step only. A call without mail still uses both. A provider enters the
+   set only when its row in the vendor register reads "confirmed for training" (rule 8). A step whose
+   credential has an `api_base` other than the OpenRouter host is not mail-safe (`router.py:600`).
+   A credential that a tenant owns (BYOK) is not mail-safe, because the tenant sets its opt-ins.
+   Bind the chain with the direct step first and OpenRouter second. Traffic without mail keeps its
+   present path and cost.
+5. **An OpenRouter step sends the restriction on every request.** The step builders of the three
+   serving doors add `provider: {"data_collection": "deny", "zdr": true}` for a mail call. They are
+   chat (`CC/main.py:9054`, and the stream at `:9146`), embeddings (`:10185`) and decide (`:10354`).
+   The auditor ran litellm 1.103.0 against a local server on 2026-11-06. A top-level `provider` kwarg and
+   `extra_body` both reach the OpenRouter body, streamed or not. `allow_fallbacks` stays true, so one
+   ZDR host failing moves to the next ZDR host. The native decide handlers (`native_typesafe`,
+   `native_aimlapi`) never reach litellm. So the step filter of rule 4 is the only guard on that door.
+   The filter runs **before** the `MAX_CHAIN_ATTEMPTS` limit (`CC/main.py:9040-9042`). A refusal releases the
+   call hold, as the 503 branch does at `:9048`. An OpenRouter "no endpoint matches" answer maps to
+   `mail_no_safe_route`.
+6. **No safe step means a refusal, never a fallback.** When the chain holds no mail-safe step, or
+   OpenRouter answers that no host matches, the Router returns a clear 4xx with the code
+   `mail_no_safe_route`. It does not try a direct vendor. The calling feature shows its normal
+   error. This is the only fail-closed point, and a fake provider tests it. The test against the
+   real OpenRouter waits for the key (OR-7).
+7. **Every mail path is on a list, and a test reads the list.** A registry
+   (`packages/acb_skills/acb_skills/mail_call_sites.py`) names each module that sends mail text to
+   a model, and how it sets the bit. A test scans the email modules for a model call that is not in
+   the registry. It is advisory against a call written in a new module that the scan does not
+   reach. The reviewer checks that case by hand (label: advisory).
+8. **A vendor needs a source before it is safe.** The register is a file with the source URL, the
+   read date and a verdict for each vendor. A vendor with the verdict "unknown" cannot enter
+   `MAIL_SAFE_PROVIDERS`. A test compares the two.
+
+9. **A mail call never reaches litellm directly.** With `ROUTER_MAIL_ENFORCE` on, a call that carries
+   the bit goes to the Router whatever `router_serving_enabled` says. When the box is not wired, the
+   call refuses with `mail_no_safe_route`. This holds in `v1_compat._handle_chat_completions`
+   (`GW/routes/v1_compat.py:768` to `:951`), in `acompletion_with_fallback` and in
+   `acompletion_stream_text`. A later rollback of `router_serving_enabled` then cannot send mail to
+   DeepSeek again.
+10. **The Copilot SDK runtime does not run the email assistant.** With no BYOK provider, that runtime
+    calls `api.githubcopilot.com` and skips the gateway. A pack call of `email-assistant` on it refuses
+    until WS-43 stamps the bit (OR-10).
+
+Four paths need work before the bit can protect them. Rows 8, 14 and 16 of §12.3.13.16.2 are direct
+calls. They must move to the Router or refuse mail (OR-3, OR-4, OR-10). The live value of
+`router_serving_enabled` decides whether rows 1 to 7 and 9 to 11 reach the Router at all. OR-8
+checks the box. The flip of that setting is owner-only (§6 D4).
+
+###### 12.3.13.16.5 The owner calls (Q-GM-16 to Q-GM-18)
+
+The owner has not answered them on 2026-11-06. Task 1400 holds the question, with a recommendation
+and the effect of each option. The design above holds for any answer. Each answer changes one slice.
+
+| Q | Question | Recommended | Changes |
+|---|---|---|---|
+| Q-GM-16 | Which model serves mail: (A) deepseek-v4-pro on ZDR hosts, or (B) a non-PRC model | A. Same quality. The listed host price is about $1.0 to $1.9 per M input tokens. The direct price is unknown | OR-8 binding. B adds an eval |
+| Q-GM-17 | What serves `tier-decide` for mail: (A) every mail feature stays off, (B) TypeSafe direct, (C) a small OpenRouter model | A. All feature modes are off now | OR-6. B needs a key and a signed DPA |
+| Q-GM-18 | What embeds mail: (A) `email_semantic_search_enabled` and `mem0_enabled` stay off, (B) a ZDR embedding model on OpenRouter | A | OR-4, OR-6. B needs a source that such a model exists |
+
+Until the owner answers Q-GM-17 and Q-GM-18, the safe default holds: the fence of OR-6 refuses a mail
+call to `tier-decide` or `tier-embed` when no mail-safe binding exists.
+
+###### 12.3.13.16.6 The slices
+
+Gate labels follow `work_plan.md` §6. Every slice ships dark. The size is the diff in lines.
+
+| ID | Slice | Gate | Done when | Fence (R7) | Task |
+|---|---|---|---|---|---|
+| **OR-1** | The bit: `X-CC-Mail` on the attribution path, the `mail_scope()` manager, the call-time predicate on `run_holds_mail`, the `/v1` forward, the Router read. The Router does nothing with it yet | 🟢 AGENT-SAFE · security review | A unit test shows the header on a marked session, on the email assistant, and inside `mail_scope()`, on the `/v1` forward and on all four console functions. It shows no header otherwise. The Router parses it and logs it. A forged header changes nothing else | `tests/unit/test_mail_bit_forwarded.py` | 1844 |
+| **OR-2** | The Router enforces it in the chat, embeddings and decide doors: filter the chain to `MAIL_SAFE_PROVIDERS` before the try cut, add `provider.data_collection` and `provider.zdr`, refuse with `mail_no_safe_route`, and write one log line `router.mail_call` with `request_id`, the step that answered and the `provider` field of the response (no request text). Flag `ROUTER_MAIL_ENFORCE`, default off. A pointer row goes in `customer_console.md` §6B | 🟢 AGENT-SAFE · R8 · security review | With the flag on and a fake provider, a mail call never reaches a non-safe step. With no safe step it gets `mail_no_safe_route`. A call without the bit is unchanged. With the flag off, nothing changes. With the bit set and routing off, litellm is never called (rule 9). A refusal releases the call hold | `tests/unit/test_router_mail_safe_chain.py` and `tests/unit/test_router_mail_no_safe_route.py` (R8) | 1845 |
+| **OR-3** | Move the streamed draft and compose onto the Router (`LLM/context.py:630`), and refuse a mail call on the litellm branch | 🟢 AGENT-SAFE · security review | With routing on, a test with a fake Console shows that `acompletion_stream_text` calls `stream_completion_on_console` with the bit and never calls litellm. With the bit set and routing off, it refuses. The `_Entry` reason for `context.py` in the ratchet is updated | `tests/unit/test_no_direct_ai_vendor_calls.py` and `tests/unit/test_mail_no_direct_litellm.py` | 1846 |
+| **OR-4** | Mail embeddings: the gateway `/v1/embeddings` door (`GW/main.py:2383`) refuses a call that carries the bit. Mem0 and Graphiti keep writing no mail (rule 6 of §12.3.13.0) | 🟢 AGENT-SAFE · security review | A mail embed through the door never reaches OpenAI. The answer is a 4xx with `mail_no_safe_route` until Q-GM-18 picks a model | `tests/unit/test_mail_embed_no_direct_openai.py` | 1847 |
+| **OR-5** | Put each feature call site of §12.3.13.16.2 (rows 3, 4, 5, 6, 7, 9, 10, 11, 12, 13) inside `mail_scope()`. Add the registry and the scan | 🟢 AGENT-SAFE | Each row has a registry entry. The scan fails on a model call in an email module with no entry | `tests/unit/test_mail_call_sites_registered.py` | 1848 |
+| **OR-6** | The vendor register as a file, `MAIL_SAFE_PROVIDERS`, with its test. The `tier-decide` and `tier-embed` guard is the step filter of OR-2 | 🟢 AGENT-SAFE | A test fails when `MAIL_SAFE_PROVIDERS` holds a vendor whose verdict is not "confirmed". With OR-2, a mail call to `tier-decide` with the AI/ML API binding refuses | `tests/unit/test_mail_vendor_register.py` | 1849 |
+| **OR-7** | The live check: against OpenRouter with the real key, a mail call with a host list that excludes every ZDR host fails with a known code. A call with the full request reaches a ZDR host. Record the host name from the response | 🔴 OWNER-GATE (the key and the credit are the owner's). The call spends a few cents. Make it only after the owner says the key is in | The call also sends a tool call and a thinking request, because the email assistant uses both. The result goes in this section: the status code, the body and the host. The answer replaces the word "unknown" in rule 6 | `tests/integration/test_openrouter_zdr_live.py` (skips with no key) | 1850 |
+| **OR-8** | Turn it on: store the credential through `POST /providers/credentials`, bind the chain of Q-GM-16, switch `router_serving_enabled` and `ROUTER_MAIL_ENFORCE` on, and keep both OpenRouter opt-ins off | 🔴 OWNER-GATE for the key, the credit and `router_serving_enabled` on production (it moves all AI traffic and all billing, §6 D4). `enforcement-flip` for `ROUTER_MAIL_ENFORCE` only, under a dated grant. The slice also adds a `model_capability` row and a price for `openrouter/deepseek/deepseek-v4-pro` through the Console catalog. No migration | Evidence by rule 8 of `CLAUDE.md` §3: the `router.mail_call` lines of OR-2, joined to `usage_event` by `request_id`, show an OpenRouter step and a ZDR host for a real mail call. No line shows `deepseek/` direct. The account settings show prompt logging off | `scripts/check_mail_routes.py` (read-only) | 1851 |
+| **OR-9** | A weekly check of the ZDR list, and the wording: the privacy page, the disclosure (§12.3.13.4.1) and the sub-processor list name OpenRouter and the host class. The Google form says "no training" only after OR-8 | 🟢 AGENT-SAFE for the check · `deploy` to schedule it on the box · 🔴 OWNER-GATE for the words (Q-GM-7 covers the disclosure) | The check fails when no ZDR host serves the bound model. The text change is a PR the owner approves | `tests/unit/test_mail_zdr_hosts_check.py` (fake list) | 1852 |
+| **OR-10** | The Copilot SDK runtime: a pack call of `email-assistant` refuses on a runtime that skips the gateway, until the runtime stamps the bit. WS-43 owns the runtime | 🟢 AGENT-SAFE · security review | A test shows the refusal with no BYOK provider. A test shows no refusal on the gateway path | `tests/unit/test_copilot_runtime_refuses_mail_pack.py` | 1853 |
+
+**Order.** OR-1 → OR-2 → OR-5. OR-3, OR-4, OR-6 and OR-10 run beside OR-5. OR-7 and OR-8 wait for the owner
+key and for OR-2, OR-3 and OR-5. OR-9 comes last. The Google submission waits for OR-8.
+
+**Not in this section.** No slice except OR-8 changes a tier chain, a flag or a credential on production.
+The Gmail scopes, the UMCC frame and the teardown stay in their own sections.
+
+**Verification commands.**
+
+```bash
+uv run pytest tests/unit/test_mail_bit_forwarded.py tests/unit/test_router_mail_safe_chain.py -q
+uv run pytest tests/unit/test_mail_embed_no_direct_openai.py tests/unit/test_mail_vendor_register.py tests/unit/test_mail_zdr_hosts_check.py tests/unit/test_mail_no_direct_litellm.py tests/unit/test_copilot_runtime_refuses_mail_pack.py -q
+uv run pytest tests/integration/test_openrouter_zdr_live.py -q   # OR-7. It skips with no key
+uv run ruff check packages/acb_llm packages/acb_skills apps/services/customer_console apps/services/gateway
+uv run pytest tests/unit/test_no_direct_ai_vendor_calls.py tests/unit/test_mail_call_sites_registered.py -q
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)" && uv run pytest tests/unit/test_router_mail_no_safe_route.py -q
+```
+
+**Risks recorded.**
+
+- **Cost.** A mail call may cost more on a ZDR host than on direct DeepSeek. The direct price is
+  unknown. OR-8 reports the cost of one week of mail calls from `usage_event`.
+- **Safety Retention.** A ZDR host may keep prompts to stop abuse. The disclosure must say so (OR-9).
+- **A forgotten call site.** The registry scan reaches the email modules only (rule 7, advisory).
+- **A host leaves the ZDR list.** Then rule 6 refuses mail calls. The mail features show errors
+  until the owner picks another host. OR-9 warns before that.
+- **A forgotten caller.** The caller sets the bit. A new client that never sets it is not covered. The gateway may later set the bit from `X-CC-Run` and the session mark. That is a follow-up, not a slice.
+- **Chat cost.** A marked session stays on the safe chain for every later turn.
+
 ### 12.4 Owner runbook — register the Metorite Google mail app (D-EM-5 amended, D-EM-31)
 
 These are one-time owner acts. No customer ever repeats them. An agent cannot do them, because
@@ -16663,6 +16881,12 @@ The questions of EM-G11 (§12.3.13, 2026-10-14):
   "Saved to Drafts" and no Send button, as after a manual save. A Send there needs
   `/email/draft-reply` to return the local draft id. Add the id and the Send, or keep the card as it
   is? Default until an answer: keep the card with no Send (§12.3.13.6b).
+- **Q-GM-16. Which model serves Gmail text (task 1400, §12.3.13.16.5)?** (A) deepseek-v4-pro on ZDR
+  hosts only, or (B) a non-PRC model. Recommended: A. Open.
+- **Q-GM-17. What serves `tier-decide` for mail?** (A) Every mail feature stays off, (B) TypeSafe
+  direct, or (C) a small OpenRouter model. Recommended: A. Open.
+- **Q-GM-18. What embeds mail?** (A) `email_semantic_search_enabled` and `mem0_enabled` stay off, or
+  (B) a ZDR embedding model on OpenRouter. Recommended: A. Open.
 
 ---
 
