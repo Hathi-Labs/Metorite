@@ -45,7 +45,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from acb_auth import agent_oauth
-
 from acb_playbook import PlaybookError, load_all, load_topic
 
 from agent_edge import tools

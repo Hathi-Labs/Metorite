@@ -133,7 +133,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-3 · The resources and `read_playbook`
 
 - **Metorite task.** 1949.
-- **Scope.** PB-3 is split (orchestrator, 2026-11-07). **PB-3a** is the tool `read_playbook`, built. **PB-3b** is the `metorite://playbook/{slug}` resources of §5, beside the project and task resources of SW-34a, and it needs both flags: `agent_resources_orgs` and `playbook_orgs`. The tool `read_playbook(topic)` for a client with no resources. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
+- **Scope.** PB-3 is split (orchestrator, 2026-11-07). **PB-3a** is the tool `read_playbook`, built. **PB-3b** is the `metorite://playbook/{slug}` resources of §5, beside the project and task resources of SW-34a, and it needs both flags: `agent_resources_orgs` and `playbook_orgs`. Content is the same for every organization. The organization layer adds its notes after the default text, marked as the organization's.
 - **Done when.** A client lists and reads each resource. An unknown topic answers not found. The text leaves as `untrusted_text`.
 - **Fence.** The transport test of SW-34a, `test_mcp_edge_coverage.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-34a.
