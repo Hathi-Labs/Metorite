@@ -216,7 +216,9 @@ function StageRows({
       </p>
       <ol className="space-y-2" aria-label="Stages, in order">
         {rows.map((row, index) => (
-          <li key={row.key} className="flex items-center gap-2">
+          // On a phone the type and the buttons take a second line, so the
+          // name keeps the width of the dialog.
+          <li key={row.key} className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
             <span className="w-5 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
               {index + 1}
             </span>
@@ -229,43 +231,45 @@ function StageRows({
               onChange={(e) => set(index, { name: e.target.value })}
               className="min-w-0 flex-1"
             />
-            <SelectButton
-              label={`Stage ${index + 1} type`}
-              value={row.type}
-              options={TYPE_OPTIONS}
-              defaultValue="open"
-              disabled={disabled}
-              onChange={(type) => set(index, { type: type as NewStageType })}
-              widthClass="w-24 shrink-0"
-            />
-            <span className="flex shrink-0 items-center">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                icon="ChevronUp"
-                aria-label={`Move stage ${index + 1} up`}
-                disabled={disabled || index === 0}
-                onClick={() => onChange(moveRow(rows, index, index - 1))}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                icon="ChevronDown"
-                aria-label={`Move stage ${index + 1} down`}
-                disabled={disabled || index === rows.length - 1}
-                onClick={() => onChange(moveRow(rows, index, index + 1))}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                icon="X"
-                aria-label={`Remove stage ${index + 1}`}
+            <span className="ml-7 flex w-full items-center gap-2 sm:ml-0 sm:w-auto">
+              <SelectButton
+                label={`Stage ${index + 1} type`}
+                value={row.type}
+                options={TYPE_OPTIONS}
+                defaultValue="open"
                 disabled={disabled}
-                onClick={() => onChange(removeRow(rows, row.key))}
+                onChange={(type) => set(index, { type: type as NewStageType })}
+                widthClass="w-24 shrink-0"
               />
+              <span className="ml-auto flex shrink-0 items-center sm:ml-0">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="ChevronUp"
+                  aria-label={`Move stage ${index + 1} up`}
+                  disabled={disabled || index === 0}
+                  onClick={() => onChange(moveRow(rows, index, index - 1))}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="ChevronDown"
+                  aria-label={`Move stage ${index + 1} down`}
+                  disabled={disabled || index === rows.length - 1}
+                  onClick={() => onChange(moveRow(rows, index, index + 1))}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="X"
+                  aria-label={`Remove stage ${index + 1}`}
+                  disabled={disabled}
+                  onClick={() => onChange(removeRow(rows, row.key))}
+                />
+              </span>
             </span>
           </li>
         ))}
