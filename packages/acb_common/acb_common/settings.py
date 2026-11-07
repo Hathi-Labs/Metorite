@@ -880,6 +880,17 @@ class Settings(BaseSettings):
     # tests/unit/test_executor_briefing_block.py, tests/unit/test_chat_summary.py.
     assistant_briefing_orgs: str = ""
 
+    # ── Celebrations (WS-63 PZ-43, personalization.md §16.6) ────────────────
+    #
+    # CELEBRATIONS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default. On, the member can set a birthday (no year), festival picks
+    # and the work-anniversary switch, and the first chat reply of a day on
+    # which one falls opens with one wish. The profile switch must be on too.
+    # The one reader is `acb_common.celebrations.celebrations_for`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fences: tests/unit/test_celebrations.py.
+    celebrations_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1084,7 +1095,7 @@ class Settings(BaseSettings):
     # `chat_continue_orgs` lists the organization ids where
     # `POST /chat/sessions/{id}/continue` answers, or `*` for each one. Empty
     # means off, and the route answers 404 for each caller. The one reader is
-    # `gateway.routes.chat.continue_allowed`, and it fails closed. The name
+    # `acb_common.chat_continue_flag.continue_allowed`, and it fails closed. The name
     # ends in `_orgs`, so a SIGHUP applies a change with no restart
     # (`docs/flag_reload.md`).
     #
