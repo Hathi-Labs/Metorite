@@ -208,7 +208,7 @@ def installation_of(row: store.Connection | None) -> int | None:
     ``None``, so the refs refresh, the checks read, the token and the
     connection test write nothing and call nothing. The org is the row's own
     ``organization_id``, read under the bound tenant, never request input
-    (R5). Fence: ``tests/unit/test_github_per_org_r8.py``.
+    (R5). Fence: ``tests/unit/test_github_merge_r8.py`` and ``test_github_connect_r8.py``.
     """
     from gateway.connections import github_app
 
