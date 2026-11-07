@@ -40,7 +40,9 @@ class _Sessions:
 class _Graph:
     """The Graph answer of a PATCH carries the ``resource`` of the subscription."""
 
-    def __init__(self, renewed_resource: str | None = INBOX) -> None:
+    def __init__(self, renewed_resource: str | None = INBOX,
+                 create_fails: bool = False) -> None:
+        self.create_fails = create_fails
         self.created: list[dict] = []
         self.renewed: list[str] = []
         self.deleted: list[str] = []
@@ -53,6 +55,8 @@ class _Graph:
         return False
 
     async def create_subscription(self, url, client_state, resource=None):
+        if self.create_fails:
+            raise RuntimeError("Graph refused the create")
         self.created.append({"cs": client_state, "resource": resource})
         return {"id": "sub-new", "expirationDateTime": EXP, "resource": resource}
 
@@ -162,3 +166,12 @@ async def test_an_inbox_subscription_is_renewed_while_the_flag_is_off(env, monke
     graph = _Graph(renewed_resource=INBOX)
     await _run(env, monkeypatch, graph, **_EXPIRING)
     assert graph.deleted == [] and graph.created == []
+
+
+async def test_a_failed_switch_create_keeps_the_healthy_old_subscription(env, monkeypatch):
+    _flag(monkeypatch, ORG)
+    graph = _Graph(renewed_resource=INBOX, create_fails=True)
+    params = await _run(env, monkeypatch, graph, **_EXPIRING)
+    assert graph.deleted == [], "the old subscription is healthy: do not delete it"
+    assert params["sid"] == "sub-old" and params["cs"] == "cs-old"
+    assert params["exp"] == datetime.fromisoformat("2026-10-04T00:00:00+00:00")

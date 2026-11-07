@@ -567,18 +567,36 @@ async def _renew_or_replace(
     old resource keeps working, and the next replace makes an Inbox one.
     """
     if sub_id:
+        renewed: dict[str, Any] | None = None
         try:
-            data = await provider.renew_subscription(
+            renewed = await provider.renew_subscription(
                 sub_id, notification_url=notify_url,
             )
-            if not (all_mail and _norm_resource(data.get("resource"))
-                    != ALL_MAIL_RESOURCE):
-                return data, sub_id
-            # The answer names no resource, or an Inbox one: replace it.
         except Exception:
             pass
-        # Best effort, as before EM-T4f: the delete now raises on a
-        # transport error, and a failed delete must not stop the create.
+        if renewed is not None:
+            if not (all_mail and _norm_resource(renewed.get("resource"))
+                    != ALL_MAIL_RESOURCE):
+                return renewed, sub_id
+            # The switch path: the old subscription is healthy, so create the
+            # all-mail one FIRST. A failed create keeps the old one and its
+            # renewed expiry. Only a good create deletes the old one.
+            try:
+                new = await provider.create_subscription(
+                    notify_url, client_state, resource=ALL_MAIL_RESOURCE,
+                )
+            except Exception as exc:
+                _log.warning("email.subscription_switch_failed",
+                             sub=str(sub_id)[:12], error=type(exc).__name__)
+                return renewed, sub_id
+            try:
+                await provider.delete_subscription(sub_id)
+            except Exception as exc:
+                _log.warning("email.subscription_delete_failed",
+                             sub=str(sub_id)[:12], error=type(exc).__name__)
+            return new, new.get("id")
+        # The PATCH failed: the old subscription is bad. Delete it (best
+        # effort, as before EM-T4f) and fall through to the create.
         try:
             await provider.delete_subscription(sub_id)
         except Exception as exc:
