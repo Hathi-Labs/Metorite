@@ -788,6 +788,14 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "not go blind. Every read and write after it binds one organization "
         "with `tenant_session`, and the sweep starts only while "
         "`agent_run_sweep_enabled` is on",
+    ("apps/services/gateway/gateway/package_host/expiry_loop.py",
+     "_organization_ids"):
+        "WS-PKG PKG-10b: which organizations the daily expiry of the package "
+        "host looks at. It lists the RLS-EXEMPT `organization` table, so it "
+        "does not go blind. It keeps the orgs that `PACKAGE_HOST_ORGS` names, "
+        "and each call of `expire_due` after it binds one organization with "
+        "`tenant_session`. The loop starts only while "
+        "`PACKAGE_EXPIRY_ENABLED` is on",
     ("apps/services/gateway/gateway/routes/github/webhook.py",
      "_installation_org"):
         "WS-54 GH-4: which org owns the GitHub installation of a webhook. "

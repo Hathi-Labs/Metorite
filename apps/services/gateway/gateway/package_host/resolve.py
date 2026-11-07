@@ -20,8 +20,10 @@ PKG-5b row of §10. The route is ``GET /shell/manifest`` in
    holds ``key``, ``source`` ``system``, ``install_id`` None, ``needs_setup``
    False, ``feature`` and ``package``, and no payload.
 2. An install shows only when it is ``active``, its ``ends_at`` is NULL or
-   in the future, and its app is a Studio package that is not archived. An
-   ``org`` install shows to each member. A ``group`` install shows to a
+   in the future, and its app is a Studio package that is not archived.
+   This read hides an install at its ``ends_at`` with no write. So
+   ``store.expire_due`` (PKG-10a) only archives it later, and never has to
+   hide it. An ``org`` install shows to each member. A ``group`` install shows to a
    member of the group, by ``routes/crm/access.my_groups``, the one group
    read. A private install shows to its owner, and to each grantee by
    :data:`gateway.package_host.sharing.SHARE_ROW`. A draft (``version``

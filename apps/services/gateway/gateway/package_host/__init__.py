@@ -6,6 +6,8 @@ of "another person sees this private install". The member purge and the
 resolve of PKG-5b part 2 read that rule. ``resolve.py`` is that resolve
 (§5.2), and ``flags.py`` is the one reader of ``PACKAGE_HOST_ORGS``.
 ``routes/shell/manifest.py`` serves the resolve.
+``expiry_loop.py`` is the daily expiry of §6.2 (PKG-10b), behind
+``PACKAGE_EXPIRY_ENABLED``.
 
 This package holds no route. PKG-8 adds the install route for Studio apps,
 and PKG-12 adds it for apps made in chat. This file imports nothing, so a

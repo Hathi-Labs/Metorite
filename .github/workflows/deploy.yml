@@ -675,6 +675,8 @@ jobs:
               tests/unit/test_studio_route_gate_r8.py \
               tests/unit/test_package_host_store_r8.py \
               tests/unit/test_package_disposal_r8.py \
+              tests/unit/test_package_lifetime_r8.py \
+              tests/unit/test_package_expiry_loop_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
