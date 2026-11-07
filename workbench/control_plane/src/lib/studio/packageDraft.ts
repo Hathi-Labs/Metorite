@@ -8,6 +8,7 @@
  * the page when the draft changed.
  */
 import { stableJson } from "./dataDoor";
+import { appBrief } from "./packageLibrary";
 import { StudioOff, type ObjectRow } from "./realDoor";
 
 const PACKAGE_ID = /^[0-9a-fA-F-]{36}$/;
@@ -25,6 +26,8 @@ export interface PackageDraft {
   /** The raw draft manifest. The page reads it through the pure helpers, and trusts none of it. */
   manifest: unknown;
   liveVersion: number | null;
+  /** The server hash of the draft: the `based_on` of a save. Null from a server that gives none. */
+  manifestHash: string | null;
   objects: ObjectRow[];
 }
 
@@ -51,6 +54,7 @@ export async function getPackageDraft(id: string, fetchImpl: typeof fetch = fetc
     name: String(pkg.name ?? ""),
     manifest: pkg.manifest ?? null,
     liveVersion: typeof pkg.live_version === "number" ? pkg.live_version : null,
+    manifestHash: typeof pkg.manifest_hash === "string" ? pkg.manifest_hash : null,
     objects,
   };
 }
@@ -70,6 +74,8 @@ export function draftHash(manifest: unknown): string {
 
 /** The name of a new app, from the first words of the brief. */
 export function nameFromBrief(brief: string): string {
+  // The stock brief of "New app" holds no name, so the app is "New app" and not the first words of the ask.
+  if (brief.trim() === appBrief("")) return "New app";
   const text = brief.replace(/^\s*build me an app:\s*/i, "").replace(/\s+/g, " ").trim();
   const title = text.split(" ").slice(0, 5).join(" ").slice(0, 60).replace(/[\s.,;:]+$/, "");
   return title ? title[0].toUpperCase() + title.slice(1) : "New app";

@@ -71,4 +71,36 @@ describe("/studio/build", () => {
     expect(code).toContain("readOnly: true");
     expect(code).toContain("useMonacoTheme");
   });
+
+  it("hands the held brief to the shell only after the facts, and sends it as an ask", () => {
+    expect(page).toContain("sendHeldBrief(");
+    expect(page.indexOf("useAssistantFacts(")).toBeLessThan(page.indexOf("sendHeldBrief("));
+    expect(page).toContain("openAssistant({ text, fresh: true })");
+  });
+
+  it("publishes no facts when the app is gone (404), so Mira never saves to a deleted app", () => {
+    expect(page).toMatch(/useAssistantFacts\(\s*draft && !watch\.off/);
+  });
+
+  it("folds the app nav while it is open and gives it back on leave", () => {
+    expect(page).toContain("useOptionalSidebarFold");
+    expect(page).toContain("foldForWork()");
+    expect(page).toMatch(/return \(\) => \{[^}]*toggle\(\)/);
+  });
+
+  it("gives the phone Problems panel a toggle that works", () => {
+    expect(page).not.toContain("onToggle={() => {}}");
+    expect(page).toContain("phoneProblemsOpen");
+  });
+
+  it("reveals an Action, a Workflow or the Skill in the Code tab", () => {
+    expect(page).toContain("reveal");
+    expect(read("components/CodeTab.tsx")).toContain("findLine(");
+    expect(read("components/CodeTab.tsx")).toContain("revealLineInCenter");
+  });
+
+  it("shows a pending state on the Build it buttons of the library", () => {
+    const gallery = readFileSync(new URL("../components/AppsGallery.tsx", here), "utf8");
+    expect(gallery).toContain("loading={building}");
+  });
 });

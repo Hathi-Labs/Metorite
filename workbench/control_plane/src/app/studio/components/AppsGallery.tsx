@@ -20,7 +20,6 @@ import { useSession } from "next-auth/react";
 import FilterPills from "@/components/FilterPills";
 import type { AppMeta } from "@/app/build/apps/lib/types";
 import { shellChatOn } from "@/lib/shell/chatFlag";
-import { openAssistant } from "@/lib/shell/assistant";
 import {
   PACKAGES_FAILED_LINE, type LibraryFilter, appBrief, changedWords, libraryCounts, mergeLibrary,
   packageShows, type PackageCard as PackageCardData,
@@ -354,7 +353,8 @@ export default function AppsGallery() {
   // Chat first, in the Studio IDE (G3a): "Build it" makes a draft package, opens its IDE, and opens
   // the dock with the brief waiting in the box. The page of the IDE binds the dock to that package.
   // With the shell chat off, `/chat?q=` does what it did before.
-  const building = useRef(false);
+  const buildingRef = useRef(false);
+  const [building, setBuilding] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
   const createApp = useCallback(
     (seed: string) => {
@@ -362,12 +362,13 @@ export default function AppsGallery() {
         router.push(`/chat?q=${encodeURIComponent(appBrief(seed))}`);
         return;
       }
-      if (building.current) return;
-      building.current = true;
+      if (buildingRef.current) return;
+      buildingRef.current = true;
+      setBuilding(true);
       setBuildError(null);
-      void startBuild(seed, { go: (href) => router.push(href), openDock: (draft) => openAssistant({ draft, fresh: true }) })
+      void startBuild(seed, { go: (href) => router.push(href) })
         .then((r) => { if (!r.ok) setBuildError(r.message); })
-        .finally(() => { building.current = false; });
+        .finally(() => { buildingRef.current = false; setBuilding(false); });
     },
     [router]
   );
@@ -490,7 +491,7 @@ export default function AppsGallery() {
           >
             <Icon name="RefreshCw" className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")}>
+          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")} loading={building} disabled={building}>
             <Icon name="Plus" className="w-4 h-4" />
             New app
           </Button>
@@ -549,7 +550,7 @@ export default function AppsGallery() {
                 placeholder="Describe the tool you need… e.g. “A board that shows every printer's service history and next due date”"
                 className="flex-1 bg-transparent outline-none text-[13px] text-foreground placeholder:text-muted-foreground"
               />
-              <Button size="none" layout="" type="submit" disabled={!describe.trim()} className="px-3 py-1.5 text-xs font-semibold shrink-0">
+              <Button size="none" layout="" type="submit" loading={building} disabled={!describe.trim() || building} className="px-3 py-1.5 text-xs font-semibold shrink-0">
                 Build it
               </Button>
             </form>
@@ -606,7 +607,7 @@ export default function AppsGallery() {
                   : "Switch filters, or describe a new tool above."}
               </p>
               {total === 0 && (
-                <Button size="none" layout="" onClick={() => createApp("")} className="px-4 py-2 text-sm">
+                <Button size="none" layout="" onClick={() => createApp("")} loading={building} disabled={building} className="px-4 py-2 text-sm">
                   Create an app
                 </Button>
               )}

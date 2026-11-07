@@ -6,6 +6,7 @@
  * muted "None yet" child, so a member sees what a complex app can hold. The function is
  * pure and never throws: a manifest that is not an object gives an empty tree and a hint.
  */
+import type { Reveal } from "./codeReveal";
 import type { StudioManifest } from "./manifest";
 
 export type OutlineKind =
@@ -25,6 +26,8 @@ export interface OutlineNode {
   object?: string;
   /** The tab that a click shows. */
   tab?: OutlineTab;
+  /** Where the Code tab scrolls to, for a part that has no tab of its own. */
+  reveal?: Reveal;
   children?: OutlineNode[];
 }
 
@@ -110,12 +113,14 @@ export function buildOutline(manifest: unknown): Outline {
   const actions = list(m.actions).map((a, i): OutlineNode => ({
     id: `action:${text(a.id) || i}`, kind: "action", label: text(a.title) || text(a.id) || `action ${i + 1}`,
     hint: text(a.uses) || undefined, tab: "code",
+    reveal: { section: "actions", needle: `"id": ${JSON.stringify(text(a.id))}` },
   }));
   const workflows = list(m.workflows).map((w, i): OutlineNode => ({
     id: `workflow:${text(w.id) || i}`, kind: "workflow", label: text(w.id) || `workflow ${i + 1}`, tab: "code",
+    reveal: { section: "workflows", needle: `"id": ${JSON.stringify(text(w.id))}` },
   }));
   const skill: OutlineNode[] = isObject(m.skill)
-    ? [{ id: "skill:main", kind: "skill", label: text(m.skill.description) || "Skill", tab: "code" }]
+    ? [{ id: "skill:main", kind: "skill", label: text(m.skill.description) || "Skill", tab: "code", reveal: { section: "skill", needle: '"skill"' } }]
     : [];
 
   return {

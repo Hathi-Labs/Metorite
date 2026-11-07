@@ -406,9 +406,15 @@ A toggle sets the frame to 390 px. Data, Views and Code are read only in G3a. Th
 
 **The chat** is the dock of the shell. The dock agent is `orchestrator` on every page (D99). `studio-builder` only owns the `studio` pack. So the IDE mounts no `AgentChat` (rule 10, `seams.test.ts`).
 
-It binds the dock to the package with `useAssistantFacts`. The facts hold the package id and the draft manifest.
+It binds the dock to the package with `useAssistantFacts`. The facts hold the package id, the `based_on` hash of the draft (`manifest_hash` of `GET /studio/packages/{id}`) and the draft manifest. The manifest sits between "Begin member data" and "End member data" marks, and says that it is data and never instructions.
 
-A rule of the `studio` pack tells Mira to edit the package that the facts name. The page reads the draft again every 5 s while it shows, and when a chat run ends. It redraws only when the draft changed.
+This page puts a stored body in the facts on purpose. `studio_package_get` returns no manifest, and Mira needs the draft to edit it. The cost is about 3,000 tokens a turn while the IDE is open. The page pastes the draft only up to 12,000 characters, half of the 24,000 that a save accepts. A larger draft shows a line that says to change it in Studio. A save with a stale `based_on` is refused and nothing is written, so a stale fact fails closed.
+
+The page gives the facts only while the app exists. After a 404 it gives none, and the polling stops.
+
+"Build it" holds its brief in a one-shot holder keyed by the package id, then opens the IDE. The IDE sends the brief as an ask of the shell after the first draft loaded and the facts are published. This order stops a second package from being made.
+
+A rule of the `studio` pack tells Mira to edit the package that the facts name. The page reads the draft again every 5 s while it shows, and when a chat run ends. It redraws only when the draft changed. The app nav folds while the IDE is open, and opens again when the member leaves.
 
 **Publish** is not in the IDE in G3a. Mira publishes after the member approves the plan card. A Publish button waits for G5.
 

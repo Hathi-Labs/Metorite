@@ -9,6 +9,7 @@ import { useState } from "react";
 
 import Icon from "@/components/Icon";
 import { RailRow } from "@/components/ui/RailRow";
+import type { Reveal } from "@/lib/studio/codeReveal";
 import type { Outline, OutlineKind, OutlineNode, OutlineTab } from "@/lib/studio/buildOutline";
 
 const ICONS: Record<OutlineKind, string> = {
@@ -20,7 +21,7 @@ export interface ExplorerProps {
   outline: Outline;
   /** The node that shows as picked: the selected object's id. */
   selectedObject: string | null;
-  onPick: (pick: { object: string | null; tab: OutlineTab | null }) => void;
+  onPick: (pick: { object: string | null; tab: OutlineTab | null; reveal?: Reveal }) => void;
 }
 
 export default function Explorer({ outline, selectedObject, onPick }: ExplorerProps) {
@@ -57,7 +58,7 @@ export default function Explorer({ outline, selectedObject, onPick }: ExplorerPr
           buttonProps={isNone ? { disabled: true } : undefined}
           onSelect={isNone ? undefined : () => {
             if (kids?.length && (n.kind === "branch" || n.kind === "app")) toggle(n.id);
-            onPick({ object: n.object ?? null, tab: n.tab ?? null });
+            onPick({ object: n.object ?? null, tab: n.tab ?? null, reveal: n.reveal });
           }}
         />
         {kids?.length && open ? kids.map((k) => row(k, depth + 1)) : null}
