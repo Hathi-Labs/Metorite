@@ -2157,7 +2157,8 @@ async def my_tasks_edit_day_rule(
     return stale or f"Saved. {shown}"
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=False)
+# A day rule is a setting: the member proposes, agrees, and can add it again.
+@_annotate_risk(idempotent=False, open_world=False)
 async def my_tasks_delete_day_rule(
     number: int, confirmed: bool = False, version: str = "",
 ) -> str:
@@ -2332,6 +2333,15 @@ _NEXT_AFTER_AGREE = (
 _CANDIDATES = 5
 
 
+def _page_lines(lines: list[str], noun: str) -> list[str]:
+    """The first ``_DIGEST_BLOCKS`` lines, and a line that says how many are left out."""
+    page = paged(lines, 0, _DIGEST_BLOCKS, default=_DIGEST_BLOCKS, noun=noun)
+    out = list(page.items)
+    if page.line:
+        out.append(f"{len(lines) - len(page.items)} more {noun}: my_tasks_list_schedule lists them all.")
+    return out
+
+
 def _why(exc: BaseException) -> str:
     """A short reason for a failed step, one line."""
     return " ".join(str(exc).split())[:120] or type(exc).__name__
@@ -2359,12 +2369,13 @@ async def _one_thing_candidates() -> str:
             if not r.get("scheduled_start") and not r.get("archived_at")]
     if not pool:
         return "No unscheduled tasks to pick from. Plan or capture first."
+    page = paged(pool, 0, _CANDIDATES, default=_CANDIDATES, noun="tasks")
     lines = [f"• {_data(r.get('title', '?'))}"
              + (f" ({r['time_estimate_mins']} min)" if r.get("time_estimate_mins") else "")
              + f" (id: {r.get('id', '')})"
-             for r in pool[:_CANDIDATES]]
-    if len(pool) > _CANDIDATES:
-        lines.append(f"{len(pool) - _CANDIDATES} more: my_tasks_list (view next) lists them.")
+             for r in page.items]
+    if page.line:
+        lines.append(f"{len(pool) - len(page.items)} more: my_tasks_list (view next) lists them.")
     return "\n".join(lines)
 
 
@@ -2465,9 +2476,9 @@ async def my_tasks_close_my_day() -> str:
         one = d.get("one_thing") or {}
         if one.get("title"):
             one_thing_line = f"★ One Thing: {_data(one['title'])}"
-        out = [f"Done today: {len(done_lines)}", *done_lines[:_DIGEST_BLOCKS]]
+        out = [f"Done today: {len(done_lines)}", *_page_lines(done_lines, "blocks")]
         out.append(f"Not done today: {len(left_lines)}")
-        out.extend(left_lines[:_DIGEST_BLOCKS])
+        out.extend(_page_lines(left_lines, "blocks"))
         if d.get("overdue_count"):
             out.append(f"Overdue from earlier days: {d['overdue_count']}")
         if one_thing_line:

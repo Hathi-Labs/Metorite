@@ -52,6 +52,8 @@ PACK_ONLY_TOOLS = (
     "my_tasks_add_day_rule",
     "my_tasks_edit_day_rule",
     "my_tasks_delete_day_rule",
+    "my_tasks_start_my_day",
+    "my_tasks_close_my_day",
 )
 
 __all__ = [
