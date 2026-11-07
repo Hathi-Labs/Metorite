@@ -1694,6 +1694,196 @@ async def my_tasks_plan_day(apply: bool = False, energy_note: str = "") -> str:
     return _fmt_plan(plan or {}, applied=bool((plan or {}).get("applied")))
 
 
+# ── Calendar settings (CAL-2, task 1676) ────────────────────────────────────
+#
+# The calendar fields of ``GET/PUT /tasks/settings`` and nothing else. Model
+# choices, capture_dedup, sync flags and day_templates stay out: the tool has
+# no parameter for them, and the strict tool of the pack answers an argument it
+# does not declare by name. The write is propose then apply, as the planner is:
+# without ``confirmed`` the tool shows the change and writes nothing.
+
+_CAL_SETTINGS_PATH = "/tasks/settings"
+
+
+def _hours(v: Any) -> str:
+    return f"{int(v):d}"
+
+
+def _cal_view(s: dict) -> dict[str, str]:
+    """The calendar fields of a settings body, each as the text the member sees."""
+    ls, le = s.get("lunch_start_hour"), s.get("lunch_end_hour")
+    lunch = ("off" if ls is None or le is None or int(le) <= int(ls)
+             else f"{_hours(ls)}-{_hours(le)}")
+    wins = s.get("energy_windows") or []
+    return {
+        "Standing instruction": (_data(s["planning_prompt"]) if s.get("planning_prompt")
+                                 else "the default"),
+        "Working hours": f"{_hours(s.get('day_start_hour', 7))}-{_hours(s.get('day_end_hour', 22))}",
+        "Daily capacity": f"{round(int(s.get('daily_capacity_mins', 360)) / 60, 1):g} h",
+        "Buffer between blocks": f"{int(s.get('buffer_mins', 0))} min",
+        "Longest focus run": f"{int(s.get('max_focus_run_mins', 90))} min",
+        "Break": f"{int(s.get('break_mins', 10))} min",
+        "Lunch": lunch,
+        "Energy windows": (", ".join(
+            f"{_hours(w['start_hour'])}-{_hours(w['end_hour'])} {w['energy']}" for w in wins)
+            if wins else "none"),
+        "Auto rollover": "on" if s.get("auto_rollover", True) else "off",
+        "Time zone": str(s.get("timezone") or "UTC"),
+    }
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_get_calendar_settings() -> str:
+    """Read the member's calendar settings: the standing instruction for the
+    day planner, the working hours, the daily capacity, the buffer, the focus
+    run and break, the lunch window, the energy windows, auto rollover and the
+    time zone. Only these. It reads no model choice and no sync flag.
+    """
+    s = await _request("GET", _CAL_SETTINGS_PATH) or {}
+    return "Calendar settings:\n" + "\n".join(
+        f"• {k}: {v}" for k, v in _cal_view(s).items())
+
+
+def _cal_patch(
+    planning_prompt: str | None, day_start_hour: int | None, day_end_hour: int | None,
+    daily_capacity_mins: int | None, buffer_mins: int | None,
+    max_focus_run_mins: int | None, break_mins: int | None,
+    lunch_start_hour: int | None, lunch_end_hour: int | None,
+    energy_windows: list[dict] | None, auto_rollover: bool | None,
+    timezone: str | None,
+) -> dict[str, Any]:
+    """The given calendar keys only. ``None`` means "not given", and 0 is given."""
+    given = {
+        "planning_prompt": planning_prompt, "day_start_hour": day_start_hour,
+        "day_end_hour": day_end_hour, "daily_capacity_mins": daily_capacity_mins,
+        "buffer_mins": buffer_mins, "max_focus_run_mins": max_focus_run_mins,
+        "break_mins": break_mins, "lunch_start_hour": lunch_start_hour,
+        "lunch_end_hour": lunch_end_hour, "energy_windows": energy_windows,
+        "auto_rollover": auto_rollover, "timezone": timezone,
+    }
+    return {k: v for k, v in given.items() if v is not None}
+
+
+def _cal_refusal_lists(patch: dict[str, Any]) -> str | None:
+    """The refusal for the energy windows or the time zone, or None."""
+    if "energy_windows" in patch:
+        for w in patch["energy_windows"]:
+            ok = (isinstance(w, dict) and set(w) <= {"start_hour", "end_hour", "energy"}
+                  and isinstance(w.get("start_hour"), int) and isinstance(w.get("end_hour"), int)
+                  and 0 <= w["start_hour"] < w["end_hour"] <= 24
+                  and w.get("energy") in ("low", "medium", "high"))
+            if not ok:
+                return ("Each energy window needs start_hour (0-23), end_hour (1-24, after the "
+                        "start) and energy (low, medium or high). I changed nothing.")
+    if "timezone" in patch:
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(str(patch["timezone"]))
+        except Exception:
+            return f"{_data(patch['timezone'])} is not a time zone name. I changed nothing."
+    return None
+
+
+def _cal_refusal(patch: dict[str, Any], current: dict) -> str | None:
+    """A text that names the first value out of range, or None. The ranges are
+    the ones of the Calendar settings sheet. Hour 0 is a valid start."""
+    def _int(k: str, lo: int, hi: int, what: str) -> str | None:
+        v = patch.get(k)
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+            return f"{what} ({k}) must be a whole number from {lo} to {hi}. I changed nothing."
+        return None
+
+    for bad in (
+        _int("day_start_hour", 0, 23, "The first hour of the day"),
+        _int("day_end_hour", 1, 24, "The last hour of the day"),
+        _int("daily_capacity_mins", 0, 960, "The daily capacity in minutes"),
+        _int("buffer_mins", 0, 60, "The buffer in minutes"),
+        _int("max_focus_run_mins", 0, 240, "The longest focus run in minutes"),
+        _int("break_mins", 0, 60, "The break in minutes"),
+        _int("lunch_start_hour", 0, 23, "The first hour of lunch"),
+        _int("lunch_end_hour", 0, 24, "The last hour of lunch"),
+    ):
+        if bad:
+            return bad
+    start = patch.get("day_start_hour", current.get("day_start_hour", 7))
+    end = patch.get("day_end_hour", current.get("day_end_hour", 22))
+    if ("day_start_hour" in patch or "day_end_hour" in patch) and int(end) <= int(start):
+        return (f"The day must end after it starts, and {start}-{end} does not. "
+                "I changed nothing.")
+    if "lunch_start_hour" in patch or "lunch_end_hour" in patch:
+        ls = patch.get("lunch_start_hour", current.get("lunch_start_hour"))
+        le = patch.get("lunch_end_hour", current.get("lunch_end_hour"))
+        if (ls is None) != (le is None):
+            return "Give both the first and the last hour of lunch. I changed nothing."
+        if ls is not None and not (int(ls) == int(le) == 0 or int(ls) < int(le)):
+            return ("Lunch must end after it starts. Give 0 and 0 to turn lunch off. "
+                    "I changed nothing.")
+    bad = _cal_refusal_lists(patch)
+    if bad:
+        return bad
+    if "planning_prompt" in patch and len(str(patch["planning_prompt"])) > 2000:
+        return "The standing instruction is too long: 2000 characters at most. I changed nothing."
+    return None
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_update_calendar_settings(
+    planning_prompt: str | None = None,
+    day_start_hour: int | None = None,
+    day_end_hour: int | None = None,
+    daily_capacity_mins: int | None = None,
+    buffer_mins: int | None = None,
+    max_focus_run_mins: int | None = None,
+    break_mins: int | None = None,
+    lunch_start_hour: int | None = None,
+    lunch_end_hour: int | None = None,
+    energy_windows: list[dict] | None = None,
+    auto_rollover: bool | None = None,
+    timezone: str | None = None,
+    confirmed: bool = False,
+) -> str:
+    """Change the member's calendar settings. Pass ONLY the fields to change: a
+    field left out stays as it is, and 0 is a value (day_start_hour 0 is
+    midnight). The fields: planning_prompt (the standing instruction of the day
+    planner), day_start_hour, day_end_hour, daily_capacity_mins, buffer_mins,
+    max_focus_run_mins, break_mins, lunch_start_hour and lunch_end_hour (both
+    0 turns lunch off), energy_windows ([{start_hour, end_hour, energy}], the
+    whole list replaces the old one), auto_rollover and timezone. No other
+    setting can change here.
+
+    Propose first. With confirmed=False the tool writes nothing and answers with
+    each change as "Working hours: 9-17 -> 8-18". Show that to the member. Call
+    again with confirmed=True and the same fields only after the member agrees.
+
+    Args:
+        confirmed: False = show the change only (default). True = save it.
+            Pass True only after the member agreed to the change shown.
+    """
+    patch = _cal_patch(
+        planning_prompt, day_start_hour, day_end_hour, daily_capacity_mins,
+        buffer_mins, max_focus_run_mins, break_mins, lunch_start_hour,
+        lunch_end_hour, energy_windows, auto_rollover, timezone)
+    if not patch:
+        return "No setting was given. Say which calendar setting to change."
+    current = await _request("GET", _CAL_SETTINGS_PATH) or {}
+    bad = _cal_refusal(patch, current)
+    if bad:
+        return bad
+    before = _cal_view(current)
+    after = _cal_view({**current, **patch})
+    changed = [f"• {k}: {before[k]} -> {after[k]}" for k in after if before[k] != after[k]]
+    if not changed:
+        return "Nothing changes: the calendar settings already have these values."
+    if not confirmed:
+        return ("Not saved yet. The change would be:\n" + "\n".join(changed)
+                + "\nAsk the member, then call again with confirmed=True.")
+    await _request("PUT", _CAL_SETTINGS_PATH, json=patch)
+    return "Saved. The calendar settings changed:\n" + "\n".join(changed)
+
+
 @_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_replan_day(apply: bool = False) -> str:
     """Fit what's left — when the user fell behind, take today's not-done movable
