@@ -153,6 +153,45 @@ def _claim_args(version: str = V1) -> dict[str, Any]:
     return {"task_id": TASK, "expected_version": version}
 
 
+class TestTheClaimProtocolBlock:
+    """SW-56. ``claim_task`` carries ``protocol: {version, lines}`` while the runs
+    flag is on and the organization is on ``agent_protocol_orgs``. The text and
+    the limits are held by ``test_mcp_edge_context.py`` ``TestTheProtocolBlock``.
+    Mutation: ``_claim_task`` does not add the key, and
+    ``test_the_claim_result_carries_the_block_when_on`` fails."""
+
+    @pytest.fixture
+    def runs_on(self, edge, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        return edge
+
+    async def _claim_result(self) -> dict[str, Any]:
+        result = await _tool("claim_task", _claim_args())
+        assert result["isError"] is False, result
+        return result["structuredContent"]
+
+    async def test_the_claim_result_has_no_block_while_dark(self, runs_on):
+        assert "protocol" not in await self._claim_result()
+
+    async def test_the_claim_result_has_no_block_with_the_runs_flag_off(self, edge, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+        assert "protocol" not in await self._claim_result()
+
+    async def test_the_claim_result_carries_the_block_when_on(self, runs_on, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        body = await self._claim_result()
+        assert body["protocol"] == {"version": 1, "lines": list(tools.PROTOCOL_LINES)}
+        assert body["task"]["id"] == TASK
+
+    async def test_the_block_is_read_from_the_claim_result_alone(self, runs_on, monkeypatch):
+        """A client that drops instructions and prompts still reads the rules."""
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        result = await _tool("claim_task", _claim_args())
+        text = json.loads(result["content"][0]["text"])
+        assert "ask_on_task" in " ".join(text["protocol"]["lines"])
+
+
 class TestClaimTaskAtTheEdge:
     """§9.2 and §9.5 for ``claim_task``, database-free."""
 
