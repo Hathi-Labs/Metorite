@@ -586,6 +586,47 @@ class TestGuidanceRule:
             assert "never changes which tasks you read or change" in tool.description
 
 
+class TestTheImageRule:
+    """IMG-3 (``projects_ai_chat.md`` §30.4 item 9, R7). The prompt, the
+    instructions and the ``get_task_context`` description each send the
+    agent to the images. Mutation: drop ``IMAGE_RULE`` from ``_context_step``
+    in ``prompts.py``, and ``test_the_prompt_sends_the_agent_to_the_images``
+    fails. Mutation: drop ``_IMAGE_INSTRUCTIONS`` from ``mcp.instructions``,
+    and ``test_every_connection_is_told`` fails."""
+
+    RULE = "When the task has images, call get_attachment for each one before you start."
+
+    def test_the_rule_is_the_sentence_of_the_spec(self):
+        assert prompts.IMAGE_RULE == self.RULE
+
+    @pytest.mark.parametrize("runs", [True, False])
+    async def test_the_prompt_sends_the_agent_to_the_images(self, armed, monkeypatch, runs):
+        if not runs:
+            _runs_off(monkeypatch)
+        texts = [await _prompt_text({"task": TASK})]
+        if runs:
+            texts.append(await _prompt_text())  # the queued form of my_work
+        for text in texts:
+            context = text.index("Call get_task_context")
+            assert text.index(self.RULE) > context, text
+            # The rule sits in the context step, before the work starts.
+            assert text.index(self.RULE) < text.index("Do the work"), text
+
+    async def test_every_connection_is_told(self, armed):
+        for token in (GOOD, READ_ONLY):
+            assert (await _instructions(token)).endswith(" " + self.RULE), token
+
+    async def test_a_read_only_connection_reads_it_before_the_cut(self, armed):
+        text = await _instructions(READ_ONLY)
+        assert text.index(self.RULE) + len(self.RULE) < TestTheAnswerRule.CUT
+
+    def test_the_context_tool_says_it_and_names_the_count(self):
+        text = tools.GET_TASK_CONTEXT.describe()["description"]
+        assert self.RULE in text
+        assert "images counts the PNG, JPEG, GIF and WebP files" in text
+        assert "get_attachment" in tools.TOOLS
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # P11, P12: the checks of §9.6 and the other methods
 # ═══════════════════════════════════════════════════════════════════════════
@@ -916,6 +957,9 @@ class TestTheAnswerRule:
     #: the cut on main across it, and it grows by 40 characters at most.
     MAIN_LENGTH: ClassVar[dict[bool, int]] = {False: 4597, True: 4612}
     CUT = 4096
+    #: IMG-3. The image sentence is the LAST sentence, after the cut, so it
+    #: moves no kept sentence. Its length is the one growth past the 40.
+    IMG3_TAIL = len(" " + prompts.IMAGE_RULE)
     #: The sentences of main that end before the cut, in either state.
     KEPT = ("never yours", "So do not write on a run of another session.",
             "the heartbeat of your hold.", "See prompt work_on_task.", "If you stop and will not finish, call release_task.")
@@ -925,7 +969,8 @@ class TestTheAnswerRule:
             self, armed, monkeypatch, on):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
         text = await _instructions()
-        assert len(text) <= self.MAIN_LENGTH[on] + 40, len(text)
+        assert text.endswith(" " + prompts.IMAGE_RULE), text[-120:]
+        assert len(text) <= self.MAIN_LENGTH[on] + 40 + self.IMG3_TAIL, len(text)
         pointer = prompts.answer_pointer().strip()
         assert text.find(pointer) != -1 and text.find(pointer) < self.CUT
         for sentence in self.KEPT:
