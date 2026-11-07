@@ -422,6 +422,13 @@ def _pull(email: str | None, claim: str | None) -> None:
     assert out.answer == "ok"
 
 
+# The two ``None`` rows call ``pull`` DIRECTLY. Over HTTP they cannot happen:
+# ``/pull`` is not in ``PUBLIC_ROUTES``, so the app-wide ``require_authenticated``
+# gate answers 401 for a caller with no email before the handler runs
+# (``acb_auth.deps.require_authenticated``). The rows pin the helper's rule for
+# a caller with no person in the session, not a reachable anonymous path.
+# The BEHAVIOUR rows are the real fence. The AST guard below only adds to them:
+# it does not see a body read that is copied to a local name before the drop.
 @pytest.mark.parametrize(("email", "claim", "member"), [
     (_ALICE, _BOB, _ALICE),
     (_ALICE, f" {_ALICE.upper()} ", _ALICE),
