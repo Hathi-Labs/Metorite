@@ -681,6 +681,7 @@ jobs:
               tests/unit/test_crm_change_history.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_projects_status_set_read_r8.py \
+              tests/unit/test_mcp_edge_attachment_r8.py \
               tests/unit/test_staging_export.py
 
   # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────
