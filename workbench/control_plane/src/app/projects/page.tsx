@@ -71,6 +71,12 @@ import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { StatusManager } from "./components/StatusManager";
 import ImportDialog from "./components/ImportDialog";
 import ProjectsSettings, { type SettingsSection } from "./components/ProjectsSettings";
+import {
+  type SettingsSeed,
+  nextSettingsSeed,
+  plainSettingsSeed,
+  settingsSeedKey,
+} from "./lib/settingsSeed";
 import { canImport, importEnabled } from "./lib/importFlow";
 import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
@@ -86,7 +92,7 @@ import {
   myWorkNavCounts,
   projectsUndoScope,
 } from "./lib/myWork";
-import { MY_TASKS_MODES, asChip, myTasksHref, myTasksModeFor, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
+import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, phoneMyTasksTap, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
 import MyTasksSpace, {
   DEFAULT_MY_TASKS_VIEW,
   MyTasksActionRow,
@@ -923,7 +929,7 @@ function ProjectsWorkspace() {
   // beside a five-mode canvas, plus a third column when a task opened, inside
   // the shell's `pb-nav` scroller. Every other app in the tree decides its
   // layout here.
-  const { isMobile } = useViewMode();
+  const { isMobile, mounted: viewMounted } = useViewMode();
   const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen } = useMobileDrawer();
   // NS-6: with the shell's one bell on, this app mounts no bell of its own.
   // Read once, as the shell reads its flags: the dev override is in
@@ -1048,7 +1054,34 @@ function ProjectsWorkspace() {
   const [app, setApp] = useState<ProjectAppId | null>(null);
   // WS-64 OP-11 — My tasks: its tab, its lens and its chip, and a counter the
   // task panel bumps so the roll-up reads its rows again.
-  const [myTasks, setMyTasks] = useState<MyTasksView>(DEFAULT_MY_TASKS_VIEW);
+  // PJP-13 — the tab is `null` until the member picks one. Then a desktop opens
+  // the Board and a phone the List. Until the viewport is known it reads List,
+  // so a phone never flashes a board. A pick, and the legacy `?app=my-today`
+  // link, count as a choice: they differ from the tab on screen.
+  const [myTasksRaw, setMyTasksRaw] = useState<MyTasksRaw>(() => ({
+    attention: DEFAULT_MY_TASKS_VIEW.attention,
+    chip: DEFAULT_MY_TASKS_VIEW.chip,
+    // The page remounts when the viewport crosses the phone line, so a pick
+    // lives in sessionStorage too. My tasks is not drawn at first paint.
+    chosen: typeof window === "undefined" ? null : readPickedMode(window.sessionStorage),
+  }));
+  useEffect(() => {
+    if (myTasksRaw.chosen) writePickedMode(window.sessionStorage, myTasksRaw.chosen);
+  }, [myTasksRaw.chosen]);
+  const myTasks = useMemo<MyTasksView>(
+    () => ({
+      mode: myTasksMode(myTasksRaw.chosen, isMobile || !viewMounted),
+      attention: myTasksRaw.attention,
+      chip: myTasksRaw.chip,
+    }),
+    [myTasksRaw, isMobile, viewMounted],
+  );
+  const setMyTasks = useCallback(
+    (update: MyTasksView | ((v: MyTasksView) => MyTasksView), pick = false) => {
+      setMyTasksRaw((raw) => applyMyTasksUpdate(raw, isMobile || !viewMounted, update, pick));
+    },
+    [isMobile, viewMounted],
+  );
   const [myTasksVersion, setMyTasksVersion] = useState(0);
   const appRef = useRef(app);
   useEffect(() => {
@@ -1121,19 +1154,18 @@ function ProjectsWorkspace() {
   const [importRunId, setImportRunId] = useState<string | null>(null);
   // WS-42 (D81) — where Projects settings opens. The sidebar row and a
   // `?app=settings` link clear it, so they start at the selected space.
-  const [settingsSeed, setSettingsSeed] = useState<{
-    section?: SettingsSection | null;
-    spaceId?: string | null;
-  }>({});
+  // Each open with a place bumps `run`, so the same place opens again
+  // (`lib/settingsSeed.ts`, the PST-1 fix round).
+  const [settingsSeed, setSettingsSeed] = useState<SettingsSeed<SettingsSection>>({});
   // Bumped when the wizard closes, so the pane's list of imports reads again.
   const [importsVersion, setImportsVersion] = useState(0);
   const openSettings = useCallback((section: SettingsSection | null, spaceId?: string | null) => {
-    setSettingsSeed({ section, spaceId: spaceId ?? null });
+    setSettingsSeed((prev) => nextSettingsSeed(prev, section, spaceId ?? null));
     setApp("settings");
   }, []);
   /** The sidebar's app rows: a plain open of Settings starts afresh. */
   const chooseApp = useCallback((id: ProjectAppId | null) => {
-    if (id === "settings") setSettingsSeed({});
+    if (id === "settings") setSettingsSeed(plainSettingsSeed);
     setApp(id);
   }, []);
   // WS-64 OP-11 — the My work counts come from the server summary of mine
@@ -1492,7 +1524,7 @@ function ProjectsWorkspace() {
         } else {
           setSheet(null);
           setApp("my-tasks");
-          setMyTasks((v) => ({ ...v, mode: "list", attention: false }));
+          setMyTasks((v) => ({ ...v, mode: "list", attention: false }), true);
         }
       } else if (tab === "projects-capture") {
         // WS-64 OP-4 — Capture must work with no My work view open. The quick
@@ -3152,7 +3184,7 @@ function ProjectsWorkspace() {
     if (!appLink) return;
     const live = resolveAppLink(appLink, PROJECT_APP_SECTIONS);
     if (live) {
-      if (live === "settings") setSettingsSeed({});
+      if (live === "settings") setSettingsSeed(plainSettingsSeed);
       setApp(live);
     }
     // WS-64 OP-11 — My tasks keeps `?app=my-tasks&chip=…` in the address, so
@@ -3163,6 +3195,7 @@ function ProjectsWorkspace() {
       const legacy = appLink.trim().toLowerCase() !== "my-tasks";
       setMyTasks((v) =>
         legacy ? { ...v, chip, mode: "list", attention: false } : v.chip === chip ? v : { ...v, chip },
+        legacy,
       );
       const target = myTasksHref(searchParams.toString(), chip);
       if (legacy) router.replace(target);
@@ -3379,7 +3412,7 @@ function ProjectsWorkspace() {
         // wrote the hidden project's mode before, so "List view" did nothing.
         if (isMyTasksApp(app)) {
           const tab = myTasksModeFor(next);
-          if (tab) setMyTasks((v) => ({ ...v, mode: tab, attention: false }));
+          if (tab) setMyTasks((v) => ({ ...v, mode: tab, attention: false }), true);
           return;
         }
         setAttentionFor(null);
@@ -3399,9 +3432,11 @@ function ProjectsWorkspace() {
         else if (what === "lifecycle") setManagingLifecycle(selected);
       },
       // Not while it is open: a re-seed remounts the pane and drops an edit.
-      openSettings: () => {
-        if (app === "settings") return;
-        openSettings(null, selected ? spaceOf(allRoots, selected).id : null);
+      // A named section (PST-1, "Space default statuses") is a request to go
+      // there, so it re-seeds even when the pane is open.
+      openSettings: (section) => {
+        if (app === "settings" && !section) return;
+        openSettings(section ?? null, selected ? spaceOf(allRoots, selected).id : null);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
@@ -4699,6 +4734,11 @@ function ProjectsWorkspace() {
     <MyTasksSpace
       view={myTasks}
       onView={setMyTasks}
+      onOpenProjects={() => {
+        // PJP-12a — the project tree, the way the sidebar opens it.
+        if (isMobile) setSheet("tree");
+        else setRailOpen(true);
+      }}
       phone={isMobile}
       compactChrome={compactChrome}
       me={me}
@@ -4723,7 +4763,7 @@ function ProjectsWorkspace() {
     // WS-42 (D81) — every setting of the Projects app in one pane.
     <div className="min-w-0 flex-1 overflow-hidden">
       <ProjectsSettings
-        key={`${settingsSeed.section ?? ""}:${settingsSeed.spaceId ?? ""}`}
+        key={settingsSeedKey(settingsSeed)}
         spaces={allRoots}
         initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(allRoots, selected).id : null)}
         initialSection={settingsSeed.section ?? null}
@@ -4745,6 +4785,14 @@ function ProjectsWorkspace() {
           setTreeKey((k) => k + 1);
         }}
         importsVersion={importsVersion}
+        // PST-1: a row of "projects that keep their own statuses" opens that
+        // project's Statuses editor. `manageSpace` leaves the pane, selects
+        // the project and opens the dialog, as the row menu does.
+        onOpenStatuses={(project) => {
+          const row = flatten(visibleRoots).find((e) => e.node.id === project.id);
+          if (row) manageSpace(setManagingStatuses)(row.node as ProjectRow);
+          else router.push(`/projects?project=${encodeURIComponent(project.id)}`);
+        }}
         // The pane edits ANY space, so it never writes the board's own lanes,
         // fields or tags. It re-reads them from the server instead: the tree
         // key drives fields and tags, and `loadProject` the lanes and tasks.
@@ -5146,6 +5194,7 @@ function ProjectsWorkspace() {
             />
           ) : mode === "board" ? (
             <TaskBoard
+              onManageStatuses={() => setManagingStatuses(selected)}
           personLabels={personLabels}
               columnTotals={columnTotals}
               loadingColumn={loadingColumn}

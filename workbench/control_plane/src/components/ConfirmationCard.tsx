@@ -45,6 +45,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import CardFieldValue from "@/components/CardFieldValue";
 import { splitCardEmailText } from "@/lib/cardEmailText";
 import FencedText from "@/components/FencedText";
+import NewMailCardForm from "@/components/NewMailCardForm";
 import ReplyCardForm from "@/components/ReplyCardForm";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Badge from "@/components/ui/Badge";
@@ -55,7 +56,8 @@ import Icon from "@/components/Icon";
 import { cardKey, fieldSpec, parseFieldValue, repeatsLine, valueIsLong } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
-import type { ReplyApproval, ReplyForm } from "@/lib/replyCard";
+import { slotLine, type CardDraft, type CardText } from "@/lib/redraftCard";
+import { isNewMail, type NewMailEdits, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
 import { noRecipientHint, rowMark } from "@/lib/sendCard";
 
 /**
@@ -75,6 +77,8 @@ export const CONFIRM_TITLE = "Approval";
 export const CONFIRM_HINT = "The assistant waits for your decision.";
 /** The title row of a reply card (EM-CR). Its summary names the sender. */
 export const REPLY_TITLE = "Reply";
+/** The title row of the card of a new mail (§18.10). */
+export const NEW_MAIL_TITLE = "New email";
 
 export interface CardField {
   /** The key as the tool printed it (`due_at`, `task 1`). */
@@ -270,11 +274,32 @@ interface ConfirmationCardProps {
   reply?: ReplyForm | null;
   /** Send or Save to Drafts on a reply card: the whole answer. */
   onReply?: (answer: ReplyApproval) => void;
+  /**
+   * Put words in the chat box and focus it, and send nothing (§18.10). The
+   * nudge chips of a new-mail card call it. `AgentChat` passes it.
+   */
+  onSuggest?: (text: string) => void;
   /** The tab row of the queue (owner, 2026-11-03, D173), drawn inside the
    *  card frame above its header, when two cards or more wait. */
   tabs?: ReactNode;
   /** The tab panel: the card is the panel the tabs control. */
   tabPanel?: { id: string; labelledBy: string };
+  /**
+   * §18.11: the slot of a new-mail card that a chat message closed. The card
+   * draws one status line and no buttons: "Updating the draft…", or "The
+   * draft did not change." once the run ended with no new card.
+   */
+  slot?: "updating" | "unchanged";
+  /** §18.11: a new-mail card reports the member's version after each edit. */
+  onDraftChange?: (draft: CardDraft | null) => void;
+  /** §18.11: the member's last version of the card that this card revises. */
+  before?: CardText;
+  /** §18.11: a message in the chat carries the member's version now. */
+  carriesEdits?: boolean;
+  /** The member's edits of a new-mail card, from before a change of tab. */
+  savedEdits?: NewMailEdits;
+  /** A new-mail card reports the member's edits, for `savedEdits`. */
+  onEdits?: (edits: NewMailEdits) => void;
 }
 
 /** A line of card text: fenced names as tokens, or the text as sent. */
@@ -296,9 +321,16 @@ export default function ConfirmationCard({
   id,
   reply,
   onReply,
+  onSuggest,
   error,
   tabs,
   tabPanel,
+  slot,
+  onDraftChange,
+  before,
+  carriesEdits,
+  savedEdits,
+  onEdits,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -331,11 +363,12 @@ export default function ConfirmationCard({
     if (armed && approvable) onApprove();
   };
   const isReply = reply !== undefined;
+  const newMail = isNewMail(reply);
   return (
     <RollupCard
       id={id ?? "confirm"}
-      title={isReply ? REPLY_TITLE : CONFIRM_TITLE}
-      icon={isReply ? "Reply" : "ShieldCheck"}
+      title={newMail ? NEW_MAIL_TITLE : isReply ? REPLY_TITLE : CONFIRM_TITLE}
+      icon={newMail ? "Mail" : isReply ? "Reply" : "ShieldCheck"}
       header="own"
       pending
     >
@@ -378,9 +411,25 @@ export default function ConfirmationCard({
       </div>
 
       <RollupBody className="space-y-2 pt-1.5">
+        {/* §18.11: the slot of a redraft. One status line, and no form and
+            no button, so nothing on it can answer the closed card. */}
+        {slot && (
+          <p
+            role="status"
+            className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
+            data-redraft-slot={slot}
+          >
+            <Icon
+              name={slot === "updating" ? "Loader2" : "Check"}
+              size={14}
+              className={`shrink-0 ${slot === "updating" ? "motion-safe:animate-spin" : ""}`}
+            />
+            {slotLine(slot)}
+          </p>
+        )}
         {/* A reply card draws its own summary: who gets the reply NOW, as the
             member toggles Reply and Reply all (review of #1191). */}
-        {!isReply && (
+        {!slot && !isReply && (
         <div className="min-w-0">
           <p className="break-words text-xs font-medium leading-relaxed text-foreground">
             <CardText text={summary} fenced={fenced} />
@@ -392,7 +441,23 @@ export default function ConfirmationCard({
           )}
         </div>
         )}
-      {isReply && (
+      {!slot && newMail && reply && (
+        <NewMailCardForm
+          form={reply}
+          detail={detail}
+          armed={armed}
+          disabled={disabled}
+          onAnswer={(answer) => onReply?.(answer)}
+          onDiscard={onReject}
+          onSuggest={onSuggest}
+          onDraftChange={onDraftChange}
+          before={before}
+          carriesEdits={carriesEdits}
+          savedEdits={savedEdits}
+          onEdits={onEdits}
+        />
+      )}
+      {!slot && isReply && !newMail && (
         <ReplyCardForm
           form={reply}
           detail={detail}
@@ -402,7 +467,7 @@ export default function ConfirmationCard({
           onDiscard={onReject}
         />
       )}
-      {!isReply && hasBody && (
+      {!slot && !isReply && hasBody && (
         <div className="space-y-2">
           {hasRows && (
             <ul className="space-y-1.5" data-confirmation-rows="" aria-label="Rows this approval covers">
@@ -548,7 +613,7 @@ export default function ConfirmationCard({
         </div>
       )}
 
-      {!isReply && (
+      {!slot && !isReply && (
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"

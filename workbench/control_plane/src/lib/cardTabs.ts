@@ -14,12 +14,15 @@ import { unfenced } from "./fencedText";
 import type { PendingConfirmation } from "./confirmationQueue";
 
 /** What a card is, for its tab. */
-export type CardKind = "send" | "reply" | "task" | "reminder" | "other";
+/** `new` is the one email card of a NEW mail (§18.10): a reply form with
+ *  `kind: "new"`. Its tab reads "Email to …", never "Reply to …". */
+export type CardKind = "send" | "reply" | "new" | "task" | "reminder" | "other";
 
 /** The icon of each kind: Lucide names, drawn by `<Icon name>`. */
 export const KIND_ICON: Record<CardKind, string> = {
   send: "Mail",
   reply: "Reply",
+  new: "Mail",
   task: "CheckSquare",
   reminder: "Bell",
   other: "ShieldCheck",
@@ -33,6 +36,9 @@ export const KIND_ICON: Record<CardKind, string> = {
  * reminder?", "Watch this task?"). A title it does not know is "other".
  */
 export function cardKind(card: Pick<PendingConfirmation, "title" | "reply">): CardKind {
+  // The form's own kind tells a new mail from a reply (§18.10). A title
+  // phrase cannot, and a `reply` form alone cannot either.
+  if (card.reply?.kind === "new") return "new";
   if (card.reply !== undefined) return "reply";
   const t = card.title.trim();
   if (/^reply\b/i.test(t)) return "reply";
@@ -76,13 +82,20 @@ export function pickLevel(needs: readonly number[], room: number, prev: TabLevel
   return level as TabLevel;
 }
 
-/** The count label that leads the tab row. */
-export function tabsCount(total: number): string {
+/**
+ * The count label that leads the tab row. `total` counts the cards that wait
+ * on the member. `updating` counts the slots of a redraft (§18.11), which
+ * wait on the assistant. A row of slots only never reads "0 to approve": it
+ * says that the drafts are being changed.
+ */
+export function tabsCount(total: number, updating = 0): string {
+  if (total === 0 && updating > 0) return updating === 1 ? "Updating 1 draft" : `Updating ${updating} drafts`;
   return `${total} to approve`;
 }
 
 /** The accessible name of the tab row. */
-export function tabsLabel(total: number, noun = "approvals"): string {
+export function tabsLabel(total: number, noun = "approvals", updating = 0): string {
+  if (total === 0 && updating > 0) return `${tabsCount(0, updating)}. Use the arrow keys to see each one.`;
   return `${total} ${noun} to approve. Use the arrow keys to see each one.`;
 }
 
@@ -172,6 +185,10 @@ export function tabLabel(card: TabCard): string {
       const f = card.reply;
       const to = f ? f.recipients[f.replyAll ? "reply_all" : "reply"].to[0] : undefined;
       return lead("Reply to", to ? personName(to) : "") || "Reply";
+    }
+    case "new": {
+      const to = card.reply?.recipients.reply_all.to[0];
+      return lead("Email to", to ? personName(to) : "") || "Email";
     }
     case "task":
       return lead("Task:", objectOf(card.detail)) || generic;

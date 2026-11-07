@@ -29,6 +29,17 @@ No row is class X. ``output_schema`` is null for every row until a later
 slice defines it. ``connection`` names the integration, or is null. The
 integration probe (``build_integrations``) is never called, so the catalog
 reports no availability.
+
+**The gate of every Studio route (STU-J1, ``ai_studio.md`` §9).** The router
+below carries ``require_feature_router("studio")``. Each module of this
+package registers its routes on this one router, so a new route has the gate
+by construction. A caller without ``feature:studio`` gets 403 before a
+handler runs, so the 403 comes before the 404 of ``STUDIO_ORGS``. A member,
+a manager and an admin hold the feature through ``feature:*``, and the owner
+through ``*``. A guest and a member with a deny override do not. No route
+adds a second feature gate, and no route reads the share verb of J2.
+Fence: ``tests/unit/test_studio_route_gate.py`` (``EXPECTED_ROUTES``) and
+``tests/unit/test_studio_route_gate_r8.py``.
 """
 
 from __future__ import annotations
@@ -53,7 +64,7 @@ from sqlalchemy import text
 router = APIRouter(
     prefix="/studio",
     tags=["studio"],
-    dependencies=[require_feature_router("workflows")],
+    dependencies=[require_feature_router("studio")],
 )
 
 NOT_FOUND = "Not found"

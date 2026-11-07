@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gateway.routes.email.core import IN_ALL_INBOXES_SQL, NOT_A_COPY_FOLDERS
-from gateway.routes.email.mailbox_access import private_predicate
+from gateway.routes.email.mailbox_access import _bound_org, private_predicate
 from gateway.routes.email.mailbox_identity import display_labels
 from sqlalchemy import text
 
@@ -112,8 +112,17 @@ def _member_mailboxes_from(anchor: str) -> str:
         f"WHERE a.id = {anchor}")
 
 
-#: The FROM clause over ``:aid``.
-_MEMBER_MAILBOXES_FROM = _member_mailboxes_from(":aid")
+#: The FROM clause over ``:aid``. It names the bound tenant on ``a`` (R5,
+#: H-334b and H-334c). ``o`` shares the organization of ``a``, so a role that
+#: bypasses RLS reads the mailboxes of one tenant only. :data:`SELF_ADDRESSES_SQL`,
+#: :data:`SELF_MAILBOX_IDS_SQL` and ``_MEMBER_MAILBOXES_SQL`` all read this one
+#: clause, so the three sets agree for every role.
+#:
+#: Each caller reads inside ``tenant_session``, which raises ``TenantUnbound``
+#: with no tenant bound. A session with no ``app.tenant_id`` compares to NULL,
+#: so the set is empty. It is never a set of another tenant.
+_MEMBER_MAILBOXES_FROM = (
+    f"{_member_mailboxes_from(':aid')} AND a.organization_id = {_bound_org()}")
 
 #: The lower-case address of each mailbox of the member who owns ``:aid``
 #: (D-EM-27). A SQL caller puts it in its own text as a subquery, for example
@@ -355,8 +364,10 @@ _PROVEN_OWN_SEND_SQL = f"""
                      WHERE ea.id = m.account_id))
      LIMIT 1"""
 
-#: The same mailboxes as rows, for :func:`resolve_self`. One FROM clause, so
-#: the set in SQL and the set in Python cannot disagree.
+#: The same mailboxes as rows, for :func:`resolve_self`. One FROM clause, and
+#: it names the bound tenant (H-334c). So the set in SQL and the set in Python
+#: agree, also for a role that bypasses RLS. An unbound session reads no row,
+#: so the identity is empty: it fails closed.
 _MEMBER_MAILBOXES_SQL = (
     "SELECT o.id::text AS id, o.email_address AS address, o.label AS label "
     f"{_MEMBER_MAILBOXES_FROM} ORDER BY o.created_at, o.id")

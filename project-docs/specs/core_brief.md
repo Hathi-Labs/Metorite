@@ -1,7 +1,21 @@
 # Core brief — the 07:30 brief, the 18:30 close-out, and silence between
 
-**Status: ACTIVE, BR-2a-1, BR-2c-1 and BR-2c-2 BUILT 2026-10-29 and 2026-10-30 (dark).** Verified
-against code on 2026-10-28, at `origin/main` `bd0efea9c`.
+**Status: ACTIVE. Built: BR-2a-1, BR-2c-1, BR-2c-2, BR-4b, BR-2d, BR-7a,
+BR-5 slice 1, and BR-2a-2 slice 1 (dark), 2026-10-29 to 2026-11-05.**
+Verified against code on 2026-11-05, at `origin/main` `1e63f33d8`.
+
+**BR-2a-2 slice 1 BUILT 2026-11-05, dark** behind `BRIEF_COMPOSE` (OFF):
+the phrase step of the 07:30 brief (§4.2, §4.4). `gateway/brief/phrase.py`
+is the one model site of the package. The run commits its claims and the
+intent mark `phrasing`, then makes one call with no session open. A retry
+of a run in `phrasing` makes no call. No close-out, no 3-minute fallback,
+no UI and no migration.
+
+**BR-4b BUILT 2026-10-30** (`gateway/brief/fence.py`), the claim fence.
+**BR-2d BUILT 2026-11-04, dark** (`gateway/brief/monitor.py`), the monitor.
+**BR-7a BUILT 2026-11-04**, the effect registry and its fence. **BR-5
+slice 1 BUILT 2026-11-04, dark** (`reach/exceptions.py`), the four
+interrupt rules behind `BRIEF_EXCEPTIONS`.
 
 Five slices are built and dark. BR-1a is the job queue
 (`docs/job_queue.md`). BR-1b-a is its detached mode and `jobs.prune`
@@ -147,7 +161,7 @@ One row for each member, kind and local date.
 | `lead` | TEXT NULL | The first sentence |
 | `lead_source` | TEXT NULL | CHECK `template` or `model` |
 | `lead_claim_ids` | UUID[] NOT NULL DEFAULT `{}` | The claims that the lead cites |
-| `model_request_id` | TEXT NULL | Joins the `usage_event` row of the phrase call |
+| `model_request_id` | TEXT NULL | The `client_ref` of the phrase call. It joins `usage_event.client_ref` |
 | `unattended_run_id` | UUID NULL | The AUTO-2 run |
 | `error` | TEXT NULL | The error type only, never a payload |
 | `created_at`, `ready_at`, `delivered_at` | TIMESTAMPTZ | |
@@ -294,6 +308,10 @@ call draws credits through the Console Router when H-171 and H-69 hold. When
 the CP-6 balance gate refuses, the run takes the template lead and still
 delivers. A brief with no AI is free, as My Day is (`my_day_feed.md` §9.3).
 
+With the Router off (`acb_llm.routed.routing_is_on()` is False), the run
+makes no call and takes the template lead. A call off the Router writes no
+usage row.
+
 ---
 
 ## 5. Delivery (BR-2c)
@@ -375,6 +393,30 @@ moment. It never drops.
 unread mark of the shell. A send outside the app is Reach, behind its own
 flags.
 
+**The rating of an alert (slice 2b-1, DECIDED 2026-11-06 07:17 UTC).** The
+owner chose to store the rating on `reach_signal_log`, with the rule id.
+Migration 348 adds three nullable columns: `rule_id`, `feedback` and
+`feedback_at`. An interrupt writes the `rule_id` of the rule that matched, with
+one log row for each rule. `feedback` holds
+`useful` or `not_useful`. One member gives one rating for each card and rule,
+and a second rating replaces the first.
+
+A rating only stores. It mutes no
+rule and changes no budget. 
+
+`proactive_reach.md` §7.1 and RE-6 (WS-59) keep
+the rating of a whole message on `reach_outbox.feedback`. The two do not
+overlap: the log rates one card for one rule, and the outbox rates a message.
+RE-6 reads the log rating, and it adds no second table.
+
+**The `notify_me` fact (slice 2b-2).** Rule 3 never fires, because no
+provider sets `notify_me`. The owner has not decided what "the member asked to
+be told" means (Q8 in §9). This row waits on that answer.
+
+**The mute screen (slice 2b-3).** A member sets a rule mute in Settings. The
+screen is STANDARD tier and needs a D145 preview. It writes `rule_mutes` in
+`my_day_prefs` through the route of slice 2a.
+
 ---
 
 ## 7. Delivery monitoring (BR-2d)
@@ -422,7 +464,7 @@ lists each act path that writes no `audit_event` row. Each one is a finding.
 
 ## 9. The owner's decisions
 
-The owner decided all seven questions on 2026-10-29 (epic #479, the comment
+The owner decided Q1 to Q7 on 2026-10-29 (epic #479, the comment
 "Owner decisions").
 
 | # | Question | DECIDED 2026-10-29 |
@@ -434,6 +476,7 @@ The owner decided all seven questions on 2026-10-29 (epic #479, the comment
 | Q5 | Fixed times, or the member's? | 07:30 and 18:30 in the member's zone by default. Each member can change both. The brief stores three preferences (`enabled`, `brief_time`, `closeout_time`) through `acb_common.assistant_profile` (`app_prefs`, and `PUT /auth/me/assistant-profile` with the key `apps`). A later slice adds the settings UI |
 | Q6 | How long to keep a brief? | 90 days. The prune hook of `brief/run.py` deletes older runs |
 | Q7 | Outside the app, when? | Web push is in v1, and it ships last, after the in-app surfaces |
+| Q8 | What does "the member asked to be told" mean for rule 3? | **OPEN, asked on task 590 on 2026-11-06.** Options: (a) one boolean in `my_day_prefs` that sets `notify_me` on every `block_soon` card, no migration (recommended), (b) only blocks that have a reminder, (c) drop rule 3, because the Notify me request (RE-5) already interrupts |
 
 ### 9.1 Gaps that the BR-2a-1 audit found
 
@@ -470,12 +513,12 @@ and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 | 1 | BR-4: the two tables and the store module | BR-1a | none | AGENT-SAFE |
 | 2 | BR-2a-1: the planner and the gather, with the template lead. **BUILT 2026-10-29, dark** | 1, AUTO-2 (#814), the BR-1b detached mode (#642) | `BRIEF_ENABLED`, `BRIEF_ORGS` | AGENT-SAFE to build. The production flip: `enforcement-flip` |
 | 3 | BR-4b: the claim fence. **BUILT 2026-10-30, not wired. BR-2a-2 calls it** | 2 | none | AGENT-SAFE |
-| 4 | BR-2a-2: the phrase step | 3 | `BRIEF_COMPOSE` | AGENT-SAFE to build. **OWNER-GATE** to flip in production (credits, §3a rule 3) |
+| 4 | BR-2a-2: the phrase step. **Slice 1 BUILT 2026-11-05, dark** (`brief/phrase.py`, the brief at 07:30 only). The close-out call waits for BR-2b | 3 | `BRIEF_COMPOSE` | AGENT-SAFE to build. **OWNER-GATE** to flip in production (credits, §3a rule 3) |
 | 5 | BR-2c: in-app delivery and the read route. **BR-2c-1 (the route and the chat turn) BUILT 2026-10-29, dark. BR-2c-2 (the My Day card) BUILT 2026-10-30, dark,** in `src/lib/shell/BriefCard.tsx` behind `NEXT_PUBLIC_BRIEF_CARD`. A 404 or a failed read draws nothing, and the brief of the day before wears its date | 2 | `BRIEF_IN_APP`, `NEXT_PUBLIC_BRIEF_CARD` | AGENT-SAFE. The production flip: `enforcement-flip` |
-| 6 | BR-2d: the monitor | 2, AUTO-2 | none | AGENT-SAFE |
+| 6 | BR-2d: the monitor. **BUILT 2026-11-04, dark** (`brief/monitor.py`, the hourly `brief.slo` check and `GET /admin/brief/health`). The 3-minute fallback waits for BR-2a-2, because a template run is `ready` at once | 2, AUTO-2 | none | AGENT-SAFE |
 | 7 | BR-2b with BR-7b: the close-out | 2 | `BRIEF_CLOSEOUT` | AGENT-SAFE. The production flip: `enforcement-flip` |
-| 8 | BR-7a: the effect registry and its fence | BR-1a | none | AGENT-SAFE |
-| 9 | BR-5: the exception rules | 2 | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip: `enforcement-flip` (Q4 is decided) |
+| 8 | BR-7a: the effect registry and its fence. **BUILT 2026-11-04** (`worker.register(effect=, policy=)`, `tests/unit/test_job_effects_fence.py`). A kind with no `effect` is a finding in the fence; `register` takes the argument as optional, so the fence is the gate | BR-1a | none | AGENT-SAFE |
+| 9 | BR-5: the exception rules. **Slice 1 BUILT 2026-11-04, dark** (`reach/exceptions.py`: the four rules, `plan.interrupt_candidates(rules=)`, `BRIEF_EXCEPTIONS`). **Slice 2a BUILT 2026-11-05, dark:** a member's mute of a rule (the `my_day_prefs` key `rule_mutes`, read by `loop.muted_rules`). **Still open, in three slices (spec rows 12 to 14):** 2b-1 the useful or not-useful rating (migration 348, HIGH tier), 2b-2 the `notify_me` fact that rule 3 needs (waits on Q8), and 2b-3 the mute screen (STANDARD, D145 preview). The move of an interrupted card to the top of My Day (§6) is not built, and no module under `routes/shell/` reads `BRIEF_EXCEPTIONS` | 2 | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip: `enforcement-flip` (Q4 is decided) |
 | 10 | BR-3a: one week on pilot data | 5 | none | **OWNER-GATE**: the pilot orgs and their inboxes are the owner's |
 | 11 | Web push of the brief, through Reach | 6 | `BRIEF_PUSH` | **OWNER-GATE**: it reaches a person through a third party |
 
@@ -493,16 +536,19 @@ Each item is a "done when". Each fence runs red first, then green.
 | # | Done when | Fence |
 |---|---|---|
 | 1 | The migration applies on a real database, with FORCE RLS on both tables. An empty `source_id` or `href` fails its CHECK. A member reads no run of another member, and org B reads no row of org A | `test_brief_store_r8.py` |
-| 2 | On a fake clock, a member in `Asia/Kolkata` gets one run at 07:30 local, and none on a day off. Two planner ticks and a restart in a run give one row and one ledger entry. A timeout of the handler gives the slot back, and the retry gathers once. A planner outage under 2 hours loses no brief, and an older slot leaves a `slot_missed` row. Each line equals `plan.line` of its card, with its `signal_id` and `href`. The run calls no model | `test_brief_run.py`, `test_brief_run_r8.py` |
-| 3 | The check refuses a sentence that cites no claim, and a sentence with a number that no cited claim holds. A `delivered` run with a line that has no claim row fails the R8 test | `test_brief_claims_fence.py` |
-| 4 | With 4 claims, one call goes out with `source="brief"`. A refused answer, a model error or a balance refusal keeps the template lead, and the run still delivers. A retry after `phrasing` makes no second call. On staging, `model_request_id` joins a `usage_event` row | `test_brief_run.py` |
+| 2 | On a fake clock, a member in `Asia/Kolkata` gets one run at 07:30 local, and none on a day off. Two planner ticks and a restart in a run give one row and one ledger entry. A timeout of the handler gives the slot back, and the retry gathers once. A planner outage under 2 hours loses no brief, and an older slot leaves a `slot_missed` row. Each line equals `plan.line` of its card, with its `signal_id` and `href`. With `BRIEF_COMPOSE` off, the run calls no model | `test_brief_run.py`, `test_brief_run_r8.py` |
+| 3 | The check refuses a sentence that cites no claim, and a sentence with a number that no cited claim holds. A `delivered` run with a line that has no claim row fails the R8 test | `test_brief_claim_fence.py` |
+| 4 | With 4 claims, one call goes out with `source="brief"`. A refused answer, a model error or a balance refusal keeps the template lead, and the run still delivers. A retry after `phrasing` makes no second call. The call carries `client_ref` equal to the stored `model_request_id`, and that value is not empty | `test_brief_phrase.py`, `test_brief_phrase_r8.py` |
 | 5 | The chat's first turn and the My Day card show the stored lines, and a diff against `plan.brief_parts` of the same cards is empty. On the My Day card, each claim href opens as an ordinary in-app link (`inAppLink`). The chat pills stay text, because a link chip needs a tool event, and a stored row has none. `GET /brief/today` answers 404 for a run of another member. With `BRIEF_IN_APP` off, both surfaces answer as before, byte for byte. BR-2c-1 holds the chat and the route | `test_chat_brief_turn_r8.py`, `test_brief_today_r8.py`, `test_brief_today.py` |
 | 6 | A run that is not ready at `slot_at + 3 min` delivers the template brief. `brief.slo_missed` logs once when a fake week falls under 99%. The health route answers the lag percentiles | `test_brief_monitor.py` |
 | 7 | The 18:30 run lists the Handled items, the moved items and the acts of the day, each with a claim. A day with no item gives `empty`. Each act from `audit_event` names its policy | `test_brief_run_r8.py` |
-| 8 | A new job kind with no `effect` fails the fence. So does a `send` kind with no policy, and an import of a send seam into `gateway/brief/` | `test_policy_fence.py` |
-| 9 | Between the moments, a card that no rule matches never moves to the top. A matching card does, inside the budget of `proactive_reach.md` §6.1. A rule that the member muted matches nothing | `test_brief_exceptions.py` |
+| 8 | A new job kind with no `effect` fails the fence. So does a `send` kind with no policy, and an import of a send seam into `gateway/brief/` | `test_job_effects_fence.py` |
+| 9 | Between the moments, a card that no rule matches never moves to the top. A matching card does, inside the budget of `proactive_reach.md` §6.1. A rule that the member muted matches nothing | `test_reach_exceptions.py` |
 | 10 | The ledger shows one brief and one close-out for each pilot member on 5 working days. Each brief has one email claim and one calendar claim at least | The ledger, read by the owner |
 | 11 | Reach sends the stored lead with a link, and `reach_outbox` holds the row | `test_reach_loop.py` |
+| 12 | An interrupt writes a `reach_signal_log` row with the `rule_id`. A rating of `useful` or `not_useful` stores `feedback` and `feedback_at` on that row only. A second rating replaces the first. A rating by member A never changes a row of member B or of another tenant. A rating mutes no rule | `test_reach_exceptions_feedback_r8.py` (a real database, two tenants) |
+| 13 | With the `notify_me` source of Q8 on, a `block_soon` card carries `notify_me` and rule 3 fires. With it off, rule 3 matches nothing | `test_reach_exceptions.py` (waits on Q8) |
+| 14 | The Settings screen lists the four rules in words. A switch mutes or unmutes one rule, and the route of slice 2a stores it | `test_reach_rule_mutes_route.py`, and the D145 preview |
 
 All fences are under `tests/unit/`.
 
@@ -511,9 +557,10 @@ All fences are under `tests/unit/`.
 ```bash
 eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_brief_store_r8.py tests/unit/test_brief_run.py \
-  tests/unit/test_brief_run_r8.py tests/unit/test_brief_claims_fence.py \
-  tests/unit/test_policy_fence.py tests/unit/test_brief_monitor.py \
-  tests/unit/test_brief_exceptions.py -q
+  tests/unit/test_brief_run_r8.py tests/unit/test_brief_claim_fence.py \
+  tests/unit/test_job_effects_fence.py tests/unit/test_brief_monitor.py \
+  tests/unit/test_reach_exceptions.py tests/unit/test_brief_phrase.py \
+  tests/unit/test_brief_phrase_r8.py -q
 uv run pytest tests/unit/test_reach_plan.py tests/unit/test_chat_brief_turn.py \
   tests/unit/test_chat_brief_turn_r8.py tests/unit/test_job_queue.py \
   tests/unit/test_tenant_coverage.py -q
@@ -521,5 +568,5 @@ uv run python scripts/affected_tests.py --run
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/linkChips.test.ts
 ```
 
-The new test files do not exist yet. Each slice creates the files that its
-acceptance names.
+A slice that is not built yet has no test file. Each slice creates the
+files that its acceptance names.

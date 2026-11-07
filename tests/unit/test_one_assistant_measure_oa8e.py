@@ -72,8 +72,9 @@ def test_every_work_plan_passes_on_both_arms(scripted) -> None:
 
 def test_the_set_has_the_turns_the_spec_asks_for() -> None:
     assert _turns(CRM_SCENARIOS) == 12
-    # ALN-4: 21, because each Projects pack needs a turn and projects-authority is the sixth.
-    assert 18 <= _turns(PROJECTS_SCENARIOS) <= 21
+    # ALN-4: projects-authority is the sixth Projects pack, and PJP-2's
+    # projects-reports the seventh. Each needs a turn (pm_authority, pm_reports).
+    assert 18 <= _turns(PROJECTS_SCENARIOS) <= 22
     assert _turns(MIXED_SCENARIOS) >= 3
     assert all(s.set == "crm" for s in CRM_SCENARIOS)
     assert all(s.set == "projects" for s in PROJECTS_SCENARIOS)
@@ -331,8 +332,9 @@ def test_the_pack_flag_turns_on_every_pack_of_each_owner() -> None:
     want = {s for o in pack.OWNERS for s in tool_packs.owner_packs(o)}
     assert slugs == want and flag["tool_packs_orgs"] == run.ds.ORG
     assert {"crm-records", "projects", "projects-plan", "projects-structure",
-            "projects-bulk", "projects-reminders", "projects-authority"} <= slugs
-    assert len(tool_packs.owner_packs(PROJECTS)) == 6  # ALN-4: + projects-authority
+            "projects-bulk", "projects-reminders", "projects-reports",
+            "projects-authority"} <= slugs
+    assert len(tool_packs.owner_packs(PROJECTS)) == 7  # PJP-2 + ALN-4: was 5
     # The email chats keep the email owner alone, as in OA-7h.
     assert set(run.pack_flag()["tool_packs"].split(",")) == set(tool_packs.owner_packs(EA))
     assert run.owners_of(scenario("read_invoice")) == (EA,)
@@ -1345,15 +1347,66 @@ def test_a_refused_hand_off_in_the_real_run_passes_and_is_counted() -> None:
     assert {c["agent"] for c in row["model_calls"]} == {ORCHESTRATOR}
 
 
-def test_the_run_4_double_write_is_refused_in_the_real_run() -> None:
+#: PJP-2 fix round 4: the run-4 cases leave ``projects-bulk`` out of the flag.
+#: With every pack allowed, a work pack of ``REACH_MIN_TOOLS`` or more fits
+#: beside the email and core packs at CI's base (45 + 54 tools, with 11 more
+#: free for ``projects-reports``), so the loader reaches the owner and the
+#: specialist leaves. That is PJP-2's rule. The double-write refusal of OA-8i
+#: needs the specialist to stay, so these cases pin an allow list that cannot
+#: reach the owner at any base: ``plan_loader`` needs EVERY pack of the owner.
+_RUN_4_OFF = "projects-bulk"
+_REAL_PACK_FLAG = run.pack_flag
+
+
+def _run_4_flag(owners: tuple[str, ...] = (pack.EA,)) -> dict[str, Any]:
+    flag = _REAL_PACK_FLAG(owners)
+    flag["tool_packs"] = ",".join(
+        slug for slug in flag["tool_packs"].split(",") if slug != _RUN_4_OFF)
+    return flag
+
+
+def test_the_run_4_allow_list_keeps_the_specialist_at_every_base(monkeypatch) -> None:
+    """The pack decision of the real-run case below, with no run. The email
+    surface and "Make a task from it" load the email and core packs at each
+    base that fits the cap, and with ``projects-bulk`` off the owner is never
+    reached, so the specialist stays. With every pack allowed, the CI base of
+    45 reaches the owner (non-vacuity: that is why the case pins the list).
+    Mutation: leave the flag whole -> the owner is reached -> red."""
+    from acb_common import get_settings
+
+    flag = _run_4_flag(pack.OWNERS)
+    monkeypatch.setattr(get_settings(), "tool_packs", flag["tool_packs"], raising=False)
+    monkeypatch.setattr(get_settings(), "tool_packs_orgs", flag["tool_packs_orgs"],
+                        raising=False)
+    allow = tool_packs.packs_on(flag["tool_packs_orgs"])
+    assert _RUN_4_OFF not in allow and "projects" in allow and "email" in allow
+    held = ("email", "projects")
+    removable = {PROJECTS: 1, EA: 1}
+    for base in range(40, 57):
+        turn = tool_packs.PackTurn(flag["tool_packs_orgs"], "s", "m", 1, (),
+                                   "Make a task from it", True, surface="email")
+        choice = tool_packs.choose(turn, allowed=allow, base_tools=base, specialists=removable)
+        assert choice.slugs == held, (base, choice)
+        current = base + sum(tool_packs._tool_count(slug) for slug in held)
+        plan = tool_packs.plan_loader(allow, held, current=current, removable=removable)
+        assert PROJECTS not in plan.via_loader, (base, plan)
+    every = tool_packs.with_followers(_REAL_PACK_FLAG(pack.OWNERS)["tool_packs"].split(","))
+    plan = tool_packs.plan_loader(every, held, current=98, removable=removable)
+    assert PROJECTS in plan.via_loader, "non-vacuity: the whole flag reaches the owner at 98"
+
+
+def test_the_run_4_double_write_is_refused_in_the_real_run(monkeypatch) -> None:
     """``mix_task_from_mail`` turn 2 of run 4, through the real run: the email
     and core packs are held, the specialist stays, and the model makes the
     task and then hands it to ``projects_assistant``. The hand-off answers the
-    OA-8i refusal, so one card and one write. Mutation: drop the OA-8i step
-    of ``PackRun.refusal`` -> the specialist starts with no scripted model ->
-    the row ends in an error -> red."""
+    OA-8i refusal, so one card and one write. The flag leaves
+    ``projects-bulk`` out (:data:`_RUN_4_OFF`), so the specialist stays at any
+    base. Mutation: drop the OA-8i step of ``PackRun.refusal`` -> the
+    specialist starts with no scripted model -> the row ends in an error ->
+    red."""
     from evals.one_assistant_measure.scenarios import Scenario
 
+    monkeypatch.setattr(run, "pack_flag", _run_4_flag)
     sc = Scenario("oa8i_double_write", "A task, then the same task handed off", (
         Turn("Make a task from it", (Check("no_unasked_write", 1),), Plan()),
     ), set="mixed", surface="email")

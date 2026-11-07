@@ -27,6 +27,7 @@
  */
 
 import { createElement, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import GenUIFallback from "@/components/GenUIFallback";
 import LiveChart from "@/components/LiveChart";
@@ -66,6 +67,7 @@ import { DeclinedNote, NotNowButton, NotNowClose } from "@/components/NotNow";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import SuggestionPills from "@/components/SuggestionPills";
+import { runHelloChip } from "@/lib/shell/buddyHello";
 import { clipWords, plainTitle } from "@/lib/fencedText";
 import { type CardFamily, templateTitle } from "@/lib/chatPlacement";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
@@ -130,6 +132,10 @@ const G_FRAME = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transp
 const G_FRAME_ASK = "glass:glass-card-tile glass:rounded-[16px]! glass:border-primary/35! glass:glass-raised! glass:p-4!";
 /** A frame whose children bring their own padding (a table, a comparison). */
 const G_FRAME_FLUSH = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transparent! glass:glass-raised!";
+/** A card drawn INSIDE another card (a table in a report). The parent is the
+ *  raised surface, so the inner one keeps a visible hairline and no second
+ *  raise. A transparent border here drew only the corners (task 1651). */
+const G_NESTED = "glass:glass-card-tile glass:rounded-[12px]! glass:border-border! glass:p-3!";
 /** An inner group: a rounded block on the card, with no border. */
 const G_BLOCK = "glass:rounded-[10px]! glass:border-transparent! glass:bg-secondary!";
 /** A field of a form: a rounded fill with no border. */
@@ -294,6 +300,13 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
     name: "reminderCard",
     summary: "A reminder that a tap opened in the chat, with its chips: Done, Not yet, Later, Drop, Make it a task. The server writes it as the chat's first row. An agent does not emit it.",
     data: "{ reminderId, title, when?, zone?, state('scheduled'|'due'|'unconfirmed'|'done'|'dropped'|'cancelled'), resolution?, kind?('action'|'notice'), link? }",
+    family: "result",
+  },
+  // ── The hello of a new member (WS-BUD BUD-1) ────────────────────────────
+  {
+    name: "buddyHello",
+    summary: "The hello a new member sees in the assistant, with three chips: Show me around, What can you do here?, I'll look around. The server writes it as the chat's first row. An agent does not emit it.",
+    data: "{ chips:[{ id('tour'|'ask'|'look'), label }] }",
     family: "result",
   },
 ];
@@ -1326,6 +1339,9 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
   "report",
   // A reminder that a tap opened (WS-66 RM-4).
   "reminderCard",
+  // The hello (WS-BUD BUD-1) draws no head at all: the chat's title says Welcome.
+  // It is here so the frame adds no generic "Card" header over its chips.
+  "buddyHello",
 ]);
 
 /**
@@ -1646,13 +1662,29 @@ function rootRemPx(): number {
 const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
+ * The cell editing of a Studio Table (STU-D2b). A grid with no `edit` draws as
+ * it always did. `components/studio/StudioTable.tsx` supplies one, and the
+ * store behind it is `lib/studio/inlineEdit.ts`. A row with no `id` never edits.
+ */
+export interface GridEdit {
+  /** Can the cells of column `index` edit? */
+  can(index: number): boolean;
+  /** The editor that replaces the cell, or null to draw the cell with an edit button. */
+  editor(rowId: string, index: number): React.ReactNode | null;
+  /** The member asked to edit this cell. */
+  open(rowId: string, index: number): void;
+  /** Is a save of this cell in flight? */
+  pending(rowId: string, index: number): boolean;
+}
+
+/**
  * The `dataGrid` template. It draws a table where the box is wide enough,
  * and stacked rows where it is not (`lib/dataGridLayout.ts`). `layout` fixes
  * one of the two, for a test. The data may also carry `kinds`, one card kind
  * per column (`task_dataset` sends them). Without them, each column takes
  * the kind of its card label.
  */
-export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) {
+export function DataGrid({ data, layout, edit, nested }: { data: Data; layout?: GridLayout; edit?: GridEdit; nested?: boolean }) {
   const kinds = Array.isArray(data.kinds)
     ? data.kinds.map((k) => (typeof k === "string" ? k : undefined))
     : undefined;
@@ -1709,22 +1741,46 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
       return cellText(av).localeCompare(cellText(bv)) * sort.dir;
     })
     : kept;
-  const cellOf = (r: Data, c: GridColumn) => (
+  // A cell that edits shows its editor, or a button that opens it (STU-D2b).
+  const withEdit = (r: Data, c: GridColumn, plain: React.ReactNode): React.ReactNode => {
+    const id = str(r.id);
+    if (!edit || !id || !edit.can(c.index)) return plain;
+    const editor = edit.editor(id, c.index);
+    if (editor !== null) return editor;
+    const busy = edit.pending(id, c.index);
+    return (
+      <Button type="button" variant="text" size="none" radius="keep" layout="block" data-cell-edit=""
+        aria-label={`Edit ${c.label}`} aria-busy={busy || undefined} disabled={busy}
+        onClick={() => edit.open(id, c.index)} style={{ color: "inherit" }}
+        className="min-h-5 w-full min-w-8 cursor-text text-left">
+        {isEmptyCell(arr(r.cells)[c.index]) ? <span style={{ color: "var(--muted-foreground)" }}>—</span> : plain}
+        {/* A quiet pencil says the cell edits. It needs no hover, so touch sees it too. */}
+        <span data-edit-mark="" aria-hidden="true"
+          style={{ display: "inline-block", marginLeft: 4, verticalAlign: "middle", opacity: 0.45 }}>
+          <Icon name="Pencil" size={10} />
+        </span>
+      </Button>
+    );
+  };
+  const cellOf = (r: Data, c: GridColumn) => withEdit(r, c, (
     <GridCell kind={c.kind} cell={arr(r.cells)[c.index]}
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />
-  );
+  ));
   const titleOf = (r: Data) => {
-    const href = taskHref(r.id, base);
+    // An empty `openBase` means "no link": a Studio record id is a UUID, and `base + id` would be a bad relative link.
+    const href = base ? taskHref(r.id, base) : null;
     // The title draws by its column's kind: a groups table by stage puts the
     // stage first, and it reads as its label, never the key (review round 1).
     const kind = shown.find((c) => c.index === primaryAt)?.kind ?? "text";
     const cell = <GridCell kind={kind} cell={arr(r.cells)[primaryAt]}
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />;
-    return href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
+    const plain = href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
+    const primary = shown.find((c) => c.index === primaryAt);
+    return primary ? withEdit(r, primary, plain) : plain;
   };
   const lead = shown.find((c) => c.role === "lead");
   return (
-    <div ref={boxRef} data-grid-layout={mode} className={`${G_FRAME} ${T_BLUE}`} style={CARD_BOX}>
+    <div ref={boxRef} data-grid-layout={mode} className={`${nested ? G_NESTED : G_FRAME} ${T_BLUE}`} style={CARD_BOX}>
       <TemplateHead icon="table-2" title={data.title != null ? str(data.title) : null} />
       <TemplateBody>
       {filterable && (
@@ -1850,7 +1906,7 @@ function ReportCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           click, so the file is the Reports app's numbers of that moment. */}
       <ReportFileButtons reportId={data.reportId} />
       {stats.length > 0 && <StatDashboard data={{ stats }} />}
-      {tables.map((t, i) => <DataGrid key={i} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
+      {tables.map((t, i) => <DataGrid key={i} nested={fold != null} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
       {pills.length > 0 && (
         <SuggestionPills suggestions={pills} onPick={(line) => ctx?.onAction?.(line)} label={BRIEF_PILLS_LABEL} align="start" />
       )}
@@ -1971,6 +2027,53 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   );
 }
 
+// ── The hello of a new member (WS-BUD BUD-1, D177) ──────────────────────────
+//
+// The server writes the row and its words (`routes/chat_brief.py`). This card
+// draws the three chips under the text. A tap runs on the client
+// (`lib/shell/buddyHello.ts`): the tour starts, the question goes out as the
+// member's message, or the panel closes. With no `onAction` (the side panel)
+// the card draws read-only, with no chips.
+
+/** The words over the chips. */
+const HELLO_CHIPS_LABEL = "Where to start";
+
+/** The chips. Its own component, so only a card that can act asks for the router. */
+function HelloChips({ chips, onAction }: { chips: Array<{ label: string; message: string }>; onAction: (text: string) => void }) {
+  const router = useRouter();
+  // One chip acts, and all three hold: a second tap would send the question
+  // twice (the reminder chips, `ReminderCard`, hold the same way).
+  const [busy, setBusy] = useState(false);
+  return (
+    <SuggestionPills
+      suggestions={chips}
+      onPick={(id) => {
+        if (busy) return;
+        setBusy(true);
+        runHelloChip(id, onAction, (href) => router.push(href));
+      }}
+      disabled={busy}
+      label={HELLO_CHIPS_LABEL}
+      align="start"
+    />
+  );
+}
+
+function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
+  const chips = arr(data.chips)
+    .map((c) => (c ?? {}) as Data)
+    .map((c) => ({ label: str(c.label).trim(), message: str(c.id).trim() }))
+    .filter((c) => c.label && c.message);
+  return (
+    <div data-buddy-hello="">
+      {/* No header, icon or chevron: the chat's title already says Welcome. */}
+      <TemplateBody>
+        {ctx?.onAction && chips.length > 0 ? <HelloChips chips={chips} onAction={ctx.onAction} /> : null}
+      </TemplateBody>
+    </div>
+  );
+}
+
 // ── A report the agent makes (owner directive, 2026-10-16) ──────────────────
 //
 // `make_report` writes a report as data and its PDF beside it. ONE component
@@ -2036,7 +2139,7 @@ function ReportVisualBlock({ visual, minWidth, heading = "", card = false }: {
       case "statDashboard":
         return <StatDashboard data={mapped.data} />;
       case "dataGrid":
-        return <DataGrid data={mapped.data} />;
+        return <DataGrid data={mapped.data} nested />;
       case "taskBoard":
         return <TaskBoard data={mapped.data} />;
       case "timeline":
@@ -2393,6 +2496,7 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   chart: (data) => <ChartCard spec={data} />,
   report: (data) => <ReportTemplate data={data} />,
   reminderCard: (data, ctx) => <ReminderCard data={data} ctx={ctx} />,
+  buddyHello: (data, ctx) => <BuddyHello data={data} ctx={ctx} />,
 };
 
 /** Render a template node, or an inert fallback if the name is unknown. */

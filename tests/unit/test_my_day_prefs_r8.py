@@ -309,3 +309,84 @@ async def test_push_prompt_is_one_members_own(db) -> None:
     assert both == {"push_prompt": state, "mutes": ["overdue"]}
     assert again == {"push_prompt": {"never": False}, "mutes": ["overdue"]}
     assert _stored(db, b_email) == []
+
+
+async def _muted(org: str, email: str) -> frozenset[str]:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import muted_rules
+
+    async with tenant_session(org) as session:
+        return await muted_rules(session, email)
+
+
+async def test_muted_rules_unions_case_variants_and_isolates_tenants(db) -> None:
+    """BR-5: the mute holds under any spelling of the address, only in the
+    bound tenant, and a value that is not an array reads as no mute."""
+    low = _address()
+    mixed = low.replace("prefs.", "Prefs.").upper().replace("@MD2D.TEST", "@md2d.test")
+    db.made.extend([low, mixed])
+    assert mixed != low and mixed.lower() == low
+    with db.admin_engine.begin() as c:
+        for org, email, val in ((db.org_a, low, '["agent_asks"]'),
+                                (db.org_a, mixed, '["source_sync_failed", "gone"]'),
+                                (db.org_b, low, '["approval_waiting"]')):
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+                "VALUES (:u, CAST(:o AS uuid), "
+                "jsonb_build_object('rule_mutes', CAST(:v AS jsonb)))"),
+                {"u": email, "o": org, "v": val})
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _muted(db.org_a, low) == {"agent_asks", "source_sync_failed"}
+        assert await _muted(db.org_b, low) == {"approval_waiting"}
+        assert await _muted(db.org_a, "nobody@md2d.test") == frozenset()
+
+
+async def test_muted_rules_ignores_a_value_that_is_not_an_array(db) -> None:
+    email = _address()
+    db.made.append(email)
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), "
+            "CAST('{\"rule_mutes\": \"agent_asks\"}' AS jsonb))"),
+            {"u": email, "o": db.org_a})
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _muted(db.org_a, email) == frozenset()
+
+
+async def _hidden(org: str, email: str) -> bool:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import hide_push_details
+
+    async with tenant_session(org) as session:
+        return await hide_push_details(session, email)
+
+
+async def test_hide_can_be_turned_off_under_the_other_spelling(db) -> None:
+    """Task 1209: on as one spelling, off as the other, and the read says
+    false. The PUT writes every spelling of the address, in the bound tenant
+    only. The other keys of those rows stay."""
+    low = _address()
+    mixed = low.replace("prefs.", "Prefs.")
+    db.made.extend([low, mixed])
+    assert mixed != low and mixed.lower() == low
+    with db.admin_engine.begin() as c:
+        # A row of the other organization, under the same address: untouched.
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), "
+            "jsonb_build_object('hide_push_details', true))"),
+            {"u": low, "o": db.org_b})
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, _member(mixed), "hide_push_details", True)
+        await _put(db.org_a, _member(low), "mutes", ["overdue"])
+        assert await _hidden(db.org_a, low) is True
+        # Off as the OTHER spelling than the one that turned it on.
+        saved = await _put(db.org_a, _member(low), "hide_push_details", False)
+        assert saved["hide_push_details"] is False
+        assert await _hidden(db.org_a, low) is False
+        assert await _hidden(db.org_a, mixed) is False
+        # The tenant wall: the row of org B still hides.
+        assert await _hidden(db.org_b, low) is True
+    rows = dict(_stored(db, mixed))
+    assert rows[db.org_a]["hide_push_details"] is False

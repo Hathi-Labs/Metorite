@@ -176,6 +176,15 @@ export const GENERATED_JOBS: readonly ShellJob[] = [
     icon: "Tag",
   },
   {
+    // WS-61 KB-2q. Opens the New space form. The layout listens for the ?do= and does nothing for a member without knowledge:manage. The form saves through POST /knowledge/spaces.
+    id: "new-space",
+    label: "New knowledge space",
+    words: ["knowledge", "wiki", "shared", "group", "team", "handbook", "new"],
+    app: "/knowledge",
+    href: "/knowledge?do=new-space",
+    icon: "FolderPlus",
+  },
+  {
     id: "edit-profile",
     label: "Update my profile",
     words: ["profile", "skills", "cv", "resume", "hours", "me"],

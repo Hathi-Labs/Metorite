@@ -54,10 +54,16 @@ def legend() -> str:
     called a task due yesterday "not overdue", and listed overdue work as
     "due in the next seven days". Every read opens with this line, so every
     answer that compares dates has today beside it. UTC, because the member's
-    timezone would cost one more call per tool.
+    timezone would cost one more call per tool. Task 1649: the line says "UTC
+    date" and points at the "Now:" line of the turn context, which holds the
+    member's own day and time. The UTC day is one day behind that member for
+    hours each evening in India, and the old "Today is" wording hid it.
     """
     now = datetime.now(UTC)
-    return f"{DATA_LEGEND} Today is {now:%A} {now:%Y-%m-%d} (UTC)."
+    return (
+        f"{DATA_LEGEND} UTC date: {now:%A} {now:%Y-%m-%d}. "
+        "The member's own day and time are in the Now line of the context. They win."
+    )
 
 #: The largest page a list tool asks for. ``/projects/search`` caps at 50
 #: (``search.MAX_HITS``). The list routes cap at 100 (``core.MAX_PAGE_SIZE``),
@@ -1827,12 +1833,12 @@ AGENT_RUNS_OFF = (
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def waiting_agent_requests() -> str:
     """The questions and requests that agents have put to the member and that
-    still wait for an answer, newest first. Each row shows the task, the agent,
+    still wait for an answer, oldest first. Each row shows the task, the agent,
     the request in plain words, its age and the link to the task card. Only
     the member answers, on that card. No chat tool approves, declines or
     answers one, so send the member to the link."""
     try:
-        page = (await get("/projects/agent-runs", {"status": "awaiting", "limit": MAX_PAGE})) or {}
+        page = (await get("/projects/agent-runs", {"status": "awaiting", "order": "oldest", "limit": MAX_PAGE})) or {}
     except GatewayRefusal as exc:
         # `require_agent_runs` answers 404 while agent runs are switched off.
         if exc.status == 404:

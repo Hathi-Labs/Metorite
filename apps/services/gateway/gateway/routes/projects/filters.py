@@ -24,6 +24,8 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from acb_common import get_settings
+from acb_common.db import current_tenant
 from fastapi import HTTPException
 from gateway.routes.projects import due_day
 from gateway.routes.projects.core import CLOSING_CATEGORIES, task_visibility_clause, wire
@@ -1190,7 +1192,7 @@ def unheld_clause() -> str:
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "NOT EXISTS (SELECT 1 FROM pm_agent_runs h"
-        " WHERE h.task_id = t.id"
+        " WHERE h.task_id = t.id AND h.task_id IS NOT NULL"
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')})"
@@ -1226,6 +1228,7 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
          WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name
   FROM pm_agent_runs r
  WHERE {task_filter}
+   AND r.task_id IS NOT NULL
    AND (r.status IN ({_OPEN_LIST})
         OR (r.status = 'failed'
             AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
@@ -1241,6 +1244,47 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
 _AGENT_STATE_SQL = agent_state_sql("r.task_id = ANY(CAST(:ids AS uuid[]))")
 
 
+def answer_change_enabled() -> bool:
+    """The flag ``agent_answer_change_enabled`` (default OFF, SW-43). The
+    gateway side of the one reader in ``acb_auth.agent_oauth``."""
+    from acb_auth import agent_oauth
+
+    return agent_oauth.answer_change_enabled()
+
+
+def answer_changeable_sql(r: str, p: str) -> str:
+    """SW-43. The ONE text of "the member may still take this answer back",
+    over the run alias *r* and the answer alias *p*. The route and the runs
+    wire both read it. All of these hold: the run works (``in_progress``),
+    the answer is not withdrawn, no agent has read it (``content.read_at``),
+    and no agent activity of the run follows it (an agent write carries
+    ``actor_via``). The window closes at the first read or post."""
+    return (
+        f"({r}.status = 'in_progress'"
+        f" AND NOT ({p}.type = 'prompt' AND {p}.content ? 'withdrawn')"
+        f" AND NOT ({p}.content ? 'read_at')"
+        " AND NOT EXISTS (SELECT 1 FROM pm_agent_run_activities x"
+        f"                 WHERE x.run_id = {p}.run_id AND x.seq > {p}.seq"
+        "                   AND x.actor_via IS NOT NULL))"
+    )
+
+
+def live_answer_sql(where: str) -> str:
+    """SW-43. The newest answer of each run that *where* picks (a member
+    ``prompt`` with ``in_reply_to`` set, written by the run's own member),
+    with ``changeable``. The marker row
+    of a withdraw has no ``in_reply_to``, so it is never an answer."""
+    return (
+        "SELECT DISTINCT ON (p.run_id) p.id, p.seq, p.run_id, p.in_reply_to,"
+        f" {answer_changeable_sql('r', 'p')} AS changeable"
+        " FROM pm_agent_run_activities p"
+        " JOIN pm_agent_runs r ON r.id = p.run_id AND r.task_id IS NOT NULL"
+        " WHERE p.type = 'prompt' AND p.in_reply_to IS NOT NULL"
+        f" AND lower(p.actor) = lower(r.member_email) AND {where}"
+        " ORDER BY p.run_id, p.seq DESC"
+    )
+
+
 def agent_runs_enabled() -> bool:
     """The flag ``agent_runs_enabled`` (default OFF). The gateway side of the
     one reader, ``acb_auth.agent_oauth.runs_enabled``, which the edge reads
@@ -1248,6 +1292,24 @@ def agent_runs_enabled() -> bool:
     from acb_auth import agent_oauth
 
     return agent_oauth.runs_enabled()
+
+
+def agent_questions_allowed(organization_id: str | None) -> bool:
+    """True when ``AGENT_QUESTIONS_ORGS`` holds the org, or holds ``*``.
+    Default OFF (WS-55 EA-18a, ``external_agent_access.md`` §12.8).
+
+    The one reader of the flag. The list, the write rule, the audience of
+    ``agent_question`` and the ``waiting`` focus each ask here, so a flip moves
+    all four together. The org comes from the session, a bound tenant or the
+    run's row, never from request input (R5). It reads ``get_settings()`` on
+    each call, so a flag reload applies a change with no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "agent_questions_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
 
 
 def held_by_of(hit: Any) -> dict[str, Any]:
@@ -1435,7 +1497,13 @@ def agent_focus_clause(focus: str) -> str:
       fills the card pill.
     * ``waiting``: the "Waiting on me" rule of §12.1. The pill state is
       ``awaiting`` and the run is the caller's (``:af_me``, bound by the
-      route), or the caller is assigned to the task.
+      route), or the caller is assigned to the task. With
+      ``AGENT_QUESTIONS_ORGS`` on for the bound tenant, it reads
+      ``agent_runs.person_may_answer_sql`` instead, so "Waiting on me" and the
+      list "For me" name the same people (§12.8, D-EA-14). The creator of the
+      task then counts too. It also reads ``agent_runs.listed_question_sql``
+      over the task's one open run. So a closed task counts in neither, and a
+      typed archive request counts for the run's member only, in both.
     * ``review``: an open or draft GitHub pull request, and the task is not in
       a closing category. ``merged``: a pull request merged in the last 7 days.
 
@@ -1453,6 +1521,23 @@ def agent_focus_clause(focus: str) -> str:
         working = ", ".join(f"'{s}'" for s in WORKING_STATES)
         return _state_exists(f"s.state IN ({working})")
     if focus == "waiting":
+        if agent_questions_allowed(current_tenant()):
+            # A lazy import: `agent_runs` imports this module.
+            from gateway.routes.projects.agent_runs import (
+                listed_question_sql,
+                person_may_answer_sql,
+            )
+
+            # The pill row has no run id. A task has one open run at most
+            # (`pm_agent_runs_one_open_per_task`), so the awaiting run of the
+            # task is the run of the pill.
+            return _state_exists(
+                f"s.state = 'awaiting' AND {person_may_answer_sql('s', me=AGENT_FOCUS_ME)}"
+                " AND EXISTS (SELECT 1 FROM pm_agent_runs qr"
+                " WHERE qr.task_id = s.task_id AND qr.task_id IS NOT NULL"
+                f" AND qr.status = 'awaiting'"
+                f" AND {listed_question_sql('qr', me=AGENT_FOCUS_ME)})"
+            )
         return _state_exists(
             "s.state = 'awaiting'"
             f" AND (lower(s.member_email) = :{AGENT_FOCUS_ME}"

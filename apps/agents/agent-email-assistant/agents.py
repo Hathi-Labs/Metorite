@@ -6107,7 +6107,11 @@ async def send_email(
 ) -> str:
     """Send an email immediately — a new message OR a reply. Outward-facing.
     The tool shows the member its own card with the recipients and the body,
-    and sends only after Send. So do not ask in text first.
+    and sends only after Send. So do not ask in text first. For a new message
+    in the chat, the member can edit the subject and the text on the card,
+    untick a person, and press Send, Save draft or Discard. The answer of the
+    tool says what went. When it says that the member changed the text, use
+    that text from then on, never your first one.
 
     To REPLY to an email, pass ``reply_to_email_id`` (the original's local id);
     the recipient and 'Re:' subject are derived from it automatically (and it's
@@ -6202,6 +6206,14 @@ async def send_email(
         return refusal
     if warning:
         reply_notices.insert(0, warning)
+    if not reply_to_email_id and _edit_card_open():
+        # §18.10 (owner, 2026-11-03): a new mail shows the ONE email card that
+        # the member edits. The gateway records it, and its act sends only the
+        # text and the people that the member answered. A run that cannot draw
+        # that card (WhatsApp, or no card channel) keeps the card below.
+        return await _new_mail_card(
+            account_id, sender, to=to, cc=cc, bcc=list(bcc or []), subject=subject,
+            body=body, attachments=attachments, notices=reply_notices, usual=usual)
 
     payload: dict[str, Any] = {
         "account_id": account_id,
@@ -6283,6 +6295,361 @@ async def send_email(
             f"(id={res.get('id', '')}).{tail}")
 
 
+# ── The one email card of a new mail (§18.10, owner 2026-11-03) ──────────────
+
+#: The answer when the member wrote in the chat while a new-mail card was open.
+_NEW_MAIL_REVISED = (
+    "The member wrote in the chat while the card was open, so the card is "
+    "closed. Nothing was sent. Read the member's words below. If they change "
+    "this mail, change it, keep every part they did not ask to change, and "
+    "call send_email again with the new text, so a new card shows. If they ask "
+    "to add a person, find the address with find_contact first. If they ask "
+    "about something else, answer that first.")
+#: §18.11 step 5: the line after the member's own version of the card. The
+#: version itself is the gateway's neutral data block (``compose_card_draft``).
+_START_FROM_THE_MEMBER = (
+    "Start from the member's own version above, not from your first text. "
+    "Keep each part of it that their words below do not ask to change.")
+#: The longest data block of the member's version that the tool passes on
+#: (``chat_recovery.CARD_DRAFT_MAX``).
+_MEMBER_VERSION_MAX = 24_000
+#: §18.11 fix round 5: the words the model reads in front of the answer of a
+#: card that came back. The revise did not happen (a 503 twice), so the
+#: gateway spent nothing, and the tool asked the SAME card again, with the
+#: member's edits still on it. The member then answered that card.
+_REVISE_UNREAD = (
+    "The member wrote in the chat while this card was open, but the gateway "
+    "could not read the card. So the member's card edits did not reach you, "
+    "and the card stayed open with those edits. The member then answered the "
+    "card, and the answer follows. Do not change or send this email again for "
+    "that chat message.")
+#: The most times that one card comes back in one call (fix round 5).
+_MAX_COMEBACKS = 3
+#: The answer when the card came back that many times and the revise still
+#: did not run. No card is drawn now. The member's edits went with the card,
+#: so the model tells the member to check the ticks of the next card (fix
+#: round 6).
+_REVISE_GAVE_UP = (
+    "The member wrote in the chat while this card was open, but the gateway "
+    "could not read the card again and again, so the card is closed. Nothing "
+    "was sent. Do not call send_email now. Tell the member that the email was "
+    "not sent, and that their edits on the card were lost. Ask them to try "
+    "again in a moment, and to check the people that are ticked on the next "
+    "card before they press Send.")
+#: The answer when the member pressed Discard, or the card closed with no answer.
+_NEW_MAIL_DISCARDED = "Send cancelled — the email was not sent."
+#: The notice of a held card with a new address (§21): it starts unticked.
+_NEW_MAIL_NEW_UNTICKED = (
+    "An address that you do not know is on this email. It is marked, and it "
+    "starts unticked, so it gets nothing unless you tick it.")
+#: The longest title of the card that ``request_confirmation`` keeps whole.
+_NEW_MAIL_TITLE_MAX = 120
+
+
+def _edit_card_open() -> bool:
+    """True when this run can draw the card that the member edits (§18.10):
+    a card channel and no WhatsApp run (``ask_tools.edit_card_channel_open``).
+    An older platform with no reader reads False, and keeps the old card."""
+    try:
+        from acb_skills.ask_tools import edit_card_channel_open
+    except ImportError:
+        return False
+    return edit_card_channel_open()
+
+
+def _run_thread() -> str:
+    """The chat thread of this run, or "" (§18.11).
+
+    It is the thread that the run streams to, and the thread that a chat
+    message of the member steers. It comes from the run, never from the
+    model. The gateway keeps it on the card's record, so only this thread
+    can send a snapshot of the card or take its link."""
+    try:
+        from orchestrator.executor import resolve_relay_thread_id
+    except ImportError:
+        return ""
+    try:
+        return str(resolve_relay_thread_id() or "").strip()[:200]
+    except Exception:
+        return ""
+
+
+async def _revised_text(lead: str, card_id: str, thread: str) -> str | None:
+    """The REVISED answer of a new-mail card that a chat message closed (§18.11).
+
+    It spends the old card (``POST /email/new-card/revise``), so a late answer
+    to it sends nothing. When the member had edited the card, the gateway
+    answers their version as a neutral data block, and the answer adds it, so
+    the model starts from it.
+
+    None when the revise did not happen (fix round 5): a 503 after the one
+    more try of :func:`_revise_card`. The gateway then spent nothing, so the
+    caller asks the SAME card again (:func:`_ask_until_revised`). Any other
+    failure gives *lead* alone: nothing was sent, and the model asks again.
+    A 409 gives *lead* too (fix round 6). The record is gone, so a card that
+    came back could not send, and the unticks already wait in the hash."""
+    if not card_id or not thread:
+        return lead
+    try:
+        res = await _revise_card(card_id, thread)
+    except GatewayError as exc:  # the card is closed either way, and nothing went
+        return None if exc.status == 503 else lead
+    except Exception:  # the card is closed either way, and nothing went
+        return lead
+    block = str(res.get("snapshot") or "") if isinstance(res, dict) else ""
+    if not block.strip():
+        return lead
+    return f"{lead}\n\n{block[:_MEMBER_VERSION_MAX]}\n{_START_FROM_THE_MEMBER}"
+
+
+async def _ask_until_revised(
+    form: dict[str, Any], card_id: str, thread: str, lead: str,
+) -> tuple[Any, str | None, bool]:
+    """``(answer, revised, came_back)`` of a new-mail card (§18.11).
+
+    It shows the card and waits. A chat message that closes it runs the
+    revise. When the revise ran, ``revised`` is the REVISED text for the
+    model. When it did not run (fix round 5), the gateway spent nothing, so
+    this shows the SAME card again, with ``reopened`` on its form. The chat
+    then puts it back in place, with the member's edits, and a next message
+    is a steer that carries them. ``came_back`` says that it did so once.
+
+    It shows the card again at most :data:`_MAX_COMEBACKS` times, so no fault
+    can spin it. After that, the model reads :data:`_REVISE_GAVE_UP` and draws
+    no card."""
+    from acb_skills import ask_tools
+
+    comebacks = 0
+    answer = await _ask_new_mail_card(form, card_id)
+    while answer is ask_tools.REVISED:
+        revised = await _revised_text(lead, card_id, thread)
+        if revised is not None:
+            return None, revised, comebacks > 0
+        if comebacks >= _MAX_COMEBACKS:
+            return None, _REVISE_GAVE_UP, True
+        comebacks += 1
+        answer = await _ask_new_mail_card({**form, "reopened": True}, card_id)
+    return answer, None, comebacks > 0
+
+
+def _noted(out: Any, came_back: bool) -> Any:
+    """*out* with :data:`_REVISE_UNREAD` in front, when the card came back."""
+    if not came_back:
+        return out
+    if isinstance(out, dict):
+        return {**out, "chat_note": _REVISE_UNREAD}
+    return f"{_REVISE_UNREAD}\n\n{out}"
+
+
+async def _revise_card(card_id: str, thread: str) -> Any:
+    """``POST /email/new-card/revise``, and ONE more try after a 503 (§18.11).
+
+    The route answers 503 for a fault in any step up to the spend, and it
+    spends nothing then (fix round 5). Each of those steps is safe to run
+    twice, so the second try keeps the member's unticks through a short
+    fault. A try after a spend finds no record and answers 404, so the card
+    is never spent twice."""
+    body = {"card_id": card_id, "card_thread_id": thread}
+    try:
+        return await _post("/email/new-card/revise", body) or {}
+    except GatewayError as exc:
+        if exc.status != 503:
+            raise
+    await asyncio.sleep(_GET_RETRY_DELAY_S)
+    return await _post("/email/new-card/revise", body) or {}
+
+
+def _new_mail_title(form: dict[str, Any]) -> str:
+    """"Email to kim@…": the people of To, or their count when they do not fit."""
+    to = [str(a) for a in ((form.get("recipients") or {}).get("reply_all") or {}).get("to") or []]
+    title = f"Email to {', '.join(to)}"
+    if len(title) <= _NEW_MAIL_TITLE_MAX:
+        return title
+    return f"Email to {len(to)} people"
+
+
+def _form_notice(form: dict[str, Any], line: str) -> None:
+    """Put *line* on a form: a notice while the card has room for one (four at
+    most, ``ask_tools.clean_reply_form``), else first in the note."""
+    notices = form.setdefault("notices", [])
+    if len(notices) < 4:
+        notices.append(line)
+    else:
+        form["note"] = f"{line} {form.get('note') or ''}".strip()
+
+
+def _new_mail_form(prep: dict[str, Any], notices: list[str]) -> dict[str, Any]:
+    """The form of the card, from the answer of ``POST /email/new-card``.
+
+    The people, the subject, the text and the files are the gateway's, as
+    it recorded them. Each person starts ticked, but a person that the
+    member unticked on the draft before (§18.11 rule 7). *notices* are the lines of
+    the tool: the usual mailbox, each always-copy colleague and a look-alike
+    warning."""
+    people: dict[str, list[str]] = {"to": [str(a) for a in prep.get("to") or []],
+                                    "cc": [str(a) for a in prep.get("cc") or []]}
+    if prep.get("bcc"):
+        people["bcc"] = [str(a) for a in prep["bcc"]]
+    form: dict[str, Any] = {
+        "kind": "new", "mailbox": str(prep.get("mailbox") or ""),
+        "subject": str(prep.get("subject") or ""), "body": str(prep.get("body") or ""),
+        "recipients": {"reply": people, "reply_all": people},
+        "files": [str(f) for f in prep.get("files") or []], "notices": [], "note": "",
+    }
+    # §18.11 step 6: the gateway linked this card to the card that a chat
+    # message revised. The tool copies the two fields, and sets neither.
+    if prep.get("revises"):
+        form["revises"], form["draft"] = prep["revises"], prep.get("draft")
+    # §18.11 rule 7: the gateway starts each person that the member unticked
+    # on that card unticked, and names them. The tool copies the start and the
+    # names, and sets neither. ``clean_reply_form`` checks that each name is a
+    # person of the card who starts unticked.
+    if isinstance(prep.get("ticked"), dict) and prep.get("unticked"):
+        start = {k: [str(a) for a in prep["ticked"].get(k) or []] for k in people}
+        form["ticked"] = {"reply": start, "reply_all": start}
+        form["unticked"] = [str(a) for a in prep["unticked"]]
+    for line in notices:
+        if str(line or "").strip():
+            _form_notice(form, " ".join(str(line).split()))
+    return form
+
+
+def _new_mail_detail(form: dict[str, Any]) -> str:
+    return _card_text(f"From {form.get('mailbox') or ''} · "
+                      f"{form.get('subject') or '(no subject)'}", 300)
+
+
+async def _ask_new_mail_card(form: dict[str, Any], card_id: str) -> Any:
+    """Show the card of a new mail, and give the answer of the member: a
+    ``ReplyAnswer``, ``REVISED``, or a str when nothing goes. Only the
+    member who asked may answer."""
+    from acb_skills import ask_tools
+
+    answer = await ask_tools.request_confirmation(
+        title=_new_mail_title(form), detail=_new_mail_detail(form), reply=form,
+        request_id=card_id, close_on_steer=True)
+    if _revised(answer):
+        return ask_tools.REVISED
+    if not isinstance(answer, ask_tools.ReplyAnswer):
+        return _unapproved_line() or _NEW_MAIL_DISCARDED
+    member = _current_user_email().strip().lower()
+    if answer.responder and member and answer.responder.strip().lower() != member:
+        return ("Nothing was sent. Another member answered this card, and only the "
+                "member who asked can send this email.")
+    return answer
+
+
+def _new_mail_text_line(res: dict[str, Any]) -> str:
+    """What the model must know about the text that went (§18.10, item 5).
+
+    The member can change the subject and the text on the card. The line
+    then gives both as they went, so the chat never claims the first text."""
+    subject = str(res.get("subject") or "")
+    if not res.get("edited"):
+        return f' Subject: "{subject}".' if subject else ""
+    return (" The member changed the email on the card before it went. The subject "
+            f'that went: "{subject}". The text that went:\n{res.get("body") or ""}')
+
+
+def _new_mail_people(res: dict[str, Any]) -> str:
+    """"kim@…, with a copy to …, and a Bcc to …" of the act's answer."""
+    out = _addr_text(res.get("to"))
+    if res.get("cc"):
+        out += f", with a copy to {_addr_text(res.get('cc'))}"
+    if res.get("bcc"):
+        out += f", and a Bcc to {_addr_text(res.get('bcc'))}"
+    if res.get("refused"):
+        out += f". The mail server refused {_addr_text(res.get('refused'))}, so they got nothing"
+    return out
+
+
+def _new_mail_left(res: dict[str, Any]) -> str:
+    left = int(res.get("left_out") or 0)
+    if not left:
+        return ""
+    return (" The member unticked 1 person on the card, who got nothing." if left == 1
+            else f" The member unticked {left} people on the card, who got nothing.")
+
+
+def _new_mail_result(res: dict[str, Any], sender: str, usual: str = "") -> str:
+    """The answer of the tool after the act of a new-mail card."""
+    files = int(res.get("files") or 0)
+    note = f" with {files} attachment(s)" if files else ""
+    if res.get("action") == "save":
+        # No "Draft:" line (``_draft_line``): the working set reads the LAST
+        # line of a result for one, and here that line can be text that the
+        # model wrote. The id is named in words, for the model only.
+        did = str(res.get("draft_id") or "")
+        ref = f" (draft_id {did})" if did else ""
+        return (f"Saved in Drafts of {sender}{note}, to {_new_mail_people(res)}{ref}. "
+                f"Nothing was sent.{_new_mail_left(res)}{_new_mail_text_line(res)}")
+    tail = f" {usual}" if usual else ""
+    return (f"Sent email to {_new_mail_people(res)} from {sender}{note} "
+            f"(id={res.get('id', '')}).{_new_mail_left(res)}{tail}{_new_mail_text_line(res)}")
+
+
+async def _new_mail_card(
+    account_id: str, sender: str, *, to: list[str], cc: list[str], bcc: list[str],
+    subject: str, body: str, attachments: list[str] | None, notices: list[str], usual: str,
+) -> str:
+    """``send_email`` for a new mail in a chat that draws the edit card (§18.10).
+
+    1. ``POST /email/new-card`` checks the mail and records it. It sends nothing.
+    2. ONE card shows the people with a tick box each, the subject and the
+       text to edit, and the files. Send, Save draft and Discard.
+    3. ``POST /email/new-card/act`` takes the member's exact answer, and
+       sends or saves only the answered text, to the ticked people of the
+       record. The tool names no person and no text of its own there."""
+    metorite = [str(a) for a in (attachments or []) if _is_metorite_ref(a)]
+    refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
+    # §18.11: the run's own chat thread, so the gateway can link a redraft.
+    thread = _run_thread()
+    try:
+        prep = await _post("/email/new-card", {
+            "account_id": account_id, "to": to, "cc": cc, "bcc": bcc,
+            "subject": subject, "body": body, "artifacts": refs, "metorite_files": metorite,
+            **({"card_thread_id": thread} if thread else {}),
+        }) or {}
+    except GatewayError as exc:
+        if exc.status in (404, 409, 422):
+            return f"Not sent. {getattr(exc, 'detail', '') or exc!s}"
+        raise
+    card_id = str(prep.get("card_id") or "")
+    if not card_id:
+        return "Not sent. The card of this email could not be recorded. Try again."
+    form = _new_mail_form(prep, notices)
+    # §18.11 step 4: a chat message spends the old card, and the model starts
+    # from the member's version. A revise that did not run shows the card again.
+    answer, revised, came_back = await _ask_until_revised(
+        form, card_id, thread, _NEW_MAIL_REVISED)
+    if revised is not None:
+        return revised
+    return _noted(await _new_mail_answered(answer, sender, usual), came_back)
+
+
+async def _new_mail_answered(answer: Any, sender: str, usual: str) -> str:
+    """The end of a new-mail card that the member answered: the act of the
+    answer, or the words of a card that sends nothing (§18.10)."""
+    if isinstance(answer, str):
+        return answer
+    # H-393: the member can edit the text on the card, so it is checked again.
+    choice = getattr(answer, "choice", None)
+    refusal, _warn = _lookalike_check({"subject": getattr(choice, "subject", ""),
+                                       "text": getattr(choice, "body", "")})
+    if refusal:
+        return refusal.replace("Not sent.", "Nothing was sent or saved.", 1)
+    try:
+        res = await _post("/email/new-card/act", {
+            "card_id": answer.request_id, "card_thread_id": answer.thread_id,
+            "answer": answer.answer,
+        }) or {}
+    except GatewayError as exc:
+        if exc.status in (404, 409, 422):
+            return f"Nothing was sent. {getattr(exc, 'detail', '') or exc!s}"
+        raise
+    return _new_mail_result(res, sender, usual)
+
+
 async def _always_copy_cc(
     account_id: str, to: list[str], cc: list[str], bcc: list[str] | None,
 ) -> tuple[list[str], list[str]]:
@@ -6336,12 +6703,19 @@ async def _held_new_mail(
         "kind": "new", "account_id": account_id, "to": to, "cc": list(cc or []),
         "bcc": list(bcc or []), "subject": subject or "", "note": body,
         "files": [str(a) for a in (attachments or []) if str(a).strip()],
-    }, "Not sent", "Send cancelled — the email was not sent.")
+    }, "Not sent", "Send cancelled — the email was not sent.", form=True)
     if isinstance(res, str):
         return res
     files = int(res.get("files") or 0)
     note = f" with {files} file(s)" if files else ""
-    return _held_sent_text(res, f"Sent{note}") + f" (id={res.get('id', '')})."
+    if res.get("action") == "save":
+        # §18.10: Save draft on the card wrote a new draft, and sent nothing.
+        # No "Draft:" line, as in ``_new_mail_result``.
+        did = str(res.get("draft_id") or "")
+        return (_held_sent_text(res, f"Saved in Drafts{note}, nothing was sent")
+                + (f" (draft_id {did})." if did else "") + _new_mail_text_line(res))
+    return (_held_sent_text(res, f"Sent{note}") + f" (id={res.get('id', '')})."
+            + _new_mail_text_line(res))
 
 
 def _size_text(size: Any) -> str:
@@ -6722,26 +7096,37 @@ _HELD_CARD_REVISED = (
 
 
 async def _held_card(
-    body: dict[str, Any], lead: str, cancelled: str,
+    body: dict[str, Any], lead: str, cancelled: str, *, form: bool = False,
 ) -> dict[str, Any] | str:
     """Show the gateway's held card for *body*, and act on the answer.
 
     Returns the act's answer, or the text of the tool when nothing was sent:
     a run with no card channel (a WhatsApp, batch or scheduled run sends
     nothing, open question 9), a refusal of the gateway, a "no" on the card,
-    or a card that the member's words closed."""
+    or a card that the member's words closed.
+
+    *form* (§18.10): a new mail draws the gateway's form of the same record,
+    the ONE email card that the member edits, where a run can draw it. A
+    WhatsApp run and an older gateway keep the rows card."""
     try:
         from acb_skills import ask_tools
     except ImportError:  # an older platform with no card
         return _NO_CARD_CHANNEL
     if not ask_tools.reply_card_channel_open():
         return _NO_CARD_CHANNEL
+    # §18.11: only a card to edit names the run's chat thread, so a rows card
+    # (a WhatsApp run) takes no snapshot and no revise.
+    edit = form and _edit_card_open()
+    thread = _run_thread() if edit else ""
     try:
-        prep = await _post("/email/held-card", body) or {}
+        prep = await _post("/email/held-card",
+                           {**body, "card_thread_id": thread} if thread else body) or {}
     except GatewayError as exc:
         if exc.status in (404, 409, 422):
             return _held_refusal(exc, lead)
         raise
+    if edit and isinstance(prep.get("form"), dict):
+        return await _held_form_card(prep, lead, cancelled, thread)
     answer = await ask_tools.request_confirmation(
         title=str(prep.get("title") or "Send this mail?"),
         detail=str(prep.get("detail") or ""),
@@ -6759,6 +7144,46 @@ async def _held_card(
     if answer.responder and member and answer.responder.strip().lower() != member:
         return (f"{lead}. Another member answered this card, and only the member "
                 "who asked can send it.")
+    try:
+        return await _post("/email/held-card/act", {
+            "card_id": answer.request_id,
+            "card_thread_id": answer.thread_id,
+            "answer": answer.answer,
+        }) or {}
+    except GatewayError as exc:
+        if exc.status in (404, 409, 422):
+            return _held_refusal(exc, lead)
+        raise
+
+
+async def _held_form_card(
+    prep: dict[str, Any], lead: str, cancelled: str, thread: str = "",
+) -> dict[str, Any] | str:
+    """The held new mail as the one email card (§18.10), on the gateway's
+    record. The gateway's form keeps each §21 rule: the classes, and a new
+    address that starts unticked. Its act checks the answered text again.
+
+    A chat message that closes it (§18.11) spends the record through the
+    same revise route as a plain card. The next held card works out its
+    classes and its ticks again, so the member's version never ticks a new
+    address. A revise that did not run shows the same card again."""
+    form = dict(prep["form"])
+    form["notices"] = list(form.get("notices") or [])
+    if any(c == "new" for c in (form.get("classes") or {}).values()):
+        _form_notice(form, _NEW_MAIL_NEW_UNTICKED)
+    card_id = str(prep.get("card_id") or "")
+    answer, revised, came_back = await _ask_until_revised(
+        form, card_id, thread, _HELD_CARD_REVISED)
+    if revised is not None:
+        return revised
+    return _noted(await _held_form_answered(answer, lead, cancelled), came_back)
+
+
+async def _held_form_answered(answer: Any, lead: str, cancelled: str) -> dict[str, Any] | str:
+    """The end of a held new-mail card that the member answered: the act of
+    the answer, or the words of a card that sends nothing (§18.10)."""
+    if isinstance(answer, str):
+        return cancelled if answer == _NEW_MAIL_DISCARDED else answer
     try:
         return await _post("/email/held-card/act", {
             "card_id": answer.request_id,

@@ -1692,7 +1692,7 @@ each of these on a real database:
   of a module are not in the CRM store, so `ModuleList.tsx` holds the paging
   state. It keeps the rules of the store: `appendPage`, a short page ends the
   list, and the newest request wins.
-- `RecordShell.tsx` holds the drawer, the header facts and the tab bar.
+- `RecordShell.tsx` holds the card, the header facts and the tab bar. D181 replaced the drawer with the shared frame (`one_record_card.md`).
   `RecordSheet` and `ModuleRecordSheet` both use it, so the two record pages
   have one look.
 - Fences: `tests/unit/test_crm_modules_routes_r8.py` and
@@ -8929,7 +8929,7 @@ SELECT DISTINCT ON (a.deal_id)
 
 **Non-goals.**
 
-- A docked panel in place of the drawer (§8.1). The sheet stays a `Modal` with
+- A docked panel in place of the drawer (§8.1). ⚠️ D181 reversed this on 2026-11-06: `one_record_card.md`. The sheet stays a `Modal` with
   `end`, and `sheet` on a phone.
 - The Tasks tab of §8.1. This slice ships a Fields tab in its place. The Tasks
   tab comes with CRM-S1 and CRM-X5, when tasks live in `pm_tasks`.
@@ -12088,6 +12088,7 @@ fence file is needed (`engineering_practice.md` §7a).
 - "Sync now" and the last sync show once, in Connection.
 - Until the setup is done, Connection opens first and shows three steps with a done mark on each: Connect Zoho, Review what the AI found, Choose who can open the CRM. After that, an admin lands on "Needs your input" when it holds an item, else on Pipeline.
 - `lib/settingsSections.ts` keeps each old id as an alias of its new section (`crmC1.test.ts` fences the ids).
+- **Change history** is a sixth section (CRM-M1, `crm_conversational.md` §8). It is for an admin, in both modes, last in the rail. U13 keeps it as a section of its own.
 
 #### Needs your input (D134.2)
 

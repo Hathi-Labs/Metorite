@@ -15,6 +15,40 @@ import { fieldGrid, parseFields } from "./blocks";
 /** One row of a source. The block reads the keys it needs. */
 export type Row = Record<string, unknown>;
 
+/**
+ * What a list answer says about the records it left out. The door attaches it to the
+ * rows it returns, as a hidden property, so `read` keeps its `Row[]` result and the one
+ * cache. A block reads it with `moreLine`.
+ */
+export interface RowsMeta {
+  /** The count of all matching records, when the store gives it. */
+  total?: number;
+  /** The store counted this far and stopped. */
+  atLeast?: number;
+}
+const META = Symbol.for("studio.rowsMeta");
+
+/** Attach the paging facts of an answer to its rows. Returns the same array. */
+export function withMeta(rows: Row[], meta: RowsMeta): Row[] {
+  if (meta.total === undefined && meta.atLeast === undefined) return rows;
+  Object.defineProperty(rows, META, { value: meta, enumerable: false, configurable: true });
+  return rows;
+}
+
+/** The one line that says some records are not loaded, or null when the rows are all of them. */
+export function moreLine(rows: readonly unknown[] | null | undefined): string | null {
+  const meta = (rows as unknown as Record<symbol, RowsMeta | undefined> | null | undefined)?.[META];
+  if (!rows || !meta) return null;
+  const shown = rows.length;
+  if (typeof meta.total === "number" && meta.total > shown) {
+    return `Showing the first ${shown} of ${meta.total} records.`;
+  }
+  if (typeof meta.atLeast === "number" && meta.atLeast > shown) {
+    return `Showing the first ${shown} of at least ${meta.atLeast} records.`;
+  }
+  return null;
+}
+
 /** What a page reads: a named action and its arguments. */
 export interface StudioSource {
   action: string;
@@ -145,6 +179,15 @@ export function pressAction(
   // This path is for chat: the card reaches the member as a sentence.
   if (door) return;
   onAction?.(action.sentence);
+}
+
+/**
+ * Can the member try the read again? The door words a wait or a network fault with
+ * "Try again", and nothing else can change by a retry (a 404, a 403, a sign-in). A
+ * generic fault with no sentence can be tried again.
+ */
+export function canRetryRead(error: string | null | undefined): boolean {
+  return !error || /try again/i.test(error);
 }
 
 /** What a bound block draws. */

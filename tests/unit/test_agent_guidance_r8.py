@@ -31,6 +31,7 @@ Mutations (R7), each turns the named test red. ``G`` is
 * G9. ``G`` ``save_guidance``: drop the ``pg_advisory_xact_lock`` statement. ``test_concurrent_saves_get_distinct_versions`` (each round).
 * G10. ``G`` ``guidance_refs``: read the chain of every id, not only the visible ones. ``test_the_refs_of_a_hidden_project_read_as_an_unknown_id``.
 * G11. ``G`` ``blocks_for_project``: keep ``project_id`` in the source of a hidden block. ``test_a_member_who_cannot_see_the_space_gets_its_body_and_a_hidden_name``.
+* G12 (ALN-5a). ``G`` ``_LATEST_SQL``, the history read or the version read of the save: drop ``kind = 'guidance'``. ``test_a_guidance_read_is_byte_identical_with_rule_rows``.
 """
 
 from __future__ import annotations
@@ -463,6 +464,54 @@ async def test_a_saved_version_cannot_change(world) -> None:
     with pytest.raises(DBAPIError, match="cannot change"), w.p.admin_engine.begin() as c:
         c.execute(text("UPDATE pm_agent_guidance SET body = 'x' WHERE project_id = :p"),
                   {"p": w.p1})
+
+
+def _rule_rows(w: Any) -> None:
+    """Rule rows of ALN-5a (``kind = 'rule'``) at each scope of the chain, with
+    versions above each guidance version. A guidance read that let a rule row
+    in would show the rule body, or take its version as the newest."""
+    sql = ("INSERT INTO pm_agent_guidance (organization_id, project_id, kind, rule_key, "
+           "version, body, written_by, level, state, proposed_by) VALUES (:o, CAST(:p AS uuid), "
+           "'rule', :k, :v, :b, 'lead-s@guidance.test', 'hard', 'active', "
+           "'lead-s@guidance.test')")
+    with w.p.admin_engine.begin() as c:
+        for project in (w.p1, w.p2, w.space, None):
+            key = str(uuid.uuid4())
+            for version in (7, 8, 9):
+                c.execute(text(sql), {"o": w.a, "p": project, "k": key, "v": version,
+                                      "b": f"RULE ROW {project} {version}"})
+
+
+@_DB_GATE
+async def test_a_guidance_read_is_byte_identical_with_rule_rows(world) -> None:
+    """WS-ALN ALN-5a, R8 case 9. Rules live on the same table
+    (``project_alignment.md`` §4.2), and each guidance statement names
+    ``kind = 'guidance'``. So the blocks of a task, the history, the refs and
+    the next version of a save do not change when rule rows exist."""
+    w = world
+    _reset(w)
+    reads = [
+        f"/agent-guidance/tasks/{w.task_p2}",
+        f"/agent-guidance/tasks/{w.task_p1}",
+        f"/agent-guidance/tasks/{w.task_space}",
+        f"/agent-guidance/history?project_id={w.p1}",
+        f"/agent-guidance/history?project_id={w.p2}",
+        "/agent-guidance/history",
+        f"/agent-guidance/refs?project_ids={w.p1},{w.p2},{w.space}",
+    ]
+    async with _session(w.p) as call:
+        await _save(call, w.admin_u, None, "ORG RULE")
+        await _save(call, w.lead_s_u, w.space, "SPACE RULE")
+        await _save(call, w.lead_s_u, w.p1, "P1 RULE")
+        before = [(await call(w.member_u, "GET", path)).content for path in reads]
+        _rule_rows(w)
+        after = [(await call(w.member_u, "GET", path)).content for path in reads]
+        saved = await _save(call, w.lead_s_u, w.p1, "P1 RULE 2")
+        org_saved = await _save(call, w.admin_u, None, "ORG RULE 2")
+    assert before == after
+    assert b"RULE ROW" not in b"".join(after)
+    assert saved.status_code == 201 and saved.json()["version"] == 2
+    assert org_saved.status_code == 201 and org_saved.json()["version"] == 2
 
 
 @_DB_GATE

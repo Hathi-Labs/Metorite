@@ -108,6 +108,8 @@ _SHELL_SPECIAL = frozenset(" $`\\'\";&|<>()")
 PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # Database, cache and graph.
     "DATABASE_URL", "REDIS_URL", "CC_DSN", "APP_DB", "DBS",
+    # What `tenant_session` does with an aborted transaction (H-249).
+    "TENANT_SESSION_ABORT_MODE",
     # Sign-in and access. EXECUTIVE_EMAILS grants the EXECUTIVE role, and
     # ALLOWED_EMAIL_DOMAIN decides who may sign in at all.
     "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
@@ -169,6 +171,13 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
     # that a card shows. It moves a guard, so only the operator writes it.
     "HELD_CARD_WRITES_ORGS",
+    # one_assistant_context.md §9 WT-1: the orgs where a member may continue
+    # a held chat in a fresh chat. It opens a way around a hold, so only the
+    # owner writes it (work_plan.md §6 D4).
+    "CHAT_CONTINUE_ORGS",
+    # §18.10: the orgs whose chat shows a new mail on the card that the member
+    # edits. It changes the card of a send, so only the operator writes it.
+    "EMAIL_EDIT_CARD_ORGS",
     # WS-63 PZ-33: the orgs that get a summary of each private chat. The job
     # spends the org's AI credits with no request of the member, so only the
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
@@ -206,6 +215,22 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # project for an org. A pin changes what a finding quotes, so only the
     # owner writes it.
     "AUTHORITY_PINS_ORGS",
+    # WS-ALN ALN-5a: PROJECT_RULES_ORGS opens the rules of a project for an
+    # org. A rule reaches each agent and each check of the project, so a
+    # tenant must not open it for another org.
+    "PROJECT_RULES_ORGS",
+    # WS-MCP MCP-P1b-1: APP_REQUESTS_ORGS opens the approval store of the app
+    # door for an org. A request waits for a member and can then run, so only
+    # the owner writes it.
+    "APP_REQUESTS_ORGS",
+    # WS-55 EA-18a: AGENT_QUESTIONS_ORGS narrows who may answer an agent's
+    # question and opens the list of the questions, so only the owner writes
+    # it.
+    "AGENT_QUESTIONS_ORGS",
+    # WS-AP AP-1a: WAITING_ORGS opens the list of what waits on a member for
+    # an org. The list reads held writes, chat questions, app requests and
+    # decisions, so only the owner writes it.
+    "WAITING_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
@@ -239,6 +264,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
     # Only its tests set it. A tenant that set it would break each verb.
     "DATA_ENGINE_FAULT",
+    # WS-BUD BUD-1: the capture rig of e2e/buddy-hello.spec.ts. Only a local
+    # capture run sets them. They choose the look and the size of a capture.
+    "HELLO_ACCENT", "HELLO_DENSITY", "HELLO_HEIGHT", "HELLO_NAME",
+    "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
     # Deploy, backup and watchdog scripts (variables they read).
@@ -250,6 +279,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # Do not name that key in this file: only the proof module and the
     # settings may name it (test_studio_direct_proof.py).
     "DIRECT_KEY",
+    # STU-D2b-1: scripts/dev_seed_studio.py reads the gateway token of a local
+    # dev_up.sh stack. It never runs on a box.
+    "DEV_UP_GATEWAY_TOKEN",
     # WS-49 BH-6: the scripts of the root copy (root_lib_files.txt) are in
     # the scan now. These are their own variables and the BH-6 deploy steps.
     "ACK", "DROPIN", "EXPIRES", "EXPIRY_WHY", "HEALTH_TRIES", "NAME",
@@ -335,7 +367,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # page reader, and WEB_READER_REMOTE=jina sends each URL of those orgs to
     # a third party. A tenant that set either would change it for every org
     # on the box, so only the owner writes them.
-    "WEB_RESEARCH_", "WEB_READER_",
+    # WEB-4: SEARXNG_URL names the search host of every org on the box.
+    # WEB-6: WEB_WORKER_TOKEN is the bearer of the web worker. A tenant that
+    # set it could send a render job for any org.
+    "WEB_RESEARCH_", "WEB_READER_", "SEARXNG_", "WEB_WORKER_",
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",
@@ -360,6 +395,12 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "DUE_PUSH_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
+    # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
+    # tenant that set it could open them for every org on the box.
+    "GUIDE_",
+    # WS-PKG PKG-5b: PACKAGE_HOST_ORGS opens the resolved shell manifest for
+    # an org, so a tenant that set it could open it for every org.
+    "PACKAGE_HOST_",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

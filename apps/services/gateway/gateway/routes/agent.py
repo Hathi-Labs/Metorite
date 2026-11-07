@@ -244,6 +244,21 @@ async def _route_incoming_turn(
     )
 
 
+async def _keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> None:
+    """Hand a steer's ``card_draft`` to the email module (§18.11 step 2).
+
+    The tenant and the member are the session's (*user*), never the body's.
+    ``keep_card_draft`` checks the snapshot against the card's own record, and
+    the flag (``EMAIL_EDIT_CARD_ORGS``). A fault keeps nothing and never stops
+    the steer."""
+    try:
+        from gateway.routes.email.automation.redraft import keep_card_draft
+
+        await keep_card_draft(user, thread_id, raw)
+    except Exception as exc:  # a snapshot never stops a steer
+        _log.warning("agent.card_draft_failed", error=type(exc).__name__)
+
+
 def _followup_refused(thread_id: str, reason: str) -> Response:
     """The 202 of a steer follow-up that starts no run. The chat drops its
     placeholder on it, as it does for a steer."""
@@ -2879,6 +2894,11 @@ async def run_agent_stream_endpoint(
     # The display of a card answer that went as a new message. It is for the
     # saved turn only, and never reaches the executor.
     _card_answer = req.payload.pop("card_answer", None)
+    # §18.11: the member's own version of an open new-mail card, sent with a
+    # message during the run. Popped HERE, so it never reaches the executor.
+    # Only a STEER keeps it (`_keep_card_draft` below), and the email module
+    # checks it against the card's own record.
+    _card_draft = req.payload.pop("card_draft", None)
     # WS-67 OA-7d: the app slug of the dock, a hint for the tool packs. Popped
     # so the payload never carries it on. Cleaned against the packs that name
     # an app, bound for the run below, and never read for a tenant or a member.
@@ -3063,6 +3083,12 @@ async def run_agent_stream_endpoint(
     # a paste send none, so they never get that card (PZ-32 repair 1).
     _sent_text = (_sent_words
                   if _card_answer is None and not _resume and not _followup else "")
+    # §18.11 step 2: a steer of the web chat keeps the member's version of an
+    # open new-mail card BEFORE the steer goes out, so the tool that the
+    # steer wakes finds it. This door is the web chat's: no WhatsApp turn
+    # reaches it. Any other route drops it.
+    if _card_draft is not None and _decision.route.name == "STEER":
+        await _keep_card_draft(user, req.thread_id or "", _card_draft)
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -5302,6 +5328,21 @@ def verify_webhook_signature(source: str, body: bytes, presented: str | None) ->
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
 
 
+def _webhook_run_payload(
+    source: str, event_type: str, payload: dict[str, Any],
+) -> dict[str, Any]:
+    """The run payload of a signed webhook. A webhook run has no member. H-165.
+
+    🔴 The HMAC proves the sender holds the shared secret. It does not prove
+    a person. The executor binds the run's member from ``user_email`` or
+    ``user_id``, so the sender's claim of one would name the member without
+    proof. This function removes both keys. The trust level of a webhook run
+    is memberless (H-152). Fence: ``tests/unit/test_webhook_run_memberless.py``.
+    """
+    clean = {k: v for k, v in payload.items() if k not in _IDENTITY_CLAIMS}
+    return {**clean, "source": source, "event_type": event_type}
+
+
 @router.post("/webhook/{source}", status_code=status.HTTP_202_ACCEPTED)
 async def receive_webhook(
     source: str,
@@ -5391,7 +5432,7 @@ async def receive_webhook(
         try:
             await run_agent(
                 agent_name,
-                {"source": source, "event_type": event.event_type, **event.payload},
+                _webhook_run_payload(source, event.event_type, event.payload),
                 run_id=run_id,
             )
         except Exception as exc:  # noqa: BLE001

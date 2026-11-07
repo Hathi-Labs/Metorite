@@ -351,6 +351,8 @@ are when they scroll.
 | **Ready for you** | Work that something prepared: a draft, a plan proposal, a report run, a free slot for an overdue task | Open |
 | **For your information** | Facts with no act due: a report moved, a deal changed stage | Open, at most 10, then "Show more" |
 | **Later** | Cards in the state `later` (§6.5) | Folded |
+
+**The waits in "Needs you"** *(2026-11-06, task 1855)*. `specs/waiting_on_me.md` owns every agent question, approval and person ask that waits on a member, and the page "Waiting". "Needs you" shows its top 5 and links to that page (AP-3). This spec adds nothing about waits.
 | **Handled** | What the apps record as closed today (§6.7) | Folded. Its count feeds the summary line |
 
 Then the feed ends with "You are caught up". The feed never fills itself with
@@ -1020,8 +1022,8 @@ does (`digest.py:238`). Each one raises on an error.
   `_digest_commitments` moves into a core that raises, with
   `commitment=True`. `_digest_commitments` keeps its best-effort wrapper for
   the digest.
-- The mailboxes come from `feed_mailboxes` (`accounts.py:361`), which reads
-  only the mailboxes of the member. The provider skips a mailbox with
+- The mailboxes come from `feed_mailboxes` (`transport/accounts.py`), which reads
+  only the mailboxes of the member in the bound tenant. The provider skips a mailbox with
   `in_all_inboxes` false. Each mailbox gets `MAILBOX_TIMEOUT_S`. A failed
   mailbox costs only its own rows, as in `_email`.
 
@@ -2996,6 +2998,7 @@ time), `PUT /shell/feed/prefs`, and `test_my_day_prefs.py` (§13.3).
   - `mutes`: a list of kinds, 20 at most.
   - `open_in_app`: a list of kinds, for §11.2 rule 4.
   - `corrections`: 10 lines at most, 300 characters each, 1,500 in all.
+  - `rule_mutes` (BR-5, `core_brief.md` §6): a list of exception rule ids. Reach reads it. The feed does not.
 
   Any other key gets 422.
 - **The body.** `{key, value}`. The server merges one key with `jsonb_set`,
@@ -3356,7 +3359,10 @@ it. These are the parts:
 - `feed_mailboxes` names no tenant. RLS holds for `acb_app`, the role of
   production, so this is defence in depth (R5). Read past RLS, the list would
   hold the member's mailbox of another organization too. The wrappers refuse
-  it with a 404, and the provider skips it. HANDOFF H-334 holds the rest.
+  it with a 404, and the provider skips it.
+  **Closed 2026-11-05, H-334b (task 1692):** `feed_mailboxes` names the
+  bound tenant now. `tests/unit/test_email_mailbox_list_tenant_r8.py` is
+  the fence.
 
 **Fix round 1, 2026-10-16.** The review found that a fold moved the state
 fingerprint. A `promise_due` folded under a notification card added

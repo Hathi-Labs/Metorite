@@ -124,7 +124,8 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
     w = SimpleNamespace(
         packages={}, versions=[], objects={}, org=None, log=[], sessions=0, audits=[],
         sync_calls=[], sync_error=None, catalog_fail=False, catalog_ids=["x"],
-        publish_catalogs=[], version_reads=[], clock=datetime(2026, 11, 3, tzinfo=UTC))
+        publish_catalogs=[], version_reads=[], expected=[],
+        clock=datetime(2026, 11, 3, tzinfo=UTC))
 
     def tick() -> datetime:
         w.clock += timedelta(seconds=1)
@@ -166,11 +167,12 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
             "live_version": None, "created": now, "updated": now}
         return _package(w.packages[pid])
 
-    async def update_manifest(db, member, pid, manifest):
+    async def update_manifest(db, member, pid, manifest, *, expected_hash=None):
         row = db.mine(member, pid)
         store.check_manifest(manifest)
         if row is None:
             return None
+        store._expect(row["manifest"], expected_hash)  # the real compare of the store
         if row["manifest"]["id"] != manifest["id"]:
             raise store.PackageStoreError(store.ID_FIXED, [
                 store.ManifestError(path="$.id", message=store.ID_FIXED)])
@@ -178,13 +180,15 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
         row["updated"] = tick()
         return _package(row)
 
-    async def publish_version(db, member, pid, notes, *, catalog):
+    async def publish_version(db, member, pid, notes, *, catalog, expected_hash=None):
         w.log.append("publish")
         w.publish_catalogs.append(dict(catalog))
+        w.expected.append(expected_hash)
         row = db.mine(member, pid)
         if row is None:
             return None
         note = store._notes(notes)
+        store._expect(row["manifest"], expected_hash)
         encoded = store._check_publishable(row["manifest"], catalog)
         number = 1 + max((v["version"] for v in w.versions if v["app"] == pid), default=0)
         entry = {"app": pid, "version": number, "manifest": copy.deepcopy(row["manifest"]),
@@ -251,7 +255,7 @@ def _client(world: Any, org: str | None = ORG, email: str = ANA) -> TestClient:
     def _user() -> UserContext:
         world.org = org
         return UserContext(email=email, role=UserRole.EMPLOYEE,
-                           access=build_access(["feature:workflows"]), organization_id=org)
+                           access=build_access(["feature:studio"]), organization_id=org)
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app)
@@ -818,10 +822,11 @@ def _handlers(tree: ast.Module) -> list[ast.AsyncFunctionDef]:
     return out
 
 
-def test_there_are_six_handlers():
+def test_there_are_eight_handlers():
+    """A5 holds six, and A5c-1 adds the delete preview and the delete."""
     names = sorted(h.name for h in _handlers(_tree()))
-    assert names == ["create_package", "get_package", "list_packages", "list_versions",
-                     "publish", "save_draft"]
+    assert names == ["create_package", "delete_package", "delete_preview", "get_package",
+                     "list_packages", "list_versions", "publish", "save_draft"]
 
 
 def test_each_handler_checks_the_switch_first():
@@ -974,3 +979,73 @@ def test_the_r8_suite_is_named_in_the_ci_skip_guard():
     assert block, "the --must-run argument list is missing"
     assert re.search(r"^[ \t]+tests/unit/test_studio_package_routes_r8\.py(?: \\)?$",
                      block.group(1), re.M)
+
+
+# ── The expected hash of a draft (G1c review round 1, P1) ─────────────────
+
+
+def _h(manifest: dict[str, Any]) -> str:
+    from acb_common.studio_manifest import manifest_hash
+
+    return manifest_hash(manifest)
+
+
+def _two_fields() -> dict[str, Any]:
+    return _manifest(objects=[{"name": "visit", "fields": [*_FIELDS, {"key": "n", "type": "text"}]}])
+
+
+def test_a_publish_passes_its_based_on_to_the_store(world):
+    """Mutation: drop ``expected_hash`` from the call of ``publish_version`` -> red."""
+    c = _client(world)
+    pid = _create(c)
+    r = c.post(f"/studio/packages/{pid}/versions", json={"based_on": _h(_manifest()).upper()})
+    assert r.status_code == 201, r.text
+    assert world.expected == [_h(_manifest())]
+    assert c.post(f"/studio/packages/{pid}/versions", json={}).status_code == 201
+    assert world.expected[-1] is None
+
+
+def test_a_publish_with_a_stale_based_on_is_409_draft_changed_and_writes_nothing(world):
+    c = _client(world)
+    pid = _create(c)
+    assert c.put(f"/studio/packages/{pid}/draft", json=_two_fields()).status_code == 200
+    r = c.post(f"/studio/packages/{pid}/versions", json={"based_on": _h(_manifest())})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"code": packages.DRAFT_CHANGED,
+                                  "message": store.DRAFT_CHANGED_TEXT}
+    assert world.versions == [] and world.sync_calls == [] and world.audits[1:] == []
+
+
+def test_a_draft_save_with_a_stale_based_on_is_409_and_keeps_the_draft(world):
+    """Mutation: drop ``expected_hash`` from the call of ``update_manifest`` -> red."""
+    c = _client(world)
+    pid = _create(c)
+    first = _h(_manifest())
+    assert c.put(f"/studio/packages/{pid}/draft?based_on={first}",
+                 json=_two_fields()).status_code == 200
+    r = c.put(f"/studio/packages/{pid}/draft?based_on={first}", json=_manifest())
+    assert r.status_code == 409 and r.json()["detail"]["code"] == packages.DRAFT_CHANGED, r.text
+    assert world.packages[pid]["manifest"] == _two_fields()
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "g" * 64, "a" * 65])
+def test_a_based_on_that_is_not_a_hash_is_422_on_both_routes(world, bad):
+    c = _client(world)
+    pid = _create(c)
+    put = c.put(f"/studio/packages/{pid}/draft", params={"based_on": bad}, json=_two_fields())
+    pub = c.post(f"/studio/packages/{pid}/versions", json={"based_on": bad})
+    assert put.status_code == 422 and pub.status_code == 422, (put.text, pub.text)
+    # The draft save takes it as a query parameter, and the publish in its body.
+    assert put.json()["detail"]["errors"] == [{"path": "?based_on", "message": packages.BAD_HASH}]
+    assert pub.json()["detail"]["errors"] == [{"path": "$.based_on", "message": packages.BAD_HASH}]
+    assert world.versions == [] and world.packages[pid]["manifest"] == _manifest()
+
+
+def test_the_store_compares_the_hash_under_its_row_lock() -> None:
+    """The compare comes after the locked read in both writers, so no write
+    lands between the compare and the write."""
+    import inspect
+
+    for fn in (store.publish_version, store.update_manifest):
+        src = inspect.getsource(fn)
+        assert src.index("for_update=True") < src.index("_expect(current.manifest, expected_hash)")

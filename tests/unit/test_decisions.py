@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import re
 import uuid
 from datetime import timedelta
@@ -74,6 +75,7 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 _REPO = Path(__file__).resolve().parents[2]
 _MIGRATIONS = _REPO / "infra" / "postgres"
 _SERVICE = _REPO / "apps/services/gateway/gateway/routes/projects/decisions.py"
+_WAITING = _REPO / "apps/services/gateway/gateway/routes/shell/waiting.py"
 
 #: Every bound on a wait. Broken code goes red and never hangs.
 _WAIT = 60
@@ -191,11 +193,14 @@ def test_the_table_keeps_no_score_for_any_person() -> None:
     }, columns
     for index in re.findall(r"CREATE\s+(?:UNIQUE\s+)?INDEX[^;]*;", sql, re.IGNORECASE):
         assert not re.search(r"decider|answered_by|asked_by", index), index
-    code = re.sub(r"#.*", "", _SERVICE.read_text(encoding="utf-8"))
-    code = re.sub(r'""".*?"""', "", code, flags=re.DOTALL)
-    for forbidden in (r"group\s+by", r"count\s*\(", r"\brank\b", r"\bscore\b",
-                      r"\bsum\s*\(", r"\bavg\s*\("):
-        assert not re.search(forbidden, code, re.IGNORECASE), forbidden
+    # WS-AP V6 (waiting_on_me.md §4.4): the read seam of "Waiting" keeps no
+    # score for any person either.
+    for source in (_SERVICE, _WAITING):
+        code = re.sub(r"#.*", "", source.read_text(encoding="utf-8"))
+        code = re.sub(r'""".*?"""', "", code, flags=re.DOTALL)
+        for forbidden in (r"group\s+by", r"count\s*\(", r"\brank\b", r"\bscore\b",
+                          r"\bsum\s*\(", r"\bavg\s*\("):
+            assert not re.search(forbidden, code, re.IGNORECASE), (source.name, forbidden)
 
 
 def test_the_member_purge_keeps_decisions_as_it_keeps_every_pm_row() -> None:
@@ -428,6 +433,7 @@ def world(promoted):  # noqa: F811 — a fixture
     ns.task = _seed_task(promoted, promoted.org_a, ns.asker,
                          grants=(ns.asker, ns.d, ns.o), assignee=ns.c)
     ns.hidden = _seed_task(promoted, promoted.org_a, ns.asker, grants=(ns.asker,))
+    ns.hidden_for_d = _seed_task(promoted, promoted.org_a, ns.asker, grants=(ns.asker, ns.d))
     ns.task_b = _seed_task(promoted, promoted.org_b, ns.b, grants=(ns.b,))
     ns.u_d = _principal(ns.d, promoted.org_a)
     ns.u_o = _principal(ns.o, promoted.org_a)
@@ -748,8 +754,11 @@ class TestDecisionsOnARealDatabase:
             assert all("payload" not in d for d in listed)
             # O opens the task and is not the decider: O reads no decision of D.
             by_task = (await call(w.u_o, "GET", f"/projects/decisions?task_id={w.task}")).json()
-            assert by_task == {"decisions": []}
-            assert mine["question"] not in str(by_task) and w.d not in str(by_task)
+            assert by_task["decisions"] == []
+            # ALN-2b: O learns THAT two decisions wait and on whom, and nothing more.
+            assert {x["decider"] for x in by_task["waiting_on"]} == {w.d, w.c}
+            assert set(by_task["waiting_on"][0]) == {"decider", "expires_at"}
+            assert mine["question"] not in str(by_task) and mine["id"] not in str(by_task)
             # D reads their own decision on the task, and not the one of C.
             own = (await call(w.u_d, "GET", f"/projects/decisions?task_id={w.task}")).json()
             assert [d["id"] for d in own["decisions"]] == [mine["id"]]
@@ -760,6 +769,155 @@ class TestDecisionsOnARealDatabase:
             assert (await call(w.u_b, "GET", "/projects/decisions")).json() == {"decisions": []}
             assert (await call(w.u_b, "GET",
                                f"/projects/decisions?task_id={w.task}")).status_code == 404
+
+    # ── ALN-2b: My Day, the read of the panel, and the close on answer ───
+
+    async def test_the_my_day_provider_shows_a_decision_to_its_decider_only(
+        self, w, monkeypatch,
+    ):
+        from acb_auth import build_access
+        from acb_common import get_settings
+        from acb_common.db import bind_tenant
+        from gateway.routes.shell import needs
+
+        provider = needs.REGISTRY["decisions"]
+        assert provider.needs is False and provider.kinds == frozenset({"decision"})
+        async with _session(w.p) as (_call, _):
+            made = await _ask(w.p, w.p.org_a, w.task, w.d)
+            bind_tenant(w.p.org_a)
+            found = await provider.run(w.u_d)
+            [signal] = found.signals()
+            assert found.total == 1 and signal.kind == "decision"
+            assert signal.signal_id == f"tasks:{w.task}"
+            assert signal.href == f"/projects?task={w.task}"
+            assert [a["way"] for a in signal.acts] == ["open"]  # a link until MD-8
+            assert signal.expires_at == made["expires_at"] and found.next_edge
+            assert signal.facts["question"] == made["question"]
+            # The asker and a member who opens the task but is not the decider
+            # see no card.
+            for other in (w.u_asker, w.u_o):
+                bind_tenant(w.p.org_a)
+                none = await provider.run(other)
+                assert none.total == 0 and none.signals() == []
+            # Org B sees nothing of org A, even with the flag on for both.
+            monkeypatch.setattr(get_settings(), "decisions_orgs", "*")
+            bind_tenant(w.p.org_b)
+            assert (await provider.run(w.u_b)).total == 0
+            # The flag is the gate: off, the source reads absent.
+            monkeypatch.setattr(get_settings(), "decisions_orgs", "")
+            bind_tenant(w.p.org_a)
+            with pytest.raises(needs.SourceAbsent):
+                await provider.run(w.u_d)
+        # A member without the Projects feature never runs it.
+        bare = dataclasses.replace(_principal(w.d, w.p.org_a), access=build_access([]))
+        assert provider.held_by(bare) is False
+
+    async def test_an_answer_closes_the_card_and_the_bell_row_at_once(self, w):
+        from acb_common.db import bind_tenant
+        from gateway.routes.shell import needs
+
+        async with _session(w.p) as (call, _):
+            made = await _ask(w.p, w.p.org_a, w.task, w.d)
+            other = await _ask(w.p, w.p.org_a, w.hidden_for_d, w.d)
+            bind_tenant(w.p.org_a)
+            assert (await needs.REGISTRY["decisions"].run(w.u_d)).total == 2
+            unread = (await call(w.u_d, "GET", "/projects/notifications?unread_only=true")).json()
+            assert unread["unread"]["total"] == 2
+            done = await call(w.u_d, "POST", f"/projects/decisions/{made['id']}/answer",
+                              {"answer_key": "no"})
+            assert done.status_code == 200
+            bind_tenant(w.p.org_a)
+            found = await needs.REGISTRY["decisions"].run(w.u_d)
+            assert [s.signal_id for s in found.signals()] == [f"tasks:{w.hidden_for_d}"]
+            # Only the bell row of THAT ask was read.
+            unread = (await call(w.u_d, "GET", "/projects/notifications?unread_only=true")).json()
+            assert [r["task_id"] for r in unread["rows"]] == [w.hidden_for_d]
+        assert other["heard"] is True and made["heard"] is True
+
+    async def test_two_asks_with_one_question_close_their_bell_rows_one_at_a_time(self, w):
+        from acb_common.db import bind_tenant
+        from gateway.routes.shell import needs
+
+        async with _session(w.p) as (call, _):
+            first = await _ask(w.p, w.p.org_a, w.task, w.d, question="Ship it?")
+            second = await _ask(w.p, w.p.org_a, w.task, w.d, question="Ship it?")
+            path = "/projects/notifications?unread_only=true"
+            assert (await call(w.u_d, "GET", path)).json()["unread"]["total"] == 2
+            done = await call(w.u_d, "POST", f"/projects/decisions/{first['id']}/answer",
+                              {"answer_key": "yes"})
+            assert done.status_code == 200
+            # ONE row closed. The other ask still has its bell row and its card.
+            assert (await call(w.u_d, "GET", path)).json()["unread"]["total"] == 1
+            bind_tenant(w.p.org_a)
+            found = await needs.REGISTRY["decisions"].run(w.u_d)
+            assert found.total == 1 and found.signals()[0].facts["open"] == 1
+            done = await call(w.u_d, "POST", f"/projects/decisions/{second['id']}/answer",
+                              {"answer_key": "no"})
+            assert done.status_code == 200
+            assert (await call(w.u_d, "GET", path)).json()["unread"]["total"] == 0
+
+    async def test_the_card_names_the_asker_by_the_directory_name_of_the_panel(self, w):
+        from acb_common.db import bind_tenant
+        from gateway.routes.shell import needs
+
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE app_user SET display_name = 'Ravi Mehta' WHERE email = :e"),
+                      {"e": w.asker})
+        try:
+            async with _session(w.p) as (call, _):
+                await _ask(w.p, w.p.org_a, w.task, w.d, asked_by=w.asker)
+                listed = (await call(w.u_d, "GET", "/projects/decisions")).json()["decisions"]
+                assert listed[0]["asked_by_name"] == "Ravi Mehta"
+                bind_tenant(w.p.org_a)
+                [signal] = (await needs.REGISTRY["decisions"].run(w.u_d)).signals()
+                assert signal.facts["who"] == "Ravi Mehta"
+        finally:
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE app_user SET display_name = email WHERE email = :e"),
+                          {"e": w.asker})
+
+    async def test_an_expired_decision_leaves_my_day_and_reads_as_expired_on_the_task(self, w):
+        from acb_common.db import bind_tenant
+        from gateway.routes.shell import needs
+
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO pm_decisions (organization_id, subject_id, decider, options,"
+                " question, asked_by, created_at, expires_at) "
+                "VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :d, CAST(:opts AS jsonb),"
+                " 'Late?', 'system:align', now() - interval '2 days',"
+                " now() - interval '1 day')"),
+                {"o": w.p.org_a, "t": w.task, "d": w.d,
+                 "opts": '[{"key":"yes","label":"Yes"},{"key":"no","label":"No"}]'})
+        async with _session(w.p) as (call, _):
+            bind_tenant(w.p.org_a)
+            assert (await needs.REGISTRY["decisions"].run(w.u_d)).total == 0
+            on_task = (await call(w.u_d, "GET", f"/projects/decisions?task_id={w.task}")).json()
+            assert [d["state"] for d in on_task["decisions"]] == ["expired"]
+            # An expired decision no longer "waits" for the others.
+            seen = (await call(w.u_o, "GET", f"/projects/decisions?task_id={w.task}")).json()
+            assert seen["waiting_on"] == []
+
+    async def test_a_member_who_cannot_open_the_task_learns_nothing(self, w):
+        async with _session(w.p) as (call, _):
+            await _ask(w.p, w.p.org_a, w.task, w.d)
+            hidden = await call(w.u_x, "GET", f"/projects/decisions?task_id={w.task}")
+            absent = await call(w.u_x, "GET", f"/projects/decisions?task_id={uuid.uuid4()}")
+            assert hidden.status_code == absent.status_code == 404
+            assert hidden.json() == absent.json()
+            assert w.d not in hidden.text
+
+    async def test_the_panel_and_the_chat_tool_write_through_the_one_answer_route(self, w):
+        """The panel posts ``{answer_key, reason}`` to this route and the chat
+        tool posts the same body. Neither names the answerer."""
+        async with _session(w.p) as (call, _):
+            made = await _ask(w.p, w.p.org_a, w.task, w.d)
+            ok = await call(w.u_d, "POST", f"/projects/decisions/{made['id']}/answer",
+                            {"answer_key": "yes", "reason": "ship it"})
+            assert ok.status_code == 200 and ok.json()["decision"]["state"] == "answered"
+            # The task read now carries the answer for the decider.
+            own = (await call(w.u_d, "GET", f"/projects/decisions?task_id={w.task}")).json()
+            assert own["decisions"][0]["answer_key"] == "yes" and own["waiting_on"] == []
 
     async def test_org_isolation_holds_in_the_table_itself(self, w, app_engine):  # noqa: F811
         async with _session(w.p):

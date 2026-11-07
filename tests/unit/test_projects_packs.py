@@ -67,9 +67,12 @@ REPO = Path(__file__).resolve().parents[2]
 PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
 SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders",
-         "projects-authority")
-SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 22,
-         "projects-reminders": 9, "projects-authority": 3}
+         "projects-reports", "projects-authority")
+#: After PJP-2 (project_planning.md section 3.3): the 11 report tools left plan, the 10 inbox,
+#: area and notification tools left structure for reminders. PJP-4 added update_tasks to
+#: bulk, ALN-2a added the two decision tools to reminders, and ALN-4 added the authority pack.
+SIZES = {"projects": 23, "projects-plan": 24, "projects-structure": 24, "projects-bulk": 22,
+         "projects-reminders": 19, "projects-reports": 11, "projects-authority": 3}
 UUID = tc.UUID
 
 #: The nine tools that make ONE card for a batch, raised inside the tool body.
@@ -540,7 +543,8 @@ def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
     assert "call load_skill_tools with the pack that you need" not in rules.lower()
     for slug in SLUGS[1:]:
         assert tp.PACKS[slug].rules.count("Use them yourself.") == 1
-    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3500  # OA-8g: was 3300; MT-1228: was 3400; ALN-4: was 3450
+    # OA-8g: was 3300; MT-1228: was 3400; PJP-2 and ALN-4: was 3450
+    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3500
 
 
 # ── 7. A covered organization ───────────────────────────────────────────────
@@ -716,7 +720,7 @@ async def test_the_loader_adds_a_projects_pack_of_strict_function_tools(store) -
     with _in_run(loader):
         answer, passed = await _call(loader, "projects-plan", live)
     assert passed is False
-    assert answer.startswith("Loaded the Projects planning and reports tools (35 tools)"), answer
+    assert answer.startswith("Loaded the Projects planning tools (24 tools)"), answer
     assert "PROJECTS PLANNING TOOLS." in answer
     added = live[5:]
     assert [_name(t) for t in added] == list(_family("projects-plan"))
@@ -811,18 +815,38 @@ def test_the_core_rules_name_the_loader_while_the_owner_is_reached() -> None:
         assert tp._PROJECTS_ROUTE_LINE not in block, slug
 
 
-async def test_projects_is_not_reached_when_a_pack_cannot_fit(
-    store, agents,
-) -> None:
-    """``email`` is held, so ``projects-plan`` (35 tools) does not fit under
-    110 even with the specialist slot freed. The specialist and the hand-off
-    stay. Mutation: drop the cap from ``plan_loader`` -> the owner is reached
-    -> red."""
+async def test_projects_is_reached_while_email_is_held(store, agents) -> None:
+    """PJP-2 (project_planning.md section 3.3): ``email`` is held (base 87), and
+    the largest Projects pack is 24 tools, so 87 - 1 + 24 = 110 fits. The owner
+    is reached and the specialist leaves. Before PJP-2 plan (35 tools) did not
+    fit, and the hand-off stayed. Mutation: grow a pack past 24 tools -> the
+    owner is not reached -> red."""
     applied = await L._apply(agents, "check my inbox", allowed=PROJ | {"email"})
     assert applied is not None and applied.record.slugs == ("email",)
-    assert PA not in applied.record.via_loader
-    assert _specialist(agents[0])
-    assert tp.delegation_refusal(PA, {tp.PACKS_KEY: applied.record}) is None
+    assert PA in applied.record.via_loader
+    assert not _specialist(agents[0])
+
+
+def test_projects_is_reached_when_one_pack_fits_and_the_rest_stay_on_offer() -> None:
+    """PJP-2 (project_planning.md §3.3): the Projects owner is reached when
+    each of its packs is allowed and one of them fits. At a current count of
+    90, the 24-tool plan pack does not fit (90 - 1 + 24 = 113), but the
+    reports pack does. The plan pack stays on offer, so its load fails on the
+    cap and opens the hand-off (LOAD_NO_PATH). Mutation: require every pack
+    to fit -> the owner is not reached -> red. Mutation: offer only what fits
+    -> a load of the plan pack answers "unknown" and has no path -> red."""
+    plan = tp.plan_loader(PROJ, ("email",), current=90, removable={PA: 1})
+    assert PA in plan.via_loader
+    assert "projects-plan" in plan.offered
+
+
+def test_projects_is_not_reached_when_no_pack_fits() -> None:
+    """The cap still binds: when no Projects pack fits, the specialist stays.
+    Mutation: drop the cap from ``plan_loader`` -> the owner is reached -> red."""
+    smallest = min(tp._tool_count(s) for s in PROJ if s != "projects")
+    current = tp.MAX_REQUEST_TOOLS - smallest + 2
+    plan = tp.plan_loader(PROJ, ("email",), current=current, removable={PA: 1})
+    assert PA not in plan.via_loader
 
 
 async def test_a_refused_projects_load_opens_the_hand_off(
@@ -879,6 +903,18 @@ def _surface_turn(words: str, surface: str = "") -> tp.PackTurn:
         ORG, SESSION, tp._member_part(MEMBER), 1, (), words, True, surface=surface)
 
 
+def _reached_by_load(turn: tp.PackTurn, choice: tp.Choice, base: int) -> bool:
+    """Task 1747: the plan of the run, as ``_apply_tool_packs`` asks it. The
+    packs that a load can move out (``PackRun.spare``) count as free, so the
+    Projects owner is reached through them."""
+    run = tp.PackRun.of(turn, choice, [(slug, False) for slug in choice.slugs])
+    total = base + sum(len(_family(slug)) for slug in choice.slugs)
+    spare = {slug: len(_family(slug)) for slug in run.spare()}
+    plan = tp.plan_loader(EVERY, choice.slugs, current=total, removable={PA: 1},
+                          spare=spare)
+    return PA in plan.via_loader
+
+
 def test_there_are_compound_words_that_also_match_the_core_word() -> None:
     """Non-vacuity of the cases below: the plan, structure and bulk lists hold
     words that the core word "task" or "tasks" matches too."""
@@ -890,17 +926,23 @@ def test_there_are_compound_words_that_also_match_the_core_word() -> None:
 def test_a_compound_word_loads_its_specific_pack_at_the_measured_base(
     slug: str, word: str, orchestrator,
 ) -> None:
-    """The word also matches the core word, and the two cannot fit at the real
-    base (56). The specific pack takes the place of the core pack. Mutation:
-    drop ``replaces_core`` from the choice -> the core pack stays, the specific
-    pack is skipped, and its word loads nothing it names -> red."""
+    """The word also matches the core word. After PJP-2 the two fit at the
+    real base (56), but together they leave no room for a third Projects
+    pack. Task 1747 (D169 item 8 as amended, option A): both packs came in
+    only by the words, so a load can move either out. So both stay, and the
+    loader reaches the owner through them. Before task 1747 the core pack
+    stepped aside here. Mutation: drop the words packs from
+    ``PackRun.spare`` -> the owner is not reached -> red. Mutation: step
+    aside a named pack -> the core pack leaves -> red."""
     base = _real_base(orchestrator)
     n = len(_family("projects")) + len(_family(slug))
-    choice = tp.choose(_surface_turn(f"Show the {word}"), allowed=EVERY, base_tools=base)
-    if base + n > tp.MAX_REQUEST_TOOLS:  # plan (35) and structure (34)
-        assert choice.slugs == (slug,), (word, choice)
-    else:  # bulk (28) fits beside the core pack at the real base
-        assert slug == "projects-bulk" and choice.slugs == ("projects", slug), (word, choice)
+    turn = _surface_turn(f"Show the {word}")
+    choice = tp.choose(turn, allowed=EVERY, base_tools=base)
+    # PJP-2: every pack is 24 tools or fewer, so each fits beside the core pack at 56.
+    assert base + n <= tp.MAX_REQUEST_TOOLS, "no Projects pack is too big for the core"
+    assert choice.slugs == ("projects", slug), (word, choice)
+    assert choice.skipped == () and choice.evicted == (), (word, choice)
+    assert _reached_by_load(turn, choice, base), (word, choice)
 
 
 def test_a_capacity_question_on_the_projects_page_loads_the_planning_pack(
@@ -908,14 +950,17 @@ def test_a_capacity_question_on_the_projects_page_loads_the_planning_pack(
 ) -> None:
     """Surface ``projects`` loads the core pack. "team capacity" matches the
     planning pack. Both cannot fit at the real base, so the planning pack
-    stays. Mutation: drop ``replaces_core`` -> only the core pack loads and
-    the capacity tools are missing -> red."""
+    stays. PJP-2: both fit now. Task 1747: the surface named the core pack,
+    so it never steps aside. The planning pack came in only by the words,
+    so a load can move it out (D169 item 8 as amended), and the loader
+    reaches the owner through it. Mutation: drop the planning words -> only
+    the core pack loads and the capacity tools are missing -> red."""
     base = _real_base(orchestrator)
     for surface in ("projects", "tasks", "calendar"):
-        choice = tp.choose(
-            _surface_turn("Who has spare team capacity?", surface),
-            allowed=EVERY, base_tools=base)
-        assert choice.slugs == ("projects-plan",), (surface, choice)
+        turn = _surface_turn("Who has spare team capacity?", surface)
+        choice = tp.choose(turn, allowed=EVERY, base_tools=base)
+        assert choice.slugs == ("projects", "projects-plan"), (surface, choice)
+        assert _reached_by_load(turn, choice, base), (surface, choice)
     only = tp.choose(_surface_turn("", "projects"), allowed=EVERY, base_tools=base)
     assert only.slugs == ("projects",), "the surface alone still loads the core pack"
 
@@ -943,14 +988,18 @@ async def test_an_access_request_on_the_projects_page_keeps_the_specialist(
     store, agents,
 ) -> None:
     """"Grant Priya access to this project" on /projects loads the core pack.
-    The structure pack cannot join it (113 tools), so the specialist tool
-    stays, the persona keeps its line, and the rules route the work to
-    ``call_agent``. Mutation: drop ``_specialist_leaves`` from
-    ``PackRun.of`` -> the specialist leaves and the access work has no tool
-    and no path -> red."""
+    PJP-2: the packs fit now, but here the allow list lacks
+    ``projects-reports``, as when an admin turns the reports family off.
+    ``plan_loader`` needs EVERY pack of the owner in the list, so the owner is
+    not reached. The specialist tool stays, the persona keeps its line, and
+    the rules route the work to ``call_agent``. (Production's ``TOOL_PACKS``
+    gets the reports pack from ``projects-plan``, ``tool_packs.FOLLOWS``.)
+    Mutation: drop ``_specialist_leaves`` from ``PackRun.of`` -> the
+    specialist leaves and the access work has no tool and no path -> red."""
     persona = agents[0].default_options["instructions"]
     applied = await _apply_on(
-        agents, "Grant Priya access to this project", "projects", PROJ)
+        agents, "Grant Priya access to this project", "projects",
+        PROJ - {"projects-reports"})
     assert applied is not None and applied.record.slugs == ("projects",)
     assert applied.record.replaced == frozenset() and applied.record.via_loader == frozenset()
     assert _specialist(agents[0]), "the specialist stays"
@@ -961,6 +1010,85 @@ async def test_an_access_request_on_the_projects_page_keeps_the_specialist(
     assert "call_agent" in tp._PROJECTS_ROUTE_LINE and PA in tp._PROJECTS_ROUTE_LINE
     with L._in_run(applied):
         assert tp.delegation_refusal(PA) is None
+
+
+async def test_an_access_request_reaches_the_owner_once_the_flag_line_has_every_pack(
+    store, agents,
+) -> None:
+    """The same request with the full list (``packs_on`` adds the packs of
+    ``tool_packs.FOLLOWS`` wherever their parents are on): the core pack
+    loads, the owner is reached through the loader, and the specialist leaves.
+    Mutation: drop ``via_loader`` from the plan -> the specialist stays and the
+    model hands off -> red."""
+    applied = await _apply_on(
+        agents, "Grant Priya access to this project", "projects", PROJ)
+    assert applied is not None and applied.record.slugs == ("projects",)
+    assert applied.record.via_loader == {PA}
+    assert not _specialist(agents[0]), "the hand-off leaves"
+
+
+@pytest.mark.parametrize(("parent", "follower", "words"), [
+    ("projects-plan", "projects-reports", "Show the status report"),
+    ("projects", "projects-authority", "Show the authority page of Website Relaunch"),
+])
+async def test_a_following_pack_is_off_where_an_admin_turned_its_parent_off(
+    parent: str, follower: str, words: str, store, agents, monkeypatch,
+) -> None:
+    """PJP-2 fix round 3 (P3-1). Each pack of ``tool_packs.FOLLOWS`` follows
+    its parent. An admin turned the parent off for the orchestrator, so the
+    run loads neither pack and the loader offers neither, though the words ask
+    for the work of the following pack. Mutation: drop ``with_followers`` from
+    the admin's list in ``_apply_tool_packs`` -> the following pack loads ->
+    red."""
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _n: frozenset())
+    control = await _apply_on(agents, words, "projects", PROJ)
+    assert control is not None and follower in control.record.slugs, "non-vacuity"
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _n: frozenset({parent}))
+    fresh = L._fresh()
+    applied = await _apply_on(fresh, words, "projects", PROJ)
+    off = {parent, follower}
+    assert applied is not None and not off & set(applied.record.slugs), applied.record.slugs
+    provider = L._provider(fresh[0])
+    assert provider is None or not off & set(provider.loader.offered)
+
+
+# ── PJP-2 fence (project_planning.md section 10) ─────────────────────────────
+
+#: Production's TOOL_PACKS on 2026-11-02 (owner-only, work_plan.md section 6 D4).
+#: ``packs_on`` adds ``projects-reports`` and ``projects-authority`` to it,
+#: because the list names their parents (``tool_packs.FOLLOWS``, owner
+#: decisions of 2026-11-04).
+PRODUCTION_PACKS = frozenset({
+    "email", "email-setup", "crm-records", "projects", "projects-plan",
+    "projects-structure", "projects-bulk", "projects-reminders",
+})
+
+
+def test_each_other_projects_pack_fits_beside_the_core_pack_and_the_owner_is_reached() -> None:
+    """R7 fence of PJP-2. At the real base (56) with the core pack held (79),
+    each other Projects pack is 31 tools or fewer (79 - 1 + 31 = 109), and
+    ``plan_loader`` puts the owner in ``via_loader``. Mutation: add tools to a
+    pack until it holds 33 -> red."""
+    core = len(_family("projects"))
+    assert 56 + core == 79
+    for slug in SLUGS[1:]:
+        assert len(_family(slug)) <= 31, slug
+        assert 79 - 1 + len(_family(slug)) <= tp.MAX_REQUEST_TOOLS, slug
+    plan = tp.plan_loader(
+        tp.with_followers(PRODUCTION_PACKS), ("projects",), current=79,
+        removable={PA: 1})
+    assert PA in plan.via_loader
+
+
+def test_the_owner_is_not_reached_while_a_pack_of_it_is_off() -> None:
+    """``plan_loader`` needs EVERY pack of the owner in the allow list. An allow
+    list that lacks ``projects-reports`` and ``projects-authority`` keeps the
+    hand-off. Production's list does not lack them: ``packs_on`` adds them
+    from their parents (``test_tool_packs_registry.py``). Mutation: let
+    ``plan_loader`` skip a missing pack -> the owner is reached with a pack the
+    run cannot load -> red."""
+    plan = tp.plan_loader(PRODUCTION_PACKS, ("projects",), current=79, removable={PA: 1})
+    assert PA not in plan.via_loader
 
 
 async def test_the_specialist_leaves_when_the_run_holds_every_projects_pack() -> None:
@@ -1039,10 +1167,322 @@ def test_a_mixed_email_turn_keeps_email_and_the_core_pack_at_the_measured_base(
 def test_a_dropped_core_pack_is_recorded_in_skipped() -> None:
     """Where the drop is valid it shows in ``Choice.skipped``. Mutation: do
     not record it -> no log line shows the drop -> red."""
+    # PJP-2: at base 56 the two fit, so the drop needs a bigger base (79 + 24 > 110 at 75).
     choice = tp.choose(
         _surface_turn("Who has spare team capacity?", "projects"),
-        allowed=EVERY, base_tools=56)
+        allowed=EVERY, base_tools=75)
     assert choice.slugs == ("projects-plan",) and "projects" in choice.skipped
+
+
+# ── PJP-2 fix rounds 2 and 3: the step-aside runs after the cap ─────────────
+#
+# Fix round 2: the step-aside used to run before the cap, and it took the
+# sticky pack that the member used least recently, also when the member named
+# it in this turn. Now the cap runs first. Fix round 3: a sticky pack of any
+# owner that the words of the turn do not name leaves first, in the cap's
+# order. Then the core pack, then a named sticky pack or a new pack of the
+# owner, the last one first (project_planning.md section 3.3, rule 2).
+#
+# Since ALN-4, ``projects-authority`` holds 3 tools. Fix round 4: a pack this
+# small does not count in the reach test (``tool_packs.REACH_MIN_TOOLS``), so
+# the step-aside acts at the real base again.
+
+#: The real base (56) and the load tool (1), and the one specialist tool.
+_BASE = 57
+_SPECIALIST = {PA: 1}
+
+
+def _sticky_turn(words: str, surface: str, *entries: tp.Sticky) -> tp.PackTurn:
+    return tp.PackTurn(
+        ORG, SESSION, tp._member_part(MEMBER), 20, entries, words, True, surface=surface)
+
+
+def _owner_reached(choice: tp.Choice, base: int = _BASE,
+                   removable: dict[str, int] | None = None) -> bool:
+    total = base + sum(len(_family(slug)) for slug in choice.slugs)
+    plan = tp.plan_loader(EVERY, choice.slugs, current=total,
+                          removable=_SPECIALIST if removable is None else removable)
+    return PA in plan.via_loader
+
+
+def _case_a() -> tp.Choice:
+    return tp.choose(
+        _sticky_turn("remind me tomorrow at 9 to call Ravi", "projects",
+                     tp.Sticky("projects-reminders", (10, 0), 13),
+                     tp.Sticky("projects-plan", (11, 0), 19)),
+        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+
+
+def test_a_reminder_on_the_projects_page_keeps_the_sticky_reminders_pack() -> None:
+    """The case of the review. ``projects-reminders`` is sticky (used in turn
+    13), ``projects-plan`` is sticky (turn 19), the member is on the Projects
+    page and says "remind me". With ``HELD_CARD_WRITES_ORGS`` on for the org,
+    the cap moves the plan pack out, because the words name the reminders pack.
+    The reminders and core packs stay (99 tools), and the owner is reached.
+    Mutation: run the step-aside before the cap -> both sticky packs leave and
+    the run holds only the core pack -> red."""
+    choice = _case_a()
+    assert choice.slugs == ("projects-reminders", "projects"), choice
+    assert choice.evicted == ("projects-plan",) and choice.skipped == (), choice
+    assert _owner_reached(choice)
+
+
+def test_with_the_switch_off_the_cap_moves_the_older_reminders_pack_out(monkeypatch) -> None:
+    """Fix round 3 (P3-2). With ``HELD_CARD_WRITES_ORGS`` off for the org, the
+    cap does not read the words of the turn (RX-1), so the least recently used
+    sticky pack leaves: the reminders pack. The plan and core packs then make
+    104 tools, and no work pack fits beside them (104 - 1 + 11 > 110). With
+    the switch off no pack is spare, so the order of fix round 3 applies, and
+    the org keeps its reach (D169 item 13). Task 1747 keeps one guard: the
+    plan pack ran in the last turn (19), so it stays, and the core pack of
+    the page steps aside. Mutation: let the cap read the words with the
+    switch off -> the reminders pack stays -> red. Mutation: keep the core
+    pack with the switch off -> the owner is not reached -> red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
+    choice = _case_a()
+    assert choice.slugs == ("projects-plan",), choice
+    assert choice.evicted == ("projects-reminders",), choice
+    assert choice.skipped == ("projects",), choice
+    assert _owner_reached(choice)
+
+
+def test_a_sticky_pack_of_another_owner_leaves_before_a_projects_pack() -> None:
+    """The case of ``test_pack_room.py``: ``crm-records``, ``projects`` and
+    ``projects-plan`` are sticky (turns 5, 6 and 7), and "remind me" adds the
+    reminders pack. The cap moves ``crm-records`` out first, then the core pack.
+    The plan and reminders packs stay (99 tools), and the owner is reached.
+    Mutation: run the step-aside before the cap -> ``crm-records`` stays and
+    both newer Projects packs leave -> red."""
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 9,
+                       (tp.Sticky("crm-records", (1, 0), 5), tp.Sticky("projects", (1, 1), 6),
+                        tp.Sticky("projects-plan", (1, 2), 7)),
+                       "remind me to call Ravi at 5", True)
+    choice = tp.choose(turn, allowed=EVERY, base_tools=56)
+    assert choice.slugs == ("projects-plan", "projects-reminders"), choice
+    assert choice.evicted == ("crm-records", "projects"), choice
+    assert _owner_reached(choice, base=56, removable={})
+
+
+def test_the_step_aside_moves_the_sticky_pack_that_the_member_did_not_name() -> None:
+    """Two sticky Projects packs fit the caps (105 tools) and keep the owner
+    unreached. The member asks for a burndown, so the older plan pack is a need
+    of this turn, and the newer structure pack steps aside. Task 1747: the
+    structure pack was last used in turn 18, not in the last turn, so it can
+    step aside. Used in turn 19, it stays (``test_pack_turn_keeps_used_packs``).
+    Mutation: let a named sticky pack leave by age alone -> the plan pack
+    leaves -> red."""
+    choice = tp.choose(
+        _sticky_turn("show the burndown", "",
+                     tp.Sticky("projects-plan", (10, 0), 13),
+                     tp.Sticky("projects-structure", (11, 0), 18)),
+        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert choice.slugs == ("projects-plan",), choice
+    assert choice.evicted == ("projects-structure",), choice
+    assert _owner_reached(choice)
+    turn = _sticky_turn("show the burndown", "",
+                        tp.Sticky("projects-plan", (10, 0), 13),
+                        tp.Sticky("projects-structure", (11, 0), 19))
+    fresh = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert fresh.slugs == ("projects-plan", "projects-structure"), fresh
+    assert fresh.evicted == (), fresh
+    assert _reached_by_load(turn, fresh, _BASE), "a load can move the structure pack out"
+
+
+def test_a_sticky_pack_of_another_owner_does_not_keep_the_core_pack_on_the_page() -> None:
+    """``email`` is sticky, the member is on the Projects page, and asks who is
+    overloaded. The cap moves ``email`` out. Task 1747: the surface named the
+    core pack, so it stays. The plan pack came in only by the words, so a load
+    can move it out (D169 item 8 as amended), and the loader reaches the owner
+    through it. Before task 1747 the core pack stepped aside here. Mutation:
+    run the step-aside before the cap -> red. Mutation: drop the words packs
+    from ``PackRun.spare`` -> the owner is not reached -> red."""
+    turn = _sticky_turn("who is overloaded", "projects", tp.Sticky("email", (10, 0), 19))
+    choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert choice.slugs == ("projects", "projects-plan"), choice
+    assert choice.evicted == ("email",) and choice.skipped == (), choice
+    assert _reached_by_load(turn, choice, _BASE)
+
+
+@pytest.mark.parametrize("words", [
+    "archive tasks that are done",
+    # Fix round 4 (P3): the new bulk words name the pack in these too.
+    "archive the rest of the done tasks",
+    "now archive the done ones",
+])
+def test_a_sticky_pack_that_the_words_name_again_outlasts_the_core_pack(words: str) -> None:
+    """Fix round 3 (P1-1). ``projects-bulk`` is sticky from the last turn, and
+    the member says "archive tasks that are done" on the Projects page. The
+    words name the bulk pack again, so where a pack must step aside, the core
+    pack goes and the bulk pack stays. A repeat turn pays no load step.
+    At the real base the bulk and core packs make 102 tools, and no other work
+    pack fits beside them, so one steps aside. Task 1747: neither pack is
+    spare (the bulk pack is sticky and named, the core pack came by the
+    surface), so the order of fix round 3 applies. Mutation: let every sticky
+    pack go before the core pack (fix round 2) -> the bulk pack leaves -> red.
+    Mutation: keep each named pack with no spare pack -> the owner is not
+    reached -> red."""
+    choice = tp.choose(
+        _sticky_turn(words, "projects", tp.Sticky("projects-bulk", (19, 0), 19)),
+        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert tp.matched_layer("projects-bulk", words) == "words"
+    assert choice.slugs == ("projects-bulk",), choice
+    assert choice.skipped == ("projects",) and choice.evicted == (), choice
+    assert _owner_reached(choice)
+
+
+@pytest.mark.parametrize(("base", "by"), [
+    # Base 56 and base 57: since CRM-M1, crm-records holds 10 tools, so the cap
+    # moves it out at both bases (111 and 112 tools).
+    (56, "the cap at 111"),
+    (_BASE, "the cap at 112"),
+])
+def test_an_unnamed_sticky_pack_of_another_owner_leaves_before_the_projects_packs(
+    base: int, by: str,
+) -> None:
+    """Fix round 3 (P2-1). ``crm-records`` (turn 18) and ``projects-bulk`` (turn
+    19) are sticky, and the member says "archive tasks that are done" on the
+    Projects page. ``crm-records``, which the words do not name, leaves first.
+    Then the bulk and core packs make 101 or 102 tools, and no other work pack
+    fits beside them. Neither pack is spare, so the order of fix round 3
+    applies: the core pack steps aside (task 1747). The bulk pack, which the
+    words name and the last turn used, stays. Mutation: let only Projects
+    packs step aside -> red. Mutation: keep each named pack with no spare pack
+    -> the owner is not reached -> red."""
+    choice = tp.choose(
+        _sticky_turn("archive tasks that are done", "projects",
+                     tp.Sticky("crm-records", (18, 0), 18),
+                     tp.Sticky("projects-bulk", (19, 1), 19)),
+        allowed=EVERY, base_tools=base, specialists=_SPECIALIST)
+    assert choice.slugs == ("projects-bulk",), (by, choice)
+    assert choice.evicted == ("crm-records",), (by, choice)
+    assert choice.skipped == ("projects",), (by, choice)
+    assert _owner_reached(choice, base=base)
+
+
+def _switch_off(monkeypatch) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
+
+
+@pytest.mark.parametrize(("words", "surface", "entries"), [
+    ("Who has spare team capacity?", "projects", ()),
+    ("show the burndown", "projects", ()),
+    ("show the task dependencies", "", ()),
+    ("create a task for Ravi to call Acme", "projects",
+     (tp.Sticky("projects-plan", (1, 0), 19),)),
+    ("now tidy them up", "projects",
+     (tp.Sticky("projects", (18, 0), 18), tp.Sticky("projects-plan", (18, 1), 18))),
+], ids=["capacity", "burndown", "dependencies", "a-task-plan-sticky", "tidy"])
+def test_with_the_switch_off_the_owner_is_reached_as_before(
+    words: str, surface: str, entries: tuple[tp.Sticky, ...], monkeypatch,
+) -> None:
+    """Task 1747, fix round 2. An org that ``HELD_CARD_WRITES_ORGS`` does not
+    name has no spare pack. It keeps the reach that it had before task 1747
+    (D169 item 13): the order of fix round 3 applies, so one pack steps aside.
+    The file turns the switch on for every other case. Mutation: keep each
+    named pack with no spare pack -> the owner is not reached -> red."""
+    _switch_off(monkeypatch)
+    turn = _sticky_turn(words, surface, *entries)
+    choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert len(choice.slugs) == 1, choice
+    assert tp.PackRun.of(turn, choice, [(s, False) for s in choice.slugs]).spare() == ()
+    assert _owner_reached(choice), choice
+
+
+def test_with_the_switch_off_a_pack_that_the_last_turn_used_stays(monkeypatch) -> None:
+    """Task 1747, fix round 2: the one guard that stays with the switch off. Both
+    packs ran in the last turn (19), so neither steps aside, and the owner
+    stays unreached. With the switch on, a spare pack reaches it. Mutation:
+    drop ``fresh`` from ``_main_order_victim`` -> a pack leaves -> red."""
+    entries = (tp.Sticky("projects", (19, 0), 19), tp.Sticky("projects-plan", (19, 1), 19))
+    turn = _sticky_turn("now tidy them up", "projects", *entries)
+    _switch_off(monkeypatch)
+    off = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert off.slugs == ("projects", "projects-plan") and off.evicted == (), off
+    assert not _owner_reached(off)
+    plan = tp.choose(_sticky_turn("show the burndown", "",
+                                  tp.Sticky("projects-structure", (19, 0), 19)),
+                     allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert "projects-structure" in plan.slugs, "a fresh pack stays beside a new one"
+
+
+def test_a_pack_too_small_for_work_does_not_reach_the_owner() -> None:
+    """Fix round 4 (P2). The core and plan packs are held (57 + 47 = 104
+    tools). Only the 3 tools of ``projects-authority`` fit beside them, and a
+    pack this small cannot carry a work request, so the owner is not reached.
+    The step-aside then splits the two (see the next case). With a work pack
+    that fits, the owner is reached as before. Mutation: drop the
+    ``REACH_MIN_TOOLS`` filter from ``plan_loader`` -> the owner is reached
+    while no work pack fits, and a bulk load refuses with LOAD_NO_PATH -> red."""
+    assert len(_family("projects-authority")) < tp.REACH_MIN_TOOLS
+    work = min(len(_family(slug)) for slug in SLUGS if slug != "projects-authority")
+    assert work >= tp.REACH_MIN_TOOLS
+    held = ("projects", "projects-plan")
+    current = _BASE + sum(len(_family(slug)) for slug in held)
+    plan = tp.plan_loader(EVERY, held, current=current, removable=_SPECIALIST)
+    assert PA not in plan.via_loader, plan
+    one = tp.plan_loader(EVERY, ("projects",), current=_BASE + 23, removable=_SPECIALIST)
+    assert PA in one.via_loader, one
+
+
+@pytest.mark.parametrize("surface", ["projects", ""])
+@pytest.mark.parametrize("words", [
+    # Fix round 4 (P3): the new bulk words name the pack.
+    "now archive the done ones",
+    # No word of the bulk pack: the model loads it.
+    "now tidy them up",
+])
+def test_plan_the_sprint_then_archive_the_done_ones_keeps_the_chat_in_place(
+    surface: str, words: str,
+) -> None:
+    """The trace of the review. Turn 19, "plan the sprint", held the core pack
+    and the model loaded the plan pack, so both are sticky. In turn 20 the two
+    would make 104 tools, and the bulk pack (22) would not fit beside them.
+    Before fix round 4 the authority pack (3) still "fitted", so the owner was
+    reached, the bulk load refused with LOAD_NO_PATH, and the chat handed off
+    one round later.
+
+    Task 1747: both packs were used in the last turn, so neither steps aside.
+    The owner is reached through the packs that a load can move out
+    (``PackRun.spare``). Bulk is held at the start, or it fits a load. Without
+    the reach, the specialist and the route line stay: the fault of
+    2026-11-02. Mutation: read the reach with no spare pack -> red. Mutation:
+    drop ``REACH_MIN_TOOLS`` -> the owner is reached with no spare pack -> the
+    non-vacuity assert goes red."""
+    turn = _sticky_turn(words, surface, tp.Sticky("projects", (19, 0), 19),
+                        tp.Sticky("projects-plan", (19, 1), 19))
+    choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    total = _BASE + sum(len(_family(slug)) for slug in choice.slugs)
+    assert total <= tp.MAX_REQUEST_TOOLS and choice.skipped == (), choice
+    assert len(choice.slugs) == 2, choice
+    assert not _owner_reached(choice), "non-vacuity: only a spare pack reaches the owner"
+    assert _reached_by_load(turn, choice, _BASE), choice
+    if tp.matched_layer("projects-bulk", words):
+        assert "projects-bulk" in choice.slugs, choice
+        return
+    assert choice.slugs == ("projects", "projects-plan") and choice.evicted == (), choice
+    run = tp.PackRun.of(turn, choice, [(slug, False) for slug in choice.slugs])
+    spare = {slug: len(_family(slug)) for slug in run.spare()}
+    assert spare, "non-vacuity: a pack that the words did not name can leave"
+    plan = tp.plan_loader(EVERY, choice.slugs, current=total, removable=_SPECIALIST,
+                          spare=spare)
+    assert "projects-bulk" in plan.offered, plan
+    assert total - 1 - sum(spare.values()) + len(_family("projects-bulk")) <= tp.MAX_REQUEST_TOOLS
+
+
+@pytest.mark.parametrize("words", [
+    "archive the completed tasks", "now archive the done ones",
+    "archive the rest of the done tasks", "archive all done tasks",
+    "delete the completed tasks", "archive the finished ones",
+])
+def test_a_cleanup_of_finished_tasks_names_the_bulk_pack(words: str) -> None:
+    """Fix round 4 (P3). A cleanup of the done, completed or finished tasks names
+    the bulk pack, also with no word "task". Mutation: drop the new phrases
+    from ``_PROJECTS_BULK_WORDS`` -> red."""
+    assert tp.matched_layer("projects-bulk", words) == "words", words
 
 
 # ── MT-1228. "Remind me" loads a pack that holds set_reminder ───────────────
@@ -1074,12 +1514,14 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
     seven = {"list_reminders", "promote_reminder", "reopen_reminder",
              "reschedule_reminder", "resolve_reminder", "set_reminder",
              "update_reminder"}
-    # WS-ALN ALN-2a: the other Projects packs are full, so the two tools of a
-    # decision sit here too. The three tools of the authority page have their
-    # own pack: the reminders and bulk packs must fit under MAX_REQUEST_TOOLS.
+    # WS-ALN ALN-2a: the two tools of a decision sit here too. The three tools of
+    # the authority page have their own pack (ALN-4).
+    organising = {"capture_intake", "intake_queue", "triage_intake", "create_area",
+                  "delete_area", "rename_area", "my_areas", "my_contexts",
+                  "notifications", "mark_notifications_read"}  # PJP-2: moved from structure
     authority = {"pin_authority", "project_authorities", "unpin_authority"}
-    assert set(_family("projects-reminders")) == seven | {
-        "answer_decision", "my_decisions"}
+    assert set(_family("projects-reminders")) == seven | organising | {"answer_decision", "my_decisions"}
+    assert not organising & set(_family("projects-structure"))
     assert set(_family("projects-authority")) == authority
     assert not authority & set(_family("projects-bulk"))
     assert not seven & set(_family("projects-bulk"))

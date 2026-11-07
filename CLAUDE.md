@@ -123,7 +123,8 @@ reference tied to code. Do not put product specs in `docs/`.
    whatever SQL they get. Five live bugs shipped green that way.
 7. **R1 — migration numbers are taken at build time and re-checked at merge.**
    Three collisions in two weeks. `bash scripts/premerge.sh` does the re-check,
-   right before `gh pr merge`.
+   right before `gh pr merge`. It runs the collision fences only. Add
+   `--with-tests` to run the affected tests too (D176).
 8. **Verify delivery by evidence, never by a green job.** Migration ledger
    lines, the deployed SHA, the log line. Four deploys once reported success
    while shipping nothing.
@@ -238,6 +239,7 @@ The owner retired staging (D144), and this PC does its job now.
 3. **Production moves once a day, at 21:30 UTC.** Do not dispatch `deploy.yml`
    after a merge. Dispatch only for a hotfix the owner asks for, or when
    production is down.
+   The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 
 A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
 `scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
@@ -300,6 +302,16 @@ Rules that make it work:
   verify. One `harden` PR per feature runs the full review and makes them
   block. A HIGH-tier slice keeps the full loop. Contract:
   `engineering_practice.md` §7a. Lists: `tests/fences.json`.
+- **⚠️ CLEAN UP AFTER YOURSELF** *(owner directive, 2026-11-06, CIV-16)*. Other
+  sessions share the box. Give every wait a deadline, and run each test command
+  under `timeout`. Stop each background job, tunnel, tmux session, preview server
+  and container that you started, when you no longer need it. Remove your
+  worktree after the merge with `bash scripts/worktree.sh remove <slug>`. Before
+  the final message of a turn, list your background jobs. Then stop each one
+  that the next step does not need. Name the ones that stay, and say why. The Stop
+  hook `.claude/hooks/stop-children.mjs` lists your old children. The reaper
+  `scripts/reaper.py` catches what is left. Fence:
+  `tests/unit/test_task_routine.py`.
 - **The reviewer hunts for the case where this is wrong.** An agent asked "is
   this correct?" says yes.
 - **Re-verify every anchor at dispatch** (file paths, line numbers, migration
@@ -387,7 +399,10 @@ Rules that make it work:
 - **Do not run all of `tests/unit/` locally.** It takes about 50 minutes.
   Run `uv run python scripts/affected_tests.py --run`. It picks the tests your
   diff can affect, and it prints the `vitest related` command for frontend
-  files. pr-check runs every test on each PR.
+  files. pr-check runs the tests that the diff can affect, and the full suite
+  when the diff is FULL. The R8 suites run on `main` only after CIV-4b ("main's
+  batch and the 21:30 release gate run the R8 suites"). The four tiers are in
+  `specs/ci_velocity.md` §4 (D176).
 - **R8 needs a database. Without one, 843 tests SKIP while the run reads
   green.** Run `bash scripts/dev_db.sh` first, then
   `eval "$(bash scripts/dev_db.sh --export)"`. `engineering_practice.md` §1.1

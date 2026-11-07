@@ -62,7 +62,7 @@ def _hermetic(monkeypatch):
         lambda: frozenset(sf.SKILL_FAMILIES["core"]["tools"]),
     )
     # S2: no stored skill settings unless a test injects them.
-    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda: {})
+    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda _org: {})
     yield
     sf.clear_cost_cache()
 
@@ -129,7 +129,7 @@ async def test_matrix_reflects_stored_skill_settings(monkeypatch):
     _agents(monkeypatch, [{"name": "orchestrator"}], {"orchestrator": None})
     monkeypatch.setattr(
         sk, "_disabled_families_by_agent",
-        lambda: {"orchestrator": frozenset({"memory", "workflows"})},
+        lambda _org: {"orchestrator": frozenset({"memory", "workflows"})},
     )
     out = await sk.skills_catalog(user=USER)
     row = out["agents"][0]

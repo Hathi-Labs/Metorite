@@ -65,6 +65,11 @@ m. A rule and a hot swap at a cap: rules pass 1 runs before the cold flips,
    the org cap, and so does a roll-up that goes with a swap of its read
    field. A rule that goes with a new hot field passes too. A refusal of
    pass 2 rolls back an earlier cold flip and its hot rows.
+n. The expected hash of a draft (G1c review round 1): a publish with a stale
+   ``based_on`` is 409 ``draft_changed`` and writes nothing. A draft save with
+   a stale ``based_on`` is 409 and keeps the draft. Two saves with one hash at
+   once give one 200 and one 409. With no hash, each route behaves as before.
+   A value that is not a hash is 422.
 
 **The mutations (R7).** Each was run on 2026-11-03. The red tests are in the
 build report. M2: drop the sync. M3: sync before the publish. M4: ignore a
@@ -89,6 +94,7 @@ pytest.importorskip("sqlalchemy")
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_manifest import manifest_hash
 from fastapi import HTTPException
 from gateway.routes.studio import actions, invoke, packages
 from gateway.studio import objects_store, packages_store
@@ -145,7 +151,7 @@ def _manifest(mid: str, objects: list[dict[str, Any]] | None = None) -> dict[str
 
 def _user(org: str, email: str) -> UserContext:
     return UserContext(email=email, role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:workflows"]), organization_id=org)
+                       access=build_access(["feature:studio"]), organization_id=org)
 
 
 class _Request:
@@ -1344,8 +1350,8 @@ def _org_objects(world: Any) -> int:
 
 
 def test_r8_the_org_object_cap_names_a_next_step(world) -> None:
-    """One member can fill the org cap of objects, and no route deletes a
-    package yet (A5c). So the refusal of another member names a next step."""
+    """One member can fill the org cap of objects. So the refusal of another
+    member names a next step: the delete of a package (A5c-1)."""
     cap, per = objects_store.MAX_OBJECTS_PER_ORG, objects_store.MAX_OBJECTS_PER_PACKAGE
     room = cap - _org_objects(world)
     assert room >= 0, "the org holds too many objects for this test"
@@ -1366,7 +1372,7 @@ def test_r8_the_org_object_cap_names_a_next_step(world) -> None:
     [problem] = got["problems"]
     assert (problem["kind"], problem["object"]) == ("store_refused", "visit")
     assert f"at most {cap} objects" in problem["message"]
-    assert "ask an admin to remove a package" in problem["message"]
+    assert "delete a package" in problem["message"] and "admin" not in problem["message"]
     assert _versions(world, pid) == [] and _objects(world, pid) == []
 
 
@@ -1756,3 +1762,111 @@ def test_r8_a_cold_flip_rolls_back_when_the_second_rules_pass_refuses(world) -> 
     assert before == 1 and _hot_rows(world, pid, "visit", "status") == 1
     assert _hot_map(world, pid, "visit")["status"] is True
     assert _versions(world, pid) == [1]
+
+
+# ── n. The expected hash of a draft (G1c review round 1, P1) ───────────────
+#
+# A chat tool reads the draft, checks it, and then writes. A second write can
+# land between the read and the write. So the publish body and the draft save
+# take an optional ``based_on``, and the store compares it with the hash of
+# the stored draft under its row lock. With no ``based_on`` a route behaves as
+# before.
+
+
+def _second(mid: str) -> dict[str, Any]:
+    """The same app with one more field."""
+    return _manifest(mid, [_visit(fields=[*_FIELDS, {"key": "note", "type": "text"}])])
+
+
+def test_r8_a_publish_with_a_stale_based_on_is_409_and_writes_nothing(world) -> None:
+    """Mutation: drop the compare from ``publish_version`` -> a version row -> red."""
+    mid = _mid("stale")
+    first, second = _manifest(mid), _second(mid)
+
+    async def setup() -> str:
+        pid = await _new(world.a, ANA, first)
+        assert (await _save(world.a, ANA, pid, second))[0] == 200
+        return pid
+
+    pid = _run(world, setup)
+    before = _snapshot(world, pid)
+    status, got = _run(world, lambda: _call(
+        "publish", world.a, ANA, pid, payload={"notes": "", "based_on": manifest_hash(first)}))
+    assert (status, got["code"]) == (409, packages.DRAFT_CHANGED), got
+    assert _snapshot(world, pid) == before and _versions(world, pid) == []
+    status, got = _run(world, lambda: _call(
+        "publish", world.a, ANA, pid, payload={"notes": "", "based_on": manifest_hash(second)}))
+    assert status == 200 and got["version"]["version"] == 1, got
+    assert [f[0] for f in _fields(world, _objects(world, pid)[0][1])] == [
+        *(f["key"] for f in _FIELDS), "note"]
+
+
+def test_r8_a_draft_save_with_a_stale_hash_is_409_and_keeps_the_draft(world) -> None:
+    """Mutation: drop the compare from ``update_manifest`` -> the third draft
+    replaces the second -> red."""
+    mid = _mid("stalesave")
+    first, second = _manifest(mid), _second(mid)
+    third = _manifest(mid, [_visit(fields=_FIELDS[:2])])
+
+    async def go() -> tuple[str, tuple[int, Any], tuple[int, Any]]:
+        pid = await _new(world.a, ANA, first)
+        ok = await _call("save_draft", world.a, ANA, pid, payload=second,
+                         based_on=manifest_hash(first))
+        stale = await _call("save_draft", world.a, ANA, pid, payload=third,
+                            based_on=manifest_hash(first))
+        return pid, ok, stale
+
+    pid, ok, stale = _run(world, go)
+    assert ok[0] == 200, ok
+    assert (stale[0], stale[1]["code"]) == (409, packages.DRAFT_CHANGED), stale
+    assert _app(world, pid)[5] == second
+
+
+def test_r8_two_saves_with_one_hash_at_once_give_one_save(world) -> None:
+    """The lost update of two saves at once: both read the same draft. The row
+    lock lets one through, and the other gets 409."""
+    mid = _mid("twosaves")
+    first = _manifest(mid)
+    a, b = _second(mid), _manifest(mid, [_visit(fields=_FIELDS[:2])])
+
+    async def go() -> tuple[str, list[tuple[int, Any]]]:
+        pid = await _new(world.a, ANA, first)
+        h = manifest_hash(first)
+        got = await asyncio.gather(
+            _call("save_draft", world.a, ANA, pid, payload=a, based_on=h),
+            _call("save_draft", world.a, ANA, pid, payload=b, based_on=h))
+        return pid, list(got)
+
+    pid, got = _run(world, go)
+    assert sorted(s for s, _ in got) == [200, 409], got
+    winner = a if got[0][0] == 200 else b
+    assert _app(world, pid)[5] == winner
+
+
+def test_r8_a_publish_and_a_save_with_no_hash_behave_as_before(world) -> None:
+    mid = _mid("nohash")
+    first, second = _manifest(mid), _second(mid)
+
+    async def go() -> tuple[str, tuple[int, Any], tuple[int, Any]]:
+        pid = await _new(world.a, ANA, first)
+        return pid, await _save(world.a, ANA, pid, second), await _publish(world.a, ANA, pid)
+
+    pid, saved, published = _run(world, go)
+    assert saved[0] == 200 and published[0] == 200, (saved, published)
+    assert _versions(world, pid) == [1] and _app(world, pid)[5] == second
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "g" * 64, 5, ["x"], "a" * 63])
+def test_r8_a_based_on_that_is_not_a_hash_is_422_and_writes_nothing(world, bad) -> None:
+    mid = _mid("badhash")
+
+    async def go() -> tuple[str, tuple[int, Any], tuple[int, Any]]:
+        pid = await _new(world.a, ANA, _manifest(mid))
+        put = await _call("save_draft", world.a, ANA, pid, payload=_second(mid),
+                          based_on=bad if isinstance(bad, str) else str(bad))
+        pub = await _call("publish", world.a, ANA, pid, payload={"notes": "", "based_on": bad})
+        return pid, put, pub
+
+    pid, put, pub = _run(world, go)
+    assert put[0] == 422 and pub[0] == 422, (put, pub)
+    assert _versions(world, pid) == [] and _app(world, pid)[5] == _manifest(mid)

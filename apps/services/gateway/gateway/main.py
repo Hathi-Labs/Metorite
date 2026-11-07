@@ -519,6 +519,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # The brief's kinds and hooks register at import (WS-BRIEF BR-2a-1,
         # gateway/brief/run.py), so the worker holds them from its first tick.
         # Its own try: an import error loses the brief, never the queue.
+        import gateway.brief.monitor  # noqa: F401  (BR-2d)
         import gateway.brief.run  # noqa: F401
     except Exception as exc:
         _log.warning("gateway.brief_jobs_skipped", error=str(exc))
@@ -1479,9 +1480,18 @@ if _HAS_MAF:
             import time as _obs_time
             _obs_run_id = assistant_message_id or _thread_id or None
             _obs_started = _obs_time.monotonic()
+            # H-201c: the feed is keyed for each tenant. Capture the org of
+            # the request NOW, because the end event fires from the detached
+            # on_complete, which may run after the middleware released it.
+            try:
+                from acb_common.db import current_tenant as _obs_tenant
+                _obs_org = _obs_tenant()
+            except Exception:
+                _obs_org = None
             try:
                 from acb_common import publish_activity
                 publish_activity(
+                    organization_id=_obs_org,
                     kind="agent", phase="start", agent="orchestrator",
                     run_id=_obs_run_id, thread_id=_thread_id or None,
                     user=user_id or None, model=(_resolved_model or model or None),
@@ -1500,6 +1510,7 @@ if _HAS_MAF:
                     try:
                         from acb_common import publish_activity
                         publish_activity(
+                            organization_id=_obs_org,
                             kind="agent", phase="end", agent="orchestrator",
                             run_id=_obs_run_id, thread_id=_thread_id or None,
                             status="completed",
@@ -1893,6 +1904,12 @@ try:
     from gateway.routes.brief_today import router as _brief_today_router
 
     app.include_router(_brief_today_router)
+
+    # WS-BRIEF BR-2d — `GET /admin/brief/health`, the delivery stats of the org
+    # (`core_brief.md` §7). Dark: the brief off for the org answers 404.
+    from gateway.routes.admin_brief_health import router as _brief_health_router
+
+    app.include_router(_brief_health_router)
 except Exception:  # pragma: no cover
     pass
 
@@ -2147,6 +2164,18 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-MCP MCP-P1b-1 — the routes of an app request
+    # (external_agent_access.md §19.5): the ask of an agent, the member's list,
+    # one read and the member's decision. The store is
+    # `gateway/app_requests.py`. Ships dark: 404 while `agent_access_enabled`
+    # is off. No pair is in `MCP_ROUTES` yet (MCP-P1b-2).
+    from gateway.routes.agent_requests import router as _agent_requests_router
+
+    app.include_router(_agent_requests_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-MCP SW-31a — the org's written rules for agents
     # (agent_coordination.md SW-31): the save, the history, the blocks that
     # apply to a task, and the refs for `my_work`. Ships dark: 404 while
@@ -2154,6 +2183,17 @@ try:
     from gateway.routes.agent_guidance import router as _agent_guidance_router
 
     app.include_router(_agent_guidance_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-ALN ALN-5a — the rules of a project (project_alignment.md §4.2), on
+    # the one guidance store: create, accept, edit, retire, the level, the
+    # list and the history. Ships dark: 404 while `PROJECT_RULES_ORGS` does
+    # not hold the caller's org.
+    from gateway.routes.project_rules import router as _project_rules_router
+
+    app.include_router(_project_rules_router)
 except Exception:  # pragma: no cover
     pass
 

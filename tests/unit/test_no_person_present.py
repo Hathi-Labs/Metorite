@@ -915,6 +915,9 @@ _READERS = frozenset({
     "apps/skills/skill-projects/skill_projects/guarded.py",
     "apps/services/gateway/gateway/routes/workflows/service.py",
     "apps/services/orchestrator/orchestrator/executor.py",
+    # WS-STU B2c-2a: the Studio door refuses a delegated write of a marked run
+    # before it opens a card or spends a request. Nobody sees that card.
+    "apps/services/gateway/gateway/routes/studio/invoke.py",
 })
 
 
@@ -993,9 +996,13 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 #: WS-55 MCP-G15 adds the outside decision. It closes the member's question,
 #: so only an outside agent with the member's word may call it. Its chat tool
 #: stays PLANNED, and a tool that names the route fails this scan.
+#: WS-STU B2c-2a adds the decision of an app request. It approves a Studio
+#: write that a member identity asked for, and Mira calls as the member. So a
+#: tool that posts to it would approve its own write.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
                     "/agent-runs/{}/activities", "/agent-runs/{}/resume",
-                    "/decisions/{}/answer", "/agent-runs/{}/outside-decision")
+                    "/decisions/{}/answer", "/agent-runs/{}/outside-decision",
+                    "/requests/{}/decision")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.
@@ -1073,6 +1080,11 @@ def test_the_route_scan_reads_an_f_string() -> None:
     # WS-55 MCP-G15: the outside decision closes the member's question.
     outside = 'url = f"/projects/agent-runs/{run_id}/outside-decision"'
     assert _routes_in(outside) == ["/agent-runs/{}/outside-decision"]
+    # WS-STU B2c-2a: the decision of an app request approves a Studio write.
+    decision = 'url = f"/agent-access/requests/{request_id}/decision"'
+    assert _routes_in(decision) == ["/requests/{}/decision"]
+    assert _routes_in('u = f"/api/agent-access/requests/{rid}/decision"') == [
+        "/requests/{}/decision"]
     # A plain string of each route still matches.
     assert _routes_in('u = "/api/actions/pending"') == ["/actions/pending"]
     assert _routes_in('u = "/agent/respond-input"') == ["/respond-input"]

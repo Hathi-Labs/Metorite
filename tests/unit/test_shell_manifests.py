@@ -39,7 +39,7 @@ ORDER = [
     "capture", "compose", "plan-day", "set-reminder", "new-project", "new-chat", "invite", "new-lead",
     "new-deal", "log-call", "find-record", "add-mcp", "review-integrations",
     "connect-agent", "find-person", "find-knowledge", "write-page", "add-product",
-    "add-topic", "edit-profile", "appearance", "whatsapp-reply", "find-chat-file",
+    "add-topic", "new-space", "edit-profile", "appearance", "whatsapp-reply", "find-chat-file",
     "review-approvals",
 ]
 
@@ -65,6 +65,7 @@ PRE_SLICE_PY = [
     ('write-page', 'Write a page', 'write a new page of company knowledge, such as a policy, a handbook entry or a how-to', 'knowledge', '/knowledge?do=write-page', {}, False, (None, None)),
     ('add-product', 'Add a product', 'add a product of the company to the Knowledge directory, with a name and other names', 'knowledge', '/knowledge?do=add-product', {}, False, (None, None)),
     ('add-topic', 'Add a topic', 'add a topic to the Knowledge directory, with a name and other names', 'knowledge', '/knowledge?do=add-topic', {}, False, (None, None)),
+    ('new-space', 'New knowledge space', 'make a new space in Knowledge for a group of people who need to see its pages', 'knowledge', '/knowledge?do=new-space', {}, False, (None, None)),
     ('edit-profile', 'Update my profile', 'change their own profile, skills, CV or working hours', None, '/people/me', {}, False, (None, None)),
     ('appearance', 'Change how Metorite looks', 'change the theme, dark or light mode, density or accent', None, '/settings/appearance', {}, False, (None, None)),
     ('whatsapp-reply', 'Reply on WhatsApp', 'answer the customers who wrote to the business on WhatsApp', 'whatsapp', '/whatsapp', {}, False, (None, None)),
@@ -93,6 +94,7 @@ PRE_SLICE_TS = [
     ('write-page', 'Write a page', ['page', 'pages', 'article', 'wiki', 'knowledge', 'handbook'], '/knowledge', '/knowledge?do=write-page', 'FilePlus', None, None),
     ('add-product', 'Add a product', ['product', 'products', 'item', 'catalogue', 'catalog', 'knowledge', 'add', 'new'], '/knowledge', '/knowledge?do=add-product', 'Package', None, None),
     ('add-topic', 'Add a topic', ['topic', 'topics', 'subject', 'theme', 'knowledge', 'add', 'new'], '/knowledge', '/knowledge?do=add-topic', 'Tag', None, None),
+    ('new-space', 'New knowledge space', ['knowledge', 'wiki', 'shared', 'group', 'team', 'handbook', 'new'], '/knowledge', '/knowledge?do=new-space', 'FolderPlus', None, None),
     ('edit-profile', 'Update my profile', ['profile', 'skills', 'cv', 'resume', 'hours', 'me'], '/people/me', '/people/me', 'UserPen', None, None),
     ('appearance', 'Change how Metorite looks', ['appearance', 'theme', 'dark', 'light', 'colour', 'color', 'density', 'accent', 'sidebar'], '/settings/appearance', '/settings/appearance', 'Palette', None, None),
     ('whatsapp-reply', 'Reply on WhatsApp', ['whatsapp', 'wa', 'reply', 'customer', 'customers'], '/whatsapp', '/whatsapp', 'MessageCircle', None, None),
@@ -194,7 +196,7 @@ def test_manifest_files_ship():
     count = sum(
         len(json.loads(f.read_text(encoding="utf-8"))["contributes"].get("jobs", [])) for f in files
     )
-    assert count == len(ORDER) == 24
+    assert count == len(ORDER) == 25
     assert not (shell_manifest.SHELL_DIR / "__init__.py").exists()
 
 
@@ -380,7 +382,7 @@ FROZEN_HREF_FEATURES = {
     "/dashboard": "dashboard",
     "/observability": "observability",
     "/artifacts": "artifacts",
-    "/studio": "workflows",  # STU-A1 added this pair
+    "/studio": "studio",  # STU-A1 added this pair, and STU-J1 moved it off `workflows`
     "/workflows": "workflows",
     "/settings/models": "models",
     "/agents": "agents",

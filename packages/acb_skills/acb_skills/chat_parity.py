@@ -287,6 +287,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/email/drafts": "edit_draft",
     "PUT /api/email/voice-profile": "voice_profile",
     # ── CRM ──
+    # WS-CRM CRM-M1: the chat reaches this tool through the `crm-records`
+    # pack, and the CRM assistant holds it. The orchestrator's base does not
+    # (tests/unit/test_crm_change_history.py holds the reach).
+    "GET /api/crm/change-history": "crm_change_history",
     "GET /api/crm/deals/{}/contacts": "crm_deal_contacts",
     "GET /api/crm/fields/{}": "crm_list_fields",
     "GET /api/crm/lost-reasons": "update_deal_status",
@@ -353,6 +357,13 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/auth/me/assistant-profile": ("profile_set", "PUT /auth/me/assistant-profile"),
     # ── AI Studio (STU-F2d) ──
     "GET /api/studio/actions": "studio_list_actions",
+    # STU-D2b: the READ side of a package page. The door POST is a list from chat. A create,
+    # an update and a delete from chat wait for B2c-2 (no chat call carries a direct proof,
+    # so the door answers 403 approval_required). The fence reads only the route, so it
+    # cannot see that gap. chat_parity.md section 4 names it.
+    "GET /api/studio/packages": "studio_package_get",
+    "GET /api/studio/packages/{}": "studio_package_get",
+    "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
     "PATCH /api/studio/skills/{}/state": "studio_skill_state",
@@ -362,6 +373,12 @@ COVERED: dict[str, str | tuple[str, str]] = {
 
 #: An action -> (kind, reason). The kind is a key of :data:`EXEMPT_KINDS`.
 EXEMPT: dict[str, tuple[str, str]] = {
+    # ── Shell ──
+    "GET /api/shell/manifest": (
+        "stream",
+        "The shell reads the installed packages to draw the sidebar and the command bar, and reads them "
+        "again every few seconds (PKG-6). No member click sends it. The chat acts on the same records.",
+    ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
         "download",
@@ -528,6 +545,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "chat",
         "Asks the assistant for the brief as a turn of the thread.",
     ),
+    "POST /api/chat/sessions/{}/buddy-hello": (
+        "chat",
+        "Posts the hello once, on a member's first visit (BUD-1). The shell sends it, not the member.",
+    ),
     "POST /api/chat/sessions/{}/compact": (
         "chat",
         "Folds the old turns of a thread into a summary. It is the chat's own context step.",
@@ -604,6 +625,9 @@ EXEMPT: dict[str, tuple[str, str]] = {
 
 #: An action -> the wave that gives the chat a tool for it.
 DEBT: dict[str, str] = {
+    # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
+    "DELETE /api/studio/packages/{}": "P-9",
+    "GET /api/studio/packages/{}/delete-preview": "P-9",
     # ── Tasks ──
     "GET /api/tasks/settings": "P-1",
     "POST /api/tasks/ai/backfill-context": "P-1",
@@ -854,7 +878,6 @@ DEBT: dict[str, str] = {
     "GET /api/apps/{}/usage": "P-6",
     "GET /api/apps/{}/versions": "P-6",
     "PATCH /api/apps/{}": "P-6",
-    "POST /api/apps": "P-6",
     "POST /api/apps/{}/ai/complete": "P-6",
     "POST /api/apps/{}/build": "P-6",
     "POST /api/apps/{}/fork": "P-6",
@@ -1001,6 +1024,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/github": "P-8",
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
+    # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
+    # AppRequestCard. The chat tool and card are MCP-P1b-4 (task 1703).
+    "GET /api/agent-access/requests": "P-8",
+    "POST /api/agent-access/requests/{}/decision": "P-8",
     "GET /api/integrations/agent-connections": "P-8",
     "GET /api/integrations/connections": "P-8",
     "GET /api/integrations/github/account": "P-8",
@@ -1020,7 +1047,7 @@ DEBT: dict[str, str] = {
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
-    "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED.
+    "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
     "tasks": 11,
     "calendar": 1,
     "email": 13,
@@ -1028,17 +1055,17 @@ DEBT_CEILING: dict[str, int] = {
     "notes": 51,
     "whatsapp": 25,
     "people": 19,
-    "knowledge": 17,  # The Knowledge manifest's planned rows.
+    "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them.
     "memory": 5,
     "workflows": 24,
-    "apps": 29,
+    "apps": 28,
     "agents": 20,
     "chat": 25,
     "shell": 15,
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
-    "integrations": 19,
-    "studio": 0,
+    "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
+    "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

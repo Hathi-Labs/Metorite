@@ -1784,6 +1784,26 @@ def _log_pack_request_tools(agents: list[Any]) -> None:
     log("executor.pack_request_tools", tools=count, cap=MAX_REQUEST_TOOLS)
 
 
+def _pack_left_block(agent_name: str) -> str:
+    """Task 1747: the line that names the sticky packs that left this chat
+    at the start of the turn (``tool_packs.left_line``), or "".
+
+    It reads the record of the packs from the run binding, which
+    ``_apply_tool_packs`` built and the run bound after
+    ``bind_artifact_context``. A delegated run drops the record, so it gets no
+    line. The line is part of the context of the turn, after the cache break,
+    so the persona keeps its bytes. Never raises."""
+    if agent_name != _PACK_AGENT:
+        return ""
+    try:
+        from acb_skills.tool_packs import PACKS_KEY, left_line
+        from acb_skills.write_artifact import artifact_context
+
+        return left_line(artifact_context().get(PACKS_KEY))
+    except Exception:
+        return ""
+
+
 class _SetupLaps:
     """Chat speed SPD-1: the ms of each setup step of a streamed run, up to
     its first model request.
@@ -3325,6 +3345,14 @@ async def _run_sub_agent_streaming(
                                 text_parts.append(_sev["delta"])
                             _note_sub_call(_sub_calls, _sev)
                             await _emit_sub_event(_sev)
+                    # Release a line that the placeholder filter still holds.
+                    for _sev in _wrap_sub_agent_events(
+                        _close_text_message(_sub_t_state),
+                        agent_name=agent_name, run_id=run_id,
+                    ):
+                        if _sev["type"] == "SUB_AGENT_TEXT_DELTA":
+                            text_parts.append(_sev["delta"])
+                        await _emit_sub_event(_sev)
             else:
                 # MAF or unknown runtime: batch run, emit one result delta.
                 # Forward the parent's resolved tier so native MAF sub-agents
@@ -3642,6 +3670,11 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
     delegated run keeps its parent's member, because a run that binds no user
     leaves the parent's ``user`` and ``member_verified`` in place. Every
     failure answers no.
+
+    The member's org (``acb_auth.access.resolve_identity``) must equal the
+    run's org. A failed read or a mismatch answers no. Known limit: with
+    ``IDENTITY_CUTOVER`` on, a person with more than one active membership
+    resolves to no org, so the gate refuses them.
     """
     from acb_common import get_run_context
 
@@ -3658,6 +3691,18 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
             return False, "not the first-party organization"
     except Exception as exc:
         return False, f"the first-party check failed: {str(exc)[:120]}"
+    # H-232: the member must belong to the run's org. ``resolve_access`` reads
+    # roles by email alone, so an admin of another org passed this gate.
+    # Fence: ``tests/unit/test_root_agent_first_party.py``.
+    try:
+        from acb_auth.access import identity_read_failed, resolve_identity
+        _user_id, member_org = await resolve_identity(member)
+    except Exception as exc:
+        return False, f"the identity check failed: {str(exc)[:120]}"
+    if identity_read_failed():
+        return False, "the identity check failed"
+    if not member_org or str(member_org).lower() != str(org).lower():
+        return False, "the member is not of the run's organization"
     try:
         from acb_auth import resolve_access
         access = await resolve_access(member)
@@ -9354,9 +9399,23 @@ async def _run_with_maf_agent(
             await stack.enter_async_context(agent)
         response = await _with_tier_policy(agent, tier_policy).run(run_input)
 
-    text: str = getattr(response, "text", "") or ""
+    return _batch_result(response, run_id, agent_name)
+
+
+def _batch_result(response: Any, run_id: str, agent_name: str) -> dict[str, Any]:
+    """The dict `run_agent` returns for one batch run.
+
+    Task 1787: this is the ONE strip of litellm's empty-text placeholder for
+    every caller of a batch result (WhatsApp, the project agent sink, the
+    sub-agent). The placeholder never leaves here.
+    """
+    from acb_llm.message_hygiene import strip_placeholder_lines
+
+    text: str = strip_placeholder_lines(getattr(response, "text", "") or "")
+    steps = [t for t in (strip_placeholder_lines(x).strip()
+                         for x in _step_texts(response)) if t]
     return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text,
-            "steps": _step_texts(response), "tool_calls": _tool_calls_of(response)}
+            "steps": steps, "tool_calls": _tool_calls_of(response)}
 
 
 def _tool_calls_of(response: Any) -> list[dict[str, Any]]:
@@ -10546,6 +10605,8 @@ def _render_history_block(
     drop first (mirroring assemble_run_context's whole-turn eviction); a single
     oversized message is trimmed rather than allowed to eat the whole budget.
     """
+    from acb_llm.message_hygiene import strip_placeholder_lines
+
     budget = _history_char_budget(model)
     # Cap any ONE message so a single giant turn can't crowd out all the others.
     per_msg_cap = max(_HISTORY_MIN_CHARS // 2, budget // 4)
@@ -10558,7 +10619,11 @@ def _render_history_block(
     for idx in range(total - 1, max(-1, total - _HISTORY_MAX_MESSAGES - 1), -1):
         m = history[idx]
         role = m.get("role", "user")
-        content = (m.get("content") or "").strip()
+        content = (m.get("content") or "")
+        if role == "assistant":
+            # A stored turn may hold litellm's placeholder line (task 1787).
+            content = strip_placeholder_lines(content)
+        content = content.strip()
         if not content:
             continue
         # Skip the current turn if the caller also included it in history.
@@ -10598,7 +10663,9 @@ def _context_preamble_parts(
     PZ-34), the member's
     number-system line (:func:`run_number_system`), today's date
     (``acb_common.today.today_line``), and last the member's part of the day
-    beside a profile block that greets (``part_of_day_line``, PZ-4). :func:`_build_event_message`
+    beside a profile block that greets (``part_of_day_line``, PZ-4), then the
+    line of the tool packs that left at the start of the turn
+    (:func:`_pack_left_block`, task 1747). :func:`_build_event_message`
     puts the history and the current turn after them. The structured path of
     WS-43t1 sends the same blocks through its per-run context provider
     (:func:`_run_context_text`). One builder, so the two paths cannot drift.
@@ -10696,9 +10763,12 @@ def _context_preamble_parts(
     # WS-53 §18.16 part 1: today's date, weekday and zone, on both channels.
     # Two runs of 2026-10-19 read a month with no year as two different years
     # because no run knew the date. Last, so each block above keeps its place.
-    from acb_common.today import today_line
+    from acb_common.today import resolve_zone, today_line
 
-    line = today_line()
+    # Task 1649: the line carries the time too, in the member's own zone.
+    settings_zone, people_zone = _member_zones()
+    line = today_line(
+        zone=resolve_zone(settings_zone, people_zone, profile_zone), with_time=True)
     if line:
         parts.append(line)
     # WS-63 PZ-4 (personalization.md §5.2): the member's part of the day, at
@@ -10709,7 +10779,59 @@ def _context_preamble_parts(
         from acb_common.today import part_of_day_line
 
         parts.append(part_of_day_line(profile_zone or None))
+    # Task 1747: the tool packs that left this chat at the start of the turn.
+    # The model's history still shows their tools, so the line says that they
+    # left, and how to load them again. From the run binding, never from the
+    # payload (R5). Last, so each block above keeps its place. An empty line
+    # adds nothing.
+    parts.extend(filter(None, [_pack_left_block(agent_name)]))
     return parts
+
+
+_ZONE_CACHE: dict[tuple[str, str], tuple[float, str, str]] = {}
+
+
+def _member_zones() -> tuple[str, str]:
+    """``(user_settings.timezone, people.timezone)`` of the run's verified
+    member, or ``("", "")``. Task 1649: the zone of the "now" line.
+
+    From the run boundary, never the payload (R5). One short read, cached for
+    a minute per ``(org, member)``. It never raises. The browser stores its own
+    zone in ``user_settings.timezone`` (``saveZone.ts``), so that column is
+    the browser's zone too."""
+    import time
+
+    org, member = _current_run_org(), _verified_run_member()
+    if not org or not member:
+        return ("", "")
+    key = (str(org), member)
+    hit = _ZONE_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < 60.0:
+        return (hit[1], hit[2])
+    settings_zone = people_zone = ""
+    try:
+        opener = _opener_for_org(str(org))
+        if opener is not None:
+            from acb_common.assistant_profile import ADDRESS_SQL
+            from sqlalchemy import text
+
+            with opener() as session:
+                row = session.execute(
+                    text("SELECT timezone FROM user_settings "
+                         "WHERE organization_id = CAST(:org AS uuid) "
+                         "AND lower(user_id) = lower(:m) "
+                         "ORDER BY updated_at DESC LIMIT 1"),
+                    {"org": str(org), "m": member}).first()
+                names = session.execute(
+                    text(ADDRESS_SQL), {"org": str(org), "m": member}).first()
+            settings_zone = str(row[0] or "") if row else ""
+            people_zone = str(names[1] or "") if names else ""
+    except Exception:
+        return ("", "")
+    _ZONE_CACHE[key] = (time.monotonic(), settings_zone, people_zone)
+    while len(_ZONE_CACHE) > 4096:
+        _ZONE_CACHE.pop(next(iter(_ZONE_CACHE)))
+    return (settings_zone, people_zone)
 
 
 def _run_context_text(
