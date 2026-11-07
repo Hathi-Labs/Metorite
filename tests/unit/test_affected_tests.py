@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "scripts"))
 
@@ -716,3 +718,39 @@ def test_a_module_that_reaches_the_package_through_a_sibling_is_picked(
     picked, _, _ = sel.select(["packages/pkg/pkg/api/deep.py"], root)
     assert "tests/unit/test_mounts_r8.py" in picked
     assert "tests/unit/test_hub_a.py" not in picked
+
+
+# ── CIV-3d: only a glob that can list a Python file makes a test a scanner ──
+
+
+@pytest.mark.parametrize("body,scanner", [
+    ('from pathlib import Path\nfor p in Path("x").glob("*.sql"): pass\n', False),
+    ('import glob\nglob.glob("infra/**/*.json", recursive=True)\n', False),
+    ('Path("x").rglob("*.ts")\nPath("y").glob("a/*.md")\n', False),
+    ('Path("x").glob("*.py")\n', True),
+    ('Path("x").rglob("*")\n', True),
+    ('Path("x").glob(PATTERN)\n', True),
+    ('Path("x").glob(f"*{ext}")\n', True),
+    ('Path("x").glob(pattern="*.sql")\n', True),  # a keyword argument is not read: fail open
+    ('Path("x").glob("*.sql")\nPath("y").glob("*.py")\n', True),  # one risky call is enough
+    ('Path("x").glob("*.sql")\nos.walk(".")\n', True),  # another idiom still counts
+    ('Path("x").glob("*.sql")\nPath(".").iterdir()\n', True),
+    ('Path("x").glob("*.sql"\n', True),  # does not parse: fail open
+    ('x = 1\n', False),
+])
+def test_a_scanner_is_a_test_that_can_list_python_files(body: str, scanner: bool) -> None:
+    assert sel._is_scanner(body) is scanner
+    both = sel.scanning_tests({"tests/unit/test_x.py": body})
+    expected = scanner and bool(sel._SCAN_IDIOM.search(body))
+    assert (("tests/unit/test_x.py" in both) is expected)
+
+
+def test_the_sql_glob_files_of_the_real_tree_are_no_longer_scanners() -> None:
+    tests = sel._texts(sorted((sel.ROOT / sel.TESTS).glob("test_*.py")), sel.ROOT)
+    scanners = sel.scanning_tests(tests)
+    r8 = set(sel.r8_files())
+    # Before CIV-3d 146 R8 files were scanners. The ones that only glob data files are not.
+    assert len(scanners & r8) < 100, len(scanners & r8)
+    # The scanners that read Python stay.
+    for must in ("tests/unit/test_data_engine.py", "tests/unit/test_crm_mirror_readonly.py"):
+        assert must in scanners, must
