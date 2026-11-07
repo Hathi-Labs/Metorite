@@ -40,7 +40,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_common import get_settings
-from agent_edge import gateway_client, resources
+from agent_edge import resources
 
 from tests.unit.test_mcp_edge_protocol import (  # noqa: F401 — fixtures
     GOOD,
