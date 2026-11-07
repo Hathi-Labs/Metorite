@@ -1088,6 +1088,7 @@ class TestThePlaybookPrompts:
 
     def test_a_message_holds_no_hathilabs_term(self):
         from agent_edge import playbook_prompts as pp
+
         from tests.unit.test_playbook_org_neutral import hits
         for prompt in pp.PROMPTS.values():
             text = pp.text(prompt, "#42")
