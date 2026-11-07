@@ -447,6 +447,35 @@ class TestSet:
                         "duplicate") == "Already set."
         assert own_chat.writes() == []
 
+    def test_celebrations_off_writes_nothing(self, own_chat, monkeypatch) -> None:
+        """PZ-43: with ``CELEBRATIONS_ORGS`` off for the org, the key does not exist."""
+        from acb_common import celebrations
+
+        monkeypatch.setattr(celebrations, "celebrations_for", lambda org: False)
+        out = _run(pt.profile_set("celebrations", {"birthday": {"month": 3, "day": 12}}))
+        assert pt.CELEBRATIONS_OFF in out
+        assert own_chat.writes() == [] and own_chat.cards == []
+
+    def test_celebrations_on_asks_a_card_and_then_writes(self, own_chat, monkeypatch) -> None:
+        from acb_common import celebrations
+
+        monkeypatch.setattr(celebrations, "celebrations_for", lambda org: True)
+        out = _run(pt.profile_set("celebrations", {"birthday": {"month": 3, "day": 12}}))
+        (card,) = own_chat.cards
+        assert pt.ASK_CELEBRATIONS in card["detail"]
+        (put,) = own_chat.writes()
+        assert json.loads(put.content) == {
+            "key": "celebrations", "value": {"birthday": {"month": 3, "day": 12}}}
+        assert _undo_of(out)["key"] == "celebrations"
+
+    def test_celebrations_declined_writes_nothing(self, own_chat, monkeypatch) -> None:
+        from acb_common import celebrations
+
+        monkeypatch.setattr(celebrations, "celebrations_for", lambda org: True)
+        own_chat.approve = False
+        _run(pt.profile_set("celebrations", {"birthday": {"month": 3, "day": 12}}))
+        assert len(own_chat.cards) == 1 and own_chat.writes() == []
+
     @pytest.mark.parametrize("key,value", [("learning", {"x": 1}), ("style", {}),
                                            ("style", "short")])
     def test_a_bad_call_sends_nothing(self, own_chat, key, value) -> None:
