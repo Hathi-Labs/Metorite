@@ -543,8 +543,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
       ? (store.record as { pipeline_id?: string | null } | null)?.pipeline_id ?? null
       : null;
   const recordPlaces = useMemo(
-    () => placesOf(pipelines, recordPipeline ?? pipelineId),
-    [pipelines, recordPipeline, pipelineId],
+    // A deal with no pipeline is in the default one, not in the board's (CRM-M3).
+    () => placesOf(pipelines, view.record?.entity === "deals" ? recordPipeline : pipelineId),
+    [pipelines, recordPipeline, pipelineId, view.record?.entity],
   );
   const chips = listEntity
     ? chipsFor(listEntity, statusesFor(listEntity), view, ctx.mode, places)
@@ -648,7 +649,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
 
   async function convert(body: Record<string, unknown>) {
     if (!converting) return;
-    const result = await store.convertLead(converting.id, body);
+    const result = await store.convertLead(
+      converting.id,
+      // The deal joins the pipeline on screen (CRM-M3). None: the default one.
+      pipelineId ? { ...body, pipeline_id: pipelineId } : body,
+    );
     const dealId = result?.deal.id ?? null;
     setConverting(null);
     // CRM-C6a: say which lead values the conversion mapping did not copy.
@@ -1326,7 +1331,11 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
           onClose={() => setCreating(null)}
           onCreate={async (body) => {
             const entity = creating;
-            const id = await store.createRecord(entity, body);
+            // A new deal joins the pipeline on screen (CRM-M3). None: the default one.
+            const id = await store.createRecord(
+              entity,
+              entity === "deals" && pipelineId ? { ...body, pipeline_id: pipelineId } : body,
+            );
             // The 422 rule (CRM-C4b): a refused save keeps the form open, with
             // the typed values and the message beside its field.
             if (!id) return;

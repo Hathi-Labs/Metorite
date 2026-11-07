@@ -181,7 +181,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
 | WS-PRE | **Preview apps**: Notes, Meetings, Dashboard | ⏸ after Phase 2 · M4 | `specs/note_taker_app.md` · `specs/meeting_bot_platform_plan.md` | Metorite: epic 494 · next E-28, E-25 |
 | WS-DOC | **Docs and repo cleanup** | 🟢 active · M1 | none yet | Metorite: epic 522 (Developer Workflow) · next DOC-1, DOC-2 |
-| WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (PROPOSED) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · BR-2a-2 slice 1 built, dark (`BRIEF_COMPOSE`) · next BR-2b, BR-5 slice 2 |
+| WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (ACTIVE) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · BR-2a-2 slice 1 built, dark (`BRIEF_COMPOSE`) · BR-2c-1, BR-2c-2, BR-4b, BR-2d, BR-7a, BR-5 slices 1 and 2a built (dark where a flag exists) · next BR-2b, BR-5 slice 2b, BR-7b-1 (task 2171) |
 | WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
 | WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, D167, epic 1451, next GD-1 to GD-5 · The buddy (the hello, then Reach's chat channel, mark, pop and pause): D177, epic 1693, `specs/onboarding.md` §13 and `specs/proactive_reach.md` §19, next BUD-1 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
 
@@ -5643,6 +5643,20 @@ D160 and D161 left these six questions open, and the build ran on a working defa
 **Re-check this number at merge.** The first merge wins a D-number. Other branches held D187 to D191 when task 1829 wrote this record.
 
 Fence: none new. The fences of `project_alignment.md` §13 and `proactive_agent.md` bind the slices that build these answers. Advisory.
+
+### D193 — AI Studio builds in a full-page IDE: "Build it" opens it, and Mira works on that one app (2026-11-06)
+
+The owner tried Studio → "Build it" on production on 2026-11-06. The owner expected a contained build experience, like VS Code or the old Command Center App Workshop, and not a chat in the side panel. The old Workshop agent no longer runs (D84, D92), so the IDE is built on the manifest packages of D146.1. Owner spec: `specs/ai_studio.md` §6.3 and rows G3a, G3b, G3c and G5. Metorite: task 1188.
+
+```text
+"New Studio IDE (Recommended)" (chat, 2026-11-06)
+```
+
+1. **"Build it" opens a full-page IDE** at `/studio/build?pkg=<id>`. It makes a draft package first.
+2. **The layout:** an explorer tree of the app's parts on the left (Data, Views, Actions, Rules, Workflows, Skill, Code blocks), Preview, Data, Views and Code tabs in the centre, a Problems panel below, and the shell's dock on the right. Simple apps use Data and Views. Complex apps add the other branches of the same tree.
+3. **Mira works on THIS app only.** The page binds the dock to the package with assistant facts, and it publishes no second chat (D87 to D89). The page sends the brief after it publishes the facts. A save uses the `based_on` hash of the facts, so a stale save is refused.
+
+Fence: `src/app/studio/build/page.test.ts`, `lib/studio/startBuild.test.ts` and `tests/unit/test_studio_pack_page_facts.py`. **Re-check this number at merge.** Main holds D192 (since the merge of 2026-11-07).
 
 ## 4. Single-owner registry (who owns duplicated work)
 
