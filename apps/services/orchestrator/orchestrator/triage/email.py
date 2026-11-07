@@ -292,6 +292,7 @@ def _extract_json(raw: str) -> dict[str, object]:
 async def classify(
     msg: EmailMessage,
     *,
+    organization_id: str | None,
     llm_caller: LLMCaller | None = None,
     audit: bool = True,
 ) -> EmailTriageDecision:
@@ -299,7 +300,20 @@ async def classify(
 
     Always records an `audit_event` row (``action='email_triage'``) so the
     Annealer can later mine the (input, decision, source) triples.
+
+    ``organization_id`` is the tenant that owns the mailbox. It is required by
+    keyword: the caller passes the tenant its run or job is bound to, never a
+    value from request input. The audit row carries the sender and the subject,
+    so a tenant-less event would fall back to the operator org in
+    ``acb_audit.log._persist`` (Option-A) and leak the mail metadata there
+    (task 2173). So ``audit=True`` with no tenant raises before any work.
+    Fence: ``tests/unit/test_triage_audit_org_r8.py``.
     """
+    if audit and not organization_id:
+        raise ValueError(
+            "classify(audit=True) needs the organization_id of the mailbox; "
+            "a tenant-less email_triage event would be filed under the operator org"
+        )
     decision = classify_by_rules(msg)
     if (
         decision.confidence < RULE_CONFIDENCE_THRESHOLD
@@ -321,6 +335,7 @@ async def classify(
                     "source": decision.source,
                     "route": decision.suggested_route,
                 },
+                organization_id=organization_id,
             )
         )
     return decision
