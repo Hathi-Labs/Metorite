@@ -35,6 +35,16 @@ The order, for the run of *member* on *local_date*:
 8. ``unattended.finish(ok)``, only for a gather that committed or a run that
    was past ``planned``.
 
+**The close-out** (BR-2b-1, ``core_brief.md`` §4.3). The payload may carry
+``kind: "closeout"``, and a payload with no ``kind`` is a ``brief``. A
+close-out runs the same steps with these changes. The switch is
+``flags.closeout``. The ledger job is ``brief.closeout``. The slot is
+checked against ``closeout_time``. Step 7 reads the snapshot for ``moved``
+and ``handled.handled_run`` for ``done`` (:func:`_closeout_reads`). A
+Handled read that is not ok raises :class:`HandledIncomplete`, and the queue
+retries. The lead is the template lead (``gather.closeout_lead``), and
+:func:`_composes` is False for a close-out, so it makes no model call.
+
 **The ledger slot goes back** (``unattended.release``) when the run gathered
 nothing: an exception, a cancel (the worker's ``HANDLER_TIMEOUT``), a skip,
 or a lost claim. So a retry or a moved slot can begin it again. The release
@@ -92,6 +102,12 @@ _log = get_logger("brief.run")
 
 #: The ledger job of a brief run: ``brief.<kind>``.
 LEDGER_JOB = f"brief.{planner.KIND}"
+#: The ledger job of a close-out run (BR-2b-1).
+CLOSEOUT_LEDGER_JOB = f"brief.{planner.CLOSEOUT}"
+#: The time that the close-out gives the Handled read (``handled_run``).
+#: The run is a job and not a feed read, so it may wait longer than the
+#: feed's 1.5 seconds.
+HANDLED_BUDGET_S = 10.0
 #: The reason of a slot whose brief time moved. Its row goes, and the day
 #: stays open for the new time.
 MOVED = "moved"
@@ -102,6 +118,11 @@ RETENTION_DAYS = 90
 class SnapshotIncomplete(Exception):
     """A provider or the state join failed, so the cards are not the truth.
     The queue retries the run."""
+
+
+class HandledIncomplete(Exception):
+    """A Handled read of the close-out failed (``HandledRun.ok`` is False),
+    so the ``done`` list is not the truth. The queue retries the run."""
 
 
 class IdentityReadFailed(Exception):
@@ -120,6 +141,15 @@ async def _give_back(org: str, ledger: unattended.Run) -> None:
         await asyncio.shield(unattended.release(org, ledger))
     except Exception as exc:
         _log.warning("brief.release_failed", error=type(exc).__name__)
+
+
+def kind_of(payload: dict[str, Any]) -> str:
+    """The kind of the run that *payload* asks for. A payload with no
+    ``kind`` is a ``brief``: a job queued before BR-2b-1 has none."""
+    kind = str(payload.get("kind") or planner.KIND)
+    if kind not in (planner.KIND, planner.CLOSEOUT):
+        raise ValueError(f"a brief.run payload names the kind brief or closeout, not {kind!r}")
+    return kind
 
 
 def _payload(payload: dict[str, Any]) -> tuple[str, date, datetime]:
@@ -143,7 +173,7 @@ _FINISHED = frozenset({"ready", "delivered", "empty", "exists"})
 
 
 async def _skip(org: str, member: str, local_date: date, claim: queue.Claim,
-                now: datetime, reason: str) -> str:
+                now: datetime, reason: str, kind: str = planner.KIND) -> str:
     """End a slot that gets no brief, and make no row. A ``planned`` row of
     an earlier try turns ``failed`` with *reason*. For :data:`MOVED` the
     row goes instead, so the day stays open for the new time. Answers
@@ -152,7 +182,7 @@ async def _skip(org: str, member: str, local_date: date, claim: queue.Claim,
     async with tenant_session(org) as db:
         if not await queue.hold(db, claim):
             return "lost"
-        found = await store.read_run(db, member, kind=planner.KIND, local_date=local_date)
+        found = await store.read_run(db, member, kind=kind, local_date=local_date)
         if found is not None and found.state == "planned":
             if reason == MOVED:
                 await store.discard_planned(db, member, found.id)
@@ -163,40 +193,61 @@ async def _skip(org: str, member: str, local_date: date, claim: queue.Claim,
     return "skipped"
 
 
-def _why_not(prefs: dict[str, Any], slot_at: datetime) -> str | None:
+def _why_not(prefs: dict[str, Any], slot_at: datetime, kind: str = planner.KIND) -> str | None:
     """Why the member's preferences of now refuse this slot, or None. The
-    slot carries the member's offset, so its clock reads their brief time."""
+    slot carries the member's offset, so its clock reads their brief time
+    (or their close-out time, for a close-out)."""
     if not prefs["enabled"]:
         return "opted_out"
-    if slot_at.strftime("%H:%M") != prefs["brief_time"]:
+    pref = "closeout_time" if kind == planner.CLOSEOUT else "brief_time"
+    if slot_at.strftime("%H:%M") != prefs[pref]:
         return MOVED
     return None
+
+
+async def _closeout_reads(member: str, user: Any, run: store.Run, snap: Any,
+                          now: datetime) -> tuple[list[store.ClaimIn], str | None]:
+    """The claims and the template lead of a close-out (BR-2b-1). The
+    Handled read runs here, as the member, because ``loop.snapshot`` does not
+    run it. A read that is not ok raises, so the queue retries."""
+    from gateway.routes.shell import handled
+
+    closed = await handled.handled_run(user, now, budget_s=HANDLED_BUDGET_S)
+    if not closed.ok:
+        raise HandledIncomplete(member)
+    claims = gather.closeout_claims(closed.closed, snap.cards, now)
+    return claims, gather.closeout_lead(run.local_date, claims)
 
 
 async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue.Claim,
                   now: datetime) -> str:
     """Steps 6 and 7. Answers ``ready``, ``delivered``, ``empty``,
-    ``exists`` or ``lost``."""
+    ``exists`` or ``lost``. A close-out takes the claims of
+    :func:`_closeout_reads`, and the rest is the same."""
     from gateway.reach import loop
 
     snap = await loop.snapshot(org, user, now)
     if not snap.complete:
         raise SnapshotIncomplete(member)
-    claims = gather.claims(snap.cards, now)
-    parts = plan.brief_parts(snap.cards, run.local_date, now=now)
-    if claims and parts is not None and _composes(org, len(claims)):
-        return await _gather_and_phrase(org, member, run, claim, claims, parts, now)
+    if run.kind == planner.CLOSEOUT:
+        claims, lead = await _closeout_reads(member, user, run, snap, now)
+    else:
+        claims = gather.claims(snap.cards, now)
+        parts = plan.brief_parts(snap.cards, run.local_date, now=now)
+        lead = plan.brief_lead(parts) if parts is not None else None
+    if claims and lead is not None and _composes(org, len(claims), run.kind):
+        return await _gather_and_phrase(org, member, run, claim, claims, lead, now)
     async with tenant_session(org) as db:
         if not await queue.hold(db, claim):
             return "lost"
-        if not claims or parts is None:
+        if not claims or lead is None:
             await store.set_state(db, member, run.id, "empty", now=now, from_state="planned")
             state = "empty"
         else:
             await store.add_claims(db, member, run.id, claims)
             await store.set_state(db, member, run.id, "gathered", now=now,
                                   from_state="planned")
-            await store.set_lead(db, member, run.id, plan.brief_lead(parts), source="template")
+            await store.set_lead(db, member, run.id, lead, source="template")
             await store.set_state(db, member, run.id, "ready", now=now, from_state="gathered")
             state = "ready"
             # BR-2c-1: on an in-app surface now, so the system delivers it.
@@ -217,13 +268,16 @@ async def _deliver(db: Any, org: str, member: str, run_id: str) -> str:
     return "ready"
 
 
-def _composes(org: str, count: int) -> bool:
+def _composes(org: str, count: int, kind: str = planner.KIND) -> bool:
     """True when the run phrases its lead (BR-2a-2): ``BRIEF_COMPOSE`` is
     on for the org, the run has :data:`phrase.MIN_CLAIMS` claims or more,
     and the Router is on. A call off the Router writes no usage row, so
-    with the Router off the run makes no call (``core_brief.md`` §4.5)."""
+    with the Router off the run makes no call (``core_brief.md`` §4.5). A
+    close-out never phrases (BR-2b-1): its lead is the template lead."""
     from acb_llm import routed
 
+    if kind != planner.KIND:
+        return False
     return count >= phrase.MIN_CLAIMS and flags.compose(org) and routed.routing_is_on()
 
 
@@ -239,7 +293,7 @@ async def _block(db: Any, org: str, member: str) -> str:
 
 
 async def _gather_and_phrase(org: str, member: str, run: store.Run, claim: queue.Claim,
-                             claims: list[store.ClaimIn], parts: plan.BriefParts,
+                             claims: list[store.ClaimIn], lead: str,
                              now: datetime) -> str:
     """Steps 7a to 7c. Answers ``ready``, ``delivered``, ``exists`` or
     ``lost``."""
@@ -257,7 +311,7 @@ async def _gather_and_phrase(org: str, member: str, run: store.Run, claim: queue
             _log.info("brief.phrase_skipped", reason="not_gathered")
             await queue.complete(db, claim, now=now)
             return "exists"
-        await store.set_lead(db, member, run.id, plan.brief_lead(parts), source="template")
+        await store.set_lead(db, member, run.id, lead, source="template")
         stored = await store.read_claims(db, member, run.id)
         block = await _block(db, org, member)
     # The session is closed: the call holds no connection and no lock.
@@ -325,7 +379,8 @@ async def _finish_stuck(org: str, member: str, run: store.Run, claim: queue.Clai
 
 
 async def _run_slot(org: str, member: str, local_date: date, slot_at: datetime,
-                    claim: queue.Claim, ledger: unattended.Run, now: datetime) -> str:
+                    claim: queue.Claim, ledger: unattended.Run, now: datetime,
+                    kind: str = planner.KIND) -> str:
     """Steps 3 to 7. Answers the outcome: ``ready``, ``delivered``,
     ``empty``, ``exists``, ``skipped`` or ``lost``."""
     from gateway.reach import loop
@@ -334,17 +389,17 @@ async def _run_slot(org: str, member: str, local_date: date, slot_at: datetime,
     if user == "identity_failed":
         raise IdentityReadFailed(member)
     if isinstance(user, str):
-        return await _skip(org, member, local_date, claim, now, f"member_{user}")
+        return await _skip(org, member, local_date, claim, now, f"member_{user}", kind)
     async with tenant_session(org) as db:
         prefs = await assistant_profile.member_app_prefs(db, org, member, planner.APP)
-        why = _why_not(prefs, slot_at)
+        why = _why_not(prefs, slot_at, kind)
         if why is None:
-            created = await store.create_run(db, member, kind=planner.KIND,
+            created = await store.create_run(db, member, kind=kind,
                                              local_date=local_date, slot_at=slot_at)
             if ledger.id is not None:
                 await store.link_run(db, member, created.run.id, ledger.id)
     if why is not None:
-        return await _skip(org, member, local_date, claim, now, why)
+        return await _skip(org, member, local_date, claim, now, why, kind)
     if created.run.state == "phrasing":
         return await _finish_stuck(org, member, created.run, claim, now)
     if created.run.state != "planned":
@@ -357,19 +412,21 @@ async def _run_slot(org: str, member: str, local_date: date, slot_at: datetime,
 async def run(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
     """The detached handler of :data:`planner.RUN_KIND`."""
     member, local_date, slot_at = _payload(payload)
+    kind = kind_of(payload)
     now = _now()
-    if not flags.org_allowed(org):
-        _log.info("brief.run_off")
+    if not (flags.closeout(org) if kind == planner.CLOSEOUT else flags.org_allowed(org)):
+        _log.info("brief.run_off", kind=kind)
         await _settle_done(org, claim, now)
         return
-    ledger = await unattended.begin(org, LEDGER_JOB, f"{member}:{local_date.isoformat()}",
+    job = CLOSEOUT_LEDGER_JOB if kind == planner.CLOSEOUT else LEDGER_JOB
+    ledger = await unattended.begin(org, job, f"{member}:{local_date.isoformat()}",
                                     scheduled_for=slot_at, now=now)
     if not ledger.fresh:
         _log.info("brief.slot_taken", state=ledger.state)
         await _settle_done(org, claim, now)
         return
     try:
-        outcome = await _run_slot(org, member, local_date, slot_at, claim, ledger, now)
+        outcome = await _run_slot(org, member, local_date, slot_at, claim, ledger, now, kind)
     except BaseException:
         # A cancel is a BaseException: the worker's HANDLER_TIMEOUT cancels
         # the handler, and so does a stop. The slot goes back in each case,

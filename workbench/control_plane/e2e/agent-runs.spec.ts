@@ -420,9 +420,11 @@ test("with the routes off, the task shows no panel and no filter", async ({ page
   await expect(page.getByRole("button", { name: "Watching" }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Waiting on me" })).toHaveCount(0);
   await page.getByText(TASK.title, { exact: true }).first().click();
-  // The comment field, not the button: the Comment button shows only once
-  // the composer opens (2026-10-19). The field is there while the panel is.
-  await expect(page.getByRole("textbox", { name: "Add a comment" })).toBeVisible({ timeout: 15_000 });
+  // The tab bar says the card is open. ORC-3: the comment field shows on
+  // the Discussion tab only, and the card opens on Overview.
+  await expect(page.locator("[data-record-tab-bar]")).toBeVisible({ timeout: 15_000 });
+  // The read has answered 404 once the placeholder of the agent row is gone.
+  await expect(page.locator("[data-ask-agent-placeholder]")).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator("[data-agent-run-panel]")).toHaveCount(0);
   await expect(page.locator("[data-agent-pill]")).toHaveCount(0);
   // EA-12d: no "Ask an agent" while the routes answer 404.
@@ -755,7 +757,9 @@ test("the card shows the badge, one PR chip with its CI, and the note on hover",
   const popup = page.waitForEvent("popup");
   await chip.click();
   expect((await popup).url()).toBe(PR_URL);
-  await expect(page.getByRole("textbox", { name: "Add a comment" })).toHaveCount(0);
+  // No card opened. The tab bar, not the comment field: since ORC-3 the
+  // field hides on Overview, so a check on it would pass with a card open.
+  await expect(page.locator("[data-record-tab-bar]")).toHaveCount(0);
   await expect(page.locator("[data-agent-run-panel]")).toHaveCount(0);
 });
 

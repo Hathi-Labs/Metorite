@@ -2788,7 +2788,7 @@ async def _extract_run_memory(
                 name=f"agent:{agent_name}:{member[:20]}",
                 content=message[:500],
                 source_description=f"agent_{agent_name}",
-                group_id=member,
+                # KG-9: the bound tenant names the episode's group.
             )
         except Exception:  # an episode must never kill the relay
             _log.warning("agent.run_end_episode_failed", thread_id=thread_id[:12])
@@ -3154,6 +3154,8 @@ async def run_agent_stream_endpoint(
         agent_name=agent_name,
         thread_id=req.thread_id,
         shared=_room_is_shared,
+        # KG-9: the org compartment is this member's org, from the session.
+        organization_id=_room_org,
     )
 
     try:
