@@ -6740,9 +6740,9 @@ The node suite holds its pure rule.
 ## 30. An image from the chat goes onto a task, and the agent sees it (2026-11-07)
 
 **Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 is BUILT and
-merged (cb38e1473). IMG-2 is AGENT-SAFE. IMG-3 is BUILT 2026-11-07 on branch
-`mt-2d62220d-img3`, and it waits for its merge. IMG-4 needs an audit before a
-build. No migration.
+merged (cb38e1473). IMG-2 (`mt-0595dfe1-img2`) and IMG-3 (`mt-2d62220d-img3`)
+are BUILT 2026-11-07, and each one merges after its checks. IMG-4 needs an
+audit before a build. No migration.
 
 ### 30.1 The request
 
