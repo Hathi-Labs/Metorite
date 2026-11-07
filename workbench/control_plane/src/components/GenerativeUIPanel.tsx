@@ -125,6 +125,9 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // The offer of the pill "Continue in a fresh chat" (WT-2). The chat draws
   // the pill, and the fold must not show the event as data.
   "chat_continue_offer",
+  // The switch line of a turn that loaded another tool pack (WT-4). The
+  // chat draws one line, and the fold must not show the event as data.
+  "chat_pack_switched",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body

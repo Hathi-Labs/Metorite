@@ -63,6 +63,8 @@ import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
 import { withEmailSteps } from "@/lib/delegatedSteps";
 import { mailboxMarksOf } from "@/lib/mailboxMark";
 import MailboxMark from "@/components/MailboxMark";
+import PackSwitchMark from "@/components/PackSwitchMark";
+import { packSwitchesOf } from "@/lib/packSwitch";
 import ContinueOffer from "@/components/ContinueOffer";
 import { newestOfferId, type ContinueOpened } from "@/lib/chatContinue";
 import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
@@ -2644,6 +2646,12 @@ export default function AgentChat({
                 {msg.role === "assistant" &&
                   mailboxMarksOf(msg.customEvents).map((label, k) => (
                     <MailboxMark key={`mbx-run-${msg.id}-${k}`} label={label} />
+                  ))}
+                {/* WT-4: this turn loaded a tool pack that the last turn did not
+                    hold. One plain line, no tap. Saved with the turn. */}
+                {msg.role === "assistant" &&
+                  packSwitchesOf(msg.customEvents).map((label, k) => (
+                    <PackSwitchMark key={`psw-${msg.id}-${k}`} label={label} />
                   ))}
                 <MessageBubble message={msg} sessionId={sessionId} onChoice={handleChoice}
                   onHitlRespond={handleGenUiHitl}

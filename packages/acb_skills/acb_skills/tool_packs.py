@@ -78,6 +78,7 @@ __all__ = [
     "PACK_ONLY_REFUSED",
     "PACK_RUN_KEY",
     "PACK_SLUG_ATTR",
+    "PACK_SWITCH_EVENT",
     "SURFACE",
     "SURFACE_MAX",
     "Choice",
@@ -105,6 +106,7 @@ __all__ = [
     "owner_tools",
     "pack",
     "pack_only_refusal",
+    "pack_switch_label",
     "pack_tool_runs",
     "pack_write_refusal",
     "packs_on",
@@ -2994,6 +2996,39 @@ def load_tool(offered: Sequence[str]) -> Any:
 
 def _label(slug: str) -> str:
     return str(SKILL_FAMILIES.get(slug, {}).get("label") or slug)
+
+
+#: WT-4 (``one_assistant_context.md`` §9.4). The CUSTOM event that tells the
+#: chat a turn moved to a pack that the last turn did not hold. The value is
+#: ``{"label": <pack label>}``. The client twin is ``PACK_SWITCH_EVENT`` in
+#: ``workbench/control_plane/src/lib/packSwitch.ts``. Fence:
+#: ``tests/unit/test_pack_switch_line.py``.
+PACK_SWITCH_EVENT = "chat_pack_switched"
+
+
+def pack_switch_label(turn: PackTurn, slugs: Iterable[str]) -> str | None:
+    """The label of the pack that this turn loaded and the last turn did not
+    hold, or None (WT-4). It is a signal, not a second router.
+
+    *turn* is the ``begin_turn`` read: its sticky set is the packs of the
+    last turn. *slugs* are the packs that layer (a) chose now. Only a pack
+    that :func:`packs_on` allows for the bound org counts, so the flag off
+    gives None. The first turn of a chat (nothing to switch from) and a turn
+    whose sticky read failed (``stored`` False) give None. A pack of
+    :data:`FOLLOWS` whose parent is new too gives way to the parent, so the
+    line names the pack that the member sees (Calendar reads "Projects").
+    Pure apart from the settings read. It reads no mark: the caller checks
+    the hold before it sends anything."""
+    if not turn.stored or turn.turn <= 1:
+        return None
+    allowed = packs_on(turn.org)
+    held = {entry.slug for entry in turn.sticky}
+    fresh = [s for s in dict.fromkeys(slugs) if s in allowed and s not in held]
+    for slug in fresh:
+        if FOLLOWS.get(slug) in fresh:
+            continue
+        return _label(slug)
+    return None
 
 
 def made_room_line(run: PackRun, leaving: Sequence[str]) -> str:
