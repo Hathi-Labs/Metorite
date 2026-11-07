@@ -104,6 +104,40 @@ def test_the_final_report_states_the_run():
     assert "run state" in report
 
 
+def test_cleanup_rule_is_in_claude_md_and_next_ticket():
+    """CIV-16: both files every session loads carry the clean-up rule."""
+    claude = _flat(CLAUDE[CLAUDE.index("CLEAN UP AFTER YOURSELF"):])[:1400]
+    for phrase in (
+        "Give every wait a deadline",
+        "under `timeout`",
+        "worktree.sh remove",
+        "list your background jobs",
+        "Name the ones that stay",
+        "stop-children.mjs",
+    ):
+        assert phrase in claude, phrase
+    nt = _flat(NEXT_TICKET[NEXT_TICKET.index("## Clean up after yourself"):NEXT_TICKET.index("## Final report")])
+    for phrase in ("timeout", "worktree.sh remove", "list your background jobs", "Name the ones that stay"):
+        assert phrase in nt, phrase
+
+
+def test_stop_hook_is_wired_in_settings():
+    import json
+
+    cfg = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    cmds = [h["command"] for g in cfg["hooks"]["Stop"] for h in g["hooks"]]
+    assert any("stop-children.mjs" in c for c in cmds)
+
+
+def test_stop_hook_fence_runs_in_pr_check():
+    """CIV-16, R7: the hook test runs in pr-check, or its fence is a word only."""
+    import yaml
+
+    wf = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8"))
+    runs = [s.get("run", "") for job in wf["jobs"].values() for s in job.get("steps", [])]
+    assert "node .claude/hooks/stop-children.test.mjs" in runs
+
+
 def test_next_ticket_step_1_names_get_task_context_and_the_20_comment_limit():
     """CIV-14i: a session reads the description and every comment before it builds."""
     step = _flat(NEXT_TICKET[NEXT_TICKET.index("**1 — Select.**"):NEXT_TICKET.index("**1b")])

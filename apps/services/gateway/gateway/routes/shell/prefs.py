@@ -300,6 +300,22 @@ _HIDE_ANY_CASE_SQL = (
 )
 
 
+#: The hide switch WRITTEN under every OTHER spelling of the address (task
+#: 1209). The read above fails closed on any ``true``, so a stale ``true``
+#: under another spelling kept the details hidden after the member turned the
+#: switch off. The own row is written by ``_write``. The shape is EA-6i's
+#: ``_SET_ALL_SQL``. It runs first, so two PUTs of two spellings wait on each
+#: other in one order and cannot deadlock.
+_SET_HIDE_OTHER_SPELLINGS_SQL = (
+    "UPDATE user_settings SET my_day_prefs = jsonb_set("
+    "CASE WHEN jsonb_typeof(my_day_prefs) = 'object' "
+    "THEN my_day_prefs ELSE CAST('{{}}' AS jsonb) END, "
+    "ARRAY['hide_push_details'], CAST(:pval AS jsonb), true), updated_at = now() "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:uid) "
+    "AND user_id <> :uid"
+)
+
+
 async def hide_push_details(db: Any, member: str) -> bool:
     """True when *member* turned on "Hide details on the lock screen"
     (``hide_push_details``, RE-9a) under ANY spelling of the address. Read on
@@ -382,6 +398,12 @@ async def _write(db: Any, uid: str, key: str, value: Any) -> Any:
     from sqlalchemy import text
 
     params: dict[str, Any] = {"uid": uid, "pkey": key, "pval": json.dumps(value)}
+    if key == "hide_push_details":
+        from gateway.routes.tasks.settings import _BOUND_ORG as _org
+
+        await db.execute(
+            text(_SET_HIDE_OTHER_SPELLINGS_SQL.format(org=_org)),
+            {"uid": uid, "pval": params["pval"]})
     seed: dict[str, Any] = {}
     if await _read(db, uid) is None:
         seed = await _seed_from_work_schedule(db, uid)

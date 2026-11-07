@@ -405,3 +405,41 @@ async def test_block_notify_fails_closed_over_spellings_and_isolates_tenants(db)
         assert await _block_notify(db.org_a, off) is False
         # No row: off.
         assert await _block_notify(db.org_a, "nobody@md2d.test") is False
+
+
+async def _hidden(org: str, email: str) -> bool:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import hide_push_details
+
+    async with tenant_session(org) as session:
+        return await hide_push_details(session, email)
+
+
+async def test_hide_can_be_turned_off_under_the_other_spelling(db) -> None:
+    """Task 1209: on as one spelling, off as the other, and the read says
+    false. The PUT writes every spelling of the address, in the bound tenant
+    only. The other keys of those rows stay."""
+    low = _address()
+    mixed = low.replace("prefs.", "Prefs.")
+    db.made.extend([low, mixed])
+    assert mixed != low and mixed.lower() == low
+    with db.admin_engine.begin() as c:
+        # A row of the other organization, under the same address: untouched.
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), "
+            "jsonb_build_object('hide_push_details', true))"),
+            {"u": low, "o": db.org_b})
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, _member(mixed), "hide_push_details", True)
+        await _put(db.org_a, _member(low), "mutes", ["overdue"])
+        assert await _hidden(db.org_a, low) is True
+        # Off as the OTHER spelling than the one that turned it on.
+        saved = await _put(db.org_a, _member(low), "hide_push_details", False)
+        assert saved["hide_push_details"] is False
+        assert await _hidden(db.org_a, low) is False
+        assert await _hidden(db.org_a, mixed) is False
+        # The tenant wall: the row of org B still hides.
+        assert await _hidden(db.org_b, low) is True
+    rows = dict(_stored(db, mixed))
+    assert rows[db.org_a]["hide_push_details"] is False
