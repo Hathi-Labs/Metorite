@@ -339,7 +339,9 @@ A sub-app is a package with `extends`. Example: an "Installations" package with 
 
 **The entries.** Each entry of an install with `extends` carries the reserved payload key `extends`. The entries of other installs stay as they were.
 
-**The sub-entry (PKG-15b).** `installNavPanes` sets `parent` when `extends` names a system package with a nav entry. `mergeInstallNav` puts the pane right after its host pane, in the section of the host. Without a host pane the pane stays in the "Apps" tail with no `parent`. A host that the viewer does not see gives the same result. A sub-app nests one level. Only a system pane is a host, because an install entry has no package id. The sidebar draws the sub-entry one step in. A folded section keeps it while its host is current.
+**The sub-entry (PKG-15b).** `installNavPanes` sets `parent` when `extends` names a system package with a nav entry. `mergeInstallNav` puts the pane right after its host pane, in the section of the host. Without a host pane the pane stays in the "Apps" tail with no `parent`. A host that the viewer does not see gives the same result.
+
+**One level only (PKG-15b).** A sub-app nests one level. Only a system pane is a host, because an install entry has no package id. The sidebar draws the sub-entry one step in. A folded section keeps it while its host is current.
 
 **The feature gate of the host.** The resolve checks it: a system package counts as present only when the viewer can use one of its entries. The same gate hides its entries (§5.2 step 3). A system package whose entries name no feature counts for each viewer. So a CRM sub-app shows its setup card to a member without CRM. The same rule holds for a `{"package": <id>}` need.
 
