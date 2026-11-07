@@ -458,7 +458,11 @@ async def endpoint(request: Request) -> Response:
     try:
         if len(authorizations) > 1:
             raise bearer.BearerRefused(401, sent=True, reason="two_tokens")
-        caller = await bearer.authenticate(authorizations[0] if authorizations else None)
+        # EA-19b: the client address that uvicorn read from the proxy, never
+        # `X-Real-IP`, which a client could set. Only a box token reads it.
+        caller = await bearer.authenticate(
+            authorizations[0] if authorizations else None,
+            request.client.host if request.client else None)
     except bearer.BearerRefused as refused:
         if refused.status == 503:
             return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
@@ -569,6 +573,14 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
             params.get("arguments"))
     except tools.GatewayUnauthorized:
         return challenge_401(sent=True)
+    # MCP-G10: a refusal that names a wait also sends `Retry-After`, where the
+    # transport allows it. The answer stays HTTP 200 with `isError: true`.
+    wait = None
+    if result.get("isError"):
+        wait = (result.get("structuredContent") or {}).get("retry_after")
+    if isinstance(wait, int):
+        return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result},
+                            headers={"Retry-After": str(wait)})
     return _result(request_id, result)
 
 

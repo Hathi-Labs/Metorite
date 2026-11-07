@@ -12,6 +12,7 @@ against the code first.
 
 | Record | Date | What it holds | Cited by |
 |---|---|---|---|
+| `2026-11-plan-audit/` | 2026-11 | The plan audit of 2026-11-06: the 30 contradictions, the fork feature matrix, and six plans for the dark fork apps (Meetings, Dashboard, Memories, Agents, the builders, the delivery monitor and clean-up). Its `README.md` lists each file | `work_plan.md` D190 |
 | `ai_native_onboarding_2026-11.md` | 2026-11 | How the best products onboard a creator and a joiner, with the evidence graded | `specs/onboarding.md` §12 |
 | `assistant_guide_2026-11.md` | 2026-11 | Tours, assistants that point at the button, and sample data, with the evidence graded | `specs/assistant_guide.md` |
 | `plane_pm_research_2026-08.md` | 2026-08 | A read of Plane (AGPL-3.0, patterns only), with the verdicts P-1 to P-31 | `specs/project_management_app.md` |

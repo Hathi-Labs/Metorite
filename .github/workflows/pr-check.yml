@@ -656,6 +656,7 @@ jobs:
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
+              tests/unit/test_project_rules_propose.py \
               tests/unit/test_crm_change_history.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_projects_status_set_read_r8.py \

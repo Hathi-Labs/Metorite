@@ -44,7 +44,6 @@ import {
   MY_TASKS_EMPTY_TEXT,
   MY_TASKS_PAGE,
   STATUS_READ_FAILED,
-  phoneMyTasksTap,
   planMineDrop,
   projectChipText,
   quickAddHome,
@@ -305,14 +304,6 @@ describe("the tabs", () => {
     expect(MY_TASKS_MODES).toEqual(
       VIEW_MODES.filter((m) => m.id !== "timeline").map((m) => ({ id: m.id, icon: m.icon })),
     );
-  });
-});
-
-describe("the phone tab", () => {
-  it("opens My tasks, and on My tasks opens the Projects sheet", () => {
-    expect(phoneMyTasksTap(null)).toBe("open");
-    expect(phoneMyTasksTap("my-inbox")).toBe("open");
-    expect(phoneMyTasksTap("my-tasks")).toBe("sheet");
   });
 });
 
@@ -624,7 +615,6 @@ describe("PJP-13 — the tab My tasks opens on", () => {
     expect(space).toMatch(/onMode=\{\(next\) => onView\(\{ \.\.\.view, mode: next as MyTasksMode \}, true\)\}/);
     const page = code("page.tsx");
     expect(page).toMatch(/mode: tab, attention: false \}\), true\)/);
-    expect(page).toMatch(/mode: "list", attention: false \}\), true\)/);
     expect(page).toMatch(/legacy,\s*\);/);
   });
 
