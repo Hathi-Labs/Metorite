@@ -1293,3 +1293,35 @@ async def test_every_result_stays_under_the_cap(gw) -> None:
     outs.append(await st.studio_publish(pid))
     for out in outs:
         assert len(json.dumps(out, ensure_ascii=False)) < st.MAX_MANIFEST_CHARS
+
+
+# -- 13. The Studio IDE binds the chat to one package (STU-G3a) ---------------------
+
+
+async def test_a_chat_bound_by_page_facts_saves_to_that_package_and_makes_no_new_one(gw) -> None:
+    """STU-G3a fence C. The IDE gives the dock the package id and the draft. The agent then
+    saves the draft unchanged to read ``based_on``, and saves its change with it. Every write
+    goes to package X by PUT, and none is a POST to ``/studio/packages``.
+
+    Mutation 1: make ``_save_draft`` POST a new package when it finds a package id. The
+    "no create" assert turns red.
+    Mutation 2: skip the compare of the unchanged manifest (``_PKG_SAME``). The first step
+    gives no ``based_on`` and the second step is refused.
+    """
+    x = await _save(_visit())
+    other = await _save(_visit("other-app"))
+    x_id = x["package_id"]
+    gw.calls.clear()
+    stored = copy.deepcopy(gw.packages[x_id]["manifest"])
+    # Step 1: the manifest of the facts, unchanged. It writes nothing and gives based_on.
+    same = await st.studio_save(stored, x_id, "")
+    assert same["ok"] and same["package_id"] == x_id and same["based_on"] == st.manifest_hash(stored)
+    # Step 2: the change, with that based_on.
+    changed = _visit(name="Renamed by Mira")
+    out = await st.studio_save(changed, x_id, same["based_on"])
+    assert out["ok"] and out["package_id"] == x_id
+    assert gw.packages[x_id]["manifest"] == changed
+    assert gw.packages[other["package_id"]]["manifest"] != changed
+    writes = gw.writes()
+    assert writes == [("PUT", "/studio/packages/{}/draft")]
+    assert not [1 for m, p, *_ in gw.calls if m == "POST"], "no create"

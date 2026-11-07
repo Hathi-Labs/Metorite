@@ -262,34 +262,27 @@ function AppCard({
 function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => void }) {
   const live = card.state === "live";
   return (
-    <div className="relative">
-    <button
-      type="button"
-      data-package-card={card.id}
-      onClick={onOpen}
-      className="group relative text-left w-full p-3 sm:p-4 rounded-xl border tech-transition flex flex-col gap-2.5 border-border bg-card hover:border-primary/40 hover:bg-secondary/30"
-    >
-      <div className="flex items-start gap-3">
-        <div
-          className={`w-9 h-9 rounded-lg border border-border flex items-center justify-center shrink-0 ${glyphGradient(card.id)}`}
-        >
-          <Icon name="Boxes" className="w-4 h-4 text-primary" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-foreground truncate">{card.name}</h3>
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
-            <Icon name="Clock" className="w-3 h-3 shrink-0" />
-            <span>{changedWords(card.changedAt)}</span>
+    <div className="group flex w-full flex-col rounded-xl border tech-transition border-border bg-card hover:border-primary/40 hover:bg-secondary/30">
+      <button type="button" data-package-card={card.id} onClick={onOpen} className="w-full p-3 sm:p-4 pb-2 text-left">
+        <div className="flex items-start gap-3">
+          <div
+            className={`w-9 h-9 rounded-lg border border-border flex items-center justify-center shrink-0 ${glyphGradient(card.id)}`}
+          >
+            <Icon name="Boxes" className="w-4 h-4 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold text-foreground truncate">{card.name}</h3>
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
+              <Icon name="Clock" className="w-3 h-3 shrink-0" />
+              <span>{changedWords(card.changedAt)}</span>
+            </div>
           </div>
         </div>
-      </div>
-      <div className="flex items-center gap-2 mt-auto pt-1">
+      </button>
+      <div className="mt-auto flex items-center justify-between gap-2 px-3 sm:px-4 pb-3">
         <Badge tone={live ? "success" : "warning"} size="xs">{live ? "Live" : "Draft"}</Badge>
+        <Button variant="ghost" size="sm" icon="Code" href={buildHref(card.id)}>Open in Studio IDE</Button>
       </div>
-    </button>
-    <Button variant="ghost" size="sm" icon="Code" href={buildHref(card.id)} className="absolute bottom-2 right-2">
-      Open in Studio IDE
-    </Button>
     </div>
   );
 }

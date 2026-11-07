@@ -48,7 +48,8 @@ describe("/studio/build", () => {
   });
 
   it("shows the off state as an empty state, not an error", () => {
-    expect(page).toContain("AI Studio is not on for your workspace.");
+    expect(page).toContain("AI Studio may be off for your workspace, or the app is not yours.");
+    expect(page).toContain("Go back to Studio");
     expect(page).toContain("watch.off");
   });
 

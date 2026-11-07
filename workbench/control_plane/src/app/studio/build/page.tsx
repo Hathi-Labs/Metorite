@@ -70,9 +70,12 @@ function Frame({ children, title, subtitle, actions, rail }: {
 }
 
 function Off() {
+  const router = useRouter();
   return (
     <Frame>
-      <EmptyState icon="Inbox" message="AI Studio is not on for your workspace." />
+      <EmptyState icon="Inbox" message="This app is not available to you."
+        hint="AI Studio may be off for your workspace, or the app is not yours. Go back to Studio and open one of your apps."
+        action={{ label: "Back to Studio", icon: "ArrowLeft", onClick: () => router.push("/studio") }} />
     </Frame>
   );
 }
@@ -154,7 +157,7 @@ function Ide({ pkg }: { pkg: string }) {
 
   if (isMobile) {
     return (
-      <Frame title={draft.name} subtitle={live ? "Live" : "Draft"} actions={actions}>
+      <Frame title={draft.name} actions={actions}>
         <Tabs tabs={PHONE_TABS} activeTab={phoneTab} onTabChange={setPhoneTab} variant="segmented" chrome="inline" className="p-2" />
         <div className="flex min-h-0 flex-1 flex-col">
           {phoneTab === "explorer" ? <div className="min-h-0 flex-1 overflow-y-auto">{explorer}</div> : null}
@@ -166,7 +169,7 @@ function Ide({ pkg }: { pkg: string }) {
   }
 
   return (
-    <Frame title={draft.name} subtitle={live ? `Live v${draft.liveVersion}` : "Draft"} actions={actions}
+    <Frame title={draft.name} actions={actions}
       rail={{ open: explorerOpen, onToggle: () => setExplorerOpen((o) => !o), noun: "the explorer" }}>
       <div className="flex min-h-0 min-w-0 flex-1">
         {explorerOpen ? (
