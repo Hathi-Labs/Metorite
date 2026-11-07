@@ -317,11 +317,13 @@ def try_assign_seat(
 ) -> bool:
     """Assign a seat. Returns False when the member already holds one.
 
-    The ``ON CONFLICT`` clause names the *partial* unique index by repeating its
-    predicate. That is what makes concurrent assignment safe: two requests for
-    the same member race to INSERT, the index rejects the loser, and
-    ``DO NOTHING`` turns the rejection into "already had one" instead of an
-    integrity error surfacing as a 500.
+    ``ON CONFLICT DO NOTHING`` has no target on purpose. Two partial unique
+    indexes can reject the insert: ``seat_assignment_live_uniq`` (the same plan
+    twice) and ``seat_assignment_one_live_tier`` (a second seat tier, 039). That
+    is what makes concurrent assignment safe: two requests for the same member
+    race to INSERT, an index rejects the loser, and ``DO NOTHING`` turns the
+    rejection into "already had one" instead of an integrity error surfacing
+    as a 500.
 
     The caller must still consult :func:`customer_console.seats.decide_assignment`
     for the cap — this function enforces *uniqueness*, not *capacity*.
@@ -332,9 +334,7 @@ def try_assign_seat(
             INSERT INTO seat_assignment
                 (organization_id, plan_slug, user_identity_id, source)
             VALUES (:org, :plan, :identity, :source)
-            ON CONFLICT (organization_id, plan_slug, user_identity_id)
-                WHERE released_at IS NULL
-                DO NOTHING
+            ON CONFLICT DO NOTHING
             RETURNING id
             """
         ),
