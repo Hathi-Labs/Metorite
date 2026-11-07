@@ -1918,6 +1918,27 @@ _DAY_RULES_MAX = 40
 _DAY_RULE_TEXT_MAX = 40
 _RULE_KINDS = ("block", "focus")
 STALE_DAY_RULES = "The day rules changed since I read them. Read the list again."
+#: A confirmed call names the version of the proposal it applies. A number means
+#: "rule n of the list the member saw", so it is valid only for that list.
+STALE_PROPOSAL = ("The day rules changed since I proposed this. Read the list again. "
+                  "I changed nothing.")
+NO_VERSION = ("Propose the change first, then pass the version it showed. "
+              "I changed nothing.")
+
+
+def _version_line(token: str) -> str:
+    return f"Version: {token}"
+
+
+def _apply_gate(version: str, token: str) -> str | None:
+    """The refusal for a confirmed call, or None when it may write. The version
+    must be the token of the list that the proposal read, and it must still be
+    the token of the list now."""
+    if not version:
+        return NO_VERSION
+    if str(version).strip().strip('"') != token:
+        return STALE_PROPOSAL
+    return None
 
 
 def day_rules_token(rules: list[dict]) -> str:
@@ -2028,6 +2049,7 @@ async def my_tasks_add_day_rule(
     label: str = "",
     theme: str = "",
     confirmed: bool = False,
+    version: str = "",
 ) -> str:
     """Add one day rule: a recurring window that the day planner keeps. days
     are numbers from 0 (Monday) to 6 (Sunday). start_hour and end_hour are whole
@@ -2038,11 +2060,13 @@ async def my_tasks_add_day_rule(
     end_hour 11, kind focus, label "Deep work". At most 40 rules fit.
 
     Propose first. With confirmed=False the tool writes nothing and shows the
-    rule. Show that to the member. Call again with confirmed=True and the same
-    arguments only after the member agrees.
+    rule and a line "Version: ...". Show the rule to the member. Call again with
+    confirmed=True, the same arguments and that version only after the member
+    agrees. Without the version the tool saves nothing.
 
     Args:
         confirmed: False = show the rule only (default). True = save it.
+        version: the version that the last proposal showed. Needed with confirmed=True.
     """
     bad = _rule_refusal(days, start_hour, end_hour, kind, label, theme)
     if bad:
@@ -2054,7 +2078,11 @@ async def my_tasks_add_day_rule(
     rule = _rule_of(days, start_hour, end_hour, kind, label, theme)
     if not confirmed:
         return (f"Not saved yet. The new rule would be number {len(rules) + 1}: "
-                f"{_rule_text(rule)}\nAsk the member, then call again with confirmed=True.")
+                f"{_rule_text(rule)}\n{_version_line(token)}\n"
+                "Ask the member, then call again with confirmed=True and this version.")
+    gate = _apply_gate(version, token)
+    if gate:
+        return gate
     stale = await _save_day_rules([*rules, rule], token)
     return stale or f"Saved. Day rule {len(rules) + 1} added: {_rule_text(rule)}"
 
@@ -2077,21 +2105,29 @@ async def my_tasks_edit_day_rule(
     label: str | None = None,
     theme: str | None = None,
     confirmed: bool = False,
+    version: str = "",
 ) -> str:
-    """Change one day rule. number is the number that my_tasks_list_day_rule
+    """Change one day rule. number is the number that my_tasks_list_day_rules
     shows (read the list first). Pass ONLY the fields to change: a field left
     out stays as it is. The fields are days (0 Monday to 6 Sunday), start_hour,
     end_hour, kind (focus or block), label and theme. An empty label or theme
     clears it.
 
     Propose first. With confirmed=False the tool writes nothing and shows the
-    rule before and after. Show that to the member. Call again with
-    confirmed=True and the same arguments only after the member agrees.
+    rule before and after, and a line "Version: ...". Show the change to the
+    member. Call again with confirmed=True, the same arguments and that version
+    only after the member agrees. Without the version the tool saves nothing.
+    After any change, read the list again before you use another number.
 
     Args:
         confirmed: False = show the change only (default). True = save it.
+        version: the version that the last proposal showed. Needed with confirmed=True.
     """
     rules, token = await _read_day_rules()
+    if confirmed:
+        gate = _apply_gate(version, token)
+        if gate:
+            return gate
     bad = _number_refusal(number, rules)
     if bad:
         return bad
@@ -2102,7 +2138,10 @@ async def my_tasks_edit_day_rule(
     if not patch:
         return "No field was given. Say what to change in the rule."
     merged = {**old, **patch}
-    bad = _rule_refusal(merged.get("days"), merged.get("start_hour"), merged.get("end_hour"),
+    # A stored rule may have no days (the server keeps it). That is no fault of
+    # this edit, so the days are checked only when the member changed them.
+    bad = _rule_refusal(patch["days"] if "days" in patch else [0],
+                        merged.get("start_hour"), merged.get("end_hour"),
                         merged.get("kind"), merged.get("label", ""), merged.get("theme", ""))
     if bad:
         return bad
@@ -2112,33 +2151,43 @@ async def my_tasks_edit_day_rule(
         return f"Nothing changes: rule {number} already is {_rule_text(old)}"
     shown = f"Rule {number}: {_rule_text(old)} -> {_rule_text(new)}"
     if not confirmed:
-        return f"Not saved yet. The change would be:\n{shown}\nAsk the member, then call again with confirmed=True."
+        return (f"Not saved yet. The change would be:\n{shown}\n{_version_line(token)}\n"
+                "Ask the member, then call again with confirmed=True and this version.")
     edited = [new if i == number else r for i, r in enumerate(rules, 1)]
     stale = await _save_day_rules(edited, token)
     return stale or f"Saved. {shown}"
 
 
 @_annotate_risk(destructive=True, idempotent=False, open_world=False)
-async def my_tasks_delete_day_rule(number: int, confirmed: bool = False) -> str:
+async def my_tasks_delete_day_rule(
+    number: int, confirmed: bool = False, version: str = "",
+) -> str:
     """Delete one day rule. number is the number that my_tasks_list_day_rules
     shows (read the list first). The other rules move up by one place, so read
     the list again before the next change.
 
     Propose first. With confirmed=False the tool writes nothing and names the
     rule that would go, as "Delete rule 2: Mon-Fri 8-11 focus". Show that to the
-    member. Call again with confirmed=True only after the member agrees.
+    member. Call again with confirmed=True and the version that the proposal
+    showed ("Version: ...") only after the member agrees. Without the version,
+    or when the list changed since the proposal, the tool deletes nothing.
 
     Args:
         confirmed: False = show which rule goes (default). True = delete it.
+        version: the version that the last proposal showed. Needed with confirmed=True.
     """
     rules, token = await _read_day_rules()
+    if confirmed:
+        gate = _apply_gate(version, token)
+        if gate:
+            return gate
     bad = _number_refusal(number, rules)
     if bad:
         return bad
     shown = f"rule {number}: {_rule_text(rules[number - 1])}"
     if not confirmed:
-        return (f"Not deleted yet. Delete {shown}\n"
-                "Ask the member, then call again with confirmed=True.")
+        return (f"Not deleted yet. Delete {shown}\n{_version_line(token)}\n"
+                "Ask the member, then call again with confirmed=True and this version.")
     stale = await _save_day_rules([r for i, r in enumerate(rules, 1) if i != number], token)
     return stale or f"Deleted {shown}"
 

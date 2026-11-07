@@ -59,6 +59,11 @@ class Gateway:
         return [j for m, _, j, _ in self.calls if m == "PUT"]
 
 
+def _v(g: Gateway) -> str:
+    """The version that a proposal of the list as it stands shows."""
+    return core.day_rules_token(g.rules)
+
+
 @pytest.fixture
 def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
     g = Gateway([DEEP, NOMEET])
@@ -101,7 +106,8 @@ async def test_add_confirmed_writes_the_whole_list_with_the_token_it_read(gw: Ga
     """Mutation: send the one rule, or no ``If-Match`` -> red."""
     token = core.day_rules_token([DEEP, NOMEET])
     text = await core.my_tasks_add_day_rule(
-        days=[6, 5], start_hour=9, end_hour=10, label=" Walk ", theme="Health", confirmed=True)
+        days=[6, 5], start_hour=9, end_hour=10, label=" Walk ", theme="Health", confirmed=True,
+        version=_v(gw))
     new = {"days": [5, 6], "start_hour": 9, "end_hour": 10, "kind": "focus",
            "label": "Walk", "theme": "health"}
     assert gw.writes == [{"day_templates": [DEEP, NOMEET, new]}]
@@ -126,7 +132,7 @@ async def test_add_refuses_what_the_server_would_drop(
         gw: Gateway, kw: dict[str, Any], word: str) -> None:
     """The server drops a malformed rule without a word. The tool says why.
     Mutation: drop a check -> the write goes out -> red."""
-    text = await core.my_tasks_add_day_rule(confirmed=True, **kw)
+    text = await core.my_tasks_add_day_rule(confirmed=True, version=_v(gw), **kw)
     assert word in text and "I changed nothing" in text, text
     assert gw.writes == []
 
@@ -135,17 +141,20 @@ async def test_add_refuses_when_the_list_is_full(monkeypatch: pytest.MonkeyPatch
     """40 rules fit, and the 41st does not. Mutation: use ``> 40`` -> red."""
     full = Gateway([{**DEEP, "start_hour": i % 8, "end_hour": 9} for i in range(40)])
     monkeypatch.setattr(core, "_request", full)
-    text = await core.my_tasks_add_day_rule(days=[0], start_hour=1, end_hour=2, confirmed=True)
+    text = await core.my_tasks_add_day_rule(
+        days=[0], start_hour=1, end_hour=2, confirmed=True, version=_v(full))
     assert "full" in text and "40" in text and full.writes == []
     almost = Gateway(full.rules[:39])
     monkeypatch.setattr(core, "_request", almost)
     assert (await core.my_tasks_add_day_rule(
-        days=[0], start_hour=1, end_hour=2, confirmed=True)).startswith("Saved.")
+        days=[0], start_hour=1, end_hour=2, confirmed=True,
+        version=_v(almost))).startswith("Saved.")
 
 
 async def test_edit_changes_the_given_fields_of_the_numbered_rule(gw: Gateway) -> None:
     """Partial edit. Mutation: replace the rule with the given fields only -> red."""
-    text = await core.my_tasks_edit_day_rule(number=1, start_hour=9, label="Focus", confirmed=True)
+    text = await core.my_tasks_edit_day_rule(
+        number=1, start_hour=9, label="Focus", confirmed=True, version=_v(gw))
     assert gw.writes == [{"day_templates": [
         {**DEEP, "start_hour": 9, "label": "Focus"}, NOMEET]}]
     assert "Rule 1: Mon-Fri 8-11 focus 'Deep work' -> Mon-Fri 9-11 focus 'Focus'" in text
@@ -156,15 +165,17 @@ async def test_edit_proposes_first_and_clears_a_label(gw: Gateway) -> None:
     text = await core.my_tasks_edit_day_rule(number=1, label="")
     assert text.startswith("Not saved yet") and "focus 'Deep work' -> Mon-Fri 8-11 focus\n" in text
     assert gw.writes == []
-    await core.my_tasks_edit_day_rule(number=1, label="", confirmed=True)
+    await core.my_tasks_edit_day_rule(number=1, label="", confirmed=True, version=_v(gw))
     assert gw.writes[0]["day_templates"][0]["label"] == ""
 
 
 @pytest.mark.parametrize("number", [0, 3, -1, True])
 async def test_edit_and_delete_refuse_a_number_out_of_range(gw: Gateway, number: Any) -> None:
     """Mutation: use a 0-based index, or let a negative index through -> red."""
-    for out in (await core.my_tasks_edit_day_rule(number=number, start_hour=9, confirmed=True),
-                await core.my_tasks_delete_day_rule(number=number, confirmed=True)):
+    v = _v(gw)
+    for out in (await core.my_tasks_edit_day_rule(
+                    number=number, start_hour=9, confirmed=True, version=v),
+                await core.my_tasks_delete_day_rule(number=number, confirmed=True, version=v)):
         assert "no day rule number" in out and "numbered 1 to 2" in out, out
     assert gw.writes == []
 
@@ -172,10 +183,12 @@ async def test_edit_and_delete_refuse_a_number_out_of_range(gw: Gateway, number:
 async def test_edit_refuses_a_bad_result_and_an_empty_edit(gw: Gateway) -> None:
     """The merged rule is checked, not the field alone: a start of 12 on the 8-11
     rule is past its end. Mutation: check the given fields only -> red."""
-    text = await core.my_tasks_edit_day_rule(number=1, start_hour=12, confirmed=True)
+    v = _v(gw)
+    text = await core.my_tasks_edit_day_rule(number=1, start_hour=12, confirmed=True, version=v)
     assert "start_hour < end_hour" in text and gw.writes == []
-    assert "No field was given" in await core.my_tasks_edit_day_rule(number=1, confirmed=True)
-    same = await core.my_tasks_edit_day_rule(number=1, start_hour=8, confirmed=True)
+    assert "No field was given" in await core.my_tasks_edit_day_rule(
+        number=1, confirmed=True, version=v)
+    same = await core.my_tasks_edit_day_rule(number=1, start_hour=8, confirmed=True, version=v)
     assert "Nothing changes" in same and gw.writes == []
 
 
@@ -184,7 +197,7 @@ async def test_delete_names_the_rule_and_applies_only_when_confirmed(gw: Gateway
     text = await core.my_tasks_delete_day_rule(number=1)
     assert "Delete rule 1: Mon-Fri 8-11 focus 'Deep work'" in text
     assert gw.writes == []
-    done = await core.my_tasks_delete_day_rule(number=1, confirmed=True)
+    done = await core.my_tasks_delete_day_rule(number=1, confirmed=True, version=_v(gw))
     assert gw.writes == [{"day_templates": [NOMEET]}]
     assert done.startswith("Deleted rule 1")
 
@@ -194,13 +207,16 @@ async def test_a_412_answers_with_the_reread_text_and_writes_nothing(
         gw: Gateway, call: str) -> None:
     """Another change lands between the read and the write. Mutation: let the
     412 raise, or retry the write -> red."""
-    gw.change_before_write = [DEEP]
+    v = _v(gw)
+    gw.change_before_write = [DEEP]  # lands between the tool's read and its write
     if call == "add":
-        out = await core.my_tasks_add_day_rule(days=[1], start_hour=1, end_hour=2, confirmed=True)
+        out = await core.my_tasks_add_day_rule(
+            days=[1], start_hour=1, end_hour=2, confirmed=True, version=v)
     elif call == "edit":
-        out = await core.my_tasks_edit_day_rule(number=2, start_hour=16, confirmed=True)
+        out = await core.my_tasks_edit_day_rule(
+            number=2, start_hour=16, confirmed=True, version=v)
     else:
-        out = await core.my_tasks_delete_day_rule(number=2, confirmed=True)
+        out = await core.my_tasks_delete_day_rule(number=2, confirmed=True, version=v)
     assert out == "The day rules changed since I read them. Read the list again."
     assert gw.rules == [DEEP]
     assert len([c for c in gw.calls if c[0] == "PUT"]) == 1
@@ -215,7 +231,9 @@ async def test_another_error_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(core, "_request", boom)
     with pytest.raises(core._GatewayError):
-        await core.my_tasks_add_day_rule(days=[0], start_hour=1, end_hour=2, confirmed=True)
+        await core.my_tasks_add_day_rule(
+            days=[0], start_hour=1, end_hour=2, confirmed=True,
+            version=core.day_rules_token([]))
 
 
 def test_the_token_matches_the_server() -> None:
@@ -242,7 +260,8 @@ def test_the_signatures_and_the_risk() -> None:
         assert not fn.__tool_risk__.get("read_only")
         assert inspect.signature(fn).parameters["confirmed"].default is False
     assert set(inspect.signature(core.my_tasks_edit_day_rule).parameters) == {
-        "number", "days", "start_hour", "end_hour", "kind", "label", "theme", "confirmed"}
+        "number", "days", "start_hour", "end_hour", "kind", "label", "theme", "confirmed",
+        "version"}
 
 
 def test_the_writes_are_held_off_and_the_read_stays(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -323,3 +342,100 @@ async def test_the_routes_read_if_match_and_return_the_etag(monkeypatch: pytest.
     sent = Response()
     await st.write_user_settings(st.UserSettingsPatch(), sent, user=None, if_match='"abc"')
     assert sent.headers["etag"] == want
+
+
+# ── CAL-3 fix round 1: a number is valid for the list the member saw ─────────
+
+A, B, C, D = (
+    {"days": [0], "start_hour": h, "end_hour": h + 1, "kind": "focus", "label": n, "theme": ""}
+    for h, n in ((8, "A"), (10, "B"), (12, "C"), (14, "D")))
+
+
+def _version_of(text: str) -> str:
+    line = next(ln for ln in text.splitlines() if ln.startswith("Version: "))
+    return line.removeprefix("Version: ")
+
+
+async def test_two_proposals_then_two_applies_delete_one_rule_not_two(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The review trace. "Delete rules 2 and 3" proposes both against [A,B,C,D]
+    (one version). The first apply deletes B. The list shifts, so rule 3 is now D.
+    The second apply must write nothing. Mutation: take a fresh token at apply
+    time and use ``number`` on the new list -> D goes -> red."""
+    g = Gateway([A, B, C, D])
+    monkeypatch.setattr(core, "_request", g)
+    p2 = await core.my_tasks_delete_day_rule(number=2)
+    p3 = await core.my_tasks_delete_day_rule(number=3)
+    v1 = _version_of(p2)
+    assert _version_of(p3) == v1 and "rule 2" in p2 and "'B'" in p2 and "'C'" in p3
+    assert g.writes == []
+    done = await core.my_tasks_delete_day_rule(number=2, confirmed=True, version=v1)
+    assert done.startswith("Deleted rule 2") and g.rules == [A, C, D]
+    second = await core.my_tasks_delete_day_rule(number=3, confirmed=True, version=v1)
+    assert second == core.STALE_PROPOSAL and "I changed nothing" in second
+    assert g.rules == [A, C, D] and len(g.writes) == 1
+
+
+async def test_an_edit_after_another_writer_reordered_the_list_writes_nothing(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Calendar sheet reorders between propose and apply. Mutation: skip the
+    version compare -> rule 2 is now A and gets the edit -> red."""
+    g = Gateway([A, B])
+    monkeypatch.setattr(core, "_request", g)
+    proposal = await core.my_tasks_edit_day_rule(number=2, end_hour=12)
+    assert "'B'" in proposal
+    g.rules = [B, A]
+    out = await core.my_tasks_edit_day_rule(
+        number=2, end_hour=12, confirmed=True, version=_version_of(proposal))
+    assert out == core.STALE_PROPOSAL and g.rules == [B, A] and g.writes == []
+
+
+@pytest.mark.parametrize("call", ["add", "edit", "delete"])
+async def test_confirmed_without_a_version_writes_nothing(gw: Gateway, call: str) -> None:
+    """Mutation: let an empty version through -> red."""
+    if call == "add":
+        out = await core.my_tasks_add_day_rule(days=[1], start_hour=1, end_hour=2, confirmed=True)
+    elif call == "edit":
+        out = await core.my_tasks_edit_day_rule(number=1, start_hour=9, confirmed=True)
+    else:
+        out = await core.my_tasks_delete_day_rule(number=1, confirmed=True)
+    assert out == core.NO_VERSION and gw.writes == []
+
+
+@pytest.mark.parametrize("call", ["add", "edit", "delete"])
+async def test_propose_then_apply_with_its_version_still_works(gw: Gateway, call: str) -> None:
+    """Happy path of each write: the version of the proposal applies it, the
+    write goes out with that version in ``If-Match``."""
+    kw: dict[str, Any] = {
+        "add": {"days": [1], "start_hour": 1, "end_hour": 2},
+        "edit": {"number": 1, "start_hour": 9},
+        "delete": {"number": 1}}[call]
+    fn = getattr(core, f"my_tasks_{call}_day_rule")
+    proposal = await fn(**kw)
+    assert "Not " in proposal and gw.writes == []
+    version = _version_of(proposal)
+    out = await fn(**kw, confirmed=True, version=version)
+    assert out.startswith(("Saved.", "Deleted")) and len(gw.writes) == 1
+    assert gw.calls[-1][3] == {"If-Match": f'"{version}"'}
+
+
+async def test_a_quoted_version_is_accepted(gw: Gateway) -> None:
+    out = await core.my_tasks_delete_day_rule(
+        number=2, confirmed=True, version=f'"{_v(gw)}"')
+    assert out.startswith("Deleted rule 2")
+
+
+async def test_an_edit_of_a_rule_with_no_days_does_not_refuse(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The server keeps a rule with ``days: []``. An edit of its hours must not
+    refuse on days the member did not touch. Changing the days to [] still
+    refuses, and ``add`` stays strict. Mutation: check the merged days -> red."""
+    nodays = {**A, "days": []}
+    g = Gateway([nodays])
+    monkeypatch.setattr(core, "_request", g)
+    out = await core.my_tasks_edit_day_rule(
+        number=1, end_hour=10, confirmed=True, version=_v(g))
+    assert out.startswith("Saved.") and g.rules[0]["end_hour"] == 10 and g.rules[0]["days"] == []
+    bad = await core.my_tasks_edit_day_rule(number=1, days=[], confirmed=True, version=_v(g))
+    assert "days" in bad and "I changed nothing" in bad
+    assert "days" in await core.my_tasks_add_day_rule(days=[], start_hour=1, end_hour=2)
