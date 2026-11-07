@@ -569,7 +569,10 @@ def test_the_write_kinds_cover_each_projects_write() -> None:
     import skill_projects  # noqa: F401  (it registers the risk marks)
     from acb_skills.subagent_contract import annotated_read_only
 
-    owner = {slug for slug in sf.pack_slugs() if sf.SKILL_FAMILIES[slug].get("owner") == PA}
+    # ``calendar-day`` (CAL-1a, task 1675) has the same owner and holds no Projects write:
+    # its tools plan the day and edit no task, so ``WRITE_KINDS`` has no kind for them.
+    owner = {slug for slug in sf.pack_slugs()
+             if sf.SKILL_FAMILIES[slug].get("owner") == PA and slug != "calendar-day"}
     assert owner == PROJ | {"projects-reports"}, "non-vacuity"  # PJP-2 + ALN-4: 7 packs
     writes = {name for slug in owner for name in sf.SKILL_FAMILIES[slug]["tools"]
               if not annotated_read_only(name) and name not in tp.CHAT_FILE_TOOLS}
