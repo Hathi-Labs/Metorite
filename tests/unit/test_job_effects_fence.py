@@ -50,9 +50,10 @@ _MODULES = ("gateway.jobs.worker", "gateway.brief.run", "gateway.brief.monitor",
 #: The ONLY gateway modules that the brief may import (an allowlist, so a new
 #: send seam is refused until someone adds it here on purpose). ``reach.loop``
 #: serves the reads ``resolve`` and ``snapshot``, and its senders stay out
-#: (:data:`_ALLOWED_NAMES`). ``routes.shell.feed`` and ``.state`` are reads.
+#: (:data:`_ALLOWED_NAMES`). ``routes.shell.feed``, ``.state`` and ``.handled`` (BR-2b-1) are reads.
 _ALLOWED = ("gateway.brief", "gateway.jobs", "gateway.reach.plan", "gateway.reach.loop",
             "gateway.my_day_loop", "gateway.routes.shell.feed", "gateway.routes.shell.state",
+            "gateway.routes.shell.handled",
             "gateway.work_schedule", "gateway.db")
 #: The names that the brief may take from a module of :data:`_ALLOWED` that
 #: also holds a sender.
@@ -61,7 +62,7 @@ _ALLOWED_NAMES: dict[str, frozenset[str]] = {
 #: ``from gateway.reach import <name>``: only these modules.
 _PACKAGE_NAMES: dict[str, frozenset[str]] = {
     "gateway.reach": frozenset({"plan", "loop"}),
-    "gateway.routes.shell": frozenset({"feed", "state"}),
+    "gateway.routes.shell": frozenset({"feed", "state", "handled"}),
     "gateway": frozenset({"my_day_loop", "work_schedule", "db", "brief", "jobs"})}
 
 

@@ -181,19 +181,39 @@ def _member(org: str) -> Any:
     return _principal("member@crm-sync.test", org, "feature:crm")
 
 
+_REQ_APP: Any = None
+
+
+def _req_app() -> Any:
+    """The one ``/crm`` app that every ``_req`` call uses.
+
+    CIV-9 (task 1637). ``include_router`` of the CRM router rebuilt hundreds of
+    pydantic fields on EVERY request: 11 s of a 38 s test (profiled 2026-11-07,
+    29,794 ``ModelField.__post_init__`` calls). The app holds no per-request
+    state except the ``get_current_user`` override, and ``_req`` sets that
+    override on each call. Tests run one after the other, so one app is safe.
+    """
+    global _REQ_APP
+    if _REQ_APP is None:
+        from fastapi import FastAPI
+        from gateway.routes import crm as crm_package
+
+        app = FastAPI()
+        app.include_router(crm_package.router)
+        _REQ_APP = app
+    return _REQ_APP
+
+
 async def _req(user: Any, method: str, path: str, body: dict | None = None) -> Any:
     """One request through the real ``/crm`` router, as *user*."""
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
-    from fastapi import FastAPI
-    from gateway.routes import crm as crm_package
 
     async def _caller() -> Any:
         bind_tenant(user.organization_id)
         return user
 
-    app = FastAPI()
-    app.include_router(crm_package.router)
+    app = _req_app()
     app.dependency_overrides[get_current_user] = _caller
     scope = clear_tenant()
     try:
