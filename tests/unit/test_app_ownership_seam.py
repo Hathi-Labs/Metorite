@@ -8,9 +8,11 @@ keeps a second owner table.
 
 R7 fences named here:
 
-* ``lead-seam-one-walk``: no module outside the allow-list compares the
-  ``lead`` column of ``pm_projects``. A copy of the walk, or a Python test on
-  ``.lead``, fails here.
+* ``lead-seam-one-walk``: no module outside the allow-list uses one of the
+  forms in ``_LEAD_TEST`` (``lower(lead) =``, ``WHERE lead =``,
+  ``pm_projects.lead =``, a Python test on ``.lead``). This is a text check.
+  A comparison written in another form, such as ``AND p.lead = :me``, passes
+  it. The authority is the review of a change that touches a lead rule.
 * ``lead-seam-end-rule-embeds``: ``agent_runs.person_may_end_sql`` holds the
   text of ``led_subtree_sql()``, and ``agent_runs.py`` and
   ``needs_attention.py`` hold no lead walk of their own.

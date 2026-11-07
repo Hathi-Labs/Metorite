@@ -2414,7 +2414,8 @@ async def release_agent_run(
     * An agent releases its OWN run only: the same member and the same
       client stamp.
     * A person releases a run when they are its member, an assignee of the
-      task, or an org admin.
+      task, or an org admin. With the flag ``APP_LEAD_RUNS_ORGS`` on, the
+      lead of the task's project, or of an ancestor, may release too.
     * A caller who cannot see the task gets 404. A caller who sees it and
       has no right to release gets 403.
     * A run that is already ``released`` answers 200 again, with no write.
