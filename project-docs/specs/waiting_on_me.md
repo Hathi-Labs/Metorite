@@ -2,7 +2,7 @@
 
 **Product:** Metorite · **Feature:** one list of what waits on a member, and of what the member waits on · **Updated:** 2026-11-06 · **Owner:** vjvarada
 
-**Status:** 🟡 **SPEC, ACCEPTED. AP-1a MERGED, dark** (task 1616, `bf0ece44b`, PR 1797): the read seam of §7.3 with four kinds, behind `WAITING_ORGS` (empty by default). **AP-8a BUILT, dark, not merged** (task 1858, branch `pro-ap8`, migration 352): the person ask of §7.1 and §7.2, behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8b is NO-GO until the spec answers §8 B4 to B6. The other slices are not built, except the parts that §2 names.
+**Status:** 🟡 **SPEC, ACCEPTED. AP-1a MERGED, dark** (task 1616, `bf0ece44b`, PR 1797): the read seam of §7.3 with four kinds, behind `WAITING_ORGS` (empty by default). **AP-8a BUILT, dark, not merged** (task 1858, branch `pro-ap8`, migration 352): the person ask of §7.1 and §7.2, behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8b is NO-GO until the spec answers §8 B4 to B6. AP-BUG-2 is built (task 1896, the admin gate of `/actions`). The other slices are not built, except the parts that §2 names.
 
 On 2026-11-06 the owner accepted the recommended answers to AP-Q1 to AP-Q8 (§13). AP-Q9 has a working default. The owner answered AP-Q10, so AP-16 is open to build after AP-15.
 
@@ -86,7 +86,7 @@ Each fact was read on `97da742ae`.
 | Agent question on a task | `pm_agent_runs`, state `awaiting` (`267_pm_agent_runs.sql:60`) | The run's member. `ask_on_task` has no recipient field (`agent_edge/tools.py:5748-5781`) | The task pill, the Projects filter "Waiting on me", the strip count, the bell `agent_question`, the chat tool `waiting_agent_requests` (`skill_projects/reads.py:1834`), the project panel "Waiting on people" | The bell goes to assignees and watchers too (`agent_runs.py:1256-1263`). Any person who opens the task can answer a free question (`agent_runs.py:1117-1118`) |
 | Archive request | The same run, a typed question | The run's member | The task, the bell of the member only (`agent_runs.py:1230-1231`) | Only the member answers (`agent_runs.py:973-982`) |
 | App request | `pm_agent_runs` with no task (migration 342) | The member | Integrations, AI agents, "Waiting for you" (`WaitingRequests.tsx`). Dark behind `APP_REQUESTS_ORGS` | Nobody |
-| Held write | `pending_actions` | No approver column (`needs.py:46-47`) | `/approvals`. My Day for admins only (`needs.py:40-47`) | ⚠️ The gateway returns the whole tenant queue to any member with `feature:approvals` (`routes/actions.py:33-56`). Every member has it (migration 207) |
+| Held write | `pending_actions` | No approver column (`needs.py:46-47`) | `/approvals`. My Day for admins only (`needs.py:40-47`) | Only an org admin. AP-BUG-2 (task 1896) fixed the open read. The `/actions` router now demands `ADMIN_PERMISSION` too, so another member gets 403 on the list, on approve and on reject. `test_actions_pending_admin_r8.py` is the fence |
 | Chat card | `chat_pending_ask` (migration 237) | `actor_email` | The open chat. My Day `agent_asks` and `AiWaitingCard`, both dark | Nobody |
 | Decision | `pm_decisions` (migration 332) | The named `decider` | The bell `decision`, the task panel, My Day. Dark behind `DECISIONS_ORGS` | Others see `{decider, expires_at}` and the answer comment (`decisions.py:428-441`) |
 | I wait on a person | `pm_task_personal.waiting_on` (migration 188) | Nobody. It is the waiter's private overlay | The waiter's "Waiting" chip in My work (`myTasks.ts:142`), `WaitingForView.tsx` (unreachable while `NEXT_PUBLIC_PROJECTS_MY_WORK` is on), the waiter's My Day `waiting_quiet` after 5 days (`feed.py:390-409`) | Nobody. The waited-on person has no list |
@@ -584,6 +584,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-15** | 1875 | A wait that no person owns: the ladder, the circle, the open wait, the opening after 24 hours, and the Team lens filter "Open" (§4.5) | R8 tests hold V9, V10 and V2 for the circle. A typed archive request stays the member's. The group "Near you" draws no count. UI gate for the open row and "Near you" | HIGH (visibility). Needs AP-1 |
 | **AP-16** | 1876 | An agent names the person its question is for: the field `for` on `ask_on_task`, inside the circle only | An R8 test holds V11. The MCP schema, `agent_edge/tools.py` and the route take the field. The answer still reaches the run's session | HIGH (identity). Needs AP-15. AP-Q10 is answered |
 | **AP-BUG-1** | 1857 | The Projects bell draws a person's `nudge` as "has gone quiet … Resume or release it" | A person's nudge reads "{A} nudged you about {task}". A stranded-run nudge keeps its text. A vitest holds both. **BUILT** | LOW |
+| **AP-BUG-2** | 1896 | ✅ BUILT. `GET /actions/pending` gave the whole tenant queue to any member (§2.1) | A member gets 403 on the list, on approve and on reject. An admin gets the whole queue of the org. Two orgs do not cross. `/approvals` shows a member no queue and no error. R8 tests hold each | HIGH (visibility) |
 
 **AP-8b: the three open points.** Write each one before AP-8b starts.
 
@@ -696,6 +697,7 @@ Each open question has a recommended answer. The build uses it as a working defa
 ## 14. Changelog
 
 - 2026-11-06 — AP-0 written (task 1855). The research read `97da742ae` and the branch `l6s-waiting-list`. It found the store for person asks (`pm_decisions`), the nudge text defect (AP-BUG-1), and the open `/approvals` gateway read (§2.1).
+- 2026-11-06 — AP-BUG-2 (task 1896) built. The `/actions` router demands `ADMIN_PERMISSION`, and `/approvals` shows a member no queue and no error.
 - 2026-11-06 — The owner accepted AP-Q1 to AP-Q8 on task 1855. The owner then asked, in chat, that a wait on a task with no assignee reach the right people. Added §4.5 (the ladder, the circle and the open wait), V9 to V11, AP-15 (task 1875), AP-16 (task 1876), AP-Q9 and AP-Q10.
 - 2026-11-06 — AP-1a built on branch `pro-ap1` (task 1616), dark behind `WAITING_ORGS`. Four kinds: `held_write`, `chat_ask`, `app_request` and `decision`. §7.3 now says that the providers stay in `waiting.py` and holds the wire shape. §8 splits AP-1 into AP-1a, AP-1b and AP-1c. §5.2 shows no question text for `chat_ask`. §2.2 records that PR 1741 and EA-18a merged, and the conflict of D-EA-14 with AP-Q2.
 - 2026-11-07 — AP-8a built on branch `pro-ap8` (task 1858), dark behind `WAITING_ORGS` and `DECISIONS_ORGS`. Migration 352 widens the source CHECK and adds `due_at`, `closed_at` and `closed_reason`. §7.2 names both flags and the rule of guard 5. §8 splits AP-8 into AP-8a and AP-8b, and AP-8b holds B4 to B6. AP-1a merged as `bf0ece44b`.

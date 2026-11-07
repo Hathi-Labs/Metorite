@@ -22,6 +22,10 @@ selected. ``gate-output``, ``select`` and ``empty-report`` carry that selection
 between the ``changes`` job, the shards and this guard. A selection run is a
 subset, so the shards and this guard never treat an absent file as lost.
 
+``r8-covered`` (CIV-4c) reads the report of deploy.yml's no-database unit run
+and the ``affected_tests.py --r8`` list. It fails when a file skipped for an
+R8 reason and is not in the list, because the release gate never runs it.
+
 Stdlib only: the ``Unit tests`` job runs it without ``uv sync``.
 Fence: tests/unit/test_ci_unit_guard.py.
 """
@@ -129,6 +133,88 @@ def check(
             problems.append(f"no shard ran {path}")
     print(f"checked {len(cases)} tests from {len(ran)} files")
     return problems
+
+
+# ── r8-covered (CIV-4c) ──────────────────────────────────────────────────
+# deploy.yml's `test` job has no database, so each R8 suite skips there. The
+# release gate runs only the files that `affected_tests.py --r8` lists. A file
+# that skips for an R8 reason and is not in that list runs nowhere.
+R8_VARS = ("CUSTOMER_CONSOLE_DATABASE_URL", "TENANT_LADDER_DATABASE_URL")
+_R8_WORD = re.compile(r"(?<![A-Za-z0-9_])R8(?![A-Za-z0-9_])")
+_REAL_POSTGRES = re.compile(r"real postgres", re.IGNORECASE)
+
+
+def is_r8_reason(reason: str) -> bool:
+    """True when a skip reason says that an R8 database was not set.
+
+    The reason starts with an R8 variable, or it names "R8" and also names a
+    variable or "real Postgres". A Redis skip that names a variable later,
+    with no "R8", is not an R8 reason. The collection text carries a path and
+    a "Skipped:" prefix, which this drops first."""
+    text = reason.split("Skipped: ", 1)[1] if "Skipped: " in reason else reason
+    text = text.strip()
+    if text.startswith(R8_VARS):
+        return True
+    if not _R8_WORD.search(text):
+        return False
+    return any(v in text for v in R8_VARS) or bool(_REAL_POSTGRES.search(text))
+
+
+def _skip_paths(case: ET.Element) -> list[str]:
+    """The files that own a skipped case: where the test is DEFINED (``file``)
+    and the module that COLLECTED it (read from ``classname``). They differ when
+    a module subclasses a gated class of another module. Both must be in the
+    --r8 list, or the collecting module runs nowhere (CIV-4c verifier)."""
+    paths = [_file(case)]
+    parts = case.get("classname", "").split(".")
+    while parts and not parts[-1].startswith("test"):
+        parts.pop()
+    if parts:
+        collected = "/".join(parts) + ".py"
+        if collected not in paths:
+            paths.append(collected)
+    return paths
+
+
+def r8_covered(junit_dir: Path, r8_list: Path) -> list[str]:
+    """Each file that skipped for an R8 reason and is not in ``r8_list``.
+
+    Fails closed: no report, a report with no test, and a missing or empty
+    list each give a problem. An empty list means the selector broke. A
+    report with no test means no run. The check never passes on nothing."""
+    try:
+        listed = {
+            line.strip().replace("\\", "/")
+            for line in r8_list.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+    except OSError as exc:
+        return [f"cannot read the --r8 list {r8_list}: {exc}"]
+    if not listed:
+        return [f"the --r8 list {r8_list} is empty. affected_tests.py --r8 broke."]
+    reports = sorted(junit_dir.rglob("*.xml")) if junit_dir.is_dir() else []
+    if not reports:
+        return [f"no JUnit report under {junit_dir}. The unit run wrote nothing."]
+    try:
+        cases = [c for r in reports for c in ET.parse(r).getroot().iter("testcase")]
+    except ET.ParseError as exc:
+        return [f"a JUnit report under {junit_dir} does not parse: {exc}"]
+    if not cases:
+        return [f"the JUnit reports under {junit_dir} hold no test. No unit run happened."]
+    skipped: dict[str, str] = {}
+    for case in cases:
+        reason = _skip_reason(case)
+        if reason is not None and is_r8_reason(reason):
+            for path in _skip_paths(case):
+                skipped.setdefault(path, f"{case.get('name')}: {reason}")
+    missed = sorted(p for p in skipped if p not in listed)
+    if not missed:
+        print(f"R8 skips checked: {len(skipped)} files, all in the --r8 list")
+    return [
+        f"{p} skipped for an R8 reason and is not in the --r8 list, so the release "
+        f"gate never runs it. Name an R8 mark in the file. {skipped[p]}"
+        for p in missed
+    ]
 
 
 def durations(junit_dir: Path) -> dict[str, float]:
@@ -291,8 +377,16 @@ def main(argv: list[str] | None = None) -> int:
     sel.add_argument("--ignored", default="", help="the output of fences.py pytest-ignore")
     e = sub.add_parser("empty-report", help="write a zero-test JUnit report if none exists")
     e.add_argument("--out", type=Path, required=True)
+    r = sub.add_parser("r8-covered", help="every R8 skip of a no-database run is in the --r8 list")
+    r.add_argument("--junit", type=Path, required=True)
+    r.add_argument("--list", type=Path, required=True, help="the output of affected_tests.py --r8")
     args = parser.parse_args(argv)
 
+    if args.cmd == "r8-covered":
+        problems = r8_covered(args.junit, args.list)
+        for p in problems:
+            print(f"::error::{p}")
+        return 1 if problems else 0
     if args.cmd == "gate-output":
         print(chr(10).join(gate_output(args.json, args.ignored)))
         return 0

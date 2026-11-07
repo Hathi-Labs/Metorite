@@ -432,8 +432,8 @@ whole API surface.
 The gateway trusts `X-User-Email` and `X-User-Role` only with a matching
 internal Bearer (`acb_auth/deps.py` branch 1a). Nothing in the gateway can tell
 a forwarded header from a forged one, so the Bearer is the whole proof. The
-Bearer falls back to the widely held `LITELLM_MASTER_KEY` when
-`GATEWAY_INTERNAL_TOKEN` is unset. The public Caddy vhost deletes both headers
+Bearer is `GATEWAY_INTERNAL_TOKEN` only, with no fallback to `LITELLM_MASTER_KEY`
+(WS-24b). An unset token fails closed outside `ACB_ENV=dev`. The public Caddy vhost deletes both headers
 from each inbound request (`deploy/hostinger/caddy/Caddyfile`). A change to
 those lines is an owner action, and `tests/unit/test_caddy_auth_gate.py` fences it.
 

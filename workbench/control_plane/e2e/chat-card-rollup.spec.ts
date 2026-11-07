@@ -168,7 +168,14 @@ test.describe("chat cards roll up, and an approval at the bottom draws in view",
     // The approval arrives at the bottom. Watch for a second: the pin must
     // never draw, and the thread must stay at its bottom.
     //
-    // ⚠️ The distance is read in a ResizeObserver callback, not in a frame
+    // CIV-8i: under a loaded CPU (CI, or `--workers=4 --repeat-each=8`) one
+    // sample read the grown content before the pin ran: 123 px, the height of
+    // the card, in 2 of 8 runs at 4 workers. A timer
+    // can fire between a React commit and the next rendering step, and the
+    // observer order is not fixed either. So one such sample is not a lost
+    // bottom. A lost bottom stays: two samples in a row, or the last one.
+    //
+    // The distance is read in a ResizeObserver callback, not in a frame
     // callback. A frame callback runs BEFORE the frame's resize callbacks,
     // so it reads the content grown and not yet pinned: a state the member
     // never sees painted. This observer is made after the chat's own, so
@@ -203,7 +210,9 @@ test.describe("chat cards roll up, and an approval at the bottom draws in view",
     await expect.poll(() => page.evaluate(() => (window as unknown as { __done?: boolean }).__done === true), { timeout: 10_000 }).toBe(true);
     const frames = await page.evaluate(() => (window as unknown as { __frames: { pin: boolean; dist: number }[] }).__frames);
     expect(frames.filter((f) => f.pin), "the pin drew while the card was in view").toHaveLength(0);
-    expect(Math.max(...frames.map((f) => f.dist)), "the transcript left its bottom").toBeLessThan(80);
+    const far = frames.map((f) => f.dist >= 80);
+    expect(far.some((f, i) => f && far[i + 1]), "the transcript left its bottom, and stayed away").toBe(false);
+    expect(frames[frames.length - 1].dist, "the transcript ended away from its bottom").toBeLessThan(80);
 
     // The card is wholly inside the thread's viewport.
     const box = await card.boundingBox();

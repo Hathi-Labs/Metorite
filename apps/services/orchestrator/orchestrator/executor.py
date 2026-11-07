@@ -3790,10 +3790,12 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
     leaves the parent's ``user`` and ``member_verified`` in place. Every
     failure answers no.
 
-    The member's org (``acb_auth.access.resolve_identity``) must equal the
-    run's org. A failed read or a mismatch answers no. Known limit: with
-    ``IDENTITY_CUTOVER`` on, a person with more than one active membership
-    resolves to no org, so the gate refuses them.
+    The member must be an active member of the run's org
+    (``acb_auth.access.is_active_member``), and the admin permission is read
+    in the run's org (``acb_auth.access.resolve_access_in_org``). A person
+    with an active membership in two orgs passes only when their role row is
+    in the run's org (PLN-Q5, H-232b). Roles live on one ``app_user`` row, in
+    one org (D48 moves them). A failed read or a mismatch answers no.
     """
     from acb_common import get_run_context
 
@@ -3812,24 +3814,41 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
         return False, f"the first-party check failed: {str(exc)[:120]}"
     # H-232: the member must belong to the run's org. ``resolve_access`` reads
     # roles by email alone, so an admin of another org passed this gate.
-    # Fence: ``tests/unit/test_root_agent_first_party.py``.
-    try:
-        from acb_auth.access import identity_read_failed, resolve_identity
-        _user_id, member_org = await resolve_identity(member)
-    except Exception as exc:
-        return False, f"the identity check failed: {str(exc)[:120]}"
-    if identity_read_failed():
-        return False, "the identity check failed"
-    if not member_org or str(member_org).lower() != str(org).lower():
-        return False, "the member is not of the run's organization"
-    try:
-        from acb_auth import resolve_access
-        access = await resolve_access(member)
-    except Exception as exc:
-        return False, f"the access check failed: {str(exc)[:120]}"
+    # H-232b: ask about the run's org, not "the member's one org", because
+    # ``resolve_identity`` has no answer for a person in two orgs under the
+    # cutover. Fence: ``tests/unit/test_root_agent_first_party.py``.
+    access, why = await _member_access_in_run_org(member, org)
+    if access is None:
+        return False, why
     if not (access.is_active and access.has(_FIRST_PARTY_ADMIN_PERMISSION)):
         return False, "not an admin of the first-party organization"
     return True, ""
+
+
+async def _member_access_in_run_org(
+    member: str, org: str,
+) -> tuple[Any, str]:
+    """The member's access in the run's org, or ``(None, why)``. H-232b.
+
+    Two ``acb_auth`` reads keyed on ``(email, org)``. First the membership
+    (``is_active_member``), then the roles of the member in that org
+    (``resolve_access_in_org``). Both fail closed, and an exception is a
+    refusal. Both run gates call it: :func:`_first_party_admin_runs` and
+    :func:`_agent_push_allowed`.
+    """
+    try:
+        from acb_auth.access import is_active_member
+        member_ok = await is_active_member(member, org)
+    except Exception as exc:
+        return None, f"the membership check failed: {str(exc)[:120]}"
+    if not member_ok:
+        return None, "the member is not of the run's organization"
+    try:
+        from acb_auth.access import resolve_access_in_org
+        access = await resolve_access_in_org(member, org)
+    except Exception as exc:
+        return None, f"the access check failed: {str(exc)[:120]}"
+    return access, ""
 
 
 async def _agent_push_allowed() -> tuple[bool, str]:
@@ -3840,6 +3859,11 @@ async def _agent_push_allowed() -> tuple[bool, str]:
     in the first-party org or in an org of ``AGENT_REGISTRY_ORGS``. The member
     and the org come from the run binding only, never from the payload (R5), as in
     :func:`_first_party_admin_runs`. Every failure answers no.
+
+    H-232b: the member must be an active member of the run's org, and the
+    permission is read in the run's org (:func:`_member_access_in_run_org`).
+    Before, ``resolve_access`` read it by email alone, so an ``agents:manage``
+    holder of another org passed on a run of a registry org.
 
     The run binds the answer as ``agent_push_allowed``. The Copilot permission
     guard and ``run_script`` read it, and :func:`_detect_agent_commits` asks it
@@ -3855,10 +3879,11 @@ async def _agent_push_allowed() -> tuple[bool, str]:
     org = _current_run_org()
     if not org:
         return False, "no organization"
+    access, why = await _member_access_in_run_org(member, org)
+    if access is None:
+        return False, why
     try:
-        from acb_auth import resolve_access
         from acb_auth.agent_operator import may_review_agent_commits
-        access = await resolve_access(member)
     except Exception as exc:
         return False, f"the access check failed: {str(exc)[:120]}"
     if not access.is_active:
@@ -5793,11 +5818,10 @@ async def _run_agent_inner(
                 gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
+                # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
                 gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "")
-                    or getattr(settings, "litellm_master_key", "")
-                    or "sk-local"
-                ),
+                    getattr(settings, "gateway_internal_token", "") or ""
+                ).strip(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -6897,11 +6921,10 @@ async def run_agent_stream(
                 gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
+                # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
                 gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "")
-                    or getattr(settings, "litellm_master_key", "")
-                    or "sk-local"
-                ),
+                    getattr(settings, "gateway_internal_token", "") or ""
+                ).strip(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -7190,12 +7213,12 @@ async def run_agent_stream(
                     getattr(settings, "litellm_base_url", "")
                     or "http://127.0.0.1:8080"
                 ).rstrip("/")
-                # Internal-token precedence must match require_internal_auth
-                # (gateway_internal_token → litellm_master_key); a divergence
-                # otherwise 401s the BYOK /v1 call and surfaces on the Copilot
-                # session as "Authorization error, run /login".
+                # A /v1 call, so the LLM API key and NEVER the identity token
+                # (`Settings.llm_api_key`, the key of _model_resolution).
+                # require_llm_api_auth accepts it. WS-24b removed the
+                # identity token from this provider config.
                 _gw_key = (
-                    getattr(settings, "gateway_internal_token", "")
+                    getattr(settings, "llm_api_key", "")
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
                 ).strip()
@@ -8919,7 +8942,7 @@ async def run_agent_stream(
                 # save that did not happen (orchestrator/setup_tokens.py).
                 if any(v.strip() for _, _k, v in raw_matches):
                     _GATEWAY_URL = settings.gateway_base_url if hasattr(settings, "gateway_base_url") else "http://127.0.0.1:8000"
-                    _token = getattr(settings, "gateway_internal_token", "") or getattr(settings, "litellm_master_key", "")
+                    _token = (getattr(settings, "gateway_internal_token", "") or "").strip()
                     try:
                         import httpx
 
