@@ -6718,7 +6718,7 @@ The node suite holds its pure rule.
 ## 30. An image from the chat goes onto a task, and the agent sees it (2026-11-07)
 
 **Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 and IMG-2
-are AGENT-SAFE. IMG-3 is AGENT-SAFE after the owner answers on task 1999.
+are AGENT-SAFE. IMG-3 is AGENT-SAFE, since the owner answer of 2026-11-07.
 IMG-4 needs an audit before a build. No migration.
 
 ### 30.1 The request
@@ -6790,8 +6790,11 @@ The audit read `origin/main` at `15895c1be`.
 **The owner decision that this opens.** On 2026-11-06 the owner kept MCP-G18
 to metadata. The read of the bytes waited on the "base64 transport". The
 request of 2026-11-07 asks the agent to get the image itself. That is a
-product wish, not an answer to the named decision. So IMG-3 waits for one
-explicit owner answer on task 1999. IMG-3 covers the READ half only. The
+product wish, not an answer to the named decision. So the agent asked one
+explicit question on task 1999. **The owner answered "yes" on 2026-11-07, in
+chat** ("okay, go ahead with the next step"). An agent may read the images
+and the text files of a task that it can see. `external_agent_access.md`
+§15 row IMG-3 records it. IMG-3 covers the READ half only. The
 server encodes the bytes, so the model never writes them. The upload over
 the MCP still waits (task 413).
 
@@ -6871,8 +6874,8 @@ STANDARD. Frontend only.
 
 **IMG-3 (task 1999). The MCP gives an image on a task to the agent.** HIGH,
 because file bytes leave the platform for an outside agent. Spec audit and
-the Opus reviewer. **Gate:** the owner answers the transport question on task
-1999 first (§30.3). The audit of 2026-11-07 gave GO-NARROWED on the read half
+the Opus reviewer. **Gate:** cleared. The owner answered the transport
+question on task 1999 on 2026-11-07 (§30.3). The audit of 2026-11-07 gave GO-NARROWED on the read half
 only, after the edits below.
 
 - **Files:** `agent_edge/tools.py`, `agent_edge/gateway_client.py`,
