@@ -695,12 +695,23 @@ def stored_legacy(monkeypatch):
     monkeypatch.setattr(routes, "_assert_account_owner", AsyncMock())
     hosted: list[str] = []
 
-    async def _store(encoded, *, kind, member, base):
+    async def _store(db, encoded, *, kind, member, base):
         hosted.append(member)
         return {"url": f"{base}/email/signature-image/{_ORG}/{'h' * 43}.png"}
 
-    monkeypatch.setattr(routes, "store_image", _store)
+    monkeypatch.setattr(routes, "_store_in", _store)
     return hosted
+
+
+async def test_a_save_with_one_bad_image_stores_none(monkeypatch, base_url, stored_legacy):
+    """Fix round 1, P3: every image is re-encoded before any row is written,
+    so a later bad image leaves no row of an earlier good one."""
+    bad = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\nbroken").decode()
+    with pytest.raises(HTTPException) as caught:
+        await routes.signature_for_save(
+            _ACCOUNT, _ME, f'<p>Jane</p><img src="{_LEGACY_SRC}"><img src="{bad}">')
+    assert caught.value.detail.startswith("One image in your signature could not be saved.")
+    assert stored_legacy == [], "a row was written before the bad image refused"
 
 
 async def test_an_edit_hosts_the_legacy_image_and_keeps_the_edit(

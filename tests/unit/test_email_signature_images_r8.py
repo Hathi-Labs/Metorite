@@ -302,6 +302,39 @@ class TestTheSettingsSave:
                 {"o": promoted.org_b, "me": owner}).scalars().all()
         assert who == [owner.lower()]
 
+    async def test_a_cap_at_the_second_image_writes_no_row(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Fix round 1, P3: a save writes all its images or none. Member 19
+        saves two new images: the second passes the cap, so the first is
+        rolled back too."""
+        monkeypatch.setenv("GATEWAY_PUBLIC_URL", _BASE)
+        owner = f"owner-{uuid.uuid4().hex[:8]}@sig.test"
+        acc = _seed_account(promoted.admin_engine, org=promoted.org_b, owner=owner)
+        for _ in range(routes.MEMBER_CAP - 1):
+            _seed_image(promoted.admin_engine, org=promoted.org_b, member=owner)
+        srcs = ["data:image/png;base64," + b64encode(_png(30, 15, _colour())).decode("ascii")
+                for _ in range(2)]
+        user = _member(owner, promoted.org_b)
+        token = bind_tenant(promoted.org_b)
+        try:
+            async with tenant_engine_scope(_app_dsn(promoted)):
+                with pytest.raises(HTTPException) as caught:
+                    await assistant_mod.put_assistant_settings(
+                        AssistantSettingsModel(
+                            account_id=acc,
+                            signature="".join(f'<img src="{s}">' for s in srcs)),
+                        user=user)
+        finally:
+            release_tenant(token)
+        assert caught.value.status_code == 409
+        with promoted.admin_engine.connect() as c:
+            mine = c.execute(text(
+                "SELECT count(*) FROM email_signature_images "
+                "WHERE organization_id = CAST(:o AS uuid) AND created_by = :me"),
+                {"o": promoted.org_b, "me": owner}).scalar_one()
+        assert mine == routes.MEMBER_CAP - 1
+
     async def test_a_save_of_the_stored_signature_changes_no_byte(
         self, promoted, app_engine,  # noqa: F811
     ):

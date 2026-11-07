@@ -169,32 +169,40 @@ async def store_image(
     so two uploads at once cannot pass a cap together. ``member`` is written
     in lower case, as the CHECK of ``created_by`` needs: the settings save
     passes the session address as it came (fix round 1, P3)."""
+    async with _tenant_session() as db:
+        await db.execute(text(_LOCK_SQL))
+        return await _store_in(db, encoded, kind=kind, member=member, base=base)
+
+
+async def _store_in(
+    db: Any, encoded: signature_image.Encoded, *, kind: str, member: str, base: str,
+) -> dict[str, Any]:
+    """The row of one image, in the caller's session, which holds the lock of
+    the org. One session can store several images, all or none."""
     member = (member or "").strip().lower()
     sha = hashlib.sha256(encoded.data).hexdigest()
     org = current_tenant()
-    async with _tenant_session() as db:
-        await db.execute(text(_LOCK_SQL))
-        same = (await db.execute(text(_SAME_SQL), {"sha": sha})).fetchone()
-        if same is not None:
-            if same.retired_at is not None:
-                await db.execute(text(_UNRETIRE_SQL), {"id": same.id})
-            image_id, token = str(same.id), same.public_token
-            content_type, width, height = same.content_type, same.width, same.height
-            kind = same.kind
-        else:
-            counts = (await db.execute(text(_COUNT_SQL), {"me": member})).fetchone()
-            if int(getattr(counts, "org_count", 0) or 0) >= ORG_CAP:
-                raise HTTPException(status_code=409, detail=_ORG_FULL)
-            if int(getattr(counts, "mine", 0) or 0) >= MEMBER_CAP:
-                raise HTTPException(status_code=409, detail=_MEMBER_FULL)
-            token = secrets.token_urlsafe(32)
-            row = (await db.execute(text(_INSERT_SQL), {
-                "me": member, "kind": kind, "ct": encoded.content_type,
-                "w": encoded.width, "h": encoded.height, "bytes": encoded.data,
-                "sha": sha, "token": token,
-            })).fetchone()
-            image_id = str(row.id)
-            content_type, width, height = encoded.content_type, encoded.width, encoded.height
+    same = (await db.execute(text(_SAME_SQL), {"sha": sha})).fetchone()
+    if same is not None:
+        if same.retired_at is not None:
+            await db.execute(text(_UNRETIRE_SQL), {"id": same.id})
+        image_id, token = str(same.id), same.public_token
+        content_type, width, height = same.content_type, same.width, same.height
+        kind = same.kind
+    else:
+        counts = (await db.execute(text(_COUNT_SQL), {"me": member})).fetchone()
+        if int(getattr(counts, "org_count", 0) or 0) >= ORG_CAP:
+            raise HTTPException(status_code=409, detail=_ORG_FULL)
+        if int(getattr(counts, "mine", 0) or 0) >= MEMBER_CAP:
+            raise HTTPException(status_code=409, detail=_MEMBER_FULL)
+        token = secrets.token_urlsafe(32)
+        row = (await db.execute(text(_INSERT_SQL), {
+            "me": member, "kind": kind, "ct": encoded.content_type,
+            "w": encoded.width, "h": encoded.height, "bytes": encoded.data,
+            "sha": sha, "token": token,
+        })).fetchone()
+        image_id = str(row.id)
+        content_type, width, height = encoded.content_type, encoded.width, encoded.height
     return {
         "id": image_id,
         "url": image_url(base, str(org), token, content_type),
@@ -303,23 +311,31 @@ async def host_data_images(sources: list[str], *, member: str) -> dict[str, str]
 
     Each one goes through the same child and the same caps as an upload. A
     source that fails refuses the save with a plain sentence, so a picture
-    never disappears from a signature without a word."""
+    never disappears from a signature without a word.
+
+    All or none (fix round 1, P3): every source is decoded and re-encoded
+    first, with no session open. Then ONE transaction, under the lock of the
+    org, writes every row. A refusal at any step, a cap too, writes no row."""
     if not sources:
         return {}
     base = public_base_url()
     if base is None:
         raise _no_base(
             "Your signature holds an embedded image, and this server cannot host it. ")
-    hosted: dict[str, str] = {}
+    encoded_all: list[tuple[str, signature_image.Encoded]] = []
     for src in sources:
         data = _decode_data_image(src)
         try:
-            encoded = await signature_image.encode(data, "logo")
+            encoded_all.append((src, await signature_image.encode(data, "logo")))
         except signature_image.SignatureImageError as exc:
             raise HTTPException(status_code=exc.status, detail=(
                 f"One image in your signature could not be saved. {exc}")) from exc
-        stored = await store_image(encoded, kind="logo", member=member, base=base)
-        hosted[src] = stored["url"]
+    hosted: dict[str, str] = {}
+    async with _tenant_session() as db:
+        await db.execute(text(_LOCK_SQL))
+        for src, encoded in encoded_all:
+            stored = await _store_in(db, encoded, kind="logo", member=member, base=base)
+            hosted[src] = stored["url"]
     return hosted
 
 
