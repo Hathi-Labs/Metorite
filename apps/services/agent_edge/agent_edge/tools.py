@@ -91,7 +91,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import agent_oauth
-from acb_common import app_manifests, get_logger, get_settings, tenant_redis
+from acb_common import app_manifests, get_logger, get_settings
 from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
@@ -3769,10 +3769,8 @@ async def _tip_unseen(ctx: Context, scope: str, tip: Tip) -> bool:
     lookup = ctx.caller.lookup
     try:
         async with asyncio.timeout(2.0):
-            client = tenant_redis.get_tenant_redis()
-            with tenant_redis.organization_scope(str(lookup.organization_id)):
-                slot = tenant_redis.key(TIPS_NAMESPACE, str(lookup.connection_id), scope, tip.id)
-                return bool(await client.set(slot, "1", nx=True, ex=TIPS_TTL_S))
+            return await idempotency.first_time(
+                lookup, TIPS_NAMESPACE, (scope, tip.id), ttl_s=TIPS_TTL_S)
     except Exception as exc:
         _log.warning("agent_edge.tips_unavailable", tip=tip.id, error=type(exc).__name__,
                      connection_id=lookup.connection_id)
