@@ -1499,17 +1499,25 @@ def _shown_text(value: str) -> str:
 
 
 def _normalize_mail(value: str) -> str:
-    """The one normalizer of the carry and of each mail part.
+    """The LIGHT normalizer of plain text: the carry and the text part.
 
-    The shown text (:func:`_shown_text`), then lower case, each run of white
-    space as one space, and no space before a closing sign or after an
-    opening one.
+    Lower case, each run of white space as one space (a no-break space too),
+    and no space before a closing sign or after an opening one. It deletes
+    no text: no tag step and no entity step, because the reader shows a
+    text part as it is, and a tag in it is text that the member can copy.
     """
     from acb_skills.untrusted import collapse
 
-    flat = collapse(_shown_text(str(value or ""))).lower()
+    flat = collapse(str(value or "")).lower()
     flat = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", flat)
     return _SPACE_AFTER_OPEN_RE.sub(r"\1", flat)
+
+
+def _normalize_html(value: str) -> str:
+    """The normalizer of an HTML part: its shown text (:func:`_shown_text`),
+    then :func:`_normalize_mail`. A paste of what the reader shows then
+    compares equal to the light form of that paste."""
+    return _normalize_mail(_shown_text(str(value or "")))
 
 
 def _member_mail_bodies(
@@ -1538,20 +1546,59 @@ class _BudgetSpent(Exception):
     """The match ran past :data:`_MAIL_BUDGET_S`."""
 
 
-def _mail_parts(mail: tuple[str, str]) -> list[str]:
-    """The normalized parts of one mail, HTML first, as the reader shows it.
-    Both parts together hold at most :data:`_MAIL_CHARS` characters."""
+def _mail_parts(mail: tuple[str, str]) -> list[tuple[str, bool]]:
+    """The normalized parts of one mail, HTML first, as the reader shows it,
+    each with True for the HTML part. Both parts together hold at most
+    :data:`_MAIL_CHARS` characters."""
     body_text, body_html = mail
-    parts: list[str] = []
+    parts: list[tuple[str, bool]] = []
     room = _MAIL_CHARS
-    for raw in (body_html, body_text):
+    for raw, is_html in ((body_html, True), (body_text, False)):
         if not raw or room <= 0:
             continue
-        part = _normalize_mail(raw)[:room]
+        part = (_normalize_html(raw) if is_html else _normalize_mail(raw))[:room]
         room -= len(part)
         if part:
-            parts.append(part)
+            parts.append((part, is_html))
     return parts
+
+
+def _gram_index(text_n: str, half: int) -> dict[str, list[int]]:
+    grams: dict[str, list[int]] = {}
+    for i in range(len(text_n) - half + 1):
+        grams.setdefault(text_n[i:i + half], []).append(i)
+    return grams
+
+
+def _scan_part(
+    text_n: str, grams: dict[str, list[int]], body_n: str, half: int,
+    deadline: float,
+) -> bool:
+    """True when one form of the carry and one mail part share a run of
+    :data:`_MAIL_RUN` characters. Raises :class:`_BudgetSpent` past *deadline*."""
+    for j in range(0, len(body_n) - half + 1, half):
+        hits = grams.get(body_n[j:j + half])
+        if not hits:
+            continue
+        # Every hit is tried, with no cap: a repeated gram in a pasted mail
+        # cannot push the true hit out of reach. A long list costs time, and
+        # the clock check turns that cost into the frame.
+        for k, i in enumerate(hits):
+            left = 0
+            while (left < i and left < j
+                   and text_n[i - left - 1] == body_n[j - left - 1]):
+                left += 1
+            right = half
+            while (i + right < len(text_n) and j + right < len(body_n)
+                   and text_n[i + right] == body_n[j + right]):
+                right += 1
+            if left + right >= _MAIL_RUN:
+                return True
+            if k % 64 == 63 and _clock() > deadline:
+                raise _BudgetSpent
+        if _clock() > deadline:
+            raise _BudgetSpent
+    return False
 
 
 def _shares_mail_run(carried: str, mails: list[tuple[str, str]]) -> bool:
@@ -1559,40 +1606,37 @@ def _shares_mail_run(carried: str, mails: list[tuple[str, str]]) -> bool:
     :data:`_MAIL_RUN` normalized characters. Raises :class:`_BudgetSpent`
     past the budget.
 
+    The carry has a LIGHT form (:func:`_normalize_mail`), and it meets both
+    parts. When it holds ``<`` or ``>``, a second form, its shown text
+    (:func:`_normalize_html`), meets the HTML part only, for a paste of HTML
+    with its tags. The second form can only add a match. The threshold of
+    the unframed return is on the light form (:func:`_guard_carry`).
+
     The half-run index: each run of ``2h`` characters (``h`` = half of
     :data:`_MAIL_RUN`) holds a gram of ``h`` characters that starts at a
     multiple of ``h`` in the part. So the match looks up those grams only,
     in a set of every ``h``-gram of the carry, and extends each hit both ways.
     """
     deadline = _clock() + _MAIL_BUDGET_S
-    text_n = _normalize_mail(carried)
-    if len(text_n) < _MAIL_RUN:
-        return False
     half = _MAIL_RUN // 2
-    grams: dict[str, list[int]] = {}
-    for i in range(len(text_n) - half + 1):
-        grams.setdefault(text_n[i:i + half], []).append(i)
+    light = _normalize_mail(carried)
+    if len(light) < _MAIL_RUN:
+        return False
+    # (form, its index, meets the text part too)
+    forms = [(light, _gram_index(light, half), True)]
+    if "<" in carried or ">" in carried:
+        shown = _normalize_html(carried)
+        if len(shown) >= _MAIL_RUN and shown != light:
+            forms.append((shown, _gram_index(shown, half), False))
     for mail in mails:
         if _clock() > deadline:
             raise _BudgetSpent
-        for body_n in _mail_parts(mail):
-            for j in range(0, len(body_n) - half + 1, half):
-                hits = grams.get(body_n[j:j + half])
-                if not hits:
+        for body_n, is_html in _mail_parts(mail):
+            for text_n, grams, meets_text in forms:
+                if not is_html and not meets_text:
                     continue
-                for i in hits[:32]:
-                    left = 0
-                    while (left < i and left < j
-                           and text_n[i - left - 1] == body_n[j - left - 1]):
-                        left += 1
-                    right = half
-                    while (i + right < len(text_n) and j + right < len(body_n)
-                           and text_n[i + right] == body_n[j + right]):
-                        right += 1
-                    if left + right >= _MAIL_RUN:
-                        return True
-                if _clock() > deadline:
-                    raise _BudgetSpent
+                if _scan_part(text_n, grams, body_n, half, deadline):
+                    return True
     return False
 
 
@@ -1617,6 +1661,7 @@ def _guard_carry(carried: str, me: str, *, organization_id: str | None) -> str:
     Each fault, a timeout, a spent budget and a carry over the cap FAIL
     TOWARD THE FRAME, with the note that the check did not run.
     """
+    # The light form only: no tag step can shrink the carry under the rule.
     size = len(_normalize_mail(carried))
     if size < _MAIL_RUN:
         return carried
