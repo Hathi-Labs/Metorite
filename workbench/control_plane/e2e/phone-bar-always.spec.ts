@@ -152,6 +152,35 @@ test("the Projects sheet toggles on a second tap, and the Menu replaces it", asy
   await expect(page.locator('[data-guide="home.app-list"]')).toBeVisible();
 });
 
+test("the selected place, the accent and an idle tab paint three different looks", async ({ page }) => {
+  // MOB-12: a selected place, the accent and Ask once drew in one blue. The
+  // paint is the claim, so this reads computed colours, not class names.
+  test.setTimeout(120_000);
+  await openPhone(page);
+  const bar = page.locator(BAR_TABS);
+  await bar.getByRole("button", { name: "Projects", exact: true }).click();
+  await expect(page.locator(DRAWER)).toHaveCount(1);
+  const well = (name: string) => bar.getByRole("button", { name, exact: true }).locator("[data-bar-look]");
+  await expect(well("Projects")).toHaveAttribute("data-bar-look", "selected");
+  await expect(well("Capture")).toHaveAttribute("data-bar-look", "accent");
+  await expect(well("Search")).toHaveAttribute("data-bar-look", "idle");
+  const paint = await page.evaluate(() => {
+    const pick = (look: string) =>
+      document.querySelector(`[data-phone-nav-bar] [data-bar-look="${look}"]`) as HTMLElement;
+    const bg = (el: Element | null) => (el ? getComputedStyle(el).backgroundColor : "none");
+    return {
+      selected: bg(pick("selected")),
+      accent: bg(pick("accent").firstElementChild),
+      idle: bg(pick("idle")),
+    };
+  });
+  const clear = (c: string) => c === "transparent" || /rgba\(0, 0, 0, 0\)/.test(c);
+  expect(clear(paint.selected), "the selected place has no pill").toBe(false);
+  expect(clear(paint.accent), "the accent has no circle").toBe(false);
+  expect(paint.selected, "the pill and the circle paint the same").not.toBe(paint.accent);
+  expect(clear(paint.idle), "an idle tab paints a well").toBe(true);
+});
+
 test("a Modal ends above the bar, and every tab stays in reach", async ({ page }) => {
   test.setTimeout(120_000);
   await openPhone(page);

@@ -226,6 +226,20 @@ describe("the shell holds no branch of its own for an app", () => {
     expect(readFileSync(join(SRC, "lib", "shell", "phoneBarEvent.ts"), "utf-8")).toContain('"cc-phone-bar"');
   });
 
+  it("a selected place, the accent and the rest never wear the same look", () => {
+    // MOB-12 (owner, 2026-11-07): a selected place, the accent and Ask all
+    // drew in one blue, so three tabs looked chosen at once. One `BarIcon`
+    // now draws each tab, Menu and Ask too: a tinted pill for "where I am",
+    // a filled circle for "what I can make", and no colour on the tab root.
+    expect(shell).toMatch(/selected: "font-semibold text-foreground"/);
+    expect(shell).toMatch(/look === "selected" \? "bg-primary\/15 text-primary"/);
+    expect(shell).toMatch(/rounded-full bg-primary text-primary-foreground/);
+    expect(shell).toMatch(/const BAR_TAB =\s*"[^"]*text-muted-foreground[^"]*"/);
+    expect(shell).not.toMatch(/const BAR_TAB =\s*"[^"]*text-primary/);
+    // Menu, every app tab and Ask go through the one well.
+    expect(shell.split("<BarIcon look=").length - 1).toBe(3);
+  });
+
   it("no page sends the retired events", () => {
     expect(APP_SOURCE).not.toContain("cc-tasks-section");
     expect(APP_SOURCE).not.toContain("cc-email-empty");

@@ -816,17 +816,15 @@ function MobileBottomNavInner({
             else open(menuContent, "menu");
           }}
           aria-pressed={menuOpen}
-          className={`relative flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
-            menuOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
-          }`}
+          className={`relative ${BAR_TAB}`}
         >
-          <span className="relative">
-            <AppIcon name="Menu" size={20} />
+          <BarIcon look={menuOpen ? "selected" : "idle"}>
+            <AppIcon name="Menu" size={20} strokeWidth={menuOpen ? 2.4 : 2} />
             {!chatsTab && !chatOn && tabBadge && (
               <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
             )}
-          </span>
-          <span className="text-[10px] font-medium leading-none">Menu</span>
+          </BarIcon>
+          <span className={`pb-0.5 text-[10px] leading-none ${BAR_LABEL[menuOpen ? "selected" : "idle"]}`}>Menu</span>
         </button>
         {barTabs.map((tab) => {
           const selected = tab.kind === "place" && (hrefSelected(tab, pathname) || selectedTab === tab.id);
@@ -891,17 +889,17 @@ function MobileBottomNavInner({
             aria-pressed={sheetOpen}
             data-ask-tab=""
             data-guide="home.ask"
-            className={`relative flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-primary transition-colors ${
-              sheetOpen ? "bg-primary/10" : ""
-            }`}
+            className={`relative ${BAR_TAB}`}
           >
-            <span className="relative">
-              <AppIcon name="Sparkles" size={20} strokeWidth={2.4} />
+            {/* Ask keeps the brand's sparkle in the primary colour, idle or
+                open, so the thumb finds it. Its pill shows while it is open. */}
+            <BarIcon look={sheetOpen ? "selected" : "idle"}>
+              <AppIcon name="Sparkles" size={20} strokeWidth={2.4} className="text-primary" />
               {tabBadge && (
                 <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
               )}
-            </span>
-            <span className="text-[10px] font-medium leading-none">Ask</span>
+            </BarIcon>
+            <span className={`pb-0.5 text-[10px] leading-none ${BAR_LABEL[sheetOpen ? "selected" : "idle"]}`}>Ask</span>
           </button>
         )}
     </nav>
@@ -933,6 +931,48 @@ function PhoneNavFlag() {
   return null;
 }
 
+/**
+ * The one look of a bar tab (MOB-12, owner 2026-11-07: the bar must make it
+ * "as obvious as possible" how to use the app).
+ *
+ * - `selected`: a place that shows now. Its icon sits in a tinted pill.
+ * - `accent`: the app's one "new". Its icon sits in a filled circle.
+ * - `idle`: every other tab, bare and muted.
+ *
+ * Before this, a selected place, the accent and Ask all drew in the same
+ * blue, so on Studio and Organisation three tabs looked chosen at once.
+ * Menu and Ask take the same wells. Fence: `phoneBar.test.ts`.
+ */
+type BarLook = "idle" | "selected" | "accent";
+
+const BAR_TAB =
+  "flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-muted-foreground transition-colors hover:text-foreground";
+
+const BAR_LABEL: Record<BarLook, string> = {
+  idle: "font-medium",
+  selected: "font-semibold text-foreground",
+  accent: "font-medium text-foreground",
+};
+
+function BarIcon({ look, children }: { look: BarLook; children: ReactNode }) {
+  return (
+    <span
+      data-bar-look={look}
+      className={`flex h-7 w-12 items-center justify-center rounded-full transition-colors ${
+        look === "selected" ? "bg-primary/15 text-primary" : ""
+      }`}
+    >
+      {look === "accent" ? (
+        <span className="relative flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          {children}
+        </span>
+      ) : (
+        <span className="relative flex items-center justify-center">{children}</span>
+      )}
+    </span>
+  );
+}
+
 function TaskTab({
   active,
   onClick,
@@ -958,26 +998,21 @@ function TaskTab({
   /** The run badge (`runBadge`): the Chats tab carries it. */
   runBadge?: ReturnType<typeof runBadge>;
 }) {
-  const cls = `flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 transition-colors ${
-    accent
-      ? "text-primary"
-      : active
-        ? "text-primary"
-        : "text-muted-foreground hover:text-foreground"
-  }`;
+  const look: BarLook = accent ? "accent" : active ? "selected" : "idle";
   const inner = (
     <>
-      <span className="relative">
-        <Icon size={20} strokeWidth={active || accent ? 2.4 : 2} />
+      <BarIcon look={look}>
+        <Icon size={look === "accent" ? 16 : 20} strokeWidth={look === "idle" ? 2 : 2.4} />
         {badge ? (
           <NavBadge count={badge} tone="info" label={badgeLabel ?? `${badge} waiting`} placement="tab" />
         ) : run ? (
           <NavBadge count={run.count} tone={run.tone} label={run.label} placement="tab" />
         ) : null}
-      </span>
-      <span className="w-full truncate pb-0.5 text-center text-[10px] font-medium leading-none">{label}</span>
+      </BarIcon>
+      <span className={`w-full truncate pb-0.5 text-center text-[10px] leading-none ${BAR_LABEL[look]}`}>{label}</span>
     </>
   );
+  const cls = BAR_TAB;
   if (href) {
     return (
       <Link href={href} onClick={onClick} aria-current={active ? "page" : undefined} className={cls}>
