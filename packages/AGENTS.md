@@ -31,6 +31,8 @@ Mem0 and Graphiti memory providers.
 - An excluded compartment's scope key is never passed to `search()`. That is a boundary, not a request in a system prompt.
 - It has no dependencies on purpose. The CALLER decides `shared`, so acb_memory stays below acb_auth and the gateway in the import graph.
 - `session_cache` keys on the clearance fingerprint and on the thread.
+- `tenant_guard.py` is the ONE tenant guard of the memory layer (KG-9). While two organizations exist, Mem0 reads and writes nothing and Graphiti does not start. A delete still runs, and `MemoryClient.scope_ids` is its ungated owner read. A kept pass serves only the one org that the probe saw. A call bound to another org probes again at once. With both flags off it opens no session. The gateway lifespan calls `check_memory_tenancy`. Fence: `tests/unit/test_memory_tenant_guard.py`.
+- The org compartment is `org:<org id>` from the bound tenant (`org_scope`), and the Graphiti group is `org_<org id>`. With no tenant, both are empty and nothing is read or written. Never fall back to `org:global`.
 - `blob_store.py`: `purge_files` and `session_paths` delete the files and the history of a deleted chat. The gateway's `workspace.purge_thread_files` is their one caller. The purge never deletes a `_RUN_ROW` row. Fence: `tests/unit/test_h227_thread_scope.py` (R8).
 
 ### acb_graph/
