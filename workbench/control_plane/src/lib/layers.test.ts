@@ -178,7 +178,9 @@ describe("the phone's bottom bar always shows (MOB-9)", () => {
           if (name !== "node_modules") walk(p);
         } else if (/\.(tsx?|css)$/.test(name) && !/\.test\.tsx?$/.test(name)) {
           const text = readFileSync(p, "utf-8");
-          if (/3\.5rem[^;"`\n]*safe-area-inset-bottom|safe-area-inset-bottom[^;"`\n]*3\.5rem/.test(text)) {
+          // Any rem amount added to the inset, not only 3.5rem: RecordingDock
+          // once spelled the bar and the Focus pill as `7rem + env(...)`.
+          if (/\d+(?:\.\d+)?rem[^;"`\n]*safe-area-inset-bottom|safe-area-inset-bottom[^;"`\n]*3\.5rem/.test(text)) {
             byHand.push(relative(src, p).split(sep).join("/"));
           }
         }

@@ -232,7 +232,9 @@ test("a hand-rolled overlay gives way to Ask, and the assistant sheet is the top
   await ask.click();
   await expect(capture).toHaveCount(0);
   const sheet = ".fixed.inset-0.z-50.flex-col.pt-safe";
-  await expect(page.locator(sheet)).toBeVisible();
+  // A dev build compiles the sheet on its first open, which outran the default
+  // 5 s once under load (verifier, 2026-11-07).
+  await expect(page.locator(sheet)).toBeVisible({ timeout: 20_000 });
   const top = await page.evaluate((sel) => {
     const el = document.querySelector(sel) as HTMLElement;
     const b = el.getBoundingClientRect();
