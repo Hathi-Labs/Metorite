@@ -119,6 +119,7 @@ from gateway.routes.projects.filters import (
     attach_parent_context,
     attach_relation_counts,
     build_task_filters,
+    task_closed_sql,
     unheld_clause,
 )
 from gateway.routes.projects.landing import (
@@ -2365,6 +2366,40 @@ class ClaimIn(BaseModel):
     external_link: str | None = Field(default=None, max_length=2_048)
 
 
+#: SW-63 (agent_coordination.md §5.10). The most subtask ids a claim lists.
+CLAIM_OPEN_SUBTASKS_MAX = 5
+
+
+async def _warn_open_subtasks(
+    db: Any, vis: Any, task_id: str, result: dict,
+) -> None:
+    """Add ``warning`` and ``open_subtasks`` to *result* of a claim (SW-63).
+
+    An open subtask is a child that ``task_closed_sql`` does not match. Only a
+    child the caller can see counts (R5, D12), so a hidden child leaks neither
+    in the number nor in the ids. The text is fixed: it holds no user text. A
+    leaf task gets neither key.
+    """
+    rows = (await db.execute(
+        text(
+            "SELECT s.task_id FROM ("
+            " SELECT t.id AS task_id, t.created_at FROM pm_tasks t"
+            " WHERE t.parent_task_id = CAST(:tid AS uuid)"
+            f" AND {task_visibility_clause(vis)}) s"
+            f" WHERE NOT {task_closed_sql('s')}"
+            " ORDER BY s.created_at, s.task_id"
+        ),
+        {"tid": task_id, **vis.params},
+    )).fetchall()
+    if not rows:
+        return
+    result["warning"] = (
+        f"This task has {len(rows)} open subtasks."
+        " Claim the slice, not the epic.")
+    result["open_subtasks"] = [
+        str(r[0]) for r in rows[:CLAIM_OPEN_SUBTASKS_MAX]]
+
+
 @router.post("/tasks/{task_id}/claim")
 async def claim_task(
     task_id: str, payload: ClaimIn = ClaimIn(),
@@ -2519,6 +2554,8 @@ async def claim_task(
         result["not_notified"] = notified["skipped"]
         # EA-13c: the run that this claim opened or found, else None.
         result["agent_run_id"] = run_id
+        # SW-63: a task with open subtasks still claims. The result warns.
+        await _warn_open_subtasks(db, vis, task_id, result)
 
     if added:
         await emit("pm.task.assigned", {
