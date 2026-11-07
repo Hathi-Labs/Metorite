@@ -270,6 +270,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
+    # CIV-14f: the answer watcher of the home box (scripts/home_server). The
+    # token is a read-only box token. A tenant must never save these.
+    "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
+    "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
     # Deploy, backup and watchdog scripts (variables they read).
     "APP_DIR", "ENV_FILE", "ACTIONS", "CURRENT", "DEST", "DRY_RUN", "EUID",
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
