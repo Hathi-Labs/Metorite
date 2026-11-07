@@ -620,6 +620,7 @@ jobs:
               tests/unit/test_user_settings_per_org_r8.py \
               tests/unit/test_auth_me_shell_r8.py \
               tests/unit/test_h6_identity_shadow.py \
+              tests/unit/test_member_of_org_read.py \
               tests/unit/test_h6_rbac_rekey.py \
               tests/unit/test_email_otp_token.py \
               tests/unit/test_invited_member_promotion.py \
