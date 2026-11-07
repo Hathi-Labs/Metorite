@@ -55,6 +55,13 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - AD-18: a write of class B or C that is not a proposal needs the member's approval. Until MCP-P1b, the edge refuses it with no request. A proposal goes to its route at once, under the idempotency slot of `_claim_slot`.
   - The two door-routed tools leave rules 3 and 4 of the coverage fence. `test_mcp_edge_app_door.py` holds them.
 
+- EA-19b (spec §10.9, D-EA-5), dark behind `agent_box_tokens_enabled`. A box token is the one access token of a connection of credential `box`.
+  - `bearer.authenticate` answers 401 for a box token while `agent_oauth.box_tokens_enabled` is false, next to the allowlist check.
+  - After a check that passes, it calls `agent_tokens.touch_box_use` for a box token only. A failed touch only logs.
+  - `mcp.py` passes `request.client.host` as the address. No edge module reads `X-Real-IP`, because a client could set it.
+  - `/oauth/revoke` and the scope check of a refresh do not call the touch. The stamp is `mcp:box:<slug>-<8 hex>`, through `gateway_client.actor_via`.
+  - Fence: `tests/unit/test_agent_box_token_store.py`.
+
 - SW-7 (spec §12.5), dark behind `agent_mcp_sessions_enabled` (default off, read through `agent_oauth.mcp_sessions_enabled`). While it is off, the edge mints, reads and signs no session. While it is on, `initialize` answers an `Mcp-Session-Id` that `agent_signing.mint_mcp_session` makes. It binds the connection and carries an HMAC, so the edge keeps no state. `mcp._session_of` reads it back on each later request (check 7b). An id that does not verify gets 404. The session key goes into `tools.Context.session`, and `gateway_client` signs it in as `X-Agent-Session`. `my_work` keeps the runs of this session and the runs with no key.
 
 - SW-10a (spec §12.6). Each run of the edge gains `stranded`: null, or the reason, the quiet minutes and a fixed note that `tools.STRANDED_NOTES` builds. `my_work` reads the gateway's `needs_agent` reason for group 1 (`tools._waiting_reason`), so an answer older than five minutes still comes back as `run_answered`. A gateway that sends no reason gives the state, as before.
