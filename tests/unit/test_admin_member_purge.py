@@ -754,7 +754,7 @@ def test_the_focus_sessions_of_this_org_go() -> None:
     The task of a session stays: a purge deletes no `pm_tasks` row (D63).
     ``test_focus_session_rls_r8.py`` runs this clause on a real Postgres.
     Mutation: drop the entry, and the count dict above and
-    ``test_every_person_keyed_table_is_on_a_list`` fail.
+    ``test_every_table_with_a_person_column_is_on_a_list`` fail.
     """
     from gateway.routes.admin.members import _PURGE_DELETES
     from gateway.routes.tasks.settings import _BOUND_ORG
@@ -1313,8 +1313,12 @@ _PERSON_COLUMNS = frozenset({"member_email", "user_email", "owner_email", "user_
 
 #: The person-keyed tables that were on neither list when the rule below went
 #: schema-wide (WS-MDC CC-5a review F3, 2026-11-07). Each one is a finding: this
-#: change does not decide its purge rule. A table leaves the set when its slice
-#: puts it on a list. The set may only shrink, and a new table never joins it.
+#: change does not decide its purge rule (task 1993). A table leaves the set when
+#: its slice puts it on a list. The set may only shrink, and a new table never
+#: joins it: the test pins the size and the highest migration that may create a
+#: member of the set.
+_PERSON_TABLES_FROZEN_AT_MIGRATION = 348
+_PERSON_TABLES_FROZEN_COUNT = 33
 _PERSON_TABLES_NOT_YET_SORTED = frozenset({
     "agent_connection", "app_pins", "artifact_member", "artifacts", "attachments",
     "calendar_day_state", "calendar_rollover_log", "copilot_config",
@@ -1328,9 +1332,11 @@ _PERSON_TABLES_NOT_YET_SORTED = frozenset({
 })
 
 
-def test_every_person_keyed_table_is_on_a_list() -> None:
-    """Each table of the schema with a person column is on the delete list,
-    the keep list or the registry list, or in the frozen set above.
+def test_every_table_with_a_person_column_is_on_a_list() -> None:
+    """Each table of the schema with one of the four person columns of
+    ``_PERSON_COLUMNS`` is on the delete list, the keep list or the registry
+    list, or in the frozen set above. A table that keys a person by another
+    column (``email``, ``subject``, ``assignee``) is not checked here.
 
     The rule above reads only the cascade of the purge, so a new member-keyed
     table that hangs off nothing was invisible to it. ``focus_sessions`` (WS-MDC
@@ -1355,6 +1361,26 @@ def test_every_person_keyed_table_is_on_a_list() -> None:
     assert not left, f"these are on a list now. Take them out of the frozen set: {left}"
     gone = sorted(_PERSON_TABLES_NOT_YET_SORTED - keyed)
     assert not gone, f"these hold no person column now. Take them out of the frozen set: {gone}"
+
+    # Shrink only (CC-5a re-review P2). The set never grows, and a table that a
+    # later migration creates can never hide in it.
+    assert len(_PERSON_TABLES_NOT_YET_SORTED) <= _PERSON_TABLES_FROZEN_COUNT, (
+        "the frozen set grew. Put the new table on _PURGE_DELETES or _PURGE_KEEPS.")
+    from tests.unit._schema_cascade import MIGRATIONS
+
+    born: dict[str, int] = {}
+    for path in sorted(MIGRATIONS.glob("[0-9]*.sql")):
+        number = int(re.match(r"\d+", path.name).group())
+        sql = path.read_text(encoding="utf-8")
+        for name in re.findall(
+                r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?\"?(\w+)\"?",
+                sql, re.I):
+            born.setdefault(name.lower(), number)
+    late = sorted(t for t in _PERSON_TABLES_NOT_YET_SORTED
+                  if born.get(t, 10**6) > _PERSON_TABLES_FROZEN_AT_MIGRATION)
+    assert not late, (
+        f"these are created after migration {_PERSON_TABLES_FROZEN_AT_MIGRATION}, "
+        f"so they cannot join the frozen set: {late}. Put each on a purge list.")
 
 
 def test_the_cascade_map_is_the_one_the_schema_declares() -> None:

@@ -43,6 +43,7 @@ tree. ``F`` is ``apps/services/gateway/gateway/routes/projects/focus_sessions.py
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import UTC
 from pathlib import Path
 
@@ -83,8 +84,10 @@ pytestmark = _DB_GATE
 
 _ROOT = Path(__file__).resolve().parents[2]
 
-#: A role of this suite only: the table owner of the FORCE test.
-_OWNER_ROLE = "focus_owner_r8"
+#: A role of this run only: the table owner of the FORCE test. A role belongs
+#: to the whole Postgres server, not to one database, so a fixed name lets two
+#: runs on one server drop each other's role (CC-5a re-review P3).
+_OWNER_ROLE = f"focus_owner_r8_{uuid.uuid4().hex[:12]}"
 
 _SEED_ORG_A_ROW = (
     "INSERT INTO focus_sessions (organization_id, member_email, task_id, started_at, "
