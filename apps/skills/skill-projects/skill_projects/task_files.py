@@ -139,5 +139,5 @@ def image_markdown(row: dict[str, Any]) -> str:
     segment = re.sub(r"[^A-Za-z0-9._-]", "_", name)
     if re.fullmatch(r"\.*", segment):
         segment = "image"
-    alt = re.sub(r"[\[\]\\r\n]", "", name).strip() or "image"
+    alt = re.sub(r"[\[\]\\\r\n]", "", name).strip() or "image"
     return f"![{alt}]({found.group(1)}{found.group(2).lower()}/{segment})"

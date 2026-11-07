@@ -1215,15 +1215,49 @@ async def _attach_new_files(
     out += [f"  {data(r.get('name'))} · attachment_id: {r.get('attachment_id')}" for r in landed]
     images = [md for md in (task_files.image_markdown(r) for r in landed) if md]
     if images:
-        text = "\n\n".join(([description.rstrip()] if description.strip() else []) + images)
-        try:
-            await patch(f"/projects/tasks/{tid}", {"description": text})
-        except _WRITE_FAILED as exc:
+        failure = await _put_images_in_description(tid, description, images)
+        if failure:
             lines.append(
-                f"The description has no inline image. {_file_failure(exc)} The files "
-                "are on the task."
+                f"The description has no inline image. {failure} The files are on the task."
             )
     return "\n" + "\n".join([*out, *lines]) if (out or lines) else ""
+
+
+async def _put_images_in_description(task_id: str, written: str, images: list[str]) -> str:
+    """Append *images* to the description, under ``If-Match``. ``""`` when it
+    is done, else the reason it is not.
+
+    *written* is the text the create wrote. The PATCH carries the version that
+    was read, so an edit made since is a 412, never a lost edit. On a 412 the
+    task is read once more. The images go on the CURRENT text only when it still
+    starts with *written*. Any other change, or a second 412, stops here.
+    """
+    tid = uuid_of(task_id, "task_id")
+    base = written.rstrip()
+    changed = "Someone changed the description, so I left it alone."
+    for attempt in range(2):
+        try:
+            cur = await get(f"/projects/tasks/{tid}") or {}
+        except _WRITE_FAILED as exc:
+            return _file_failure(exc)
+        now = str(cur.get("description") or "")
+        if not now.startswith(base):
+            return changed
+        text = "\n\n".join(([now.rstrip()] if now.strip() else []) + images)
+        token = str(cur.get("updated_at") or "")
+        try:
+            await patch(
+                f"/projects/tasks/{tid}", {"description": text},
+                headers={"If-Match": token} if token else None,
+            )
+        except GatewayRefusal as exc:
+            if exc.status == 412 and attempt == 0:
+                continue
+            return changed if exc.status == 412 else _file_failure(exc)
+        except httpx.TransportError as exc:
+            return _file_failure(exc)
+        return ""
+    return ""
 
 
 def _file_failure(exc: Exception) -> str:

@@ -3474,13 +3474,28 @@ def _chat_files(monkeypatch: Any, *uploads: tuple[str, bytes]) -> None:
     monkeypatch.setattr(attachment_tools, "read_attachment_bytes", _bytes)
 
 
-def _files_gateway(*, fail_on: str = "", patch_fails: bool = False) -> Any:
-    """The create, the file posts and the description PATCH of a new task."""
+def _files_gateway(
+    *, fail_on: str = "", patch_fails: bool = False, concurrent: list[str] | None = None
+) -> Any:
+    """The create, the file posts and the description PATCH of a new task.
+
+    The task keeps its description and its version. Each entry of ``concurrent``
+    is a text that a second editor saves just before the next PATCH lands, so
+    that PATCH meets a 412. ``patched`` records every PATCH it received.
+    """
+    state: dict[str, Any] = {"description": "", "v": 1, "patched": []}
+    edits = list(concurrent or [])
+
+    def version() -> str:
+        return f"2026-11-07T10:00:{state['v']:02d}+00:00"
 
     def answer(call: dict) -> Any:
         from tests.unit._projects_agent_fakes import FakeResponse
 
         path, method = call["path"], call["method"]
+        if path == "/projects/tasks" and method == "POST":
+            state["description"] = (call["json"] or {}).get("description") or ""
+            return responder(call)
         if path == f"/projects/tasks/{OTHER}/attachments" and method == "POST":
             name = call["files"]["file"][0]
             if name == fail_on:
@@ -3492,12 +3507,24 @@ def _files_gateway(*, fail_on: str = "", patch_fails: bool = False) -> Any:
                 "kind": "image" if mime.startswith("image/") else "file",
                 "url": f"/api/projects/attachments/{SERVED_ID}/{name}",
             }
+        if path == f"/projects/tasks/{OTHER}" and method == "GET":
+            return {**TASK, "id": OTHER, "description": state["description"],
+                    "updated_at": version()}
         if path == f"/projects/tasks/{OTHER}" and method == "PATCH":
+            state["patched"].append(call)
             if patch_fails:
                 return FakeResponse({"detail": "Not saved."}, status_code=500)
+            if edits:
+                state["description"] = state["description"] + edits.pop(0)
+                state["v"] += 1
+            if call["headers"].get("If-Match") != version():
+                return FakeResponse({"detail": {"error": "precondition_failed"}}, status_code=412)
+            state["description"] = call["json"]["description"]
+            state["v"] += 1
             return {**TASK, "id": OTHER}
         return responder(call)
 
+    answer.state = state  # type: ignore[attr-defined]
     return answer
 
 
@@ -3625,3 +3652,47 @@ def test_create_task_files_are_in_the_pin_and_the_rule_text() -> None:
     assert "Do not call `attach_to_task` after it." in text_
     pack = " ".join(tool_packs._PROJECTS_BULK_RULES.split())
     assert "create_task files" in pack and "Do not call attach_to_task after it." in pack
+
+
+async def test_the_description_patch_carries_if_match(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    gw = _files_gateway()
+    fake_gateway(monkeypatch, gw)
+    await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    [edit] = gw.state["patched"]
+    assert edit["headers"]["If-Match"] == "2026-11-07T10:00:01+00:00"
+
+
+async def test_a_412_appends_the_image_to_the_current_description(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    gw = _files_gateway(concurrent=[" Also on Linux."])
+    fake_gateway(monkeypatch, gw)
+    out = await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    first, second = gw.state["patched"]
+    assert first["headers"]["If-Match"] != second["headers"]["If-Match"]
+    assert gw.state["description"].startswith("It breaks. Also on Linux.\n\n![shot.png](")
+    assert "no inline image" not in out
+
+
+async def test_a_second_412_says_the_description_has_no_inline_image(monkeypatch) -> None:
+    _chat_files(monkeypatch, PNG)
+    approve(monkeypatch)
+    gw = _files_gateway(concurrent=[" One.", " Two."])
+    fake_gateway(monkeypatch, gw)
+    out = await skill_projects.create_task(UUID, "Fix", description="It breaks.", files=[PNG[0]])
+    assert len(gw.state["patched"]) == 2
+    assert "The description has no inline image." in out
+    assert "The files are on the task." in out
+    assert "![shot.png]" not in gw.state["description"]
+
+
+async def test_the_alt_text_keeps_every_r_and_drops_brackets_and_line_breaks() -> None:
+    from skill_projects import task_files
+
+    row = {"mime": "image/png", "url": f"/api/projects/attachments/{SERVED_ID}/x.png"}
+    md = task_files.image_markdown({**row, "name": "error[1].png"})
+    assert md.startswith("![error1.png](")
+    md = task_files.image_markdown({**row, "name": "a" + chr(13) + "b" + chr(10) + "c.png"})
+    assert md.startswith("![abc.png](")
