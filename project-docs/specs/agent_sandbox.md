@@ -1475,7 +1475,9 @@ does each act of §13.
 **(D187) Amended 2026-11-07.** D187 amends SBX-Q1 for production: the
 dedicated box of §4.6 comes first, and `e2b` stays the alternative. D187
 names `studio:publish` as the approver of SBX-Q3, in place of
-`tools:approve` (§8.1). SBX-Q8 and SBX-Q9 are new, and each has a default.
+`tools:approve` (§8.1). SBX-Q8 and SBX-Q9 are new. **The owner accepted both
+recommendations on 2026-11-07**, in chat ("all approved go ahead"). Task 1962
+records the answer, and SBX-0c (task 2188) writes it here.
 
 Every call has a default. A slice that needs a call waits for it, and the
 default never ships to production by itself.
@@ -1489,8 +1491,8 @@ default never ships to production by itself.
 | **SBX-Q5** | May a stored tool run with no chat, in a workflow? | Reads only, and only an org-approved version | No |
 | **SBX-Q6** | Accept the run capability inside the container. This amends one line of D83 for the `tools` target | Yes. It is short-lived, opens only the door, and has the member's access as its ceiling | No. SBX-2 and later wait |
 | **SBX-Q7** | May member data go to a hosted vendor? This is a DPDP question for WS-37 | Yes only after a data processing agreement and a region check | No. The `e2b` backend runs no tenant data |
-| **SBX-Q8** | (D187) May a failure report carry the error text and the workaround code of a member to the Metorite team (§6.7, level c)? | Only with the consent of the member, one report at a time, as D126 does for a chat | Counts, the tool name and the error class only |
-| **SBX-Q9** | (D187) Who in the source organization consents to a platform adoption (§6.8)? | A person with the `owner` role, on one card for one tool and one version | No adoption from the code of a tenant. An engineer may still build from the counts alone |
+| **SBX-Q8** | (D187) May a failure report carry the error text and the workaround code of a member to the Metorite team (§6.7, level c)? | Only with the consent of the member, one report at a time, as D126 does for a chat | **Decided 2026-11-07: the recommendation.** Without a consent, a report holds the counts, the tool name and the error class only |
+| **SBX-Q9** | (D187) Who in the source organization consents to a platform adoption (§6.8)? | A person with the `owner` role, on one card for one tool and one version | **Decided 2026-11-07: the recommendation.** Without a consent, no adoption from the code of a tenant. An engineer may still build from the counts alone |
 
 ---
 

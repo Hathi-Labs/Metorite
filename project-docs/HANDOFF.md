@@ -1358,7 +1358,22 @@ line — never reclaim a number by deleting the other entry.
 - **Part 4 (task 1748, H-201e):** keys the `/cost` rollup for each tenant
   (`cc:<org>:cost:{day}`). Built 2026-11-05 on branch `h201e-mt-2e03e787`,
   not merged.
+- **Part 5 (task 1719, H-201d):** the expand half of the `agent_avatars` key.
+  Migration 354 adds the unique index on `(organization_id, agent_name)`, and
+  `_save_avatar` names it. Built 2026-11-07 on branch `h201d-mt-66c5a664`,
+  not merged. H-443 carries the contract half.
 - **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
+
+### H-443 · H-201d contract: drop the old agent_avatars primary key one release after the expand migration ships · [AGENT]
+- **Metorite:** #1719. Do it only when the migration ledger of production
+  holds `354_agent_avatars_key_per_tenant.sql` from an EARLIER release. In the same
+  release as 354, the old gateway's `ON CONFLICT (agent_name)` fails on each
+  save until the restart. The contract file drops `agent_avatars_pkey` and
+  flips the two cross-org pins in `test_agent_avatars_key_per_tenant_r8.py`
+  and `test_h201_readers_under_rls.py`.
+- **Check:** `grep -lnE "DROP CONSTRAINT (IF EXISTS )?agent_avatars_pkey" infra/postgres/*.sql`
+  → no hit means the contract is still open.
+- **Added:** 2026-11-07 · the H-201d expand session (task 1719)
 
 ### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
 - **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).

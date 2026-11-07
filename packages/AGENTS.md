@@ -97,8 +97,8 @@ Audit event recording.
 Authentication, roles and org access control.
 - Guards: `require_role(UserRole.EXECUTIVE)`, `require_permission("feature:whatsapp")` and the app-wide default-deny `require_authenticated(public=...)`.
 - **`permissions.FEATURES` is the feature vocabulary, not `feature_catalog`.** A new `feature_catalog` row always needs a `FEATURES` edit too. Fence: `tests/unit/test_org_access_control.py`. Checklist: `project-docs/specs/department_centers.md` §2.
-- Two DISTINCT secrets: `GATEWAY_INTERNAL_TOKEN` is service identity and `LITELLM_MASTER_KEY` is the `/v1` key that agents hold. With the internal token unset, `_resolve_internal_token()` falls back to the LLM key, and that ladder lives in one place.
-- `GATEWAY_REFUSE_LLM_KEY_IDENTITY` defaults OFF, and flipping it is OWNER-GATE.
+- Two DISTINCT secrets: `GATEWAY_INTERNAL_TOKEN` is service identity and `LITELLM_MASTER_KEY` is the `/v1` key that agents hold. `deps._get_internal_token()` reads the internal token only. It never falls back to the LLM key (WS-24b).
+- An unset internal token fails closed outside `ACB_ENV=dev` (`deps._unset_token_is_open`). `require_internal_auth` answers 401, and a bare `X-User-Email` resolves anonymous. A caller sends `gateway_internal_token` only, never the LLM key, as the bearer of an internal call. Fence: `tests/unit/test_service_identity_and_webhook_auth.py`.
 - `X-User-Email` and `X-User-Role` are internal-only headers. The reverse proxy strips them at the public vhost.
 - `resolve_access(..., record_request=False)`: the default must stay False, and `deps._with_resolved_access` stays its only caller that passes True. Fence: `tests/unit/test_signin_requests.py`.
 - `allowed_email_domain()` and `is_company_email()` give a label, not a boundary.
