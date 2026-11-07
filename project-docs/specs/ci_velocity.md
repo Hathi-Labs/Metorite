@@ -551,6 +551,32 @@ on linger, copies the script, and enables the timer. In WSL, the Windows
 task "Metorite WSL keep-alive" keeps the distro up.
 HIGH tier.
 
+### CIV-20: fewer PRs sent back (task 2207)
+
+**Status: slices 1 and 3 BUILT 2026-11-07. Slice 2 is CIV-8** (PR 1872, merged).
+STANDARD tier. Of the PRs that lane-merge handled from 2026-11-06 22:05 UTC,
+21 went BACK, about 1 in 3. The causes: 8 merge conflicts, 6 a missing
+"Visual review:" line, 6 a red test, 1 a migration number below main's highest.
+
+**Slice 1.** `scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane>
+<note>` is the one way a lane hands a PR over. It appends the line to
+`~/lanes/merge-queue.tsv` only after these checks pass: the worktree is clean
+and sits at the PR head, the body has the Visual review line when the diff
+touches `workbench/control_plane/src`, a trial merge of `origin/main` has no
+conflict, and each new migration number is above main's highest and free of
+other open PRs. A failed check prints the reason and appends nothing.
+**Fence:** `tests/unit/test_lane_handover.py`.
+
+**Slice 3.** `.gitattributes` gives `project-docs/INDEX.md` the `union` merge
+driver, so two PRs that each add a row no longer conflict. A fence checks that
+no spec row repeats in one section. Other append-only files stay out: a union
+there would keep both sides of a real clash in one line.
+**Fence:** `tests/unit/test_index_union.py`.
+
+**Open.** The lane rules live outside the repo. Rule 14 must name
+`lane_handover.sh`. The done test is a BACK rate under 1 in 10 over 20
+hand-overs.
+
 ### CIV-19: the lane keeper (task 2206)
 
 **Status: BUILT 2026-11-07** (task 2206). STANDARD tier.
@@ -663,4 +689,5 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-5 | 1633 | CIV-4b | 1711 |
 | CIV-17 | 1988 | CIV-13 | 1721 |
 | CIV-10 | 1643 | CIV-4c | 1736 |
+| CIV-20 | 2207 | | |
 | CIV-19 | 2206 | | |
