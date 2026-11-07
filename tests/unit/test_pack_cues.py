@@ -54,10 +54,11 @@ WHEN = {
     "calendar-day": (
         "Load to rebuild or replan the day, start my day, fit what is left, "
         "block time for a task, set the One Thing or roll over."),
-    # STU-G1: the Studio builder pack.
+    # STU-G1: the Studio builder pack. STU-B2c-2b adds the record write tools,
+    # so the line says "read and change".
     "studio": (
         "Load for AI Studio: build an app (manifest, actions), manage your skills, "
-        "or read the records of a package."),
+        "or read and change the records of a package."),
 }
 
 
