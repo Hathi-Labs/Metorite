@@ -174,7 +174,8 @@ def refuse_tenantless(event: AuditEvent) -> bool:
     ``acb_graph`` cannot load, it fails closed and answers ``True``.
 
     The Option-A fallback in :func:`_persist` stays for real system events.
-    Fence: ``tests/unit/test_action_broker_audit_org_r8.py``.
+    Fences: ``tests/unit/test_action_broker_audit_org_r8.py``,
+    ``test_llm_usage_audit_org_r8.py``.
     """
     if event.organization_id:
         return False
