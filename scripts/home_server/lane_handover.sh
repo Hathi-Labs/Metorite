@@ -21,17 +21,20 @@ PR="$1"; TASK="$2"; WT="$3"; LANE="$4"; shift 4; NOTE="$*"
 BASE="${HANDOVER_BASE:-origin/main}"
 QUEUE="${HANDOVER_QUEUE:-$HOME/lanes/merge-queue.tsv}"
 fail() { echo "HANDOVER REFUSED: $*" >&2; exit 1; }
-case "$PR$TASK" in *[!0-9]*) fail "the PR and the task are numbers: got '$PR' and '$TASK'";; esac
+for v in "$PR" "$TASK"; do
+  case "$v" in ''|*[!0-9]*) fail "the PR and the task are numbers: got '$PR' and '$TASK'";; esac
+done
 case "$NOTE" in *$'\t'*|*$'\n'*) fail "the note holds a tab or a newline. The queue is one TSV line.";; esac
 [ -d "$WT" ] || fail "no worktree at $WT"
 cd "$WT" || fail "cannot enter $WT"
+WT="$(pwd -P)"  # lane-merge runs from another directory, so the queue needs an absolute path
 
 # 1. Clean tree, and the PR head is this HEAD.
 [ -z "$(git status --porcelain)" ] || fail "the worktree has uncommitted changes. Commit and push them first."
 head_pr="$(gh pr view "$PR" --json headRefOid -q .headRefOid)" || fail "gh cannot read PR $PR"
 [ "$head_pr" = "$(git rev-parse HEAD)" ] || fail "PR $PR head is ${head_pr:0:9}, and this worktree is at $(git rev-parse --short=9 HEAD). Push first."
 
-git fetch -q origin "${BASE#origin/}" 2>/dev/null || true
+git fetch -q origin "${BASE#origin/}" 2>/dev/null || echo "warning: git fetch failed, so $BASE may be stale" >&2
 base="$(git merge-base HEAD "$BASE")" || fail "no merge base with $BASE"
 files="$(git diff --name-only "$base" HEAD)"
 
@@ -47,6 +50,25 @@ if ! out="$(git merge-tree --write-tree --name-only "$BASE" HEAD 2>&1)"; then
   conflicts="$(sed -n '2,$p' <<< "$out" | sed '/^$/,$d' | tr '\n' ' ')"
   fail "merging $BASE conflicts in: ${conflicts:-see git merge-tree}. Merge it, resolve, push."
 fi
+# The union driver keeps both sides of a clash on INDEX.md, so look for a repeated spec row.
+merged="$(head -n1 <<< "$out")"
+if git show "$merged:project-docs/INDEX.md" > "${TMPDIR:-/tmp}/handover-index.$$" 2>/dev/null; then
+  dup="$(python3 - "${TMPDIR:-/tmp}/handover-index.$$" <<'PY'
+import re, sys
+row = re.compile(r"^\|\s*\*{0,2}`?([\w./-]+\.md)`?\*{0,2}\s*\|")
+seen, section = {}, ""
+for line in open(sys.argv[1], encoding="utf-8"):
+    if line.startswith("## "):
+        section = line
+    m = row.match(line)
+    if m:
+        seen[(section, m.group(1))] = seen.get((section, m.group(1)), 0) + 1
+print(" ".join(sorted(k[1] for k, v in seen.items() if v > 1)))
+PY
+)"
+  rm -f "${TMPDIR:-/tmp}/handover-index.$$"
+  [ -z "$dup" ] || fail "after the merge, project-docs/INDEX.md lists a spec twice: $dup. Merge $BASE, remove the repeat, push."
+fi
 
 # 4. Migration numbers (R1).
 num() { basename "$1" | { grep -oE '^[0-9]+' || true; } | sed 's/^0*//'; }
@@ -60,7 +82,7 @@ while IFS= read -r f; do
   n="$(num "$f")"; [ -n "$n" ] || continue
   [ "$n" -gt "$main_max" ] || fail "migration $(basename "$f") is not above main's highest number ($main_max). Take $((main_max + 1)) (R1)."
   mine="$mine $n"
-done < <(git diff --name-only --diff-filter=A "$base" HEAD -- infra/postgres/ | grep -E '/[0-9]+_[^/]*\.sql$' || true)
+done < <(git diff --name-only --diff-filter=AR "$base" HEAD -- infra/postgres/ | grep -E '/[0-9]+_[^/]*\.sql$' || true)
 if [ -n "$mine" ]; then
   others="$(gh pr list --state open --limit 200 --json number,files \
     -q ".[] | select(.number != $PR) | .number as \$p | .files[].path | select(test(\"^infra/postgres/[0-9]+_.*[.]sql\$\")) | \"\(\$p) \(.)\"")" \

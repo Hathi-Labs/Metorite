@@ -24,7 +24,9 @@ esac
 
 
 def git(cwd, *a):
-    return subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(
+        ["git", *a], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 @pytest.fixture
@@ -60,7 +62,9 @@ def _run(tmp, wt, body="Visual review: no UI change", others="", head=None):
     }
     return subprocess.run(
         [BASH, str(SCRIPT), "77", "2207", str(wt), "lane-ci", "note one"],
-        env=env, capture_output=True, text=True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -141,6 +145,57 @@ def test_a_migration_number_taken_by_another_open_pr_is_refused(repo):
 def test_a_note_with_a_tab_is_refused(repo):
     tmp, wt = repo
     r = subprocess.run(
-        [BASH, str(SCRIPT), "77", "2207", str(wt), "lane-ci", "a\tb"], capture_output=True, text=True
+        [BASH, str(SCRIPT), "77", "2207", str(wt), "lane-ci", "a\tb"],
+        capture_output=True,
+        text=True,
     )
     assert r.returncode == 1 and "tab" in r.stderr
+
+
+def test_an_empty_pr_number_is_refused(repo):
+    tmp, wt = repo
+    r = subprocess.run(
+        [BASH, str(SCRIPT), "", "2207", str(wt), "lane-ci", "n"], capture_output=True, text=True
+    )
+    assert r.returncode == 1 and "are numbers" in r.stderr
+
+
+def test_a_relative_worktree_is_written_as_an_absolute_path(repo):
+    tmp, wt = repo
+    _commit(wt, "a.txt", "x\n")
+    env = {
+        **os.environ,
+        "PATH": f"{tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        "HANDOVER_QUEUE": str(tmp / "queue.tsv"),
+        "FAKE_HEAD": git(wt, "rev-parse", "HEAD"),
+        "FAKE_BODY": "",
+        "FAKE_OTHERS": "",
+    }
+    r = subprocess.run(
+        [BASH, str(SCRIPT), "77", "2207", "wt", "lane-ci", "n"],
+        cwd=tmp,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    assert _queue(tmp).split("\t")[2] == str(wt.resolve())
+
+
+def test_a_repeated_index_row_after_the_merge_is_refused(repo):
+    tmp, wt = repo
+    git(wt, "checkout", "-q", "main")
+    _commit(wt, "project-docs/INDEX.md", "## ACTIVE\n| a.md | one |\n")
+    git(wt, "push", "-q", "origin", "main")
+    (wt / ".gitattributes").write_text("project-docs/INDEX.md merge=union\n", encoding="utf-8")
+    _commit(wt, ".gitattributes", "project-docs/INDEX.md merge=union\n")
+    git(wt, "push", "-q", "origin", "main")
+    git(wt, "checkout", "-q", "-b", "two", "main")
+    _commit(wt, "project-docs/INDEX.md", "## ACTIVE\n| a.md | mine |\n")
+    git(wt, "checkout", "-q", "main")
+    _commit(wt, "project-docs/INDEX.md", "## ACTIVE\n| a.md | theirs |\n")
+    git(wt, "push", "-q", "origin", "main")
+    git(wt, "checkout", "-q", "two")
+    r = _run(tmp, wt)
+    assert r.returncode == 1 and "lists a spec twice: a.md" in r.stderr, r.stderr
+    assert _queue(tmp) == ""
