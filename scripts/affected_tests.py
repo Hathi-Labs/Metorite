@@ -180,14 +180,29 @@ def imports(body: str, module: str | None = None, is_package: bool = False) -> s
             else:
                 names |= {n.split()[0] for n in m.group(3).split(",") if n.strip()}
     else:
+        aliases: dict[str, str] = {}  # local name -> dotted module it holds
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 names |= {a.name for a in node.names}
+                aliases.update({a.asname: a.name for a in node.names if a.asname})
             elif isinstance(node, ast.ImportFrom):
                 mod = _resolve(node, module, is_package)
                 if mod:
                     names.add(mod)
                     names |= {f"{mod}.{a.name}" for a in node.names if a.name != "*"}
+                    aliases.update(
+                        {(a.asname or a.name): f"{mod}.{a.name}" for a in node.names if a.name != "*"}
+                    )
+        # CIV-18. `from gateway.routes import crm as pkg` then `pkg.router`
+        # reads the attribute `gateway.routes.crm.router`. Record it, so the
+        # router rule in select() sees a test that mounts a package this way.
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in aliases
+            ):
+                names.add(f"{aliases[node.value.id]}.{node.attr}")
     out: set[str] = set()
     for n in names:
         parts = n.split(".")
@@ -220,10 +235,40 @@ def _import_index(
 
     leaves = {leaf(m) for m in changed_mods}
     src_users: dict[str, set[str]] = {}
-    for s, body in sources.items():
-        mod = module_name(s, root) if any(lf in body for lf in leaves) else None
-        for n in imports(body, mod, s.endswith("__init__.py")) if mod else ():
-            src_users.setdefault(n, set()).add(mod)
+    parsed: set[str] = set()
+    # CIV-18. Parse in rounds. Each round adds the leaves of the modules that
+    # import the last round's modules, so the importers of a changed module
+    # are known several levels up (a route module reaches its package through
+    # a sibling). The rounds stop when no new module appears, or after 6.
+    for _ in range(6):
+        grew = False
+        for s, body in sources.items():
+            if s in parsed or not any(lf in body for lf in leaves):
+                continue
+            mod = module_name(s, root)
+            parsed.add(s)
+            if not mod:
+                continue
+            for n in imports(body, mod, s.endswith("__init__.py")):
+                src_users.setdefault(n, set()).add(mod)
+            grew = True
+        # Climb only inside the packages that enclose a changed module.
+        pkgs = {".".join(m.split(".")[:i]) for m in changed_mods for i in range(2, len(m.split(".")))}
+        reach = set(changed_mods)
+        for _r in range(6):
+            more = {
+                u
+                for m in reach
+                for u in src_users.get(m, ())
+                if any(u == p or u.startswith(p + ".") for p in pkgs)
+            }
+            if more <= reach:
+                break
+            reach |= more
+        new_leaves = {leaf(m) for m in reach} - leaves
+        if not grew or not new_leaves:
+            break
+        leaves |= new_leaves
     upstream = set().union(*(src_users.get(m, set()) for m in changed_mods))
     leaves |= {leaf(m) for m in upstream}
     test_users: dict[str, set[str]] = {}
@@ -266,6 +311,46 @@ _SCAN_IDIOM = re.compile(
     r"|\biter_modules\(|\bwalk_packages\(|\bimportlib\.resources\b"
     r"""|["'](?:grep|rg)["']\s*[,\]]"""
 )
+# CIV-3d (task 2196, 2026-11-07). The idioms above, except a glob. A glob whose
+# pattern is a LITERAL that ends in a data extension cannot list a Python
+# file, so a Python change cannot change what it finds. 122 of the 363 scanners
+# (80 of them R8 files) only glob `*.sql` and the like: the scanner set cost
+# 2,780 s of the 5,062 s suite on every Python PR, and now costs 866 s. A pattern that is not a literal, or ends in
+# `.py`, `*` or anything else, still counts. A file that does not parse counts.
+_SCAN_NON_GLOB = re.compile(
+    r"\.iterdir\(|\bos\.walk\(|(?<!ast)(?<!os)\.walk\(\s*\)"
+    r"|\blistdir\(|\bscandir\(|\bls-files\b|\bls-tree\b|\bgit\W+grep\b|\bfnmatch"
+    r"|\biter_modules\(|\bwalk_packages\(|\bimportlib\.resources\b"
+    r"""|["'](?:grep|rg)["']\s*[,\]]"""
+)
+_SCAN_GLOB_CALL = re.compile(r"\.r?glob\(|\bi?glob\(")
+_DATA_GLOB = re.compile(r"\.(?:sql|json|md|ts|tsx|js|mjs|cjs|css|ya?ml|toml|txt|sh|html|csv|lock|conf|ini)$")
+
+
+def _is_scanner(body: str) -> bool:
+    """True when the test may list Python files. Fails to True."""
+    if _SCAN_NON_GLOB.search(body):
+        return True
+    if not _SCAN_GLOB_CALL.search(body):
+        return False
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(body)
+    except (SyntaxError, ValueError):
+        return True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+        if name not in ("glob", "rglob", "iglob"):
+            continue
+        arg = node.args[0] if node.args else None
+        literal = isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+        if not (literal and _DATA_GLOB.search(arg.value)):
+            return True
+    return False
 
 
 def scanning_tests(tests: dict[str, str]) -> set[str]:
@@ -276,7 +361,38 @@ def scanning_tests(tests: dict[str, str]) -> set[str]:
     A false hit costs only time. Helpers under tests/unit/_*.py scan only SQL,
     TypeScript and JSON, so an import of one does not make a test a scanner.
     """
-    return {t for t, body in tests.items() if _SCAN_IDIOM.search(body)}
+    return {t for t, body in tests.items() if _SCAN_IDIOM.search(body) and _is_scanner(body)}
+
+
+def _package_router_tests(
+    dotted: str, src_users: dict[str, set[str]], test_users: dict[str, set[str]]
+) -> set[str]:
+    """Tests that mount the router of a package that reaches ``dotted``.
+
+    CIV-18 (task 1991). A package registers its route modules as an import
+    side effect, and a route module may reach the package only through a
+    sibling (``projects/due_day`` is imported by ``projects/mine``, and
+    ``mine`` by the package ``__init__``). So follow the importers of
+    ``dotted`` upward, inside each enclosing package, to a fixed point. When
+    the walk reaches the package itself, a test that imports ``<pkg>.router``
+    mounts the changed code. The walk stays inside the package, so it ends.
+    """
+    out: set[str] = set()
+    parts = dotted.split(".")
+    for i in range(len(parts) - 1, 0, -1):
+        pkg = ".".join(parts[:i])
+        seen, todo = {dotted}, [dotted]
+        while todo:
+            for user in src_users.get(todo.pop(), ()):
+                if user not in seen and (user == pkg or user.startswith(pkg + ".")):
+                    seen.add(user)
+                    todo.append(user)
+        if pkg in seen:
+            # `core` is where the packages define the router; some tests mount it
+            # from there (review P2).
+            out |= test_users.get(f"{pkg}.router", set())
+            out |= test_users.get(f"{pkg}.core.router", set())
+    return out
 
 
 def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str], list[str]]:
@@ -319,6 +435,14 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
                 users = test_users.get(upstream, set())
                 if len(users) <= HUB_LIMIT:
                     picked |= users
+                # CIV-18. A test that imports an aggregating package's
+                # `router` mounts every route module the package registers,
+                # whatever the package's size. `gateway.routes.projects` has
+                # 259 test importers (a hub), but only 35 import its router,
+                # and the R8 suites are among them. Without this, a change to
+                # `projects/personal.py` skipped `test_personal_privacy_r8.py`.
+                picked |= test_users.get(f"{upstream}.router", set())
+            picked |= _package_router_tests(dotted, src_users, test_users)
 
     if any(c.startswith("infra/postgres/") and c.endswith(".sql") for c in changed):
         picked.add("tests/unit/test_migration_prefixes.py")

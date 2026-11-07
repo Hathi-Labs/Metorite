@@ -156,10 +156,12 @@ test("flag off: the fold control and the logo stay in the sidebar's head", async
 });
 
 /**
- * The full-width bar (owner, 2026-10-09). The control moved into the bar, so
- * the fold, the pulse and the tip must still reach the member from there.
+ * The shell on, as production runs it. The fold control sits in the
+ * sidebar's own head since GL-11 (8f497e7b8, 2026-11-01), and the top bar
+ * that carried it is gone (GL-12, 30e72d332). The fold, the pulse and the tip
+ * must still reach the member from the sidebar's head.
  */
-test.describe("with the full-width shell bar", () => {
+test.describe("with the shell on", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
@@ -170,30 +172,36 @@ test.describe("with the full-width shell bar", () => {
     await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
   });
 
-  test("a sidebar link, then work, folds the rail, and the tip points at the bar's button", async ({ page }) => {
+  test("a sidebar link, then work, folds the rail, and the tip points at the head's button", async ({ page }) => {
     await openFromSidebar(page, "Organisation");
     await page.waitForURL("**/settings/organization**");
     await workInApp(page);
     await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
-    const button = page.locator("[data-shell-bar]").getByRole("button", { name: "Expand sidebar" });
+    const button = rail(page).getByRole("button", { name: "Expand sidebar" });
     await expect(button).toBeVisible();
     await expect(tip(page)).toBeVisible();
-    // Under the button, not over the logo beside it.
+    // Beside the folded rail, top-aligned with the button. The head sits in
+    // the rail now (placement "rail"), so the tip does not hang under it.
+    // The button itself lies past the folded rail's edge, so the tip's left
+    // edge is the rail's right edge and a gap (`FoldTip`: 56px plus 12px).
+    // The rail narrows over a transition, so measure it once it is narrow.
+    await expect.poll(async () => (await rail(page).boundingBox())?.width).toBeLessThan(60);
     const b = (await button.boundingBox())!;
+    const r = (await rail(page).boundingBox())!;
     const t = (await tip(page).boundingBox())!;
-    expect(t.y).toBeGreaterThan(b.y + b.height);
-    expect(t.x).toBeLessThan(b.x + b.width);
+    expect(t.x).toBeGreaterThanOrEqual(r.x + r.width);
+    expect(Math.abs(t.y - b.y)).toBeLessThanOrEqual(8);
 
     await tip(page).getByRole("button", { name: "Keep it open" }).click();
     await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
   });
 
-  test("a press on the bar's button is the member's own choice, so work does not fold it again", async ({ page }) => {
+  test("a press on the head's button is the member's own choice, so work does not fold it again", async ({ page }) => {
     await openFromSidebar(page, "Organisation");
     await page.waitForURL("**/settings/organization**");
     await workInApp(page);
     await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
-    await page.locator("[data-shell-bar]").getByRole("button", { name: "Expand sidebar" }).click();
+    await rail(page).getByRole("button", { name: "Expand sidebar" }).click();
     await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
     await workInApp(page);
     await workInApp(page);
