@@ -10,13 +10,13 @@ it restarts the services:
   keeps the old primary key. ``_save_avatar`` names the new index as its
   conflict target. A same-org save updates the row. A save of a name that
   another org holds still fails, on ``agent_avatars_pkey``.
-* **Contract (a later release, HANDOFF H-201d).** It drops
+* **Contract (a later release, HANDOFF H-443).** It drops
   ``agent_avatars_pkey``. Then each org keeps its own avatar for one name.
 
 This suite proves both states on a REAL, phase-4-promoted catalog, as the
 NOSUPERUSER NOBYPASSRLS app role, through the real route functions and
-``acb_graph.tenant_session``. The contract test drops the old key in its own
-dedicated database, and restores it at the end, so test order does not
+``acb_graph.tenant_session``. The contract test drops the old key in the module's
+promoted database, and restores it at the end, so test order does not
 matter. The superuser admin engine stands in for the owner role: production's
 owner bypasses RLS too (see migration 230), so it sees each org's row.
 
@@ -134,7 +134,7 @@ def test_a_same_org_save_updates_through_the_new_key(graph_as_app):  # noqa: F81
 def test_a_name_another_org_holds_still_fails_on_the_old_key(graph_as_app):  # noqa: F811
     """Pins the EXPAND behaviour on purpose. Org B's save does not match org
     A's row on the new index, so it inserts, and the old primary key refuses
-    it. The contract release flips this case (HANDOFF H-201d)."""
+    it. The contract release flips this case (HANDOFF H-443)."""
     from fastapi import HTTPException
     from gateway.routes.observability import AvatarPut, _save_avatar, put_avatar
 

@@ -35,7 +35,7 @@
 --     `agent_avatars_pkey`. Only then can org B save a name that org A holds.
 --     It must NOT ship with this file. If it did, the old code's upsert would
 --     fail on every save until the restart, because no unique rule on
---     `(agent_name)` would remain. HANDOFF H-201d carries that step.
+--     `(agent_name)` would remain. HANDOFF H-443 carries that step.
 --
 -- **NULL organization_id.** Production carries the generated phases 01 to 04
 -- (see migration 223). Phase 3 sets `organization_id` NOT NULL on this table,

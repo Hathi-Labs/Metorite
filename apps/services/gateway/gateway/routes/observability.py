@@ -447,7 +447,7 @@ def _save_avatar(
     ⚠️ Expand phase. The old primary key on ``agent_name`` alone still
     exists, so a save of a name that another org holds fails with a unique
     violation on ``agent_avatars_pkey``. The contract release drops that
-    key (HANDOFF H-201d), and then the save succeeds.
+    key (HANDOFF H-443), and then the save succeeds.
     """
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415

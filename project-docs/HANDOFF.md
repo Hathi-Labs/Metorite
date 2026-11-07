@@ -1371,7 +1371,7 @@ line — never reclaim a number by deleting the other entry.
   save until the restart. The contract file drops `agent_avatars_pkey` and
   flips the two cross-org pins in `test_agent_avatars_key_per_tenant_r8.py`
   and `test_h201_readers_under_rls.py`.
-- **Check:** `grep -ln "DROP CONSTRAINT IF EXISTS agent_avatars_pkey" infra/postgres/*.sql`
+- **Check:** `grep -lnE "DROP CONSTRAINT (IF EXISTS )?agent_avatars_pkey" infra/postgres/*.sql`
   → no hit means the contract is still open.
 - **Added:** 2026-11-07 · the H-201d expand session (task 1719)
 
