@@ -87,6 +87,9 @@ reference tied to code. Do not put product specs in `docs/`.
   palette, bell or assistant rail. A team view is a filter, never a Center.
   `specs/navigation_shell.md` owns it, and `workbench/control_plane/AGENTS.md`
   rule 10 carries it to UI work.
+- **⚠️ Seat tiers replace flat pricing at launch** *(D152, board `WS-PLN`)*.
+  Build new seat, checkout and signup work against `specs/seat_plans.md`.
+  The flat offer below stays live until PLN-50 flips.
 - **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
   (`core`), everything live included. `specs/launch_surface.md` §4 is the
   shape of record. `saas_multitenancy.md` §2.4b is the superseded D23/D24

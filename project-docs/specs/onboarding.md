@@ -401,6 +401,8 @@ joiner gets no company interview, and never sees `company_context`,
 - **Join before create (OB-22).** A person who proved an address at a domain of
   an opted-in org sees "Ask to join" before the org form. The request goes to the
   queue of `colleague_onboarding.md` §6. The joiner gets the member role.
+  Its row joins the one signup screen of `seat_plans.md` §8a.2, below the orgs
+  and the invites of the person's own address.
 - **Their other assistant (OB-23).** A pasted memory export arrives as proposals.
   The member confirms each line. Only the member reads the profile (D-PZ-3).
 
