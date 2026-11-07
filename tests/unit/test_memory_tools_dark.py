@@ -136,5 +136,36 @@ def test_a_scoped_writer_with_mem0_on_saves(
     monkeypatch: pytest.MonkeyPatch, scoped: list[str], tool: str, said: str,
 ) -> None:
     _mem0(monkeypatch, True)
-    assert asyncio.run(getattr(memory_tools, tool)("x")) == said
+    from acb_common.db import bind_tenant, release_tenant
+
+    async def _run() -> str:
+        # KG-9: the org key holds the bound tenant, so the run binds one.
+        token = bind_tenant("org-dark-1")
+        try:
+            return await getattr(memory_tools, tool)("x")
+        finally:
+            release_tenant(token)
+
+    assert asyncio.run(_run()) == said
     assert len(scoped) == 1
+    if tool == "save_org_memory":
+        assert scoped == ["org:org-dark-1"]
+
+
+def test_save_org_memory_with_no_tenant_saves_nothing(
+    monkeypatch: pytest.MonkeyPatch, scoped: list[str],
+) -> None:
+    """KG-9: no bound tenant, no org key, and the tool does not say saved."""
+    _mem0(monkeypatch, True)
+    from acb_common.db import clear_tenant, release_tenant
+
+    async def _run() -> str:
+        token = clear_tenant()
+        try:
+            return await memory_tools.save_org_memory("x")
+        finally:
+            release_tenant(token)
+
+    answer = asyncio.run(_run())
+    assert "saved." not in answer.lower()
+    assert scoped == []

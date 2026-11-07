@@ -1,9 +1,9 @@
 # Project alignment — Metorite checks work against the project's rules (WS-ALN)
 
-> **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec), ALN-1 (§5, the durable trigger) and ALN-4 (§4.1, the pin: the table `pm_project_authorities`, migration 339, three routes and three chat tools, no UI) are built. `ALIGN_JOBS_ORGS` and `AUTHORITY_PINS_ORGS` ship empty and `JOB_QUEUE` ships off, so no job and no pin exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a (the table and the service of one person decides, migration 332, merged e827f2012) is built dark behind `DECISIONS_ORGS`. ALN-2b (a My Day card and a task panel block for one decision, built 2026-11-04) is built dark. It adds the gated feed-only source `decisions`, so an org needs `DECISIONS_ORGS` and `MY_DAY_PROVIDERS=decisions`. The Reach sender for `decision` stays its own slice. **ALN-5a (§4.2, the rules of a project) is built dark on 2026-11-04:** rule rows on `pm_agent_guidance`, migration 343, seven routes under `/project-rules`, an exact-quote check, no UI, no chat tool and no model call. `PROJECT_RULES_ORGS` ships empty. ALN-4b and ALN-5b are next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
+> **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-07 · **Owner:** vjvarada
+> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec), ALN-1 (§5, the durable trigger) and ALN-4 (§4.1, the pin: the table `pm_project_authorities`, migration 339, three routes and three chat tools, no UI) are built. `ALIGN_JOBS_ORGS` and `AUTHORITY_PINS_ORGS` ship empty and `JOB_QUEUE` ships off, so no job and no pin exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a (the table and the service of one person decides, migration 332, merged e827f2012) is built dark behind `DECISIONS_ORGS`. ALN-2b (a My Day card and a task panel block for one decision, built 2026-11-04) is built dark. It adds the gated feed-only source `decisions`, so an org needs `DECISIONS_ORGS` and `MY_DAY_PROVIDERS=decisions`. The Reach sender for `decision` stays its own slice. **ALN-5a (§4.2, the rules of a project) is built dark on 2026-11-04:** rule rows on `pm_agent_guidance`, migration 343, seven routes under `/project-rules`, an exact-quote check, no UI, no chat tool and no model call. `PROJECT_RULES_ORGS` ships empty. ALN-4b and ALN-5b are next. **On 2026-11-06 the owner chose the recommended answer to each of ALN-Q1 to ALN-Q5 (D192, §14).** Only the number of the ALN-Q4 cap stays open, and ALN-7 measures it.
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §11 was read on that commit. Earlier task text came from a read at `308df8828`, and §2 lists each fact that changed.
-> **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
+> **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160, and D192 for the answers of §14. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Projects/Tasks App", epic 1368, this spec task 1369. The questions are tasks 1370 to 1374. The slices ALN-1 to ALN-14 are tasks 1375 to 1388, in order.
 > **Research first:** the comment "Research notes, 2026-11-02 (project alignment)" on epic 1368, copied into §9.
 > **Gate summary:** every slice is AGENT-SAFE. The flag that spends credits stays the owner's flip. An eval over USD 0.50 needs the owner's OK. Each slice that changes what a member sees follows the D145 loop.
@@ -45,10 +45,10 @@ Many people create tasks and edit documents in Metorite. A product manager write
 2. **No check of a personal task.** A task in a member's personal project (`pm_projects.personal_owner`) is never read by the checker. A move into a project is the moment it becomes project work.
 3. **No second rule engine.** §3.4 says why.
 4. **No external document.** A Google or Notion page that `pm_task_refs` links is out. The checker quotes only what Metorite can read.
-5. **No hard block at first.** ALN-12 is optional and waits on ALN-Q2.
+5. **No hard block at first.** A deviation warns by default (ALN-Q2, D192). A lead can mark one rule "needs approval". Then ALN-12 holds a move to Done, after the ALN-8 eval gate.
 6. **No grant from a rule.** A rule is guidance. D140.2 holds: the member is the only authority.
 7. **No check of a comment** in v1. The title, the description and the acceptance text are in.
-8. **No auto-move of a task** into a project (ALN-Q3).
+8. **No auto-move of a task** into a project (ALN-Q3, D192). Mira suggests the project, and one tap accepts.
 
 ---
 
@@ -290,9 +290,9 @@ The mode order is `off`, `shadow`, then `on` (D75.7, D100.2). `mode_for` needs a
 
 ### 6.3 Who pays and the cap
 
-ALN-Q4 sets the payer. The working default is the org's AI allowance. `job_member_scope` needs a member from our own tables, never from request input. ALN-7 uses the nearest project lead. With no lead, it uses the first org admin. ALN-7 names the exact read.
+The org's AI allowance pays (ALN-Q4, D192). `job_member_scope` needs a member from our own tables, never from request input. ALN-7 uses the nearest project lead. With no lead, it uses the first org admin. ALN-7 names the exact read.
 
-The cap is a working default of **300 checks for each org each day**, in Redis, and an admin can see the count. ALN-7 measures the real cost in a week of shadow data on our own org, and the owner then sets the number.
+The cap is daily and for each org. It lives in Redis, and an admin can see the count (D192). **The number is still open.** ALN-7 starts at 300 checks for each org each day. It measures the real cost in a week of shadow data on our own org. Then the owner sets the number.
 
 **Order of cost.** The cheap checks come first: no rules, a personal task, an unchanged hash, a dismissal that stands. Each one stops before any model call.
 
@@ -302,7 +302,7 @@ The cap is a working default of **300 checks for each org each day**, in Redis, 
 
 ### 7.1 Who hears (ALN-Q1)
 
-The working default: the person hears first. The lead hears after 2 working days with no action, or at once when the rule is `hard`. "The person" is the member who last changed the task, or its assignee when the change came from an agent.
+The person hears first (ALN-Q1, D192). The lead hears after 2 working days with no action, or at once when the rule is `hard`. "The person" is the member who last changed the task, or its assignee when the change came from an agent.
 
 ### 7.2 Visibility
 
@@ -415,7 +415,7 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **ALN-12** (1386) | The optional gate on Done. Needs ALN-10, and ALN-Q2 must choose it | R8: a task with an open hard finding cannot move to done. After the lead's answer it can. With the checker off or over its cap, the move passes | HIGH | AGENT-SAFE. Build only if the owner picks option A or C |
+| **ALN-12** (1386) | The gate on Done, for a rule that a lead marks "needs approval". Needs ALN-10 and the ALN-8 eval gate | R8: a task with an open hard finding cannot move to done. After the lead's answer it can. With the checker off or over its cap, the move passes | HIGH | AGENT-SAFE. In scope: ALN-Q2 chose option A (D192) |
 | **ALN-14** (1388) | Check an agent's plan and a linked pull request. Needs ALN-8, SW-18 (task 349) | A pull request that names a rule's forbidden approach raises one finding. A run with no pull request raises none | STD | AGENT-SAFE |
 
 ### Build order and parallel work
@@ -509,14 +509,16 @@ For this spec only: `uv run pytest tests/unit/test_index_completeness.py tests/u
 
 ## 14. Owner questions
 
-On 2026-11-02 the owner approved the full project plan and told us to start. The owner left these five questions open. Each answer below is a **working default, not an owner decision**. The build uses it. The question task stays open. If the owner changes an answer, this spec changes with it.
+On 2026-11-02 the owner approved the full project plan and told us to start. The owner left these five questions open. **On 2026-11-06 the owner chose the recommended answer to each one** ("go ahead with your recommendations for all the decisions"). D192 records them. Each question task is Done, with its answer in a comment.
 
-| Id | Question | Working default, not an owner decision |
+**One part stays open.** The ALN-Q4 cap has no number yet. ALN-7 starts at 300 and measures the real cost, and then the owner sets the number.
+
+| Id | Question | The owner's answer (D192) |
 |---|---|---|
 | **ALN-Q1** (1370) | Who hears first when work deviates? | **The person hears first** (option A). The lead hears after 2 working days, or at once for a hard rule. Sets ALN-9 and ALN-10 |
 | **ALN-Q2** (1371) | Can a deviation stop the work until the lead approves? | **Warn by default** (option A). A lead can mark one rule "needs approval". Then ALN-12 holds a move to Done. Never at capture. A block needs the gate of ALN-8 first |
 | **ALN-Q3** (1372) | May Metorite move a task into a project by itself? | **Suggest only** (option A). One tap accepts. Sets ALN-3 |
-| **ALN-Q4** (1373) | Who pays for the checks, and what is the daily cap? | **The org's AI allowance**, under a daily cap for each org that an admin can see (option A). The first number is 300 checks. Text that did not change is never checked twice. A check over the cap waits for the next day. ALN-7 measures the real cost first |
+| **ALN-Q4** (1373) | Who pays for the checks, and what is the daily cap? | **The org's AI allowance**, under a daily cap for each org that an admin can see (option A). The number is open: ALN-7 starts at 300 checks and measures the real cost first. Metorite never checks unchanged text twice. A check over the cap waits for the next day |
 | **ALN-Q5** (1374) | Does Metorite ever keep a score for each person? | **No** (the recommended line). Personal tasks are never checked. No report ranks people. Counts are for each project and each rule. An org admin can turn the feature off. Binds ALN-7, ALN-10 and ALN-13 |
 
-**What the working defaults do not change.** Each slice ships dark. Each slice that changes what a member sees needs a D145 preview and the owner's approval. The flag that spends credits stays the owner's flip. An eval over USD 0.50 needs the owner's OK.
+**What the answers do not change.** Each slice ships dark. Each slice that changes what a member sees needs a D145 preview and the owner's approval. The flag that spends credits stays the owner's flip. An eval over USD 0.50 needs the owner's OK.
