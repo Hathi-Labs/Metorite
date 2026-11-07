@@ -117,11 +117,13 @@ This section is an index of the workstreams, not their state (D118). Metorite ho
 
 The core function brief sets the phases (D119). Customer zero comes first inside Phase 1.
 
+⚠️ **D190 (2026-11-07) sets the order of work.** The M0 items and the cheap isolation fixes go first: steps 1 and 4 of the critical path below. Studio and the package host (lane L7) continue beside them. M2 has no date. The owner sets the date of the first paying customer after the main components of Metorite are built.
+
 | Milestone | Phase | Date | Meaning |
 |---|---|---|---|
 | **M0** | Phase 1, weeks 1 to 3 | about 17 Nov 2026 | Customer zero uses Metorite every day: Fracktal and Shaurrya Tele. The backups are safe. |
 | **M1** | Phase 1, the rest | December 2026 | Pilot-ready. Brief tasks 1 to 7 are done, the isolation tests pass, and a second organization is safe. |
-| **M2** | Phase 2 | 31 March 2027 | The first paid customer. Brief tasks 8 to 15 and the money path. |
+| **M2** | Phase 2 | no date (D190.2) | The first paid customer. Brief tasks 8 to 15 and the money path. |
 | **M3** | Phase 2 operations | 31 March 2027, if the brief needs it | Restore, compliance and observability. An item that is not on the brief moves to Phase 3. |
 | **M4** | Phase 3 | after Phase 2 | The UX System, Writing Help, MCP data parity and Notes. Studio and Workflows left M4 on 2026-10-31 (D141, WS-STU). |
 
@@ -5549,6 +5551,32 @@ It extends D140 and D183. It amends earlier rules in five points (items 10 to 14
 **Re-check this number at merge.** The first merge wins a D-number. D187 and D188 were open on other branches when this record was written.
 
 Fence: `test_playbook_org_neutral.py` (PB-1 creates it, PB-5 widens it, and it blocks from the PB-1 merge) and the fences named per slice in `specs/agent_coordination.md` §7.1. Advisory until the slices build them.
+
+### D190 — One order of work, no date for the first paying customer yet, the D152 seat tiers, and the board as the one record of the plan (2026-11-07)
+
+The owner asked on 2026-11-06 for an audit of the whole plan. The audit found 30 contradictions, and nine of them were HIGH (`research/2026-11-plan-audit/contradictions.md`). The owner answered its six questions in chat on 2026-11-07. Metorite task 1958 records the answer. Board: epic WS-SOT (task 2023), and SOT-0 (task 2038) is this record.
+
+**Owner calls.**
+
+1. **One order of work.** The M0 items and the cheap isolation fixes go first: steps 1 and 4 of the §2.0 critical path. Studio and the package host (lane L7) continue beside them. The lanes follow this order.
+2. **No date for the first paying customer yet.** The owner sets that date after the main components of Metorite are built. Until then, the M2 date in §2.0 and the paying-customer dates of the local launch plan do not bind.
+3. **Price: the D152 seat tiers ($20, $100 and $200).** They replace the flat ₹500 seat. D152 lands with PLN-0 (task 1274), on its open PR. Until that PR merges, CLAUDE.md §2 and `specs/launch_surface.md` §4 still say ₹500. The PLN-0 PR, or the PR after it, changes both. The open branches and PRs that carry useful work land on priority (task 2008).
+4. **Meetings: planning only.** The Meetings plan is on epic 1008: tasks 1010 to 1022 and 2009 to 2022 (`research/2026-11-plan-audit/meetings.md`). No Meetings slice starts until the owner orders it. D119.3 still holds for the build.
+5. **The board is the single source of truth for the project plan.** The board holds the state of each piece of work: status, priority, owner, order and what waits on whom. The repo holds rules, specs (scope and acceptance) and decisions. Epic WS-SOT moves the remaining state onto the board: `HANDOFF.md`, `hardening_backlog.md`, the status text in §2.1 and INDEX, spec slice rows with no task, and agent memory. This extends D118.
+6. **A plan for each dark fork app, before any build.** Each CommandCenter app that is still dark and useful gets a board epic with one task for each slice, in the shape of the Meetings plan. The five plans are in `research/2026-11-plan-audit/`: the Dashboard folds into Home (WS-DSH), the Memories page retires into Settings (WS-WKM), the Agent Registry and Live Activity fold into Projects (WS-AGA), the fork's builders fold into AI Studio (WS-STB), and a delivery monitor plus a clean-up (WS-DLM, WS-FCL). No slice starts until the owner orders its plan.
+7. **Branches.** The merge of a pull request deletes its branch. Each other branch gets a verdict: land it, or close it (task 2008).
+
+**Not decided.** Question 4 (file the absent launch-plan epics on the board) and question 5 (the app project as the one unit of ownership) stay open on task 1958.
+
+**What D190 amends.**
+
+8. **§2.0, the M2 date.** It reads "no date (D190.2)".
+9. **D118.** The board holds state with no exception. The R4 amendment lands in SOT-7 (task 2031), and the D39 amendment for `HANDOFF.md` lands in SOT-5 (task 2029).
+10. **D186.3.** "The flat seat" reads "the seat of D152" from the PLN-0 merge.
+
+**Re-check this number at merge.** The first merge wins a D-number. D187, D188 and D189 were open on other branches on 2026-11-07.
+
+Fence: advisory. SOT-7 (task 2031) adds the test that fails on status text in §2.1 and INDEX, and SOT-8 (task 2032) adds the test for slice rows with no task.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
