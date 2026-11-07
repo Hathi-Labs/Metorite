@@ -342,7 +342,7 @@ describe("one list for the bell and the card", () => {
     expect(card).toMatch(/<HomeCard[^>]*>\s*<NeedsList needs=\{needs\} now=\{now\}( first=\{first\})? \/>/);
     const bell = code(read("./ShellBell.tsx"));
     expect(bell).toMatch(/^import \{[^}]*\bNeedsList\b[^}]*\} from "\.\/NeedsYouCard";/m);
-    expect(bell).toMatch(/<NeedsList needs=\{panelNeeds\} now=\{now\}( extra=\{extra\})? \/>/);
+    expect(bell).toMatch(/<NeedsList needs=\{panelNeeds\} now=\{now\} extra=\{extra\} \/>/);
     // The panel's needs are the reader's, with only the act wrapped.
     expect(bell).toMatch(/\.\.\.needs,\s*act: \(item, from\) =>/);
   });

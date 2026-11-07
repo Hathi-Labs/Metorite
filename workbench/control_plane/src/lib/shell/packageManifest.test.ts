@@ -55,7 +55,7 @@ describe("PKG-6 packageManifest", () => {
     const out = mergeInstallNav(base, installNavPanes(m));
     const apps = out.find((s) => s.id === "apps")!;
     expect(apps.items.map((p) => p.href)).toContain("/zz-crm");
-    expect(apps.items.find((p) => p.href === "/zz-crm")).toMatchObject({ label: "CRM", launch: "live", team: "across" });
+    expect(apps.items.find((p) => p.href === "/zz-crm")).toMatchObject({ label: "CRM", launch: "live", team: "apps" });
   });
 
   it("a feature-gated entry is hidden without the feature", () => {
@@ -137,21 +137,49 @@ describe("PKG-6 packageManifest", () => {
     expect(installNeeds(EMPTY_MANIFEST)).toHaveLength(0);
   });
 
-  it("the bell row with no href is plain text, not a link", () => {
-    const html = renderToStaticMarkup(
-      createElement(InstallNeedRow, { need: { installId: "i-2", title: "Finish setting up X", href: null } }),
-    );
-    expect(html).toContain("Finish setting up X");
-    expect(html).not.toContain("<a ");
+  it("an install with no safe setup_href gives no row", () => {
+    const m = manifest({
+      nav: [
+        entry("a", { href: "/zz-a", label: "A", name: "A" }, { needs_setup: true }),
+        entry("b", { href: "/zz-b", label: "B", name: "B", setup_href: "https://evil.example/x" }, { needs_setup: true }),
+      ],
+    });
+    expect(installNeeds(m)).toEqual([]);
+  });
+
+  it("a later entry of the same install may give the setup_href", () => {
+    const m = manifest({
+      nav: [entry("a", { href: "/zz-a", label: "A", name: "A" }, { needs_setup: true })],
+      jobs: [entry("j", { href: "/zz-a", label: "J", setup_href: "/zz-a/setup" }, { needs_setup: true })],
+    });
+    expect(installNeeds(m).map((n) => n.href)).toEqual(["/zz-a/setup"]);
+  });
+
+  it("an install pane has an empty note by default and a payload note when given", () => {
+    const m = manifest({
+      nav: [
+        entry("a", { href: "/zz-a", label: "Field visits" }),
+        entry("b", { href: "/zz-b", label: "B", description: "Plan the visits" }),
+      ],
+    });
+    const panes = installNavPanes(m);
+    expect(panes.map((p) => p.note)).toEqual(["", "Plan the visits"]);
+    expect(panes.every((p) => p.team === "apps")).toBe(true);
   });
 
   it("the bell counts the install rows and hands them to the panel", () => {
     const src = readFileSync(new URL("./ShellBell.tsx", import.meta.url), "utf-8");
-    expect(src).toMatch(/needs\.total === undefined \? undefined : needs\.total \+ setup/);
+    expect(src).toMatch(/count=\{bellCount\(needs\.total, setup\)\}/);
     expect(src).toMatch(/<BellPanel [^>]*extra=\{extra\}/);
     // The My Day card passes no `extra`, so it is unchanged.
     const card = readFileSync(new URL("./NeedsYouCard.tsx", import.meta.url), "utf-8");
     expect(card).toMatch(/<NeedsList needs=\{needs\} now=\{now\}( first=\{first\})? \/>/);
+  });
+
+  it("the bell host reads the manifest again when the panel opens", () => {
+    const src = readFileSync(new URL("./ShellBell.tsx", import.meta.url), "utf-8");
+    expect(src).toMatch(/const refreshManifest = manifest\.refresh;/);
+    expect(src).toMatch(/refresh\(\);\s*(\/\/[^\n]*\n\s*)*refreshManifest\(\);/);
   });
 
   it("All apps lists an install pane, and the stars ignore it", () => {

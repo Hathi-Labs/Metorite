@@ -311,8 +311,8 @@ export function NeedsList({
 
 /**
  * One "Finish setting up" row for an install (PKG-6b). It has the look of a
- * feed row and no act. It links to the setup page, or it is plain text when
- * the install names none.
+ * feed row and no act. It links to the setup page. `installNeeds` makes no row
+ * without a setup page.
  */
 export function InstallNeedRow({ need }: { need: InstallNeed }) {
   const inner = (
@@ -329,13 +329,9 @@ export function InstallNeedRow({ need }: { need: InstallNeed }) {
   return (
     <li data-install-need={need.installId}>
       <div className="flex min-h-11 items-center gap-2 rounded-lg pr-1 hover:bg-secondary/60 tech-transition">
-        {need.href ? (
-          <Link href={need.href} className={row}>
-            {inner}
-          </Link>
-        ) : (
-          <div className={row}>{inner}</div>
-        )}
+        <Link href={need.href} className={row}>
+          {inner}
+        </Link>
       </div>
     </li>
   );

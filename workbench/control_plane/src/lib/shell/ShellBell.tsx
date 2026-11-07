@@ -58,7 +58,7 @@ import { usePanelHeld } from "./panelHold";
 import { cardsFor, seesApprovals } from "./myDay";
 import { needsKey } from "./needs";
 import { NeedsList, type NeedsYou, useNeedsYou } from "./NeedsYouCard";
-import { installNeeds, usePackageManifest, type InstallNeed } from "./packageManifest";
+import { EMPTY_MANIFEST, installNeeds, usePackageManifestResource, usePackageManifest, type InstallNeed } from "./packageManifest";
 import { homePane } from "./shellNav";
 
 // ── Whether the panel is up ──────────────────────────────────────────────────
@@ -109,6 +109,15 @@ export const BELL_MAX = 99;
 export function bellBadge(count: number | undefined): string | null {
   if (count === undefined || !Number.isFinite(count) || count <= 0) return null;
   return count > BELL_MAX ? `${BELL_MAX}+` : String(Math.floor(count));
+}
+
+/**
+ * The bell's count: the feed's rows plus the install setup rows. `undefined`
+ * stays `undefined` until the feed answers. The badge and the panel read one
+ * list of setup rows (PKG-6b).
+ */
+export function bellCount(total: number | undefined, setupRows: readonly InstallNeed[]): number | undefined {
+  return total === undefined ? undefined : total + setupRows.length;
 }
 
 /**
@@ -203,11 +212,11 @@ export function ShellBell({
   const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
   // PKG-6b: one setup row for each install that needs setup counts too.
-  const setup = installNeeds(usePackageManifest()).length;
+  const setup = installNeeds(usePackageManifest());
   if (!allowed) return null;
   return (
     <BellButton
-      count={needs.total === undefined ? undefined : needs.total + setup}
+      count={bellCount(needs.total, setup)}
       open={open}
       onOpen={() => {
         onBeforeOpen?.();
@@ -441,16 +450,21 @@ export function ShellBellHost({ placement }: { placement: ModalPlacement }) {
   const { allowed, approvals } = useNeedsAllowed();
   const needs = useNeedsYou(allowed, approvals);
   const open = useBellOpen();
-  const extra = installNeeds(usePackageManifest());
+  const manifest = usePackageManifestResource();
+  const extra = installNeeds(manifest.data ?? EMPTY_MANIFEST);
   const { refresh } = needs;
+  const refreshManifest = manifest.refresh;
   // While the sidebar is on screen, it shows the needs beside its row.
   const barHolds = usePanelHeld("needs");
 
   useNeedsPoll(allowed, refresh);
 
   useEffect(() => {
-    if (allowed && open) refresh();
-  }, [allowed, open, refresh]);
+    if (!(allowed && open)) return;
+    refresh();
+    // A setup row may be stale too: read the manifest again on open.
+    refreshManifest();
+  }, [allowed, open, refresh, refreshManifest]);
 
   if (!allowed) return null;
   return (
