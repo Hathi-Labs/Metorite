@@ -327,3 +327,45 @@ class TestBrokerAuditOrgUnderRls:
             )
         finally:
             _delete(p.admin_engine, [target])
+
+
+def test_only_the_audit_helper_calls_record() -> None:
+    """Fence ``broker-audit-has-one-record-call`` (R7, task 2189 review P2).
+
+    The ``events`` fixture patches ``broker.record`` and drives only today's
+    sites, so a NEW ``record(AuditEvent(...))`` in broker.py would stay green.
+    This scan fails on it: ``broker._audit`` is the one function that may call
+    ``record``, because it stamps the bound tenant and asks
+    ``refuse_tenantless`` first. Any other call is a tenant-less audit row.
+    """
+    import ast
+    import pathlib
+
+    from action_broker import broker
+
+    tree = ast.parse(pathlib.Path(broker.__file__).read_text(encoding="utf-8"))
+    callers: list[str] = []
+
+    class Scan(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+        def visit_Call(self, node: ast.Call) -> None:
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+            if name == "record":
+                callers.append(self.stack[-1] if self.stack else "<module>")
+            self.generic_visit(node)
+
+    Scan().visit(tree)
+    assert callers == ["_audit"], (
+        "broker.py may call record() only inside _audit, which stamps the bound "
+        f"tenant and asks refuse_tenantless first. Calls found in: {callers}"
+    )
