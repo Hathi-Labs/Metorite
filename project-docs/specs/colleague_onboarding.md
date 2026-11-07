@@ -88,7 +88,13 @@ route's permission, the type-to-confirm rule, and any cross-table claim at all
 writes a random `GATEWAY_INTERNAL_TOKEN` when the line is absent, empty or
 equal to the LLM key. It keeps a distinct token. Fences:
 `tests/unit/test_setup_secrets.py` and
-`tests/unit/test_no_llm_key_identity_fence.py`. G2 stays open. ·
+`tests/unit/test_service_identity_and_webhook_auth.py`. G2 stays open. ·
+**WS-24c slice 2 BUILT 2026-11-07 (task 1843):** a caller reads the internal
+token through `acb_common.settings.internal_service_token()` only. It sends
+`internal_auth_headers()`, which gives no `Authorization` header when the
+token is empty. The scanner of `test_no_llm_key_identity_fence.py` moved into
+`test_service_identity_and_webhook_auth.py`, and no known-debt set stays. The
+follow-ups are in HANDOFF H-444. ·
 **Board row:** WS-24 ·
 **Owner:** vjvarada · **Date:** 2026-08-05 ·
 **Verified against code on 2026-08-05** (branch `ws-24-onboarding-readiness`,

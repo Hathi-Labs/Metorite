@@ -80,10 +80,30 @@ def test_the_acting_user_travels_with_the_token(
 ) -> None:
     mod = _load(label, path)
     monkeypatch.setattr(mod, "_current_user_email", lambda: "alice@fracktal.in")
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "tok-internal")
 
     headers = mod._headers()
     assert headers["X-User-Email"] == "alice@fracktal.in"
-    assert headers["Authorization"].startswith("Bearer ")
+    assert headers["Authorization"] == "Bearer tok-internal"
+
+
+@pytest.mark.parametrize(("label", "path"), CLIENTS, ids=[c[0] for c in CLIENTS])
+def test_an_unset_token_sends_no_authorization_header(
+    label: str, path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WS-24c slice 2. ``Bearer `` with no token is an illegal header value,
+    and httpx raises before the request leaves. With no header, the gateway
+    answers a clean 401. The acting member still travels."""
+    from acb_common import get_settings
+
+    mod = _load(label, path)
+    monkeypatch.setattr(mod, "_current_user_email", lambda: "alice@fracktal.in")
+    monkeypatch.delenv("GATEWAY_INTERNAL_TOKEN", raising=False)
+    monkeypatch.setattr(get_settings(), "gateway_internal_token", "", raising=False)
+
+    headers = mod._headers()
+    assert "Authorization" not in headers
+    assert headers["X-User-Email"] == "alice@fracktal.in"
 
 
 def _headers_source(path: Path) -> str:

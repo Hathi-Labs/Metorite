@@ -69,6 +69,7 @@ from acb_common.priority import (
     level_names,
     task_cell,
 )
+from acb_common.settings import internal_auth_headers
 
 try:
     # MCP-style risk annotations (HH-2): the risk-aware permission handler and
@@ -138,16 +139,6 @@ def _current_user_email() -> str:
     except Exception:
         return ""
 
-
-def _internal_token() -> str:
-    try:
-        from acb_common import get_settings
-        settings = get_settings()
-        return (getattr(settings, "gateway_internal_token", "") or "").strip()
-    except Exception:
-        return os.environ.get("GATEWAY_INTERNAL_TOKEN", "").strip()
-
-
 def _headers() -> dict[str, str]:
     """Internal bearer + the acting user, which is not optional.
 
@@ -172,7 +163,7 @@ def _headers() -> dict[str, str]:
             "the run with user_email in its payload."
         )
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }

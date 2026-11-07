@@ -57,6 +57,7 @@ import httpx
 from acb_common import get_logger, get_settings
 from acb_common.card_body import CARD_CLIP, CUT_MARK, card_body, cut_refusal, is_cut, one_line
 from acb_common.paging import bounds, page_line
+from acb_common.settings import internal_auth_headers
 from acb_common.tool_refusals import (
     GatewayRefusal,
     refusals_as_text,
@@ -124,18 +125,6 @@ def _current_user_email() -> str:
     except Exception:
         return ""
 
-
-def _internal_token() -> str:
-    """The gateway's internal bearer token: ``GATEWAY_INTERNAL_TOKEN`` only.
-
-    There is no ``litellm_master_key`` rung (WS-24b, 2026-11-06). The gateway
-    no longer accepts the LLM key as service identity, so that rung would only
-    send a token that 401s. Unset gives ``""``, and the gateway refuses it.
-    """
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 def _headers() -> dict[str, str]:
     """Internal bearer + the acting user, which is not optional.
 
@@ -161,7 +150,7 @@ def _headers() -> dict[str, str]:
             "the run with user_email in its payload."
         )
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }

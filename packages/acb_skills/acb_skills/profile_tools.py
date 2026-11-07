@@ -167,8 +167,9 @@ from acb_common.assistant_profile import (
     writes_open,
 )
 from acb_common.paging import paged
+from acb_common.settings import internal_auth_headers
 
-from acb_skills.company_search_tools import _gateway_url, _internal_token
+from acb_skills.company_search_tools import _gateway_url
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 #: The first line of every answer (the ``company_search_tools`` convention).
@@ -230,7 +231,7 @@ def _headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -652,7 +653,7 @@ async def _write_gate() -> dict[str, str]:
     if await session_is_marked():
         raise _Refused(MARKED, "marked")
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
         "X-Profile-Via": _channel(),

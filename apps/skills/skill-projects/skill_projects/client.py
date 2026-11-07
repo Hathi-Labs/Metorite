@@ -29,6 +29,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from acb_common.settings import internal_auth_headers
 from acb_common.tool_refusals import (
     DETAIL_MAX,
     GatewayRefusal,
@@ -81,17 +82,6 @@ def current_user_email() -> str:
     except Exception:
         return ""
 
-
-def internal_token() -> str:
-    try:
-        from acb_common import get_settings
-
-        settings = get_settings()
-        return (getattr(settings, "gateway_internal_token", "") or "").strip()
-    except Exception:
-        return os.environ.get("GATEWAY_INTERNAL_TOKEN", "").strip()
-
-
 def headers() -> dict[str, str]:
     """Internal bearer plus the acting member. The member is not optional."""
     user = current_user_email()
@@ -102,7 +92,7 @@ def headers() -> dict[str, str]:
             fixable=False,
         )
     return {
-        "Authorization": f"Bearer {internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
         # D-PM-36 — the activity row records that the assistant prepared the

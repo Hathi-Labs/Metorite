@@ -83,6 +83,16 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-444 · Finish the WS-24c token follow-ups that slice 2 left out · [AGENT]
+- **Metorite:** #1843. The task holds the slice record. No own task yet, so the full entry is here.
+- **Why:** Slice 2 made one reader of the internal token. Three gaps stay:
+  - The deploy does not copy `GATEWAY_INTERNAL_TOKEN` into `workbench/operator_console/.env.local`. This needs the `deploy-write` grant.
+  - `scripts/setup_secrets.sh` line 65 appends the `EXECUTIVE_EMAILS` comment again on each run.
+  - `env_value` in `setup_secrets.sh` does not handle two token lines, a quoted value or a CRLF line end.
+- **Do this:** Under a `deploy-write` grant, copy the token into the operator console `.env.local` in `scripts/vps_apply.sh`. Make the comment append run once. Make `env_value` take the last line, strip quotes and strip a CR. Fence each change in `tests/unit/test_setup_secrets.py`.
+- **Check:** `grep -c 'EXECUTIVE_EMAILS=' scripts/setup_secrets.sh` and `grep -n operator_console/.env.local scripts/vps_apply.sh`. No copy step in the second means STILL PENDING.
+- **Added:** 2026-11-07 · WS-24c slice 2, branch `ws24c2-mt-de46e5c8`
+
 ### H-442 · Confirm migration 337 and its backup on production after the 2026-11-03 release · [AGENT]
 - **Why:** PZ-33b (merged 952e4315d) adds `chat_message.member_typed` in `infra/postgres/337_chat_message_member_typed.sql`. A migration is one-way (R6), and a deploy once reported success while it shipped nothing (CLAUDE.md §3 rule 8).
 - **Check:** on the box, read the ledger: `SELECT filename, applied_at FROM schema_migrations WHERE filename LIKE '337_%'`. No row means STILL PENDING. With a row, also read the deploy log for the pre-migration backup line of that release, and run `SELECT count(*) FROM information_schema.columns WHERE table_name = 'chat_message' AND column_name = 'member_typed'`. A count of 1 closes the entry.

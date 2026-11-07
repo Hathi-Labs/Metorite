@@ -95,6 +95,7 @@ from uuid import UUID
 
 import httpx
 from acb_common.paging import page_line, paged, prefix_page
+from acb_common.settings import internal_auth_headers
 from acb_common.tool_refusals import (
     GatewayRefusal,
     RefusalVoice,
@@ -226,15 +227,6 @@ def _current_user_email() -> str:
     except Exception:
         return ""
 
-
-def _internal_token() -> str:
-    """The internal bearer. The order is the one of ``agent-crm``."""
-    from acb_common import get_settings
-
-    settings = get_settings()
-    return (getattr(settings, "gateway_internal_token", "") or "").strip()
-
-
 def _headers() -> dict[str, str]:
     """The bearer and the acting member. With no member, refuse.
 
@@ -251,7 +243,7 @@ def _headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(CRM_SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }

@@ -41,6 +41,7 @@ from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
 from acb_common.no_person import no_person_present
+from acb_common.settings import internal_auth_headers, internal_service_token
 from acb_llm.run_errors import run_error_event
 from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
 from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
@@ -5819,9 +5820,7 @@ async def _run_agent_inner(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
                 # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
-                gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "") or ""
-                ).strip(),
+                gateway_token=internal_service_token(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -6922,9 +6921,7 @@ async def run_agent_stream(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
                 # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
-                gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "") or ""
-                ).strip(),
+                gateway_token=internal_service_token(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -8942,14 +8939,13 @@ async def run_agent_stream(
                 # save that did not happen (orchestrator/setup_tokens.py).
                 if any(v.strip() for _, _k, v in raw_matches):
                     _GATEWAY_URL = settings.gateway_base_url if hasattr(settings, "gateway_base_url") else "http://127.0.0.1:8000"
-                    _token = (getattr(settings, "gateway_internal_token", "") or "").strip()
                     try:
                         import httpx
 
                         from orchestrator.setup_tokens import save_setup_vars
                         async with httpx.AsyncClient(timeout=10) as c:
                             _setup_note = await save_setup_vars(
-                                c, _GATEWAY_URL, {"Authorization": f"Bearer {_token}"},
+                                c, _GATEWAY_URL, internal_auth_headers(),
                                 raw_matches,
                             )
                         if _setup_note:
