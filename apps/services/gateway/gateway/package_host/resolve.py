@@ -32,7 +32,9 @@ PKG-5b row of §10. The route is ``GET /shell/manifest`` in
 4. ``needs_setup`` comes from the needs of the manifest, and is never
    stored. A need is ``{"feature": <slug>}`` or ``{"package": <id>}``. Any
    other shape counts as unmet (fail closed). A package need is met only by
-   a system package or by an install that this viewer sees. The ``extends``
+   a system package that the viewer can use, or by an install that this
+   viewer sees. A system package counts when one of its entries passes the
+   feature check of step 3. The ``extends``
    of a sub-app (§8.2, PKG-15a) is one more package need. A host that is
    missing, paused, not text or the sub-app itself leaves the need unmet.
    Each entry of an install with ``extends`` carries ``"extends": <host>``.
@@ -216,9 +218,18 @@ def feature_ok(feature: Any, can_use: CanUse) -> bool:
     return can_use(feature)
 
 
-def system_package_ids(system: Mapping[str, Sequence[SystemContribution]]) -> frozenset[str]:
-    """The id of each system package that holds an entry."""
-    return frozenset(c.package for entries in system.values() for c in entries)
+def system_package_ids(
+    system: Mapping[str, Sequence[SystemContribution]], can_use: CanUse,
+) -> frozenset[str]:
+    """The id of each system package that the viewer can use (§8.2).
+
+    A system package counts only when at least one of its entries passes
+    :func:`feature_ok`, the gate that hides its entries. So a package whose
+    entries the viewer cannot see is not present. A package whose entries
+    name no feature is present for each viewer.
+    """
+    return frozenset(c.package for entries in system.values() for c in entries
+                     if feature_ok(c.feature, can_use))
 
 
 def resolve(
@@ -234,7 +245,7 @@ def resolve(
     """
     kept = widest_per_app(installs)
     by_id = {i.id: i for i in kept}
-    packages = system_package_ids(system) | {
+    packages = system_package_ids(system, can_use) | {
         mid for i in kept if (mid := manifest_id(i.manifest)) is not None}
     setup = {i.id: not needs_met(i.manifest, can_use, packages) for i in kept}
 

@@ -35,6 +35,7 @@ is not a pass.
 7. One key of two apps: the wider scope wins, then the older install.
 8. Org B sees nothing of org A, and org A nothing of org B.
 9. ``needs_setup`` follows the needs, and a malformed need fails closed.
+   A sub-app of CRM shows its setup card to a member without CRM.
 10. The version is stable, a match is a 304, and only the viewer's own
     entries move it.
 11. A duplicate claim still raises (``test_package_host_store_r8.py``).
@@ -389,10 +390,11 @@ def _needs(world: Any, app: str, needs: Any) -> None:
 
 
 def test_r8_needs_setup_follows_the_needs_and_fails_closed(world) -> None:
-    system = sorted({c.package for v in load_contributes().values() for c in v})[0]
+    # A system package counts only when the viewer can use one of its
+    # entries (§8.2). Each CRM entry carries the feature ``crm``.
     cases = {
         "a1": ([{"feature": "crm"}], False, True),
-        "a2": ([{"package": system}], False, False),
+        "a2": ([{"package": "crm"}], False, True),
         "a3": ([{"package": _mid("a8")}], False, False),
         "a4": ([{"package": _mid("a7")}], True, True),
         "a5": ([{"connection": "zoho"}], True, True),
@@ -456,6 +458,23 @@ def test_r8_a_host_that_is_a_system_package_is_met(world) -> None:
     _extends(world, "a2", system)
     _install(world, "a2", "org", [_claim(_k("sub-sys"))])
     assert _mine(_view(world, BEN).body)[_k("sub-sys")]["needs_setup"] is False
+
+
+def test_r8_a_sub_app_of_crm_shows_its_setup_card_without_crm(world) -> None:
+    """A member whose role lacks ``crm`` sees no CRM entry. So CRM is not
+    present for that member, and the sub-app needs setup. It still names its
+    host."""
+    assert {c.feature for v in load_contributes().values() for c in v
+            if c.package == "crm"} == {"crm"}
+    _extends(world, "a3", "crm")
+    _install(world, "a3", "org", [_claim(_k("sub-crm"))])
+    with_crm = _view(world, BEN, features=("feature:crm",)).body
+    without = _view(world, BEN, features=("feature:projects",)).body
+    assert _mine(with_crm)[_k("sub-crm")]["needs_setup"] is False
+    assert _mine(without)[_k("sub-crm")]["needs_setup"] is True
+    assert _mine(without)[_k("sub-crm")]["extends"] == "crm"
+    assert not [e for v in without["contributions"].values() for e in v
+                if e.get("package") == "crm"]
 
 
 # ── 10. The version ────────────────────────────────────────────────────────
