@@ -5,7 +5,16 @@
 // this proxy and by the agent runtime. So the stamp is true only while this
 // proxy never forwards a header of the browser. These cases RUN the handler
 // with a forged stamp and read the headers that went upstream.
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+// `lib/gateway.ts` reads the token once, when it loads. A known value makes
+// the upstream bearer exact, whatever the shell that runs the suite holds.
+const TOKEN = vi.hoisted(() => {
+  const token = "m3a-proxy-internal-token";
+  vi.stubEnv("GATEWAY_INTERNAL_TOKEN", token);
+  return token;
+});
+afterAll(() => vi.unstubAllEnvs());
 
 vi.mock("@/auth", () => ({
   auth: async () => ({ user: { email: "priya@fracktal.in" } }),
@@ -54,7 +63,7 @@ describe("the CRM proxy and a forged chat stamp", () => {
     expect(sent.get("x-actor-via")).toBeNull();
     // The identity is the session's, never the browser's header.
     expect(sent.get("x-user-email")).toBe("priya@fracktal.in");
-    expect(sent.get("authorization")).not.toBe("Bearer forged");
-    expect(sent.get("authorization")?.startsWith("Bearer ")).toBe(true);
+    // The proxy's own bearer, never the browser's.
+    expect(sent.get("authorization")).toBe(`Bearer ${TOKEN}`);
   });
 });
