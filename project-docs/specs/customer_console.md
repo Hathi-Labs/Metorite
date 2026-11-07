@@ -10508,7 +10508,8 @@ not an agent.**
     body claim (`_drop_identity_claims` in `routes/agent.py`). The two sync
     doors keep a claim of the member's own address, set to the session's
     address. A service caller keeps its claim. `POST /agent/webhook/{source}` spreads the signed
-    sender's payload.
+    sender's payload. Since H-438 (2026-11-07, task 1127), `POST /pull`
+    calls the same helper before its Mem0 read.
   - The Control Plane chat proxy builds its own payload with no member, so a
     browser cannot choose one. Since H-337 the three `/agent/run*` doors take
     a signed-in member from the session (`session_user`), not from the body.

@@ -72,6 +72,7 @@ describe("the sidebar holds places to work, by team", () => {
     expect(TEAM_GROUPS.map((g) => g.label)).toEqual([
       "Personal Center",
       "Across teams",
+      "Apps",
       "AI Studio",
       "Admin",
     ]);
