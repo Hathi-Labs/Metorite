@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. The bell part is not built. PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. The rest of this spec is not built.
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. The bell part is not built. PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. PKG-15a is built dark: the resolve finds the host of a sub-app (§8.2), and an install with `extends` carries the reserved payload key `extends`. The task text "After PKG-14" holds only for the panel half of PKG-15. PKG-15b waits on the merge of PKG-6b. The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `787269f0a`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
@@ -235,7 +235,7 @@ Five decisions that the columns carry:
 
 The workbench caches the answer through `useCachedResource`. A change to an install bumps a version, and the cache reads again.
 
-**Response shape.** The response is `{"version": <content hash>, "contributions": {<point>: [{"key", "source": "system"|"org"|"group"|"private", "install_id": <uuid or null>, "needs_setup": bool, ...payload fields}]}}`.
+**Response shape.** The response is `{"version": <content hash>, "contributions": {<point>: [{"key", "source": "system"|"org"|"group"|"private", "install_id": <uuid or null>, "needs_setup": bool, ...payload fields}]}}`. An entry of an install whose manifest has `extends` also carries `"extends": "<host id>"` (PKG-15a, §8.2). Only those entries carry it.
 
 **Version.** `version` is a hash of the resolved content, so it needs no column. It is an ETag. The workbench reads it again within 10 seconds, so a paused install disappears in time (J3).
 
@@ -332,6 +332,12 @@ The host renders the slot through the one renderer. The package never draws outs
 ### 8.2 Sub-apps
 
 A sub-app is a package with `extends`. Example: an "Installations" package with `"extends": "crm"`. Its nav entry shows under CRM in the sidebar, and its panel shows on each CRM account. It has its own objects and its own skill. When the host package is not installed, the sub-app is `needs_setup` (§5.4).
+
+**How the resolve finds the host (PKG-15a).** The `extends` of a manifest is the id of the host package. The resolve adds it as one more package need, `{"package": <extends>}`, to the needs of the manifest. So the host is met by a system package id, or by an active install that this viewer sees (§5.2 step 4). A paused or archived host install is missing. A host that only another org holds is missing too, because step 2 never shows it.
+
+**The edge cases.** An `extends` that is not text, or does not match the id pattern, fails closed. An `extends` equal to the own id of the sub-app is a missing host, and the manifest validator refuses it at install time.
+
+**The entries.** Each entry of an install with `extends` carries the reserved payload key `extends`. The entries of other installs stay as they were. The resolve does not check the feature gate of the host. A system package id counts as present whatever its feature, as `needs_met` does today.
 
 ### 8.3 Field extensions
 
@@ -433,7 +439,7 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 |---|---|---|---|---|
 | **PKG-13** | The shared field-extension layer (§8.3) | Expand-only migration. R8: FORCE RLS holds. A value of the wrong type is refused with the field name | HIGH | AGENT-SAFE |
 | **PKG-14** | Slots on the CRM record sheet and the task panel (§8.1) | A T1 package fills a panel and a button. A T2 block in a host slot is refused at install. The host tests pass unchanged. Visual review | STD | AGENT-SAFE |
-| **PKG-15** | Sub-apps: `extends`, the nav sub-entry, `needs_setup` when the host is missing | A sub-app of CRM shows under CRM. Without CRM it shows its setup card | STD | AGENT-SAFE |
+| **PKG-15** | Sub-apps: `extends`, the nav sub-entry, `needs_setup` when the host is missing. **PKG-15a (Python) is built dark:** the resolve adds the host as one package need, and an entry of an install with `extends` carries `"extends": "<host id>"`. The manifest refuses `extends` equal to its own `id`. **PKG-15b (workbench)** adds the nav sub-entry and the setup row. It waits on the merge of PKG-6b. The panel on each CRM account waits on PKG-14 | A sub-app of CRM shows under CRM. Without CRM it shows its setup card. R8: a host that only another org holds is missing. Run `uv run pytest tests/unit/test_package_host_resolve.py tests/unit/test_studio_manifest.py -q`, and `tests/unit/test_package_host_resolve_r8.py` on a real database with `-p no:xdist -rs` | STD | AGENT-SAFE |
 | **PKG-16** | Overlays (§8.4), and the layer list in the J4 admin view | An overlay hides and renames a job for its scope only. An overlay that changes an action's class is refused | HIGH | AGENT-SAFE |
 
 ### Phase P4 — Arranged around the person
@@ -565,6 +571,7 @@ The owner accepted PKG-Q1 to PKG-Q5 as recommended on 2026-11-01 (D147).
 | PKG-Q4 | How far may the product rearrange itself for each person? | **It suggests and never moves** a stable region (§9.2) |
 | PKG-Q5 | Which harness lessons go first? | **Replay tests and logged model inputs**, then the goal record. `web_research.md` §8 carries them |
 | PKG-Q6 | May the private claim of a member, for a DIFFERENT app, block an org install? | **OPEN.** PKG-8 decides it before its install route ships. The two options are below |
+| PKG-Q12 | Where does the setup card of a missing host link? | **OPEN.** Default: the install payload names `setup_href`. PKG-6b draws a setup row only when `setup_href` is a valid same-origin path |
 
 **PKG-Q6 in detail.** Today the private claim blocks the org install, because an org claim conflicts with every claim (§4). So a member can squat on a key, and no route removes the install before PKG-9. PKG-8 picks one of two options:
 1. **The org wins.** The org install goes in, and the resolve shows the org claim in place of the private claim (§5.2).
