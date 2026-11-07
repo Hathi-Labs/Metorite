@@ -407,6 +407,14 @@ export function ComposePanel({
     };
   }, [to, cc, open, accounts.length]);
 
+  // A bar tap closes the window as the X does: the pending save runs first,
+  // so the draft is kept (MOB-9). ⚠️ Above the early return, as every hook
+  // must be: after it, opening the window adds a hook and React throws.
+  useCloseOnBarTap(() => {
+    autosave.flush();
+    onClose();
+  }, open);
+
   if (!open) return null;
 
   const fromAccount = accounts.find((a) => a.id === fromId) ?? null;
@@ -449,8 +457,6 @@ export function ComposePanel({
     autosave.flush();
     onClose();
   };
-  // A bar tap closes the window the same way, so the draft is kept (MOB-9).
-  useCloseOnBarTap(closeComposer);
 
   /** Discard the auto-saved draft. The X keeps it instead. The window closes
    *  at once. The chain drains first, so no save that waited writes the draft

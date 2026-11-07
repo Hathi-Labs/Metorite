@@ -87,7 +87,13 @@ describe("every overlay that must give way listens to the bar tap", () => {
   });
 
   it("the email composer closes through the path that keeps the draft", () => {
-    expect(read("app/email/components/ComposePanel.tsx")).toContain("useCloseOnBarTap(closeComposer)");
+    const src = read("app/email/components/ComposePanel.tsx");
+    // The pending save runs first, as the X does, and only while it is open.
+    expect(src).toMatch(/useCloseOnBarTap\(\(\) => \{\s*autosave\.flush\(\);\s*onClose\(\);\s*\}, open\);/);
+    // ⚠️ The hook sits ABOVE `if (!open) return null`. Below it, opening the
+    // window added a hook and React threw (fix round 2 shipped this; caught
+    // in supervision, 2026-11-07).
+    expect(src.indexOf("useCloseOnBarTap(")).toBeLessThan(src.indexOf("if (!open) return null;"));
   });
 
   it("the key panel closes only while a key is selected", () => {
