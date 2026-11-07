@@ -2619,7 +2619,17 @@ async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user))
     from acb_llm.guardrails import CITATION_RE  # local import to avoid cold-start cost
 
     trace_id = uuid.uuid4().hex
-    user_id: str = req.user_email or getattr(_user, "email", "") or "anonymous"
+    # H-438 (task 1127): the session names the member, never the body. The
+    # member keys the Mem0 read below. The run doors' own helper drops a
+    # signed-in member's claim of another person, and keeps an own claim in
+    # any case as the session's address. A service caller keeps its claim.
+    # Lazy import, as the router mount does. Fence:
+    # tests/unit/test_chat_payload_identity_claims.py.
+    from gateway.routes.agent import _drop_identity_claims
+
+    claims: dict[str, str | None] = {"user_email": req.user_email} if req.user_email else {}
+    _drop_identity_claims(claims, _user, keep_own=True)
+    user_id: str = claims.get("user_email") or getattr(_user, "email", "") or "anonymous"
     _log.info("pull.received", query=req.query, user=user_id, trace_id=trace_id)
     try:
         from orchestrator.agents import build_orchestrator_agent, enrich_instructions_with_memory

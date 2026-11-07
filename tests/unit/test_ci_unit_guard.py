@@ -125,6 +125,8 @@ def test_every_shard_runs_and_writes_a_report() -> None:
     )
     assert "--splits ${{ steps.pick.outputs.splits }}" in run
     assert "--group ${{ matrix.shard }}" in run
+    # CIV-8k: a hung test prints its stack after 900 s, so the log names the cause.
+    assert "-o faulthandler_timeout=900" in run
     assert "junit_family=xunit1" in run
     assert "--junitxml=" in run
 
@@ -408,7 +410,8 @@ def test_gate_output_never_reads_a_failure_as_an_empty_selection(tmp_path: Path)
     assert "full=true" in missing and "shards=[1,2,3,4,5,6]" in missing
 
 
-def test_the_pick_step_and_the_changes_job_agree_on_the_count() -> None:
+def test_the_pick_step_and_the_changes_job_agree_on_the_count(monkeypatch) -> None:
+    monkeypatch.setattr(guard, "file_seconds", lambda *a, **k: None)  # the tiers by file count
     for n in (1, 40, 41, 120, 121, 300):
         paths = [f"tests/unit/test_{i}.py" for i in range(n)]
         mode, picked = guard.select_shard("false", " ".join(paths), "", "success")
@@ -443,3 +446,55 @@ def test_no_job_skips_on_a_draft() -> None:
     assert "pull_request.draft" not in text
     on = yaml.safe_load(text)[True]
     assert "types" not in (on["pull_request"] or {})
+
+
+# ── CIV-17b: the shard count follows measured seconds ──────────────────────
+
+
+def test_shard_count_by_seconds() -> None:
+    sec = {"tests/unit/test_a.py": 300.0, "tests/unit/test_b.py": 301.0, "tests/unit/test_big.py": 5000.0}
+    a, b, big = sec
+    assert guard.shard_count("selection", [a], sec) == 1
+    assert guard.shard_count("selection", [a, b], sec) == 2  # 601 s: one shard holds 600 s
+    assert guard.shard_count("selection", [big], sec) == guard.ALL_SHARDS  # capped
+    # a file with no timing counts DEFAULT_FILE_S (a new test)
+    new = [f"tests/unit/test_new_{i}.py" for i in range(61)]
+    assert guard.shard_count("selection", new, sec) == 2  # 610 s
+    assert guard.shard_count("empty", [], sec) == 0
+    assert guard.shard_count("full", [], sec) == guard.ALL_SHARDS
+
+
+def test_without_timings_the_tiers_by_file_count_still_apply() -> None:
+    few = [f"tests/unit/test_{i}.py" for i in range(41)]
+    assert guard.shard_count("selection", few, None) == 3
+    assert guard.shard_count("selection", few, {}) == 3
+
+
+def test_file_seconds_reads_pytest_splits_format_and_fails_to_none(tmp_path: Path) -> None:
+    f = tmp_path / ".test_durations"
+    f.write_text(json.dumps({"tests/unit/test_a.py::t1": 1.5, "tests/unit/test_a.py::t2": 2.0,
+                             "tests/unit/test_b.py::T::t": 3}), encoding="utf-8")
+    assert guard.file_seconds(f) == {"tests/unit/test_a.py": 3.5, "tests/unit/test_b.py": 3.0}
+    f.write_text("not json", encoding="utf-8")
+    assert guard.file_seconds(f) is None
+    assert guard.file_seconds(tmp_path / "missing") is None
+    f.write_text("{}", encoding="utf-8")
+    assert guard.file_seconds(f) is None
+
+
+def test_gate_output_uses_the_timings_and_agrees_with_the_pick_step(tmp_path: Path, monkeypatch) -> None:
+    durations = tmp_path / ".test_durations"
+    durations.write_text(json.dumps({"tests/unit/test_a.py::t": 700.0, "tests/unit/test_b.py::t": 100.0}),
+                         encoding="utf-8")
+    monkeypatch.setattr(guard, "DURATIONS_PATH", durations)
+    gate = tmp_path / "gate.json"
+    gate.write_text(json.dumps({"full": False, "files": ["tests/unit/test_a.py", "tests/unit/test_b.py"]}),
+                    encoding="utf-8")
+    out = dict(x.split("=", 1) for x in guard.gate_output(gate))
+    assert out["shards"] == "[1,2]"  # 800 s
+    mode, paths = guard.select_shard("false", out["files"], "", "success")
+    assert guard.shard_count(mode, paths, guard.file_seconds()) == 2
+    # a docs-only PR still starts no shard, and a failed result still starts all six
+    gate.write_text(json.dumps({"full": False, "files": []}), encoding="utf-8")
+    assert dict(x.split("=", 1) for x in guard.gate_output(gate))["shards"] == "[]"
+    assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6]"
