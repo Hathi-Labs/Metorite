@@ -80,18 +80,18 @@ async def _method(method: str, token: str | None = GOOD, params: Any = None) -> 
 
 class TestTheCapabilityAndTheLists:
 
-    async def test_initialize_declares_resources_without_subscribe(self, armed):
+    async def test_initialize_declares_resources_without_subscribe(self, armed):  # noqa: F811
         body = await _method("initialize", params={"protocolVersion": "2025-11-25"})
         assert body["result"]["capabilities"]["resources"] == {
             "subscribe": False, "listChanged": False}
 
-    async def test_the_resources_are_dark_while_agent_resources_orgs_is_empty(self, armed):
+    async def test_the_resources_are_dark_while_agent_resources_orgs_is_empty(self, armed):  # noqa: F811
         assert (await _method("resources/list"))["result"] == {"resources": []}
         assert (await _method("resources/templates/list"))["result"] == {"resourceTemplates": []}
         error = (await _read(f"metorite://task/{T_ONE}"))["error"]
         assert error == {"code": -32002, "message": "Resource not found"}
 
-    async def test_the_resources_stay_dark_for_an_organization_off_the_list(self, armed, monkeypatch):
+    async def test_the_resources_stay_dark_for_an_organization_off_the_list(self, armed, monkeypatch):  # noqa: F811
         monkeypatch.setattr(get_settings(), "agent_resources_orgs", "00000000-0000-4000-8000-000000000001")
         assert (await _method("resources/templates/list"))["result"] == {"resourceTemplates": []}
 
@@ -192,7 +192,7 @@ class TestARead:
         await _method("resources/list")
         assert on.gateway.requests == []
 
-    async def test_a_dark_read_makes_no_gateway_request(self, armed):
+    async def test_a_dark_read_makes_no_gateway_request(self, armed):  # noqa: F811
         armed.gateway.requests.clear()
         await _read(f"metorite://task/{T_ONE}")
         assert armed.gateway.requests == []

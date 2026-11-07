@@ -493,6 +493,27 @@ async def endpoint(request: Request) -> Response:
                            session)
 
 
+async def _resources_method(request_id: Any, method: str, params: dict[str, Any],
+                            caller: bearer.Caller, ctx: tools.Context) -> Response:
+    """The three resource methods of SW-34a (``agent_edge.resources``)."""
+    org = caller.lookup.organization_id
+    if method == "resources/list":
+        return _result(request_id, {"resources": resources.listed(caller.scopes, org)})
+    if method == "resources/templates/list":
+        return _result(request_id, {"resourceTemplates": resources.templates(
+            caller.scopes, org)})
+    try:
+        result = await resources.read(ctx, params)
+    except resources.ResourceBadParams as refused:
+        return _rpc_error(request_id, INVALID_PARAMS, str(refused))
+    except resources.ResourceNotFound as refused:
+        return _rpc_error(request_id, resources.NOT_FOUND, str(refused))
+    except tools.GatewayUnauthorized:
+        return challenge_401(sent=True)
+    _log.info("agent_edge.resource_read", connection_id=caller.lookup.connection_id)
+    return _result(request_id, result)
+
+
 async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
                     tool: tools.Tool | None, caller: bearer.Caller,
                     key: str, session: str | None = None) -> Response:
@@ -526,24 +547,10 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
         return _result(request_id, {"tools": listed})
     if method == "prompts/list":
         return _result(request_id, {"prompts": prompts.listed(caller.scopes, caller.lookup.organization_id)})
-    if method == "resources/list":
-        return _result(request_id, {"resources": resources.listed(
-            caller.scopes, caller.lookup.organization_id)})
-    if method == "resources/templates/list":
-        return _result(request_id, {"resourceTemplates": resources.templates(
-            caller.scopes, caller.lookup.organization_id)})
-    if method == "resources/read":
-        try:
-            result = await resources.read(
-                tools.Context(caller=caller, key=key, session=session), params)
-        except resources.ResourceBadParams as refused:
-            return _rpc_error(request_id, INVALID_PARAMS, str(refused))
-        except resources.ResourceNotFound as refused:
-            return _rpc_error(request_id, resources.NOT_FOUND, str(refused))
-        except tools.GatewayUnauthorized:
-            return challenge_401(sent=True)
-        _log.info("agent_edge.resource_read", connection_id=caller.lookup.connection_id)
-        return _result(request_id, result)
+    if method.startswith("resources/"):
+        return await _resources_method(
+            request_id, method, params, caller,
+            tools.Context(caller=caller, key=key, session=session))
     if method == "prompts/get":
         try:
             result = prompts.get(caller.scopes, params, caller.lookup.organization_id)
