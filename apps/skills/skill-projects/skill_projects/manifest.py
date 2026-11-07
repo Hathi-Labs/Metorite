@@ -164,13 +164,9 @@ MANIFEST: tuple[Route, ...] = (
     # WAITING_ORGS and DECISIONS_ORGS. The route refuses an agent connection
     # and a run with no person present. AP-10 builds the tool `ask_person`.
     Route("POST", "/projects/tasks/{task_id}/asks", "ask_person", "C"),
-    Route(
-        "POST",
-        "/projects/asks/{ask_id}/withdraw",
-        "",
-        "X",
-        "The asker withdraws an ask on its card (AP-9). AP-10 names no withdraw tool.",
-    ),
+    # The asker withdraws an ask on its card (AP-9). A member does it by a
+    # click, so D-OP-9 gives it a chat tool: AP-10 builds `withdraw_ask`.
+    Route("POST", "/projects/asks/{ask_id}/withdraw", "withdraw_ask", "C"),
     # ── tasks.py ─────────────────────────────────────────────────────────
     Route("GET", "/projects/tasks", "list_tasks", "A"),
     Route("GET", "/projects/tasks/{task_id}", "task_detail", "A"),
@@ -571,6 +567,7 @@ PLANNED: dict[str, str] = {
     "release_agent_run": "WS-55 EA-12e, in-product chat parity",
     # WS-AP AP-8a built the person ask route. AP-10 builds its chat tool.
     "ask_person": "WS-AP AP-10, the chat tools of Waiting",
+    "withdraw_ask": "WS-AP AP-10, the chat tools of Waiting",
     # WS-55 SW-11a. A person resumes a stalled run from Needs attention. The
     # chat gets the tool with the other run tools in EA-12e.
     "resume_agent_run": "WS-55 EA-12e, in-product chat parity",

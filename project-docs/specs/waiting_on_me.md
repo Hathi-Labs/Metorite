@@ -516,7 +516,7 @@ Guard 1 refuses before any read. Guard 4 locks the task row with `SELECT ... FOR
 
 The author comes from the session, never from the body. The bell row goes through `notify`, the one bell writer, with the kind `decision`. Its text names the person: "Vijay waits on you".
 
-Three more routes: `POST /asks/{id}/withdraw` (the asker), `POST /asks/{id}/nudge` (the asker or the Team lens, once in 24 hours), and the answer, which stays `answer_decision`. AP-8a builds the withdraw. AP-8b builds the nudge.
+Three more routes: `POST /asks/{id}/withdraw` (the asker), `POST /asks/{id}/nudge` (the asker or the Team lens, once in 24 hours), and the answer, which stays `answer_decision`. AP-8a builds the withdraw. AP-8b builds the nudge. The manifest lists the withdraw as class C with the planned tool `withdraw_ask`, which AP-10 builds. It is not class X (D-OP-9).
 
 **Why this route is safe now.** `decisions.py:16-19` refused an HTTP ask because a member's agent could put cards on bells. Guard 1 refuses every agent connection. A member can already @mention any reader of a task, and the mention reaches the bell. The ask adds one tracked state to that same act.
 
@@ -576,7 +576,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-8a** | 1858 | The person ask: the migration of §7.1 (352), the ask route and the withdraw of §7.2, and the closed state on the answer and the reads | R8 tests (`test_person_asks_r8.py`): guards 1 to 5, one answer, two concurrent answers, withdraw, no answer after a withdraw, the trigger in SQL, each flag off, org isolation, V4 and V5. `test_decisions.py` still passes. **Built, dark, not merged** | HIGH (migration, identity) |
 | **AP-8b** | 1994 | The bell of the asker on an answer, the nudge route (once in 24 h), and the close with the task (`task_closed`) | R8 tests: the nudge once in 24 h, the close with the task, the bell of the asker. **NO-GO until the spec answers B4 to B6 below** | HIGH (identity) |
 | **AP-9** | 1859 | "Wait on someone" on the task card, the chip, the board chip, the filter "Waiting on me" and the panel section | The chip reads right for the addressee and for another reader. The filter lists a person ask. UI gate | MEDIUM |
-| **AP-10** | 1860 | The chat tools `ask_person`, `my_waits` and `answer_wait` | Each tool calls the AP-8 or AP-1 route. `ask_person` raises a card. The new-chat-tool fence set passes | STANDARD |
+| **AP-10** | 1860 | The chat tools `ask_person`, `withdraw_ask`, `my_waits` and `answer_wait` | Each tool calls the AP-8 or AP-1 route. `ask_person` raises a card. The new-chat-tool fence set passes | STANDARD |
 | **AP-11** | 1861 | "Wait for Priya's reply" in the comment box | One Send writes the comment and the ask. A reply from Priya in the thread answers it | STANDARD |
 | **AP-12** | 1862 | The Team lens of §4.3 | R8 tests hold V7 and V6. The lens has no answer control. A reader without the right gets 403 | HIGH (visibility) |
 | **AP-13** | 1863 | A hand-off to a member can also send an ask "Tell me when it is done" | The delegate form shows the choice and the line "Priya will see that you wait". The ask closes when the task closes | STANDARD |
