@@ -13,7 +13,6 @@ import re
 from pathlib import Path
 
 import pytest
-
 from acb_playbook import load_all
 
 _ROOT = Path(__file__).resolve().parents[2]
