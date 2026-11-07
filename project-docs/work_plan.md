@@ -5365,7 +5365,7 @@ The owner then chose "After merge, keep D-10-16" over a merge queue.
 1. **A PR runs only what its diff can affect.** Lint, the secret scan, the type checks and the SAFETY fences always run. `scripts/affected_tests.py --gate` picks the unit tests, and it fails open to the full set. This replaces "pr-check runs every test on each PR".
 2. **`main` runs the full suite in batches, after the merge.** One run at a time. Merges that land during a run fold into the next one. On a red batch, the session that broke it fixes forward or reverts at once. The home box names that PR (CIV-5).
 3. **The 2026-10-16 decision stays.** No merge queue.
-4. **The release does not change.** Production moves at 21:30 UTC only, and only from a `main` whose full suite passes (D145).
+4. **The release does not change.** Production moves at the release slots only (three a day, D194), and only from a `main` whose full suite passes (D145).
 5. **Outside contributors need approval** before Actions runs any of their code (CIV-1, done 2026-11-04). While the repo is public, the home box is not a GitHub runner.
 
 Fence: `tests/unit/test_affected_tests.py` (CIV-2) and `tests/unit/test_ci_unit_guard.py` (CIV-3). CIV-1 is advisory, because it is a GitHub setting.

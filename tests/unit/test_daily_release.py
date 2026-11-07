@@ -592,9 +592,11 @@ def _run_once(deploy: dict, tmp_path: pathlib.Path, *, now: str = "2026-11-05T22
     return out.read_text(encoding="utf-8").strip(), done.stdout, text, calls
 
 
-def _publish(conclusion: str | None) -> list[dict]:
-    return [{"name": "Lint & type-check", "conclusion": "success"},
-            {"name": "Publish release ref", "conclusion": conclusion}]
+def _publish(conclusion: str | None, completed_at: str | None = None) -> list[dict]:
+    job = {"name": "Publish release ref", "conclusion": conclusion}
+    if completed_at:
+        job["completed_at"] = completed_at
+    return [{"name": "Lint & type-check", "conclusion": "success"}, job]
 
 
 _SCHEDULE_RUN = {"id": 401, "event": "schedule", "display_title": "deploy"}
@@ -615,7 +617,7 @@ def test_once_ships_when_no_nightly_run_shipped(deploy: dict, tmp_path: pathlib.
     assert open_ == "open=true"
     assert "::warning" not in stdout and not summary
     # It reads the window of this slot, and never its own run.
-    assert any("created=>=2026-11-05T21:00:00Z" in c for c in calls)
+    assert any("created=>=2026-11-05T18:00:00Z" in c for c in calls)
     assert not any("/runs/500/" in c for c in calls)
 
 
@@ -706,7 +708,11 @@ def test_once_looks_back_to_the_window_open_of_this_slot(deploy: dict, tmp_path:
     _, _, _, calls = _run_once(deploy, tmp_path, now=now)
     runs = [c for c in calls if "/workflows/deploy.yml/runs?" in c]
     assert len(runs) == 2, "one list for the schedule, one for the dispatch"
-    assert all(f"created=>={since}&" in c for c in runs), runs
+    # The list starts 3 h before the window opens (the gap), so a cron that
+    # GitHub started in the gap and that published inside the window shows.
+    import datetime as _dt
+    start = (_dt.datetime.strptime(since, "%Y-%m-%dT%H:%M:%SZ") - _dt.timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert all(f"created=>={start}&" in c for c in runs), runs
 
 
 # ── The hourly delivery check reads release ──────────────────────────────────
@@ -733,3 +739,21 @@ def test_a_stale_rerun_does_not_roll_production_back(deploy: dict) -> None:
     stale = steps[ids.index("stale")]["run"]
     assert 'git merge-base --is-ancestor "$GITHUB_SHA" "$rel"' in stale
     assert steps[ids.index("deploy")]["if"] == "${{ steps.stale.outputs.stale != 'true' }}"
+
+
+@needs_bash
+def test_once_ignores_a_publish_that_ended_before_the_window(deploy: dict, tmp_path: pathlib.Path) -> None:
+    # The 13:30 slot published at 17:50. At 22:40 the 21:00 window is the
+    # slot, so that publish is the slot before and must not hold this run.
+    open_, _, _, _ = _run_once(deploy, tmp_path, schedule=[_SCHEDULE_RUN], dispatch=[],
+                               jobs={"401": _publish("success", "2026-11-05T17:50:00Z")})
+    assert open_ == "open=true"
+
+
+@needs_bash
+def test_once_holds_for_a_run_created_in_the_gap_that_published_in_the_window(
+        deploy: dict, tmp_path: pathlib.Path) -> None:
+    # A cron that GitHub started at 20:40 published at 21:20, inside the window.
+    open_, _, _, _ = _run_once(deploy, tmp_path, schedule=[_SCHEDULE_RUN], dispatch=[],
+                               jobs={"401": _publish("success", "2026-11-05T21:20:00Z")})
+    assert open_ == "open=false"

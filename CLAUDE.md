@@ -401,7 +401,7 @@ Rules that make it work:
   diff can affect, and it prints the `vitest related` command for frontend
   files. pr-check runs the tests that the diff can affect, and the full suite
   when the diff is FULL. The R8 suites run on `main` only after CIV-4b ("main's
-  batch and the 21:30 release gate run the R8 suites"). The four tiers are in
+  batch and the release-slot gate run the R8 suites"). The four tiers are in
   `specs/ci_velocity.md` §4 (D176).
 - **R8 needs a database. Without one, 843 tests SKIP while the run reads
   green.** Run `bash scripts/dev_db.sh` first, then

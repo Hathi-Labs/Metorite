@@ -875,6 +875,10 @@ jobs:
               opens = [day + datetime.timedelta(hours=h) for h in (-3, 5, 13, 21)]
               start = max(t for t in opens if t <= now)
               print(start.strftime("%Y-%m-%dT%H:%M:%SZ"))
+          elif mode == "listfrom":
+              # 3 h before the window opens: the gap between two windows.
+              t = datetime.datetime.strptime(sys.argv[2], "%Y-%m-%dT%H:%M:%SZ")
+              print((t - datetime.timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"))
           elif mode == "runs":
               # The OTHER nightly runs: a schedule run, or a dispatch whose
               # run name says "nightly". A plain dispatch never counts.
@@ -893,12 +897,23 @@ jobs:
               jobs = load(sys.argv[2]).get("jobs")
               if not isinstance(jobs, list):
                   sys.exit(2)
+              # A run created in the gap before the window can publish
+              # inside it (GitHub starts a cron hours late). So the test
+              # is when the publish job ended, not when its run began.
+              # A job with no end time counts, as before.
+              since = sys.argv[4] if len(sys.argv) > 4 else ""
               ok = any(isinstance(j, dict) and j.get("name") == sys.argv[3]
-                       and j.get("conclusion") == "success" for j in jobs)
+                       and j.get("conclusion") == "success"
+                       and (not since or not j.get("completed_at") or str(j["completed_at"]) >= since)
+                       for j in jobs)
               sys.exit(0 if ok else 3)
           PY
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           since="$(python3 "$tmp/once.py" since "$now")"
+          # List runs created up to 3 h before the window opened: the gap
+          # between two windows. `shipped` then keeps only a publish that
+          # ended at or after `since`.
+          listfrom="$(python3 "$tmp/once.py" listfrom "$since")"
           api="repos/${GITHUB_REPOSITORY}/actions"
           trouble=""
           shipped=""
@@ -907,7 +922,7 @@ jobs:
             trouble="the step could not read the clock"
           else
             for event in schedule workflow_dispatch; do
-              if ! gh api "${api}/workflows/deploy.yml/runs?event=${event}&created=>=${since}&per_page=100" > "$tmp/runs.json" \
+              if ! gh api "${api}/workflows/deploy.yml/runs?event=${event}&created=>=${listfrom:-$since}&per_page=100" > "$tmp/runs.json" \
                  || ! python3 "$tmp/once.py" runs "$tmp/runs.json" "$GITHUB_RUN_ID" >> "$tmp/ids.txt"; then
                 trouble="the Actions API gave no list of ${event} runs"
               fi
@@ -919,7 +934,7 @@ jobs:
             # stdin from /dev/null, so no call can eat the list of runs.
             # filter=all: a publish job that passed on any attempt counts.
             if gh api "${api}/runs/${id}/jobs?filter=all&per_page=100" > "$tmp/jobs.json" < /dev/null; then
-              python3 "$tmp/once.py" shipped "$tmp/jobs.json" "$PUBLISH_JOB" < /dev/null
+              python3 "$tmp/once.py" shipped "$tmp/jobs.json" "$PUBLISH_JOB" "$since" < /dev/null
               rc=$?
             fi
             case "$rc" in
