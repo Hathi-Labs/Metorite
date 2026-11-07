@@ -13690,8 +13690,9 @@ next cycle started again.
 
 #### 12.3.12.9 EM-G4b-f3 — each cycle stays under the quota of Google
 
-**Status.** 🔨 Built on branch `mt-87552e7e-gmail-sweep`, not merged. Task 1223. The verifier failed
-the first build, and this section holds the fix round.
+**Status.** ✅ MERGED `27b0586c1` (2026-11-02), live on production the same day. Task 1223. The
+verifier failed the first build, and this section holds the fix round. §12.3.12.10 (EM-G4b-f4)
+repairs one known limit of this slice.
 
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. This slice repairs a sync that fails for each
 new large mailbox, so it has no off state and no kill switch.
@@ -13899,8 +13900,8 @@ and `test_gmail_history_cursor.py` is H.
   `quota_mailbox`.
 - A restart empties the meter and the clock, because both live in the process. The first calls after
   it can get a 403, and the next cycle goes on.
-- A mail that always fails at the top of a read ends the sweep in the abandon. The mail below that
-  point stays unread, and a Resync recovers it.
+- ~~A mail that always fails at the top of a read ends the sweep in the abandon. The mail below that
+  point stays unread, and a Resync recovers it.~~ EM-G4b-f4 (§12.3.12.10) repairs it.
 - An older process reads a reset cursor as no cursor. It then sweeps again from the start, and it
   drops the point that the sweep reached.
 
@@ -13912,6 +13913,60 @@ ssh metorite "sudo -n journalctl -u acb-gateway --since '1 hour ago' --no-pager 
 
 `sync.import_paused` lines and a rising message count show the fix. A `gmail.rate_limit_gave_up`
 line now names the reason of Google.
+
+#### 12.3.12.10 EM-G4b-f4 — a failed mail cannot hold the reset sweep for ever
+
+**Status.** 🔨 Built on branch `mt-303a02d9-gmail-hold-cap`, not merged. Task 1448. The verifier
+of task 1223 found the defect.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. The change is in `gmail.py` only, and the cursor
+form stays readable by an older process.
+
+**The defect.** When the history cursor of a mailbox is stale, the sync runs a reset sweep (§12.3.12.9,
+D-G4b-f3-12). One mail at the top of the read answers 5xx on each try. `held_at` keeps the bound
+above that mail, so the bound cannot move, and the sweep counts as short. After
+`CATCH_UP_MAX_MISSES` short loop cycles, the scheduler abandons the sweep and writes the seed. Each
+cycle stored the mail of its share below the failed mail, but the mail past that share was never
+read. The `sync_error` note reaches the API only, so the member never knew.
+
+**Decisions.**
+
+- **D-G4b-f4-1. The reset cursor counts its held cycles.** A cut that a failed fetch holds stores
+  the same bound with `"held": <n>`. The form is
+  `{"v":1,"seed":...,"reset":[after,until],"held":n}`, and `held` is absent at 0. A process before
+  this slice ignores `held`, so a rollback loses the count and nothing else.
+- **D-G4b-f4-2. The cap is `GMAIL_FETCH_HOLD_CYCLES` (3), as on the history path.** On the cycle
+  that reaches it, the bound moves to the oldest mail of the whole read, past each failed mail.
+  Each one gets the log `gmail.fetch_abandoned message_id=<id> held_cycles=<n>` and a record in
+  `errors`, with its id only. That is the same line and record as `_cursor_after_read`.
+- **D-G4b-f4-3. The count belongs to the bound.** A cycle that moves the bound in the normal way
+  stores no `held`. So a failed mail holds the sweep for 3 cycles in a row at most.
+- **D-G4b-f4-4. A held cycle is a cut, not a short sweep.** It sets `rate_limited` and stores the
+  cursor, as a spent share does. The changed `held` makes the cursor differ, so the cycle is
+  progress for `_early_stop`, and the rate-limit clock does not start. The loop comes back after
+  `SYNC_RESUME_SECS`. A held cycle reads the same page again, so 3 held cycles cost 3 shares.
+- **D-G4b-f4-5. Only the cut is in scope.** A read that reaches the end of the list with a failed
+  mail still counts as short, as before. It read every other mail, so it drops no older mail.
+
+**Acceptance.** `tests/unit/test_gmail_history_cursor.py` holds the fences:
+
+1. A mail that always fails at the top holds the bound for 2 cycles, with `held` 1 and 2. The third
+   cycle moves the bound past it and logs `gmail.fetch_abandoned` once. The fourth reads the older
+   mail and ends with the first seed (`test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep`).
+2. The abandon goes into `errors` at the cap only, and the moved bound stores no `held`
+   (`test_a_held_reset_bound_records_the_abandoned_mail`).
+3. A bound that moves clears the count (`test_a_bound_that_moves_clears_the_held_count`).
+4. A failed mail at the top of the first cycle stores `held` 1, and the sweep still reads one page
+   (`test_a_failed_fetch_does_not_lift_the_share`).
+5. A bad `held` is no reset cursor, and a held cursor is no other cursor
+   (`test_text_that_is_no_reset_cursor`, `test_a_reset_cursor_is_no_other_cursor`).
+
+**Verify on production, after the release.** After a `gmail.reset_held` line, the log shows a
+`gmail.fetch_abandoned` line or a `gmail.reset_partial` line, at the latest 2 cycles later.
+
+```bash
+ssh metorite "sudo -n journalctl -u acb-gateway --since '1 day ago' --no-pager | grep -E 'gmail.reset_held|gmail.fetch_abandoned'"
+```
 
 #### 12.3.13 EM-G11 — Google verification readiness of the Gmail app (2026-10-14)
 
