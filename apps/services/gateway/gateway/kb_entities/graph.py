@@ -39,7 +39,7 @@ a graph row for a holder of ``knowledge:manage``.
 the edges of the first hits of ``GET /search/company`` in one statement, in
 its own tenant session, so ``gateway/retrieval/`` stays free of SQL. It drops
 the edges that §4.2 and §4.4 keep out of search, and it answers ids only.
-:func:`search_allowed` is the one reader of ``GRAPH_SEARCH_ORGS``.
+:func:`search_allowed` asks the one reader of ``GRAPH_SEARCH_ORGS``.
 
 **The tenant comes from the session (R5, R11).** The sweep runs in the
 tenant session of the job, and each statement also names the org. A read
@@ -417,13 +417,15 @@ async def remove_edge(db: Any, user: UserContext, edge_id: str) -> bool:
 
 def search_allowed(organization_id: str | None) -> bool:
     """True when ``GRAPH_SEARCH_ORGS`` holds the org, or holds ``*``. Default
-    OFF. The one reader of the setting. It reads the setting on each call,
-    so a reload takes effect with no restart. Off, ``GET /search/company``
-    reads no edge and its answer does not change."""
-    if not organization_id:
-        return False
-    listed = _parse_orgs(str(getattr(get_settings(), "graph_search_orgs", "") or ""))
-    return "*" in listed or str(organization_id).strip().lower() in listed
+    OFF. It reads the setting on each call, so a reload takes effect with no
+    restart. Off, ``GET /search/company`` reads no edge and its answer does
+    not change, and ``GET /search/entity`` answers 404 (KG-7).
+
+    The one reader is ``acb_skills.company_search_tools.graph_search_enabled``,
+    so the gateway and the orchestrator's tool list read one flag."""
+    from acb_skills.company_search_tools import graph_search_enabled
+
+    return graph_search_enabled(organization_id)
 
 
 #: The least confidence of an INFERRED edge that search uses (§4.2).

@@ -166,6 +166,7 @@ def _edge_rank(provenance: str, confidence: float, stamp: str | None,
 async def neighbours(
     user: UserContext, hits: list[Hit], *, stamp: bool,
     apps: list[str] | None = None, after: datetime | None = None, verified: bool = False,
+    per_hit: int = PER_HIT, spent: int = 0,
 ) -> list[dict[str, Any]]:
     """The neighbours of the first hits, opened as the member (§5, §6).
 
@@ -183,6 +184,10 @@ async def neighbours(
     ``apps=``) keeps the kinds of those sources only. ``None`` keeps every
     source. *after* drops a record stamped before it, as :func:`_kept` does
     for a hit. *verified* asks the Knowledge source for verified pages only.
+
+    The entity card (KG-7) reuses this read. It asks for *per_hit* items of
+    each node in place of :data:`PER_HIT`, and *spent* holds the characters
+    that its own lines already took from :data:`NEIGHBOUR_TOKENS`.
     """
     from acb_skills.company_search_tools import NEIGHBOURS_HEADER, neighbour_line
 
@@ -231,7 +236,7 @@ async def neighbours(
         kept = 0
         for e in mine:
             key = (e.kind, e.id)
-            if key in taken or kept >= PER_HIT:
+            if key in taken or kept >= per_hit:
                 continue
             taken.add(key)
             kept += 1
@@ -241,7 +246,7 @@ async def neighbours(
             items.append(item)
 
     budget = NEIGHBOUR_TOKENS * CHARS_PER_TOKEN
-    spent = len(NEIGHBOURS_HEADER) + 1
+    spent = max(0, int(spent)) + len(NEIGHBOURS_HEADER) + 1
     out: list[dict[str, Any]] = []
     for item in items:
         cost = len(neighbour_line(item)) + 1
@@ -557,3 +562,28 @@ async def company_search(
         answer["neighbours"] = near
     answer["skipped"] = skipped
     return answer
+
+
+@router.get("/entity")
+async def entity_card(
+    q: str = Query(..., min_length=MIN_CHARS, max_length=MAX_CHARS),
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """One entity, its own records and its neighbours, as the member (KG-7).
+
+    404 unless ``GRAPH_SEARCH_ORGS`` names the member's org, as if the route
+    were absent. ``gateway.retrieval.entity`` builds the answer.
+    """
+    if not user.email:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if not graph_enabled(user):
+        raise HTTPException(status_code=404, detail="Not Found")
+    words = " ".join((q or "").split())
+    if not MIN_CHARS <= len(words) <= MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Give {MIN_CHARS} to {MAX_CHARS} characters to find.",
+        )
+    from gateway.retrieval import entity
+
+    return await entity.card(user, words)
