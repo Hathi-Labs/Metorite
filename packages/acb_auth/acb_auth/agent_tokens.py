@@ -2425,23 +2425,6 @@ def _box_addr(addr: str | None) -> str | None:
     return clean
 
 
-def _audit_new_address(organization_id: str, connection_id: str, addr: str) -> None:
-    """One audit row of a new address, through the one audit writer. It
-    never blocks the call: an audit backend that is down only logs."""
-    try:
-        from acb_audit import AuditEvent, record
-
-        record(AuditEvent(
-            actor="system:agent_edge",
-            action=BOX_NEW_ADDRESS_ACTION,
-            target=f"agent_connection:{connection_id}",
-            payload={"addr": addr},
-            organization_id=organization_id,
-        ))
-    except Exception as exc:  # an audit backend that is down must not block this
-        _log.warning("agent_tokens.box_audit_failed", error=type(exc).__name__)
-
-
 async def touch_box_use(
     connection_id: str, organization_id: str, addr: str | None
 ) -> bool:
@@ -2454,7 +2437,8 @@ async def touch_box_use(
     expiry never moves.
 
     A new address sets ``addr_changed_at`` at most once an hour, and then
-    this writes one audit row :data:`BOX_NEW_ADDRESS_ACTION`. True when the
+    this logs it. The audit row :data:`BOX_NEW_ADDRESS_ACTION` is written by
+    the gateway list route (EA-19c), not by the edge. True when the
     row was stamped. The caller must not fail a request on an error here.
     """
     from sqlalchemy import text
@@ -2478,6 +2462,9 @@ async def touch_box_use(
     if row is None:
         return False
     if row.marked and stored is not None:
+        # The edge writes NO audit row: the audit writer opens a sync engine
+        # and has no tenant here. The mark is the evidence. The gateway list
+        # route (EA-19c) reads a fresh mark and writes the row (review of
+        # 2026-11-07).
         _log.warning("agent_tokens.box_new_address", connection_id=connection)
-        _audit_new_address(org, connection, stored)
     return True

@@ -670,7 +670,8 @@ class TestTheTouch:
         assert (after.last_used_at, after.last_seen_addr, after.expires_at) == (
             before.last_used_at, before.last_seen_addr, before.expires_at)
 
-    async def test_a_new_address_writes_one_audit_row_an_hour(self, world, box_on, audits):
+    async def test_a_new_address_sets_one_mark_an_hour_and_the_edge_writes_no_audit(
+            self, world, box_on, audits):
         made = await _mint(world, name="touch-addr")
         cid = made.connection_id
 
@@ -680,7 +681,7 @@ class TestTheTouch:
                 cid, world.org, addr))
 
         assert await touch("198.51.100.1") is True  # the first address
-        assert audits == []
+        assert _conn(world, cid).addr_changed_at is None
         assert await touch("198.51.100.2") is True  # a change: the mark
         row = _conn(world, cid)
         assert row.addr_changed_at is not None and row.last_seen_addr == "198.51.100.2"
@@ -688,13 +689,20 @@ class TestTheTouch:
         assert await touch("198.51.100.1") is True  # in the hour: no second mark
         row = _conn(world, cid)
         assert row.addr_changed_at == marked and row.last_seen_addr == "198.51.100.1"
-        assert [(a.action, a.target, a.payload, a.organization_id) for a in audits] == [
-            ("box_token.new_address", f"agent_connection:{cid}",
-             {"addr": "198.51.100.2"}, world.org)]
         _admin(world, "UPDATE agent_connection SET addr_changed_at = now() - interval"
                       " '2 hours' WHERE id = CAST(:i AS uuid) RETURNING id", i=cid)
         assert await touch("198.51.100.3") is True  # past the hour: a new mark
-        assert len(audits) == 2
+        assert _conn(world, cid).addr_changed_at > marked
+        # The audit writer opens a sync engine with no tenant. The edge never calls it.
+        assert audits == []
+
+    def test_the_edge_path_never_reaches_the_audit_writer(self):
+        import inspect
+
+        src = inspect.getsource(agent_tokens)
+        assert "acb_audit" not in src.split("BOX_NEW_ADDRESS_ACTION", 1)[1] or "import acb_audit" not in src
+        assert "_audit_new_address" not in src
+        assert "from acb_audit" not in src
 
     async def test_the_edge_stores_the_client_address_never_x_real_ip(self, live, box_on):
         made = await _mint(live, name="edge-addr")
