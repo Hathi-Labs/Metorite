@@ -34,6 +34,8 @@ export type PlannedStage = {
   name: string;
   type: string;
   source: "existing" | "new" | "added";
+  /** A hidden stage of a copied pipeline. It counts for no check. */
+  hidden?: boolean;
 };
 
 /** The answer of `GET /crm/pipelines/preview`. */
@@ -100,11 +102,43 @@ export function emptyDraft(pipelines: readonly DealPipeline[] | null | undefined
 /**
  * One row as the route takes it. An open row sends no type: a name that the
  * CRM has keeps the type of that stage, and a new name becomes an open stage.
- * Won and Lost are a choice, so they go.
+ * Won and Lost are a choice, so they go. A closing word that the member set
+ * to Open sends "open", because the route reads a bare closing word as closed.
  */
 function stageBody(row: NewStageRow): Record<string, string> {
   const name = row.name.trim();
-  return row.type === "open" ? { name } : { name, type: row.type };
+  if (row.type !== "open") return { name, type: row.type };
+  return closingType(name) ? { name, type: "open" } : { name };
+}
+
+/** The closing words of the route. A new stage with one and no type closes. */
+const CLOSING_WORDS: Record<string, NewStageType> = {
+  won: "won",
+  "closed won": "won",
+  lost: "lost",
+  "closed lost": "lost",
+};
+
+/** The type that the route gives a closing name, or null for any other name. */
+export function closingType(name: string): NewStageType | null {
+  return CLOSING_WORDS[foldName(name)] ?? null;
+}
+
+/**
+ * A row with a new name. A closing word sets Won or Lost, as the route does,
+ * so the row shows the type that the create makes. A name that stops being a
+ * closing word takes back Open, if the type came from the old name.
+ */
+export function renameRow(row: NewStageRow, name: string): NewStageRow {
+  const before = closingType(row.name);
+  const after = closingType(name);
+  // The type came from the old name, so the new name may change it.
+  const inferred = before !== null && row.type === before;
+  if (after && (inferred || (row.type === "open" && before === null))) {
+    return { ...row, name, type: after };
+  }
+  if (!after && inferred) return { ...row, name, type: "open" };
+  return { ...row, name };
 }
 
 /** The named rows, in order. A blank row is a row still to fill, never a stage. */
@@ -145,7 +179,7 @@ export function draftProblem(draft: NewPipelineDraft): string | null {
     if (name.length > PIPELINE_NAME_MAX) {
       return `The stage “${name.slice(0, 40)}…” has more than ${PIPELINE_NAME_MAX} characters.`;
     }
-    const key = name.split(/\s+/).join(" ").toLowerCase();
+    const key = foldName(name);
     if (seen.has(key)) return `The list names “${name}” twice. Keep it once.`;
     seen.add(key);
   }
@@ -167,6 +201,39 @@ export function moveRow(rows: readonly NewStageRow[], from: number, to: number):
 export function removeRow(rows: readonly NewStageRow[], key: string): NewStageRow[] {
   const next = rows.filter((row) => row.key !== key);
   return next.length > 0 ? next : [blankRow()];
+}
+
+/**
+ * The stored type of each stage that the plan reuses, by its folded name. A
+ * row with such a name shows that type, never "Open": the stage keeps it.
+ */
+export function reusedTypes(plan: PipelinePlan | null | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const stage of plan?.stages ?? []) {
+    if (stage.source === "existing") out.set(foldName(stage.name), stage.type);
+  }
+  return out;
+}
+
+/**
+ * The type of each deal stage that the CRM has, by its folded name, joined
+ * with the stages that the last plan reused. The plan wins on a clash. A row
+ * with such a name keeps that type, also before a plan loads and after a read
+ * fails, so the phone tree draws the same row as the desktop one.
+ */
+export function storedTypes(
+  statuses: readonly { name: string; type: string }[],
+  plan: PipelinePlan | null | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const status of statuses) out.set(foldName(status.name), status.type);
+  for (const [name, type] of reusedTypes(plan)) out.set(name, type);
+  return out;
+}
+
+/** A name as two names compare: inner spaces folded, in lower case. */
+export function foldName(name: string): string {
+  return name.trim().split(/\s+/).join(" ").toLowerCase();
 }
 
 /** The key of a body, so the dialog asks the preview once for each change. */

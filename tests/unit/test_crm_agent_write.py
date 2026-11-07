@@ -45,7 +45,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 import pytest
@@ -124,6 +124,22 @@ _TASK = {"id": _TASK_ID, "type": "task", "subject": "Send quote",
          "deal_id": _DEAL_ID}
 
 
+def _pipelines(call: dict) -> Any:
+    """The pipeline routes of ``_responder`` (CRM-M3a)."""
+    path, method, body = call["path"], call["method"], call["json"] or {}
+    if path == "/crm/pipelines" and method == "GET":
+        return [{"id": _PIPELINE_ID, "name": "Sales pipeline", "is_default": True,
+                 "position": 0, "stages": []}]
+    if path == "/crm/pipelines/preview" and method == "GET":
+        return dict(_PLAN, name=call["params"].get("name") or _PLAN["name"])
+    if path == "/crm/pipelines" and method == "POST":
+        return {"id": str(uuid4()), "name": body.get("name"), "is_default": False,
+                "position": 1, "stages": [
+                    {"id": s.get("id") or str(uuid4()), "name": s["name"], "position": i,
+                     "type": s["type"]} for i, s in enumerate(_PLAN["stages"])]}
+    raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
+
+
 def _responder(call: dict) -> Any:
     """The gateway, as far as these tools can tell.
 
@@ -157,16 +173,8 @@ def _responder(call: dict) -> Any:
         return {"id": str(uuid4()), **body}
     if path == "/crm/leads" and method == "POST":
         return {**body, "id": _NEW_LEAD_ID, "owner_email": _USER}
-    if path == "/crm/pipelines" and method == "GET":
-        return [{"id": _PIPELINE_ID, "name": "Sales pipeline", "is_default": True,
-                 "position": 0, "stages": []}]
-    if path == "/crm/pipelines/preview" and method == "GET":
-        return dict(_PLAN, name=call["params"].get("name") or _PLAN["name"])
-    if path == "/crm/pipelines" and method == "POST":
-        return {"id": str(uuid4()), "name": body.get("name"), "is_default": False,
-                "position": 1, "stages": [
-                    {"id": s.get("id") or str(uuid4()), "name": s["name"], "position": i,
-                     "type": s["type"]} for i, s in enumerate(_PLAN["stages"])]}
+    if path.startswith("/crm/pipelines"):
+        return _pipelines(call)
     if method == "PATCH" and path.count("/") == 3:
         return {"id": path.rsplit("/", 1)[-1], "name": "Acme AMC",
                 "first_name": "Ravi", **body}
@@ -925,9 +933,12 @@ async def test_the_pipeline_tool_reads_the_plan_and_posts_the_same_body(monkeypa
     assert [(c["method"], c["path"]) for c in calls] == [
         ("GET", "/crm/pipelines/preview"), ("POST", "/crm/pipelines")]
     sent = calls[1]["json"]
+    # The card's plan goes with the create, so a plan that changed is refused.
     assert sent == {"name": "AMC contracts",
-                    "stages": [{"name": "Site visit"}, {"name": "Negotiation"}]}
+                    "stages": [{"name": "Site visit"}, {"name": "Negotiation"}],
+                    "planned": [stage["id"] for stage in _PLAN["stages"]]}
     assert json.loads(calls[0]["params"]["stages"]) == sent["stages"]
+    assert "planned" not in calls[0]["params"], "the preview reads only the request"
     assert calls[0]["params"]["name"] == "AMC contracts"
     context = cards[0]["context"]
     order = [context.index(name) for name in
@@ -963,7 +974,8 @@ async def test_copy_from_takes_a_name_and_sends_the_id(monkeypatch) -> None:
     assert [c["path"] for c in calls] == [
         "/crm/pipelines", "/crm/pipelines/preview", "/crm/pipelines"]
     assert calls[1]["params"] == {"name": "AMC contracts", "copy_from": _PIPELINE_ID}
-    assert calls[2]["json"] == {"name": "AMC contracts", "copy_from": _PIPELINE_ID}
+    assert calls[2]["json"] == {"name": "AMC contracts", "copy_from": _PIPELINE_ID,
+                                "planned": [stage["id"] for stage in _PLAN["stages"]]}
     assert len(cards) == 1
 
 
@@ -983,8 +995,8 @@ async def test_a_bad_start_is_refused_before_any_card(monkeypatch, kwargs, words
 class _PreviewRefusingClient(FakeClient):
     """The gateway answers the preview with one refusal."""
 
-    status = 404
-    detail: Any = "Not Found"
+    status: ClassVar[int] = 404
+    detail: ClassVar[Any] = "Not Found"
 
     async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         resp = await super().request(method, url, **kwargs)
@@ -1006,15 +1018,61 @@ async def test_an_org_off_the_flag_reads_plain_words(monkeypatch) -> None:
 
 async def test_a_mirror_org_reads_that_zoho_owns_its_pipelines(monkeypatch) -> None:
     class _Mirror(_PreviewRefusingClient):
-        status = 409
-        detail = {"code": "mirror_mode_settings",
-                  "message": "The stages, pipelines and lost reasons come from Zoho."}
+        status: ClassVar[int] = 409
+        detail: ClassVar[Any] = {"code": "mirror_mode_settings",
+                                 "message": "The stages, pipelines and lost reasons come from Zoho."}
 
     cards = approve(monkeypatch)
     calls = fake_gateway(_M, monkeypatch, _responder, user=_USER, client_class=_Mirror)
     out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
     assert out.startswith("Nothing was changed.") and "Make the pipeline in Zoho" in out
     assert cards == [] and writes(calls) == []
+
+
+async def test_the_card_shows_the_type_of_each_stage_and_a_hidden_one(monkeypatch) -> None:
+    """Repair round 1 (P2): the member sees each type, new or reused, before
+    Apply, in words, and a hidden stage of a copied pipeline says so."""
+    plan = {**_PLAN, "stages": [
+        {"id": None, "name": "Site visit", "type": "open", "source": "new"},
+        {"id": _NEGOTIATION, "name": "Negotiation", "type": "ongoing", "source": "existing"},
+        {"id": _CLOSED_LOST, "name": "Old lane", "type": "on_hold", "source": "existing",
+         "hidden": True},
+    ]}
+
+    def responder(call: dict) -> Any:
+        if call["path"] == "/crm/pipelines/preview":
+            return plan
+        return _responder(call)
+
+    cards = approve(monkeypatch)
+    _gateway(monkeypatch, responder)
+    await _M.crm_create_pipeline("AMC contracts", stages=["Site visit", "Negotiation"])
+    context = cards[0]["context"]
+    assert "Site visit · open · new" in context
+    assert "Negotiation · in progress · a stage the CRM has" in context
+    assert "Old lane · on hold · a stage the CRM has · hidden" in context
+
+
+class _PlanChangedClient(FakeClient):
+    """The create answers 409 ``plan_changed``: a stage changed after the card."""
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        resp = await super().request(method, url, **kwargs)
+        if method.upper() == "POST" and url.endswith("/crm/pipelines"):
+            return FakeResponse({"detail": {
+                "code": "plan_changed",
+                "message": "The stages changed after the card showed them.",
+            }}, status_code=409)
+        return resp
+
+
+async def test_a_plan_that_changed_after_the_card_reads_plain_words(monkeypatch) -> None:
+    """Repair round 1 (P3): Apply makes the card or nothing. The route refuses
+    a plan that changed, and the tool says so in words."""
+    approve(monkeypatch)
+    fake_gateway(_M, monkeypatch, _responder, user=_USER, client_class=_PlanChangedClient)
+    out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert out == _M._PLAN_CHANGED
 
 
 async def test_each_call_of_the_agent_carries_its_chat_stamp(monkeypatch) -> None:

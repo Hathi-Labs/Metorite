@@ -22,11 +22,11 @@ import Modal from "@/components/ui/Modal";
 import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
 import Tabs, { type TabDef } from "@/components/Tabs";
 import { useId, useState } from "react";
-import { TRY_AGAIN } from "../lib/api";
 import {
   blankRow,
   draftProblem,
   emptyDraft,
+  foldName,
   MAX_NEW_STAGES,
   moveRow,
   NEW_STAGE_TYPE_LABELS,
@@ -34,6 +34,8 @@ import {
   PLAN_SOURCE_WORDS,
   pipelineBody,
   removeRow,
+  renameRow,
+  storedTypes,
   type NewPipelineDraft,
   type NewStageType,
   type PipelinePlan,
@@ -66,8 +68,8 @@ export default function NewPipelineDialog({
   pipelines: DealPipeline[] | null;
   saving: boolean;
   onClose: () => void;
-  /** True when the pipeline is made. A refusal leaves its words in the store. */
-  onCreate: (body: Record<string, unknown>) => Promise<boolean>;
+  /** Null when the pipeline is made, else the words of the refusal. */
+  onCreate: (body: Record<string, unknown>) => Promise<string | null>;
 }) {
   return (
     <Modal
@@ -96,31 +98,38 @@ function NewPipelineForm({
   pipelines: DealPipeline[] | null;
   saving: boolean;
   onCancel: () => void;
-  onCreate: (body: Record<string, unknown>) => Promise<boolean>;
+  onCreate: (body: Record<string, unknown>) => Promise<string | null>;
 }) {
-  const [draft, setDraft] = useState<NewPipelineDraft>(() => emptyDraft(pipelines));
+  // The draft lives in the store, so a new tree at the phone width keeps it.
+  const stored = useCrmStore((state) => state.newPipeline.draft);
+  const setNewPipeline = useCrmStore((state) => state.setNewPipeline);
+  const draft = stored ?? emptyDraft(pipelines);
+  const setDraft = (next: NewPipelineDraft) => setNewPipeline({ draft: next });
   // A field error shows after a Create that the draft could not send.
   const [tried, setTried] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const storeError = useCrmStore((state) => state.error);
+  const [refusal, setRefusal] = useState<string | null>(null);
   const id = useId();
   const sources = pipelines && pipelines.length > 0 ? orderedPipelines(pipelines) : [];
   const body = pipelineBody(draft);
   const preview = usePipelinePreview(body);
+  const dealStatuses = useCrmStore((state) => state.dealStatuses);
   const problem = draftProblem(draft);
   const change = (next: Partial<NewPipelineDraft>) => {
     setDraft({ ...draft, ...next });
-    setFailed(false);
+    setRefusal(null);
   };
 
   async function submit() {
     setTried(true);
-    setFailed(false);
+    setRefusal(null);
     if (problem || !body || saving) return;
-    if (!(await onCreate(body))) setFailed(true);
+    setRefusal(await onCreate(body));
   }
 
-  const shownError = failed ? (storeError ?? TRY_AGAIN) : tried ? problem : null;
+  const shownError = refusal ?? (tried ? problem : null);
+  // A refused plan blocks Create. A failed read does not: Retry asks again,
+  // and the create itself checks the plan.
+  const blocked = preview.state === "refused" && !preview.retryable;
 
   return (
     <form
@@ -172,12 +181,13 @@ function NewPipelineForm({
             <StageRows
               draft={draft}
               disabled={saving}
+              reused={storedTypes(dealStatuses, preview.lastPlan)}
               onChange={(stages) => change({ stages })}
             />
           )}
         </div>
 
-        <PlanPreview preview={preview} />
+        <PlanPreview preview={preview} onRetry={preview.retry} />
       </div>
       {shownError && (
         <p role="alert" className="px-4 pb-2 text-xs text-destructive">
@@ -188,7 +198,7 @@ function NewPipelineForm({
         <Button type="button" variant="secondary" size="sm" disabled={saving} onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" size="sm" loading={saving} disabled={preview.state === "refused"}>
+        <Button type="submit" size="sm" loading={saving} disabled={blocked}>
           {saving ? "Creating…" : "Create pipeline"}
         </Button>
       </div>
@@ -200,10 +210,13 @@ function NewPipelineForm({
 function StageRows({
   draft,
   disabled,
+  reused,
   onChange,
 }: {
   draft: NewPipelineDraft;
   disabled: boolean;
+  /** The stored type of each stage that the plan reuses, by folded name. */
+  reused: Map<string, string>;
   onChange: (stages: NewPipelineDraft["stages"]) => void;
 }) {
   const rows = draft.stages;
@@ -228,19 +241,30 @@ function StageRows({
               placeholder="Stage name"
               value={row.name}
               disabled={disabled}
-              onChange={(e) => set(index, { name: e.target.value })}
+              onChange={(e) => set(index, renameRow(row, e.target.value))}
               className="min-w-0 flex-1"
             />
             <span className="ml-7 flex w-full items-center gap-2 sm:ml-0 sm:w-auto">
-              <SelectButton
-                label={`Stage ${index + 1} type`}
-                value={row.type}
-                options={TYPE_OPTIONS}
-                defaultValue="open"
-                disabled={disabled}
-                onChange={(type) => set(index, { type: type as NewStageType })}
-                widthClass="w-24 shrink-0"
-              />
+              {reused.has(foldName(row.name)) ? (
+                // A stage that the CRM has keeps its own type.
+                <span
+                  className="w-24 shrink-0 truncate px-1 text-xs text-muted-foreground"
+                  title="A stage the CRM has. It keeps its type."
+                >
+                  {STATUS_TYPE_LABELS[reused.get(foldName(row.name)) as StatusType] ??
+                    reused.get(foldName(row.name))}
+                </span>
+              ) : (
+                <SelectButton
+                  label={`Stage ${index + 1} type`}
+                  value={row.type}
+                  options={TYPE_OPTIONS}
+                  defaultValue="open"
+                  disabled={disabled}
+                  onChange={(type) => set(index, { type: type as NewStageType })}
+                  widthClass="w-24 shrink-0"
+                />
+              )}
               <span className="ml-auto flex shrink-0 items-center sm:ml-0">
                 <Button
                   type="button"
@@ -289,7 +313,14 @@ function StageRows({
 }
 
 /** The plan of the gateway, in order: what Create makes. */
-export function PlanPreview({ preview }: { preview: PipelinePreview }) {
+export function PlanPreview({
+  preview,
+  onRetry,
+}: {
+  preview: PipelinePreview;
+  /** Asks again after a failed read. */
+  onRetry?: () => void;
+}) {
   const plan: PipelinePlan | null =
     preview.state === "ready" ? preview.plan : preview.state === "loading" ? preview.plan : null;
   const marked = plan?.stages.some((stage) => stage.source !== "existing") ?? false;
@@ -312,7 +343,14 @@ export function PlanPreview({ preview }: { preview: PipelinePreview }) {
             The preview shows here when the pipeline has a name and a stage.
           </p>
         ) : preview.state === "refused" ? (
-          <p className="py-2 text-xs text-destructive">{preview.message}</p>
+          <div className="flex items-start gap-2 py-2">
+            <p className="min-w-0 flex-1 text-xs text-destructive">{preview.message}</p>
+            {preview.retryable && onRetry && (
+              <Button type="button" variant="secondary" size="sm" icon="RefreshCw" onClick={onRetry}>
+                Try again
+              </Button>
+            )}
+          </div>
         ) : plan ? (
           <>
             <ol className={preview.state === "loading" ? "opacity-60" : ""}>
@@ -324,6 +362,7 @@ export function PlanPreview({ preview }: { preview: PipelinePreview }) {
                   </span>
                   <span className="shrink-0 text-muted-foreground">
                     {STATUS_TYPE_LABELS[stage.type as StatusType] ?? stage.type}
+                    {stage.hidden ? " · hidden" : ""}
                   </span>
                   {stage.source !== "existing" && (
                     <Badge

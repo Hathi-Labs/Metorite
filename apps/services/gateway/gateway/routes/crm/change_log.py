@@ -364,6 +364,26 @@ async def log_change(
     return new_id
 
 
+#: The newest row of one thing, area and action that no Undo reached yet.
+_OPEN_CHANGE_SQL = (
+    "SELECT id FROM crm_change_log WHERE organization_id = CAST(:organization_id AS uuid) "
+    "AND area = :area AND action = :action AND entity_id = :entity_id "
+    "AND undone_by IS NULL AND undoes_id IS NULL ORDER BY at DESC, id DESC LIMIT 1"
+)
+
+
+async def open_change(db: Any, area: str, action: str, entity_id: str) -> str | None:
+    """The id of the newest row of *entity_id* in *area* with *action* that
+    no Undo reached, or None. A change that removes the thing of that row
+    passes it as ``undoes``, so the row offers no Undo of a thing that is
+    gone (CRM-M3a: the Undo of a pipeline removes the stages it made)."""
+    row = (await db.execute(text(_OPEN_CHANGE_SQL), {
+        "organization_id": _bound_org(), "area": area, "action": action,
+        "entity_id": entity_id,
+    })).first()
+    return str(row.id) if row is not None else None
+
+
 # ── Refusals ────────────────────────────────────────────────────────────────
 
 
@@ -684,6 +704,7 @@ __all__ = [
     "list_changes",
     "log_change",
     "name_taken",
+    "open_change",
     "plain",
     "quoted",
     "same_values",

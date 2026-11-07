@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as dataCache from "@/lib/dataCache";
-import { createPipeline, previewPipeline } from "../lib/api";
+import { createPipeline, CrmError, previewPipeline } from "../lib/api";
 import {
   blankRow,
   defaultSource,
@@ -19,11 +19,18 @@ import {
   moveRow,
   pipelineBody,
   removeRow,
+  closingType,
+  renameRow,
+  reusedTypes,
+  storedTypes,
   type NewPipelineDraft,
   type PipelinePlan,
 } from "../lib/newPipeline";
+import { useCrmStore } from "../lib/store";
 import type { DealPipeline } from "../lib/types";
+import { PREVIEW_FAILED, retryableFailure } from "../lib/usePipelinePreview";
 import { PlanPreview } from "./NewPipelineDialog";
+import { SEVERAL_PIPELINES_NOTE } from "./PipelineSettings";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 
@@ -175,9 +182,126 @@ describe("the preview", () => {
     );
     expect(html({ state: "idle" })).toContain("The preview shows here when the pipeline has a name and a stage.");
     expect(html({ state: "loading", plan: null })).toContain("Checking the stages…");
-    expect(html({ state: "refused", message: 'A pipeline named "AMC" exists already.' })).toContain(
+    expect(html({ state: "refused", message: 'A pipeline named "AMC" exists already.', retryable: false })).toContain(
       "A pipeline named &quot;AMC&quot; exists already."
     );
+  });
+});
+
+describe("repair round 1", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("offers Try again after a failed read, never after a refused plan", () => {
+    const failed = renderToStaticMarkup(
+      createElement(PlanPreview, {
+        preview: { state: "refused", message: PREVIEW_FAILED, retryable: true },
+        onRetry: () => undefined,
+      }),
+    );
+    expect(failed).toContain(PREVIEW_FAILED);
+    expect(failed).toMatch(/<button[^>]*>[\s\S]*Try again[\s\S]*<\/button>/);
+    const refused = renderToStaticMarkup(
+      createElement(PlanPreview, {
+        preview: { state: "refused", message: "The stage “Lost” is hidden.", retryable: false },
+        onRetry: () => undefined,
+      }),
+    );
+    expect(refused).not.toContain("<button");
+    expect(retryableFailure(new CrmError("down", 503))).toBe(true);
+    expect(retryableFailure(new TypeError("Failed to fetch"))).toBe(true);
+    expect(retryableFailure(new CrmError("taken", 409, "name_taken"))).toBe(false);
+  });
+
+  it("shows the stored type of a stage that the plan reuses, by its folded name", () => {
+    const types = reusedTypes({
+      ...PLAN,
+      stages: [
+        ...PLAN.stages,
+        { id: "9a1f0e1e-0000-4000-8000-000000000005", name: "Needs  Analysis", type: "ongoing", source: "existing" },
+      ],
+    });
+    expect(types.get("proposal")).toBe("open");
+    expect(types.get("needs analysis")).toBe("ongoing");
+    expect(types.has("site visit")).toBe(false);
+    expect(types.has("won")).toBe(false);
+  });
+
+  it("keeps the stored type of a CRM stage before a plan loads and after a read fails", () => {
+    const statuses = [
+      { name: "Proposal", type: "ongoing" },
+      { name: "Closed  Won", type: "won" },
+    ];
+    const none = storedTypes(statuses, null);
+    expect(none.get("proposal")).toBe("ongoing");
+    expect(none.get("closed won")).toBe("won");
+    // The plan wins on a clash: it is the newer read of the gateway.
+    expect(storedTypes(statuses, PLAN).get("proposal")).toBe("open");
+  });
+
+  it("marks a hidden stage of a copy in the preview", () => {
+    const out = renderToStaticMarkup(
+      createElement(PlanPreview, {
+        preview: {
+          state: "ready",
+          plan: { ...PLAN, stages: [{ ...PLAN.stages[1], hidden: true }] },
+        },
+      }),
+    );
+    expect(out).toContain(" · hidden");
+  });
+
+  it("keeps a refused create in the dialog, out of the page banner", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ detail: { code: "name_taken", message: "Taken." } }), { status: 409 })
+      )
+    );
+    // The re-read after the create is not under test here.
+    const loadVocabulary = useCrmStore.getState().loadVocabulary;
+    useCrmStore.setState({ error: null, loadVocabulary: async () => undefined });
+    try {
+      const refused = await useCrmStore.getState().createPipeline({ name: "AMC", copy_from: SALES.id });
+      expect(refused).toBe("Taken.");
+      expect(useCrmStore.getState().error).toBeNull();
+    } finally {
+      useCrmStore.setState({ loadVocabulary });
+    }
+  });
+
+  it("gives a closing word the type that the route gives it, and sends an Open one", () => {
+    expect(closingType(" Closed  WON ")).toBe("won");
+    expect(closingType("lost")).toBe("lost");
+    expect(closingType("Won deal")).toBeNull();
+    const won = renameRow(row("Clo"), "Closed Won");
+    expect(won.type).toBe("won");
+    // The type came from the name, so a new name changes it.
+    expect(renameRow(won, "Closed Lost").type).toBe("lost");
+    expect(renameRow(won, "Closed").type).toBe("open");
+    // A type that the member chose stays.
+    expect(renameRow(row("Signed", "won"), "Signed off").type).toBe("won");
+    expect(renameRow({ ...won, type: "open" }, "Closed Won ").type).toBe("open");
+    // An Open closing word goes as "open", or the route would close it.
+    expect(pipelineBody(draft({ stages: [row("Won", "open"), row("Booked")] }))).toEqual({
+      name: "AMC contracts",
+      stages: [{ name: "Won", type: "open" }, { name: "Booked" }],
+    });
+  });
+
+  it("keeps the dialog and its draft in the store across a remount", () => {
+    const draft = { name: "AMC", start: "empty" as const, copyFrom: null, stages: [row("Site visit")] };
+    useCrmStore.getState().setNewPipeline({ open: true, draft });
+    expect(useCrmStore.getState().newPipeline).toEqual({ open: true, draft });
+    useCrmStore.getState().setNewPipeline({ open: false, draft: null });
+    expect(useCrmStore.getState().newPipeline).toEqual({ open: false, draft: null });
+  });
+
+  it("says on the read-only card what is coming and what to do now", () => {
+    expect(SEVERAL_PIPELINES_NOTE).toContain("in a later release");
+    expect(SEVERAL_PIPELINES_NOTE).toContain("undo the newest pipeline in Change history");
   });
 });
 

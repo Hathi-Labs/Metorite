@@ -514,7 +514,11 @@ async def test_undo_deletes_the_pipeline_and_refuses_while_a_deal_names_it(pns) 
     assert out["action"] == "delete" and out["undoes_id"] == str(row.id)
     assert [s["name"] for s in out["before"]["stages"]] == ["Site visit", "Proposal", "Won", "Lost"]
     assert _count(pns, "crm_pipelines", pns.org_a) == 1
-    assert _count(pns, "crm_deal_statuses", pns.org_a) == 5, "the stages stay"
+    # Repair round 1 (P1): the stage that the create made goes too. The
+    # stages that the create reused stay.
+    assert _count(pns, "crm_deal_statuses", pns.org_a) == 4
+    assert _one(pns, "SELECT count(*) FROM crm_deal_statuses WHERE organization_id = "
+                     "CAST(:o AS uuid) AND name = 'Site visit'", o=pns.org_a) == 0
     again = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
     assert again.status_code == 409 and _code(again) == "already_undone", again.text
 
@@ -606,3 +610,158 @@ async def test_a_create_that_fails_late_leaves_no_row(pns, monkeypatch) -> None:
     assert _count(pns, "crm_pipelines", pns.org_a) == 1
     assert _count(pns, "crm_deal_statuses", pns.org_a) == 4
     assert _count(pns, "crm_change_log", pns.org_a) == 0
+
+
+# ── Repair round 1 ──────────────────────────────────────────────────────────
+
+
+def _row_of(p: Any, org: str, area: str, action: str, entity: str) -> Any:
+    with p.admin_engine.begin() as c:
+        return c.execute(text(
+            "SELECT * FROM crm_change_log WHERE organization_id = CAST(:o AS uuid) "
+            "AND area = :a AND action = :act AND entity_id = :e ORDER BY at DESC LIMIT 1"),
+            {"o": org, "a": area, "act": action, "e": entity}).first()
+
+
+async def test_undo_of_a_create_removes_the_stages_it_made_and_logs_each(pns) -> None:
+    """P1. The Undo removes "Site visit", which the create made, with one row
+    that undoes the create row of the stage. "Proposal", which the create
+    reused, stays. The single-pipeline board then shows no empty lane.
+    Mutation: drop the stage loop of ``_undo_pipeline`` -> "Site visit" stays."""
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    made = (await _call(pns, admin, "POST", "/crm/pipelines", AMC)).json()
+    site = made["stages"][0]["id"]
+    (row,) = [x for x in _rows(pns, pns.org_a) if x.area == "pipeline"]
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
+    assert undo.status_code == 200, undo.text
+    assert _one(pns, "SELECT count(*) FROM crm_deal_statuses WHERE id = CAST(:s AS uuid)",
+                s=site) == 0
+    assert _one(pns, "SELECT count(*) FROM crm_deal_statuses WHERE id = CAST(:s AS uuid)",
+                s=ids["proposal"]) == 1
+    gone = _row_of(pns, pns.org_a, "deal_stage", "delete", site)
+    created = _row_of(pns, pns.org_a, "deal_stage", "create", site)
+    assert gone is not None and gone.reversible is False
+    assert str(gone.undoes_id) == str(created.id) and str(created.undone_by) == str(gone.id)
+    assert 'Removed the deal stage "Site visit" with the Undo of the pipeline' in gone.summary
+    board = await _call(pns, admin, "GET", "/crm/statuses/deal")
+    assert [s["name"] for s in board.json()] == ["Qualify", "Proposal", "Won", "Lost"]
+
+
+async def test_undo_of_a_create_refuses_while_a_new_stage_holds_a_record(pns) -> None:
+    """P1. A deal with no pipeline sits in "Site visit", which the create
+    made. The Undo refuses, names the stage and the count, and changes
+    nothing."""
+    _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    made = (await _call(pns, admin, "POST", "/crm/pipelines", AMC)).json()
+    site = made["stages"][0]["id"]
+    _one(pns, "INSERT INTO crm_deals (organization_id, name, status_id) "
+              "VALUES (CAST(:o AS uuid), 'Loose deal', CAST(:s AS uuid)) RETURNING id",
+         o=pns.org_a, s=site)
+    (row,) = [x for x in _rows(pns, pns.org_a) if x.area == "pipeline"]
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
+    assert undo.status_code == 409 and _code(undo) == "in_use", undo.text
+    assert '"Site visit"' in _words(undo) and "holds 1 deal now" in _words(undo)
+    assert _count(pns, "crm_pipelines", pns.org_a) == 2
+    assert _one(pns, "SELECT count(*) FROM crm_deal_statuses WHERE id = CAST(:s AS uuid)",
+                s=site) == 1
+
+
+async def test_undo_of_a_create_keeps_a_new_stage_that_another_pipeline_holds(pns) -> None:
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    made = (await _call(pns, admin, "POST", "/crm/pipelines", AMC)).json()
+    site = made["stages"][0]["id"]
+    added = await _call(pns, admin, "POST", f"/crm/pipelines/{ids['pipeline']}/stages",
+                        {"status_id": site})
+    assert added.status_code == 201, added.text
+    (row,) = [x for x in _rows(pns, pns.org_a)
+              if x.area == "pipeline" and x.action == "create"]
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
+    assert undo.status_code == 200, undo.text
+    assert _one(pns, "SELECT count(*) FROM crm_deal_statuses WHERE id = CAST(:s AS uuid)",
+                s=site) == 1, "the default pipeline holds it now"
+
+
+@pytest.mark.parametrize(("column", "code", "words"), [
+    ("hidden", "stage_hidden", "is hidden. Show it in CRM settings first, or use another name."),
+    ("source_gone_at", "stage_gone", "Zoho no longer lists the stage"),
+])
+async def test_a_hidden_or_gone_stage_is_never_reused_in_silence(
+    pns, column: str, code: str, words: str,
+) -> None:
+    """P2. The preview and the create refuse it by name, and nothing is made."""
+    ids = _seed(pns, pns.org_a)
+    value = "true" if column == "hidden" else "now()"
+    _one(pns, f"UPDATE crm_deal_statuses SET {column} = {value} "
+              "WHERE id = CAST(:s AS uuid) RETURNING id", s=ids["proposal"])
+    admin = _admin(pns.org_a)
+    plan = await _call(pns, admin, "GET", "/crm/pipelines/preview", params={
+        "name": "X", "stages": json.dumps([{"name": "Site visit"}, {"name": "Proposal"}])})
+    made = await _call(pns, admin, "POST", "/crm/pipelines",
+                       {"name": "X", "stages": [{"name": "Site visit"}, {"name": "Proposal"}]})
+    for r in (plan, made):
+        assert r.status_code == 409 and _code(r) == code, r.text
+        assert words in _words(r)
+    assert _count(pns, "crm_pipelines", pns.org_a) == 1
+
+
+async def test_only_a_visible_stage_counts_as_won_or_open(pns) -> None:
+    """P2. The source pipeline's only won stage is hidden, and the org has no
+    other. A copy refuses: a hidden stage cannot close a deal."""
+    ids = _seed(pns, pns.org_a)
+    _one(pns, "UPDATE crm_deal_statuses SET hidden = true WHERE id = CAST(:s AS uuid) "
+              "RETURNING id", s=ids["won"])
+    r = await _call(pns, _admin(pns.org_a), "POST", "/crm/pipelines",
+                    {"name": "Renewals", "copy_from": ids["pipeline"]})
+    assert r.status_code == 422, r.text
+    assert "no won stage" in _words(r)
+
+
+@pytest.mark.parametrize(("name", "kind", "chance"), [
+    ("Closed Won", "won", 100), ("closed  LOST", "lost", 0),
+])
+async def test_a_new_closing_word_with_no_type_closes(pns, name: str, kind: str, chance: int) -> None:
+    """P2 (verifier). "Closed Won" with no type is a won stage, as it reads,
+    and no org stage of that type is added beside it."""
+    _seed(pns, pns.org_a)
+    r = await _call(pns, _admin(pns.org_a), "POST", "/crm/pipelines",
+                    {"name": "Service", "stages": [{"name": "Booked"}, {"name": name}]})
+    assert r.status_code == 201, r.text
+    stages = r.json()["stages"]
+    assert stages[1]["type"] == kind and stages[1]["probability"] == chance
+    assert [s["type"] for s in stages].count(kind) == 1
+
+
+async def test_a_closing_word_that_the_member_set_to_open_stays_open(pns) -> None:
+    """The dialog sends "open" for a closing word that the member set to Open,
+    and the route keeps that choice."""
+    _seed(pns, pns.org_a)
+    r = await _call(pns, _admin(pns.org_a), "POST", "/crm/pipelines",
+                    {"name": "Service", "stages": [{"name": "Closed Won", "type": "open"}]})
+    assert r.status_code == 201, r.text
+    first = r.json()["stages"][0]
+    assert (first["name"], first["type"]) == ("Closed Won", "open")
+
+
+async def test_the_create_refuses_a_plan_that_changed_after_the_card(pns) -> None:
+    """P3. The card sent its planned ids. A stage that a person made between
+    the card and Apply changes the plan, and the create refuses."""
+    _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    plan = (await _call(pns, admin, "GET", "/crm/pipelines/preview", params={
+        "name": "AMC contracts", "stages": json.dumps(AMC["stages"])})).json()
+    planned = [s["id"] for s in plan["stages"]]
+    # Someone makes "Site visit" after the card.
+    _one(pns, "INSERT INTO crm_deal_statuses (organization_id, name, type, position) "
+              "VALUES (CAST(:o AS uuid), 'Site visit', 'open', 99) RETURNING id", o=pns.org_a)
+    stale = await _call(pns, admin, "POST", "/crm/pipelines", {**AMC, "planned": planned})
+    assert stale.status_code == 409 and _code(stale) == "plan_changed", stale.text
+    assert "Ask for the card again" in _words(stale)
+    assert _count(pns, "crm_pipelines", pns.org_a) == 1
+    fresh = (await _call(pns, admin, "GET", "/crm/pipelines/preview", params={
+        "name": "AMC contracts", "stages": json.dumps(AMC["stages"])})).json()
+    ok = await _call(pns, admin, "POST", "/crm/pipelines",
+                     {**AMC, "planned": [s["id"] for s in fresh["stages"]]})
+    assert ok.status_code == 201, ok.text

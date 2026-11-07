@@ -71,8 +71,12 @@ from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.admin import (
     _NAME_INDEX,
     CLAMPED_PROBABILITY,
+    STATUS_AREAS,
+    STATUS_LOG_KEYS,
     _violates,
     create_status_in,
+    delete_status_in,
+    status_in_use,
 )
 from gateway.routes.crm.change_log import Change, Logged, log_change, quoted
 from gateway.routes.crm.core import (
@@ -83,6 +87,7 @@ from gateway.routes.crm.core import (
     assert_writable,
     checked_uuid,
     current_tenant,
+    default_pipeline_id,
     insert_row,
     load_row,
     provider_link_context,
@@ -134,7 +139,8 @@ class NewStageIn(BaseModel):
     """One stage of a new pipeline: a name, and the type of a NEW stage.
 
     ``type`` stays out for a stage that the CRM holds already. A new stage
-    with no type is ``open``."""
+    with no type is ``open``, unless its whole name is a closing word
+    ("Won", "Closed Lost"): then it is ``won`` or ``lost``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -155,6 +161,10 @@ class PipelineCreateIn(BaseModel):
     #: The id of the pipeline whose stages the new one takes, in order.
     copy_from: str | None = None
     stages: list[NewStageIn] | None = None
+    #: The stage ids of the plan that the member saw, in order, ``None`` for a
+    #: stage that the create makes (the chat card sends it). When the plan of
+    #: the create differs, the create refuses with 409 ``plan_changed``.
+    planned: list[str | None] | None = None
 
 
 class PlannedStageModel(BaseModel):
@@ -166,6 +176,9 @@ class PlannedStageModel(BaseModel):
     #: ``new``: the create makes it. ``added``: the org's won or lost stage,
     #: which the create adds so that a deal in the pipeline can close.
     source: str
+    #: True for a hidden stage of a copied pipeline. No picker offers it, and
+    #: it does not count as the open, won or lost stage of the pipeline.
+    hidden: bool = False
 
 
 class PipelinePlanModel(BaseModel):
@@ -315,17 +328,27 @@ _CLOSING: tuple[str, ...] = ("won", "lost")
 #: INSERT. ``crm_pipelines`` has no unique index on the name (migration 247).
 _CREATE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
 
-#: A pipeline that holds the name already, in any case.
+#: A pipeline that holds the name already, in any case and with its inner
+#: spaces folded, as :func:`_named_stages` folds a stage name.
 _NAME_HOLDER_SQL = (
-    "SELECT name FROM crm_pipelines WHERE lower(btrim(name)) = lower(:name) LIMIT 1"
+    "SELECT name FROM crm_pipelines "
+    "WHERE lower(regexp_replace(btrim(name), '\\s+', ' ', 'g')) = lower(:name) LIMIT 1"
 )
+
+#: A stage that no picker offers: hidden, or gone from the Zoho picklist.
+_UNUSABLE = "(s.hidden OR s.source_gone_at IS NOT NULL)"
 
 #: The stages of one pipeline, in its order.
 _PIPELINE_STAGES_SQL = (
-    "SELECT s.id, s.name, s.type FROM crm_pipeline_stages ps "
+    f"SELECT s.id, s.name, s.type, {_UNUSABLE} AS unusable FROM crm_pipeline_stages ps "
     "JOIN {table} s ON s.id = ps.status_id "
     "WHERE ps.pipeline_id = CAST(:p AS uuid) ORDER BY ps.position, s.name"
 )
+
+#: The whole names that make a new stage with no type a closing stage.
+_CLOSING_WORDS: dict[str, str] = {
+    "won": "won", "closed won": "won", "lost": "lost", "closed lost": "lost",
+}
 
 
 @dataclass(frozen=True)
@@ -334,6 +357,8 @@ class _Planned:
     name: str
     type: str
     source: str
+    #: Hidden, or gone from the source: it counts for no check.
+    hidden: bool = False
 
 
 def _refuse(status: int, code: str, message: str) -> HTTPException:
@@ -349,6 +374,11 @@ def _kind_of(kind: str) -> PipelineKind:
     return found
 
 
+def _fold(name: str) -> str:
+    """A name as two names compare: inner spaces folded, in lower case."""
+    return " ".join(name.split()).lower()
+
+
 def _clean_name(raw: str | None, what: str) -> str:
     name = (raw or "").strip()
     if not name or len(name) > MAX_NAME:
@@ -360,15 +390,16 @@ def _clean_name(raw: str | None, what: str) -> str:
 
 async def _default_closing(db: Any, kind: PipelineKind, closing: str) -> _Planned | None:
     """The org's own stage of type *closing*: the one that the default
-    pipeline lists first, else the first one in lane order. A hidden stage
+    pipeline lists first (``core.default_pipeline_id``, the one seam), else
+    the first one in lane order. A hidden stage, or one gone from the source,
     never counts, because no picker offers it."""
     row = (await db.execute(text(
         f"SELECT s.id, s.name, s.type FROM {kind.status_table} s "
-        "LEFT JOIN crm_pipeline_stages ps ON ps.status_id = s.id AND ps.pipeline_id = ("
-        "SELECT id FROM crm_pipelines ORDER BY is_default DESC, position, created_at "
-        "LIMIT 1) WHERE s.type = :t AND NOT s.hidden "
+        "LEFT JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
+        "AND ps.pipeline_id = CAST(:dp AS uuid) "
+        f"WHERE s.type = :t AND NOT {_UNUSABLE} "
         "ORDER BY (ps.status_id IS NULL), ps.position, s.position, s.name LIMIT 1"
-    ), {"t": closing})).first()
+    ), {"t": closing, "dp": await default_pipeline_id(db)})).first()
     if row is None:
         return None
     return _Planned(str(row.id), str(row.name), closing, "added")
@@ -393,7 +424,7 @@ async def plan_pipeline(
         ))
     # Mirror mode: Zoho owns the pipelines (409 `mirror_mode_settings`).
     await assert_writable(db, current_tenant(), "crm_pipelines", creating=True)
-    holder = (await db.execute(text(_NAME_HOLDER_SQL), {"name": name})).first()
+    holder = (await db.execute(text(_NAME_HOLDER_SQL), {"name": _fold(name)})).first()
     if holder is not None:
         raise _refuse(409, "name_taken", (
             f"A pipeline named {quoted(holder.name)} exists already. "
@@ -415,16 +446,18 @@ async def plan_pipeline(
         rows = (await db.execute(text(
             _PIPELINE_STAGES_SQL.format(table=kind.status_table) + share
         ), {"p": str(source.id)})).fetchall()
-        planned = [_Planned(str(r.id), str(r.name), str(r.type), "existing") for r in rows]
+        planned = [_Planned(str(r.id), str(r.name), str(r.type), "existing",
+                            hidden=bool(r.unusable)) for r in rows]
     else:
         planned = await _named_stages(db, kind, payload.stages or [], share)
-    if not any(p.type in WEIGHTED_TYPES for p in planned):
+    # Only a stage that a picker offers counts: a hidden one cannot hold a deal.
+    if not any(p.type in WEIGHTED_TYPES and not p.hidden for p in planned):
         raise HTTPException(status_code=422, detail=(
             "A pipeline needs at least one open stage, where a deal sits before "
             "it closes. Add one, such as \"Qualify\"."
         ))
     for closing in _CLOSING:
-        if any(p.type == closing for p in planned):
+        if any(p.type == closing and not p.hidden for p in planned):
             continue
         found = await _default_closing(db, kind, closing)
         if found is None:
@@ -445,16 +478,18 @@ async def _named_stages(
             f"A pipeline holds at most {MAX_STAGES} stages. This list has {len(stages)}."
         ))
     rows = (await db.execute(text(
-        f"SELECT id, name, type FROM {kind.status_table} ORDER BY position, name" + share
+        f"SELECT s.id, s.name, s.type, {_UNUSABLE} AS unusable, "
+        "(s.source_gone_at IS NOT NULL) AS gone "
+        f"FROM {kind.status_table} s ORDER BY s.position, s.name" + share
     ), {})).fetchall()
     by_name: dict[str, list[Any]] = {}
     for row in rows:
-        by_name.setdefault(" ".join(str(row.name).split()).lower(), []).append(row)
+        by_name.setdefault(_fold(str(row.name)), []).append(row)
     seen: set[str] = set()
     planned: list[_Planned] = []
     for index, stage in enumerate(stages, start=1):
         name = _clean_name(stage.name, f"Stage {index}")
-        key = " ".join(name.split()).lower()
+        key = _fold(name)
         if key in seen:
             raise HTTPException(status_code=422, detail=(
                 f"The list names the stage {quoted(name)} twice. Keep it once."
@@ -474,6 +509,17 @@ async def _named_stages(
             ))
         if matches:
             row = matches[0]
+            # A stage that no picker offers is never reused in silence.
+            if row.gone:
+                raise _refuse(409, "stage_gone", (
+                    f"Zoho no longer lists the stage {quoted(row.name)}. Use "
+                    "another name for this stage."
+                ))
+            if row.unusable:
+                raise _refuse(409, "stage_hidden", (
+                    f"The stage {quoted(row.name)} is hidden. Show it in CRM "
+                    "settings first, or use another name."
+                ))
             if wanted is not None and wanted != str(row.type):
                 raise HTTPException(status_code=422, detail=(
                     f"The stage {quoted(row.name)} exists, and its type is "
@@ -482,7 +528,9 @@ async def _named_stages(
                 ))
             planned.append(_Planned(str(row.id), str(row.name), str(row.type), "existing"))
         else:
-            planned.append(_Planned(None, name, wanted or "open", "new"))
+            # "Won" or "Closed Lost" with no type closes a deal, as it reads.
+            planned.append(_Planned(
+                None, name, wanted or _CLOSING_WORDS.get(key, "open"), "new"))
     return planned
 
 
@@ -490,8 +538,8 @@ def _plan_model(kind: str, name: str, copy_of: str | None,
                 planned: list[_Planned]) -> PipelinePlanModel:
     return PipelinePlanModel(
         name=name, kind=kind, copy_of=copy_of,
-        stages=[PlannedStageModel(id=p.id, name=p.name, type=p.type, source=p.source)
-                for p in planned],
+        stages=[PlannedStageModel(id=p.id, name=p.name, type=p.type, source=p.source,
+                                  hidden=p.hidden) for p in planned],
     )
 
 
@@ -564,6 +612,13 @@ async def create_pipeline_in(
         "key": f"crm_pipeline_create:{current_tenant()}",
     })
     kind, name, copy_of, planned = await plan_pipeline(db, payload, lock=True)
+    if payload.planned is not None and [p.id for p in planned] != [
+        (str(i).strip().lower() if i else None) for i in payload.planned
+    ]:
+        raise _refuse(409, "plan_changed", (
+            "The stages changed after the card showed them, so nothing was "
+            "made. Ask for the card again, and check the stages."
+        ))
     position = int((await db.execute(text(
         "SELECT COALESCE(max(position), -1) + 1 FROM crm_pipelines"
     ), {})).scalar() or 0)
@@ -604,7 +659,8 @@ async def create_pipeline_in(
     )
     after: dict[str, Any] = {
         "name": name,
-        "stages": [{"id": s.id, "name": s.name, "type": s.type} for s in made],
+        "stages": [{"id": s.id, "name": s.name, "type": s.type, "source": s.source}
+                   for s in made],
     }
     if copy_of is not None:
         after["copy_of"] = copy_of
@@ -632,8 +688,9 @@ async def delete_pipeline_in(
 
     The Undo of a create calls it. The caller holds the pipeline row ``FOR
     UPDATE``, so no deal can join it before the DELETE: the key check of a
-    deal write waits on that lock. Its stages stay, because a stage is one
-    list of the org. It logs one row (CRM-M1)."""
+    deal write waits on that lock. It removes no stage: the Undo of a create
+    removes the stages that the create made (:func:`_undo_pipeline`). It
+    logs one row (CRM-M1)."""
     await assert_writable(db, current_tenant(), "crm_pipelines")
     held = int((await db.execute(text(
         f"SELECT count(*) FROM {kind.records_table} WHERE pipeline_id = CAST(:p AS uuid)"
@@ -659,6 +716,61 @@ async def delete_pipeline_in(
             "stages": [{"id": str(s.id), "name": s.name, "type": s.type} for s in stages],
         },
     ), undoes=undoes)
+
+
+async def _new_stages_to_remove(
+    db: Any, pipeline_id: str, stages: list[dict[str, Any]],
+    kind: PipelineKind = PIPELINE_KINDS["deal"],
+) -> list[Any]:
+    """The stages that the create made (``source`` ``new``), each locked,
+    that no other pipeline holds now. The Undo of the create removes them.
+
+    A new stage that holds a record refuses the Undo with the name of the
+    stage and the count. A stage that another pipeline holds now stays."""
+    doomed: list[Any] = []
+    for stage in stages:
+        if stage.get("source") != "new":
+            continue
+        row = await load_row(db, kind.status_table, str(stage.get("id") or ""), lock=True)
+        if row is None:
+            continue
+        held = await status_in_use(db, kind.status_kind, str(row.id))
+        if held:
+            noun = kind.record_noun + ("" if held == 1 else "s")
+            raise change_log.in_use(
+                f"The stage {quoted(row.name)}, which this change made, holds "
+                f"{held} {noun} now. Move them to another stage first, and then "
+                "undo this change."
+            )
+        shared = int((await db.execute(text(
+            "SELECT count(*) FROM crm_pipeline_stages WHERE status_id = CAST(:s AS uuid) "
+            "AND pipeline_id <> CAST(:p AS uuid)"
+        ), {"s": str(row.id), "p": pipeline_id})).scalar() or 0)
+        if not shared:
+            doomed.append(row)
+    return doomed
+
+
+async def _remove_new_stage(
+    db: Any, user: Any, row: Any, pipeline_name: str,
+    kind: PipelineKind = PIPELINE_KINDS["deal"],
+) -> None:
+    """Delete one stage that the create made, through the helper of
+    ``DELETE /crm/statuses/{kind}/{id}``, and log one row. The row undoes the
+    create row of the stage, so that row offers no second Undo."""
+    await delete_status_in(db, kind.status_kind, str(row.id))
+    area = STATUS_AREAS[kind.status_kind]
+    opened = await change_log.open_change(db, area, change_log.CREATE, str(row.id))
+    await log_change(db, user, Change(
+        area=area, action=change_log.DELETE,
+        summary=(
+            f"Removed the {kind.status_kind} stage {quoted(row.name)} with the Undo "
+            f"of the pipeline {quoted(pipeline_name)}"
+        ),
+        ladder=change_log.TEAM, entity_id=str(row.id),
+        before={k: getattr(row, k) for k in STATUS_LOG_KEYS if hasattr(row, k)},
+        reversible=False,
+    ), undoes=opened)
 
 
 @router.patch(
@@ -849,18 +961,25 @@ async def _undo_pipeline(db: Any, user: Any, logged: Logged) -> None:
 
     A create (CRM-M3a): the pipeline goes through :func:`delete_pipeline_in`
     while it still has the name and the stages of the create, in order, and
-    holds no deal. Its stages stay. A rename: the old name goes back through
+    holds no deal. Each stage that the create made goes too, through
+    ``admin.delete_status_in``, while no record and no other pipeline holds
+    it. A new stage that holds a record refuses the Undo, by name. A reused
+    stage stays. A rename: the old name goes back through
     :func:`rename_pipeline_in`."""
     row = await load_row(db, "crm_pipelines", str(logged.entity_id or ""), lock=True)
     if row is None:
         raise change_log.gone(logged.area)
     if logged.action == change_log.CREATE:
         after = logged.after or {}
-        made = [str(s.get("id")) for s in after.get("stages") or [] if isinstance(s, dict)]
+        stages = [s for s in after.get("stages") or [] if isinstance(s, dict)]
+        made = [str(s.get("id")) for s in stages]
         current = await _stage_ids(db, str(row.id), lock=True)
         if row.name != after.get("name") or bool(row.is_default) or current != made:
             raise change_log.changed_since()
+        doomed = await _new_stages_to_remove(db, str(row.id), stages)
         await delete_pipeline_in(db, user, row, undoes=logged.id)
+        for stage in doomed:
+            await _remove_new_stage(db, user, stage, str(row.name))
         return
     if not change_log.same_values({"name": row.name}, logged.after):
         raise change_log.changed_since()

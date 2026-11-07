@@ -900,25 +900,46 @@ def _stage_items(stages: list[str]) -> list[dict[str, str]]:
     return items
 
 
+#: The type of a stage, in the words of the card.
+_STAGE_TYPE_WORDS: dict[str, str] = {
+    "open": "open", "ongoing": "in progress", "on_hold": "on hold",
+    "won": "won", "lost": "lost",
+}
+
+_PLAN_CHANGED = (
+    "Nothing was changed. The stages changed after the card showed them. "
+    "Read the plan again, and ask the member once more."
+)
+
+
 def _plan_lines(plan: dict[str, Any]) -> list[tuple[str, str]]:
-    """One card line for each stage of the plan, in order."""
+    """One card line for each stage of the plan, in order: the name, the type
+    of the stage, new or reused, and where it comes from."""
     lines: list[tuple[str, str]] = []
     for index, stage in enumerate(plan.get("stages") or [], start=1):
         if not isinstance(stage, dict):
             continue
+        kind = str(stage.get("type") or "")
+        parts = [str(stage.get("name")), _STAGE_TYPE_WORDS.get(kind, kind)]
         where = _STAGE_SOURCE_WORDS.get(str(stage.get("source") or ""), "")
-        lines.append((
-            f"stage {index}",
-            f"{stage.get('name')} · {stage.get('type')}" + (f" · {where}" if where else ""),
-        ))
+        if where:
+            parts.append(where)
+        if stage.get("hidden"):
+            parts.append("hidden")
+        lines.append((f"stage {index}", " · ".join(parts)))
     return lines
 
 
 def _off_or_raise(refused: GatewayRefusal) -> str:
-    """The 404 of an org that ``CRM_PIPELINES_ORGS`` leaves out, in plain
-    words. Each other refusal raises, and the model reads it as text."""
-    if refused.status == 404 and "no_pipeline" not in str(refused.detail):
+    """The 404 of an org that ``CRM_PIPELINES_ORGS`` leaves out, and the 409
+    of a plan that changed after the card, in plain words. Each other refusal
+    raises, and the model reads it as text."""
+    # The code of the route is in the message (`_raise_if_error`); the safe
+    # detail keeps the words only.
+    if refused.status == 404 and "no_pipeline" not in str(refused):
         return _PIPELINES_OFF
+    if refused.status == 409 and "plan_changed" in str(refused):
+        return _PLAN_CHANGED
     raise refused
 
 
@@ -995,6 +1016,11 @@ async def crm_create_pipeline(
     start = f"a copy of {copy_of}" if copy_of else "new"
     count = len(planned.get("stages") or [])
     card = {"pipeline": title, "starts from": start, **dict(_plan_lines(planned))}
+    # The create plans again. With the ids that the card showed, it refuses
+    # (409 `plan_changed`) when that plan differs, so Apply makes the card.
+    body["planned"] = [
+        stage.get("id") for stage in planned.get("stages") or [] if isinstance(stage, dict)
+    ]
 
     from acb_skills.ask_tools import request_confirmation
     if not await request_confirmation(

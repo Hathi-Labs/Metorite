@@ -1222,7 +1222,7 @@ async def test_the_undo_of_a_pipeline_rename_refuses_a_newer_rename(
 ) -> None:
     """P3d (fix round 1). Rename a pipeline twice, then undo the first
     rename: 409 ``changed_since``, and the newer name stays. Mutation: drop
-    the check of ``pipelines._undo_rename`` → the old name comes back → red."""
+    the check of ``pipelines._undo_pipeline`` → the old name comes back → red."""
     _settings(ns, ns.org_a, "native")
     pipeline = _pipeline(ns, ns.org_a, "Sales")
     admin = _admin(ns.org_a)

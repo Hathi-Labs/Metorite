@@ -271,7 +271,9 @@ export default function PipelineSettings({
   onReorderLostReasons: (patches: PositionPatch[]) => Promise<void>;
 }) {
   const several = showPicker(pipelines);
-  const [newPipelineOpen, setNewPipelineOpen] = useState(false);
+  // In the store, so the dialog stays open when the page mounts its phone tree.
+  const newPipelineOpen = useCrmStore((state) => state.newPipeline.open);
+  const setNewPipeline = useCrmStore((state) => state.setNewPipeline);
   const createPipeline = useCrmStore((state) => state.createPipeline);
   // CRM-M3a: "New pipeline", on the Native Deal stages card, for an admin.
   const newPipeline =
@@ -281,7 +283,7 @@ export default function PipelineSettings({
         size="sm"
         icon="Plus"
         disabled={saving}
-        onClick={() => setNewPipelineOpen(true)}
+        onClick={() => setNewPipeline({ open: true })}
       >
         New pipeline
       </Button>
@@ -385,7 +387,7 @@ export default function PipelineSettings({
                 <PipelineSections
                   pipelines={pipelines}
                   fallback={dealStatuses}
-                  note="Stage editing for several pipelines is not available yet."
+                  note={SEVERAL_PIPELINES_NOTE}
                   action={newPipeline}
                 />
               ) : (
@@ -408,11 +410,11 @@ export default function PipelineSettings({
               open={newPipelineOpen}
               pipelines={pipelines}
               saving={saving}
-              onClose={() => setNewPipelineOpen(false)}
+              onClose={() => setNewPipeline({ open: false, draft: null })}
               onCreate={async (body) => {
-                const made = await createPipeline(body);
-                if (made) setNewPipelineOpen(false);
-                return made !== null;
+                const refused = await createPipeline(body);
+                if (refused === null) setNewPipeline({ open: false, draft: null });
+                return refused;
               }}
             />
           )}
@@ -497,6 +499,15 @@ const LIST_WORDS: Record<
     },
   },
 };
+
+/**
+ * The Native Deal stages card with two or more pipelines (CRM-M3a). It reads
+ * only until the stage editor of each pipeline (CRM-M3c), so it says what is
+ * coming and what a member can do now.
+ */
+export const SEVERAL_PIPELINES_NOTE =
+  "Each pipeline lists its stages here to read. You can edit them here in a later release. " +
+  "To edit a stage now, undo the newest pipeline in Change history.";
 
 /** The two choices of "Column order" (Mirror mode). */
 const ORDER_TABS: TabDef[] = [
