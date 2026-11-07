@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
-> **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. PKG-6b (task 1725) is built dark. The bell panel shows one setup row for each install that needs setup. The badge counts it. The bell draws a setup row only when the entry has a valid same-origin `setup_href`. A row without it is dropped from the bell and from the badge, because a row with no next step never clears (PKG-Q11). All apps lists an install pane. The access report no longer calls an install-only slug unmapped. An install pane has no star yet. The gateway accepts only `nav.ts` panes in `pins` and `known` (see the PKG-6 row). Star and hide for install panes moved to task 2195 (PKG-6c). PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. The rest of this spec is not built.
+> **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-07 · **Owner:** vjvarada
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. PKG-6b (task 1725) is built dark. The bell panel shows one setup row for each install that needs setup. The badge counts it. The bell draws a setup row only when the entry has a valid same-origin `setup_href`. A row without it is dropped from the bell and from the badge, because a row with no next step never clears (PKG-Q11). All apps lists an install pane. The access report no longer calls an install-only slug unmapped. An install pane has no star yet. The gateway accepts only `nav.ts` panes in `pins` and `known` (see the PKG-6 row). Star and hide for install panes moved to task 2195 (PKG-6c). PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. PKG-11 is specified in §6 and split into 11a (the store) and 11b (the org share, blocked on J2). PKG-11a is built dark, in the store only: `store.promote_to_group` and `promotion.share_with_people` of §6.2. No route, flag or migration calls them yet. The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `787269f0a`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
@@ -219,7 +219,7 @@ Five decisions that the columns carry:
 
    **A requirement on that writer.** `upsert_app_grant` of `grants.py` runs `ON CONFLICT (app_id, subject) DO UPDATE SET role = excluded.role`. So it keeps the first `granted_by`. A share by the owner that lands on an existing row then fails the third test. That row can be a consent row of a colleague, or a grant of another editor.
 
-   So the writer of PKG-11 sets `granted_by` to the sharer on a conflict, or the rule changes in the same slice. `hardening_backlog.md` PK-7 tracks it.
+   So the writer of PKG-11 sets `granted_by` to the sharer on a conflict, or the rule changes in the same slice. `hardening_backlog.md` PK-7 tracks it. PKG-11a meets it with its own statement in `package_host/promotion.py`, which sets `granted_by` on a conflict and keeps the role and the consent hash. It does not call or change `grants.py`.
 4. **A duplicate claim is refused in code, not by an index.** Some points allow many claims (`triggers`, `slot`), and a private claim conflicts only with what its owner sees. PKG-5b checks the claims of §4 in the install transaction, under `pg_advisory_xact_lock` on the organization.
 5. **A purge deletes a private install of the member only when nobody else sees it.** Nobody else sees it when no `app_grants` row of its app passes the three tests of decision 3. A consent row of a colleague fails test 3, so it keeps no install. Its contributions go by the cascade. A private install that the member shared with named people stays, and the purge counts it (decision 3). An org or group install that the member made stays too, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
 
@@ -281,9 +281,9 @@ A package names what it needs: a connection, a feature, or another package. A mi
 | Scope | Who sees it | Who installs it |
 |---|---|---|
 | `system` | Every member with the feature | The release |
-| `org` | Every member with the feature | A holder of `studio:publish`, one approved version (`ai_studio.md` J2) |
-| `group:<slug>` | The members of the group | A member of the group with `feature:studio` |
-| `private` | One member | Any member with `feature:studio` |
+| `org` | Every member with the feature | The owner asks. A holder of `studio:publish` reads the manifest diff and approves one version (`ai_studio.md` J2, D180) |
+| `group:<slug>` | The active members of the group | The owner, who is a member of the group, with `studio:publish` (D180 item 3) |
+| `private` | The owner, and each person the owner shares with by name | Any member with `feature:studio`. A share by name needs `studio:publish` (D180 item 3) |
 
 **A package that holds code (D187).** A package with a member-authored logic module (`ai_studio.md` B5) runs code for each viewer. So each install for named people, a group or the org needs the `studio:publish` approval of one version first (`agent_sandbox.md` §8.1).
 
@@ -295,6 +295,8 @@ A package names what it needs: a connection, a feature, or another package. A mi
 4. **Company.** A holder of `studio:publish` reads the manifest diff and approves one version.
 
 **Promotion changes the scope of the same install.** It never copies the package.
+
+**The rules of a promotion (PKG-11).** A promotion moves an active install that the owner kept (`ends_at` is null). A draft cannot move, because only a private install runs the draft. A share with named people keeps the install private and writes `app_grants`. A promotion to a group needs the owner to be an active member of the group. While an active named person outside the group holds a share, the promotion is refused, so nobody loses the app in silence. The store checks the claims of §4 again for the new scope, under the org lock. The store never writes `apps.visibility`. The install scope and the grants are the record. A promotion deletes the share rows of the install, and never a consent row or a row of another sharer. `share_with_people` refuses a person whom another member shares the app with (`shared_by_another_owner`). The share key is the app and the person, a known limit that PKG-11 notes for J2. The store does not check rights. The route of PKG-11b or J2 checks `studio:publish`.
 
 **Expiry.** A daily job archives each install whose `ends_at` has passed, through the disposal path (§5.3). The records of the archived package stay for 30 more days, and the owner can restore it in that time. Then the job deletes them. The owner gets a note in the bell 3 days before each step.
 
@@ -424,7 +426,8 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 |---|---|---|---|---|
 | **PKG-9** | The store functions `remove_install`, `pause_install` and `resume_install` (§5.3), with no route, no flag and no migration. The lock and the tenant rules of `install`. The writer fence of `test_package_host_store.py` also covers UPDATE and DELETE | `tests/unit/test_package_disposal_r8.py` (named in the `--must-run` list of `pr-check.yml`): a removed install leaves no row in `package_install` or `package_contribution`. Org B cannot remove, pause or resume an install of org A. After a pause, the next `resolve_for` shows no claim of the install and the version returns to its value before the install. A resume brings the claims back. A paused install still blocks an overlapping claim, and a removed one does not. A pause or resume of an archived install is refused and writes nothing. Two removes at once give one deletion and one not-found | HIGH | AGENT-SAFE. The admin kill switch for a whole package and the stop of actions are J3. The 10-second re-read of the workbench is PKG-6 |
 | **PKG-10** | `ends_at`, Keep, and the expiry job with the archive and the restore (§6.2) | An install expires on its date. A restore within 30 days brings it back whole. The bell note comes 3 days before each step | HIGH | AGENT-SAFE |
-| **PKG-11** | Promotion: private → people or a group → org, on the same install. It joins `ai_studio.md` J2 | A promotion keeps the install id. A share to the org without approval stays pending | HIGH | AGENT-SAFE |
+| **PKG-11a** | Promotion in the store, with no route, no flag and no migration. `store.promote_to_group` holds the one UPDATE of the scope. `package_host/promotion.py` holds `share_with_people`. Both take the org lock of `install`. The share writes `app_grants` with `granted_by` set to the sharer, also on a conflict (PK-7). `grants.py` does not change | `tests/unit/test_package_promotion_r8.py` (in `--must-run`). A promotion to a group keeps the install id, the version, `installed_by`, `created_at` and each claim row. A claim of another app that overlaps the group scope raises `ClaimTaken` and writes nothing. A second install of the app at that group raises `AlreadyInstalled`. A draft, an install that is not active, an install with `ends_at`, and an owner outside the group are refused and write nothing. Org B cannot promote or share an install of org A. Two promotions at once give one winner. A share onto an existing consent row counts for the resolve and the purge. A share by a member other than the owner is refused. A promotion by a member other than the owner (`actor`) is refused. A promotion deletes the share rows of the install, and a new private install of the app shows to no old grantee. A share with a person whom another member shares the app with is refused and writes no row. A grantee who is not active does not block a promotion. A removal of a private install (`store.remove_install`) also deletes its share rows | HIGH | AGENT-SAFE |
+| **PKG-11b** | The share to the org: `promote_to_org` (task 2174). It waits for J2 to name the approval record (§6.2) | A share to the org without an approved version raises `ApprovalRequired`, and the install keeps its scope. An approval moves one version only | HIGH | BLOCKED: the J2 decision on the approval record |
 | **PKG-12** | "Make it an app": Mira builds a private package from chat (`ai_studio.md` M1, grown) | A chat request makes a private install with `ends_at`. It opens by link after the chat ends | STD | AGENT-SAFE |
 
 ### Phase P3 — Slots, sub-apps and overlays
@@ -517,6 +520,8 @@ Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch
 
 ---
 
+**New with PKG-11a:** `gateway/package_host/promotion.py`, `tests/unit/test_package_promotion.py` and `tests/unit/test_package_promotion_r8.py`.
+
 ## 13. Verification commands
 
 Each slice names its own tests. These bind every WS-PKG PR:
@@ -549,6 +554,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | The resolve shows an install only to the viewers of §5.2, and reads the one share rule | New with PKG-5b part 2: `tests/unit/test_package_host_resolve_r8.py`, `tests/unit/test_package_host_resolve.py` |
 | `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` leaves the org out | New with PKG-5b part 2: `tests/unit/test_package_host_flag.py` |
 | Removal leaves no contribution, and a pause hides the install at the next read | New with PKG-9: `tests/unit/test_package_disposal_r8.py` |
+| A promotion keeps the install, and only a share by the owner counts | New with PKG-11a: `tests/unit/test_package_promotion_r8.py` |
 | A stable region moves only on a member action | New with PKG-18: `src/lib/shell/arrangement.test.ts` |
 
 ---
@@ -565,7 +571,10 @@ The owner accepted PKG-Q1 to PKG-Q5 as recommended on 2026-11-01 (D147).
 | PKG-Q4 | How far may the product rearrange itself for each person? | **It suggests and never moves** a stable region (§9.2) |
 | PKG-Q5 | Which harness lessons go first? | **Replay tests and logged model inputs**, then the goal record. `web_research.md` §8 carries them |
 | PKG-Q6 | May the private claim of a member, for a DIFFERENT app, block an org install? | **OPEN.** PKG-8 decides it before its install route ships. The two options are below |
+| PKG-Q9 | On a promotion to a group, do named people outside the group lose the app? | **No.** The store refuses the promotion while such a share exists (default, PKG-11a) |
+| PKG-Q10 | May a holder of `studio:publish` approve their own share to the org? | **OPEN. Default: no.** Another holder approves (PKG-11b) |
 | PKG-Q11 | Who sees the setup row? | **OPEN.** Every member whose resolve says needs_setup (now, only with a setup_href), or the installer and admins only? |
+| PKG-Q12 | May an install with `ends_at` set be shared or promoted? | **No** (default, PKG-11a). Keep comes first (§6.2) |
 
 **PKG-Q6 in detail.** Today the private claim blocks the org install, because an org claim conflicts with every claim (§4). So a member can squat on a key, and no route removes the install before PKG-9. PKG-8 picks one of two options:
 1. **The org wins.** The org install goes in, and the resolve shows the org claim in place of the private claim (§5.2).
