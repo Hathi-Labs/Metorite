@@ -120,7 +120,7 @@ export function checkDraft(manifest: unknown): Problem[] {
   }
 
   const size = JSON.stringify(manifest).length;
-  if (size > CHAT_CAP) warn("$", `The draft is ${size} characters. Mira can hold ${CHAT_CAP}. Split the app into smaller parts.`);
+  if (size > CHAT_CAP) warn("$", `The draft is ${size} characters. Mira can edit ${CHAT_CAP}. Start a new, smaller app, and add the parts to it one at a time.`);
   return out;
 }
 

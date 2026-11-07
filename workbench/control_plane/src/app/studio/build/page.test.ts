@@ -85,7 +85,14 @@ describe("/studio/build", () => {
   it("folds the app nav while it is open and gives it back on leave", () => {
     expect(page).toContain("useOptionalSidebarFold");
     expect(page).toContain("foldForWork()");
-    expect(page).toMatch(/return \(\) => \{[^}]*toggle\(\)/);
+    expect(page).toContain("foldOnOpen(");
+    expect(page).toContain("autoFoldEnabled()");
+    expect(page).toContain("restoreOnLeave(");
+    expect(page).toContain("dockFoldsNav(");
+    expect(page).toMatch(/now\.toggle\(\)/);
+    // A strict-mode remount must not give the nav back: the give-back waits one tick and the effect cancels it.
+    expect(page).toMatch(/leaveTimer\.current = setTimeout/);
+    expect(page).toMatch(/clearTimeout\(leaveTimer\.current\)/);
   });
 
   it("gives the phone Problems panel a toggle that works", () => {

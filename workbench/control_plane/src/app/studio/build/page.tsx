@@ -28,14 +28,16 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Tabs from "@/components/Tabs";
 import { useOptionalSidebarFold } from "@/components/SidebarFold";
+import { autoFoldEnabled } from "@/lib/sidebarFold";
 import { useViewMode } from "@/components/ViewModeProvider";
-import { DOCK_MIN_VIEWPORT, assistantState, currentAssistantFacts, openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
+import { DOCK_MIN_VIEWPORT, assistantState, dockFoldsNav, currentAssistantFacts, openAssistant, useAssistantFacts } from "@/lib/shell/assistant";
 import { sendHeldBrief } from "@/lib/studio/buildHandoff";
 import { buildOutline, type OutlineTab } from "@/lib/studio/buildOutline";
 import type { Reveal } from "@/lib/studio/codeReveal";
 import { checkDraft } from "@/lib/studio/draftProblems";
 import { useDraftWatch } from "@/lib/studio/draftWatch";
 import { ideFacts } from "@/lib/studio/ideFacts";
+import { clearFoldMark, foldMarked, foldOnOpen, markFolded, restoreOnLeave } from "@/lib/studio/ideFold";
 import { buildHref, draftHash } from "@/lib/studio/packageDraft";
 import { previewHref } from "@/lib/studio/packagePreview";
 
@@ -102,13 +104,27 @@ function Ide({ pkg }: { pkg: string }) {
   const fold = useOptionalSidebarFold();
   const foldRef = useRef(fold);
   useEffect(() => { foldRef.current = fold; });
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
+    // A strict-mode remount runs the cleanup and the effect at once. The give-back waits one tick, and
+    // the effect cancels it, so only a real leave gives the nav back.
+    if (leaveTimer.current) { clearTimeout(leaveTimer.current); leaveTimer.current = null; }
     const f = foldRef.current;
-    if (!f || f.collapsed) return;
-    f.foldForWork();
+    if (!f) return;
+    // A fold that the IDE made before a reload stays marked. A new fold needs the auto fold on.
+    if (foldOnOpen({ collapsed: f.collapsed, enabled: autoFoldEnabled() })) {
+      f.foldForWork();
+      markFolded();
+    }
     return () => {
-      const now = foldRef.current;
-      if (now && now.collapsed) now.toggle();
+      leaveTimer.current = setTimeout(() => {
+        leaveTimer.current = null;
+        const now = foldRef.current;
+        const st = assistantState();
+        const dockHolds = st.open && st.mode === "dock" && dockFoldsNav(window.innerWidth, false);
+        if (now && restoreOnLeave({ marked: foldMarked(), collapsed: now.collapsed, dockHolds })) now.toggle();
+        clearFoldMark();
+      }, 0);
     };
   }, []);
 

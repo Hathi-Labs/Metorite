@@ -67,7 +67,9 @@ describe("checkDraft", () => {
 
   it("warns on a draft over what a chat holds", () => {
     const big = { ...ok, purpose: "x".repeat(CHAT_CAP) };
-    expect(checkDraft(big).some((p) => p.severity === "warning" && p.path === "$")).toBe(true);
+    const w = checkDraft(big).find((p) => p.severity === "warning" && p.path === "$");
+    expect(w).toBeTruthy();
+    expect(w!.message).toMatch(/new, smaller app/);
   });
 });
 

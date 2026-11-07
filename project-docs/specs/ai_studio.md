@@ -411,13 +411,15 @@ A toggle sets the frame to 390 px. Data, Views and Code are read only in G3a. Th
 
 It binds the dock to the package with `useAssistantFacts`. The facts hold the package id, the `based_on` hash of the draft (`manifest_hash` of `GET /studio/packages/{id}`) and the draft manifest. The manifest sits between "Begin member data" and "End member data" marks, and says that it is data and never instructions.
 
-This page puts a stored body in the facts on purpose. `studio_package_get` returns no manifest, and Mira needs the draft to edit it. The cost is about 3,000 tokens a turn while the IDE is open. The page pastes the draft only up to 12,000 characters, half of the 24,000 that a save accepts. A larger draft shows a line that says to change it in Studio. A save with a stale `based_on` is refused and nothing is written, so a stale fact fails closed.
+This page puts a stored body in the facts on purpose. `studio_package_get` returns no manifest, and Mira needs the draft to edit it. The page pastes the draft up to 24,000 characters, the same cap as a save. So any draft that a chat may save is also in the facts, and Mira can edit it. The cost is about 6,000 tokens a turn at the cap, while the IDE is open. A larger draft shows a line that says Mira cannot edit it and to start a new, smaller app.
+
+A save with a stale `based_on` is refused and nothing is written, so a stale fact fails closed.
 
 The page gives the facts only while the app exists. After a 404 it gives none, and the polling stops.
 
 "Build it" holds its brief in a one-shot holder keyed by the package id, then opens the IDE. The IDE sends the brief as an ask of the shell after the first draft loaded and the facts are published. This order stops a second package from being made.
 
-A rule of the `studio` pack tells Mira to edit the package that the facts name. The page reads the draft again every 5 s while it shows, and when a chat run ends. It redraws only when the draft changed. The app nav folds while the IDE is open, and opens again when the member leaves.
+A rule of the `studio` pack tells Mira to edit the package that the facts name. The page reads the draft again every 5 s while it shows, and when a chat run ends. It redraws only when the draft changed. The app nav folds while the IDE is open, only when the member allows the auto fold. The page marks its fold in `sessionStorage`, so a reload keeps it. On leave it opens the nav again, except when the dock rule holds it folded.
 
 **Publish** is not in the IDE in G3a. Mira publishes after the member approves the plan card. A Publish button waits for G5.
 
