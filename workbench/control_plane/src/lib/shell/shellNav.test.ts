@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { PANES, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import {
+  AGENTS_LINK,
   ASSISTANT_LINK,
   CHANGE_LAYOUT_ITEM,
   MY_ACCESS,
@@ -159,6 +160,41 @@ describe("the Assistant settings row of the account menu (PZ-25, PZ-28)", () => 
     expect(PANES.some((p) => p.href === "/settings/assistant")).toBe(false);
   });
 });
+
+// WS-MCP SW-31b. Settings → Agents is the door for every member, because a
+// project lead who is not an admin writes guidance too, and the Organisation
+// bar is admin-only. It shows only while guidance is on for the org.
+// Mutation: show the row with `agents` off, and the first test fails. Put it
+// in You, and the last test fails.
+describe("the Agents row of the account menu (SW-31b)", () => {
+  const member = visibleSections(ALL, false);
+
+  it("is absent with guidance off, and by default", () => {
+    for (const links of [accountLinks(member), accountLinks(member, { agents: false })]) {
+      expect(links.map((l) => l.href)).not.toContain("/settings/agents");
+    }
+  });
+
+  it("shows once, after Appearance and Assistant settings, with guidance on", () => {
+    expect(accountLinks(member, { assistant: true, agents: true }).map((l) => l.href)).toEqual([
+      "/people/me",
+      MY_ACCESS.href,
+      "/settings/appearance",
+      "/settings/assistant",
+      "/settings/agents",
+    ]);
+    expect(AGENTS_LINK).toEqual({ href: "/settings/agents", label: "Agents", icon: "Bot" });
+  });
+
+  it("sits in Settings, not in You", () => {
+    const groups = accountMenu(member, { layout: true, switcher: false, others: 0, agents: true });
+    const hrefs = (id: string) =>
+      (groups.find((g) => g.id === id)?.items ?? []).flatMap((i) => (i.kind === "link" ? [i.href] : []));
+    expect(hrefs("you")).toEqual(["/people/me", "/people/access"]);
+    expect(hrefs("settings")).toEqual(["/settings/appearance", "/settings/agents"]);
+  });
+});
+
 
 /**
  * The sidebar foot's one menu (owner, 2026-10-14): the accounts, then You,

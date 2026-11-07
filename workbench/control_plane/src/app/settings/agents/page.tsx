@@ -19,7 +19,7 @@
  * short reason. The whole router is dark behind `AGENT_GUIDANCE_ORGS`, and
  * its 404 draws the "not turned on" state, never a broken page.
  */
-import { useState } from "react";
+import { useReducer, useState } from "react";
 
 import { AppTopBar } from "@/components/AppTopBar";
 import { useAccess } from "@/components/AccessProvider";
@@ -35,14 +35,17 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 import { GuidanceHistory } from "./GuidanceHistory";
 import {
+  EMPTY_EDITOR,
   GUIDANCE_MAX,
   HISTORY_LIMIT,
   HOW_IT_REACHES,
   ORG_SCOPE,
   ORG_WRITE_CAPABILITY,
   counter,
+  editorReducer,
+  editorText,
   historyKey,
-  isTurnedOff,
+  historyReadOf,
   projectIdOf,
   saveFailure,
   scopeOptions,
@@ -71,29 +74,15 @@ async function readHistory(projectId: string | null): Promise<GuidanceRead> {
         { cache: "no-store" },
       )
     : await fetch(`/api/agent-guidance/history?limit=${HISTORY_LIMIT}`, { cache: "no-store" });
-  if (res.ok) {
-    const data = (await res.json().catch(() => null)) as { rows?: unknown } | null;
-    return { kind: "ok", rows: Array.isArray(data?.rows) ? (data.rows as GuidanceVersion[]) : [] };
-  }
-  const detail = ((await res.json().catch(() => null)) as { detail?: unknown } | null)?.detail;
-  if (isTurnedOff(res.status, detail)) return { kind: "off" };
-  if (res.status === 404) throw new Error("This project is gone, or you cannot see it now.");
-  if (res.status === 403) throw new Error("You cannot open agent guidance. It needs access to Projects.");
-  throw new Error("Could not load the guidance. The connection dropped or the server is busy.");
+  return historyReadOf(res.status, await res.json().catch(() => null));
 }
-
-type SaveNote = { kind: "ok" | "error"; text: string } | null;
 
 export default function AgentsSettingsPage() {
   const { access } = useAccess();
   const canManageOrg = hasCapability(access, ORG_WRITE_CAPABILITY);
 
   const [scope, setScope] = useState<string>(ORG_SCOPE);
-  // A draft per scope, so a switch of scope keeps what the member typed.
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [openVersion, setOpenVersion] = useState<{ scope: string; id: string } | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [note, setNote] = useState<SaveNote>(null);
+  const [editor, dispatch] = useReducer(editorReducer, EMPTY_EDITOR);
 
   const projectId = projectIdOf(scope);
   const tree = useCachedResource("agent-guidance/tree", readTree);
@@ -104,66 +93,57 @@ export default function AgentsSettingsPage() {
 
   const options = scopeOptions(tree.data);
   const rows = history.data?.kind === "ok" ? history.data.rows : [];
-  const latest = rows[0]?.body ?? "";
-  const text = drafts[scope] ?? latest;
-  const dirty = text !== latest;
+  const { text, dirty } = editorText(editor, scope, rows);
   const count = counter(text);
-  const refusal = writeRefusal({ projectId, canManageOrg, node: node.data });
+  const refusal = writeRefusal({
+    projectId,
+    canManageOrg,
+    node: node.data,
+    nodeFailed: !!node.error && !node.data,
+  });
   const off = history.data?.kind === "off";
   const ready = history.data?.kind === "ok";
-
-  const pickScope = (next: string) => {
-    setScope(next);
-    setNote(null);
-  };
-
-  const edit = (value: string) => {
-    setDrafts((d) => ({ ...d, [scope]: value }));
-    setNote(null);
-  };
-
-  const discard = () => {
-    setDrafts((d) => {
-      const rest = { ...d };
-      delete rest[scope];
-      return rest;
-    });
-    setNote(null);
-  };
+  // The note and the "Saving…" belong to one scope. Another scope shows neither.
+  const saving = editor.saving === scope;
+  const note = editor.note?.scope === scope ? editor.note : null;
 
   const save = async () => {
-    if (saving || refusal || count.over || !dirty || !ready) return;
-    setSaving(true);
-    setNote(null);
+    if (editor.saving || refusal || count.over || !dirty || !ready) return;
+    const at = scope;
+    const pid = projectId;
+    const before = rows;
+    dispatch({ type: "save-start", scope: at });
     try {
       const res = await fetch("/api/agent-guidance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project_id: projectId, body: text }),
+        body: JSON.stringify({ project_id: pid, body: text }),
       });
       const data = (await res.json().catch(() => null)) as (GuidanceVersion & { detail?: unknown }) | null;
       if (!res.ok || !data) {
-        // The draft stays, so a refusal never loses what the member typed.
-        setNote({ kind: "error", text: saveFailure(res.status, data?.detail) });
+        dispatch({ type: "save-failed", scope: at, text: saveFailure(res.status, data?.detail, text.length) });
         return;
       }
       // The new version heads the list at once. The next read confirms it.
-      put<GuidanceRead>(historyKey(projectId), { kind: "ok", rows: [data, ...rows] });
-      discard();
-      setNote({ kind: "ok", text: `Saved as version ${data.version}.` });
+      // The draft stays until the head shows this id (`editorText`).
+      put<GuidanceRead>(historyKey(pid), { kind: "ok", rows: [data, ...before] });
+      dispatch({ type: "save-done", scope: at, id: data.id, version: data.version });
     } catch {
-      setNote({ kind: "error", text: saveFailure(0, null) });
-    } finally {
-      setSaving(false);
+      dispatch({ type: "save-failed", scope: at, text: saveFailure(0, null) });
     }
   };
 
+  // An admin reaches this page from the Organisation bar. Any other member
+  // reaches it from the account menu, and Organisation is admin-only.
+  const back = access.is_admin
+    ? { href: "/settings/organization", label: "Back to Organisation" }
+    : { href: "/settings", label: "Back to Settings" };
+
   return (
     <div className="flex h-full flex-col">
-      {/* The page's title bar (owner, 2026-10-10). Agents opens from the
-          Organisation bar, as Teams and Roles do, so its way back leads there. */}
+      {/* The page's title bar (owner, 2026-10-10), with its way back. */}
       <AppTopBar
-        back={{ href: "/settings/organization", label: "Back to Organisation" }}
+        back={back}
         title="Agents"
         icon="Bot"
         subtitle="The written rules that your agents follow"
@@ -195,7 +175,7 @@ export default function AgentsSettingsPage() {
                   value={scope}
                   defaultValue={ORG_SCOPE}
                   options={options}
-                  onChange={pickScope}
+                  onChange={setScope}
                   filterAbove={8}
                   widthClass="w-full sm:w-80"
                 />
@@ -229,7 +209,7 @@ export default function AgentsSettingsPage() {
                     <Textarea
                       id="guidance-body"
                       value={text}
-                      onChange={(e) => edit(e.target.value)}
+                      onChange={(e) => dispatch({ type: "edit", scope, text: e.target.value })}
                       readOnly={!!refusal}
                       rows={16}
                       spellCheck
@@ -251,8 +231,13 @@ export default function AgentsSettingsPage() {
                         {count.label}
                       </span>
                       <span className="ml-auto flex items-center gap-2">
-                        {dirty && !refusal && (
-                          <Button size="sm" variant="ghost" onClick={discard} disabled={saving}>
+                        {dirty && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => dispatch({ type: "discard", scope })}
+                            disabled={saving}
+                          >
                             Discard changes
                           </Button>
                         )}
@@ -281,14 +266,13 @@ export default function AgentsSettingsPage() {
                   </div>
                   <GuidanceHistory
                     rows={rows}
-                    openId={openVersion?.scope === scope ? openVersion.id : null}
-                    onOpen={(id) => setOpenVersion(id ? { scope, id } : null)}
+                    openId={editor.open?.scope === scope ? editor.open.id : null}
+                    onOpen={(id) => dispatch({ type: "open", scope, id })}
                     onUse={
                       refusal
                         ? undefined
                         : (body) => {
-                            edit(body);
-                            setOpenVersion(null);
+                            dispatch({ type: "use", scope, text: body });
                             document.getElementById("guidance-body")?.focus();
                           }
                     }

@@ -116,19 +116,22 @@ export function versionSummary(body: string): string {
  * Why this member cannot save this scope, or null when the save may go.
  *
  * `node` is undefined while the facts of a project load, and the answer is
- * then null: the gateway still decides, so a wait never shows a refusal.
+ * then null: the gateway still decides, so a wait never shows a refusal. A
+ * read of the facts that FAILED is a refusal, so Save never stays on with
+ * nothing checked.
  */
 export function writeRefusal(a: {
   projectId: string | null;
   canManageOrg: boolean;
   node?: NodeFacts;
+  nodeFailed?: boolean;
 }): string | null {
   if (a.projectId === null) {
     return a.canManageOrg
       ? null
       : "Only an organization admin can change the guidance of the whole organization.";
   }
-  if (!a.node) return null;
+  if (!a.node) return a.nodeFailed ? "Could not check who can change this project. Try again." : null;
   if (a.node.archived_at || a.node.status === "archived") {
     return "This project is archived, so its guidance cannot change.";
   }
@@ -143,8 +146,11 @@ export function isTurnedOff(status: number, detail: unknown): boolean {
   return status === 404 && detail === "Not Found";
 }
 
-/** The words of a failed save. The gateway's own reason wins where it sent one. */
-export function saveFailure(status: number, detail: unknown): string {
+/**
+ * The words of a failed save. The gateway's own reason wins where it sent
+ * one as text. `length` is the length of the text that the member sent.
+ */
+export function saveFailure(status: number, detail: unknown, length = 0): string {
   const said = typeof detail === "string" && detail.trim() ? detail.trim() : "";
   if (isTurnedOff(status, detail)) {
     return "Agent guidance is not turned on for this organization, so the text was not saved.";
@@ -153,9 +159,130 @@ export function saveFailure(status: number, detail: unknown): string {
   if (status === 404) return "This project is gone, or you cannot see it now. The text was not saved.";
   if (status === 409) return said || "The guidance could not be saved. Try again.";
   if (status === 422) {
-    return `The guidance is longer than ${GUIDANCE_MAX.toLocaleString("en-US")} characters. Make it shorter, then save.`;
+    if (said) return said;
+    return length > GUIDANCE_MAX
+      ? `The guidance is longer than ${GUIDANCE_MAX.toLocaleString("en-US")} characters. Make it shorter, then save.`
+      : "The server did not accept this text. Remove any unusual characters, then save.";
   }
   return "Could not save the guidance. The connection dropped or the server is busy. Try again.";
+}
+
+/**
+ * The answer of a history read, as the page uses it. A 404 with the detail
+ * "Not Found" is the dark router, so it is the off state and not an error.
+ * Each other failure throws the words that the page shows.
+ */
+export function historyReadOf(status: number, body: unknown): GuidanceRead {
+  const b = (body ?? {}) as { rows?: unknown; detail?: unknown };
+  if (status >= 200 && status < 300) {
+    return { kind: "ok", rows: Array.isArray(b.rows) ? (b.rows as GuidanceVersion[]) : [] };
+  }
+  if (isTurnedOff(status, b.detail)) return { kind: "off" };
+  if (status === 404) throw new Error("This project is gone, or you cannot see it now.");
+  if (status === 403) throw new Error("You cannot open agent guidance. It needs access to Projects.");
+  throw new Error("Could not load the guidance. The connection dropped or the server is busy.");
+}
+
+// ── The editor, as one reducer ──────────────────────────────────────────────
+
+/** A note under the editor, for one scope only. */
+export interface ScopeNote {
+  scope: string;
+  kind: "ok" | "error";
+  text: string;
+}
+
+/**
+ * The state of the editor. Each part names its scope, so a switch of scope
+ * never shows the note or the "Saving…" of another scope.
+ */
+export interface EditorState {
+  /** A draft for each scope, so a switch of scope keeps what the member typed. */
+  drafts: Record<string, string>;
+  /** The version open in the History, read-only. */
+  open: { scope: string; id: string } | null;
+  /** The scope whose save is in flight. */
+  saving: string | null;
+  note: ScopeNote | null;
+  /**
+   * The id of the version that the last save of a scope made. The draft stays
+   * until the History head shows this id, so the editor never flashes the old
+   * text between the save and the next read.
+   */
+  saved: Record<string, string>;
+}
+
+export const EMPTY_EDITOR: EditorState = { drafts: {}, open: null, saving: null, note: null, saved: {} };
+
+export type EditorAction =
+  | { type: "edit"; scope: string; text: string }
+  | { type: "discard"; scope: string }
+  | { type: "use"; scope: string; text: string }
+  | { type: "open"; scope: string; id: string | null }
+  | { type: "save-start"; scope: string }
+  | { type: "save-done"; scope: string; id: string; version: number }
+  | { type: "save-failed"; scope: string; text: string };
+
+function without<T>(map: Record<string, T>, key: string): Record<string, T> {
+  const rest = { ...map };
+  delete rest[key];
+  return rest;
+}
+
+export function editorReducer(state: EditorState, action: EditorAction): EditorState {
+  const { scope } = action;
+  const clearNote = state.note?.scope === scope ? null : state.note;
+  switch (action.type) {
+    case "edit":
+      return { ...state, drafts: { ...state.drafts, [scope]: action.text }, saved: without(state.saved, scope), note: clearNote };
+    case "discard":
+      return { ...state, drafts: without(state.drafts, scope), saved: without(state.saved, scope), note: clearNote };
+    case "use":
+      // "Use this text" only copies the version into the editor and closes it.
+      // It writes nothing. A save of it makes a new version.
+      return {
+        ...state,
+        drafts: { ...state.drafts, [scope]: action.text },
+        saved: without(state.saved, scope),
+        open: null,
+        note: clearNote,
+      };
+    case "open":
+      return { ...state, open: action.id ? { scope, id: action.id } : null };
+    case "save-start":
+      return { ...state, saving: scope, note: clearNote };
+    case "save-done":
+      return {
+        ...state,
+        saving: state.saving === scope ? null : state.saving,
+        saved: { ...state.saved, [scope]: action.id },
+        note: { scope, kind: "ok", text: `Saved as version ${action.version}.` },
+      };
+    case "save-failed":
+      // The draft stays, so a refusal never loses what the member typed.
+      return {
+        ...state,
+        saving: state.saving === scope ? null : state.saving,
+        note: { scope, kind: "error", text: action.text },
+      };
+  }
+}
+
+/**
+ * The text in the editor for one scope, and whether it differs from the
+ * newest version. A draft that a save made stops counting once the History
+ * head shows the saved version.
+ */
+export function editorText(
+  state: EditorState,
+  scope: string,
+  rows: readonly GuidanceVersion[],
+): { text: string; dirty: boolean } {
+  const latest = rows[0]?.body ?? "";
+  const draft = state.drafts[scope];
+  const settled = state.saved[scope] !== undefined && rows[0]?.id === state.saved[scope];
+  const text = draft === undefined || settled ? latest : draft;
+  return { text, dirty: text !== latest };
 }
 
 /**

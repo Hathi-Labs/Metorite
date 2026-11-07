@@ -22,7 +22,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!raw || typeof raw.body !== "string") {
     return NextResponse.json({ detail: "Send the guidance text as body." }, { status: 422 });
   }
-  const projectId = typeof raw.project_id === "string" && raw.project_id ? raw.project_id : null;
+  // Absent or null is the whole organization. Any other value must be a
+  // non-empty string. A bad value is a 422, never an org save.
+  const given = raw.project_id;
+  if (given !== undefined && given !== null && (typeof given !== "string" || !given.trim())) {
+    return NextResponse.json({ detail: "project_id must be a project id or null." }, { status: 422 });
+  }
+  const projectId = typeof given === "string" ? given : null;
   try {
     return await proxyToGateway("/agent-guidance", {
       method: "POST",
