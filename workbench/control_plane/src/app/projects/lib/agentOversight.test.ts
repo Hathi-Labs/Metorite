@@ -75,17 +75,20 @@ describe("the agent lanes", () => {
     ]);
   });
 
-  it("holds the eight lanes of the spec, and an unknown state reads as no agent", () => {
+  // Task 1045a adds the ninth lane, "Waiting" (`agent_coordination.md` §3.2).
+  it("holds the nine lanes of the spec, and an unknown state reads as no agent", () => {
     expect(AGENT_LANES.map((l) => l.label)).toEqual([
       "Needs you",
       "Answered",
       "Working",
+      "Waiting",
       "Queued",
       "Idle",
       "Stopping",
       "Failed",
       "No agent",
     ]);
+    expect(agentLaneKey("waiting")).toBe("waiting");
     expect(agentLaneKey("mystery")).toBe("none");
     expect(agentLaneKey(undefined)).toBe("none");
   });
@@ -104,9 +107,14 @@ describe("the count buttons", () => {
   it("each button stands for the rows that its count reads", () => {
     expect(matchesAgentFocus(task({ agent_state: "queued" }), "queued", me, NOW)).toBe(true);
     expect(matchesAgentFocus(task({ agent_state: "working" }), "queued", me, NOW)).toBe(false);
-    for (const state of ["working", "answered", "stale"]) {
+    // Task 1045a: a `waiting` run still holds its task, so it counts as
+    // working. It is not "Waiting on me", which is a question to the viewer.
+    for (const state of ["working", "answered", "stale", "waiting"]) {
       expect(matchesAgentFocus(task({ agent_state: state }), "working", me, NOW)).toBe(true);
     }
+    expect(
+      matchesAgentFocus(task({ agent_state: "waiting", agent_member_email: me }), "waiting", me, NOW),
+    ).toBe(false);
     expect(matchesAgentFocus(task({ agent_state: "queued" }), "working", me, NOW)).toBe(false);
     expect(
       matchesAgentFocus(

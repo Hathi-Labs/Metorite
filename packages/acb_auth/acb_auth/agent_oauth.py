@@ -184,6 +184,20 @@ def runs_enabled() -> bool:
     return bool(get_settings().agent_runs_enabled)
 
 
+#: Task 1045a (``agent_coordination.md`` §3.2). What a ``waiting`` line of an
+#: agent run may wait on. ONE copy for both units: the gateway checks the
+#: input against it, and the edge offers it as the enum of the tool. The CHECK
+#: ``pm_agent_runs_waiting_on`` of the migration lists the same five. It lives
+#: here because the edge's ``tools.py`` may not hold the word as a literal
+#: (rule 15 of the edge's AGENTS.md).
+#: The wait is on work that is not the agent's own (owner, 2026-11-07). While
+#: the agent's own sub-agents work, the run is working, so no value names
+#: them. ``agent`` is another (external) agent.
+RUN_WAITING_ON: tuple[str, ...] = ("ci", "review", "deploy", "member", "agent")
+#: The longest wait, in minutes (D140.8). A shorter lease lowers it.
+RUN_WAITING_MAX_MIN = 120
+
+
 def answer_change_enabled() -> bool:
     """True when ``agent_answer_change_enabled`` is on (SW-43).
 

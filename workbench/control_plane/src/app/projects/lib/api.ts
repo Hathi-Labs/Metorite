@@ -10,6 +10,7 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type AgentWaiting,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
@@ -1825,6 +1826,11 @@ export interface TaskRow {
    * on its open run, at most 140 characters. The pill shows it on hover.
    */
   agent_note?: string | null;
+  /**
+   * Task 1045a (`agent_coordination.md` §3.2) — the wait of a run that reads
+   * `waiting`: what it waits on and when the wait ends. Null in any other state.
+   */
+  agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
   /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.

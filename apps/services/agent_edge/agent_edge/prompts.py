@@ -336,6 +336,21 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
     return _numbered(steps)
 
 
+#: Task 1045a (``agent_coordination.md`` 1045a item 7). The step of the
+#: waiting line. It shows only with the runs flag, as the tool does.
+#: Fence: ``test_mcp_edge_prompts.py`` ``TestTheWaitingRule``.
+WAITING_RULE = (
+    "While your own sub-agents work, you work too. Continue to post a short"
+    " thought at least once a minute, and the run stays working. Post a"
+    " waiting line only before a wait of more than 2 minutes on CI, a deploy,"
+    " a review or a person, or another agent that is not yours: a thought"
+    " with post_agent_activity and waiting {on, until_minutes, note}. on is"
+    " ci, review, deploy, member or agent, and until_minutes is 1 to 120."
+    " The task then shows the run as waiting, not idle. Your next activity"
+    " ends the wait. A wait on a person for longer than 120 minutes is a"
+    " question: call ask_on_task.")
+
+
 def _work_steps(*, runs: bool) -> list[str]:
     """The steps after the context: the work, the progress, the links, the
     review, the done, and the end with one disposition."""
@@ -350,6 +365,7 @@ def _work_steps(*, runs: bool) -> list[str]:
             " When you asked me with ask_on_task and I answer outside Metorite,"
             " such as in this chat, call record_outside_decision at once. The"
             " question then closes, and the task stops waiting on me.")
+        steps.append(WAITING_RULE)
         if agent_oauth.answer_change_enabled():
             steps.append(ANSWER_RULE.strip())
     else:
@@ -400,6 +416,7 @@ __all__ = [
     "TEXT_EXTRA",
     "TEXT_NO_TASK",
     "TEXT_UNKNOWN",
+    "WAITING_RULE",
     "PromptRefused",
     "get",
     "listed",

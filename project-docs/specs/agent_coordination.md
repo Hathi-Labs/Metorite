@@ -6,6 +6,8 @@
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. No other P9 slice is built.**
 
+**1045a (the `waiting` state, migration 351) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b and 1045c are open.**
+
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
 **Verified against code on 2026-10-30** (origin/main of that day). §6 holds each anchor and the commit it was read at. Re-verify each anchor at dispatch (`work_plan.md` §1 item 4).
@@ -142,7 +144,7 @@ While the sweep is off, no fingerprint exists, so `stranded` is null. That is wh
 
 **Two clocks, two meanings.** The 5-minute **stale band** says whether an agent works on the task now. It is display only. The 2-hour **lease** says whether the run still keeps the task.
 
-A quiet run keeps its task until the lease ends. An orchestrator can wait 20 to 50 minutes on sub-agents or CI and post nothing (task 1045). The `waiting` line tells the board the truth during that wait.
+A quiet run keeps its task until the lease ends. An orchestrator can wait 20 to 50 minutes on sub-agents or CI and post nothing (task 1045). While its own sub-agents work, the run reads `working`, so the agent posts a thought at least once a minute (owner, 2026-11-07). The `waiting` line is only for work that is not the agent's own: CI, a deploy, a review or a person, or another agent. It tells the board the truth during that wait.
 
 **The lease clock** reads the newest activity of any author, a member's answer too (D140.10). Resume (SW-11a) depends on this: its member prompt renews the lease. Task 1045b adds linked events (a pull request push or a check event) to the clock, and keeps them out of the answered rule.
 
@@ -813,7 +815,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 - **Scope.**
   1. `AgentRunPanel.tsx` reads `lease_expired`. So for a dead connection, it does not say that the next claim can take the task. `external_agent_access.md` §12.3 names this gap. Make the panel read the server's holder-free answer, which `held_by.stale` already carries.
-  2. Cap a `waiting` time at one lease. When `AGENT_RUN_LEASE_SECONDS` is below 7200, the cap is the lease in minutes, not 120.
+  2. Cap a `waiting` time at one lease. When `AGENT_RUN_LEASE_SECONDS` is below 7200, the cap is the lease in minutes, not 120. **Built with 1045a** (2026-11-06).
   3. Add an R8 test with a moved clock, if `test_agent_run_exclusive.py` lacks one. A claim at the lease plus 1 minute takes the task over. A claim at the lease minus 1 minute gets 409.
 - **Not in scope.** The 15-minute TTL of the first text (D140.10). The end of a run when its task closes is H-409 item 1, Metorite #748.
 - **Done when.** The panel, the card and `held_by.stale` agree for a dead connection. The moved-clock test passes on a real database.
@@ -871,18 +873,20 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 #### 1045a · The `waiting` state
 
+- **Built** 2026-11-06, migration 351, live under `agent_runs_enabled`. The build also caps a wait at one lease when the lease is shorter than 2 hours (SW-4 item 2, `filters.agent_run_waiting_cap_min`). The task row carries `agent_waiting`, so the card says "waiting on CI".
 - **Scope.**
-  1. `post_agent_activity` takes an optional `waiting: {on, until_minutes, note}`. `on` is `subagents`, `ci`, `review`, `deploy` or `member`. `until_minutes` is 1 to 120. 1045a ships this fixed cap of 120 minutes. SW-4 later lowers the cap to the lease when the lease is shorter. `note` holds at most 200 characters.
+  1. `post_agent_activity` takes an optional `waiting: {on, until_minutes, note}`. `on` is `ci`, `review`, `deploy`, `member` or `agent`. `agent` is another (external) agent, and the card says "another agent". No value names the agent's own sub-agents. While they work, the run reads `working`, so the gateway refuses `subagents` with 422 (owner, 2026-11-07). `until_minutes` is 1 to 120. 1045a ships this fixed cap of 120 minutes. SW-4 later lowers the cap to the lease when the lease is shorter. `note` holds at most 200 characters.
   2. Migration, expand only: `pm_agent_runs.waiting_on TEXT NULL`, with a CHECK of the five values, and `waiting_until TIMESTAMPTZ NULL`.
   3. `_write_activity` is the one writer. An activity with `waiting` sets both columns. Any other activity clears them.
   4. `AGENT_RUN_STATE_SQL` gains `waiting` first in its `in_progress` arm (§3.2). `WORKING_STATES` gains `waiting`, so the strip counts do not change.
   5. The run wire and the edge gain `waiting: {on, until, note}`. The note leaves as untrusted text.
   6. `AGENT_STATES`, `agentCardLook` and the pill gain `waiting`: a still accent edge. It does not move, because motion means working (EA-13g). The group-by gains a lane "Waiting".
-  7. The text that tells agents. Change the server instructions (`mcp.py`), the `work_on_task` steps (`prompts.py`) and `next-ticket.md`. Each says: post a `waiting` line before a wait of more than 2 minutes. A wait on a person longer than 120 minutes is a question (`ask_on_task`) or a wait record (SW-9).
+  7. The text that tells agents. Change the server instructions (`mcp.py`), the `work_on_task` steps (`prompts.py`) and `next-ticket.md`. Each says: while your own sub-agents work, post a thought at least once a minute, and the run stays working. Post a `waiting` line only before a wait of more than 2 minutes. The wait is on CI, a deploy, a review, a person or another agent. A wait on a person longer than 120 minutes is a question (`ask_on_task`) or a wait record (SW-9).
 - **Done when.**
   - R8: a run with `waiting {on: ci, until_minutes: 30}` reads `waiting` at minute 20 and `stale` at minute 31.
   - R8: a thought at minute 10 clears the wait, and the run reads `working`.
   - `until_minutes` of 121 gets 422.
+  - `on: subagents` gets 422, and the gateway takes `on: agent`.
   - The stranded clause never matches a run that reads `waiting`.
   - A vitest maps `waiting` to its look in light and dark.
 - **Fence.** `test_agent_runs_r8.py`, `test_mcp_edge_agent_runs.py`, `test_mcp_edge_prompts.py`, `agentCardLook.test.ts`.
