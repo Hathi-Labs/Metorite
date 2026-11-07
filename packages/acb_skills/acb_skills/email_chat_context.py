@@ -487,11 +487,7 @@ def _internal_token() -> str:
     from acb_common import get_settings
 
     settings = get_settings()
-    return (
-        getattr(settings, "gateway_internal_token", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
+    return (getattr(settings, "gateway_internal_token", "") or "").strip()
 
 
 async def fetch_accounts(member: str) -> list[dict[str, Any]]:

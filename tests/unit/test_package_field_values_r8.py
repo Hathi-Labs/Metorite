@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/package_host.md`` §5.1, §8.3 and the PKG-13 row
 of §10. Code: ``gateway/package_host/field_values.py``. Migration: the file
-that creates ``package_field_value`` (353 at build). The hermetic fence of
+that creates ``package_field_value`` (356 at build). The hermetic fence of
 the one writer is ``tests/unit/test_package_field_values.py``.
 
 Each call runs as the app role, through ``tenant_session``, so FORCE RLS

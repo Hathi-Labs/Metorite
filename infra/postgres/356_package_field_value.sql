@@ -1,5 +1,5 @@
 -- ============================================================================
--- 353_package_field_value.sql — the values of package extension fields
+-- 356_package_field_value.sql — the values of package extension fields
 -- (WS-PKG PKG-13, Metorite task 1251).
 --
 -- What: one new table. `package_field_value` holds one value of one extension
@@ -42,8 +42,8 @@
 -- No column names a member, so the member purge has no row for this table.
 -- A deletion of the org cascades.
 --
--- The number was 353 at build time: main ended at 348, and open pull
--- requests held 349, 350 and 352. Check it again at merge (R1).
+-- The number was 356 at build time: main ended at 355, and open pull
+-- requests held 357 and 358. Check it again at merge (R1).
 -- tests/unit/test_package_field_values_r8.py finds this file by CONTENT,
 -- never by number.
 -- ============================================================================

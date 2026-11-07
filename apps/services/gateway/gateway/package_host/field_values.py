@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/package_host.md`` §5.1 (the table
 ``package_field_value``), §8.3 (field extensions) and the PKG-13 row of §10.
-Migration: the file that creates ``package_field_value`` (353 at build).
+Migration: the file that creates ``package_field_value`` (356 at build).
 ``tests/unit/test_package_field_values_r8.py`` runs this SQL on a real
 Postgres, and ``tests/unit/test_package_field_values.py`` holds the checks
 with no database and the fence of the one writer.
