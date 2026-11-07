@@ -233,7 +233,7 @@ the chat does part of it, or does it in a way that fails in practice.
 | G24 | The member's reminders: list, set, change, answer, reopen, promote and move | The Calendar (RM-5) | `routes/projects/reminders.py` (`calendar_events_reminders.md` §5.8) | Closed by RM-3: the seven tools are built, and each field is in `SENDS` | Closed | RM-3 |
 | G25 | A member asks a member about a task (WS-AP AP-8a) | The task card (AP-9) | `POST /projects/tasks/{id}/asks` (`waiting_on_me.md` §7.2) | The tool `ask_person` is in `PLANNED`. The route is dark | **Missing** | AP-10 |
 
-**Count: 24 gaps.** WS-55 EA-12a added G23 on 2026-10-14. WS-66 RM-1 added G24 on 2026-10-25, and RM-3 closed it on the same day. The counts below are the measure of 2026-10-05. P1, P2
+**Count: 25 gaps.** WS-AP AP-8a added G25 on 2026-11-07. WS-55 EA-12a added G23 on 2026-10-14. WS-66 RM-1 added G24 on 2026-10-25, and RM-3 closed it on the same day. The counts below are the measure of 2026-10-05. P1, P2
 and P6 have closed G1 to G9 since then, and P7 has closed G12 to G18.
 
 - 6 missing: G6, G7, G17, G20, G21 and G22. G21 is closed by P10 (2026-10-23).

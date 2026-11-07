@@ -38,6 +38,7 @@ runs as a role that cannot bypass RLS, with two organizations:
 * M8. ``answer_decision``: drop ``closed_at IS NULL`` from the UPDATE.
 * M9. ``withdraw_ask``: drop the asker check.
 * M10. ``require_waiting``: do nothing.
+* M11. ``withdraw_ask``: drop ``lower(n.actor) = :me`` from the bell UPDATE.
 
 Run::
 
@@ -549,6 +550,27 @@ class TestPersonAsksOnARealDatabase:
             assert [d["state"] for d in own["decisions"]] == ["closed"]
         row = _row(w.p, ask_id)
         assert row.answered_at is None and row.closed_reason == "withdrawn"
+
+    async def test_a_withdraw_closes_the_bell_of_its_own_asker_only(self, w):
+        """Two askers ask one addressee the same text on one task. The withdraw
+        of one asker reads that asker's bell row only."""
+        text_ = "Can you review?"
+        async with _session(w.p) as (call, _):
+            bob = await call(w.u_o, "POST", _asks_path(w.task),
+                             {"addressee": w.d, "question": text_})
+            alice = await call(w.u_a, "POST", _asks_path(w.task),
+                               {"addressee": w.d, "question": text_})
+            assert bob.status_code == alice.status_code == 201, (bob.text, alice.text)
+            gone = await call(w.u_a, "POST",
+                              f"/projects/asks/{alice.json()['decision']['id']}/withdraw")
+            assert gone.status_code == 200, gone.text
+        with w.p.admin_engine.connect() as c:
+            rows = {r.actor: r.read_at for r in c.execute(text(
+                "SELECT actor, read_at FROM pm_notifications WHERE recipient = :d"
+                " AND kind = 'decision'"), {"d": w.d})}
+        assert set(rows) == {w.o, w.a}
+        assert rows[w.o] is None, "the withdraw of Alice read the bell row of Bob"
+        assert rows[w.a] is not None
 
     async def test_a_decision_that_is_not_a_person_ask_is_not_withdrawn(self, w):
         from tests.unit.test_decisions import _ask

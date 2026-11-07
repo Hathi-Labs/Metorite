@@ -753,9 +753,13 @@ async def withdraw_ask(db: Any, user: UserContext, ask_id: str) -> tuple[dict[st
             "WHERE id = (SELECT n.id FROM pm_notifications n"
             " WHERE n.recipient = :who AND n.kind = 'decision' AND n.read_at IS NULL"
             " AND n.task_id = CAST(:tid AS uuid) AND n.excerpt IS NOT DISTINCT FROM :ex"
+            " AND lower(n.actor) = :me"
             " ORDER BY n.created_at, n.id LIMIT 1)"
         ),
-        {"who": str(done.decider), "tid": str(done.subject_id), "ex": done.question},
+        {
+            "who": str(done.decider), "tid": str(done.subject_id),
+            "ex": done.question, "me": me,
+        },
     )
     return _wire(done), str(done.decider)
 
