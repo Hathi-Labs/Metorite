@@ -6,8 +6,9 @@ against the code on 2026-10-29, at `origin/main` `0988e0de9`. The highest
 migration on main is 315.
 
 **Built.** KG-1 (`585046f02`), KG-2 (`ccdf3c109`, dark, backfill open) and
-KG-3a (`a373b0152`, migration 314) are merged. KG-3b and KG-4 to KG-14 are
-not built. §9 holds the state of each slice.
+KG-3a (`a373b0152`, migration 314) are merged. KG-4 is built dark on its
+branch (migration 355, 2026-11-05). KG-3b and KG-5 to KG-14 are not built.
+§9 holds the state of each slice.
 
 **Read first.** `work_plan.md` D105, D106, D112, D128 and D132.
 `knowledge_base.md` §20 owns the read seam. `company_context.md` owns the
@@ -129,9 +130,15 @@ migration (R6). It takes the next free number at build time (R1).
 
 **Indexes after KG-4.** A partial unique index on (`organization_id`,
 `source_kind`, `source_id`, `relation`, `target_kind`, `target_id`) WHERE
-`page_id IS NULL` makes a second sweep write nothing. An index on
-(`organization_id`, `source_kind`, `source_id`) serves the neighbour read.
-`idx_kb_links_target` serves the other direction.
+`page_id IS NULL` makes a second sweep write nothing. Its name is
+`kb_links_graph_key`. Its first three columns serve the neighbour read, so
+migration 355 makes no second index on them. `idx_kb_links_target` serves
+the other direction.
+
+**Shape rules as built (migration 355).** A CHECK makes a row with no
+`page_id` name its source, relation, provenance and confidence. A second
+CHECK lets only a row with no `page_id` carry `removed_at`. A third CHECK
+holds `source_kind` to the node kinds of §3.1.
 
 **Why `page_id` stays NULL on a graph row.** Three reads key on `page_id`:
 `backlinks.py`, `core.read_links` and `proposal_expiry.py`. A graph row
@@ -173,7 +180,7 @@ evidence (§4.3).
 | `deal_company` | `deal` → `company` | `crm_deals.company_id` | KG-4 | EXTRACTED |
 | `contact_company` | `contact` → `company` | `crm_contacts.company_id` | KG-4 | EXTRACTED |
 | `activity_on` | `deal`, `contact` or `company` → the other records that one activity names | `crm_activities` (`deal_id`, `contact_id`, `company_id`) | KG-4 | EXTRACTED |
-| `origin` | `task` → `email` or `whatsapp` | `pm_tasks.origin` (migration 211) | KG-4 | EXTRACTED |
+| `origin` | `task` → `email` or `whatsapp` | `pm_tasks.origin` (migration 211). An email origin holds the row id in `email_id`. A WhatsApp origin holds no row id, so KG-4 finds the `wa_messages` row by `chat_id` and `wa_message_id` | KG-4 | EXTRACTED |
 | `task_link` | `task` → `task` | `pm_task_links` (migration 146: `source_task_id`, `target_task_id`, `link_type`). `organization_id` is NOT NULL with FORCE RLS since migration 161 | KG-4 | EXTRACTED |
 | `attendee` | `meeting` → `person` | KG-4: an id of `meeting.attendee_ids` that is a row of `people`. KG-5: an exact match on the addresses of `meeting.attendees` (migration 99) | KG-4, KG-5 | EXTRACTED, or AMBIGUOUS |
 | `participant` | `email` or `whatsapp` → `person` or `contact` | An exact address or phone match. No email or WhatsApp table holds a person or contact id | KG-5 | EXTRACTED, or AMBIGUOUS with two candidates |
@@ -378,7 +385,7 @@ here in the same pull request (R4).
 | **KG-2** (task 787) | ✅ BUILT 2026-10-29, `ccdf3c109`, dark. The backfill and its cost are open | Email embeddings through the embed door, and `scripts/backfill_email_embeddings.py`. `company_context.md` §12 holds the as-built record | No embed call outside `embed.py`. Both orgs hold vectors. The cost is a comment on task 787 | `test_no_embed_outside_door.py`, `test_email_embeddings_backfill_r8.py` | `uv run pytest tests/unit/test_no_embed_outside_door.py -q` | HIGH · The backfill and `email_semantic_search_enabled`: **OWNER-GATE** (approved 2026-10-29) |
 | **KG-3a** (task 788) | ✅ BUILT 2026-10-28, `a373b0152`, migration 314 | Email search under FORCE RLS, a stored tsvector. The backfill ran (task 920) | The email source answers inside its 1.5 s | `test_email_fts_column_r8.py` | `uv run pytest tests/unit/test_email_fts_column_r8.py -p no:xdist -rs -q` | HIGH · AGENT-SAFE |
 | **KG-3b** (task 788) | Open. After the KG-2 backfill | Hybrid search for each source with vectors, email first. One global sort by the CX-1 score (reciprocal rank fusion, k = 60) in place of `_interleave`, behind `CONTEXT_RECENCY`. A cache of the query embedding for the turn. The `--fixture` verdict gains the p50 and p95 limits of §7.3 | The eval runs with `CONTEXT_RECENCY` off and on, and the pull request writes both. A paraphrase of an email subject finds the mail. With the flag off, the output is byte-identical | `test_company_search_fusion.py` (new), `test_search_company_eval.py` | `uv run pytest tests/unit/test_company_search_fusion.py tests/unit/test_search_company_eval.py -q` | STANDARD · AGENT-SAFE to build. The embed spend: **OWNER-GATE** |
-| **KG-4** (task 789) | Open. Next | The expand migration of §3.2. The sweep of §4.1 that writes the KG-4 relations as EXTRACTED, with no model. The edge read and the removal of §4.4 in `gateway/kb_entities/graph.py`. Behind `GRAPH_SWEEP_ORGS`. `participant` moved to KG-5, because no stored id names a participant | R8: each KG-4 relation appears on a seeded org. Org B reads and writes no edge of org A. A second sweep writes 0 rows. A removed edge stays removed after a sweep. The page-link reads give the same answer as before | `test_kg_links_r8.py` (new). `test_kg_links_writer.py` (new): one writer for each form, no graph row with `page_id`, every relation names its evidence end, no write of a relation outside `RELATIONS`, and `RELATIONS` equals the pinned list of §4.1. `test_tenant_coverage.py`, `test_kb_backlinks_r8.py` | `uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py tests/unit/test_kb_backlinks_r8.py -p no:xdist -rs -q` | HIGH (migration, RLS) · AGENT-SAFE |
+| **KG-4** (task 789) | Built dark 2026-11-05, migration 355, branch `kg4-structural-edges-mt-2a446b84`. Not merged. The sweep is the job kind `graph.sweep`, seeded once a night (Q4) by a `worker.seed_hooks` hook. It needs `JOB_QUEUE` and `GRAPH_SWEEP_ORGS` | The expand migration of §3.2. The sweep of §4.1 that writes the KG-4 relations as EXTRACTED, with no model. The edge read and the removal of §4.4 in `gateway/kb_entities/graph.py`. Behind `GRAPH_SWEEP_ORGS`. `participant` moved to KG-5, because no stored id names a participant | R8: each KG-4 relation appears on a seeded org. Org B reads and writes no edge of org A. A second sweep writes 0 rows. A removed edge stays removed after a sweep. The page-link reads give the same answer as before | `test_kg_links_r8.py` (new). `test_kg_links_writer.py` (new): one writer for each form, no graph row with `page_id`, every relation names its evidence end, no write of a relation outside `RELATIONS`, and `RELATIONS` equals the pinned list of §4.1. `test_tenant_coverage.py`, `test_kb_backlinks_r8.py` | `uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py tests/unit/test_kb_backlinks_r8.py -p no:xdist -rs -q` | HIGH (migration, RLS) · AGENT-SAFE |
 | **KG-5** (task 790) | Open. After KG-4 | Exact identifiers to records, with no model: an address or a phone to a person or a contact, a domain to a company. Aliases through the registry. AMBIGUOUS rows for two candidates | R8 covers the exact case, the ambiguous case and the free-mail case. The eval improves on the person and company questions | `test_kg_resolve_r8.py` (new), `test_kc_entities.py` | `uv run pytest tests/unit/test_kg_resolve_r8.py tests/unit/test_kc_entities.py -p no:xdist -rs -q` | HIGH (tenancy, identity) · AGENT-SAFE |
 | **KG-6** (task 791) | Open. After KG-3b and KG-4 | The graph step of §5, `Source.open` for each source (§6), the budget and the time of §7. Behind `GRAPH_SEARCH_ORGS`. The graph output never goes through `routes/knowledge/core.read_links`, because that read checks visibility for page targets only | A private task, another member's email, a CRM record without CRM access, a page in a closed space and a project outside a `group:<slug>` grant never appear as neighbours. The eval shows the gain, and p95 stays under 3 s. With the flag off, the output is byte-identical | `test_kg_neighbours_r8.py` (new), `test_company_search_graph.py` (new: the budget, the cap, the order, the flag off), `test_company_search_sources.py` | `uv run pytest tests/unit/test_company_search_graph.py tests/unit/test_company_search_sources.py tests/unit/test_kg_neighbours_r8.py -p no:xdist -rs -q` | HIGH (visibility) · AGENT-SAFE |
 | **KG-7** (task 792) | Open. After KG-6 | `get_entity`: a name or a citation in, one entity with its aliases and its neighbours across apps out, each item a link. It reuses the KG-6 read and budget. It joins the core tool pack. No model | On staging, Mira answers "what is going on with <customer>" with one tool call. The eval holds 10 such questions | `test_get_entity_tool.py` (new): no model call, a refusal with no member, the KG-6 visibility | `uv run pytest tests/unit/test_get_entity_tool.py tests/unit/test_kg_neighbours_r8.py -p no:xdist -rs -q` | STANDARD · AGENT-SAFE |
@@ -418,6 +425,12 @@ uv run python -m evals.search_company.run --fixture
 
 Each slice adds its own line from §9.
 
+```bash
+# KG-4
+uv run pytest tests/unit/test_kg_links_writer.py tests/unit/test_kg_links_r8.py \
+  tests/unit/test_kb_backlinks_r8.py tests/unit/test_tenant_coverage.py -p no:xdist -rs -q
+```
+
 ---
 
 ## 11. Open questions — each with a recommended default
@@ -442,6 +455,11 @@ the owner or a decision gives one. Build to the default.
   visibility check.** Its comment says "The other kinds are listed as they
   are." No writer of those kinds exists today, so nothing leaks. A graph row
   keeps `page_id` NULL, so it never reaches that read (§3.2).
+- **KG-4 does not delete a stale edge.** When a contact moves to another
+  company, the old `contact_company` row stays. KG-6 opens each end through
+  its app, so the row shows no hidden record. A later slice must decide
+  whether the sweep deletes an EXTRACTED row whose source no longer holds
+  the id. Found at KG-4, 2026-11-05.
 - **The KG rows of `company_context.md` §12** are the as-built record of
   KG-1, KG-2 and KG-3a. From today this spec owns every KG slice, and the
   KG-3b row there points here.

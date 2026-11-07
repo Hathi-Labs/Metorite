@@ -4055,7 +4055,9 @@ The first production run PASSED on 2026-09-29, all four steps, on
 ### 21.13 H-201 — the other readers bind the tenant
 
 **Status: BUILT 2026-09-30, part 1 of H-201, with fix rounds 1 and 2. The
-observability, debug, skills and plugin rows BUILT 2026-11-05 (task 612).** This part binds the readers
+observability, debug, skills and plugin rows BUILT 2026-11-05 (task 612).
+The expand half of the `agent_avatars` key BUILT 2026-11-07 (H-201d, task
+1719, migration 354). The contract half is OPEN (HANDOFF H-443).** This part binds the readers
 that are nearest to chat. It also adds the room check on the answer path.
 H-201 in `HANDOFF.md` lists the work that is still open.
 
@@ -4076,9 +4078,29 @@ policy on each table below.
 | `routes/integrations.py` `GET /plugins`, `DELETE /plugins/{id}` | `plugins` | a request | `current_tenant()` | bound 2026-11-05 |
 
 With no tenant, each 2026-11-05 reader gives an empty answer, and a debug get
-or flag gives 404. An avatar write gives 403, and a plugin delete gives 404. `agent_avatars` keeps the key
-`agent_name` alone, so org B cannot save a name that org A holds. Task 1719
-owns that key.
+or flag gives 404. An avatar write gives 403, and a plugin delete gives 404.
+
+**The `agent_avatars` key (H-201d, task 1719).** Migration 64 made
+`agent_name` alone the primary key, so org B cannot save a name that org A
+holds. The fix is an expand/contract pair (R6), because the deploy applies
+migrations before it restarts the services.
+
+1. **Expand, migration 354 (built).** It adds the unique index
+   `uq_agent_avatars_org_agent` on `(organization_id, agent_name)` and keeps
+   the old key. `_save_avatar` names the new index in `ON CONFLICT`. A
+   same-org save updates the row. A save of a name that another org holds
+   still fails, on `agent_avatars_pkey`, and never reaches the other row.
+2. **Contract, a later release (open, HANDOFF H-443).** It drops
+   `agent_avatars_pkey`. Then each org keeps its own avatar for one name.
+   It cannot ship with 354. The old gateway runs on the new schema until the
+   restart, and its `ON CONFLICT (agent_name)` needs a unique rule on
+   exactly `(agent_name)`.
+
+Production holds no row with a NULL `organization_id`, because tenancy
+phase 3 sets the column NOT NULL. A unique index treats each NULL as
+distinct, so on a database without the tenancy phases it does not constrain
+a NULL row. `tests/unit/test_agent_avatars_key_per_tenant_r8.py` proves both
+states as the app role under FORCE RLS.
 
 **The rules.**
 
@@ -6717,11 +6739,10 @@ The node suite holds its pure rule.
 
 ## 30. An image from the chat goes onto a task, and the agent sees it (2026-11-07)
 
-**Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 and IMG-2
-are AGENT-SAFE. IMG-3 is AGENT-SAFE, since the owner answer of 2026-11-07.
-IMG-4 needs an audit before a build. No migration.
-
-IMG-2 is BUILT on branch `mt-0595dfe1-img2` (2026-11-07), not yet merged.
+**Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 is BUILT and
+merged (cb38e1473). IMG-2 (`mt-0595dfe1-img2`) and IMG-3 (`mt-2d62220d-img3`)
+are BUILT 2026-11-07, and each one merges after its checks. IMG-4 needs an
+audit before a build. No migration.
 
 ### 30.1 The request
 
@@ -6805,6 +6826,30 @@ the MCP still waits (task 413).
 **IMG-1 (task 1998). The composer shows a chip, and takes paste and drop.**
 STANDARD. Frontend only.
 
+✅ built 2026-11-07, branch `mt-10bf2e89-img1`.
+
+**Built.** The build differs from the plan in seven ways.
+1. The composer state is a pure reducer in `lib/chatAttachments.ts`. The hook
+   `hooks/useChatAttachments.ts` runs the uploads. The vitest rig has no DOM,
+   so `chatAttachments.test.ts` drives the reducer, and the browser half was
+   driven by hand. No `e2e/chat-attach-chip.spec.ts` exists, because that rig
+   stubs every route of the shell.
+2. A failed chip blocks Send until the member retries or removes it. The plan
+   did not say. A silent drop of a file is worse.
+3. `FileUploadButton` has a new `onPick` prop. The Files drawer drop zone
+   keeps its old upload.
+4. `wordsOfMessage` (beside `parseUploadNote`) gives the thread title and the
+   Copy action the words only. Edit opens the words, and the files come back
+   as ready chips with a remove control (`editStart`). A save sends the words
+   and the note of the kept files. A note that does not parse edits as raw
+   text. Chat search reads the saved text on the server, so it can show the
+   raw note. That is not changed here.
+5. A paste that carries text stays text, so a copy from a page does not
+   attach its picture.
+6. The send trims the member's words before the note.
+7. A backtick in a file name becomes an apostrophe before the upload. An
+   upload keeps the thread that was open when the file was attached.
+
 - **Files:** `components/AgentChat.tsx` (composer and message bubble),
   `components/FileUploadButton.tsx`, `lib/chatUpload.ts`, and a new
   `components/ChatAttachmentChips.tsx`.
@@ -6885,7 +6930,11 @@ STANDARD. Frontend only.
 
 **IMG-3 (task 1999). The MCP gives an image on a task to the agent.** HIGH,
 because file bytes leave the platform for an outside agent. Spec audit and
-the Opus reviewer. **Gate:** cleared. The owner answered the transport
+the Opus reviewer. **BUILT 2026-11-07** on branch `mt-2d62220d-img3`, with the
+R8 cases in `test_mcp_edge_attachment_r8.py`. On a write connection, the image
+sentence of the instructions sits after the cut at 4096 characters. So Claude
+Code reads that rule from the `get_task_context` description and from the
+`work_on_task` prompt. **Gate:** cleared. The owner answered the transport
 question on task 1999 on 2026-11-07 (§30.3). The audit of 2026-11-07 gave GO-NARROWED on the read half
 only, after the edits below.
 

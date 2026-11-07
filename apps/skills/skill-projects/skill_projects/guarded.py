@@ -106,6 +106,7 @@ from skill_projects.writes import (
     _vocab,
     agent_assignee_refusal_as_text,
     ask_about_subtasks,
+    shared_set_line,
     status_edit_refusal,
 )
 
@@ -1429,12 +1430,16 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
 
 
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
-async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
+async def delete_status(
+    project_id: str, status: str, move_to: str = "", change_whole_set: bool = False,
+) -> str:
     """Delete a lane, moving the tasks in it to move_to (a status NAME in
     the same set) first. The card leads with how many tasks move: the count
     the statuses read returns per lane, which is the count the route acts
     on. The last lane, the last Done lane (D79) and the last lane that
-    closes a task cannot be deleted, and the tool says so before any card."""
+    closes a task cannot be deleted, and the tool says so before any card.
+    Pass change_whole_set=true only when the member asks to change a set that
+    other projects share."""
     if _many(status):
         return f"delete_status {ONE_ACT.replace('id', 'name')}"
     pid, node = await _node(project_id)
@@ -1465,7 +1470,9 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
             "or Cancelled lane first."
         )
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    refused = status_edit_refusal(owner, node.get("name"))
+    refused = status_edit_refusal(
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
+    )
     if refused:
         return refused
     in_use = int(counts.get(sid) or 0)
@@ -1481,9 +1488,13 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
         )
     where = data(target.get("name")) if target else "(none needed; the lane is empty)"
     impact = f"1 lane deleted · {_plural(in_use, 'task')} moved to {where}"
+    shared = shared_set_line(owner)
     if not await _confirm(
         title="Delete this status?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))} · {impact}",
+        detail=(
+            f"{data(row.get('name'))} in {data(node.get('name'))} · {impact}"
+            + (f" · {shared}" if shared else "")
+        ),
         context=_guard_card(
             impact,
             {"status": data(row.get("name")), "category": row.get("category"), "move to": where},

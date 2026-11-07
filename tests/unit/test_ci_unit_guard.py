@@ -125,6 +125,8 @@ def test_every_shard_runs_and_writes_a_report() -> None:
     )
     assert "--splits ${{ steps.pick.outputs.splits }}" in run
     assert "--group ${{ matrix.shard }}" in run
+    # CIV-8k: a hung test prints its stack after 900 s, so the log names the cause.
+    assert "-o faulthandler_timeout=900" in run
     assert "junit_family=xunit1" in run
     assert "--junitxml=" in run
 
@@ -365,6 +367,187 @@ def test_the_shard_step_env_names_cannot_leak_into_a_script_under_test() -> None
     assert not bad, f"generic env names leak into the scripts under test: {bad}"
 
 
+# ── CIV-4c: every R8 skip of the no-database run is in the --r8 list ──────
+#
+# deploy.yml's `test` job has no database, so each R8 suite skips there. The
+# release gate runs `affected_tests.py --r8` against two real databases. A
+# file that skips for an R8 reason and is not in that list runs nowhere.
+
+_LADDER = "TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres with the ladder"
+_CONSOLE = "CUSTOMER_CONSOLE_DATABASE_URL unset — R8 requires a REAL Postgres. "
+
+
+def _case(file: str, name: str, skip: str | None = None, collection: bool = False) -> str:
+    if skip is None:
+        inner = ""
+    elif collection:
+        inner = f'<skipped message="collection skipped">{file}:3: Skipped: {skip}</skipped>'
+    else:
+        inner = f'<skipped type="pytest.skip" message="{skip}">{file}:9: {skip}</skipped>'
+    klass = file[: -len(".py")].replace("/", ".")
+    return f'<testcase classname="{klass}" file="{file}" name="{name}" time="0.1">{inner}</testcase>'
+
+
+def _junit(tmp_path: Path, *cases: str) -> Path:
+    out = tmp_path / "junit"
+    out.mkdir(exist_ok=True)
+    body = "".join(cases)
+    (out / "test.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" '
+        f'tests="{len(cases)}">{body}</testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    return out
+
+
+def _list(tmp_path: Path, *paths: str) -> Path:
+    f = tmp_path / "r8_files.txt"
+    f.write_text("".join(f"{p}\n" for p in paths), encoding="utf-8")
+    return f
+
+
+A = "tests/unit/test_a_r8.py"
+B = "tests/unit/test_b.py"
+
+
+def test_r8_covered_fails_for_an_r8_skip_outside_the_list(tmp_path: Path) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_y", _CONSOLE))
+    problems = guard.r8_covered(junit, _list(tmp_path, A))
+    assert len(problems) == 1, problems
+    assert B in problems[0] and "--r8" in problems[0]
+
+
+def test_r8_covered_passes_when_every_r8_skip_is_listed(tmp_path: Path, capsys) -> None:
+    junit = _junit(
+        tmp_path,
+        _case(A, "test_x", _LADDER),
+        _case(A, "test_x2", _LADDER),
+        _case(B, "test_y", _CONSOLE),
+        _case("tests/unit/test_c.py", "test_runs"),
+    )
+    assert guard.r8_covered(junit, _list(tmp_path, A, B)) == []
+    assert "R8 skips checked: 2 files, all in the --r8 list" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "AGENT_WRITES_REDIS_URL or TENANT_LADDER_DATABASE_URL unset — no Redis",
+        "AGENT_WRITES_REDIS_URL or TENANT_LADDER_DATABASE_URL unset — this class "
+        "runs the nonce and the cap on a REAL Redis 7.",
+        "Windows only",
+        "requires docker",
+        "gateway not installed",
+    ],
+)
+def test_r8_covered_ignores_a_skip_of_another_reason(tmp_path: Path, reason: str) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_y", reason))
+    assert guard.r8_covered(junit, _list(tmp_path, A)) == []
+
+
+def test_r8_covered_counts_a_module_skipped_at_collection(tmp_path: Path) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_b", _CONSOLE, True))
+    problems = guard.r8_covered(junit, _list(tmp_path, A))
+    assert len(problems) == 1 and B in problems[0], problems
+
+
+def test_r8_covered_reads_a_real_collection_skip(tmp_path: Path) -> None:
+    """The report of a real pytest run, so a change in pytest's format shows here."""
+    junit = _report(tmp_path, _MODULE_SKIP, "test_gated.py")
+    assert any("test_gated.py" in p for p in guard.r8_covered(junit, _list(tmp_path, "other.py")))
+    assert guard.r8_covered(junit, _list(tmp_path, "test_gated.py")) == []
+
+
+_TEST_SKIP = """
+import pytest
+
+
+def test_needs_the_database():
+    pytest.skip("TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres")
+"""
+
+
+def test_r8_covered_reads_a_real_test_skip(tmp_path: Path) -> None:
+    """CIV-4c review P2. A skip inside a test, written by a real pytest run: if
+    pytest changed the `message` of a normal skip, the guard would read nothing
+    and pass with 0 files. Here that shows as a red test."""
+    junit = _report(tmp_path, _TEST_SKIP, "test_needs_db.py")
+    assert any("test_needs_db.py" in p for p in guard.r8_covered(junit, _list(tmp_path, "other.py")))
+    assert guard.r8_covered(junit, _list(tmp_path, "test_needs_db.py")) == []
+
+
+def test_r8_covered_names_the_module_that_collects_an_inherited_gated_class(tmp_path: Path) -> None:
+    """CIV-4c verifier. `test_reuse.py` subclasses a gated class of
+    `test_base.py`. JUnit `file` says test_base.py, `classname` says
+    test_reuse. With only test_base.py in the list, test_reuse.py runs nowhere
+    and the guard must say so."""
+    (tmp_path / "test_base.py").write_text(
+        "import pytest\n\n\nclass TestBaseR8:\n    def test_it(self):\n"
+        "        pytest.skip('TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres')\n",
+        encoding="utf-8",
+    )
+    junit = _report(
+        tmp_path, "from test_base import TestBaseR8\n\n\nclass TestReuse(TestBaseR8):\n    pass\n",
+        "test_reuse.py",
+    )
+    only_base = guard.r8_covered(junit, _list(tmp_path, "test_base.py"))
+    assert len(only_base) == 1 and "test_reuse.py" in only_base[0], only_base
+    assert guard.r8_covered(junit, _list(tmp_path, "test_base.py", "test_reuse.py")) == []
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "TENANT_LADDER_DATABASE_URL unset",
+        "CUSTOMER_CONSOLE_DATABASE_URL unset",
+        "TENANT_LADDER_DATABASE_URL unset — R8 needs a real Postgres",
+        "TENANT_LADDER_DATABASE_URL unset - R8 needs Postgres",
+        "TENANT_LADDER_DATABASE_URL unset. ⚠️ This suite is the ONLY one that",
+        "TENANT_LADDER_DATABASE_URL unset or CUSTOMER_CONSOLE_DATABASE_URL unset",
+        "R8 requires a REAL Postgres; set CUSTOMER_CONSOLE_DATABASE_URL",
+        "R8: set TENANT_LADDER_DATABASE_URL (scripts/dev_db.sh)",
+        "R8 needs TENANT_LADDER_DATABASE_URL",
+        "R8 requires a REAL Postgres.",
+    ],
+)
+def test_r8_covered_knows_each_r8_reason_of_the_repo(tmp_path: Path, reason: str) -> None:
+    assert guard.is_r8_reason(reason), reason
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_y", reason))
+    assert len(guard.r8_covered(junit, _list(tmp_path, A))) == 1
+
+
+def test_r8_covered_fails_closed_on_no_report(tmp_path: Path) -> None:
+    listed = _list(tmp_path, A)
+    (tmp_path / "empty").mkdir()
+    assert guard.r8_covered(tmp_path / "empty", listed)  # a directory with no report
+    assert guard.r8_covered(tmp_path / "absent", listed)  # no directory
+    zero = tmp_path / "zero"
+    zero.mkdir()
+    (zero / "test.xml").write_text(_EMPTY, encoding="utf-8")
+    assert any("no test" in p for p in guard.r8_covered(zero, listed))  # zero cases
+
+
+_EMPTY = '<?xml version="1.0"?><testsuites><testsuite name="pytest" tests="0"/></testsuites>'
+
+
+def test_r8_covered_fails_closed_on_an_empty_or_absent_list(tmp_path: Path) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER))
+    empty = tmp_path / "blank.txt"
+    empty.write_text("\n\n", encoding="utf-8")
+    assert any("empty" in p for p in guard.r8_covered(junit, empty))
+    assert guard.r8_covered(junit, tmp_path / "nothing.txt")
+
+
+def test_r8_covered_reaches_the_cli(tmp_path: Path) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_y", _CONSOLE))
+    base = [sys.executable, str(_ROOT / "scripts/ci_unit_guard.py"), "r8-covered", "--junit", str(junit)]
+    bad = subprocess.run([*base, "--list", str(_list(tmp_path, A))], capture_output=True, text=True)
+    assert bad.returncode == 1 and "::error::" in bad.stdout and B in bad.stdout, bad.stdout
+    good = subprocess.run([*base, "--list", str(_list(tmp_path, A, B))], capture_output=True, text=True)
+    assert good.returncode == 0, good.stdout + good.stderr
+    assert "R8 skips checked: 2 files" in good.stdout
+
+
 # ── CIV-17: the shard count follows the selection ──────────────────────────
 
 
@@ -408,7 +591,8 @@ def test_gate_output_never_reads_a_failure_as_an_empty_selection(tmp_path: Path)
     assert "full=true" in missing and "shards=[1,2,3,4,5,6]" in missing
 
 
-def test_the_pick_step_and_the_changes_job_agree_on_the_count() -> None:
+def test_the_pick_step_and_the_changes_job_agree_on_the_count(monkeypatch) -> None:
+    monkeypatch.setattr(guard, "file_seconds", lambda *a, **k: None)  # the tiers by file count
     for n in (1, 40, 41, 120, 121, 300):
         paths = [f"tests/unit/test_{i}.py" for i in range(n)]
         mode, picked = guard.select_shard("false", " ".join(paths), "", "success")
@@ -443,3 +627,55 @@ def test_no_job_skips_on_a_draft() -> None:
     assert "pull_request.draft" not in text
     on = yaml.safe_load(text)[True]
     assert "types" not in (on["pull_request"] or {})
+
+
+# ── CIV-17b: the shard count follows measured seconds ──────────────────────
+
+
+def test_shard_count_by_seconds() -> None:
+    sec = {"tests/unit/test_a.py": 300.0, "tests/unit/test_b.py": 301.0, "tests/unit/test_big.py": 5000.0}
+    a, b, big = sec
+    assert guard.shard_count("selection", [a], sec) == 1
+    assert guard.shard_count("selection", [a, b], sec) == 2  # 601 s: one shard holds 600 s
+    assert guard.shard_count("selection", [big], sec) == guard.ALL_SHARDS  # capped
+    # a file with no timing counts DEFAULT_FILE_S (a new test)
+    new = [f"tests/unit/test_new_{i}.py" for i in range(61)]
+    assert guard.shard_count("selection", new, sec) == 2  # 610 s
+    assert guard.shard_count("empty", [], sec) == 0
+    assert guard.shard_count("full", [], sec) == guard.ALL_SHARDS
+
+
+def test_without_timings_the_tiers_by_file_count_still_apply() -> None:
+    few = [f"tests/unit/test_{i}.py" for i in range(41)]
+    assert guard.shard_count("selection", few, None) == 3
+    assert guard.shard_count("selection", few, {}) == 3
+
+
+def test_file_seconds_reads_pytest_splits_format_and_fails_to_none(tmp_path: Path) -> None:
+    f = tmp_path / ".test_durations"
+    f.write_text(json.dumps({"tests/unit/test_a.py::t1": 1.5, "tests/unit/test_a.py::t2": 2.0,
+                             "tests/unit/test_b.py::T::t": 3}), encoding="utf-8")
+    assert guard.file_seconds(f) == {"tests/unit/test_a.py": 3.5, "tests/unit/test_b.py": 3.0}
+    f.write_text("not json", encoding="utf-8")
+    assert guard.file_seconds(f) is None
+    assert guard.file_seconds(tmp_path / "missing") is None
+    f.write_text("{}", encoding="utf-8")
+    assert guard.file_seconds(f) is None
+
+
+def test_gate_output_uses_the_timings_and_agrees_with_the_pick_step(tmp_path: Path, monkeypatch) -> None:
+    durations = tmp_path / ".test_durations"
+    durations.write_text(json.dumps({"tests/unit/test_a.py::t": 700.0, "tests/unit/test_b.py::t": 100.0}),
+                         encoding="utf-8")
+    monkeypatch.setattr(guard, "DURATIONS_PATH", durations)
+    gate = tmp_path / "gate.json"
+    gate.write_text(json.dumps({"full": False, "files": ["tests/unit/test_a.py", "tests/unit/test_b.py"]}),
+                    encoding="utf-8")
+    out = dict(x.split("=", 1) for x in guard.gate_output(gate))
+    assert out["shards"] == "[1,2]"  # 800 s
+    mode, paths = guard.select_shard("false", out["files"], "", "success")
+    assert guard.shard_count(mode, paths, guard.file_seconds()) == 2
+    # a docs-only PR still starts no shard, and a failed result still starts all six
+    gate.write_text(json.dumps({"full": False, "files": []}), encoding="utf-8")
+    assert dict(x.split("=", 1) for x in guard.gate_output(gate))["shards"] == "[]"
+    assert dict(x.split("=", 1) for x in guard.gate_output(tmp_path / "absent.json"))["shards"] == "[1,2,3,4,5,6]"

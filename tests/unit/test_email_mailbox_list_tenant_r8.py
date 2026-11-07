@@ -34,6 +34,18 @@ binds org B.
 * (e) Each H-334c read, bound to org B, keeps the org A mailbox out.
 * (f) Fail closed: with no tenant bound, each self read is empty.
 
+H-334d (task 1990) moves the tenant predicate into the shared FROM clause
+``_member_mailboxes_from``. Before, the pair set read that clause with a
+column anchor and named no bound tenant. A second seed member owns TWO
+paired mailboxes in org A and two in org B, so each mailbox has a pair:
+
+* (g) ``PAIRED_MAILBOX_IDS_SQL``, ``ALSO_IN_SQL``, ``also_in_by_message``
+  and ``draft_skip_in_pair``, bound to org B, give no pair of an org A
+  mailbox. The org B pair still reads.
+* (h) Fail closed: with no tenant bound, the pair reads give no row.
+* (i) Non-vacuity: bound to org A, the org A pair reads. Bound to org B, the
+  pair clause less its tenant predicate reads the org A pair too.
+
 (a) and (b) run with ``EMAIL_SHARED_MAILBOX`` off and on.
 
 R7: drop the predicate from one read, and its test fails.
@@ -65,6 +77,7 @@ from tests.unit.test_email_keep_separate import (  # noqa: F401
     _DB_GATE,
     _account,
     _address,
+    _mail,
     promoted,
 )
 from tests.unit.test_feed_task_kinds_r8 import _as_owner
@@ -72,6 +85,10 @@ from tests.unit.test_feed_task_kinds_r8 import _as_owner
 pytestmark = _DB_GATE
 
 OWNER = f"h334b-owner-{uuid.uuid4().hex[:8]}@h334b.test"
+#: The H-334d member: two paired mailboxes in each org.
+PAIR_OWNER = f"h334d-owner-{uuid.uuid4().hex[:8]}@h334d.test"
+#: The tenant predicate of the shared FROM clause (H-334c, H-334d).
+_BOUND = f" AND a.organization_id = {mailbox_access._bound_org()}"
 
 
 def _member(email: str) -> UserContext:
@@ -200,8 +217,140 @@ class TestTheListReadsNameTheTenant:
             from gateway.routes.email.automation.identity import (
                 _member_mailboxes_from,
             )
+            clause = _member_mailboxes_from(":aid")
+            assert _BOUND in clause
             alien = (await db.execute(text(
-                "SELECT o.id::text AS id " + _member_mailboxes_from(":aid")),
+                "SELECT o.id::text AS id " + clause.replace(_BOUND, "")),
                 {"aid": boxes["box_a"]})).fetchall()
         assert {r.id for r in rows} == {boxes["box_a"], boxes["box_b"]}
         assert [r.id for r in alien] == [boxes["box_a"]]
+
+
+# ── H-334d: the pair set names the bound tenant ────────────────────────────
+
+_SENDER = "peer@h334d-outside.test"
+
+
+def _pair_side(admin, org: str) -> dict[str, str]:
+    """Two paired mailboxes of PAIR_OWNER in ``org``. The mail ``m`` in the
+    first has a copy in the second, and the thread of the copy holds a newer
+    Sent mail. So ``m`` is "also in" the second, and its draft is answered."""
+    first = _account(admin, org=org, owner=PAIR_OWNER)
+    second = _account(admin, org=org, owner=PAIR_OWNER)
+    imid = f"<h334d-{uuid.uuid4().hex[:10]}@outside.test>"
+    m = _mail(admin, org=org, account_id=first, sender=_SENDER,
+              message_id=imid, minutes_ago=30)
+    _mail(admin, org=org, account_id=second, sender=_SENDER,
+          message_id=imid, thread="h334d-thread", minutes_ago=30)
+    _mail(admin, org=org, account_id=second, sender=PAIR_OWNER,
+          folder="sent", thread="h334d-thread", minutes_ago=5)
+    return {"first": first, "second": second, "mail": m}
+
+
+@pytest.fixture(scope="module")
+def pairs(promoted):  # noqa: F811
+    p = promoted
+    return {"a": _pair_side(p.admin_engine, p.org_a),
+            "b": _pair_side(p.admin_engine, p.org_b)}
+
+
+def _pair_ids(rows) -> list[str]:
+    return sorted(str(r.id) for r in rows)
+
+
+class TestThePairSetNamesTheTenant:
+    async def test_paired_mailbox_ids_sql_names_the_tenant(
+        self, promoted, pairs,  # noqa: F811
+    ):
+        from acb_common.db import tenant_session
+        from gateway.routes.email.automation.identity import PAIRED_MAILBOX_IDS_SQL
+
+        async with _as_owner(promoted, promoted.org_b), tenant_session() as db:
+            other = (await db.execute(text(PAIRED_MAILBOX_IDS_SQL),
+                                      {"aid": pairs["a"]["first"]})).fetchall()
+            this = (await db.execute(text(PAIRED_MAILBOX_IDS_SQL),
+                                     {"aid": pairs["b"]["first"]})).fetchall()
+        assert other == []
+        assert _pair_ids(this) == [pairs["b"]["second"]]
+
+    async def test_also_in_names_the_tenant(self, promoted, pairs):  # noqa: F811
+        """``ALSO_IN_SQL`` reads the pair set with the column anchor
+        ``m.account_id``: the read of a page of mail."""
+        from acb_common.db import tenant_session
+        from gateway.routes.email.automation.identity import also_in_by_message
+
+        mails = [pairs["a"]["mail"], pairs["b"]["mail"]]
+        async with _as_owner(promoted, promoted.org_b), tenant_session() as db:
+            got = await also_in_by_message(db, mails, PAIR_OWNER)
+        assert got == {pairs["b"]["mail"]: [pairs["b"]["second"]]}
+
+    async def test_the_draft_dedupe_names_the_tenant(
+        self, promoted, pairs,  # noqa: F811
+    ):
+        from acb_common.db import tenant_session
+        from gateway.routes.email.automation.identity import draft_skip_in_pair
+
+        a, b = pairs["a"], pairs["b"]
+        async with _as_owner(promoted, promoted.org_b), tenant_session() as db:
+            assert await draft_skip_in_pair(db, a["first"], a["mail"]) is None
+        async with _as_owner(promoted, promoted.org_b), tenant_session() as db:
+            assert await draft_skip_in_pair(db, b["first"], b["mail"]) == "answered"
+
+    async def test_each_org_reads_its_own_pair(self, promoted, pairs):  # noqa: F811
+        """Non-vacuity: bound to org A, the org A pair reads. So the seed
+        pairs, and the empty reads above prove the predicate."""
+        from acb_common.db import tenant_session
+        from gateway.routes.email.automation.identity import (
+            PAIRED_MAILBOX_IDS_SQL,
+            also_in_by_message,
+            draft_skip_in_pair,
+        )
+
+        a = pairs["a"]
+        async with _as_owner(promoted, promoted.org_a), tenant_session() as db:
+            ids = (await db.execute(text(PAIRED_MAILBOX_IDS_SQL),
+                                    {"aid": a["first"]})).fetchall()
+            got = await also_in_by_message(db, [a["mail"]], PAIR_OWNER)
+        assert _pair_ids(ids) == [a["second"]]
+        assert got == {a["mail"]: [a["second"]]}
+        async with _as_owner(promoted, promoted.org_a), tenant_session() as db:
+            assert await draft_skip_in_pair(db, a["first"], a["mail"]) == "answered"
+
+    async def test_the_pair_clause_less_the_tenant_reads_the_other_org(
+        self, promoted, pairs,  # noqa: F811
+    ):
+        """Non-vacuity: bound to org B, the pair clause less its tenant
+        predicate reads the org A pair. Only the predicate keeps it out."""
+        from acb_common.db import tenant_session
+        from gateway.routes.email.automation.identity import PAIRED_MAILBOX_IDS_SQL
+
+        assert _BOUND in PAIRED_MAILBOX_IDS_SQL
+        async with _as_owner(promoted, promoted.org_b), tenant_session() as db:
+            rows = (await db.execute(
+                text(PAIRED_MAILBOX_IDS_SQL.replace(_BOUND, "")),
+                {"aid": pairs["a"]["first"]})).fetchall()
+        assert _pair_ids(rows) == [pairs["a"]["second"]]
+
+    def test_an_unbound_session_reads_no_pair_row(
+        self, promoted, pairs,  # noqa: F811
+    ):
+        """Fail closed: with no ``app.tenant_id``, the pair reads are empty
+        for the role that bypasses RLS."""
+        from gateway.routes.email.automation.identity import (
+            _DRAFT_LOCK_SQL,
+            ALSO_IN_SQL,
+            NOT_A_COPY_FOLDERS,
+            PAIRED_MAILBOX_IDS_SQL,
+        )
+
+        with promoted.admin_engine.connect() as c:
+            for side in ("a", "b"):
+                s = pairs[side]
+                assert c.execute(text(PAIRED_MAILBOX_IDS_SQL),
+                                 {"aid": s["first"]}).fetchall() == []
+                assert c.execute(text(ALSO_IN_SQL), {
+                    "ids": [s["mail"]], "uid": PAIR_OWNER,
+                    "not_a_copy": list(NOT_A_COPY_FOLDERS),
+                }).fetchall() == []
+                assert c.execute(text(_DRAFT_LOCK_SQL), {
+                    "aid": s["first"], "mid": s["mail"]}).fetchall() == []

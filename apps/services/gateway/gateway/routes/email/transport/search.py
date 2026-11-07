@@ -86,9 +86,9 @@ def _parse_dt(value: str | None) -> Any:
     if not value:
         return None
     try:
-        from datetime import datetime  # noqa: PLC0415
+        from datetime import datetime
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -289,7 +289,7 @@ async def search_messages(
             try:
                 from email_ingestion.email_embeddings import embed_query
                 qvec = await embed_query(text_q)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 qvec = None
             if qvec is not None:
                 params["qvec"] = "[" + ",".join(f"{x:.7f}" for x in qvec) + "]"
@@ -378,6 +378,100 @@ async def search_messages(
             "query": text_q,
             "hybrid": bool(join_sql),
         }
+
+
+# ── The vector half of company search (WS-KG KG-3b) ─────────────────────────
+
+#: The lowest cosine similarity of a vector hit. The nearest mail to a query
+#: is always there, even when it has nothing to do with it, so a floor keeps
+#: the unrelated out. A default, tuned by the eval after the KG-2 backfill.
+VECTOR_MIN_SIM = 0.30
+
+
+async def semantic_messages(
+    *, user: UserContext, words: str, k: int, received_after: str | None,
+    embed: Any,
+) -> list[dict[str, Any]]:
+    """The mail nearest in meaning to *words*, as the lexical search shapes it.
+
+    The same account scope, folder scope and date filter as
+    :func:`search_messages` with ``folder="all"``: the vector half adds no read
+    path around the gate. FORCE RLS binds both reads (the tenant session).
+
+    1. A first read asks whether any vector of this member's scope exists. With
+       none, this returns ``[]`` and *embed* is NOT called: an org that was
+       never backfilled costs no model call.
+    2. *embed* (``async (words) -> vector | None``) runs with no session open.
+       ``None`` gives ``[]``.
+    3. A second read orders by cosine distance and keeps the hits at or above
+       :data:`VECTOR_MIN_SIM`.
+    """
+    text_q = (words or "").strip()
+    if not text_q:
+        return []
+    uid = user.email or "anonymous"
+
+    async def scope(db: Any) -> tuple[str, dict[str, Any]]:
+        account_id = await resolve_account_filter(db, None, uid)
+        params: dict[str, Any] = {"uid": uid}
+        where = [_account_scope(account_id, params, pooled_only=True, level="read")]
+        folder_sql = folder_scope("all", params, include_sent=True)
+        if folder_sql:
+            where.append(folder_sql)
+        _state_filters(where, params, {"received_after": received_after})
+        return " AND ".join(where), params
+
+    async with _tenant_session() as db:
+        where_sql, params = await scope(db)
+        present = (await db.execute(text(
+            "SELECT 1 FROM email_messages em "
+            "JOIN email_embeddings ee ON ee.message_id = em.id "
+            f"WHERE {where_sql} LIMIT 1"
+        ), params)).first()
+    if present is None:
+        return []
+    qvec = await embed(text_q)
+    if qvec is None:
+        return []
+    async with _tenant_session() as db:
+        where_sql, params = await scope(db)
+        params["qvec"] = "[" + ",".join(f"{x:.7f}" for x in qvec) + "]"
+        params["limit"] = max(1, int(k))
+        rows = (await db.execute(text(
+            f"""SELECT em.id, em.provider_message_id, em.thread_id,
+                       em.account_id, em.folder, em.labels,
+                       em.from_address, em.to_addresses,
+                       em.cc_addresses, em.bcc_addresses,
+                       em.subject, '' AS body_text, NULL AS body_html,
+                       em.snippet, em.has_attachments,
+                       em.is_read, em.is_starred, em.is_flagged,
+                       em.importance, em.categories,
+                       em.received_at, em.synced_at,
+                       0.0 AS rank,
+                       1 - (ee.embedding <=> CAST(:qvec AS vector)) AS sim
+                  FROM email_messages em
+                  JOIN email_embeddings ee ON ee.message_id = em.id
+                 WHERE {where_sql}
+                 ORDER BY ee.embedding <=> CAST(:qvec AS vector)
+                 LIMIT :limit"""
+        ), params)).fetchall()
+    # The floor and the tie-break run here: a second sort key or a WHERE on the
+    # distance would stop Postgres from using the ivfflat ordering scan.
+    rows = sorted(
+        (r for r in rows if float(getattr(r, "sim", 0.0) or 0.0) >= VECTOR_MIN_SIM),
+        key=lambda r: (-float(r.sim), -(r.received_at.timestamp() if r.received_at else 0.0),
+                       str(r.id)),
+    )
+    out = []
+    for row in rows:
+        m = _row_to_message(row)
+        m.html_remote = False
+        d = m.model_dump()
+        d["rank"] = 0.0
+        d["sim"] = float(getattr(row, "sim", 0.0) or 0.0)
+        d["highlight"] = ""
+        out.append(d)
+    return out
 
 
 # ── The backfill of the stored vector (WS-KG KG-3a, migration 314) ──────────
