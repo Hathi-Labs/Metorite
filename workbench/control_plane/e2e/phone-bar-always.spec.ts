@@ -28,6 +28,18 @@ import { expect, test, type Page } from "@playwright/test";
 const DRAWER = "div.fixed.inset-0.z-\\[70\\]";
 const BAR_TABS = "[data-phone-nav-bar] nav";
 
+/**
+ * Three cases need production flags, which are inlined when the dev server
+ * starts (the pattern of `projects-my-work.spec.ts`). Start it with
+ * NEXT_PUBLIC_PROJECTS_MY_WORK=1 and NEXT_PUBLIC_PROJECTS_COMPACT_CHROME=1 in
+ * the environment of `npx playwright test e2e/phone-bar-always.spec.ts`.
+ * Without My work the Projects bar has no Capture tab. Without compact chrome
+ * the phone board draws no status strip. Each such case then skips.
+ */
+const flagOn = (name: string) => ["1", "true", "on", "yes"].includes((process.env[name] ?? "").toLowerCase());
+const MY_WORK = flagOn("NEXT_PUBLIC_PROJECTS_MY_WORK");
+const COMPACT = flagOn("NEXT_PUBLIC_PROJECTS_COMPACT_CHROME");
+
 const TREE = [
   {
     id: "p1",
@@ -155,6 +167,7 @@ test("the Projects sheet toggles on a second tap, and the Menu replaces it", asy
 });
 
 test("the selected place, the accent and an idle tab paint three different looks", async ({ page }) => {
+  test.skip(!MY_WORK, "start the server with NEXT_PUBLIC_PROJECTS_MY_WORK=1 (the Capture accent)");
   // MOB-12: a selected place, the accent and Ask once drew in one blue. The
   // paint is the claim, so this reads computed colours, not class names.
   test.setTimeout(120_000);
@@ -223,6 +236,7 @@ test("the assistant sheet ends above the bar, and Ask closes it", async ({ page 
 
 // MOB-9 fix round (task 2002): one bar-tap signal, so a hand-rolled overlay gives way.
 test("a hand-rolled overlay gives way to Ask, and the assistant sheet is the top layer", async ({ page }) => {
+  test.skip(!MY_WORK, "start the server with NEXT_PUBLIC_PROJECTS_MY_WORK=1 (the Capture tab)");
   test.setTimeout(120_000);
   await openPhone(page);
   await page.locator(`${BAR_TABS} > button`, { hasText: "Capture" }).click();
@@ -258,6 +272,7 @@ test("a second tap on Search closes it", async ({ page }) => {
 // MOB-11 (task 2004): on the phone Board, the "Manage this project" menu sat
 // under the board's sticky status strip, so a tap on Statuses hit the strip.
 test("the Board's Manage menu paints above the status strip, and Statuses opens", async ({ page }) => {
+  test.skip(!COMPACT, "start the server with NEXT_PUBLIC_PROJECTS_COMPACT_CHROME=1 (the phone board strip)");
   test.setTimeout(120_000);
   await openPhone(page);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail: "projects-views" })));
