@@ -68,6 +68,10 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
     # WS-53 CRM-Q28: the weekly CRM digest, prose a member reads on Reports.
     "apps/services/gateway/gateway/crm_sync/digest.py::_complete": (
         ("summary",), "apps/services/gateway/gateway/crm_sync/digest.py::SYSTEM"),
+    # WS-BRIEF BR-2a-2: the lead of the brief, prose a member reads. The call is
+    # in `_ask`, and `messages_for` builds the prompt with the summary voice.
+    "apps/services/gateway/gateway/brief/phrase.py::_ask": (
+        ("summary",), "apps/services/gateway/gateway/brief/phrase.py::messages_for"),
     GW + "notes/copilot.py::_craft": (("chat",), None),
     GW + "notes/copilot_agenda.py::draft_agenda": (("chat", "title"), None),
     GW + "notes/share.py::_draft": (("email",), None),

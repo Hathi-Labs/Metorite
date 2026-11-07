@@ -301,6 +301,12 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   session kind `brief.slo` once each hour and org, with the dedupe key
   `slo:<hour>`. It logs `brief.slo_missed` at error when the org is under
   99% on time over 7 days. `core_brief.md` §7 holds the rules.
+- **The fourth consumer (WS-KG KG-4, built dark).**
+  `kb_entities/graph.seed` seeds the session kind `graph.sweep` once each
+  UTC night and org, from 20:00 UTC, with the dedupe key
+  `graph_sweep:<day>`. It runs only for an org that `GRAPH_SWEEP_ORGS`
+  names. The job writes the structural edges of `knowledge_graph.md` §4.1,
+  with no model.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 

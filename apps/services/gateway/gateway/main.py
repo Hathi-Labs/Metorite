@@ -559,6 +559,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.headless_turn_jobs_skipped", error=str(exc))
     try:
+        # The graph sweep kind and its seed hook register at import (WS-KG
+        # KG-4, gateway/kb_entities/graph.py). Dark: the seed needs
+        # GRAPH_SWEEP_ORGS. Its own try, for the reason above.
+        from gateway.kb_entities import graph as _kg_graph  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.graph_jobs_skipped", error=str(exc))
+    try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
     except Exception as exc:

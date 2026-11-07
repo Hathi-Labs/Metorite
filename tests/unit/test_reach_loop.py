@@ -59,7 +59,14 @@ class FakeOutbox:
 
     def __init__(self) -> None:
         self.log_rows: dict[tuple[str, str, str, str], str] = {}
+        #: The ``rule_id`` of each log row (BR-5 slice 2b-1).
+        self.log_rules: dict[tuple[str, str, str, str], str | None] = {}
         self.rows: list[dict] = []
+        #: The member's ``block_notify`` setting (BR-5 slice 2b-2).
+        self.notify = False
+
+    async def block_notify(self, org, member):
+        return self.notify
 
     async def has_log(self, org, member):
         return any(k[0] == org and k[1] == member for k in self.log_rows)
@@ -69,7 +76,9 @@ class FakeOutbox:
 
     async def log(self, org, member, pairs, outcome, outbox_id=None):
         n = 0
-        for s, f in pairs:
+        for s, f, *rule in pairs:
+            if (org, member, s, f) not in self.log_rows:
+                self.log_rules[(org, member, s, f)] = rule[0] if rule else None
             self.log_rows.setdefault((org, member, s, f), outcome)
             n += 1
         return n
@@ -151,7 +160,7 @@ class Sent:
 def world(monkeypatch):
     fake, sent = FakeOutbox(), Sent()
     for name in ("has_log", "logged_pairs", "log", "plan", "finish", "interrupts_since",
-                 "urgent_since", "brief_planned", "full_brief_due"):
+                 "urgent_since", "brief_planned", "full_brief_due", "block_notify"):
         monkeypatch.setattr(outbox, name, getattr(fake, name))
     monkeypatch.setattr(channel, "deliver", sent)
     seed_brief(fake)
@@ -1353,6 +1362,44 @@ class TestTheMutedRules:
     async def test_dark_reads_no_mutes(self, world, monkeypatch):
         await self._run(world, monkeypatch, {"agent_asks"}, on=False)
         assert world.calls == []
+
+
+class TestTheRuleAndTheSetting:
+    """BR-5 slices 2b-1 and 2b-2: the log row of an interrupt names its rule,
+    and ``block_notify`` lets rule 3 fire."""
+
+    async def _on(self, world, monkeypatch, on: bool = True) -> None:
+        from gateway.brief import flags as brief_flags
+
+        async def no_mutes(org, member):
+            return frozenset()
+
+        monkeypatch.setattr(brief_flags, "exceptions", lambda org: on)
+        monkeypatch.setattr(outbox, "muted_rules", no_mutes)
+        assert await loop.member_pass(ORG, ME) == "baseline"
+
+    async def test_an_interrupt_logs_its_rule_id(self, world, monkeypatch):
+        await self._on(world, monkeypatch)
+        world.cards = [card("agent_asks:1", "agent_asks")]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        rules = {k[2]: v for k, v in world.outbox.log_rules.items()}
+        assert rules["agent_asks:1"] == "agent_asks"
+        # The baseline row has no rule.
+        assert {v for k, v in rules.items() if k != "agent_asks:1"} == {None}
+
+    async def test_the_setting_on_lets_a_block_soon_interrupt(self, world, monkeypatch):
+        await self._on(world, monkeypatch)
+        world.outbox.notify = True
+        world.cards = [card("tasks:b1", "block_soon", at=NOW.isoformat())]
+        assert await loop.member_pass(ORG, ME) == "interrupt:sent"
+        assert world.outbox.log_rules[(ORG, ME, "tasks:b1",
+                                       plan.reach_print(world.cards[0]))] == "block_soon_asked"
+
+    async def test_the_setting_off_holds_a_block_soon(self, world, monkeypatch):
+        await self._on(world, monkeypatch)
+        world.cards = [card("tasks:b1", "block_soon", at=NOW.isoformat())]
+        assert await loop.member_pass(ORG, ME) == "nothing"
+        assert world.sent.calls == []
 
 
 class TestTheMuteReadFailsOpen:

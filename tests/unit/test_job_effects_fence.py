@@ -45,7 +45,8 @@ _GATEWAY = _ROOT / "apps/services/gateway/gateway"
 
 #: Every module that registers a kind at import, as ``main.py`` imports them.
 _MODULES = ("gateway.jobs.worker", "gateway.brief.run", "gateway.brief.monitor",
-            "gateway.chat_summary_job", "gateway.align.check", "gateway.jobs.headless_turn")
+            "gateway.chat_summary_job", "gateway.align.check",
+            "gateway.kb_entities.graph", "gateway.jobs.headless_turn")
 
 #: The ONLY gateway modules that the brief may import (an allowlist, so a new
 #: send seam is refused until someone adds it here on purpose). ``reach.loop``

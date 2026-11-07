@@ -209,11 +209,7 @@ def _internal_token() -> str:
     from acb_common import get_settings
 
     settings = get_settings()
-    return (
-        getattr(settings, "gateway_internal_token", "")
-        or getattr(settings, "litellm_master_key", "")
-        or "sk-local"
-    )
+    return (getattr(settings, "gateway_internal_token", "") or "").strip()
 
 
 class _Refused(Exception):
@@ -2117,8 +2113,8 @@ _PKG_MAYBE_PUBLISHED = ("The publish may have worked. A second publish of the sa
 _PKG_BUSY = "Nothing was {act}. Try again."
 _PKG_UNREAD = "The package could not be read. Nothing was changed. Try again."
 _PKG_STALE = ("A save to a package needs the based_on of its stored draft. This save has none, "
-              "or an old one. Nothing was saved. Use the based_on that the last save of this "
-              "package gave.")
+              "or an old one, so the draft changed. Nothing was saved. Use the based_on of the "
+              "latest page facts or of the last save of this package. Then apply the change again.")
 _PKG_BIG = ("The stored draft is over {limit} characters, so a chat cannot hold it. Nothing was "
             "saved. Change this draft in Studio.")
 _PKG_SAME = "The stored draft already equals this manifest. Nothing changed."

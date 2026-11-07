@@ -219,6 +219,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # project for an org. A pin changes what a finding quotes, so only the
     # owner writes it.
     "AUTHORITY_PINS_ORGS",
+    # WS-KG KG-4: GRAPH_SWEEP_ORGS opens the nightly sweep that writes graph
+    # edges into kb_links for an org. A tenant must not open it for another
+    # org, so only the operator writes it.
+    "GRAPH_SWEEP_ORGS",
     # WS-ALN ALN-5a: PROJECT_RULES_ORGS opens the rules of a project for an
     # org. A rule reaches each agent and each check of the project, so a
     # tenant must not open it for another org.
@@ -235,6 +239,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.
     "WAITING_ORGS",
+    # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
+    # chat status tools. It changes what a chat write may do, so only the owner
+    # writes it.
+    "STATUS_SET_GUARD_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
