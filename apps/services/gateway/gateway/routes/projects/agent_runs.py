@@ -85,6 +85,13 @@ The rules, each one stated in the spec:
   read finds the question closed, and the run moves ``awaiting`` →
   ``in_progress``. A typed request (EA-6g) never closes this way: only the
   member answers it, in Metorite.
+* **Who may answer** (WS-55 EA-18a, D-EA-14, spec §12.8). With
+  ``AGENT_QUESTIONS_ORGS`` on for the org, a person's answer to an open question
+  needs :func:`may_answer_run`: the creator of the task, an assignee, the run's
+  member, or the role owner, admin or manager. A Stop and a reply to a run that
+  is not ``awaiting`` stay open to each member who sees the task. The list of
+  ``agent_questions.py`` reads the same text, so it never offers a button that
+  this route refuses.
 """
 
 from __future__ import annotations
@@ -122,6 +129,7 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_ANSWER_WAITS_SQL,
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
+    agent_questions_allowed,
     agent_runs_enabled,
     answer_change_enabled,
     attach_agent_state,
@@ -1231,6 +1239,12 @@ async def _comment(
     only, because nobody else may answer it (EA12-8 as amended by EA3-40).
 
     *quiet* (SW-11a, Resume) writes the comment and sends no bell at all.
+
+    EA-18a (D-EA-14 point 4). With ``AGENT_QUESTIONS_ORGS`` on for the run's
+    org, the creator of the task joins the audience of a question. ``notify``
+    lower-cases and folds the recipients (``notifiable``), so one person gets
+    one row, whatever the case of each address. It also drops the actor and
+    each person who cannot open the task.
     """
     task_id = str(run.task_id)
     meta: dict[str, Any] = {
@@ -1256,8 +1270,11 @@ async def _comment(
     audience = [] if member_only else await task_audience(db, task_id)
     snippet = excerpt_of(text_)
     if question:
+        recipients = [run.member_email, *audience]
+        if not member_only and agent_questions_allowed(getattr(run, "organization_id", None)):
+            recipients.append(await _task_creator(db, task_id))
         await notify(
-            db, recipients=[run.member_email, *audience], kind="agent_question",
+            db, recipients=recipients, kind="agent_question",
             task_id=task_id, actor_id=run.client_via, activity_id=str(comment.id),
             excerpt=snippet,
         )
@@ -1267,6 +1284,15 @@ async def _comment(
             actor_id=author, activity_id=str(comment.id), excerpt=snippet,
         )
     return linked
+
+
+async def _task_creator(db: Any, task_id: str) -> str | None:
+    """``pm_tasks.created_by`` of one task, as written. ``None`` adds nobody:
+    ``notifiable`` drops an empty recipient."""
+    return (await db.execute(
+        text("SELECT created_by FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": task_id},
+    )).scalar()
 
 
 async def _move_run(
@@ -2047,7 +2073,8 @@ async def post_agent_activity(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Write one activity. 201 with the new row, or 200 with the row that
-    already holds this ``idempotency_key`` (R5)."""
+    already holds this ``idempotency_key`` (R5). EA-18a: a person's answer to
+    an open question needs :func:`may_answer_run`, or it gets 403."""
     run_id = _parse_uuid(run_id, "Agent run")
     _require_write_scope(user)
     agent = _agent_via(user) is not None
@@ -2055,6 +2082,8 @@ async def post_agent_activity(
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
+        if not agent:
+            await _refuse_an_outside_answer(db, run, user, payload)
         written = await _write_activity(
             db, run, user, kind=payload.type, key=payload.idempotency_key,
             body=_clean_body(payload.body), options=payload.options,
@@ -2068,6 +2097,40 @@ async def post_agent_activity(
     if written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
     return {"activity": out_activity, "run": out_run, "created": written.created}
+
+
+async def _refuse_an_outside_answer(
+    db: Any, run: Any, user: UserContext, payload: ActivityIn,
+) -> None:
+    """The write rule of D-EA-14 (spec §12.8), on a LOCKED run, so the status
+    that it reads is the status that the write moves.
+
+    It binds ONLY an answer: a person's ``prompt`` while the run is ``awaiting``
+    on an open question that is not a typed archive request. D-EA-14 decided
+    who may answer, and it decided nothing else. So a Stop, and a reply to a run
+    that is not ``awaiting``, stay open to each member who sees the task
+    (D-EA-10 point 1). The narrower archive rule stays in :func:`_answer`.
+
+    The mark and the replay keep their order. A marked run still gets
+    ``no_person_present`` first. A retry of a key that the run already holds
+    returns its first row and writes nothing (R5).
+    """
+    if payload.type != "prompt" or payload.signal == "stop" or run.status != "awaiting":
+        return
+    if not agent_questions_allowed(getattr(user, "organization_id", None)):
+        return
+    run_id = str(run.id)
+    _refuse_a_marked_prompt(payload.type, run_id)
+    if await _existing_activity(db, run_id, payload.idempotency_key) is not None:
+        return
+    question = await _newest_open_question(db, run_id)
+    if question is None or archive_request_of(question) is not None:
+        return
+    if await may_answer_run(db, run, user):
+        return
+    raise HTTPException(status_code=403, detail=ANSWER_REFUSED.format(
+        name=getattr(run, "member_name", None) or run.member_email,
+    ))
 
 
 #: The statuses that a finish leaves: ``completed``, or ``stopped`` when a
@@ -2174,6 +2237,147 @@ async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
         text(f"SELECT {person_may_end_sql('r')} FROM pm_agent_runs r"
              " WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"),
         {"rid": str(run.id), "me": me},
+    )).scalar()
+    return bool(held)
+
+
+# ── Who may answer (WS-55 EA-18a, D-EA-14, spec §12.8) ──────────────────────
+
+#: The organization roles that may answer any question the reader can see, and
+#: that read the "Everyone" tab. A role, and not a permission: the owner has not
+#: decided if a read permission may act on the run of another member (HANDOFF
+#: H-409 item 2). "Manager" is this role, not the manager of a space.
+ANSWER_REVIEW_ROLES: frozenset[str] = frozenset({"owner", "admin", "manager"})
+
+#: The 403 of an answer from a person outside the set. It says who may answer
+#: and what the person can do next. A comment stays open to them.
+ANSWER_REFUSED = (
+    "Only {name}, the creator of the task, its assignees, or an owner, admin or "
+    "manager can answer this question. Ask one of them, or open the task and add "
+    "a comment."
+)
+
+
+def answer_reason_sql(run: str, *, me: str = "me") -> str:
+    """Why a person sees the question of the run alias *run*: ``created``,
+    ``assigned`` or ``my_agent``, the first true test in that order, or NULL.
+
+    ONE text with :func:`person_may_answer_sql`, so ``why`` and the answer set
+    cannot disagree. It binds ``:me``, or the name in *me*, to the caller's
+    address in lower case. Each address test compares with ``lower()``, because
+    ``created_by`` holds the actor as written. The role test is not here, and it
+    never goes into this text (:func:`holds_answer_role`).
+    """
+    return (
+        "(CASE"
+        " WHEN EXISTS (SELECT 1 FROM pm_tasks qt"
+        f" WHERE qt.id = {run}.task_id AND lower(qt.created_by) = :{me}) THEN 'created'"
+        " WHEN EXISTS (SELECT 1 FROM pm_task_assignees qa"
+        f" WHERE qa.task_id = {run}.task_id AND lower(qa.assignee) = :{me}) THEN 'assigned'"
+        f" WHEN lower({run}.member_email) = :{me} THEN 'my_agent'"
+        " END)"
+    )
+
+
+def answerable_question_sql(run_id: str) -> str:
+    """The run whose id is the SQL expression *run_id* waits on a question that
+    a person answers through the generic route. Its NEWEST open elicitation, as
+    :data:`_OPEN_ELICITATIONS_SQL` picks it, is not a typed archive request.
+
+    The SQL twin of ``archive_request_of(question) is None``. Only the run's
+    member answers a typed request, through ``archive-approval``. So
+    :func:`listed_question_sql` shows a typed request to that member only.
+    """
+    return (
+        "EXISTS (SELECT 1 FROM (SELECT oq.content_metadata"
+        "   FROM pm_agent_run_activities oq"
+        f"  WHERE oq.run_id = {run_id} AND oq.type = 'elicitation'"
+        "    AND NOT EXISTS (SELECT 1 FROM pm_agent_run_activities op"
+        "                     WHERE op.run_id = oq.run_id AND op.in_reply_to = oq.id)"
+        "  ORDER BY oq.seq DESC LIMIT 1) nq"
+        " WHERE coalesce(nq.content_metadata -> 'request' ->> 'kind', '')"
+        f" <> '{ARCHIVE_REQUEST_KIND}')"
+    )
+
+
+def listed_question_sql(run: str, *, me: str = "me") -> str:
+    """ONE text of "the list shows the question of the run alias *run* to the
+    reader" (WS-55 EA-18a fix rounds 1 and 2, spec §12.8). It binds ``:me``,
+    or the name in *me*, to the reader's address in lower case.
+
+    * A question on a closed task shows to nobody.
+    * A typed archive request shows to the run's member only, because only
+      that member approves it (§12.1). Every other reader, the creator, an
+      assignee and an owner, admin or manager too, does not see it.
+    * Any other open question shows by the answer set of the caller.
+
+    ``agent_questions.questions_sql`` and the flag-on branch of
+    ``filters.agent_focus_clause("waiting")`` both read it, so "For me" and
+    "Waiting on me" count the same questions.
+    """
+    return (
+        f"(NOT {task_closed_sql(run)}"
+        f" AND ({answerable_question_sql(f'{run}.id')}"
+        f" OR lower({run}.member_email) = :{me}))"
+    )
+
+
+def question_reason_sql(run: str, *, me: str = "me") -> str:
+    """``why`` of a row of the list, over the run alias *run* (spec §12.8,
+    EA-18a fix round 4). It binds ``:me``, or the name in *me*.
+
+    For a typed archive request, the reason is always ``my_agent``. Only the
+    run's member answers it, so "Your agent asked" is the true reason, also
+    when that member created the task or is an assignee. Any other question
+    takes :func:`answer_reason_sql`, in the order created, assigned, own agent.
+    The answer set does not change: the member is in it in each case.
+    """
+    return (
+        f"(CASE WHEN NOT {answerable_question_sql(f'{run}.id')}"
+        f" AND lower({run}.member_email) = :{me} THEN 'my_agent'"
+        f" ELSE {answer_reason_sql(run, me=me)} END)"
+    )
+
+
+def person_may_answer_sql(run: str, *, me: str = "me") -> str:
+    """The three groups of D-EA-14: the creator of the task, an assignee, or
+    the run's member, in SQL over the run alias *run*.
+
+    ONE text, as :func:`person_may_end_sql` set for Release. The list reads it
+    for ``can_answer`` and for "For me" (``agent_questions.py``). The write
+    route reads it through :func:`may_answer_run`. ``filters.agent_focus_clause``
+    reads it for "Waiting on me". So the list never offers a button that the
+    route refuses.
+    """
+    return f"({answer_reason_sql(run, me=me)} IS NOT NULL)"
+
+
+def holds_answer_role(user: UserContext) -> bool:
+    """True for a PERSON with a role of :data:`ANSWER_REVIEW_ROLES`, from the
+    session. The other half of the answer set, and the gate of the "Everyone"
+    tab. A signed agent holds no role here: a prompt is a person's word, and a
+    connection does not carry its member's rank.
+    """
+    if getattr(user, "agent", None) is not None:
+        return False
+    return bool(user.roles & ANSWER_REVIEW_ROLES)
+
+
+async def may_answer_run(db: Any, run: Any, user: UserContext) -> bool:
+    """True when *user* may answer the open question of *run* (D-EA-14 point
+    2): the role test, or the one text of :func:`person_may_answer_sql`.
+
+    The caller has already passed ``_load_visible_run``, so the reader sees the
+    task (D87 rule 4). An agent never answers.
+    """
+    if _agent_via(user) is not None:
+        return False
+    if holds_answer_role(user):
+        return True
+    held = (await db.execute(
+        text(f"SELECT {person_may_answer_sql('r')} FROM pm_agent_runs r"
+             " WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"),
+        {"rid": str(run.id), "me": _member(user)},
     )).scalar()
     return bool(held)
 

@@ -927,6 +927,27 @@ class Settings(BaseSettings):
     # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
     authority_pins_orgs: str = ""
 
+    # ── Questions for me (WS-55 EA-18a, external_agent_access.md §12.8) ──────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/agent-questions` answers 404, the
+    # creator joins no `agent_question` audience, and any member who sees the
+    # task may answer (D-EA-10 point 1). On, all five points of D-EA-14 apply.
+    # The one reader is `gateway.routes.projects.filters.agent_questions_allowed`.
+    # A SIGHUP reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_questions_r8.py.
+    agent_questions_orgs: str = ""
+
+    # ── Waiting: what waits on you (WS-AP AP-1a) ────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /shell/waiting` and `GET /shell/waiting/count`
+    # answer 404. The one reader is
+    # `gateway.routes.shell.waiting.waiting_allowed`. A SIGHUP reload applies
+    # a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_waiting_seam_r8.py.
+    waiting_orgs: str = ""
+
     # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
