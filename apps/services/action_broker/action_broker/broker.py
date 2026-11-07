@@ -186,19 +186,59 @@ def clear_action_handlers() -> None:
     _HANDLERS.clear()
 
 
-async def execute(proposal: ActionProposal) -> dict[str, Any]:
+#: The reason of a refusal when no tenant is bound (task 2220).
+TENANT_UNBOUND = "tenant_unbound"
+
+
+async def execute(proposal: ActionProposal, *, member: str | None = None) -> dict[str, Any]:
     """Perform an auto-apply / approved proposal via its registered handler.
 
     Fails CLOSED:
+    * with ``ACB_GRAPH_TENANT_BIND`` on and no bound tenant, nothing runs
+      (task 2220). The audit row of the act would be skipped, and an outward
+      write with no audit row breaks ``core_brief.md`` §8. It answers
+      ``status: refused``, ``reason: tenant_unbound``. Only the
+      ``audit.skipped_no_tenant`` and ``action_broker.tenant_unbound`` log
+      lines record it, because no tenant exists to own a row;
     * a ``rejected`` proposal is never executed;
     * an action with no registered handler is REFUSED (never silently applied);
-    both are audited. On success the handler's result is returned.
+    the last two are audited. On success the handler's result is returned.
+
+    ⚠️ The tenant is ``current_tenant()``, which only ``bind_tenant`` sets. A
+    ``tenant_session(org)`` (``acb_common.db`` or ``acb_graph``) binds the GUC
+    of its own connection only, so a caller with only that is refused. Fence:
+    ``tests/unit/test_action_broker_execute_tenant_r8.py``.
+
+    ``member`` is the person who decided the act. ``approve`` passes its
+    ``reviewed_by``, from the session and never from the payload, and the
+    ``execute:<action>`` row carries it as ``payload.member``. ``submit``'s
+    auto-apply path passes none: no person decided that act.
 
     A handler that answers a dict with ``"ok": False`` has REFUSED the work, as
     ``workflow.resume_run`` does for a run that it will not resume (H-328). That
     is a failure, never a success: ``approve`` then marks the row ``failed`` and
     the approver reads the handler's error. Any other result is a success.
     """
+    from acb_common.db import current_tenant
+
+    org = current_tenant()
+    unbound = AuditEvent(
+        actor="system:action_broker",
+        action=f"execute_refused:{proposal.action}",
+        target=proposal.target,
+        payload={"reason": TENANT_UNBOUND},
+        organization_id=str(org) if org else None,
+    )
+    if refuse_tenantless(unbound):
+        _log.warning("action_broker.tenant_unbound", op="execute",
+                     action=proposal.action, target=proposal.target)
+        return {
+            "ok": False,
+            "status": "refused",
+            "reason": TENANT_UNBOUND,
+            "error": "no tenant is bound, so the action did not run",
+        }
+
     if proposal.disposition == Disposition.REJECTED:
         _audit(AuditEvent(
             actor="system:action_broker",
@@ -225,7 +265,10 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
         actor="system:action_broker",
         action=f"execute:{proposal.action}",
         target=proposal.target,
-        payload={"authority": proposal.authority.value},
+        payload={
+            "authority": proposal.authority.value,
+            **({"member": member} if member else {}),
+        },
     ))
     result = await handler(proposal)
     if isinstance(result, dict) and result.get("ok") is False:
@@ -559,7 +602,7 @@ async def approve(action_id: str, reviewed_by: str) -> dict[str, Any]:
         return {"ok": False, "error": f"action {action_id!r} is {status}, not pending"}
 
     _mark(action_id, "approved", reviewed_by=reviewed_by)
-    res = await execute(proposal)
+    res = await execute(proposal, member=reviewed_by)
     if res.get("ok"):
         _mark(action_id, "applied", result=res)
         return {"ok": True, "status": "applied", "action_id": action_id, "result": res.get("result")}
