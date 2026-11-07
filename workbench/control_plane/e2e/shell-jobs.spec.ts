@@ -87,8 +87,14 @@ test("an admin's “invite” in the command bar opens the invite form", async (
   await page.setViewportSize({ width: 1440, height: 900 });
   await stub(page, true);
   await page.goto("/tasks");
-  await page.locator("[data-shell-bar]").getByRole("button", { name: /Search or ask anything/ }).click();
+  // The top bar's field is gone (GL-12, 30e72d332), and this frame has no chat
+  // flag, so no Ask bar draws. Ctrl+K opens the same command bar. A press
+  // before hydration does nothing, so press again until the dialog shows.
   const bar = page.getByRole("dialog", { name: "Search or ask" });
+  await expect(async () => {
+    if (!(await bar.isVisible())) await page.keyboard.press("Control+k");
+    await expect(bar).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
   await bar.getByRole("combobox", { name: "Search or ask anything" }).fill("invite");
   await expect(bar.getByRole("option").first()).toContainText("Invite a member");
   await page.keyboard.press("Enter");
