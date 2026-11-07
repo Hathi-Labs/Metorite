@@ -444,3 +444,30 @@ def test_the_kind_and_the_hook_are_registered() -> None:
 
     assert worker.effects()[graph.SWEEP_KIND] == ("own_rows", None)
     assert graph.seed in worker.seed_hooks
+
+
+def test_the_sweep_is_the_only_writer_of_company_aliases() -> None:
+    """R7 fence for the rule behind ``_alias_remove_sql``.
+
+    The sweep deletes each host-shaped alias of a ``crm_companies`` entity
+    that is not the company's one-company host. That is safe only while no
+    other code writes those aliases. So no file outside ``graph.py`` and
+    ``registry.py`` may call ``add_aliases`` or ``remove_aliases``, and only
+    the Knowledge create route may pass ``aliases=`` to ``ensure_entity``.
+    """
+    callers: dict[str, list[str]] = {}
+    for path in sorted(_GATEWAY.rglob("*.py")):
+        rel = path.relative_to(_GATEWAY).as_posix()
+        if rel in {"kb_entities/graph.py", "kb_entities/registry.py"}:
+            continue
+        src = path.read_text(encoding="utf-8")
+        for name in ("add_aliases(", "remove_aliases("):
+            if name in src:
+                callers.setdefault(name, []).append(rel)
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and getattr(node.func, "attr", getattr(node.func, "id", "")) == "ensure_entity"
+                    and any(k.arg == "aliases" for k in node.keywords)):
+                callers.setdefault("ensure_entity(aliases=)", []).append(rel)
+    assert callers == {"ensure_entity(aliases=)": ["routes/knowledge/entities.py"]}, callers

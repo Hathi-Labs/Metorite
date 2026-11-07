@@ -99,7 +99,7 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "name or an alias, and the sweep has no caller to show one to."
     ),
     ("registry.py", "remove_aliases"): (
-        "The KG-5 sweep removes a host alias that two companies now share. "
+        "The KG-5 sweep removes a host alias that its company no longer holds as its one-company host. "
         "The read locks that one row in the bound tenant and reads its "
         "aliases, to fold them in Python before the UPDATE. It returns a "
         "count, never a name or an alias."
@@ -113,7 +113,7 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
     ),
     ("graph.py", "_alias_remove_sql"): (
         "The KG-5 sweep finds the customer entities that hold a host alias "
-        "that two companies now share. It answers entity ids and hosts, "
+        "that is not the one-company host of the company today. It answers entity ids and hosts, "
         "never a name, to the sweep, which has no caller. The removal goes "
         "through registry.remove_aliases."
     ),

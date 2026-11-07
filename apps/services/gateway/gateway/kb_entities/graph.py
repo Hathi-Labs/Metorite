@@ -611,9 +611,11 @@ def _alias_remove_sql() -> str:
 
     That covers a company that changed its website, a host that two
     companies now share, and a host of ``SITE_HOSTS`` or ``CONSUMER_DOMAINS``,
-    because none of them is a one-company host. An alias that does not look
-    like a host, and an entity of any other ``ref_table``, are never read
-    here. Ids and aliases only."""
+    because none of them is a one-company host. The test is the shape of a host, so a dotted name such as
+    ``J.P.Morgan`` also matches. That is safe only while the sweep is the one
+    writer of these aliases: ``test_the_sweep_is_the_only_writer_of_company_aliases``
+    fences it. An entity of any other ``ref_table`` is never read here. Ids
+    and aliases only."""
     return (
         "SELECT e.id::text AS entity_id, ea.v AS domain "
         "FROM kb_entities e CROSS JOIN LATERAL unnest(e.aliases) AS ea(v) "
