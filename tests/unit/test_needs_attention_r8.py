@@ -74,7 +74,10 @@ is ``routes/projects/authority.py``:
 * L5. ``N`` ``app_roots_of``: ignore the org of a pair.
   ``test_l6_another_org_sees_nothing``.
 * L6. ``N`` ``no_lead_kind_sql``: no ``vis.project_clause``.
-  ``test_l7_a_hidden_app_project_gives_no_row``.
+  ``test_l7_a_hidden_app_project_gives_no_row``. MALLORY leads the root and
+  is the assignee of one open task in the hidden app. The task clause lets
+  her see that task, so the count stays 1 and only the project clause hides
+  the row.
 * L7. ``A`` ``no_lead_sql``: ``lead IS NULL`` only (a blank lead hides the
   row). ``test_l2_a_project_with_a_lead_gives_no_row``.
 """
@@ -1007,8 +1010,13 @@ class TestTheAppProjectWithNoLead:
 
     async def test_l7_a_hidden_app_project_gives_no_row(self, w, apps):
         """MALLORY leads the root, so she may write a grant on the app, but no
-        grant lets her see it. The row stays hidden (D12)."""
+        grant lets her see it. The row stays hidden (D12).
+
+        MALLORY is also the assignee of one open task in the app. The task
+        clause lets an assignee see her task, so only the project clause
+        keeps the hidden project's name out of her row."""
         _set(w, apps.root, lead=MALLORY)
+        _task(w, apps.app, assignee=MALLORY, title="Fix the hidden import")
         assert _no_lead(await _list(w, w.mallory)) == []
         with w.p.admin_engine.begin() as c:
             c.execute(text(
