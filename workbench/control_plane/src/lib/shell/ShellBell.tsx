@@ -125,7 +125,9 @@ export function bellLabel(count: number | undefined): string {
 /**
  * Whether this member can have a feed at all, and whether it holds the
  * approvals group. Both are My Day's own rules (`cardsFor`, `seesApprovals`),
- * so the bell, the card and the sidebar's row counts show the same rows.
+ * so the bell, the card and the sidebar's row counts show the same feed rows.
+ * The bell badge also counts the install setup rows (PKG-6b). The sidebar row
+ * counts do not, because a setup row belongs to no app row.
  */
 export function useNeedsAllowed(): { allowed: boolean; approvals: boolean } {
   const { access, loading } = useAccess();

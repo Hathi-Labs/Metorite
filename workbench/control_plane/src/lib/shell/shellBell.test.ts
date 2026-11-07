@@ -54,6 +54,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { needsKey, type NeedsItem } from "./needs";
+import { NeedsList, type NeedsYou } from "./NeedsYouCard";
 import { BELL_POLL_MS, BellButton, ShellBell, bellBadge, bellLabel, joinNeedsPoll, shownOfTotal } from "./ShellBell";
 import { shellDockOn } from "./dockFlag";
 
@@ -383,5 +384,34 @@ describe("one list for the bell and the card", () => {
     const undo = code(read("../../app/tasks/components/UndoToast.tsx"));
     // The fallback binds no key, and stands down while a page holds the toast.
     expect(undo).toMatch(/useUndoToastSync\(false, !held, false\)/);
+  });
+});
+
+describe("an empty feed with install setup rows", () => {
+  const empty: NeedsYou = {
+    items: [],
+    count: 0,
+    total: 0,
+    sources: {},
+    byApp: {},
+    floors: new Set(),
+    loading: false,
+    error: null,
+    refresh: () => {},
+    errors: {},
+    act: () => {},
+  };
+  const extra = [{ installId: "i1", title: "Finish setting up Acme", href: "/setup" }];
+
+  it("shows the setup row and not the green empty line", () => {
+    const html = renderToStaticMarkup(createElement(NeedsList, { needs: empty, now: null, extra }));
+    expect(html).toContain("Finish setting up Acme");
+    expect(html).not.toContain("Nothing needs you");
+    expect(html).not.toContain("Nothing else needs you");
+  });
+
+  it("keeps the empty line when there are no setup rows", () => {
+    const html = renderToStaticMarkup(createElement(NeedsList, { needs: empty, now: null }));
+    expect(html).toContain("Nothing needs you right now.");
   });
 });

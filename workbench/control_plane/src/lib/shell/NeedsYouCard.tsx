@@ -212,6 +212,9 @@ export function NeedsList({
     ) : (
       <CardError message="What needs you could not load." onRetry={needs.refresh} />
     );
+  } else if (needs.items.length === 0 && extra && extra.length > 0) {
+    // Setup rows are things that need the member, so "Nothing needs you" would lie.
+    body = null;
   } else if (needs.items.length === 0) {
     body = (
       <div className="flex items-center gap-2.5 px-2 py-4">
