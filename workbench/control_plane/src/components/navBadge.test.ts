@@ -132,11 +132,11 @@ describe("the phone nav wears the run badge on every page", () => {
     // D99: with the chat bar on, the Ask tab carries the total instead
     // (`assistant.test.ts`), so the Menu tab gives it up.
     expect(shell).toMatch(
-      /<AppIcon name="Menu" size=\{20\} \/>\s*\{!isChatPage && !chatOn && tabBadge && \(\s*<NavBadge count=\{tabBadge\.count\} tone=\{tabBadge\.tone\} label=\{tabBadge\.label\} placement="tab"/,
+      /<AppIcon name="Menu" size=\{20\} \/>\s*\{!chatsTab && !chatOn && tabBadge && \(\s*<NavBadge count=\{tabBadge\.count\} tone=\{tabBadge\.tone\} label=\{tabBadge\.label\} placement="tab"/,
     );
-    expect(shell).toMatch(
-      /<AppIcon name="MessageCircle" size=\{20\} \/>\s*\{tabBadge && \(\s*<NavBadge count=\{tabBadge\.count\} tone=\{tabBadge\.tone\} label=\{tabBadge\.label\} placement="tab"/,
-    );
+    // MOB-12: the Chats tab is drawn from the registry, and it carries the run badge.
+    expect(shell).toContain('runBadge={tab.id === "chats" ? tabBadge : null}');
+    expect(shell).toMatch(/<NavBadge count=\{run\.count\} tone=\{run\.tone\} label=\{run\.label\} placement="tab"/);
   });
 
   it("each drawer link carries its app's count, amber when a run there waits", () => {

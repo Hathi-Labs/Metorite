@@ -100,7 +100,10 @@ describe("projectsPhoneTabs", () => {
       }
     }
     const shell = fs.readFileSync(path.join(root, "components", "AppShell.tsx"), "utf-8");
-    expect(shell).toContain("projectsPhoneTabs(myWorkEnabled())");
+    // MOB-12: the registry reads `projectsPhoneTabs`, and the shell draws the registry.
+    const registry = fs.readFileSync(path.join(root, "lib", "shell", "phoneBar.ts"), "utf-8");
+    expect(registry).toContain("projectsBarTabs(myWorkEnabled())");
+    expect(shell).toContain("phoneBarFor(pathname)");
     expect(shell).not.toContain("projectsMenuEvent");
     // MOB-10: no tab sends the old "My tasks" event, so the page has no handler for it.
     expect(page).not.toContain("projects-mywork");

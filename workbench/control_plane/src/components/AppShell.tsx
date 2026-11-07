@@ -74,7 +74,7 @@ import {
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
-import { shouldPollWorkspace } from "@/lib/access";
+import { canUseFeature, hasCapability, shouldPollWorkspace } from "@/lib/access";
 import { useSaveZone } from "@/lib/shell/saveZone";
 import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
@@ -88,8 +88,8 @@ import { SubtaskPromptHost } from "@/app/tasks/components/SubtaskPromptHost";
 // in-progress meeting recording follows the user across every app (spec §5.2).
 import { LiveDock } from "@/app/notes/components/LiveDock";
 import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
-import { myWorkEnabled } from "@/app/projects/lib/myWorkFlag";
-import { projectsPhoneTabs } from "@/app/projects/lib/phoneTabs";
+import { hrefSelected, phoneBarFor, resolvePhoneTabs } from "@/lib/shell/phoneBar";
+import { PHONE_BAR_EVENT, currentPhoneBarReport, type PhoneBarReport } from "@/lib/shell/phoneBarEvent";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
 import { LAYER_CLASS } from "@/lib/layers";
 // ---------------------------------------------------------------------------
@@ -714,60 +714,44 @@ function MobileBottomNavInner({
     </>
   );
 
-  const isChatPage = pathname?.startsWith("/chat") ?? false;
   const tabBadge = runBadge(activeCount, needsTotal, unreadTotal);
-  const isEmailPage = pathname?.startsWith("/email") ?? false;
-  const isTasksPage = pathname?.startsWith("/tasks") ?? false;
-  // Notes actions live on the library page; the meeting/session sub-pages have
-  // their own in-view controls, so scope the context tabs to the list.
-  const isNotesPage = pathname === "/notes";
-  // WhatsApp: "Sections" (the app sub-nav) applies across every /whatsapp page;
-  // "Triage" (the stream filter) is inbox-only. Both open bottom drawers.
-  const isWhatsAppPage = pathname?.startsWith("/whatsapp") ?? false;
-  const isWhatsAppInbox = pathname === "/whatsapp";
-  // App Workshop editor: chat and the preview/code/tests pane are full-screen
-  // alternatives on mobile (desktop shows both side by side) — the page owns
-  // the "workshop-*" cc-mobile-nav detail values.
-  const isAppWorkshopEditPage =
-    (pathname?.startsWith("/build/apps/") && pathname?.endsWith("/edit")) ?? false;
-  // Projects: three things the desktop layout owns have no home on a phone —
-  // the project tree (a 240px rail), the five view modes (a toolbar row) and
-  // ⌘K search (a keyboard). Each becomes a tab here; the page turns the first
-  // two into drawer sheets and the third into its own overlay. Notifications
-  // stay in the page's own title row: the bell is self-anchored and has no
-  // external open control, so a tab could not raise it.
-  const isProjectsPage = pathname?.startsWith("/projects") ?? false;
-  const projectsTabs = projectsPhoneTabs(myWorkEnabled());
-  // CRM (CRM-U10): the page names the lists of the bar and the one on screen,
-  // because it knows the mode, the source's labels and the rows Zoho turned
-  // off. It emits `cc-crm-nav`, and `null` when it unmounts.
-  const isCrmPage = pathname?.startsWith("/crm") ?? false;
+  // The bar of this app (MOB-12): the registry names the tabs by the path
+  // (`lib/shell/phoneBar.ts`), and the page tells the shell, in ONE event,
+  // which tab is selected, which tabs to hide and which counts to draw.
+  const bar = phoneBarFor(pathname);
+  const [report, setReport] = useState<PhoneBarReport | null>(null);
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- a page that painted first left its report in the store */
+    setReport(currentPhoneBarReport());
+    /* eslint-enable react-hooks/set-state-in-effect */
+    const h = (e: Event) => setReport((e as CustomEvent<PhoneBarReport | null>).detail ?? null);
+    window.addEventListener(PHONE_BAR_EVENT, h);
+    return () => window.removeEventListener(PHONE_BAR_EVENT, h);
+  }, []);
+  // The member's access gates a tab. While access resolves, a gated tab waits,
+  // so the bar does not draw a tab and then take it back.
+  const barTabs = resolvePhoneTabs(bar, pathname ?? "", {
+    ask: chatOn,
+    hide: report?.hide,
+    allowed: (t) =>
+      (!t.feature || (!accessLoading && canUseFeature(access, t.feature))) &&
+      (!t.capability || (!accessLoading && hasCapability(access, t.capability))),
+  });
+  const barDefault = bar && "tabs" in bar.entry ? bar.entry.defaultActive : undefined;
+  const selectedTab = report?.active ?? barDefault ?? null;
+  // On a page with a Chats tab, that tab carries the run badge. Elsewhere the
+  // Menu tab does (when the Ask tab is absent).
+  const chatsTab = barTabs.some((t) => t.id === "chats");
+  // CRM (CRM-U10): the one dynamic bar. The page names the lists of the bar
+  // and the one on screen, because it knows the mode, the source's labels and
+  // the rows Zoho turned off. It emits `cc-crm-nav`, and `null` when it
+  // unmounts.
+  const hasDynamicBar = !!bar && "dynamic" in bar.entry;
   const [crmNav, setCrmNav] = useState<PhoneNav | null>(null);
   useEffect(() => {
     const h = (e: Event) => setCrmNav((e as CustomEvent<PhoneNav | null>).detail ?? null);
     window.addEventListener("cc-crm-nav", h);
     return () => window.removeEventListener("cc-crm-nav", h);
-  }, []);
-
-  // Tasks: the bottom bar reflects which My Tasks section you're in. The page emits
-  // `cc-tasks-section` whenever the active view changes.
-  const [tasksSection, setTasksSection] = useState("inbox");
-  useEffect(() => {
-    const h = (e: Event) =>
-      setTasksSection((e as CustomEvent<string>).detail || "inbox");
-    window.addEventListener("cc-tasks-section", h);
-    return () => window.removeEventListener("cc-tasks-section", h);
-  }, []);
-
-  // Email: with no mailbox the page shows only "Connect your email", so the
-  // Inbox / Automation / AI Chat tabs would open empty sheets. The page emits
-  // `cc-email-empty` (true while the empty state shows, false otherwise and on
-  // unmount), and the tabs hide while it is true (WS-17 EM-T3b).
-  const [emailEmpty, setEmailEmpty] = useState(false);
-  useEffect(() => {
-    const h = (e: Event) => setEmailEmpty((e as CustomEvent<boolean>).detail === true);
-    window.addEventListener("cc-email-empty", h);
-    return () => window.removeEventListener("cc-email-empty", h);
   }, []);
 
   // WS-OB GD-4: the guide opens and closes the Menu drawer, which holds the
@@ -808,6 +792,13 @@ function MobileBottomNavInner({
     }
   };
 
+  // A link tab: the same first step as a tab with an event, then the route.
+  const goLink = () => {
+    pendingTab.current = null;
+    if (sheetOpen) closeAssistant();
+    if (isOpen) close();
+  };
+
   return (
     <>
     <nav className="flex h-full items-stretch justify-around gap-0.5 py-1 px-1">
@@ -826,90 +817,31 @@ function MobileBottomNavInner({
         >
           <span className="relative">
             <AppIcon name="Menu" size={20} />
-            {!isChatPage && !chatOn && tabBadge && (
+            {!chatsTab && !chatOn && tabBadge && (
               <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
             )}
           </span>
           <span className="text-[10px] font-medium leading-none">Menu</span>
         </button>
-        {isEmailPage && !emailEmpty && (
-          <>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-accounts")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="Mail" size={20} />
-              <span className="text-[10px] font-medium leading-none">Inbox</span>
-            </Button>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-automation")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="Zap" size={20} />
-              <span className="text-[10px] font-medium leading-none">Automation</span>
-            </Button>
-            {!chatOn && (
-              <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-ai")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-                <AppIcon name="MessageCircle" size={20} />
-                <span className="text-[10px] font-medium leading-none">AI Chat</span>
-              </Button>
-            )}
-          </>
-        )}
-        {isChatPage && (
-          <>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("chats")} className="relative flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <span className="relative">
-                <AppIcon name="MessageCircle" size={20} />
-                {tabBadge && (
-                  <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
-                )}
-              </span>
-              <span className="text-[10px] font-medium leading-none">Chats</span>
-            </Button>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("files")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="FolderOpen" size={20} />
-              <span className="text-[10px] font-medium leading-none">Files</span>
-            </Button>
-          </>
-        )}
-        {isTasksPage && (
-          <>
+        {barTabs.map((tab) => {
+          const selected = tab.kind === "place" && (hrefSelected(tab, pathname) || selectedTab === tab.id);
+          const count = report?.counts?.[tab.id] ?? 0;
+          return (
             <TaskTab
-              active={tasksSection === "inbox"}
-              onClick={() => dispatchNav("tasks-inbox")}
-              icon={themedIcon("Inbox")}
-              label="Inbox"
+              key={tab.id}
+              href={tab.href}
+              active={selected}
+              onClick={tab.href ? goLink : () => dispatchNav(tab.event ?? tab.id)}
+              icon={themedIcon(tab.icon)}
+              label={tab.label}
+              accent={tab.accent}
+              badge={count > 0 && tab.countLabel ? count : null}
+              badgeLabel={tab.countLabel ? `${count} ${tab.countLabel}` : undefined}
+              runBadge={tab.id === "chats" ? tabBadge : null}
             />
-            <TaskTab
-              active={tasksSection !== "inbox"}
-              onClick={() => dispatchNav("tasks-lists")}
-              icon={themedIcon("ListChecks")}
-              label="Lists"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("tasks-capture")}
-              icon={themedIcon("Plus")}
-              label="Capture"
-              accent
-            />
-            {!chatOn && (
-              <TaskTab
-                onClick={() => dispatchNav("tasks-assistant")}
-                icon={themedIcon("Sparkles")}
-                label="Assistant"
-              />
-            )}
-          </>
-        )}
-        {isProjectsPage && (
-          <>
-            {projectsTabs.map((tab) => (
-              <TaskTab
-                key={tab.event}
-                onClick={() => dispatchNav(tab.event)}
-                icon={themedIcon(tab.icon)}
-                label={tab.label}
-                accent={tab.accent}
-              />
-            ))}
-          </>
-        )}
-        {isCrmPage && crmNav && (
+          );
+        })}
+        {hasDynamicBar && crmNav && (
           <>
             {crmNav.tabs.map((tab) => (
               <TaskTab
@@ -926,70 +858,6 @@ function MobileBottomNavInner({
               icon={themedIcon("LayoutGrid")}
               label="More"
               badge={crmNav.badge}
-            />
-          </>
-        )}
-        {isNotesPage && (
-          <>
-            <TaskTab
-              onClick={() => dispatchNav("notes-record")}
-              icon={themedIcon("Mic")}
-              label="Record"
-              accent
-            />
-            <TaskTab
-              onClick={() => dispatchNav("notes-join")}
-              icon={themedIcon("Video")}
-              label="Join call"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("notes-upload")}
-              icon={themedIcon("Upload")}
-              label="Upload"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("notes-glossary")}
-              icon={themedIcon("BookMarked")}
-              label="Glossary"
-            />
-          </>
-        )}
-        {isWhatsAppInbox && (
-          <TaskTab
-            onClick={() => dispatchNav("wa-triage")}
-            icon={themedIcon("Filter")}
-            label="Triage"
-          />
-        )}
-        {isWhatsAppPage && (
-          <TaskTab
-            onClick={() => dispatchNav("wa-sections")}
-            icon={themedIcon("LayoutGrid")}
-            label="Sections"
-          />
-        )}
-        {isAppWorkshopEditPage && (
-          <>
-            <TaskTab
-              onClick={() => dispatchNav("workshop-chat")}
-              icon={themedIcon("Sparkles")}
-              label="Chat"
-              accent
-            />
-            <TaskTab
-              onClick={() => dispatchNav("workshop-preview")}
-              icon={themedIcon("Play")}
-              label="Preview"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("workshop-code")}
-              icon={themedIcon("FileCode")}
-              label="Code"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("workshop-tests")}
-              icon={themedIcon("FlaskConical")}
-              label="Tests"
             />
           </>
         )}
@@ -1062,38 +930,58 @@ function PhoneNavFlag() {
 function TaskTab({
   active,
   onClick,
+  href,
   icon: Icon,
   label,
   accent,
   badge,
+  badgeLabel,
+  runBadge: run,
 }: {
   active?: boolean;
   onClick: () => void;
+  /** A route: the tab is a link, and `onClick` is its first step. */
+  href?: string;
   icon: ThemedIcon;
   label: string;
   accent?: boolean;
   /** A count that waits for the member, drawn on the icon. */
   badge?: number | null;
+  /** The words of that count, for a screen reader. */
+  badgeLabel?: string;
+  /** The run badge (`runBadge`): the Chats tab carries it. */
+  runBadge?: ReturnType<typeof runBadge>;
 }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-current={active ? "page" : undefined}
-      className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 transition-colors ${
-        accent
-          ? "text-primary"
-          : active
-            ? "text-primary"
-            : "text-muted-foreground hover:text-foreground"
-      }`}
-    >
+  const cls = `flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 transition-colors ${
+    accent
+      ? "text-primary"
+      : active
+        ? "text-primary"
+        : "text-muted-foreground hover:text-foreground"
+  }`;
+  const inner = (
+    <>
       <span className="relative">
         <Icon size={20} strokeWidth={active || accent ? 2.4 : 2} />
         {badge ? (
-          <NavBadge count={badge} tone="info" label={`${badge} waiting`} placement="tab" />
+          <NavBadge count={badge} tone="info" label={badgeLabel ?? `${badge} waiting`} placement="tab" />
+        ) : run ? (
+          <NavBadge count={run.count} tone={run.tone} label={run.label} placement="tab" />
         ) : null}
       </span>
-      <span className="text-[10px] font-medium leading-none">{label}</span>
+      <span className="w-full truncate text-center text-[10px] font-medium leading-none">{label}</span>
+    </>
+  );
+  if (href) {
+    return (
+      <Link href={href} onClick={onClick} aria-current={active ? "page" : undefined} className={cls}>
+        {inner}
+      </Link>
+    );
+  }
+  return (
+    <button onClick={onClick} aria-current={active ? "page" : undefined} className={cls}>
+      {inner}
     </button>
   );
 }
