@@ -2,7 +2,8 @@
 
 DB-side ``record(AuditEvent)`` calls degrade gracefully when Postgres is not
 available (see acb_audit.log.record), so we run these tests with ``audit=False``
-to keep them silent and side-effect-free.
+to keep them silent and side-effect-free. With ``audit=False`` no tenant is
+needed, so they pass ``organization_id=None`` (task 2173).
 """
 from __future__ import annotations
 
@@ -126,6 +127,7 @@ async def test_classify_skips_llm_for_high_confidence_rules() -> None:
     d = await classify(
         _msg(headers={"List-Unsubscribe": "<...>"}),
         llm_caller=fake_llm,
+        organization_id=None,
         audit=False,
     )
     assert d.label == "newsletter"
@@ -148,6 +150,7 @@ async def test_classify_uses_llm_when_rules_uncertain() -> None:
     d = await classify(
         _msg(from_addr="x@y.com", subject="hi", body="hello"),
         llm_caller=fake_llm,
+        organization_id=None,
         audit=False,
     )
     assert d.label == "needs_human"
@@ -163,6 +166,7 @@ async def test_classify_llm_garbage_falls_back_safely() -> None:
     d = await classify(
         _msg(from_addr="x@y.com", subject="hi", body="hello"),
         llm_caller=bad_llm,
+        organization_id=None,
         audit=False,
     )
     assert d.label == "needs_human"
@@ -171,6 +175,6 @@ async def test_classify_llm_garbage_falls_back_safely() -> None:
 
 @pytest.mark.asyncio
 async def test_classify_without_llm_caller_returns_rule_result() -> None:
-    d = await classify(_msg(from_addr="x@y.com", subject="hi"), audit=False)
+    d = await classify(_msg(from_addr="x@y.com", subject="hi"), organization_id=None, audit=False)
     assert d.source == "rule"
     assert isinstance(d, EmailTriageDecision)

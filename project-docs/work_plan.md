@@ -132,7 +132,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 1. **Customer zero safe and working** (M0, P0): H-259, BO-23b, M0.4, the chat flag, H-163, H-373, H-120, H-326 and CZ-DEWIN-1.
 2. **The shared job queue**: BR-1a. Every brief task runs on it, so build it first and small.
 3. **Issue reporting and the Get started checklist** before the pilots: IR-0 to IR-3 and OB-1. Help follows in M1: HLP-1 to HLP-3.
-4. **The cheap isolation fixes** (M1, P0): H-249, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. H-334 closed the owner check on 2026-11-04. H-334b closed its three list reads on 2026-11-05 (task 1692). H-334c closed the self reads and `_display_labels` on 2026-11-06 (task 1812). AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
+4. **The cheap isolation fixes** (M1, P0): H-249, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. H-334 closed the owner check on 2026-11-04. H-334b closed its three list reads on 2026-11-05 (task 1692). H-334c closed the self reads and `_display_labels` on 2026-11-06 (task 1812). H-334d closed the pair set and fenced the self readers on 2026-11-07 (task 1990). AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
 5. **The isolation spine**: H2, then H3.2 (D120), then H3 in a maintenance window. H4, H5 and H6 run beside it.
 6. **The owner answers**: WS-40-Q (D121) and H3.2 (D120). Both gate P0 work.
 7. **Branch protection**: WS-38a, then WS-5a and WS-38b.
@@ -168,11 +168,11 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140, D183, D186) · `specs/orchestration_playbook.md` (D186) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a · P9 planned 2026-11-06 (D183, SW-44 to SW-63, task 1874) |
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
-| WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · PKG-1 to PKG-5b are built. PKG-4 and PKG-5b are dark: `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` is empty · next PKG-6 (the workbench reads the resolved manifest behind the flag) |
+| WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · PKG-1 to PKG-5b are built. PKG-4 and PKG-5b are dark: `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` is empty · PKG-6 is built dark, and PKG-6b (bell setup row, All apps listing, access report) is built dark. Stars for an install pane wait on a gateway change to `SHELL_PANES` in `routes/admin/me.py` | · PKG-17a (the org default per role, `GET` and `PUT /shell/layout`) is built dark, and PKG-17b is the client read
 | WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard). WEB-10 built (the goal record, `goal_records`, no caller yet). WEB-2 built dark behind `WEB_RESEARCH_ORGS` (the local HTML reader). 2026-11-04: WEB-3 built dark (the file readers, the type refusal and the CTX-1 spill). 2026-11-05: WEB-4 built dark (the search provider list). WEB-6 built (the web worker container). 2026-11-06: WEB-7 built dark (`fetch_page` render through the worker, task 1265). Docling and the scanned PDF split to WEB-7b (task 1837). Next WEB-7b, WEB-8, or WEB-5 (waits on WEB-Q1) |
 | WS-CIV | **CI velocity**: each PR runs the tests its diff can affect, and `main` runs the full suite in batches after the merge. No merge queue (D-2026-10-16 stays) | 🟢 active · started 2026-11-04 (D176) | `specs/ci_velocity.md` | Metorite: project "Developer Workflow", epic 1628, slices CIV-1 to CIV-9 = tasks 1629 to 1637 · CIV-1 (outside contributors need approval) done 2026-11-04 · CIV-4 is HIGH (deploy path) · CIV-13 (task 1721, D178, HIGH): the home box starts the 21:30 release, built 2026-11-05 |
-| WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · ALN-1 (the durable trigger) is built dark: `ALIGN_JOBS_ORGS` is empty and the handler is a stub · ALN-2a built (migration 332, backend and chat tools, dark behind `DECISIONS_ORGS`) · ALN-4 (the pin: migration 339, routes and chat tools, no UI) is built dark behind `AUTHORITY_PINS_ORGS` · ALN-5a (the rules of a project: rule rows on the SW-31a store, migration 343, routes, no UI, no chat tool) is built dark behind `PROJECT_RULES_ORGS` · next ALN-2b, ALN-4b, AUTO-7b and ALN-5b, then ALN-6, ALN-7 |
-| WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice, AUTO-3 (D131) and AUTO-7a are merged · AUTO-7b is built, dark behind `AUTO_PARK_ORGS`, in review (task 1411) · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 parts (a) and (b) are merged, and part (c) is open · next AUTO-8 and AUTO-6, then AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
+| WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · the owner answered ALN-Q1 to ALN-Q5 on 2026-11-06 (D192, `project_alignment.md` §14) · ALN-0 is this spec · ALN-1 (the durable trigger) is built dark: `ALIGN_JOBS_ORGS` is empty and the handler is a stub · ALN-2a built (migration 332, backend and chat tools, dark behind `DECISIONS_ORGS`) · ALN-4 (the pin: migration 339, routes and chat tools, no UI) is built dark behind `AUTHORITY_PINS_ORGS` · ALN-5a (the rules of a project: rule rows on the SW-31a store, migration 343, routes, no UI, no chat tool) is built dark behind `PROJECT_RULES_ORGS` · next ALN-2b, ALN-4b, AUTO-7b and ALN-5b, then ALN-6, ALN-7 |
+| WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice, AUTO-3 (D131) and AUTO-7a are merged · AUTO-7b is built, dark behind `AUTO_PARK_ORGS`, in review (task 1411) · the owner answered AUTO-Q1 on 2026-11-06 (D192, `proactive_agent.md` §12) · H-328 parts (a) and (b) are merged, and part (c) is open · next AUTO-8 and AUTO-6, then AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
 | WS-PJP | **Plan with Metorite**: the AI plans projects with the member. It finds the critical path, the critical chain and its buffer, the constraint and the risks, proposes the stages that fit the work, and shows three or more changes on one card | 🟢 active · started 2026-11-02 (D168) · M2 | `specs/project_planning.md` | Metorite: project "Projects/Tasks App", epic 1476 · reports to WS-PT · D99, D145, D168 · PJP-0 is this spec · next PJP-1 (pills and swatches), PJP-2 (no hand-off to projects-assistant) and PJP-4 in parallel · PJP-2 needs the owner's `TOOL_PACKS` line before its release |
 | WS-AP | **Waiting**: one list of every agent, approval and person that waits on a member, and of every person the member waits on | 🟢 active · started 2026-11-06 · M2 | `specs/waiting_on_me.md` | Metorite: project "Proactive Intelligence", epic 1615 · D12, D87, D103, D124, D171 and ALN-Q5 · AP-0 is this spec (task 1855) · the owner accepted AP-Q1 to AP-Q8 on 2026-11-06 · the owner answered AP-Q10 on 2026-11-06 at 10:33 UTC: a person of the circle only (AP-16) · AP-1a (task 1616) is built and dark on branch `pro-ap1`. AP-1b waits on the owner: D-EA-14 or AP-Q2 · next AP-BUG-1 (task 1857), then AP-8 (task 1858) · AP-15 (task 1875) routes a wait that no person owns |
 | WS-CO | **Chat organization**: topics, picking up a chat, one search, and the full-screen chat | 🟢 active · started 2026-11-02 (D162, D163) · M1 | `specs/chat_organization.md` · `specs/artifact_management.md` §6.0 | next CO-0 (AGENT-SAFE). CO-1 waits for the PZ-33b question on numbers, and its flip is owner-only |
@@ -5499,6 +5499,24 @@ A form that makes a new record stays a dialog, and so does a confirm.
 
 This extends D172.1 from tasks to CRM records. Fence: named per slice in `one_record_card.md` §6, advisory until each slice builds.
 
+### D184 — Salutations: the greeting for the time of day, forms of address, what others call the member, and celebrations (2026-11-06)
+
+Owner, 2026-11-06, with the four decisions answered on epic task 1820. Owner spec: `specs/personalization.md` §16. Metorite: tasks 1821 to 1826.
+
+```text
+"depending on the time of the day or night, when I am using the Metorite platform and chatting with the chat, it should give me an appropriate salutation that matches the time of the day. Also wanted to check if the system for reading drafts from the emails and other communications and seeing what other people call me in email can be used to also understand what exactly to call the user. In terms of their preference for naming, celebrations, etc. We should be covering Indian salutations like "Ji", "Gaaru" etc that covers all the different kinds of salutations from across the country."
+"Approve all four recommendations" (2026-11-06 05:41 UTC)
+```
+
+1. **When the chat greets.** In the first reply of a chat, and after 4 hours or more with no message in that chat. Never in the middle of a conversation. Late at night it says "Hello" or "Good evening", never "Good night". Q1 said "Hi". The PZ-39 preview that the owner approved on 2026-11-06 at 09:43 UTC (task 1823) says "Hello", and "Hello" stands. It greets in the member's language when the profile sets one. One table serves the server and My Day (a design detail, not an owner decision).
+2. **What other people call the member.** The assistant may learn it from received mail, as a suggestion only. It reads the first line of mail, keeps counts of each form and no mail text, and asks once. Nothing changes without a yes. A message from another person is still never the member's voice (§12.3).
+3. **Celebrations.** The assistant asks and never guesses. The member gives a birthday (day and month, no year) and picks festivals from an all-India list. One greeting on the day. No guess of religion or community, because that is sensitive personal data under the DPDP Act.
+4. **The default form of address.** With no choice made, the chat uses the name only. A form such as "ji" or "garu" comes after the member chooses it. The setup question offers "just my name" first. Then it offers the forms that fit the member's language, from a sourced list.
+
+D-PZ-39 to D-PZ-42 in `personalization.md` §16.8 are these four decisions. The D-PZ ids and the PZ slice numbers are two separate sequences.
+
+Fence: named per slice in `personalization.md` §16.7. `tests/unit/test_greeting_table.py` holds PZ-39. The fences of PZ-40 to PZ-43 are advisory until each slice builds.
+
 ### D185 — Status sets: the nearest owner wins, and every screen names it (2026-11-06)
 
 Owner answer on Metorite task 1796 ("A: approve all three recommendations"), 2026-11-06 04:52 UTC. Owner spec: `specs/projects_settings.md` §9. Board: **WS-42**. Metorite: tasks 1798, 1799, 1800, 1790 and 1791.
@@ -5509,9 +5527,9 @@ Owner answer on Metorite task 1796 ("A: approve all three recommendations"), 202
 
 1. **Inheritance: the nearest owner wins.** The model of migration 196 stays. A project uses the status set of the nearest node at or above it that owns one. Every screen names the owner: "Uses the statuses of User Stories & Use Cases (shared with 3)".
 2. **Settings, Statuses stays and is renamed "Space default statuses".** It shows the scope line ("27 projects use these") and lists each project that owns its own set, with a link.
-3. **The board gets a chip that names the set.** The chip reads "Statuses: Metorite (shared)", "Own statuses" or "From User Stories". A click opens the editor. The chip replaces the Statuses button of task 1792.
+3. ~~**The board gets a chip that names the set.** The chip reads "Statuses: Metorite (shared)", "Own statuses" or "From User Stories". A click opens the editor. The chip replaces the Statuses button of task 1792.~~ **Reversed by D191 (2026-11-07).** The board shows no status control.
 
-This supersedes the owner rule of 2026-08-31 (management controls stay out of the view chrome) for statuses only. Fields, tags and lifecycle stay behind the menu.
+~~This supersedes the owner rule of 2026-08-31 (management controls stay out of the view chrome) for statuses only. Fields, tags and lifecycle stay behind the menu.~~ D191 restores that rule for statuses too.
 
 **Re-check this number at merge.** The first merge wins a D-number, and the branches for D182 to D184 were open when this record was written.
 
@@ -5582,6 +5600,49 @@ The owner accepted each recommendation on 2026-11-07. Owner spec: `specs/agent_s
 **Re-check this number at merge.** The first merge wins a D-number. Re-check D187 at merge. The branch mt-90c28fde-pz44-tone-spec also holds a D187 (tone of voice), so the second of the two to merge takes the next free number.
 
 Fence: SBX-F17 to SBX-F22 of `agent_sandbox.md` §11, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D187 entries merge.
+
+### D191 — Projects settings is the one place to edit a space or a project, and the board edits nothing (2026-11-07)
+
+The owner asked on 2026-11-07, in chat, on a capture of the board's Statuses button. Then the owner accepted the recommendation ("go ahead with what you recommend would be best"). Owner spec: `specs/projects_settings.md` §10. Board: **WS-42**. Metorite: decision task 2168, slices PS-5 (task 2169) and PS-6 (task 2170), and PST-3 (task 1800, cut).
+
+```text
+"even on desktop, should the statuses editing be so accessible? we can probably have one central surface to edit all the settings, tags, etc for each project or subproject in one place to not crowd up the UI/UX."
+```
+
+1. **The board shows no status control.** No button and no chip. This reverses D185.3. The owner rule of 2026-08-31 (management controls stay out of the view chrome) binds for statuses again.
+2. **The pane edits a space or a project.** The second scope of D81.2 becomes "space or project". The picker lists the tree. Each section edits the set that the picked node uses, and names its owner.
+3. **One settings item in the row menu.** D81.4 changes. "Settings…" replaces Space settings, Statuses, Custom fields, Tags and Lifecycle policy. It opens the pane at that node.
+
+D185.1 and D185.2 stay. The scope line still names the owner of a set, in the Statuses editor and on the chat card. A board does not change a set, so it does not need the line.
+
+**Re-check this number at merge.** The first merge wins a D-number. D189 and D190 were open on other branches when this session wrote the record.
+
+Fence: `projectsSettings.test.ts` and the `projectMenu` tests, named per slice in `specs/projects_settings.md` §10.4. Advisory until PS-5 and PS-6 build them.
+
+### D192 — The owner's answers to ALN-Q1 to ALN-Q5 and AUTO-Q1: the recommended option of each (2026-11-06)
+
+Owner directive, 2026-11-06, in chat. Board: **WS-ALN** and **WS-AUTO**. Owning specs: `specs/project_alignment.md` §14 and `specs/proactive_agent.md` §12. Metorite: tasks 1370 to 1374 and 1395 hold each answer, and task 1829 records them here.
+
+```text
+"go ahead with your recomendations for all the decisions"
+```
+
+D160 and D161 left these six questions open, and the build ran on a working default for each. The owner chose the recommended option of each question. This record closes the "What stays open" items of D160 and D161. It changes no other rule of them.
+
+1. **ALN-Q1, who hears first.** The person hears first. The lead hears after 2 working days with no action, or at once for a hard rule. It sets ALN-9 and ALN-10.
+2. **ALN-Q2, a block.** A deviation warns by default. A lead can mark one rule "needs approval". Then ALN-12 holds a move to Done, and never a capture. ALN-12 is now in scope, and it waits for the eval gate of ALN-8.
+3. **ALN-Q3, the move of a task.** Metorite suggests the project of a task, and one tap accepts. It never moves a task by itself. It sets ALN-3.
+4. **ALN-Q4, the payer and the cap.** The org's AI allowance pays, under a daily cap for each org that an admin can see. A text that did not change is never checked twice. A check over the cap waits for the next day.
+5. **ALN-Q5, no score for a person.** Metorite keeps no score for each person, and checks no personal task. Counts are for each project and each rule. An org admin can turn the feature off.
+6. **AUTO-Q1, proactive Mira.** Each member gets it on day one, at the safest level. A member has at most 10 standing watches, and a higher plan can raise it. The member's own allowance pays for a watch.
+
+**What stays open.** The number of the ALN-Q4 cap. ALN-7 starts at 300 checks for each org each day. It measures the real cost in a week of shadow data on our own org. Then the owner sets the number.
+
+**What this does not change.** Each slice ships dark. A slice that changes what a member sees needs a D145 preview and the owner's approval. The flags that spend credits stay the owner's flip. An eval over USD 0.50 needs the owner's OK.
+
+**Re-check this number at merge.** The first merge wins a D-number. Other branches held D187 to D191 when task 1829 wrote this record.
+
+Fence: none new. The fences of `project_alignment.md` §13 and `proactive_agent.md` bind the slices that build these answers. Advisory.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
@@ -6242,13 +6303,12 @@ The fence refuses a new hash until the owner records
 to `_BASELINE` in that test defeats the fence. Treat that change as this gate.
 
 **(b) provisioning `GATEWAY_INTERNAL_TOKEN`** — a credential, and it must land
-in **both** `/opt/acb/app/.env` and the workbench's `.env.local`, because the
-Next BFF mirrors the same `LITELLM_MASTER_KEY` fallback
-(`workbench/control_plane/src/lib/gateway.ts:58-61`); a mismatch turns every
-proxied browser call anonymous. **`GATEWAY_REFUSE_LLM_KEY_IDENTITY` is a
-separate owner gate of its own** — it ships OFF, defaults to today's behaviour
-exactly, and flipping it while the token is unset **401s every signed-in
-member** ·
+in **both** `/opt/acb/app/.env` and the workbench's `.env.local`. A mismatch
+turns every proxied browser call anonymous. **WS-24b (2026-11-06) removed the
+`LITELLM_MASTER_KEY` fallback** on both sides, and the
+`GATEWAY_REFUSE_LLM_KEY_IDENTITY` flag with it. An unset token now fails closed:
+internal calls get 401. Production had the token set and distinct on
+2026-11-06, so it needs no env change. A new box must set the token ·
 **(c) installing/scheduling the BO-23 backup timer** — building the dump
 script, the manifest and the restore runbook is AGENT-SAFE; installing the
 systemd unit and pointing it at prod data is not ·

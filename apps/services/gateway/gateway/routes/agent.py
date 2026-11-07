@@ -704,13 +704,18 @@ _AGENT_REGISTRY: list[dict] = [
     },
     {
         "name": "app-builder",
+        # Owner, 2026-11-07 (task 1909): the chat gave a Studio build to this
+        # agent. The description now keeps every new app away from it. The
+        # tool stays, so the base count of the chat and the pack budget do
+        # not move (test_projects_packs.py pins them).
         "description": (
-            "App Workshop builder — turns chat into small internal web apps "
-            "(Custom Apps). Each Workshop session is bound to its app's "
-            "workspace; the agent edits index.html and the app.json manifest "
-            "and keeps the preview renderable after every round."
+            "Legacy App Workshop editor. Use it ONLY when the member names an "
+            "existing App Workshop app (an index.html app) and asks to change "
+            "that app. NEVER use it to build a new app, tracker, board, form "
+            "or tool: AI Studio builds those with the studio tools "
+            "(studio_plan, studio_draft, studio_save)."
         ),
-        "tags": ["apps", "builder", "workshop"],
+        "tags": ["workshop", "legacy"],
         "status": "live",
         # Copilot-SDK engine: the builder needs native file/shell tools to
         # edit the app workspace. BYOK-routed through the gateway tiers (no
@@ -2788,7 +2793,7 @@ async def _extract_run_memory(
                 name=f"agent:{agent_name}:{member[:20]}",
                 content=message[:500],
                 source_description=f"agent_{agent_name}",
-                group_id=member,
+                # KG-9: the bound tenant names the episode's group.
             )
         except Exception:  # an episode must never kill the relay
             _log.warning("agent.run_end_episode_failed", thread_id=thread_id[:12])
@@ -3154,6 +3159,8 @@ async def run_agent_stream_endpoint(
         agent_name=agent_name,
         thread_id=req.thread_id,
         shared=_room_is_shared,
+        # KG-9: the org compartment is this member's org, from the session.
+        organization_id=_room_org,
     )
 
     try:
