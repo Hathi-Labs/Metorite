@@ -7,8 +7,9 @@
 // - a DECISION lives in `connect.ts` and these cases run it;
 // - a WIRING (which page calls which decision) is held by a source scan of
 //   code with the comments stripped, so a comment cannot satisfy it.
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +18,7 @@ import { isKnownIcon } from "@/lib/icons";
 
 import { ConnectChoices } from "../components/ConnectChoices";
 import { ConnectEmptyState } from "../components/ConnectEmptyState";
+import { DisclosureStep } from "../components/DisclosureStep";
 import { ImportRangeStep } from "../components/ImportRangeStep";
 import { WorkspaceAdminSteps } from "../components/WorkspaceAdminHelp";
 import {
@@ -63,6 +65,14 @@ import {
   isFirstSyncPending,
   mapMailAppInfo,
   reconnectProvider,
+  ackLatch,
+  DISCLOSURE_COPY,
+  DISCLOSURE_PIN,
+  DISCLOSURE_SUBPROCESSORS,
+  DISCLOSURE_VERSION,
+  GOOGLE_G_MARK,
+  PRIVACY_POLICY_URL,
+  type ConnectProviderId,
   shouldPollFirstSync,
   GMAIL_RECONNECT_UNAVAILABLE,
   moveFieldCopy,
@@ -70,6 +80,9 @@ import {
   reconnectAction,
 } from "./connect";
 import { syncBanners } from "./onboarding";
+
+// next/font is a build step, so it has no function under vitest.
+vi.mock("next/font/google", () => ({ Roboto: () => ({ style: {} }) }));
 
 const EMAIL_APP = join(__dirname, "..");
 
@@ -176,6 +189,13 @@ describe("the callback page gives guided copy (done-when 4)", () => {
     expect(v.title).toMatch(/organization needs to approve/i);
     expect(v.body).toMatch(/IT admin/);
     expect(`${v.title} ${v.body}`).not.toMatch(/unexpected error/i);
+  });
+
+  // EM-G11a: the Note Taker and the digest send with no click, so this page
+  // must not say that Metorite sends mail only when told to.
+  it("consent_declined makes no promise about what Metorite sends", () => {
+    const body = callbackView({ ...base, error: "consent_declined" }).body;
+    expect(body).not.toMatch(/send|only as you/i);
   });
 
   it("consent_declined says the member cancelled, never 'unexpected error'", () => {
@@ -400,9 +420,9 @@ describe("the reconnect banner sends the mailbox as login_hint (done-when 6)", (
   });
 
   it("the banner passes the address of the account", () => {
-    expect(PAGE).toContain("handleConnect(action.provider, attentionAccount.emailAddress)");
+    expect(PAGE).toContain("handleConnect(reconnecting.provider, disclosure, reconnecting.address)");
     expect(callbackBody(PAGE, "handleConnect")).toContain(
-      "connectQuery(window.location.href, loginHint, importMonths)",
+      "connectQuery(window.location.href, loginHint, importMonths, disclosure)",
     );
   });
 
@@ -653,35 +673,36 @@ describe("the range step (EM-T6d item 2)", () => {
     expect(r.every((x) => x.pressed === undefined)).toBe(true);
   });
 
-  it("draws the title, the 6-month limit and the button to Microsoft", () => {
+  it("draws the title, the 6-month limit and the button to the next step", () => {
     const out = rangeStep(3);
     expect(out).toContain(IMPORT_RANGE_COPY.title);
     expect(IMPORT_RANGE_COPY.title).toBe("How much of your mail should Metorite import?");
     expect(IMPORT_RANGE_COPY.body).toMatch(/never imports mail older than 6 months/);
     expect(out).toContain("never imports mail older than 6 months");
-    expect(out).toContain("Continue to Microsoft");
+    expect(out).toContain(">Continue<");
+    expect(out).not.toContain("Continue to Microsoft");
     expect(out).toContain(">Back<");
     expect(out).toMatch(/role="radiogroup"/);
   });
 
-  it("a click on a provider opens the step with the stored range, and Continue keeps it and starts the sign-in", () => {
+  it("a click on a provider opens the step with the stored range, and Continue keeps it and opens the disclosure", () => {
     const src = codeOnly(read("components/ConnectChoices.tsx"));
     expect(src).toContain("onClick={() => p.available && setStep({ provider: p.id, months: storedImportMonths() })}");
     expect(src).toMatch(/if \(step\) \{\s*return \(\s*<ImportRangeStep/);
     expect(src).toMatch(
-      /onContinue=\{\(\) => \{\s*rememberImportMonths\(step\.months\);\s*onConnect\(step\.provider, step\.months\);\s*\}\}/,
+      /onContinue=\{\(\) => \{\s*rememberImportMonths\(step\.months\);\s*setStep\(\{ \.\.\.step, acknowledge: true \}\);\s*\}\}/,
     );
     expect(src).toMatch(/onBack=\{\(\) => \{\s*backFrom\.current = step\.provider;\s*setStep\(null\);\s*\}\}/);
     // The list click no longer starts the sign-in itself.
     expect(src).not.toMatch(/p\.available && onConnect\(/);
   });
 
-  it("both places pass the range to handleConnect, as its third argument", () => {
+  it("both places pass the range to handleConnect, as its fourth argument", () => {
     expect(PAGE).toContain(
-      "onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}",
+      "onConnect={(provider, importMonths, disclosure) => handleConnect(provider, disclosure, undefined, importMonths)}",
     );
     expect(PAGE).toMatch(
-      /<ConnectChoices\s+initialProvider=\{rangeStepProvider\}\s*onConnect=\{\(provider, importMonths\) => \{\s*setShowAddModal\(false\);\s*handleConnect\(provider, undefined, importMonths\);/,
+      /<ConnectChoices\s+initialProvider=\{rangeStepProvider\}\s*onConnect=\{\(provider, importMonths, disclosure\) => \{\s*setShowAddModal\(false\);\s*handleConnect\(provider, disclosure, undefined, importMonths\);/,
     );
   });
 
@@ -712,9 +733,9 @@ describe("the range goes to the gateway (EM-T6d item 3)", () => {
   });
 
   it("the reconnect target holds no import_months", () => {
-    // The banner passes the address and nothing else, so handleConnect gets
-    // no range, and connectQuery then sends none (D-EM-13).
-    expect(PAGE).toContain("onClick={() => handleConnect(action.provider, attentionAccount.emailAddress)}");
+    // The dialog of the banner passes the address and no range, so
+    // connectQuery sends none (D-EM-13).
+    expect(PAGE).toContain("handleConnect(reconnecting.provider, disclosure, reconnecting.address)");
     const q = new URLSearchParams(connectQuery("https://app.test/email", "ravi@contoso.test"));
     expect(q.get("login_hint")).toBe("ravi@contoso.test");
     expect(q.has("import_months")).toBe(false);
@@ -908,7 +929,7 @@ describe("the handlers of the range step (fix round 1, P3)", () => {
 
   it("Continue calls onContinue, and Back calls onBack", () => {
     const blocks = buttonBlocks();
-    const cont = blocks.filter((b) => b.includes("IMPORT_RANGE_COPY.continueTo(provider)"));
+    const cont = blocks.filter((b) => b.includes("IMPORT_RANGE_COPY.next"));
     const back = blocks.filter((b) => b.includes("IMPORT_RANGE_COPY.back"));
     expect(cont).toHaveLength(1);
     expect(back).toHaveLength(1);
@@ -1045,7 +1066,8 @@ describe("gmail-available-from-capability", () => {
     expect(rangeStepProviderFrom("?connect=1&provider=gmail", BOTH)).toBe("gmail");
     expect(retryTarget("gmail", BOTH)).toBe("/email?connect=1&provider=gmail");
     const step = choicesMarkup({ microsoft: true, gmail: true }, "gmail");
-    expect(step).toContain("Continue to Google");
+    expect(step).toContain(">Continue<");
+    expect(step).not.toContain("Continue to Google");
     expect(step).toMatch(/role="radiogroup"/);
   });
 
@@ -1395,7 +1417,7 @@ describe("reconnect-banner-names-the-provider", () => {
       kind: "button", provider: "microsoft", label: RECONNECT_LABEL.microsoft,
     });
     expect(PAGE).toMatch(
-      /const action = reconnectAction\(attentionAccount, liveConnect\);[\s\S]*?onClick=\{\(\) => handleConnect\(action\.provider, attentionAccount\.emailAddress\)\}\s*>\s*\{action\.label\}/,
+      /const action = reconnectAction\(attentionAccount, liveConnect\);[\s\S]*?onClick=\{\(\) => setReconnecting\(\{ provider: action\.provider, address: attentionAccount\.emailAddress \}\)\}\s*>\s*\{action\.label\}/,
     );
   });
 
@@ -1596,5 +1618,419 @@ describe("the mailbox limit (Q-MB-1, owner 2026-10-23)", () => {
     expect(v.body).toContain("Disconnect one");
     expect(v.body).not.toMatch(/\d/);
     expect(offersTryAgain(v.kind)).toBe(false);
+  });
+});
+
+// ── The disclosure before the sign-in (EM-G11a, §12.3.13.4) ────────────────
+
+function disclosure(provider: ConnectProviderId): string {
+  return renderToStaticMarkup(
+    createElement(DisclosureStep, { provider, onBack: () => {}, onAcknowledge: () => {} }),
+  );
+}
+
+/** All the words of one provider as one string. */
+function wordsOf(provider: ConnectProviderId): string {
+  const w = DISCLOSURE_COPY[provider];
+  return [w.title, w.lead, ...w.sections.flatMap((s) => [s.heading, s.body]), w.agree, w.button].join(" ");
+}
+
+/** The tag of the button that leaves for the provider. */
+function leaveButton(markup: string, label: string): string {
+  const end = markup.indexOf(label);
+  expect(end, label).toBeGreaterThan(-1);
+  return markup.slice(markup.lastIndexOf("<button", end), end);
+}
+
+describe("disclosure-names-each-data-class-the-ai-and-each-sub-processor", () => {
+  it("the Gmail words name each data class that Metorite reads", () => {
+    const words = wordsOf("gmail");
+    for (const thing of ["messages", "headers", "attachments", "labels", "drafts", "filters"]) {
+      expect(words, thing).toContain(thing);
+    }
+  });
+
+  it("each provider names each sub-processor, from the one list", () => {
+    expect(DISCLOSURE_SUBPROCESSORS).toEqual(["TypeSafe", "AI/ML API", "DeepSeek"]);
+    for (const provider of ["gmail", "microsoft"] as const) {
+      for (const name of DISCLOSURE_SUBPROCESSORS) expect(wordsOf(provider), name).toContain(name);
+    }
+  });
+
+  it("names no company that no live path reaches", () => {
+    // A key sits on the box, but no tier binds Gemini (§12.3.13.4.1).
+    for (const provider of ["gmail", "microsoft"] as const) {
+      expect(wordsOf(provider)).not.toMatch(/gemini/i);
+    }
+  });
+
+  it("says that DeepSeek processes the text in China under its own terms", () => {
+    for (const provider of ["gmail", "microsoft"] as const) {
+      expect(wordsOf(provider)).toContain("DeepSeek processes that text in China under its own terms");
+    }
+  });
+
+  it("promises nothing about what a sub-processor does with the text", () => {
+    // The privacy policy of DeepSeek lets it train on what it receives, so
+    // this sentence was false. Metorite can state only what Metorite does.
+    for (const provider of ["gmail", "microsoft"] as const) {
+      const words = wordsOf(provider);
+      expect(words).not.toContain("may not use your data");
+      expect(words).not.toMatch(/\bthey\b[^.]*\btrain\b/i);
+      expect(words).toContain("Metorite itself does not");
+    }
+  });
+
+  it("says what the AI does, and that a draft reply waits for the member", () => {
+    for (const provider of ["gmail", "microsoft"] as const) {
+      expect(wordsOf(provider)).toContain("A draft reply stays a draft until you send it.");
+    }
+  });
+
+  it("covers each AI feature, and says that Metorite learns and stores", () => {
+    for (const provider of ["gmail", "microsoft"] as const) {
+      const words = wordsOf(provider);
+      expect(words).toContain("the text that each other AI feature works on");
+      expect(words).toContain("mail you received, your drafts or mail you sent");
+      expect(words).toContain("learns your writing style from the mail you send");
+      expect(words).toContain("it stores what it learns");
+      expect(words).toContain("to fill in what those rules ask for");
+    }
+  });
+
+  it("says each way that mail leaves without a click", () => {
+    for (const provider of ["gmail", "microsoft"] as const) {
+      const words = wordsOf(provider);
+      expect(words).toContain("It sends mail when you ask it to");
+      expect(words).toContain("it sends the digest from your mailbox to you on its schedule");
+    }
+    // `dispatch.py`: G1 drafts from Gmail, and Outlook sends with no click.
+    expect(wordsOf("gmail")).toContain("saves each email that your meeting notes commit to as a draft here");
+    expect(wordsOf("gmail")).not.toContain("with no further step from you");
+    expect(wordsOf("microsoft")).toContain(
+      "AI writes each email that your meeting notes commit to, and Metorite sends it from here with no further step from you",
+    );
+    // `_default_email_account`: the other mailboxes of the member get none of it.
+    for (const provider of ["gmail", "microsoft"] as const) {
+      expect(wordsOf(provider)).toContain("if this is your default mailbox");
+    }
+  });
+
+  it("names the Note Taker setting that stops it, in the words of its screen", () => {
+    const modal = readFileSync(
+      join(EMAIL_APP, "..", "notes", "components", "NotesSettingsModal.tsx"),
+      "utf-8",
+    );
+    const label = /key: "auto_dispatch_emails",\s+label: "([^"]+)"/.exec(modal)?.[1];
+    expect(label).toBe("Send committed emails automatically");
+    expect(modal).toContain("Note Taker settings");
+    for (const provider of ["gmail", "microsoft"] as const) {
+      expect(wordsOf(provider)).toContain(`turn off “${label}” in Note Taker settings`);
+    }
+  });
+
+  it("says that a failed unsubscribe also makes a filter", () => {
+    expect(wordsOf("gmail")).toContain("or an unsubscribe does not work, Metorite creates a Gmail filter");
+    expect(wordsOf("microsoft")).toContain("does not work, Metorite creates an Outlook rule");
+  });
+
+  it("holds none of the sentences that the code proved false", () => {
+    const FALSE = [
+      "only when you tell it to",
+      "A draft is never sent unless you send it",
+      "a setting that you chose",
+      "a draft, an answer or a digest needs",
+      "writes your digest",
+      "in your default mailbox",
+      "Metorite lists the filters it made",
+    ];
+    for (const provider of ["gmail", "microsoft"] as const) {
+      for (const sentence of FALSE) expect(wordsOf(provider), sentence).not.toContain(sentence);
+    }
+  });
+
+  it("the step draws each section of the words, in order", () => {
+    const out = disclosure("gmail");
+    let at = -1;
+    for (const s of DISCLOSURE_COPY.gmail.sections) {
+      const next = out.indexOf(s.heading.replace("'", "&#x27;"));
+      expect(next, s.heading).toBeGreaterThan(at);
+      at = next;
+    }
+  });
+});
+
+describe("disclosure-links-the-privacy-page", () => {
+  it("links the privacy page in a new tab", () => {
+    expect(PRIVACY_POLICY_URL).toBe("https://metorite.com/privacy.html");
+    const out = disclosure("gmail");
+    expect(out).toContain(`href="${PRIVACY_POLICY_URL}"`);
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain('rel="noopener noreferrer"');
+    expect(out).toContain(DISCLOSURE_COPY.privacy);
+  });
+});
+
+describe("disclosure-version-changes-with-the-words", () => {
+  it("the pin holds the version and the hash of the words", () => {
+    const hash = createHash("sha256").update(JSON.stringify(DISCLOSURE_COPY)).digest("hex");
+    // A failure here means that the words changed. Write a NEW version, in
+    // this file's constant and in `GMAIL_DISCLOSURE_VERSION`, then a new pin.
+    // A new hash under the old version records a tick for words nobody saw.
+    expect(`${DISCLOSURE_VERSION}:${hash}`).toBe(DISCLOSURE_PIN);
+  });
+
+  it("the version is a value the BFF lets through", () => {
+    expect(DISCLOSURE_VERSION).toMatch(/^[a-z0-9-]{1,32}$/);
+  });
+});
+
+describe("every-handleConnect-caller-passes-the-disclosure", () => {
+  const code = codeOnly(PAGE);
+
+  it("the version is a required argument of handleConnect", () => {
+    expect(code).toContain(
+      "const handleConnect = useCallback((provider: ConnectProviderId, disclosure: string, loginHint?: string, importMonths?: number) => {",
+    );
+    expect(callbackBody(code, "handleConnect")).toContain(
+      "connectQuery(window.location.href, loginHint, importMonths, disclosure)",
+    );
+  });
+
+  it("lists each caller, and each passes the value the step handed up", () => {
+    const calls = [...code.matchAll(/(?<!const )handleConnect\(([^)]*)\)/g)].map((m) => m[1]).sort();
+    expect(calls).toEqual([
+      "provider, disclosure, undefined, importMonths",
+      "provider, disclosure, undefined, importMonths",
+      "reconnecting.provider, disclosure, reconnecting.address",
+    ]);
+  });
+
+  it("each caller sits behind a step", () => {
+    expect(code).toMatch(
+      /<ConnectEmptyState\s+onConnect=\{\(provider, importMonths, disclosure\) => handleConnect\(provider, disclosure, undefined, importMonths\)\}/,
+    );
+    expect(code).toMatch(
+      /<ConnectChoices\s+initialProvider=\{rangeStepProvider\}\s*onConnect=\{\(provider, importMonths, disclosure\) => \{\s*setShowAddModal\(false\);\s*handleConnect\(provider, disclosure, undefined, importMonths\);/,
+    );
+    expect(code).toMatch(
+      /<DisclosureStep\s[\s\S]*?onAcknowledge=\{\(disclosure\) => \{\s*setReconnecting\(null\);\s*handleConnect\(reconnecting\.provider, disclosure, reconnecting\.address\);/,
+    );
+  });
+
+  it("the reconnect banner opens the step, and never starts the sign-in", () => {
+    expect(code).toMatch(
+      /const action = reconnectAction\(attentionAccount, liveConnect\);[\s\S]*?onClick=\{\(\) => setReconnecting\(\{ provider: action\.provider, address: attentionAccount\.emailAddress \}\)\}\s*>\s*\{action\.label\}/,
+    );
+    expect(code).toMatch(/<Modal\s+open=\{reconnecting !== null\}/);
+  });
+
+  it("the step alone hands out the version, so no page can forge the tick", () => {
+    const named = walk(EMAIL_APP)
+      .filter((f) => /\bDISCLOSURE_VERSION\b/.test(codeOnly(readFileSync(f, "utf-8"))))
+      .map((f) => relative(EMAIL_APP, f).replace(/\\/g, "/"))
+      .sort();
+    expect(named).toEqual(["components/DisclosureStep.tsx", "lib/connect.ts"]);
+  });
+
+  it("ConnectChoices starts the sign-in only from the step", () => {
+    const src = codeOnly(read("components/ConnectChoices.tsx"));
+    expect([...src.matchAll(/onConnect\(/g)]).toHaveLength(1);
+    expect(src).toMatch(
+      /<DisclosureStep\s+provider=\{step\.provider\}[\s\S]*?onAcknowledge=\{\(disclosure\) => onConnect\(step\.provider, step\.months, disclosure\)\}/,
+    );
+  });
+
+  it("no other file of the app builds an authorize URL", () => {
+    const named = walk(EMAIL_APP)
+      .filter((f) => /\/authorize\b/.test(codeOnly(readFileSync(f, "utf-8"))))
+      .map((f) => relative(EMAIL_APP, f).replace(/\\/g, "/"));
+    expect(named).toEqual(["page.tsx"]);
+  });
+
+  it("page shortcuts stop while the reconnect dialog is up", () => {
+    expect(code).toContain("composeOpen || showAddModal || reconnecting || noAccounts");
+  });
+});
+
+describe("google-button-reads-continue-with-google", () => {
+  it("reads Continue with Google, and draws the real mark", () => {
+    expect(DISCLOSURE_COPY.gmail.button).toBe("Continue with Google");
+    const out = disclosure("gmail");
+    expect(leaveButton(out, "Continue with Google")).toContain(`src="${GOOGLE_G_MARK}"`);
+    expect(GOOGLE_G_MARK).toBe("/brand/google-g.svg");
+  });
+
+  it("the Outlook step draws the shared button and no Google mark", () => {
+    const out = disclosure("microsoft");
+    expect(out).toContain(DISCLOSURE_COPY.microsoft.button);
+    expect(out).not.toContain("Continue with Google");
+    expect(out).not.toContain(GOOGLE_G_MARK);
+    expect(leaveButton(out, "Continue to Microsoft")).toContain("cc-control");
+  });
+
+  it("holds Google's palette in each mode, and the allowlist names the file", () => {
+    const src = read("components/GoogleButton.tsx");
+    for (const hex of ["#131314", "#8E918F", "#E3E3E3", "#FFFFFF", "#747775", "#1F1F1F"]) {
+      expect(src, hex).toContain(hex);
+    }
+    expect(codeOnly(src)).toContain("style={roboto.style}");
+    expect(readFileSync(join(EMAIL_APP, "..", "layout.tsx"), "utf-8")).not.toContain("Roboto(");
+    const conformance = readFileSync(join(EMAIL_APP, "..", "..", "lib", "theme", "conformance.test.ts"), "utf-8");
+    expect(conformance).toMatch(/const COLOR_EXCEPTIONS[\s\S]*"app\/email\/components\/GoogleButton\.tsx":/);
+  });
+
+  it("no accent and no density reach the button", () => {
+    const src = codeOnly(read("components/GoogleButton.tsx"));
+    expect(src).not.toMatch(/cc-control|bg-primary|text-primary|ring-primary/);
+    // `rem` follows the density, so each size of the button is in px.
+    expect(src).not.toMatch(/\b(?:text-sm|text-xs|h-\d|px-\d|gap-\d)\b/);
+  });
+
+  it("the Gmail row and each step draw the same mark, and the row keeps its label", () => {
+    const gmail = CONNECT_PROVIDERS.find((p) => p.id === "gmail");
+    expect(gmail?.label).toBe("Google / Gmail");
+    expect(gmail?.mark).toBe(GOOGLE_G_MARK);
+    const list = choicesMarkup({ microsoft: true, gmail: true });
+    expect(list).toContain(`src="${GOOGLE_G_MARK}"`);
+    const closed = choicesMarkup({ microsoft: true, gmail: false });
+    expect(closed).toContain(`src="${GOOGLE_G_MARK}"`);
+    expect(choicesMarkup({ microsoft: true, gmail: true }, "gmail")).toContain(`src="${GOOGLE_G_MARK}"`);
+    // The mark never sits on the member's accent.
+    const tile = list.slice(list.lastIndexOf("<span", list.indexOf(GOOGLE_G_MARK)), list.indexOf(GOOGLE_G_MARK));
+    expect(tile).not.toContain("primary");
+  });
+
+  it("the file is Google's own mark with no plate, and it runs nothing", () => {
+    const file = join(EMAIL_APP, "..", "..", "..", "public", "brand", "google-g.svg");
+    const svg = readFileSync(file, "utf-8");
+    // The outline of the G, verbatim from Google's download (signin-assets.zip).
+    expect(svg).toContain("M29.3987 18.1814H19.9849V22.0445H25.3598");
+    expect(svg).toContain('viewBox="10 10 20 20"');
+    // The button plate of the download. Our button draws its own.
+    expect(svg).not.toContain("M4 0.5H36");
+    expect(svg).not.toMatch(/<script|javascript:|onload=|onerror=|href=/i);
+  });
+});
+
+describe("the-button-waits-for-the-box", () => {
+  it("the Google button starts disabled, and so does the Outlook one", () => {
+    expect(leaveButton(disclosure("gmail"), "Continue with Google")).toMatch(/\sdisabled=""/);
+    expect(leaveButton(disclosure("microsoft"), "Continue to Microsoft")).toMatch(/\sdisabled=""/);
+  });
+
+  it("the box starts clear, and only its tick enables the button", () => {
+    const CHECKED = /<input[^>]*\schecked=""/;
+    expect(disclosure("gmail")).not.toMatch(CHECKED);
+    // The pattern sees a ticked box, so the line above can fail.
+    expect(
+      renderToStaticMarkup(createElement("input", { type: "checkbox", defaultChecked: true })),
+    ).toMatch(CHECKED);
+    const src = codeOnly(read("components/DisclosureStep.tsx"));
+    expect(src).toContain("const [agreed, setAgreed] = useState(false);");
+    expect([...src.matchAll(/disabled=\{!agreed \|\| leaving\}/g)]).toHaveLength(2);
+    // A call that gets past the attribute still does nothing.
+    expect(src).toMatch(/latch\.fire\(agreed, \(\) => \{/);
+  });
+
+  it("the label of the box is one control with the box", () => {
+    const out = disclosure("gmail");
+    const id = /<input[^>]*id="([^"]+)"/.exec(out)?.[1];
+    expect(id).toBeTruthy();
+    expect(out).toContain(`for="${id}"`);
+  });
+});
+
+describe("the disclosure comes last, for each path (items 1 and 2)", () => {
+  it("Continue on the range step opens the disclosure, and Back returns to the range", () => {
+    const src = codeOnly(read("components/ConnectChoices.tsx"));
+    expect(src).toMatch(/if \(step\?\.acknowledge\) \{\s*return \(\s*<DisclosureStep/);
+    expect(src).toMatch(/onBack=\{\(\) => setStep\(\{ provider: step\.provider, months: step\.months \}\)\}/);
+  });
+
+  it("the retry reaches the step through the range step", () => {
+    expect(rangeStepProviderFrom("?connect=1&provider=gmail", BOTH)).toBe("gmail");
+    expect(codeOnly(read("components/ConnectChoices.tsx"))).toContain("step?.acknowledge");
+  });
+
+  it("the words end the flow in order: list, range, disclosure", () => {
+    const step = choicesMarkup({ microsoft: true, gmail: true }, "gmail");
+    expect(step).toContain(">Continue<");
+    expect(step).not.toContain("Continue with Google");
+  });
+
+  it("connectQuery carries the version, and a reconnect carries no range", () => {
+    const q = new URLSearchParams(connectQuery("https://app.test/email", "ravi@contoso.test", undefined, "v1"));
+    expect(q.get("disclosure")).toBe("v1");
+    expect(q.get("login_hint")).toBe("ravi@contoso.test");
+    expect(q.has("import_months")).toBe(false);
+    expect(new URLSearchParams(connectQuery("https://app.test/email")).has("disclosure")).toBe(false);
+  });
+
+  it("a refused connect offers Try again, which passes the step", () => {
+    const view = callbackView({ error: "disclosure_required", accountId: null, email: null, provider: "gmail" });
+    expect(view.kind).toBe("retry");
+    expect(offersTryAgain(view.kind)).toBe(true);
+  });
+
+  it("the old helpers that built a URL with no version are gone", () => {
+    const src = codeOnly(read("lib/api.ts"));
+    expect(src).not.toContain("getOAuthUrl");
+    expect(src).not.toContain("getOAuthAuthorizeUrl");
+  });
+});
+
+describe("the-button-fires-once", () => {
+  it("a double click acknowledges once", () => {
+    const latch = ackLatch();
+    let sends = 0;
+    const click = () => latch.fire(true, () => sends++);
+    click();
+    click();
+    expect(sends).toBe(1);
+  });
+
+  it("the box clear lets nothing through, and does not spend the latch", () => {
+    const latch = ackLatch();
+    let sends = 0;
+    latch.fire(false, () => sends++);
+    expect(sends).toBe(0);
+    latch.fire(true, () => sends++);
+    expect(sends).toBe(1);
+  });
+
+  it("a page that the browser restored can go again", () => {
+    const latch = ackLatch();
+    let sends = 0;
+    latch.fire(true, () => sends++);
+    latch.reset();
+    latch.fire(true, () => sends++);
+    expect(sends).toBe(2);
+  });
+
+  it("the step sends only through the latch, and opens it on a restored page", () => {
+    const src = codeOnly(read("components/DisclosureStep.tsx"));
+    expect(src).toContain("const [latch] = useState(ackLatch);");
+    expect(src).toMatch(/const go = \(\) =>\s*latch\.fire\(agreed, \(\) => \{/);
+    expect([...src.matchAll(/onAcknowledge\(/g)]).toHaveLength(1);
+    expect(src).toMatch(/if \(!e\.persisted\) return;\s*latch\.reset\(\);\s*setLeaving\(false\);/);
+  });
+});
+
+describe("the-spec-mirrors-the-words", () => {
+  it("§12.3.13.4.1 holds each string of DISCLOSURE_COPY", () => {
+    const spec = readFileSync(
+      join(EMAIL_APP, "..", "..", "..", "..", "..", "project-docs", "specs", "email_app_master_plan.md"),
+      "utf-8",
+    );
+    const at = spec.indexOf("###### 12.3.13.4.1");
+    expect(at).toBeGreaterThan(-1);
+    const flat = spec.slice(at, spec.indexOf("##### 12.3.13.5", at)).replace(/\s+/g, " ");
+    for (const provider of ["gmail", "microsoft"] as const) {
+      const w = DISCLOSURE_COPY[provider];
+      for (const s of [w.title, w.lead, ...w.sections.flatMap((x) => [x.heading, x.body]), w.agree, w.button]) {
+        expect(flat, s).toContain(s);
+      }
+    }
   });
 });

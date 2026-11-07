@@ -1332,25 +1332,8 @@ const WORKBENCH_URL =
   process.env.NEXT_PUBLIC_WORKBENCH_URL ||
   "http://localhost:3001";
 
-// Both helpers return a BFF path, never a gateway URL. `/email/oauth/…` on the
-// gateway is gated (deliberately — the handler binds the mailbox to the caller),
-// and a top-level browser navigation cannot carry the Bearer or X-User-Email
-// that gate needs. api/email/oauth/[provider]/authorize authenticates the
-// caller server-side and re-issues the provider's 302.
-
-export function getOAuthUrl(provider: "gmail" | "microsoft"): string {
-  return `/api/email/oauth/${provider}/authorize`;
-}
-
-export function getOAuthAuthorizeUrl(
-  provider: "gmail" | "microsoft",
-  redirectAfter?: string
-): string {
-  const params = new URLSearchParams();
-  if (redirectAfter) params.set("redirect_after", redirectAfter);
-  const qs = params.toString();
-  return `/api/email/oauth/${provider}/authorize${qs ? `?${qs}` : ""}`;
-}
+// The authorize URL has one builder, `handleConnect` in `page.tsx`. Only that
+// path carries the acknowledged disclosure (EM-G11a item 6).
 
 export function getOAuthCallbackUrl(): string {
   return `${WORKBENCH_URL}/email/oauth/callback`;

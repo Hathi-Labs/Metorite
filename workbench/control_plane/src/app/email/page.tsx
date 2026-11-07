@@ -25,6 +25,7 @@ import { ComposePanel } from "./components/ComposePanel";
 import { TaskCaptureModal } from "./components/TaskCaptureModal";
 import { AutomationView } from "./components/automation/AutomationView";
 import { ConnectChoices } from "./components/ConnectChoices";
+import { DisclosureStep } from "./components/DisclosureStep";
 import { ConnectEmptyState } from "./components/ConnectEmptyState";
 import { DisconnectDialog } from "./components/DisconnectDialog";
 import { MailboxAvatar, MailboxChip } from "./components/MailboxChip";
@@ -51,6 +52,7 @@ import {
   firstSyncTick,
   FIRST_SYNC_POLL_MS,
   reconnectAction,
+  RECONNECT_LABEL,
   rememberMailboxesBeforeConnect,
   shouldPollFirstSync,
   type ConnectProviderId,
@@ -81,6 +83,8 @@ export default function EmailPage() {
   const [leftOpen, setLeftOpen] = useState(true);
   const [listOpen, setListOpen] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+  // The mailbox the reconnect banner opened the disclosure for (EM-G11a item 2).
+  const [reconnecting, setReconnecting] = useState<{ provider: ConnectProviderId; address: string } | null>(null);
   // The mailbox the disconnect dialog asks about. `null` closes the dialog.
   const [disconnecting, setDisconnecting] = useState<EmailAccount | null>(null);
   // The mailbox whose name and colour the member edits (EM-T8b).
@@ -442,7 +446,7 @@ export default function EmailPage() {
     [selectFolder, isMobile, closeDrawer]
   );
 
-  const handleConnect = useCallback((provider: ConnectProviderId, loginHint?: string, importMonths?: number) => {
+  const handleConnect = useCallback((provider: ConnectProviderId, disclosure: string, loginHint?: string, importMonths?: number) => {
     // Navigate to the BFF, never straight at the gateway host. A top-level
     // navigation carries no Bearer and no X-User-Email (the session cookie is
     // on this origin, not api.*), so the gated authorize route 401s every
@@ -457,10 +461,14 @@ export default function EmailPage() {
     // (EM-T6d). The reconnect banner passes none, because a reconnect keeps
     // the range of the mailbox (D-EM-13).
     //
+    // `disclosure` is the version the member acknowledged in `DisclosureStep`.
+    // It comes only from that step, so each caller sits behind it (EM-G11a).
+    // The gateway refuses a Gmail connect without it.
+    //
     // connectQuery uses URLSearchParams, which already percent-encodes —
     // don't pre-encode or redirect_after ends up double-encoded and the
     // callback treats it as a relative path (→ /email/oauth/https%3A%2F%2F… 404).
-    const query = connectQuery(window.location.href, loginHint, importMonths);
+    const query = connectQuery(window.location.href, loginHint, importMonths, disclosure);
     // An ADD (no hint) keeps the ids of the mailboxes, so the callback can
     // tell a mailbox that was already connected (EM-T8c, §11.6 case 2). A
     // deliberate reconnect names its mailbox and stores none.
@@ -730,7 +738,7 @@ export default function EmailPage() {
       // Don't hijack typing, modifier combos, or when a modal owns the keys.
       const typing = isTypingTarget(e.target as HTMLElement | null);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingAccount) return;
+      if (composeOpen || showAddModal || reconnecting || noAccounts || disconnecting || editingMailbox || removingAccount) return;
       // An automation scene (Assistant / Chat / Email Cleaner / …) replaces the
       // inbox panes and owns its own shortcuts — don't act on the background
       // selectedEmail while one is open.
@@ -778,7 +786,7 @@ export default function EmailPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [
     selectedEmail, navigateList, openCompose, handleToolbarAction,
-    updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
+    updateEmail, deleteEmail, composeOpen, showAddModal, reconnecting, noAccounts,
     disconnecting, editingMailbox, removingAccount, automationFeature,
   ]);
 
@@ -787,7 +795,7 @@ export default function EmailPage() {
   if (noAccounts) {
     return (
       <ConnectEmptyState
-        onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}
+        onConnect={(provider, importMonths, disclosure) => handleConnect(provider, disclosure, undefined, importMonths)}
         initialProvider={rangeStepProvider}
         availability={connectProviders}
         loadError={error}
@@ -1154,7 +1162,7 @@ export default function EmailPage() {
                   size="sm"
                   icon="RefreshCw"
                   className="flex-shrink-0"
-                  onClick={() => handleConnect(action.provider, attentionAccount.emailAddress)}
+                  onClick={() => setReconnecting({ provider: action.provider, address: attentionAccount.emailAddress })}
                 >
                   {action.label}
                 </Button>
@@ -1422,17 +1430,42 @@ export default function EmailPage() {
         icon="Mail"
         size="sm"
       >
-        <div className="px-3 py-3">
+        <div className="min-h-0 overflow-y-auto px-3 py-3">
           <ConnectChoices
             initialProvider={rangeStepProvider}
-            onConnect={(provider, importMonths) => {
+            onConnect={(provider, importMonths, disclosure) => {
               setShowAddModal(false);
-              handleConnect(provider, undefined, importMonths);
+              handleConnect(provider, disclosure, undefined, importMonths);
             }}
             onDone={() => setShowAddModal(false)}
             availability={connectProviders}
           />
         </div>
+      </Modal>
+
+      {/* Reconnect a mailbox (EM-G11a item 2). The banner opens this, and the
+          redirect follows the button of the step. A reconnect passes no range
+          (D-EM-13), and the address is the hint for the sign-in page. */}
+      <Modal
+        open={reconnecting !== null}
+        onClose={() => setReconnecting(null)}
+        title={reconnecting ? RECONNECT_LABEL[reconnecting.provider] : ""}
+        icon="RefreshCw"
+        size="sm"
+      >
+        {reconnecting && (
+          <div className="min-h-0 overflow-y-auto px-3 py-3">
+            <DisclosureStep
+              provider={reconnecting.provider}
+              dialog
+              onBack={() => setReconnecting(null)}
+              onAcknowledge={(disclosure) => {
+                setReconnecting(null);
+                handleConnect(reconnecting.provider, disclosure, reconnecting.address);
+              }}
+            />
+          </div>
+        )}
       </Modal>
 
       <MailboxEditDialog

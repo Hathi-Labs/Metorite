@@ -66,6 +66,13 @@ const AUTHORIZE_TIMEOUT_MS = 30_000;
 const IMPORT_MONTHS = /^[0-6]$/;
 
 /**
+ * The version of the disclosure the member acknowledged (EM-G11a item 6). The
+ * gateway is the authority, and it refuses a Gmail connect without the current
+ * one. This keeps anything that is not a plain version off the hop.
+ */
+const DISCLOSURE = /^[a-z0-9-]{1,32}$/;
+
+/**
  * Hand a failure to the callback page rather than rendering JSON into the
  * address bar — this is a navigation, and the page already knows how to explain
  * an OAuth failure (it is where the gateway's own callback errors land).
@@ -116,14 +123,15 @@ export async function GET(
 
   const headers = await gatewayHeaders();
 
-  // Only `redirect_after`, `login_hint` and `import_months` are forwarded; see
+  // Only `redirect_after`, `login_hint`, `import_months` and `disclosure` are
+  // forwarded; see
   // the header comment on `user_email`. `login_hint` is a HINT for the
   // provider's sign-in page (the reconnect banner sends the mailbox address).
   // The gateway drops a value that does not parse as one address, and the
   // callback still binds the member of the session, so it can never choose
   // whose mailbox is attached (EM-T3a item 3, EM-T3b). `import_months` is the
   // range of the first import, and only a value that matches IMPORT_MONTHS
-  // makes the hop (EM-T6d item 3).
+  // makes the hop (EM-T6d item 3). `disclosure` is the same, against DISCLOSURE.
   const forwarded = new URLSearchParams();
   const redirectAfter = req.nextUrl.searchParams.get("redirect_after");
   if (redirectAfter) forwarded.set("redirect_after", redirectAfter);
@@ -132,6 +140,10 @@ export async function GET(
   const importMonths = req.nextUrl.searchParams.get("import_months");
   if (importMonths !== null && IMPORT_MONTHS.test(importMonths)) {
     forwarded.set("import_months", importMonths);
+  }
+  const disclosure = req.nextUrl.searchParams.get("disclosure");
+  if (disclosure !== null && DISCLOSURE.test(disclosure)) {
+    forwarded.set("disclosure", disclosure);
   }
   const qs = forwarded.toString();
 
