@@ -43,7 +43,7 @@ This spec does not add a second app model. It grows the AI Studio package (`ai_s
 5. **No app-local look.** A package names no colour, font or pixel size (`ai_studio.md` §1.2).
 6. **No move without consent.** The AI never moves a stable region (§9.2).
 7. **No schema change for each tenant.** A field extension is a row, never a column (§8.3).
-8. **No cross-company marketplace.** That needs its own spec.
+8. **No cross-company marketplace.** That needs its own spec. A `system` install from reviewed repo code is not a marketplace (D187, `agent_sandbox.md` §6.8).
 
 ---
 
@@ -284,6 +284,8 @@ A package names what it needs: a connection, a feature, or another package. A mi
 | `org` | Every member with the feature | The owner asks. A holder of `studio:publish` reads the manifest diff and approves one version (`ai_studio.md` J2, D180) |
 | `group:<slug>` | The active members of the group | The owner, who is a member of the group, with `studio:publish` (D180 item 3) |
 | `private` | The owner, and each person the owner shares with by name | Any member with `feature:studio`. A share by name needs `studio:publish` (D180 item 3) |
+
+**A package that holds code (D187).** A package with a member-authored logic module (`ai_studio.md` B5) runs code for each viewer. So each install for named people, a group or the org needs the `studio:publish` approval of one version first (`agent_sandbox.md` §8.1).
 
 ### 6.2 The lifecycle of an app made in chat (D147, PKG-Q2)
 
