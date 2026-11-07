@@ -5499,6 +5499,24 @@ A form that makes a new record stays a dialog, and so does a confirm.
 
 This extends D172.1 from tasks to CRM records. Fence: named per slice in `one_record_card.md` §6, advisory until each slice builds.
 
+### D184 — Salutations: the greeting for the time of day, forms of address, what others call the member, and celebrations (2026-11-06)
+
+Owner, 2026-11-06, with the four decisions answered on epic task 1820. Owner spec: `specs/personalization.md` §16. Metorite: tasks 1821 to 1826.
+
+```text
+"depending on the time of the day or night, when I am using the Metorite platform and chatting with the chat, it should give me an appropriate salutation that matches the time of the day. Also wanted to check if the system for reading drafts from the emails and other communications and seeing what other people call me in email can be used to also understand what exactly to call the user. In terms of their preference for naming, celebrations, etc. We should be covering Indian salutations like "Ji", "Gaaru" etc that covers all the different kinds of salutations from across the country."
+"Approve all four recommendations" (2026-11-06 05:41 UTC)
+```
+
+1. **When the chat greets.** In the first reply of a chat, and after 4 hours or more with no message in that chat. Never in the middle of a conversation. Late at night it says "Hello" or "Good evening", never "Good night". Q1 said "Hi". The PZ-39 preview that the owner approved on 2026-11-06 at 09:43 UTC (task 1823) says "Hello", and "Hello" stands. It greets in the member's language when the profile sets one. One table serves the server and My Day (a design detail, not an owner decision).
+2. **What other people call the member.** The assistant may learn it from received mail, as a suggestion only. It reads the first line of mail, keeps counts of each form and no mail text, and asks once. Nothing changes without a yes. A message from another person is still never the member's voice (§12.3).
+3. **Celebrations.** The assistant asks and never guesses. The member gives a birthday (day and month, no year) and picks festivals from an all-India list. One greeting on the day. No guess of religion or community, because that is sensitive personal data under the DPDP Act.
+4. **The default form of address.** With no choice made, the chat uses the name only. A form such as "ji" or "garu" comes after the member chooses it. The setup question offers "just my name" first. Then it offers the forms that fit the member's language, from a sourced list.
+
+D-PZ-39 to D-PZ-42 in `personalization.md` §16.8 are these four decisions. The D-PZ ids and the PZ slice numbers are two separate sequences.
+
+Fence: named per slice in `personalization.md` §16.7. `tests/unit/test_greeting_table.py` holds PZ-39. The fences of PZ-40 to PZ-43 are advisory until each slice builds.
+
 ### D185 — Status sets: the nearest owner wins, and every screen names it (2026-11-06)
 
 Owner answer on Metorite task 1796 ("A: approve all three recommendations"), 2026-11-06 04:52 UTC. Owner spec: `specs/projects_settings.md` §9. Board: **WS-42**. Metorite: tasks 1798, 1799, 1800, 1790 and 1791.
@@ -6267,13 +6285,12 @@ The fence refuses a new hash until the owner records
 to `_BASELINE` in that test defeats the fence. Treat that change as this gate.
 
 **(b) provisioning `GATEWAY_INTERNAL_TOKEN`** — a credential, and it must land
-in **both** `/opt/acb/app/.env` and the workbench's `.env.local`, because the
-Next BFF mirrors the same `LITELLM_MASTER_KEY` fallback
-(`workbench/control_plane/src/lib/gateway.ts:58-61`); a mismatch turns every
-proxied browser call anonymous. **`GATEWAY_REFUSE_LLM_KEY_IDENTITY` is a
-separate owner gate of its own** — it ships OFF, defaults to today's behaviour
-exactly, and flipping it while the token is unset **401s every signed-in
-member** ·
+in **both** `/opt/acb/app/.env` and the workbench's `.env.local`. A mismatch
+turns every proxied browser call anonymous. **WS-24b (2026-11-06) removed the
+`LITELLM_MASTER_KEY` fallback** on both sides, and the
+`GATEWAY_REFUSE_LLM_KEY_IDENTITY` flag with it. An unset token now fails closed:
+internal calls get 401. Production had the token set and distinct on
+2026-11-06, so it needs no env change. A new box must set the token ·
 **(c) installing/scheduling the BO-23 backup timer** — building the dump
 script, the manifest and the restore runbook is AGENT-SAFE; installing the
 systemd unit and pointing it at prod data is not ·

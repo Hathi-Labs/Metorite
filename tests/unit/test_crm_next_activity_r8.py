@@ -67,8 +67,6 @@ async def _call(
     from acb_auth import get_current_user
     from acb_common import db as shared
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
-    from fastapi import FastAPI
-    from gateway.routes import crm as crm_package
 
     user = _admin(org)
 
@@ -80,8 +78,9 @@ async def _call(
         if statements is not None:
             statements.append(statement)
 
-    app = FastAPI()
-    app.include_router(crm_package.router)
+    from tests.unit._crm_app import crm_app
+
+    app = crm_app()
     app.dependency_overrides[get_current_user] = _caller
     scope = clear_tenant()
     try:

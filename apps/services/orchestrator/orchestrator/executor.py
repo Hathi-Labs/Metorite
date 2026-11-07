@@ -5793,11 +5793,10 @@ async def _run_agent_inner(
                 gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
+                # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
                 gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "")
-                    or getattr(settings, "litellm_master_key", "")
-                    or "sk-local"
-                ),
+                    getattr(settings, "gateway_internal_token", "") or ""
+                ).strip(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -6897,11 +6896,10 @@ async def run_agent_stream(
                 gateway_url=str(
                     getattr(settings, "gateway_base_url", "http://127.0.0.1:8000")
                 ),
+                # GATEWAY_INTERNAL_TOKEN only, with no LLM-key rung (WS-24b).
                 gateway_token=str(
-                    getattr(settings, "gateway_internal_token", "")
-                    or getattr(settings, "litellm_master_key", "")
-                    or "sk-local"
-                ),
+                    getattr(settings, "gateway_internal_token", "") or ""
+                ).strip(),
                 # D85, two halves. ``shell_tools_withheld``: the injected
                 # shell tools are withheld (a cover may lift it).
                 # ``host_shell_refused``: the Copilot CLI's own shell, which
@@ -7190,12 +7188,12 @@ async def run_agent_stream(
                     getattr(settings, "litellm_base_url", "")
                     or "http://127.0.0.1:8080"
                 ).rstrip("/")
-                # Internal-token precedence must match require_internal_auth
-                # (gateway_internal_token → litellm_master_key); a divergence
-                # otherwise 401s the BYOK /v1 call and surfaces on the Copilot
-                # session as "Authorization error, run /login".
+                # A /v1 call, so the LLM API key and NEVER the identity token
+                # (`Settings.llm_api_key`, the key of _model_resolution).
+                # require_llm_api_auth accepts it. WS-24b removed the
+                # identity token from this provider config.
                 _gw_key = (
-                    getattr(settings, "gateway_internal_token", "")
+                    getattr(settings, "llm_api_key", "")
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
                 ).strip()
@@ -8919,7 +8917,7 @@ async def run_agent_stream(
                 # save that did not happen (orchestrator/setup_tokens.py).
                 if any(v.strip() for _, _k, v in raw_matches):
                     _GATEWAY_URL = settings.gateway_base_url if hasattr(settings, "gateway_base_url") else "http://127.0.0.1:8000"
-                    _token = getattr(settings, "gateway_internal_token", "") or getattr(settings, "litellm_master_key", "")
+                    _token = (getattr(settings, "gateway_internal_token", "") or "").strip()
                     try:
                         import httpx
 
