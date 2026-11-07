@@ -50,7 +50,7 @@ Nothing here ships to the VPS.
   `plan-guard.test.mjs` at the same time.
 - **The loop ends at a merge, a watched `deploy` run and a staging check.**
   Root `CLAUDE.md` §3a and §4 own that rule. A merge moves only the `staging`
-  ref, and production moves once a day. An agent cannot undo a production
+  ref, and production moves three times a day (D194). An agent cannot undo a production
   migration (R6), so do not add a step here that deploys to production.
 - **Subagents are one level deep.** A worker cannot dispatch workers, so all
   orchestration lives in `commands/next-ticket.md` or in the main session.
