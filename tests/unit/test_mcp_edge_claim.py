@@ -383,18 +383,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(w._URL)
     dedicated = f"{admin_url.database}_mcpclaim"
-    w._drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    w._clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql",
-                  "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(w._GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            w._exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='{_APP_ROLE}')"
@@ -978,6 +969,70 @@ class TestTheClaimGuardsAndReach:
         assert _text(result) == "Task not found."
         assert _assignees(live, task) == []
         assert _activities(live, task) == []
+
+
+class TestAClaimOfAnEpicWarns:
+    """SW-63 (agent_coordination.md §5.10). R8, through the edge and the real
+    gateway. The mutations (R7), in ``routes/projects/tasks.py``
+    ``_warn_open_subtasks``:
+
+    * SW63-M1. Count a closed child: ``test_closed_subtasks_are_not_counted``.
+    * SW63-M2. Drop the visibility clause:
+      ``test_a_subtask_hidden_from_the_caller_is_not_counted``.
+    * SW63-M3. Refuse the claim: ``test_a_parent_with_open_subtasks_claims_and_warns``.
+    """
+
+    pytestmark = _DB_GATE
+
+    async def test_a_parent_with_open_subtasks_claims_and_warns(self, live):
+        parent = _task(live, live.team, live.s.todo, "epic")
+        kids = [_task(live, live.team, live.s.todo, f"kid {i}", parent=parent)
+                for i in range(2)]
+        result = await _claim(live, parent)
+        assert result["isError"] is False, result
+        body = result["structuredContent"]
+        assert body["warning"] == (
+            "This task has 2 open subtasks. Claim the slice, not the epic.")
+        assert sorted(body["open_subtasks"]) == sorted(kids)
+        assert body["moved"] is True
+        assert _assignees(live, parent) == [MEMBER]
+
+    async def test_a_leaf_has_no_warning(self, live):
+        leaf = _task(live, live.team, live.s.todo, "leaf")
+        body = (await _claim(live, leaf))["structuredContent"]
+        assert "warning" not in body and "open_subtasks" not in body
+
+    async def test_closed_subtasks_are_not_counted(self, live):
+        parent = _task(live, live.team, live.s.todo, "epic closed")
+        open_kid = _task(live, live.team, live.s.todo, "open", parent=parent)
+        _task(live, live.team, live.s.done, "done", parent=parent)
+        _task(live, live.team, live.s.cancelled, "dropped", parent=parent)
+        body = (await _claim(live, parent))["structuredContent"]
+        assert body["warning"].startswith("This task has 1 open subtasks.")
+        assert body["open_subtasks"] == [open_kid]
+
+    async def test_all_subtasks_closed_gives_no_warning(self, live):
+        parent = _task(live, live.team, live.s.todo, "epic all closed")
+        _task(live, live.team, live.s.done, "done", parent=parent)
+        body = (await _claim(live, parent))["structuredContent"]
+        assert "warning" not in body
+
+    async def test_a_subtask_hidden_from_the_caller_is_not_counted(self, live):
+        parent = _task(live, live.team, live.s.todo, "epic hidden")
+        seen = _task(live, live.team, live.s.todo, "seen", parent=parent)
+        # Another member's personal project: the caller cannot read it.
+        _task(live, live.personal.other, live.s.other_todo, "secret", parent=parent)
+        body = (await _claim(live, parent))["structuredContent"]
+        assert body["warning"].startswith("This task has 1 open subtasks.")
+        assert body["open_subtasks"] == [seen]
+
+    async def test_the_ids_stop_at_five_and_the_count_does_not(self, live):
+        parent = _task(live, live.team, live.s.todo, "epic many")
+        for i in range(7):
+            _task(live, live.team, live.s.todo, f"k{i}", parent=parent)
+        body = (await _claim(live, parent))["structuredContent"]
+        assert body["warning"].startswith("This task has 7 open subtasks.")
+        assert len(body["open_subtasks"]) == 5
 
 
 # ═══════════════════════════════════════════════════════════════════════════
