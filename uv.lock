@@ -355,6 +355,7 @@ source = { editable = "apps/services/agent_edge" }
 dependencies = [
     { name = "acb-auth" },
     { name = "acb-common" },
+    { name = "acb-playbook" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "uvicorn", extra = ["standard"] },
@@ -364,6 +365,7 @@ dependencies = [
 requires-dist = [
     { name = "acb-auth", editable = "packages/acb_auth" },
     { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-playbook", editable = "packages/acb_playbook" },
     { name = "fastapi", specifier = ">=0.141" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54" },

@@ -520,13 +520,14 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
                                                       session=session))
         return _result(request_id, {"tools": listed})
     if method == "prompts/list":
-        return _result(request_id, {"prompts": prompts.listed(caller.scopes)})
+        return _result(request_id, {"prompts": prompts.listed(caller.scopes, caller.lookup.organization_id)})
     if method == "prompts/get":
         try:
-            result = prompts.get(caller.scopes, params)
+            result = prompts.get(caller.scopes, params, caller.lookup.organization_id)
         except prompts.PromptRefused as refused:
             return _rpc_error(request_id, INVALID_PARAMS, refused.message)
-        _log.info("agent_edge.prompt_get", prompt=prompts.PROMPT_NAME,
+        _log.info("agent_edge.prompt_get",
+                  prompt=prompts.logged_name(params),
                   connection_id=caller.lookup.connection_id)
         return _result(request_id, result)
     if tool is None:
