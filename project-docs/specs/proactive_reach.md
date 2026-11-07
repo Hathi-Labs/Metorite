@@ -353,6 +353,8 @@ with FORCE ROW LEVEL SECURITY at the `get_db()` seam (R5).
 | `created_at`, `sent_at`, `outcome_at` | Times |
 | `feedback` | `useful`, `not_here`, `muted` or null (§10) |
 
+**Amended 2026-11-06 (BR-5 slice 2b-1, owner).** `reach_outbox.feedback` rates a whole message. The rating of one card for one exception rule lives on `reach_signal_log` (`rule_id`, `feedback`, `feedback_at`, migration 350). `core_brief.md` §6 owns it. RE-6 reads it and adds no second table.
+
 **Indexes.** `(state, not_before)` for the workers. `(organization_id,
 member_email, created_at)` for the budget and the report. A unique index on
 `dedupe_key`.

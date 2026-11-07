@@ -393,7 +393,23 @@ jobs:
       # fences are advisory, so they must not hold the nightly release, and a
       # timing flake gets one rerun. The safety fences still gate here.
       - name: Run unit tests
-        run: uv run python -m pytest tests/unit/ -x -v --reruns 1 $(python3 scripts/fences.py pytest-ignore)
+        run: uv run python -m pytest tests/unit/ -x -v --reruns 1 $(python3 scripts/fences.py pytest-ignore) --junitxml=junit/test.xml -o junit_family=xunit1
+
+      # ── Every R8 skip here runs in the R8 gate (CIV-4c) ─────────────────
+      # This job has no database, so each R8 suite skips here. The R8 gate
+      # runs only the `affected_tests.py --r8` list. A file that skips for an
+      # R8 reason and is not in the list runs nowhere, so this step fails.
+      # No `if:`: it runs only after a green unit run, and a red one stays
+      # red. An empty list or a report with no test fails it too.
+      - name: Every R8 skip is in the release gate's R8 list
+        run: |
+          set -euo pipefail
+          python3 scripts/affected_tests.py --r8 > r8_files.txt
+          if ! grep -q . r8_files.txt; then
+            echo "::error title=R8 list empty::affected_tests.py --r8 found no file. The check stops."
+            exit 1
+          fi
+          python3 scripts/ci_unit_guard.py r8-covered --junit junit --list r8_files.txt
 
   # ── The R8 gate of a release (CIV-4b, spec ci_velocity.md §5) ──────────
   #
@@ -645,6 +661,7 @@ jobs:
               tests/unit/test_user_settings_per_org_r8.py \
               tests/unit/test_auth_me_shell_r8.py \
               tests/unit/test_h6_identity_shadow.py \
+              tests/unit/test_member_of_org_read.py \
               tests/unit/test_h6_rbac_rekey.py \
               tests/unit/test_email_otp_token.py \
               tests/unit/test_invited_member_promotion.py \
@@ -674,11 +691,15 @@ jobs:
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
               tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_shell_layout_r8.py \
+              tests/unit/test_package_disposal_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
               tests/unit/test_crm_change_history.py \
               tests/unit/test_auto_park.py \
+              tests/unit/test_projects_status_set_read_r8.py \
+              tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_staging_export.py
 
   # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────

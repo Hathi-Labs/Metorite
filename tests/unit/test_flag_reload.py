@@ -63,7 +63,8 @@ def env(tmp_path, monkeypatch):
 def test_only_per_org_and_mode_flags_reload() -> None:
     assert len(fr.RELOADABLE) >= 20
     assert all(re.fullmatch(r"[A-Z0-9_]+_(ORGS|MODES)", k) for k in fr.RELOADABLE)
-    for key in ("CRM_ORGS", "TOOL_PACKS_ORGS", "DECIDE_FEATURE_MODES", "crm_orgs"):
+    for key in ("CRM_ORGS", "TOOL_PACKS_ORGS", "DECIDE_FEATURE_MODES", "crm_orgs",
+                "STATUS_SET_GUARD_ORGS", "status_set_guard_orgs"):
         assert fr.reloadable(key), key
     for key in ("DATABASE_URL", "PGPASSWORD", "PGSSLMODE", "CALENDAR_REMINDERS",
                 "JOB_QUEUE", "V1_ALLOW_CALLER_ENDPOINT_OVERRIDE", "DB_POOL_SIZE",
@@ -86,6 +87,22 @@ def test_agent_questions_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert fr.reload_flags().applied == ("AGENT_QUESTIONS_ORGS",)
     assert agent_questions_allowed("acme")
     assert not agent_questions_allowed("globex")
+
+
+def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-AP AP-1a, waiting_on_me.md §7.3. The reload list holds the key, and
+    the one reader sees a change with no restart."""
+    from gateway.routes.shell.waiting import waiting_allowed
+
+    assert fr.reloadable("WAITING_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("WAITING_ORGS", "")
+    get_settings.cache_clear()
+    assert not waiting_allowed("acme")
+    env(**{**_START, "WAITING_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("WAITING_ORGS",)
+    assert waiting_allowed("acme")
+    assert not waiting_allowed("globex")
 
 
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:

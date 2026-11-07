@@ -2690,7 +2690,8 @@ CONTEXT_COMMENTS = 20
 #: The most gateway calls of one ``get_task_context`` (§12.4): the five of
 #: ``get_task``, one for each parent, the project node and the timeline.
 #: SW-31a adds one, the read of the guidance (:func:`_guidance_of`), so 13.
-CONTEXT_CALL_CEILING = 13
+#: MCP-G18 adds one, the read of the attachments (:func:`_attachments_of`), so 14.
+CONTEXT_CALL_CEILING = 14
 #: CIV-14c. With ``comments: "all"`` the timeline is read in pages of the
 #: route's cap, up to this many comments in total. The newest ones win.
 CONTEXT_ALL_COMMENTS = 500
@@ -2708,7 +2709,20 @@ ANCESTOR_KEYS: tuple[str, ...] = ("id", "task_number", "title", "status", "descr
 #: The keys of the result of ``get_task_context`` (§12.4).
 CONTEXT_KEYS: tuple[str, ...] = (
     "task", "ancestors", "project", "blocked_by", "blocks", "subtasks", "agent_runs",
-    "held_by", "refs", "recent_comments",
+    "held_by", "refs", "recent_comments", "attachments",
+)
+
+#: The most attachments that ``get_task_context`` returns (MCP-G18). The
+#: gateway route is not paged, so the edge cuts the list here.
+CONTEXT_ATTACHMENTS_MAX = 100
+#: Present only when the task has more attachments than that cap.
+ATTACHMENTS_TRUNCATED_KEY = "attachments_truncated"
+#: The one route of the attachments read. Its rows carry a cookie URL. The
+#: edge never copies that URL (MCP-G18).
+ATTACHMENTS_ROUTE = "/projects/tasks/{task_id}/attachments"
+#: The keys of one attachment of ``get_task_context`` (MCP-G18). No url, no bytes.
+ATTACHMENT_KEYS: tuple[str, ...] = (
+    "attachment_id", "name", "mime", "size", "kind", "added_by", "created_at",
 )
 
 #: The one stub of a parent that the member cannot see. It has no title.
@@ -2744,6 +2758,7 @@ GUIDANCE_ROUTE = "/agent-guidance/tasks/{task_id}"
 GUIDANCE_REFS_ROUTE = "/agent-guidance/refs"
 #: The key that carries the guidance. It is absent while the org's flag is off.
 GUIDANCE_KEY = "guidance"
+
 #: The keys of ``guidance``: ``blocks``, nearest first, and ``dropped``, the
 #: number of the farthest blocks that the cap of the gateway cut. A
 #: ``dropped`` above 0 tells the agent that rules are missing.
@@ -2752,6 +2767,45 @@ GUIDANCE_KEYS: tuple[str, ...] = ("blocks", "dropped")
 GUIDANCE_REF_KEY = "guidance_ref"
 #: The levels of a block.
 GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company")
+#: SW-56 (agent_coordination.md §3.10.9). The protocol block of the results of
+#: ``claim_task`` and ``my_work``: fixed server text, so a client that drops the
+#: instructions and the prompts still reads the rules when it claims. At most
+#: :data:`PROTOCOL_LINES_MAX` lines of :data:`PROTOCOL_LINE_MAX` characters. It
+#: shows only while the runs flag is on, because each line names a run tool, and
+#: only for an organization on ``agent_protocol_orgs``. Fence:
+#: ``test_mcp_edge_context.py`` ``TestTheProtocolBlock``.
+PROTOCOL_KEY = "protocol"
+PROTOCOL_VERSION = 1
+PROTOCOL_LINES_MAX = 6
+PROTOCOL_LINE_MAX = 120
+PROTOCOL_LINES: tuple[str, ...] = (
+    "Claim the slice, not the epic.",
+    "Post a thought with post_agent_activity each minute.",
+    "When you are blocked, ask with ask_on_task. Never ask only in the terminal.",
+    "End each turn with one result: review or done, a question, or release_task.",
+    "Hand off with evidence: what is done, what is left, and the proof.",
+)
+_PROTOCOL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "version": {"type": "integer"},
+        "lines": {"type": "array", "maxItems": PROTOCOL_LINES_MAX,
+                  "items": {"type": "string", "maxLength": PROTOCOL_LINE_MAX}},
+    },
+    "required": ["version", "lines"],
+    "additionalProperties": False,
+}
+
+
+def _protocol(ctx: Context) -> dict[str, Any] | None:
+    """The protocol block, or ``None``: the key is then left out.
+
+    ``None`` while the runs flag is off or the organization of the token row is
+    not on ``agent_protocol_orgs``. No gateway request."""
+    if not (agent_oauth.runs_enabled()
+            and agent_oauth.protocol_allowed(ctx.caller.lookup.organization_id)):
+        return None
+    return {"version": PROTOCOL_VERSION, "lines": list(PROTOCOL_LINES)}
 #: The most projects of one refs read (the route's own cap).
 GUIDANCE_REFS_MAX = 25
 
@@ -2899,8 +2953,15 @@ _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "recent_comments": {"type": "array", "items": _TIMELINE_OUTPUT["properties"][
         "activities"]["items"]},
+    "attachments": {"type": "array", "items": _object({
+        "attachment_id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA,
+        "mime": _SHAPED_OR_NULL, "size": {"type": "integer"},
+        "kind": {"type": "string", "enum": ["image", "file"]},
+        "added_by": _SHAPED_OR_NULL, "created_at": _NULLABLE_STRING,
+    })},
 }), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, COMMENTS_TRUNCATED_KEY, {"type": "boolean"})
+_CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, ATTACHMENTS_TRUNCATED_KEY, {"type": "boolean"})
 
 
 async def _statuses_of(ctx: Context, project: str) -> dict[str, Mapping[str, Any]]:
@@ -3028,6 +3089,45 @@ def _blocks_links(links: Any, direction: str) -> list[dict[str, Any]]:
             and r.get("link_type") == "blocks" and r.get("direction") == direction]
 
 
+_MIME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}")
+
+
+def _attachment(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One attachment of a task, as metadata (MCP-G18). The file name is text
+    that a person chose, so it leaves as ``untrusted_text``. The cookie URL of
+    the gateway row is dropped: no link and no bytes leave the edge."""
+    size = row.get("size")
+    return {
+        "attachment_id": str(row.get("attachment_id")),
+        "name": untrusted(row.get("name") or ""),
+        "mime": shaped(row.get("mime"), _MIME_RE),
+        "size": size if isinstance(size, int) and not isinstance(size, bool) else 0,
+        "kind": "image" if row.get("kind") == "image" else "file",
+        "added_by": shaped(row.get("added_by"), _EMAIL_RE),
+        "created_at": _str_or_none(row.get("created_at")),
+    }
+
+
+async def _attachments_of(ctx: Context, where: Mapping[str, str],
+                          ) -> tuple[list[dict[str, Any]], bool]:
+    """``(rows, truncated)`` of the files on a task (MCP-G18). The task was
+    read just before, so a refusal here gives no rows. A busy gateway ends the
+    call, as :func:`_project_of` does. The route answers every row, so the edge
+    cuts the list at :data:`CONTEXT_ATTACHMENTS_MAX`."""
+    try:
+        body = await _get(ctx, ATTACHMENTS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)
+    except ToolError as exc:
+        if exc.text == TEXT_BUSY:
+            raise
+        return [], False
+    rows = body.get("rows") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        return [], False
+    rows = [r for r in rows if isinstance(r, dict)]
+    return ([_attachment(r) for r in rows[:CONTEXT_ATTACHMENTS_MAX]],
+            len(rows) > CONTEXT_ATTACHMENTS_MAX)
+
+
 async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """The task, why it exists and what holds it up, in one call (§12.4).
 
@@ -3064,8 +3164,9 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
                     ("page_size", str(size))]),
         _walk_up(ctx, row),
         _guidance_of(ctx, where["task_id"]),
+        _attachments_of(ctx, where),
     )
-    relations, refs, runs, statuses, node, timeline, walk, guidance = found
+    relations, refs, runs, statuses, node, timeline, walk, guidance, files = found
     if not isinstance(relations, dict):
         raise ToolError(TEXT_BUSY)
     names = {k: v["name"] for k, v in statuses.items() if isinstance(v.get("name"), str)}
@@ -3106,7 +3207,10 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         "held_by": task["held_by"],
         "refs": [reference(r) for r in _rows_of(refs)],
         "recent_comments": comments,
+        "attachments": files[0],
     }
+    if files[1]:
+        result[ATTACHMENTS_TRUNCATED_KEY] = True
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
     if every:
@@ -3126,7 +3230,12 @@ GET_TASK_CONTEXT = Tool(
         " subtasks, its open agent runs, held_by, its references and the"
         " comments, oldest first. By default these are the newest 20. Send"
         " comments: \"all\" for every comment, up to 500. The result then has"
-        " comments_truncated, true when older comments did not fit. A parent that this member cannot"
+        " comments_truncated, true when older comments did not fit. The result"
+        " also has attachments. Each has attachment_id, name, mime, size, kind"
+        " (image or file), added_by and created_at. It has no link and no"
+        " content: a person reads an image in the app. The list keeps the"
+        " oldest 100, and attachments_truncated is true when more exist."
+        " A parent that this member cannot"
         " see shows as {\"hidden\": true}, and the parents above it do not"
         " show. Each parent has the first 500 characters of its description."
         " A parent in another project shows its status category only."
@@ -3150,7 +3259,7 @@ GET_TASK_CONTEXT = Tool(
     not_found=TEXT_TASK_NOT_FOUND,
     run=_get_task_context,
     routes=(TASK_ROUTE, RELATIONS_ROUTE, REFS_ROUTE, TASK_RUNS_ROUTE, STATUSES_ROUTE,
-            NODE_ROUTE, TIMELINE_ROUTE, GUIDANCE_ROUTE),
+            NODE_ROUTE, TIMELINE_ROUTE, GUIDANCE_ROUTE, ATTACHMENTS_ROUTE),
 )
 
 
@@ -3211,9 +3320,9 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "yours": {"type": "boolean"},
     "external_link": _SHAPED_OR_NULL,
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
-_MY_WORK_OUTPUT: dict[str, Any] = _object({
+_MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
-})
+}), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
 
 
 async def _my_runs(ctx: Context, via: str, *, needs_agent: bool = False,
@@ -3447,7 +3556,11 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         for item in out:
             project = item.get("project_id")
             item[GUIDANCE_REF_KEY] = refs.get(project) if isinstance(project, str) else None
-    return {"rows": out}
+    answer: dict[str, Any] = {"rows": out}
+    protocol = _protocol(ctx)
+    if protocol is not None:
+        answer[PROTOCOL_KEY] = protocol
+    return answer
 
 
 MY_WORK = Tool(
@@ -4490,11 +4603,16 @@ _CLAIM_INPUT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_CLAIM_OUTPUT: dict[str, Any] = _optional(_object({
+_CLAIM_OUTPUT: dict[str, Any] = _optional(_optional(_optional(_object({
     "task": _TASK_SCHEMA, "moved": {"type": "boolean"},
     # EA-13c (EA3-42): the run that the claim opened or found, or null.
     "agent_run_id": _NULLABLE_STRING,
-}), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
+}), "warning", {"type": "string"}),
+    # SW-63: both keys are set only when the task has open subtasks that the
+    # member can see.
+    "open_subtasks", {"type": "array", "maxItems": 5, "items": {"type": "string"}},
+), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
+_CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, PROTOCOL_KEY, _PROTOCOL_SCHEMA)
 
 
 async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -4531,8 +4649,20 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {
         "task": _task(current, names), "moved": written.get("moved") is True,
         "agent_run_id": _id(written.get("agent_run_id"))}
+    # SW-63: the gateway's warning for a task with open subtasks. The text is
+    # fixed on the gateway, and the ids leave only in the shape of an id.
+    ids = [i for i in (_id(v) for v in
+                       (written.get("open_subtasks") or [])[:5]) if i]
+    if ids and isinstance(written.get("warning"), str) and re.fullmatch(
+            r"This task has [0-9]{1,9} open subtasks\. Claim the slice, not"
+            r" the epic\.", written["warning"]):
+        result["warning"] = written["warning"]
+        result["open_subtasks"] = ids
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
+    protocol = _protocol(ctx)
+    if protocol is not None:
+        result[PROTOCOL_KEY] = protocol
     return result
 
 
@@ -4551,7 +4681,9 @@ CLAIM_TASK = Tool(
         " nothing. Returns the task with its new version, and agent_run_id:"
         " the agent run that the claim opened, or your own open run from"
         " [[OWN]] that it found, or null when agent"
-        " runs are off. Only one AI session may hold a task. When another"
+        " runs are off. A task with open subtasks still claims, and the result"
+        " also has warning and open_subtasks, up to 5 ids: claim the slice,"
+        " not the epic. Only one AI session may hold a task. When another"
         " session holds it, the tool refuses: pick another task, and do not"
         " claim this one again.[[SHARED]] Send external_link, an https link to"
         " your session, when you have one. The run then shows it. A new link"
@@ -7288,6 +7420,9 @@ __all__ = [
     "ASSIGNEE_PERSONAL_CODE",
     "ASSIGNEE_REFUSED_CODE",
     "ASSIGN_ANNOTATIONS",
+    "ATTACHMENTS_ROUTE",
+    "ATTACHMENTS_TRUNCATED_KEY",
+    "ATTACHMENT_KEYS",
     "AUDIENCES",
     "AUDIENCE_WIDENS_CODE",
     "AUDIENCE_WIDER",
@@ -7301,6 +7436,7 @@ __all__ = [
     "COMMENT_REPLAY_KEYS",
     "COMPLETED_CATEGORY",
     "CONTEXT_ALL_CALL_CEILING",
+    "CONTEXT_ATTACHMENTS_MAX",
     "CONTEXT_CALL_CEILING",
     "CONTEXT_COMMENTS",
     "CONTEXT_KEYS",
@@ -7382,6 +7518,11 @@ __all__ = [
     "PROJECT_KEYS",
     "PROJECT_ROW_KEYS",
     "PROJECT_UPDATE_BODY_KEYS",
+    "PROTOCOL_KEY",
+    "PROTOCOL_LINES",
+    "PROTOCOL_LINES_MAX",
+    "PROTOCOL_LINE_MAX",
+    "PROTOCOL_VERSION",
     "READ_ANNOTATIONS",
     "RECORD_OUTSIDE_DECISION",
     "REF_KEYS",

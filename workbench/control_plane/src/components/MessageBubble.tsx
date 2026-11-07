@@ -48,6 +48,10 @@ import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
 import CardAnswerContent from "@/components/CardAnswerContent";
 import { STEER_WAITING, enterSends, isSteered, touchKeyboard } from "@/lib/chatSteer";
 import ChatSendButton from "@/components/ChatSendButton";
+import { PendingChips, SentChips, workspaceFileUrl } from "@/components/ChatAttachmentChips";
+import { canSend as canSendEdit, composeMessage, editStart } from "@/lib/chatAttachments";
+import type { PendingFile } from "@/lib/chatAttachments";
+import { parseUploadNote, wordsOfMessage } from "@/lib/chatUpload";
 import Button from "@/components/ui/Button";
 
 /** The only part of a room participant a message bubble needs: a face. */
@@ -93,6 +97,21 @@ function PersonAvatar({
     >
       {initialsOf(name)}
     </div>
+  );
+}
+
+/**
+ * A member's words. A message that ends in the upload note draws its words,
+ * then chips (projects_ai_chat §30.4). A note that does not parse stays text.
+ */
+function UserWords({ content, sessionId }: { content: string; sessionId: string }) {
+  const note = parseUploadNote(content);
+  if (!note) return <p className="whitespace-pre-wrap break-words">{content}</p>;
+  return (
+    <>
+      {note.words && <p className="whitespace-pre-wrap break-words">{note.words}</p>}
+      <SentChips files={note.files} sessionId={sessionId} />
+    </>
   );
 }
 
@@ -220,7 +239,13 @@ function MessageBubble({
   // reason it refused. A refusal keeps the composer open with the text.
   const [editPending, setEditPending] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
-  const [editText, setEditText] = useState(message.content);
+  const [editText, setEditText] = useState(() => editStart(message.content).words);
+  const [editItems, setEditItems] = useState<PendingFile[]>([]);
+  const openEdit = () => {
+    const e = editStart(message.content, (p) => workspaceFileUrl(sessionId, p));
+    setEditText(e.words);
+    setEditItems(e.items);
+  };
   const editRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-grow the edit textarea + focus when entering edit mode
@@ -428,7 +453,8 @@ function MessageBubble({
 
   const handleEditSubmit = async () => {
     if (editPending) return;
-    const trimmed = editText.trim();
+    // The words, then the note of the files that are kept (`composeMessage`).
+    const trimmed = composeMessage(editText, editItems).trim();
     // An unchanged text is a RESEND (owner, task 1653): it takes the same
     // supersede path as a changed one, so the old answer is replaced and the
     // model reads the note of the writes that already ran. Retry cannot do
@@ -449,10 +475,10 @@ function MessageBubble({
   const cancelEdit = () => {
     setEditing(false);
     setEditError(null);
-    setEditText(message.content);
+    openEdit();
   };
   const startEdit = onEditLast && !cardAnswer
-    ? () => { setEditText(message.content); setEditError(null); setEditing(true); }
+    ? () => { openEdit(); setEditError(null); setEditing(true); }
     : undefined;
 
   const handleEditKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -491,13 +517,13 @@ function MessageBubble({
             {cardAnswer ? (
               <CardAnswerContent answer={cardAnswer} />
             ) : (
-              <p className="whitespace-pre-wrap break-words">{message.content}</p>
+              <UserWords content={message.content} sessionId={sessionId} />
             )}
           </div>
           {message.content.trim() && (
             <div className="flex items-center gap-2 mt-1 pl-0.5">
               <MessageActionBar
-                content={cardAnswer ? cardAnswerText(cardAnswer) : message.content}
+                content={cardAnswer ? cardAnswerText(cardAnswer) : wordsOfMessage(message.content)}
                 messageId={message.id}
                 role="user"
               />
@@ -548,10 +574,17 @@ function MessageBubble({
                 <ChatSendButton
                   type="button"
                   onClick={() => void handleEditSubmit()}
-                  disabled={!editText.trim()}
+                  disabled={!canSendEdit(editText, editItems)}
                   loading={editPending}
                   label="Send edited message"
                   title="Send edited message"
+                />
+              </div>
+              <div className={editItems.length > 0 ? "pb-2" : undefined}>
+                <PendingChips
+                  items={editItems}
+                  onRemove={(id) => { setEditItems((xs) => xs.filter((x) => x.id !== id)); editRef.current?.focus(); }}
+                  onRetry={() => {}}
                 />
               </div>
               {editError && (
@@ -575,7 +608,7 @@ function MessageBubble({
               {cardAnswer ? (
                 <CardAnswerContent answer={cardAnswer} />
               ) : (
-                <p className="min-w-0 whitespace-pre-wrap break-words">{message.content}</p>
+                <div className="min-w-0"><UserWords content={message.content} sessionId={sessionId} /></div>
               )}
             </div>
             <div className="mt-1 flex items-center justify-end gap-1.5 pr-0.5 text-[10px] text-muted-foreground">
@@ -606,13 +639,13 @@ function MessageBubble({
               {cardAnswer ? (
                 <CardAnswerContent answer={cardAnswer} />
               ) : (
-                <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                <UserWords content={message.content} sessionId={sessionId} />
               )}
             </div>
             <div className="flex items-center justify-end gap-2 mt-1 pr-0.5 opacity-100 transition-opacity">
               {message.content.trim() && (
                 <MessageActionBar
-                  content={cardAnswer ? cardAnswerText(cardAnswer) : message.content}
+                  content={cardAnswer ? cardAnswerText(cardAnswer) : wordsOfMessage(message.content)}
                   messageId={message.id}
                   role="user"
                   onEdit={startEdit}
