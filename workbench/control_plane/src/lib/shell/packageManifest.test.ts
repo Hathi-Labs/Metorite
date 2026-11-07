@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { InstallNeedRow } from "./NeedsYouCard";
 import { isStarred } from "./presets";
 import { launcherGroups } from "./shellNav";
-import { NAV_SECTIONS, visibleSections } from "@/lib/nav";
+import { NAV_SECTIONS, visibleSections, type NavPane } from "@/lib/nav";
+import { NavSectionBlock } from "@/components/Sidebar";
 import { JOBS, addInstallJobs, buildItems, heldPanes } from "./registry";
 import {
   EMPTY_MANIFEST,
@@ -204,5 +205,98 @@ describe("PKG-6 packageManifest", () => {
     });
     expect(installFeatureSlugs(m)).toEqual(["zz_crm"]);
     expect(installFeatureSlugs(EMPTY_MANIFEST)).toEqual([]);
+  });
+
+  // ── PKG-15b: the sub-app sits under its host (`package_host.md` §8.2) ──────
+  describe("sub-entry", () => {
+    const allFeatures = NAV_SECTIONS.flatMap((s) => s.items.map((p) => p.feature ?? ""));
+    const base = () => visibleSections(allFeatures, true);
+    const hostPane = () => base().find((s) => s.id !== "apps" && s.items.length > 1)!.items[0];
+    const host = () => entry(hostPane().href, { package: "zz-host" }, { source: "system", install_id: null, needs_setup: false });
+    const sub = (href = "/zz-sub", extra: Record<string, unknown> = {}) =>
+      entry("sub", { href, label: "Sub", extends: "zz-host", ...extra });
+
+    it("a visible system host: the entry has a parent and needs no setup", () => {
+      const m = manifest({ nav: [host(), sub()] });
+      const [pane] = installNavPanes(m);
+      expect(pane.parent).toBe(hostPane().href);
+      expect(m.contributions.nav.find((e) => e.key === "sub")!.needsSetup).toBe(false);
+    });
+
+    it("no host in the manifest: no parent, and needs_setup is true", () => {
+      const m = manifest({ nav: [sub("/zz-sub", { needs_setup: true })].map((e) => ({ ...e, needs_setup: true })) });
+      const [pane] = installNavPanes(m);
+      expect(pane.parent).toBeUndefined();
+      expect(m.contributions.nav[0].needsSetup).toBe(true);
+      const out = mergeInstallNav(base(), installNavPanes(m));
+      expect(out.find((s) => s.id === "apps")!.items.at(-1)!.href).toBe("/zz-sub");
+    });
+
+    it("a host that is not in the sidebar: the pane goes flat to the Apps tail", () => {
+      const m = manifest({ nav: [host(), sub()] });
+      const noHost = base().map((s) => ({ ...s, items: s.items.filter((p) => p.href !== hostPane().href) }));
+      const out = mergeInstallNav(noHost, installNavPanes(m));
+      const pane = out.flatMap((s) => s.items).find((p) => p.href === "/zz-sub")!;
+      expect(pane.parent).toBeUndefined();
+      expect(out.find((s) => s.id === "apps")!.items.at(-1)!.href).toBe("/zz-sub");
+    });
+
+    it("the sub-entry follows its host, in the section of the host", () => {
+      const m = manifest({ nav: [host(), sub("/zz-a"), sub("/zz-b")].map((e, i) => (i === 2 ? { ...e, key: "sub2" } : e)) });
+      const out = mergeInstallNav(base(), installNavPanes(m));
+      const sec = out.find((s) => s.items.some((p) => p.href === hostPane().href))!;
+      const at = sec.items.findIndex((p) => p.href === hostPane().href);
+      expect(sec.items.slice(at, at + 3).map((p) => p.href)).toEqual([hostPane().href, "/zz-a", "/zz-b"]);
+      const apps = out.find((s) => s.id === "apps");
+      expect(apps?.items.some((p) => p.href === "/zz-a") ?? false).toBe(false);
+    });
+
+    it("one level only: a sub-app of a sub-app draws flat", () => {
+      const first = { ...installNavPanes(manifest({ nav: [host(), sub("/zz-a")] }))[0] };
+      const second: NavPane = { ...first, href: "/zz-b", label: "Deep", parent: "/zz-a" };
+      const out = mergeInstallNav(base(), [first, second]);
+      const deep = out.flatMap((s) => s.items).find((p) => p.href === "/zz-b")!;
+      expect(deep.parent).toBeUndefined();
+      expect(out.find((s) => s.id === "apps")!.items.at(-1)!.href).toBe("/zz-b");
+    });
+
+    it("an extends that names an install, or nothing, sets no parent", () => {
+      const m = manifest({ nav: [host(), sub("/zz-a", { extends: "zz-other" }), { ...sub("/zz-b", { extends: 5 }), key: "k2" }] });
+      expect(installNavPanes(m).map((p) => p.parent)).toEqual([undefined, undefined]);
+    });
+
+    it("the same array comes back when nothing is added", () => {
+      const b = base();
+      expect(mergeInstallNav(b, [])).toBe(b);
+      const taken: NavPane = { ...installNavPanes(manifest({ nav: [host(), sub()] }))[0], href: hostPane().href };
+      expect(mergeInstallNav(b, [taken])).toBe(b);
+    });
+
+    it("All apps lists the sub-entry under Apps, and the stars ignore it", () => {
+      const merged = mergeInstallNav(base(), installNavPanes(manifest({ nav: [host(), sub()] })));
+      const listed = launcherGroups(merged).flatMap((g) => g.items.map((p) => p.href));
+      expect(listed).toContain("/zz-sub");
+      expect(isStarred({ pins: [], known: [] }, base(), "/zz-sub")).toBe(false);
+    });
+
+    it("the sidebar draws the sub-entry indented under its host", () => {
+      const merged = mergeInstallNav(base(), installNavPanes(manifest({ nav: [host(), sub()] })));
+      const section = merged.find((s) => s.items.some((p) => p.href === "/zz-sub"))!;
+      const draw = (pathname: string, folded: boolean) =>
+        renderToStaticMarkup(
+          createElement(NavSectionBlock, { section, pathname, collapsed: false, folded, onToggle: () => {}, onNavigate: () => {}, shellNav: true }),
+        );
+      const open = draw("/", false);
+      expect(open).toContain(`data-nav-sub="${hostPane().href}"`);
+      expect(open).toContain('data-nav-row="/zz-sub"');
+      // Folded: the sub-entry stays while its host is current, and not otherwise.
+      expect(draw(hostPane().href, true)).toContain('data-nav-row="/zz-sub"');
+      expect(draw("/", true)).not.toContain('data-nav-row="/zz-sub"');
+      // The sub-entry current: its host stays in view.
+      const onSub = draw("/zz-sub", true);
+      expect(onSub).toContain(`data-nav-row="${hostPane().href}"`);
+      // A pane with no parent draws flat.
+      expect(renderToStaticMarkup(createElement(NavSectionBlock, { section: { ...section, items: [{ ...section.items.find((p) => p.href === "/zz-sub")!, parent: undefined }] }, pathname: "/", collapsed: false, folded: false, onToggle: () => {}, onNavigate: () => {}, shellNav: true }))).not.toContain("data-nav-sub");
+    });
   });
 });

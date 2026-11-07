@@ -898,7 +898,7 @@ type RowMenuOpen = (
   at: { x: number; y: number; keyboard: boolean; trigger: HTMLElement | null },
 ) => void;
 
-function NavSectionBlock({
+export function NavSectionBlock({
   section,
   pathname,
   collapsed,
@@ -988,8 +988,16 @@ function NavSectionBlock({
   // A folded section keeps showing the item you are ON — the current location
   // must never vanish from the nav. With the shell nav, the category of the
   // current route is never folded at all (`isFolded`).
+  // A sub-entry (PKG-15b) stays in view while its host is current, and the
+  // host stays in view while a sub-entry is current.
+  const on = (href: string) => pathname?.startsWith(href) ?? false;
   const items = folded
-    ? section.items.filter((p) => pathname?.startsWith(p.href))
+    ? section.items.filter(
+        (p) =>
+          on(p.href) ||
+          (p.parent !== undefined && on(p.parent)) ||
+          section.items.some((c) => c.parent === p.href && on(c.href)),
+      )
     : section.items;
 
   return (
@@ -1022,21 +1030,32 @@ function NavSectionBlock({
       {/* Section items */}
       {items.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          {items.map((p) => (
-            <NavLink
-              key={p.href}
-              pane={p}
-              pathname={pathname}
-              onNavigate={onNavigate}
-              {...badgeFor(p.href)}
-              needs={appNeeds[p.href]}
-              needsFloor={appFloors?.has(p.href)}
-              pinnedApps={p.href === "/studio" ? pinnedApps : undefined}
-              shellNav={shellNav}
-              onRowMenu={onRowMenu}
-              menuOpen={menuHref === p.href}
-            />
-          ))}
+          {items.map((p) => {
+            const link = (
+              <NavLink
+                key={p.href}
+                pane={p}
+                pathname={pathname}
+                onNavigate={onNavigate}
+                {...badgeFor(p.href)}
+                needs={appNeeds[p.href]}
+                needsFloor={appFloors?.has(p.href)}
+                pinnedApps={p.href === "/studio" ? pinnedApps : undefined}
+                shellNav={shellNav}
+                onRowMenu={onRowMenu}
+                menuOpen={menuHref === p.href}
+              />
+            );
+            // A sub-app sits under its host: the same row, one step in, with
+            // the house rule line (PKG-15b, `package_host.md` §8.2).
+            return p.parent === undefined ? (
+              link
+            ) : (
+              <div key={p.href} data-nav-sub={p.parent} className="ml-4 border-l border-sidebar-border/50 pl-1">
+                {link}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -100,6 +100,12 @@ export type NavPane = {
    */
   adminOnly?: boolean;
   /**
+   * The href of the host pane. Only an install pane with `extends` sets it
+   * (`package_host.md` §8.2, PKG-15b). The sidebar draws the pane indented
+   * under its host. Optional, so a pane without it draws as before.
+   */
+  parent?: string;
+  /**
    * Launch status — REQUIRED, so adding a pane forces the decision rather than
    * defaulting into the customer's sidebar. `nav.test.ts` pins the live set
    * against `launch_surface.md` §2, so promoting an app is a one-line edit
