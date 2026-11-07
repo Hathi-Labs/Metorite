@@ -1,16 +1,23 @@
 import { shellChatOn } from "@/lib/shell/chatFlag";
-import { openAssistant } from "@/lib/shell/assistant";
 import { appBrief } from "@/lib/studio/packageLibrary";
+import { startBuild } from "@/lib/studio/startBuild";
 
 /**
- * Start an app in chat: Mira builds it in the one assistant, from the brief.
- * The words wait in the box for the member to read and send. With the shell
- * chat off, `/chat?q=` does the same. It makes no app by itself, so an empty
- * seed opens a chat that asks the member what the app should track. The
- * library's "New app" button and the phone bar's "New app" tab both call it.
+ * Start a new app, in ONE place (Studio G3a, with MOB-12's phone tab).
+ *
+ * "Build it" makes a draft package, opens its IDE, and opens the dock with the
+ * brief waiting in the box (`startBuild`). With the shell chat off, `/chat?q=`
+ * does what it did before. The library's "New app" button and the phone bar's
+ * "New app" tab both call it, so the two never drift. It resolves to
+ * `startBuild`'s result, or to null on the `/chat?q=` path.
  */
-export function startApp(seed: string, push: (url: string) => void): void {
-  const brief = appBrief(seed);
-  if (shellChatOn()) openAssistant({ draft: brief, fresh: true });
-  else push(`/chat?q=${encodeURIComponent(brief)}`);
+export async function startApp(
+  seed: string,
+  push: (url: string) => void,
+): Promise<Awaited<ReturnType<typeof startBuild>> | null> {
+  if (!shellChatOn()) {
+    push(`/chat?q=${encodeURIComponent(appBrief(seed))}`);
+    return null;
+  }
+  return startBuild(seed, { go: push });
 }

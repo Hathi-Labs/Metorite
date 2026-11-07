@@ -73,6 +73,9 @@ SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "pr
 #: bulk, ALN-2a added the two decision tools to reminders, and ALN-4 added the authority pack.
 SIZES = {"projects": 23, "projects-plan": 24, "projects-structure": 24, "projects-bulk": 22,
          "projects-reminders": 19, "projects-reports": 11, "projects-authority": 3}
+#: CAL-1a: the owner also holds the ``calendar-day`` pack. It is no Projects family
+#: (its eight tools are not in ``skill_projects.__all__``), so ``SLUGS`` stays the seven.
+OWNER_SLUGS = (*SLUGS, "calendar-day")
 UUID = tc.UUID
 
 #: The nine tools that make ONE card for a batch, raised inside the tool body.
@@ -132,7 +135,7 @@ def test_the_four_families_equal_the_owners_tools() -> None:
         assert len(_family(slug)) == SIZES[slug], slug
         assert len(_family(slug)) <= tp.MAX_PACK_TOOLS
         assert list(_family(slug)) == sorted(_family(slug)), "the family is sorted"
-    assert tp.owner_packs(PA) == SLUGS
+    assert tp.owner_packs(PA) == OWNER_SLUGS
 
 
 def test_no_projects_tool_is_in_an_email_or_crm_pack() -> None:
@@ -480,7 +483,7 @@ def test_the_persona_lines_are_one_constant_that_a_pack_can_take_out() -> None:
     assert persona.count(mod.PROJECTS_DELEGATION_BULLETS) == 1
     assert _bullets()[PA] == mod.PROJECTS_DELEGATION_BULLETS
     assert PA not in tp.NO_PERSONA_BULLETS
-    left = tp.persona_for(persona, [(s, False) for s in SLUGS], _bullets())
+    left = tp.persona_for(persona, [(s, False) for s in OWNER_SLUGS], _bullets())
     assert mod.PROJECTS_DELEGATION_BULLETS not in left
     assert tp.persona_for(persona, [], _bullets()) == persona
 
@@ -508,7 +511,7 @@ def test_with_some_projects_packs_the_rules_keep_a_path_to_the_owner() -> None:
     rules = tp._rules_block(tp.PACKS["projects"], False, ("projects",))
     assert tp._PROJECTS_NO_AGENT_LINE not in rules
     assert tp._PROJECTS_ROUTE_LINE in rules
-    every = tp._rules_block(tp.PACKS["projects"], False, SLUGS)
+    every = tp._rules_block(tp.PACKS["projects"], False, OWNER_SLUGS)
     assert tp._PROJECTS_NO_AGENT_LINE in every and tp._PROJECTS_ROUTE_LINE not in every
 
 
@@ -523,7 +526,7 @@ def test_every_projects_pack_says_no_agent_exists_and_refuses_the_hand_off() -> 
     turn = _turn(words="")
     some = tp.PackRun.of(turn, tp.Choice((), {}, {}), [("projects", False)])
     assert some.replaced == frozenset() and some.refusal(PA) is None
-    allp = tp.PackRun.of(turn, tp.Choice((), {}, {}), [(s, False) for s in SLUGS])
+    allp = tp.PackRun.of(turn, tp.Choice((), {}, {}), [(s, False) for s in OWNER_SLUGS])
     assert allp.refusal(PA) == tp.PACKS["projects"].delegation_refusal
     assert allp.replaced == {PA}
 
@@ -758,7 +761,7 @@ async def test_layer_c_adds_the_core_pack_before_the_first_request(store) -> Non
 
 # ── 10. The loader reaches the Projects owner (OA-7i, `plan_loader`) ────────
 
-PROJ = frozenset(SLUGS)
+PROJ = frozenset(OWNER_SLUGS)
 NO_WORDS = "Tell Anil that we pay on Friday"
 
 
@@ -790,12 +793,12 @@ async def test_projects_is_reached_with_no_pack_held_and_the_texts_agree(
     assert persona.count(bullet) == 1, "non-vacuity"
     assert agents[0].default_options["instructions"] == persona.replace(bullet, "", 1)
     provider = L._provider(agents[0])
-    assert provider is not None and provider.loader.offered == SLUGS
+    assert provider is not None and provider.loader.offered == OWNER_SLUGS
     with L._in_run(applied):
         refused = await L.agent_tools.call_agent(PA, "Show my overdue tasks")
         background = await L.agent_tools.call_agent_background(PA, "Sync")
         await L.asyncio.sleep(0.05)
-    assert refused == tp.LOADER_HANDOFF_REFUSED.format(owner=PA, packs=", ".join(SLUGS))
+    assert refused == tp.LOADER_HANDOFF_REFUSED.format(owner=PA, packs=", ".join(OWNER_SLUGS))
     assert "load_skill_tools" in refused and "projects-plan" in refused
     for slug in SLUGS:
         assert "No Projects agent exists" in tp.PACKS[slug].rules
@@ -1098,7 +1101,7 @@ async def test_the_specialist_leaves_when_the_run_holds_every_projects_pack() ->
     -> red."""
     turn = _turn(words="")
     empty = tp.Choice((), {}, {})
-    assert tp.PackRun.of(turn, empty, [(s, False) for s in SLUGS]).replaced == {PA}
+    assert tp.PackRun.of(turn, empty, [(s, False) for s in OWNER_SLUGS]).replaced == {PA}
     assert tp.PackRun.of(turn, empty, [("projects", False)], via_loader={PA}).replaced == {PA}
     assert tp.PackRun.of(turn, empty, [("projects", False)]).replaced == frozenset()
     assert tp.PackRun.of(turn, empty, [("email", False)]).replaced == {EA}
@@ -1112,7 +1115,7 @@ def test_the_catalog_offers_no_projects_pack_to_an_owner_that_cannot_load() -> N
     plan = tp.plan_loader(PROJ, (), current=56, removable={PA: 1}, available=lambda _o: False)
     assert plan.offered == () and plan.via_loader == frozenset()
     ok = tp.plan_loader(PROJ, (), current=56, removable={PA: 1}, available=lambda _o: True)
-    assert ok.offered == SLUGS and ok.via_loader == {PA}
+    assert ok.offered == OWNER_SLUGS and ok.via_loader == {PA}
 
 
 async def test_a_covered_org_is_offered_no_projects_pack(store, agents, _broker) -> None:

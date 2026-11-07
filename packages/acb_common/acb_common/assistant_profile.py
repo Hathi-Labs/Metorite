@@ -66,7 +66,7 @@ ALIAS_MAX = 60
 #: The longest address that an alias takes (RFC 5321).
 EMAIL_MAX = 254
 
-PUT_KEYS: tuple[str, ...] = ("learning", "address", "style")
+PUT_KEYS: tuple[str, ...] = ("learning", "address", "style", "celebrations")
 FORMALITY: tuple[str, ...] = ("casual", "neutral", "formal")
 GREETING: tuple[str, ...] = ("none", "brief", "warm")
 LENGTH: tuple[str, ...] = ("short", "default", "detailed")
@@ -480,6 +480,14 @@ def stored_profile(raw: Any) -> dict[str, Any]:
     interview = _stored_interview(raw.get("interview"))
     if interview is not None:
         out["interview"] = interview
+    # PZ-43 (§16.6): the birthday (no year), the festival picks and the work
+    # anniversary switch. Shown only when the member set one, so a profile
+    # of a member who set nothing keeps its shape.
+    from acb_common import celebrations
+
+    one = celebrations.stored_celebrations(raw.get(celebrations.KEY))
+    if celebrations.has_content(one):
+        out[celebrations.KEY] = one
     out["address"] = _stored_keys(raw.get("address"), _clean_address)
     out["style"] = _stored_keys(raw.get("style"), _clean_style)
     for key, one, cap in (("facts", _stored_fact, FACTS_MAX),
@@ -1817,11 +1825,13 @@ NO_NAME_LINE = "Do not address them by name. Never write a placeholder."
 #: "at most once a day", because the model keeps no day of its own (R7).
 GREETING_LINES: dict[str, str] = {
     "none": "Greeting: none. Open with the answer.",
-    "brief": ("Greeting: brief. In the first reply of a chat only, open with one "
-              "short greeting for the time of day. Never greet again in that chat."),
-    "warm": ("Greeting: warm. In the first reply of a chat only, open with a "
-             "greeting and one personal line from a fact in this block. Do this "
-             "at most once a day."),
+    "brief": ("Greeting: brief. Follow the greeting rule of the part-of-day line. "
+              "When it allows a greeting, open with one short greeting. Otherwise "
+              "do not greet."),
+    "warm": ("Greeting: warm. Follow the greeting rule of the part-of-day line. "
+             "When it allows a greeting, open with a greeting and one personal "
+             "line from a fact in this block. Do this at most once a day. "
+             "Otherwise do not greet."),
 }
 #: The rule of each answer length (§5.3, the WS-52 brevity rule).
 LENGTH_LINES: dict[str, str] = {
@@ -1865,6 +1875,17 @@ def _address_line(address: dict[str, Any], name: str, *, own: bool = True) -> st
         bits.append(f"Tone: {address['formality']}.")
     bits.append(GREETING_LINES[address.get("greeting") or DEFAULT_GREETING])
     return " ".join(bits)
+
+
+_BLOCK_LANGUAGE = re.compile(r"Language: (\S+?)\. Answer in it")
+
+
+def block_language(block: str) -> str | None:
+    """The ``style.language`` tag that :func:`_style_line` wrote into *block*,
+    or None. The part-of-day line reads it (PZ-39). It never guesses a
+    language from a name or a region."""
+    m = _BLOCK_LANGUAGE.search(block or "")
+    return m.group(1) if m else None
 
 
 def _style_line(style: dict[str, Any], notes: list[str]) -> str:
@@ -2135,6 +2156,19 @@ EXPORT_SOURCES: dict[str, str] = {
 }
 
 
+def _export_celebrations(celebs: dict[str, Any]) -> list[str]:
+    """The lines of the export for the key ``celebrations`` (PZ-43)."""
+    lines = ["", "Your celebrations"]
+    b = celebs.get("birthday")
+    if b:
+        lines.append(f"- Birthday: day {b['day']}, month {b['month']} (no year)")
+    if celebs["festivals"]:
+        lines.append("- Festivals: " + ", ".join(_one_line(f) for f in celebs["festivals"]))
+    if celebs["work_anniversary"]:
+        lines.append("- Work anniversary: greet me on it")
+    return lines
+
+
 def render_export(raw: Any) -> str:
     """The text export of the stored value *raw*, for the member to keep.
 
@@ -2148,7 +2182,8 @@ def render_export(raw: Any) -> str:
     profile = stored_profile(raw)
     address, style = profile["address"], profile["style"]
     notes = [_one_line(n) for n in style.get("notes", []) if _one_line(n)]
-    if not (address or style or profile["facts"] or profile["aliases"]):
+    celebs = profile.get("celebrations")
+    if not (address or style or profile["facts"] or profile["aliases"] or celebs):
         return EXPORT_EMPTY
     lines = [EXPORT_HEADER]
     if address:
@@ -2176,4 +2211,6 @@ def render_export(raw: Any) -> str:
         lines += ["", "Names you use for people"]
         lines += [f"- {_one_line(a['alias'])}: {_one_line(a['email'])}"
                   for a in profile["aliases"]]
+    if celebs:
+        lines += _export_celebrations(celebs)
     return "\n".join(lines)

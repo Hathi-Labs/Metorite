@@ -80,7 +80,7 @@ from acb_common import get_logger
 
 from gateway.brief import flags as brief_flags
 from gateway.jobs import unattended
-from gateway.reach import flags, outbox, plan, requests
+from gateway.reach import exceptions, flags, outbox, plan, requests
 from gateway.reach import whatsapp as channel
 
 _log = get_logger("reach.loop")
@@ -230,7 +230,7 @@ async def _send_now(org: str, member: str, *, kind: str, cards: list[dict[str, A
             # that surely did not reach Meta, or a 429, is tried again. A
             # timeout may have delivered, so it is logged and never resent.
             logs = [c for c in cards if not plan.is_request(c)]
-        await outbox.log(org, member, map(plan.pair, logs), outcome, outbox_id)
+        await outbox.log(org, member, map(plan.entry, logs), outcome, outbox_id)
     _log.info("reach.message", kind=kind, state=got.state, reason=got.reason,
               items=len(cards))
     return got.state if got.reason is None else f"{got.state}:{got.reason}"
@@ -405,7 +405,9 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
     logged = await outbox.logged_pairs(org, member)
     # WhatsApp only: a reminder never interrupts there, whatever its class
     # (D114.7, RM-9 lifts it).
-    candidates = plan.interrupt_candidates(plan.on_whatsapp(snap.cards), logged, snap.now,
+    cards = exceptions.with_notify(plan.on_whatsapp(snap.cards),
+                                   await block_notify(org, member))
+    candidates = plan.interrupt_candidates(cards, logged, snap.now,
                                            rules=brief_flags.exceptions(org),
                                            muted=await muted_rules(org, member))
 
@@ -418,7 +420,7 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
         candidates = []
     if how == "free_text" and candidates:
         # The brief already named them. One message, not two.
-        await outbox.log(org, member, map(plan.pair, candidates), "deferred")
+        await outbox.log(org, member, map(plan.entry, candidates), "deferred")
         candidates = []
 
     # The requests of "Tell me on WhatsApp" (RE-5). A pass that sent a brief
@@ -436,6 +438,15 @@ async def muted_rules(org: str, member: str) -> frozenset[str]:
     if not brief_flags.exceptions(org):
         return frozenset()
     return await outbox.muted_rules(org, member)
+
+
+async def block_notify(org: str, member: str) -> bool:
+    """True when the member asked to be told before each block (BR-5 slice
+    2b-2, ``my_day_prefs`` key ``block_notify``). Dark, it reads nothing and
+    answers False, so rule 3 matches nothing."""
+    if not brief_flags.exceptions(org):
+        return False
+    return await outbox.block_notify(org, member)
 
 
 class _Budget:
@@ -539,10 +550,10 @@ async def _message_step(org: str, member: str, snap: Snapshot,
             # sends them, and the cap and the quiet hours apply then.
             did.append("held")
         elif quiet:
-            await outbox.log(org, member, map(plan.pair, candidates), "quiet")
+            await outbox.log(org, member, map(plan.entry, candidates), "quiet")
             did.append("quiet")
         elif await budget.sent() >= flags.daily_cap():
-            await outbox.log(org, member, map(plan.pair, candidates), "capped")
+            await outbox.log(org, member, map(plan.entry, candidates), "capped")
             did.append("capped")
         elif await budget.recent():
             # The batch window (D-RE-4): no plan and no log, so the first

@@ -112,11 +112,14 @@ describe("chat first", () => {
   });
 
   it("opens the one assistant with the brief, and makes no Workshop app", () => {
-    // MOB-12: the gallery and the phone bar's New app tab share `startApp`.
+    // G3a fix 1: "Build it" goes through `startBuild`. The IDE sends the brief after its facts publish.
+    // MOB-12: the gallery and the phone bar's New app tab share `startApp`, which holds that flow.
     const start = read("./startApp.ts");
     expect(gallery).toContain("startApp(seed,");
-    expect(start).toContain("openAssistant({ draft: brief, fresh: true })");
+    expect(start).toContain("startBuild(");
     expect(start).toContain("/chat?q=");
+    expect(gallery).not.toContain("openAssistant(");
+    expect(start).not.toContain("openAssistant(");
     expect(gallery).not.toMatch(/fetch\("\/api\/apps",\s*\{\s*method: "POST"/);
     expect(gallery).not.toContain("?seed=");
   });

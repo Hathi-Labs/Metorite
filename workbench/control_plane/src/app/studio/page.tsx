@@ -27,6 +27,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { useToast } from "@/components/ui/Toast";
 import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { startApp } from "@/lib/studio/startApp";
 import { AppTopBar } from "@/components/AppTopBar";
@@ -71,6 +72,9 @@ function StudioLibrary() {
   // The phone bar (MOB-12): Library and Modules are the two tabs of the page,
   // and New app starts a chat. The bar holds all three on a phone.
   const { isMobile } = useViewMode();
+  // The bar's New app tab has no button to show a failure on, so a toast
+  // says what happened and what to do (the gallery shows the same words).
+  const toast = useToast();
   usePhoneBar({
     active: view.tab === "modules" ? "studio-modules" : "studio-library",
     // With no Module Studio, Library is the only place, so its tab has no use.
@@ -81,7 +85,11 @@ function StudioLibrary() {
       const tab = (e as CustomEvent<string>).detail;
       if (tab === "studio-library") go({ tab: "library" });
       else if (tab === "studio-modules") go({ tab: "modules" });
-      else if (tab === "studio-new") startApp("", (url) => router.push(url));
+      else if (tab === "studio-new") {
+        void startApp("", (url) => router.push(url)).then((r) => {
+          if (r && !r.ok) toast.show({ key: "studio-new-app", variant: "error", title: r.message });
+        });
+      }
     };
     window.addEventListener("cc-mobile-nav", h);
     return () => window.removeEventListener("cc-mobile-nav", h);
