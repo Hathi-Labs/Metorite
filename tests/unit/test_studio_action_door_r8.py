@@ -1989,6 +1989,8 @@ def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None
 #     A delete after the approval deletes the record once.
 # ar. With ``APP_REQUESTS_ORGS`` off, a write from chat opens no request and
 #     says that record changes from chat are not open yet.
+# as. Fix round 1: on the real package read, a key that is no field opens no
+#     request, and the tool says so before any ask.
 #
 # **The mutations (R7).** Each ran on 2026-11-06 on a committed tree, and was
 # restored with git. See the docstring of ``test_studio_record_writes.py``.
@@ -2195,3 +2197,21 @@ def test_r8_ar_with_the_org_flag_off_a_chat_write_opens_no_request(tworld, monke
     assert out["errors"][0]["message"] == st.WRITE_REFUSALS["approval_required"]
     assert _studio_runs(w) == runs
     assert [r["outcome"] for r in _ran(w, w.tpkg, "add")] == ["refused"]
+
+
+def test_r8_as_a_key_that_is_no_field_opens_no_request_on_the_real_package_read(
+        tworld) -> None:
+    """Fix round 1 (P2), on the real package read: its ``objects`` hold the
+    fields that the tool checks. A key that is no field gets its sentence
+    before an ask, so no card waits for a change that the store refuses."""
+    w = tworld
+    runs = _studio_runs(w)
+
+    async def go() -> dict[str, Any]:
+        return await st.studio_record_create(w.tpkg, "visit", data={"site": "A", "sight": "B"})
+
+    out = _chat(w, go)
+    assert out["saved"] is False and out["errors"][0]["message"] == st._UNKNOWN_FIELD.format(
+        object="visit", keys="sight")
+    assert _studio_runs(w) == runs and _door_posts(w) == []
+    assert _ran(w, w.tpkg, "add") == []
