@@ -196,6 +196,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/tasks/plan/apply": "my_tasks_plan_project",
     # ── Calendar ──
     "GET /api/projects/my/calendar/estimate-stats": "my_tasks_estimate_stats",
+    # CAL-1a (task 1675): the `calendar-day` pack puts these planner tools in the main
+    # chat. The `{}` key covers plan-today, replan-today and rollover-today
+    # (my_tasks_plan_day, my_tasks_replan_day, my_tasks_rollover). Fence:
+    # tests/unit/test_calendar_day_pack.py.
     "POST /api/tasks/calendar/{}": "my_tasks_plan_day",
     "PUT /api/tasks/calendar/day-state": "my_tasks_set_one_thing",
     # ── Email ──
@@ -363,6 +367,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # cannot see that gap. chat_parity.md section 4 names it.
     "GET /api/studio/packages": "studio_package_get",
     "GET /api/studio/packages/{}": "studio_package_get",
+    # STU-G3a: "Build it" in the Studio IDE makes a draft package first
+    # (lib/studio/packageDraft.ts createDraftPackage). studio_save makes one with
+    # the same POST when it gets no package_id.
+    "POST /api/studio/packages": "studio_save",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
@@ -548,6 +556,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "POST /api/chat/sessions/{}/buddy-hello": (
         "chat",
         "Posts the hello once, on a member's first visit (BUD-1). The shell sends it, not the member.",
+    ),
+    "POST /api/chat/sessions/{}/continue": (
+        "chat",
+        "The pill of a held chat carries the member's last typed words to a fresh chat (WT-2). "
+        "It is the chat's own move, and the member sends the text.",
     ),
     "POST /api/chat/sessions/{}/compact": (
         "chat",

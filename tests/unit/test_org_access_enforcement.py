@@ -321,6 +321,16 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "reads no input but `If-None-Match`, and the flag "
             "`PACKAGE_HOST_ORGS` answers 404 first."
         ),
+        "/shell/layout": (
+            "PKG-17a. The org default of the shell layout is a UI default and "
+            "grants nothing. `GET` is open to every signed-in member, who reads "
+            "only their own org's document (the tenant is the bound session "
+            "under FORCE RLS, never a request value). `PUT` needs "
+            "`admin:settings:manage`. Both answer 404 first for an org outside "
+            "`PACKAGE_HOST_ORGS` "
+            "(`test_shell_layout.py::test_flag_off_is_404_before_403`, "
+            "`test_a_non_admin_put_is_403`, `test_shell_layout_r8.py`)."
+        ),
         "/shell/search": (
             "NS-4a. Each provider in `PROVIDERS` checks "
             "`user.has_permission('feature:<app>')` before it calls the app's own "

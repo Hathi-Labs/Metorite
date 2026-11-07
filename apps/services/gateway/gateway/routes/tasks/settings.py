@@ -245,8 +245,8 @@ async def _load(db: Any, user_id: str, *, any_case: bool = False) -> UserSetting
         # 0 (midnight) is a valid start: only None takes the default.
         day_start_hour=_int_or(getattr(row, "day_start_hour", None), 7),
         day_end_hour=int(getattr(row, "day_end_hour", 22) or 22),
-        daily_capacity_mins=int(
-            getattr(row, "daily_capacity_mins", 360) or 360),
+        # 0 is a valid capacity (the sheet allows 0 to 16 h): only None defaults.
+        daily_capacity_mins=_int_or(getattr(row, "daily_capacity_mins", None), 360),
         buffer_mins=int(getattr(row, "buffer_mins", 0) or 0),
         energy_windows=_energy_windows(getattr(row, "energy_windows", None)),
         timezone=str(getattr(row, "timezone", None) or "UTC"),
