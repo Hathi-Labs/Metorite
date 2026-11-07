@@ -201,6 +201,16 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
 #: and why its read is scoped. A key that ends in ``/`` is a package. Paths
 #: are relative to the repository root.
 OUTSIDE_EMAIL_READERS: dict[str, str] = {
+    "apps/services/gateway/gateway/kb_entities/graph.py": (
+        "The WS-KG graph sweep (KG-5) runs as the graph.sweep job inside "
+        "tenant_session(org) with FORCE RLS, behind GRAPH_SWEEP_ORGS. It reads "
+        "email senders and recipients only to write kb_links rows of ids and "
+        "a relation, and it has no viewer: it builds no name, snippet or "
+        "output. The neighbour read of KG-6 never opens an email through this "
+        "module. It opens the mail through the email app, with the account "
+        "and folder scope of Email search. Fences: test_kg_resolve_r8.py and "
+        "test_kg_links_writer.py."
+    ),
     "apps/services/gateway/gateway/routes/admin/members.py": (
         "An admin removes or purges a member (H-375). It cancels or deletes "
         "only the scheduled sends whose owner_email is that member, inside "
