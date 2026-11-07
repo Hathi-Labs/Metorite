@@ -2536,6 +2536,32 @@ class FakeProjectsDB:
                 )
 
             return sorted(rows, key=status_key, reverse=reverse)
+        # Task 1792 — the ONE status lane order (`core.status_order_sql`):
+        # `CASE [<alias>.]category WHEN '<stage>' THEN <n> … ELSE <n> END`, then
+        # position, then name. The rank is read off the statement's own WHEN
+        # pairs, as the branch above reads its ARRAY, so a route that reordered
+        # the stages changes this mirror's answer too. Without this branch
+        # `_ORDER_RE` read `CASE` as a column and kept the insert order.
+        stage = re.search(
+            r"ORDER\s+BY\s+CASE\s+(?:\w+\.)?category\s+"
+            r"((?:WHEN\s+'\w+'\s+THEN\s+\d+\s+)+)ELSE\s+(\d+)\s+END",
+            statement, re.I,
+        )
+        if stage:
+            rank = {
+                name: int(n)
+                for name, n in re.findall(r"WHEN\s+'(\w+)'\s+THEN\s+(\d+)", stage.group(1), re.I)
+            }
+            other = int(stage.group(2))
+            return sorted(
+                rows,
+                key=lambda r: (
+                    rank.get(str(r.get("category") or ""), other),
+                    r.get("position") is None,  # Postgres sorts NULL last
+                    _sortable(r.get("position")),
+                    str(r.get("name") or ""),
+                ),
+            )
         # WS-27ae — the delta feed's total order, `(<stamp>, <id>)` ascending.
         # It is the SAME pair the cursor encodes, so a mirror that ordered on
         # the stamp alone would break ties differently from Postgres and the

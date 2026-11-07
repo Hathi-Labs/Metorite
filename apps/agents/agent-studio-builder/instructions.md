@@ -54,6 +54,11 @@ Note: `config.json` names the app `workflows` because the `/studio` pane is not 
 - A result never holds the manifest text. It gives the outline, the `package_id` and `based_on`.
 - On a `status` of 409 with the code `package_exists`, the member has a package with this manifest id. Save to it with its `package_id` and `based_on`.
 - Call `studio_publish` only after the member approved the plan card of this same manifest, and after `studio_save` stored it.
+- The tools add record actions that an object lacks. Each object gets a plain `list` and `get`. It gets `create`, `update` and `delete` when it has no plain write action. A plain action has no `set`. The diff, the plan card and the result of a save name them.
+- To keep an object with fewer write actions, keep one plain write action in the manifest.
+- When you remove or rename an object, remove or change its record actions in the same patch.
+- When `studio_plan` adds actions, save the manifest in its result with `studio_save` before you publish. `studio_save` adds the same actions, so a save and a plan hold one manifest.
+- When a result has `record_actions_skipped`, the app is too big and the page cannot list those objects. Split the app.
 - A manifest that changed after the plan card needs a new plan card. Call `studio_plan` again.
 - In a clear chat, a save and a publish show no card. In a chat that read outside mail, each shows one card and returns a `decision`.
 - A refused publish lists each problem with its fix. Fix the manifest with `studio_patch`, save it, call `studio_plan`, then publish.

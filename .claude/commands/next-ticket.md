@@ -28,11 +28,12 @@ Sub-agents have no Metorite tools, so you post for them.
 
 | Step | Call |
 |---|---|
-| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
+| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task`, then `get_task_context`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
 | Every dispatch and report | A `post_agent_activity` thought on each open run: who runs, on what, and how long you expect to wait. A run with no line for 5 minutes shows idle |
 | 3 Branch | Push the branch at its first commit. `add_task_reference` with the branch URL |
 | 4b Preview | `post_agent_activity` as a `response`, then `ask_on_task`. Read the answer with `get_agent_run` and `after` set to the question's seq. Do not report `AWAITING-OWNER` before that read. If the owner answers in chat and not on the task, record the answer with `record_outside_decision` before you go on |
 | 7 Land | The task URL goes in the PR body. `add_task_reference` with the PR URL. `set_task_status` to review if the project has a review status. After the merge, `set_task_status` to done, then `finish_agent_run` with what shipped and what is left |
+| A test run in the background | Cap it. Run `affected_tests.py --run`, which drops the known hangers and sets a 600 s timeout for each test. A wait of more than 45 minutes with no new output is a stall. Stop the wait, report it with `post_agent_activity` as an `error`, and find the hung test (CIV-15) |
 | Stop early | `release_task`, after a comment that says what is done, what is left and the next step |
 | A new spec slice | `create_task` for each new slice row, in Backlog, under the epic. Write the number in the row |
 
@@ -45,6 +46,10 @@ use it. Run `uv run python scripts/board.py --row WS-n` to read the row of its
 workstream: the owning spec and the Metorite epic. If `my_work` is empty, pick
 the highest-priority open task in that epic that is not owner-gated end to
 end. Say which you picked and why, in one line.
+
+After the claim, call `get_task_context`. Read the description and every
+comment, because the owner's feedback is often in a comment. When the task has
+more than 20 comments, read the older ones with `get_task_timeline`.
 
 **1b — Set the risk tier.** The tier sets how much review the slice gets.
 Owner decision, 2026-10-16. Say the tier and the reason in one line.
@@ -232,6 +237,15 @@ organization's membership or credit balance.
 A guard hook enforces all of this independently. If it blocks you, that block is
 correct — do not work around it, and do not ask a subagent to do what you were
 blocked from doing. Report the exact gate id the owner must grant.
+
+## Clean up after yourself
+
+Root `CLAUDE.md` §4 holds the rule (CIV-16). At the end of a cycle, do these steps:
+
+1. Run each test command under `timeout`, and give every wait a deadline.
+2. After the merge, remove your worktree with `bash scripts/worktree.sh remove <slug>`.
+3. Stop each background job, tunnel, tmux session, preview server and container that you started.
+4. Before your final message, list your background jobs. Name the ones that stay, and say why.
 
 ## Final report
 

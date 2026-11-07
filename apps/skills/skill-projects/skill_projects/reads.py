@@ -1833,12 +1833,12 @@ AGENT_RUNS_OFF = (
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def waiting_agent_requests() -> str:
     """The questions and requests that agents have put to the member and that
-    still wait for an answer, newest first. Each row shows the task, the agent,
+    still wait for an answer, oldest first. Each row shows the task, the agent,
     the request in plain words, its age and the link to the task card. Only
     the member answers, on that card. No chat tool approves, declines or
     answers one, so send the member to the link."""
     try:
-        page = (await get("/projects/agent-runs", {"status": "awaiting", "limit": MAX_PAGE})) or {}
+        page = (await get("/projects/agent-runs", {"status": "awaiting", "order": "oldest", "limit": MAX_PAGE})) or {}
     except GatewayRefusal as exc:
         # `require_agent_runs` answers 404 while agent runs are switched off.
         if exc.status == 404:

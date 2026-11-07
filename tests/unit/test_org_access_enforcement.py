@@ -371,6 +371,20 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "and no member from the request "
             "(`test_feed_measure_r8.py::TestTheTenancyBoundary`)."
         ),
+        "/shell/waiting": (
+            "WS-AP AP-1a. `WAITING_ORGS` answers 404 first, and a signed agent "
+            "gets 404. Each provider in `waiting.PROVIDERS` checks the features "
+            "of its app's own route through `Provider.held_by` before it calls "
+            "that route's read. `held_write` also needs `ADMIN_PERMISSION`. "
+            "`app_request` has no feature, as its own routes have none: the "
+            "flag and agent access gate it, and it lists the member's own rows. "
+            "The route takes no member and no org from the request "
+            "(`test_waiting_seam_r8.py`)."
+        ),
+        "/shell/waiting/count": (
+            "WS-AP AP-1a. The same run of `waiting.PROVIDERS` and the same "
+            "gates as `/shell/waiting` (`test_waiting_seam_r8.py`)."
+        ),
     },
     "gateway.retrieval.company": {
         "/search/company": (
