@@ -35,7 +35,7 @@ import {
 } from "@/lib/shell/shellNav";
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { latestShell, saveShellPrefs, useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
-import { EMPTY_SHELL, toggleStar } from "@/lib/shell/presets";
+import { EMPTY_SHELL, starBase, toggleStar } from "@/lib/shell/presets";
 import { foldHeading, isFolded, readFolds, writeFolds, type Folds } from "@/lib/shell/sidebarFolds";
 import { needsLabel, needsSuffix, rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
@@ -226,7 +226,7 @@ export default function Sidebar() {
   const toast = useToast();
   const canHide = shellNav && shell.enabled && shell.stored !== undefined;
   const flipStar = (href: string) => {
-    const base = { ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) };
+    const base = starBase({ ...EMPTY_SHELL, ...(latestShell() ?? shell.stored) }, shell.layout);
     return saveShellPrefs({ ...base, ...toggleStar(base, sections, href) });
   };
   const hideFromSidebar = (pane: NavPane) => {

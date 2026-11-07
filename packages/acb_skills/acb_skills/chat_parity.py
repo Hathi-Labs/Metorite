@@ -383,6 +383,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "The shell reads the installed packages to draw the sidebar and the command bar, and reads them "
         "again every few seconds (PKG-6). No member click sends it. The chat acts on the same records.",
     ),
+    "GET /api/shell/layout": (
+        "stream",
+        "The shell reads the org default of the star set and the preset, to draw the sidebar for a member "
+        "with no choice of their own (PKG-17b). No member click sends it. The chat sets no org default here.",
+    ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
         "download",

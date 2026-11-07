@@ -42,6 +42,7 @@ import { chatScope, type ChatSession } from "@/lib/sessions";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { setGuideAllowed, setGuideHold } from "./guide";
+import { orgDefaultFor, useOrgLayout } from "./orgLayout";
 import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
 import { asLayout, readCachedLayout, writeCachedLayout, writeNudgeRetired } from "./shellCache";
 import { shellNavOn } from "./shellNav";
@@ -529,12 +530,14 @@ export function useShellPrefs(): ShellPrefsState {
     if (scope && layout) writeCachedLayout(scope, layout);
   }, [scope, res.data]);
 
+  // The org default (PKG-17b): a fallback for a member with no stored choice.
+  const orgLayout = useOrgLayout(enabled);
   const fresh = enabled ? (unsaved ?? res.data) : undefined;
   const stored = enabled ? (fresh ?? cached) : undefined;
   return {
     stored,
     fresh,
-    layout: shellLayout(stored, access.roles ?? []),
+    layout: shellLayout(stored, access.roles ?? [], orgDefaultFor(orgLayout, access.roles ?? [])),
     loading: enabled && stored === undefined && res.loading,
     failed: enabled && stored === undefined && !res.loading && res.error !== null,
     enabled,
