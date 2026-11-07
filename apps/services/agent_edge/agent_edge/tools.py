@@ -2841,6 +2841,7 @@ GUIDANCE_ROUTE = "/agent-guidance/tasks/{task_id}"
 GUIDANCE_REFS_ROUTE = "/agent-guidance/refs"
 #: The key that carries the guidance. It is absent while the org's flag is off.
 GUIDANCE_KEY = "guidance"
+
 #: The keys of ``guidance``: ``blocks``, nearest first, and ``dropped``, the
 #: number of the farthest blocks that the cap of the gateway cut. A
 #: ``dropped`` above 0 tells the agent that rules are missing.
@@ -2849,6 +2850,45 @@ GUIDANCE_KEYS: tuple[str, ...] = ("blocks", "dropped")
 GUIDANCE_REF_KEY = "guidance_ref"
 #: The levels of a block.
 GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company")
+#: SW-56 (agent_coordination.md §3.10.9). The protocol block of the results of
+#: ``claim_task`` and ``my_work``: fixed server text, so a client that drops the
+#: instructions and the prompts still reads the rules when it claims. At most
+#: :data:`PROTOCOL_LINES_MAX` lines of :data:`PROTOCOL_LINE_MAX` characters. It
+#: shows only while the runs flag is on, because each line names a run tool, and
+#: only for an organization on ``agent_protocol_orgs``. Fence:
+#: ``test_mcp_edge_context.py`` ``TestTheProtocolBlock``.
+PROTOCOL_KEY = "protocol"
+PROTOCOL_VERSION = 1
+PROTOCOL_LINES_MAX = 6
+PROTOCOL_LINE_MAX = 120
+PROTOCOL_LINES: tuple[str, ...] = (
+    "Claim the slice, not the epic.",
+    "Post a thought with post_agent_activity each minute.",
+    "When you are blocked, ask with ask_on_task. Never ask only in the terminal.",
+    "End each turn with one result: review or done, a question, or release_task.",
+    "Hand off with evidence: what is done, what is left, and the proof.",
+)
+_PROTOCOL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "version": {"type": "integer"},
+        "lines": {"type": "array", "maxItems": PROTOCOL_LINES_MAX,
+                  "items": {"type": "string", "maxLength": PROTOCOL_LINE_MAX}},
+    },
+    "required": ["version", "lines"],
+    "additionalProperties": False,
+}
+
+
+def _protocol(ctx: Context) -> dict[str, Any] | None:
+    """The protocol block, or ``None``: the key is then left out.
+
+    ``None`` while the runs flag is off or the organization of the token row is
+    not on ``agent_protocol_orgs``. No gateway request."""
+    if not (agent_oauth.runs_enabled()
+            and agent_oauth.protocol_allowed(ctx.caller.lookup.organization_id)):
+        return None
+    return {"version": PROTOCOL_VERSION, "lines": list(PROTOCOL_LINES)}
 #: The most projects of one refs read (the route's own cap).
 GUIDANCE_REFS_MAX = 25
 
@@ -3655,9 +3695,9 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "yours": {"type": "boolean"},
     "external_link": _SHAPED_OR_NULL,
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
-_MY_WORK_OUTPUT: dict[str, Any] = _object({
+_MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
-})
+}), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
 
 
 async def _my_runs(ctx: Context, via: str, *, needs_agent: bool = False,
@@ -3891,7 +3931,11 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         for item in out:
             project = item.get("project_id")
             item[GUIDANCE_REF_KEY] = refs.get(project) if isinstance(project, str) else None
-    return {"rows": out}
+    answer: dict[str, Any] = {"rows": out}
+    protocol = _protocol(ctx)
+    if protocol is not None:
+        answer[PROTOCOL_KEY] = protocol
+    return answer
 
 
 MY_WORK = Tool(
@@ -4943,6 +4987,7 @@ _CLAIM_OUTPUT: dict[str, Any] = _optional(_optional(_optional(_object({
     # member can see.
     "open_subtasks", {"type": "array", "maxItems": 5, "items": {"type": "string"}},
 ), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
+_CLAIM_OUTPUT = _optional(_CLAIM_OUTPUT, PROTOCOL_KEY, _PROTOCOL_SCHEMA)
 
 
 async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
@@ -4990,6 +5035,9 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         result["open_subtasks"] = ids
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
+    protocol = _protocol(ctx)
+    if protocol is not None:
+        result[PROTOCOL_KEY] = protocol
     return result
 
 
@@ -7864,6 +7912,11 @@ __all__ = [
     "PROJECT_KEYS",
     "PROJECT_ROW_KEYS",
     "PROJECT_UPDATE_BODY_KEYS",
+    "PROTOCOL_KEY",
+    "PROTOCOL_LINES",
+    "PROTOCOL_LINES_MAX",
+    "PROTOCOL_LINE_MAX",
+    "PROTOCOL_VERSION",
     "READ_ANNOTATIONS",
     "RECORD_OUTSIDE_DECISION",
     "REF_KEYS",

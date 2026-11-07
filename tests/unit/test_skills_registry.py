@@ -101,8 +101,16 @@ def test_no_stale_registry_entries():
 # (``_agent_tools()``, plus ``narrow_and_read`` from ``_narrow_tool``).
 
 
-def _owner_universe(owner: str) -> set[str]:
-    """The tools that agent *owner* holds: declared AND built by its code."""
+#: Packs whose tools are built by the owner but are NOT in its ``own_tool_scope``
+#: on purpose (CAL-1a, task 1675): the day planner tools are My Tasks functions,
+#: and the scope of the Projects specialist must not change. Such a pack is
+#: checked against what the owner builds only.
+SCOPE_FREE_PACKS = frozenset({"calendar-day"})
+
+
+def _owner_universe(owner: str, *, scoped: bool = True) -> set[str]:
+    """The tools that agent *owner* holds: declared AND built by its code.
+    ``scoped=False`` skips the declaration (see ``SCOPE_FREE_PACKS``)."""
     import json
     from pathlib import Path
 
@@ -124,7 +132,7 @@ def _owner_universe(owner: str) -> set[str]:
     built = {tool_name(fn) for fn in module._agent_tools()}
     if callable(getattr(module, "_narrow_tool", None)):
         built.add(NARROW)
-    return set(cfg.get("own_tool_scope") or ()) & built
+    return (set(cfg.get("own_tool_scope") or ()) & built) if scoped else built
 
 
 def test_each_pack_tool_is_a_tool_its_owner_holds():
@@ -134,7 +142,8 @@ def test_each_pack_tool_is_a_tool_its_owner_holds():
     assert packs, "non-vacuity: the registry holds a pack"
     for slug in packs:
         owner = sf.SKILL_FAMILIES[slug]["owner"]
-        missing = set(sf.SKILL_FAMILIES[slug]["tools"]) - _owner_universe(owner)
+        missing = set(sf.SKILL_FAMILIES[slug]["tools"]) - _owner_universe(
+            owner, scoped=slug not in SCOPE_FREE_PACKS)
         assert not missing, (
             f"pack {slug!r} names tools its owner {owner!r} does not hold: "
             f"{sorted(missing)}"
