@@ -674,7 +674,7 @@ test.describe("the phone opens on the chat, and one nudge (WS-62 CF-2)", () => {
     await expect(bubble).toBeVisible({ timeout: 60_000 });
     await expect(bubble).toHaveText(/Ask me anything\. I can read your mail, plan your week and move your tasks\./);
     // Under the field, centred on it, with the tail up.
-    const field = page.locator("[data-ask-field] input");
+    const field = page.locator("[data-ask-field] input, [data-ask-field] textarea");
     const b = (await bubble.boundingBox())!;
     const f = (await field.boundingBox())!;
     expect(b.y).toBeGreaterThanOrEqual(f.y + f.height);

@@ -35,3 +35,12 @@ export function composerHeight(scrollHeight: number, cap: number): number {
 export function offerExpand(scrollHeight: number, cap: number, expanded: boolean): boolean {
   return expanded || scrollHeight > cap;
 }
+
+/** The Ask bar at the foot: one line is 28 px, and it grows to six lines (task 1601). */
+export const ASK_BAR_LINE_PX = 28;
+export const ASK_BAR_MAX_PX = 148;
+
+/** The Ask bar field's height for content of `scrollHeight`: one line at least, six at most. */
+export function askBarHeight(scrollHeight: number): number {
+  return Math.min(Math.max(scrollHeight, ASK_BAR_LINE_PX), ASK_BAR_MAX_PX);
+}
