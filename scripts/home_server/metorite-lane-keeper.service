@@ -12,6 +12,8 @@ Description=Metorite lane keeper: wake the lanes whose turn ended (CIV-19)
 
 [Service]
 Type=oneshot
+# A trusted project directory. From the home directory claude says "Workspace not trusted".
+WorkingDirectory=%h/Metorite
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
 EnvironmentFile=-%h/.config/metorite-lane-keeper.env
 ExecStart=/usr/bin/python3 %h/.local/lib/metorite/lane_keeper.py
