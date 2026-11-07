@@ -36,6 +36,7 @@ import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { railClass, useRailFold } from "@/lib/railFold";
 import { ShellJob } from "@/lib/shell/doJob";
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 
 import { canUseFeature } from "@/lib/access";
 
@@ -65,7 +66,7 @@ function IntegrationsPageInner() {
   const canRead = hasFeature && consoleGate.canRead;
   const canManage = hasFeature && consoleGate.canManage;
   const { isMobile } = useViewMode();
-  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
   const rail = useRailFold();
   // The same cached read the Connections view makes: one request. A 404 gives
   // `null`, and then a new MCP server would have no list to land in, so the
@@ -90,11 +91,38 @@ function IntegrationsPageInner() {
 
   function openMenu(): void {
     const r = addRef.current?.getBoundingClientRect();
-    setMenu({ x: r?.left ?? 0, y: (r?.bottom ?? 0) + 4 });
+    // On a phone the bar's Add tab holds the button, so the menu rises from
+    // the bottom right, above the bar (the menu clamps to the viewport).
+    if (!r) setMenu({ x: window.innerWidth - 220, y: window.innerHeight - 240 });
+    else setMenu({ x: r.left, y: r.bottom + 4 });
   }
 
+  // The phone bar (MOB-12): Views opens the views rail, as the title button
+  // does, and Add opens the menu. Add hides for a member who cannot manage.
+  const [sheetTab, markSheetTab] = useSheetTab(drawerOpen, drawerShows);
+  usePhoneBar({ active: sheetTab, hide: canManage ? [] : ["integrations-add"] });
+  const openViews = () => {
+    markSheetTab("integrations-views");
+    openDrawer(
+      <nav aria-label="Integrations views" className="p-2">
+        <IntegrationsRail view={view} onSelect={choose} views={views} />
+      </nav>,
+    );
+  };
+  const barRef = useRef({ openViews, openMenu });
+  barRef.current = { openViews, openMenu };
+  useEffect(() => {
+    const h = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab === "integrations-views") barRef.current.openViews();
+      else if (tab === "integrations-add") barRef.current.openMenu();
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
+
   const actions =
-    canManage ? (
+    canManage && !isMobile ? (
       <div ref={addRef}>
         <Button variant="secondary" size="sm" icon="Plus" onClick={openMenu} aria-haspopup="menu">
           Add
@@ -112,13 +140,7 @@ function IntegrationsPageInner() {
           isMobile ? (
             <button
               type="button"
-              onClick={() =>
-                openDrawer(
-                  <nav aria-label="Integrations views" className="p-2">
-                    <IntegrationsRail view={view} onSelect={choose} views={views} />
-                  </nav>,
-                )
-              }
+              onClick={openViews}
               className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
             >
               <span className="truncate">{current.label}</span>

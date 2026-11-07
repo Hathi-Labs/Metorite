@@ -93,10 +93,9 @@ describe("the rule", () => {
   const livePaths = LIVE_PANES.map((p) => p.href);
 
   it.each(livePaths)("%s: at most 3 tabs with Ask present, one accent, only an act", (href) => {
+    const shown = resolvePhoneTabs(phoneBarFor(href), href, everyone);
+    expect(shown.length, href).toBeLessThanOrEqual(3);
     for (const list of tabLists(href)) {
-      const shown = resolvePhoneTabs(phoneBarFor(href), href, everyone);
-      void list;
-      expect(shown.length, href).toBeLessThanOrEqual(3);
       const accents = list.filter((t) => t.accent);
       expect(accents.length, href).toBeLessThanOrEqual(1);
       for (const t of accents) expect(t.kind, `${href} ${t.id}`).toBe("act");
@@ -144,6 +143,10 @@ describe("the rule", () => {
     const without = resolvePhoneTabs(tasks, "/tasks", { ...everyone, ask: false }).map((t) => t.id);
     expect(withAsk).toEqual(["tasks-inbox", "tasks-lists", "tasks-capture"]);
     expect(without).toEqual([...withAsk, "tasks-assistant"]);
+    // `/chat` with the shell chat on is a door to the Ask sheet, so its tabs need Ask absent.
+    const chat = phoneBarFor("/chat");
+    expect(resolvePhoneTabs(chat, "/chat", everyone)).toEqual([]);
+    expect(resolvePhoneTabs(chat, "/chat", { ...everyone, ask: false }).map((t) => t.id)).toEqual(["chats", "files", "chat-new"]);
     const email = phoneBarFor("/email");
     expect(resolvePhoneTabs(email, "/email", everyone).map((t) => t.id)).not.toContain("email-ai");
     expect(resolvePhoneTabs(email, "/email", { ...everyone, ask: false }).map((t) => t.id)).toContain("email-ai");

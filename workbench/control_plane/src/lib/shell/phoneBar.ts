@@ -164,14 +164,17 @@ export const PHONE_BARS: RegisteredBar[] = [
     },
   },
   {
+    // With the shell chat on (production), `/chat` is only a door: it opens
+    // the Ask sheet and the page under it is empty (`ChatFullView`). So all
+    // three tabs stand in for Ask and show only without it, as rule 4 asks.
     app: "Chat",
     path: "/chat",
     exact: true,
     entry: {
       tabs: [
-        { id: "chats", event: "chats", label: "Chats", icon: "MessageCircle", kind: "place" },
-        { id: "files", event: "files", label: "Files", icon: "FolderOpen", kind: "place" },
-        { id: "chat-new", event: "chat-new", label: "New chat", icon: "MessageSquarePlus", kind: "act", accent: true },
+        { id: "chats", event: "chats", label: "Chats", icon: "MessageCircle", kind: "place", withoutAsk: true },
+        { id: "files", event: "files", label: "Files", icon: "FolderOpen", kind: "place", withoutAsk: true },
+        { id: "chat-new", event: "chat-new", label: "New chat", icon: "MessageSquarePlus", kind: "act", accent: true, withoutAsk: true },
       ],
     },
   },

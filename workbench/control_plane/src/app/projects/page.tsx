@@ -12,6 +12,7 @@
  * `lib/tree.filterByCenter`'s own test says so).
  */
 
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import Icon, { themedIcon } from "@/components/Icon";
 import { ContextMenu } from "@/components/ContextMenu";
 import RailRow from "@/components/ui/RailRow";
@@ -1507,9 +1508,12 @@ function ProjectsWorkspace() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
 
-  // WS-27ag — the phone's bottom bar (AppShell's `isProjectsPage` branch) talks
-  // to this page over the same `cc-mobile-nav` channel Tasks, Notes and the App
-  // Workshop use. Tapping the tab that is already showing closes its sheet.
+  // WS-27ag — the phone's bottom bar (the registry, `lib/shell/phoneBar.ts`)
+  // talks to this page over the same `cc-mobile-nav` channel Tasks, Notes and
+  // the App Workshop use. Tapping the tab that is already showing closes its
+  // sheet. The Projects tab is a place: it shows selected while its sheet
+  // is open (MOB-12).
+  usePhoneBar({ active: sheet === "tree" ? "projects-tree" : null });
   useEffect(() => {
     const handler = (event: Event) => {
       const tab = (event as CustomEvent<string>).detail;

@@ -19,10 +19,10 @@ import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import FilterPills from "@/components/FilterPills";
 import type { AppMeta } from "@/app/build/apps/lib/types";
-import { shellChatOn } from "@/lib/shell/chatFlag";
-import { openAssistant } from "@/lib/shell/assistant";
+import { startApp } from "@/lib/studio/startApp";
+import { useViewMode } from "@/components/ViewModeProvider";
 import {
-  PACKAGES_FAILED_LINE, type LibraryFilter, appBrief, changedWords, libraryCounts, mergeLibrary,
+  PACKAGES_FAILED_LINE, type LibraryFilter, changedWords, libraryCounts, mergeLibrary,
   packageShows, type PackageCard as PackageCardData,
 } from "@/lib/studio/packageLibrary";
 import { STUDIO_OFF, type PackageSummary, listPackages } from "@/lib/studio/realDoor";
@@ -291,6 +291,7 @@ function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => vo
 
 export default function AppsGallery() {
   const router = useRouter();
+  const { isMobile } = useViewMode();
   const { data: session } = useSession();
   const myEmail = (session?.user?.email ?? "").toLowerCase();
 
@@ -354,11 +355,7 @@ export default function AppsGallery() {
   // Chat first: Mira builds the app in the one assistant, from the brief. The words wait
   // in the box for the member to read and send. With the shell chat off, `/chat?q=` does the same.
   const createApp = useCallback(
-    (seed: string) => {
-      const brief = appBrief(seed);
-      if (shellChatOn()) openAssistant({ draft: brief, fresh: true });
-      else router.push(`/chat?q=${encodeURIComponent(brief)}`);
-    },
+    (seed: string) => startApp(seed, (url) => router.push(url)),
     [router]
   );
 
@@ -480,10 +477,13 @@ export default function AppsGallery() {
           >
             <Icon name="RefreshCw" className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")}>
-            <Icon name="Plus" className="w-4 h-4" />
-            New app
-          </Button>
+          {/* On a phone the bar's New app tab holds it (MOB-12). */}
+          {!isMobile && (
+            <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")}>
+              <Icon name="Plus" className="w-4 h-4" />
+              New app
+            </Button>
+          )}
         </div>
       </div>
 

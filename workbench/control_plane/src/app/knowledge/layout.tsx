@@ -45,6 +45,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AppTopBar } from "@/components/AppTopBar";
 import { useAccess } from "@/components/AccessProvider";
 import { useMobileDrawer } from "@/components/AppShell";
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -231,7 +232,8 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
   const searchParams = useSearchParams();
   const router = useRouter();
   const { isMobile } = useViewMode();
-  const { open: openDrawer, close: closeDrawer } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
+  const [sheetTab, markSheetTab] = useSheetTab(drawerOpen, drawerShows);
   const rail = useRailFold();
 
   const [focus, setFocus] = useState<PageFocus | null>(null);
@@ -411,46 +413,67 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
     onAddEntity: canAdd ? (type: CreatableType) => requestLeave(() => openAddEntity(type)) : undefined,
   };
 
+  // The spaces rail in the drawer: the title button opens it on a phone, and
+  // so does the bar's Spaces tab (MOB-12).
+  const openRail = () => {
+    markSheetTab("knowledge-rail");
+    openDrawer(
+      <nav aria-label="Knowledge spaces" className="p-2">
+        <KnowledgeRail
+          {...railProps}
+          onNavigate={(href) => {
+            closeDrawer();
+            go(href);
+          }}
+          onNewSubPage={(parent) => {
+            closeDrawer();
+            newSubPage(parent);
+          }}
+          onArchive={(page) => {
+            closeDrawer();
+            setArchiving(page);
+          }}
+          onNewSpace={
+            railProps.onNewSpace
+              ? () => {
+                  closeDrawer();
+                  railProps.onNewSpace?.();
+                }
+              : undefined
+          }
+          onAddEntity={
+            railProps.onAddEntity
+              ? (type) => {
+                  closeDrawer();
+                  railProps.onAddEntity?.(type);
+                }
+              : undefined
+          }
+        />
+      </nav>,
+    );
+  };
+
+  // The phone bar: Spaces and New page answer here. Search is a link.
+  usePhoneBar({ active: sheetTab });
+  const railRef = useRef(openRail);
+  railRef.current = openRail;
+  const newPageRef = useRef(() => {});
+  newPageRef.current = () => requestLeave(() => openNewPage({ spaceId: selectedSpaceId }));
+  useEffect(() => {
+    const h = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab === "knowledge-rail") railRef.current();
+      else if (tab === "knowledge-new-page") newPageRef.current();
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
+
   const title = isMobile ? (
     <button
       type="button"
-      onClick={() =>
-        openDrawer(
-          <nav aria-label="Knowledge spaces" className="p-2">
-            <KnowledgeRail
-              {...railProps}
-              onNavigate={(href) => {
-                closeDrawer();
-                go(href);
-              }}
-              onNewSubPage={(parent) => {
-                closeDrawer();
-                newSubPage(parent);
-              }}
-              onArchive={(page) => {
-                closeDrawer();
-                setArchiving(page);
-              }}
-              onNewSpace={
-                railProps.onNewSpace
-                  ? () => {
-                      closeDrawer();
-                      railProps.onNewSpace?.();
-                    }
-                  : undefined
-              }
-              onAddEntity={
-                railProps.onAddEntity
-                  ? (type) => {
-                      closeDrawer();
-                      railProps.onAddEntity?.(type);
-                    }
-                  : undefined
-              }
-            />
-          </nav>,
-        )
-      }
+      onClick={openRail}
       className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
     >
       <span className="truncate">Knowledge</span>
@@ -473,7 +496,7 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
           rail={{ open: rail.open, onToggle: rail.toggle, noun: "the spaces" }}
           title={title}
           subtitle={selectedSpace?.name}
-          actions={
+          actions={isMobile ? undefined : (
             <Button
               variant="primary"
               size="sm"
@@ -481,10 +504,10 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
               aria-label="New page"
               onClick={() => requestLeave(() => openNewPage({ spaceId: selectedSpaceId }))}
             >
-              {isMobile ? null : "New page"}
+              New page
             </Button>
-          }
-          tools={
+          )}
+          tools={isMobile ? undefined : (
             <Button
               variant="ghost"
               size="sm"
@@ -493,9 +516,9 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
               title="Search Knowledge"
               onClick={() => go(KNOWLEDGE_SEARCH)}
             >
-              {isMobile ? null : "Search"}
+              Search
             </Button>
-          }
+          )}
         />
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {!isMobile && rail.open ? (

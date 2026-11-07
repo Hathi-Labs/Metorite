@@ -969,7 +969,7 @@ function TaskTab({
           <NavBadge count={run.count} tone={run.tone} label={run.label} placement="tab" />
         ) : null}
       </span>
-      <span className="w-full truncate text-center text-[10px] font-medium leading-none">{label}</span>
+      <span className="w-full truncate pb-0.5 text-center text-[10px] font-medium leading-none">{label}</span>
     </>
   );
   if (href) {

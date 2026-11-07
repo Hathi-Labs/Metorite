@@ -383,11 +383,14 @@ export function EmailList({
         </div>
       ) : (
         <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-border flex-shrink-0 overflow-x-auto scrollbar-hide">
-          {/* Compose — always available, even with nothing selected */}
-          <Button size="none" radius="keep" layout="flex items-center" title="New Email" onClick={onCompose} className="gap-1 px-2.5 py-1.5 rounded-md flex-shrink-0">
-            <AppIcon name="Pencil" size={12} />
-            <span className="text-[10px] font-medium">New</span>
-          </Button>
+          {/* Compose — always available, even with nothing selected. On a
+              phone the bar's Write tab holds it (MOB-12). */}
+          {!isMobile && (
+            <Button size="none" radius="keep" layout="flex items-center" title="New Email" onClick={onCompose} className="gap-1 px-2.5 py-1.5 rounded-md flex-shrink-0">
+              <AppIcon name="Pencil" size={12} />
+              <span className="text-[10px] font-medium">New</span>
+            </Button>
+          )}
 
           {selectedEmail ? (
             <>
