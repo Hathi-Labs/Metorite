@@ -64,6 +64,7 @@
       "tests/unit/test_nightly_release_box.py",
       "tests/unit/test_no_copilot_sdk.py",
       "tests/unit/test_no_direct_ai_vendor_calls.py",
+      "tests/unit/test_no_llm_key_identity_fence.py",
       "tests/unit/test_no_tenant_name_in_prompts.py",
       "tests/unit/test_operator_console_deploy_wiring.py",
       "tests/unit/test_operator_console_invocations.py",

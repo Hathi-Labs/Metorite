@@ -79,6 +79,11 @@ back as `kept: {"tasks": 847}` with all 847 gone; `gtd_projects` was on neither
 list. Fixed, and three fences that did not exist were the reason: the delete
 route's permission, the type-to-confirm rule, and any cross-table claim at all
 (§2 Step 5 *Repair round 1*). **No migration, no new slug.** ·
+**WS-24c slice 1 BUILT 2026-11-07 (task 1843):** `scripts/setup_secrets.sh`
+writes a random `GATEWAY_INTERNAL_TOKEN` when the line is absent, empty or
+equal to the LLM key. It keeps a distinct token. Fences:
+`tests/unit/test_setup_secrets.py` and
+`tests/unit/test_no_llm_key_identity_fence.py`. G2 stays open. ·
 **Board row:** WS-24 ·
 **Owner:** vjvarada · **Date:** 2026-08-05 ·
 **Verified against code on 2026-08-05** (branch `ws-24-onboarding-readiness`,
