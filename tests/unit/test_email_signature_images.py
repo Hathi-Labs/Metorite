@@ -896,3 +896,38 @@ async def test_a_legacy_webp_in_a_save_names_the_fix(monkeypatch, base_url, stor
         "One image in your signature could not be saved. "
         "This image is a WebP file. Upload it again as a PNG or a JPEG.")
     assert stored_legacy == []
+
+
+@needs_child
+async def test_a_truncated_jpeg_gets_the_broken_sentence() -> None:
+    """Fix round 3, P3: MuPDF printed 'MuPDF error: ...' on stdout before the
+    JSON line, so the parent read a bad answer. The child turns that print off,
+    and the damage warning gives the 'broken' sentence."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (300, 200), (200, 30, 30)).save(buf, "JPEG")
+    data = buf.getvalue()
+    with pytest.raises(si.SignatureImageError) as caught:
+        await si.encode(data[: len(data) // 2], "logo")
+    assert str(caught.value) == (
+        "That image could not be read. It may be damaged. Upload a PNG or a JPEG.")
+    assert caught.value.status == 400
+
+
+def test_a_library_line_before_the_answer_keeps_the_refusal() -> None:
+    """Fix round 3, P3: a 'MuPDF error' line on stdout before the JSON line
+    must not turn the 'broken' refusal into 'could not be read'."""
+    answer = b'MuPDF error: library error: premature end of jpeg\n{"refused": "broken"}\n'
+    with pytest.raises(si.SignatureImageError) as caught:
+        si._parse(answer)
+    assert str(caught.value) == (
+        "That image could not be read. It may be damaged. Upload a PNG or a JPEG.")
+
+
+def test_the_child_turns_the_mupdf_prints_off() -> None:
+    import inspect
+
+    source = inspect.getsource(worker._preload)
+    assert "mupdf_display_errors(False)" in source
+    assert "mupdf_display_warnings(False)" in source

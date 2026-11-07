@@ -377,8 +377,14 @@ def _parse(answer: bytes | None) -> Encoded:
     and the magic bytes of the image must each hold."""
     if not answer:
         raise _bad()
+    # The answer is the LAST line. A native library that prints a line of its
+    # own on stdout (MuPDF's "MuPDF error: ...") then cannot turn a refusal
+    # into a bad answer (fix round 3). The child turns those prints off too.
+    lines = [line for line in answer.splitlines() if line.strip()]
+    if not lines:
+        raise _bad()
     try:
-        item = json.loads(answer.decode("utf-8"))
+        item = json.loads(lines[-1].decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         raise _bad() from None
     if not isinstance(item, dict) or len(item) != 1:

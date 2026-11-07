@@ -159,6 +159,11 @@ def _preload() -> Any:
     """Load MuPDF and render one tiny image, inside the confinement."""
     import pymupdf
 
+    # MuPDF prints "MuPDF error: ..." and its warnings itself, and stdout is
+    # the answer channel: one JSON line. Turn the prints off (fix round 3).
+    # The child still reads each warning through mupdf_warnings().
+    pymupdf.TOOLS.mupdf_display_errors(False)
+    pymupdf.TOOLS.mupdf_display_warnings(False)
     tiny = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2, 2), True)
     doc = pymupdf.open(stream=tiny.tobytes("png"), filetype="image")
     doc[0].get_pixmap(alpha=True).tobytes("png")
@@ -245,7 +250,12 @@ def _encode(pymupdf: Any, data: bytes, spec: dict[str, Any]) -> dict[str, Any]:
         tried.add((out_w, out_h))
         # torect maps the clip (points) onto the exact pixel box.
         matrix = clip.torect(pymupdf.Rect(0, 0, out_w, out_h))
-        pix = page.get_pixmap(matrix=matrix, clip=clip, alpha=True)
+        try:
+            pix = page.get_pixmap(matrix=matrix, clip=clip, alpha=True)
+        except MemoryError:
+            raise
+        except Exception:  # a render that fails is a damaged image
+            raise _Refused("broken") from None
         said = _warnings(pymupdf).lower()
         if any(word in said for word in _DAMAGE_WORDS):
             raise _Refused("broken")
