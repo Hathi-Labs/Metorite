@@ -1392,6 +1392,157 @@ async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
     return row["id"], row["org"]
 
 
+# ── H-232b — the (email, org) reads of a run gate (task 1712) ───────────────
+#
+# :func:`resolve_identity` answers "which ONE org is this person in". With
+# ``IDENTITY_CUTOVER`` on, a person with two active memberships has no answer,
+# and PLN-Q5 (2026-11-02) allows that person. So a gate that already knows the
+# run's org asks the narrower question: "is this person an active member of
+# THIS org". Fence: ``tests/unit/test_member_of_org_read.py`` (R8) and
+# ``tests/unit/test_root_agent_first_party.py``.
+#
+# Both reads open ``tenant_session(org)``, bound to the org they ask about.
+# The statements name the org as a predicate too, so the bind can never widen
+# a read. It only keeps the ``app_user`` reads working under phase-4 RLS, and
+# it adds no unbound factory open (``test_db_engine_seam.py``).
+
+#: Flag ON. The RLS-EXEMPT tables of :data:`_IDENTITY_LEG_SQL`, with the org as
+#: a predicate.
+_MEMBER_OF_ORG_IDENTITY_SQL = """
+    SELECT 1
+      FROM user_identity ui
+      JOIN org_membership m ON m.user_id = ui.id
+     WHERE lower(ui.email) = :email
+       AND m.organization_id = CAST(:org AS uuid)
+       AND m.status = 'active'
+     LIMIT 1
+"""
+
+#: Flag OFF. The ``app_user`` row that the flag-OFF :func:`resolve_identity`
+#: reads, with the org as a predicate. ``app_user`` is unique on
+#: ``lower(email)`` (migration 162), so this is "the person's one org is
+#: :org". The status test matches ``resolve_access``'s ``is_active``.
+_MEMBER_OF_ORG_APP_USER_SQL = """
+    SELECT 1
+      FROM app_user
+     WHERE lower(email) = :email
+       AND organization_id = CAST(:org AS uuid)
+       AND status = 'active'
+     LIMIT 1
+"""
+
+#: The role read of :data:`_ACCESS_SQL`, limited to the ``app_user`` row of
+#: ONE org. The roles of a person are the roles of their ``app_user`` row, and
+#: that row is in one org only. So the access "in org X" is that row's access
+#: when the row is in X, and no access when it is not.
+_ACCESS_IN_ORG_SQL = _ACCESS_SQL.replace(
+    "WHERE lower(u.email) = :email",
+    "WHERE lower(u.email) = :email\n       AND u.organization_id = CAST(:org AS uuid)",
+)
+if _ACCESS_IN_ORG_SQL == _ACCESS_SQL:  # pragma: no cover - import-time guard
+    raise RuntimeError("_ACCESS_IN_ORG_SQL: the org predicate did not apply")
+
+
+async def is_active_member(email: str | None, org_id: str | None) -> bool:
+    """True only when the read worked and *email* is an active member of *org_id*.
+
+    The gate of a run already holds the run's org (bound server-side, never
+    from the request), so it asks about that one org. A person with an active
+    membership in two orgs passes for each of the two (PLN-Q5).
+
+    * ``IDENTITY_CUTOVER`` **ON**: reads :data:`_MEMBER_OF_ORG_IDENTITY_SQL`,
+      the RLS-EXEMPT ``user_identity ⋈ org_membership``. An invited, suspended
+      or removed membership answers False.
+    * ``IDENTITY_CUTOVER`` **OFF**: reads :data:`_MEMBER_OF_ORG_APP_USER_SQL`,
+      the same ``app_user`` table and unbound session as the flag-OFF
+      :func:`resolve_identity`. ``app_user`` holds one org per person, so the
+      answer is that of H-232's org compare.
+
+    Both run on ``tenant_session(org_id)``. The GUC changes nothing for the
+    RLS-EXEMPT tables. For ``app_user`` it keeps the read working under
+    phase-4 RLS, where H-232's unbound read found no row.
+
+    **Fails CLOSED.** A blank email or org, an org that is not a UUID, a
+    missing table and any read error answer False. A pool or connect timeout
+    raises :class:`IdentityUnavailable`, as in the neighbouring reads, and the
+    caller refuses. It never sets :func:`identity_read_failed`, because only
+    the sign-in path reads that flag.
+    """
+    if not email or not org_id:
+        return False
+    key = email.lower().strip()
+    sql = (
+        _MEMBER_OF_ORG_IDENTITY_SQL if identity_cutover_enabled()
+        else _MEMBER_OF_ORG_APP_USER_SQL
+    )
+    try:
+        from sqlalchemy import text
+
+        org = str(org_id).strip()
+        async with tenant_session(org) as session:
+            row = (
+                await session.execute(text(sql), {"email": key, "org": org})
+            ).first()
+    except Exception as exc:
+        _raise_if_pool_timeout(exc, "member_of_org")
+        _log.warning("auth.member_of_org_failed", error=str(exc)[:200])
+        return False
+    return row is not None
+
+
+async def resolve_access_in_org(
+    email: str | None, org_id: str | None,
+) -> EffectiveAccess:
+    """The access of *email* in *org_id*, or no access. Never cached.
+
+    :func:`resolve_access` reads the roles of the person's ``app_user`` row by
+    email alone, so it answers with the roles of the person's OWN org, which
+    need not be the run's org. This read is the same statement with the org as
+    a predicate (:data:`_ACCESS_IN_ORG_SQL`). The row is in one org only, so a
+    person whose row is in another org has no access here.
+
+    The session is ``tenant_session(org_id)``, the one GUC seam, in both flag
+    states, because ``app_user`` is FORCE-RLS'd after H3. The org predicate
+    is in the statement too, so before phase 4 the answer is the same.
+
+    **Fails CLOSED.** It never falls back to the legacy role map. A blank email
+    or org, no row, a missing table and a read error give
+    ``EffectiveAccess(is_active=False)``. A pool or connect timeout raises
+    :class:`IdentityUnavailable`.
+    """
+    refused = EffectiveAccess(is_active=False)
+    if not email or not org_id:
+        return refused
+    key = email.lower().strip()
+    org = str(org_id).strip()
+    try:
+        from sqlalchemy import text
+
+        async with tenant_session(org) as session:
+            row = (
+                await session.execute(
+                    text(_ACCESS_IN_ORG_SQL), {"email": key, "org": org},
+                )
+            ).mappings().first()
+    except Exception as exc:
+        _raise_if_pool_timeout(exc, "access_in_org")
+        _log.warning("auth.access_in_org_failed", error=str(exc)[:200])
+        return refused
+    if row is None:
+        return refused
+    overrides: list[tuple[str, str]] = []
+    for entry in row["overrides"] or []:
+        perm, _, effect = str(entry).rpartition("=")
+        if perm and effect in ("allow", "deny"):
+            overrides.append((perm, effect))
+    return build_access(
+        row["role_permissions"] or [],
+        overrides,
+        roles=row["roles"] or [],
+        is_active=row["status"] == "active",
+    )
+
+
 #: The address that holds ``owner`` in the organization with a given slug. Joins
 #: user_role → org_role('owner') → app_user, scoped to the org by slug. One row
 #: is returned because an org has one owner in practice; ``LIMIT 1`` makes the
