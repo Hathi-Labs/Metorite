@@ -35,10 +35,139 @@ def _want_json(json_logs: bool | None) -> bool:
     return fmt in ("json", "1", "true", "yes")
 
 
+# ── Box token redaction (EA-19e, external_agent_access.md §10.9 question 3) ──
+
+#: A box token: ``mbt_`` and 43 URL-safe characters. The same shape as the
+#: ``metorite-box-token`` rule of ``.gitleaks.toml``.
+BOX_TOKEN_RE = re.compile(r"mbt_[A-Za-z0-9_-]{43}")
+BOX_TOKEN_MASK = "mbt_[redacted]"
+_BOX_TOKEN_PREFIX = "mbt_"
+_BOX_TOKEN_BYTES_RE = re.compile(BOX_TOKEN_RE.pattern.encode("ascii"))
+_BOX_TOKEN_BYTES_MASK = BOX_TOKEN_MASK.encode("ascii")
+_BOX_TOKEN_BYTES_PREFIX = _BOX_TOKEN_PREFIX.encode("ascii")
+
+
+def _redact_value(value: object) -> object:
+    """Mask each box token in ``value``, at any depth.
+
+    It walks str, bytes, bytearray, dict, list, tuple, set and frozenset, and
+    the text of an exception. It returns the same object when nothing
+    changed, so a clean event costs one ``in`` test for each string. Any
+    other object passes as it is. :class:`BoxTokenMaskingRenderer` masks its
+    rendered text.
+    """
+    if isinstance(value, str):
+        if _BOX_TOKEN_PREFIX not in value:
+            return value
+        return BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, value)
+    if isinstance(value, (bytes, bytearray)):
+        if _BOX_TOKEN_BYTES_PREFIX not in value:
+            return value
+        masked = _BOX_TOKEN_BYTES_RE.sub(_BOX_TOKEN_BYTES_MASK, bytes(value))
+        return masked if isinstance(value, bytes) else bytearray(masked)
+    if isinstance(value, dict):
+        out = {k: _redact_value(v) for k, v in value.items()}
+        return value if all(out[k] is value[k] for k in value) else out
+    if isinstance(value, (list, tuple)):
+        items = [_redact_value(v) for v in value]
+        if all(a is b for a, b in zip(items, value, strict=True)):
+            return value
+        return items if isinstance(value, list) else tuple(items)
+    if isinstance(value, (set, frozenset)):
+        members = [(v, _redact_value(v)) for v in value]
+        if all(a is b for a, b in members):
+            return value
+        return type(value)(b for _, b in members)
+    if isinstance(value, BaseException):
+        text = str(value)
+        if _BOX_TOKEN_PREFIX in text:
+            return BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, f"{type(value).__name__}: {text}")
+    return value
+
+
+class BoxTokenMaskingRenderer:
+    """Wrap the final structlog renderer, and mask each box token it renders.
+
+    :func:`redact_box_tokens` walks the event dict, but an object of another
+    type (a starlette ``Headers``, for example) renders through its ``repr``.
+    So this wrapper also masks the rendered str or bytes. It is the last
+    processor of :func:`configure_logging`. Fence:
+    ``tests/unit/test_box_token_secret_rules.py``.
+    """
+
+    def __init__(self, inner: object) -> None:
+        self.inner = inner
+
+    def __call__(self, logger: object, method: str, event_dict: dict) -> object:
+        out = self.inner(logger, method, event_dict)  # type: ignore[operator]
+        if isinstance(out, str):
+            if _BOX_TOKEN_PREFIX in out:
+                return BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, out)
+            return out
+        if isinstance(out, (bytes, bytearray)):
+            if _BOX_TOKEN_BYTES_PREFIX in out:
+                return _BOX_TOKEN_BYTES_RE.sub(_BOX_TOKEN_BYTES_MASK, bytes(out))
+            return out
+        return out
+
+
+def redact_box_tokens(_logger: object, _method: str, event_dict: dict) -> dict:
+    """A structlog processor: mask each box token in the event dict.
+
+    It reads every string and bytes value, the ``event`` message too, and
+    walks nested dicts, lists, tuples and sets. It runs after ``format_exc_info``, so it also
+    masks the text of an exception. :func:`configure_logging` puts it just
+    before the renderer. Fence: ``tests/unit/test_box_token_secret_rules.py``.
+    """
+    for key, value in list(event_dict.items()):
+        new = _redact_value(value)
+        if new is not value:
+            event_dict[key] = new
+    return event_dict
+
+
+class BoxTokenRedactFilter(logging.Filter):
+    """A stdlib filter: mask each box token in a log record.
+
+    It renders the message with its args, and the exception and stack text,
+    then masks them. :func:`configure_logging` puts it on each root handler,
+    so a record that a child logger sends up the tree passes it too.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = str(record.msg)
+        if _BOX_TOKEN_PREFIX in message:
+            record.msg = BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, message)
+            record.args = None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        if record.exc_text and _BOX_TOKEN_PREFIX in record.exc_text:
+            record.exc_text = BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, record.exc_text)
+        if record.stack_info and _BOX_TOKEN_PREFIX in record.stack_info:
+            record.stack_info = BOX_TOKEN_RE.sub(BOX_TOKEN_MASK, record.stack_info)
+        return True
+
+
+def install_box_token_filter(logger: logging.Logger | None = None) -> None:
+    """Put one :class:`BoxTokenRedactFilter` on each handler of ``logger``.
+
+    The default is the root logger. It is idempotent. A handler added later
+    does not get the filter, so call it again after you add one.
+    """
+    target = logger or logging.getLogger()
+    for handler in target.handlers:
+        if not any(isinstance(f, BoxTokenRedactFilter) for f in handler.filters):
+            handler.addFilter(BoxTokenRedactFilter())
+
+
 def configure_logging(
     level: str = "INFO", *, json_logs: bool | None = None,
 ) -> None:
     logging.basicConfig(format="%(message)s", level=level.upper())
+    install_box_token_filter()
     renderer: object = (
         structlog.processors.JSONRenderer()
         if _want_json(json_logs)
@@ -51,7 +180,11 @@ def configure_logging(
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
-            renderer,
+            # ⚠️ After format_exc_info (so it masks the exception text) and
+            # before the renderer (nothing after it reads the dict).
+            redact_box_tokens,
+            # The renderer is wrapped, so its rendered text is masked too.
+            BoxTokenMaskingRenderer(renderer),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(logging, level.upper(), logging.INFO)
