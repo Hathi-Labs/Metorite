@@ -53,6 +53,8 @@ export interface NavNeeds {
   /**
    * My Day's own number: the feed's count, the one its sentence says
    * ("19 things need you"). The My Day row shows it, so the two agree.
+   * The bell badge adds the install setup rows to it. The sidebar rows do not,
+   * because a setup row belongs to no app row.
    */
   total: number;
 }

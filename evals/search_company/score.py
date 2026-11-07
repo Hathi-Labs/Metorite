@@ -30,6 +30,11 @@ K = 5
 #: room for a drift of the fusion, and no more. The README says why.
 FLOOR = 0.90
 
+#: The latency limits of ``knowledge_graph.md`` §7.3 (KG-3b), in seconds. A run
+#: passes when p50 is under the first and p95 is under the second.
+P50_LIMIT_S = 1.5
+P95_LIMIT_S = 3.0
+
 EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
 
 
@@ -145,8 +150,14 @@ def summarize(outcomes: Sequence[Outcome], registry: Sequence[str], k: int = K) 
 
 
 def verdict(summary: Summary, floor: float = FLOOR) -> int:
-    """0 pass, 1 fail. A failed request, a source with no hit, or a recall under the floor fails."""
+    """0 pass, 1 fail.
+
+    A failed request, a source with no hit, a recall under the floor, a p50 of
+    :data:`P50_LIMIT_S` or more, or a p95 of :data:`P95_LIMIT_S` or more fails.
+    """
     if summary.n == 0 or summary.failing or summary.errors or summary.recall < floor:
+        return EXIT_FAIL
+    if summary.p50 >= P50_LIMIT_S or summary.p95 >= P95_LIMIT_S:
         return EXIT_FAIL
     return EXIT_PASS
 
@@ -174,5 +185,8 @@ def render(summary: Summary, *, mode: str, flags: dict[str, str], floor: float |
     if floor is not None:
         status = "PASS" if verdict(summary, floor) == EXIT_PASS else "FAIL"
         failing = f", failing sources: {', '.join(summary.failing)}" if summary.failing else ""
-        lines.append(f"floor: recall >= {floor:.2f}{failing} -> {status}")
+        lines.append(
+            f"floor: recall >= {floor:.2f}, p50 < {P50_LIMIT_S:.1f}s, "
+            f"p95 < {P95_LIMIT_S:.1f}s{failing} -> {status}"
+        )
     return "\n".join(lines)

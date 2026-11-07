@@ -196,6 +196,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/tasks/plan/apply": "my_tasks_plan_project",
     # ── Calendar ──
     "GET /api/projects/my/calendar/estimate-stats": "my_tasks_estimate_stats",
+    # CAL-1a (task 1675): the `calendar-day` pack puts these planner tools in the main
+    # chat. The `{}` key covers plan-today, replan-today and rollover-today
+    # (my_tasks_plan_day, my_tasks_replan_day, my_tasks_rollover). Fence:
+    # tests/unit/test_calendar_day_pack.py.
     "POST /api/tasks/calendar/{}": "my_tasks_plan_day",
     "PUT /api/tasks/calendar/day-state": "my_tasks_set_one_thing",
     # ── Email ──
@@ -548,6 +552,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "POST /api/chat/sessions/{}/buddy-hello": (
         "chat",
         "Posts the hello once, on a member's first visit (BUD-1). The shell sends it, not the member.",
+    ),
+    "POST /api/chat/sessions/{}/continue": (
+        "chat",
+        "The pill of a held chat carries the member's last typed words to a fresh chat (WT-2). "
+        "It is the chat's own move, and the member sends the text.",
     ),
     "POST /api/chat/sessions/{}/compact": (
         "chat",
