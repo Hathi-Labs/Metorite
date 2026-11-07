@@ -16,6 +16,7 @@ import {
   AT_PARAM,
   DATE_PARAM,
   calendarLinkFromSearch,
+  linkQuery,
   parseLinkClock,
   parseLinkDate,
   REMINDER_PARAM,
@@ -162,6 +163,16 @@ describe("scrollTopFor", () => {
 
 describe("the page reads the link", () => {
   const read = (p: string) => readFileSync(new URL(p, import.meta.url), "utf-8");
+
+  it("another key of the address does not open the day again (ORC-3)", () => {
+    // The task card writes `?ttab=` under an open Calendar. The reader's key
+    // stays the same, so its effect does not run, and the week stays.
+    const before = linkQuery(q("date=2026-11-12&at=15:00"));
+    expect(linkQuery(q("date=2026-11-12&ttab=files&at=15:00"))).toBe(before);
+    expect(linkQuery(q("ttab=discussion"))).toBe("");
+    expect(linkQuery(q("at=15:00&date=2026-11-12"))).toBe(before);
+    expect(read("../components/CalendarDeepLink.tsx")).toMatch(/const query = linkQuery\(params\)/);
+  });
 
   it("the reader parses the query here and sits inside Suspense", () => {
     const reader = read("../components/CalendarDeepLink.tsx");
