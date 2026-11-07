@@ -96,6 +96,13 @@ describe("a load of the queue (MD-3a review)", () => {
     expect(markedRow(afterLoad(marked, { ok: false }).rows, ID, "failed").marked).toBe(ID);
   });
 
+  it("a refusal (403) empties the queue and shows no error and no gone line (AP-BUG-2)", () => {
+    const good = afterLoad(start, { ok: true, rows: [{ id: ID }] });
+    const closed = afterLoad(good, { ok: false, closed: true });
+    expect(closed).toEqual({ rows: [], load: "closed" });
+    expect(markedRow(closed.rows, ID, closed.load)).toEqual({ marked: null, gone: false });
+  });
+
   it("a good load replaces the rows", () => {
     const good = afterLoad({ rows: [{ id: OTHER }], load: "failed" }, { ok: true, rows: [] });
     expect(good).toEqual({ rows: [], load: "ok" });
