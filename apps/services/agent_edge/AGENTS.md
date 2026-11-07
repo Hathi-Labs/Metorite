@@ -61,6 +61,12 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - A `text/*` or JSON file comes back as `untrusted_text`, cut at 64 KB on a character boundary. Any other file comes back as metadata and one sentence.
   - `gateway_client.get` with `max_bytes` is the binary read. It streams the body and stops at the cap and one byte. `_url` sends the path percent-encoded, and the signed string holds the plain path.
   - `agent_oauth.ATTACHMENT_FILENAME_PATTERN` is the shape of the file name in the path. A stored name of another shape goes as `attachment`. `get_task_context` adds `images`, and the prompt, the instructions and its description say to call `get_attachment` for each image.
+- EA-19b (spec §10.9, D-EA-5), dark behind `agent_box_tokens_enabled`. A box token is the one access token of a connection of credential `box`.
+  - `bearer.authenticate` answers 401 for a box token while `agent_oauth.box_tokens_enabled` is false, next to the allowlist check.
+  - After a check that passes, it calls `agent_tokens.touch_box_use` for a box token only. A failed touch only logs.
+  - `mcp.py` passes `request.client.host` as the address. No edge module reads `X-Real-IP`, because a client could set it.
+  - `/oauth/revoke` and the scope check of a refresh do not call the touch. The stamp is `mcp:box:<slug>-<8 hex>`, through `gateway_client.actor_via`.
+  - Fence: `tests/unit/test_agent_box_token_store.py`.
 
 - SW-7 (spec §12.5), dark behind `agent_mcp_sessions_enabled` (default off, read through `agent_oauth.mcp_sessions_enabled`). While it is off, the edge mints, reads and signs no session. While it is on, `initialize` answers an `Mcp-Session-Id` that `agent_signing.mint_mcp_session` makes. It binds the connection and carries an HMAC, so the edge keeps no state. `mcp._session_of` reads it back on each later request (check 7b). An id that does not verify gets 404. The session key goes into `tools.Context.session`, and `gateway_client` signs it in as `X-Agent-Session`. `my_work` keeps the runs of this session and the runs with no key.
 

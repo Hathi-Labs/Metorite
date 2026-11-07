@@ -248,6 +248,8 @@ class _Gateway:
             {"id": S_CANCELLED, "name": "Dropped", "category": "cancelled"},
         ]
         self.ref_status = 201
+        #: MCP-G10. Extra response headers by ``(method, path)``.
+        self.answer_headers: dict[tuple[str, str], dict[str, str]] = {}
 
     async def __call__(self, scope, receive, send) -> None:
         body = b""
@@ -263,8 +265,10 @@ class _Gateway:
                                   pairs=dict(parse_qsl(query)), headers=headers, body=body)
         self.requests.append(request)
         status, answer = self._answer(request)
+        extra = [(k.lower().encode(), v.encode()) for k, v in
+                 self.answer_headers.get((request.method, request.path), {}).items()]
         await send({"type": "http.response.start", "status": status,
-                    "headers": [(b"content-type", b"application/json")]})
+                    "headers": [(b"content-type", b"application/json"), *extra]})
         await send({"type": "http.response.body", "body": json.dumps(answer).encode()})
 
     def _answer(self, r: SimpleNamespace) -> tuple[int, Any]:

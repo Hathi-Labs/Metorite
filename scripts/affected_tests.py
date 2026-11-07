@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import json
 import re
 import subprocess
@@ -163,7 +164,18 @@ def imports(body: str, module: str | None = None, is_package: bool = False) -> s
     Importing ``a.b.c`` runs ``a/__init__.py`` and ``a/b/__init__.py`` too, so
     a change to either affects the importer. Hence the prefixes. ``module``
     lets a relative import (``from . import x``) resolve.
+
+    CIV-3e (task 2205). The parse is the cost: one ``gate()`` parsed every source and test
+    file twice (``select`` and the hub count each call ``_import_index``).
+    The result is cached by the text of the file, so the second pass and every
+    later ``gate()`` of the same process cost a dict lookup. A caller gets a
+    copy, so it may change the set.
     """
+    return set(_imports_cached(body, module, is_package))
+
+
+@functools.lru_cache(maxsize=None)
+def _imports_cached(body: str, module: str | None, is_package: bool) -> frozenset[str]:
     names: set[str] = set(_DOTTED_STRING.findall(body))
     try:
         # Silence SyntaxWarnings (invalid escapes) from files we only index.
@@ -181,7 +193,8 @@ def imports(body: str, module: str | None = None, is_package: bool = False) -> s
                 names |= {n.split()[0] for n in m.group(3).split(",") if n.strip()}
     else:
         aliases: dict[str, str] = {}  # local name -> dotted module it holds
-        for node in ast.walk(tree):
+        nodes = list(ast.walk(tree))  # one walk, read twice below
+        for node in nodes:
             if isinstance(node, ast.Import):
                 names |= {a.name for a in node.names}
                 aliases.update({a.asname: a.name for a in node.names if a.asname})
@@ -196,7 +209,7 @@ def imports(body: str, module: str | None = None, is_package: bool = False) -> s
         # CIV-18. `from gateway.routes import crm as pkg` then `pkg.router`
         # reads the attribute `gateway.routes.crm.router`. Record it, so the
         # router rule in select() sees a test that mounts a package this way.
-        for node in ast.walk(tree):
+        for node in nodes:
             if (
                 isinstance(node, ast.Attribute)
                 and isinstance(node.value, ast.Name)
@@ -207,7 +220,7 @@ def imports(body: str, module: str | None = None, is_package: bool = False) -> s
     for n in names:
         parts = n.split(".")
         out |= {".".join(parts[: i + 1]) for i in range(len(parts))}
-    return out
+    return frozenset(out)
 
 
 def _texts(files: list[Path], root: Path) -> dict[str, str]:
@@ -327,8 +340,12 @@ _SCAN_GLOB_CALL = re.compile(r"\.r?glob\(|\bi?glob\(")
 _DATA_GLOB = re.compile(r"\.(?:sql|json|md|ts|tsx|js|mjs|cjs|css|ya?ml|toml|txt|sh|html|csv|lock|conf|ini)$")
 
 
+@functools.lru_cache(maxsize=None)
 def _is_scanner(body: str) -> bool:
-    """True when the test may list Python files. Fails to True."""
+    """True when the test may list Python files. Fails to True.
+
+    Cached by the text of the test (CIV-3e): ``scanning_tests`` ran the AST
+    check of every glob user on every ``gate()`` call."""
     if _SCAN_NON_GLOB.search(body):
         return True
     if not _SCAN_GLOB_CALL.search(body):

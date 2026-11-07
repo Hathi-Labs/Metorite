@@ -150,6 +150,17 @@ TEXT_BAD_CURSOR = "The cursor is not valid. List again with no cursor."
 TEXT_WRITE_FORBIDDEN = "This member cannot change that."
 TEXT_STALE = "The task changed. Read it again."
 TEXT_CAP = "Too many changes. Wait a few minutes."
+#: MCP-G10. The seconds of a wait that an agent sees, at most. A header value
+#: beyond it is a fault, and the edge does not pass it on.
+MAX_RETRY_AFTER_S = 3600
+#: MCP-G10. The ONE line that every write tool carries (not the server
+#: instructions, which are over the 4096 cut). It names the real limit from
+#: ``agent_oauth``. ``test_mcp_edge_write_clarity.py`` pins the text.
+WRITE_LIMIT_LINE = (
+    f" Limit: a connection makes at most {agent_oauth.WRITE_CAP} changes in"
+    f" {agent_oauth.WRITE_WINDOW_S // 60} minutes, counted from its first change."
+    " Past it, a refusal holds retry_after, the seconds to wait."
+)
 #: EA-6f (EA3-32). An agent may move a task to done. A cancel stays a human
 #: step, and a new task may not start closed.
 TEXT_CANCEL_STEP = "Cancelling a task stays a human step."
@@ -172,6 +183,14 @@ TEXT_UPDATE_EMPTY = (
 #: WS-55 MCP-G2. The texts of the planning fields, of the move inside a
 #: project (``parent_task_id`` of ``update_task``) and of ``set_assignees``.
 TEXT_START_DATE = "The input 'start_date' is not a real date. Send a date such as 2026-10-31."
+#: MCP-G14. ``create_task`` with an Epic type and a parent. The gateway's rule
+#: (``core.assert_epic_has_no_parent``, spec §3.4) answers 422, and this text
+#: names it. The move of ``update_task`` has its own text, :data:`TEXT_MOVE_EPIC`.
+TEXT_EPIC_PARENT = ("An Epic cannot have a parent. Leave out type_id or"
+                    " parent_task_id.")
+#: The ``detail`` of that 422. ``test_mcp_edge_write_clarity.py`` pins it equal
+#: to the gateway's own text, so a changed detail fails the test.
+EPIC_PARENT_DETAIL = "An Epic cannot have a parent task; it is the top level."
 TEXT_MOVE_ALONE = (
     "Send parent_task_id in a call of its own. Then change the other fields"
     " with the new version.")
@@ -404,11 +423,17 @@ _UUID_PATTERN = (
 
 
 class ToolError(Exception):
-    """A tool result with ``isError: true`` and a fixed text."""
+    """A tool result with ``isError: true`` and a fixed text.
 
-    def __init__(self, text: str) -> None:
+    MCP-G10: *retry_after* is the seconds to wait before the call may work
+    again. It is the ``Retry-After`` of the gateway answer: the seconds left
+    in the window of the write cap, or the wait of a busy database (503).
+    """
+
+    def __init__(self, text: str, retry_after: int | None = None) -> None:
         super().__init__(text)
         self.text = text
+        self.retry_after = retry_after
 
 
 class _NotSent(ToolError):
@@ -428,8 +453,16 @@ def untrusted(value: Any) -> dict[str, str] | None:
     return {"untrusted_text": value if isinstance(value, str) else str(value)}
 
 
-def error_result(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": text}], "isError": True}
+def error_result(text: str, retry_after: int | None = None) -> dict[str, Any]:
+    """A refusal. MCP-G10: with *retry_after* it also holds the seconds to
+    wait, in ``structuredContent`` and in a second text block, so a client
+    that shows only the text still sees the wait."""
+    result: dict[str, Any] = {"content": [{"type": "text", "text": text}], "isError": True}
+    if retry_after is not None:
+        result["content"].append(
+            {"type": "text", "text": f"Try again in {retry_after} seconds."})
+        result["structuredContent"] = {"retry_after": retry_after}
+    return result
 
 
 def success_result(structured: dict[str, Any]) -> dict[str, Any]:
@@ -500,10 +533,10 @@ def _body_of(answer: Answer, not_found: str, *, write: bool = False) -> Any:
     if write and status == 412:
         raise ToolError(TEXT_STALE)
     if write and status == 429:
-        raise ToolError(TEXT_CAP)
+        raise ToolError(TEXT_CAP, answer.retry_after)
     if 400 <= status < 500:
         raise ToolError(TEXT_BAD_REQUEST)
-    raise ToolError(TEXT_BUSY)
+    raise ToolError(TEXT_BUSY, answer.retry_after)
 
 
 async def _get(ctx: Context, template: str, not_found: str, *,
@@ -882,7 +915,8 @@ def check_input(schema: Mapping[str, Any], arguments: Any) -> dict[str, Any]:
     one exception (MCP-G2): an input whose ``type`` lists ``"null"`` keeps a
     null that the call sent, because null is a value of that input. Only
     ``parent_task_id`` of ``update_task`` has one, and its null means "move
-    the task to the top level".
+    the task to the top level". MCP-G12 adds ``due_at``, ``start_date`` and
+    ``estimate_mins`` of ``update_task``, where null clears the field.
     """
     if arguments is None:
         arguments = {}
@@ -1117,7 +1151,8 @@ class Tool:
         return {
             "name": self.name,
             "title": self.title,
-            "description": session_text(self.description),
+            "description": session_text(self.description + (
+                WRITE_LIMIT_LINE if self.method != "GET" else "")),
             "inputSchema": dict(self.input_schema),
             "outputSchema": dict(self.output_schema),
             "annotations": {"title": self.title, **self.annotations},
@@ -4291,15 +4326,20 @@ _UPDATE_INPUT: dict[str, Any] = {
         "description": _DESCRIPTION_INPUT,
         "tags": {**_TAGS_INPUT,
                  "description": "The new tag list. It replaces the whole list."},
-        "due_at": _DUE_INPUT,
+        "due_at": {**_DUE_INPUT, "type": ["string", "null"],
+                   "description": _DUE_INPUT["description"] + " null clears the due date."},
         "custom_fields": {
             "type": "object",
             "description": "A map from a field_key of get_project to its new value."
                            " null clears that field. The other fields stay."},
         "importance": _IMPORTANCE_INPUT,
         "leveraged": _LEVERAGED_INPUT,
-        "estimate_mins": _ESTIMATE_INPUT,
-        "start_date": _START_DATE_INPUT,
+        "estimate_mins": {**_ESTIMATE_INPUT, "type": ["integer", "null"],
+                          "description": _ESTIMATE_INPUT["description"]
+                          + " null clears the estimate."},
+        "start_date": {**_START_DATE_INPUT, "type": ["string", "null"],
+                       "description": _START_DATE_INPUT["description"]
+                       + " null clears the start date."},
         "parent_task_id": {
             "type": ["string", "null"], "pattern": _UUID_PATTERN,
             "description": "Moves the task under this parent task, in the same"
@@ -4392,6 +4432,7 @@ async def _create(ctx: Context, args: dict[str, Any],
     # refused assignee leaves no task, and the key goes free.
     _, row = await _write(ctx, "POST", CREATE_ROUTE, TEXT_PROJECT_NOT_FOUND,
                           json_body=payload,
+                          details={(422, EPIC_PARENT_DETAIL): TEXT_EPIC_PARENT},
                           coded=_assignee_codes(args.get("assignees") or ()))
     if not isinstance(row, dict) or _id(row.get("id")) is None:
         raise ToolError(TEXT_BUSY)
@@ -4616,7 +4657,9 @@ CREATE_TASK = Tool(
         " project too: find its id with list_projects and send it as"
         " project_id. Call get_project first: it gives the status ids, the task"
         " type ids and the tag names of the project. Send parent_task_id to"
-        " make a subtask of a task in the same project. Leave status_id out to"
+        " make a subtask of a task in the same project. An Epic cannot have a"
+        " parent, so do not send type_id of the Epic type with parent_task_id."
+        " Leave status_id out to"
         " use the default status. A new task cannot start in a done or"
         " cancelled status. importance is 2 for Important or 0 for not"
         " Important. estimate_mins is whole minutes, 0 or more. start_date is a"
@@ -4669,7 +4712,7 @@ _MOVE_DETAILS: Mapping[tuple[int, str], str] = {
     (422, "A task cannot be its own parent."): TEXT_MOVE_OWN_PARENT,
     (422, "That move would put the task inside its own subtree."): TEXT_MOVE_CYCLE,
     (422, "Task hierarchy is deeper than the supported maximum."): TEXT_MOVE_TOO_DEEP,
-    (422, "An Epic cannot have a parent task; it is the top level."): TEXT_MOVE_EPIC,
+    (422, EPIC_PARENT_DETAIL): TEXT_MOVE_EPIC,
 }
 
 
@@ -4756,9 +4799,12 @@ UPDATE_TASK = Tool(
         " replaces the whole tag list. custom_fields maps a field_key from"
         " get_project to its new value, and null clears that field. importance"
         " is 2 for Important or 0 for not Important. estimate_mins is whole"
-        " minutes, 0 or more. start_date is a date such as 2026-10-31."
+        " minutes, 0 or more. start_date is a date such as 2026-10-31. Send null"
+        " for due_at, start_date or estimate_mins to clear it. A field you leave"
+        " out stays as it is."
         " parent_task_id moves the task under another task of the same project,"
-        " and null moves it to the top level. Send parent_task_id in a call of"
+        " and null moves it to the top level. An Epic cannot have a parent."
+        " Send parent_task_id in a call of"
         " its own. To move a task to another project, call preview_move_tasks"
         " and then move_tasks."
         " This tool cannot change the status (use set_task_status), the project"
@@ -7195,10 +7241,10 @@ def _door_body(answer: Answer, door: app_manifests.DoorOp, *, write: bool) -> An
         raise ToolError(TEXT_DOOR_INPUT.format(names=", ".join(names)) if names
                         else TEXT_DOOR_INPUT_ANY)
     if status == 429:
-        raise ToolError(TEXT_CAP if write else TEXT_DOOR_READ_CAP)
+        raise ToolError(TEXT_CAP if write else TEXT_DOOR_READ_CAP, answer.retry_after)
     if 400 <= status < 500:
         raise ToolError(TEXT_BAD_REQUEST)
-    raise ToolError(TEXT_BUSY)
+    raise ToolError(TEXT_BUSY, answer.retry_after)
 
 
 async def _door_send(ctx: Context, call: app_manifests.Call, door: app_manifests.DoorOp,
@@ -7764,7 +7810,7 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
             finally:
                 _TOOL_TIMER.reset(token)
     except ToolError as exc:
-        return error_result(exc.text)
+        return error_result(exc.text, exc.retry_after)
     except TimeoutError:
         return error_result(TEXT_BUSY)
     if isinstance(structured, ImageContent):
@@ -7967,6 +8013,7 @@ __all__ = [
     "TEXT_DOOR_LIMIT",
     "TEXT_DOOR_NOT_FOUND",
     "TEXT_DOOR_READ_CAP",
+    "TEXT_EPIC_PARENT",
     "TEXT_EXTENSIONS",
     "TEXT_FORBIDDEN",
     "TEXT_GUESSED_TYPES",
@@ -8055,6 +8102,7 @@ __all__ = [
     "WHOAMI_KEYS",
     "WHY_NOT_TEXTS",
     "WRITE_ANNOTATIONS",
+    "WRITE_LIMIT_LINE",
     "Context",
     "GatewayUnauthorized",
     "ImageContent",

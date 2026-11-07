@@ -117,11 +117,13 @@ This section is an index of the workstreams, not their state (D118). Metorite ho
 
 The core function brief sets the phases (D119). Customer zero comes first inside Phase 1.
 
+⚠️ **D190 (2026-11-07) sets the order of work.** The M0 items and the cheap isolation fixes go first: steps 1 and 4 of the critical path below. Studio and the package host (lane L7) continue beside them. M2 has no date. The owner sets the date of the first paying customer after the main components of Metorite are built.
+
 | Milestone | Phase | Date | Meaning |
 |---|---|---|---|
 | **M0** | Phase 1, weeks 1 to 3 | about 17 Nov 2026 | Customer zero uses Metorite every day: Fracktal and Shaurrya Tele. The backups are safe. |
 | **M1** | Phase 1, the rest | December 2026 | Pilot-ready. Brief tasks 1 to 7 are done, the isolation tests pass, and a second organization is safe. |
-| **M2** | Phase 2 | 31 March 2027 | The first paid customer. Brief tasks 8 to 15 and the money path. |
+| **M2** | Phase 2 | no date (D190.2) | The first paid customer. Brief tasks 8 to 15 and the money path. |
 | **M3** | Phase 2 operations | 31 March 2027, if the brief needs it | Restore, compliance and observability. An item that is not on the brief moves to Phase 3. |
 | **M4** | Phase 3 | after Phase 2 | The UX System, Writing Help, MCP data parity and Notes. Studio and Workflows left M4 on 2026-10-31 (D141, WS-STU). |
 
@@ -168,7 +170,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140, D183, D186) · `specs/orchestration_playbook.md` (D186) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a · P9 planned 2026-11-06 (D183, SW-44 to SW-63, task 1874) |
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
-| WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · PKG-1 to PKG-5b are built. PKG-4 and PKG-5b are dark: `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` is empty · PKG-6 is built dark, and PKG-6b (bell setup row, All apps listing, access report) is built dark. Stars for an install pane wait on a gateway change to `SHELL_PANES` in `routes/admin/me.py` | · PKG-17a (the org default per role, `GET` and `PUT /shell/layout`) is built dark, and PKG-17b is the client read
+| WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · PKG-1 to PKG-5b are built. PKG-4 and PKG-5b are dark: `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` is empty · PKG-6 is built dark, and PKG-6b (bell setup row, All apps listing, access report) is built dark. Stars for an install pane wait on a gateway change to `SHELL_PANES` in `routes/admin/me.py` · PKG-17a (the org default per role, `GET` and `PUT /shell/layout`) is built dark, and PKG-17b is the client read · PKG-18a (the Today band, client only) is built dark behind `NEXT_PUBLIC_TODAY_BAND` |
 | WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard). WEB-10 built (the goal record, `goal_records`, no caller yet). WEB-2 built dark behind `WEB_RESEARCH_ORGS` (the local HTML reader). 2026-11-04: WEB-3 built dark (the file readers, the type refusal and the CTX-1 spill). 2026-11-05: WEB-4 built dark (the search provider list). WEB-6 built (the web worker container). 2026-11-06: WEB-7 built dark (`fetch_page` render through the worker, task 1265). Docling and the scanned PDF split to WEB-7b (task 1837). Next WEB-7b, WEB-8, or WEB-5 (waits on WEB-Q1) |
 | WS-CIV | **CI velocity**: each PR runs the tests its diff can affect, and `main` runs the full suite in batches after the merge. No merge queue (D-2026-10-16 stays) | 🟢 active · started 2026-11-04 (D176) | `specs/ci_velocity.md` | Metorite: project "Developer Workflow", epic 1628, slices CIV-1 to CIV-9 = tasks 1629 to 1637 · CIV-1 (outside contributors need approval) done 2026-11-04 · CIV-4 is HIGH (deploy path) · CIV-13 (task 1721, D178, HIGH): the home box starts the 21:30 release, built 2026-11-05 |
 | WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · the owner answered ALN-Q1 to ALN-Q5 on 2026-11-06 (D192, `project_alignment.md` §14) · ALN-0 is this spec · ALN-1 (the durable trigger) is built dark: `ALIGN_JOBS_ORGS` is empty and the handler is a stub · ALN-2a built (migration 332, backend and chat tools, dark behind `DECISIONS_ORGS`) · ALN-4 (the pin: migration 339, routes and chat tools, no UI) is built dark behind `AUTHORITY_PINS_ORGS` · ALN-5a (the rules of a project: rule rows on the SW-31a store, migration 343, routes, no UI, no chat tool) is built dark behind `PROJECT_RULES_ORGS` · next ALN-2b, ALN-4b, AUTO-7b and ALN-5b, then ALN-6, ALN-7 |
@@ -181,7 +183,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
 | WS-PRE | **Preview apps**: Notes, Meetings, Dashboard | ⏸ after Phase 2 · M4 | `specs/note_taker_app.md` · `specs/meeting_bot_platform_plan.md` | Metorite: epic 494 · next E-28, E-25 |
 | WS-DOC | **Docs and repo cleanup** | 🟢 active · M1 | none yet | Metorite: epic 522 (Developer Workflow) · next DOC-1, DOC-2 |
-| WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (PROPOSED) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · BR-2a-2 slice 1 built, dark (`BRIEF_COMPOSE`) · next BR-2b, BR-5 slice 2 |
+| WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (ACTIVE) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · BR-2a-2 slice 1 built, dark (`BRIEF_COMPOSE`) · BR-2c-1, BR-2c-2, BR-4b, BR-2d, BR-7a, BR-5 slices 1 and 2a built (dark where a flag exists) · next BR-2b, BR-5 slice 2b, BR-7b-1 (task 2171) |
 | WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
 | WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, D167, epic 1451, next GD-1 to GD-5 · The buddy (the hello, then Reach's chat channel, mark, pop and pause): D177, epic 1693, `specs/onboarding.md` §13 and `specs/proactive_reach.md` §19, next BUD-1 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
 
@@ -5600,6 +5602,57 @@ The owner accepted each recommendation on 2026-11-07. Owner spec: `specs/agent_s
 **Re-check this number at merge.** The first merge wins a D-number. Re-check D187 at merge. The branch mt-90c28fde-pz44-tone-spec also holds a D187 (tone of voice), so the second of the two to merge takes the next free number.
 
 Fence: SBX-F17 to SBX-F22 of `agent_sandbox.md` §11, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D187 entries merge.
+
+### D189 — Tone of voice: one persona, a tick list of places, original styles and lines (2026-11-06)
+
+Owner answer on Metorite task 1469 ("Approve all four recommendations"), 2026-11-06 18:28 UTC. Owner spec: `specs/personalization.md` §17. Board: **WS-63**. Metorite: tasks 1469 to 1475. Decisions D-PZ-43 to D-PZ-46.
+
+```text
+"It must say where a persona voice applies (drafting, nudges, reminders, interview questions) and where it never applies (facts, figures, safety and sensitive cards, tool output, quoted text)." (2026-11-02)
+```
+
+1. **The assistant stays Mira (D125).** A persona changes how it sounds in some places. It never changes who it is or what it knows.
+2. **Where it applies (Q1).** Reminders, nudges, the hello and the encouragement in the chat, and the interview questions. Chat answers stay plain unless the member turns on "chat answers too". It never goes into a draft to another person. It never touches a fact, a number, a date, a card, a tool result or quoted text. A member has one persona and one tick list, so PZ-50 has no build.
+3. **Original styles only (Q2).** "Sage" is the Yoda-like preset, with no character name. A free-text style is one line of 140 characters. A named film character or real person gets the nearest preset. A lawyer must confirm the legal points before launch.
+4. **Original lines (Q3).** About 30 written and checked lines for each preset. The model writes 20 lines once for a free style, and the member accepts them. No line repeats within 14 days. No model writes at send time.
+5. **Sources of a line.** The model writes the chat hello and encouragement. A bank line follows a reminder or a nudge. Only bank lines count toward the cap. The owner confirms this reading at the PZ-48 preview. This amends the fixed nudge string and "no model writes an interrupt". The fact text stays fixed, and one bank line may follow it.
+6. **An exception to the house voice.** Rules 2, 4 and 9 of `acb_llm.voice` CORE give way to the style in two places. These are the persona line and the chat hello and encouragement line. The owner approved the sample lines. They need the exception. Rules 7, 10 and 12 always bind. Plain keeps every rule.
+7. **Limits (Q4).** At most 3 persona lines a day. None on a serious message or a WhatsApp template. A failed check sends the message plain. An admin can turn personas off for the organization.
+
+The persona is a preference. No study shows it raises output. A flattery test runs before launch.
+
+**Re-check this number at merge.** The first merge wins a D-number. On 2026-11-07, open branches held D184 (salutations), D187 (`mt-22261640-sbx-spec`) and D188 (`mt-7cb8e476-cc0-spec`).
+
+Fence: named per slice in `specs/personalization.md` §17.9. Advisory until PZ-45 builds them.
+
+### D190 — One order of work, no date for the first paying customer yet, the D152 seat tiers, and the board as the one record of the plan (2026-11-07)
+
+The owner asked on 2026-11-06 for an audit of the whole plan. The audit found 30 contradictions, and nine of them were HIGH (`research/2026-11-plan-audit/contradictions.md`). The owner answered its six questions in chat on 2026-11-07. Metorite task 1958 records the answer. Board: epic WS-SOT (task 2023), and SOT-0 (task 2038) is this record.
+
+**Owner calls.**
+
+1. **One order of work.** The M0 items and the cheap isolation fixes go first: steps 1 and 4 of the §2.0 critical path. Studio and the package host (lane L7) continue beside them. The lanes follow this order.
+2. **No date for the first paying customer yet.** The owner sets that date after the main components of Metorite are built. Until then, the M2 date in §2.0 and the paying-customer dates of the local launch plan do not bind.
+3. **Price: the D152 seat tiers ($20, $100 and $200).** They replace the flat ₹500 seat. D152 lands with PLN-0 (task 1274), on its open PR. Until that PR merges, CLAUDE.md §2 and `specs/launch_surface.md` §4 still say ₹500. The PLN-0 PR, or the PR after it, changes both. The open branches and PRs that carry useful work land on priority (task 2008).
+4. **Meetings: planning only.** The Meetings plan is on epic 1008: tasks 1010 to 1022 and 2009 to 2022 (`research/2026-11-plan-audit/meetings.md`). No Meetings slice starts until the owner orders it. D119.3 still holds for the build.
+5. **The board is the single source of truth for the project plan.** The board holds the state of each piece of work: status, priority, owner, order and what waits on whom. The repo holds rules, specs (scope and acceptance) and decisions. Epic WS-SOT moves the remaining state onto the board: `HANDOFF.md`, `hardening_backlog.md`, the status text in §2.1 and INDEX, spec slice rows with no task, and agent memory. This extends D118.
+6. **A plan for each dark fork app, before any build.** Each CommandCenter app that is still dark and useful gets a board epic with one task for each slice, in the shape of the Meetings plan. The five plans are in `research/2026-11-plan-audit/`: the Dashboard folds into Home (WS-DSH), the Memories page retires into Settings (WS-WKM), the Agent Registry and Live Activity fold into Projects (WS-AGA), the fork's builders fold into AI Studio (WS-STB), and a delivery monitor plus a clean-up (WS-DLM, WS-FCL). No slice starts until the owner orders its plan.
+7. **Branches.** The merge of a pull request deletes its branch. Each other branch gets a verdict: land it, or close it (task 2008).
+
+**Owner calls of the same day, on task 1958 (04:57 UTC).**
+
+8. **The launch plan.** File only the epics that the board lacks: E10 (dynamic data), E14 (ephemeral apps), E20 (field engineer), E21 (ticketing and support) and E23 (payments and reimbursement). Each is a Backlog epic with no slices. The budget and the other tasks of the local launch plan stay local.
+9. **One unit of ownership: the app project.** Each §2.1 row and each lane (L1 to L8) maps onto app projects. The old §2.2 rows close as "now in X". SOT-7 (task 2031) does the mapping.
+
+**What D190 amends.**
+
+10. **§2.0, the M2 date.** It reads "no date (D190.2)".
+11. **D118.** The board holds state with no exception. The R4 amendment lands in SOT-7 (task 2031), and the D39 amendment for `HANDOFF.md` lands in SOT-5 (task 2029).
+12. **D186.3.** "The flat seat" reads "the seat of D152" from the PLN-0 merge.
+
+**Re-check this number at merge.** The first merge wins a D-number. D187, D191, D192 and D193 merged first. D188 and D189 were open on other branches on 2026-11-07.
+
+Fence: advisory. SOT-7 (task 2031) adds the test that fails on status text in §2.1 and INDEX, and SOT-8 (task 2032) adds the test for slice rows with no task.
 
 ### D191 — Projects settings is the one place to edit a space or a project, and the board edits nothing (2026-11-07)
 
