@@ -524,6 +524,8 @@ ASK_ADDRESS = "It holds an address, a link or a number."
 ASK_SENSITIVE = ("It is sensitive: health, religion, caste, politics, sexuality "
                  "or money.")
 ASK_REPLACES = "It replaces a fact that you saved."
+ASK_CELEBRATIONS = "It is a birthday, a festival or a work anniversary that you ask me to greet."
+CELEBRATIONS_OFF = "Celebrations are not on for your organization. Nothing saved."
 CONFIRM_CHECK = "Check it before you approve."
 CONFIRM_DETAIL = f"{ASK_ADDRESS} {CONFIRM_CHECK}"
 
@@ -1173,7 +1175,7 @@ def _free_text(key: str, value: dict[str, Any], prior: dict[str, Any]) -> list[A
 
 
 @_write_tool
-async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
+async def profile_set(key: Literal["address", "style", "celebrations"], value: dict[str, Any],
                       sensitive: bool = False) -> str:
     """Set how to address the member, or how to answer them.
 
@@ -1189,14 +1191,19 @@ async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
     first. It answers the interview areas name (address name or formality),
     language (style language) and detail.
 
+    Key ``celebrations`` (only where it is on): birthday as
+    {"month": 3, "day": 12} with no year, festivals as a list of ids,
+    work_anniversary true or false. Never guess a festival, a religion or a
+    community. It always asks the member first.
+
     Args:
-        key: address or style.
+        key: address, style or celebrations.
         value: The fields that change, for example {"length": "short"}.
         sensitive: True for a note about health, religion, caste, politics,
             sexuality or money. The member approves it first.
     """
-    if key not in ("address", "style"):
-        raise _Refused("The key is address or style. Nothing saved.")
+    if key not in ("address", "style", "celebrations"):
+        raise _Refused("The key is address, style or celebrations. Nothing saved.")
     if not isinstance(value, dict) or not value:
         raise _Refused("Give at least one field to change. Nothing saved.")
     headers = await _write_gate()
@@ -1210,6 +1217,18 @@ async def profile_set(key: Literal["address", "style"], value: dict[str, Any],
     if merged == prior:
         raise _Refused("Already set.", "duplicate")
     reasons = [*typed, *_reasons(free, sensitive)]
+    if key == "celebrations":
+        from acb_common.celebrations import celebrations_for, is_clear
+
+        clearing = is_clear(merged)
+        # PZ-43: with the flag off the member can still CLEAR a saved value
+        # (§7 rule 2), and can set nothing.
+        if not clearing and not celebrations_for(_run_org()):
+            raise _Refused(CELEBRATIONS_OFF)
+        if not clearing:
+            # A birthday and a festival pick are personal data (D-PZ-41).
+            # The member says yes on a card that shows the exact value.
+            reasons.append(ASK_CELEBRATIONS)
     if reasons or _confirming():
         await _cards(f"{key}: {json.dumps(merged, ensure_ascii=False, sort_keys=True)}",
                      reasons, second=ASK_NOT_TYPED in reasons)
