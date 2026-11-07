@@ -1,12 +1,12 @@
 -- ============================================================================
--- 346_kb_links_graph_edges.sql - kb_links holds an edge between any two
+-- 355_kb_links_graph_edges.sql - kb_links holds an edge between any two
 -- records (WS-KG KG-4, D128)
 -- ============================================================================
 -- Spec: project-docs/specs/knowledge_graph.md §3.2, §4.1, §4.4 and the KG-4
 -- row of §9 · Metorite task 789 · R5 · R6 · R8.
--- R1: origin/main held 345 (`345_chat_session_continued_from.sql`) as its
--- highest file on 2026-11-05. No branch holds 346. So this file is 346.
--- Check the number again at merge.
+-- R1: this file was 346. On 2026-11-07 main held 348 as its highest file, and
+-- open pull requests held 349 to 354. So this file is 355. Check the number
+-- again at merge.
 --
 -- What: migration 272 made `kb_links` for the links of a Knowledge page. This
 -- file widens it, so one row can also join two records of any app.
