@@ -476,6 +476,8 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "agentRunsApi",
         # WS-55 SW-11a: the Needs attention list.
         "attentionApi",
+        # D173: the decisions of a task and the answer of one decision.
+        "decisionsApi",
         "watchersApi",
         "projectWatchersApi",
         "intakeApi",
@@ -503,6 +505,9 @@ def test_the_reader_finds_the_client_objects_and_their_routes() -> None:
         "agentRunsApi.resume": [("POST", "/projects/agent-runs/{}/resume")],
         "agentRunsApi.withdrawAnswer": [("POST", "/projects/agent-runs/{}/answer/withdraw")],
         "attentionApi.list": [("GET", "/projects/needs-attention")],
+        "attentionApi.mine": [("GET", "/projects/needs-attention")],
+        "decisionsApi.forTask": [("GET", "/projects/decisions")],
+        "decisionsApi.answer": [("POST", "/projects/decisions/{}/answer")],
     }
     for name, calls in shapes.items():
         assert methods[name].calls == calls, f"{name}: read {methods[name].calls}"
