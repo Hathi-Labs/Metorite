@@ -13,11 +13,19 @@ holds the tenant and the member walls. This file holds the behaviour.
 four generated phases. So no test here reads "whatever the ladder left" in a
 shared database, and a new pytest-split cut cannot strand it.
 
+**The clock.** Each read of a day names the day of the stored start
+(:func:`day_for`), or a fixed day. So no test depends on the hour of the run.
+``FOCUS_R8_CLOCK=00:30`` pins the gateway clock to 00:30 UTC of the day after
+the database clock. That is the case of a run from 00:00 to 03:00 UTC: a read
+of "today" names a later day than the rows that the seeds wrote. Each test
+passes with the pin too, and :func:`test_no_day_reads_the_members_today`
+pins its own clock.
+
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
 
     export TENANT_LADDER_DATABASE_URL="postgresql+psycopg://acb:acb@127.0.0.1:<port>/acb_tenant"
-    uv run pytest tests/unit/test_focus_sessions_r8.py -v -rs
+    uv run pytest tests/unit/test_focus_sessions_r8.py -o timeout_method=thread -v -rs
 
 **The mutations (R7).** Each one turned the named test red, on a committed
 tree, and ``git checkout`` restored it. ``F`` is
@@ -25,38 +33,57 @@ tree, and ``git checkout`` restored it. ``F`` is
 
 * M1. ``F`` ``_start_in``: no ``_REPLACE_OPEN_SQL`` (and no stamp of it).
   ``test_a_start_ends_the_open_session_as_replaced_and_stamps_its_task``.
-* M2. ``F`` ``START_ATTEMPTS = 1``, so a start that meets the index never
-  tries again. ``test_a_start_that_meets_an_uncommitted_open_row_tries_once_more``
-  (409 in place of 201).
+* M2. ``F`` ``START_ATTEMPTS = 1``.
+  ``test_a_start_that_meets_an_uncommitted_open_row_tries_once_more``.
 * M3. ``F`` ``_FOCUSED_SECONDS``: drop ``- paused_seconds``.
   ``test_pauses_do_not_count_in_minutes``.
-* M4. ``F`` ``_EXTEND_SQL``: drop the ``+ interval``.
+* M4. ``F`` ``_EXTEND_SQL``: ``+ interval '0 minutes'``.
   ``test_extend_moves_the_planned_end_by_ten_minutes``.
 * M5. ``F`` ``update_focus_session``: drop ``_stamp_end`` of an end.
   ``test_an_end_stamps_actual_end_with_the_answer``.
 * M6. ``F`` ``AUTO_CLOSE_SQL``: drop ``AND ended_at IS NULL``.
-  ``test_a_stale_session_closes_once_under_two_concurrent_reads`` (the second
-  reader closes it a second time).
+  ``test_a_stale_session_closes_once_under_two_concurrent_reads``.
 * M7. ``F`` ``start_focus_session``: drop ``load_visible_task``.
   ``test_a_task_the_member_cannot_see_answers_404_and_writes_nothing``.
 * M8. ``F`` ``start_focus_session``: drop ``dependencies=_ON``.
   ``test_the_flag_off_answers_404_on_every_route_and_writes_nothing``.
-* M9. ``F`` ``list_focus_sessions``: ``zone = "UTC"`` in place of
-  ``stored_zone``. ``test_the_day_is_the_members_local_day``.
+* M9. ``F`` ``list_focus_sessions``: ``zone = "UTC"``.
+  ``test_the_day_is_the_members_local_day``.
 * M10. ``F`` ``_RESUME_SQL``: keep ``planned_end`` as it was.
-  ``test_pauses_do_not_count_in_minutes`` (the planned end does not move).
-* M11. ``F`` ``_start_in``: stamp ``actual_start`` only, so ``actual_end``
-  keeps its old value. ``test_a_start_makes_an_open_row_and_stamps_actual_start``.
+  ``test_pauses_do_not_count_in_minutes``.
+* M11. ``F`` ``_start_in``: stamp ``actual_start`` only.
+  ``test_a_start_makes_an_open_row_and_stamps_actual_start``.
+* M12. ``F`` ``update_focus_session``: drop its ``auto_close``.
+  ``test_an_answer_after_the_auto_close_keeps_the_end[False]``.
+* M13. ``F`` ``update_focus_session``: drop the ``_ANSWER_SQL`` step.
+  ``test_an_answer_after_the_auto_close_keeps_the_end[True]``.
+* M14. ``F`` ``_TIMER_STALE``: a paused row reads ``planned_end`` alone.
+  ``test_a_paused_session_does_not_close_on_its_planned_end``.
+* M15. ``F`` ``AUTO_CLOSE_SQL``: drop ``OR _LONG_PAUSE`` from the WHERE.
+  ``test_a_pause_of_more_than_an_hour_ends_at_the_pause``.
+* M16. ``F`` ``AUTO_CLOSE_SQL``: the end is ``COALESCE(paused_at, planned_end)``.
+  ``test_a_pause_after_the_timer_went_stale_ends_at_the_planned_end``.
+* M17. ``F`` ``_EXTEND_SQL``: the old ``GREATEST(COALESCE(planned_end, now()),
+  now())`` form. ``test_an_extend_during_a_pause_adds_the_pause_once``.
+* M18. ``F`` ``day_bounds``: no range check and no ``try``.
+  ``test_a_day_at_the_end_of_the_calendar_is_a_422``.
+* M19. ``F`` ``_start_in``: no ``task_gone`` branch.
+  ``test_a_start_that_meets_a_deleted_task_answers_404``.
+* M20. ``F`` ``_INSERT_FLOW_SQL``: no ``COALESCE`` fallback.
+  ``test_a_flow_session_with_no_block_ends_90_minutes_on``.
+* M21. ``F`` ``list_focus_sessions``: the total is the sum of the row minutes.
+  ``test_the_total_of_a_day_is_the_whole_minutes_of_its_seconds``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -125,6 +152,19 @@ def _app(people: dict[str, UserContext]) -> FastAPI:
     return app
 
 
+def _pin_the_gateway_clock(promoted: Any, monkeypatch: Any) -> None:  # noqa: F811
+    """``FOCUS_R8_CLOCK=HH:MM`` pins the gateway clock to that time in UTC, on
+    the day after the database clock (see the module docstring)."""
+    clock = os.environ.get("FOCUS_R8_CLOCK", "").strip()
+    if not clock:
+        return
+    hour, minute = (int(part) for part in clock.split(":"))
+    with promoted.admin_engine.connect() as c:
+        db_day = c.execute(text("SELECT (now() AT TIME ZONE 'UTC')::date")).scalar()
+    pinned = datetime.combine(db_day + timedelta(days=1), time(hour, minute), tzinfo=UTC)
+    monkeypatch.setattr(fs, "now", lambda: pinned)
+
+
 @pytest.fixture
 def world(promoted, monkeypatch):  # noqa: F811
     """Alice and Bob in org B, Carol in org A, the flag on for both orgs."""
@@ -148,6 +188,7 @@ def world(promoted, monkeypatch):  # noqa: F811
     monkeypatch.setattr(personal, "emit", quiet)
     monkeypatch.setattr(personal, "link_from_text", quiet)
     monkeypatch.setattr(get_settings(), "focus_log_orgs", f"{org_a},{org_b}")
+    _pin_the_gateway_clock(promoted, monkeypatch)
     people = {
         ALICE: member(ALICE, org_b), BOB: member(BOB, org_b), CAROL: member(CAROL, org_a),
     }
@@ -224,6 +265,12 @@ def row(world: Any, sid: str) -> Any:
         ).fetchone()
 
 
+def day_for(world: Any, sid: str) -> str:
+    """The UTC day of a stored start. Only the local-day tests give a member a
+    zone, so a read of this day holds the row at any hour of the run."""
+    return row(world, sid).started_at.astimezone(UTC).date().isoformat()
+
+
 def open_rows(world: Any, email: str, org: str) -> list[Any]:
     with world.p.admin_engine.connect() as c:
         return c.execute(
@@ -257,6 +304,11 @@ def instant(value: str | None) -> datetime | None:
     return None if value is None else datetime.fromisoformat(value)
 
 
+def shift(world: Any, sid: str, sets: str) -> None:
+    """Move the clock of one row. *sets* is a SET list of the test's own."""
+    admin(world, f"UPDATE focus_sessions SET {sets} WHERE id = CAST(:i AS uuid)", i=sid)
+
+
 # ── Hermetic ───────────────────────────────────────────────────────────────
 
 
@@ -268,25 +320,27 @@ def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
         assert re.search(r"^\s+tests/unit/test_focus_sessions_r8\.py \\?$", workflow, re.M), name
 
 
-def test_the_auto_close_is_one_update_with_a_literal_interval() -> None:
+def test_the_auto_close_is_one_update_with_literal_intervals() -> None:
     """§9.3: ONE statement, never a read and then a write. The stale test
     reads the open state in the same WHERE, so a second reader updates no
-    row. An interval is a literal, never a bound text (``CAST(:x AS
+    row. Each interval is a literal, never a bound text (``CAST(:x AS
     interval)``)."""
     sql = " ".join(fs.AUTO_CLOSE_SQL.split())
-    assert sql.startswith("UPDATE focus_sessions SET ended_at = planned_end,")
+    assert sql.startswith("UPDATE focus_sessions SET ended_at = GREATEST(started_at,")
     assert "outcome = 'auto_closed'" in sql
     assert "AND ended_at IS NULL" in sql
     assert "planned_end < now() - interval '15 minutes'" in sql
+    assert "planned_end + (now() - paused_at) < now() - interval '15 minutes'" in sql
+    assert "paused_at < now() - interval '60 minutes'" in sql
     assert "member_email = :me" in sql
     assert "SELECT" not in sql
     source = Path(fs.__file__).read_text(encoding="utf-8")
     assert not re.search(r"AS\s+interval", source, re.I)
 
 
-def test_open_session_taken_reads_only_the_open_index() -> None:
-    """A retry runs only for the race of two starts, never for another
-    integrity error (a deleted task, a CHECK)."""
+def test_the_integrity_errors_are_told_apart() -> None:
+    """A retry runs only for the race of two starts. A foreign key violation
+    is a task that went, and answers 404. Another error is neither."""
 
     class Raw(Exception):
         def __init__(self, sqlstate: str, constraint_name: str) -> None:
@@ -302,6 +356,9 @@ def test_open_session_taken_reads_only_the_open_index() -> None:
     assert fs.open_session_taken(Wrapped(Raw("23505", fs.OPEN_INDEX)))
     assert not fs.open_session_taken(Wrapped(Raw("23505", "focus_sessions_pkey")))
     assert not fs.open_session_taken(Wrapped(Raw("23503", "focus_sessions_task_id_fkey")))
+    assert fs.task_gone(Wrapped(Raw("23503", "focus_sessions_task_id_fkey")))
+    assert not fs.task_gone(Wrapped(Raw("23505", fs.OPEN_INDEX)))
+    assert not fs.task_gone(Wrapped(Raw("23514", "focus_sessions_mode")))
 
 
 def test_the_migration_has_the_shape_of_section_9_3() -> None:
@@ -322,7 +379,7 @@ def test_the_migration_has_the_shape_of_section_9_3() -> None:
     assert "CREATE POLICY focus_sessions_tenant_isolation ON focus_sessions" in flat
 
 
-# ── R8 ─────────────────────────────────────────────────────────────────────
+# ── R8: start ──────────────────────────────────────────────────────────────
 
 
 async def test_a_start_makes_an_open_row_and_stamps_actual_start(world) -> None:
@@ -412,6 +469,64 @@ async def test_two_concurrent_starts_leave_one_open_row(world) -> None:
     assert count(world, ALICE) == 2
 
 
+async def test_a_start_that_meets_a_deleted_task_answers_404(world, monkeypatch) -> None:
+    """The task goes after the visibility read and before the insert, so the
+    insert meets the foreign key (23503). The start answers 404, and the
+    savepoint keeps the member's open session open. M19."""
+    async with client(world, world.org) as c:
+        s = await start(c, ALICE, await capture(c, ALICE, "Open"))
+
+        async def seen(*_a: Any, **_k: Any) -> Any:
+            return SimpleNamespace()
+
+        monkeypatch.setattr(fs, "load_visible_task", seen)
+        resp = await c.post(BASE, json={"task_id": str(uuid.uuid4()), "mode": "25/5"},
+                            headers=as_(ALICE))
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == "Task not found"
+    assert [str(r.id) for r in open_rows(world, ALICE, world.org)] == [s["id"]]
+
+
+async def test_flow_takes_the_end_of_the_block_that_runs_now(world) -> None:
+    """Flow has no timer. Its planned end is the end of Alice's block of the
+    task when that block covers now, else the start plus 90 minutes."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    block_end = now + timedelta(minutes=50)
+    async with client(world, world.org) as c:
+        blocked = await capture(
+            c, ALICE, "Blocked time",
+            scheduled_start=(now - timedelta(minutes=10)).isoformat(),
+            scheduled_end=block_end.isoformat())
+        loose = await capture(c, ALICE, "No block")
+        a = await start(c, ALICE, blocked, mode="flow")
+        b = await start(c, BOB, await capture(c, BOB, "Bob's"), mode="flow")
+        loose_s = await start(c, ALICE, loose, mode="flow")
+    assert instant(a["planned_end"]) == block_end
+    for s in (b, loose_s):
+        assert instant(s["planned_end"]) - instant(s["started_at"]) == timedelta(minutes=90)
+
+
+async def test_a_flow_session_with_no_block_ends_90_minutes_on(world) -> None:
+    """A Flow row with no block, 30 hours old, closes at its start plus 90
+    minutes: 90 minutes, and the overlay gets that end. M20."""
+    async with client(world, world.org) as c:
+        task = await capture(c, ALICE, "Flow, no block")
+        s = await start(c, ALICE, task, mode="flow")
+        assert instant(s["planned_end"]) - instant(s["started_at"]) == timedelta(minutes=90)
+        shift(world, s["id"], "started_at = started_at - interval '30 hours', "
+                              "planned_end = planned_end - interval '30 hours'")
+        listed = await day_of(c, ALICE, day_for(world, s["id"]))
+    closed = row(world, s["id"])
+    assert closed.outcome == "auto_closed"
+    assert closed.ended_at - closed.started_at == timedelta(minutes=90)
+    assert overlay(world, task, ALICE).actual_end == closed.ended_at
+    [item] = listed["sessions"]
+    assert item["minutes"] == 90
+
+
+# ── R8: pause, extend and end ──────────────────────────────────────────────
+
+
 async def test_pauses_do_not_count_in_minutes(world) -> None:
     """30 minutes on the clock, 5 minutes paused: 25 minutes. A resume moves
     the planned end by the pause. An end during a second pause of 2 minutes
@@ -419,28 +534,25 @@ async def test_pauses_do_not_count_in_minutes(world) -> None:
     async with client(world, world.org) as c:
         task = await capture(c, ALICE, "Deep work")
         s = await start(c, ALICE, task)
-        admin(world, (
-            "UPDATE focus_sessions SET started_at = now() - interval '30 minutes', "
-            "planned_end = now() + interval '10 minutes' WHERE id = CAST(:i AS uuid)"), i=s["id"])
+        shift(world, s["id"], "started_at = now() - interval '30 minutes', "
+                              "planned_end = now() + interval '10 minutes'")
         paused = await patch(c, ALICE, s["id"], action="pause")
         assert paused.status_code == 200 and paused.json()["paused"] is True
         again = await patch(c, ALICE, s["id"], action="pause")
         assert again.json()["paused"] is True
-        admin(world, "UPDATE focus_sessions SET paused_at = now() - interval '5 minutes' "
-                     "WHERE id = CAST(:i AS uuid)", i=s["id"])
+        shift(world, s["id"], "paused_at = now() - interval '5 minutes'")
         before = row(world, s["id"]).planned_end
         resumed = (await patch(c, ALICE, s["id"], action="resume")).json()
         assert resumed["paused"] is False
         assert 300 <= resumed["paused_seconds"] <= 302
         moved = instant(resumed["planned_end"]) - before
         assert timedelta(seconds=300) <= moved <= timedelta(seconds=302)
-        listed = await day_of(c, ALICE)
+        listed = await day_of(c, ALICE, day_for(world, s["id"]))
         [item] = listed["sessions"]
         assert item["minutes"] == 25
         assert listed["total_minutes"] == 25
         await patch(c, ALICE, s["id"], action="pause")
-        admin(world, "UPDATE focus_sessions SET paused_at = now() - interval '2 minutes' "
-                     "WHERE id = CAST(:i AS uuid)", i=s["id"])
+        shift(world, s["id"], "paused_at = now() - interval '2 minutes'")
         ended = (await patch(c, ALICE, s["id"], action="end", outcome="done")).json()
     assert ended["minutes"] == 23 and ended["paused"] is False
     assert 420 <= ended["paused_seconds"] <= 424
@@ -456,12 +568,36 @@ async def test_extend_moves_the_planned_end_by_ten_minutes(world) -> None:
         assert resp.status_code == 200, resp.text
         assert instant(resp.json()["planned_end"]) - instant(s["planned_end"]) == timedelta(
             minutes=10)
-        admin(world, (
-            "UPDATE focus_sessions SET started_at = now() - interval '40 minutes', "
-            "planned_end = now() - interval '5 minutes' WHERE id = CAST(:i AS uuid)"), i=s["id"])
+        shift(world, s["id"], "started_at = now() - interval '40 minutes', "
+                              "planned_end = now() - interval '5 minutes'")
         late = (await patch(c, ALICE, s["id"], action="extend")).json()
     ahead = instant(late["planned_end"]) - datetime.now(UTC)
     assert timedelta(minutes=9) < ahead <= timedelta(minutes=10, seconds=5)
+
+
+async def test_an_extend_during_a_pause_adds_the_pause_once(world) -> None:
+    """09:00 a 25/5 start, a pause at 09:20, an extend at 09:30 and a resume
+    at 09:35 give a planned end of 09:50. The test moves the stored times to
+    stand for the clock. M17."""
+    async with client(world, world.org) as c:
+        s = await start(c, ALICE, await capture(c, ALICE, "Paused extend"))
+        # Now stands for 09:30: the start at 09:00, the pause since 09:20.
+        shift(world, s["id"], "started_at = now() - interval '30 minutes', "
+                              "planned_end = now() - interval '5 minutes', "
+                              "paused_at = now() - interval '10 minutes'")
+        extended = await patch(c, ALICE, s["id"], action="extend")
+        assert extended.status_code == 200, extended.text
+        stored = row(world, s["id"])
+        assert stored.planned_end - stored.started_at == timedelta(minutes=35)
+        # Five minutes pass: now stands for 09:35.
+        shift(world, s["id"], "started_at = started_at - interval '5 minutes', "
+                              "planned_end = planned_end - interval '5 minutes', "
+                              "paused_at = paused_at - interval '5 minutes'")
+        resumed = await patch(c, ALICE, s["id"], action="resume")
+        assert resumed.status_code == 200, resumed.text
+    stored = row(world, s["id"])
+    span = stored.planned_end - stored.started_at
+    assert timedelta(minutes=50) <= span <= timedelta(minutes=50, seconds=3), span
 
 
 async def test_an_end_stamps_actual_end_with_the_answer(world) -> None:
@@ -473,10 +609,12 @@ async def test_an_end_stamps_actual_end_with_the_answer(world) -> None:
         resp = await patch(c, ALICE, s["id"], action="end", outcome="not_now")
         assert resp.status_code == 200, resp.text
         again = await patch(c, ALICE, s["id"], action="pause")
+        answer_again = await patch(c, ALICE, s["id"], action="end", outcome="done")
     ended = row(world, s["id"])
     assert ended.outcome == "not_now" and ended.ended_at is not None
     assert overlay(world, task, ALICE).actual_end == ended.ended_at
-    assert again.status_code == 409 and again.json()["detail"]["code"] == "session_ended"
+    for refused in (again, answer_again):
+        assert refused.status_code == 409 and refused.json()["detail"]["code"] == "session_ended"
 
 
 async def test_an_end_needs_one_of_the_four_answers(world) -> None:
@@ -503,6 +641,36 @@ async def test_an_end_needs_one_of_the_four_answers(world) -> None:
     assert count(world, BOB) == 0
 
 
+# ── R8: the auto close ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("read_first", [False, True])
+async def test_an_answer_after_the_auto_close_keeps_the_end(world, read_first) -> None:
+    """09:00 a 25/5 start, 10:30 the answer ``done``. The PATCH runs the auto
+    close first, so the session ends at 09:25 whether or not a read came
+    first: 25 minutes, and the answer is kept. A second act gets 409. M12
+    (without the read), M13 (with it)."""
+    async with client(world, world.org) as c:
+        task = await capture(c, ALICE, "Morning block")
+        s = await start(c, ALICE, task)
+        shift(world, s["id"], "started_at = now() - interval '90 minutes', "
+                              "planned_end = now() - interval '65 minutes'")
+        if read_first:
+            listed = await day_of(c, ALICE, day_for(world, s["id"]))
+            assert listed["sessions"][0]["outcome"] == "auto_closed"
+        resp = await patch(c, ALICE, s["id"], action="end", outcome="done")
+        assert resp.status_code == 200, resp.text
+        again = await patch(c, ALICE, s["id"], action="end", outcome="done")
+        resume = await patch(c, ALICE, s["id"], action="resume")
+    out = resp.json()
+    assert out["outcome"] == "done" and out["minutes"] == 25
+    stored = row(world, s["id"])
+    assert stored.ended_at == stored.planned_end and stored.outcome == "done"
+    assert overlay(world, task, ALICE).actual_end == stored.planned_end
+    for refused in (again, resume):
+        assert refused.status_code == 409, refused.text
+
+
 async def test_a_stale_session_closes_once_under_two_concurrent_reads(world) -> None:
     """§9.3: a session 30 minutes past its planned end. The first reader
     closes it and has not committed. The second reader waits on the row lock,
@@ -511,10 +679,8 @@ async def test_a_stale_session_closes_once_under_two_concurrent_reads(world) -> 
     async with client(world, world.org) as c:
         task = await capture(c, ALICE, "Walked away")
         s = await start(c, ALICE, task)
-        admin(world, (
-            "UPDATE focus_sessions SET started_at = now() - interval '60 minutes', "
-            "planned_end = now() - interval '30 minutes' WHERE id = CAST(:i AS uuid)"),
-            i=s["id"])
+        shift(world, s["id"], "started_at = now() - interval '60 minutes', "
+                              "planned_end = now() - interval '30 minutes'")
 
         async def second_reader() -> int:
             async with tenant_session(world.org) as db:
@@ -534,7 +700,7 @@ async def test_a_stale_session_closes_once_under_two_concurrent_reads(world) -> 
         finally:
             if not done:
                 await first_cm.__aexit__(None, None, None)
-        listed = await day_of(c, ALICE)
+        listed = await day_of(c, ALICE, day_for(world, s["id"]))
     assert (first, second) == (1, 0)
     closed = row(world, s["id"])
     assert closed.outcome == "auto_closed"
@@ -549,11 +715,10 @@ async def test_two_reads_of_a_stale_session_through_the_routes_agree(world) -> N
     async with client(world, world.org) as c:
         task = await capture(c, ALICE, "Two readers")
         s = await start(c, ALICE, task)
-        admin(world, (
-            "UPDATE focus_sessions SET started_at = now() - interval '60 minutes', "
-            "planned_end = now() - interval '20 minutes' WHERE id = CAST(:i AS uuid)"),
-            i=s["id"])
-        one, two = await asyncio.gather(day_of(c, ALICE), day_of(c, ALICE))
+        shift(world, s["id"], "started_at = now() - interval '60 minutes', "
+                              "planned_end = now() - interval '20 minutes'")
+        day = day_for(world, s["id"])
+        one, two = await asyncio.gather(day_of(c, ALICE, day), day_of(c, ALICE, day))
     for listed in (one, two):
         [item] = listed["sessions"]
         assert item["outcome"] == "auto_closed"
@@ -566,13 +731,69 @@ async def test_a_session_inside_the_grace_stays_open(world) -> None:
     async with client(world, world.org) as c:
         task = await capture(c, ALICE, "Overrun")
         s = await start(c, ALICE, task)
-        admin(world, (
-            "UPDATE focus_sessions SET started_at = now() - interval '40 minutes', "
-            "planned_end = now() - interval '10 minutes' WHERE id = CAST(:i AS uuid)"),
-            i=s["id"])
-        listed = await day_of(c, ALICE)
+        shift(world, s["id"], "started_at = now() - interval '40 minutes', "
+                              "planned_end = now() - interval '10 minutes'")
+        listed = await day_of(c, ALICE, day_for(world, s["id"]))
     [item] = listed["sessions"]
     assert item["outcome"] is None and row(world, s["id"]).ended_at is None
+
+
+async def test_a_paused_session_does_not_close_on_its_planned_end(world) -> None:
+    """The planned end passed 20 minutes ago, during a pause of 25 minutes.
+    The pause stopped the timer: the effective planned end is 5 minutes from
+    now, so the session stays open and paused. M14."""
+    async with client(world, world.org) as c:
+        s = await start(c, ALICE, await capture(c, ALICE, "Lunch"))
+        shift(world, s["id"], "started_at = now() - interval '40 minutes', "
+                              "planned_end = now() - interval '20 minutes', "
+                              "paused_at = now() - interval '25 minutes'")
+        listed = await day_of(c, ALICE, day_for(world, s["id"]))
+        [item] = listed["sessions"]
+        assert item["outcome"] is None and item["paused"] is True
+        resumed = await patch(c, ALICE, s["id"], action="resume")
+    assert resumed.status_code == 200, resumed.text
+    stored = row(world, s["id"])
+    assert stored.ended_at is None and stored.paused_at is None
+    assert stored.planned_end > datetime.now(UTC)
+
+
+async def test_a_pause_of_more_than_an_hour_ends_at_the_pause(world) -> None:
+    """A 50/10 session paused at minute 30, for 70 minutes. The timer still
+    has 20 minutes, but a pause over 60 minutes closes the session at the
+    pause: 30 minutes. M15."""
+    async with client(world, world.org) as c:
+        task = await capture(c, ALICE, "Left for the day")
+        s = await start(c, ALICE, task, mode="50/10")
+        shift(world, s["id"], "started_at = now() - interval '100 minutes', "
+                              "planned_end = now() - interval '50 minutes', "
+                              "paused_at = now() - interval '70 minutes'")
+        paused_at = row(world, s["id"]).paused_at
+        listed = await day_of(c, ALICE, day_for(world, s["id"]))
+    closed = row(world, s["id"])
+    assert closed.outcome == "auto_closed" and closed.ended_at == paused_at
+    assert closed.paused_at is None
+    assert overlay(world, task, ALICE).actual_end == paused_at
+    [item] = listed["sessions"]
+    assert item["minutes"] == 30
+
+
+async def test_a_pause_after_the_timer_went_stale_ends_at_the_planned_end(world) -> None:
+    """A pause that begins 25 minutes after the planned end. The timer was
+    stale before the pause, so the session ends at the planned end, as a read
+    before the pause would have closed it: 25 minutes. M16."""
+    async with client(world, world.org) as c:
+        s = await start(c, ALICE, await capture(c, ALICE, "Late pause"))
+        shift(world, s["id"], "started_at = now() - interval '60 minutes', "
+                              "planned_end = now() - interval '35 minutes', "
+                              "paused_at = now() - interval '10 minutes'")
+        listed = await day_of(c, ALICE, day_for(world, s["id"]))
+    closed = row(world, s["id"])
+    assert closed.outcome == "auto_closed" and closed.ended_at == closed.planned_end
+    [item] = listed["sessions"]
+    assert item["minutes"] == 25
+
+
+# ── R8: who may and the flag ───────────────────────────────────────────────
 
 
 async def test_a_task_the_member_cannot_see_answers_404_and_writes_nothing(world) -> None:
@@ -617,23 +838,30 @@ async def test_the_flag_off_answers_404_on_every_route_and_writes_nothing(
     assert overlay(world, task, ALICE) == pair_before
 
 
-async def test_the_day_is_the_members_local_day(world) -> None:
+# ── R8: the day ────────────────────────────────────────────────────────────
+
+
+def _seed_two_kolkata_rows(world: Any, task: str) -> None:
     """Alice keeps Asia/Kolkata (UTC+05:30). 20:00 UTC on 1 November is 01:30
-    on 2 November for her, and 18:00 UTC is 23:30 on 1 November. A UTC day
-    would put both on 1 November. M9."""
-    async with client(world, world.org) as c:
-        task = await capture(c, ALICE, "Late night")
+    on 2 November for her (40 minutes), and 18:00 UTC is 23:30 on 1 November
+    (20 minutes). A UTC day would put both on 1 November."""
+    admin(world, (
+        "INSERT INTO user_settings (organization_id, user_id, timezone) "
+        "VALUES (CAST(:o AS uuid), :e, 'Asia/Kolkata')"), o=world.org, e=ALICE)
+    for at, minutes in (("2026-11-01T20:00:00+00:00", 40), ("2026-11-01T18:00:00+00:00", 20)):
         admin(world, (
-            "INSERT INTO user_settings (organization_id, user_id, timezone) "
-            "VALUES (CAST(:o AS uuid), :e, 'Asia/Kolkata')"), o=world.org, e=ALICE)
-        for at, minutes in (("2026-11-01T20:00:00+00:00", 40), ("2026-11-01T18:00:00+00:00", 20)):
-            admin(world, (
-                "INSERT INTO focus_sessions (organization_id, member_email, task_id, "
-                "started_at, ended_at, planned_end, mode, outcome) VALUES (CAST(:o AS uuid), "
-                ":e, CAST(:t AS uuid), CAST(:at AS timestamptz), "
-                "CAST(:at AS timestamptz) + make_interval(mins => :m), "
-                "CAST(:at AS timestamptz) + interval '25 minutes', '25/5', 'done')"),
-                o=world.org, e=ALICE, t=task, at=at, m=minutes)
+            "INSERT INTO focus_sessions (organization_id, member_email, task_id, "
+            "started_at, ended_at, planned_end, mode, outcome) VALUES (CAST(:o AS uuid), "
+            ":e, CAST(:t AS uuid), CAST(:at AS timestamptz), "
+            "CAST(:at AS timestamptz) + make_interval(mins => :m), "
+            "CAST(:at AS timestamptz) + interval '25 minutes', '25/5', 'done')"),
+            o=world.org, e=ALICE, t=task, at=at, m=minutes)
+
+
+async def test_the_day_is_the_members_local_day(world) -> None:
+    """M9. Each day holds the row that started in it, in Alice's zone."""
+    async with client(world, world.org) as c:
+        _seed_two_kolkata_rows(world, await capture(c, ALICE, "Late night"))
         second = await day_of(c, ALICE, "2026-11-02")
         first = await day_of(c, ALICE, "2026-11-01")
         bad = await c.get(BASE, params={"day": "2 Nov"}, headers=as_(ALICE))
@@ -644,38 +872,48 @@ async def test_the_day_is_the_members_local_day(world) -> None:
     assert bad.status_code == 422
 
 
-async def test_the_total_of_a_day_is_the_sum_of_its_rows(world) -> None:
+async def test_no_day_reads_the_members_today(world, monkeypatch) -> None:
+    """With no ``day``, the read takes Alice's today in her zone. The test pins
+    the gateway clock to 20:30 UTC on 1 November, which is 02:00 on 2
+    November in Kolkata."""
+    monkeypatch.setattr(fs, "now", lambda: datetime(2026, 11, 1, 20, 30, tzinfo=UTC))
+    async with client(world, world.org) as c:
+        _seed_two_kolkata_rows(world, await capture(c, ALICE, "Today"))
+        listed = await day_of(c, ALICE)
+    assert listed["day"] == "2026-11-02"
+    assert [s["minutes"] for s in listed["sessions"]] == [40]
+
+
+async def test_a_day_at_the_end_of_the_calendar_is_a_422(world) -> None:
+    """The bounds of the last day and of the first day do not exist in every
+    zone, so each is a 422 that says what to send. M18."""
+    async with client(world, world.org) as c:
+        answers = {
+            day: await c.get(BASE, params={"day": day}, headers=as_(ALICE))
+            for day in ("9999-12-31", "0001-01-01")
+        }
+        inside = await day_of(c, ALICE, "9999-12-30")
+    for day, resp in answers.items():
+        assert resp.status_code == 422, (day, resp.text)
+        assert "Send day as a date from 0001-01-02 to 9999-12-30" in resp.json()["detail"]
+    assert inside["sessions"] == []
+
+
+async def test_the_total_of_a_day_is_the_whole_minutes_of_its_seconds(world) -> None:
+    """One rule for minutes: the total is ``total_seconds // 60``, and each row
+    is the whole minutes of its own seconds. M21."""
     async with client(world, world.org) as c:
         task = await capture(c, ALICE, "Sum")
         for minutes, seconds in ((12, 59), (7, 30), (0, 45)):
             admin(world, (
                 "INSERT INTO focus_sessions (organization_id, member_email, task_id, "
                 "started_at, ended_at, planned_end, mode, outcome) VALUES (CAST(:o AS uuid), "
-                ":e, CAST(:t AS uuid), now() - interval '3 hours', "
-                "now() - interval '3 hours' + make_interval(mins => :m, secs => :s), "
-                "now() - interval '2 hours', '25/5', 'done')"),
+                ":e, CAST(:t AS uuid), TIMESTAMPTZ '2026-10-20 10:00:00+00', "
+                "TIMESTAMPTZ '2026-10-20 10:00:00+00' + make_interval(mins => :m, secs => :s), "
+                "TIMESTAMPTZ '2026-10-20 10:25:00+00', '25/5', 'done')"),
                 o=world.org, e=ALICE, t=task, m=minutes, s=seconds)
-        listed = await day_of(c, ALICE)
+        listed = await day_of(c, ALICE, "2026-10-20")
     assert sorted(s["minutes"] for s in listed["sessions"]) == [0, 7, 12]
-    assert listed["total_minutes"] == 19
     assert listed["total_seconds"] == (12 * 60 + 59) + (7 * 60 + 30) + 45
+    assert listed["total_minutes"] == listed["total_seconds"] // 60 == 21
     assert listed["more"] is False
-
-
-async def test_flow_takes_the_end_of_the_block_that_runs_now(world) -> None:
-    """Flow has no timer. Its planned end is the end of Alice's block of the
-    task when that block runs now, else none, and no auto close applies."""
-    now = datetime.now(UTC).replace(microsecond=0)
-    block_end = now + timedelta(minutes=50)
-    async with client(world, world.org) as c:
-        blocked = await capture(
-            c, ALICE, "Blocked time",
-            scheduled_start=(now - timedelta(minutes=10)).isoformat(),
-            scheduled_end=block_end.isoformat())
-        loose = await capture(c, ALICE, "No block")
-        a = await start(c, ALICE, blocked, mode="flow")
-        b = await start(c, BOB, await capture(c, BOB, "Bob's"), mode="flow")
-        assert b["planned_end"] is None
-        c_ = await start(c, ALICE, loose, mode="flow")
-    assert instant(a["planned_end"]) == block_end
-    assert c_["planned_end"] is None

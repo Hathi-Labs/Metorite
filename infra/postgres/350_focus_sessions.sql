@@ -69,7 +69,9 @@ CREATE TABLE IF NOT EXISTS focus_sessions (
     -- NULL while the session runs.
     ended_at         TIMESTAMPTZ NULL,
     -- The end of the timer (the start plus 25 or 50 minutes) or, for Flow,
-    -- the end of the member's block. NULL for Flow with no block.
+    -- the end of the member's block that covers the start. Flow with no
+    -- such block takes the start plus 90 minutes. The writer sets it on each
+    -- new row. The column stays nullable, and no auto close reads a NULL.
     planned_end      TIMESTAMPTZ NULL,
     paused_seconds   INTEGER NOT NULL DEFAULT 0,
     -- The start of the pause that runs now. NULL when no pause runs.

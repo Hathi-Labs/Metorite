@@ -8,7 +8,7 @@ routes that stay class X are a short, named list, and each has a reason.
 does not carry. This file refuses a route that moves to class X (or leaves it)
 without somebody editing this list.
 
-Two dicts hold the whole class X set, keyed ``"METHOD path"``:
+Three dicts hold the whole class X set, keyed ``"METHOD path"``:
 
 * :data:`STAYS_X` is where OP-6 ends. These routes are client plumbing, a
   second door to a read the chat has, another app's feature, or a door for
@@ -16,9 +16,11 @@ Two dicts hold the whole class X set, keyed ``"METHOD path"``:
 * :data:`PENDING_OP6` is the work that later slices of OP-6 still owe, each
   with the slice id. Every slice that ships deletes its lines here. The last
   slice leaves the dict empty, and then the pin is exactly :data:`STAYS_X`.
+* :data:`PENDING_TOOLS` holds the routes of another workstream that ship
+  before their chat tools, each with the slice that adds the tools.
 
 R7 fence: the test fails on a route in the manifest that no dict names, on a
-route a dict names that is no longer class X, and on a route in both dicts.
+route a dict names that is no longer class X, and on a route in two dicts.
 Mutation: set one ``Route(..., "X")`` row to class B in ``manifest.py`` and
 the first test fails. Add a new class X row and the first test fails.
 """
@@ -114,7 +116,7 @@ def _class_x() -> dict[str, str]:
     return {f"{r.method} {r.path}": r.reason for r in m.MANIFEST if r.cls == "X"}
 
 
-def test_the_class_x_routes_are_exactly_the_two_lists() -> None:
+def test_the_class_x_routes_are_exactly_the_pinned_lists() -> None:
     now = set(_class_x())
     pinned = set(STAYS_X) | set(PENDING_OP6) | set(PENDING_TOOLS)
     assert now - pinned == set(), (
