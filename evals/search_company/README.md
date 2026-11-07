@@ -47,8 +47,9 @@ An agent invented each name. No row comes from a real person, company or mail.
 | `--live URL --as EMAIL --set PATH` | Asks a running gateway over HTTP as the member EMAIL. | `GATEWAY_INTERNAL_TOKEN` in the environment, and the real set |
 
 `--fixture` exits 0 when every source that has questions returns a hit for them
-and recall is at least the floor of **0.90**. It exits 1 otherwise, and 2 when it
-cannot start. A source without questions (`whatsapp`, `artifacts`) shows as
+and recall is at least the floor of **0.90**. Since KG-3b it also needs a p50
+under **1.5 s** and a p95 under **3 s** (`knowledge_graph.md` §7.3). It exits 1
+otherwise, and 2 when it cannot start. A source without questions (`whatsapp`, `artifacts`) shows as
 empty and does not fail the run.
 
 **The floor.** The synthetic baseline is recall 1.000 and merged@5 1.000,
