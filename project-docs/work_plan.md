@@ -5599,13 +5599,16 @@ The owner asked on 2026-11-06 for an audit of the whole plan. The audit found 30
 6. **A plan for each dark fork app, before any build.** Each CommandCenter app that is still dark and useful gets a board epic with one task for each slice, in the shape of the Meetings plan. The five plans are in `research/2026-11-plan-audit/`: the Dashboard folds into Home (WS-DSH), the Memories page retires into Settings (WS-WKM), the Agent Registry and Live Activity fold into Projects (WS-AGA), the fork's builders fold into AI Studio (WS-STB), and a delivery monitor plus a clean-up (WS-DLM, WS-FCL). No slice starts until the owner orders its plan.
 7. **Branches.** The merge of a pull request deletes its branch. Each other branch gets a verdict: land it, or close it (task 2008).
 
-**Not decided.** Question 4 (file the absent launch-plan epics on the board) and question 5 (the app project as the one unit of ownership) stay open on task 1958.
+**Owner calls of the same day, on task 1958 (04:57 UTC).**
+
+8. **The launch plan.** File only the epics that the board lacks: E10 (dynamic data), E14 (ephemeral apps), E20 (field engineer), E21 (ticketing and support) and E23 (payments and reimbursement). Each is a Backlog epic with no slices. The budget and the other tasks of the local launch plan stay local.
+9. **One unit of ownership: the app project.** Each §2.1 row and each lane (L1 to L8) maps onto app projects. The old §2.2 rows close as "now in X". SOT-7 (task 2031) does the mapping.
 
 **What D190 amends.**
 
-8. **§2.0, the M2 date.** It reads "no date (D190.2)".
-9. **D118.** The board holds state with no exception. The R4 amendment lands in SOT-7 (task 2031), and the D39 amendment for `HANDOFF.md` lands in SOT-5 (task 2029).
-10. **D186.3.** "The flat seat" reads "the seat of D152" from the PLN-0 merge.
+10. **§2.0, the M2 date.** It reads "no date (D190.2)".
+11. **D118.** The board holds state with no exception. The R4 amendment lands in SOT-7 (task 2031), and the D39 amendment for `HANDOFF.md` lands in SOT-5 (task 2029).
+12. **D186.3.** "The flat seat" reads "the seat of D152" from the PLN-0 merge.
 
 **Re-check this number at merge.** The first merge wins a D-number. D187 merged first. D188 and D189 were open on other branches on 2026-11-07.
 
