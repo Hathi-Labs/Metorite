@@ -15,8 +15,8 @@
  *
  * Two layers, so a route that forgets the first still meets the second:
  *
- * 1. `refuseUnsafePath` in each catch-all proxy and each single-param route
- *    that builds a raw path, right after it reads `params`. It answers 400.
+ * 1. `refuseUnsafePath` in each catch-all proxy and each single-param route,
+ *    right after it reads `params`. It answers 400.
  * 2. `gatewayUrlEscape` inside `gatewayFetch`, the one fetch to the gateway.
  *    It refuses a path that can leave its PREFIX, read twice: as the URL
  *    parser reads it, and once decoded, as uvicorn gives it to Starlette.
@@ -29,10 +29,12 @@
  * cannot see it: a decoded `?`, `#` or `/` moves the request to another route
  * UNDER the same prefix, and no dot segment is needed. A `?` cuts off the
  * fixed suffix, so a DELETE of one participant becomes a DELETE of the
- * session. A `/` adds a segment. So each handler that puts a raw param into
- * a gateway path calls `refuseUnsafePath([param])` after it reads `params`.
- * A param that goes in through `encodeURIComponent`, or through a shape
- * regex of its own, needs no call.
+ * session. A `/` adds a segment. `encodeURIComponent` does not stop it:
+ * uvicorn decodes `%2F` back to `/` before Starlette routes the path. So
+ * each single-param handler calls `refuseUnsafePath([param])` after it reads
+ * `params`, and keeps its `encodeURIComponent` too. A route with a stricter
+ * shape check of its own (a regex, `refuseBadSegment`) needs no second call.
+ * The single-param sweep lists each exception.
  *
  * `gatewayFetch` also never follows a redirect (its rule 11), so the bearer
  * cannot reach a path that this guard did not check.

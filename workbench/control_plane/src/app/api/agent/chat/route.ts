@@ -56,6 +56,7 @@ import { cleanSurface, surfaceField } from "@/lib/shell/surface";
 import { typedField } from "@/lib/typedMark";
 import { bindToRun } from "@/lib/runBinding";
 import { MAX_CARD_DRAFTS } from "@/lib/redraftCard";
+import { unsafeGatewayPath } from "@/lib/gatewayPath";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -716,6 +717,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!agentName || (!message && !followUp)) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", content: "agentName and message are required" })}\n\n`,
+      { status: 400, headers: sseHeaders() }
+    );
+  }
+  // The thread id goes into gateway paths. A `?`, `#` or `/` in it would
+  // move the call to another route, so the path guard refuses it (H-280).
+  if (threadId && (typeof threadId !== "string" || unsafeGatewayPath([threadId]) !== null)) {
+    return new Response(
+      `data: ${JSON.stringify({ type: "error", content: "Invalid threadId" })}\n\n`,
       { status: 400, headers: sseHeaders() }
     );
   }

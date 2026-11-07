@@ -185,18 +185,23 @@ describe("a URL object built from a param", () => {
 // Next decodes a `[sessionId]` param once, so `%3F`, `%23` and `%2F` arrive as
 // `?`, `#` and `/`. Put raw into `/chat/sessions/${sessionId}/participants/x`,
 // a `?` cuts the suffix off, and a DELETE of one participant becomes a DELETE
-// of the session. A `/` adds a segment. The sweep reads every route file under
-// a `[param]` folder, and each param must take one of three ways in:
+// of the session. A `/` adds a segment. `encodeURIComponent` does not save
+// it: uvicorn decodes `%2F` back to `/` before Starlette routes the path.
 //
-// 1. Raw in the source (`${param}`): the handler calls the guard on the next
-//    line after each read of `params`, with every raw param it read.
-// 2. A shape check of its own before the build (SHAPED below): the test takes
-//    the regex out of the source and proves that it refuses each mark.
-// 3. Never raw: only `encodeURIComponent(param)`, or a helper (HELPERS below)
-//    that the test calls with each mark.
+// So the sweep does not ask HOW a route spells its URL. It reads every route
+// file under a `[param]` folder. Each read of `params` must be
+// `const { a, b } = await params;` (or a bare `await params;` that keeps no
+// value), and the next lines must guard EVERY name it read, in one of four
+// ways:
 //
-// A read of `params` in any other spelling fails, and is then written in the
-// one spelling this test knows.
+// 1. `refuseUnsafePath([a, b])`, then `if (refused) return refused;`.
+// 2. SHAPED: the route's own regex. The test takes it out of the source and
+//    proves that it refuses each mark.
+// 3. SEGMENT: `refuseBadSegment(a)`, which the test calls with each mark.
+// 4. EXEMPT: a param that is the gateway's `{x:path}` tail on purpose.
+//
+// A route that never reads `params` passes them whole to a helper (HELPERS),
+// which the test calls with each mark. Any other spelling of a read fails.
 
 /** A segment value that, once decoded, moves a request to another route. */
 const ROUTE_MOVERS = ["a?b", "a#b", "a/b", "?", "#", "/", "..", "a%2Fb", ""];
@@ -205,6 +210,28 @@ const ROUTE_MOVERS = ["a?b", "a#b", "a/b", "?", "#", "/", "..", "a%2Fb", ""];
 const SHAPED: Record<string, { param: string; regex: string }> = {
   "/email/oauth/[provider]/authorize/route.ts": { param: "provider", regex: "PROVIDER_SEGMENT" },
   "/email/oauth/[provider]/callback/route.ts": { param: "provider", regex: "PROVIDER_SEGMENT" },
+};
+
+/** The routes that guard their one param with `refuseBadSegment` (`^[\w.:@-]+$`). */
+const SEGMENT = new Set([
+  "/integrations/connections/[id]/disconnect/route.ts",
+  "/integrations/mcp/[name]/oauth/start/route.ts",
+  "/integrations/mcp/[name]/route.ts",
+  "/integrations/mcp/[name]/test/route.ts",
+  "/integrations/plugins/[id]/route.ts",
+]);
+
+/**
+ * The routes whose param is the LAST segment of a gateway `{x:path}` route.
+ * A slash is part of the value there, and no suffix follows it to cut off.
+ * `tail` is the end of the gateway URL as the source spells it.
+ */
+const EXEMPT: Record<string, { param: string; tail: string; why: string }> = {
+  "/settings/llm/enabled-models/[id]/route.ts": {
+    param: "id",
+    tail: "/settings/llm/enabled-models/${encodeURIComponent(modelId)}`",
+    why: "a model id holds a slash (openai/gpt-4o); the gateway route is {model_id:path}",
+  },
 };
 
 /** The routes that pass `params` whole to a helper that checks the shape. */
@@ -231,65 +258,71 @@ function singleParamRoutes(dir: string, names: string[] = [], out: { path: strin
   return out;
 }
 
+const relOf = (path: string) => path.slice(API_DIR.length).replace(/\\/g, "/");
+
 describe("the single-param sweep (H-280)", () => {
-  const routes = singleParamRoutes(API_DIR).map((r) => ({
-    rel: r.path.slice(API_DIR.length).replace(/\\/g, "/"),
-    names: r.names,
-    src: readSource(r.path),
-  }));
-  const raw = (src: string, name: string) => src.includes(`\${${name}}`);
+  const routes = singleParamRoutes(API_DIR).map((r) => ({ rel: relOf(r.path), names: r.names, src: readSource(r.path) }));
 
-  it("finds the routes, so a moved tree cannot pass it empty", () => {
-    expect(routes.length).toBeGreaterThanOrEqual(50);
-    // The routes of the H-280 finding: each one puts a raw param in a path.
-    const rawRoutes = routes.filter((r) => r.names.some((n) => raw(r.src, n)) && !SHAPED[r.rel]);
-    expect(rawRoutes.length).toBeGreaterThanOrEqual(14);
+  it("finds every route under a [param] folder, so a moved tree cannot pass it empty", () => {
+    // No count is written here. A second walk, by path text, must find the
+    // same files, and the route of the finding must be one of them.
+    const byText = allRoutes(API_DIR)
+      .map(relOf)
+      .filter((rel) => /\/\[\w+\]\//.test(rel) && !rel.includes("..."));
+    expect(routes.map((r) => r.rel).sort()).toEqual(byText.sort());
+    expect(routes.map((r) => r.rel)).toContain("/chat/sessions/[sessionId]/participants/[subject]/route.ts");
   });
 
-  it("names only files that exist in SHAPED and HELPERS", () => {
+  it("names only files that exist, each in one list", () => {
     const rels = new Set(routes.map((r) => r.rel));
-    for (const rel of [...Object.keys(SHAPED), ...Object.keys(HELPERS)]) expect(rels.has(rel), rel).toBe(true);
+    const listed = [...Object.keys(SHAPED), ...SEGMENT, ...Object.keys(EXEMPT), ...Object.keys(HELPERS)];
+    for (const rel of listed) expect(rels.has(rel), rel).toBe(true);
+    expect(new Set(listed).size).toBe(listed.length);
   });
 
-  it.each(routes.map((r) => [r.rel, r.names, r.src] as const))(
-    "%s refuses a param that would move it",
-    (rel, names, src) => {
-      const reads = src.match(/await (?:ctx\.|context\.)?params\b/g) ?? [];
-      if (reads.length === 0) {
-        // Way 3, by a helper: the params go whole to a shape check.
-        expect(HELPERS[rel], "a route that never reads its params names its helper").toBeDefined();
-        expect(src).toContain(`${HELPERS[rel]}(`);
-        return;
-      }
-      // Each read is `const { a, b } = await params;`, or a bare `await params;`
-      // that keeps no value.
-      const known = src.match(/(?:const \{ [\w, ]+ \} = |^\s*)await (?:ctx\.)?params;/gm) ?? [];
-      expect(known.length, "a read of params in another spelling").toBe(reads.length);
+  it.each(routes.map((r) => [r.rel, r.src] as const))("%s guards each param it reads", (rel, src) => {
+    const reads = src.match(/await (?:ctx\.|context\.)?params\b/g) ?? [];
+    if (reads.length === 0) {
+      expect(HELPERS[rel], "a route that never reads its params names its helper").toBeDefined();
+      expect(src).toContain(`${HELPERS[rel]}(`);
+      return;
+    }
+    expect(HELPERS[rel], "a HELPERS route reads no params").toBeUndefined();
+    const bare = src.match(/^\s*await (?:ctx\.)?params;/gm) ?? [];
+    const destructs = [...src.matchAll(/const \{ ([\w, ]+) \} = await (?:ctx\.)?params;\n([^\n]*)\n([^\n]*)/g)];
+    expect(bare.length + destructs.length, "a read of params in another spelling").toBe(reads.length);
 
-      for (const name of names.filter((n) => raw(src, n))) {
-        const shaped = SHAPED[rel];
-        if (shaped?.param === name) {
-          // Way 2: the route's own regex, proved here against each mark.
-          const lit = new RegExp(`const ${shaped.regex} = /(.+)/([a-z]*);`).exec(src);
-          expect(lit, shaped.regex).not.toBeNull();
-          const re = new RegExp(lit![1], lit![2]);
-          for (const bad of ROUTE_MOVERS) expect(re.test(bad), JSON.stringify(bad)).toBe(false);
-          const checks = src.split(`if (!${shaped.regex}.test(${name}))`).length - 1;
-          expect(checks, "one shape check per read").toBe(reads.length);
-          continue;
-        }
-        // Way 1: every read that takes this param is followed by the guard.
-        const destructs = [...src.matchAll(/const \{ ([\w, ]+) \} = await (?:ctx\.)?params;\n([^\n]*)\n([^\n]*)/g)]
-          .filter((m) => m[1].split(", ").includes(name));
-        expect(destructs.length, name).toBeGreaterThan(0);
-        for (const m of destructs) {
-          const rawNames = m[1].split(", ").filter((n) => raw(src, n));
-          expect(m[2].trim(), name).toBe(`const refused = refuseUnsafePath([${rawNames.join(", ")}]);`);
-          expect(m[3].trim(), name).toBe("if (refused) return refused;");
-        }
+    for (const [, list, next1, next2] of destructs) {
+      const names = list.split(", ");
+      const one = names.length === 1 ? names[0] : null;
+      const a = next1.trim();
+      const b = next2.trim();
+      if (SHAPED[rel]) {
+        const { param, regex } = SHAPED[rel];
+        expect(one).toBe(param);
+        expect(a).toBe(`if (!${regex}.test(${param})) {`);
+        const lit = new RegExp(`const ${regex} = /(.+)/([a-z]*);`).exec(src);
+        expect(lit, regex).not.toBeNull();
+        const re = new RegExp(lit![1], lit![2]);
+        for (const bad of ROUTE_MOVERS) expect(re.test(bad), JSON.stringify(bad)).toBe(false);
+      } else if (SEGMENT.has(rel)) {
+        expect(one).not.toBeNull();
+        expect(a).toBe(`const bad = refuseBadSegment(${one});`);
+        expect(b).toBe("if (bad) return bad;");
+      } else if (EXEMPT[rel]) {
+        expect(one).toBe(EXEMPT[rel].param);
+        expect(src).toContain(EXEMPT[rel].tail);
+      } else {
+        expect(a, rel).toBe(`const refused = refuseUnsafePath([${names.join(", ")}]);`);
+        expect(b, rel).toBe("if (refused) return refused;");
       }
-    },
-  );
+    }
+  });
+
+  it("refuseBadSegment refuses each mark", async () => {
+    const { unsafeSegment } = await import("@/app/api/integrations/safeSegment");
+    for (const bad of ROUTE_MOVERS) expect(unsafeSegment(bad), JSON.stringify(bad)).toBe(true);
+  });
 
   it.each(Object.entries(HELPERS))("%s: its helper refuses each mark", async (_rel, helper) => {
     const relay = await import("@/app/api/auth/me/assistant-profile/relay");

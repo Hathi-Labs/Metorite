@@ -82,7 +82,10 @@
 //    redirect: the gateway's one trailing-slash route (`GET /people/`) is
 //    called with its slash, and each OAuth route already asks for
 //    `redirect: "manual"`. See withManualRedirect. A caller that names its
-//    own `redirect` keeps it.
+//    own `redirect` keeps it. The rule also covers the LiteLLM calls to
+//    `/chat/completions` (agent/chat and chat/sessions/[sessionId]/compact).
+//    A LiteLLM base URL that redirects now gives those callers a 3xx, which
+//    they treat as a failure. That is intended: it fails closed.
 //
 // THE LOG
 // -------

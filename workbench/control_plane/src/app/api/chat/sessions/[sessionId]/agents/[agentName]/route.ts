@@ -15,7 +15,7 @@ export async function DELETE(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId, agentName } = await params;
-    const refused = refuseUnsafePath([sessionId]);
+    const refused = refuseUnsafePath([sessionId, agentName]);
     if (refused) return refused;
     const res = await gatewayFetch(
       `${GATEWAY_URL}/chat/sessions/${sessionId}/agents/${encodeURIComponent(agentName)}`,
