@@ -40,6 +40,17 @@ import httpx
 import pytest
 from acb_skills import company_search_tools as cst
 
+
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 ROOT = Path(__file__).resolve().parents[2]
 
 LEGACY_RULE_1 = "1. For data questions: call retrieve_entity_context or retrieve_sales_context FIRST."
@@ -353,7 +364,7 @@ class TestTheMember:
         assert req.url.path == "/search/company"
         assert dict(req.url.params) == {"q": "acme renewal", "apps": "crm,email"}
         assert req.headers["X-User-Email"] == "rep@customer.example"
-        assert req.headers["Authorization"].startswith("Bearer ")
+        assert req.headers["Authorization"] == f"Bearer {_INTERNAL}"
 
     def test_a_refusal_of_the_gateway_is_a_sentence(self, gateway, monkeypatch):
         _as(monkeypatch, "rep@customer.example")

@@ -135,6 +135,17 @@ from gateway.studio import packages_store as store
 from tests.unit.test_studio_builder_tools import CLASSES, MEMBER, ROWS
 from tests.unit.test_studio_skill_tools import Card, Mark
 
+
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 ORG = str(uuid.uuid4())
 BEN = "ben@acme.test"
 FIELDS: list[dict[str, Any]] = [
@@ -1155,7 +1166,7 @@ async def test_every_call_uses_the_internal_bearer_and_the_member_of_the_run(gw)
     await st.studio_publish(pid)
     assert gw.calls
     for _m2, _p, body, headers in gw.calls:
-        assert headers["X-User-Email"] == MEMBER and headers["Authorization"].startswith("Bearer ")
+        assert headers["X-User-Email"] == MEMBER and headers["Authorization"] == f"Bearer {_INTERNAL}"
         text = json.dumps(body)
         assert MEMBER not in text
         assert not any(f'"{k}"' in text for k in ("organization_id", "owner_email", "visibility"))

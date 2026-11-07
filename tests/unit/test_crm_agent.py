@@ -71,6 +71,17 @@ _M = load_agent_module()
 # speak through its own transport, so a fake gateway patches both modules.
 import acb_skills.crm_tools as _T  # noqa: E402
 
+
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 _ID = str(uuid4())
 _STATUS_ID = str(uuid4())
 
@@ -291,7 +302,7 @@ async def test_every_tool_sends_the_acting_user(monkeypatch) -> None:
         assert call["headers"].get("X-User-Email") == "sales@fracktal.in", (
             f"{call['path']} called the gateway with no acting user"
         )
-        assert call["headers"].get("Authorization", "").startswith("Bearer ")
+        assert call["headers"].get("Authorization", "") == f"Bearer {_INTERNAL}"
 
 
 @pytest.mark.parametrize("tool", sorted(_INVOCATIONS), ids=sorted(_INVOCATIONS))
@@ -961,7 +972,7 @@ async def test_each_shared_tool_reads_its_route_as_the_member(
     for call in calls:
         assert call["method"] == "GET"
         assert call["headers"].get("X-User-Email") == "sales@fracktal.in"
-        assert call["headers"].get("Authorization", "").startswith("Bearer ")
+        assert call["headers"].get("Authorization", "") == f"Bearer {_INTERNAL}"
 
 
 def test_every_shared_tool_is_an_annotated_read() -> None:

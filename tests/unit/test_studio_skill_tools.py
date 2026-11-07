@@ -66,6 +66,17 @@ from gateway.studio import skills_store as store
 
 from tests.unit.test_studio_builder_tools import MEMBER, ROWS
 
+
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 CATALOG_IDS = frozenset(r["id"] for r in ROWS)
 #: A row of the member's own package. ``GET /studio/actions`` lists it, and
 #: the skill route never serves it (``catalog_rows()`` holds no package row).
@@ -353,7 +364,7 @@ async def test_every_call_uses_the_internal_bearer_and_the_member_of_the_run(gw,
     await st.studio_skill_list()
     assert gw.calls
     for _m, _p, body, headers in gw.calls:
-        assert headers["X-User-Email"] == MEMBER and headers["Authorization"].startswith("Bearer ")
+        assert headers["X-User-Email"] == MEMBER and headers["Authorization"] == f"Bearer {_INTERNAL}"
         assert MEMBER not in json.dumps(body)
 
 

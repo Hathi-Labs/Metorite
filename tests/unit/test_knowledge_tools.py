@@ -36,6 +36,17 @@ import pytest
 from acb_skills import knowledge_manifest
 from acb_skills import knowledge_tools as kt
 
+
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 PAGE = "3f2c1a4e-0000-4000-8000-000000000001"
 
 BODY = """# Refund policy
@@ -139,7 +150,7 @@ class TestTheMember:
         assert req.url.path == f"/knowledge/pages/{PAGE}"
         assert dict(req.url.params) == {}, "the section filter adds no gateway parameter"
         assert req.headers["X-User-Email"] == "rep@customer.example"
-        assert req.headers["Authorization"].startswith("Bearer ")
+        assert req.headers["Authorization"] == f"Bearer {_INTERNAL}"
 
     def test_it_reads_the_spaces_route_as_the_member(self, gateway, monkeypatch):
         _as(monkeypatch, "rep@customer.example")

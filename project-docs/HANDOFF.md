@@ -90,7 +90,11 @@ line — never reclaim a number by deleting the other entry.
   - `scripts/setup_secrets.sh` line 65 appends the `EXECUTIVE_EMAILS` comment again on each run.
   - `env_value` in `setup_secrets.sh` does not handle two token lines, a quoted value or a CRLF line end.
 - **Do this:** Under a `deploy-write` grant, copy the token into the operator console `.env.local` in `scripts/vps_apply.sh`. Make the comment append run once. Make `env_value` take the last line, strip quotes and strip a CR. Fence each change in `tests/unit/test_setup_secrets.py`.
-- **Check:** `grep -c 'EXECUTIVE_EMAILS=' scripts/setup_secrets.sh` and `grep -n operator_console/.env.local scripts/vps_apply.sh`. No copy step in the second means STILL PENDING.
+- **Check:** run each command. Each item has its own pass condition.
+  1. Operator console copy: `grep -c 'operator_console/.env.local' scripts/vps_apply.sh`. The output `0` means OPEN. A count of 1 or more, with a copy step on those lines, means closed.
+  2. `EXECUTIVE_EMAILS`: `grep -cF 'grep -q "^EXECUTIVE_EMAILS=" .env || echo "# EXECUTIVE_EMAILS=' scripts/setup_secrets.sh`. The output `1` means OPEN, because the guard never matches the comment line that it writes. The output `0` means closed.
+  3. `env_value`: `grep -A2 '^env_value()' scripts/setup_secrets.sh | grep -c 'head -1 | cut -d= -f2-$'`. The output `1` means OPEN: the function takes the first line, and keeps quotes and a CR. The output `0` means closed.
+  - When all three are closed, delete this entry.
 - **Added:** 2026-11-07 · WS-24c slice 2, branch `ws24c2-mt-de46e5c8`
 
 ### H-442 · Confirm migration 337 and its backup on production after the 2026-11-03 release · [AGENT]

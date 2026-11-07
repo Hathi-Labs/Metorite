@@ -38,6 +38,17 @@ from gateway.routes.admin import assistant_profile_people as rp
 
 from tests.unit._sql_match import hits
 
+
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 ROOT = Path(__file__).resolve().parents[2]
 ORG = "0b5e8b1c-63a5-4c4a-9d1e-0000000000a5"
 
@@ -440,7 +451,7 @@ class TestTheTool:
         assert req.url.path == "/auth/me/assistant-profile/resolve-person"
         assert dict(req.url.params) == {"name": "Raj K"}
         assert req.headers["X-User-Email"] == "rep@customer.example"
-        assert req.headers["Authorization"].startswith("Bearer ")
+        assert req.headers["Authorization"] == f"Bearer {_INTERNAL}"
         assert out.endswith("Match: «Raj» <raj@customer.example> (source: alias)")
 
     @pytest.mark.parametrize("name", ["", "a", "x" * 81])

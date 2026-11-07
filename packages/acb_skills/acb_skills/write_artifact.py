@@ -1302,8 +1302,10 @@ async def _notify(
     try:
         import httpx
 
+        # An empty token sends no Authorization header: ``Bearer `` is an
+        # illegal header value, and the gateway answers 401 (WS-24c).
         headers = {
-            "Authorization": f"Bearer {gateway_token}",
+            **({"Authorization": f"Bearer {gateway_token}"} if gateway_token else {}),
             "Content-Type": "application/json",
         }
 

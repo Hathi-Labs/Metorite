@@ -49,6 +49,16 @@ from tests.unit._sandbox_tools_fakes import (  # noqa: E402,F401 — fixtures by
     short_tmp,
 )
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 _M = load_agent_module()
 AGENT = "projects-assistant"
 UUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
@@ -649,7 +659,7 @@ async def test_every_tool_sends_the_acting_user(tool: str, monkeypatch) -> None:
     assert calls, f"{tool} made no gateway call"
     for call in calls:
         assert call["headers"]["X-User-Email"] == "pm@fracktal.in", tool
-        assert call["headers"]["Authorization"].startswith("Bearer "), tool
+        assert call["headers"]["Authorization"] == f"Bearer {_INTERNAL}", tool
 
 
 @pytest.mark.parametrize("tool", sorted(_INVOCATIONS))

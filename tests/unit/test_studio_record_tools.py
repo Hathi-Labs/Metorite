@@ -43,6 +43,17 @@ from gateway.routes.studio import actions, invoke
 
 from tests.unit.test_studio_builder_tools import MEMBER
 
+
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: These tests set one, and check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
+
+
 PID = str(uuid.uuid4())
 ACTIONS = [
     {"id": "find", "uses": "object:visit.list"},
@@ -178,7 +189,7 @@ async def test_the_package_list_reads_as_the_member_and_fences_the_name(gw) -> N
     assert out["packages"][0]["name"] == "«Field visits»"
     (call,) = gw.calls
     assert call[:2] == ("GET", "/studio/packages")
-    assert call[3]["X-User-Email"] == MEMBER and call[3]["Authorization"].startswith("Bearer ")
+    assert call[3]["X-User-Email"] == MEMBER and call[3]["Authorization"] == f"Bearer {_INTERNAL}"
 
 
 async def test_a_package_read_gives_objects_and_actions_in_the_grammar(gw) -> None:

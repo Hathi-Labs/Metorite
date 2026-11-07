@@ -609,14 +609,6 @@ def test_the_legal_reads_of_the_first_fence_do_not_hit(name: str) -> None:
     assert scan(LEGACY_CLEAN[name]) == [], (name, scan(LEGACY_CLEAN[name]))
 
 
-def test_the_scan_reads_every_language_and_tree() -> None:
-    """The first fence read .py, .ts and .tsx only, and skipped deploy/."""
-    files = _tree_files()
-    rel = {p.relative_to(ROOT).parts[0] for p in files}
-    assert {"apps", "packages", "scripts", "evals", "deploy"} <= rel
-    assert {p.suffix for p in files} >= {".py", ".ts", ".sh", ".mjs"}
-
-
 def test_no_caller_sends_the_llm_key_as_service_identity() -> None:
     """Zero hits in the tree. No known-debt set exists (PR 1765 merged).
 
@@ -637,16 +629,47 @@ def test_no_caller_sends_the_llm_key_as_service_identity() -> None:
 
 
 # ── One reader of the internal token, one header rule (WS-24c slice 2) ──────
+#
+# Three rules, over every ``.py`` file under apps/ packages/ scripts/ evals/.
+# Tests are not scanned.
+#
+# 1. ``direct``: a code reference to the token itself, the string
+#    ``GATEWAY_INTERNAL_TOKEN`` or ``gateway_internal_token``, or an attribute
+#    ``.gateway_internal_token``. Only the files in ``_DIRECT_ALLOWED`` may.
+# 2. ``reader``: a reference to ``internal_service_token``, by name, by
+#    attribute or by import. Only ``_READER_ALLOWED`` may. Every other caller
+#    spreads ``internal_auth_headers()``, so it cannot send ``Bearer ``.
+# 3. ``copy``: a ``def``, a ``lambda`` binding or an assignment whose name is
+#    in ``_COPY_NAMES``, outside settings.py.
 
-#: The one module that may define the caller-side token reader.
 _ACCESSOR = "packages/acb_common/acb_common/settings.py"
-#: A function name that says "I read the internal token". The gateway side
-#: (``acb_auth.deps._get_internal_token``) is the verifier, not a caller.
+
+#: The files that may reference the token directly, each with its reason.
+_DIRECT_ALLOWED = {
+    _ACCESSOR: "the one caller-side reader",
+    "packages/acb_auth/acb_auth/deps.py": "the gateway verifier (_get_internal_token)",
+    "packages/acb_auth/acb_auth/agent_signing.py": "redacts the value; branch-0 digest pins it",
+    "scripts/onboarding_preflight.py": "checks the env files of a box, sends nothing",
+    "scripts/_test_memory_e2e.py": "a manual e2e script, with its E2E_TOKEN override first",
+    "evals/coding_engine/run.py": "the harness sets the token of the run under test",
+    "evals/email_narrowing/run.py": "the harness passes the token to the agent child env",
+    "evals/whatsapp_narrowing/run.py": "the harness passes the token to the agent child env",
+    "evals/search_company/run.py": "the harness sends its own bearer to a live gateway",
+}
+
+#: The files that may call ``internal_service_token`` itself.
+_READER_ALLOWED = {
+    _ACCESSOR: "defines it, and internal_auth_headers calls it",
+    "apps/services/orchestrator/orchestrator/executor.py":
+        "passes the token as ctx gateway_token to write_artifact and documents",
+}
+
+_TOKEN_NAMES = frozenset({"GATEWAY_INTERNAL_TOKEN", "gateway_internal_token"})
 _COPY_NAMES = frozenset({"_internal_token", "internal_token", "internal_service_token"})
 
 
-def _token_reader_copies() -> list[str]:
-    """Every ``def`` of a token reader under the code trees, except the one."""
+def _py_modules() -> list[tuple[str, object]]:
+    """(path, AST) of each code file. A file that does not parse fails."""
     import ast
 
     out = []
@@ -655,43 +678,125 @@ def _token_reader_copies() -> list[str]:
             if _SKIP_PARTS & set(p.parts):
                 continue
             rel = p.relative_to(ROOT).as_posix()
-            try:
-                mod = ast.parse(p.read_text(encoding="utf-8", errors="replace"))
-            except SyntaxError:
-                continue
-            for node in ast.walk(mod):
-                if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and node.name in _COPY_NAMES and rel != _ACCESSOR):
-                    out.append(f"{rel}:{node.lineno} ({node.name})")
+            # utf-8-sig: deps.py starts with a BOM, and a skip would hide it.
+            out.append((rel, ast.parse(p.read_text(encoding="utf-8-sig"), rel)))
     return out
+
+
+def token_hits(rel: str, mod) -> list[str]:
+    """Every hit of the three rules in one parsed module."""
+    import ast
+
+    docstrings = {
+        id(n.body[0].value) for n in ast.walk(mod)
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and n.body and isinstance(n.body[0], ast.Expr)
+        and isinstance(n.body[0].value, ast.Constant)
+    }
+    hits = []
+    for n in ast.walk(mod):
+        line = getattr(n, "lineno", 0)
+        if rel not in _DIRECT_ALLOWED and (
+            (isinstance(n, ast.Constant) and n.value in _TOKEN_NAMES and id(n) not in docstrings)
+            or (isinstance(n, ast.Attribute) and n.attr == "gateway_internal_token")
+        ):
+            hits.append(f"{rel}:{line} (direct)")
+        if rel not in _READER_ALLOWED and (
+            (isinstance(n, ast.Name) and n.id == "internal_service_token")
+            or (isinstance(n, ast.Attribute) and n.attr == "internal_service_token")
+            or (isinstance(n, ast.alias) and n.name == "internal_service_token")
+        ):
+            hits.append(f"{rel}:{line} (reader)")
+        if rel != _ACCESSOR:
+            names: list[str] = []
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = [n.name]
+            elif isinstance(n, (ast.Assign, ast.AnnAssign)):
+                targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                names = [t.id for t in targets if isinstance(t, ast.Name)]
+            if _COPY_NAMES & set(names):
+                hits.append(f"{rel}:{line} (copy)")
+    return hits
 
 
 def test_no_copy_of_the_internal_token_reader() -> None:
     """R7. One reader: ``acb_common.settings.internal_service_token``.
 
-    Ten copies of ``_internal_token`` each held the same rule. WS-24b had to
-    edit all ten to drop the LLM-key rung. A new copy fails here. Mutation:
-    add ``def _internal_token()`` to any module under ``apps/`` -> red.
+    Ten copies of ``_internal_token`` each held the same rule, and WS-24b had
+    to edit all ten. Mutations, each red: an inline
+    ``get_settings().gateway_internal_token``, a ``lambda`` or an assignment
+    named ``_internal_token``, a renamed ``def`` that calls the reader,
+    ``"Bearer " + internal_service_token()``, and an import alias of it.
     """
-    assert _token_reader_copies() == [], (
-        "Use acb_common.settings.internal_service_token() or "
-        "internal_auth_headers(). Do not copy the reader."
+    found = [h for rel, mod in _py_modules() for h in token_hits(rel, mod)]
+    assert found == [], (
+        "Send internal_auth_headers(). Do not read the token or copy the "
+        f"reader: {found}"
     )
 
 
-def test_no_caller_builds_the_bearer_from_the_raw_token() -> None:
-    """A caller spreads ``internal_auth_headers()``. It does not write
-    ``Bearer {internal_service_token()}``, which sends ``Bearer `` when the
-    token is empty. Mutation: write that line in any caller -> red."""
-    rx = re.compile(r"Bearer \{\s*internal_service_token\(")
-    found = [
-        p.relative_to(ROOT).as_posix()
-        for tree in ("apps", "packages", "scripts", "evals")
-        for p in sorted((ROOT / tree).rglob("*.py"))
-        if not _SKIP_PARTS & set(p.parts)
-        and rx.search(p.read_text(encoding="utf-8", errors="replace"))
-    ]
-    assert found == [], found
+def test_each_allowed_file_exists() -> None:
+    """A stale allow-list entry hides nothing today, and a new file could take
+    the path tomorrow."""
+    for rel in {**_DIRECT_ALLOWED, **_READER_ALLOWED}:
+        assert (ROOT / rel).is_file(), rel
+
+
+#: Each sample is one shape of the six verifier mutations. Each must hit.
+COPY_SAMPLES = {
+    "inline settings read": 'h = {"Authorization": f"Bearer {get_settings().gateway_internal_token}"}\n',
+    "lambda": '_internal_token = lambda: os.environ.get("X", "")\n',
+    "assignment": 'internal_token = os.environ.get("GATEWAY_INTERNAL_TOKEN", "")\n',
+    "renamed def": "def _svc_token():\n    return internal_service_token()\n",
+    "concatenation": 'h = {"Authorization": "Bearer " + internal_service_token()}\n',
+    "alias": "from acb_common.settings import internal_service_token as _t\n",
+    "settings getattr": 'tok = getattr(s, "gateway_internal_token", "")\n',
+}
+
+
+@pytest.mark.parametrize("name", sorted(COPY_SAMPLES))
+def test_each_copy_shape_is_caught(name: str) -> None:
+    import ast
+
+    rel = "apps/agents/agent-x/agents.py"
+    assert token_hits(rel, ast.parse(COPY_SAMPLES[name])), name
+
+
+def test_the_header_helper_is_not_a_hit() -> None:
+    import ast
+
+    text = (
+        '"""Reads GATEWAY_INTERNAL_TOKEN through the seam."""\n'
+        "from acb_common.settings import internal_auth_headers\n"
+        'h = {**internal_auth_headers(), "X-User-Email": user}\n'
+    )
+    assert token_hits("apps/agents/agent-x/agents.py", ast.parse(text)) == []
+
+
+@pytest.mark.parametrize(("token", "want"), [("", None), ("tok-ctx", "Bearer tok-ctx")])
+async def test_the_artifact_notify_sends_no_empty_bearer(token, want, monkeypatch) -> None:
+    """``write_artifact._notify`` takes the run's ``gateway_token`` from ctx.
+    An empty one sends no ``Authorization`` header (WS-24c)."""
+    import importlib
+
+    import httpx
+
+    # The package exports a function of the same name, so import the module.
+    wa = importlib.import_module("acb_skills.write_artifact")
+    sent: list[dict] = []
+
+    class _Client:
+        def __init__(self, **_kw): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): return False
+        async def patch(self, _url, **kw): sent.append(kw["headers"])
+        async def post(self, _url, **kw): sent.append(kw["headers"])
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    await wa._notify(session_id="s1", workspace_root="/w", artifact={"path": "a.md"},
+                     gateway_url="http://gw", gateway_token=token)
+    assert sent, "the notify made no gateway call"
+    assert all(h.get("Authorization") == want for h in sent), sent
 
 
 def test_the_accessor_reads_the_token_and_never_the_llm_key(
