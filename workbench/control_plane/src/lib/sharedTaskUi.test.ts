@@ -422,10 +422,8 @@ describe("both apps reach the shared modules", () => {
     ["tasks", "components/TaskPanelHeader"],
     ["projects", "lib/statusCategory"],
     ["tasks", "lib/statusCategory"],
-    // ORC-1 moved the panel rules to `@/lib/panelMode`, which reads
-    // `@/lib/taskPanel`. /projects reaches both through that one file now
-    // (the shim `app/projects/lib/panelMode.ts` until ORC-2), so this row
-    // names it. The row for `lib/taskPanel` was red on main from ORC-1.
+    // 2026-11-06 (ORC-1, D181): /projects reaches the shared panel seam through
+    // its panelMode shim, and that seam reads taskPanel. /tasks imports it directly.
     ["projects", "lib/panelMode"],
     ["tasks", "lib/taskPanel"],
   ])("/%s consumes @/%s", (app, module) => {

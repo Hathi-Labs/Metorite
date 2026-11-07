@@ -1,0 +1,7 @@
+[Unit]
+Description=Metorite reaper: stop orphan dev stacks, remove merged worktrees (CIV-14j)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Metorite
+ExecStart=/usr/bin/python3 %h/Metorite/scripts/reaper.py
