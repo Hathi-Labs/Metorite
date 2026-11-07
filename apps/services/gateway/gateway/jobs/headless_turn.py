@@ -646,10 +646,15 @@ async def run_turn(org: str, payload: dict[str, Any], claim: queue.Claim) -> Non
 def register_jobs(*, replace: bool = False) -> bool:
     """Register :data:`KIND` as a detached kind that is not idempotent, only
     when ``JOB_QUEUE`` is on. True when it registered. A second try of a turn
-    could spend twice, so the worker gives each job one try."""
+    could spend twice, so the worker gives each job one try.
+
+    The effect is ``own_rows`` (BR-7a): a turn writes only the ledger and its
+    own goal row, and its tools are read-only. The report is a log line. When
+    AUTO-6 sends it through Reach, the kind becomes ``send`` with a policy."""
     if not worker.worker_enabled():
         return False
-    worker.register(KIND, run_turn, mode="detached", idempotent=False, replace=replace)
+    worker.register(KIND, run_turn, mode="detached", idempotent=False, replace=replace,
+                    effect="own_rows")
     return True
 
 
