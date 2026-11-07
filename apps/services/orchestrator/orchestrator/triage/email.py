@@ -298,8 +298,9 @@ async def classify(
 ) -> EmailTriageDecision:
     """Top-level triage: rule-first, then optional LLM tiebreaker.
 
-    Always records an `audit_event` row (``action='email_triage'``) so the
-    Annealer can later mine the (input, decision, source) triples.
+    With ``audit=True`` it records an `audit_event` row
+    (``action='email_triage'``) so the Annealer can later mine the
+    (input, decision, source) triples.
 
     ``organization_id`` is the tenant that owns the mailbox. It is required by
     keyword: the caller passes the tenant its run or job is bound to, never a
