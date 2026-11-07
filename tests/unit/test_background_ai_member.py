@@ -826,6 +826,10 @@ _RUN_AGENT_WITHOUT_SESSION_USER: dict[tuple[str, str], tuple[int, str]] = {
      "_orchestrate_draft"): (
         1, "runs inside `as_mailbox_owner`; its `user_email` is that same "
            "owner, which `_run_member` keeps verified"),
+    ("apps/services/gateway/gateway/jobs/headless_turn.py", "run_worker"): (
+        1, "AUTO-8a: runs inside `job_member_scope` with the goal's payer, read "
+           "from `goal_records` and never from the payload; its `user_email` is "
+           "that same member, which `_run_member` keeps verified (H-152)"),
     ("apps/services/gateway/gateway/routes/projects/agent_dispatch.py",
      "_run_and_record"): (
         1, "an inline event sink. From PUT /tasks/{id}/assignees it inherits "
