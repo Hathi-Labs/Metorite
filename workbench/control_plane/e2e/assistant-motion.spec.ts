@@ -284,8 +284,14 @@ async function expectNoOpenSheetFor(page: Page, ms: number) {
 async function openSheet(page: Page) {
   const ask = page.locator("[data-ask-tab]");
   await expect(ask).toBeVisible({ timeout: 60_000 });
-  await ask.click();
-  await expect(panel(page)).toHaveAttribute("data-panel-form", "sheet");
+  // MOB-9: Ask opens AND closes the sheet, and a chat-first phone opens the
+  // sheet by itself on landing (CF-2). So tap only while it is not open, and
+  // try again: the landing open can arrive between the check and the tap, and
+  // a tap before the bar hydrates does nothing.
+  await expect(async () => {
+    if ((await ask.getAttribute("aria-pressed")) !== "true") await ask.click();
+    await expect(panel(page)).toHaveAttribute("data-panel-form", "sheet", { timeout: 4_000 });
+  }).toPass({ timeout: 60_000 });
   await expect(panel(page)).toHaveAttribute("data-panel-phase", "open");
   await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
 }
