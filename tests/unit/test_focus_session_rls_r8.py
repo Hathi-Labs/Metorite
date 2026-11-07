@@ -249,12 +249,11 @@ async def test_a_body_that_names_a_member_or_an_org_is_refused(world) -> None:  
     assert open_rows(world, ALICE, world.other) == []
 
 
-async def test_the_purge_takes_the_member_of_this_org_only(
-    world, app_engine,  # noqa: F811
-) -> None:
-    """R6. The ``focus_sessions`` clause of the member purge, as the app role
-    bound to org B, deletes Alice's sessions of org B only. Bob keeps his, and
-    Alice's address keeps its session of org A."""
+async def test_the_purge_takes_the_member_of_this_org_only(world) -> None:  # noqa: F811
+    """R6. The ``focus_sessions`` clause of the member purge deletes Alice's
+    sessions of org B only. Bob keeps his, and Alice's address keeps its
+    session of org A. The statement runs as the superuser, which skips RLS,
+    bound to org B, so the clause must hold the org by itself, beside RLS."""
     from gateway.routes.admin.members import _PURGE_DELETES
 
     [rows] = [r for r in _PURGE_DELETES if r.table == "focus_sessions"]
@@ -263,7 +262,7 @@ async def test_the_purge_takes_the_member_of_this_org_only(
         await start(c, ALICE, task)
         await start(c, BOB, await capture(c, BOB, "Kept"))
     admin(world, _SEED_ORG_A_ROW, o=world.other, e=ALICE, t=task)
-    with app_engine.begin() as conn:
+    with world.p.admin_engine.begin() as conn:
         _bound(conn, world.org)
         deleted = conn.execute(
             text(f"DELETE FROM focus_sessions WHERE {rows.where}"), {"email": ALICE},
