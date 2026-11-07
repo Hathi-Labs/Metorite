@@ -645,6 +645,7 @@ jobs:
               tests/unit/test_user_settings_per_org_r8.py \
               tests/unit/test_auth_me_shell_r8.py \
               tests/unit/test_h6_identity_shadow.py \
+              tests/unit/test_member_of_org_read.py \
               tests/unit/test_h6_rbac_rekey.py \
               tests/unit/test_email_otp_token.py \
               tests/unit/test_invited_member_promotion.py \
@@ -674,6 +675,7 @@ jobs:
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
               tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
@@ -681,6 +683,7 @@ jobs:
               tests/unit/test_crm_change_history.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_projects_status_set_read_r8.py \
+              tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_staging_export.py
 
   # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────
