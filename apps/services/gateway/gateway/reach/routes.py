@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from gateway.brief import flags as brief_flags
-from gateway.reach import flags, loop, outbox, plan, requests
+from gateway.reach import exceptions, flags, loop, outbox, plan, requests
 from gateway.reach import whatsapp as channel
 
 router = APIRouter(
@@ -62,7 +62,8 @@ async def reach_preview(user: UserContext = Depends(get_current_user)) -> dict[s
     logged = await outbox.logged_pairs(org, email)
     # The preview shows what WhatsApp would get, so no reminder (D114.7).
     cards = plan.on_whatsapp(snap.cards)
-    candidates = plan.interrupt_candidates(cards, logged, snap.now,
+    marked = exceptions.with_notify(cards, await loop.block_notify(org, email))
+    candidates = plan.interrupt_candidates(marked, logged, snap.now,
                                            rules=brief_flags.exceptions(org),
                                            muted=await loop.muted_rules(org, email))
     wa_id, is_open = await channel.reach_state(org, email)
