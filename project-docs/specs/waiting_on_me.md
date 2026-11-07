@@ -99,7 +99,7 @@ Each fact was read on `97da742ae`.
 3. **The Projects filter "Waiting on me"** keeps a task when a run is `awaiting`. The caller must be the run's member or an assignee (`filters.py:1478-1503`). It covers agent runs only.
 4. **A person cannot mark "waiting on X" and keep the task.** Delegate replaces every assignee (`lens.ts:941-944`, `tasks.py:2221-2227`). The overlay route takes `waiting_on` alone (`personal.py:175-189`), but the read side names the current assignees minus me (D77, `personal.py:1180-1208`).
 5. **The nudge** writes one bell row of kind `nudge` (`personal.py:3147-3276`). It has no rate limit, because nothing reads `last_nudged_at` before a send.
-6. **⚠️ Defect.** The Projects bell draws every `nudge` as "{A} has gone quiet on {task}. Resume or release it." (`notifications.ts:79,97`). That text belongs to the stranded-run nudge of `agent_run_sweep.py:100-102`. So a person's nudge reads wrong. Task 1857 (AP-BUG-1).
+6. **BUILT (task 1857, AP-BUG-1).** Before the fix, the Projects bell drew every `nudge` as "{A} has gone quiet on {task}. Resume or release it." (`notifications.ts:79,97`). That text belongs to the stranded-run nudge of `agent_run_sweep.py:100-102`. So a person's nudge read wrong. `describe()` now tells the two apart by the actor. The sweep stamps an `mcp:` or `agent:` client. A person stamps their address. No producer changed.
 7. **`pm_decisions` has no ask route on purpose** (`decisions.py:16-19`). An HTTP ask lets a member, or an agent with a member's connection, put a card on another member's bell. AP-8a adds the route, and §7.2 holds its guards.
 8. **The no-score fence.** `tests/unit/test_decisions.py:180-200` refuses an index that names `decider`, `answered_by` or `asked_by`. It refuses `group by`, `count(`, `rank` and `score` in the service too.
 9. **The sidebar has a count already.** The My Day row shows the feed total and the AI runs that wait (`Sidebar.tsx:1322-1381`). Since GL-12, "Needs you" is folded into that row (`navigation_shell.md:288-294`). `NavPane.badge` exists and no pane sets it (`nav.ts:89`).
@@ -583,7 +583,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-14** | 1864 | Forward an agent question to a person | The forward makes a person ask that quotes the question. The answer returns to the run as the member's answer | HIGH. Deferred: the owner answered AP-Q7 "not now" |
 | **AP-15** | 1875 | A wait that no person owns: the ladder, the circle, the open wait, the opening after 24 hours, and the Team lens filter "Open" (§4.5) | R8 tests hold V9, V10 and V2 for the circle. A typed archive request stays the member's. The group "Near you" draws no count. UI gate for the open row and "Near you" | HIGH (visibility). Needs AP-1 |
 | **AP-16** | 1876 | An agent names the person its question is for: the field `for` on `ask_on_task`, inside the circle only | An R8 test holds V11. The MCP schema, `agent_edge/tools.py` and the route take the field. The answer still reaches the run's session | HIGH (identity). Needs AP-15. AP-Q10 is answered |
-| **AP-BUG-1** | 1857 | The Projects bell draws a person's `nudge` as "has gone quiet … Resume or release it" | A person's nudge reads "{A} nudged you about {task}". A stranded-run nudge keeps its text. A vitest holds both | LOW |
+| **AP-BUG-1** | 1857 | The Projects bell draws a person's `nudge` as "has gone quiet … Resume or release it" | A person's nudge reads "{A} nudged you about {task}". A stranded-run nudge keeps its text. A vitest holds both. **BUILT** | LOW |
 
 **AP-8b: the three open points.** Write each one before AP-8b starts.
 
@@ -593,7 +593,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 
 **Build order.**
 
-1. AP-BUG-1 at once.
+1. AP-BUG-1 at once (BUILT).
 2. AP-1 and AP-8, in parallel.
 3. AP-2, AP-4 and AP-9.
 4. AP-3, AP-10 and AP-11.
