@@ -14,8 +14,12 @@
  * that `studio_save` uses). They ask Mira in the dock. The dock holds the facts of this page (the
  * package id, the STORED draft and its hash), so Mira edits THIS app, and a save of the member
  * moves the hash that her next save uses. When her run ends, the page reads the draft again and
- * the Explorer, the Preview and the Problems follow. A poll never replaces an unsaved edit. Nothing
- * here publishes: Mira publishes after the plan card.
+ * the Explorer, the Preview and the Problems follow. A poll never replaces an unsaved edit.
+ *
+ * G5: a change bar above the tabs says what the newest change in the draft did, in plain words, with
+ * a one-step Undo through the same save. Publish is in the top bar: its dialog lists what changes in
+ * the LIVE app, then sends the stored draft with its hash. The bar is in the IDE and not in the dock,
+ * because the dock is the shell's one seam (D89).
  *
  * The shell is ONE seam (D89). The page mounts no chat, no palette, no bell and no key
  * handler. It publishes facts with `useAssistantFacts` and asks the shell to open its dock.
@@ -38,14 +42,17 @@ import { DOCK_MIN_VIEWPORT, assistantState, dockFoldsNav, currentAssistantFacts,
 import { sendHeldBrief } from "@/lib/studio/buildHandoff";
 import { buildOutline, type OutlineTab } from "@/lib/studio/buildOutline";
 import type { Reveal } from "@/lib/studio/codeReveal";
+import type { Problem } from "@/lib/studio/draftProblems";
 import { checkDraft } from "@/lib/studio/draftProblems";
 import { PendingTextContext } from "@/lib/studio/pendingText";
 import { useDraftEditor } from "@/lib/studio/useDraftEditor";
 import type { LiveObject } from "@/lib/studio/draftEdit";
 import { useDraftWatch } from "@/lib/studio/draftWatch";
+import { useLandedChange } from "@/lib/studio/useLandedChange";
+import { publishBlock } from "@/lib/studio/publish";
 import { ideFacts } from "@/lib/studio/ideFacts";
 import { clearFoldMark, foldMarked, foldOnOpen, markFolded, restoreOnLeave } from "@/lib/studio/ideFold";
-import { buildHref, draftHash } from "@/lib/studio/packageDraft";
+import { buildHref, draftHash, type PackageDraft } from "@/lib/studio/packageDraft";
 import { previewHref } from "@/lib/studio/packagePreview";
 
 import CodeTab from "./components/CodeTab";
@@ -53,6 +60,8 @@ import DataTab from "./components/DataTab";
 import EditBar from "./components/EditBar";
 import Explorer from "./components/Explorer";
 import PreviewTab from "./components/PreviewTab";
+import PublishDialog from "./components/PublishDialog";
+import ChangeBar from "./components/ChangeBar";
 import ProblemsPanel from "./components/ProblemsPanel";
 import ViewsTab from "./components/ViewsTab";
 
@@ -97,8 +106,14 @@ function Ide({ pkg }: { pkg: string }) {
   const router = useRouter();
   const params = useSearchParams();
   const { isMobile } = useViewMode();
-  const watch = useDraftWatch(pkg);
+  const rawWatch = useDraftWatch(pkg);
+  const change = useLandedChange(pkg, rawWatch);
+  // The member's own save marks its hash first, so the change bar says "You saved" and not "Mira or another tab".
+  const { markOwn } = change;
+  const watch = useMemo(() => ({ ...rawWatch, adopt: (next: PackageDraft) => { markOwn("you", next.manifestHash); rawWatch.adopt(next); } }), [rawWatch, markOwn]);
   const { draft } = watch;
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publishProblems, setPublishProblems] = useState<Problem[]>([]);
   const [pendingText, setPendingText] = useState(0);
   const editor = useDraftEditor(pkg, watch, pendingText);
   const reportPending = useCallback((d: 1 | -1) => setPendingText((n) => Math.max(0, n + d)), []);
@@ -150,7 +165,9 @@ function Ide({ pkg }: { pkg: string }) {
   const hash = useMemo(() => draftHash(manifest), [manifest]);
   const outline = useMemo(() => buildOutline(manifest), [manifest]);
   const { server } = editor.state;
-  const problems = useMemo(() => [...server, ...checkDraft(manifest)], [server, manifest]);
+  const checked = useMemo(() => [...server, ...checkDraft(manifest)], [server, manifest]);
+  // A refusal of a publish is shown in the panel too, but it never blocks the next try.
+  const problems = useMemo(() => [...checked, ...publishProblems], [checked, publishProblems]);
   // A refusal of the server check lands in the Problems panel at its path, so the panel opens for it.
   const [seenServer, setSeenServer] = useState(server);
   if (server !== seenServer) {
@@ -197,9 +214,18 @@ function Ide({ pkg }: { pkg: string }) {
     if (isMobile) setPhoneTab("editor");
   };
   const live = draft.liveVersion !== null;
+  const block = publishBlock({
+    dirty: editor.dirty, saving: editor.state.saving, undoing: change.undoing, fault: editor.state.fault !== null,
+    errors: checked.filter((x) => x.severity === "error").length, hash: draft.manifestHash,
+  });
   const actions = (
     <>
-      <Badge tone={live ? "success" : "warning"} size="xs">{live ? `Live v${draft.liveVersion}` : "Draft"}</Badge>
+      <Badge tone={live ? "success" : "warning"} size="xs">{live ? `Live v${draft.liveVersion}` : "Not published"}</Badge>
+      <Button variant="primary" size={isMobile ? "icon" : "sm"} icon="Rocket" disabled={block !== null}
+        aria-label={block ? `Publish. ${block}` : "Publish"} title={block ?? "Publish the saved draft"}
+        onClick={() => { setPublishProblems([]); setPublishOpen(true); }}>
+        {isMobile ? null : "Publish"}
+      </Button>
       <Button variant="secondary" size="sm" icon="ExternalLink" href={previewHref(pkg, object ?? undefined)}>
         Open app
       </Button>
@@ -229,6 +255,8 @@ function Ide({ pkg }: { pkg: string }) {
   );
   const editorPane = (
     <>
+      <ChangeBar landed={change.landed} dirty={editor.dirty} saving={editor.state.saving} fault={editor.state.fault !== null}
+        undoing={change.undoing} note={change.note} onUndo={change.undo} onReload={editor.reload} />
       <Tabs tabs={TABS} activeTab={tab} onTabChange={setTab} variant="underline" chrome="inline" className="px-2 pt-1" />
       <EditBar state={editor.state} dirty={editor.dirty} newer={editor.newer} onSave={editor.save} onRevert={editor.revert} onReload={editor.reload} hideJson={tab === "code"}
         changes={editor.changes} editText={editor.editText} />
@@ -236,6 +264,12 @@ function Ide({ pkg }: { pkg: string }) {
       {lockedLine}
       {body}
     </>
+  );
+
+  const dialog = (
+    <PublishDialog open={publishOpen} pkg={pkg} name={draft.name} manifest={draft.manifest} hash={draft.manifestHash}
+      liveVersion={draft.liveVersion} onClose={() => setPublishOpen(false)} onPublished={watch.refresh}
+      onProblems={(ps) => { setPublishProblems(ps); setProblemsOpen(true); setPhoneProblemsOpen(true); }} onReload={editor.reload} />
   );
 
   if (isMobile) {
@@ -247,6 +281,7 @@ function Ide({ pkg }: { pkg: string }) {
           {phoneTab === "editor" ? editorPane : null}
           {phoneTab === "problems" ? <ProblemsPanel problems={problems} open={phoneProblemsOpen} onToggle={() => setPhoneProblemsOpen((o) => !o)} fill /> : null}
         </div>
+        {dialog}
       </Frame>
     );
   }
@@ -265,6 +300,7 @@ function Ide({ pkg }: { pkg: string }) {
           <ProblemsPanel problems={problems} open={problemsOpen} onToggle={() => setProblemsOpen((o) => !o)} />
         </div>
       </div>
+      {dialog}
     </Frame>
   );
 }
