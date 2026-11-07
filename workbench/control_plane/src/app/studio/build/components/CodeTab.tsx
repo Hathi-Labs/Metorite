@@ -1,27 +1,31 @@
 "use client";
 
 /**
- * The Code tab of the Studio IDE: the draft manifest as JSON, read only, in the Monaco editor
- * that the App Workshop page uses (`ai_studio.md` §6.3, G3a). Direct edits are G3c.
+ * The Code tab of the Studio IDE: the draft manifest as JSON, in the Monaco editor that the App
+ * Workshop page uses (`components/CodeEditor.tsx`, one copy for both). Editable since G3c
+ * (`ai_studio.md` §6.3). The text is the member's until they save or revert. A text that does not
+ * parse shows its line under the editor, and a save is refused (`draftSave.parseManifestText`).
  */
-import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef } from "react";
 
+import CodeEditor, { type EditorInstance } from "@/components/CodeEditor";
 import { findLine, type Reveal } from "@/lib/studio/codeReveal";
+import type { JsonFault } from "@/lib/studio/draftSave";
 
-import { useMonacoTheme } from "@/lib/theme/surfaces";
+export interface CodeTabProps {
+  manifest: unknown;
+  /** The text that the member typed, or null to show the manifest. */
+  text: string | null;
+  fault: JsonFault | null;
+  reveal?: (Reveal & { seq: number }) | null;
+  onText: (text: string) => void;
+  onSave: () => void;
+}
 
-const Editor = dynamic(() => import("@monaco-editor/react"), {
-  ssr: false,
-  loading: () => <p role="status" className="p-3 text-xs text-muted-foreground">Loading the editor…</p>,
-});
-
-type Mounted = Parameters<NonNullable<React.ComponentProps<typeof Editor>["onMount"]>>[0];
-
-export default function CodeTab({ manifest, reveal }: { manifest: unknown; reveal?: (Reveal & { seq: number }) | null }) {
-  const theme = useMonacoTheme();
-  const value = useMemo(() => JSON.stringify(manifest ?? null, null, 2), [manifest]);
-  const editorRef = useRef<Mounted | null>(null);
+export default function CodeTab({ manifest, text, fault, reveal, onText, onSave }: CodeTabProps) {
+  const pretty = useMemo(() => JSON.stringify(manifest ?? null, null, 2), [manifest]);
+  const value = text ?? pretty;
+  const editorRef = useRef<EditorInstance | null>(null);
   const shown = useRef(0);
   // Scroll to the item that a click in the Explorer named, once for each click.
   const show = () => {
@@ -34,25 +38,18 @@ export default function CodeTab({ manifest, reveal }: { manifest: unknown; revea
     ed.setPosition({ lineNumber: line, column: 1 });
     ed.setSelection({ startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1000 });
   };
-  useEffect(show, [reveal, value]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(show, [reveal, value]);
   return (
-    <div className="h-full min-h-64" data-code-editor>
-      <Editor
-        height="100%"
-        language="json"
-        theme={theme}
-        value={value}
-        onMount={(ed) => { editorRef.current = ed; show(); }}
-        options={{
-          readOnly: true,
-          minimap: { enabled: false },
-          fontSize: 12.5,
-          wordWrap: "on",
-          scrollBeyondLastLine: false,
-          automaticLayout: true,
-          domReadOnly: true,
-        }}
-      />
+    <div className="flex h-full min-h-64 flex-col">
+      <div className="min-h-0 flex-1" data-code-editor>
+        <CodeEditor language="json" value={value} onChange={onText} onSave={onSave}
+          onMount={(ed) => { editorRef.current = ed; show(); }} />
+      </div>
+      {fault ? (
+        <p role="alert" data-json-fault={fault.line} className="border-t border-border bg-destructive/5 px-3 py-1.5 text-xs text-destructive">
+          {fault.message}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -8,10 +8,14 @@
  * (Preview, Data, Views and Code tabs, with the Problems panel below), and the shell's own
  * assistant dock on the right.
  *
- * Interaction: the member opens an app in the IDE, picks a part in the Explorer, and reads it
- * in a tab. They ask Mira in the dock. The dock holds the facts of this page (the package id
- * and the draft), so Mira edits THIS app. When her run ends, the page reads the draft again
- * and the Explorer, the Preview and the Problems follow. Nothing here saves or publishes.
+ * Interaction: the member opens an app in the IDE, picks a part in the Explorer, and edits it in a
+ * tab (G3c): a field in Data, a view in Views, the JSON in Code. The bar shows "Unsaved changes"
+ * with Save and Revert, and Save sends the draft through the one save (`draftSave.ts`, the route
+ * that `studio_save` uses). They ask Mira in the dock. The dock holds the facts of this page (the
+ * package id, the STORED draft and its hash), so Mira edits THIS app, and a save of the member
+ * moves the hash that her next save uses. When her run ends, the page reads the draft again and
+ * the Explorer, the Preview and the Problems follow. A poll never replaces an unsaved edit. Nothing
+ * here publishes: Mira publishes after the plan card.
  *
  * The shell is ONE seam (D89). The page mounts no chat, no palette, no bell and no key
  * handler. It publishes facts with `useAssistantFacts` and asks the shell to open its dock.
@@ -35,6 +39,8 @@ import { sendHeldBrief } from "@/lib/studio/buildHandoff";
 import { buildOutline, type OutlineTab } from "@/lib/studio/buildOutline";
 import type { Reveal } from "@/lib/studio/codeReveal";
 import { checkDraft } from "@/lib/studio/draftProblems";
+import { useDraftEditor } from "@/lib/studio/useDraftEditor";
+import type { LiveObject } from "@/lib/studio/draftEdit";
 import { useDraftWatch } from "@/lib/studio/draftWatch";
 import { ideFacts } from "@/lib/studio/ideFacts";
 import { clearFoldMark, foldMarked, foldOnOpen, markFolded, restoreOnLeave } from "@/lib/studio/ideFold";
@@ -43,6 +49,7 @@ import { previewHref } from "@/lib/studio/packagePreview";
 
 import CodeTab from "./components/CodeTab";
 import DataTab from "./components/DataTab";
+import EditBar from "./components/EditBar";
 import Explorer from "./components/Explorer";
 import PreviewTab from "./components/PreviewTab";
 import ProblemsPanel from "./components/ProblemsPanel";
@@ -91,6 +98,7 @@ function Ide({ pkg }: { pkg: string }) {
   const { isMobile } = useViewMode();
   const watch = useDraftWatch(pkg);
   const { draft } = watch;
+  const editor = useDraftEditor(pkg, watch);
   const [tab, setTab] = useState<string>("preview");
   const [phoneTab, setPhoneTab] = useState<string>("editor");
   const [explorerOpen, setExplorerOpen] = useState(true);
@@ -134,10 +142,19 @@ function Ide({ pkg }: { pkg: string }) {
     if (window.innerWidth >= DOCK_MIN_VIEWPORT && !assistantState().open) openAssistant();
   }, []);
 
-  const manifest = draft?.manifest ?? null;
+  // The tabs, the Explorer and the Problems draw what the member edits. The facts below keep the STORED draft.
+  const manifest = editor.shown;
   const hash = useMemo(() => draftHash(manifest), [manifest]);
   const outline = useMemo(() => buildOutline(manifest), [manifest]);
-  const problems = useMemo(() => checkDraft(manifest), [manifest]);
+  const { server } = editor.state;
+  const problems = useMemo(() => [...server, ...checkDraft(manifest)], [server, manifest]);
+  // A refusal of the server check lands in the Problems panel at its path, so the panel opens for it.
+  const [seenServer, setSeenServer] = useState(server);
+  if (server !== seenServer) {
+    setSeenServer(server);
+    if (server.length > 0) { setProblemsOpen(true); setPhoneProblemsOpen(true); }
+  }
+  const liveRows = useMemo(() => (draft?.objects ?? []) as unknown as LiveObject[], [draft]);
   // No facts when the app is gone (404): Mira must never save to a deleted app.
   useAssistantFacts(
     draft && !watch.off ? ideFacts({ id: draft.id, name: draft.name }, draft.manifest, draft.manifestHash) : null,
@@ -190,18 +207,27 @@ function Ide({ pkg }: { pkg: string }) {
   const stale = watch.stale ? (
     <p role="status" className="border-b border-border px-3 py-1 text-xs text-muted-foreground">{watch.stale}</p>
   ) : null;
+  const locked = editor.state.fault !== null;
+  const lockedLine = locked && tab !== "code" ? (
+    <p role="status" className="border-b border-border px-3 py-1 text-xs text-warning">
+      The Code tab holds JSON that does not parse. Fix it there, or press Revert, before you edit here.
+    </p>
+  ) : null;
   const body = (
     <div className="min-h-0 flex-1 overflow-y-auto">
       {tab === "preview" ? <PreviewTab manifest={manifest} hash={hash} pkg={pkg} object={object} onObject={setObject} /> : null}
-      {tab === "data" ? <DataTab manifest={manifest} object={object} onObject={setObject} /> : null}
-      {tab === "views" ? <ViewsTab manifest={manifest} /> : null}
-      {tab === "code" ? <CodeTab manifest={manifest} reveal={reveal} /> : null}
+      {tab === "data" ? <DataTab manifest={manifest} object={object} onObject={setObject} onChange={editor.edit} live={liveRows} locked={locked} /> : null}
+      {tab === "views" ? <ViewsTab manifest={manifest} onChange={editor.edit} locked={locked} /> : null}
+      {tab === "code" ? <CodeTab manifest={manifest} text={editor.state.code} fault={editor.state.fault} reveal={reveal}
+        onText={editor.typeCode} onSave={editor.save} /> : null}
     </div>
   );
-  const editor = (
+  const editorPane = (
     <>
       <Tabs tabs={TABS} activeTab={tab} onTabChange={setTab} variant="underline" chrome="inline" className="px-2 pt-1" />
+      <EditBar state={editor.state} dirty={editor.dirty} newer={editor.newer} onSave={editor.save} onRevert={editor.revert} onReload={editor.reload} />
       {stale}
+      {lockedLine}
       {body}
     </>
   );
@@ -212,7 +238,7 @@ function Ide({ pkg }: { pkg: string }) {
         <Tabs tabs={PHONE_TABS} activeTab={phoneTab} onTabChange={setPhoneTab} variant="segmented" chrome="inline" className="p-2" />
         <div className="flex min-h-0 flex-1 flex-col">
           {phoneTab === "explorer" ? <div className="min-h-0 flex-1 overflow-y-auto">{explorer}</div> : null}
-          {phoneTab === "editor" ? editor : null}
+          {phoneTab === "editor" ? editorPane : null}
           {phoneTab === "problems" ? <ProblemsPanel problems={problems} open={phoneProblemsOpen} onToggle={() => setPhoneProblemsOpen((o) => !o)} fill /> : null}
         </div>
       </Frame>
@@ -229,7 +255,7 @@ function Ide({ pkg }: { pkg: string }) {
           </aside>
         ) : null}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {editor}
+          {editorPane}
           <ProblemsPanel problems={problems} open={problemsOpen} onToggle={() => setProblemsOpen((o) => !o)} />
         </div>
       </div>

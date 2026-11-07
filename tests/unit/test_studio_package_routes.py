@@ -279,6 +279,13 @@ def _create(c: TestClient, manifest: dict[str, Any] | None = None) -> str:
     return str(r.json()["package"]["id"])
 
 
+def _done(manifest: dict[str, Any]) -> dict[str, Any]:
+    """What a draft save stores: the manifest with the record actions of its objects (STU-G3c)."""
+    from acb_skills.studio_tools import complete_record_actions
+
+    return complete_record_actions(manifest)[0]
+
+
 _JSON = {"content-type": "application/json"}
 _BAD = b"{not json"
 
@@ -482,7 +489,7 @@ def test_a_get_gives_the_hash_of_the_draft_that_a_save_needs(world):
     changed["name"] = "Renamed"
     assert c.put(f"/studio/packages/{pid}/draft?based_on={first['manifest_hash']}", json=changed).status_code == 200
     second = c.get(f"/studio/packages/{pid}").json()["package"]
-    assert second["manifest_hash"] == manifest_hash(changed) != first["manifest_hash"]
+    assert second["manifest_hash"] == manifest_hash(_done(changed)) != first["manifest_hash"]
     assert all("manifest_hash" not in p for p in c.get("/studio/packages").json()["packages"])
 
 
@@ -528,7 +535,7 @@ def test_a_draft_save_replaces_the_manifest_and_writes_no_object(world):
                                  {"id": "find", "uses": "object:visit.list"}])
     r = c.put(f"/studio/packages/{pid}/draft", json=changed)
     assert r.status_code == 200, r.text
-    assert world.packages[pid]["manifest"] == changed
+    assert world.packages[pid]["manifest"] == _done(changed)
     assert world.sync_calls == [] and world.objects == {} and world.versions == []
     # A draft save writes no audit row.
     assert len(world.audits) == 1
@@ -1046,7 +1053,7 @@ def test_a_draft_save_with_a_stale_based_on_is_409_and_keeps_the_draft(world):
                  json=_two_fields()).status_code == 200
     r = c.put(f"/studio/packages/{pid}/draft?based_on={first}", json=_manifest())
     assert r.status_code == 409 and r.json()["detail"]["code"] == packages.DRAFT_CHANGED, r.text
-    assert world.packages[pid]["manifest"] == _two_fields()
+    assert world.packages[pid]["manifest"] == _done(_two_fields())
 
 
 @pytest.mark.parametrize("bad", ["", "abc", "g" * 64, "a" * 65])
@@ -1070,3 +1077,45 @@ def test_the_store_compares_the_hash_under_its_row_lock() -> None:
     for fn in (store.publish_version, store.update_manifest):
         src = inspect.getsource(fn)
         assert src.index("for_update=True") < src.index("_expect(current.manifest, expected_hash)")
+
+
+# ── Record actions on a draft save (STU-G3c) ───────────────────────────────
+
+
+def test_a_draft_save_gives_a_new_object_its_record_actions(world):
+    """The IDE saves a manifest with a new object and no action. The server adds the five.
+
+    Mutation 1: drop the ``complete_record_actions`` call from ``save_draft``. This test goes red.
+    """
+    c = _client(world)
+    pid = _create(c)
+    grown = _manifest(objects=[{"name": "visit", "fields": _FIELDS},
+                               {"name": "site", "fields": [{"key": "city", "type": "text"}]}])
+    r = c.put(f"/studio/packages/{pid}/draft", json=grown)
+    assert r.status_code == 200, r.text
+    uses = {a["uses"] for a in world.packages[pid]["manifest"]["actions"]}
+    assert {f"object:site.{v}" for v in ("list", "get", "create", "update", "delete")} <= uses
+    added = r.json()["record_actions"]["added"]
+    assert added and r.json()["record_actions"]["skipped"] == []
+    # The answer holds the hash of what was stored, so the next save can name it.
+    assert r.json()["package"]["manifest_hash"] == _h(world.packages[pid]["manifest"])
+
+
+def test_a_second_draft_save_of_the_same_manifest_adds_nothing(world):
+    """Mira's save and the IDE's save meet: a complete manifest passes unchanged (idempotent)."""
+    c = _client(world)
+    pid = _create(c)
+    first = c.put(f"/studio/packages/{pid}/draft", json=_manifest()).json()
+    again = c.put(f"/studio/packages/{pid}/draft", json=first["package"]["manifest"]).json()
+    assert again["record_actions"] == {"added": [], "skipped": []}
+    assert again["package"]["manifest_hash"] == first["package"]["manifest_hash"]
+
+
+def test_a_stale_hash_is_checked_against_the_stored_draft_not_the_completed_one(world):
+    """The addition happens to the body. The hash compare reads the stored draft only."""
+    c = _client(world)
+    pid = _create(c)
+    h0 = _h(world.packages[pid]["manifest"])
+    assert c.put(f"/studio/packages/{pid}/draft?based_on={h0}", json=_two_fields()).status_code == 200
+    r = c.put(f"/studio/packages/{pid}/draft?based_on={h0}", json=_two_fields())
+    assert r.status_code == 409 and r.json()["detail"]["code"] == packages.DRAFT_CHANGED

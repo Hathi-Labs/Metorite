@@ -79,6 +79,13 @@ read of a publish and its POST cannot go live in place of the draft that was
 checked, and of two saves of one read only one writes. With no ``based_on``
 a route behaves as before. A value that is not 64 hex digits is 422.
 
+**Record actions on a draft save (STU-G3c).** A draft save adds the record
+actions that an object lacks, by ``acb_skills.studio_tools.complete_record_actions``,
+the one rule of ``studio_save`` (STU-BETA-2). So an object that a member adds in
+the Studio IDE opens with its five actions. The answer adds ``record_actions``
+with the ``added`` ids and the ``skipped`` object names (the app is too big).
+The ``based_on`` check reads the stored draft, so the addition never moves it.
+
 **Create.** There is no idempotency key. A second create with the same
 manifest id by the same member answers 409 ``package_exists`` with the id of
 the first. Two creates at the same moment can both pass, and that is
@@ -133,6 +140,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from acb_common.studio_manifest import manifest_hash
+from acb_skills.studio_tools import complete_record_actions
 from fastapi import Depends, HTTPException, Request, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.apps._common import record_app_audit_bound
@@ -468,13 +476,18 @@ async def save_draft(
     await _require_owned(user.email, pid)
     manifest = _parse_json(raw)
     expected = _based_on(based_on, "?based_on")
+    # The record actions of each object (STU-BETA-2), by the one rule of ``studio_save``. A member
+    # who adds an object in the IDE gets the same five actions as Mira's save gives, so the page
+    # opens. The hash check reads the STORED draft, so this change never moves it.
+    manifest, added, skipped = complete_record_actions(manifest)
     async with _tenant_session() as db:
         with _store_errors():
             package = await store.update_manifest(db, user.email, pid, manifest,
                                                   expected_hash=expected)
         if package is None:
             raise _not_found()
-    return {"package": _package_out(package)}
+    return {"package": _package_out(package),
+            "record_actions": {"added": [a["id"] for a in added], "skipped": skipped}}
 
 
 @router.post("/packages/{package_id}/versions", status_code=201)
