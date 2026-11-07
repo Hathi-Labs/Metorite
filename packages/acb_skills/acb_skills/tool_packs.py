@@ -1032,9 +1032,7 @@ PACKS: dict[str, Pack] = {
     # follows `projects` (FOLLOWS).
     "calendar-day": Pack(
         slug="calendar-day",
-        when=("Load to rebuild or replan the day, start my day, fit what is left, "
-              "block time for a task, set the One Thing, roll over, or read or change the "
-              "calendar settings (working hours, standing instruction, energy windows)."),
+        when=("Load to rebuild or replan the day, block time, set the One Thing, roll over, or change the calendar settings."),
         rules=_CALENDAR_DAY_RULES,
         words=_CALENDAR_DAY_WORDS,
         replaces_core="projects",
