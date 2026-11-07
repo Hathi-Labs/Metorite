@@ -33,10 +33,12 @@ from typing import Any
 
 import pytest
 from acb_auth import UserContext, UserRole, build_access, get_current_user
+from acb_common import get_settings
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.routes.admin import me
 
+ORG = "11111111-2222-3333-4444-555555555555"
 SAMPLES = Path(__file__).resolve().parents[1] / "fixtures" / "accent_samples.json"
 
 
@@ -70,6 +72,8 @@ class _FakeDB:
 
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
+    # The routes are dark (PKG-20): the flag opens the test org.
+    monkeypatch.setattr(get_settings(), "package_host_orgs", ORG)
     db = _FakeDB()
 
     @asynccontextmanager
@@ -83,8 +87,9 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     return db
 
 
-def _user(email: str = "ana@alpha.example", perms: list[str] | None = None) -> UserContext:
-    return UserContext(email=email, role=UserRole.EMPLOYEE,
+def _user(email: str = "ana@alpha.example", perms: list[str] | None = None,
+          org: str | None = ORG) -> UserContext:
+    return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=org,
                        access=build_access(perms or [], roles=["guest"]))
 
 
@@ -236,6 +241,60 @@ class TestGet:
         res = _client(_user()).get("/auth/me/appearance")
         assert res.status_code == 503
         assert "mode" not in res.json()
+
+
+class TestDark:
+    """PKG-20 ships dark behind ``PACKAGE_HOST_ORGS``, as ``GET /shell/manifest``
+    does. The flag check comes FIRST: before the sign-in check, and before any
+    session opens."""
+
+    @pytest.fixture
+    def spy(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        opened: list[str] = []
+        import gateway.routes.tasks.settings as settings
+
+        def _spy(*_a: Any, **_k: Any) -> Any:
+            opened.append("session")
+            raise AssertionError("the route opened a session while it was dark")
+
+        monkeypatch.setattr(me, "_tenant_session", _spy)
+        monkeypatch.setattr(settings, "_tenant_session", _spy)
+        return opened
+
+    @pytest.mark.parametrize("listed", ["", "other-org"])
+    def test_an_org_off_the_list_gets_404_on_both_routes(
+        self, monkeypatch: pytest.MonkeyPatch, spy: list[str], listed: str,
+    ) -> None:
+        monkeypatch.setattr(get_settings(), "package_host_orgs", listed)
+        client = _client(_user())
+        for res in (client.get("/auth/me/appearance"),
+                    client.put("/auth/me/appearance", json=GOOD)):
+            assert res.status_code == 404
+            assert res.json()["detail"] == "Not found"
+        assert spy == []
+
+    def test_a_caller_with_no_org_gets_404(
+        self, monkeypatch: pytest.MonkeyPatch, spy: list[str],
+    ) -> None:
+        monkeypatch.setattr(get_settings(), "package_host_orgs", "*")
+        client = _client(_user(org=None))
+        assert client.get("/auth/me/appearance").status_code == 404
+        assert client.put("/auth/me/appearance", json=GOOD).status_code == 404
+        assert spy == []
+
+    def test_the_flag_comes_before_the_sign_in_check(
+        self, monkeypatch: pytest.MonkeyPatch, spy: list[str],
+    ) -> None:
+        # An org off the list with no address: 404, not 403.
+        monkeypatch.setattr(get_settings(), "package_host_orgs", "other-org")
+        client = _client(_user(email=""))
+        assert client.get("/auth/me/appearance").status_code == 404
+        assert client.put("/auth/me/appearance", json=GOOD).status_code == 404
+
+    def test_an_org_on_the_list_with_no_address_is_still_a_403(self, fake: _FakeDB) -> None:
+        client = _client(_user(email=""))
+        assert client.get("/auth/me/appearance").status_code == 403
+        assert client.put("/auth/me/appearance", json=GOOD).status_code == 403
 
 
 class TestAccentRule:

@@ -19,7 +19,9 @@
  *    browser copy, and only when the member changed no appearance in this
  *    page session (`touched`). An org that locks the density keeps its own:
  *    the density is not applied.
- * 3. A failed read, or an all-null copy, changes nothing.
+ * 3. A failed read, or an all-null copy, changes nothing. A 404 means the
+ *    gateway keeps the feature dark for this org (`PACKAGE_HOST_ORGS`). It
+ *    reads as "off": nothing applies, and this page session sends no PUT.
  * 4. The apply goes through the store setters with the origin "server", and
  *    through next-themes `setTheme` for the mode. It never touches the DOM.
  * 5. Only a MEMBER change writes the server copy: `setUserDensity` or
@@ -79,6 +81,8 @@ const sync = {
   timer: null as ReturnType<typeof setTimeout> | null,
   /** The last mode the member chose in this page, or null. */
   memberMode: null as ThemeMode | null,
+  /** The gateway answered 404: the feature is dark for this org. */
+  off: false,
 };
 
 function modeOf(value: unknown): ThemeMode {
@@ -110,13 +114,15 @@ function owns(scope: string): boolean {
 }
 
 async function send(record: AppearanceRecord): Promise<void> {
+  if (sync.off) return;
   try {
-    await fetch(APPEARANCE_URL, {
+    const res = await fetch(APPEARANCE_URL, {
       method: "PUT",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(record),
     });
+    if (res.status === 404) sync.off = true;
   } catch {
     // Silent: the browser copy holds the choice, and the next change sends it.
   }
@@ -215,6 +221,10 @@ async function readAndApply(scope: string, apply: AppearanceApply): Promise<void
   let body: unknown;
   try {
     const res = await fetch(APPEARANCE_URL, { cache: "no-store" });
+    if (res.status === 404) {
+      sync.off = true;
+      return;
+    }
     if (!res.ok) return;
     body = await res.json();
   } catch {
@@ -265,5 +275,5 @@ export function __resetAppearanceSyncForTests(): void {
   sync.readFor = null;
   sync.pending = false;
   sync.timer = null;
-  sync.memberMode = null;
+  sync.memberMode = null;  sync.off = false;
 }

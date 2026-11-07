@@ -17,7 +17,8 @@ and two organizations:
 - the first write makes the row with the People seed (D-PC-16), and a later
   write changes ``appearance`` only;
 - ``PUT /tasks/settings`` and the zone write do NOT clear it;
-- the column is nullable JSONB with no default (R6).
+- the column is nullable JSONB with no default (R6);
+- an org outside ``PACKAGE_HOST_ORGS`` gets 404 and writes nothing.
 
 A hermetic fake agrees with any SQL it is handed, so none of these could be
 proved without the database.
@@ -25,6 +26,7 @@ proved without the database.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import uuid
 
 import pytest
@@ -32,6 +34,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_auth import UserContext, UserRole, build_access
+from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
 from sqlalchemy import text
 
@@ -52,7 +55,9 @@ def _address() -> str:
 
 
 @pytest.fixture
-def db(promoted):  # noqa: F811 — a fixture
+def db(promoted, monkeypatch):  # noqa: F811 — a fixture
+    # The routes are dark (PKG-20): the flag opens every org for these cases.
+    monkeypatch.setattr(get_settings(), "package_host_orgs", "*")
     made: list[str] = []
     promoted.made = made
     yield promoted
@@ -89,6 +94,8 @@ def _tasks_member(email: str) -> UserContext:
 async def _put(org: str, user: UserContext, **record) -> dict:
     from gateway.routes.admin.me import AppearanceIn, put_my_appearance
 
+    # The flag reads the org of the session user, as the routes do.
+    user = dataclasses.replace(user, organization_id=org)
     with _tenant(org):
         return await put_my_appearance(body=AppearanceIn(**record), user=user)
 
@@ -96,6 +103,7 @@ async def _put(org: str, user: UserContext, **record) -> dict:
 async def _get(org: str, user: UserContext) -> dict:
     from gateway.routes.admin.me import get_my_appearance
 
+    user = dataclasses.replace(user, organization_id=org)
     with _tenant(org):
         return await get_my_appearance(user=user)
 
@@ -245,6 +253,25 @@ async def test_the_last_write_wins_and_takes_a_new_stamp(db) -> None:
         got = await _get(db.org_a, user)
     assert got == two
     assert two["updated_at"] >= one["updated_at"]
+
+
+async def test_an_org_outside_the_flag_gets_404_and_writes_nothing(db, monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    email = _address()
+    db.made.append(email)
+    user = _guest(email)
+    # Only org B is on the list, so org A is dark.
+    monkeypatch.setattr(get_settings(), "package_host_orgs", db.org_b)
+    async with tenant_engine_scope(_app_dsn(db)):
+        with pytest.raises(HTTPException) as put_exc:
+            await _put(db.org_a, user, mode="light", density="compact", accent="#e11d48")
+        with pytest.raises(HTTPException) as get_exc:
+            await _get(db.org_a, user)
+        await _put(db.org_b, user, mode="dark", density=None, accent=None)
+    assert (put_exc.value.status_code, get_exc.value.status_code) == (404, 404)
+    # Only the row of org B exists: the dark PUT wrote nothing.
+    assert [org for org, _raw, _kind in _stored(db, email)] == [db.org_b]
 
 
 def test_the_column_is_nullable_jsonb_with_no_default(db) -> None:

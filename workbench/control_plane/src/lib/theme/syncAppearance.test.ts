@@ -181,6 +181,33 @@ describe("the read of the server copy", () => {
     expect(puts()).toHaveLength(0);
   });
 
+  it("reads a 404 as off: no change, no retry, and no later PUT", async () => {
+    ls.setItem(scopedKey(STORAGE_KEYS.accent, SCOPE_A), "#0ea5e9");
+    bindA();
+    const setMode = vi.fn();
+    stubFetch(() => json({ detail: "Not found" }, 404));
+    await startAppearanceSync(A.email, A.org, { setMode });
+    await startAppearanceSync(A.email, A.org, { setMode });
+    expect(gets()).toHaveLength(1);
+    expect(setMode).not.toHaveBeenCalled();
+    expect(useAppearanceStore.getState().accent).toBe("#0ea5e9");
+    useAppearanceStore.getState().setAccent(ROSE);
+    vi.advanceTimersByTime(WRITE_DELAY_MS * 4);
+    expect(puts()).toHaveLength(0);
+    // The browser copy still holds the member's choice.
+    expect(useAppearanceStore.getState().accent).toBe(ROSE);
+  });
+
+  it("still syncs when the read is 200", async () => {
+    bindA();
+    stubFetch(() => json({ mode: "dark", density: null, accent: ROSE, updated_at: STAMP }));
+    await startAppearanceSync(A.email, A.org, { setMode: vi.fn() });
+    expect(useAppearanceStore.getState().accent).toBe(ROSE);
+    useAppearanceStore.getState().setUserDensity("compact");
+    vi.advanceTimersByTime(WRITE_DELAY_MS);
+    expect(puts()).toHaveLength(1);
+  });
+
   it("changes nothing for an all-null copy, so nothing flashes", async () => {
     ls.setItem(scopedKey(MODE_STORAGE_KEY, SCOPE_A), "light");
     ls.setItem(scopedKey(STORAGE_KEYS.density, SCOPE_A), "compact");

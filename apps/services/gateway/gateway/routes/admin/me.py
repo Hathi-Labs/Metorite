@@ -789,6 +789,10 @@ async def put_my_zone(
 # paint (`lib/theme/syncAppearance.ts`), and writes it only on a member's
 # change. The Design choice (`cc-look`) is not part of the record.
 #
+# **Dark.** Both routes check `package_host_allowed` FIRST, as `GET
+# /shell/manifest` does, and before the sign-in check. An org outside
+# `PACKAGE_HOST_ORGS` (the default, empty) gets 404 and no session opens.
+#
 # It needs only a signed-in member, as `/auth/me/zone` does. It reads and
 # writes the member's OWN row in the session's tenant. The write is the one
 # write of the settings row (`write_member_settings`), so no second writer
@@ -893,9 +897,12 @@ def stored_appearance(raw: Any) -> dict[str, Any]:
 async def get_my_appearance(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
     """The saved record, or all-null for a member with no server copy. A
     failed read answers 503, never a default, so the browser changes nothing."""
+    from gateway.package_host.flags import package_host_allowed
     from gateway.routes.tasks.settings import _BOUND_ORG
     from sqlalchemy import text
 
+    if not package_host_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not found")
     uid = _member(user)
     if not uid:
         raise HTTPException(status_code=403, detail="Sign in to read your appearance")
@@ -916,8 +923,11 @@ async def put_my_appearance(
 ) -> dict[str, Any]:
     """Save the whole record in the member's own settings row. It needs a
     signed-in member and no app feature. The server stamps ``updated_at``."""
+    from gateway.package_host.flags import package_host_allowed
     from gateway.routes.tasks.settings import write_member_settings
 
+    if not package_host_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not found")
     uid = _member(user)
     if not uid:
         raise HTTPException(status_code=403, detail="Sign in to save your appearance")
