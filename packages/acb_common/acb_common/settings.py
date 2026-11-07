@@ -169,9 +169,9 @@ class Settings(BaseSettings):
     # GATEWAY_INTERNAL_TOKEN. Distinct from litellm_master_key ON PURPOSE:
     # the LLM key is handed to every agent's BYOK client, so while the two
     # were one value any agent could authenticate as the platform (BO-2
-    # residual #4). When this is unset the gateway still falls back to
-    # litellm_master_key so an un-migrated deployment keeps working, but it
-    # logs a warning on every resolution because the separation is then absent.
+    # residual #4). There is NO fallback to litellm_master_key (WS-24b,
+    # 2026-11-06). Unset fails closed outside ACB_ENV=dev: no Bearer is
+    # service identity, and require_internal_auth answers 401.
     #
     # Never hand this to a /v1 client — use `llm_api_key` below.
     gateway_internal_token: str = ""
@@ -576,6 +576,14 @@ class Settings(BaseSettings):
     # is `gateway.routes.knowledge.flags`. A flip on production is the owner's.
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_sync: str = ""
+    # WS-KG KG-4 (knowledge_graph.md §4.1 and §8). The organization ids whose
+    # records the graph sweep joins each night, in the grammar of
+    # `knowledge_orgs`. `*` is each org. Empty, the default, means no
+    # organization: the seed hook enqueues no job and the job writes no edge.
+    # The one reader is `gateway.kb_entities.graph.sweep_allowed`. It calls no
+    # model and spends nothing. AGENT-SAFE: a flip is gate `enforcement-flip`.
+    # Fences: tests/unit/test_kg_links_writer.py, test_kg_links_r8.py.
+    graph_sweep_orgs: str = ""
 
     # H-328 part (b): the orgs whose UNATTENDED workflow runs may start. A
     # schedule tick, a matured wait and the startup sweep act only for an org
@@ -923,6 +931,14 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # SW-56 (agent_coordination.md SW-56): the organizations where the results
+    # of `claim_task` and `my_work` carry the `protocol` block, up to six short
+    # lines of fixed server text. The same shape as `agent_access_orgs`: ids
+    # with a comma between them, or `*`. Empty, the default, leaves the key
+    # out. Only the edge reads it, at each call, through
+    # `acb_auth.agent_oauth.protocol_allowed`. 🔴 A change on a box is gate
+    # `enforcement-flip`.
+    agent_protocol_orgs: str = ""
     # ── The trigger of the project alignment check (WS-ALN ALN-1, D160) ─────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

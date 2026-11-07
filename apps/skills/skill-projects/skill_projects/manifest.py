@@ -110,8 +110,11 @@ _CARD_ANSWER_REASON = (
 _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no view to keep."
 #: The day planner belongs to the Calendar app and the Tasks assistant
 #: (``calendar_ai_review.md`` §4). A second caller would be a second planner.
+#: CAL-1a (task 1675): the main chat reaches it through the ``calendar-day``
+#: pack, which holds the My Tasks planner tools. No Projects tool calls these routes.
 _PLANNER_REASON = (
-    "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4)."
+    "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4). "
+    "The chat reaches it through the calendar-day pack (my_tasks_plan_day and its siblings)."
 )
 #: A file import is an admin's upload through a wizard (project_import.md §7.7).
 _IMPORT_REASON = (
