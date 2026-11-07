@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -61,6 +62,12 @@ from acb_auth import UserContext
 SNIPPET_CHARS = 400
 
 logger = logging.getLogger(__name__)
+
+#: Seconds kept back from the source timeout, so the vector half ends before
+#: the route's own deadline (KG-3b).
+VECTOR_MARGIN_S = 0.2
+#: The least time worth a vector half. Under it, the lexical answer goes at once.
+VECTOR_FLOOR_S = 0.15
 
 _MARK = re.compile(r"</?mark>", re.IGNORECASE)
 _SPACE = re.compile(r"\s+")
@@ -152,6 +159,7 @@ class Source:
         self, user: UserContext, q: str, k: int, *, hybrid: bool = False,
         after: datetime | None = None, reviewed: bool = False,
         verified_only: bool = False, vectors: bool = False,
+        budget_s: float | None = None,
     ) -> list[Hit]:
         """At most *k* hits for *q*, as *user*. No feature, no call and no hit.
 
@@ -172,6 +180,10 @@ class Source:
             options["after"] = after
         if self.vectors and vectors:
             options["vectors"] = True
+            # The time the route really left this source (KG-3b). Set only with
+            # the flag on, so the vector half never outlives the outer deadline.
+            if budget_s is not None:
+                options["budget_s"] = budget_s
         if self.reviewed and reviewed:
             options["reviewed"] = True
             if verified_only:
@@ -266,9 +278,11 @@ def _email_hit(m: Any) -> Hit:
 
 async def _email(
     user: UserContext, q: str, k: int, *, after: datetime | None = None,
-    vectors: bool = False,
+    vectors: bool = False, budget_s: float | None = None,
 ) -> list[Hit]:
     from gateway.routes.email.transport.search import search_messages
+
+    started = time.monotonic()
 
     # ⚠️ Every parameter, by name. The route declares them with `Query(...)`
     # defaults, and a direct call that left one out would pass the `Query`
@@ -288,10 +302,20 @@ async def _email(
     lexical = [_email_hit(m) for m in (answer.get("emails") or [])[:k]]
     if not vectors:
         return lexical
+    # The budget of the vector half is measured from the START of this source:
+    # what the route left (or SOURCE_TIMEOUT_S), less the time the lexical half
+    # took, less a margin. Too little left: the lexical answer, no embed call.
+    from gateway.kb_index.query import QUERY_EMBED_TIMEOUT_S
+    from gateway.retrieval.company import SOURCE_TIMEOUT_S
+
+    total = SOURCE_TIMEOUT_S if budget_s is None else min(SOURCE_TIMEOUT_S, budget_s)
+    left = total - (time.monotonic() - started) - VECTOR_MARGIN_S
+    if left < VECTOR_FLOOR_S:
+        return lexical
+    vector_budget = min(QUERY_EMBED_TIMEOUT_S, left)
     # KG-3b: the vector half, fused with the lexical one by reciprocal rank
     # fusion. A failure of the vector half leaves the lexical answer.
     try:
-        from gateway.kb_index.query import QUERY_EMBED_TIMEOUT_S as VECTOR_HALF_TIMEOUT_S
         from gateway.kb_index.query import rrf_scores
         from gateway.retrieval import turn_vector
         from gateway.routes.email.transport.search import semantic_messages
@@ -302,7 +326,7 @@ async def _email(
                 return kept
             from email_ingestion.email_embeddings import embed_query
 
-            vector = await embed_query(words)
+            vector = await embed_query(words, user.organization_id)
             turn_vector.remember(user.organization_id, words, vector)
             return vector
 
@@ -313,7 +337,7 @@ async def _email(
                 user=user, words=q, k=k, embed=embed,
                 received_after=after.isoformat() if after is not None else None,
             ),
-            VECTOR_HALF_TIMEOUT_S,
+            vector_budget,
         )
     except TimeoutError:
         logger.info("search.company email vectors timed out")

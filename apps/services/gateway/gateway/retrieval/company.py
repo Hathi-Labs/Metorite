@@ -334,9 +334,13 @@ async def company_search(
             # pool, and the filter runs before the cut to `per_app`.
             source = REGISTRY[key]
             ask = pool(per_app) if since is not None and not source.dated else per_app
+            allowed = min(SOURCE_TIMEOUT_S, left)
+            if recency:
+                # KG-3b: the vector half of a source gets the true time left.
+                options["budget_s"] = allowed
             hits = await asyncio.wait_for(
                 source.find(user, words, ask, hybrid=hybrid, **options),
-                min(SOURCE_TIMEOUT_S, left),
+                allowed,
             )
         except HTTPException:
             # The app's own refusal: a query too short for it, an access rule.

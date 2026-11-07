@@ -145,7 +145,7 @@ class TestFlagOffIsByteIdentical:
 class _Mail:
     """A fake Email search: lexical finds ``words`` only, vectors find by meaning."""
 
-    def __init__(self, monkeypatch, *, has_vectors: bool = True, lexical=()):
+    def __init__(self, monkeypatch, *, has_vectors: bool = True, lexical=(), lex_delay: float = 0.0):
         import email_ingestion.email_embeddings as ee
         import gateway.routes.email.transport.search as email_search
 
@@ -155,9 +155,10 @@ class _Mail:
         self.lexical = list(lexical)
 
         async def lexical_search(**kw):
+            await asyncio.sleep(lex_delay)
             return {"emails": list(self.lexical), "total": None}
 
-        async def embed_query(words: str):
+        async def embed_query(words: str, org=None):
             self.embeds.append(words)
             return [1.0, 0.0]
 
@@ -290,6 +291,66 @@ class TestTheVectorDeadline:
 
         assert re.search(r"asyncio\.wait_for\(\s*semantic_messages\(", src)
         assert src.count("semantic_messages(") == 1
+
+
+class TestTheBudgetRunsFromTheStart:
+    LEX = TestTheVectorDeadline.LEX
+
+    def _slow_vectors(self, monkeypatch, mail, seconds=5.0):
+        import gateway.routes.email.transport.search as email_search
+
+        async def slow(*, user, words, k, received_after, embed):
+            await embed(words)
+            await asyncio.sleep(seconds)
+            return []
+
+        monkeypatch.setattr(email_search, "semantic_messages", slow)
+
+    def test_a_one_second_lexical_half_still_answers(self, apps, recency, monkeypatch):  # noqa: F811
+        recency(True)
+        mail = _Mail(monkeypatch, lexical=self.LEX, lex_delay=1.0)
+        self._slow_vectors(monkeypatch, mail)
+        answer = run(member("email"))
+        assert "email" not in answer["skipped"]
+        assert [h["id"] for h in answer["hits"]] == ["m-lex"]
+
+    def test_a_1_4_second_lexical_half_skips_the_vector_half(self, apps, recency, monkeypatch):  # noqa: F811
+        recency(True)
+        mail = _Mail(monkeypatch, lexical=self.LEX, lex_delay=1.4)
+        self._slow_vectors(monkeypatch, mail)
+        answer = run(member("email"))
+        assert "email" not in answer["skipped"]
+        assert [h["id"] for h in answer["hits"]] == ["m-lex"]
+        assert mail.embeds == []
+
+    def test_a_fast_lexical_half_gets_the_full_budget(self, apps, recency, monkeypatch):  # noqa: F811
+        recency(True)
+        seen: list[float] = []
+        orig = asyncio.wait_for
+
+        async def spy(aw, timeout):
+            if timeout is not None and timeout < 1.0 and "semantic" in repr(aw):
+                seen.append(timeout)
+            return await orig(aw, timeout)
+
+        _Mail(monkeypatch, lexical=self.LEX)
+        monkeypatch.setattr(sources.asyncio, "wait_for", spy)
+        run(member("email"))
+        assert seen and seen[0] == pytest.approx(kb_query.QUERY_EMBED_TIMEOUT_S)
+
+    def test_the_budget_is_the_route_time_left_when_it_is_lower(self, monkeypatch):
+        mail = _Mail(monkeypatch, lexical=self.LEX)
+        self._slow_vectors(monkeypatch, mail)
+        got = asyncio.run(sources.REGISTRY["email"].find(
+            member("email"), "q", 5, vectors=True, budget_s=0.3))
+        assert [h.id for h in got] == ["m-lex"]      # 0.3 - 0.2 < the floor: skipped
+        assert mail.embeds == []
+
+    def test_flag_off_passes_no_budget(self, world, recency):  # noqa: F811
+        recency(False)
+        run(member(*ALL))
+        email_call = next(kw for name, _u, kw in world.calls if name == "email")
+        assert "budget_s" not in email_call and "vectors" not in email_call
 
 
 # ── One embed call per turn ─────────────────────────────────────────────────
