@@ -46,6 +46,7 @@ def test_the_required_topics_exist():
         "kit/paste-in",
         "kit/plan-the-work",
         "start-here",
+        "default-guidance",
     }
     assert required <= slugs
 
