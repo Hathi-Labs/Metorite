@@ -42,9 +42,11 @@ function walk(dir: string, out: string[] = []): string[] {
   }
   return out;
 }
-const APP_SOURCE = walk(APP)
-  .map((f) => readFileSync(f, "utf-8"))
-  .join("\n");
+const APP_FILES = walk(APP).map((f) => readFileSync(f, "utf-8"));
+const APP_SOURCE = APP_FILES.join("\n");
+// Only a file that listens on the bar's channel can answer a tab's event. A
+// quoted string anywhere else is not an answer (MOB-12 fix round 2).
+const LISTENER_SOURCE = APP_FILES.filter((src) => /addEventListener\(\s*["']cc-mobile-nav["']/.test(src)).join("\n");
 
 const everyone = { ask: true, allowed: () => true };
 
@@ -161,10 +163,10 @@ describe("every tab goes somewhere", () => {
     for (const l of lists) for (const t of l) all.push([r.app, t]);
   }
 
-  it("each `event` appears quoted in a file under src/app", () => {
+  it("each `event` appears quoted in a file under src/app that listens on cc-mobile-nav", () => {
     for (const [app, t] of all) {
       if (!t.event) continue;
-      expect(APP_SOURCE.includes(`"${t.event}"`), `${app}: nobody answers "${t.event}"`).toBe(true);
+      expect(LISTENER_SOURCE.includes(`"${t.event}"`), `${app}: no listener of "cc-mobile-nav" answers "${t.event}"`).toBe(true);
     }
   });
 
@@ -243,5 +245,32 @@ describe("the shell holds no branch of its own for an app", () => {
   it("no page sends the retired events", () => {
     expect(APP_SOURCE).not.toContain("cc-tasks-section");
     expect(APP_SOURCE).not.toContain("cc-email-empty");
+  });
+});
+
+describe("MOB-12 fix round 2: a page reports what it cannot answer", () => {
+  const page = (p: string) => readFileSync(join(APP, p), "utf-8");
+
+  it("Knowledge hides the three tabs in every state with no rail", () => {
+    const layout = page("knowledge/layout.tsx");
+    expect(layout).toMatch(/usePhoneBar\(\{ hide: NO_RAIL_TABS \}\)/);
+    expect(layout).toContain('["knowledge-rail", "knowledge-search", "knowledge-new-page"]');
+  });
+
+  it("Integrations hides Views for a member with one view or none, once access has loaded", () => {
+    expect(page("integrations/page.tsx")).toContain('!accessLoading && views.length <= 1 ? ["integrations-views"]');
+  });
+
+  it("a member who is not an admin sees no Organisation tab", () => {
+    expect(page("settings/organization/OrganizationAdmin.tsx")).toContain('["org-members", "org-requests", "org-invite"]');
+  });
+
+  it("Reminders hides only when the flag is off", () => {
+    expect(page("calendar/CalendarView.tsx")).toContain('remList.status === "absent" ? ["calendar-reminders"]');
+  });
+
+  it("on a phone the Knowledge and Integrations titles are text, not a second Spaces or Views button", () => {
+    expect(page("knowledge/layout.tsx")).toContain('const title = "Knowledge";');
+    expect(page("integrations/page.tsx")).toContain('title={isMobile ? current.label : "Integrations"}');
   });
 });

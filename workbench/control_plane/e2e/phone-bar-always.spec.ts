@@ -250,3 +250,26 @@ test("a second tap on Search closes it", async ({ page }) => {
   await page.waitForTimeout(500);
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
+
+// MOB-11 (task 2004): on the phone Board, the "Manage this project" menu sat
+// under the board's sticky status strip, so a tap on Statuses hit the strip.
+test("the Board's Manage menu paints above the status strip, and Statuses opens", async ({ page }) => {
+  test.setTimeout(120_000);
+  await openPhone(page);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail: "projects-views" })));
+  await page.getByText("Board", { exact: true }).first().click({ timeout: 20_000 });
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".sticky.top-0")).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Manage this project" }).click();
+  const rows = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('[role="menu"] [role="menuitem"]')).map((it) => {
+      const b = it.getBoundingClientRect();
+      const el = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+      return { label: (it.textContent ?? "").trim(), hit: !!el && it.contains(el) };
+    }),
+  );
+  expect(rows.length).toBeGreaterThanOrEqual(4);
+  for (const r of rows) expect(r.hit, `the "${r.label}" row is covered`).toBe(true);
+  await page.getByRole("menuitem", { name: "Statuses" }).click();
+  await expect(page.getByRole("dialog").first()).toBeVisible();
+});

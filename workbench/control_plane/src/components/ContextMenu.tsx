@@ -1,10 +1,10 @@
 "use client";
 
-import { clampMenuPos } from "@/lib/menuClamp";
-import { phoneBarTop } from "@/components/ui/AnchoredPanel";
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
+import { useClampedMenu } from "@/lib/menuClamp";
 import AppIcon from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 
 /**
  * THE right-click menu (WS-27bd item 5).
@@ -62,28 +62,16 @@ export function ContextMenu({
    */
   autoFocus?: boolean;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x, y });
-
-  // Flip into view if the click was near a screen edge.
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    // The foot is the phone bar's top edge when a bar shows (MOB-9 fix round).
-    setPos(
-      clampMenuPos(
-        { x, y },
-        { width: r.width, height: r.height },
-        { width: window.innerWidth, height: window.innerHeight },
-        phoneBarTop(),
-      ),
-    );
-  }, [x, y]);
+  // Flip into view if the click was near a screen edge. The foot is the phone
+  // bar's top edge when a bar shows, and a menu taller than the room scrolls.
+  const { ref, pos, maxHeight } = useClampedMenu(x, y);
 
   useEffect(() => {
     if (autoFocus) ref.current?.querySelector<HTMLButtonElement>("button")?.focus();
   }, [autoFocus]);
+
+  // A bar tap closes the menu (MOB-9).
+  useCloseOnBarTap(onClose);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -120,7 +108,7 @@ export function ContextMenu({
     >
       <div
         ref={ref}
-        style={{ left: pos.x, top: pos.y }}
+        style={{ left: pos.x, top: pos.y, ...(maxHeight ? { maxHeight, overflowY: "auto" as const } : {}) }}
         onClick={(e) => e.stopPropagation()}
         role="menu"
         className="absolute min-w-[196px] max-w-[240px] overflow-hidden rounded-lg border border-border bg-popover py-1 text-popover-foreground shadow-xl"

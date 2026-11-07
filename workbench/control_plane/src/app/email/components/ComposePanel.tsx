@@ -1,5 +1,6 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useState, useEffect, useRef } from "react";
@@ -448,6 +449,8 @@ export function ComposePanel({
     autosave.flush();
     onClose();
   };
+  // A bar tap closes the window the same way, so the draft is kept (MOB-9).
+  useCloseOnBarTap(closeComposer);
 
   /** Discard the auto-saved draft. The X keeps it instead. The window closes
    *  at once. The chain drains first, so no save that waited writes the draft

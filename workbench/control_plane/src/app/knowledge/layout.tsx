@@ -47,7 +47,6 @@ import { useAccess } from "@/components/AccessProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
 import { EmptyState } from "@/components/EmptyState";
-import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { SkeletonRows } from "@/components/ui/Skeleton";
@@ -138,7 +137,12 @@ async function readSpaces(): Promise<SpacesRead> {
 }
 
 /** The bar and the body of a state with no rail: loading, off, no feature. */
+const NO_RAIL_TABS = ["knowledge-rail", "knowledge-search", "knowledge-new-page"];
+
 function Frame({ children }: { children: ReactNode }) {
+  // No rail is mounted in these states, so nothing answers the three tabs of
+  // the phone bar. The bar hides them rather than draw a dead tap (MOB-12).
+  usePhoneBar({ hide: NO_RAIL_TABS });
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       <AppTopBar title="Knowledge" />
@@ -470,18 +474,9 @@ function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; childre
     return () => window.removeEventListener("cc-mobile-nav", h);
   }, []);
 
-  const title = isMobile ? (
-    <button
-      type="button"
-      onClick={openRail}
-      className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
-    >
-      <span className="truncate">Knowledge</span>
-      <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
-    </button>
-  ) : (
-    "Knowledge"
-  );
+  // Plain text. On a phone the Spaces tab opens the rail, so a title that
+  // opened it too would repeat a tab (navigation_shell.md §9.2 rule 5, MOB-12).
+  const title = "Knowledge";
 
   return (
     <KnowledgeContext.Provider value={context}>

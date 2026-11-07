@@ -59,6 +59,8 @@ export interface PhoneTab {
   atRootOnly?: boolean;
   /** The noun in the count's words: `3 unscheduled`. */
   countLabel?: string;
+  /** Carries the run badge (active, waiting and unread chats). One tab per bar. */
+  runBadge?: true;
 }
 
 export type PhoneBarEntry =
@@ -172,7 +174,7 @@ export const PHONE_BARS: RegisteredBar[] = [
     exact: true,
     entry: {
       tabs: [
-        { id: "chats", event: "chats", label: "Chats", icon: "MessageCircle", kind: "place", withoutAsk: true },
+        { id: "chats", event: "chats", label: "Chats", icon: "MessageCircle", kind: "place", withoutAsk: true, runBadge: true },
         { id: "files", event: "files", label: "Files", icon: "FolderOpen", kind: "place", withoutAsk: true },
         { id: "chat-new", event: "chat-new", label: "New chat", icon: "MessageSquarePlus", kind: "act", accent: true, withoutAsk: true },
       ],

@@ -1205,7 +1205,11 @@ export function TaskBoard({
             if (dir) setChosenTab(stepTab(tabs, shownTab, dir));
           }}
         >
-          <div className="sticky top-0 z-10 border-b border-border bg-background px-3 py-1.5">
+          {/* z-[5], not z-10: the header row (AppTopBar, relative z-10 in the glass
+              look) holds the "Manage this project" menu. An equal layer, later in
+              the tree, painted this strip over the menu's Custom fields and
+              Statuses rows on a phone (MOB-11, task 2004). */}
+          <div className="sticky top-0 z-[5] border-b border-border bg-background px-3 py-1.5">
             <ScrollStrip label="Statuses" className="gap-1.5" revealKey={shownTab ?? ""}>
               {tabs.map((tab) => (
                 <Button

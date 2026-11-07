@@ -742,7 +742,7 @@ function MobileBottomNavInner({
   const selectedTab = report?.active ?? barDefault ?? null;
   // On a page with a Chats tab, that tab carries the run badge. Elsewhere the
   // Menu tab does (when the Ask tab is absent).
-  const chatsTab = barTabs.some((t) => t.id === "chats");
+  const chatsTab = barTabs.some((t) => t.runBadge);
   // CRM (CRM-U10): the one dynamic bar. The page names the lists of the bar
   // and the one on screen, because it knows the mode, the source's labels and
   // the rows Zoho turned off. It emits `cc-crm-nav`, and `null` when it
@@ -827,7 +827,13 @@ function MobileBottomNavInner({
           <span className={`pb-0.5 text-[10px] leading-none ${BAR_LABEL[menuOpen ? "selected" : "idle"]}`}>Menu</span>
         </button>
         {barTabs.map((tab) => {
-          const selected = tab.kind === "place" && (hrefSelected(tab, pathname) || selectedTab === tab.id);
+          // Menu and Ask each draw their own pill while open. A place tab gives
+          // its pill up then, so two pills never show (MOB-12).
+          const selected =
+            tab.kind === "place" &&
+            !menuOpen &&
+            !sheetOpen &&
+            (hrefSelected(tab, pathname) || selectedTab === tab.id);
           const count = report?.counts?.[tab.id] ?? 0;
           return (
             <TaskTab
@@ -840,7 +846,7 @@ function MobileBottomNavInner({
               accent={tab.accent}
               badge={count > 0 && tab.countLabel ? count : null}
               badgeLabel={tab.countLabel ? `${count} ${tab.countLabel}` : undefined}
-              runBadge={tab.id === "chats" ? tabBadge : null}
+              runBadge={tab.runBadge ? tabBadge : null}
             />
           );
         })}

@@ -355,9 +355,11 @@ export function CalendarView() {
 
   // The phone bar (MOB-12): Today, Schedule and Reminders. The bar holds what
   // the floating button and the top bell held. Month has no time to place a
-  // task in, and a closed reminders flag draws no list.
+  // task in, and a closed reminders flag draws no list. Reminders hides only
+  // when the flag is off ("absent"). While the list loads the tab stays, so
+  // the bar does not reflow, and its sheet shows a loading row.
   usePhoneBar({
-    hide: [...(mode === "month" ? ["calendar-schedule"] : []), ...(remShown ? [] : ["calendar-reminders"])],
+    hide: [...(mode === "month" ? ["calendar-schedule"] : []), ...(remList.status === "absent" ? ["calendar-reminders"] : [])],
     counts: { "calendar-schedule": unscheduled.length, "calendar-reminders": remList.total },
   });
   useEffect(() => {
@@ -365,12 +367,12 @@ export function CalendarView() {
       const tab = (e as CustomEvent<string>).detail;
       if (tab === "calendar-today") pickAnchor(startOfDay(new Date()));
       else if (tab === "calendar-schedule") setSheet({ day: mode === "week" ? startOfWeek(anchor) : anchor });
-      else if (tab === "calendar-reminders" && remShown) setRemSheet(true);
+      else if (tab === "calendar-reminders" && remList.status !== "absent") setRemSheet(true);
     };
     window.addEventListener("cc-mobile-nav", h);
     return () => window.removeEventListener("cc-mobile-nav", h);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `pickAnchor` only sets state
-  }, [mode, anchor, remShown]);
+  }, [mode, anchor, remList.status]);
 
   // Deadline radar: unscheduled next actions with a due date approaching (≤14d)
   // — the ones most likely to slip because they were never timeboxed.
@@ -938,8 +940,11 @@ export function CalendarView() {
           onClose={() => setRemForm(null)}
         />
       )}
-      {remSheet && remShown && (
+      {remSheet && remList.status !== "absent" && (
         <Modal open onClose={() => setRemSheet(false)} title="Reminders" icon="Bell" placement="sheet" size="md" className="max-h-[80dvh]">
+          {!remShown ? (
+            <p className="px-3 py-4 text-xs text-muted-foreground">Loading your reminders…</p>
+          ) : (
           <RemindersSheetBody
             rows={remList.rows}
             total={remList.total}
@@ -959,6 +964,7 @@ export function CalendarView() {
             }}
             onResolve={(id, action) => void resolveReminderAs(id, action)}
           />
+          )}
         </Modal>
       )}
 

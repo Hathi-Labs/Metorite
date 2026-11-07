@@ -2,6 +2,7 @@
 
 /** The API keys view: the per-org service-key catalog (moved from the old APIs tab, no behaviour change). */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon, { themedIcon } from "@/components/Icon";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -785,6 +786,9 @@ export default function ApiKeysView() {
   const [selected, setSelected] = useState<string | null>(null);
   const [showDiscover, setShowDiscover] = useState(false);
   const hasFetched = useRef(false);
+  // A bar tap closes the key panel and the discover window (MOB-9).
+  useCloseOnBarTap(() => setSelected(null), selected !== null);
+  useCloseOnBarTap(() => setShowDiscover(false), showDiscover);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);

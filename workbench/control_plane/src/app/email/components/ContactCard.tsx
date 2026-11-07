@@ -19,6 +19,7 @@
  * above / to the left near an edge, and becomes a bottom sheet on mobile).
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -465,6 +466,8 @@ function ContactPopover({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+  // A bar tap closes the card, which sits above the Menu drawer (MOB-9).
+  useCloseOnBarTap(onClose);
 
   const mailTo = useCallback(() => {
     openCompose({ to: email, subject: "" });

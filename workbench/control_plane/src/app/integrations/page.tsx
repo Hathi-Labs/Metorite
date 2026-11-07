@@ -31,7 +31,6 @@ import { useMobileDrawer } from "@/components/AppShell";
 import { AppTopBar } from "@/components/AppTopBar";
 import { ContextMenu } from "@/components/ContextMenu";
 import { EmptyState } from "@/components/EmptyState";
-import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { railClass, useRailFold } from "@/lib/railFold";
@@ -100,7 +99,13 @@ function IntegrationsPageInner() {
   // The phone bar (MOB-12): Views opens the views rail, as the title button
   // does, and Add opens the menu. Add hides for a member who cannot manage.
   const [sheetTab, markSheetTab] = useSheetTab(drawerOpen, drawerShows);
-  usePhoneBar({ active: sheetTab, hide: canManage ? [] : ["integrations-add"] });
+  // Views hides when the member has one view or none: a sheet of one row is a
+  // dead tap. It stays while access loads, so the bar does not reflow.
+  const hide = [
+    ...(canManage ? [] : ["integrations-add"]),
+    ...(!accessLoading && views.length <= 1 ? ["integrations-views"] : []),
+  ];
+  usePhoneBar({ active: sheetTab, hide });
   const openViews = () => {
     markSheetTab("integrations-views");
     openDrawer(
@@ -136,20 +141,9 @@ function IntegrationsPageInner() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
       <AppTopBar
         rail={{ open: rail.open, onToggle: rail.toggle, noun: "the views" }}
-        title={
-          isMobile ? (
-            <button
-              type="button"
-              onClick={openViews}
-              className="inline-flex max-w-full items-center gap-1 align-middle tech-transition hover:opacity-80"
-            >
-              <span className="truncate">{current.label}</span>
-              <Icon name="ChevronDown" size={14} className="shrink-0 text-muted-foreground" />
-            </button>
-          ) : (
-            "Integrations"
-          )
-        }
+        // Plain text. On a phone the Views tab opens the rail, so a title that
+        // opened it too would repeat a tab (navigation_shell.md §9.2 rule 5).
+        title={isMobile ? current.label : "Integrations"}
         subtitle={viewLine(view)}
         actions={actions}
       />

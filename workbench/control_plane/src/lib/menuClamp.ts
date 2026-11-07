@@ -23,24 +23,38 @@ export function clampMenuPos(
   return { x, y };
 }
 
-/** A ref for the menu's box, and its clamped position. */
+/**
+ * The tallest a menu may be: the room above the foot, less a 4px margin at each
+ * end. `null` when the menu fits, so the caller adds no scroll and a flyout
+ * inside the menu is not clipped. A taller menu scrolls (MOB-12 fix round 2).
+ */
+export function menuMaxHeight(
+  height: number,
+  view: { height: number },
+  barTop: number | null,
+): number | null {
+  const room = (barTop ?? view.height) - 8;
+  return height > room ? Math.max(room, 80) : null;
+}
+
+/** A ref for the menu's box, its clamped position and the height cap it needs. */
 export function useClampedMenu(x: number, y: number) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
+  const [cap, setCap] = useState<number | null>(null);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
+    const top = phoneBarTop();
+    const view = { width: window.innerWidth, height: window.innerHeight };
+    // A menu taller than the room is capped, and it scrolls inside the cap.
+    const max = menuMaxHeight(Math.max(r.height, el.scrollHeight), view, top);
     /* eslint-disable react-hooks/set-state-in-effect -- measured after paint, as ContextMenu always did */
-    setPos(
-      clampMenuPos(
-        { x, y },
-        { width: r.width, height: r.height },
-        { width: window.innerWidth, height: window.innerHeight },
-        phoneBarTop(),
-      ),
-    );
+    setCap(max);
+    setPos(clampMenuPos({ x, y }, { width: r.width, height: max ?? r.height }, view, top));
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [x, y]);
-  return { ref, pos };
+  /** The height cap, or null when the menu fits. The caller adds it with a scroll. */
+  return { ref, pos, maxHeight: cap };
 }

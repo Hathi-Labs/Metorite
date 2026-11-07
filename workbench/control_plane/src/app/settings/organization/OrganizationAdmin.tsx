@@ -249,9 +249,13 @@ export default function OrganizationAdmin() {
   // where the page hides it: above the branding, seats and email forms.
   const { isMobile } = useViewMode();
   const rosterTab = !(tab === "branding" || tab === "seats" || tab === "email");
+  // A member who is not an admin sees the admin-only card, so no tab shows.
+  const notAdmin = !access.is_admin && !loading;
   usePhoneBar({
     active: tab === "members" ? "org-members" : tab === "requests" ? "org-requests" : null,
-    hide: rosterTab ? [] : ["org-invite"],
+    hide: notAdmin
+      ? ["org-members", "org-requests", "org-invite"]
+      : rosterTab ? [] : ["org-invite"],
     counts: { "org-requests": queueError ? 0 : requests.length },
   });
   useEffect(() => {

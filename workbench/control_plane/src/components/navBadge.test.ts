@@ -135,7 +135,9 @@ describe("the phone nav wears the run badge on every page", () => {
       /<AppIcon name="Menu" size=\{20\}[^/]*\/>\s*\{!chatsTab && !chatOn && tabBadge && \(\s*<NavBadge count=\{tabBadge\.count\} tone=\{tabBadge\.tone\} label=\{tabBadge\.label\} placement="tab"/,
     );
     // MOB-12: the Chats tab is drawn from the registry, and it carries the run badge.
-    expect(shell).toContain('runBadge={tab.id === "chats" ? tabBadge : null}');
+    expect(shell).toContain("runBadge={tab.runBadge ? tabBadge : null}");
+    expect(shell).not.toContain('tab.id === "chats"');
+    expect(read("../lib/shell/phoneBar.ts")).toMatch(/id: "chats"[^\n]*runBadge: true/);
     expect(shell).toMatch(/<NavBadge count=\{run\.count\} tone=\{run\.tone\} label=\{run\.label\} placement="tab"/);
   });
 
