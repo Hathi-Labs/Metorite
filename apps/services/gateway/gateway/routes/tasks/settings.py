@@ -457,15 +457,19 @@ async def get_user_settings(user: UserContext = Depends(get_current_user)):
 async def write_member_settings(uid: str, fields: dict[str, Any]) -> None:
     """The one write of a member's settings row (upsert of ``fields``).
 
-    ``PUT /tasks/settings`` and ``PUT /auth/me/zone`` (RX-7) both call it, so
-    a second writer of the row never exists. ``uid`` is the session's address
-    and the tenant is the bound one. Neither comes from a request body.
+    ``PUT /tasks/settings``, ``PUT /auth/me/zone`` (RX-7) and
+    ``PUT /auth/me/appearance`` (PKG-20) call it, so a second writer of the
+    row never exists. ``uid`` is the session's address and the tenant is the
+    bound one. Neither comes from a request body.
     """
     if not fields:
         return
     import json
-    _jsonb_cols = {"energy_windows", "day_templates"}
+    _jsonb_cols = {"energy_windows", "day_templates", "appearance"}
     fields = dict(fields)
+    if "appearance" in fields and not isinstance(fields["appearance"], str):
+        # The route gives the whole record as a dict. Encode it for JSONB.
+        fields["appearance"] = json.dumps(fields["appearance"])
     if "day_templates" in fields:
         fields["day_templates"] = json.dumps(
             _day_templates(fields["day_templates"]))
