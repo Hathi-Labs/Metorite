@@ -178,7 +178,7 @@ def test_the_visual_review_line_reads_the_live_body_first():
     assert step["env"] == {"GH_TOKEN": "${{ github.token }}"}
     assert "${{" not in step["run"]
     assert 'gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}"' in step["run"]
-    assert "gh run rerun --failed" in step["run"]
+    assert "gh run rerun <run id> --failed" in step["run"]
 
 
 _BASH = shutil.which("bash")
@@ -213,7 +213,8 @@ def _run_visual_review(tmp_path: Path, *, event_body, live: str | None, token: b
     shim.mkdir()
     gh = shim / "gh"
     gh.write_text("#!/usr/bin/env bash\n" + (
-        f"printf '%s' {json.dumps(live)}\n" if live is not None else "exit 1\n"), encoding="utf-8")
+        f"printf '%s' {json.dumps(live)}\n" if live is not None
+        else "echo '{\"message\":\"Bad credentials\"}'\nexit 1\n"), encoding="utf-8")
     gh.chmod(0o755)
     env = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r"}
     env.pop("GH_TOKEN", None)
@@ -224,7 +225,7 @@ def _run_visual_review(tmp_path: Path, *, event_body, live: str | None, token: b
     else:
         env["GITHUB_EVENT_PATH"] = str(tmp_path / "missing.json")
     run = _step("frontend", "Visual review line")["run"]
-    return subprocess.run(["bash", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
+    return subprocess.run(["bash", "-eo", "pipefail", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
 
 
 _LINE = "Visual review: no UI change"

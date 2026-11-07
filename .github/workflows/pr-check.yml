@@ -909,7 +909,7 @@ jobs:
             echo "the body names its visual review"
             exit 0
           fi
-          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then edit the PR body and rerun the failed jobs of this run: gh run rerun --failed. Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
+          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then edit the PR body and rerun the failed jobs of this run: gh run rerun <run id> --failed (or the button Re-run failed jobs). Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
           exit 1
 
   # The operator console had tests but NO CI running them — a fence that never
