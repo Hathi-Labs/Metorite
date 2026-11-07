@@ -165,8 +165,8 @@ def imports(body: str, module: str | None = None, is_package: bool = False) -> s
     a change to either affects the importer. Hence the prefixes. ``module``
     lets a relative import (``from . import x``) resolve.
 
-    CIV-3e (task 2205). The parse is the cost: one ``gate()`` parsed 4,800
-    files twice (``select`` and the hub count each call ``_import_index``).
+    CIV-3e (task 2205). The parse is the cost: one ``gate()`` parsed every source and test
+    file twice (``select`` and the hub count each call ``_import_index``).
     The result is cached by the text of the file, so the second pass and every
     later ``gate()`` of the same process cost a dict lookup. A caller gets a
     copy, so it may change the set.
