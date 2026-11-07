@@ -1589,6 +1589,18 @@ class Settings(BaseSettings):
     # `enforcement-flip`. `connections/github_app.py` reads the key file once
     # for each process. Fence: tests/unit/test_github_app_auth.py.
     github_app_enabled: bool = False
+    # ── The App for each organization (WS-MCP SW-53, agent_coordination.md) ─
+    #
+    # A comma list of organization ids, or `*` for each one. The master
+    # `github_app_enabled` comes first: off means off for every org. With the
+    # master on, an org that the list does not name is off. An EMPTY list
+    # turns every org off (fail closed). Off for an org: a webhook delivery
+    # for its installation answers 202 and writes nothing, the connect routes
+    # answer 404, and the reconcile poll skips it. The one reader is
+    # `gateway.connections.github_app.github_app_org_allowed`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_github_webhook_r8.py.
+    github_app_orgs: str = ""
     github_app_slug: str = ""                 # the App's URL name, e.g. "metorite"
     github_app_client_id: str = ""            # the JWT `iss`, and the OAuth client id
     github_app_client_secret: str = ""        # the OAuth client secret of the App
