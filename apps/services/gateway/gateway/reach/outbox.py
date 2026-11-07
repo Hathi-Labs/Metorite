@@ -27,6 +27,12 @@ later tick claims it again once the claim is old, so delivery is at least
 once. The WhatsApp reads count ``channel = 'whatsapp'`` only, so a push row
 never counts in the WhatsApp cap. ``tests/unit/test_reach_push.py`` runs this
 SQL on a real Postgres.
+
+**The sent rows** (WS-BRIEF BR-7b-1, ``core_brief.md`` §8). The close-out
+lists each row that went to the member today as an act. :func:`sent_rows` is
+that read, on every channel. It opens its own ``tenant_session(org)`` and
+filters on the member. ``tests/unit/test_audit_acts_read_r8.py`` runs it on
+a real Postgres.
 """
 
 from __future__ import annotations
@@ -203,6 +209,17 @@ _FULL_DUE_SQL = (
     f"WHERE organization_id = {_BOUND_ORG} AND dedupe_key = :key)"
 )
 
+#: The rows that went to one member in a window, on every channel (BR-7b-1,
+#: ``core_brief.md`` §8). A read: the close-out lists them as acts.
+_SENT_ROWS_SQL = (
+    "SELECT id::text, channel, kind, signal_ids, sent_at FROM reach_outbox "
+    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
+    "AND state = 'sent' AND sent_at >= :since AND sent_at < :until "
+    "ORDER BY sent_at, id LIMIT :n"
+)
+#: The most rows that :func:`sent_rows` gives.
+SENT_ROWS_MAX = 50
+
 
 async def logged_pairs(org: str, member: str) -> set[tuple[str, str]]:
     """Every ``(signal_id, fingerprint)`` Reach logged for *member*."""
@@ -356,6 +373,32 @@ async def brief_planned(org: str, member: str, local_date: date, key: str) -> bo
     async with tenant_session(org) as db:
         return bool((await db.execute(text(_BRIEF_SQL),
                                       {"m": member, "d": local_date, "key": key})).scalar())
+
+
+@dataclass(frozen=True)
+class SentRow:
+    """One row that Reach sent to a member (BR-7b-1)."""
+
+    id: str
+    channel: str
+    kind: str
+    signal_ids: tuple[str, ...]
+    sent_at: datetime
+
+
+async def sent_rows(org: str, member: str, since: datetime, until: datetime,
+                    *, limit: int = SENT_ROWS_MAX) -> list[SentRow]:
+    """The rows in state ``sent`` that went to *member* from *since* up to
+    *until*, the oldest first, :data:`SENT_ROWS_MAX` at most (BR-7b-1,
+    ``core_brief.md`` §8). The caller takes *org* and *member* from its run,
+    never from request input. A read: it changes no row."""
+    n = max(1, min(int(limit), SENT_ROWS_MAX))
+    async with tenant_session(org) as db:
+        rows = (await db.execute(text(_SENT_ROWS_SQL), {
+            "m": member, "since": since, "until": until, "n": n})).all()
+    return [SentRow(id=str(r[0]), channel=str(r[1]), kind=str(r[2]),
+                    signal_ids=tuple(str(s) for s in (r[3] or ())), sent_at=r[4])
+            for r in rows]
 
 
 async def full_brief_due(org: str, member: str, local_date: date, key: str) -> bool:

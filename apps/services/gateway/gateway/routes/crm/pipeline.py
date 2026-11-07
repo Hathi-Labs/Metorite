@@ -59,9 +59,11 @@ from gateway.routes.crm.core import (
     has_column,
     insert_row,
     link_deal_contact,
-    load_default_status,
+    load_pipeline_start_status,
     load_row,
     now,
+    pipeline_scope_sql,
+    pipeline_takes_unset,
     project_joined,
     read_statuses,
     record_activity,
@@ -563,7 +565,9 @@ async def get_pipeline(
         if pipeline_id:
             wanted = checked_uuid(pipeline_id, "pipeline_id")
             await require_row(db, "crm_pipelines", wanted, "Pipeline")
-            where += " AND pipeline_id = CAST(:pipeline_id AS uuid)"
+            where += " AND " + pipeline_scope_sql(
+                await pipeline_takes_unset(db, wanted),
+            )
             params["pipeline_id"] = wanted
         owner = resolve_owner(owner, user)
         if owner:
@@ -693,6 +697,9 @@ class ConvertRequest(BaseModel):
     contact_id: str | None = None
     company_id: str | None = None
     deal: ConvertDeal | None = None
+    #: The pipeline of the board the convert started from (CRM-M3). None: the
+    #: default pipeline.
+    pipeline_id: str | None = None
 
 
 class SkippedValue(BaseModel):
@@ -891,8 +898,13 @@ async def _create_deal(
 ) -> Any:
     """The deal the lead became — carrying its provenance and its primary contact."""
     wanted = body.deal or ConvertDeal()
-    status = await load_default_status(db, DEALS.status_table or "crm_deal_statuses")
-    pipeline_id = await default_pipeline_id(db)
+    stated = (body.pipeline_id or "").strip()
+    if stated:
+        await require_row(db, "crm_pipelines", checked_uuid(stated, "pipeline_id"), "Pipeline")
+    pipeline_id = stated or await default_pipeline_id(db)
+    status = await load_pipeline_start_status(
+        db, DEALS.status_table or "crm_deal_statuses", pipeline_id,
+    )
     name = (
         (wanted.name or "").strip()
         or (getattr(lead, "organization_name", None) or "").strip()
