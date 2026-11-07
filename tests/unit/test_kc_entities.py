@@ -92,6 +92,12 @@ _INTEGRITY_READS: dict[tuple[str, str], str] = {
         "of that type. It returns the type only. The route answers 404 "
         "unless the rule then returns the row."
     ),
+    ("registry.py", "add_aliases"): (
+        "The KG-5 sweep adds a domain to the aliases of one entity. The read "
+        "locks that one row in the bound tenant and reads its aliases, to "
+        "fold them in Python before the UPDATE. It returns a count, never a "
+        "name or an alias, and the sweep has no caller to show one to."
+    ),
     ("registry.py", "lock_page_slot"): (
         "The lazy page route locks the entity row and reads its raw page_id, "
         "so two first writes make one page and a hidden page is never "

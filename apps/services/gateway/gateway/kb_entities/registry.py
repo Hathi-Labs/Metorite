@@ -296,6 +296,55 @@ async def ensure_entity(
     return str(found.id) if found is not None else None
 
 
+async def add_aliases(db: Any, entity_id: Any, aliases: list[str] | None) -> int:
+    """Add *aliases* to one entity of the bound tenant. Answers the number added.
+
+    The other writer of ``kb_entities.aliases`` is :func:`ensure_entity`,
+    when it makes a row. This one only adds. An alias that ``fold()``
+    of an existing alias equals is not added again, so a second call adds
+    0. A blank alias, an alias longer than :data:`ALIAS_MAX` and each alias
+    past :data:`ALIASES_MAX` are skipped, never refused, because a
+    background caller (the KG-5 sweep) has no one to answer. The tenant is
+    the bound ``app.tenant_id``, so an entity of another org gives 0.
+    """
+    from gateway.kb_entities.resolver import fold
+
+    eid = core.parse_id(entity_id)
+    if eid is None:
+        return 0
+    # An integrity read (listed in the fence): the aliases of one row, locked
+    # until the commit, so two adds never lose each other's alias.
+    row = (await db.execute(
+        text("SELECT aliases FROM kb_entities "
+             f"WHERE organization_id = {_BOUND} AND id = CAST(:ke_id AS uuid) "
+             "FOR UPDATE"),
+        {"ke_id": eid},
+    )).first()
+    if row is None:
+        return 0
+    have = list(row.aliases or [])
+    seen = {fold(a) for a in have}
+    added: list[str] = []
+    for raw in aliases or []:
+        alias = " ".join(str(raw or "").split())
+        key = fold(alias)
+        if not key or len(alias) > ALIAS_MAX or key in seen:
+            continue
+        if len(have) + len(added) >= ALIASES_MAX:
+            break
+        seen.add(key)
+        added.append(alias)
+    if not added:
+        return 0
+    await db.execute(
+        text("UPDATE kb_entities SET aliases = aliases || CAST(:ke_aliases AS text[]), "
+             "updated_at = now() "
+             f"WHERE organization_id = {_BOUND} AND id = CAST(:ke_id AS uuid)"),
+        {"ke_id": eid, "ke_aliases": added},
+    )
+    return len(added)
+
+
 #: One create at a time for each org, space, type and folded name, until the commit.
 _NAME_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
 
