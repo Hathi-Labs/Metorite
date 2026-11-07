@@ -1648,11 +1648,13 @@ async def rotate_my_box_token(
             req.ticket, _rotate_binding(target, req, email, org),
             namespace=_BOX_TICKET_NAMESPACE):
         raise _no_ticket()
+    # Read the name first, so a revoke that lands between the two reads can
+    # never lose a token that the store already made.
+    row = await _own_box(org, email, target)
     made = await agent_tokens.rotate_box_token(
         org, target, member_email=email, now=req.now, days=req.days)
     if isinstance(made, agent_tokens.BoxRefused):
         raise _store_refusal(made)
-    row = await _own_box(org, email, made.connection_id)
     _log.info("agent_access.box_token_rotated", connection_id=made.connection_id,
               now=req.now, days=req.days)
     _audit_box(email, org, BOX_ROTATE_ACTION, f"agent_connection:{made.connection_id}",

@@ -87,9 +87,16 @@ pytest.importorskip("sqlalchemy")
 
 import acb_audit
 import structlog
-from acb_auth import AgentScope, EffectiveAccess, UserContext, UserRole, agent_oauth
+from acb_auth import (
+    AgentScope,
+    EffectiveAccess,
+    UserContext,
+    UserRole,
+    agent_oauth,
+    agent_signing,
+    agent_tokens,
+)
 from acb_auth import access as access_module
-from acb_auth import agent_signing, agent_tokens
 from acb_auth.access import invalidate as invalidate_access
 from acb_common import get_settings, tenant_redis
 from acb_common.tenant_redis import TenantRedis, organization_scope
