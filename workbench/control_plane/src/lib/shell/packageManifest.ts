@@ -105,6 +105,9 @@ function systemOwns(href: string): boolean {
   );
 }
 
+/** The team of an install pane. `TEAM_GROUPS` names it "Apps". */
+export const INSTALL_TEAM = "apps";
+
 /** The nav panes the installs give, ready for the "Apps" section. */
 export function installNavPanes(m: PackageManifest, features: readonly string[] = []): NavPane[] {
   const seen = new Set<string>();
@@ -119,9 +122,13 @@ export function installNavPanes(m: PackageManifest, features: readonly string[] 
       href,
       label,
       icon: text(e.payload.icon) ?? "Box",
-      note: label,
+      // An empty note, not the label again: the launcher card would print the
+      // name twice. A payload `note` or `description` gives the line.
+      note: text(e.payload.note) ?? text(e.payload.description) ?? "",
       launch: "live",
-      team: "across",
+      // The sidebar lists an install pane under "Apps" (`mergeInstallNav`),
+      // and the launcher group "Apps" holds the same panes (`TEAM_GROUPS`).
+      team: INSTALL_TEAM,
       ...(typeof e.payload.feature === "string" ? { feature: e.payload.feature } : {}),
     });
   }
@@ -174,27 +181,50 @@ export function installJobs(m: PackageManifest, features: readonly string[] = []
 export interface InstallNeed {
   installId: string;
   title: string;
-  /** Where to finish the setup. Null when the payload names none. */
-  href: string | null;
+  /** Where to finish the setup. A row with no safe `setup_href` is not made. */
+  href: string;
 }
 
-/** One "Finish setting up <name>" row for each install that needs setup. */
+/**
+ * One "Finish setting up <name>" row for each install that needs setup AND
+ * names a safe same-origin `setup_href`. A row with no next step never clears,
+ * so it is dropped, and the bell's badge counts this one list (PKG-Q11).
+ */
 export function installNeeds(m: PackageManifest): InstallNeed[] {
   const seen = new Set<string>();
   const out: InstallNeed[] = [];
   for (const list of Object.values(m.contributions)) {
     for (const e of list) {
       if (e.source === "system" || e.installId === null || !e.needsSetup || seen.has(e.installId)) continue;
+      const href = safeHref(e.payload.setup_href);
+      if (!href) continue;
       seen.add(e.installId);
       const name = text(e.payload.name) ?? text(e.payload.label) ?? e.key;
       out.push({
         installId: e.installId,
         title: `Finish setting up ${name}`,
-        href: safeHref(e.payload.setup_href),
+        href,
       });
     }
   }
   return out;
+}
+
+/**
+ * The feature slugs that installs declare, over every point. /auth/me
+ * `features` holds them while the package host is on, so the access report
+ * reads this list to know they have a home (PKG-6b).
+ */
+export function installFeatureSlugs(m: PackageManifest): string[] {
+  const out = new Set<string>();
+  for (const list of Object.values(m.contributions)) {
+    for (const e of list) {
+      if (e.source === "system" || e.installId === null) continue;
+      const f = text(e.payload.feature);
+      if (f) out.add(f);
+    }
+  }
+  return [...out].sort();
 }
 
 /** A paused install leaves the shell within this time (`package_host.md` §5.2). */
@@ -212,19 +242,24 @@ export async function fetchManifest(): Promise<PackageManifest> {
 }
 
 /**
- * The manifest, from the cache. It is empty while it loads and when the flag is off.
+ * The manifest resource, from the cache. `refresh` forces a new read.
  *
  * PKG-8a: a Studio publish or save of the assistant reads it again at once, so the
  * owner's new sidebar entry shows with no reload. A delete on the app page drops it
  * through `forgetPackage`.
  */
-export function usePackageManifest(enabled: boolean = true): PackageManifest {
+export function usePackageManifestResource(enabled: boolean = true) {
   const r = useCachedResource<PackageManifest>(enabled ? manifestKey() : null, fetchManifest, {
     ttl: MANIFEST_TTL_MS,
     revalidateOnFocus: true,
   });
   useLiveRefresh(refreshManifest, "studio");
-  return r.data ?? EMPTY_MANIFEST;
+  return r;
+}
+
+/** The manifest, from the cache. It is empty while it loads and when the flag is off. */
+export function usePackageManifest(enabled: boolean = true): PackageManifest {
+  return usePackageManifestResource(enabled).data ?? EMPTY_MANIFEST;
 }
 
 /**
