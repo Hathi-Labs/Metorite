@@ -2554,10 +2554,20 @@ separate HIGH design, and it is out of scope here.
 | WT-3 | Copy: the two `NO_WRITES` texts offer the tap, and no copy says "open a new chat". Update the pinned tests. | HIGH | AGENT-SAFE |
 | WT-4 | The switch line (not held): when this turn loads a pack that the sticky set of the last turn did not hold, the run sends one `chat_pack_switched` event with the pack label, and the chat shows "Switched to Projects". It reads `begin_turn` and `packs_on`, and adds no second matcher. **No suggestion chip** (see WT-4 below). Dark under `TOOL_PACKS`. Needs PR 1743 for the event seam (`offer_continue` pattern). | STANDARD | AGENT-SAFE, dark |
 | WT-5 | The flips: `CHAT_CONTINUE_ORGS`, `HELD_CARD_WRITES_ORGS`, `EMAIL_HELD_CARD_SEND`. | — | **OWNER-GATE** (`work_plan.md` §6 D4) |
-| WT-6 | Class C cards with an Undo receipt, and the person-class tick for `nudge_task`. | HIGH | AGENT-SAFE, dark |
+| WT-6a | Class C archive with an Undo receipt. `archive_task` and `archive_project` join the held set behind a NEW flag `HELD_CLASS_C_ORGS`, default empty. The chat receipt line (`ConfirmationReceipts`) offers Undo. Undo calls the existing unarchive route under the member's own session, as a `lib/undo.ts` command in the style of `taskUndo.ts` (If-Match, 412 means changed since). | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE (`work_plan.md` §6 D4) |
+| WT-6b | The person-class tick (email plan §21.4) for the report recipient tools, which add a person to a list for mail later. The `nudge_task` tick is dropped: its person is always an org member who waits on the task, so the class is always `org` and the tick decides nothing. | HIGH | AGENT-SAFE, dark |
 
 **WT-1 done when:** each case of §9.5 passes on a real database, the flag-off
 answer is 404, and the verification commands of §9.6 pass.
+
+**WT-6a done when:** (owner decision, 2026-11-07)
+
+- `archive_task` and `archive_project` run from a held chat only when `HELD_CLASS_C_ORGS` holds the org. The flag is a comma list of org ids or `*`, empty by default, with one reader that fails closed. The name ends in `_ORGS`, so a flag reload applies it.
+- `HELD_CARD_WRITES_ORGS` does NOT open Class C. The owner approved that flag for class B only (RX-1, D169).
+- `delete_*`, `merge_*`, `move_project` and `revert_activity` stay out of the held set until a server restore exists. A restore for them is its own HIGH slice.
+- The receipt offers Undo. Undo calls `unarchive_task` or `unarchive_project` under the member's own session and RLS. It never uses a server token. A 412 says the row changed since. A receipt of chat A does not undo in chat B. A member of org X does not undo in org Y (R5).
+- Each new held tool has its name, the `card_write` annotation and the exact parameter pin (`is_held_card_write`).
+- Fences: `tests/unit/test_held_card_writes.py` (flag off means refused), an R8 test (archive in a held chat, Undo restores the row, 412 after another member's change, cross-org gives 404), and vitest beside `taskUndo.test.ts`.
 
 **WT-4 done when:**
 
