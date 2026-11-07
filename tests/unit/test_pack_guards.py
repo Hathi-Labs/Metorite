@@ -1026,12 +1026,16 @@ CRM_DIR = "apps/agents/agent-crm"
 #: Ten since WS-CRM CRM-M1: the pack holds ``crm_change_history`` too, the
 #: read of the CRM Change history. The orchestrator base does not hold it,
 #: because the base was at the 110-tool cap (test_projects_packs.py).
-CRM_TEN = frozenset({
-    "convert_lead", "create_lead", "crm_change_history", "crm_search_notes",
-    "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
-    "update_deal_status",
+#: Eleven since WS-CRM CRM-M3a: ``crm_create_pipeline``, for an org on
+#: ``CRM_PIPELINES_ORGS`` (``_mode`` opens the flag).
+CRM_PACK = frozenset({
+    "convert_lead", "create_lead", "crm_change_history", "crm_create_pipeline",
+    "crm_search_notes", "get_pipeline", "get_record", "get_timeline", "log_activity",
+    "search_crm", "update_deal_status",
 })
-CRM_WRITES = frozenset({"create_lead", "update_deal_status", "log_activity", "convert_lead"})
+CRM_WRITES = frozenset({
+    "create_lead", "update_deal_status", "log_activity", "convert_lead", "crm_create_pipeline",
+})
 
 
 def _crm_module() -> Any:
@@ -1048,6 +1052,10 @@ def _mode(monkeypatch, mode: str | None, calls: list[str] | None = None) -> None
         return mode
 
     monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS, so the pack holds all eleven
+    # tools. ``test_an_org_off_the_pipelines_flag_builds_no_pipeline_tool``
+    # holds the drop of an org off the list.
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
 
 
 async def test_the_built_crm_pack_holds_exactly_the_ten_tools(monkeypatch) -> None:
@@ -1057,7 +1065,7 @@ async def test_the_built_crm_pack_holds_exactly_the_ten_tools(monkeypatch) -> No
     _mode(monkeypatch, "live")
     with _run():
         build = await _build("crm-records", _crm_module())
-    assert {t.__name__ for t in build.tools} == CRM_TEN and len(build.tools) == 10
+    assert {t.__name__ for t in build.tools} == CRM_PACK and len(build.tools) == 11
     assert build.owner == CRM and build.held is False and build.skipped == ()
 
 
@@ -1082,9 +1090,22 @@ async def test_mirror_mode_takes_the_three_record_writes_from_every_layer(
             build = await _build("crm-records", _crm_module(),
                                  holds=frozenset({"web_search", "read_attachment"}))
     names = {t.__name__ for t in build.tools}
-    assert names == CRM_TEN - ti.MIRROR_RECORD_WRITES
+    assert names == CRM_PACK - ti.MIRROR_RECORD_WRITES
     assert "log_activity" in names and not names & ti.MIRROR_RECORD_WRITES
     assert set(build.dropped) == ti.MIRROR_RECORD_WRITES
+
+
+async def test_an_org_off_the_pipelines_flag_builds_no_pipeline_tool(monkeypatch) -> None:
+    """WS-CRM CRM-M3a. An org that ``CRM_PIPELINES_ORGS`` leaves out builds the
+    pack with no ``crm_create_pipeline``, and the build names the drop. The
+    other ten tools stay. Mutation: take the flag drop out of
+    ``_drop_pack_mirror_writes`` -> the tool stays -> red."""
+    _mode(monkeypatch, "live")
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: False)
+    with _run():
+        build = await _build("crm-records", _crm_module())
+    assert build.dropped == ("crm_create_pipeline",)
+    assert {t.__name__ for t in build.tools} == CRM_PACK - {"crm_create_pipeline"}
 
 
 async def test_the_mirror_drop_reuses_the_executor_set(monkeypatch) -> None:
@@ -1095,7 +1116,7 @@ async def test_the_mirror_drop_reuses_the_executor_set(monkeypatch) -> None:
     with _run():
         build = await _build("crm-records", _crm_module())
     assert build.dropped == ("create_lead",)
-    assert len(build.tools) == 9  # 10 less create_lead
+    assert len(build.tools) == 10  # 11 less create_lead
 
 
 @pytest.mark.parametrize("mode", ["live", None])
@@ -1106,7 +1127,7 @@ async def test_a_live_org_or_a_failed_mode_read_keeps_the_writes(monkeypatch, mo
     _mode(monkeypatch, mode)
     with _run():
         build = await _build("crm-records", _crm_module())
-    assert {t.__name__ for t in build.tools} == CRM_TEN and build.dropped == ()
+    assert {t.__name__ for t in build.tools} == CRM_PACK and build.dropped == ()
 
 
 @pytest.mark.parametrize(("mode", "gone"), [
@@ -1126,7 +1147,7 @@ async def test_a_held_crm_pack_keeps_the_writes_and_mirror_still_takes_three(
         build = await _build("crm-records", _crm_module())
     assert build.held is True and calls == ["read"]
     assert set(build.dropped) == gone
-    assert {t.__name__ for t in build.tools} == CRM_TEN - gone
+    assert {t.__name__ for t in build.tools} == CRM_PACK - gone
 
 
 async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
@@ -1140,7 +1161,7 @@ async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
         assert (await _build("crm-records", module)).dropped == ("get_record",)
         monkeypatch.setattr(ti, "_is_egress", lambda t: False)
         open_build = await _build("crm-records", module)
-    assert open_build.dropped == () and len(open_build.tools) == 10
+    assert open_build.dropped == () and len(open_build.tools) == 11
 
 
 async def test_a_marked_mail_chat_holds_the_crm_pack_with_its_writes(monkeypatch) -> None:
@@ -1328,9 +1349,9 @@ async def test_a_child_in_an_open_chat_gets_the_open_read_set_and_no_write(
     with _run():
         main = await _build("crm-records", crm)
         why, job = await _child("crm-records")
-    assert main.held is False and {t.__name__ for t in main.tools} == CRM_TEN
+    assert main.held is False and {t.__name__ for t in main.tools} == CRM_PACK
     child = {t.__name__ for t in job.pack_tools}
-    assert why == "" and child == CRM_TEN - CRM_WRITES == CHILD_TOOLS["crm-records"]
+    assert why == "" and child == CRM_PACK - CRM_WRITES == CHILD_TOOLS["crm-records"]
 
 
 async def test_an_email_child_builds_held_in_an_open_chat(monkeypatch) -> None:

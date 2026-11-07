@@ -557,10 +557,12 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
 #: Ten since WS-CRM CRM-M1: ``crm_change_history`` is in the pack, and not in
 #: the orchestrator's base, because the base was at the 110-tool cap beside
 #: the email and Projects core packs (``test_projects_packs.py``).
+#: Eleven since WS-CRM CRM-M3a: ``crm_create_pipeline`` (admin, behind
+#: ``CRM_PIPELINES_ORGS``). The owner declares 23 tools.
 CRM_TOOLS = (
-    "convert_lead", "create_lead", "crm_change_history", "crm_search_notes",
-    "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
-    "update_deal_status",
+    "convert_lead", "create_lead", "crm_change_history", "crm_create_pipeline",
+    "crm_search_notes", "get_pipeline", "get_record", "get_timeline", "log_activity",
+    "search_crm", "update_deal_status",
 )
 
 
@@ -582,7 +584,7 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     orchestrator does not hold it. Mutation: add a tool the owner lacks, or
     drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
-    assert len(scope) == 22, "non-vacuity: the owner still declares 22 tools"
+    assert len(scope) == 23, "non-vacuity: the owner declares 23 tools (CRM-M3a)"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
@@ -634,8 +636,9 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email_address", "owner_email", "as_user", "impersonate"}
     tools = tp.owner_tools("crm-records", _crm_module())
-    # 10, not 9, since WS-CRM CRM-M1: the pack holds crm_change_history too.
-    assert len(tools) == 10
+    # 10 since WS-CRM CRM-M1 (crm_change_history), 11 since CRM-M3a
+    # (crm_create_pipeline).
+    assert len(tools) == 11
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))
