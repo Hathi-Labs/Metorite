@@ -142,7 +142,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - Fences: `test_github_app_auth.py`, `test_github_connect_r8.py`, `test_github_per_org_r8.py`, `test_github_webhook_r8.py`, `test_github_merge_r8.py`, `test_github_reconcile_r8.py`.
 6. routes/memory.py -- **Memory search and management.** The path parameter is a SCOPE KEY (`acb_memory.scope_key`), not a user id. `_authorize_scope` has one rule for each shape, and refuses an unknown shape.
    - Your own email only. An admin does not read a member's private memory.
-   - `agent:<name>` needs `agents:run:<name>`. `org:global` needs `memory:read_org` or `memory:write_org`. `room:<thread_id>` needs room membership.
+   - `agent:<name>` needs `agents:run:<name>`. `org:global` and `org:<org id>` need `memory:read_org` or `memory:write_org`. `org:<org id>` must name the member's own org, and another org's id answers 404 (KG-9). `room:<thread_id>` needs room membership.
    - A service principal must assert `X-User-Email` to touch a person's scope. An omitted identity fails closed. `delete` checks that the memory is IN the scope.
 7. routes/settings.py -- **LLM settings and model config.** Every `model_config` and `provider_keys` call passes `organization_id=current_tenant()`. Fence: `test_credential_tenant_threading.py`. ⚠️ The `os.environ` half of `_inject_env_into_litellm` is a known cross-tenant write. 🔒 `_write_env_key` takes the env-write guard of item 5. Fence: `test_integrations_env_hardening.py`.
 8. routes/email/ -- **Email accounts, messages, send, sync, AI chat and the connect flow** (`email_app_master_plan.md`).
