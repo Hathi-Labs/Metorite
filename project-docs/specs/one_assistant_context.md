@@ -5,7 +5,7 @@ OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 
-§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-1b to WT-6 are not built.
+§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-4 is BUILT, dark behind `TOOL_PACKS` (2026-11-07, task 1688, "WT-4 as built" in §9.4). WT-1b to WT-3, WT-5 and WT-6 are not built.
 
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
 
@@ -2567,6 +2567,16 @@ answer is 404, and the verification commands of §9.6 pass.
 - `TOOL_PACKS` off sends nothing. The same pack as the last turn sends nothing.
 - The slice only READS the mark (`session_mark_state` or `_pack_held`). It never writes, clears or re-keys it. An edit to the mark code moves the slice to HIGH.
 - **The chip.** Layer (a) already switches with no tap, so a chip that asks first is a second decision path. WT-4 builds no chip. A chip for a load that layer (a) did not do needs an owner decision first (open question on task 1688).
+
+**WT-4 as built (2026-11-07, task 1688).**
+
+- `tool_packs.pack_switch_label(turn, slugs)` is the pure signal. It compares the sticky set of `begin_turn` with the packs that layer (a) loaded. It returns the `SKILL_FAMILIES` label of the first new pack, or None.
+- It counts only packs that `packs_on` allows. It gives None on the first turn and after a failed sticky read.
+- A follower pack (Calendar day planner) gives way to its parent. So Calendar reads "Switched to Projects".
+- `executor._pack_switch_event` reads the hold with `_pack_held`, and it fails closed. A held chat and a Redis fault send nothing. It never writes the mark.
+- The event rides `_ProfileMarkHold.add`. It leaves with the first output, so a turn with no answer sends none.
+- The client twin is `src/lib/packSwitch.ts`. `PackSwitchMark` draws the line beside the mailbox mark.
+- Open: a pack that the model loads mid-turn with `load_skill_tools` (layer (b)) draws no line. A later slice can add it.
 
 ### 9.5 Fences (R7)
 
