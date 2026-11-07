@@ -20,6 +20,8 @@
 
 No caller spends a request yet. The spend on branch 0 is MCP-P1b-2. §19.13 holds the three rows of MCP-P1b.
 
+**MCP-G12, MCP-G14 and MCP-G10 are BUILT 2026-11-08 and not merged (branch `mt-5be99476-g12-write-clarity`, Metorite tasks 1023, 1208 and 844).** `update_task` takes null for `due_at`, `start_date` and `estimate_mins`, and null clears the field. `create_task` with the Epic type and a parent answers "An Epic cannot have a parent. Leave out type_id or parent_task_id." A refusal of the write cap holds `retry_after` in seconds, and the reply sends `Retry-After`. A busy answer does the same when the gateway names a wait. Every write tool carries one line that names the limit of 120 changes in 10 minutes. The batch write for comments (G10 item 3) is not built. The fence is `tests/unit/test_mcp_edge_write_clarity.py`.
+
 **MCP-G18 is BUILT 2026-11-06 and merged (Metorite task 1727, first slice).** The read of the image itself is IMG-3 (task 1999, `projects_ai_chat.md` §30.4), by the owner request of 2026-11-07. `get_task_context` returns the metadata of the files on a task. Names are `untrusted_text`. It has no link, no bytes and no upload (§15, row MCP-G18).
 
 **MCP-G15 is BUILT 2026-11-04 and not merged (branch `mt-c4fee5e7-decided-elsewhere`, Metorite task 1567).** An agent records a decision that its member made outside Metorite, such as in the agent's own chat. The new tool is `record_outside_decision` (§12.1, "A decision made outside Metorite"). The run moves from `awaiting` to `in_progress`, and the task leaves each list that waits on the member. It goes live at the merge under `agent_runs_enabled`, which is ON. No migration.

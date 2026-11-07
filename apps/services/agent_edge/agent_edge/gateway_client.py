@@ -88,6 +88,9 @@ class Answer:
 
     status: int
     body: Any
+    #: MCP-G10. The whole seconds of the ``Retry-After`` header, when the
+    #: gateway sent a valid one. At least 1 and at most 3600.
+    retry_after: int | None = None
 
 
 @contextlib.contextmanager
@@ -300,6 +303,14 @@ def _url(path: str, pairs: Sequence[tuple[str, str]]) -> str:
     return base + path + (f"?{urlencode(pairs)}" if pairs else "")
 
 
+def _retry_after(raw: str | None) -> int | None:
+    """The seconds of a ``Retry-After`` header (MCP-G10), or ``None`` for no
+    header or a value that is not whole seconds. A date form is not used."""
+    if raw is None or not raw.strip().isdigit():
+        return None
+    return min(max(int(raw.strip()), 1), 3600)
+
+
 async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
                 template: str, timeout_s: float | None = None) -> Answer:
     # Read at call time, so a test that patches the module constant holds.
@@ -332,7 +343,8 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
         parsed = response.json() if response.content else None
     except ValueError:
         parsed = None
-    return Answer(status=response.status_code, body=parsed)
+    return Answer(status=response.status_code, body=parsed,
+                  retry_after=_retry_after(response.headers.get("retry-after")))
 
 
 __all__ = [
