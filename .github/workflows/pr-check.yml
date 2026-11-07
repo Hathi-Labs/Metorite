@@ -86,6 +86,10 @@ jobs:
       # `ci_unit_guard.py gate-output` turns a list over 200 KB into `full`.
       full: ${{ steps.gate.outputs.full }}
       files: ${{ steps.gate.outputs.files }}
+      # CIV-17. The unit shards this selection needs, a JSON list: `[]` for
+      # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6]` for a full
+      # run. The `test` matrix reads it. Empty here means `changes` failed.
+      shards: ${{ steps.gate.outputs.shards }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -100,7 +104,8 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           python3 scripts/affected_tests.py --gate --base "$BASE" > gate.json || rm -f gate.json
-          python3 scripts/ci_unit_guard.py gate-output --json gate.json | tee -a "$GITHUB_OUTPUT"
+          python3 scripts/ci_unit_guard.py gate-output --json gate.json \
+            "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
 
       - id: diff
         env:
@@ -287,17 +292,21 @@ jobs:
   # `unit-tests` would then read a skipped dependency. A selection NEVER
   # reaches pytest as an empty list, because pytest then collects everything.
   test:
-    name: "Unit tests (shard ${{ matrix.shard }}/6)"
+    name: "Unit tests (shard ${{ matrix.shard }})"
     runs-on: ubuntu-24.04
     needs: changes
-    if: ${{ !cancelled() }}
+    # CIV-17. No shard job starts for an empty selection (`shards` is `[]`), and
+    # GitHub fails a matrix with no values, so the `if:`
+    # skips the job before the matrix is read. A failed `changes` job leaves
+    # `shards` empty text, and the matrix then falls back to all six shards.
+    if: ${{ !cancelled() && needs.changes.outputs.shards != '[]' }}
     # `fail-fast: false`: one run reports the failures of EVERY shard.
     # Fail-fast cancelled the other five and hid their failures until the
     # next round.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: ${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6]') }}
     # WS-31 CP-3. The Customer Console's suites are R8-gated: they skip themselves
     # unless CUSTOMER_CONSOLE_DATABASE_URL points at a real Postgres, because
     # hermetic fakes agree with whatever SQL they are handed. Independent
@@ -452,10 +461,16 @@ jobs:
           set -f
           [ "$SHARD_MODE" = "selection" ] || SHARD_TARGETS="tests/unit/"
           rc=0
+          # CIV-8k (task 2191). Shard 1 hung for 25 to 39 minutes in 6 red runs, always
+          # right after tests/unit/test_adaptive_tier.py::test_a_long_thread_drafts_on_powerful
+          # [...-False-tier-fast], and the log shows no cause. `faulthandler_timeout`
+          # prints the stack of every thread when one test runs over 900 s. It kills
+          # nothing, and no test takes more than 260 s.
           uv run python -m pytest $SHARD_TARGETS -v -rs --reruns 1 \
             $(python3 scripts/fences.py pytest-ignore) \
-            --splits 6 --group ${{ matrix.shard }} \
+            --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
+            -o faulthandler_timeout=900 \
             -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml || rc=$?
           if [ "$rc" -eq 5 ] && [ "$SHARD_MODE" = "selection" ]; then
             echo "this shard drew no test from the selection"
@@ -501,21 +516,39 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [test, changes]
     # `always()`, so a failed shard turns THIS check red instead of skipping
-    # it. A skipped required check counts as satisfied.
+    # it. A skipped required check counts as satisfied (#1077).
     if: always()
     steps:
+      # CIV-17. `test` is `skipped` ONLY for an empty selection: `changes`
+      # succeeded and said `shards` is `[]`. Any other skip (a cancelled run, a
+      # failed `changes` job) stays red here. This is the #1077 trap.
       - name: Every shard passed
+        env:
+          TEST: ${{ needs.test.result }}
+          CHANGES: ${{ needs.changes.result }}
+          SHARDS: ${{ needs.changes.outputs.shards }}
         run: |
-          echo "shards: ${{ needs.test.result }}"
-          [ "${{ needs.test.result }}" = "success" ] || exit 1
+          echo "shards: $TEST (selection list: $SHARDS)"
+          if [ "$TEST" = "skipped" ] && [ "$CHANGES" = "success" ] && [ "$SHARDS" = "[]" ]; then
+            echo "empty selection: no shard was needed"
+            exit 0
+          fi
+          [ "$TEST" = "success" ] || exit 1
 
       - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.shards != '[]'
         with:
           pattern: junit-shard-*
           path: junit
           merge-multiple: true
+
+      # An empty selection ran no shard, so no report exists. Write a zero-test
+      # one, and the check below then has a report to read.
+      - name: Empty selection report
+        if: needs.changes.outputs.shards == '[]'
+        run: python3 scripts/ci_unit_guard.py empty-report --out junit/shard-0.xml
 
       # CIV-3. On a selection run only the must-run files in the selection
       # have to run. `--only-selected` takes the selected paths, and an empty
