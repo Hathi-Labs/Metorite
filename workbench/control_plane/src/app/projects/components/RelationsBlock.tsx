@@ -42,6 +42,7 @@ import {
   populated,
   progressLabel,
   progressPercent,
+  relatedCount,
 } from "../lib/relations";
 
 const LINK_LABELS: Array<[LinkType, string]> = [
@@ -62,6 +63,11 @@ interface Props {
   /** Bumped by the panel when it adds a subtask, so this reloads. */
   refreshKey?: number;
   onOpenTask: (taskId: string) => void;
+  /**
+   * ORC-3 — the number of other tasks this block lists: subtasks, links and
+   * the tasks that block this one. The Related tab and its section show it.
+   */
+  onCount?: (count: number) => void;
 }
 
 export function RelationsBlock({
@@ -69,6 +75,7 @@ export function RelationsBlock({
   task,
   refreshKey = 0,
   onOpenTask,
+  onCount,
 }: Props) {
   const [data, setData] = useState<Relations | null>(null);
   /**
@@ -115,6 +122,12 @@ export function RelationsBlock({
       ids: [...data.links, ...data.blocked_by].map((link) => link.link_id),
     });
   }, [data]);
+
+  useEffect(() => {
+    // ⚠️ Not `blocked_by` too: the gateway builds it from the incoming
+    // `blocks` rows of `links` (`relations.py`), so a blocker is in both.
+    onCount?.(data ? relatedCount(data) : 0);
+  }, [data, onCount]);
 
   if (!data) return null;
 
