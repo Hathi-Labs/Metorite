@@ -23,10 +23,13 @@
  *
  * Fence (R7): `packageManifest.test.ts`.
  */
-import { cacheKey } from "@/lib/dataCache";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import type { NavPane, NavSection } from "@/lib/nav";
 import { NAV_SECTIONS } from "@/lib/nav";
 import { useCachedResource } from "@/lib/useCachedResource";
+import { MANIFEST_CACHE, manifestKey, refreshManifest } from "./manifestCache";
+
+export { MANIFEST_CACHE, manifestKey, refreshManifest };
 
 export type ManifestSource = "system" | "org" | "group" | "private";
 
@@ -194,8 +197,6 @@ export function installNeeds(m: PackageManifest): InstallNeed[] {
   return out;
 }
 
-export const MANIFEST_CACHE = "shell/manifest";
-export const manifestKey = (): string => cacheKey(MANIFEST_CACHE);
 /** A paused install leaves the shell within this time (`package_host.md` §5.2). */
 export const MANIFEST_TTL_MS = 10_000;
 
@@ -210,11 +211,28 @@ export async function fetchManifest(): Promise<PackageManifest> {
   }
 }
 
-/** The manifest, from the cache. It is empty while it loads and when the flag is off. */
+/**
+ * The manifest, from the cache. It is empty while it loads and when the flag is off.
+ *
+ * PKG-8a: a Studio publish or save of the assistant reads it again at once, so the
+ * owner's new sidebar entry shows with no reload. A delete on the app page drops it
+ * through `forgetPackage`.
+ */
 export function usePackageManifest(enabled: boolean = true): PackageManifest {
   const r = useCachedResource<PackageManifest>(enabled ? manifestKey() : null, fetchManifest, {
     ttl: MANIFEST_TTL_MS,
     revalidateOnFocus: true,
   });
+  useLiveRefresh(refreshManifest, "studio");
   return r.data ?? EMPTY_MANIFEST;
+}
+
+/**
+ * The nav sections with the panes of the installs in "Apps". The desktop sidebar and
+ * the phone drawer both call it, so the two navs show the same installs. With the
+ * package host off, the SAME array comes back.
+ */
+export function useInstallNav(sections: readonly NavSection[], features: readonly string[]): NavSection[] {
+  const manifest = usePackageManifest();
+  return mergeInstallNav(sections, installNavPanes(manifest, features));
 }

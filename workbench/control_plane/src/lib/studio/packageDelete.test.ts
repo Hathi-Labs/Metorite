@@ -13,6 +13,8 @@ import { describe, expect, it } from "vitest";
 import {
   GONE_LINE, PREVIEW_FAILED_LINE, STALE_COUNTS_LINE, afterStall, changedText, classifyStep, deleteAndRefresh, forgetPackage, parsePreview, previewCopy, progressLine, readPreview, runDelete,
 } from "./packageDelete";
+import { peek, read } from "@/lib/dataCache";
+import { manifestKey } from "@/lib/shell/manifestCache";
 
 const ID = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
 const wire = (confirm = "t0", records = 12) => ({
@@ -50,7 +52,18 @@ describe("the preview", () => {
     expect(c.subject).toBe("Visits");
     expect(c.body).toContain("1 object, 12 records, 3 versions");
     expect(c.body).toContain("cannot undo");
-    expect(c.note).toContain("1 of them reaches another member, who loses the app");
+    expect(c.note).toBe("Its entry in your sidebar goes too. 1 install reaches another member, who loses the app.");
+  });
+
+  it("names the owner's own entry once, and makes each verb agree with its count (PKG-8a fix round 1)", () => {
+    const note = (installs: number, other: number) =>
+      previewCopy({ ...parsePreview(wire())!, installs, otherMemberInstalls: other }).note;
+    expect(note(1, 0)).toBe("Its entry in your sidebar goes too.");
+    expect(note(1, 1)).toBe("1 install reaches another member, who loses the app.");
+    expect(note(3, 3)).toBe("3 installs reach other members, who lose the app.");
+    expect(note(3, 2)).toBe("Its entry in your sidebar goes too. 2 installs reach other members, who lose the app.");
+    expect(note(0, 0)).toBeNull();
+    expect(note(2, 1)).not.toMatch(/\b1 install\b[^.]*\bgo\b/);
   });
 
   it("reads the preview from the delete-preview route", async () => {
@@ -282,6 +295,13 @@ describe("a deleted package leaves no cached page", () => {
     expect(page).toContain("detail.error === STUDIO_OFF || (detail.error && detail.data === undefined)");
     const btn = readFileSync(new URL("../../components/studio/DeletePackageButton.tsx", import.meta.url), "utf8");
     expect(btn).toContain("forgetPackage(id)");
+  });
+
+  it("drops the shell manifest too, so the sidebar entry of the app goes at once (PKG-8a fix round 1)", async () => {
+    await read(manifestKey(), async () => ({ version: "v1", contributions: {} }));
+    expect(peek(manifestKey())).toBeDefined();
+    forgetPackage(ID);
+    expect(peek(manifestKey())).toBeUndefined();
   });
 });
 
