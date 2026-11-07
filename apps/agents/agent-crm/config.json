@@ -43,6 +43,8 @@
     "update_deal_status",
     "log_activity",
     "convert_lead",
+    "crm_update_record",
+    "crm_update_task",
     "crm_list_records",
     "crm_get_record",
     "crm_list_fields",

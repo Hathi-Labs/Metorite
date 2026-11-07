@@ -88,6 +88,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "voice_profile": ("show my writing style",),
     # -- crm-records --
     "convert_lead": ("convert the lead Acme to a deal",),
+    # WS-CRM CRM-M2b: the edit of any field, and the task change.
+    "crm_update_record": ("change the amount of the Acme deal in the crm to 50000",),
+    "crm_update_task": ("mark my crm follow-up task with Acme as done",),
     "create_lead": ("create a lead for Acme",),
     "crm_search_notes": ("search my crm notes for pricing",),
     # WS-CRM CRM-M1: the read of the CRM Change history.
