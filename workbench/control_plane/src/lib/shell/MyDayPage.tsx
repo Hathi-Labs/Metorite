@@ -33,6 +33,11 @@
  * **The brief card** (`core_brief.md` §5 item 1, BR-2c-2) is a third, separate
  * flag, `NEXT_PUBLIC_BRIEF_CARD` (`briefCardOn`). It sits above the cards or
  * the feed, in either layout, and draws nothing when the brief is absent.
+ *
+ * **The Today band** (`package_host.md` §9.3, PKG-18a) is a fourth flag,
+ * `NEXT_PUBLIC_TODAY_BAND` (`todayBandOn`). With the feed on, it sits above
+ * the feed column and shows the top five cards with their reasons. It reads
+ * the same feed answer as the column.
  */
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -61,6 +66,8 @@ import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
 import { cardOrderFor, cardsFor, dateLine, failedLines, seesApprovals, summaryLine } from "./myDay";
 import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
 import { BUILT_CARDS } from "./presets";
+import TodayBand from "./TodayBand";
+import { todayBandOn, todayBandOnServer } from "./todayBandFlag";
 import { homePane } from "./shellNav";
 import AiWaitingCard, { useAiWaiting } from "./AiWaitingCard";
 import { publishMyDayCount } from "./myDayCount";
@@ -113,6 +120,7 @@ export default function MyDay() {
   const today = useTodayItems(!accessLoading && cards.today, now);
   const feedOn = useSyncExternalStore(noSubscribe, myDayFeedOn, myDayFeedOnServer);
   const briefOn = useSyncExternalStore(noSubscribe, briefCardOn, briefCardOnServer);
+  const bandOn = useSyncExternalStore(noSubscribe, todayBandOn, todayBandOnServer);
   // The brief read is the page's, so the grid waits for it and paints once.
   // Off, the key is null: no read, and the brief never gates the page. A
   // cache hit has data at once, so a later visit is instant.
@@ -242,6 +250,8 @@ export default function MyDay() {
         // view while the member scrolls the column. Below `xl` Today comes
         // FIRST, so "You are caught up" ends the page (visual review). The
         // start classes place each one at `xl`, whatever the order.
+        <>
+        {bandOn && cards.needs ? <TodayBand feed={feed} className="mt-6" /> : null}
         <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
           {cards.today ? (
             <TodayCard today={today} now={now} className="xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1" />
@@ -250,6 +260,7 @@ export default function MyDay() {
             <FeedColumn feed={feed} now={now} ai={aiWaiting} className="xl:col-span-2 xl:col-start-1 xl:row-start-1" />
           ) : null}
         </div>
+        </>
       ) : (
         // One column in the order of the question. From `xl`, Today is a
         // right rail that spans both rows, and the other two stack left.
