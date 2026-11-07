@@ -348,7 +348,10 @@ def _package_router_tests(
                     seen.add(user)
                     todo.append(user)
         if pkg in seen:
+            # `core` is where the packages define the router; some tests mount it
+            # from there (review P2).
             out |= test_users.get(f"{pkg}.router", set())
+            out |= test_users.get(f"{pkg}.core.router", set())
     return out
 
 
