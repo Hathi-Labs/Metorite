@@ -112,7 +112,7 @@ describe("chat first", () => {
   });
 
   it("opens the one assistant with the brief, and makes no Workshop app", () => {
-    expect(gallery).toContain("openAssistant({ draft: brief, fresh: true })");
+    expect(gallery).toContain("openAssistant({ draft, fresh: true })");
     expect(gallery).toContain("/chat?q=");
     expect(gallery).not.toMatch(/fetch\("\/api\/apps",\s*\{\s*method: "POST"/);
     expect(gallery).not.toContain("?seed=");

@@ -25,7 +25,9 @@ import {
   PACKAGES_FAILED_LINE, type LibraryFilter, appBrief, changedWords, libraryCounts, mergeLibrary,
   packageShows, type PackageCard as PackageCardData,
 } from "@/lib/studio/packageLibrary";
+import { buildHref } from "@/lib/studio/packageDraft";
 import { STUDIO_OFF, type PackageSummary, listPackages } from "@/lib/studio/realDoor";
+import { startBuild } from "@/lib/studio/startBuild";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -260,6 +262,7 @@ function AppCard({
 function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => void }) {
   const live = card.state === "live";
   return (
+    <div className="relative">
     <button
       type="button"
       data-package-card={card.id}
@@ -284,6 +287,10 @@ function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => vo
         <Badge tone={live ? "success" : "warning"} size="xs">{live ? "Live" : "Draft"}</Badge>
       </div>
     </button>
+    <Button variant="ghost" size="sm" icon="Code" href={buildHref(card.id)} className="absolute bottom-2 right-2">
+      Open in Studio IDE
+    </Button>
+    </div>
   );
 }
 
@@ -351,13 +358,23 @@ export default function AppsGallery() {
   }, [fetchApps]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Chat first: Mira builds the app in the one assistant, from the brief. The words wait
-  // in the box for the member to read and send. With the shell chat off, `/chat?q=` does the same.
+  // Chat first, in the Studio IDE (G3a): "Build it" makes a draft package, opens its IDE, and opens
+  // the dock with the brief waiting in the box. The page of the IDE binds the dock to that package.
+  // With the shell chat off, `/chat?q=` does what it did before.
+  const building = useRef(false);
+  const [buildError, setBuildError] = useState<string | null>(null);
   const createApp = useCallback(
     (seed: string) => {
-      const brief = appBrief(seed);
-      if (shellChatOn()) openAssistant({ draft: brief, fresh: true });
-      else router.push(`/chat?q=${encodeURIComponent(brief)}`);
+      if (!shellChatOn()) {
+        router.push(`/chat?q=${encodeURIComponent(appBrief(seed))}`);
+        return;
+      }
+      if (building.current) return;
+      building.current = true;
+      setBuildError(null);
+      void startBuild(seed, { go: (href) => router.push(href), openDock: (draft) => openAssistant({ draft, fresh: true }) })
+        .then((r) => { if (!r.ok) setBuildError(r.message); })
+        .finally(() => { building.current = false; });
     },
     [router]
   );
@@ -499,6 +516,13 @@ export default function AppsGallery() {
         activeId={filter}
         onChange={(id) => setFilter(id as Filter)}
       />
+
+      {buildError && (
+        <div role="alert" className="flex items-center gap-2 mx-4 sm:mx-6 mt-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive shrink-0">
+          <Icon name="X" className="w-3.5 h-3.5 shrink-0" />
+          {buildError}
+        </div>
+      )}
 
       {forkError && (
         <div className="flex items-center gap-2 mx-4 sm:mx-6 mt-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive shrink-0">
