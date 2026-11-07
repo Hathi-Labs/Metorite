@@ -1,9 +1,9 @@
 # Proactive agent — Mira acts for each person without being asked (WS-AUTO)
 
-> **Product:** Metorite · **Feature:** automations, standing watches and the chase, on a trust ladder · **Updated:** 2026-11-04 · **Owner:** vjvarada
-> **Status:** 📋 **SPEC, THREE SLICES BUILT.** The first slice of AUTO-2 is merged (PR 1442, migration 313, dark): the run ledger, the incidents and the stall guard. The brief is its only caller. AUTO-3 is decided (D131). AUTO-7a is merged (PR 1615). H-328 parts (a) and (b) are merged, and part (c) is open. **AUTO-7b is built, dark behind `AUTO_PARK_ORGS` (task 1411), and waits for review** (§4.2, §9). AUTO-8 is the next slice. AUTO-Q1 is open, and the build runs on its working default (§12).
+> **Product:** Metorite · **Feature:** automations, standing watches and the chase, on a trust ladder · **Updated:** 2026-11-07 · **Owner:** vjvarada
+> **Status:** 📋 **SPEC, THREE SLICES BUILT.** The first slice of AUTO-2 is merged (PR 1442, migration 313, dark): the run ledger, the incidents and the stall guard. The brief is its only caller. AUTO-3 is decided (D131). AUTO-7a is merged (PR 1615). H-328 parts (a) and (b) are merged, and part (c) is open. **AUTO-7b is built, dark behind `AUTO_PARK_ORGS` (task 1411), and waits for review** (§4.2, §9). AUTO-8 is the next slice. **The owner answered AUTO-Q1 on 2026-11-06** with the recommended option (D192, §12).
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §10 was read on that commit. The AUTO-7b paths were read again on `0591d53b3` (2026-11-04). The line numbers of Open Instinct come from a read on 2026-11-02, and no code of it ran.
-> **Board:** WS-AUTO in `work_plan.md` §2.1. **Decision:** D161. D75, D100, D103, D124, D129, D131, D132, D140, D145 and workflows G5 bind it.
+> **Board:** WS-AUTO in `work_plan.md` §2.1. **Decision:** D161, and D192 for the answer of §12. D75, D100, D103, D124, D129, D131, D132, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Automations", epic 807, this spec task 1396. The slices are AUTO-1 (816), AUTO-4 (817), AUTO-5 to AUTO-10 (1389 to 1394). AUTO-2 is task 814, AUTO-3 is task 815 and AUTO-Q1 is task 1395.
 > **Research first:** the comments "Research notes, 2026-11-02 (Open Instinct)" on epic 807, copied into §8, and the Hermes research of 2026-10-27.
 > **Gate summary:** every slice is AGENT-SAFE. A flag that spends credits stays the owner's flip. A slice that changes what a member sees follows the D145 loop.
@@ -115,9 +115,11 @@ Task 469 says it well: use triggers, and do not poll the model. An event, or one
 
 Each turn has a tool list (read tools by default), a round cap, a time cap and a credit cap. At the cap, the turn stops, writes `cap_reached` in its run row and reports that once. The paying member comes from our own tables, through `job_member_scope`. The run writes a `usage_event` row of kind `automation`. A kill switch stops all headless turns for an org.
 
-### 4.5 A cap on each member (AUTO-Q1)
+### 4.5 A cap on each member (AUTO-Q1, D192)
 
-A member has at most 10 standing watches. Over the cap, Mira refuses the next watch with a plain message. The member can list, pause or delete a watch in chat and in the list of AUTO-4. The member purge removes the watches of a leaver.
+A member has at most 10 standing watches. A higher plan can raise the number, and WS-PLN owns the plan shape. Over the cap, Mira refuses the next watch with a plain message. The member can list, pause or delete a watch in chat and in the list of AUTO-4. The member purge removes the watches of a leaver.
+
+**Who pays.** A watch spends the member's own AI allowance. The confirm card shows "about X credits a month". When the allowance runs out, the watch pauses and tells the member once.
 
 ---
 
@@ -334,12 +336,12 @@ For AUTO-7b: `uv run pytest tests/unit/test_auto_park.py tests/unit/test_no_pers
 
 ## 12. Owner questions
 
-**AUTO-Q1** (task 1395) is the one open question. The owner approved the plan on 2026-11-02 and left it open. The answer below is a **working default, not an owner decision**. The build uses it. The question task stays open. If the owner changes an answer, this spec changes with it.
+**AUTO-Q1** (task 1395) was the one open question. The owner approved the plan on 2026-11-02 and left it open. **On 2026-11-06 the owner chose the recommended answer** ("go ahead with your recommendations for all the decisions"). D192 records it. The question task is Done, with the answer in a comment.
 
-| Part | Question | Working default, not an owner decision |
+| Part | Question | The owner's answer (D192) |
 |---|---|---|
 | 1. The default | Does each member get proactive Mira on day one, or opt in? | **On, at the safest level.** My Day and Reach already speak within their caps. A standing watch exists only when a member asks for one, so nothing new runs by itself |
 | 2. The cap | How many standing watches may a member have? | **10 for each member** at first. A higher number on a higher plan. WS-PLN owns the plan shape |
 | 3. Who pays | A watch spends AI credits with no person present | **The member's allowance.** The confirm card shows "about X credits a month". Over the cap, the watch pauses and tells the member once |
 
-**What the working default does not change.** Each slice ships dark. Each slice that changes what a member sees needs a D145 preview and the owner's approval. Each flag that spends credits stays the owner's flip. An eval over USD 0.50 still needs the owner's OK.
+**What the answer does not change.** Each slice ships dark. Each slice that changes what a member sees needs a D145 preview and the owner's approval. Each flag that spends credits stays the owner's flip. An eval over USD 0.50 still needs the owner's OK.
