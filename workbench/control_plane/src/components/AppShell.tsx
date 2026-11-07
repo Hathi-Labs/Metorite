@@ -88,6 +88,7 @@ import { SubtaskPromptHost } from "@/app/tasks/components/SubtaskPromptHost";
 // in-progress meeting recording follows the user across every app (spec §5.2).
 import { LiveDock } from "@/app/notes/components/LiveDock";
 import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
+import { sendBarTap } from "@/lib/phoneBarTap";
 import { hrefSelected, phoneBarFor, resolvePhoneTabs } from "@/lib/shell/phoneBar";
 import { PHONE_BAR_EVENT, currentPhoneBarReport, type PhoneBarReport } from "@/lib/shell/phoneBarEvent";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
@@ -774,6 +775,8 @@ function MobileBottomNavInner({
   // before it answers. The exception is a second tap on the tab that opened
   // the sheet that shows: that tap closes it and sends nothing.
   const dispatchNav = (detail: string) => {
+    // Every overlay that is not the drawer or the assistant gives way first.
+    sendBarTap(detail);
     if (sheetOpen) closeAssistant();
     if (isOpen && shows === "sheet" && openedBy.current === detail) {
       close();
@@ -793,7 +796,8 @@ function MobileBottomNavInner({
   };
 
   // A link tab: the same first step as a tab with an event, then the route.
-  const goLink = () => {
+  const goLink = (id: string) => {
+    sendBarTap(id);
     pendingTab.current = null;
     if (sheetOpen) closeAssistant();
     if (isOpen) close();
@@ -805,6 +809,7 @@ function MobileBottomNavInner({
         <button
           onClick={() => {
             // A second tap on Menu closes it. A page's sheet gives way to the Menu.
+            sendBarTap("menu");
             pendingTab.current = null;
             if (sheetOpen) closeAssistant();
             if (menuOpen) close();
@@ -831,7 +836,7 @@ function MobileBottomNavInner({
               key={tab.id}
               href={tab.href}
               active={selected}
-              onClick={tab.href ? goLink : () => dispatchNav(tab.event ?? tab.id)}
+              onClick={tab.href ? () => goLink(tab.id) : () => dispatchNav(tab.event ?? tab.id)}
               icon={themedIcon(tab.icon)}
               label={tab.label}
               accent={tab.accent}
@@ -873,6 +878,7 @@ function MobileBottomNavInner({
             type="button"
             onClick={() => {
               // A second tap on Ask closes the sheet (MOB-9).
+              sendBarTap("ask");
               pendingTab.current = null;
               if (sheetOpen) {
                 closeAssistant();

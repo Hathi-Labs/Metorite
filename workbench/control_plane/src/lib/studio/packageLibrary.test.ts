@@ -112,8 +112,11 @@ describe("chat first", () => {
   });
 
   it("opens the one assistant with the brief, and makes no Workshop app", () => {
-    expect(gallery).toContain("openAssistant({ draft: brief, fresh: true })");
-    expect(gallery).toContain("/chat?q=");
+    // MOB-12: the gallery and the phone bar's New app tab share `startApp`.
+    const start = read("./startApp.ts");
+    expect(gallery).toContain("startApp(seed,");
+    expect(start).toContain("openAssistant({ draft: brief, fresh: true })");
+    expect(start).toContain("/chat?q=");
     expect(gallery).not.toMatch(/fetch\("\/api\/apps",\s*\{\s*method: "POST"/);
     expect(gallery).not.toContain("?seed=");
   });

@@ -165,7 +165,8 @@ describe("the phone's bottom bar always shows (MOB-9)", () => {
 
   it("closes a Modal on a tap of the bar, which the substrate does not do", () => {
     const modal = read("components/ui/Modal.tsx");
-    expect(modal).toMatch(/closest\("\[data-phone-nav-bar\]"\)\) closeRef\.current\(\)/);
+    // MOB-9 fix round: the shell sends one bar-tap signal, and the Modal listens (`phoneBarTap.ts`).
+    expect(modal).toContain("useCloseOnBarTap(onClose, open)");
   });
 
   it("drops the sheet's own safe-area padding, since the bar covers the inset", () => {

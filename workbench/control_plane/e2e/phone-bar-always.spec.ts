@@ -189,3 +189,35 @@ test("the assistant sheet ends above the bar, and Ask closes it", async ({ page 
   await ask.click();
   await expect(ask).toHaveAttribute("aria-pressed", "false");
 });
+
+// MOB-9 fix round (task 2002): one bar-tap signal, so a hand-rolled overlay gives way.
+test("a hand-rolled overlay gives way to Ask, and the assistant sheet is the top layer", async ({ page }) => {
+  test.setTimeout(120_000);
+  await openPhone(page);
+  await page.locator(`${BAR_TABS} > button`, { hasText: "Capture" }).click();
+  const capture = page.locator(".fixed.inset-x-0.z-\\[80\\]");
+  await expect(capture).toHaveCount(1);
+  const ask = page.locator("[data-ask-tab]");
+  await ask.click();
+  await expect(capture).toHaveCount(0);
+  const sheet = ".fixed.inset-0.z-50.flex-col.pt-safe";
+  await expect(page.locator(sheet)).toBeVisible();
+  const top = await page.evaluate((sel) => {
+    const el = document.querySelector(sel) as HTMLElement;
+    const b = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+    return !!hit && el.contains(hit);
+  }, sheet);
+  expect(top, "the assistant sheet is not the top layer").toBe(true);
+});
+
+test("a second tap on Search closes it", async ({ page }) => {
+  test.setTimeout(120_000);
+  await openPhone(page);
+  const search = page.locator(`${BAR_TABS} > button`, { hasText: "Search" });
+  await search.click();
+  await expect(page.getByRole("dialog").first()).toBeVisible();
+  await search.click();
+  await page.waitForTimeout(500);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});

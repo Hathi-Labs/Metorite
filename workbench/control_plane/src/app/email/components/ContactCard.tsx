@@ -503,7 +503,7 @@ function ContactPopover({
       aria-label={`Contact card for ${name}`}
       className={
         sheet
-          ? "fixed inset-x-0 bottom-0 z-[91] rounded-t-2xl border-t border-border bg-popover shadow-2xl max-h-[88vh] overflow-y-auto pb-safe"
+          ? "fixed inset-x-0 bottom-0 z-[91] rounded-t-2xl border-t border-border bg-popover shadow-2xl max-h-[calc(88vh-var(--phone-nav-h))] overflow-y-auto pb-safe"
           : "fixed z-[91] rounded-xl border border-border bg-popover shadow-2xl overflow-y-auto"
       }
       style={

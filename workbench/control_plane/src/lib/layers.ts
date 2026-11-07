@@ -16,8 +16,10 @@
  *   bottomNav      the phone's bottom bar, with its Ask tab. It paints above
  *                  every overlay of the tree, the shell drawer, the sheets and
  *                  the anchored panels, so a tab stays in reach (MOB-9, task
- *                  2002). It sits below a confirmation (`Modal` `alert`,
- *                  z-[100]) and the toasts (z-[110]).
+ *                  2002). A confirmation (`Modal` `alert`, z-[100]) and the
+ *                  toasts (z-[110]) paint above it. On a phone the
+ *                  confirmation's layer ends at the bar's top edge, like
+ *                  every layer, so a tap on a tab cancels it. That fails safe.
  *
  * ⚠️ The bar covers the foot of an overlay. `globals.css` ends every full-height
  * fixed layer at the bar's top edge while the phone layout shows

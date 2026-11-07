@@ -103,6 +103,7 @@
  * WS-27bd recorded for the email `ContextMenu`. Do not add a sixth consumer.
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import { Dialog } from "@base-ui/react/dialog";
 import { useEffect, useRef, useState } from "react";
 
@@ -376,19 +377,7 @@ export default function Modal({
    * closes the dialog, and the tab then does its own job. Fence:
    * `e2e/phone-bar-always.spec.ts`.
    */
-  const closeRef = useRef(onClose);
-  useEffect(() => {
-    closeRef.current = onClose;
-  });
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (event: MouseEvent) => {
-      const target = event.target;
-      if (target instanceof Element && target.closest("[data-phone-nav-bar]")) closeRef.current();
-    };
-    document.addEventListener("click", onClick, true);
-    return () => document.removeEventListener("click", onClick, true);
-  }, [open]);
+  useCloseOnBarTap(onClose, open);
 
   /** The order documented on `finalFocus`. Runs in Base UI's close cleanup. */
   const returnFocus = () => {

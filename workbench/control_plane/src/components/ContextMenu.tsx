@@ -1,5 +1,7 @@
 "use client";
 
+import { clampMenuPos } from "@/lib/menuClamp";
+import { phoneBarTop } from "@/components/ui/AnchoredPanel";
 import AppIcon from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -68,15 +70,15 @@ export function ContextMenu({
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    let nx = x;
-    let ny = y;
-    if (x + r.width > window.innerWidth) {
-      nx = Math.max(4, window.innerWidth - r.width - 4);
-    }
-    if (y + r.height > window.innerHeight) {
-      ny = Math.max(4, window.innerHeight - r.height - 4);
-    }
-    setPos({ x: nx, y: ny });
+    // The foot is the phone bar's top edge when a bar shows (MOB-9 fix round).
+    setPos(
+      clampMenuPos(
+        { x, y },
+        { width: r.width, height: r.height },
+        { width: window.innerWidth, height: window.innerHeight },
+        phoneBarTop(),
+      ),
+    );
   }, [x, y]);
 
   useEffect(() => {

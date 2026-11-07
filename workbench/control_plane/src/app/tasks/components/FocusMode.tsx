@@ -23,6 +23,7 @@
 // `C` capture hotkey (page.tsx) opens the capture palette on top of the room:
 // a stray thought is one keystroke to the inbox and the timer never stops.
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon, { themedIcon, type ThemedIcon } from "@/components/Icon";
 import { usePathname } from "next/navigation";
@@ -291,6 +292,10 @@ function FocusRoom({ itemId }: { itemId: string }) {
     }
     clearSession();
   }, [itemId, updateItem, clearSession]);
+
+  // A tap on a tab of the phone's bar minimizes the room to its strip. The
+  // session goes on, and the tab then acts. It never ends the session.
+  useCloseOnBarTap(minimize, !minimized);
 
   // Esc minimizes the room to the dock (timer keeps running, still visible).
   useEffect(() => {

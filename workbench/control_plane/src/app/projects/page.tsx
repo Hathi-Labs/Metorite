@@ -13,6 +13,7 @@
  */
 
 import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { useBarTap } from "@/lib/phoneBarTap";
 import Icon, { themedIcon } from "@/components/Icon";
 import { ContextMenu } from "@/components/ContextMenu";
 import RailRow from "@/components/ui/RailRow";
@@ -1514,6 +1515,17 @@ function ProjectsWorkspace() {
   // sheet. The Projects tab is a place: it shows selected while its sheet
   // is open (MOB-12).
   usePhoneBar({ active: sheet === "tree" ? "projects-tree" : null });
+  // A second tap on Search closes it. The bar tap closes the overlay before
+  // the tab's event arrives, so read whether Search was open AT the tap, from
+  // the committed state, and let the event close and not reopen (MOB-9 fix).
+  const searchingRef = useRef(false);
+  useEffect(() => {
+    searchingRef.current = searching;
+  });
+  const searchTapClosed = useRef(false);
+  useBarTap((tab) => {
+    searchTapClosed.current = tab === "projects-search" && searchingRef.current;
+  });
   useEffect(() => {
     const handler = (event: Event) => {
       const tab = (event as CustomEvent<string>).detail;
@@ -1538,6 +1550,11 @@ function ProjectsWorkspace() {
       else if (tab === "projects-search") {
         // ⌘K has no phone equivalent, so the palette needs a control. It is a
         // full-screen overlay of its own — the drawer would be a second one.
+        if (searchTapClosed.current) {
+          searchTapClosed.current = false;
+          setSearching(false);
+          return;
+        }
         setSheet(null);
         useTaskStore.getState().closeQuickCapture();
         setSearching(true);

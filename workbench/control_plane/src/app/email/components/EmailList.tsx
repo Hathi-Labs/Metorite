@@ -1,5 +1,6 @@
 "use client";
 
+import { useClampedMenu } from "@/lib/menuClamp";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -802,6 +803,8 @@ function ContextMenu({
   onFix: () => void;
 }) {
   const { email, bulk, count = 1 } = ctx;
+  // The foot of the menu stays above the phone's bar (MOB-9 fix round).
+  const { ref: menuRef, pos: menuPos } = useClampedMenu(ctx.x, ctx.y);
   const hasCategories = bulk || (email.categories?.length ?? 0) > 0;
   const run = (fn: () => void) => {
     fn();
@@ -829,8 +832,9 @@ function ContextMenu({
         }}
       />
       <div
+        ref={menuRef}
         className="fixed z-[81] w-52 bg-popover border border-border rounded-lg shadow-xl py-1 text-xs"
-        style={{ left: ctx.x, top: ctx.y }}
+        style={{ left: menuPos.x, top: menuPos.y }}
       >
         {bulk ? (
           <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border mb-1">
