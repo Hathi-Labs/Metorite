@@ -562,7 +562,8 @@ lands. Mira's acts of a member's own chat run are the main source now.
    Other acts follow, and the door reads go last. The door reads of one app
    and one policy make ONE line with a count. So one busy client cannot fill
    the section. That line takes the id of its oldest row as `source_id`.
-   The section keeps `plan.BRIEF_LINES` lines. The lead names the true total
+   The section keeps `plan.BRIEF_LINES` lines with a valid link. Of the
+   changes, the cut keeps the newest. The lead names the true total
    and the number shown, such as "25 acts for you, 7 shown".
 
 ### 8.3 Tenancy of `audit_event` and the R8 plan

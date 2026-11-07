@@ -153,11 +153,34 @@ def _foreign_ok(module: str, name: str | None) -> bool:
                or module.startswith(n + ".") for n in narrow)
 
 
+def dynamic_imports(source: str) -> list[str]:
+    """Each call in *source* that imports by a string at run time, whatever
+    its argument: ``__import__(...)``, ``<any>.__import__(...)``,
+    ``<any>.import_module(...)``, and a name that a ``from importlib import
+    import_module [as x]`` bound. The AST fence cannot read the string, so
+    the brief may hold no such call at all. Pure."""
+    bound = {"__import__"}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "importlib":
+            bound |= {a.asname or a.name for a in node.names
+                      if a.name in ("import_module", "__import__")}
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if isinstance(fn, ast.Name) and fn.id in bound:
+            found.append(f"dynamic import: {fn.id}() at line {node.lineno}")
+        elif isinstance(fn, ast.Attribute) and fn.attr in ("import_module", "__import__"):
+            found.append(f"dynamic import: .{fn.attr}() at line {node.lineno}")
+    return found
+
+
 def forbidden_imports(source: str, package: str = "gateway.brief") -> list[str]:
     """The imports of *source* that are not on the allowlist: a gateway
     module off :data:`_ALLOWED`, a name off :data:`_ALLOWED_NAMES` or an
     alias of one, and a foreign send package (:func:`_foreign_ok`). Pure."""
-    found: list[str] = []
+    found: list[str] = dynamic_imports(source)
     for module, name, alias in import_targets(source, package):
         full = f"{module}.{name}" if name else module
         if module.split(".")[0] != "gateway":
@@ -310,6 +333,16 @@ def test_the_fences_see_a_planted_violation() -> None:
     assert forbidden_imports("from orchestrator.in_app_path import is_in_app_path") == []
     assert forbidden_imports("from acb_skills.untrusted import UntrustedFrame") == []
     assert forbidden_imports("from acb_llm import routed") == []
+    # A dynamic import by string is refused whatever its argument.
+    for plant in ("__import__('whatsapp_ingestion.providers.cloud_api')",
+                  "import importlib\nimportlib.import_module('gateway.reach.outbox')",
+                  "__import__('gateway.reach.outbox', fromlist=['finish'])",
+                  "from importlib import import_module as im\nim('x')",
+                  "from importlib import import_module\nimport_module('x')",
+                  "import importlib as il\nil.import_module('x')",
+                  "import builtins\nbuiltins.__import__('x')"):
+        assert any(f.startswith("dynamic import") for f in forbidden_imports(plant)), plant
+    assert dynamic_imports("import_module = 1\nx = len('a')") == []
     assert forbidden_imports("from . import store\nfrom ..jobs import queue") == []
     assert unlabelled_calls("w.register('a.b', h)") == [1]
     assert unlabelled_calls("register('a.b', h, effect=None)") == [1]

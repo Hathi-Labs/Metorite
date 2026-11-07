@@ -329,6 +329,13 @@ class _Item:
     count: int = 1
 
 
+def _cut_key(item: _Item) -> tuple[float, str]:
+    """The order of the cut inside a rank: the NEWEST first for rank 0, the
+    oldest first for the other ranks."""
+    at = item.at.timestamp() if isinstance(item.at, datetime) else 0.0
+    return (-at if item.rank == _RANK_CHANGE else at, item.source_id)
+
+
 @dataclass(frozen=True)
 class Acted:
     """The ``acted`` section: the claims, and the counts that the lead names."""
@@ -355,8 +362,10 @@ def acted_claims(acts: list[Any], sent: list[Any], cards: list[dict[str, Any]],
        group, and its href is the href of that row.
     2. The lines go in rank order (:func:`_rank`): the changes and the sent
        rows first, then the other acts, then the door reads. Inside a rank
-       the oldest goes first.
-    3. The cut keeps ``plan.BRIEF_LINES`` lines. :class:`Acted` carries the
+       the oldest shows first.
+    3. A line with no valid href is skipped before the cut. The cut keeps
+       ``plan.BRIEF_LINES`` lines: the newest of rank 0, and the oldest of
+       the other ranks (:func:`_cut_key`). :class:`Acted` carries the
        true total and the number that the kept lines hold, and
        :func:`closeout_lead` names both.
 
@@ -381,20 +390,28 @@ def acted_claims(acts: list[Any], sent: list[Any], cards: list[dict[str, Any]],
     for row in sent:
         items.append(_Item(_RANK_CHANGE, row.sent_at, REACH, f"{REACH}:{row.id}", OUTBOX_KIND,
                            sent_line(row), reach_href(row.signal_ids, cards, closed)))
-    items.sort(key=lambda i: (i.rank, i.at, i.source_id))
-    out: list[store.ClaimIn] = []
-    shown = 0
-    for item in items[:plan.BRIEF_LINES]:
+    # A line with no valid href is skipped BEFORE the cut, so it uses no slot.
+    valid: list[_Item] = []
+    for item in items:
         if in_app_href(item.href) is None:
             _log.info("brief.claim_skipped", kind=item.kind, reason="no_href")
             continue
+        valid.append(item)
+    # The cut keeps the newest changes and sent rows of rank 0, so a run of
+    # old pushes cannot push out a later sent row. The other ranks keep the
+    # oldest first. The lines then show in rank order, the oldest first.
+    ranked = sorted(valid, key=lambda i: (i.rank, _cut_key(i)))
+    kept = sorted(ranked[:plan.BRIEF_LINES], key=lambda i: (i.rank, i.at, i.source_id))
+    out: list[store.ClaimIn] = []
+    shown = 0
+    for item in kept:
         out.append(store.ClaimIn(position=start + len(out), section=ACTED, text=item.text,
                                  source_app=item.app, source_kind=item.kind,
                                  source_id=item.source_id, href=item.href))
         shown += item.count
     total = len(acts) + len(sent)
-    if len(items) > plan.BRIEF_LINES:
-        _log.info("brief.acted_cut", left_out=len(items) - plan.BRIEF_LINES, total=total)
+    if len(valid) > plan.BRIEF_LINES:
+        _log.info("brief.acted_cut", left_out=len(valid) - plan.BRIEF_LINES, total=total)
     return Acted(claims=out, total=total if out else 0, shown=shown)
 
 

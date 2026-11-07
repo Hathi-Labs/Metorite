@@ -207,3 +207,34 @@ def test_the_brief_package_stays_free_of_send_seams() -> None:
     )
 
     fence()
+
+
+def test_a_line_with_no_valid_href_uses_no_slot(monkeypatch) -> None:
+    """The skip runs before the cut: 8 rows, one href refused, 7 lines. The
+    refused row is the NEWEST, so the cut of rank 0 would take it first."""
+    real = gather.in_app_href
+    # The row's link builder gives a href, and the one check refuses it.
+    monkeypatch.setattr(gather, "reach_href",
+                        lambda ids, cards, closed: "/tasks?bad=1" if ids == ("tasks:bad",) else "/")
+    monkeypatch.setattr(gather, "in_app_href",
+                        lambda v: None if v == "/tasks?bad=1" else real(v))
+    sent = [_row(ids=("tasks:bad",), at=NOON + timedelta(hours=1))] + [
+        _row(at=NOON + timedelta(minutes=i + 1)) for i in range(7)]
+    got = gather.acted_claims([], sent, [], [], 0)
+    assert len(got.claims) == plan.BRIEF_LINES
+    assert f"reach:{sent[0].id}" not in {c.source_id for c in got.claims}
+    assert all(gather.in_app_href(c.href) for c in got.claims)
+    assert [c.position for c in got.claims] == list(range(plan.BRIEF_LINES))
+
+
+def test_the_cut_keeps_the_newest_changes_and_shows_them_oldest_first() -> None:
+    """Nine old pushes cannot cut two later sent rows."""
+    pushes = [_act("agent_push_by_reviewer", policy="chat:autopush",
+                   at=NOON + timedelta(minutes=i)) for i in range(9)]
+    sent = [_row(at=NOON + timedelta(hours=2)), _row(at=NOON + timedelta(hours=3))]
+    got = gather.acted_claims(pushes, sent, [], [], 0)
+    ids = [c.source_id for c in got.claims]
+    assert len(ids) == plan.BRIEF_LINES
+    assert ids[-2:] == [f"reach:{sent[0].id}", f"reach:{sent[1].id}"]
+    assert ids[:5] == [f"audit:{p.id}" for p in pushes[4:]]
+    assert (got.total, got.shown) == (11, 7)
