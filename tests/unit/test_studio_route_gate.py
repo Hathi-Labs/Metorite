@@ -18,7 +18,9 @@ c. A holder of ``feature:studio`` passes the gate on each route. With the
    org outside ``STUDIO_ORGS``, each route answers 404, and no handler reads
    a store.
 d. The router carries one feature gate, ``feature:studio``. No route adds a
-   second gate, and no route reads ``studio:publish`` (J2 owns that check).
+   second gate. Only the org install of WS-PKG PKG-8b reads ``studio:publish``,
+   in its handler, because an org install is a share (``package_host.md``
+   §6.1). No other route reads it (J2 owns the review of a share).
 e. ``EXPECTED_ROUTES`` pins the routes. A new route fails here until a person
    adds it, and so adds its 403 case.
 f. No file of ``routes/studio`` names the ``workflows`` gate.
@@ -46,9 +48,9 @@ with 16 routes, and each test named here went red.
   publish route. Red: ``test_no_route_adds_a_second_gate_or_the_share_verb``
   and ``test_a_studio_holder_passes_the_gate_on_each_route`` (the
   ``feature:studio`` and ``feature:*`` holders) on that route, and
-  ``test_the_share_verb_is_a_capability_that_no_studio_route_reads``.
+  ``test_the_share_verb_is_read_by_the_org_install_only``.
 * M5: remove ``"studio"`` from ``FEATURES`` and ``"studio:publish"`` from
-  ``CAPABILITIES``. Red: ``test_the_share_verb_is_a_capability_that_no_studio_route_reads``,
+  ``CAPABILITIES``. Red: ``test_the_share_verb_is_read_by_the_org_install_only``,
   and the pins in ``test_org_access_control.py`` and
   ``test_auth_me_features.py``.
 """
@@ -102,6 +104,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     # A5c-1, the package delete.
     ("GET", "/studio/packages/{package_id}/delete-preview"),
     ("DELETE", "/studio/packages/{package_id}"),
+    # WS-PKG PKG-8b, the org and group install.
+    ("POST", "/studio/packages/{package_id}/install"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
 )
@@ -317,15 +321,37 @@ def test_no_studio_file_names_the_workflows_gate() -> None:
     assert 'dependencies=[require_feature_router("studio")]' in actions_src
 
 
-def test_the_share_verb_is_a_capability_that_no_studio_route_reads() -> None:
-    """J1-1 adds `studio:publish` to the vocabulary only. Version publish of
-    a member's own app needs `feature:studio` and ownership (STU-Q4b)."""
+def test_the_share_verb_is_read_by_the_org_install_only() -> None:
+    """J1-1 adds `studio:publish` to the vocabulary. Version publish of a
+    member's own app needs `feature:studio` and ownership (STU-Q4b). The one
+    reader in `routes/studio` is the org install of PKG-8b, an org-wide share
+    (`package_host.md` §6.1). It names the verb once, as
+    `packages.ORG_INSTALL_RIGHT`, and only `install_package` calls
+    `has_permission`, with that constant."""
+    import ast
+
+    from gateway.routes.studio import packages
+
     assert "studio:publish" in CAPABILITIES
     assert "studio" in FEATURES
+    assert packages.ORG_INSTALL_RIGHT == "studio:publish"
     for path in sorted(_STUDIO_DIR.glob("*.py")):
         text = path.read_text(encoding="utf-8")
-        assert "studio:publish" not in text, path.name
-        assert "has_permission(" not in text, path.name
+        if path.name != "packages.py":
+            assert "studio:publish" not in text, path.name
+            assert "has_permission(" not in text, path.name
+            continue
+        assert text.count('"studio:publish"') == 1, path.name
+        tree = ast.parse(text)
+        readers = sorted(
+            fn.name for fn in ast.walk(tree)
+            if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
+            and "has_permission(" in ast.unparse(fn))
+        assert readers == ["install_package"], readers
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute) and n.func.attr == "has_permission"]
+        assert [ast.unparse(c) for c in calls] == [
+            "user.has_permission(ORG_INSTALL_RIGHT)"], calls
 
 
 # ── g. The chat gets the refusal ──────────────────────────────────────────

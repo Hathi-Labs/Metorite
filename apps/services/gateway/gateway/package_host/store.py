@@ -57,19 +57,22 @@ with a key that a system package holds
 (:func:`acb_common.app_manifests.shell_manifest.load_contributes`), and with
 an existing claim of the same point and key whose scope overlaps:
 
-* a new ``org`` claim overlaps every claim;
-* a new ``group:g`` claim overlaps the org claims, the claims of group g, and
-  the private claims of each member of g;
+* a new ``org`` claim overlaps the org claims and the group claims;
+* a new ``group:g`` claim overlaps the org claims and the claims of group g;
 * a new private claim of u overlaps the org claims, the private claims of u,
   and the claims of each group of u.
 
-Overlap is one relation, so the store reads it from both sides: a private
-claim of u and a claim of a group of u conflict in either order of install.
-Each existing claim counts, also one of a paused or archived install, until
-the disposal of PKG-9 deletes it. A conflict raises :class:`ClaimTaken`
-with the point, the key and the holder. ⚠️ A route sends only
-:meth:`InstallError.detail_for` of the session member, because the holder
-can be the private install of another member.
+⚠️ **The org wins (PKG-Q6, owner, 2026-11-07, task 1246).** A private claim
+never blocks an org or a group install. The org or group install goes in,
+and the resolve shows its claim in place of the private claim of each
+viewer (§5.2: org, then group, then private). The member still reaches the
+private app from the Studio library. A private claim stays refused when an
+org claim or a claim of a group of its member holds the key. So the
+relation is one-sided on purpose. Each existing claim counts, also one of a
+paused or archived install, until the disposal of PKG-9 deletes it. A
+conflict raises :class:`ClaimTaken` with the point, the key and the holder.
+⚠️ A route sends only :meth:`InstallError.detail_for` of the session member,
+because the holder can be the private install of another member.
 
 **The groups.** A member of a group is an ACTIVE member. That is the rule of
 the one group query, ``routes/projects/core._MY_GROUPS_SQL``. The store
@@ -91,8 +94,14 @@ holds the row of the app in ``apps`` ``FOR UPDATE``, then the org lock of
 waits for a ``FOR UPDATE`` on the ``apps`` row. So a second caller that does
 not hold the row must lock it (``FOR KEY SHARE``) before it calls here.
 Else it can hold this lock and wait for the row while a publish holds the
-row and waits for this lock. PKG-8b adds the second caller (advisory: no
-fence holds this order yet).
+row and waits for this lock. The second caller is the install route of
+PKG-8b: it calls ``studio/packages_store.lock_for_install`` first. Fence:
+``tests/unit/test_studio_package_install_r8.py`` (the install waits for the
+row and does not hold this lock).
+
+**Who may install (PKG-8b).** The store does not decide it. The route asks
+:func:`in_group` for a group install, and reads ``studio:publish`` for an
+org install (§6.1).
 
 **A new version (PKG-8a).** :func:`set_version` moves an install to a new
 version and replaces its claims. It takes the org lock through
@@ -198,16 +207,16 @@ def _groups_of(member: str) -> str:
 
 #: The groups of the member of the new install (``:subject``).
 _GROUPS_OF_MEMBER = _groups_of(":subject")
-#: The groups of the owner of an existing private install ``i``.
-_GROUPS_OF_HOLDER = _groups_of("i.scope_subject")
 
 #: The existing installs whose scope overlaps a new install of each kind (§4).
+#: ⚠️ PKG-Q6 (the org wins): the org and the group rows never name a private
+#: install, so a private claim never blocks them. The private row still names
+#: the org and the group claims, so a private claim cannot take their key.
 OVERLAP: dict[str, str] = {
-    "org": "TRUE",
+    "org": "i.scope_kind <> 'private'",
     "group": (
         "(i.scope_kind = 'org'"
-        " OR (i.scope_kind = 'group' AND i.scope_subject = :subject)"
-        f" OR (i.scope_kind = 'private' AND :subject IN ({_GROUPS_OF_HOLDER})))"
+        " OR (i.scope_kind = 'group' AND i.scope_subject = :subject))"
     ),
     "private": (
         "(i.scope_kind = 'org'"
@@ -215,6 +224,13 @@ OVERLAP: dict[str, str] = {
         f" OR (i.scope_kind = 'group' AND i.scope_subject IN ({_GROUPS_OF_MEMBER})))"
     ),
 }
+
+#: True when the address ``:member`` is an ACTIVE member of the group
+#: ``:group`` (``group:<slug>``) of the bound org (PKG-8b). The body is the one
+#: group query, with the bound org, so a group of another org never matches.
+_IN_GROUP_SQL = (
+    f"SELECT 1 FROM ({_groups_of(':member')}) AS mine WHERE mine.subject = :group"
+)
 
 #: A claim of an install of the same app is never a conflict, at any scope.
 SAME_APP_EXEMPT = "i.app_id <> CAST(:app AS uuid)"
@@ -605,6 +621,34 @@ async def _check_held(db: Any, kind: str, subject: str, app: str,
         raise ClaimTaken(str(row[0]), str(row[1]), Holder(
             source=str(row[4]), package=str(row[3]), install_id=str(row[2]),
             scope_subject=str(row[5])))
+
+
+# ── The group of an install (PKG-8b) ────────────────────────────────────────
+
+
+async def in_group(db: Any, *, member: str, group: str) -> bool:
+    """True when *member* is an active member of *group* in the bound org.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    *member* is the address of the session member, never request input.
+    *group* is a ``group:<slug>`` subject. The read is the one group query
+    (``_MY_GROUPS_SQL``) with the bound org, so a removed member, a group of
+    another org and a group that does not exist all answer False. A value
+    that is not a group subject answers False and reads nothing. The store
+    takes no lock and writes nothing here. The install route of PKG-8b calls
+    it before it locks the ``apps`` row.
+    """
+    if not _plain(member, limit=MAX_SUBJECT_BYTES) or not _plain(group, limit=MAX_SUBJECT_BYTES):
+        return False
+    try:
+        who = normalize_grant_subject(member)
+        subject = normalize_grant_subject(group)
+    except ValueError:
+        return False
+    if _kind_of(who) != "private" or _kind_of(subject) != "group":
+        return False
+    row = (await db.execute(text(_IN_GROUP_SQL), {"member": who, "group": subject})).first()
+    return row is not None
 
 
 # ── The writer ──────────────────────────────────────────────────────────────

@@ -37,9 +37,10 @@ by construction. A caller without ``feature:studio`` gets 403 before a
 handler runs, so the 403 comes before the 404 of ``STUDIO_ORGS``. A member,
 a manager and an admin hold the feature through ``feature:*``, and the owner
 through ``*``. A guest and a member with a deny override do not. No route
-adds a second feature gate, and no route reads the share verb of J2.
-Fence: ``tests/unit/test_studio_route_gate.py`` (``EXPECTED_ROUTES``) and
-``tests/unit/test_studio_route_gate_r8.py``.
+adds a second feature gate. One handler reads the share verb of J2: the org
+install of WS-PKG PKG-8b (``packages.install_package``), in its body and not
+as a gate. Fence: ``tests/unit/test_studio_route_gate.py``
+(``EXPECTED_ROUTES``) and ``tests/unit/test_studio_route_gate_r8.py``.
 """
 
 from __future__ import annotations

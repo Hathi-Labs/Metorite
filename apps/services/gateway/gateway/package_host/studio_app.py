@@ -26,6 +26,14 @@ the prefix is :data:`APP_HREF_PREFIX`. The shell manifest ``studio.json``
 gates the ``/apps`` route on the feature ``studio``. Fence:
 ``tests/unit/test_studio_publish_install.py``.
 
+**An org or a group install (PKG-8b).** The route
+``POST /studio/packages/{id}/install`` calls :func:`install_scope` on the
+body, decides who may install, locks the ``apps`` row, and then calls
+:func:`keep_scope_install` with the live version. That function moves the
+install at the scope when it exists, and writes it when it does not, with
+the claims of :func:`claims_of`. A later publish moves only the private
+install, so the holder approves a new version by a new call.
+
 This module runs no SQL. The store is the one writer, and the route is the
 one place that decides who may call this.
 """
@@ -34,6 +42,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+
+from acb_auth.permissions import normalize_grant_subject
 
 from gateway.package_host import store
 from gateway.package_host.store import Contribution, Install
@@ -92,3 +102,70 @@ async def keep_private_install(
     return await store.install(
         db, app_id=app_id, version=version, scope_subject=owner, scope_kind="private",
         installed_by=owner, ends_at=None, contributions=claims)
+
+
+#: The scopes of the install route (PKG-8b). A private install comes with the
+#: publish (PKG-8a), so the route takes no address.
+ROUTE_KINDS = frozenset({"org", "group"})
+#: The refusal of a scope that the route does not take.
+BAD_SCOPE = ("The scope is org or group:<slug>. Your own private install comes with "
+             "each publish, so send one of the two.")
+
+
+def install_scope(raw: object) -> tuple[str, str]:
+    """The kind and the normalised subject of the scope in a route body.
+
+    *raw* is the value of ``scope`` in the body: ``org`` or
+    ``group:<slug>``. Each other value, an address too, raises
+    :class:`store.ScopeRefused` (422), and the route reads nothing. The store
+    checks the subject again before its first statement.
+    """
+    refused = store.ScopeRefused("bad_scope", BAD_SCOPE)
+    if not isinstance(raw, str) or "\x00" in raw:
+        raise refused
+    try:
+        # A lone surrogate raises UnicodeEncodeError, a ValueError.
+        if len(raw.encode("utf-8")) > store.MAX_SUBJECT_BYTES:
+            raise refused
+        subject = normalize_grant_subject(raw)
+    except ValueError:
+        raise refused from None
+    kind = "org" if subject == "org" else "group" if subject.startswith("group:") else "private"
+    if kind not in ROUTE_KINDS:
+        raise refused
+    return kind, subject
+
+
+async def keep_scope_install(
+    db: Any,
+    *,
+    app_id: str,
+    version: int,
+    scope_kind: str,
+    scope_subject: str,
+    member: str,
+    manifest: Mapping[str, Any],
+) -> tuple[Install, bool]:
+    """Keep the install of *app_id* at an org or a group scope, at *version*.
+
+    *db* is the session of the route, which holds the ``apps`` row ``FOR KEY
+    SHARE`` already. *member* is the session member, and the store writes
+    it as ``installed_by`` of a new install. The function moves the install
+    at the scope when it exists, and writes it when it does not, as
+    :func:`keep_private_install` does. Answers the install and True when it
+    wrote a new one. A refusal of the store raises an
+    :class:`store.InstallError`, and the route answers with its
+    ``detail_for`` of the member.
+    """
+    if scope_kind not in ROUTE_KINDS:
+        raise store.ScopeRefused("bad_scope", BAD_SCOPE)
+    claims = claims_of(app_id, manifest)
+    moved = await store.set_version(
+        db, app_id=app_id, version=version, scope_subject=scope_subject,
+        scope_kind=scope_kind, contributions=claims)
+    if moved is not None:
+        return moved, False
+    made = await store.install(
+        db, app_id=app_id, version=version, scope_subject=scope_subject, scope_kind=scope_kind,
+        installed_by=member, ends_at=None, contributions=claims)
+    return made, True
