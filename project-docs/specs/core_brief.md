@@ -1,8 +1,23 @@
 # Core brief — the 07:30 brief, the 18:30 close-out, and silence between
 
 **Status: ACTIVE. Built: BR-2a-1, BR-2c-1, BR-2c-2, BR-4b, BR-2d, BR-7a,
-BR-5 slice 1, and BR-2a-2 slice 1 (dark), 2026-10-29 to 2026-11-05.**
-Verified against code on 2026-11-05, at `origin/main` `1e63f33d8`.
+BR-5 slices 1, 2a, 2b-1 and 2b-2, BR-2a-2 slice 1 and BR-2b-1 (dark), 2026-10-29
+to 2026-11-06.** Verified against code on 2026-11-07, on a branch from
+`495c2f29c`.
+
+**BR-5 slices 2b-1 and 2b-2 BUILT 2026-11-06, dark** behind
+`BRIEF_EXCEPTIONS` (OFF). Migration 350 adds `rule_id`, `feedback` and
+`feedback_at` to `reach_signal_log`. The loop writes the `rule_id`, and
+`outbox.rate_alert` stores a rating. The `my_day_prefs` boolean
+`block_notify` sets `notify_me` on each `block_soon` card (Q8). No route
+takes a rating yet: RE-6 calls `rate_alert`.
+
+**BR-2b-1 BUILT 2026-11-06, dark** behind `BRIEF_CLOSEOUT` (OFF): the
+template close-out at 18:30, with the sections `done` and `moved` (§4.3).
+`brief.run` takes a `kind` in its payload. A payload with no `kind` is a
+`brief`. The close-out makes no model call, even with `BRIEF_COMPOSE` on.
+No migration. The sections `acted` and "mail sent" wait for BR-7b, and the
+phrase of the close-out lead waits for a later slice.
 
 **BR-2a-2 slice 1 BUILT 2026-11-05, dark** behind `BRIEF_COMPOSE` (OFF):
 the phrase step of the 07:30 brief (§4.2, §4.4). `gateway/brief/phrase.py`
@@ -273,7 +288,33 @@ BR-1b builds.
   reply, tasks due today and promises due (`needs_reply_count`,
   `promise_tasks`). Each count stores its ids.
 - **The close-out** reads `handled_run` for `done`, the open cards of today
-  for `moved`, and BR-7b's executed acts for `acted`.
+  for `moved`, and BR-7b's executed acts for `acted`. BR-2b-1 builds `done`
+  and `moved` only. The rules of BR-2b-1:
+  - **`done`.** One claim for each `Closed` row of `handled_run`, in its
+    order (newest first). `source_id` is `Closed.key`, `source_app` is
+    `Closed.app`, `source_kind` is `handled`, `text` is `Closed.title`, and
+    `href` is `Closed.href` when it is an in-app path. A row with no in-app
+    href gets no claim. The cut is `BRIEF_LINES`. The run calls
+    `handled_run` itself, because `loop.snapshot` does not run Handled. A
+    Handled read that is not ok (`HandledRun.ok` is False) raises, and the
+    queue retries the run, as it does for `SnapshotIncomplete`. So a lost
+    source never reads as a quiet day.
+  - **`moved`.** The `plan.brief_items` of the 18:30 snapshot, cut to
+    `BRIEF_LINES`, in the feed's order. Each makes one claim in the section
+    `moved`, with the text `plan.line`, as the brief builds it. These are
+    the open cards that the day leaves for tomorrow. A card that is done
+    since the snapshot is not open, so it is not here.
+  - **The order.** `done` first, then `moved`. The positions are continuous
+    from 0.
+  - **The lead (template).** `Your close-out, <date words>.` Then, in
+    words and counts, `<N> done` and `<M> moved to tomorrow`, joined with
+    "and", and a stop. A count of 0 is left out. Example: `Your close-out,
+    Thu 15 Oct. 2 done and 1 moved to tomorrow.` The counts are the claim
+    counts. The lead holds no name and no title of a card.
+  - **Empty.** No claim in both sections gives the state `empty`, with no
+    lead.
+  - **"Mail sent" is not in BR-2b-1.** The Email Handled read lists the
+    rules that applied. Mail that an agent sent belongs to BR-7b.
 - **Each read runs as the member**, through the app's own authorized read.
   The brief adds no SQL against the table of another app.
 - **The order** is the feed's order. No model ranks, picks or drops a claim.
@@ -340,7 +381,7 @@ words.
    brief time near midnight that the look-back ran after midnight. It does
    not use the feed day, because the feed day moves with the day-start
    hour. The route is a pure read, and it writes nothing. No route
-   enqueues a run. `kind=closeout` answers 404 until BR-2b. Before the slot
+   enqueues a run. A close-out run is served by the same route (BR-2b-1). Before the slot
    of today, the route serves the run of the day before, with its own
    `local_date`. The My Day card (BR-2c-2) must show that date.
 4. **The bell.** One entry in v1 (§9 Q2, owner 2026-10-29). The entry says
@@ -395,11 +436,23 @@ flags.
 
 **The rating of an alert (slice 2b-1, DECIDED 2026-11-06 07:17 UTC).** The
 owner chose to store the rating on `reach_signal_log`, with the rule id.
-Migration 348 adds three nullable columns: `rule_id`, `feedback` and
+Migration 350 adds three nullable columns: `rule_id`, `feedback` and
 `feedback_at`. An interrupt writes the `rule_id` of the rule that matched, with
 one log row for each rule. `feedback` holds
 `useful` or `not_useful`. One member gives one rating for each card and rule,
 and a second rating replaces the first.
+
+**BUILT 2026-11-06, dark.** `plan.interrupt_candidates` puts the rule id on
+each card that a rule lets in. `outbox.log` writes it. `decide` takes the
+first rule that matches, so one card has one rule and one row. The key of
+the log stays `(organization_id, member_email, signal_id, fingerprint)`.
+
+`outbox.rate_alert(org, member, signal_id, rule_id, feedback)` stores the
+rating on the newest row of that card and rule with the outcome `sent`. A row
+that sent no message, such as `capped` or `quiet`, takes no rating. The
+function compares the member address with no case. The caller takes the org and
+the member from the session. No route takes a rating in this slice. RE-6
+calls the function when it builds the buttons.
 
 A rating only stores. It mutes no
 rule and changes no budget. 
@@ -409,9 +462,20 @@ the rating of a whole message on `reach_outbox.feedback`. The two do not
 overlap: the log rates one card for one rule, and the outbox rates a message.
 RE-6 reads the log rating, and it adds no second table.
 
-**The `notify_me` fact (slice 2b-2).** Rule 3 never fires, because no
-provider sets `notify_me`. The owner has not decided what "the member asked to
-be told" means (Q8 in §9). This row waits on that answer.
+**The `notify_me` fact (slice 2b-2, DECIDED 2026-11-06 18:29 UTC, Q8 "One
+setting").** One boolean in `my_day_prefs`, `block_notify`, sets `notify_me`
+on every `block_soon` card, so rule 3 can fire. No migration.
+
+**BUILT 2026-11-06, dark.** `PUT /shell/feed/prefs` stores the key, as it
+stores `rule_mutes`. `loop.block_notify` reads it only with
+`BRIEF_EXCEPTIONS` on. `exceptions.with_notify` marks a copy of each
+`block_soon` card for the loop and `/reach/preview`. The feed's own card does
+not change.
+
+The read fails closed over the spellings of the member address. The switch
+is on only when each spelling row that holds the key holds `true`, so a
+`false` under any spelling turns it off. A read error
+counts as off, so a fault sends no alert that the member did not ask for.
 
 **The mute screen (slice 2b-3).** A member sets a rule mute in Settings. The
 screen is STANDARD tier and needs a D145 preview. It writes `rule_mutes` in
@@ -476,7 +540,7 @@ The owner decided Q1 to Q7 on 2026-10-29 (epic #479, the comment
 | Q5 | Fixed times, or the member's? | 07:30 and 18:30 in the member's zone by default. Each member can change both. The brief stores three preferences (`enabled`, `brief_time`, `closeout_time`) through `acb_common.assistant_profile` (`app_prefs`, and `PUT /auth/me/assistant-profile` with the key `apps`). A later slice adds the settings UI |
 | Q6 | How long to keep a brief? | 90 days. The prune hook of `brief/run.py` deletes older runs |
 | Q7 | Outside the app, when? | Web push is in v1, and it ships last, after the in-app surfaces |
-| Q8 | What does "the member asked to be told" mean for rule 3? | **OPEN, asked on task 590 on 2026-11-06.** Options: (a) one boolean in `my_day_prefs` that sets `notify_me` on every `block_soon` card, no migration (recommended), (b) only blocks that have a reminder, (c) drop rule 3, because the Notify me request (RE-5) already interrupts |
+| Q8 | What does "the member asked to be told" mean for rule 3? | **DECIDED 2026-11-06 18:29 UTC, "One setting"** (owner, task 590): option (a), one boolean in `my_day_prefs` (`block_notify`) that sets `notify_me` on every `block_soon` card, no migration. The options were (a), (b) only blocks that have a reminder, and (c) drop rule 3 |
 
 ### 9.1 Gaps that the BR-2a-1 audit found
 
@@ -516,9 +580,9 @@ and the at-most-once rule needs AUTO-2's `UNATTENDED_LEDGER`.
 | 4 | BR-2a-2: the phrase step. **Slice 1 BUILT 2026-11-05, dark** (`brief/phrase.py`, the brief at 07:30 only). The close-out call waits for BR-2b | 3 | `BRIEF_COMPOSE` | AGENT-SAFE to build. **OWNER-GATE** to flip in production (credits, §3a rule 3) |
 | 5 | BR-2c: in-app delivery and the read route. **BR-2c-1 (the route and the chat turn) BUILT 2026-10-29, dark. BR-2c-2 (the My Day card) BUILT 2026-10-30, dark,** in `src/lib/shell/BriefCard.tsx` behind `NEXT_PUBLIC_BRIEF_CARD`. A 404 or a failed read draws nothing, and the brief of the day before wears its date | 2 | `BRIEF_IN_APP`, `NEXT_PUBLIC_BRIEF_CARD` | AGENT-SAFE. The production flip: `enforcement-flip` |
 | 6 | BR-2d: the monitor. **BUILT 2026-11-04, dark** (`brief/monitor.py`, the hourly `brief.slo` check and `GET /admin/brief/health`). The 3-minute fallback waits for BR-2a-2, because a template run is `ready` at once | 2, AUTO-2 | none | AGENT-SAFE |
-| 7 | BR-2b with BR-7b: the close-out | 2 | `BRIEF_CLOSEOUT` | AGENT-SAFE. The production flip: `enforcement-flip` |
+| 7 | BR-2b with BR-7b: the close-out. **BR-2b-1 BUILT 2026-11-06, dark** (the template close-out with `done` and `moved`, no model call). `BRIEF_CLOSEOUT` is the planner's switch for the close-out kind: off, the planner plans no close-out and the brief path is as before. **Still open:** BR-7b (`acted`, mail sent by an agent) and the phrase of the close-out lead | 2 | `BRIEF_CLOSEOUT` | AGENT-SAFE. The production flip: `enforcement-flip` |
 | 8 | BR-7a: the effect registry and its fence. **BUILT 2026-11-04** (`worker.register(effect=, policy=)`, `tests/unit/test_job_effects_fence.py`). A kind with no `effect` is a finding in the fence; `register` takes the argument as optional, so the fence is the gate | BR-1a | none | AGENT-SAFE |
-| 9 | BR-5: the exception rules. **Slice 1 BUILT 2026-11-04, dark** (`reach/exceptions.py`: the four rules, `plan.interrupt_candidates(rules=)`, `BRIEF_EXCEPTIONS`). **Slice 2a BUILT 2026-11-05, dark:** a member's mute of a rule (the `my_day_prefs` key `rule_mutes`, read by `loop.muted_rules`). **Still open, in three slices (spec rows 12 to 14):** 2b-1 the useful or not-useful rating (migration 348, HIGH tier), 2b-2 the `notify_me` fact that rule 3 needs (waits on Q8), and 2b-3 the mute screen (STANDARD, D145 preview). The move of an interrupted card to the top of My Day (§6) is not built, and no module under `routes/shell/` reads `BRIEF_EXCEPTIONS` | 2 | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip: `enforcement-flip` (Q4 is decided) |
+| 9 | BR-5: the exception rules. **Slice 1 BUILT 2026-11-04, dark** (`reach/exceptions.py`: the four rules, `plan.interrupt_candidates(rules=)`, `BRIEF_EXCEPTIONS`). **Slice 2a BUILT 2026-11-05, dark:** a member's mute of a rule (the `my_day_prefs` key `rule_mutes`, read by `loop.muted_rules`). **Slices 2b-1 and 2b-2 BUILT 2026-11-06, dark** (spec rows 12 and 13): the rule id and the rating of an alert (migration 350, `outbox.rate_alert`, no route), and the `my_day_prefs` boolean `block_notify` that sets `notify_me` (Q8). **Still open:** 2b-3 the mute screen (STANDARD, D145 preview, row 14). The move of an interrupted card to the top of My Day (§6) is not built, and no module under `routes/shell/` reads `BRIEF_EXCEPTIONS` | 2 | `BRIEF_EXCEPTIONS` | AGENT-SAFE to build. The production flip: `enforcement-flip` (Q4 is decided) |
 | 10 | BR-3a: one week on pilot data | 5 | none | **OWNER-GATE**: the pilot orgs and their inboxes are the owner's |
 | 11 | Web push of the brief, through Reach | 6 | `BRIEF_PUSH` | **OWNER-GATE**: it reaches a person through a third party |
 
@@ -541,13 +605,14 @@ Each item is a "done when". Each fence runs red first, then green.
 | 4 | With 4 claims, one call goes out with `source="brief"`. A refused answer, a model error or a balance refusal keeps the template lead, and the run still delivers. A retry after `phrasing` makes no second call. The call carries `client_ref` equal to the stored `model_request_id`, and that value is not empty | `test_brief_phrase.py`, `test_brief_phrase_r8.py` |
 | 5 | The chat's first turn and the My Day card show the stored lines, and a diff against `plan.brief_parts` of the same cards is empty. On the My Day card, each claim href opens as an ordinary in-app link (`inAppLink`). The chat pills stay text, because a link chip needs a tool event, and a stored row has none. `GET /brief/today` answers 404 for a run of another member. With `BRIEF_IN_APP` off, both surfaces answer as before, byte for byte. BR-2c-1 holds the chat and the route | `test_chat_brief_turn_r8.py`, `test_brief_today_r8.py`, `test_brief_today.py` |
 | 6 | A run that is not ready at `slot_at + 3 min` delivers the template brief. `brief.slo_missed` logs once when a fake week falls under 99%. The health route answers the lag percentiles | `test_brief_monitor.py` |
-| 7 | The 18:30 run lists the Handled items, the moved items and the acts of the day, each with a claim. A day with no item gives `empty`. Each act from `audit_event` names its policy | `test_brief_run_r8.py` |
+| 7a | **BUILT (BR-2b-1).** On a fake clock, a member in `Asia/Kolkata` gets one close-out run at 18:30 local, and none on a day off. Two ticks give one row and one ledger entry. A task closed today gives one `done` claim with `source_id` `tasks:<id>`. An open card gives one `moved` claim with the text of `plan.line`. A day with neither gives `empty`. With `BRIEF_COMPOSE` on and 4 claims or more, the close-out makes no model call. With `BRIEF_CLOSEOUT` off, no close-out is planned. A payload with no `kind` runs as a `brief`. A Handled read that is not ok retries. `GET /brief/today?kind=closeout` serves the run to its member only | `test_brief_closeout.py`, `test_brief_closeout_r8.py` |
+| 7b | BR-7b: the 18:30 run also lists the acts of the day (`acted`), each with a claim. Each act from `audit_event` names its policy. Stays open | `test_brief_run_r8.py` (BR-7b) |
 | 8 | A new job kind with no `effect` fails the fence. So does a `send` kind with no policy, and an import of a send seam into `gateway/brief/` | `test_job_effects_fence.py` |
 | 9 | Between the moments, a card that no rule matches never moves to the top. A matching card does, inside the budget of `proactive_reach.md` §6.1. A rule that the member muted matches nothing | `test_reach_exceptions.py` |
 | 10 | The ledger shows one brief and one close-out for each pilot member on 5 working days. Each brief has one email claim and one calendar claim at least | The ledger, read by the owner |
 | 11 | Reach sends the stored lead with a link, and `reach_outbox` holds the row | `test_reach_loop.py` |
-| 12 | An interrupt writes a `reach_signal_log` row with the `rule_id`. A rating of `useful` or `not_useful` stores `feedback` and `feedback_at` on that row only. A second rating replaces the first. A rating by member A never changes a row of member B or of another tenant. A rating mutes no rule | `test_reach_exceptions_feedback_r8.py` (a real database, two tenants) |
-| 13 | With the `notify_me` source of Q8 on, a `block_soon` card carries `notify_me` and rule 3 fires. With it off, rule 3 matches nothing | `test_reach_exceptions.py` (waits on Q8) |
+| 12 | An interrupt writes a `reach_signal_log` row with the `rule_id`. A rating of `useful` or `not_useful` stores `feedback` and `feedback_at` on that row only. A second rating replaces the first. A rating by member A never changes a row of member B or of another tenant. A rating mutes no rule | `test_reach_exceptions_feedback_r8.py` (a real database, two tenants). **BUILT 2026-11-06**, migration 350 |
+| 13 | With the `notify_me` source of Q8 on, a `block_soon` card carries `notify_me` and rule 3 fires. With it off, rule 3 matches nothing | `test_reach_exceptions.py`. **BUILT 2026-11-06** (Q8 "One setting", `block_notify`). `test_my_day_prefs_r8.py` runs the read on a real database |
 | 14 | The Settings screen lists the four rules in words. A switch mutes or unmutes one rule, and the route of slice 2a stores it | `test_reach_rule_mutes_route.py`, and the D145 preview |
 
 All fences are under `tests/unit/`.
@@ -560,7 +625,9 @@ uv run pytest tests/unit/test_brief_store_r8.py tests/unit/test_brief_run.py \
   tests/unit/test_brief_run_r8.py tests/unit/test_brief_claim_fence.py \
   tests/unit/test_job_effects_fence.py tests/unit/test_brief_monitor.py \
   tests/unit/test_reach_exceptions.py tests/unit/test_brief_phrase.py \
-  tests/unit/test_brief_phrase_r8.py -q
+  tests/unit/test_brief_phrase_r8.py tests/unit/test_brief_closeout.py \
+  tests/unit/test_brief_closeout_r8.py tests/unit/test_reach_exceptions_feedback_r8.py \
+  tests/unit/test_my_day_prefs_r8.py -q
 uv run pytest tests/unit/test_reach_plan.py tests/unit/test_chat_brief_turn.py \
   tests/unit/test_chat_brief_turn_r8.py tests/unit/test_job_queue.py \
   tests/unit/test_tenant_coverage.py -q

@@ -63,3 +63,43 @@ def test_all_write_routes_require_internal_auth():
         route = paths[p]
         dep_calls = [d.call for d in route.dependant.dependencies]
         assert require_internal_auth in dep_calls, f"{p} missing require_internal_auth"
+
+
+
+def test_the_router_demands_the_admin_permission(monkeypatch):
+    """AP-BUG-2 (task 1896): ``feature:approvals`` alone reaches every member,
+    so the router also demands ``ADMIN_PERMISSION``. A member gets 403 on the
+    list, on approve and on reject. This fence runs with no database. The R8
+    proof is ``test_actions_pending_admin_r8.py``."""
+    import action_broker
+    from acb_auth import (
+        UserContext,
+        UserRole,
+        build_access,
+        get_current_user,
+        require_internal_auth,
+    )
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes.shell.intent import ADMIN_PERMISSION
+
+    monkeypatch.setattr(action_broker, "list_pending", lambda: [{"id": "1"}])
+    member = UserContext(email="m@x", role=UserRole.EMPLOYEE, access=build_access(["feature:*"]))
+    admin = UserContext(
+        email="a@x", role=UserRole.EMPLOYEE,
+        access=build_access(["feature:*", ADMIN_PERMISSION]),
+    )
+    app = FastAPI()
+    app.include_router(actions.router)
+    app.dependency_overrides[require_internal_auth] = lambda: None
+    client = TestClient(app)
+
+    app.dependency_overrides[get_current_user] = lambda: member
+    assert client.get("/actions/pending").status_code == 403
+    assert client.post("/actions/pending/x/approve").status_code == 403
+    assert client.post("/actions/pending/x/reject").status_code == 403
+
+    app.dependency_overrides[get_current_user] = lambda: admin
+    res = client.get("/actions/pending")
+    assert res.status_code == 200
+    assert res.json()["count"] == 1

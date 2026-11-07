@@ -169,8 +169,12 @@ export function summarise(report: PaneReport[]): string {
  * feature registered in `feature_catalog` and granted to you, that no nav item
  * points at. It is reachable by URL and undiscoverable in the UI — which reads,
  * again, as "the app doesn't have that".
+ *
+ * `installSlugs` are the slugs that installed packages declare (PKG-6b). An
+ * install gives its own pane, so such a slug has a home in the sidebar. The
+ * caller reads them from the package manifest. With none, nothing changes.
  */
-export function unmappedFeatures(access: Access): string[] {
+export function unmappedFeatures(access: Access, installSlugs: readonly string[] = []): string[] {
   // `allPanes()` includes preview panes, which is what we want here: a slug
   // whose pane exists but is not launched is MAPPED — it has a home to return
   // to — and reporting it as unmapped would send someone looking for a nav
@@ -180,5 +184,6 @@ export function unmappedFeatures(access: Access): string[] {
       .map((p) => p.feature)
       .filter((f): f is string => Boolean(f)),
   );
-  return access.features.filter((f) => !navSlugs.has(f)).sort();
+  const installed = new Set(installSlugs);
+  return access.features.filter((f) => !navSlugs.has(f) && !installed.has(f)).sort();
 }

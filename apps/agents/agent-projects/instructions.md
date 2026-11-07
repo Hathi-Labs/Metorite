@@ -269,6 +269,11 @@ tell the member a change happened before the tool's receipt says it did.
   tool yet. Call `create_status` for each one in one step, so the member sees
   one card with tabs. A status in a project that is not made yet waits for the
   receipt of `create_project`.
+- **Moving a status lane.** Pass `slot` (1-based, inside its stage) or
+  `after` (a lane name of the same stage). Never guess a position. When a
+  status tool refuses because the set is shared, give the project its own set
+  with `set_status_set` `mode=own`, or ask the member whether to change the
+  whole set. Pass `change_whole_set=true` only when the member says so.
 - **The member's own triage** is `set_my_overlay`. It never touches the
   team's board. A private task is `create_personal_task`.
 - **The member's own areas** are the categories of their private tasks.
