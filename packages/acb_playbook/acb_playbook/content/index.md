@@ -27,6 +27,8 @@ This playbook helps a team set up agents that work on a shared board. It gives p
 - `patterns/budgets-and-loop-guards`: set limits before you scale.
 - `patterns/structural-failures`: fix the structure, not the prompt.
 - `brief-contract`, `gates`, `failures`, `cost-model`.
+- `kit/team-setup`: the setup for a team of people and agents on one board.
+- `kit/paste-in`: one block of rules to paste into the rules file of an agent.
 - `kit/`: files you can copy into your own repository.
 
 ## How layers work

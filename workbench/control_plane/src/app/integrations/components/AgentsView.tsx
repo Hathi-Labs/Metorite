@@ -44,6 +44,7 @@ import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import WaitingRequests from "./WaitingRequests";
+import { AGENT_SETUP_TEXT } from "../lib/agentSetupText";
 
 import {
   AGENT_ACCESS_KEY,
@@ -203,6 +204,28 @@ function ConnectCard() {
             ))}
           </ul>
         </div>
+      </div>
+      <div
+        data-testid="agents-setup-copy"
+        className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="min-w-0">
+          <h3 className="text-xs font-semibold text-foreground">Setup for your agent</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            The connection gives the agent its tools. It does not give the working rules for your computer.
+            Paste this text into the rules file of your agent, such as CLAUDE.md or AGENTS.md.
+          </p>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="Copy"
+          className="shrink-0 self-start sm:self-auto"
+          onClick={() => copy(AGENT_SETUP_TEXT, "Setup text")}
+          aria-label="Copy setup for your agent"
+        >
+          Copy setup for your agent
+        </Button>
       </div>
     </section>
   );
