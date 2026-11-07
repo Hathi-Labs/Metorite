@@ -233,8 +233,10 @@ def test_r8_a_private_install_of_ben_adds_nothing_for_ana(world) -> None:
     assert mine in _allowed(_me(world, BEN, features=ALL_FEATURES))
     after = _me(world, ANA)
     assert not _anywhere(after, mine)
-    assert after["features"] == before["features"]
-    assert after["features_denied"] == before["features_denied"]
+    # Compare as sets: the order of the catalog rows is not part of the contract,
+    # and other suites write the shared catalog on a busy scratch database.
+    assert set(after["features"]) == set(before["features"])
+    assert sorted(map(str, after["features_denied"])) == sorted(map(str, before["features_denied"]))
 
 
 # ── d. Two orgs ────────────────────────────────────────────────────────────
