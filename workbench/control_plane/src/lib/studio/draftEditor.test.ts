@@ -271,3 +271,11 @@ describe("the words of a refusal (P3)", () => {
     expect(NEWER_LINE).toContain("Reload drops your edit");
   });
 });
+
+describe("a broken Code text and a newer draft (P1-c)", () => {
+  it("counts the broken text as an open edit, so the page says a newer draft exists", () => {
+    const broken = reduce(CLEAN, { type: "code", text: "{ no", draft: draft() });
+    expect(newerDraft(broken, draft({ ...m0, purpose: "Mira" }, H2))).toBe(true);
+    expect(newerDraft(broken, draft())).toBe(false);
+  });
+});
