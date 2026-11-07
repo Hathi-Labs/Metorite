@@ -30,7 +30,12 @@ Mutations this suite catches (R7):
 * the run is started without the event's tenant: the run is refused
   (``RunWorkspaceRefused``) and the closing row is a failure;
 * the ``PROJECTS_AGENT_DISPATCH`` check removed: with the flag OFF the run
-  starts anyway, and the OFF test sees a model call and a "started" row.
+  starts anyway, and the OFF test sees a model call and a "started" row;
+* H-240: the sink passes no ``session_user``: the run's member is not
+  verified, and ``test_the_run_acts_as_the_assigner_*`` fails;
+* H-240: the sink leaves the member out of ``run_payload``: the tools have
+  no acting user, the comment never reaches the route, and the same test
+  fails.
 
 The run is dark by default. The run fixture turns the flag ON, and the OFF
 test turns it off on the same real sink and the same real executor.
@@ -58,6 +63,10 @@ pytest.importorskip("agent_framework", reason="MAF not installed")
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
 import httpx
+
+# Module level: this file uses postponed annotations, and FastAPI resolves a
+# dependency's annotation from the module's globals.
+from fastapi import Request
 from sqlalchemy import text
 
 from tests.unit._projects_agent_fakes import load_agent_module
@@ -91,23 +100,46 @@ class _Model:
     """Answers a plain (not streamed) chat completion, as the batch path asks.
 
     Records each request body, so a test can see what the agent was told.
+    ``steps`` (H-240) holds tool calls to answer with first, one per request.
+    Each request also records who the run acts for at that moment: the
+    run context's member, whether the session verified it, and the acting
+    user of the gateway-calling tools. The handler runs inside the run's own
+    task, so these are the run's bindings.
     """
 
     def __init__(self, reply: str) -> None:
         self.reply = reply
         self.bodies: list[dict[str, Any]] = []
+        self.steps: list[dict[str, Any]] = []
+        self.who: list[tuple[str, str, str]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        from acb_common import get_run_context
+        from acb_skills.memory_tools import _get_memory_user_id
+
         body = json.loads(request.content or b"{}")
         self.bodies.append(body)
+        ctx = get_run_context()
+        self.who.append((
+            str(ctx.get("user") or ""), str(ctx.get("member_verified") or ""),
+            _get_memory_user_id() or "",
+        ))
         assert not body.get("stream"), "the batch path asked for a stream"
+        if self.steps:
+            call = self.steps.pop(0)
+            message = {"role": "assistant", "content": None, "tool_calls": [{
+                "id": f"call_{len(self.bodies)}", "type": "function",
+                "function": {"name": call["name"],
+                             "arguments": json.dumps(call["arguments"])},
+            }]}
+            finish = "tool_calls"
+        else:
+            message = {"role": "assistant", "content": self.reply}
+            finish = "stop"
         return httpx.Response(200, json={
             "id": f"chatcmpl-{len(self.bodies)}", "object": "chat.completion",
             "created": 0, "model": "probe",
-            "choices": [{
-                "index": 0, "finish_reason": "stop",
-                "message": {"role": "assistant", "content": self.reply},
-            }],
+            "choices": [{"index": 0, "finish_reason": finish, "message": message}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         })
 
@@ -210,7 +242,7 @@ def board(promoted):  # noqa: F811
             "'manual', :me, 7)"),
             {"t": task, "o": org, "p": project, "s": status, "ti": TITLE, "me": MEMBER})
     return SimpleNamespace(
-        promoted=promoted, org=org, task=task,
+        promoted=promoted, org=org, task=task, project=project,
         url=promoted.app_url.render_as_string(hide_password=False),
     )
 
@@ -236,16 +268,27 @@ async def _settle() -> None:
             await asyncio.gather(*rest, return_exceptions=True)
 
 
-def _assign(board: SimpleNamespace, *, before_settle: list[Any] | None = None) -> None:
-    """The event ``PUT /tasks/{id}/assignees`` emits, through the real sink."""
+def _assign(
+    board: SimpleNamespace, *, before_settle: list[Any] | None = None,
+    member: str | None = None,
+) -> None:
+    """The event ``PUT /tasks/{id}/assignees`` emits, through the real sink.
+
+    *member* (H-240) is the assigner the gateway's emitter writes from the
+    session. ``None`` sends the event with no member key at all.
+    """
     from gateway.routes.projects import agent_dispatch
+
+    event: dict[str, Any] = {
+        "task_id": board.task, "assignees": [f"agent:{AGENT}"],
+        "organization_id": board.org,
+    }
+    if member is not None:
+        event[agent_dispatch.MEMBER_KEY] = member
 
     async def go() -> None:
         async with tenant_engine_scope(board.url):
-            await agent_dispatch.on_event("projects", "pm.task.assigned", {
-                "task_id": board.task, "assignees": [f"agent:{AGENT}"],
-                "organization_id": board.org,
-            })
+            await agent_dispatch.on_event("projects", "pm.task.assigned", event)
             if before_settle is not None:
                 before_settle.extend(_timeline(board))
             await _settle()
@@ -313,3 +356,134 @@ def test_with_the_flag_off_no_run_starts_and_the_member_is_told(
         (agent_dispatch.DISABLED_BODY, "disabled"),
     ]
     assert {str(r.organization_id) for r in rows} == {board.org}
+
+
+# ── H-240: the run acts for the member who assigned the task ────────────────
+#
+# The model asks for the `comment` tool. The tool's gateway client talks to
+# the REAL Projects router in-process, and the router reads and writes the
+# phase-4 catalog as the NOSUPERUSER NOBYPASSRLS role. Only the auth seam is
+# a stand-in: it maps the `X-User-Email` the run sent to that person's
+# access, as `deps.get_current_user` branch 1a does. The acting user is NOT
+# stubbed. It is what the executor bound from the sink's member.
+
+EDITOR = "editor@dispatch.test"
+OUTSIDER = "outsider@dispatch.test"
+COMMENT = "The launch notes are drafted."
+
+
+@pytest.fixture
+def people(board):
+    """Two members of org B. The editor holds a grant on the task's project.
+    The outsider holds none, so the task is not theirs to open or change."""
+    with board.promoted.admin_engine.begin() as c:
+        for email in (EDITOR, OUTSIDER):
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, "
+                "organization_id) SELECT :e, :e, 'employee', 'active', "
+                "CAST(:o AS uuid) WHERE NOT EXISTS "
+                "(SELECT 1 FROM app_user WHERE lower(email) = :e)"),
+                {"e": email, "o": board.org})
+        c.execute(text(
+            "INSERT INTO pm_project_grants (id, project_id, organization_id, "
+            "subject, created_by) VALUES (CAST(:g AS uuid), CAST(:p AS uuid), "
+            "CAST(:o AS uuid), :e, :me)"),
+            {"g": str(uuid.uuid4()), "p": board.project, "o": board.org,
+             "e": EDITOR, "me": MEMBER})
+    return board
+
+
+@pytest.fixture
+def gateway(monkeypatch):
+    """The skill's client reaches the real Projects router in-process.
+
+    Returns the list of `X-User-Email` values each call carried. The member
+    approves each card: the card is the member's consent, and in a real
+    dispatched run no card can reach the member yet (DEFERRED in H-240).
+    """
+    import types
+
+    import skill_projects.client as client
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from gateway.routes.projects import router
+
+    from tests.unit._projects_agent_fakes import approve
+    from tests.unit._projects_fakes import member_user
+
+    sent: list[str] = []
+
+    async def who(request: Request) -> Any:
+        email = request.headers.get("x-user-email", "")
+        sent.append(email)
+        return member_user(email)
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = who
+    real = httpx.AsyncClient
+    monkeypatch.setattr(client, "httpx", types.SimpleNamespace(
+        AsyncClient=lambda **kw: real(transport=httpx.ASGITransport(app=app), **kw),
+    ))
+    monkeypatch.setattr(client, "gateway_url", lambda: "http://gateway.test")
+    approve(monkeypatch)
+    return sent
+
+
+def _comments(board: SimpleNamespace) -> list[tuple[str, str]]:
+    with board.promoted.admin_engine.connect() as c:
+        return [(r.created_by, r.body) for r in c.execute(text(
+            "SELECT created_by, body FROM pm_activities WHERE task_id = "
+            "CAST(:t AS uuid) AND type = 'comment' ORDER BY created_at"),
+            {"t": board.task})]
+
+
+def _comment_step(board: SimpleNamespace) -> dict[str, Any]:
+    return {"name": "comment",
+            "arguments": {"task_id": board.task, "body": COMMENT}}
+
+
+def test_the_run_acts_as_the_assigner_and_writes_what_they_may(
+    people, model, gateway, app_engine,  # noqa: F811
+) -> None:
+    """H-240. The editor assigns the task. The run binds the editor as its
+    VERIFIED member and as the acting user of the tools. The agent's comment
+    reaches the real route as the editor, and lands in the task's tenant
+    under the editor's name."""
+    model.steps.append(_comment_step(people))
+    _assign(people, member=EDITOR)
+    assert model.who and set(model.who) == {(EDITOR, "1", EDITOR)}, model.who
+    assert gateway and set(gateway) == {EDITOR}, gateway
+    assert _comments(people) == [(EDITOR, COMMENT)]
+    assert [r.meta.get("state") for r in _timeline(people)] == ["started", "finished"]
+
+
+def test_the_run_of_a_member_who_may_not_open_the_task_changes_nothing(
+    people, model, gateway, app_engine,  # noqa: F811
+) -> None:
+    """H-240. The outsider is the assigner. The run acts as the outsider, so
+    the route answers as it answers the outsider: the task is not found, and
+    no comment is written. The agent reads the refusal as the tool's
+    result."""
+    model.steps.append(_comment_step(people))
+    _assign(people, member=OUTSIDER)
+    assert set(model.who) == {(OUTSIDER, "1", OUTSIDER)}, model.who
+    assert gateway and set(gateway) == {OUTSIDER}, gateway
+    assert _comments(people) == []
+    told = json.dumps(model.bodies[-1]["messages"])
+    assert "not visible to you" in told, told
+
+
+def test_a_run_with_no_member_has_no_acting_user_and_writes_nothing(
+    people, model, gateway, app_engine,  # noqa: F811
+) -> None:
+    """An event with no member (an outside agent, a service caller, a
+    suspended member) runs as before H-240: no member, and each gateway call
+    refuses before it leaves the run."""
+    model.steps.append(_comment_step(people))
+    _assign(people)
+    assert set(model.who) == {("", "", "")}, model.who
+    assert gateway == []
+    assert _comments(people) == []
+    told = json.dumps(model.bodies[-1]["messages"])
+    assert "No acting user" in told, told

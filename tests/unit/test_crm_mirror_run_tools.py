@@ -34,7 +34,7 @@ from tests.unit._crm_agent_fakes import (
 )
 
 _M = load_agent_module("crm_assistant_mirror_test")
-_WRITES = {"create_lead", "update_deal_status", "convert_lead"}
+_WRITES = {"create_lead", "update_deal_status", "convert_lead", "crm_update_record"}
 
 
 def _names(agents: list[Any]) -> set[str]:

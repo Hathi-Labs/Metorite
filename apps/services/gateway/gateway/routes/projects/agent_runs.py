@@ -1770,7 +1770,8 @@ async def start_agent_run(
             cid = _parse_uuid(str(payload.connection_id), "Connection")
             conn = (await db.execute(
                 text(
-                    "SELECT id, client_origin, client_id FROM agent_connection "
+                    "SELECT id, client_origin, client_id, credential, client_name"
+                    "  FROM agent_connection "
                     " WHERE id = CAST(:cid AS uuid) AND lower(member_email) = :me "
                     "   AND revoked_at IS NULL AND expires_at > now()"
                 ),
@@ -1780,7 +1781,13 @@ async def start_agent_run(
             # branch 0 gives the agent's calls on this connection.
             origin = getattr(conn, "client_origin", None)
             client_via = (
-                actor_via_for(origin, client_id=getattr(conn, "client_id", None))
+                actor_via_for(
+                    origin, client_id=getattr(conn, "client_id", None),
+                    # EA-19b: the stamp of a box connection.
+                    credential=getattr(conn, "credential", None),
+                    connection_id=str(getattr(conn, "id", "")),
+                    client_name=getattr(conn, "client_name", None),
+                )
                 if conn else ""
             )
             if conn is None or not ACTOR_VIA_PATTERN.fullmatch(client_via):

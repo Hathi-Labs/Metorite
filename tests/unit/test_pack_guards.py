@@ -1026,15 +1026,19 @@ CRM_DIR = "apps/agents/agent-crm"
 #: Ten since WS-CRM CRM-M1: the pack holds ``crm_change_history`` too, the
 #: read of the CRM Change history. The orchestrator base does not hold it,
 #: because the base was at the 110-tool cap (test_projects_packs.py).
-#: Eleven since WS-CRM CRM-M3a: ``crm_create_pipeline``, for an org on
-#: ``CRM_PIPELINES_ORGS`` (``_mode`` opens the flag).
+#: Thirteen: the ten of WS-CRM CRM-M1, ``crm_update_record`` and
+#: ``crm_update_task`` of CRM-M2b, and ``crm_create_pipeline`` of CRM-M3a,
+#: for an org on ``CRM_PIPELINES_ORGS`` (``_mode`` opens the flag).
 CRM_PACK = frozenset({
     "convert_lead", "create_lead", "crm_change_history", "crm_create_pipeline",
-    "crm_search_notes", "get_pipeline", "get_record", "get_timeline", "log_activity",
-    "search_crm", "update_deal_status",
+    "crm_search_notes", "crm_update_record", "crm_update_task",
+    "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
+    "update_deal_status",
 })
+#: Seven: the four record writes, the two of CRM-M2b and the pipeline create.
 CRM_WRITES = frozenset({
-    "create_lead", "update_deal_status", "log_activity", "convert_lead", "crm_create_pipeline",
+    "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    "crm_update_record", "crm_update_task", "crm_create_pipeline",
 })
 
 
@@ -1065,7 +1069,7 @@ async def test_the_built_crm_pack_holds_exactly_the_ten_tools(monkeypatch) -> No
     _mode(monkeypatch, "live")
     with _run():
         build = await _build("crm-records", _crm_module())
-    assert {t.__name__ for t in build.tools} == CRM_PACK and len(build.tools) == 11
+    assert {t.__name__ for t in build.tools} == CRM_PACK and len(build.tools) == 13
     assert build.owner == CRM and build.held is False and build.skipped == ()
 
 
@@ -1098,7 +1102,7 @@ async def test_mirror_mode_takes_the_three_record_writes_from_every_layer(
 async def test_an_org_off_the_pipelines_flag_builds_no_pipeline_tool(monkeypatch) -> None:
     """WS-CRM CRM-M3a. An org that ``CRM_PIPELINES_ORGS`` leaves out builds the
     pack with no ``crm_create_pipeline``, and the build names the drop. The
-    other ten tools stay. Mutation: take the flag drop out of
+    other twelve tools stay. Mutation: take the flag drop out of
     ``_drop_pack_mirror_writes`` -> the tool stays -> red."""
     _mode(monkeypatch, "live")
     monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: False)
@@ -1116,7 +1120,7 @@ async def test_the_mirror_drop_reuses_the_executor_set(monkeypatch) -> None:
     with _run():
         build = await _build("crm-records", _crm_module())
     assert build.dropped == ("create_lead",)
-    assert len(build.tools) == 10  # 11 less create_lead
+    assert len(build.tools) == 12  # 13 less create_lead
 
 
 @pytest.mark.parametrize("mode", ["live", None])
@@ -1161,7 +1165,7 @@ async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
         assert (await _build("crm-records", module)).dropped == ("get_record",)
         monkeypatch.setattr(ti, "_is_egress", lambda t: False)
         open_build = await _build("crm-records", module)
-    assert open_build.dropped == () and len(open_build.tools) == 11
+    assert open_build.dropped == () and len(open_build.tools) == 13
 
 
 async def test_a_marked_mail_chat_holds_the_crm_pack_with_its_writes(monkeypatch) -> None:

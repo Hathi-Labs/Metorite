@@ -561,8 +561,9 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
 #: ``CRM_PIPELINES_ORGS``). The owner declares 23 tools.
 CRM_TOOLS = (
     "convert_lead", "create_lead", "crm_change_history", "crm_create_pipeline",
-    "crm_search_notes", "get_pipeline", "get_record", "get_timeline", "log_activity",
-    "search_crm", "update_deal_status",
+    "crm_search_notes", "crm_update_record", "crm_update_task",
+    "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
+    "update_deal_status",
 )
 
 
@@ -584,7 +585,9 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     orchestrator does not hold it. Mutation: add a tool the owner lacks, or
     drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
-    assert len(scope) == 23, "non-vacuity: the owner declares 23 tools (CRM-M3a)"
+    # 25: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
+    # and crm_create_pipeline of CRM-M3a.
+    assert len(scope) == 25, "non-vacuity: the owner declares 25 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
@@ -636,9 +639,9 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email_address", "owner_email", "as_user", "impersonate"}
     tools = tp.owner_tools("crm-records", _crm_module())
-    # 10 since WS-CRM CRM-M1 (crm_change_history), 11 since CRM-M3a
-    # (crm_create_pipeline).
-    assert len(tools) == 11
+    # 13: 10 since CRM-M1, 2 of CRM-M2b (the record edit and the task
+    # change) and 1 of CRM-M3a (crm_create_pipeline).
+    assert len(tools) == 13
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))
@@ -651,12 +654,17 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
 #: The eight read-only tools, the three skill tools (STU-F2d), the two
-#: package tools (STU-G1c), then the two record tools (STU-D2b).
+#: package tools (STU-G1c), the two record reads (STU-D2b), then the three
+#: record writes (STU-B2c-2b).
 STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_list_actions", "studio_outline", "studio_patch", "studio_plan",
                 "studio_validate", "studio_skill_list", "studio_skill_save",
                 "studio_skill_state", "studio_save", "studio_publish",
-                "studio_package_get", "studio_record_list")
+                "studio_package_get", "studio_record_list", "studio_record_create",
+                "studio_record_update", "studio_record_delete")
+#: The five record tools: the two reads, then the three writes.
+RECORD_READS = ("studio_package_get", "studio_record_list")
+RECORD_WRITES = ("studio_record_create", "studio_record_update", "studio_record_delete")
 
 
 def _studio_scope() -> set[str]:
@@ -670,7 +678,7 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 15 <= tp.MAX_PACK_TOOLS == 35
+    assert len(family["tools"]) == 18 <= tp.MAX_PACK_TOOLS == 35
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:
@@ -719,7 +727,7 @@ def test_the_pack_loader_finds_the_owner_in_the_owner_list() -> None:
     assert tuple(tool_name(fn) for fn in tp.owner_tools("studio", module)) == STUDIO_TOOLS
 
 
-def test_the_built_studio_pack_is_the_fifteen_tools_as_coroutines() -> None:
+def test_the_built_studio_pack_is_the_eighteen_tools_as_coroutines() -> None:
     import inspect
 
     tools = tp.owner_tools("studio", load_agent_module(STUDIO_DIR))
@@ -731,8 +739,10 @@ def test_the_studio_rules_name_only_tools_of_the_pack() -> None:
     """Mutation: name a tool of another pack in the rules -> red."""
     found = tp.PACKS["studio"]
     # "no_card" is a value of the "decision" of studio_plan, and "based_on" a
-    # parameter of studio_skill_save (STU-F2d review round 2). Neither is a tool.
-    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"no_card", "based_on"}
+    # parameter of studio_skill_save (STU-F2d review round 2). "request_id" is a
+    # parameter of the record write tools (STU-B2c-2b). None is a tool.
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {
+        "no_card", "based_on", "request_id"}
     assert named and named <= set(STUDIO_TOOLS), named - set(STUDIO_TOOLS)
     assert found.owner == STUDIO and found.delegation_refusal
     assert tp.owner_packs(STUDIO) == ("studio",)
@@ -767,6 +777,126 @@ async def test_the_studio_filter_empties_the_pack_for_an_org_not_in_studio_orgs(
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: None)
     kept, _ = await ti._drop_pack_unless_studio([tool_a], [])
     assert kept == [], "no org fails closed"
+
+
+# -- 8a. The record writes need the approval store of the org (STU-B2c-2b) ---
+
+
+def _named(name: str) -> Any:
+    async def tool(): ...
+    tool.__name__ = name
+    return tool
+
+
+def _record_tools() -> list[Any]:
+    return [_named(n) for n in (*RECORD_READS, *RECORD_WRITES)]
+
+
+@pytest.mark.parametrize("access,listed,kept", [
+    (True, "", RECORD_READS), (True, "org-2", RECORD_READS),
+    (True, "org-1", RECORD_READS + RECORD_WRITES), (True, "*", RECORD_READS + RECORD_WRITES),
+    # Fix round 1 (P3): the member's list of Waiting for you needs agent access
+    # too (`agent_requests._require_access`). Without it, no write tool.
+    (False, "org-1", RECORD_READS), (False, "*", RECORD_READS), (False, "", RECORD_READS),
+])
+async def test_the_studio_pack_holds_the_record_writes_only_where_requests_are_open(
+    monkeypatch, access: bool, listed: str, kept: tuple[str, ...],
+) -> None:
+    """Criterion 5: an org that ``APP_REQUESTS_ORGS`` leaves out gets the read
+    tools only, and an org in it gets all five, while ``AGENT_ACCESS_ENABLED``
+    is on. With agent access off, the read tools only, whatever the org flag.
+    The readers are the ones of the door and of the list route. Mutation:
+    make ``_drop_studio_writes_unless_requests`` return the tools unchanged ->
+    the dark cases keep the writes -> red. Mutation: drop the
+    ``agent_oauth.enabled()`` check -> the access-off cases keep the writes ->
+    red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(ti, "_studio_open", lambda: True)
+    _member_holds(monkeypatch, HOLDER)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-1")
+    monkeypatch.setattr(get_settings(), "app_requests_orgs", listed)
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", access)
+    tools = _record_tools()
+    out, dropped = await ti._drop_pack_unless_studio(tools, ["earlier"])
+    assert tuple(tool_name(t) for t in out) == kept
+    assert dropped == ["earlier", *(n for n in RECORD_WRITES if n not in kept)]
+
+
+async def test_the_record_write_filter_fails_closed(monkeypatch) -> None:
+    """No org, and a reader that raises, both read as closed."""
+    from gateway import app_requests
+
+    tools = _record_tools()
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: None)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS
+
+    def boom(_org: Any) -> bool:
+        raise RuntimeError("settings unreadable")
+
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-1")
+    monkeypatch.setattr(app_requests, "requests_allowed", boom)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS
+
+    # A reader of agent access that raises reads as closed too (fix round 1).
+    from acb_auth import agent_oauth
+
+    def access_boom() -> bool:
+        raise RuntimeError("settings unreadable")
+
+    monkeypatch.setattr(app_requests, "requests_allowed", lambda _org: True)
+    monkeypatch.setattr(agent_oauth, "enabled", access_boom)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS
+    monkeypatch.setattr(agent_oauth, "enabled", lambda: True)
+    out, _ = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert tuple(tool_name(t) for t in out) == RECORD_READS + RECORD_WRITES, "non-vacuous"
+
+
+async def test_a_pack_with_no_record_write_reads_no_flag(monkeypatch) -> None:
+    reads: list[int] = []
+
+    def read() -> bool:
+        reads.append(1)
+        return False
+
+    monkeypatch.setattr(ti, "_studio_requests_open", read)
+    tools = [_named("studio_draft"), _named("studio_record_list")]
+    out, dropped = await ti._drop_studio_writes_unless_requests(tools, [])
+    assert out == tools and dropped == [] and reads == []
+
+
+def test_the_filter_reads_the_one_list_of_record_writes() -> None:
+    from acb_skills import studio_tools as st
+
+    assert frozenset(RECORD_WRITES) == st.STUDIO_RECORD_WRITES
+    assert tuple(fn.__name__ for fn in st.STUDIO_RECORD_TOOLS) == RECORD_READS + RECORD_WRITES
+
+
+def test_the_studio_rules_tell_the_dark_and_the_lit_record_writes() -> None:
+    """Criterion 6. The lit text: the ask, where the member answers, the
+    resend with no data, and saved true as the only proof. The dark text: no
+    write tool means record changes from chat are not open. The old line that
+    no chat tool writes a record is gone. Mutation: drop either part -> red."""
+    rules = " ".join(tp.PACKS["studio"].rules.split())
+    lit = (
+        "studio_record_create adds a record, studio_record_update changes one, and "
+        "studio_record_delete deletes one.",
+        "each asks the member first. The first call saves nothing.",
+        "the member approves or declines the change in Integrations, AI agents, Waiting for you.",
+        "call the same tool again with the same package id, the same object name and that "
+        "request_id. Send no data again",
+        "Only a result with saved true is saved. Never say that a change is saved before that.",
+        "A declined change wrote nothing. Say so.",
+    )
+    dark = ("When this chat holds no tool that adds, changes or deletes a record, record "
+            "changes from chat are not open for this organization yet.")
+    for line in (*lit, dark):
+        assert line in rules, line
+    assert "No chat tool creates, changes or deletes a record" not in rules
+    assert "change the records of a package" in tp.PACKS["studio"].when
 
 
 # -- 8b. The studio pack needs the member's feature:studio (J1-1 fix round 1)

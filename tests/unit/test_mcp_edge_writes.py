@@ -248,6 +248,8 @@ class _Gateway:
             {"id": S_CANCELLED, "name": "Dropped", "category": "cancelled"},
         ]
         self.ref_status = 201
+        #: MCP-G10. Extra response headers by ``(method, path)``.
+        self.answer_headers: dict[tuple[str, str], dict[str, str]] = {}
 
     async def __call__(self, scope, receive, send) -> None:
         body = b""
@@ -263,8 +265,10 @@ class _Gateway:
                                   pairs=dict(parse_qsl(query)), headers=headers, body=body)
         self.requests.append(request)
         status, answer = self._answer(request)
+        extra = [(k.lower().encode(), v.encode()) for k, v in
+                 self.answer_headers.get((request.method, request.path), {}).items()]
         await send({"type": "http.response.start", "status": status,
-                    "headers": [(b"content-type", b"application/json")]})
+                    "headers": [(b"content-type", b"application/json"), *extra]})
         await send({"type": "http.response.body", "body": json.dumps(answer).encode()})
 
     def _answer(self, r: SimpleNamespace) -> tuple[int, Any]:
@@ -522,8 +526,9 @@ class TestTheWriteToolsAtTheEdge:
         monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", False)
         off = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
         assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
-        # The seven reads of EA-3 and the two reads of EA-15 (§12.4).
-        assert len(off) == 9
+        # The seven reads of EA-3, the two reads of EA-15 (§12.4) and
+        # `get_attachment` of IMG-3.
+        assert len(off) == 10
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read projects:write", WRITE_SCOPES),

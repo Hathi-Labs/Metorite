@@ -1598,6 +1598,18 @@ class Settings(BaseSettings):
     # `enforcement-flip`. `connections/github_app.py` reads the key file once
     # for each process. Fence: tests/unit/test_github_app_auth.py.
     github_app_enabled: bool = False
+    # ── The App for each organization (WS-MCP SW-53, agent_coordination.md) ─
+    #
+    # A comma list of organization ids, or `*` for each one. The master
+    # `github_app_enabled` comes first: off means off for every org. With the
+    # master on, an org that the list does not name is off. An EMPTY list
+    # turns every org off (fail closed). Off for an org: a webhook delivery
+    # for its installation answers 202 and writes nothing, the connect routes
+    # answer 404, and the reconcile poll skips it. The one reader is
+    # `gateway.connections.github_app.github_app_org_allowed`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_github_webhook_r8.py.
+    github_app_orgs: str = ""
     github_app_slug: str = ""                 # the App's URL name, e.g. "metorite"
     github_app_client_id: str = ""            # the JWT `iss`, and the OAuth client id
     github_app_client_secret: str = ""        # the OAuth client secret of the App
@@ -2147,6 +2159,16 @@ class Settings(BaseSettings):
     # Only the edge reads it. `acb_auth.agent_oauth.mcp_sessions_enabled` is
     # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_mcp_sessions_enabled: bool = False
+    # EA-19b (external_agent_access.md §10.9, D-EA-5): box tokens, the one
+    # access token of a headless agent box, with no refresh token. Default
+    # OFF. While it is false, the edge bearer check and the connection read
+    # of branch 0 refuse a box connection, so a box token gets 401. It is a
+    # pause and not a kill: `/oauth/revoke` and the revoke routes still work,
+    # and a flip back to on revives each box token that no one revoked. Both
+    # units read it, so both need the same value, and a change needs a
+    # restart of each. `acb_auth.agent_oauth.box_tokens_enabled` is the one
+    # reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_box_tokens_enabled: bool = False
     # SW-10a (spec §12.6): the sweep of stranded agent runs. Default OFF.
     # While it is false, the gateway starts no sweep task, so no fingerprint
     # and no recovery record exist, and no member gets a nudge. Only the

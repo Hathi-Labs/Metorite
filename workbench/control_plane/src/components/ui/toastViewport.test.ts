@@ -33,9 +33,9 @@ describe("the toast viewport on a phone", () => {
 
   it("below sm it clears the nav: the nav's height, the safe area, and a gap", () => {
     const base = rule(".toast-viewport-bottom", css);
-    expect(base).toMatch(/bottom: calc\(3\.5rem \+ env\(safe-area-inset-bottom, 0px\) \+ 0\.5rem\)/);
+    expect(base).toMatch(/bottom: calc\(var\(--phone-bar-h\) \+ 0\.5rem\)/);
     // The same clearance the page content uses for the same nav.
-    expect(rule(".pb-nav", css)).toMatch(/calc\(3\.5rem \+ env\(safe-area-inset-bottom, 0px\)\)/);
+    expect(rule(".pb-nav", css)).toMatch(/padding-bottom: var\(--phone-bar-h\)/);
   });
 
   it("from sm up (no bottom nav) it keeps the old 1rem", () => {

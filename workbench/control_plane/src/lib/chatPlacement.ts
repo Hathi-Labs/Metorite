@@ -327,6 +327,9 @@ const WRITE: readonly string[] = [
   "update_deal_status",
   "log_activity",
   "convert_lead",
+  // WS-CRM CRM-M2b: a field of a record, and a task done or due.
+  "crm_update_record",
+  "crm_update_task",
   // WS-CRM CRM-M3a: a new deal pipeline, on one card.
   "crm_create_pipeline",
   // ── The assistant profile (WS-63 PZ-6a): each acts at once, with Undo ──

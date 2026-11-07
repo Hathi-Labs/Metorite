@@ -380,10 +380,10 @@ async def test_a_model_load_at_the_tool_cap_moves_a_sticky_pack_out(store, monke
     check only the pack count in ``_room_for`` -> red."""
     _stub_owners(monkeypatch)
     await _seed_sticky("email", "crm-records")
-    # extra=68 since WS-CRM CRM-M3a: crm-records holds 11 tools (CRM-M1 added
-    # crm_change_history, CRM-M3a crm_create_pipeline), and the list must
-    # still be exactly 110.
-    run, live, key = await _full_run(("email", "crm-records"), extra=68)
+    # extra=66: crm-records holds 13 tools (10 since CRM-M1, 2 more of
+    # CRM-M2b and crm_create_pipeline of CRM-M3a), and the list must still
+    # be exactly 110.
+    run, live, key = await _full_run(("email", "crm-records"), extra=66)
     assert len(live) == 110
     with _frame(run, key):
         answer, _ = await _call(_loader(run, key), REMINDERS, live)

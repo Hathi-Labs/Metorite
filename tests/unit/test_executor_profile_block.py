@@ -56,9 +56,9 @@ EXAMPLE: dict[str, Any] = {
 #: The block of §5.1, byte for byte.
 GOLDEN = (
     "## About the member (their own profile — they can see and change it)\n"
-    'Address them as "VJ". Tone: casual. Greeting: brief. In the first reply of a chat '
-    "only, open with one short greeting for the time of day. Never greet again in that "
-    "chat.\n"
+    'Address them as "VJ". Tone: casual. Greeting: brief. Follow the greeting rule '
+    "of the part-of-day line. When it allows a greeting, open with one short "
+    "greeting. Otherwise do not greet.\n"
     "Answer length: short. Use about half the usual length. Language: en-IN. Answer in "
     "it, unless they write in another language. Notes: Hinglish is fine on WhatsApp.\n"
     'People they name: "Raj" = raj@fracktal.in.\n'
@@ -823,12 +823,16 @@ def test_no_name_forbids_a_placeholder() -> None:
 
 @pytest.mark.parametrize(("greeting", "text"), [
     ("none", "Greeting: none. Open with the answer."),
-    ("brief", "Greeting: brief. In the first reply of a chat only, open with one short "
-              "greeting for the time of day. Never greet again in that chat."),
-    ("warm", "Greeting: warm. In the first reply of a chat only, open with a greeting and "
-             "one personal line from a fact in this block. Do this at most once a day."),
-    (None, "Greeting: brief. In the first reply of a chat only, open with one short "
-           "greeting for the time of day. Never greet again in that chat."),
+    ("brief", "Greeting: brief. Follow the greeting rule of the part-of-day line. "
+              "When it allows a greeting, open with one short greeting. Otherwise "
+              "do not greet."),
+    ("warm", "Greeting: warm. Follow the greeting rule of the part-of-day line. "
+             "When it allows a greeting, open with a greeting and one personal line "
+             "from a fact in this block. Do this at most once a day. Otherwise do "
+             "not greet."),
+    (None, "Greeting: brief. Follow the greeting rule of the part-of-day line. "
+           "When it allows a greeting, open with one short greeting. Otherwise "
+           "do not greet."),
 ])
 def test_each_greeting_line_is_golden(greeting, text) -> None:
     address = {"name": "VJ"} if greeting is None else {"name": "VJ", "greeting": greeting}
@@ -901,10 +905,59 @@ def test_the_part_of_day_bands(hour, part) -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from acb_common.today import part_of_day_line
+    from acb_common.today import greeting_for, part_of_day_line
 
     now = datetime(2026, 10, 24, hour, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
-    assert part_of_day_line("Asia/Kolkata", now) == f"Part of the day for the member: {part}."
+    # Decided no: do not greet. Due: "Greet now." and the word.
+    assert part_of_day_line("Asia/Kolkata", now, greet=False) == (
+        f"Part of the day for the member: {part}. Do not greet in this reply.")
+    due = part_of_day_line("Asia/Kolkata", now, greet=True)
+    assert due.startswith(f"Part of the day for the member: {part}. Greet now.")
+    assert f'"{greeting_for("Asia/Kolkata", now)}"' in due
+    if part == "night":
+        assert '"Hello"' in due
+        # F7: "Good evening" is offered from 21:00 to 23:59 only.
+        assert ('"Good evening"' in due) == (hour >= 21)
+        assert "Never say \"Good night\"" in due
+    else:
+        assert "Good night" not in due
+
+
+def test_a_non_english_language_asks_for_the_common_hello() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from acb_common.today import part_of_day_line
+
+    now = datetime(2026, 10, 24, 9, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    hi = part_of_day_line("Asia/Kolkata", now, greet=True, language="hi-IN")
+    assert "Greet now." in hi and "common hello of that language" in hi
+    assert "Namaste" in hi and "Good morning" not in hi
+    # F7: a good-night phrase is barred in any language.
+    assert "good-night phrase in any language" in hi and "Shubha" in hi
+    for tag in ("en", "en-IN", "EN-gb", "", None):
+        assert "Good morning" in part_of_day_line("Asia/Kolkata", now, greet=True, language=tag)
+    # Decided no: the language changes nothing.
+    assert "Greet now." not in part_of_day_line("Asia/Kolkata", now, greet=False, language="hi")
+
+
+def test_a_run_with_no_decision_keeps_the_old_rule() -> None:
+    """F6: WhatsApp, delegated, batch and group runs bind no decision. Their
+    line says to greet only in the first reply of the conversation, and it
+    never says "Greet now."."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from acb_common.today import part_of_day_line
+
+    now = datetime(2026, 10, 24, 9, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    line = part_of_day_line("Asia/Kolkata", now)
+    assert "Greet only in the first reply of the conversation" in line
+    assert "never again in it" in line
+    assert "Greet now." not in line and "Do not greet" not in line
+    assert line == part_of_day_line("Asia/Kolkata", now, greet=None)
+    assert "Greet now." in part_of_day_line("Asia/Kolkata", now, greet=True)
+    assert "Do not greet in this reply." in part_of_day_line("Asia/Kolkata", now, greet=False)
 
 
 def test_the_part_of_day_reads_the_member_zone_and_a_bad_zone_falls_back() -> None:
@@ -986,7 +1039,7 @@ def test_the_part_of_day_line_follows_today_only_when_the_block_greets(
 
     seen: list[Any] = []
     monkeypatch.setattr(today, "part_of_day_line",
-                        lambda zone, now=None: seen.append(zone) or "Part of the day: X.")
+                        lambda zone, now=None, **kw: seen.append(zone) or "Part of the day: X.")
     run.update(zone="Europe/Berlin")
     parts = _parts()
     assert parts[-1] == "Part of the day: X."
@@ -1001,7 +1054,22 @@ def test_the_part_of_day_line_follows_today_only_when_the_block_greets(
     ex._PROFILE_CACHE.clear()
     run.update(raw={"address": {"name": "VJ", "greeting": "warm"}}, zone="")
     assert _parts()[-1] == "Part of the day: X."
-    assert seen[-1] is None
+    assert seen[-1] == "Asia/Kolkata"  # resolve_zone default
+
+
+def test_the_line_follows_the_run_decision_on_both_paths(run, monkeypatch) -> None:
+    """F6: a decided run says "Greet now." or "Do not greet". A run with no
+    decision keeps the old rule. The zone is the resolved one (F4 of D2)."""
+    run.update(zone="Europe/Berlin")
+    seen: dict[str, str] = {}
+    for label, value in (("yes", True), ("no", False), ("none", None)):
+        monkeypatch.setattr(ex, "_greet_due_now", lambda v=value: v)
+        ex._PROFILE_CACHE.clear()
+        seen[label] = _parts()[-1]
+    assert "Greet now." in seen["yes"]
+    assert "Do not greet in this reply." in seen["no"]
+    assert "Greet only in the first reply of the conversation" in seen["none"]
+    assert "Greet now." not in seen["none"] and "Greet now." not in seen["no"]
 
 
 def test_the_cached_entry_keeps_the_zone_and_the_greeting(run, monkeypatch) -> None:

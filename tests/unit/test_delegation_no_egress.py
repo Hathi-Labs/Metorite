@@ -113,6 +113,7 @@ EXPECTED_OPEN_WORLD = frozenset({
     # crm-assistant, WS-CRM CRM-M3a: a new pipeline. It never queues for Zoho,
     # but it says open_world as each CRM write does, so a covered run holds it off.
     "crm_create_pipeline",
+    "crm_update_record", "crm_update_task",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })

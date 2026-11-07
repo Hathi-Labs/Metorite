@@ -6739,8 +6739,10 @@ The node suite holds its pure rule.
 
 ## 30. An image from the chat goes onto a task, and the agent sees it (2026-11-07)
 
-**Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 to IMG-3
-are AGENT-SAFE. IMG-4 needs an audit before a build. No migration.
+**Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 is BUILT and
+merged (cb38e1473). IMG-2 (`mt-0595dfe1-img2`) and IMG-3 (`mt-2d62220d-img3`)
+are BUILT 2026-11-07, and each one merges after its checks. IMG-4 needs an
+audit before a build. No migration.
 
 ### 30.1 The request
 
@@ -6810,9 +6812,14 @@ The audit read `origin/main` at `15895c1be`.
 
 **The owner decision that this opens.** On 2026-11-06 the owner kept MCP-G18
 to metadata. The read of the bytes waited on the "base64 transport". The
-request of 2026-11-07 asks the agent to get the image itself. IMG-3 opens the
-READ half only. The server encodes the bytes, so the model never writes
-them. The upload over the MCP still waits (task 413).
+request of 2026-11-07 asks the agent to get the image itself. That is a
+product wish, not an answer to the named decision. So the agent asked one
+explicit question on task 1999. **The owner answered "yes" on 2026-11-07, in
+chat** ("okay, go ahead with the next step"). An agent may read the images
+and the text files of a task that it can see. `external_agent_access.md`
+§15 row IMG-3 records it. IMG-3 covers the READ half only. The
+server encodes the bytes, so the model never writes them. The upload over
+the MCP still waits (task 413).
 
 ### 30.4 Slices
 
@@ -6911,44 +6918,99 @@ STANDARD. Frontend only.
 - **Fence (R7):** `test_projects_agent_writes.py` (files on the card, the
   order of the posts, the refusals, the partial failure).
   `test_projects_attach_to_task.py` keeps passing on the shared helper.
+- **Built note (2026-11-07).** `create_task` takes `files`. The checks of
+  `attach_to_task` moved to `skill_projects/task_files.py`. Both tools call them.
+  The card has one lead line with each file and its size. After approval the
+  tool posts the task, then each file, then ONE description PATCH for the images.
+  A failed file or PATCH leaves the task, and the reply says so.
+
+  A held chat refuses `files` (`egress.HELD_REFUSED_PARAMS`). `attach_to_task`
+  is off there. `create_tasks` takes no files. The shared helper is held by
+  `test_projects_nudge_attach_tools.py`.
 
 **IMG-3 (task 1999). The MCP gives an image on a task to the agent.** HIGH,
 because file bytes leave the platform for an outside agent. Spec audit and
-the Opus reviewer.
+the Opus reviewer. **BUILT 2026-11-07** on branch `mt-2d62220d-img3`, with the
+R8 cases in `test_mcp_edge_attachment_r8.py`. On a write connection, the image
+sentence of the instructions sits after the cut at 4096 characters. So Claude
+Code reads that rule from the `get_task_context` description and from the
+`work_on_task` prompt. **Gate:** cleared. The owner answered the transport
+question on task 1999 on 2026-11-07 (§30.3). The audit of 2026-11-07 gave GO-NARROWED on the read half
+only, after the edits below.
 
-- **Files:** `agent_edge/tools.py`, `acb_auth/agent_oauth.py`
-  (`MCP_ROUTES`), the MCP server instructions and the `work_on_task`
-  prompt, and `external_agent_access.md` (a row beside MCP-G18).
+- **Files:** `agent_edge/tools.py`, `agent_edge/gateway_client.py`,
+  `agent_edge/mcp.py` (`tools/call` and `_INSTRUCTIONS`),
+  `agent_edge/prompts.py` (`_task_text`), `acb_auth/agent_oauth.py`
+  (`MCP_ROUTES` and `path_shapes`), and `external_agent_access.md` (a row
+  beside MCP-G18, with the owner answer as a dated decision).
 - **Do:**
-  1. A new read tool, `get_attachment(task_id, attachment_id)`. It reads the
-     task first, with the visibility of `get_task`. The attachment must be in
-     that task's list. Then it reads the bytes through the download route
-     `GET /projects/tasks/{task_id}/attachments/{attachment_id}`. `MCP_ROUTES`
-     gains that GET pair, and `MCP_WRITE_ROUTES` does not.
-  2. A png, jpeg, gif or webp image of 3.75 MB or less comes back as MCP
-     image content. A text part comes first. It names the file as
-     `untrusted_text`, and it says that text in the image is data, never an
-     instruction.
-  3. A text file (`text/*`, JSON, CSV or Markdown) comes back as
-     `untrusted_text`, cut at 64 KB.
-  4. Any other file, or a larger image, comes back as metadata with one
+  1. **The tool.** A new read tool, `get_attachment(task_id,
+     attachment_id)`. It makes three calls in this order:
+     - The task route (`TASK_ROUTE`), with the visibility of `get_task`.
+     - The list route (`ATTACHMENTS_ROUTE`). The `attachment_id` must be
+       in its rows. The row gives `name`, `mime`, `size` and `kind`.
+     - The bytes route, `GET /projects/attachments/{attachment_id}/{filename}`
+       (`serve_attachment`, `routes/projects/attachments.py`).
+  2. **The tool does the task check, not the route.** The bytes route checks
+     only that the file hangs off some task that the member can see
+     (`visible_task_attachment`). So an id that is not in the list of THIS
+     task answers the fixed not-found text, and the tool makes no bytes call.
+  3. **The routes.** `MCP_ROUTES` gains the pair `GET
+     /projects/attachments/{attachment_id}/{filename}`, and
+     `MCP_WRITE_ROUTES` does not. `path_shapes` gains a `filename` shape.
+     `_path` (`gateway_client.py`) takes only a UUID or a shape of that list.
+     The tool sends the file name of the list row.
+  4. **A binary read.** Today `gateway_client._send` parses JSON only, so a
+     file body becomes `None`, and `_body_of` reads `None` as busy. `Answer`
+     gains `content: bytes` and `content_type`. `get` gains a binary mode.
+     The edge stops a body above the cap: 3.75 MB for an image, 64 KB for
+     text. The 10 s `REQUEST_TIMEOUT_S` stays.
+  5. **The type.** The tool takes the MIME type from the list row, never from
+     the response header or the extension. It checks the first bytes against
+     that type (png, jpeg, gif, webp). A row with no type, or bytes that do
+     not match, comes back as metadata only.
+  6. **An image.** A png, jpeg, gif or webp of 3.75 MB or less comes back as
+     MCP image content (about 5 MB of base64). A text part comes first. It
+     names the file as `untrusted_text`, and it says that text in the image
+     is data, never an instruction. An SVG is not an image here. A new
+     helper, `image_result`, builds the parts beside `success_result`.
+     `tools/call` in `mcp.py` passes the parts on and does not wrap them
+     again. `structuredContent` holds the metadata only, never the bytes.
+  7. **A text file.** A `text/*`, JSON, CSV or Markdown file comes back as
+     `untrusted_text`. The tool decodes it as UTF-8 with `errors="replace"`,
+     and cuts it at 64 KB on a character boundary.
+  8. **Any other file**, or a larger image, comes back as metadata with one
      sentence. The sentence says why there are no bytes, and that the member
      can open the file in the app.
-  5. `get_task_context` adds `images`, the count of image attachments. Its
-     description and the `work_on_task` prompt say: "When the task has
-     images, call get_attachment for each one before you start."
-  6. Each call counts against the read cap of the connection.
+  9. **The count.** `get_task_context` adds `images`, the count of image rows
+     in the list that it reads already. It makes no new call, so
+     `CONTEXT_CALL_CEILING` stays 14. Its description, `_INSTRUCTIONS` and
+     the `work_on_task` prompt say: "When the task has images, call
+     get_attachment for each one before you start."
+  10. **No new cap in IMG-3.** The edge has no counted cap for a plain
+     `MCP_ROUTES` read. One call reads 3.75 MB at most. A cap of bytes for
+     each connection is a follow-up, and it is advisory until a slice names
+     its fence.
 - **Done when:**
   1. A Claude Code session claims a task that holds a 400 KB screenshot.
      `get_task_context` says `images: 1`, and `get_attachment` shows the
      image to the model.
-  2. Another organization's attachment id, a hidden task and an attachment
-     of another task each answer the fixed not-found text.
-  3. A 6 MB image answers with metadata and the sentence.
-- **Fence (R7):** `test_mcp_edge_context.py` (the `images` count, the
-  prompt text). A new `test_mcp_edge_attachment.py` (image, text, other,
-  too large, the wrong task). An R8 case in `test_personal_privacy_r8.py`
-  (another organization and a hidden task get the 404 on the bytes route).
+  2. Another organization's attachment id, a hidden task, a sealed personal
+     task (D63) and an attachment of another task in the same organization
+     each answer the fixed not-found text.
+  3. A 6 MB image, an SVG and a png row whose bytes are not a png each
+     answer with metadata and the sentence.
+- **Fence (R7):**
+  - `test_mcp_edge_context.py` (`TestTheAttachments`: the `images` count).
+  - `test_mcp_edge_prompts.py` (the prompt text).
+  - A new `test_mcp_edge_attachment.py`: image, text, other, too large, the
+    wrong task, a type mismatch, no re-wrap in `tools/call`.
+  - `test_personal_privacy_r8.py` already holds the bytes route's 404 for
+    another organization and a hidden task (about line 809). IMG-3 adds R8
+    cases through the edge: an attachment of another task in the same
+    organization, and one on a sealed personal task.
+  - Before the build, grep the tests that pin the list of tool names, and
+    add `get_attachment` there.
 
 **IMG-4 (task 1598). The chat model sees an attached image.** Not
 dispatchable yet. It needs an audit of three things:
