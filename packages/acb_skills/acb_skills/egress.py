@@ -89,6 +89,7 @@ __all__ = [
     "EGRESS_WITHHELD_ANSWER",
     "HELD_CARD_SEND_TOOLS",
     "HELD_CARD_WRITE_TOOLS",
+    "HELD_OFF_PACK_WRITES",
     "HELD_OWNER_CHAT_FILES",
     "HELD_PARAM_REASONS",
     "HELD_REFUSED_PARAMS",
@@ -124,6 +125,7 @@ __all__ = [
     "is_egress_tool",
     "is_held_card_write",
     "is_held_chat_off",
+    "is_held_off_pack_write",
     "is_held_off_write",
     "mark_untrusted_answer",
     "mark_untrusted_session",
@@ -1534,15 +1536,48 @@ def is_held_card_write(item: Any) -> bool:
     return _tool_params(item) == allowed
 
 
+#: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
+#: slug. The pack is the ``calendar-day`` pack, and its eight tools are the My
+#: Tasks planner tools, which the Tasks assistant holds too. **The choice.** In a
+#: held chat the pack holds off its six writes. They have no card: a plan is
+#: proposed in text and applied by a second call, so mail that the chat read
+#: could steer the apply. The pack keeps its two reads (``my_tasks_day_digest``
+#: and ``my_tasks_list_schedule``, ``read_only=True``). **Why a pack-slug table
+#: and not a bare name.** :func:`is_held_off_write` matches on the bare name
+#: before the owner, so naming these tools through the pack family would also
+#: strip them from the Tasks assistant, whose held-chat tool list on main keeps
+#: all eight. So the family is out of :func:`_owner_tool_names`, and only the
+#: pack builder asks :func:`is_held_off_pack_write`. Fence:
+#: ``tests/unit/test_calendar_day_held.py``.
+HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
+    "calendar-day": frozenset({
+        "my_tasks_plan_day", "my_tasks_replan_day", "my_tasks_rollover",
+        "my_tasks_schedule", "my_tasks_set_one_thing", "my_tasks_unschedule",
+    }),
+}
+
+
 @functools.lru_cache(maxsize=1)
 def _owner_tool_names() -> frozenset[str]:
-    """Each tool of a pack of :data:`HELD_WRITE_OWNERS`."""
+    """Each tool of a pack of :data:`HELD_WRITE_OWNERS`, less the packs that
+    :data:`HELD_OFF_PACK_WRITES` rules by slug."""
     from acb_skills.skill_families import SKILL_FAMILIES
 
     return frozenset(
-        name for family in SKILL_FAMILIES.values()
-        if family.get("owner") in HELD_WRITE_OWNERS for name in family["tools"]
+        name for slug, family in SKILL_FAMILIES.items()
+        if family.get("owner") in HELD_WRITE_OWNERS and slug not in HELD_OFF_PACK_WRITES
+        for name in family["tools"]
     )
+
+
+def is_held_off_pack_write(item: Any, slug: str) -> bool:
+    """True for a write of pack *slug* that a held chat holds off (CAL-1a).
+
+    Only a pack of :data:`HELD_OFF_PACK_WRITES` answers True, and only for the
+    names it lists. With the org off (:func:`held_card_writes_on`) it is False.
+    """
+    name = item if isinstance(item, str) else tool_name(item)
+    return name in HELD_OFF_PACK_WRITES.get(slug, frozenset()) and held_card_writes_on()
 
 
 def _own_tool_of(item: Any, name: str, owner: str | None) -> bool:
