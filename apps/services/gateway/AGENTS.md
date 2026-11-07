@@ -135,7 +135,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - 🔒 **The two switches of an MCP server** (`agent_architecture.md` §12.2 WS-8c, items 31 and 32). `always_confirm` asks the card for each tool. `read_only_key` asks no card. `connections/mcp._read_only_key` is the ONE parse of the key, and `_check_switches` is the one write rule. A write that leaves both on gets 422, and so does the key on an OAuth row. The check reads the row after the change, under `FOR UPDATE`. Fences: `test_mcp_always_confirm_r8.py`, `test_mcp_read_only_key_r8.py`.
    - ⚠️ `acb_llm/key_store.py` makes three untenanted calls that the walker cannot see. They are owner-gated (`work_plan.md` §6 gate (f)).
 5a. routes/integrations_skills.py -- **The read-only skills catalog** (`skills_registry.md`). A tool pack loads only through `orchestrator._tool_injection._pack_owner_module`, and it runs no tool. Fence: `test_tool_packs_registry.py`.
-5b. routes/agent_skills.py -- **The skill toggles of each agent.** The PUT needs `admin:access:manage`. `core` and `apps` cannot toggle (422). `orchestrator/_tool_injection.py::_resolve_injected_scope` applies the rows as an intersection only.
+5b. routes/agent_skills.py -- **The skill toggles of each agent.** The PUT needs `admin:access:manage`. `core` and `apps` cannot toggle (422). `orchestrator/_tool_injection.py::_resolve_injected_scope` applies the rows as an intersection only. The audit row goes through `admin._common.record_admin_change`, so it carries the bound tenant (task 2221). Fence: `test_agent_skills_audit_org_r8.py` (R8).
 5c. routes/github/ + connections/github_app.py -- **The Metorite GitHub App** (`github_integration.md`), dark behind `GITHUB_APP_ENABLED`.
    - ⚠️ The installation token lives in PROCESS MEMORY only. It never goes to Redis, the database, a log or an answer.
    - `connections/github.py` is the ONE reader of a connection. `PUT /integrations/github/token` is the ONE writer of a pasted token.
@@ -217,6 +217,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - `GET /auth/me` is NOT admin-gated. It returns resolved OUTCOMES, so the matching rule has one implementation.
    - ⚠️ **The `/admin` auth floor is PER-ROUTE.** Each route declares `Depends(require_admin_user)` in its own signature.
    - `_common.py` holds the invariants. The org keeps an owner. Nobody assigns a role above their own rank. System roles are immutable. Nobody locks themselves out. ⚠️ Two guards answer 409, so a test must check the detail text. Fence: `test_admin_member_offboarding.py`.
+   - ⚠️ **The admin audit row carries the org of the change** (task 2221). `record_admin_change` stamps `current_tenant()`. A caller with no bound tenant (the operator door, the shared purge body) passes `organization_id=` of the org that it wrote, never a request field. With no org and the bind on, it writes no row. Fences: `test_admin_audit_org_r8.py` (R8), `test_operator_door.py`.
    - Feature modules import from `_common`, never from each other.
    - **`purge_member` is the hard delete**, a separate route, never a flag on Remove. It keeps the person's work and the audit trail. ⚠️ A KEEP clause must exclude all that the delete side CASCADES away. Only two tables are on both sides: `chat_session` splits on `visibility`, and `package_install` (WS-PKG PKG-4) splits on `scope_kind` and on `_OTHERS_SEE_THE_APP`. That term is the share rule of `package_host/sharing.py` (item 22e): a grant to an address other than the member, which the member made. Fences: `test_admin_member_purge.py`, `tests/unit/_schema_cascade.py`.
    - ⚠️ **The provisioning `ON CONFLICT` arms name the statuses they rewrite, and never negate.** The target is `ON CONFLICT (lower(email))`. Approve never rewrites the roles of an existing member that is not `invited`. Fences: `test_signin_requests.py`, `test_app_user_upserts.py`.
@@ -487,6 +488,7 @@ Every AI call names its job (task 1128). Pass `job="structured"`, `"writing"` or
 2. Approve: POST /agent/mutations/pending/{id}/approve -> git push (GitHub) or keep (local)
 3. Reject: POST /agent/mutations/pending/{id}/reject -> git reset HEAD~1
 4. Local-only repos detected via git remote get-url origin check
+5. ⚠️ Each decision row (approve, PR opened, reject, re-mutate) goes through `_mutation_audit`, stamped with `user.organization_id` (task 2221). Never call `record` bare in these routes. Fence: `test_mutation_queue_audit_org_r8.py` (R8).
 
 ### Agent registration
 1. POST /agent with repo_url or local_path
