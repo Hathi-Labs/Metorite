@@ -189,6 +189,34 @@ export function buildItems(
   return [...jobs, ...apps];
 }
 
+/**
+ * Add the install jobs (`packageManifest.ts`, PKG-6) to the Do group. A job
+ * whose key a system job already holds is dropped: system wins. With no
+ * install job, the SAME array comes back.
+ */
+export function addInstallJobs(
+  items: BarItem[],
+  jobs: readonly { id: string; label: string; words: readonly string[]; href: string; icon: string }[],
+): BarItem[] {
+  if (jobs.length === 0) return items;
+  const taken = new Set(items.map((i) => i.key));
+  const extra = jobs
+    .filter((j) => !taken.has(`do:${j.id}`))
+    .map((j): BarItem => ({
+      key: `do:${j.id}`,
+      group: "do",
+      label: j.label,
+      hint: "Start · Installed app",
+      icon: j.icon,
+      href: j.href,
+      app: j.href.split(/[?#]/)[0],
+      words: j.words,
+    }));
+  if (extra.length === 0) return items;
+  const at = items.reduce((n, i, k) => (i.group === "do" ? k + 1 : n), 0);
+  return [...items.slice(0, at), ...extra, ...items.slice(at)];
+}
+
 /** The app the member is in: the held pane with the longest matching href. */
 export function contextPane(pathname: string, panes: readonly NavPane[]): NavPane | null {
   let best: NavPane | null = null;

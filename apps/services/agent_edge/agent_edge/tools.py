@@ -1980,6 +1980,12 @@ _RUN_SCHEMA = _object({
     "latest_line": {"anyOf": [_LINE_SCHEMA, {"type": "null"}]},
     "stranded": {"anyOf": [_STRANDED_SCHEMA, {"type": "null"}]},
 })
+#: SW-43. The answer of the member that may still change. It is OPTIONAL: the
+#: key is there only while ``agent_answer_change_enabled`` is on, so it is not
+#: in ``required`` and not in ``RUN_KEYS``.
+_RUN_SCHEMA["properties"]["answer"] = {"anyOf": [_object({
+    "id": {"type": "string"}, "seq": _NULLABLE_INTEGER, "changeable": {"type": "boolean"},
+}), {"type": "null"}]}
 _RUN_ACTIVITY_SCHEMA = _object({
     "id": {"type": "string"}, "seq": _NULLABLE_INTEGER, "type": {"type": "string"},
     "author": {"type": "string", "enum": [AUTHOR_AGENT, AUTHOR_PERSON]},
@@ -1999,7 +2005,7 @@ _RUN_ACTIVITY_SCHEMA = _object({
 #: The keys of one run and of one activity (§12.1) are the keys of the two
 #: schemas, and no other. An identity literal may appear only as a key of a
 #: dict display (EA3-9), so the tuples come from the schemas.
-RUN_KEYS: tuple[str, ...] = tuple(_RUN_SCHEMA["properties"])
+RUN_KEYS: tuple[str, ...] = tuple(_RUN_SCHEMA["required"])
 RUN_ACTIVITY_KEYS: tuple[str, ...] = tuple(_RUN_ACTIVITY_SCHEMA["properties"])
 
 
@@ -2096,13 +2102,24 @@ def _member_of(value: Any) -> str | dict[str, str] | None:
     return assignee(value) if isinstance(value, str) else None
 
 
+def _answer(raw: Any) -> dict[str, Any] | None:
+    """``answer`` of a run (SW-43): the id, the seq and whether the member
+    may still change it. ``None`` when the run has no live answer."""
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "id": str(raw.get("id")), "seq": _int_or_none(raw.get("seq")),
+        "changeable": bool(raw.get("changeable")),
+    }
+
+
 def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
     """One run of ``pm_agent_runs`` (§12.1). The pinned keys, and no other.
 
     A database CHECK shapes ``status``, and the gateway derives ``state``.
     The link is (S). The question and the line hold free text, so (U).
     """
-    return {
+    out = {
         "id": str(row.get("id")),
         "task_id": str(row.get("task_id")),
         "status": _key(row.get("status")),
@@ -2117,6 +2134,9 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "latest_line": _line(row.get("latest_ephemeral")),
         "stranded": _stranded(row.get("stranded")),
     }
+    if "answer" in row:  # only a gateway with SW-43 on sends it
+        out["answer"] = _answer(row.get("answer"))
+    return out
 
 
 def _selected(value: Any) -> list[str | dict[str, str] | None]:
@@ -2670,7 +2690,8 @@ CONTEXT_COMMENTS = 20
 #: The most gateway calls of one ``get_task_context`` (§12.4): the five of
 #: ``get_task``, one for each parent, the project node and the timeline.
 #: SW-31a adds one, the read of the guidance (:func:`_guidance_of`), so 13.
-CONTEXT_CALL_CEILING = 13
+#: MCP-G18 adds one, the read of the attachments (:func:`_attachments_of`), so 14.
+CONTEXT_CALL_CEILING = 14
 #: CIV-14c. With ``comments: "all"`` the timeline is read in pages of the
 #: route's cap, up to this many comments in total. The newest ones win.
 CONTEXT_ALL_COMMENTS = 500
@@ -2688,7 +2709,20 @@ ANCESTOR_KEYS: tuple[str, ...] = ("id", "task_number", "title", "status", "descr
 #: The keys of the result of ``get_task_context`` (§12.4).
 CONTEXT_KEYS: tuple[str, ...] = (
     "task", "ancestors", "project", "blocked_by", "blocks", "subtasks", "agent_runs",
-    "held_by", "refs", "recent_comments",
+    "held_by", "refs", "recent_comments", "attachments",
+)
+
+#: The most attachments that ``get_task_context`` returns (MCP-G18). The
+#: gateway route is not paged, so the edge cuts the list here.
+CONTEXT_ATTACHMENTS_MAX = 100
+#: Present only when the task has more attachments than that cap.
+ATTACHMENTS_TRUNCATED_KEY = "attachments_truncated"
+#: The one route of the attachments read. Its rows carry a cookie URL. The
+#: edge never copies that URL (MCP-G18).
+ATTACHMENTS_ROUTE = "/projects/tasks/{task_id}/attachments"
+#: The keys of one attachment of ``get_task_context`` (MCP-G18). No url, no bytes.
+ATTACHMENT_KEYS: tuple[str, ...] = (
+    "attachment_id", "name", "mime", "size", "kind", "added_by", "created_at",
 )
 
 #: The one stub of a parent that the member cannot see. It has no title.
@@ -2879,8 +2913,15 @@ _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "recent_comments": {"type": "array", "items": _TIMELINE_OUTPUT["properties"][
         "activities"]["items"]},
+    "attachments": {"type": "array", "items": _object({
+        "attachment_id": {"type": "string"}, "name": _UNTRUSTED_SCHEMA,
+        "mime": _SHAPED_OR_NULL, "size": {"type": "integer"},
+        "kind": {"type": "string", "enum": ["image", "file"]},
+        "added_by": _SHAPED_OR_NULL, "created_at": _NULLABLE_STRING,
+    })},
 }), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, COMMENTS_TRUNCATED_KEY, {"type": "boolean"})
+_CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, ATTACHMENTS_TRUNCATED_KEY, {"type": "boolean"})
 
 
 async def _statuses_of(ctx: Context, project: str) -> dict[str, Mapping[str, Any]]:
@@ -3008,6 +3049,45 @@ def _blocks_links(links: Any, direction: str) -> list[dict[str, Any]]:
             and r.get("link_type") == "blocks" and r.get("direction") == direction]
 
 
+_MIME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}")
+
+
+def _attachment(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One attachment of a task, as metadata (MCP-G18). The file name is text
+    that a person chose, so it leaves as ``untrusted_text``. The cookie URL of
+    the gateway row is dropped: no link and no bytes leave the edge."""
+    size = row.get("size")
+    return {
+        "attachment_id": str(row.get("attachment_id")),
+        "name": untrusted(row.get("name") or ""),
+        "mime": shaped(row.get("mime"), _MIME_RE),
+        "size": size if isinstance(size, int) and not isinstance(size, bool) else 0,
+        "kind": "image" if row.get("kind") == "image" else "file",
+        "added_by": shaped(row.get("added_by"), _EMAIL_RE),
+        "created_at": _str_or_none(row.get("created_at")),
+    }
+
+
+async def _attachments_of(ctx: Context, where: Mapping[str, str],
+                          ) -> tuple[list[dict[str, Any]], bool]:
+    """``(rows, truncated)`` of the files on a task (MCP-G18). The task was
+    read just before, so a refusal here gives no rows. A busy gateway ends the
+    call, as :func:`_project_of` does. The route answers every row, so the edge
+    cuts the list at :data:`CONTEXT_ATTACHMENTS_MAX`."""
+    try:
+        body = await _get(ctx, ATTACHMENTS_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)
+    except ToolError as exc:
+        if exc.text == TEXT_BUSY:
+            raise
+        return [], False
+    rows = body.get("rows") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        return [], False
+    rows = [r for r in rows if isinstance(r, dict)]
+    return ([_attachment(r) for r in rows[:CONTEXT_ATTACHMENTS_MAX]],
+            len(rows) > CONTEXT_ATTACHMENTS_MAX)
+
+
 async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """The task, why it exists and what holds it up, in one call (§12.4).
 
@@ -3044,8 +3124,9 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
                     ("page_size", str(size))]),
         _walk_up(ctx, row),
         _guidance_of(ctx, where["task_id"]),
+        _attachments_of(ctx, where),
     )
-    relations, refs, runs, statuses, node, timeline, walk, guidance = found
+    relations, refs, runs, statuses, node, timeline, walk, guidance, files = found
     if not isinstance(relations, dict):
         raise ToolError(TEXT_BUSY)
     names = {k: v["name"] for k, v in statuses.items() if isinstance(v.get("name"), str)}
@@ -3086,7 +3167,10 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         "held_by": task["held_by"],
         "refs": [reference(r) for r in _rows_of(refs)],
         "recent_comments": comments,
+        "attachments": files[0],
     }
+    if files[1]:
+        result[ATTACHMENTS_TRUNCATED_KEY] = True
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
     if every:
@@ -3106,7 +3190,12 @@ GET_TASK_CONTEXT = Tool(
         " subtasks, its open agent runs, held_by, its references and the"
         " comments, oldest first. By default these are the newest 20. Send"
         " comments: \"all\" for every comment, up to 500. The result then has"
-        " comments_truncated, true when older comments did not fit. A parent that this member cannot"
+        " comments_truncated, true when older comments did not fit. The result"
+        " also has attachments. Each has attachment_id, name, mime, size, kind"
+        " (image or file), added_by and created_at. It has no link and no"
+        " content: a person reads an image in the app. The list keeps the"
+        " oldest 100, and attachments_truncated is true when more exist."
+        " A parent that this member cannot"
         " see shows as {\"hidden\": true}, and the parents above it do not"
         " show. Each parent has the first 500 characters of its description."
         " A parent in another project shows its status category only."
@@ -3130,7 +3219,7 @@ GET_TASK_CONTEXT = Tool(
     not_found=TEXT_TASK_NOT_FOUND,
     run=_get_task_context,
     routes=(TASK_ROUTE, RELATIONS_ROUTE, REFS_ROUTE, TASK_RUNS_ROUTE, STATUSES_ROUTE,
-            NODE_ROUTE, TIMELINE_ROUTE, GUIDANCE_ROUTE),
+            NODE_ROUTE, TIMELINE_ROUTE, GUIDANCE_ROUTE, ATTACHMENTS_ROUTE),
 )
 
 
@@ -7268,6 +7357,9 @@ __all__ = [
     "ASSIGNEE_PERSONAL_CODE",
     "ASSIGNEE_REFUSED_CODE",
     "ASSIGN_ANNOTATIONS",
+    "ATTACHMENTS_ROUTE",
+    "ATTACHMENTS_TRUNCATED_KEY",
+    "ATTACHMENT_KEYS",
     "AUDIENCES",
     "AUDIENCE_WIDENS_CODE",
     "AUDIENCE_WIDER",
@@ -7281,6 +7373,7 @@ __all__ = [
     "COMMENT_REPLAY_KEYS",
     "COMPLETED_CATEGORY",
     "CONTEXT_ALL_CALL_CEILING",
+    "CONTEXT_ATTACHMENTS_MAX",
     "CONTEXT_CALL_CEILING",
     "CONTEXT_COMMENTS",
     "CONTEXT_KEYS",

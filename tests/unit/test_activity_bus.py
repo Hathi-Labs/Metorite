@@ -391,7 +391,8 @@ def test_cost_summary_aggregates_daily_rollups(monkeypatch):
 
     class _FakeRedis:
         async def hgetall(self, key):
-            if key == activity._cost_key(today):
+            # H-201e: the reader asks for the tenant's own key.
+            if key == f"cc:{_ORG}:cost:{today}":
                 return {
                     "total|cost": "0.5",
                     "total|tokens": "1500",
@@ -411,9 +412,9 @@ def test_cost_summary_aggregates_daily_rollups(monkeypatch):
                 }
             return {}
 
-    monkeypatch.setattr(activity, "_get_client", lambda: _FakeRedis())
+    _patch_client(monkeypatch, _FakeRedis())
 
-    out = asyncio.run(activity.cost_summary(days=3))
+    out = asyncio.run(activity.cost_summary(days=3, organization_id=_ORG))
     assert out["window_days"] == 3
     assert len(out["days"]) == 3
     assert out["days"][-1]["date"] == today          # newest last (chart L→R)
@@ -463,7 +464,7 @@ def test_cost_rollup_folds_the_tenant_partition(monkeypatch):
             return self.pipe
 
     r = _FakeRedis()
-    asyncio.run(activity._record_cost(r, {
+    asyncio.run(activity._record_cost(r, "cc:_unattributed:cost:test", {
         "kind": "model", "model": "gpt-4o-mini", "cost_usd": 0.25,
         "tokens": 100, "source": "email", "agent": "email-assistant",
         "instance": "u:alice@fracktal.in",
@@ -473,7 +474,7 @@ def test_cost_rollup_folds_the_tenant_partition(monkeypatch):
     assert fields["instance|u:alice@fracktal.in|calls"] == 1
 
     shared = _FakeRedis()
-    asyncio.run(activity._record_cost(shared, {
+    asyncio.run(activity._record_cost(shared, "cc:_unattributed:cost:test", {
         "kind": "model", "model": "gpt-4o-mini", "cost_usd": 0.25,
         "tokens": 100, "source": "chat", "agent": "task-manager",
     }))
@@ -497,7 +498,7 @@ def test_cost_summary_empty_history_is_all_zero(monkeypatch):
         async def hgetall(self, key):
             return {}
 
-    monkeypatch.setattr(activity, "_get_client", lambda: _Empty())
-    out = asyncio.run(activity.cost_summary(days=7))
+    _patch_client(monkeypatch, _Empty())
+    out = asyncio.run(activity.cost_summary(days=7, organization_id=_ORG))
     assert out["totals"] == {"cost": 0.0, "tokens": 0, "calls": 0}
     assert out["by_model"] == {}

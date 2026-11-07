@@ -1,7 +1,7 @@
 # Web research — Mira reads the web at large, on open-source parts (WS-WEB)
 
-> **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-04 · **Owner:** vjvarada
-> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-02, with Trafilatura in a child process. WEB-2b (the confinement of that child) is built, 2026-11-02, and it must merge before that flag flips. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-3 (the file readers) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-04. MarkItDown reads PDF, DOCX, PPTX, XLSX, CSV and EPUB in the same child. pdfplumber reads a PDF that it cannot. A long file spills through CTX-1. The type refusal of §3.1 rule 5 is built with it. WEB-1c (task 1739, 2026-11-05) closes three small gaps of WEB-1. The guard scan sees `sys.modules`, a process spawn and `get(**kw)`. The `Type:` line names Markdown when Jina's text wins. The direct read marks a cut at 512 KiB. WEB-4 (the search provider list) is built dark, 2026-11-05. WEB-6 (the web worker container) is built, 2026-11-05, in the profile `webworker` with no caller. WEB-7 adds the caller, and WEB-5 waits on WEB-Q1. `web_search` and `fetch_page` existed before WEB-0 (§2).
+> **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-06 · **Owner:** vjvarada
+> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-02, with Trafilatura in a child process. WEB-2b (the confinement of that child) is built, 2026-11-02, and it must merge before that flag flips. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-3 (the file readers) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-04. MarkItDown reads PDF, DOCX, PPTX, XLSX, CSV and EPUB in the same child. pdfplumber reads a PDF that it cannot. A long file spills through CTX-1. The type refusal of §3.1 rule 5 is built with it. WEB-1c (task 1739, 2026-11-05) closes three small gaps of WEB-1. The guard scan sees `sys.modules`, a process spawn and `get(**kw)`. The `Type:` line names Markdown when Jina's text wins. The direct read marks a cut at 512 KiB. WEB-4 (the search provider list) is built dark, 2026-11-05. WEB-6 (the web worker container) is built, 2026-11-05, in the profile `webworker`. WEB-7 (the render caller, task 1265) is built dark, 2026-11-06, and Docling split to WEB-7b (task 1837). The worker is not on the box yet, and WEB-5 waits on WEB-Q1. `web_search` and `fetch_page` existed before WEB-0 (§2).
 > **Verified against code on 2026-11-05 at `44ca36243`.** Each path in §12 was read on that commit.
 > **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D148. D85, D117, D124, D129, D130 and D139 bind it.
 > **Metorite:** project "Agent Tooling", epic 1235, this spec task 1237. The slices WEB-1 to WEB-12 are tasks 1259 to 1270, in order.
@@ -131,8 +131,25 @@ The guard picks the reader by the content type.
 - **Faults.** Each fault gives the WEB-2 read of the type, and one log line. A fault is no slot, a missing package, a crash, a bad answer, a timeout or an empty text. A PDF or an Office file then gets the binary line. CSV gets the strip.
 - **The type refusal (§3.1 rule 5).** With the flag on, `_allowed_type` passes HTML, plain text (`text/*` and `application/javascript`), JSON, XML, PDF, Office, EPUB and images. Each other type gets one line that names the type (`zip`, `audio`, `video`, a font, an unknown generic). The name is cleaned to `type/subtype`, because the server writes it. With the flag off, nothing is refused.
 - **The log.** Each file read writes one `web_reader.read` event: the URL with no query, the reader, the size in bytes, the characters and the spill ref.
-- **Left for later.** Image text (OCR) and the old binary Office types (`.doc`, `.xls`, `.ppt`) keep the binary line. The line still says "comes later (WEB-3)", and a later change can reword it. Docling for a hard or scanned PDF is WEB-7.
+- **Left for later.** Image text (OCR) and the old binary Office types (`.doc`, `.xls`, `.ppt`) keep the binary line. The line still says "comes later (WEB-3)", and a later change can reword it. Docling for a hard or scanned PDF is WEB-7b (task 1837).
 - Fences: `tests/unit/test_web_files.py`, and `TestTheFileChild` in `tests/unit/test_web_reader_confine.py` (Linux).
+
+**As built, WEB-7 (2026-11-06, task 1265).** `fetch_page(url, max_chars, render)` asks the web worker of §5.1, with `WEB_RESEARCH_ORGS` on. Off, the output is the WEB-1 output, byte for byte, and `render` has no effect.
+
+- **One client.** `acb_skills/web_render_client.py` is the one caller of the worker. It posts `{url, org_id, job_id}` to `WEB_WORKER_URL` + `/render` with the bearer `WEB_WORKER_TOKEN`. The page URL goes in the body only. The client follows no redirect and reads no proxy from the env.
+- **The guard first.** The walk of §3.1 runs before the render. So a refused URL, or a refused redirect hop, never reaches the worker. The worker checks each hop again.
+- **The org.** The org comes from `_run_org`, the run binding (R5). The tool takes no org. An empty org sends nothing. Each call gets a new job id (`uuid4().hex`).
+- **When it renders.** A render goes when the model passes `render` true. It also goes when a 2xx HTML page gives local text under `MIN_LOCAL_CHARS` (200). A file, a binary body and another type never go. One call makes one render at most.
+- **The order.** The local reader, then the render, then Jina. Jina goes only with `WEB_READER_REMOTE=jina` and a text that is still under 200 characters. An asked render wins. An automatic render wins only when it is longer.
+- **The mark.** The Markdown sits in the one `WEB PAGE` block, with the type `text/markdown`. The URL line shows the final URL that the worker reports, when that URL passes rule 1 of the guard. Else it shows the URL of the call.
+- **Faults.** Refused, too large, bad text, timeout, busy, unavailable and an empty text each give one line before the static text. That line comes only for an asked render. An automatic render writes one log line and stays silent. Nothing raises.
+- **Caps.** The connect timeout is 3 seconds. The total timeout is 70 seconds, because a worker job ends at 60 seconds. The client reads at most 4 MiB of an answer. The worker caps the Markdown at 2 MiB, and JSON can write a line break as two bytes.
+- **Slots.** Two renders run in the process, and one for each org. With no slot, the read falls back at once and does not wait.
+- **The token is a secret.** It goes in the `Authorization` header only. No output, log line or fault text holds it.
+- **Not ready.** With `WEB_WORKER_URL` or `WEB_WORKER_TOKEN` empty, nothing goes to the worker. An asked render then gives one line: the worker is not set up.
+- **Not on the box yet.** This change is dark. A live render needs the owner's deploy wiring: the image build, the token in `root.env`, and the profile `webworker` up. Until then the automatic render stays silent.
+- **Split.** Docling for a hard or scanned PDF, and the scanned PDF fixture, moved to WEB-7b (task 1837).
+- Fence: `tests/unit/test_web_render.py`.
 
 ### 3.3 Search providers
 
@@ -203,11 +220,11 @@ One container, `web_worker`, in the pattern of `apps/services/meeting_bot/`:
   | Address checks of one organization at once | 2 |
 
   The container drops all capabilities (`cap_drop: [ALL]`) and sets `no-new-privileges`. It binds `127.0.0.1` only (`test_compose_ports_local.py`).
-- **The API.** `POST /render` takes a URL, an organization id and a job id. It answers with Markdown. The bearer token is the internal token. The worker refuses to start with an empty token. Docling joins in WEB-7 and Playwright MCP in WEB-9.
+- **The API.** `POST /render` takes a URL, an organization id and a job id. It answers with Markdown. The bearer token is the internal token. The worker refuses to start with an empty token. Docling joins in WEB-7b and Playwright MCP in WEB-9.
 - **Every call names the organization.** The orchestrator sends the organization of the run binding, and the worker trusts it only behind the token. The worker holds no database. Each job gets a new browser context with no shared profile, and a directory made with mode `0700` under a root keyed by job id. The worker deletes both when the job ends. A job of org B cannot read or name a file of org A (`404`).
 - **The build.** The context is the repo root, because the image installs `acb_common`. The module is never copied. The worker joins the AGPL fence: `test_no_agpl_dependency.py` reads its requirements too.
 
-**As built, WEB-6 (2026-11-05).** The worker is `apps/services/web_worker/`. No caller exists, and WEB-7 adds the orchestrator call.
+**As built, WEB-6 (2026-11-05).** The worker is `apps/services/web_worker/`. WEB-7 added the orchestrator call (§3.2).
 
 - **The pinned fetch.** Chromium fetches nothing itself. The route gives each request to `fetch.pinned_fetch` and fulfills it with the answer. The fetch resolves each host once, checks the address with `acb_common.public_address`, and connects to that address. `Host` and the TLS name stay the name of the URL. So a DNS answer that changes later (DNS rebinding) never reaches a socket.
 - **Each hop.** A hop URL with a backslash, a control character, a space or userinfo gets a refusal before a parser reads it. Two parsers can read such a URL as two hosts. A hop to another origin gets no `Cookie`, `Authorization` or `Proxy-Authorization`.
@@ -354,7 +371,8 @@ Research of 2026-11-01. The licence and the last commit of each repo were read f
 | **WEB-4** | The search provider list (§3.3): SearXNG, ddgs, SerpAPI and the scholarly sources, offered only when ready | A provider with a failed health check is skipped. Each result names its provider and date. Results merge by URL | STD | AGENT-SAFE |
 | **WEB-5** | The SearXNG container on the box (§5.2), private port only | `/healthz` answers from the orchestrator and from nowhere outside. `web_search` returns SearXNG results in a real turn. The log line names the provider | HIGH | **Waits on WEB-Q1 and WEB-Q4.** Deploy grant open until 2026-11-30 |
 | **WEB-6** | The web worker container (§5.1) | The worker refuses a private address. It runs as non-root with its caps. One render returns Markdown. A second organization's job sees no file of the first | HIGH | AGENT-SAFE |
-| **WEB-7** | `fetch_page(render: true)`, the automatic render when the static text is empty, and hard PDFs through Docling | A page that draws its text with JavaScript reads in full. A scanned PDF fixture gives its text | STD | AGENT-SAFE |
+| **WEB-7** | `fetch_page(render: true)` and the automatic render when the static text is empty or short. Built dark, 2026-11-06 (task 1265) | A page that draws its text with JavaScript reads in full | STD | AGENT-SAFE |
+| **WEB-7b** | Hard PDFs through Docling in the worker (task 1837). Split from WEB-7 | A scanned PDF fixture gives its text | STD | AGENT-SAFE |
 | **WEB-8** | `crawl_site` and `extract_from_pages` | A crawl stays on one host, honours `robots.txt` and stops at its page cap. An extract fills each named field or leaves it empty, never invented | STD | AGENT-SAFE |
 | **WEB-9** | The browse session (§4), on Playwright MCP in the worker | A read runs at once. A form submit asks on the card. A session ends after 5 idle minutes and keeps no cookies. A login page stops the session | HIGH | AGENT-SAFE |
 | **WEB-10** | The goal record (§6) | Expand-only migration (R6). R8: org B reads none of org A's goals. A stale update is refused. The cap stops a job with `cap_reached` | HIGH | AGENT-SAFE |
@@ -387,6 +405,10 @@ WEB-10 added these two paths on 2026-11-01:
 - `infra/postgres/325_goal_records.sql` (the table `goal_records`)
 - `packages/acb_common/acb_common/goal_store.py` (the one writer of `goal_records`)
 
+WEB-7 added this path on 2026-11-06:
+
+- `packages/acb_skills/acb_skills/web_render_client.py` (the one client of the web worker)
+
 ---
 
 ## 13. Verification commands
@@ -396,6 +418,7 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8 needs
 uv run python scripts/affected_tests.py --run
 uv run pytest tests/unit/test_web_fetch_guard.py tests/unit/test_web_readers.py tests/unit/test_web_search_providers.py -q
 uv run pytest tests/unit/test_web_worker.py tests/unit/test_no_agpl_dependency.py tests/unit/test_compose_ports_local.py -q   # WEB-6
+uv run pytest tests/unit/test_web_render.py tests/unit/test_tool_schema_diet.py -q   # WEB-7
 docker build -f apps/services/web_worker/Dockerfile -t web-worker-check . && docker run --rm --entrypoint id web-worker-check -u   # WEB-6: must not print 0
 uv run pytest tests/unit/test_goal_record_r8.py -q -rs                 # WEB-10. R8: it skips with no database
 uv run ruff check packages/acb_skills packages/acb_common apps/services/orchestrator --select F821,F601,F602,F502,F7,B006   # the blocking set of pr-check. The full set holds old findings
@@ -413,6 +436,7 @@ bash scripts/ci_local.sh
 | A provider is offered only when ready | New with WEB-4: `tests/unit/test_web_search_providers.py` |
 | No AGPL package in our Python or Node lock files | New with WEB-2: `tests/unit/test_no_agpl_dependency.py` |
 | The worker refuses a private target (top URL, redirect, subresource), runs as non-root, and keeps one org's job files from another | New with WEB-6: `tests/unit/test_web_worker.py` |
+| A refused URL never reaches the worker, the org comes from the run binding, the token leaks nowhere, and the flag off is the WEB-1 output | New with WEB-7: `tests/unit/test_web_render.py` |
 | A browse write asks on the card | New with WEB-9: `tests/unit/test_browse_session.py` |
 | A parent never imports a parser, and the file child reads the six types, falls back to pdfplumber and spills a long file | New with WEB-3: `tests/unit/test_web_files.py` |
 | The file child is confined and meets the same refusals as the page child | New with WEB-3: `TestTheFileChild` and `test_file_mode_refuses_each_attack_too` in `tests/unit/test_web_reader_confine.py` (Linux) |
