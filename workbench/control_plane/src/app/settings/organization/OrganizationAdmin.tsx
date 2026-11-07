@@ -147,6 +147,16 @@ const PURGE_LABELS: Record<string, string> = {
   reminders: "private reminder",
   // WS-BRIEF BR-4: a brief or close-out of the member, with its claims.
   brief_runs: "daily brief",
+  // WS-MDC CC-5a: the member's focus sessions, with their minutes.
+  focus_sessions: "focus session",
+  // Each label is a singular noun that takes a plain "s". The fence
+  // `test_every_purge_count_has_a_label` holds the gateway's keys to this map.
+  goal_records: "personal goal",
+  calendar_entries: "calendar event",
+  calendar_attendances: "event attendance",
+  private_app_installs: "private app install",
+  shared_app_installs: "shared app install",
+  shared_private_app_installs: "privately shared app install",
   // WS-STU F1: the member's own AI Studio skills, with their versions.
   studio_skills: "AI Studio skill",
   // WS-63 PZ-9: the member's settings row, with the assistant profile.

@@ -59,6 +59,7 @@ from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F40
 from gateway.routes.projects import decisions as _decisions  # noqa: F401
 from gateway.routes.projects import delta as _delta  # noqa: F401
 from gateway.routes.projects import export as _export  # noqa: F401
+from gateway.routes.projects import focus_sessions as _focus_sessions  # noqa: F401
 from gateway.routes.projects import imports as _imports  # noqa: F401
 from gateway.routes.projects import intake as _intake  # noqa: F401
 from gateway.routes.projects import me as _me  # noqa: F401

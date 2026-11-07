@@ -1579,3 +1579,10 @@ DROP POLICY IF EXISTS crm_change_log_tenant_isolation ON crm_change_log;
 CREATE POLICY crm_change_log_tenant_isolation ON crm_change_log
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE focus_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE focus_sessions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS focus_sessions_tenant_isolation ON focus_sessions;
+CREATE POLICY focus_sessions_tenant_isolation ON focus_sessions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

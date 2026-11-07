@@ -141,6 +141,8 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     fake.seed_rows("user_settings", {"user_id": PRIYA})
     # ── her two private reminders (WS-66 RM-1) ──
     fake.seed_rows("reminders", {"member_email": PRIYA}, {"member_email": PRIYA})
+    # ── her three focus sessions (WS-MDC CC-5a) ──
+    fake.seed_rows("focus_sessions", *({"member_email": PRIYA} for _ in range(3)))
     # ── her two calendar entries, and her seat on a colleague's event (CE-4) ──
     fake.seed_rows("calendar_entries", {"id": "entry-p1", "owner_email": PRIYA},
                    {"id": "entry-p2", "owner_email": PRIYA})
@@ -516,6 +518,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "knowledge_favorites": 0,
         # WS-66 RM-1: her two private reminders. The ledger goes by cascade.
         "reminders": 2,
+        # WS-MDC CC-5a: her three focus sessions. The task stays.
+        "focus_sessions": 3,
         # WS-BRIEF BR-4: the fake holds no brief of the member.
         "brief_runs": 0,
         # WS-STU F1: her one private skill. The versions go by cascade.
@@ -740,6 +744,26 @@ def test_the_reminders_of_this_org_go_and_their_ledger_by_cascade() -> None:
     assert keys.index("reminders") < keys.index("member_record")
     assert "reminder_events" in cascade_closure("reminders")
     assert "reminder_events" not in {r.table for r in _PURGE_DELETES}
+
+
+def test_the_focus_sessions_of_this_org_go() -> None:
+    """WS-MDC CC-5a (D-MD-5): the purge deletes the member's focus sessions.
+
+    Only the member reads their own minutes. The clause names the member and
+    the bound org, because the same address may hold sessions in another org.
+    The task of a session stays: a purge deletes no `pm_tasks` row (D63).
+    ``test_focus_session_rls_r8.py`` runs this clause on a real Postgres.
+    Mutation: drop the entry, and the count dict above and
+    ``test_every_table_with_a_person_column_is_on_a_list`` fail.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "focus_sessions"]
+    assert rows.key == "focus_sessions"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("focus_sessions") < keys.index("member_record")
 
 
 def test_the_briefs_of_this_org_go_and_their_claims_by_cascade() -> None:
@@ -1284,6 +1308,81 @@ def test_a_member_keyed_table_under_the_registry_cannot_be_forgotten() -> None:
     assert "store.delete(" in inspect.getsource(sources.purge_member_sources)
 
 
+#: The person columns of the schema-wide rule below.
+_PERSON_COLUMNS = frozenset({"member_email", "user_email", "owner_email", "user_id"})
+
+#: The person-keyed tables that were on neither list when the rule below went
+#: schema-wide (WS-MDC CC-5a review F3, 2026-11-07). Each one is a finding: this
+#: change does not decide its purge rule (task 1993). A table leaves the set when
+#: its slice puts it on a list. The set may only shrink, and a new table never
+#: joins it: the test pins the size and the highest migration that may create a
+#: member of the set.
+_PERSON_TABLES_FROZEN_AT_MIGRATION = 348
+_PERSON_TABLES_FROZEN_COUNT = 33
+_PERSON_TABLES_NOT_YET_SORTED = frozenset({
+    "agent_connection", "app_pins", "artifact_member", "artifacts", "attachments",
+    "calendar_day_state", "calendar_rollover_log", "copilot_config",
+    "crm_companies", "crm_contacts", "crm_deals", "crm_leads",
+    "crm_module_records", "crm_views", "email_detached_purges",
+    "email_mailbox_purges", "kb_pages", "kb_spaces", "live_session",
+    "my_day_card_state", "my_day_judgments", "my_tasks_horizons",
+    "my_tasks_reviews", "notes_glossary", "org_membership", "pm_agent_runs",
+    "pm_task_personal", "reach_outbox", "reach_requests", "reach_signal_log",
+    "whatsapp_bot_messages", "whatsapp_member_links", "whatsapp_pending_acts",
+})
+
+
+def test_every_table_with_a_person_column_is_on_a_list() -> None:
+    """Each table of the schema with one of the four person columns of
+    ``_PERSON_COLUMNS`` is on the delete list, the keep list or the registry
+    list, or in the frozen set above. A table that keys a person by another
+    column (``email``, ``subject``, ``assignee``) is not checked here.
+
+    The rule above reads only the cascade of the purge, so a new member-keyed
+    table that hangs off nothing was invisible to it. ``focus_sessions`` (WS-MDC
+    CC-5a) was that shape. The schema is the numbered migrations, as
+    ``_schema_cascade`` reads them, because ``schema.generated.sql`` is stale.
+
+    ⚠️ Mutation-checked: drop the ``focus_sessions`` row of ``_PURGE_DELETES``,
+    and this test names the table.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+
+    from tests.unit._schema_cascade import columns_of, tables
+
+    keyed = {t for t in tables() if columns_of(t) & _PERSON_COLUMNS}
+    sorted_out = {r.table for r in (*_PURGE_DELETES, *_PURGE_KEEPS)} | set(
+        _PURGED_THROUGH_THE_REGISTRY)
+    unsorted = sorted(keyed - sorted_out - _PERSON_TABLES_NOT_YET_SORTED)
+    assert not unsorted, (
+        f"these tables carry a person column and are on no list: {unsorted}. "
+        "Put each on _PURGE_DELETES or _PURGE_KEEPS of members.py, with its reason.")
+    left = sorted(_PERSON_TABLES_NOT_YET_SORTED & sorted_out)
+    assert not left, f"these are on a list now. Take them out of the frozen set: {left}"
+    gone = sorted(_PERSON_TABLES_NOT_YET_SORTED - keyed)
+    assert not gone, f"these hold no person column now. Take them out of the frozen set: {gone}"
+
+    # Shrink only (CC-5a re-review P2). The set never grows, and a table that a
+    # later migration creates can never hide in it.
+    assert len(_PERSON_TABLES_NOT_YET_SORTED) <= _PERSON_TABLES_FROZEN_COUNT, (
+        "the frozen set grew. Put the new table on _PURGE_DELETES or _PURGE_KEEPS.")
+    from tests.unit._schema_cascade import MIGRATIONS
+
+    born: dict[str, int] = {}
+    for path in sorted(MIGRATIONS.glob("[0-9]*.sql")):
+        number = int(re.match(r"\d+", path.name).group())
+        sql = path.read_text(encoding="utf-8")
+        for name in re.findall(
+                r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?\"?(\w+)\"?",
+                sql, re.I):
+            born.setdefault(name.lower(), number)
+    late = sorted(t for t in _PERSON_TABLES_NOT_YET_SORTED
+                  if born.get(t, 10**6) > _PERSON_TABLES_FROZEN_AT_MIGRATION)
+    assert not late, (
+        f"these are created after migration {_PERSON_TABLES_FROZEN_AT_MIGRATION}, "
+        f"so they cannot join the frozen set: {late}. Put each on a purge list.")
+
+
 def test_the_cascade_map_is_the_one_the_schema_declares() -> None:
     """`_CREDENTIAL_CASCADES` is hand-maintained, so it is pinned.
 
@@ -1673,6 +1772,25 @@ def test_delete_permanently_is_not_offered_on_the_viewers_own_row() -> None:
     )
     # The row opens the dialog; it never issues the DELETE itself.
     assert "fetch(" not in row
+
+
+def test_every_purge_count_has_a_label() -> None:
+    """The confirm copy names each count with ``PURGE_LABELS``. A key with no
+    label falls back to the raw key plus "s", so a new table read "3 focus
+    sessionss" and "2 calendar entriess" (CC-5a, 2026-11-07). Every key that
+    the purge counts, on the delete side and the keep side, needs a label.
+    """
+    from gateway.routes.admin import members
+
+    page = _page()
+    block = page.split("const PURGE_LABELS", 1)[1].split("\n};", 1)[0]
+    labels = set(re.findall(r"^\s+([a-z_]+):", block, re.M))
+    keys = [rows.key for rows in (*members._PURGE_DELETES, *members._PURGE_KEEPS)]
+    missing = [key for key in keys if key not in labels]
+    assert not missing, (
+        f"purge counts with no label in PURGE_LABELS: {missing}. Add a "
+        "singular noun that takes a plain 's'."
+    )
 
 
 def test_the_confirmation_names_what_goes_and_what_stays() -> None:
