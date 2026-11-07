@@ -136,7 +136,7 @@ def _shop(mid: str) -> dict[str, Any]:
 
 def _user(org: str, email: str) -> UserContext:
     return UserContext(email=email, role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:workflows"]), organization_id=org)
+                       access=build_access(["feature:studio"]), organization_id=org)
 
 
 class _Request:

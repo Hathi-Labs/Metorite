@@ -273,6 +273,12 @@ ALLOWED: dict[str, str] = {
         "Text, not rows: the first 40 characters of one string, compared with the sent text to spot a card view.",
     "packages/acb_skills/acb_skills/studio_tools.py::_route_short::value[:80]":
         "Text, not rows: one action id cut to 80 characters, as the 422 of the skill route quotes it.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_object_names::names[:RECORD_ACTIONS_LINE_MAX]":
+        "No row is lost: the text keeps the count, and ends with 'and N more' for the names it cuts (STU-BETA-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::with_record_actions::name[:48 - len(tail)]":
+        "Text, not rows: one object name cut so that the action id fits the 48-character limit of the manifest (STU-BETA-2).",
+    "packages/acb_skills/acb_skills/studio_tools.py::with_record_actions::base[:48 - len(str(n))]":
+        "Text, not rows: one action id cut so that it fits the limit with its number (STU-BETA-2).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -293,8 +299,9 @@ ALLOWED: dict[str, str] = {
 #: event loop: two byte cuts of one page, each with its reason (78). STU-F2d
 #: fix rounds 2 and 3 added three string cuts in `studio_tools.py`: one action
 #: id as the route quotes it, and two 40-character prefixes that spot a card
-#: view (81).
-ALLOWED_CEILING = 81
+#: view (81). STU-BETA-2 added one: the plan card names six objects at most
+#: and says 'and N more', and two cuts keep a made action id in 48 characters (84).
+ALLOWED_CEILING = 84
 
 
 def _stringy(node: ast.AST) -> bool:

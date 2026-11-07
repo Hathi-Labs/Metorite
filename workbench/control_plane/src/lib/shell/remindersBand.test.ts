@@ -104,6 +104,14 @@ describe("the band", () => {
     expect((html.match(/data-reminder-snooze=""/g) ?? []).length).toBe(2);
     expect(html).toContain('data-reminder-row="upcoming"');
     expect(html).toContain("Later today");
+    // On a phone each act is an icon, the due row's Done too (task 1898):
+    // every visible word of an act hides below `sm`.
+    expect(html.match(/<span[^>]*>(Done|Snooze)<\/span>/g)).toEqual([
+      '<span class="hidden sm:inline">Done</span>',
+      '<span class="hidden sm:inline">Snooze</span>',
+      '<span class="hidden sm:inline">Done</span>',
+      '<span class="hidden sm:inline">Snooze</span>',
+    ]);
   });
 
   it("links a row to the chat card of the reminder", () => {

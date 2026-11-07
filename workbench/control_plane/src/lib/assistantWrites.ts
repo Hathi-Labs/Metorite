@@ -40,7 +40,8 @@ export type LiveApp =
   | "email"
   | "crm"
   | "knowledge"
-  | "artifacts";
+  | "artifacts"
+  | "studio";
 
 /**
  * Live apps that no assistant tool writes to, with the reason. The fence
@@ -77,6 +78,16 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
   "write_artifact", "make_document", "make_report", "package_artifacts",
 ]);
 
+/**
+ * The studio pack's write tools (`studio_tools.py`, the `studio` pack): they
+ * save and publish packages and skills, which the Studio library lists. The
+ * read tools (draft, validate, patch, outline, plan, describe, list_actions,
+ * package_get, record_list, skill_list, interview) change nothing stored.
+ */
+const STUDIO_WRITES: ReadonlySet<string> = new Set([
+  "studio_save", "studio_publish", "studio_skill_save", "studio_skill_state",
+]);
+
 /** The assistant profile tools write the settings page, which no live app shows. */
 const PROFILE_WRITES = /^profile_/;
 
@@ -94,6 +105,7 @@ export function appsForWrite(toolName: string): LiveApp[] {
   if (CRM_WRITES.has(bare)) return ["crm"];
   if (KNOWLEDGE_WRITES.has(bare)) return ["knowledge"];
   if (ARTIFACT_WRITES.has(bare)) return ["artifacts"];
+  if (STUDIO_WRITES.has(bare)) return ["studio"];
   if (PROFILE_WRITES.test(bare)) return [];
   if (placementOf(bare) === "write") return [...TASK_STORE];
   return [];
@@ -101,7 +113,7 @@ export function appsForWrite(toolName: string): LiveApp[] {
 
 /** Every app that some tool writes to. The fence walks this. */
 export const APPS_WITH_WRITE_TOOLS: readonly LiveApp[] = [
-  "projects", "tasks", "calendar", "email", "crm", "knowledge", "artifacts",
+  "projects", "tasks", "calendar", "email", "crm", "knowledge", "artifacts", "studio",
 ];
 
 // ── The announcement ────────────────────────────────────────────────────────

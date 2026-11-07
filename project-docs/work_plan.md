@@ -132,7 +132,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 1. **Customer zero safe and working** (M0, P0): H-259, BO-23b, M0.4, the chat flag, H-163, H-373, H-120, H-326 and CZ-DEWIN-1.
 2. **The shared job queue**: BR-1a. Every brief task runs on it, so build it first and small.
 3. **Issue reporting and the Get started checklist** before the pilots: IR-0 to IR-3 and OB-1. Help follows in M1: HLP-1 to HLP-3.
-4. **The cheap isolation fixes** (M1, P0): H-249, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. H-334 closed the owner check on 2026-11-04. H-334b closed its three list reads on 2026-11-05 (task 1692). AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
+4. **The cheap isolation fixes** (M1, P0): H-249, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. H-334 closed the owner check on 2026-11-04. H-334b closed its three list reads on 2026-11-05 (task 1692). H-334c closed the self reads and `_display_labels` on 2026-11-06 (task 1812). AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
 5. **The isolation spine**: H2, then H3.2 (D120), then H3 in a maintenance window. H4, H5 and H6 run beside it.
 6. **The owner answers**: WS-40-Q (D121) and H3.2 (D120). Both gate P0 work.
 7. **Branch protection**: WS-38a, then WS-5a and WS-38b.
@@ -166,14 +166,15 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
-| WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
+| WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140, D183, D186) · `specs/orchestration_playbook.md` (D186) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a · P9 planned 2026-11-06 (D183, SW-44 to SW-63, task 1874) |
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
 | WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · PKG-1 to PKG-5b are built. PKG-4 and PKG-5b are dark: `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` is empty · next PKG-6 (the workbench reads the resolved manifest behind the flag) |
-| WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard). WEB-10 built (the goal record, `goal_records`, no caller yet). WEB-2 built dark behind `WEB_RESEARCH_ORGS` (the local HTML reader). 2026-11-04: WEB-3 built dark (the file readers, the type refusal and the CTX-1 spill). 2026-11-05: WEB-4 built dark (the search provider list). Next WEB-5 (waits on WEB-Q1) or WEB-6 |
+| WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard). WEB-10 built (the goal record, `goal_records`, no caller yet). WEB-2 built dark behind `WEB_RESEARCH_ORGS` (the local HTML reader). 2026-11-04: WEB-3 built dark (the file readers, the type refusal and the CTX-1 spill). 2026-11-05: WEB-4 built dark (the search provider list). WEB-6 built (the web worker container). 2026-11-06: WEB-7 built dark (`fetch_page` render through the worker, task 1265). Docling and the scanned PDF split to WEB-7b (task 1837). Next WEB-7b, WEB-8, or WEB-5 (waits on WEB-Q1) |
 | WS-CIV | **CI velocity**: each PR runs the tests its diff can affect, and `main` runs the full suite in batches after the merge. No merge queue (D-2026-10-16 stays) | 🟢 active · started 2026-11-04 (D176) | `specs/ci_velocity.md` | Metorite: project "Developer Workflow", epic 1628, slices CIV-1 to CIV-9 = tasks 1629 to 1637 · CIV-1 (outside contributors need approval) done 2026-11-04 · CIV-4 is HIGH (deploy path) · CIV-13 (task 1721, D178, HIGH): the home box starts the 21:30 release, built 2026-11-05 |
 | WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · ALN-1 (the durable trigger) is built dark: `ALIGN_JOBS_ORGS` is empty and the handler is a stub · ALN-2a built (migration 332, backend and chat tools, dark behind `DECISIONS_ORGS`) · ALN-4 (the pin: migration 339, routes and chat tools, no UI) is built dark behind `AUTHORITY_PINS_ORGS` · ALN-5a (the rules of a project: rule rows on the SW-31a store, migration 343, routes, no UI, no chat tool) is built dark behind `PROJECT_RULES_ORGS` · next ALN-2b, ALN-4b, AUTO-7b and ALN-5b, then ALN-6, ALN-7 |
 | WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice, AUTO-3 (D131) and AUTO-7a are merged · AUTO-7b is built, dark behind `AUTO_PARK_ORGS`, in review (task 1411) · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 parts (a) and (b) are merged, and part (c) is open · next AUTO-8 and AUTO-6, then AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
 | WS-PJP | **Plan with Metorite**: the AI plans projects with the member. It finds the critical path, the critical chain and its buffer, the constraint and the risks, proposes the stages that fit the work, and shows three or more changes on one card | 🟢 active · started 2026-11-02 (D168) · M2 | `specs/project_planning.md` | Metorite: project "Projects/Tasks App", epic 1476 · reports to WS-PT · D99, D145, D168 · PJP-0 is this spec · next PJP-1 (pills and swatches), PJP-2 (no hand-off to projects-assistant) and PJP-4 in parallel · PJP-2 needs the owner's `TOOL_PACKS` line before its release |
+| WS-AP | **Waiting**: one list of every agent, approval and person that waits on a member, and of every person the member waits on | 🟢 active · started 2026-11-06 · M2 | `specs/waiting_on_me.md` | Metorite: project "Proactive Intelligence", epic 1615 · D12, D87, D103, D124, D171 and ALN-Q5 · AP-0 is this spec (task 1855) · the owner accepted AP-Q1 to AP-Q8 on 2026-11-06 · the owner answered AP-Q10 on 2026-11-06 at 10:33 UTC: a person of the circle only (AP-16) · AP-1a (task 1616) is built and dark on branch `pro-ap1`. AP-1b waits on the owner: D-EA-14 or AP-Q2 · next AP-BUG-1 (task 1857), then AP-8 (task 1858) · AP-15 (task 1875) routes a wait that no person owns |
 | WS-CO | **Chat organization**: topics, picking up a chat, one search, and the full-screen chat | 🟢 active · started 2026-11-02 (D162, D163) · M1 | `specs/chat_organization.md` · `specs/artifact_management.md` §6.0 | next CO-0 (AGENT-SAFE). CO-1 waits for the PZ-33b question on numbers, and its flip is owner-only |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). GL-10, GL-11 and GL-12 are built (GL-12, 2026-11-01: the Ask bar at the foot, no top bar, Needs you beside its sidebar row) (GL-11, 2026-11-01: desktop proportions, raised chat cards, the full-height sidebar with hover to expand) (cards, rail, chat edge). **GL-Z1 is built, 2026-10-31 (D149): glass is the only look, and the Design switch and the gate are gone.** Next GL-Z2 (fold each `glass:` class into a plain class, then delete the classic token blocks), then GL-5 and GL-6** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
@@ -3912,7 +3913,7 @@ accepted every recommendation of the spec. Board: **WS-55**. Owning spec:
    consent page. The box is on. *(Amended 2026-10-30 by the owner: "by
    default, including personal projects would be on." The first rule kept
    the box off. D-EA-4 of `external_agent_access.md` records it, task 1057.)*
-5. **Version 1 has no personal access token.** Interactive OAuth only.
+5. **Version 1 has no personal access token.** Interactive OAuth only. *Amended 2026-11-06 (owner, task 1819): a per-box token opens under D-EA-5, in `external_agent_access.md` §10.9. A personal token for CI and the device flow stay out.*
 6. **Company context** is the name, domain and branding. It also holds the
    shared memory that the member may read. This lasts until a company profile
    exists (H-15).
@@ -5226,6 +5227,10 @@ In one chat the owner read mail, sent mail, and said "Remind me to call Rajendra
 6. **A held write that would skip its card still shows it.** WS-66 RX-2 lets a reminder write act at once in a clear chat. `egress.write_must_show_card` is the one reader, and that path reads it first.
 7. **No text sends the member away.** A held pack names no new chat and no app. For what stays off, it names the act and the reason in one sentence. `AGENT_ASSIGNEE_REFUSED` follows this too.
 8. **One chat loads what it needs.** A new need of the member never loses to an old sticky pack. Layer (a) already met this. A load that the model asks for now meets it too. The sticky pack that the member used least recently leaves, in that same turn, and it leaves the sticky state. This reverses "a load is monotonic" of §4.2.2 of `one_assistant_context.md`. A pack that the member named in this turn stays. A pack with a tool that started in this run stays too, also while that tool waits on a card.
+
+   **Amended 2026-11-06 (owner, task 1747, option A):** "A: amend D169.8, an explicit load beats a words-only pack". The owner chose it on run `ce6947d1` at 03:29 UTC and confirmed it at 04:21 UTC.
+
+   When a load by the model finds the room full, a pack that came into this turn ONLY by the member's words gives way. No tool of such a pack started in this run. A pack whose tool ran or started stays, and so does a pack that the member named by surface. If the room still does not fit, the failed load reaches the Projects assistant (`LOAD_NO_PATH`).
 9. **The card keeps the promise.** The click is the guard only when the card shows the exact change. `acb_common.card_body` holds the rule. Each short field shows first, and nothing cuts it. Only `description`, `body` and `notes` may be cut, and the card says so. A short field that does not fit refuses in each chat. In a held chat, a card with a cut refuses in plain words, and it says what to shorten. The fixed note and the Zoho note stay first. A value holds one line, so a value cannot forge a line of the card.
 10. **A held chat refuses each parameter that writes a grant, an owner or an audience.** `egress.HELD_REFUSED_PARAMS` is the list. `lead` of `create_project` and `update_project` is a grant write (D-OP-11). `grant_access` is off, so `lead` would be a second door. The `edit_project` form offers no such field in a held chat. `org_wide` of `create_field`, `create_tag` and `create_type` puts a row on each project, so it refuses too. The rest of each tool still works. An agent assignee refuses in a marked top-level chat too.
 11. **A held card says where the change goes and who it reaches.** The card of `create_task` names the project and the parent in each chat. A held card of `create_task`, `create_tasks`, `capture_intake`, `propose_plan` and `move_task` adds `seen by`. `gives access to` names each person that an assignment or a move opens the row to. `assign`, `move_task`, `file_tasks` and the creates show it. `GET /projects/nodes/{id}/audience` answers from `project_grant_holders`, the one predicate, so each tool stays on the list. A failed read shows no card. A held create also shows the mailbox line. That line comes from the server's held answer, because a steered model would leave out `source`. `comment`, `edit_comment` and `update_task` name each address that a mention tells (`sent to`). A held comment adds the people that the task already tells.
@@ -5233,7 +5238,7 @@ In one chat the owner read mail, sent mail, and said "Remind me to call Rajendra
 13. **The kill switch.** `HELD_CARD_WRITES_ORGS` is a comma list of org ids or `*`, and it is empty by default. `egress.held_card_writes_on` is the one reader, and it fails closed. With the org off, a held chat works as it did before this decision. The CRM writes leave a held run. Each Projects write stays, class C included. The note says that the pack holds no write. `lead` does not refuse, and a load moves no pack. The name ends in `_ORGS`, so a SIGHUP turns it off with no deploy and no restart (`docs/flag_reload.md`). A flip is the gate `enforcement-flip`. Three things do not wait for the switch, because each makes a card more true in each chat. They are the short fields first, the project and parent lines, and the `sent to` line.
 14. **A known residual, not new.** A task write still emits its event. A published workflow on a `pm.task.*` event runs outside the hold (`routes/workflows/engine/handlers.py`, and `egress.STORE_WRITES`). §16.3 of `maf_coding_engine.md` records it. A workflow is configuration that a person published, and the model does not reach it.
 
-**Fences.** `tests/unit/test_held_card_writes.py`, `tests/unit/test_held_card_promises.py`, `tests/unit/test_card_body.py`, `tests/unit/test_project_audience_r8.py`, `tests/unit/test_pack_room.py`, `tests/unit/test_no_egress_tool_audit.py`, `tests/unit/test_held_send_guidance.py`, `tests/unit/test_delegation_no_egress.py`.
+**Fences.** `tests/unit/test_held_card_writes.py`, `tests/unit/test_held_card_promises.py`, `tests/unit/test_card_body.py`, `tests/unit/test_project_audience_r8.py`, `tests/unit/test_pack_room.py`, `tests/unit/test_no_egress_tool_audit.py`, `tests/unit/test_held_send_guidance.py`, `tests/unit/test_delegation_no_egress.py`, `tests/unit/test_pack_turn_keeps_used_packs.py`.
 
 ### D170 — My task inbox holds only what the member captured (2026-11-03)
 
@@ -5268,6 +5273,8 @@ Owner directive, 2026-11-03, in chat. The owner gave the design to the agent: "I
 4. **No approval in one click from My Day.** The member approves on the card that shows the exact payload (D124.2). My Day opens that card.
 
 Fence: named in `chat_run_continuity.md` §8 for WAIT-1 and WAIT-2. Advisory until each slice builds.
+
+**Amended 2026-11-06 (WS-AP, AP-Q1).** The owner accepted a sidebar row "Waiting" that opens the page `/waiting`. That page holds the full list of what waits on the member. My Day keeps the top 5 in "Needs you", and links to the page. Item 3 stands. `specs/waiting_on_me.md` §5 owns the page.
 
 ### D172 — The task card reads first, and the one AI pill works on the open task (2026-11-03)
 
@@ -5413,6 +5420,64 @@ GitHub starts the `30 21 * * *` cron of `deploy.yml` 3.5 to 5.5 h late, each nig
 
 This amends D145 point 5. Fence: `tests/unit/test_daily_release.py` and `tests/unit/test_nightly_release_box.py`.
 
+### D183 — Many people, each with their own agents: an app lead, an approver of record, a review cap, and GitHub on the board (2026-11-06)
+
+The owner asked on 2026-11-06, in chat, to "see how Metorite itself can be improved in its MCP to orchestrate multiple people's agents, approvals etc, and plan that out too". Board: **WS-MCP**. Owning spec: `specs/agent_coordination.md` §3.10, §4.1 and §5.10. Metorite: epic 321, plan task 1874.
+
+It extends D140. It changes one rule: SW-60 lets a run parked on its CI pass the lease of D140.8 (Q13). It amends D-EA-14 (`external_agent_access.md` §12.8) in one point: the app lead joins the answer set.
+
+**Owner calls (task 1872, 2026-11-06).** Items 1 to 3. **Agent defaults (task 1874).** Items 4 to 10. They stand unless the owner objects. The owner accepted Q1 to Q12 of the spec's §8 on 2026-11-06 at 10:33 UTC. Q13 (the CI park cap) is open.
+
+1. **An app project is the unit of ownership.** A contributor takes the tasks of one app and works in one app at a time.
+2. **GitHub stays the merge gate.** Local CI is for speed.
+3. **The GitHub connection lives in Metorite** (WS-54).
+4. **The app lead is `pm_projects.lead`**, read through `authority.py`, where a lead already holds write authority on the subtree. Setting a lead is a grant write. A shared seam is a project with its own lead.
+5. **A claim outside the member's apps warns.** A mode for each organization can turn the warning into a refusal.
+6. **A preview or a review goes to the app lead first.** The agent sets a `purpose`. The ladder of the Waiting spec (AP-15) names the person at read. The lead joins the answer set of D-EA-14.
+7. **Nothing frees a task by itself.** An unanswered question escalates to people and keeps the slot.
+8. **A review cap for each person** stops new work on that person's apps. It ships as a warning.
+9. **The board mirrors GitHub and does not replace it.** A per-organization switch comes first. The App gets no new permission.
+10. **A rule that must bind every agent runs in GitHub.** A local hook binds one tool only.
+11. **A run may park on its CI** for a capped time, and the session may end (SW-60).
+12. **A turn of a background session ends with a disposition** (SW-61), and a first sweep writes one digest (SW-62).
+
+### D179 — Studio opens to every beta org, the members bleed it out, and the build continues on top of it (2026-11-05)
+
+Owner directive, 2026-11-05, in chat. Metorite task 1795 (`mt-8bfa6cb4`). Owning spec: `specs/ai_studio.md` §14 A1.
+
+```text
+"You can build this for everybody. Let all my beta customers be able to try it
+out and bleed it out, and continue to build features onto it."
+```
+
+1. **The nav entry is live.** The `/studio` pane in `nav.ts` goes from `preview` to `live`. Every member who holds its feature sees Studio in the AI Studio section. `launch_surface.md` §2 lists it, and `nav.test.ts` fences the set.
+2. **The routes still wait for the switch-on.** The Studio routes answer only for an org on `STUDIO_ORGS`. An org outside the list sees a plain "not open for your organization yet" state. The supervisor turns it on after the gates of task 1795: `STUDIO_ORGS=*` and the `studio` pack in `TOOL_PACKS`. This decision does not flip either one.
+3. **The kill switch.** `STUDIO_ORGS` reloads with no restart (`docs/flag_reload.md`). An empty value closes the routes for every org at once. The nav entry stays, and the pane then shows the not-open state.
+4. **The build goes on.** Each later Studio slice lands on this live pane, behind its own flag where it needs one. D178 and the J1 slices keep their own gates.
+
+**Why.** The owner wants the beta customers to use Studio and find its faults, so the next slices come from real use.
+
+**Fence.** `src/lib/nav.test.ts` fails when `/studio` is `preview` and when the live count is wrong. It also holds the one allowed exception to the job rule (`NO_JOB_YET`).
+
+### D180 — Every member builds and publishes private Studio apps, and `studio:publish` gates the share to others (2026-11-05)
+
+Owner answers in a Metorite run on task 1199 (STU-J1): STU-Q4 on 2026-11-04, STU-Q4b on 2026-11-05, and the edge of item 6 on 2026-11-06. Owner spec: `specs/ai_studio.md` §9, §12 and §14 J1. Board: **WS-STU**.
+
+```text
+STU-Q4:  "Every member builds private apps. Owners and admins publish and can grant publish."
+STU-Q4b: "Yes: a member publishes their own private app for themselves. `studio:publish` gates sharing to others."
+Item 6:  "Accept the gap: such members get Studio"
+```
+
+1. **Who builds.** Each person who holds `feature:studio` builds private packages and skills. A member, a manager and an admin hold it through `feature:*`, and the owner through `*`. A guest does not. An admin can deny it to one person with an override.
+2. **Publish to self needs no publish right.** The owner of a private package or skill publishes its versions with `feature:studio` and ownership only. That covers the version snapshot, the object sync and the skill state change. It also covers a rollback or a delete of the member's own object.
+3. **`studio:publish` gates the share to others.** It covers the share of an app to other people and the review of a manifest diff (J2, task 1200). The owner holds it through `*`. J1-2 (task 1707) seeds it on `admin`. Then owners and admins can grant it.
+4. **A group carries no permission grant.** The access model reads roles and per-person overrides only. So a grant of `studio:publish` goes to one person (an override) or to a custom role. A share of an app to a group is the object grant `group:<slug>` of J2 (D12), not a permission.
+5. **One vocabulary.** Studio adds `feature:studio` and `studio:publish` only. No `studio:*` family, no reuse of `apps:publish`, and no new table.
+6. **A `feature:workflows` deny no longer closes Studio.** Before J1-1, a member with a `feature:workflows` deny override got 403 on each Studio route. After J1-1 that member gets Studio, because `feature:*` decides `feature:studio`. The owner accepted this on 2026-11-06. An admin can deny `feature:studio` by hand. No agent writes that override.
+
+Fence: `tests/unit/test_studio_route_gate.py` and `tests/unit/test_studio_route_gate_r8.py` (items 1 and 2), and `tests/unit/test_org_access_control.py` (items 3 and 5), and `test_studio_route_gate.py::test_a_workflows_deny_override_no_longer_closes_studio` (item 6). Item 4 is advisory until J1-2 and J2 build their tests.
+
 ### D181 — One record card: the Projects frame and the CRM tabs (2026-11-06)
 
 Owner directive, 2026-11-06, in chat. Owner spec: `specs/one_record_card.md`. Metorite: tasks 1834, 1835 and 1836.
@@ -5451,6 +5516,57 @@ Owner, 2026-11-06, with the four decisions answered on epic task 1820. Owner spe
 D-PZ-39 to D-PZ-42 in `personalization.md` §16.8 are these four decisions. The D-PZ ids and the PZ slice numbers are two separate sequences.
 
 Fence: named per slice in `personalization.md` §16.7. `tests/unit/test_greeting_table.py` holds PZ-39. The fences of PZ-40 to PZ-43 are advisory until each slice builds.
+
+### D185 — Status sets: the nearest owner wins, and every screen names it (2026-11-06)
+
+Owner answer on Metorite task 1796 ("A: approve all three recommendations"), 2026-11-06 04:52 UTC. Owner spec: `specs/projects_settings.md` §9. Board: **WS-42**. Metorite: tasks 1798, 1799, 1800, 1790 and 1791.
+
+```text
+"We should leave no doubt in the minds of the users when they're configuring the statuses and the lanes." (2026-11-05)
+```
+
+1. **Inheritance: the nearest owner wins.** The model of migration 196 stays. A project uses the status set of the nearest node at or above it that owns one. Every screen names the owner: "Uses the statuses of User Stories & Use Cases (shared with 3)".
+2. **Settings, Statuses stays and is renamed "Space default statuses".** It shows the scope line ("27 projects use these") and lists each project that owns its own set, with a link.
+3. **The board gets a chip that names the set.** The chip reads "Statuses: Metorite (shared)", "Own statuses" or "From User Stories". A click opens the editor. The chip replaces the Statuses button of task 1792.
+
+This supersedes the owner rule of 2026-08-31 (management controls stay out of the view chrome) for statuses only. Fields, tags and lifecycle stay behind the menu.
+
+**Re-check this number at merge.** The first merge wins a D-number, and the branches for D182 to D184 were open when this record was written.
+
+Fence: `statusSetCopy.test.ts` and `tests/unit/test_projects_status_set_read_r8.py`, named per slice in `specs/projects_settings.md` §7.1. Advisory until PST-1 builds them.
+
+### D186 — Metorite runs the fleet and teaches it: orchestration know-how for every organization that connects (2026-11-06)
+
+The owner asked on 2026-11-06, in chat, for two things. First, to list every capability that the Metorite MCP needs for multi-agent orchestration, for sessions and for the platform. Second, that Metorite "contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP". Board: **WS-MCP**. Owning specs: `specs/agent_coordination.md` §3.11, §4.2 and §5.11, and `specs/orchestration_playbook.md`. Metorite: epic 321, plan task 1906.
+
+It extends D140 and D183. It amends earlier rules in five points (items 10 to 14 below).
+
+**Owner calls (task 1906, comment of 2026-11-06 18:05 UTC).**
+
+1. **Metorite ships orchestration know-how to every organization that connects its MCP.** It reaches them by MCP prompts, MCP resources, short tips in tool results, guidance layers, setup tools, an orchestration doctor and chat. The server instructions keep the safety rules only, because Claude Code cuts them at 4,096 characters (task 1803).
+2. **HathiLabs rules are the HathiLabs layer, never the product default.** STE, the R rules, D numbers, gate labels and the guard hooks bind HathiLabs work only.
+3. **The price is the flat seat.** The playbook and every P10 capability are part of the seat of `launch_surface.md` §4. No SKU and no add-on.
+
+**Agent defaults (task 1906).** They stand unless the owner objects. The owner accepted Q14 to Q17 and chose the recommended answer to Q18 on 2026-11-06 (spec §8.1).
+
+4. **One channel to a running agent: the notice** (SW-64).
+5. **Declared data only warns or narrows.** A lane, a role, a label and a path claim never widen authority.
+6. **The runner is local.** It runs on the member's own box with the box token (EA-19).
+7. **A fact that spreads needs a source, an age and an approval.**
+8. **Policies are data**, in one store resolved by app project and risk tier (SW-94). The environment flags stay as master switches.
+9. **Done may wait for the live service.** The setting `done_on` is `merge` by default.
+
+**What D186 amends.**
+
+10. **D140.2 and D-EA-14, by SW-75 only.** A policy may answer a reversible question on a LOW task that a person tiered. Q16 is decided: build it dark, off by default.
+11. **The non-goal "A status move other than to Done" of `github_integration.md` §2 and EA3-39 item 5, by SW-76.** An opened pull request may move its task to review, under a policy that is off by default.
+12. **D140.8 and D183, by SW-66.** A run may park past the lease on a merge, on another run or on a time, under the same cap (Q13).
+13. **EA3-39 items 1 and 8, by PB-2.** The edge serves more than one prompt, and playbook prompts list with `projects:read`.
+14. **The owner decision on task 1731, by SW-78.** A later release uses a second token with a narrow scope (Q18, decided). Minting it on a live box is an owner act.
+
+**Re-check this number at merge.** The first merge wins a D-number. D187 and D188 were open on other branches when this record was written.
+
+Fence: `test_playbook_org_neutral.py` (PB-1 creates it, PB-5 widens it, and it blocks from the PB-1 merge) and the fences named per slice in `specs/agent_coordination.md` §7.1. Advisory until the slices build them.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
