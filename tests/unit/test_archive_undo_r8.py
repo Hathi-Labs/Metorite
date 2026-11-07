@@ -16,6 +16,10 @@ This file proves the route half on a real database (R8):
   archived.
 * Another organization gets 404, and the row stays archived (R5).
 * An absent header still restores (D-PM-20), so each app call is unchanged.
+* A project's archive and its restore both move the root row's
+  ``updated_at``. So the Undo token of an old archive answers 412 after
+  another member restores it and a third archives it again. That later
+  archive stays.
 
 Run::
 
@@ -31,6 +35,12 @@ Mutations (each must turn a named test red):
 * U3. Either route: check the version BEFORE the visibility load. A caller of
   another org then learns from a 412 that the row exists.
   ``test_another_org_gets_404_with_a_good_version``.
+* U4. ``tree.unarchive_node`` or ``tree.archive_node``: drop the
+  ``updated_at`` stamp on the root row.
+  ``test_the_archive_and_the_restore_move_the_root_stamp``.
+* U5. Drop both stamps. That is the state before the fix, and the Undo then
+  clears the later archive (200).
+  ``test_a_stale_undo_cannot_clear_a_later_archive``.
 """
 
 from __future__ import annotations
@@ -105,14 +115,19 @@ async def _archive_task(call: Any, w: Any) -> str:
     return done.json()["updated_at"]
 
 
-async def _archive_project(call: Any, w: Any) -> str:
-    """The tool's write and its read after it, as ``guarded.archive_project``."""
-    done = await _as(call, w.me, "POST", f"/projects/nodes/{w.project}/archive")
+async def _archive_project(call: Any, w: Any, user: Any = None) -> str:
+    """The tool's write, and the root stamp that it answers, as
+    ``guarded.archive_project`` reads it. A read after it gives the same
+    stamp while nobody else wrote."""
+    done = await _as(call, user or w.me, "POST", f"/projects/nodes/{w.project}/archive")
     assert done.status_code == 200, done.text
     assert done.json()["projects"] == 1
-    node = await _as(call, w.me, "GET", f"/projects/nodes/{w.project}")
+    stamp = done.json()["updated_at"]
+    assert stamp, done.text
+    node = await _as(call, user or w.me, "GET", f"/projects/nodes/{w.project}")
     assert node.status_code == 200, node.text
-    return node.json()["updated_at"]
+    assert node.json()["updated_at"] == stamp
+    return stamp
 
 
 @_DB_GATE
@@ -218,3 +233,47 @@ class TestArchiveUndoOnARealDatabase:
                              if_match=version)
         assert late.status_code == 412, late.text
         assert _archived(w.p, "pm_projects", w.project)
+
+    async def test_a_stale_undo_cannot_clear_a_later_archive(self, world):
+        """THE finding. A archives P (token V), B restores it, C archives it
+        again, and A clicks Undo. V is the version of A's archive, so the Undo
+        answers 412 and C's archive stays. Mutation U4 turns this red."""
+        w = world
+        async with _session(w.p) as call:
+            first = await _archive_project(call, w)
+            restored = await _as(call, w.other, "POST",
+                                 f"/projects/nodes/{w.project}/unarchive")
+            assert restored.status_code == 200, restored.text
+            assert restored.json()["projects"] == 1
+            await _archive_project(call, w, w.other)
+            late = await _as(call, w.me, "POST", f"/projects/nodes/{w.project}/unarchive",
+                             if_match=first)
+        assert late.status_code == 412, late.text
+        assert _archived(w.p, "pm_projects", w.project)
+
+    async def test_the_archive_and_the_restore_move_the_root_stamp(self, world):
+        """The root row's ``updated_at`` moves on archive and on restore. Then
+        the Undo with the token of the archive restores the project."""
+        w = world
+        with w.p.admin_engine.connect() as c:
+            before = c.execute(text(
+                "SELECT updated_at FROM pm_projects WHERE id = CAST(:i AS uuid)"),
+                {"i": w.project}).scalar_one()
+        async with _session(w.p) as call:
+            version = await _archive_project(call, w)
+            with w.p.admin_engine.connect() as c:
+                after = c.execute(text(
+                    "SELECT updated_at FROM pm_projects WHERE id = CAST(:i AS uuid)"),
+                    {"i": w.project}).scalar_one()
+            assert after > before
+            assert after.isoformat() == version
+            undone = await _as(call, w.me, "POST", f"/projects/nodes/{w.project}/unarchive",
+                               if_match=version)
+        assert undone.status_code == 200, undone.text
+        assert undone.json()["projects"] == 1
+        assert not _archived(w.p, "pm_projects", w.project)
+        with w.p.admin_engine.connect() as c:
+            restored = c.execute(text(
+                "SELECT updated_at FROM pm_projects WHERE id = CAST(:i AS uuid)"),
+                {"i": w.project}).scalar_one()
+        assert restored > after

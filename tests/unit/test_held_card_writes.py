@@ -1219,6 +1219,10 @@ async def test_flag_on_a_held_pack_keeps_the_two_archives(store, monkeypatch) ->
 TID = "11111111-1111-4111-8111-111111111111"
 PID = "22222222-2222-4222-8222-222222222222"
 STAMP = "2026-11-07T10:00:00.123456+00:00"
+#: The root row's stamp that the project archive wrote. A read after the
+#: archive gives STAMP, as if a later write by another member had moved it.
+ARCHIVED_STAMP = "2026-11-07T10:00:01.654321+00:00"
+CHILD = "33333333-3333-4333-8333-333333333333"
 
 
 def _undo_spy(monkeypatch) -> list[tuple[str, str, Any]]:
@@ -1232,21 +1236,25 @@ def _undo_spy(monkeypatch) -> list[tuple[str, str, Any]]:
     return seen
 
 
-def _archive_gateway(monkeypatch, *, subtasks: bool = False) -> list[dict[str, Any]]:
+def _archive_gateway(monkeypatch, *, subtasks: bool = False,
+                     children: bool = False) -> list[dict[str, Any]]:
     def responder(call: dict[str, Any]) -> Any:
         path, method = call["path"], call["method"]
         if path.endswith(f"/tasks/{TID}") and method == "GET":
             return {"id": TID, "title": "Fix it", "task_number": 7, "project_id": PID,
                     "status_id": "s1", "archived_at": None}
+        if path.endswith(f"/tasks/{TID}/relations") and children:
+            return {"subtasks": [{"id": CHILD, "category": "todo"}]}
         if path.endswith(f"/tasks/{TID}/archive"):
             row = {"id": TID, "archived_at": STAMP, "updated_at": STAMP}
             if subtasks:
-                row |= {"subtasks_archived": 1, "subtask_ids": ["c1"]}
+                row |= {"subtasks_archived": 1, "subtask_ids": [CHILD]}
             return row
         if path.endswith(f"/nodes/{PID}") and method == "GET":
             return {"id": PID, "name": "Ops", "archived_at": None, "updated_at": STAMP}
         if path.endswith(f"/nodes/{PID}/archive"):
-            return {"project_id": PID, "archived": True, "projects": 1, "open_tasks": 0}
+            return {"project_id": PID, "archived": True, "projects": 1, "open_tasks": 0,
+                    "updated_at": ARCHIVED_STAMP}
         if path.endswith(f"/nodes/{PID}/summary"):
             return {}
         return {"rows": [], "total": 0}
@@ -1268,7 +1276,10 @@ async def test_flag_on_an_approved_archive_offers_undo_with_its_version(monkeypa
 
 
 async def test_flag_on_an_approved_project_archive_offers_undo(monkeypatch) -> None:
-    """The project's version comes from a read after the archive."""
+    """The Undo token is the stamp that THIS archive wrote on the root row, and
+    not a read after it. A read could see a later archive by another member,
+    and the Undo would then clear that one. Mutation: read the node after the
+    archive -> STAMP -> red."""
     from skill_projects import guarded
 
     _class_c(monkeypatch, "*")
@@ -1276,7 +1287,28 @@ async def test_flag_on_an_approved_project_archive_offers_undo(monkeypatch) -> N
     approve(monkeypatch)
     seen = _undo_spy(monkeypatch)
     await guarded.archive_project(PID)
-    assert seen == [("project", PID, STAMP)]
+    assert seen == [("project", PID, ARCHIVED_STAMP)]
+
+
+async def test_a_project_archive_with_no_stamp_offers_no_undo(monkeypatch) -> None:
+    """The root was already archived, or an older gateway answered. With no
+    stamp of this archive, no line offers an Undo that could clear another."""
+    from skill_projects import guarded
+
+    _class_c(monkeypatch, "*")
+
+    def responder(call: dict[str, Any]) -> Any:
+        if call["path"].endswith(f"/nodes/{PID}/archive"):
+            return {"project_id": PID, "archived": True, "projects": 1, "open_tasks": 0}
+        if call["path"].endswith(f"/nodes/{PID}") and call["method"] == "GET":
+            return {"id": PID, "name": "Ops", "archived_at": None, "updated_at": STAMP}
+        return {"rows": [], "total": 0}
+
+    fake_gateway(monkeypatch, responder)
+    approve(monkeypatch)
+    seen = _undo_spy(monkeypatch)
+    await guarded.archive_project(PID)
+    assert seen == []
 
 
 async def test_flag_off_no_receipt_offers_undo(monkeypatch) -> None:
@@ -1306,15 +1338,75 @@ async def test_a_declined_archive_offers_no_undo(monkeypatch) -> None:
     assert seen == [] and not [c for c in calls if c["method"] == "POST"]
 
 
-async def test_an_archive_that_filed_subtasks_offers_no_undo(monkeypatch) -> None:
-    """Undo restores ONE task, as the route does. Mutation: offer it anyway -> red."""
+def _chat_held(monkeypatch, answer: bool) -> None:
+    """The chat read outside mail, or not. ``chat_is_held`` has tests of its own."""
+
+    async def chat_is_held(_ctx: Any = None) -> bool:
+        return answer
+
+    monkeypatch.setattr(eg, "chat_is_held", chat_is_held)
+
+
+def test_a_held_chat_refuses_the_subtasks_of_an_archive() -> None:
+    """The table holds the refusal to the class C pin. Mutation: drop
+    ``archive_task`` from ``HELD_REFUSED_PARAMS`` -> red."""
+    assert eg.HELD_REFUSED_PARAMS["archive_task"] == {"include_subtasks"}
+    assert eg.HELD_REFUSED_PARAMS["archive_task"] <= eg.HELD_CLASS_C_TOOLS["archive_task"]
+    assert "include_subtasks" in eg.HELD_PARAM_REASONS
+
+
+@pytest.mark.parametrize("value", ["yes", "no"])
+async def test_a_held_archive_with_include_subtasks_is_refused(value: str, monkeypatch) -> None:
+    """A held chat archives one task, with Undo, and never a subtree. Mutation:
+    drop the refusal from ``archive_task`` -> a card and a cascade -> red."""
     from skill_projects import guarded
 
     _class_c(monkeypatch, "*")
-    _archive_gateway(monkeypatch, subtasks=True)
-    approve(monkeypatch)
+    calls = _archive_gateway(monkeypatch, subtasks=True, children=True)
+    cards = approve(monkeypatch)
+    _chat_held(monkeypatch, True)
     seen = _undo_spy(monkeypatch)
-    await guarded.archive_task(TID, include_subtasks="yes")
+    answer = await guarded.archive_task(TID, include_subtasks=value)
+    assert answer == eg.held_param_refusal("archive_task", "include_subtasks")
+    assert "new chat" not in answer.lower()
+    assert cards == [] and seen == []
+    assert not [c for c in calls if c["method"] == "POST"]
+
+
+async def test_a_held_archive_without_include_subtasks_files_one_task_with_undo(
+    monkeypatch,
+) -> None:
+    """The task has a subtask. A held chat does not ask about it, because it
+    cannot answer yes. The card says that the subtask stays, the write files
+    one task, and the receipt offers Undo. Mutation: ask in a held chat -> red."""
+    from skill_projects import guarded
+
+    _class_c(monkeypatch, "*")
+    calls = _archive_gateway(monkeypatch, children=True)
+    cards = approve(monkeypatch)
+    _chat_held(monkeypatch, True)
+    seen = _undo_spy(monkeypatch)
+    answer = await guarded.archive_task(TID)
+    assert answer.startswith("Archived"), answer
+    assert len(cards) == 1 and "left on the board" in cards[0]["detail"]
+    posts = [c for c in calls if c["method"] == "POST"]
+    assert len(posts) == 1 and not (posts[0].get("params") or {}).get("include_subtasks")
+    assert seen == [("task", TID, STAMP)]
+
+
+async def test_an_open_chat_archive_that_filed_subtasks_offers_no_undo(monkeypatch) -> None:
+    """Only an open chat can file subtasks. Undo restores ONE task, as the route
+    does, so that receipt offers none. Mutation: offer it anyway -> red."""
+    from skill_projects import guarded
+
+    _class_c(monkeypatch, "*")
+    calls = _archive_gateway(monkeypatch, subtasks=True, children=True)
+    approve(monkeypatch)
+    _chat_held(monkeypatch, False)
+    seen = _undo_spy(monkeypatch)
+    answer = await guarded.archive_task(TID, include_subtasks="yes")
+    assert answer.startswith("Archived"), answer
+    assert [c for c in calls if c["method"] == "POST"], "non-vacuity: it archived"
     assert seen == []
 
 

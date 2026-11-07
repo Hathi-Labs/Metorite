@@ -92,9 +92,10 @@ from gateway.routes.projects.core import (
     validate_grant_subject,
     validate_icon_slot,
     validate_lifecycle_settings,
+    wire,
 )
-from gateway.routes.projects.notifications import project_audience
 from gateway.routes.projects.due_day import overdue_sql
+from gateway.routes.projects.notifications import project_audience
 from gateway.routes.projects.tasks import _narrow_agent_body
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -1735,6 +1736,11 @@ class ArchiveResponse(BaseModel):
     #: Open tasks in the subtree at the moment of archiving. Reported, not acted
     #: on: **no `pm_tasks` row is written by this endpoint** (D-PM-26).
     open_tasks: int
+    #: The new ``updated_at`` of the ROOT row, when this call stamped the root.
+    #: None when the root was already in the target state. WT-6a: the chat
+    #: receipt sends it as ``If-Match`` on its Undo, so the Undo matches this
+    #: archive and no later one.
+    updated_at: str | None = None
 
 
 async def _subtree_open_tasks(db: Any, project_id: str) -> int:
@@ -1782,14 +1788,25 @@ async def archive_node(
         # reporting zero.
         open_tasks = await _subtree_open_tasks(db, project_id)
 
-        stamped = (await db.execute(
+        # WT-6a: the ROOT row's `updated_at` moves, as each other node write
+        # moves it (`update_row`, `personal.py`'s rename). The If-Match of an
+        # Undo is then this archive's own version, and a later archive by
+        # another member gets a new one. The descendants keep their stamp.
+        touched = (await db.execute(
             text(
                 f"UPDATE pm_projects SET archived_at = now(), "
-                f"    archived_root_id = CAST(:pid AS uuid) "
-                f"WHERE id IN ({_SUBTREE_SQL}) AND archived_at IS NULL"
+                f"    archived_root_id = CAST(:pid AS uuid), "
+                f"    updated_at = CASE WHEN id = CAST(:pid AS uuid) "
+                f"        THEN now() ELSE updated_at END "
+                f"WHERE id IN ({_SUBTREE_SQL}) AND archived_at IS NULL "
+                f"RETURNING id, updated_at"
             ),
             {"pid": project_id},
-        )).rowcount or 0
+        )).fetchall()
+        stamped = len(touched)
+        root_stamp = next(
+            (wire(r.updated_at) for r in touched if str(r.id) == project_id), None,
+        )
 
         if stamped:
             await record_activity(
@@ -1800,6 +1817,7 @@ async def archive_node(
         result = ArchiveResponse(
             project_id=project_id, archived=True,
             projects=int(stamped), open_tasks=int(open_tasks),
+            updated_at=root_stamp,
         )
 
     if stamped:
@@ -1828,9 +1846,12 @@ async def unarchive_node(
     unreachable rather than merely documented.
 
     ``If-Match`` (one_assistant_context.md §9.4 WT-6a) is the rule of
-    :func:`patch_node`: strict equality on ``updated_at``. The Undo of a chat
-    receipt sends the version that it read after the archive, so a change
-    since answers 412 and restores nothing. An absent header passes (D-PM-20).
+    :func:`patch_node`. A node has no ``fields_at``, so the version is
+    ``updated_at`` with strict equality. :func:`archive_node` and this route
+    both stamp ``updated_at`` on the root row. The Undo of a chat receipt
+    sends the stamp that its archive answered. So a later restore, a later
+    archive or a field change answers 412 and restores nothing. An absent
+    header passes (D-PM-20).
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -1856,10 +1877,14 @@ async def unarchive_node(
                 ),
             )
 
+        # WT-6a: as in `archive_node`, the root row's `updated_at` moves, so
+        # an Undo token of the archive before this restore answers 412.
         cleared = (await db.execute(
             text(
                 "UPDATE pm_projects SET archived_at = NULL, "
-                "    archived_root_id = NULL "
+                "    archived_root_id = NULL, "
+                "    updated_at = CASE WHEN id = CAST(:pid AS uuid) "
+                "        THEN now() ELSE updated_at END "
                 "WHERE archived_root_id = CAST(:pid AS uuid)"
             ),
             {"pid": project_id},

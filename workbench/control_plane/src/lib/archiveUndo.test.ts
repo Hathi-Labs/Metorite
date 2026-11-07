@@ -193,6 +193,10 @@ describe("the receipt of an approved archive", () => {
     expect(at("busy")).toBe(`Restoring… ${card.detail}`);
     expect(at("done")).toBe(`Restored · ${card.detail}`);
     expect(at("stale")).toBe(`Approved · ${card.detail}. ${STALE_MESSAGE}`);
+    // A refused Undo names the next step: the Archive view.
+    expect(at("refused")).toBe(
+      `Approved · ${card.detail}. Undo could not restore it. Restore it from the Archive view.`,
+    );
     const stale = run([{ type: "undoState", key: RID, state: "stale" }], offered);
     expect(draw(stale, () => undefined)).not.toContain("data-confirmation-undo");
     const failed = run([{ type: "undoState", key: RID, state: "failed" }], offered);

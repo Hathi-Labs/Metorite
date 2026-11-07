@@ -2569,14 +2569,20 @@ answer is 404, and the verification commands of §9.6 pass.
 - `delete_*`, `merge_*`, `move_project` and `revert_activity` stay out of the held set until a server restore exists. A restore for them is its own HIGH slice.
 - The receipt offers Undo. Undo calls `unarchive_task` or `unarchive_project` under the member's own session and RLS. It never uses a server token. A 412 says the row changed since. A receipt of chat A does not undo in chat B. A member of org X does not undo in org Y (R5).
 - Each new held tool has its name, the `card_write` annotation and the exact parameter pin (`is_held_card_write`).
+- A held chat archives one task, with Undo. It never archives a subtree. It refuses `include_subtasks`.
+- The Undo token is the version that the archive wrote. A stale Undo never clears a later archive by another member.
 - Fences: `tests/unit/test_held_card_writes.py` (flag off means refused), an R8 test (archive in a held chat, Undo restores the row, 412 after another member's change, cross-org gives 404), and vitest beside `taskUndo.test.ts`.
 
 **WT-6a as built (2026-11-07):**
 
 - The class C flag acts only where `HELD_CARD_WRITES_ORGS` is on too. With that flag off, the held rule is off, as before RX-1.
 - After an approved archive, the tool sends `confirmation_undo` with the card's `request_id`, the row and its version. The tool names no card. Only an APPROVE sets the card that it names.
-- The line offers Undo only while `HELD_CLASS_C_ORGS` holds the org. An archive that also filed subtasks offers no Undo, because the route restores one task.
-- The browser calls `POST /api/projects/tasks/{id}/unarchive` or `.../nodes/{id}/unarchive` with `If-Match`. The task rule is `precondition_holds`. The node rule is strict equality.
+- The line offers Undo only while `HELD_CLASS_C_ORGS` holds the org. The line reads that flag only, and not `HELD_CARD_WRITES_ORGS`.
+- A held chat refuses `include_subtasks` (`egress.HELD_REFUSED_PARAMS`). With subtasks and no answer, a held chat does not ask. Its card says that the subtasks stay on the board. So a held chat archives one task, with Undo, and never a subtree.
+- An open chat can still file subtasks. That receipt offers no Undo, because the route restores one task.
+- The browser calls `POST /api/projects/tasks/{id}/unarchive` or `.../nodes/{id}/unarchive` with `If-Match`. The task rule is `precondition_holds`. The node rule is strict equality on `updated_at`.
+- `archive_node` and `unarchive_node` stamp `updated_at = now()` on the root row. The descendants keep their stamp. The archive answers the new root stamp, and the tool sends that stamp as the Undo token. A restore and a new archive by others then give 412.
+- The task half needed no change. Migration 304 moves `fields_at` when `archived_at` changes.
 - Fences: `tests/unit/test_held_card_writes.py` §12 and §13, `tests/unit/test_archive_undo_r8.py` (R8), and `src/lib/archiveUndo.test.ts`.
 
 **WT-4 done when:**

@@ -156,7 +156,7 @@ export function archiveUndoText(state: ArchiveUndoState | undefined, label: stri
     case "stale":
       return `Approved · ${label}. ${STALE_MESSAGE}`;
     case "refused":
-      return `Approved · ${label}. Undo could not restore it.`;
+      return `Approved · ${label}. Undo could not restore it. Restore it from the Archive view.`;
     case "failed":
       return `Approved · ${label}. Undo did not go through. Try again.`;
     default:

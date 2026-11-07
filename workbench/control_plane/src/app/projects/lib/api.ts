@@ -43,6 +43,8 @@ export interface ArchiveResult {
   projects: number;
   /** Open tasks in the subtree. Reported, never acted on (D-PM-26). */
   open_tasks: number;
+  /** The root row's new `updated_at`, when an archive stamped the root (WT-6a). */
+  updated_at?: string | null;
 }
 
 /**

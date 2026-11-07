@@ -1225,7 +1225,8 @@ HELD_CARD_SEND_TOOLS: Mapping[str, frozenset[str]] = {
 
 #: The parameters that a tool refuses at call time in a held run. A value other
 #: than the default sends nothing, for a tool of :data:`HELD_CARD_SEND_TOOLS`,
-#: and writes nothing, for a tool of :data:`HELD_CARD_WRITE_TOOLS`.
+#: and writes nothing, for a tool of :data:`HELD_CARD_WRITE_TOOLS` or
+#: :data:`HELD_CLASS_C_TOOLS`.
 #:
 #: RX-1: ``lead`` is a grant write. The lead of a project writes its grants, and
 #: a write to ``lead`` needs the grant authority (D-OP-11, ``authority.py``). A
@@ -1240,12 +1241,16 @@ HELD_REFUSED_PARAMS: Mapping[str, frozenset[str]] = {
     "create_field": frozenset({"org_wide"}),
     "create_tag": frozenset({"org_wide"}),
     "create_type": frozenset({"org_wide"}),
+    # WT-6a: a held chat archives one task, with Undo, and never a subtree.
+    # The Undo restores one row, so a cascade would have no Undo.
+    "archive_task": frozenset({"include_subtasks"}),
 }
 #: Why a write of :data:`HELD_REFUSED_PARAMS` refuses its parameter, in the words
 #: that the model reads. :func:`held_param_refusal` builds the whole answer.
 HELD_PARAM_REASONS: Mapping[str, str] = {
     "lead": "the lead of a project decides who can see it",
     "org_wide": "an organization-wide entry reaches every project",
+    "include_subtasks": "an archive of its subtasks has no Undo",
 }
 _HELD_PARAM_REFUSED = (
     "{tool} did not run with {param}, and nothing changed. This chat read email "
@@ -1413,6 +1418,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
 #: ``If-Match``, and a 412 says that the row changed since. No server token and
 #: no name of the model reaches it. A delete, a merge, a move of a project and a
 #: revert have no such restore, so each stays off until a restore exists.
+#:
+#: **One task, never a subtree.** ``include_subtasks`` stays in the pin, because
+#: the pin is the tool's whole parameter list. A held chat refuses it at call
+#: time (:data:`HELD_REFUSED_PARAMS`), because the Undo restores one row.
 #:
 #: **The gate.** ``HELD_CLASS_C_ORGS`` (:func:`held_class_c_on`), and it acts
 #: only where ``HELD_CARD_WRITES_ORGS`` is on too. ``HELD_CARD_WRITES_ORGS``
