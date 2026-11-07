@@ -9,7 +9,8 @@
  * `full` covers the page column, with the session list at the left and the
  * chat's files at the right. The element changes its classes, not its
  * place in the tree, so `AgentChat` never remounts on a switch: a running
- * reply, the draft and the scroll stay. On a phone it is a full-screen sheet.
+ * reply, the draft and the scroll stay. On a phone it is a full-height sheet
+ * that ends at the bottom bar's top edge (MOB-9), so the tabs stay in reach.
  *
  * **The peek strip** (CF-1, `chat_first_surface.md` §4.1, flag
  * `NEXT_PUBLIC_CHAT_FIRST`). On a phone the sheet can drop to a 56 px strip
@@ -1043,7 +1044,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     ? strip
       ? // The strip: a row on the bottom nav. The sheet's body stays under it.
         `assistant-peek-bottom fixed inset-x-0 ${LAYER_CLASS.peekStrip} overflow-hidden border-t border-border bg-card`
-      : `fixed inset-0 ${LAYER_CLASS.assistantSheet} flex flex-col bg-background glass:bg-card pt-safe pb-safe`
+      : `fixed inset-0 ${LAYER_CLASS.assistantSheet} flex flex-col bg-background glass:bg-card pt-safe`
     : form === "full"
       ? // In glass the full view is the page's content card (`AppShell`'s
         // FULL_MAIN): the same 8 px inset, corners and shadow. It takes the

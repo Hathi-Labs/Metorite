@@ -3,7 +3,9 @@
  * fence pins the layer order in `lib/layers.ts` and checks that the card
  * files take their layer from it.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { LAYER, LAYER_CLASS, TASK_CARD_FRAME } from "@/lib/layers";
@@ -74,13 +76,99 @@ describe("a page's own layers cannot rise over the task card (TC-1 fix)", () => 
   });
 });
 
-describe("the phone card follows the nav and the peek strip (TC-1 fix)", () => {
+describe("the phone card follows the peek strip (TC-1 fix, MOB-9)", () => {
   const css = read("app/globals.css");
-  it("pads the card's foot by the nav clearance, and more while the peek strip shows", () => {
-    expect(css).toMatch(/\.task-card-phone\s*\{\s*padding-bottom:\s*var\(--task-card-nav-clear\)/);
+  it("pads the card's foot by the strip only, since the card ends at the bar", () => {
+    expect(css).toMatch(/\.task-card-phone\s*\{\s*padding-bottom:\s*0;/);
     expect(css).toMatch(
-      /:root\[data-assistant-peek\] \.task-card-phone\s*\{\s*padding-bottom:\s*calc\(var\(--task-card-nav-clear\) \+ var\(--task-card-peek-h\)\)/,
+      /:root\[data-assistant-peek\] \.task-card-phone\s*\{\s*padding-bottom:\s*var\(--task-card-peek-h\)/,
     );
-    expect(css).toMatch(/--task-card-nav-clear:\s*calc\(3\.5rem \+ env\(safe-area-inset-bottom/);
+    expect(css).not.toContain("--task-card-nav-clear");
+  });
+});
+
+// MOB-9 (task 2002): the phone's bottom bar always shows. The bar paints above
+// every overlay but a confirmation and the toasts. A fixed layer ends at the
+// bar's top edge through `globals.css`, so the bar never hides under one.
+const SRC = fileURLToPath(new URL("..", import.meta.url));
+const tsxFiles = (): string[] => {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (/\.tsx$/.test(entry)) out.push(relative(SRC, full).split(sep).join("/"));
+    }
+  };
+  walk(SRC);
+  return out;
+};
+/** The z-index of every `fixed` class string in the tree, outside Modal and the toasts. */
+const fixedLayers = (): { file: string; z: number }[] => {
+  const out: { file: string; z: number }[] = [];
+  for (const file of tsxFiles()) {
+    if (file === "components/ui/Modal.tsx" || file === "components/ui/Toast.tsx") continue;
+    for (const m of read(file).matchAll(/"([^"\n]*)"|`([^`]*)`/g)) {
+      const cls = m[1] ?? m[2];
+      if (!/(^|\s)fixed(\s|$)/.test(cls)) continue;
+      const z = cls.match(/(?:^|\s)z-(?:\[(\d+)\]|(\d+))(?:\s|$)/);
+      if (z) out.push({ file, z: Number(z[1] ?? z[2]) });
+    }
+  }
+  return out;
+};
+
+describe("the phone's bottom bar always shows (MOB-9)", () => {
+  it("paints above the highest fixed overlay of the tree and the anchored panels", () => {
+    const layers = fixedLayers();
+    expect(layers.length, "the scan went vacuous").toBeGreaterThan(20);
+    const top = layers.reduce((a, b) => (b.z > a.z ? b : a));
+    expect(
+      LAYER.bottomNav,
+      `${top.file} paints a fixed overlay at z-${top.z}, over the bottom bar. Raise LAYER.bottomNav, or lower the overlay.`,
+    ).toBeGreaterThan(top.z);
+    const panels = read("components/ui/AnchoredPanel.tsx");
+    const panelTop = Number(panels.match(/top:\s*"z-\[(\d+)\]"/)?.[1]);
+    expect(LAYER.bottomNav).toBeGreaterThan(panelTop);
+    expect(LAYER.bottomNav).toBeGreaterThan(70); // the shell drawer
+  });
+
+  it("paints below a confirmation and the toasts", () => {
+    const alert = Number(read("components/ui/Modal.tsx").match(/alert:\s*"z-\[(\d+)\]"/)?.[1]);
+    const toast = Number(read("components/ui/Toast.tsx").match(/fixed right-4 z-\[(\d+)\]/)?.[1]);
+    expect(LAYER.bottomNav).toBeLessThan(alert);
+    expect(LAYER.bottomNav).toBeLessThan(toast);
+    // The guided tour dims the bar and rings its Ask tab, so it sits between.
+    const guide = Number(read("components/ui/AnchoredPanel.tsx").match(/guide:\s*"z-\[(\d+)\]"/)?.[1]);
+    expect(guide).toBeGreaterThan(LAYER.bottomNav);
+    expect(guide).toBeLessThan(alert);
+  });
+
+  it("marks the bar, sets the attribute with the phone layout, and sizes the bar", () => {
+    const shell = read("components/AppShell.tsx");
+    expect(shell).toMatch(/data-phone-nav-bar=""[^>]*h-\[calc\(3\.5rem\+env\(safe-area-inset-bottom,0px\)\)\]/);
+    expect(shell).toMatch(/<PhoneNavFlag \/>/);
+    expect(shell).toMatch(/setAttribute\("data-phone-nav", ""\)[\s\S]*removeAttribute\("data-phone-nav"\)/);
+  });
+
+  it("ends every full-height fixed layer at the bar's top edge, and never the bar", () => {
+    const css = read("app/globals.css");
+    expect(css).toMatch(/:root\[data-phone-nav\]\s*\{\s*--phone-nav-h:\s*calc\(3\.5rem \+ env\(safe-area-inset-bottom/);
+    const rule = css.match(/:root\[data-phone-nav\] :is\(([^)]*)\):not\(\[data-phone-nav-bar\]\)\s*\{\s*bottom:\s*var\(--phone-nav-h\)/);
+    expect(rule, "the phone-nav rule moved or changed shape").not.toBeNull();
+    for (const sel of [".fixed.inset-0", ".fixed.inset-y-0", ".fixed.bottom-0", ".phone-nav-clear"]) {
+      expect(rule![1]).toContain(sel);
+    }
+    // The bar covers the home-indicator inset, so a layer above it drops its own.
+    expect(css).toMatch(/\.pb-safe\s*\{\s*padding-bottom:\s*0;/);
+  });
+
+  it("closes a Modal on a tap of the bar, which the substrate does not do", () => {
+    const modal = read("components/ui/Modal.tsx");
+    expect(modal).toMatch(/closest\("\[data-phone-nav-bar\]"\)\) closeRef\.current\(\)/);
+  });
+
+  it("drops the sheet's own safe-area padding, since the bar covers the inset", () => {
+    expect(read("lib/shell/AssistantDock.tsx")).not.toMatch(/fixed inset-0 \$\{LAYER_CLASS\.assistantSheet\}[^`]*pb-safe/);
   });
 });

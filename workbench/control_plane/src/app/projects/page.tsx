@@ -930,7 +930,7 @@ function ProjectsWorkspace() {
   // the shell's `pb-nav` scroller. Every other app in the tree decides its
   // layout here.
   const { isMobile, mounted: viewMounted } = useViewMode();
-  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
   // NS-6: with the shell's one bell on, this app mounts no bell of its own.
   // Read once, as the shell reads its flags: the dev override is in
   // `localStorage`, which the server render cannot see.
@@ -2081,11 +2081,15 @@ function ProjectsWorkspace() {
   // and this is the subscribe half. The alternatives all reintroduce the bug
   // (a re-tap after a backdrop dismissal sets the same value, so React bails
   // out and the drawer never reopens).
+  //
+  // MOB-9: the Menu tab can also take the drawer over while a sheet shows. The
+  // sheet is gone then, and the drawer is not this page's to close.
   useEffect(() => {
-    if (!drawerOpen) ownsDrawer.current = false;
+    const gone = !drawerOpen || drawerShows === "menu";
+    if (gone) ownsDrawer.current = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!drawerOpen) setSheet(null);
-  }, [drawerOpen]);
+    if (gone) setSheet(null);
+  }, [drawerOpen, drawerShows]);
 
   // True once the page's own mount effects have run. ⚠️ The command bar's
   // "New space" waits for it. A child's effect runs BEFORE its parent's, so

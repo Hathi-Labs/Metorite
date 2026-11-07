@@ -53,7 +53,7 @@ import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { AssistantWorkArea } from "@/lib/shell/ChatBar";
 import { ChatNudge, useChatFirstLanding } from "@/lib/shell/ChatNudge";
-import { openAssistant } from "@/lib/shell/assistant";
+import { closeAssistant, openAssistant, useAssistant } from "@/lib/shell/assistant";
 // D99: the one assistant, loaded on demand, so a shell with the flag off
 // never carries the chat in its bundle.
 const AssistantDock = dynamic(() => import("@/lib/shell/AssistantDock"), { ssr: false });
@@ -97,17 +97,23 @@ import { LAYER_CLASS } from "@/lib/layers";
 // drawer without AppShell needing to know about sessions or filters.
 // ---------------------------------------------------------------------------
 
+/** What the open drawer shows: the shell's Menu, or a page's own sheet. */
+type DrawerKind = "menu" | "sheet";
+
 type MobileDrawerCtx = {
   /** True when the drawer is currently open. */
   isOpen: boolean;
+  /** What the open drawer shows. A page's `open(content)` is a `sheet`. */
+  shows: DrawerKind;
   /** Open the drawer with the given React content. */
-  open: (content: ReactNode) => void;
+  open: (content: ReactNode, kind?: DrawerKind) => void;
   /** Close the drawer. */
   close: () => void;
 };
 
 const MobileDrawerCtx = createContext<MobileDrawerCtx>({
   isOpen: false,
+  shows: "sheet",
   open: () => {},
   close: () => {},
 });
@@ -136,6 +142,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { isMobile, isNarrow, forceDesktop, toggleView } = useViewMode();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerContent, setDrawerContent] = useState<ReactNode>(null);
+  const [drawerKind, setDrawerKind] = useState<DrawerKind>("sheet");
   const pathname = usePathname();
   const { access, loading: accessLoading } = useAccess();
 
@@ -199,8 +206,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // D99: the chat bar and the one assistant, behind their own flag.
   const [chatOn] = useState(() => shellChatOn());
 
-  const openDrawer = useCallback((content: ReactNode) => {
+  const openDrawer = useCallback((content: ReactNode, kind: DrawerKind = "sheet") => {
     setDrawerContent(content);
+    setDrawerKind(kind);
     setDrawerOpen(true);
   }, []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
@@ -360,8 +368,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // ── Mobile layout ────────────────────────────────────────────────────────
   return (
     <MobileDrawerCtx.Provider
-      value={{ isOpen: drawerOpen, open: openDrawer, close: closeDrawer }}
+      value={{ isOpen: drawerOpen, shows: drawerKind, open: openDrawer, close: closeDrawer }}
     >
+      <PhoneNavFlag />
       {/* No top app bar on mobile — every screen is reachable from the bottom
           nav, so pages get the full viewport. pt-safe on the shell keeps
           content out of the notch/status bar. */}
@@ -397,8 +406,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             badge carries the pill's count. */}
         {chatOn ? null : <AgentPill />}
 
-        {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
-        <div className={`fixed bottom-0 inset-x-0 ${LAYER_CLASS.bottomNav} border-t border-border bg-card/90 backdrop-blur pb-safe glass:border-t-0 glass:glass-chrome glass:rounded-t-2xl`}>
+        {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator.
+            MOB-9: it is exactly 3.5rem plus the inset tall, and it paints above every overlay
+            (`LAYER_CLASS.bottomNav`). `globals.css` ends each full-height fixed layer at its top
+            edge while `data-phone-nav` is on <html>. */}
+        <div data-phone-nav-bar="" className={`fixed bottom-0 inset-x-0 box-border h-[calc(3.5rem+env(safe-area-inset-bottom,0px))] ${LAYER_CLASS.bottomNav} border-t border-border bg-card/90 backdrop-blur pb-safe glass:border-t-0 glass:glass-chrome glass:rounded-t-2xl`}>
           {/* CF-2: one nudge above the Ask tab, for a member who never wrote
               to the assistant. Behind the chat-first flag. */}
           {chatOn ? <ChatNudge placement="tab" /> : null}
@@ -414,10 +426,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <RecordingDock />
         {/* Server-side "live now" presence (bot calls / other devices). */}
         <LiveDock />
-        {/* D99: the one assistant, as a full-screen sheet over the nav. */}
+        {/* D99: the one assistant, as a full-height sheet that ends at the nav's top edge (MOB-9). */}
         {chatOn ? <AssistantDock phone /> : null}
 
-        {/* Unified drawer (slide-up panel for bottom-nav tab content) */}
+        {/* Unified drawer (slide-up panel for bottom-nav tab content). It ends at the bar's top
+            edge (MOB-9), so every tab stays in reach. */}
         {drawerOpen && (
           <div className="fixed inset-0 z-[70]">
             <div
@@ -461,7 +474,19 @@ function MobileBottomNavInner({
   pathname: string | null;
   toggleView: () => void;
 }) {
-  const { isOpen, open, close } = useMobileDrawer();
+  const { isOpen, shows, open, close } = useMobileDrawer();
+  const menuOpen = isOpen && shows === "menu";
+  // MOB-9: the assistant's sheet is open when it is open and not the strip.
+  const assistantSt = useAssistant();
+  const sheetOpen = assistantSt.open && assistantSt.mode !== "peek";
+  // The tab whose tap opened the sheet that shows now, for the second tap.
+  // `pendingTab` holds a tab for a moment after its tap. The drawer that
+  // opens in that moment is that tab's.
+  const openedBy = useRef<string | null>(null);
+  const pendingTab = useRef<string | null>(null);
+  useEffect(() => {
+    openedBy.current = isOpen ? pendingTab.current : null;
+  }, [isOpen]);
   // Same access filter as the desktop Sidebar — the two navs must agree, or a
   // pane hidden on desktop reappears in the phone drawer. Same unresolved rule
   // too: `null` yields nothing and the skeleton below holds the space.
@@ -752,24 +777,51 @@ function MobileBottomNavInner({
   menuRef.current = menuContent;
   useEffect(() => {
     const h = (e: Event) => {
-      if ((e as CustomEvent<string>).detail === "open") open(menuRef.current);
+      if ((e as CustomEvent<string>).detail === "open") open(menuRef.current, "menu");
       else close();
     };
     window.addEventListener(GUIDE_MENU_EVENT, h);
     return () => window.removeEventListener(GUIDE_MENU_EVENT, h);
   }, [open, close]);
 
+  // MOB-9 (task 2002): a tap on a bar tab first closes what is open, then
+  // does its job. The assistant's sheet always closes. The drawer closes too,
+  // and the event goes one tick later, so the page sees the closed drawer
+  // before it answers. The exception is a second tap on the tab that opened
+  // the sheet that shows: that tap closes it and sends nothing.
   const dispatchNav = (detail: string) => {
-    window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail }));
+    if (sheetOpen) closeAssistant();
+    if (isOpen && shows === "sheet" && openedBy.current === detail) {
+      close();
+      return;
+    }
+    pendingTab.current = detail;
+    window.setTimeout(() => {
+      if (pendingTab.current === detail) pendingTab.current = null;
+    }, 600);
+    const send = () => window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail }));
+    if (isOpen) {
+      close();
+      window.setTimeout(send, 0);
+    } else {
+      send();
+    }
   };
 
   return (
     <>
-    <nav className="flex items-stretch justify-around gap-0.5 py-1 px-1">
+    <nav className="flex h-full items-stretch justify-around gap-0.5 py-1 px-1">
         <button
-          onClick={() => { open(menuContent); }}
+          onClick={() => {
+            // A second tap on Menu closes it. A page's sheet gives way to the Menu.
+            pendingTab.current = null;
+            if (sheetOpen) closeAssistant();
+            if (menuOpen) close();
+            else open(menuContent, "menu");
+          }}
+          aria-pressed={menuOpen}
           className={`relative flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
-            isOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            menuOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
           }`}
         >
           <span className="relative">
@@ -952,13 +1004,22 @@ function MobileBottomNavInner({
           <button
             type="button"
             onClick={() => {
+              // A second tap on Ask closes the sheet (MOB-9).
+              pendingTab.current = null;
+              if (sheetOpen) {
+                closeAssistant();
+                return;
+              }
               close();
               openAssistant({ mode: "full" });
             }}
             aria-label={tabBadge ? `Ask Metorite, ${tabBadge.label}` : "Ask Metorite"}
+            aria-pressed={sheetOpen}
             data-ask-tab=""
             data-guide="home.ask"
-            className="relative flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-primary transition-colors"
+            className={`relative flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-primary transition-colors ${
+              sheetOpen ? "bg-primary/10" : ""
+            }`}
           >
             <span className="relative">
               <AppIcon name="Sparkles" size={20} strokeWidth={2.4} />
@@ -981,6 +1042,21 @@ function MobileBottomNavInner({
     )}
     </>
   );
+}
+
+/**
+ * MOB-9: the phone layout is on screen. `data-phone-nav` on <html> turns on
+ * the rule in `globals.css` that ends every full-height fixed layer at the
+ * bar's top edge. It goes with the layout: the member who switches to the
+ * desktop view, or a route with no chrome, gets no attribute.
+ */
+function PhoneNavFlag() {
+  useEffect(() => {
+    const root = document.documentElement;
+    root.setAttribute("data-phone-nav", "");
+    return () => root.removeAttribute("data-phone-nav");
+  }, []);
+  return null;
 }
 
 function TaskTab({

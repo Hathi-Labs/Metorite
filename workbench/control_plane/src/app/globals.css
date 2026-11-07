@@ -1369,6 +1369,37 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
 .pb-nav {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px));
 }
+/* ── The phone's bottom bar always shows (MOB-9, task 2002) ───────────────
+   The bar (AppShell, `data-phone-nav-bar`) is 3.5rem plus the safe-area inset
+   and paints at `LAYER_CLASS.bottomNav` (z-96), above every overlay of the
+   tree. While the phone layout shows, AppShell sets `data-phone-nav` on
+   <html>, and `--phone-nav-h` is the bar's height. Every full-height fixed
+   layer then ENDS at the bar's top edge, so no sheet, scrim or card hides a
+   tab, and no band of page shows between the layer and the bar.
+   Unlayered, so it beats a Tailwind utility (see `.pb-askbar`). An element
+   that is not spelled `fixed inset-0` opts in with `phone-nav-clear`.
+   The bar covers the home-indicator inset, so inside such a layer the foot's
+   safe-area padding drops to its gap (`pb-safe` to 0, `pb-safe-full` to
+   0.5rem). The peek strip (`.assistant-peek-bottom`) is NOT in this rule: it
+   runs under the bar by design.
+   Fences: `layers.test.ts`, `e2e/phone-bar-always.spec.ts`. */
+:root {
+  --phone-nav-h: 0px;
+}
+:root[data-phone-nav] {
+  --phone-nav-h: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+}
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]) {
+  bottom: var(--phone-nav-h);
+}
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]).pb-safe,
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]) .pb-safe {
+  padding-bottom: 0;
+}
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]).pb-safe-full,
+:root[data-phone-nav] :is(.fixed.inset-0, .fixed.inset-y-0, .fixed.bottom-0, .phone-nav-clear):not([data-phone-nav-bar]) .pb-safe-full {
+  padding-bottom: 0.5rem;
+}
 /* Clearance for the floating Ask bar of the desktop shell (`ChatBar.tsx`,
    `bottom-5`, a 44 px field). A page whose last line sits at the foot of its
    scroller takes it, so the bar never covers that line. From `sm` up only:
@@ -1448,18 +1479,18 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3.5rem);
 }
 /* The phone's task card (TC-1, `lib/layers.ts` TASK_CARD_FRAME.phone). The box
-   runs under the nav (z-50 over z-15), like the peek strip's box above, so no
-   band of page shows. Its foot is padded by the nav clearance, and by the
-   strip's height while the strip shows. */
+   is `fixed ... bottom-0`, so the phone-nav rule above ends it at the bar's top
+   edge (MOB-9). It needs no foot padding of its own. While the peek strip
+   shows, the strip runs under the bar by design and covers the card's foot,
+   so the card pads by the strip's height. */
 :root {
-  --task-card-nav-clear: calc(3.5rem + env(safe-area-inset-bottom, 0px));
   --task-card-peek-h: 3.5rem;
 }
 .task-card-phone {
-  padding-bottom: var(--task-card-nav-clear);
+  padding-bottom: 0;
 }
 :root[data-assistant-peek] .task-card-phone {
-  padding-bottom: calc(var(--task-card-nav-clear) + var(--task-card-peek-h));
+  padding-bottom: var(--task-card-peek-h);
 }
 /* The thin progress line. It slides only when the member allows motion. With
    reduced motion it is a still third of the line. */
