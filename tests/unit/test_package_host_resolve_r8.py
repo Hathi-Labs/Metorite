@@ -414,6 +414,50 @@ def test_r8_needs_setup_follows_the_needs_and_fails_closed(world) -> None:
     assert _mine(_view(world, ANA).body)[_k("draft")]["needs_setup"] is True
 
 
+# ── 9b. The host of a sub-app (PKG-15a) ────────────────────────────────────
+
+
+def _extends(world: Any, app: str, host: str) -> None:
+    man = json.dumps({"studio": 1, "id": _mid(app), "name": "P", "purpose": "T",
+                      "extends": host})
+    _admin(world, "UPDATE app_versions SET manifest = CAST(:m AS jsonb) "
+                  "WHERE app_id = CAST(:a AS uuid)", {"m": man, "a": world.apps[app]})
+    _admin(world, "UPDATE apps SET manifest = CAST(:m AS jsonb) WHERE id = CAST(:a AS uuid)",
+           {"m": man, "a": world.apps[app]})
+
+
+def test_r8_a_host_that_only_another_org_holds_is_missing(world) -> None:
+    """The host is an install of org A. The sub-app is an install of org B.
+    Org B never sees the host, so the sub-app needs setup."""
+    _extends(world, "b1", _mid("a8"))
+    _install(world, "a8", "org", [])
+    _install(world, "b1", "org", [_claim(_k("sub-b"))], org="b")
+    entry = _mine(_view(world, ZED, org="b").body)[_k("sub-b")]
+    assert entry["needs_setup"] is True
+    assert entry["extends"] == _mid("a8")
+
+
+def test_r8_a_host_in_the_own_org_is_met_until_it_is_paused(world) -> None:
+    _extends(world, "a1", _mid("a8"))
+    host = _install(world, "a8", "org", [])
+    _install(world, "a1", "org", [_claim(_k("sub-a"))])
+    assert _mine(_view(world, BEN).body)[_k("sub-a")]["needs_setup"] is False
+    assert _mine(_view(world, BEN).body)[_k("sub-a")]["extends"] == _mid("a8")
+    _admin(world, "UPDATE package_install SET state = 'paused' WHERE id = CAST(:i AS uuid)",
+           {"i": host})
+    assert _mine(_view(world, BEN).body)[_k("sub-a")]["needs_setup"] is True
+    _admin(world, "UPDATE package_install SET state = 'archived', archived_at = now() "
+                  "WHERE id = CAST(:i AS uuid)", {"i": host})
+    assert _mine(_view(world, BEN).body)[_k("sub-a")]["needs_setup"] is True
+
+
+def test_r8_a_host_that_is_a_system_package_is_met(world) -> None:
+    system = sorted({c.package for v in load_contributes().values() for c in v})[0]
+    _extends(world, "a2", system)
+    _install(world, "a2", "org", [_claim(_k("sub-sys"))])
+    assert _mine(_view(world, BEN).body)[_k("sub-sys")]["needs_setup"] is False
+
+
 # ── 10. The version ────────────────────────────────────────────────────────
 
 

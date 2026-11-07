@@ -197,6 +197,96 @@ def test_a_need_of_an_app_the_viewer_cannot_see_is_unmet() -> None:
     assert out["jobs"][0]["needs_setup"] is True
 
 
+# ── d2. The host of a sub-app (PKG-15a) ───────────────────────────────────
+
+_CRM = {"nav": (SystemContribution("nav", "/crm", "crm", None),)}
+
+
+def _sub(extends: Any, iid: str = "s", app: str = "sub") -> InstallRow:
+    return _inst(iid, app, manifest={"id": app, "extends": extends})
+
+
+def _sub_out(installs: list[InstallRow], system: Any = None) -> dict[str, Any]:
+    out = resolve.resolve(_CRM if system is None else system, installs,
+                          [_claim(i.id, f"k-{i.id}") for i in installs], _all)
+    return {e["install_id"]: e for e in out["jobs"]}
+
+
+def test_a_host_that_is_a_system_package_is_met() -> None:
+    entry = _sub_out([_sub("crm")])["s"]
+    assert entry["needs_setup"] is False
+    assert entry["extends"] == "crm"
+
+
+def test_a_host_that_is_an_active_install_of_the_viewer_is_met() -> None:
+    host = _inst("h", "hostapp", "private")
+    assert _sub_out([_sub("hostapp"), host], {})["s"]["needs_setup"] is False
+
+
+def test_a_host_that_is_absent_is_missing() -> None:
+    entry = _sub_out([_sub("nohost")])["s"]
+    assert entry["needs_setup"] is True
+    assert entry["extends"] == "nohost"
+
+
+def test_a_paused_or_archived_host_is_missing() -> None:
+    """Step 2 hands the resolve no row of a paused or archived install, so
+    the host is not among the installs, and the sub-app needs setup."""
+    assert _sub_out([_sub("hostapp")], {})["s"]["needs_setup"] is True
+
+
+def test_a_host_that_only_another_org_holds_is_missing() -> None:
+    """Step 2 reads the bound org only. The R8 twin proves it on a database."""
+    assert _sub_out([_sub("other-org-app")], {})["s"]["needs_setup"] is True
+
+
+@pytest.mark.parametrize("extends", [3, "", "Bad Id", "UPPER", "a" * 60, ["crm"], {"id": "crm"}, True])
+def test_a_malformed_extends_fails_closed(extends: Any) -> None:
+    entry = _sub_out([_sub(extends)])["s"]
+    assert entry["needs_setup"] is True
+    assert "extends" not in entry
+
+
+def test_a_null_extends_is_no_host() -> None:
+    entry = _sub_out([_sub(None)])["s"]
+    assert entry["needs_setup"] is False
+    assert "extends" not in entry
+
+
+def test_a_sub_app_is_never_its_own_host() -> None:
+    entry = _sub_out([_sub("sub")], {})["s"]
+    assert entry["needs_setup"] is True
+
+
+def test_the_host_adds_one_need_to_the_other_needs() -> None:
+    man = {"id": "sub", "extends": "crm", "needs": [{"feature": "hr"}]}
+    out = resolve.resolve(_CRM, [_inst("s", "sub", manifest=man)], [_claim("s", "k")],
+                          {"crm"}.__contains__)
+    assert out["jobs"][0]["needs_setup"] is True
+
+
+def test_only_an_install_with_extends_carries_the_extends_key() -> None:
+    plain = _inst("p", "plain")
+    sub = _sub("crm")
+    out = _sub_out([plain, sub])
+    assert out["p"] == {"key": "k-p", "source": "org", "install_id": "p", "needs_setup": False}
+    assert out["s"]["extends"] == "crm"
+
+
+def test_a_payload_cannot_set_the_extends_key() -> None:
+    out = resolve.resolve({}, [_inst("p", "plain")], [_claim("p", "k", extends="crm")], _all)
+    assert "extends" not in out["jobs"][0]
+
+
+def test_the_version_changes_only_for_an_install_with_extends() -> None:
+    plain = [_inst("p", "plain")]
+    before = resolve.version_of(resolve.resolve({}, plain, [_claim("p", "k")], _all))
+    again = resolve.version_of(resolve.resolve({}, plain, [_claim("p", "k")], _all))
+    assert before == again
+    sub = [_inst("p", "plain", manifest={"id": "plain", "extends": "crm"})]
+    assert before != resolve.version_of(resolve.resolve({}, sub, [_claim("p", "k")], _all))
+
+
 # ── e. The order ───────────────────────────────────────────────────────────
 
 
