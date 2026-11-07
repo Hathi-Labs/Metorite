@@ -391,3 +391,31 @@ def test_poll_without_a_junit_artifact_is_a_known_gap(tmp_path):
 def test_scripts_parse():
     for script in (BISECT, POLL):
         assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
+
+
+def test_a_junit_failure_uses_the_file_attribute_when_it_is_present(tmp_path: Path) -> None:
+    """Verifier finding: a lower-case class name broke the classname guess."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import junit_failed_ids as jf
+
+    xml = tmp_path / "r.xml"
+    xml.write_text(
+        '<testsuites><testsuite><testcase classname="tests.unit.test_a.test_group" '
+        'name="test_x[1-a.b]" file="tests/unit/test_a.py"><failure/></testcase>'
+        '<testcase classname="tests.unit.Odd_dir.test_b.TestK" name="test_y" '
+        'file="tests/unit/Odd_dir/test_b.py"><error/></testcase></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    assert jf.failed_ids(xml) == {
+        "tests/unit/test_a.py::test_group::test_x[1-a.b]",
+        "tests/unit/Odd_dir/test_b.py::TestK::test_y",
+    }
+
+
+def test_an_unknown_revision_is_a_bad_argument(tmp_path: Path) -> None:
+    repo, _ = make_repo(tmp_path, {104})
+    got = subprocess.run(
+        ["bash", str(BISECT), "nonexistent", "HEAD", "x"],
+        cwd=repo, capture_output=True, text=True, check=False,
+    )
+    assert got.returncode == 2, got

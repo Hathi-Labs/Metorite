@@ -13,7 +13,7 @@
 # Environment:
 #   BISECT_TEST_CMD    The probe command. The script runs it with `bash -c`
 #                      in the probe worktree, and the test ids are "$@".
-#                      Default: uv run python -m pytest -x -q -p no:cacheprovider "$@"
+#                      Default: uv run python -m pytest -x -q -p no:cacheprovider -- "$@"
 #                      Exit 0 = good, 1 = bad. Any other code = the commit
 #                      cannot be judged. The search skips it, as `git bisect skip` does.
 #   BISECT_TIMEOUT_S   Limit of one probe in seconds. Default 1800.
@@ -42,13 +42,13 @@ bad_arg="$2"
 shift 2
 test_ids=("$@")
 
-TEST_CMD="${BISECT_TEST_CMD:-uv run python -m pytest -x -q -p no:cacheprovider \"\$@\"}"
+TEST_CMD="${BISECT_TEST_CMD:-uv run python -m pytest -x -q -p no:cacheprovider -- \"\$@\"}"
 TIMEOUT_S="${BISECT_TIMEOUT_S:-1800}"
 MAX_PROBES="${BISECT_MAX_PROBES:-12}"
 
 repo="$(git rev-parse --show-toplevel)"
-good="$(git -C "$repo" rev-parse --verify "${good_arg}^{commit}")"
-bad="$(git -C "$repo" rev-parse --verify "${bad_arg}^{commit}")"
+good="$(git -C "$repo" rev-parse --verify --quiet "${good_arg}^{commit}")" || { echo "bisect_main: unknown revision: $good_arg" >&2; exit 2; }
+bad="$(git -C "$repo" rev-parse --verify --quiet "${bad_arg}^{commit}")" || { echo "bisect_main: unknown revision: $bad_arg" >&2; exit 2; }
 
 probes=0
 probe_dir=""

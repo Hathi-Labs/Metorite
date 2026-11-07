@@ -18,7 +18,15 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
-def node_id(classname: str, name: str) -> str:
+def node_id(classname: str, name: str, file: str = "") -> str:
+    # xunit1 carries `file`: the module that DEFINES the test. Use it when
+    # present, because a class name that starts in lower case, or a module
+    # directory in upper case, makes the classname guess wrong.
+    if file:
+        module = file.replace("\\", "/")
+        stem = module[: -len(".py")].replace("/", ".") if module.endswith(".py") else ""
+        rest = classname[len(stem) + 1 :] if stem and classname.startswith(stem + ".") else ""
+        return "::".join(x for x in (module, *[c for c in rest.split(".") if c], name) if x)
     parts = [p for p in classname.split(".") if p]
     split = len(parts)
     for i, part in enumerate(parts):
@@ -35,7 +43,7 @@ def failed_ids(path: Path) -> set[str]:
     root = ET.parse(path).getroot()
     for case in root.iter("testcase"):
         if any(child.tag in ("failure", "error") for child in case):
-            ids.add(node_id(case.get("classname", ""), case.get("name", "")))
+            ids.add(node_id(case.get("classname", ""), case.get("name", ""), case.get("file", "")))
     return ids
 
 
