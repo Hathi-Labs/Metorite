@@ -909,14 +909,17 @@ guarantee.
 > service caller or a suspended member. That run has no acting user, as before. A second run of one
 > agent on one task does not start while the first run is live.
 >
-> The flag stays OFF. H-444 holds three gaps for the flip:
+> The flag stays OFF. H-444 holds five gaps for the flip:
 >
 > 1. No cap limits the live runs.
 > 2. A workflow node does not wait for the run.
-> 3. A card denies in a run with no chat.
->
-> The run acts with the member's access. The code does not yet intersect it
-> with the agent identity through `EffectiveAccess.intersect()`.
+> 3. A `skill-projects` card denies in a run with no chat. The `skill-my-tasks`
+>    writes (`my_tasks_delegate`, `my_tasks_update`, `my_tasks_move`) send no card.
+> 4. The run acts with the full access of the assigner. The code does not yet
+>    intersect it with the agent identity through `EffectiveAccess.intersect()`.
+>    Task text from another member then drives a run with the assigner's access.
+>    The flag must not flip before this gap closes.
+> 5. A write shows the assigner and `chat:projects-assistant`, not the agent.
 >
 > Fences: `tests/unit/test_projects_agent_dispatch_run.py` (the real sink and
 > the real executor, on the R8 database) and `tests/unit/test_projects_automation.py`.
