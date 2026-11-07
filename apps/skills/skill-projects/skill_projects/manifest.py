@@ -1240,7 +1240,24 @@ _TASK_PREFIX_REASON = (
 #: it read. The model never names it.
 _HELD_CARD_REASON = "The card of a held chat sets it from the rows it read."
 
+_STATUS_PLACE_REASON = (
+    "create_status and update_status send it when the model passes slot or after, in "
+    "every organization, and the route accepts it at all times. "
+    "test_projects_status_chat.py proves the send."
+)
+
+
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # WS-42 PST-4: the place of a lane. The tools send them when the model
+    # passes a place, and this fence's witnesses pass none.
+    ("POST", "/projects/nodes/{project_id}/statuses"): {
+        "slot": _STATUS_PLACE_REASON,
+        "after": _STATUS_PLACE_REASON,
+    },
+    ("PATCH", "/projects/statuses/{status_id}"): {
+        "slot": _STATUS_PLACE_REASON,
+        "after": _STATUS_PLACE_REASON,
+    },
     # WS-ALN ALN-2a: the list is the member's own, and the chat reads only that.
     ("GET", "/projects/decisions"): {
         "task_id": "my_decisions lists the decisions that name the member, across tasks."
