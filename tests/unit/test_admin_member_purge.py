@@ -1748,6 +1748,25 @@ def test_delete_permanently_is_not_offered_on_the_viewers_own_row() -> None:
     assert "fetch(" not in row
 
 
+def test_every_purge_count_has_a_label() -> None:
+    """The confirm copy names each count with ``PURGE_LABELS``. A key with no
+    label falls back to the raw key plus "s", so a new table read "3 focus
+    sessionss" and "2 calendar entriess" (CC-5a, 2026-11-07). Every key that
+    the purge counts, on the delete side and the keep side, needs a label.
+    """
+    from gateway.routes.admin import members
+
+    page = _page()
+    block = page.split("const PURGE_LABELS", 1)[1].split("\n};", 1)[0]
+    labels = set(re.findall(r"^\s+([a-z_]+):", block, re.M))
+    keys = [rows.key for rows in (*members._PURGE_DELETES, *members._PURGE_KEEPS)]
+    missing = [key for key in keys if key not in labels]
+    assert not missing, (
+        f"purge counts with no label in PURGE_LABELS: {missing}. Add a "
+        "singular noun that takes a plain 's'."
+    )
+
+
 def test_the_confirmation_names_what_goes_and_what_stays() -> None:
     """A confirmation that says "are you sure?" is not informed consent for an
     irreversible act. It must name both halves — including that the audit
