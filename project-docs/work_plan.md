@@ -5626,6 +5626,20 @@ D160 and D161 left these six questions open, and the build ran on a working defa
 
 Fence: none new. The fences of `project_alignment.md` §13 and `proactive_agent.md` bind the slices that build these answers. Advisory.
 
+### D193 — AI Studio builds in a full-page IDE: "Build it" opens it, and Mira works on that one app (2026-11-06)
+
+The owner tried Studio → "Build it" on production on 2026-11-06. The owner expected a contained build experience, like VS Code or the old Command Center App Workshop, and not a chat in the side panel. The old Workshop agent no longer runs (D84, D92), so the IDE is built on the manifest packages of D146.1. Owner spec: `specs/ai_studio.md` §6.3 and rows G3a, G3b, G3c and G5. Metorite: task 1188.
+
+```text
+"New Studio IDE (Recommended)" (chat, 2026-11-06)
+```
+
+1. **"Build it" opens a full-page IDE** at `/studio/build?pkg=<id>`. It makes a draft package first.
+2. **The layout:** an explorer tree of the app's parts on the left (Data, Views, Actions, Rules, Workflows, Skill, Code blocks), Preview, Data, Views and Code tabs in the centre, a Problems panel below, and the shell's dock on the right. Simple apps use Data and Views. Complex apps add the other branches of the same tree.
+3. **Mira works on THIS app only.** The page binds the dock to the package with assistant facts, and it publishes no second chat (D87 to D89). The page sends the brief after it publishes the facts. A save uses the `based_on` hash of the facts, so a stale save is refused.
+
+Fence: `src/app/studio/build/page.test.ts`, `lib/studio/startBuild.test.ts` and `tests/unit/test_studio_pack_page_facts.py`. **Re-check this number at merge.** Main holds D192 (since the merge of 2026-11-07).
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 

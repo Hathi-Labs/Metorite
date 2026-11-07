@@ -465,6 +465,27 @@ def test_a_get_returns_the_manifest_and_the_object_rows(world):
     assert got["objects"][0]["rules"] == []
 
 
+def test_a_get_gives_the_hash_of_the_draft_that_a_save_needs(world):
+    """STU-G3a fix 1 (the IDE puts ``based_on`` in the page facts). The GET answer holds
+    ``manifest_hash``: the one hash of the stored draft. A save changes it, and the list holds none.
+
+    Mutation 1: drop ``manifest_hash`` from ``_package_out``. This test turns red.
+    Mutation 2: hash the request body and not the stored draft. The second assert turns red.
+    """
+    from acb_common.studio_manifest import manifest_hash
+
+    c = _client(world)
+    pid = _create(c)
+    first = c.get(f"/studio/packages/{pid}").json()["package"]
+    assert first["manifest_hash"] == manifest_hash(first["manifest"])
+    changed = _manifest()
+    changed["name"] = "Renamed"
+    assert c.put(f"/studio/packages/{pid}/draft?based_on={first['manifest_hash']}", json=changed).status_code == 200
+    second = c.get(f"/studio/packages/{pid}").json()["package"]
+    assert second["manifest_hash"] == manifest_hash(changed) != first["manifest_hash"]
+    assert all("manifest_hash" not in p for p in c.get("/studio/packages").json()["packages"])
+
+
 @pytest.mark.parametrize("org,email", [(ORG, BEN), (OTHER, ANA)])
 def test_a_package_of_another_member_or_org_is_404_on_each_route(world, org, email):
     theirs = _create(_client(world, org=org, email=email))
