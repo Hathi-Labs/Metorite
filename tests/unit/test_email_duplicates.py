@@ -528,14 +528,23 @@ class TestAlsoIn:
         async with _as_member(f.p, f.org):
             listed = await messages_mod.list_messages(
                 user=f.me, **{**_LIST_OFF, "account_id": f.a})
-        # The owner role sees every organization, so only the SQL keeps the
-        # copy out there.
-        with f.admin.connect() as c:
+        # The owner role bypasses row level security. The session binds the
+        # tenant of the member, so the pair set reads, and only the SQL keeps
+        # the copy in a mailbox that does not pair out. The owner role also
+        # sees the copy in the other organization, so the SQL must keep that
+        # one out too.
+        with f.admin.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                      {"o": str(f.org)})
+            # Non-vacuity: the bound session reads the pair A and B.
+            paired = {str(r[0]) for r in c.execute(
+                text(identity.PAIRED_MAILBOX_IDS_SQL), {"aid": f.a})}
             rows = c.execute(text(identity.ALSO_IN_SQL), {
                 "ids": [m_a], "uid": f.member,
                 "not_a_copy": list(core.NOT_A_COPY_FOLDERS)}).fetchall()
-        assert _also_in(listed)[m_a] == []
+        assert paired == {f.b}
         assert rows == []
+        assert _also_in(listed)[m_a] == []
 
     async def test_a_copy_from_another_sender_does_not_pair(self, family):
         """Review round 1, F3: an outsider sends a DIFFERENT mail with the same

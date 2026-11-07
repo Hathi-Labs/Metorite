@@ -10,41 +10,71 @@ silent empty identity, and a reader that someone moves onto a privileged
 connection loses the defence. This fence keeps every reader on
 ``tenant_session``.
 
-**The rule.** The seeds are the SQL constants and helpers of
+**The reader set.** The seeds are the SQL constants and helpers of
 ``automation/identity.py`` and ``transport/accounts._display_labels``
-(:data:`SEEDS`). A **reader** is a top-level function or method that names a
-seed or another reader. The fence resolves each name through the imports of
-its module, so a common name in an unrelated module is never a reader. A
-module-level constant built from a reader is a reader too (for example
-``digest._NOT_FROM_SELF_EM``). Each reader must:
+(:data:`SEEDS`). A top-level function or method that names a seed, or names
+another member of the set, joins the set. The fence resolves each name
+through the imports of its module, so a common name in an unrelated module
+never joins. A module-level constant built from a member joins too (for
+example ``digest._NOT_FROM_SELF_EM``). A constant counts at any reference. A
+function counts only where it is CALLED, so a hook that registers a job as a
+callback does not join.
 
-1. call no unbound opener (:data:`UNBOUND_OPENERS`: ``get_db``, ``_get_db``,
-   ``get_session_factory``, ``get_engine``, ``open_session`` that is not a
-   parameter of the function, and an engine or sessionmaker made in place).
-2. either open the seam (a call of ``_tenant_session`` or ``tenant_session``
-   in its body), or receive its session as a parameter. A reader that
-   receives the session passes the rule up. Each function that names it is a
-   reader in turn, until one opens the seam.
+**Builder or reader.** A function of the set that only BUILDS the SQL text is
+a **builder**: it calls no execute method (:data:`EXEC_ATTRS`), it opens no
+session, and each function of the set that it calls is a builder too.
+``paired_mailbox_ids_sql`` and ``def _sql(): return f"... {SELF_ADDRESSES_SQL}"``
+are builders. A builder passes the set to its callers, and the fence does not
+judge it. Every other function of the set is a **reader**, and the fence
+judges it.
 
-A top-level reader that opens no seam and takes no parameter has no session
-that a tenant binds, and it fails.
+**The rule.** Each reader must do one of these:
 
-Three choices keep other lanes green. A function reader counts only where
-it is CALLED, so a hook that registers a job as a callback is no reader. A
-reader that opens the seam, or that the fence already names for an unbound
-opener, passes nothing up, so one defect gives one finding. A name resolves
-through the imports of its own module, so a same name elsewhere is out of
-scope. :data:`ALLOWED` is empty: on 2026-11-07 the tree scan judged 74
-functions with zero hits.
+1. open the seam (a call of ``_tenant_session`` or ``tenant_session``). If it
+   also opens an unbound session (:data:`UNBOUND_OPENERS`), the fence follows
+   that session inside the function. It fails when that session, or a name
+   bound from it, runs the SQL text of the set, or goes into a call of a
+   member of the set.
+2. open no unbound session and receive its session as a parameter. A
+   parameter counts as a session when its name looks like one
+   (:func:`_is_session_param`) or its annotation names ``AsyncSession``,
+   ``Session``, ``AsyncConnection`` or ``Connection``. Such a reader passes the
+   rule up: each function that calls it joins the set, until one opens the
+   seam.
 
-⚠️ **Limit (stated, R7).** The fence reads names. It follows a function only
-by its own name, an imported name or ``module.name``. A method call such as
-``obj.run(db)`` is not followed, so the rule stops at a method that receives
-the session. A session that a caller hands into a method keeps its seam by
-review, and the hermetic tenancy fences
-(``test_email_automation_tenancy.py``, ``test_email_request_jobs_tenancy.py``)
-cover the jobs. ``tests/unit/test_email_mailbox_list_tenant_r8.py`` proves
-the predicate on a real Postgres.
+A reader that opens an unbound session and no seam fails. A reader with no
+seam and no session parameter fails. A reader that opens the seam, or that
+the fence names for an unbound opener, passes nothing up, so one defect gives
+one finding. :data:`ALLOWED` is empty: on 2026-11-07 the tree scan judged the
+readers of the tree with zero hits.
+
+⚠️ **Limits (stated, R7).** The fence reads names inside one function at a
+time. It does not catch these shapes. Each one has a known-gap control below,
+which asserts that the fence stays silent, so a fix shows up as a change.
+
+1. A method call such as ``obj.run(db)``. The fence follows a function only by
+   its own name, an imported name or ``module.name``.
+2. A reader passed as a value, such as ``functools.partial(resolve_self, db)``.
+   Only a call counts.
+3. A local helper that returns an unbound session, such as
+   ``async with _open() as db`` where ``_open`` returns ``get_db()``. The fence
+   knows only the openers of :data:`UNBOUND_OPENERS`. A reader with no session
+   parameter still fails by rule 2. A reader with one passes.
+4. A reader with a session parameter that reads on another session, such as a
+   module-level one. The fence trusts the parameter.
+5. A reader that opens the seam and moves an unbound session through an
+   attribute, a container or a second function. The flow in rule 1 follows
+   plain names and the local text variables only.
+6. A builder that passes the SQL text, with a module-level session, to a helper
+   outside the set. It runs no execute method itself, so the fence takes it for
+   a builder. Its callers still join the set.
+7. A reader with no session parameter fails, and the functions that call it
+   join the set too. So such a defect can give more than one finding.
+
+The hermetic tenancy fences (``test_email_automation_tenancy.py``,
+``test_email_request_jobs_tenancy.py``) cover the jobs.
+``tests/unit/test_email_mailbox_list_tenant_r8.py`` proves the predicate on a
+real Postgres.
 
 Run::
 
@@ -88,11 +118,30 @@ TENANT_SEAMS = frozenset({"tenant_session", "_tenant_session"})
 
 #: The openers that bind no tenant. ``open_session`` counts only when it is
 #: NOT a parameter. As a parameter it is the tenant session of the caller
-#: (``teardown.py``, ``memory_purge.py``).
+#: (``teardown.py``, ``memory_purge.py``). A ``.connect()`` or ``.begin()``
+#: on a name that ends in ``engine`` counts too (:data:`ENGINE_OPENERS`).
 UNBOUND_OPENERS = frozenset({
     "get_db", "_get_db", "get_session_factory", "get_engine",
     "create_async_engine", "create_engine", "async_sessionmaker",
-    "sessionmaker", "AsyncSession", "open_session",
+    "sessionmaker", "AsyncSession", "SessionLocal", "open_session",
+})
+
+#: The methods that open a connection on an engine.
+ENGINE_OPENERS = frozenset({"connect", "begin"})
+
+#: The methods that run SQL. A function of the set that calls none of them,
+#: opens no session and calls only builders is a builder.
+EXEC_ATTRS = frozenset({
+    "execute", "executemany", "exec_driver_sql", "scalar", "scalars",
+    "stream", "stream_scalars", "fetch", "fetchrow", "fetchval",
+})
+
+#: A parameter name that holds a session.
+_SESSION_NAMES = frozenset({"db", "session", "conn", "connection", "s", "sess"})
+_SESSION_SUFFIXES = ("_db", "_session", "_conn")
+#: An annotation that names a session type.
+_SESSION_TYPES = frozenset({
+    "AsyncSession", "Session", "AsyncConnection", "Connection",
 })
 
 #: A reader that the rule may not judge, and why. Empty on purpose: each
@@ -109,6 +158,8 @@ class _Func:
     qualname: str
     lineno: int
     params: frozenset[str]
+    #: The parameters that hold a session (:func:`_is_session_param`).
+    session_params: frozenset[str] = frozenset()
     #: The names it refers to, resolved to (module, name).
     refs: set[tuple[str, str]] = field(default_factory=set)
     #: The functions it calls, resolved the same way. A function that is
@@ -116,6 +167,13 @@ class _Func:
     calls: set[tuple[str, str]] = field(default_factory=set)
     opens_seam: bool = False
     unbound: list[str] = field(default_factory=list)
+    #: It calls a method of :data:`EXEC_ATTRS`.
+    executes: bool = False
+    #: The names that an execute call on an unbound session reads, and the
+    #: functions that receive an unbound session as an argument.
+    unbound_uses: set[tuple[str, str]] = field(default_factory=set)
+    #: Each local name, with the names its assigned value reads.
+    local_refs: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -159,14 +217,37 @@ def _resolve_relative(module: str, is_pkg: bool, level: int, target: str | None)
     return ".".join([*base, target] if target else base)
 
 
-def _params(node: ast.AST) -> frozenset[str]:
+def _args(node: ast.AST) -> list[ast.arg]:
     a = node.args  # type: ignore[attr-defined]
-    names = [x.arg for x in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
+    out = [*a.posonlyargs, *a.args, *a.kwonlyargs]
     if a.vararg:
-        names.append(a.vararg.arg)
+        out.append(a.vararg)
     if a.kwarg:
-        names.append(a.kwarg.arg)
-    return frozenset(n for n in names if n not in {"self", "cls"})
+        out.append(a.kwarg)
+    return [x for x in out if x.arg not in {"self", "cls"}]
+
+
+def _params(node: ast.AST) -> frozenset[str]:
+    return frozenset(x.arg for x in _args(node))
+
+
+def _is_session_param(arg: ast.arg) -> bool:
+    """A parameter holds a session when its name looks like one, or when its
+    annotation names a session type."""
+    name = arg.arg
+    if name in _SESSION_NAMES or name.endswith(_SESSION_SUFFIXES):
+        return True
+    if arg.annotation is None:
+        return False
+    for n in ast.walk(arg.annotation):
+        if isinstance(n, ast.Name) and n.id in _SESSION_TYPES:
+            return True
+        if isinstance(n, ast.Attribute) and n.attr in _SESSION_TYPES:
+            return True
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and any(
+                t in n.value for t in _SESSION_TYPES):
+            return True
+    return False
 
 
 def _call_name(call: ast.Call) -> str:
@@ -176,6 +257,21 @@ def _call_name(call: ast.Call) -> str:
     if isinstance(f, ast.Attribute):
         return f.attr
     return ""
+
+
+def _tail_name(n: ast.AST) -> str:
+    if isinstance(n, ast.Name):
+        return n.id
+    if isinstance(n, ast.Attribute):
+        return n.attr
+    return ""
+
+
+def _is_engine_open(call: ast.Call) -> bool:
+    """``admin_engine.connect()``, ``self._engine.begin()``."""
+    f = call.func
+    return (isinstance(f, ast.Attribute) and f.attr in ENGINE_OPENERS
+            and _tail_name(f.value).lower().endswith("engine"))
 
 
 def _imports(tree: ast.AST, name: str, is_pkg: bool) -> dict[str, tuple[str, str]]:
@@ -226,12 +322,8 @@ class _Resolver:
                 and (r := self(n.func)) is not None}
 
 
-def _openers(node: ast.AST, params: frozenset[str]) -> tuple[bool, list[str]]:
+def _openers(node: ast.AST, inner: set[str]) -> tuple[bool, list[str]]:
     """Does ``node`` open the seam, and which unbound openers does it call?"""
-    inner: set[str] = set(params)
-    for n in ast.walk(node):
-        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
-            inner |= _params(n)
     seam, unbound = False, []
     for n in ast.walk(node):
         if not isinstance(n, ast.Call):
@@ -241,15 +333,103 @@ def _openers(node: ast.AST, params: frozenset[str]) -> tuple[bool, list[str]]:
             seam = True
         elif cn in UNBOUND_OPENERS and not (cn == "open_session" and cn in inner):
             unbound.append(f"{cn}() at line {n.lineno}")
+        elif _is_engine_open(n):
+            unbound.append(f"{_tail_name(n.func.value)}.{cn}() at line {n.lineno}")  # type: ignore[attr-defined]
     return seam, unbound
+
+
+def _bindings(node: ast.AST) -> list[tuple[str, ast.AST]]:
+    """Each plain name that the body binds, with the value it binds."""
+    out: list[tuple[str, ast.AST]] = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Assign):
+            out += [(t.id, n.value) for t in n.targets if isinstance(t, ast.Name)]
+        elif isinstance(n, ast.AnnAssign | ast.NamedExpr) and n.value is not None:
+            if isinstance(n.target, ast.Name):
+                out.append((n.target.id, n.value))
+        elif isinstance(n, ast.With | ast.AsyncWith):
+            out += [(i.optional_vars.id, i.context_expr) for i in n.items
+                    if isinstance(i.optional_vars, ast.Name)]
+    return out
+
+
+def _is_unbound(e: ast.AST, names: set[str], inner: set[str]) -> bool:
+    """Is ``e`` an unbound session: an unbound opener, a name bound from one,
+    or a call on one?"""
+    while isinstance(e, ast.Await):
+        e = e.value
+    if isinstance(e, ast.Name):
+        return e.id in names
+    if not isinstance(e, ast.Call):
+        return False
+    f, cn = e.func, _call_name(e)
+    if cn in UNBOUND_OPENERS and not (cn == "open_session" and cn in inner):
+        return True
+    if _is_engine_open(e):
+        return True
+    if isinstance(f, ast.Call):  # ``get_session_factory()()``
+        return _is_unbound(f, names, inner)
+    if isinstance(f, ast.Name):  # ``factory()``
+        return f.id in names
+    # ``engine.connect()``, ``factory.begin()``
+    return isinstance(f, ast.Attribute) and _is_unbound(f.value, names, inner)
+
+
+def _unbound_flow(node: ast.AST, inner: set[str], resolve: _Resolver):
+    """Follow each unbound session inside one function.
+
+    Returns the names that an execute call on an unbound session reads, the
+    functions that get an unbound session as an argument, and the names that
+    each local assignment reads."""
+    binds = _bindings(node)
+    names: set[str] = set()
+
+    def unbound(e: ast.AST) -> bool:
+        return _is_unbound(e, names, inner)
+
+    changed = True
+    while changed:
+        changed = False
+        for name, value in binds:
+            if name not in names and unbound(value):
+                names.add(name)
+                changed = True
+    uses: set[tuple[str, str]] = set()
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        argv = [*n.args, *(k.value for k in n.keywords)]
+        if (isinstance(f, ast.Attribute) and f.attr in EXEC_ATTRS
+                and unbound(f.value)):
+            for a in argv:
+                uses |= resolve.refs(a) | resolve.calls(a)
+        if any(unbound(a) for a in argv) and (r := resolve(f)) is not None:
+            uses.add(r)
+    local_refs: dict[str, set[tuple[str, str]]] = {}
+    for name, value in binds:
+        local_refs.setdefault(name, set()).update(resolve.refs(value))
+    return uses, local_refs
 
 
 def _func(node: ast.AST, qual: str, module: str, resolve: _Resolver) -> _Func:
     params = _params(node)
-    seam, unbound = _openers(node, params)
+    inner: set[str] = set(params)
+    for n in ast.walk(node):
+        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            inner |= _params(n)
+    seam, unbound = _openers(node, inner)
+    executes = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                   and n.func.attr in EXEC_ATTRS for n in ast.walk(node))
+    uses, local_refs = (_unbound_flow(node, inner, resolve) if seam and unbound
+                        else (set(), {}))
     return _Func(module=module, qualname=qual, lineno=node.lineno,  # type: ignore[attr-defined]
-                 params=params, refs=resolve.refs(node), calls=resolve.calls(node),
-                 opens_seam=seam, unbound=unbound)
+                 params=params,
+                 session_params=frozenset(
+                     a.arg for a in _args(node) if _is_session_param(a)),
+                 refs=resolve.refs(node), calls=resolve.calls(node),
+                 opens_seam=seam, unbound=unbound, executes=executes,
+                 unbound_uses=uses, local_refs=local_refs)
 
 
 def parse_module(source: str, name: str, path: str = "<src>", is_pkg: bool = False) -> _Module:
@@ -276,68 +456,115 @@ def parse_module(source: str, name: str, path: str = "<src>", is_pkg: bool = Fal
     return mod
 
 
-def _readers(modules: list[_Module], seeds: frozenset[tuple[str, str]]):
-    """The reader set, and the test of one function against it.
+@dataclass
+class _Set:
+    """The reader set of a group of modules, and the tests against it."""
 
-    A constant reader counts at any reference. A function reader counts only
-    where it is called. A reader that opens the seam, or that opens an
+    members: set[tuple[str, str]]
+    funcs: set[tuple[str, str]]
+    #: The functions of the set that run SQL or open a session.
+    executors: set[tuple[str, str]]
+
+    def hits(self, f: _Func) -> bool:
+        key = (f.module, f.qualname)
+        return (any(r in self.members and r not in self.funcs for r in f.refs - {key})
+                or any(c in self.members for c in f.calls - {key}))
+
+    def reaches(self, f: _Func) -> bool:
+        """Does an unbound session of ``f`` run the SQL text of the set, or go
+        into a call of a member of the set?"""
+        seen: set[tuple[str, str]] = set()
+        todo = list(f.unbound_uses)
+        while todo:
+            r = todo.pop()
+            if r in seen:
+                continue
+            seen.add(r)
+            if r in self.members:
+                return True
+            if r[0] == f.module and r[1] in f.local_refs:
+                todo.extend(f.local_refs[r[1]])
+        return False
+
+
+def _reader_set(modules: list[_Module], seeds: frozenset[tuple[str, str]]) -> _Set:
+    """The reader set.
+
+    A constant member counts at any reference. A function member counts only
+    where it is called. A member that opens the seam, or that opens an
     unbound session, passes nothing to its callers: the first is safe, and
     the fence names the second at its own line."""
-    readers: set[tuple[str, str]] = set(seeds)
-    funcs = {(m.name, f.qualname) for m in modules for f in m.funcs}
-
-    def hits(f: _Func) -> bool:
-        key = (f.module, f.qualname)
-        return (any(r in readers and r not in funcs for r in f.refs - {key})
-                or any(c in readers for c in f.calls - {key}))
-
+    s = _Set(members=set(seeds),
+             funcs={(m.name, f.qualname) for m in modules for f in m.funcs},
+             executors=set())
     changed = True
     while changed:
         changed = False
         for m in modules:
             for const, refs in m.consts.items():
                 key = (m.name, const)
-                # A module-level text names a reader constant, or calls a
-                # function reader, as ``ALSO_IN_SQL`` calls
+                # A module-level text names a member constant, or calls a
+                # function member, as ``ALSO_IN_SQL`` calls
                 # ``paired_mailbox_ids_sql``.
-                if key not in readers and refs & readers:
-                    readers.add(key)
+                if key not in s.members and refs & s.members:
+                    s.members.add(key)
                     changed = True
             for f in m.funcs:
                 key = (m.name, f.qualname)
-                if (key in readers or f.opens_seam or f.unbound
-                        or not hits(f)):
+                if (key in s.members or f.opens_seam or f.unbound
+                        or not s.hits(f)):
                     continue
-                readers.add(key)
+                s.members.add(key)
                 changed = True
-    return readers, hits
+    # A function of the set runs SQL when it calls an execute method, opens
+    # a session, or calls a function of the set that runs SQL.
+    by_key = {(m.name, f.qualname): f for m in modules for f in m.funcs}
+    changed = True
+    while changed:
+        changed = False
+        for key, f in by_key.items():
+            if key in s.executors:
+                continue
+            if (f.executes or f.opens_seam or f.unbound
+                    or any(c in s.executors for c in f.calls - {key})):
+                s.executors.add(key)
+                changed = True
+    return s
+
+
+def _judged_funcs(modules: list[_Module], seeds: frozenset[tuple[str, str]]):
+    s = _reader_set(modules, seeds)
+    for m in modules:
+        for f in m.funcs:
+            key = (m.name, f.qualname)
+            if key not in seeds and s.hits(f) and key in s.executors:
+                yield s, m, f
 
 
 def judged(modules: list[_Module], seeds: frozenset[tuple[str, str]] = SEEDS) -> set[str]:
-    """Each function that the rule judges, as ``module:qualname``."""
-    _, hits = _readers(modules, seeds)
-    return {f"{m.name}:{f.qualname}" for m in modules for f in m.funcs
-            if (m.name, f.qualname) not in seeds and hits(f)}
+    """Each reader that the rule judges, as ``module:qualname``. A builder is
+    not judged."""
+    return {f"{m.name}:{f.qualname}" for _, m, f in _judged_funcs(modules, seeds)}
 
 
 def scan(modules: list[_Module], seeds: frozenset[tuple[str, str]] = SEEDS) -> list[str]:
     """Each reader that breaks the rule, as ``module:qualname: why``."""
-    _, hits = _readers(modules, seeds)
     out: list[str] = []
-    for m in modules:
-        for f in m.funcs:
-            key = (m.name, f.qualname)
-            if key in seeds or not hits(f):
-                continue
-            where = f"{m.name}:{f.qualname}"
-            if where in ALLOWED:
-                continue
-            if f.unbound:
-                out.append(f"{where}: reads the self or pair SQL and opens "
-                           f"an unbound session: {', '.join(f.unbound)}")
-            elif not f.opens_seam and not f.params:
-                out.append(f"{where}: reads the self or pair SQL with no "
-                           "tenant_session and no session parameter")
+    for s, m, f in _judged_funcs(modules, seeds):
+        where = f"{m.name}:{f.qualname}"
+        if where in ALLOWED:
+            continue
+        if f.opens_seam:
+            if f.unbound and s.reaches(f):
+                out.append(f"{where}: opens tenant_session, but reads the self "
+                           "or pair SQL on an unbound session: "
+                           f"{', '.join(f.unbound)}")
+        elif f.unbound:
+            out.append(f"{where}: reads the self or pair SQL and opens "
+                       f"an unbound session: {', '.join(f.unbound)}")
+        elif not f.session_params:
+            out.append(f"{where}: reads the self or pair SQL with no "
+                       "tenant_session and no session parameter")
     return sorted(out)
 
 
@@ -361,40 +588,35 @@ def _tree_modules() -> list[_Module]:
 
 # ── The tree ────────────────────────────────────────────────────────────────
 
+#: The floor of the readers that the tree scan judges. The scan judged 74 on
+#: 2026-11-07. The floor sits well below, so a lane that renames or removes a
+#: reader stays green. A scan that loses most of the readers fails.
+_MIN_JUDGED = 40
+
 
 def test_the_tree_holds_no_reader_off_the_seam():
     assert scan(_tree_modules()) == []
 
 
 def test_the_scan_finds_the_readers_it_guards():
-    """Non-vacuity: the scan reaches the readers of each kind in the tree. A
-    rename that hides them from the scan fails here, not in silence."""
+    """Non-vacuity, by shape and not by name: each seed resolves to a real
+    definition, each seed has a member of the set that uses it, and the scan
+    judges at least :data:`_MIN_JUDGED` readers."""
     mods = _tree_modules()
-    names = {(m.name, f.qualname) for m in mods for f in m.funcs}
-    for want in (
-        (_IDENTITY, "resolve_self"),
-        (_IDENTITY, "also_in_by_message"),
-        (_IDENTITY, "draft_skip_in_pair"),
-        (_ACCOUNTS, "_display_labels"),
-    ):
-        assert want in names, want
+    found = {(m.name, n) for m in mods for n in m.local_defs}
+    assert set(SEEDS) <= found, sorted(set(SEEDS) - found)
+    s = _reader_set(mods, SEEDS)
+    used: set[tuple[str, str]] = set()
+    for m in mods:
+        for const, refs in m.consts.items():
+            if (m.name, const) in s.members:
+                used |= refs
+        for f in m.funcs:
+            if (m.name, f.qualname) in s.members or s.hits(f):
+                used |= f.refs | f.calls
+    assert set(SEEDS) <= used, sorted(set(SEEDS) - used)
     got = judged(mods)
-    for want in (
-        # The pair set: "also in" of the list and the search, and the draft
-        # dedupe of the rule runner.
-        "gateway.routes.email.transport.messages:_also_in_by_message",
-        "gateway.routes.email.transport.messages:list_messages",
-        "gateway.routes.email.transport.search:search_messages",
-        "gateway.routes.email.automation.actions:_skip_for_paired_mailbox",
-        "gateway.routes.email.automation.runner:_run_rules_job",
-        # The self set: a derived constant of the digest, and the labels.
-        "gateway.routes.email.digest:_maybe_send_digest",
-        "gateway.routes.email.transport.accounts:create_account",
-    ):
-        assert want in got, want
-    seeds = set(SEEDS)
-    found = {(m.name, n) for m in mods for n in (m.local_defs)}
-    assert seeds <= found, sorted(seeds - found)
+    assert len(got) >= _MIN_JUDGED, len(got)
 
 
 def test_each_allowed_entry_is_live_and_has_a_reason():
@@ -407,12 +629,15 @@ def test_each_allowed_entry_is_live_and_has_a_reason():
 # ── Positive controls: a synthetic module that breaks the rule ─────────────
 
 _HEAD = (
+    "import functools\n"
     "from gateway.routes.email.automation.identity import (\n"
     "    SELF_ADDRESSES_SQL, PAIRED_MAILBOX_IDS_SQL, resolve_self)\n"
     "from gateway.routes.email.automation import identity\n"
-    "from gateway.db import get_db, tenant_session\n"
+    "from gateway.db import get_db, tenant_session, admin_engine, SessionLocal\n"
     "from gateway.routes.email.core import _tenant_session\n"
     "from sqlalchemy import text\n"
+    "from sqlalchemy.ext.asyncio import AsyncSession\n"
+    "GLOBAL_DB = None\n"
 )
 
 
@@ -489,10 +714,11 @@ def test_a_derived_constant_is_a_reader():
 
 
 def test_a_reader_with_no_session_at_all_is_caught():
+    """It runs the SQL on a module-level session, and it takes no session."""
     hits = _scan_src(
         "async def orphan():\n"
-        "    return PAIRED_MAILBOX_IDS_SQL\n")
-    assert hits and "no tenant_session" in hits[0]
+        "    return await GLOBAL_DB.execute(text(PAIRED_MAILBOX_IDS_SQL))\n")
+    assert hits and "gateway.sample:orphan" in hits[0] and "no tenant_session" in hits[0]
 
 
 def test_the_seam_passes():
@@ -543,3 +769,180 @@ def test_an_unbound_reader_is_named_once_at_its_own_line():
         "async def route():\n"
         "    return await leak('x')\n")
     assert len(hits) == 1 and "gateway.sample:leak" in hits[0]
+
+
+# ── Builders (R2a): a function that only builds the SQL text ───────────────
+
+
+def test_a_text_builder_is_not_judged():
+    """No false positive: a function with no parameter that only builds the
+    SQL text runs no SQL, so it needs no session."""
+    assert _scan_src(
+        "def _sql():\n"
+        "    return f'x IN ({SELF_ADDRESSES_SQL})'\n"
+        "def _sql2(alias):\n"
+        "    return _sql() + alias\n") == []
+
+
+def test_the_caller_of_a_text_builder_is_judged():
+    """A builder passes the set to its callers. A caller that runs the text
+    on get_db() is caught."""
+    hits = _scan_src(
+        "def _sql():\n"
+        "    return f'x IN ({SELF_ADDRESSES_SQL})'\n"
+        "async def leak():\n"
+        "    db = await get_db()\n"
+        "    return await db.execute(text(_sql()))\n")
+    assert len(hits) == 1 and "gateway.sample:leak" in hits[0]
+
+
+# ── The seam and an unbound opener in one function (R2b) ───────────────────
+
+
+def test_the_seam_beside_an_unrelated_unbound_opener_passes():
+    """No false positive: the read runs on the seam. The get_engine() serves
+    something else."""
+    assert _scan_src(
+        "from gateway.db import get_engine\n"
+        "async def ok(aid):\n"
+        "    eng = get_engine()\n"
+        "    async with eng.connect() as c:\n"
+        "        await c.execute(text('SELECT 1'))\n"
+        "    async with _tenant_session() as db:\n"
+        "        return await resolve_self(db, aid)\n") == []
+
+
+def test_the_seam_with_the_read_on_an_unbound_session_is_caught():
+    """The function opens the seam, but the unbound session runs the read."""
+    hits = _scan_src(
+        "async def leak(aid):\n"
+        "    async with _tenant_session() as t:\n"
+        "        await t.execute(text('SELECT 1'))\n"
+        "    db = await get_db()\n"
+        "    return await resolve_self(db, aid)\n")
+    assert len(hits) == 1 and "opens tenant_session, but" in hits[0]
+
+
+def test_the_seam_with_the_text_run_on_an_unbound_engine_is_caught():
+    """The flow follows an engine to its connection, and a local text."""
+    hits = _scan_src(
+        "from gateway.db import get_engine\n"
+        "async def leak():\n"
+        "    async with _tenant_session() as t:\n"
+        "        await t.execute(text('SELECT 1'))\n"
+        "    sql = f'x IN ({SELF_ADDRESSES_SQL})'\n"
+        "    eng = get_engine()\n"
+        "    async with eng.connect() as c:\n"
+        "        return await c.execute(text(sql))\n")
+    assert len(hits) == 1 and "gateway.sample:leak" in hits[0]
+
+
+# ── The openers and the session parameter (R4) ─────────────────────────────
+
+
+def test_an_engine_connect_is_caught():
+    hits = _scan_src(
+        "def leak():\n"
+        "    with admin_engine.connect() as c:\n"
+        "        return c.execute(text(SELF_ADDRESSES_SQL))\n")
+    assert hits and "admin_engine.connect()" in hits[0]
+
+
+def test_an_engine_begin_is_caught():
+    hits = _scan_src(
+        "class Repo:\n"
+        "    def leak(self, aid):\n"
+        "        with self._engine.begin() as c:\n"
+        "            return c.execute(text(SELF_ADDRESSES_SQL), {'aid': aid})\n")
+    assert hits and "gateway.sample:Repo.leak" in hits[0] and "_engine.begin()" in hits[0]
+
+
+def test_a_session_local_is_caught():
+    hits = _scan_src(
+        "async def leak(aid):\n"
+        "    async with SessionLocal() as db:\n"
+        "        return await resolve_self(db, aid)\n")
+    assert hits and "SessionLocal()" in hits[0]
+
+
+def test_a_parameter_that_is_no_session_does_not_pass_the_climb():
+    """A route that takes ``user`` and no session has no session that a
+    tenant binds."""
+    hits = _scan_src(
+        "async def route(user, aid):\n"
+        "    return await resolve_self(GLOBAL_DB, aid)\n")
+    assert hits and "gateway.sample:route" in hits[0] and "no session parameter" in hits[0]
+
+
+def test_a_session_annotation_names_a_receiver():
+    """No false positive: a parameter typed ``AsyncSession`` holds a session,
+    whatever its name. Its caller opens the seam."""
+    assert _scan_src(
+        "async def helper(x: AsyncSession, aid):\n"
+        "    return await resolve_self(x, aid)\n"
+        "async def caller(aid):\n"
+        "    async with _tenant_session() as db:\n"
+        "        return await helper(db, aid)\n") == []
+
+
+# ── Known gaps (R7): the fence stays silent on these shapes ────────────────
+# Each control asserts the CURRENT behaviour, so a fix changes it on purpose.
+# The numbers match the limits in the module docstring.
+
+
+def test_known_gap_1_a_method_call_is_not_followed():
+    assert _scan_src(
+        "class Svc:\n"
+        "    async def run(self, db, aid):\n"
+        "        return await resolve_self(db, aid)\n"
+        "async def route(aid, svc):\n"
+        "    db = await get_db()\n"
+        "    return await svc.run(db, aid)\n") == []
+
+
+def test_known_gap_2_a_reader_passed_as_a_value_is_not_a_call():
+    assert _scan_src(
+        "async def route(aid):\n"
+        "    db = await get_db()\n"
+        "    read = functools.partial(resolve_self, db)\n"
+        "    return await read(aid)\n") == []
+
+
+def test_known_gap_3_a_local_opener_helper_is_not_an_opener():
+    assert _scan_src(
+        "def _open():\n"
+        "    return get_db()\n"
+        "async def reader(session, aid):\n"
+        "    async with _open() as db:\n"
+        "        return await resolve_self(db, aid)\n") == []
+
+
+def test_known_gap_4_a_session_parameter_is_trusted():
+    assert _scan_src(
+        "async def reader(db, aid):\n"
+        "    return await resolve_self(GLOBAL_DB, aid)\n") == []
+
+
+def test_known_gap_5_the_flow_does_not_follow_a_container():
+    assert _scan_src(
+        "async def leak(aid):\n"
+        "    async with _tenant_session() as t:\n"
+        "        await t.execute(text('SELECT 1'))\n"
+        "    holder = {'db': await get_db()}\n"
+        "    return await resolve_self(holder['db'], aid)\n") == []
+
+
+def test_known_gap_6_a_builder_that_hands_the_text_out_is_not_judged():
+    assert _scan_src(
+        "from somewhere import run_sql\n"
+        "async def leak():\n"
+        "    return await run_sql(GLOBAL_DB, SELF_ADDRESSES_SQL)\n") == []
+
+
+def test_known_gap_7_a_reader_with_no_session_is_named_with_its_caller():
+    hits = _scan_src(
+        "async def helper(user, aid):\n"
+        "    return await resolve_self(GLOBAL_DB, aid)\n"
+        "async def route(aid):\n"
+        "    return await helper('u', aid)\n")
+    assert len(hits) == 2
