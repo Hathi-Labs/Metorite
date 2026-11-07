@@ -29,6 +29,13 @@ limit lives in ``tools``. One read is longer (EA-12b, spec §12.1): the long
 poll of ``get_agent_run`` passes ``timeout_s``, its ``wait_s`` plus 10
 seconds.
 
+**A binary read (IMG-3, ``projects_ai_chat.md`` §30.4).** :func:`get` with
+``max_bytes`` reads the body as bytes, and parses no JSON. It streams the
+body and stops once it holds ``max_bytes + 1`` bytes, so the edge never
+buffers more than the cap and one chunk. :attr:`Answer.content` then holds
+at most ``max_bytes + 1`` bytes. More than ``max_bytes`` means "too long".
+It reads the body of a 2xx answer only.
+
 This module maps no answer. It returns the status and the parsed body, and
 ``agent_edge.tools`` maps each one to a tool result (§9.6, EA3-16).
 """
@@ -41,7 +48,7 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from acb_auth import agent_oauth, agent_signing
@@ -84,10 +91,20 @@ class RouteRefused(ValueError):
 
 @dataclass(frozen=True)
 class Answer:
-    """The gateway's status code and its parsed JSON body (``None`` if none)."""
+    """The gateway's status code and its parsed JSON body (``None`` if none).
+
+    IMG-3: a binary read (:func:`get` with ``max_bytes``) parses no JSON. Its
+    ``body`` is ``None``, ``content`` holds the bytes (at most the cap and one
+    byte), and ``content_type`` holds the header. A tool never decides a type
+    from that header."""
 
     status: int
     body: Any
+    content: bytes = b""
+    content_type: str | None = None
+    #: MCP-G10. The whole seconds of the ``Retry-After`` header, when the
+    #: gateway sent a valid one. At least 1 and at most 3600.
+    retry_after: int | None = None
 
 
 @contextlib.contextmanager
@@ -175,6 +192,7 @@ async def get(
     query: Sequence[tuple[str, str]] = (),
     timeout_s: float | None = None,
     session: str | None = None,
+    max_bytes: int | None = None,
 ) -> Answer:
     """One signed ``GET`` to the gateway, or raise :class:`GatewayUnreachable`.
 
@@ -183,7 +201,12 @@ async def get(
     gateway refuses a repeated key. *timeout_s* is the limit of this request,
     and ``None`` is :data:`REQUEST_TIMEOUT_S`. Only the long poll of
     ``get_agent_run`` sets it (EA-12b).
+
+    IMG-3: *max_bytes* asks for the binary read of the module text. ``None``
+    is the JSON read.
     """
+    if max_bytes is not None and max_bytes < 0:
+        raise ValueError("max_bytes is not a size")
     path = _path(template, path_params or {})
     pairs = [(str(k), str(v)) for k, v in query]
     try:
@@ -196,7 +219,7 @@ async def get(
         _log.warning("agent_edge.gateway_request_unbuildable", route=template,
                      error=type(exc).__name__)
         raise GatewayUnreachable(template) from None
-    return await _send(_GET, url, headers, b"", template, timeout_s)
+    return await _send(_GET, url, headers, b"", template, timeout_s, max_bytes)
 
 
 async def write(
@@ -299,12 +322,37 @@ def _values_of(template: str, path: str, names: Sequence[str]) -> dict[str, str]
 
 
 def _url(path: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """The URL of a request. The signed string holds the plain *path*, and
+    the gateway checks it against the decoded path of the ASGI scope. So the
+    URL carries the path percent-encoded (IMG-3: a space in a file name). An
+    id, a template word and ``/`` stay as they are."""
     base = str(get_settings().agent_edge_gateway_url).rstrip("/")
-    return base + path + (f"?{urlencode(pairs)}" if pairs else "")
+    return base + quote(path, safe="/") + (f"?{urlencode(pairs)}" if pairs else "")
+
+
+async def _capped_bytes(response: httpx.Response, max_bytes: int) -> bytes:
+    """At most ``max_bytes + 1`` bytes of the body of *response* (IMG-3). The
+    read stops at that length, so a longer body is never held whole."""
+    held = bytearray()
+    async for chunk in response.aiter_bytes():
+        held += chunk
+        if len(held) > max_bytes:
+            del held[max_bytes + 1:]
+            break
+    return bytes(held)
+
+
+def _retry_after(raw: str | None) -> int | None:
+    """The seconds of a ``Retry-After`` header (MCP-G10), or ``None`` for no
+    header or a value that is not whole seconds. A date form is not used."""
+    if raw is None or not raw.strip().isdigit():
+        return None
+    return min(max(int(raw.strip()), 1), 3600)
 
 
 async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
-                template: str, timeout_s: float | None = None) -> Answer:
+                template: str, timeout_s: float | None = None,
+                max_bytes: int | None = None) -> Answer:
     # Read at call time, so a test that patches the module constant holds.
     limit = REQUEST_TIMEOUT_S if timeout_s is None else timeout_s
     try:
@@ -317,6 +365,14 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
             follow_redirects=False,
             trust_env=False,
         ) as client:
+            if method == _GET and max_bytes is not None:
+                # IMG-3: the binary read. The stream closes when the block
+                # ends, so the rest of a long body is never read.
+                async with client.stream(_GET, url, headers=dict(headers)) as streamed:
+                    content = (await _capped_bytes(streamed, max_bytes)
+                               if 200 <= streamed.status_code < 300 else b"")
+                return Answer(status=streamed.status_code, body=None, content=content,
+                              content_type=streamed.headers.get("content-type"))
             if method == _GET:
                 response = await client.get(url, headers=dict(headers))
             else:
@@ -335,7 +391,8 @@ async def _send(method: str, url: str, headers: Mapping[str, str], body: bytes,
         parsed = response.json() if response.content else None
     except ValueError:
         parsed = None
-    return Answer(status=response.status_code, body=parsed)
+    return Answer(status=response.status_code, body=parsed,
+                  retry_after=_retry_after(response.headers.get("retry-after")))
 
 
 __all__ = [

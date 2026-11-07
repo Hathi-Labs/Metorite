@@ -577,6 +577,37 @@ there would keep both sides of a real clash in one line.
 `lane_handover.sh`. The done test is a BACK rate under 1 in 10 over 20
 hand-overs.
 
+### CIV-19: the lane keeper (task 2206)
+
+**Status: BUILT 2026-11-07** (task 2206). STANDARD tier.
+On 2026-11-07 the box lanes sat idle for about 5 hours. An account switch ended
+the turn of 8 lanes. The loops that wake lanes ran on the owner's PC, and the
+PC went quiet.
+
+A box user timer runs `lane_keeper.py` every 10 minutes. It reads
+`claude agents --json` and keeps the newest session of each lane name. It wakes
+a lane with `claude --bg --resume <session id> <note>` when the state is done,
+blocked or idle, and the transcript is more than 10 minutes old. A lane in a
+`sleep 600` has state working, so the keeper leaves it alone. The keeper wakes
+a lane once in 30 minutes. After an account change it wakes every ended lane
+once, with no cap. Each wake goes to `~/lanes/keeper.log`.
+
+The keeper never stops a process and never starts a new lane. `lane-chat` and
+`lane-bill` are on the default skip list, because they wait on the owner.
+`KEEPER_LANES` limits the wake to a named set. An old, stopped session of a
+name that has no newer session counts as ended, so name the lanes on a night
+when only some lanes run.
+
+The account switch is a hook. `KEEPER_SWITCH_CMD` names the command, and the
+keeper gives it `KEEPER_SKIP_ACCOUNTS`. The keeper does not run it while the box
+sits on a skip-list account. The repo holds no switch command, so the owner
+supplies it.
+
+**Files:** `scripts/home_server/lane_keeper.py`,
+`scripts/home_server/metorite-lane-keeper.service`,
+`scripts/home_server/metorite-lane-keeper.timer`.
+**Fence:** `tests/unit/test_lane_keeper.py`.
+
 ### CIV-10: the weekly delivery review (task 1643)
 
 **Status: BUILT 2026-11-07** (task 1643, branch `civ10-review`). STANDARD tier.
@@ -659,3 +690,5 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-17 | 1988 | CIV-13 | 1721 |
 | CIV-10 | 1643 | CIV-4c | 1736 |
 | CIV-20 | 2207 | | |
+
+| CIV-19 | 2206 | | |

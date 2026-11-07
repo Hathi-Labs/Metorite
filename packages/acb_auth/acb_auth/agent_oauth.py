@@ -850,6 +850,11 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # MCP-G18: the metadata of the files on a task, for `get_task_context`.
     # The row also holds a cookie URL, which the edge never returns.
     ("GET", "/projects/tasks/{task_id}/attachments"),
+    # IMG-3 (projects_ai_chat.md §30.4, owner answer 2026-11-07): the bytes
+    # of one file, for `get_attachment`. The route checks only that the file
+    # hangs off SOME task that the member can see. So the tool first finds
+    # the id in the list of THIS task, and sends no bytes call otherwise.
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"),
     ("GET", "/projects/search"),
     ("GET", "/projects/tasks/{task_id}/agent-runs"),
     ("GET", "/projects/agent-runs"),
@@ -867,11 +872,20 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     *MCP_WRITE_ROUTES,
 })
 
+#: IMG-3. The file name in the path of the bytes route. The route ignores
+#: it (the stored name wins), so the shape only keeps the path plain: the
+#: characters of the upload rule (``_safe_name``), 1 to 120 of them, no
+#: ``/``, no ``\\``, no ``..``, no control character, and no dot or space
+#: first. The edge sends a stand-in name for a stored name of another shape.
+ATTACHMENT_FILENAME_PATTERN = r"(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9._ -]{0,119}"
+
 #: The path parameters of a pair of :data:`MCP_ROUTES` that are not ids, each
 #: with its pattern (MCP-P1a). The edge client refuses every other value.
 MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType({
     ("GET", "/agent-access/apps/{app}"): MappingProxyType(
         {"app": app_manifests.APP_ID_PATTERN}),
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"): MappingProxyType(
+        {"filename": ATTACHMENT_FILENAME_PATTERN}),
 })
 
 # ── The app door (MCP-P1a, spec §19.3 to §19.7) ─────────────────────────────
@@ -1150,6 +1164,7 @@ __all__ = [
     "APPROVAL_REQUIRED_CODE",
     "APP_OFF_CODE",
     "APP_SCOPES",
+    "ATTACHMENT_FILENAME_PATTERN",
     "BOX_CLIENT_ID",
     "BOX_CREDENTIAL",
     "BOX_SLUG_MAX",

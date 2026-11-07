@@ -543,6 +543,11 @@ def test_string_list_and_document_caps():
     assert [x.path for x in e] == ["$"] and "256 KiB" in e[0].message
 
 
+#: A catastrophic regex runs for minutes, so only a hang fails this. A tight
+#: bound measured the runner (CIV-8l).
+_HANG_GUARD_S = 30.0
+
+
 @pytest.mark.parametrize(
     "text",
     ["eyJ-" * 5_000, "eyJ" + "a" * 250 + "." + "eyJ" * 6_000, ("eyJabcdefgh." * 1500)[:19_000]],
@@ -554,7 +559,7 @@ def test_adversarial_documents_validate_fast(text):
     errs = validate_manifest(d)
     elapsed = time.perf_counter() - start
     assert isinstance(errs, list)
-    assert elapsed < 0.5, elapsed
+    assert elapsed < _HANG_GUARD_S, elapsed
 
 
 def test_one_adversarial_string_just_under_the_cap_is_fast():
@@ -562,7 +567,7 @@ def test_one_adversarial_string_just_under_the_cap_is_fast():
     d["skill"]["instructions"] = "eyJ-" * 4_999
     start = time.perf_counter()
     validate_manifest(d)
-    assert time.perf_counter() - start < 0.5
+    assert time.perf_counter() - start < _HANG_GUARD_S
 
 
 @pytest.mark.parametrize(

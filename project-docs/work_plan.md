@@ -5603,6 +5603,28 @@ The owner accepted each recommendation on 2026-11-07. Owner spec: `specs/agent_s
 
 Fence: SBX-F17 to SBX-F22 of `agent_sandbox.md` §11, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D187 entries merge.
 
+### D189 — Tone of voice: one persona, a tick list of places, original styles and lines (2026-11-06)
+
+Owner answer on Metorite task 1469 ("Approve all four recommendations"), 2026-11-06 18:28 UTC. Owner spec: `specs/personalization.md` §17. Board: **WS-63**. Metorite: tasks 1469 to 1475. Decisions D-PZ-43 to D-PZ-46.
+
+```text
+"It must say where a persona voice applies (drafting, nudges, reminders, interview questions) and where it never applies (facts, figures, safety and sensitive cards, tool output, quoted text)." (2026-11-02)
+```
+
+1. **The assistant stays Mira (D125).** A persona changes how it sounds in some places. It never changes who it is or what it knows.
+2. **Where it applies (Q1).** Reminders, nudges, the hello and the encouragement in the chat, and the interview questions. Chat answers stay plain unless the member turns on "chat answers too". It never goes into a draft to another person. It never touches a fact, a number, a date, a card, a tool result or quoted text. A member has one persona and one tick list, so PZ-50 has no build.
+3. **Original styles only (Q2).** "Sage" is the Yoda-like preset, with no character name. A free-text style is one line of 140 characters. A named film character or real person gets the nearest preset. A lawyer must confirm the legal points before launch.
+4. **Original lines (Q3).** About 30 written and checked lines for each preset. The model writes 20 lines once for a free style, and the member accepts them. No line repeats within 14 days. No model writes at send time.
+5. **Sources of a line.** The model writes the chat hello and encouragement. A bank line follows a reminder or a nudge. Only bank lines count toward the cap. The owner confirms this reading at the PZ-48 preview. This amends the fixed nudge string and "no model writes an interrupt". The fact text stays fixed, and one bank line may follow it.
+6. **An exception to the house voice.** Rules 2, 4 and 9 of `acb_llm.voice` CORE give way to the style in two places. These are the persona line and the chat hello and encouragement line. The owner approved the sample lines. They need the exception. Rules 7, 10 and 12 always bind. Plain keeps every rule.
+7. **Limits (Q4).** At most 3 persona lines a day. None on a serious message or a WhatsApp template. A failed check sends the message plain. An admin can turn personas off for the organization.
+
+The persona is a preference. No study shows it raises output. A flattery test runs before launch.
+
+**Re-check this number at merge.** The first merge wins a D-number. On 2026-11-07, open branches held D184 (salutations), D187 (`mt-22261640-sbx-spec`) and D188 (`mt-7cb8e476-cc0-spec`).
+
+Fence: named per slice in `specs/personalization.md` §17.9. Advisory until PZ-45 builds them.
+
 ### D190 — One order of work, no date for the first paying customer yet, the D152 seat tiers, and the board as the one record of the plan (2026-11-07)
 
 The owner asked on 2026-11-06 for an audit of the whole plan. The audit found 30 contradictions, and nine of them were HIGH (`research/2026-11-plan-audit/contradictions.md`). The owner answered its six questions in chat on 2026-11-07. Metorite task 1958 records the answer. Board: epic WS-SOT (task 2023), and SOT-0 (task 2038) is this record.

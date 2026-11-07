@@ -1318,12 +1318,16 @@ HELD_REFUSED_PARAMS: Mapping[str, frozenset[str]] = {
     "create_field": frozenset({"org_wide"}),
     "create_tag": frozenset({"org_wide"}),
     "create_type": frozenset({"org_wide"}),
+    # IMG-2: a file on a task reaches everyone who can open it, and
+    # ``attach_to_task`` is off in a held chat.
+    "create_task": frozenset({"files"}),
 }
 #: Why a write of :data:`HELD_REFUSED_PARAMS` refuses its parameter, in the words
 #: that the model reads. :func:`held_param_refusal` builds the whole answer.
 HELD_PARAM_REASONS: Mapping[str, str] = {
     "lead": "the lead of a project decides who can see it",
     "org_wide": "an organization-wide entry reaches every project",
+    "files": "a file on a task reaches everyone who can open the task",
 }
 _HELD_PARAM_REFUSED = (
     "{tool} did not run with {param}, and nothing changed. This chat read email "
@@ -1402,7 +1406,7 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
         "project_id title description status assignees due estimate_mins tags "
         "parent_task_id priority important leveraged importance repeat "
         "repeat_every repeat_on repeat_day repeat_month repeat_from repeat_until "
-        "repeat_times start type fields source"),
+        "repeat_times start type fields source files"),
     "defer": _pin("task_id until"),
     "move_task": _pin(
         "task_ids destination_project_id parent_task_id fields include_subtasks"),
@@ -1475,8 +1479,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     # The CRM record writes.
     "create_lead": _pin("lead_name email phone organization_name description"),
     "update_deal_status": _pin("deal_id stage lost_reason"),
-    "log_activity": _pin("entity record_id activity_type subject body"),
+    "log_activity": _pin("entity record_id activity_type subject body due_at"),
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
+    "crm_update_record": _pin("entity record_id fields"),
+    "crm_update_task": _pin("activity_id completed due_at"),
 }
 
 #: The pack owners whose every write needs the list. Their tools say
