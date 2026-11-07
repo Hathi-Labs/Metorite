@@ -17,6 +17,14 @@ names one task and the one next action that ends it:
    (``filters.open_block_sql``) blocks, where the blocker is parked: a
    ``backlog`` status and nobody holds it by RA-1's holder rule
    (``analytics.holder_label_sql``). The action opens the blocker.
+4. ``no_lead`` (WS-MCP SW-44, ``agent_coordination.md`` §3.10.1). An app
+   project with open work and no lead of its own. An app project is a direct
+   child of an app root that ``APP_OWNER_ROOT_ORGS`` names for the caller's
+   org. The row names a project, not a task. The action opens the project.
+   Only a caller who may write a grant on the project
+   (``authority.may_write_grant``) gets the row, because only that caller
+   may set its lead. The open work is Load's open-work predicate, and the
+   lead test is ``authority.no_lead_sql``.
 
 ⚠️ **Each rule here is a rule that already exists, joined.** The scope is
 ``analytics.scope_clause``, the open-work predicate is Load's
@@ -30,17 +38,21 @@ tenant or a person from the request (R5, R11): ``mine`` and ``yours`` read
 the session's member.
 
 ⚠️ **It only reads.** It sends no bell and writes nothing, so a deploy brings
-no storm of notifications (spec §12.7, "Rollout: prospective only"). No flag
-of its own. While ``agent_runs_enabled`` is off, the two run kinds read
-nothing, as ``agent_summary.py`` does, because their actions answer 404 then.
+no storm of notifications (spec §12.7, "Rollout: prospective only"). The
+three task kinds have no flag of their own. While ``agent_runs_enabled`` is
+off, the two run kinds read nothing, as ``agent_summary.py`` does, because
+their actions answer 404 then. ``no_lead`` reads nothing while
+``APP_OWNER_ROOT_ORGS`` names no root for the caller's org (:func:`app_roots_of`).
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any
 
 from acb_auth import UserContext, agent_oauth, get_current_user
+from acb_common import get_settings
 from fastapi import Depends, Query
 from gateway.routes.projects.agent_runs import (
     RELEASE_ADMIN_PERMISSION,
@@ -52,9 +64,15 @@ from gateway.routes.projects.analytics import (
     load_params,
     scope_clause,
 )
+from gateway.routes.projects.authority import (
+    led_projects,
+    may_write_grant,
+    no_lead_sql,
+)
 from gateway.routes.projects.core import (
     _tenant_session,
     actor,
+    can_manage_settings,
     resolve_visibility,
     router,
     task_visibility_clause,
@@ -69,17 +87,22 @@ from gateway.routes.projects.filters import (
 )
 from sqlalchemy import text
 
-#: The three kinds, in the order the list prints them.
+#: The four kinds, in the order the list prints them.
 KIND_STALLED = "stalled"
 KIND_DANGLING = "dangling"
 KIND_BLOCKED = "blocked"
-KINDS: tuple[str, ...] = (KIND_STALLED, KIND_DANGLING, KIND_BLOCKED)
+KIND_NO_LEAD = "no_lead"
+KINDS: tuple[str, ...] = (KIND_STALLED, KIND_DANGLING, KIND_BLOCKED, KIND_NO_LEAD)
+#: The kinds whose row names a task. A ``no_lead`` row names a project.
+TASK_KINDS: tuple[str, ...] = (KIND_STALLED, KIND_DANGLING, KIND_BLOCKED)
 
 #: The actions. ``resume`` and ``close_run`` are member writes on the run.
 #: ``open_blocker`` only opens a task.
 ACTION_RESUME = "resume"
 ACTION_CLOSE_RUN = "close_run"
 ACTION_OPEN_BLOCKER = "open_blocker"
+#: ``open_project`` only opens a project. The row offers no write (SW-44).
+ACTION_OPEN_PROJECT = "open_project"
 
 #: The one next action of each kind, then any second action.
 #:
@@ -92,6 +115,7 @@ ACTIONS: dict[str, tuple[str, ...]] = {
     KIND_STALLED: (ACTION_RESUME, ACTION_CLOSE_RUN),
     KIND_DANGLING: (ACTION_CLOSE_RUN,),
     KIND_BLOCKED: (ACTION_OPEN_BLOCKER,),
+    KIND_NO_LEAD: (ACTION_OPEN_PROJECT,),
 }
 #: The acts of a stalled run with a dead connection (spec §12.7).
 STALLED_CONNECTION_GONE: tuple[str, ...] = (ACTION_CLOSE_RUN,)
@@ -225,6 +249,76 @@ def blocked_sql(open_where: str, blocking_where: str) -> str:
     )
 
 
+def app_roots_of(organization_id: str | None) -> tuple[str, ...]:
+    """The app roots that ``APP_OWNER_ROOT_ORGS`` names for one org (SW-44).
+
+    THE one reader of the flag. The value holds ``org_id=root_project_id``
+    pairs with a comma between pairs. A pair with no ``=``, or a root that is
+    not a UUID, names nothing. No ``*`` exists, because a root is a project of
+    one org. The org comes from the session, never from request input (R5).
+    It reads ``get_settings()`` on each call, so a flag reload applies a
+    change with no restart. Empty, the default, gives no root, and then the
+    ``no_lead`` kind reads nothing.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return ()
+    raw = str(getattr(get_settings(), "app_owner_root_orgs", "") or "")
+    roots: list[str] = []
+    for pair in raw.split(","):
+        key, sep, root = pair.partition("=")
+        if not sep or key.strip().lower() != org:
+            continue
+        try:
+            value = str(uuid.UUID(root.strip()))
+        except ValueError:
+            continue
+        if value not in roots:
+            roots.append(value)
+    return tuple(roots)
+
+
+def no_lead_kind_sql(scope_sql: str, vis: Any) -> str:
+    """The ``no_lead`` kind: each app project that the reader can see, with no
+    lead of its own and open work below it (SW-44).
+
+    An app project is a direct child of a root in ``:app_roots``, and it is
+    not archived. ``scope_sql`` is :func:`analytics.scope_clause`'s answer,
+    over a task alias ``t``. The derived table gives it the project as
+    ``t.project_id``, so a project scope keeps the app projects inside it
+    with no copy of the subtree walk. ``open_tasks`` counts the open tasks of
+    the project and of each project below it, by Load's open-work predicate.
+    Who may set the lead is NOT here. The route asks
+    :func:`authority.may_write_grant` for each row.
+
+    Binds ``:app_roots``, ``:closed``, ``:reportable_states`` and the
+    visibility binds.
+    """
+    open_where = load_open_where("TRUE", vis)
+    return (
+        f"SELECT k.* FROM ("
+        f"SELECT p.id AS project_id, p.name AS project_name,"
+        f"       p.parent_project_id, p.created_at AS since,"
+        f"       (SELECT count(*) FROM pm_tasks t"
+        f"          JOIN pm_task_statuses s ON s.id = t.status_id"
+        f"         WHERE t.project_id IN ("
+        f"           WITH RECURSIVE sub AS ("
+        f"             SELECT p.id AS id"
+        f"             UNION"
+        f"             SELECT c.id FROM pm_projects c JOIN sub ON c.parent_project_id = sub.id"
+        f"           ) SELECT id FROM sub)"
+        f"           AND ({open_where})) AS open_tasks"
+        f"  FROM pm_projects p"
+        f" WHERE p.parent_project_id = ANY(CAST(:app_roots AS uuid[]))"
+        f"   AND p.archived_at IS NULL"
+        f"   AND {no_lead_sql('p')}"
+        f"   AND {vis.project_clause('p.id')}"
+        f"   AND EXISTS (SELECT 1 FROM (SELECT p.id AS project_id) t WHERE {scope_sql})"
+        f") k WHERE k.open_tasks > 0"
+        f" ORDER BY k.project_name ASC, k.project_id ASC"
+    )
+
+
 def _capped(inner: str) -> str:
     """At most :data:`MAX_PER_KIND` rows of a kind, the oldest first, each
     with the exact count of the kind. Binds ``:cap``."""
@@ -288,6 +382,69 @@ def _row(kind: str, hit: Any, clock: datetime, admin: bool) -> dict[str, Any]:
     }
 
 
+def _project_row(hit: Any, clock: datetime) -> dict[str, Any]:
+    """The wire shape of a ``no_lead`` row. It holds every key of a task row,
+    so a reader of one shape reads both. The task keys are null. ``title`` is
+    the project name, and ``open_tasks`` is the count of its open work.
+
+    ``yours`` is false. The row asks for a decision about the project, and it
+    is no member's own work, so ``mine`` never lists it. ``can_act`` is true:
+    the route lists the row only for a caller who may write a grant on it.
+    """
+    return {
+        "kind": KIND_NO_LEAD,
+        "task_id": None,
+        "task_number": None,
+        "title": hit.project_name,
+        "project_id": str(hit.project_id),
+        "project_name": hit.project_name,
+        "parent_task_id": None,
+        "category": None,
+        "archived": False,
+        "owner": None,
+        "owner_name": None,
+        "since": _iso(hit.since),
+        "age_hours": _hours(clock, hit.since),
+        "run_id": None,
+        "run_status": None,
+        "client_via": None,
+        "client_name": None,
+        "reason": None,
+        "blocker_id": None,
+        "blocker_number": None,
+        "blocker_title": None,
+        "open_tasks": int(hit.open_tasks),
+        "action": ACTION_OPEN_PROJECT,
+        "actions": list(ACTIONS[KIND_NO_LEAD]),
+        "can_act": True,
+        "connection_gone": False,
+        "can_resume": False,
+        "yours": False,
+    }
+
+
+async def _no_lead_hits(
+    db: Any, user: UserContext, vis: Any, scope_sql: str, params: dict[str, Any],
+) -> list[Any]:
+    """The ``no_lead`` rows that this caller may act on (SW-44).
+
+    No root for the caller's org reads nothing. Each candidate then passes
+    :func:`authority.may_write_grant`, the one rule of who may set a lead, so
+    a member who may not set the lead gets no row. The lead set is read once.
+    """
+    roots = app_roots_of(vis.organization_id)
+    if not roots:
+        return []
+    hits = (await db.execute(
+        text(no_lead_kind_sql(scope_sql, vis)), {**params, "app_roots": list(roots)},
+    )).fetchall()
+    if not hits:
+        return []
+    led = None if can_manage_settings(user) else await led_projects(db, user)
+    return [h for h in hits
+            if await may_write_grant(db, user, {"id": str(h.project_id)}, led=led)]
+
+
 @router.get("/needs-attention")
 async def needs_attention(
     project_id: str | None = None,
@@ -298,11 +455,12 @@ async def needs_attention(
 ) -> dict[str, Any]:
     """The stalled, dangling and blocked work of one project and its
     subprojects, or of every task the reader can see when ``project_id`` is
-    absent (spec §12.7).
+    absent (spec §12.7). Then the app projects with no lead (SW-44).
 
     A project the reader cannot see answers 404. ``mine`` keeps the rows the
     caller owns. The rows come stalled, dangling, blocked, and the oldest
-    first inside each kind. ``counts`` and ``total`` are exact. ``listed``
+    first inside each kind. ``no_lead`` comes last, in name order.
+    ``counts`` and ``total`` are exact. ``listed``
     is the count of rows the page reads from, which is smaller than
     ``total`` only when a kind is ``capped``.
     """
@@ -317,7 +475,7 @@ async def needs_attention(
         }
         # One clock for every age, the database's, as the run states read it.
         clock = (await db.execute(text("SELECT now()"))).scalar()
-        found: dict[str, list[Any]] = {kind: [] for kind in KINDS}
+        found: dict[str, list[Any]] = {kind: [] for kind in TASK_KINDS}
         if agent_runs_enabled():
             found[KIND_STALLED] = list((await db.execute(
                 text(_capped(stalled_sql(scope_sql, vis))), params)).fetchall())
@@ -327,12 +485,14 @@ async def needs_attention(
         blocking_where = load_open_where("TRUE", vis)
         found[KIND_BLOCKED] = list((await db.execute(
             text(_capped(blocked_sql(open_where, blocking_where))), params)).fetchall())
+        # SW-44. A `no_lead` row is never `yours`, so `mine` reads none.
+        no_lead = [] if mine else await _no_lead_hits(db, user, vis, scope_sql, params)
 
     admin = user.has_permission(RELEASE_ADMIN_PERMISSION)
     counts: dict[str, int] = {}
     capped = False
     rows: list[dict[str, Any]] = []
-    for kind in KINDS:
+    for kind in TASK_KINDS:
         hits = [h for h in found[kind] if h.yours] if mine else found[kind]
         # `kind_total` counts the whole kind. With `mine` the page counts
         # only the caller's rows of the capped read, so `capped` then says
@@ -341,6 +501,11 @@ async def needs_attention(
         counts[kind] = len(hits) if mine else total
         capped = capped or total > len(found[kind])
         rows.extend(_row(kind, hit, clock, admin) for hit in hits)
+    # The authority filter runs after the read, so the count is exact here,
+    # and the list keeps at most MAX_PER_KIND rows, as the other kinds do.
+    counts[KIND_NO_LEAD] = len(no_lead)
+    capped = capped or len(no_lead) > MAX_PER_KIND
+    rows.extend(_project_row(hit, clock) for hit in no_lead[:MAX_PER_KIND])
     page = rows[offset:offset + limit]
     return {
         "rows": page,
@@ -359,8 +524,11 @@ __all__ = [
     "MAX_PER_KIND",
     "PARKED_CATEGORY",
     "STALLED_CONNECTION_GONE",
+    "TASK_KINDS",
+    "app_roots_of",
     "blocked_sql",
     "dangling_sql",
     "needs_attention",
+    "no_lead_kind_sql",
     "stalled_sql",
 ]

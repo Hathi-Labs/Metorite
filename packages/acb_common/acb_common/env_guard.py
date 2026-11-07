@@ -227,6 +227,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.
     "WAITING_ORGS",
+    # WS-MCP SW-44: APP_OWNER_ROOT_ORGS names the app root of each org. A
+    # tenant must not point the list of another org at a project, so only the
+    # owner writes it.
+    "APP_OWNER_ROOT_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",

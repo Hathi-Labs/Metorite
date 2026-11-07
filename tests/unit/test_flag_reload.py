@@ -104,6 +104,23 @@ def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not waiting_allowed("globex")
 
 
+def test_app_owner_root_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-MCP SW-44, agent_coordination.md §3.10.1. The reload list holds the
+    key, and the one reader sees a change with no restart."""
+    from gateway.routes.projects.needs_attention import app_roots_of
+
+    root = "11111111-2222-4333-8444-555555555555"
+    assert fr.reloadable("APP_OWNER_ROOT_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("APP_OWNER_ROOT_ORGS", "")
+    get_settings.cache_clear()
+    assert app_roots_of("acme") == ()
+    env(**{**_START, "APP_OWNER_ROOT_ORGS": f"acme={root}"})
+    assert fr.reload_flags().applied == ("APP_OWNER_ROOT_ORGS",)
+    assert app_roots_of("acme") == (root,)
+    assert app_roots_of("globex") == ()
+
+
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
     """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
     break that map, and ``str`` keeps every value valid."""

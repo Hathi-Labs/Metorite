@@ -140,6 +140,18 @@ _LED_SUBTREE_SQL = (
 )
 
 
+def no_lead_sql(alias: str = "p") -> str:
+    """True for a project row that has no lead of its own (WS-MCP SW-44).
+
+    The walk above reads ``lower(lead) = :me``, so a NULL, empty or blank
+    ``lead`` names nobody and gives no authority. This predicate reads the
+    column the same way. It looks at the row only, and not at an ancestor.
+    The Needs attention kind ``no_lead`` reads it (``needs_attention.py``),
+    so no other module spells the lead test (§3.10 rule 1).
+    """
+    return f"btrim(coalesce({alias}.lead, '')) = ''"
+
+
 def _me(user: Any) -> str:
     """The caller's email in lower case, or ``""`` when the context has none."""
     who = actor(user).strip().lower()

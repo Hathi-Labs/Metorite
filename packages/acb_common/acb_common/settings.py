@@ -948,6 +948,19 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_waiting_seam_r8.py.
     waiting_orgs: str = ""
 
+    # ── The app roots of the app-owner map (WS-MCP SW-44) ───────────────────
+    #
+    # `org_id=root_project_id` pairs with a comma between pairs. A root is the
+    # project whose direct children are the apps of the org, for example
+    # "Metorite Application". An org may name more than one root. Empty means
+    # off, the default: the Needs attention kind `no_lead` ("App project with
+    # no lead") lists nothing. A pair with no `=`, or a root that is not a
+    # UUID, names nothing. The one reader is
+    # `gateway.routes.projects.needs_attention.app_roots_of`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_needs_attention_r8.py.
+    app_owner_root_orgs: str = ""
+
     # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

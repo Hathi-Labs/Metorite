@@ -1,6 +1,6 @@
 # Agent coordination — many agents and many people on one board
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.** **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`. **P9 (§3.10, §5.10, D183) was planned on 2026-11-06. No P9 slice is built.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.** **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`. **P9 (§3.10, §5.10, D183) was planned on 2026-11-06. Only the code part of SW-44 (item 4) is built, and it is dark (2026-11-07).**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -1201,6 +1201,7 @@ They keep their own gates.
 - **Done when.** No task sits directly in "Metorite Application". Each app and seam project has a lead. A test app project with open tasks and no lead shows the row.
 - **Fence.** `test_needs_attention_r8.py` holds the kind. The board moves are advisory, because no test reads production data (R7).
 - **Risk.** HIGH (a grant write). **Gate.** AGENT-SAFE for the code. OWNER-GATE for the lead writes on production (CLAUDE.md §3a rule 3).
+- **Built (item 4, the code part), 2026-11-07.** The Needs attention kind `no_lead` ("App projects with no lead") is in `needs_attention.py`. It lists a direct child of an app root with open tasks and no lead of its own. Only a caller who passes `authority.may_write_grant` gets the row. Its one act is Open project. `authority.no_lead_sql` holds the lead test. The flag `APP_OWNER_ROOT_ORGS` holds `org_id=root_project_id` pairs, and it is empty by default, so the kind is dark. A SIGHUP reload applies a change. Items 1 to 3 (the board moves and the lead writes) and the flag value stay with the owner.
 
 #### SW-45 · Own apps in `my_work` and `claim_task`
 
