@@ -5509,9 +5509,9 @@ Owner answer on Metorite task 1796 ("A: approve all three recommendations"), 202
 
 1. **Inheritance: the nearest owner wins.** The model of migration 196 stays. A project uses the status set of the nearest node at or above it that owns one. Every screen names the owner: "Uses the statuses of User Stories & Use Cases (shared with 3)".
 2. **Settings, Statuses stays and is renamed "Space default statuses".** It shows the scope line ("27 projects use these") and lists each project that owns its own set, with a link.
-3. **The board gets a chip that names the set.** The chip reads "Statuses: Metorite (shared)", "Own statuses" or "From User Stories". A click opens the editor. The chip replaces the Statuses button of task 1792.
+3. ~~**The board gets a chip that names the set.** The chip reads "Statuses: Metorite (shared)", "Own statuses" or "From User Stories". A click opens the editor. The chip replaces the Statuses button of task 1792.~~ **Reversed by D191 (2026-11-07).** The board shows no status control.
 
-This supersedes the owner rule of 2026-08-31 (management controls stay out of the view chrome) for statuses only. Fields, tags and lifecycle stay behind the menu.
+~~This supersedes the owner rule of 2026-08-31 (management controls stay out of the view chrome) for statuses only. Fields, tags and lifecycle stay behind the menu.~~ D191 restores that rule for statuses too.
 
 **Re-check this number at merge.** The first merge wins a D-number, and the branches for D182 to D184 were open when this record was written.
 
@@ -5549,6 +5549,24 @@ It extends D140 and D183. It amends earlier rules in five points (items 10 to 14
 **Re-check this number at merge.** The first merge wins a D-number. D187 and D188 were open on other branches when this record was written.
 
 Fence: `test_playbook_org_neutral.py` (PB-1 creates it, PB-5 widens it, and it blocks from the PB-1 merge) and the fences named per slice in `specs/agent_coordination.md` §7.1. Advisory until the slices build them.
+
+### D191 — Projects settings is the one place to edit a space or a project, and the board edits nothing (2026-11-07)
+
+The owner asked on 2026-11-07, in chat, on a capture of the board's Statuses button. Then the owner accepted the recommendation ("go ahead with what you recommend would be best"). Owner spec: `specs/projects_settings.md` §10. Board: **WS-42**. Metorite: decision task 2168, slices PS-5 (task 2169) and PS-6 (task 2170), and PST-3 (task 1800, cut).
+
+```text
+"even on desktop, should the statuses editing be so accessible? we can probably have one central surface to edit all the settings, tags, etc for each project or subproject in one place to not crowd up the UI/UX."
+```
+
+1. **The board shows no status control.** No button and no chip. This reverses D185.3. The owner rule of 2026-08-31 (management controls stay out of the view chrome) binds for statuses again.
+2. **The pane edits a space or a project.** The second scope of D81.2 becomes "space or project". The picker lists the tree. Each section edits the set that the picked node uses, and names its owner.
+3. **One settings item in the row menu.** D81.4 changes. "Settings…" replaces Space settings, Statuses, Custom fields, Tags and Lifecycle policy. It opens the pane at that node.
+
+D185.1 and D185.2 stay. The scope line still names the owner of a set, in the Statuses editor and on the chat card. A board does not change a set, so it does not need the line.
+
+**Re-check this number at merge.** The first merge wins a D-number. D189 and D190 were open on other branches when this session wrote the record.
+
+Fence: `projectsSettings.test.ts` and the `projectMenu` tests, named per slice in `specs/projects_settings.md` §10.4. Advisory until PS-5 and PS-6 build them.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
