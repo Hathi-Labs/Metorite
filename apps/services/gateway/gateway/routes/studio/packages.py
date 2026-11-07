@@ -139,6 +139,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
+from acb_common.studio_manifest import manifest_hash
 from fastapi import Depends, HTTPException, Request, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import store as host_store
@@ -344,6 +345,8 @@ def _package_out(package: store.Package, *, manifest: bool = True) -> dict[str, 
     }
     if manifest:
         out["manifest"] = package.manifest
+        # The one hash of the stored draft: the ``based_on`` of a save (STU-G3a). Added only.
+        out["manifest_hash"] = manifest_hash(package.manifest)
     return out
 
 

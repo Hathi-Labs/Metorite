@@ -1167,3 +1167,114 @@ async def test_held_lanes_follow_every_board_filter(q) -> None:
         held = [lane for lane in lanes if lane["pipeline_position"] is None]
         assert {lane["status"]["name"] for lane in held} == held_names, query
         assert all(lane["count"] > 0 for lane in held), query
+
+
+# ── 8. A deal with no pipeline, and the stage a pipeline starts in (#1443a) ──
+
+
+async def _native_with_second_pipeline(q: Any) -> SimpleNamespace:
+    """A Native org with the seeded default pipeline and a second one.
+
+    The second pipeline lists Closed Won, Needs Analysis and Proposal, so its
+    first OPEN stage is Needs Analysis and not the org default, Qualification.
+    """
+    admin = _admin(q.org_a)
+    assert (await _req(admin, "PATCH", "/crm/settings", {"mode": "native"})).status_code == 200
+    default = (await _req(admin, "GET", "/crm/pipelines")).json()[0]
+    stage = {s["name"]: s["id"] for s in default["stages"]}
+    with q.p.admin_engine.begin() as c:
+        second = str(c.execute(text(
+            "INSERT INTO crm_pipelines (organization_id, name, position) "
+            "VALUES (CAST(:o AS uuid), 'Renewals', 5) RETURNING id"),
+            {"o": q.org_a}).scalar())
+        for position, name in enumerate(("Closed Won", "Needs Analysis", "Proposal")):
+            c.execute(text(
+                "INSERT INTO crm_pipeline_stages (organization_id, pipeline_id, "
+                "status_id, position) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), "
+                "CAST(:s AS uuid), :n)"),
+                {"o": q.org_a, "p": second, "s": stage[name], "n": position})
+    return SimpleNamespace(admin=admin, default=default["id"], second=second, stage=stage)
+
+
+async def test_a_deal_with_no_pipeline_shows_on_the_default_board_only(q) -> None:
+    n = await _native_with_second_pipeline(q)
+    for name, pipeline in (("In default", n.default), ("In second", n.second)):
+        made = await _req(n.admin, "POST", "/crm/deals", {"name": name, "pipeline_id": pipeline})
+        assert made.status_code == 201, made.text
+    loose = await _req(n.admin, "POST", "/crm/deals", {"name": "Loose"})
+    assert loose.status_code == 201, loose.text
+    with q.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_deals SET pipeline_id = NULL WHERE id = CAST(:i AS uuid)"),
+                  {"i": loose.json()["id"]})
+
+    def names(res: Any) -> set[str]:
+        return {r["name"] for r in res.json()["rows"]}
+
+    on_default = await _req(n.admin, "GET", f"/crm/deals?pipeline_id={n.default}")
+    assert names(on_default) == {"In default", "Loose"} and on_default.json()["total"] == 2
+    on_second = await _req(n.admin, "GET", f"/crm/deals?pipeline_id={n.second}")
+    assert names(on_second) == {"In second"}
+
+    # The board: the lane counts and the lane totals include it, on one board only.
+    board = (await _req(n.admin, "GET", f"/crm/pipeline?pipeline_id={n.default}")).json()
+    assert sum(lane["count"] for lane in board["lanes"]) == 2
+    seen = {r["name"] for lane in board["lanes"] for r in lane["rows"]}
+    assert seen == {"In default", "Loose"}
+    other = (await _req(n.admin, "GET", f"/crm/pipeline?pipeline_id={n.second}")).json()
+    assert sum(lane["count"] for lane in other["lanes"]) == 1
+
+    # The aggregate and the export agree with the list (one builder).
+    agg = await _req(n.admin, "GET", f"/crm/aggregate?entity=deals&pipeline_id={n.default}")
+    assert agg.status_code == 200, agg.text
+    assert agg.json()["total"] == 2, agg.text
+
+    # With one pipeline nothing changes: the filter stays exact.
+    with q.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid)"),
+                  {"p": n.second})
+        c.execute(text("UPDATE crm_deals SET pipeline_id = NULL WHERE pipeline_id = "
+                       "CAST(:p AS uuid)"), {"p": n.second})
+        c.execute(text("DELETE FROM crm_pipelines WHERE id = CAST(:p AS uuid)"), {"p": n.second})
+    one = await _req(n.admin, "GET", f"/crm/deals?pipeline_id={n.default}")
+    assert names(one) == {"In default"}
+
+
+async def test_a_new_deal_starts_in_the_first_open_stage_of_its_pipeline(q) -> None:
+    n = await _native_with_second_pipeline(q)
+    made = await _req(n.admin, "POST", "/crm/deals", {"name": "R", "pipeline_id": n.second})
+    assert made.status_code == 201, made.text
+    assert made.json()["status_id"] == n.stage["Needs Analysis"]
+    plain = await _req(n.admin, "POST", "/crm/deals", {"name": "P"})
+    assert plain.json()["status_id"] == n.stage["Qualification"]
+
+    # A stage outside the pipeline is a 422 with a reason, on create and on a move.
+    bad = await _req(n.admin, "POST", "/crm/deals",
+                     {"name": "X", "pipeline_id": n.second, "status_id": n.stage["Qualification"]})
+    assert bad.status_code == 422, bad.text
+    assert bad.json()["detail"]["code"] == "stage_not_in_pipeline"
+    assert bad.json()["detail"]["message"]
+    moved = await _req(n.admin, "PATCH", f"/crm/deals/{made.json()['id']}",
+                       {"status_id": n.stage["Qualification"]})
+    assert moved.status_code == 422 and moved.json()["detail"]["code"] == "stage_not_in_pipeline"
+    ok = await _req(n.admin, "PATCH", f"/crm/deals/{made.json()['id']}",
+                    {"status_id": n.stage["Proposal"]})
+    assert ok.status_code == 200, ok.text
+
+
+async def test_a_converted_lead_joins_the_pipeline_it_was_started_from(q) -> None:
+    n = await _native_with_second_pipeline(q)
+
+    async def convert(body: dict) -> Any:
+        lead = await _req(n.admin, "POST", "/crm/leads", {"first_name": "Ann", "last_name": "Lee"})
+        res = await _req(n.admin, "POST", f"/crm/leads/{lead.json()['id']}/convert", body)
+        assert res.status_code == 200, res.text
+        return res.json()["deal"]
+
+    from_second = await convert({"pipeline_id": n.second})
+    assert from_second["pipeline_id"] == n.second
+    assert from_second["status_id"] == n.stage["Needs Analysis"]
+    assert (await convert({}))["pipeline_id"] == n.default
+    lead = await _req(n.admin, "POST", "/crm/leads", {"first_name": "Bo", "last_name": "Li"})
+    gone = await _req(n.admin, "POST", f"/crm/leads/{lead.json()['id']}/convert",
+                      {"pipeline_id": "00000000-0000-0000-0000-000000000000"})
+    assert gone.status_code == 404, gone.text

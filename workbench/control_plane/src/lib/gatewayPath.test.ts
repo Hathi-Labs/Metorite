@@ -8,9 +8,18 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { gatewayUrlEscape, refuseUnsafePath, unsafeGatewayPath } from "./gatewayPath";
+
+// The shape helpers of the assistant-profile relay never call the gateway.
+// The mock keeps next-auth, which the real module loads, out of this suite.
+vi.mock("@/lib/gateway", () => ({
+  GATEWAY_URL: "http://gw:8080",
+  gatewayFetch: vi.fn(),
+  gatewayHeaders: vi.fn(),
+  requireIdentity: vi.fn(),
+}));
 
 const ESCAPES = [
   "..", ".", "%2e%2e", "%2E%2E", ".%2e", "%2e.", "%2e", "", "a/..", "a\\b", "%2f", "%5C", "..%2f",
@@ -169,6 +178,184 @@ describe("a URL object built from a param", () => {
       }
     },
   );
+});
+
+// ── Every single route param that reaches a gateway path (H-280) ──────────
+//
+// Next decodes a `[sessionId]` param once, so `%3F`, `%23` and `%2F` arrive as
+// `?`, `#` and `/`. Put raw into `/chat/sessions/${sessionId}/participants/x`,
+// a `?` cuts the suffix off, and a DELETE of one participant becomes a DELETE
+// of the session. A `/` adds a segment. `encodeURIComponent` does not save
+// it: uvicorn decodes `%2F` back to `/` before Starlette routes the path.
+//
+// So the sweep does not ask HOW a route spells its URL. It reads every route
+// file under a `[param]` folder. Each read of `params` must be
+// `const { a, b } = await params;` (or a bare `await params;` that keeps no
+// value), and the next lines must guard EVERY name it read, in one of four
+// ways:
+//
+// 1. `refuseUnsafePath([a, b])`, then `if (refused) return refused;`.
+// 2. SHAPED: the route's own regex. The test takes it out of the source and
+//    proves that it refuses each mark.
+// 3. SEGMENT: `refuseBadSegment(a)`, which the test calls with each mark.
+// 4. EXEMPT: a param that is the gateway's `{x:path}` tail on purpose.
+//
+// A route that never reads `params` passes them whole to a helper (HELPERS),
+// which the test calls with each mark. Any other spelling of a read fails.
+
+/** A segment value that, once decoded, moves a request to another route. */
+const ROUTE_MOVERS = ["a?b", "a#b", "a/b", "?", "#", "/", "..", "a%2Fb", ""];
+
+/** The routes with their own shape regex, and the name of that regex. */
+const SHAPED: Record<string, { param: string; regex: string }> = {
+  "/email/oauth/[provider]/authorize/route.ts": { param: "provider", regex: "PROVIDER_SEGMENT" },
+  "/email/oauth/[provider]/callback/route.ts": { param: "provider", regex: "PROVIDER_SEGMENT" },
+};
+
+/** The routes that guard their one param with `refuseBadSegment` (`^[\w.:@-]+$`). */
+const SEGMENT = new Set([
+  "/integrations/connections/[id]/disconnect/route.ts",
+  "/integrations/mcp/[name]/oauth/start/route.ts",
+  "/integrations/mcp/[name]/route.ts",
+  "/integrations/mcp/[name]/test/route.ts",
+  "/integrations/plugins/[id]/route.ts",
+]);
+
+/**
+ * The routes whose param is the LAST segment of a gateway `{x:path}` route.
+ * A slash is part of the value there, and no suffix follows it to cut off.
+ * `tail` is the end of the gateway URL as the source spells it.
+ */
+const EXEMPT: Record<string, { param: string; tail: string; why: string }> = {
+  "/settings/llm/enabled-models/[id]/route.ts": {
+    param: "id",
+    tail: "/settings/llm/enabled-models/${encodeURIComponent(modelId)}`",
+    why: "a model id holds a slash (openai/gpt-4o); the gateway route is {model_id:path}",
+  },
+};
+
+/** The routes that pass `params` whole to a helper that checks the shape. */
+const HELPERS: Record<string, "idSuffix" | "areaSuffix"> = {
+  "/auth/me/assistant-profile/aliases/[id]/route.ts": "idSuffix",
+  "/auth/me/assistant-profile/facts/[id]/route.ts": "idSuffix",
+  "/auth/me/assistant-profile/summaries/[id]/route.ts": "idSuffix",
+  "/auth/me/assistant-profile/interview/[area]/route.ts": "areaSuffix",
+};
+
+/** Each route file under a `[param]` folder (not a catch-all), with its param names. */
+function singleParamRoutes(dir: string, names: string[] = [], out: { path: string; names: string[] }[] = []) {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      // Below a catch-all, the catch-all sweep above owns the route.
+      if (entry.includes("...")) continue;
+      const m = /^\[([^\].]+)\]$/.exec(entry);
+      singleParamRoutes(full, m ? [...names, m[1]] : names, out);
+    } else if (entry === "route.ts" && names.length > 0) {
+      out.push({ path: full, names });
+    }
+  }
+  return out;
+}
+
+const relOf = (path: string) => path.slice(API_DIR.length).replace(/\\/g, "/");
+
+describe("the single-param sweep (H-280)", () => {
+  const routes = singleParamRoutes(API_DIR).map((r) => ({ rel: relOf(r.path), names: r.names, src: readSource(r.path) }));
+
+  it("finds every route under a [param] folder, so a moved tree cannot pass it empty", () => {
+    // No count is written here. A second walk, by path text, must find the
+    // same files, and the route of the finding must be one of them.
+    const byText = allRoutes(API_DIR)
+      .map(relOf)
+      .filter((rel) => /\/\[[^\].]+\]\//.test(rel) && !rel.includes("..."));
+    expect(routes.map((r) => r.rel).sort()).toEqual(byText.sort());
+    expect(routes.map((r) => r.rel)).toContain("/chat/sessions/[sessionId]/participants/[subject]/route.ts");
+  });
+
+  it("names only files that exist, each in one list", () => {
+    const rels = new Set(routes.map((r) => r.rel));
+    const listed = [...Object.keys(SHAPED), ...SEGMENT, ...Object.keys(EXEMPT), ...Object.keys(HELPERS)];
+    for (const rel of listed) expect(rels.has(rel), rel).toBe(true);
+    expect(new Set(listed).size).toBe(listed.length);
+  });
+
+  it.each(routes.map((r) => [r.rel, r.src] as const))("%s guards each param it reads", (rel, src) => {
+    const reads = src.match(/await (?:ctx\.|context\.)?params\b/g) ?? [];
+    if (reads.length === 0) {
+      expect(HELPERS[rel], "a route that never reads its params names its helper").toBeDefined();
+      expect(src).toContain(`${HELPERS[rel]}(`);
+      return;
+    }
+    expect(HELPERS[rel], "a HELPERS route reads no params").toBeUndefined();
+    const bare = src.match(/^\s*await (?:ctx\.)?params;/gm) ?? [];
+    const destructs = [...src.matchAll(/const \{ ([\w, ]+) \} = await (?:ctx\.)?params;\n([^\n]*)\n([^\n]*)/g)];
+    expect(bare.length + destructs.length, "a read of params in another spelling").toBe(reads.length);
+
+    for (const [, list, next1, next2] of destructs) {
+      const names = list.split(", ");
+      const one = names.length === 1 ? names[0] : null;
+      const a = next1.trim();
+      const b = next2.trim();
+      if (SHAPED[rel]) {
+        const { param, regex } = SHAPED[rel];
+        expect(one).toBe(param);
+        expect(a).toBe(`if (!${regex}.test(${param})) {`);
+        const lit = new RegExp(`const ${regex} = /(.+)/([a-z]*);`).exec(src);
+        expect(lit, regex).not.toBeNull();
+        const re = new RegExp(lit![1], lit![2]);
+        for (const bad of ROUTE_MOVERS) expect(re.test(bad), JSON.stringify(bad)).toBe(false);
+      } else if (SEGMENT.has(rel)) {
+        expect(one).not.toBeNull();
+        expect(a).toBe(`const bad = refuseBadSegment(${one});`);
+        expect(b).toBe("if (bad) return bad;");
+      } else if (EXEMPT[rel]) {
+        expect(one).toBe(EXEMPT[rel].param);
+        expect(src).toContain(EXEMPT[rel].tail);
+      } else {
+        expect(a, rel).toBe(`const refused = refuseUnsafePath([${names.join(", ")}]);`);
+        expect(b, rel).toBe("if (refused) return refused;");
+      }
+    }
+  });
+
+  it("refuseBadSegment refuses each mark", async () => {
+    const { unsafeSegment } = await import("@/app/api/integrations/safeSegment");
+    for (const bad of ROUTE_MOVERS) expect(unsafeSegment(bad), JSON.stringify(bad)).toBe(true);
+  });
+
+  it.each(Object.entries(HELPERS))("%s: its helper refuses each mark", async (_rel, helper) => {
+    const relay = await import("@/app/api/auth/me/assistant-profile/relay");
+    for (const bad of ROUTE_MOVERS) {
+      const got =
+        helper === "areaSuffix"
+          ? await relay.areaSuffix(Promise.resolve({ area: bad }))
+          : await relay.idSuffix("facts", Promise.resolve({ id: bad }));
+      expect(got, JSON.stringify(bad)).toBeNull();
+    }
+    // The summaries take a chat id, which may hold a colon. Still no mark.
+    for (const bad of ROUTE_MOVERS) {
+      expect(await relay.idSuffix("summaries", Promise.resolve({ id: bad })), JSON.stringify(bad)).toBeNull();
+    }
+  });
+});
+
+describe("a decoded mark in a single param, end to end (H-280)", () => {
+  // The source sweep above proves the spelling. This proves the effect, on
+  // the route of the finding: a DELETE of one participant must not become a
+  // DELETE of the session.
+  it.each(["s1?", "s1#", "s1/participants/x", ".."])("DELETE with sessionId %j answers 400 and calls no gateway", async (sessionId) => {
+    const gateway = await import("@/lib/gateway");
+    const fetchMock = vi.mocked(gateway.gatewayFetch);
+    fetchMock.mockClear();
+    const { DELETE } = await import("@/app/api/chat/sessions/[sessionId]/participants/[subject]/route");
+    const { NextRequest } = await import("next/server");
+    const res = await DELETE(new NextRequest("http://localhost/api/x", { method: "DELETE" }), {
+      params: Promise.resolve({ sessionId, subject: "bob@fracktal.in" }),
+    });
+    expect(res.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 /** A route's source with LF line ends. A Windows checkout can hold CRLF. */
