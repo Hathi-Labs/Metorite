@@ -260,13 +260,6 @@ line — never reclaim a number by deleting the other entry.
   A count above 0 means this is open.
 - **Added:** 2026-10-08 · branch `sec-bh1-child-env` (WS-49 BH-1, fix round 1).
 
-### H-280 · A single route param can still move a gateway call to another route under its prefix · [AGENT]
-- **Metorite:** #621. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n '\$\{(sessionId|subject|agentName|provider|threadId)\}' workbench/control_plane/src/app/api`.
-  A hit that puts the raw param into a gateway URL, with no `refuseUnsafePath([...])`
-  in that handler, means this is open.
-- **Added:** 2026-10-08 · branch `proxy-path-guard`.
-
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Metorite:** #499. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
@@ -1938,9 +1931,4 @@ line — never reclaim a number by deleting the other entry.
 - **Metorite:** #885. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `git grep -n "no-offset\|without an offset" origin/main -- apps/services/gateway/gateway/routes/projects/due.py` prints nothing.
 - **Added:** 2026-10-27 · WS-64 session
-
-### H-437 · Give a web chat run the credential filter of its member · [AGENT] · security
-- **Metorite:** #1120. The task holds the full entry.
-- **Check:** in `apps/services/orchestrator/orchestrator/executor.py`, `async def _integration_authorizer` takes only `event_payload` and `thread_id`, and reads the member from the payload → still open. That one read sets two things: the credential filter, and the memory permission gate through `_set_memory_permission`.
-- **Added:** 2026-10-30 · H-337 session
 
