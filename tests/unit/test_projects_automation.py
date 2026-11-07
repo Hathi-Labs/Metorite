@@ -713,6 +713,29 @@ def test_an_agent_with_a_live_run_on_the_task_gets_no_second_run(
     assert states == ["started", "finished", "started", "finished"], states
 
 
+def test_a_dispatch_that_fails_before_its_run_gives_its_pair_back(
+    monkeypatch, db, project,
+):
+    """H-240. The sink holds the pair before it writes the "started" row. A
+    write or a commit that fails must give the pair back, or the agent could
+    never run on that task again until a restart.
+
+    Mutation (R7): remove the ``except`` that empties ``held``, and this
+    fails."""
+    bind_db(monkeypatch, db, (agent_dispatch,))
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("the write failed")
+
+    monkeypatch.setattr(agent_dispatch, "record_activity", broken)
+    with pytest.raises(RuntimeError):
+        run(agent_dispatch.on_event(
+            "projects", "pm.task.assigned",
+            _assigned(project.task.id, ["agent:researcher"]),
+        ))
+    assert not agent_dispatch._LIVE
+
+
 _REPO = Path(__file__).resolve().parents[2]
 
 

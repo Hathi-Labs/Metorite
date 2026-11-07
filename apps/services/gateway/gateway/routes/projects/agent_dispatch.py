@@ -379,87 +379,89 @@ async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> Non
         )
         return
 
-    async with _tenant_session(organization_id) as db:
-        task = (await db.execute(
-            text("SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
-            {"tid": task_id},
-        )).fetchone()
-        if task is None:
-            return
+    # H-240: the pairs this event holds in `_LIVE`. A failure before the
+    # runs start, the commit included, gives them back.
+    held: list[tuple[str, str]] = []
+    try:
+        async with _tenant_session(organization_id) as db:
+            task = (await db.execute(
+                text("SELECT * FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+                {"tid": task_id},
+            )).fetchone()
+            if task is None:
+                return
 
-        # WS-27bg. An agent is not put to work inside a project that is not
-        # running. Assignment in a paused project is planning ("this is yours
-        # when we restart"), and dispatching on it would have an agent burn
-        # budget on work the org has explicitly suspended.
-        #
-        # A WARNING rather than a timeline row, for the same reason the tenant
-        # refusal above is: this is a sink, and the decision belongs in the log
-        # where an operator looks, not in the activity feed of a project nobody
-        # is reading.
-        # Ancestor-aware: an agent must not be put to work inside an active
-        # subproject of a PAUSED department. Reading the immediate project
-        # alone was the slice-1 defect (see `is_runnable_with_ancestors`).
-        if not await is_runnable_with_ancestors(
-            db, getattr(task, "project_id", None)
-        ):
-            _log.warning(
-                "projects.agent_dispatch_skipped", task_id=task_id,
-                agents=agents,
-                reason="the task's project (or one above it) is not running "
-                       "(WS-27bg)",
-            )
-            return
+            # WS-27bg. An agent is not put to work inside a project that is not
+            # running. Assignment in a paused project is planning ("this is yours
+            # when we restart"), and dispatching on it would have an agent burn
+            # budget on work the org has explicitly suspended.
+            #
+            # A WARNING rather than a timeline row, for the same reason the tenant
+            # refusal above is: this is a sink, and the decision belongs in the log
+            # where an operator looks, not in the activity feed of a project nobody
+            # is reading.
+            # Ancestor-aware: an agent must not be put to work inside an active
+            # subproject of a PAUSED department. Reading the immediate project
+            # alone was the slice-1 defect (see `is_runnable_with_ancestors`).
+            if not await is_runnable_with_ancestors(
+                db, getattr(task, "project_id", None)
+            ):
+                _log.warning(
+                    "projects.agent_dispatch_skipped", task_id=task_id,
+                    agents=agents,
+                    reason="the task's project (or one above it) is not running "
+                           "(WS-27bg)",
+                )
+                return
 
-        # Ship dark. OFF: one row the member reads, an INFO line, no run.
-        # Checked after the task and the run state, so a paused project stays
-        # as quiet as it was, and before any `agent_run` "started" row.
-        if not dispatch_enabled():
-            await record_activity(
-                db, activity_type="agent_run",
-                created_by=f"{AGENT_PREFIX}{agents[0]}",
-                task_id=task_id, body=DISABLED_BODY,
-                meta={"agent": agents[0], "agents": agents,
-                      "state": "disabled"},
-            )
-            _log.info(
-                "projects.agent_dispatch_disabled", task_id=task_id,
-                agents=agents, flag=DISPATCH_FLAG,
-            )
-            return
-
-        # H-240: no second run of an agent on a task while its first one
-        # lives. The run acts as its member, so it can assign the task again,
-        # and an agent that puts itself back on the task must not start a
-        # copy of itself. The pairs are held from here, so a second event
-        # that arrives while this one writes its rows is skipped too.
-        busy = [name for name in agents if (task_id, name) in _LIVE]
-        if busy:
-            _log.warning(
-                "projects.agent_dispatch_already_running", task_id=task_id,
-                agents=busy,
-            )
-        agents = [name for name in agents if name not in busy]
-        if not agents:
-            return
-        held = [(task_id, name) for name in agents]
-        _LIVE.update(held)
-
-        message = build_message(task)
-        try:
-            for name in agents:
-                # The timeline entry is written and COMMITTED before the run
-                # starts — the `_tenant_session` block commits on exit, which
-                # is BEFORE the dispatch loop below — so the handoff is
-                # visible immediately rather than when the agent finishes.
+            # Ship dark. OFF: one row the member reads, an INFO line, no run.
+            # Checked after the task and the run state, so a paused project stays
+            # as quiet as it was, and before any `agent_run` "started" row.
+            if not dispatch_enabled():
                 await record_activity(
                     db, activity_type="agent_run",
-                    created_by=f"{AGENT_PREFIX}{name}",
+                    created_by=f"{AGENT_PREFIX}{agents[0]}",
+                    task_id=task_id, body=DISABLED_BODY,
+                    meta={"agent": agents[0], "agents": agents,
+                          "state": "disabled"},
+                )
+                _log.info(
+                    "projects.agent_dispatch_disabled", task_id=task_id,
+                    agents=agents, flag=DISPATCH_FLAG,
+                )
+                return
+
+            # H-240: no second run of an agent on a task while its first one
+            # lives. The run acts as its member, so it can assign the task again,
+            # and an agent that puts itself back on the task must not start a
+            # copy of itself. The pairs are held from here, so a second event
+            # that arrives while this one writes its rows is skipped too.
+            busy = [name for name in agents if (task_id, name) in _LIVE]
+            if busy:
+                _log.warning(
+                    "projects.agent_dispatch_already_running", task_id=task_id,
+                    agents=busy,
+                )
+            agents = [name for name in agents if name not in busy]
+            if not agents:
+                return
+            held = [(task_id, name) for name in agents]
+            _LIVE.update(held)
+
+            message = build_message(task)
+            for name in agents:
+                # The timeline entry is written and COMMITTED before the run
+                # starts — the `_tenant_session` block commits on exit, which is
+                # BEFORE the dispatch loop below — so the handoff is visible
+                # immediately rather than when the agent finishes.
+                await record_activity(
+                    db, activity_type="agent_run", created_by=f"{AGENT_PREFIX}{name}",
                     task_id=task_id, body=f"Assigned to {name}; starting a run.",
                     meta={"agent": name, "state": "started"},
                 )
-        except BaseException:
-            _LIVE.difference_update(held)
-            raise
+    except BaseException:
+        _LIVE.difference_update(held)
+        raise
 
     # H-240: the member the gateway's emitter wrote, or "" (no acting user).
     member = event_member(payload)
