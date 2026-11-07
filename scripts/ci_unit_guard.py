@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -142,8 +143,69 @@ def durations(junit_dir: Path) -> dict[str, float]:
     return dict(sorted(out.items()))
 
 
-def gate_output(gate_json: Path) -> list[str]:
-    """``full=`` and ``files=`` lines for $GITHUB_OUTPUT. Fails open to full."""
+# CIV-17. How many unit shards a selection needs. CIV-17b (2026-11-07) counts
+# measured SECONDS, not files: a Python PR selected 400 to 500 files, so a file
+# count gave 6 shards for every one of them, and the tiers never applied. The
+# seconds come from `.test_durations`, the file that pytest-split uses to cut
+# the shards. A file with no timing counts DEFAULT_FILE_S. Without the timing
+# file, the old tiers by file count apply, so `changes` and the shards still
+# agree on the count.
+ALL_SHARDS = 6
+SHARD_TIERS = ((40, 1), (120, 3))
+SHARD_TARGET_S = 600
+DEFAULT_FILE_S = 10.0
+DURATIONS_PATH = Path(".test_durations")
+
+
+def file_seconds(path: Path | None = None) -> dict[str, float] | None:
+    """Seconds of each test file, summed over its tests. None when unreadable."""
+    path = path or DURATIONS_PATH
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        out: dict[str, float] = {}
+        for node, secs in data.items():
+            out[node.split("::", 1)[0]] = out.get(node.split("::", 1)[0], 0.0) + float(secs)
+        return out or None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def shard_count(mode: str, paths: list[str], seconds: dict[str, float] | None = None) -> int:
+    """The shards that ``mode`` (from ``select_shard``) needs: 0 for an empty
+    selection, ALL_SHARDS for a full run. A selection takes one shard for each
+    SHARD_TARGET_S of measured time, at most ALL_SHARDS."""
+    if mode == "empty":
+        return 0
+    if mode != "selection":
+        return ALL_SHARDS
+    if seconds:
+        total = sum(seconds.get(p, DEFAULT_FILE_S) for p in paths)
+        return max(1, min(ALL_SHARDS, math.ceil(total / SHARD_TARGET_S)))
+    for limit, shards in SHARD_TIERS:
+        if len(paths) <= limit:
+            return shards
+    return ALL_SHARDS
+
+
+def shard_list(count: int) -> str:
+    """The ``shards`` job output: a JSON list that the ``test`` matrix reads."""
+    return json.dumps(list(range(1, count + 1)), separators=(",", ":"))
+
+
+def gate_output(gate_json: Path, ignored: str = "") -> list[str]:
+    """``full=``, ``files=`` and ``shards=`` lines for $GITHUB_OUTPUT.
+
+    Fails open to full (and so to all shards). ``ignored`` is the output of
+    ``fences.py pytest-ignore``: a shard drops those files from the selection,
+    so the count has to drop them too."""
+    lines = _gate_lines(gate_json)
+    full = lines[0].partition("=")[2]
+    files = lines[1].partition("=")[2]
+    mode, paths = select_shard(full, files, ignored, "success")
+    return [*lines, f"shards={shard_list(shard_count(mode, paths, file_seconds()))}"]
+
+
+def _gate_lines(gate_json: Path) -> list[str]:
     try:
         data = json.loads(gate_json.read_text(encoding="utf-8"))
         full = bool(data["full"])
@@ -221,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--out", type=Path, required=True)
     g = sub.add_parser("gate-output", help="turn affected_tests.py --gate JSON into step outputs")
     g.add_argument("--json", type=Path, required=True)
+    g.add_argument("--ignored", default="", help="the output of fences.py pytest-ignore")
     sel = sub.add_parser("select", help="what this shard runs, as step outputs")
     sel.add_argument("--full", default="")
     sel.add_argument("--files", default="")
@@ -231,12 +294,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "gate-output":
-        print(chr(10).join(gate_output(args.json)))
+        print(chr(10).join(gate_output(args.json, args.ignored)))
         return 0
     if args.cmd == "select":
         mode, paths = select_shard(args.full, args.files, args.ignored, args.changes_result)
         print(f"mode={mode}")
         print(f"paths={' '.join(paths)}")
+        print(f"splits={shard_count(mode, paths, file_seconds()) or ALL_SHARDS}")
         return 0
     if args.cmd == "empty-report":
         print("wrote an empty report" if empty_report(args.out) else "report exists")
