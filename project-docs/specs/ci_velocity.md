@@ -348,6 +348,42 @@ AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
 repo in which one known commit breaks one test.
 AGENT-SAFE. STANDARD tier.
 
+**Status: BUILT 2026-11-07** (task 1633, branch `civ5-bisect`). Not live: the
+owner has not installed the timer.
+
+**Built.**
+- `scripts/bisect_main.sh <good> <bad> <test id>...` searches the first-parent
+  commits in (good, bad]. It does not call `git bisect`. Each probe has a
+  detached worktree in a temp dir, and the EXIT trap removes it. It checks
+  first that the good commit passes and the bad commit fails, else it exits 3.
+  A probe exit code of 0 is good and 1 is bad. Any other code skips the commit.
+  Adjacent commits that cannot be judged give exit 4 and the range. The cap
+  is 12 probes (exit 5). It prints `FIRST_BAD <sha> <subject> PR=<n or none>`.
+- `scripts/home_server/bisect_poll.sh` is one poll pass. It acts only when the
+  newest completed batch run is red and new. It finds the last green batch as
+  the good sha, reads the failed ids with `scripts/junit_failed_ids.py`, runs
+  the bisect and prints `BISECT_RESULT <json>`. State is `handled` in
+  `~/.cache/metorite-bisect`. It never reruns or cancels a run.
+- `scripts/home_server/systemd/metorite-bisect-poll.{service,timer}` are unit
+  files. Nobody installed them.
+- Fence: `tests/unit/test_bisect_main.py` (18 tests, a fixture repo and a
+  shimmed `gh_cmd`).
+
+**By hand.** `bash scripts/bisect_main.sh <good> <bad> tests/unit/test_x.py::test_y`.
+The default probe is `uv run python -m pytest -x -q -p no:cacheprovider "$@"`.
+Set `BISECT_TEST_CMD` to reuse a prepared lane or venv. `BISECT_TIMEOUT_S` and
+`BISECT_MAX_PROBES` set the limits.
+
+**Left for the owner.**
+- Install the timer (steps in the service file).
+- A lane session reads the `BISECT_RESULT` line in the journal and posts it on
+  a Metorite task. The script has no Metorite credentials.
+- Known gap: the push batch job writes no JUnit file. Only the R8 shards
+  upload one (`r8-junit-shard-N`). The poller reads an artifact named
+  `unit-junit` (`BISECT_ARTIFACT`). A later slice must add
+  `--junitxml` and an upload step to `test` in `deploy.yml`. Until then the
+  poller records a red run with "no failed test id".
+
 ### CIV-6 · Local tier: the affected tests by default, several runs at once on the box
 
 **Done when:**

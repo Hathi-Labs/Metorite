@@ -461,10 +461,16 @@ jobs:
           set -f
           [ "$SHARD_MODE" = "selection" ] || SHARD_TARGETS="tests/unit/"
           rc=0
+          # CIV-8k (task 2191). Shard 1 hung for 25 to 39 minutes in 6 red runs, always
+          # right after tests/unit/test_adaptive_tier.py::test_a_long_thread_drafts_on_powerful
+          # [...-False-tier-fast], and the log shows no cause. `faulthandler_timeout`
+          # prints the stack of every thread when one test runs over 900 s. It kills
+          # nothing, and no test takes more than 260 s.
           uv run python -m pytest $SHARD_TARGETS -v -rs --reruns 1 \
             $(python3 scripts/fences.py pytest-ignore) \
             --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
+            -o faulthandler_timeout=900 \
             -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml || rc=$?
           if [ "$rc" -eq 5 ] && [ "$SHARD_MODE" = "selection" ]; then
             echo "this shard drew no test from the selection"
@@ -650,6 +656,7 @@ jobs:
               tests/unit/test_crm_change_history.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_projects_status_set_read_r8.py \
+              tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_staging_export.py
 
       # CIV-3. A selection run holds part of the timings. Only a full run
