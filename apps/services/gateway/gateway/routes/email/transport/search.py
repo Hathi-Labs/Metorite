@@ -388,6 +388,82 @@ async def search_messages(
 VECTOR_MIN_SIM = 0.30
 
 
+async def _all_scope(
+    db: Any, uid: str, received_after: str | None,
+) -> tuple[str, dict[str, Any]]:
+    """The WHERE of a search of All folders for the member ``uid``, and its binds.
+
+    The one scope of :func:`semantic_messages` and :func:`open_found`. It is
+    the scope that :func:`search_messages` builds for ``folder="all"`` with
+    no ``account_id``:
+
+    * ``_account_scope(..., pooled_only=True, level="read")``, so a mailbox
+      that the member keeps separate stays out (EM-T8g-1, D-EM-30);
+    * ``folder_scope("all", include_sent=True)``, so junk and trash stay out;
+    * ``_state_filters`` with ``received_after`` only.
+    """
+    account_id = await resolve_account_filter(db, None, uid)
+    params: dict[str, Any] = {"uid": uid}
+    where = [_account_scope(account_id, params, pooled_only=True, level="read")]
+    folder_sql = folder_scope("all", params, include_sent=True)
+    if folder_sql:
+        where.append(folder_sql)
+    _state_filters(where, params, {"received_after": received_after})
+    return " AND ".join(where), params
+
+
+#: The most ids one read by id takes (WS-KG KG-6).
+MAX_OPEN = 50
+
+
+async def open_found(
+    *, user: UserContext, ids: list[str], received_after: str | None = None,
+) -> list[dict[str, Any]]:
+    """The mail of *ids* that the search of All folders could find (WS-KG KG-6).
+
+    The read by id of company retrieval (``knowledge_graph.md`` §6). It is
+    NOT the read by mail id of the app (``message_summaries``): that read
+    keeps the owner scope only, so it also opens a separate mailbox and the
+    trash. This read applies :func:`_all_scope`, the scope of the search, so
+    a neighbour never names a mail that company search would hide. FORCE RLS
+    binds it (the tenant session). A bad id is left out. Each row has the
+    keys ``id``, ``subject``, ``from_address`` and ``received_at``.
+    """
+    import uuid
+
+    wanted: list[str] = []
+    for raw in ids or []:
+        try:
+            wanted.append(str(uuid.UUID(str(raw))))
+        except (ValueError, TypeError):
+            continue
+    wanted = list(dict.fromkeys(wanted))[:MAX_OPEN]
+    if not wanted:
+        return []
+    uid = user.email or "anonymous"
+    async with _tenant_session() as db:
+        where_sql, params = await _all_scope(db, uid, received_after)
+        params["open_ids"] = wanted
+        rows = (await db.execute(text(
+            "SELECT em.id, em.subject, em.from_address, em.received_at "
+            f"FROM email_messages em WHERE {where_sql} "
+            "AND em.id = ANY(CAST(:open_ids AS uuid[]))"
+        ), params)).fetchall()
+    out = []
+    for r in rows:
+        sender = r.from_address
+        if isinstance(sender, str):
+            import json
+
+            try:
+                sender = json.loads(sender)
+            except ValueError:
+                sender = {}
+        out.append({"id": str(r.id), "subject": r.subject, "from_address": sender or {},
+                    "received_at": r.received_at.isoformat() if r.received_at else None})
+    return out
+
+
 async def semantic_messages(
     *, user: UserContext, words: str, k: int, received_after: str | None,
     embed: Any,
@@ -412,14 +488,7 @@ async def semantic_messages(
     uid = user.email or "anonymous"
 
     async def scope(db: Any) -> tuple[str, dict[str, Any]]:
-        account_id = await resolve_account_filter(db, None, uid)
-        params: dict[str, Any] = {"uid": uid}
-        where = [_account_scope(account_id, params, pooled_only=True, level="read")]
-        folder_sql = folder_scope("all", params, include_sent=True)
-        if folder_sql:
-            where.append(folder_sql)
-        _state_filters(where, params, {"received_after": received_after})
-        return " AND ".join(where), params
+        return await _all_scope(db, uid, received_after)
 
     async with _tenant_session() as db:
         where_sql, params = await scope(db)

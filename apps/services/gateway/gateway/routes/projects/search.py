@@ -459,6 +459,58 @@ async def search_tasks(
         }
 
 
+# ── The read by id of company retrieval (WS-KG KG-6) ───────────────────────
+#
+# The graph step of `GET /search/company` (knowledge_graph.md §5, §6) opens
+# the neighbours of a hit through this read, as the member. It applies the
+# visibility of the search above: the same `task_visibility_clause`, the same
+# triage rule and the same archived rule. So a neighbour can never name a
+# task that the search box would hide. An id the member cannot open is left
+# out, with no error and no trace.
+
+#: The most ids one read by id takes.
+MAX_OPEN = 50
+
+_OPEN_SQL = """
+SELECT t.id, t.title, t.due_at, t.updated_at, p.name AS project_name
+  FROM pm_tasks t
+  JOIN pm_projects p ON p.id = t.project_id
+ WHERE {visible}
+   AND {triage}
+   AND t.archived_at IS NULL
+   AND t.id = ANY(CAST(:ids AS uuid[]))
+"""
+
+
+async def open_tasks(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
+    """The tasks of *ids* that *user* may see, as ``{id, title, project_name,
+    due_at, updated_at}``. A bad id or a hidden task is left out."""
+    wanted: list[str] = []
+    for raw in ids or []:
+        try:
+            wanted.append(str(uuid.UUID(str(raw))))
+        except (ValueError, TypeError):
+            continue
+    wanted = list(dict.fromkeys(wanted))[:MAX_OPEN]
+    if not wanted:
+        return []
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        rows = (await db.execute(
+            text(_OPEN_SQL.format(
+                visible=task_visibility_clause(vis), triage=triage_exclusion_clause(),
+            )),
+            {**vis.params, "ids": wanted},
+        )).fetchall()
+    return [
+        {
+            "id": str(r.id), "title": r.title, "project_name": r.project_name,
+            "due_at": wire(r.due_at), "updated_at": wire(r.updated_at),
+        }
+        for r in rows
+    ]
+
+
 # ── Task references: `#171` in a chat answer (owner report, 2026-10-13) ──────
 #
 # The chat draws a bare `#171` as the task pill when it is a task the member
@@ -607,7 +659,18 @@ async def task_refs(
 
 
 __all__ = [
-    "DESCRIPTION_RANK", "MAX_HITS", "MAX_REFS", "MIN_QUERY", "REF_HITS_PER_NUMBER",
-    "SNIPPET_CHARS", "lookup_task_refs", "ref_numbers", "ref_root", "relative_task_ids",
-    "snippet_of", "task_number",
+    "DESCRIPTION_RANK",
+    "MAX_HITS",
+    "MAX_OPEN",
+    "MAX_REFS",
+    "MIN_QUERY",
+    "REF_HITS_PER_NUMBER",
+    "SNIPPET_CHARS",
+    "lookup_task_refs",
+    "open_tasks",
+    "ref_numbers",
+    "ref_root",
+    "relative_task_ids",
+    "snippet_of",
+    "task_number",
 ]

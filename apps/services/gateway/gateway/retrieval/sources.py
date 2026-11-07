@@ -42,6 +42,14 @@ that declares it, like ``meaning``. A source with ``dated=True`` takes
 ``after`` and filters in its app's own SQL. A source with ``reviewed=True``
 takes ``reviewed`` and ranks a page past its review date lower. Only
 ``GET /search/company`` passes them, and only with ``CONTEXT_RECENCY`` on.
+
+**The read by id** (WS-KG KG-6, ``knowledge_graph.md`` §6). Each source
+also has ``open(user, ids, kind=...)``. It checks the feature and the app's
+switch first, as ``find`` does, and then calls the app's OWN read by id
+with this request's member. It answers only the records that the member can
+open, as hits, with no snippet. A hidden record is left out with no trace.
+``kinds`` names the node kinds of the graph that the source opens. A kind
+that no source opens (``entity``, ``meeting``) never shows.
 """
 
 from __future__ import annotations
@@ -120,6 +128,14 @@ class Hit:
 #: ``reviewed=True`` takes ``reviewed=``.
 Reader = Callable[..., Awaitable[list[Hit]]]
 
+#: ``open(user, kind, ids)``: the records of *ids* that the member can open,
+#: as hits. It calls the app's own read by id (KG-6). The opener of a source
+#: with ``reviewed=True`` also takes ``verified_only=`` by name.
+Opener = Callable[..., Awaitable[list[Hit]]]
+
+#: The most ids that one call of ``open`` takes.
+MAX_OPEN = 50
+
 
 def holds(user: UserContext, feature: str) -> bool:
     """True when *user* holds ``feature:<feature>``, the gate of its router."""
@@ -150,6 +166,10 @@ class Source:
     #: True when the app's reader takes ``vectors=``: it fuses a vector half
     #: with its lexical half (KG-3b). The route sets it with ``CONTEXT_RECENCY``.
     vectors: bool = False
+    #: The node kinds of the graph that this source opens (KG-6, §3.1).
+    kinds: tuple[str, ...] = ()
+    #: The app's read by id (KG-6, §6). ``None`` opens nothing.
+    opener: Opener | None = None
 
     def reaches(self, user: UserContext) -> bool:
         """True when *user* holds the feature and the app's switch is open."""
@@ -189,6 +209,35 @@ class Source:
             if verified_only:
                 options["verified_only"] = True
         return (await self.read(user, q, k, **options))[:k]
+
+    async def open(
+        self, user: UserContext, ids: list[str], *, kind: str | None = None,
+        verified_only: bool = False,
+    ) -> list[Hit]:
+        """The records of *ids* that *user* can open, as hits (KG-6, §6).
+
+        No feature, or a closed switch: no call and no hit. *kind* is one of
+        :attr:`kinds`, and the first one by default. A kind the source does
+        not open gives nothing. The app's read applies the app's own rule,
+        and this method keeps only hits of that kind among *ids*, so a
+        reader can never widen the answer. *verified_only* reaches only the
+        opener of a source with ``reviewed`` (KB-AI-4), as in ``find``.
+
+        At most :data:`MAX_OPEN` ids, the first ones. The caller orders them so
+        that each hit gets its share (``company.neighbours``).
+        """
+        if self.opener is None or not self.reaches(user):
+            return []
+        want = kind or (self.kinds[0] if self.kinds else "")
+        if want not in self.kinds:
+            return []
+        asked = list(dict.fromkeys(str(i) for i in ids or [] if str(i or "")))[:MAX_OPEN]
+        if not asked:
+            return []
+        wanted = set(asked)
+        options = {"verified_only": True} if self.reviewed and verified_only else {}
+        hits = await self.opener(user, want, asked, **options)
+        return [h for h in hits if h.kind == want and h.id in wanted]
 
 
 # ── The switches beyond the feature (CX-1) ──────────────────────────────────
@@ -242,22 +291,30 @@ def _as_dict(row: Any) -> dict[str, Any]:
 
 # ── tasks ───────────────────────────────────────────────────────────────────
 
+def _task_hit(r: dict[str, Any]) -> Hit:
+    return Hit(
+        app="tasks", kind="task", id=str(r["id"]), title=_title(r.get("title")),
+        hint=f"Task · {r.get('project_name') or 'Projects'}",
+        href=f"/projects?task={quote(str(r['id']))}",
+        snippet=_clip(r.get("snippet")), when=_when(r.get("due_at")),
+        stamp=_when(r.get("updated_at")),
+    )
+
+
 async def _tasks(user: UserContext, q: str, k: int) -> list[Hit]:
     from gateway.routes.projects.search import search_tasks
 
     answer = await search_tasks(
         q=q, limit=k, exclude_relatives_of=None, include_triage=False, user=user,
     )
-    return [
-        Hit(
-            app="tasks", kind="task", id=str(r["id"]), title=_title(r.get("title")),
-            hint=f"Task · {r.get('project_name') or 'Projects'}",
-            href=f"/projects?task={quote(str(r['id']))}",
-            snippet=_clip(r.get("snippet")), when=_when(r.get("due_at")),
-            stamp=_when(r.get("updated_at")),
-        )
-        for r in (answer.get("rows") or [])[:k]
-    ]
+    return [_task_hit(r) for r in (answer.get("rows") or [])[:k]]
+
+
+async def _open_tasks(user: UserContext, kind: str, ids: list[str]) -> list[Hit]:
+    """``resolve_visibility`` and the search's own clauses (KG-6, §6)."""
+    from gateway.routes.projects.search import open_tasks
+
+    return [_task_hit(r) for r in await open_tasks(user, ids)]
 
 
 # ── email ───────────────────────────────────────────────────────────────────
@@ -354,6 +411,16 @@ async def _email(
     return [hits[ident] for ident in order][:k]
 
 
+async def _open_email(user: UserContext, kind: str, ids: list[str]) -> list[Hit]:
+    """The scope of Email search, by id (KG-6, §6): the member's mailboxes
+    with a separate mailbox left out, and All folders with junk and trash
+    left out. The app's ``open_found`` applies it, next to the search."""
+    from gateway.routes.email.transport.search import open_found
+
+    return [_email_hit({**row, "highlight": "", "snippet": None})
+            for row in await open_found(user=user, ids=ids)]
+
+
 # ── people ──────────────────────────────────────────────────────────────────
 
 async def _people(user: UserContext, q: str, k: int) -> list[Hit]:
@@ -363,17 +430,25 @@ async def _people(user: UserContext, q: str, k: int) -> list[Hit]:
         user=user, q=q, department=None, team=None, status=None, skill=None,
         has_capacity=False,
     )
-    out = []
-    for p in (answer.rows or [])[:k]:
-        what = p.get("title") or p.get("role") or p.get("department") or "Colleague"
-        # The bio only. The resume and the skills are HR data (§20.3).
-        out.append(Hit(
-            app="people", kind="person", id=str(p["id"]),
-            title=_title(p.get("preferred_name") or p.get("name")),
-            hint=f"Person · {what}", href=f"/people/{quote(str(p['id']))}",
-            snippet=_clip(p.get("bio")),
-        ))
-    return out
+    return [_person_hit(p) for p in (answer.rows or [])[:k]]
+
+
+def _person_hit(p: dict[str, Any], *, bio: bool = True) -> Hit:
+    what = p.get("title") or p.get("role") or p.get("department") or "Colleague"
+    # The bio only. The resume and the skills are HR data (§20.3).
+    return Hit(
+        app="people", kind="person", id=str(p["id"]),
+        title=_title(p.get("preferred_name") or p.get("name")),
+        hint=f"Person · {what}", href=f"/people/{quote(str(p['id']))}",
+        snippet=_clip(p.get("bio")) if bio else "",
+    )
+
+
+async def _open_people(user: UserContext, kind: str, ids: list[str]) -> list[Hit]:
+    """Active people only, with the directory's projection (KG-6, §6)."""
+    from gateway.routes.people.directory import open_people
+
+    return [_person_hit(p, bio=False) for p in await open_people(user, ids)]
 
 
 # ── crm ─────────────────────────────────────────────────────────────────────
@@ -439,18 +514,33 @@ async def _crm(user: UserContext, q: str, k: int) -> list[Hit]:
     if not flags.crm_org_allowed(user.organization_id):
         return []
     await access.require_crm_access(user)
-    out = []
-    for kind, row in await records.search_records(user, q, k):
-        noun, fields, _tab, _param = CRM_KINDS[kind]
-        extra = next((str(row[f]).strip() for f in fields if str(row.get(f) or "").strip()), "")
-        out.append(Hit(
-            app="crm", kind=kind, id=str(row["id"]), title=_title(_crm_title(kind, row)),
-            hint=f"{noun} · {extra}" if extra else noun,
-            href=crm_href(kind, row["id"]),
-            snippet=_clip(extra), when=_when(row.get("last_activity_at")),
-            stamp=_when(row.get("last_activity_at")),
-        ))
-    return out
+    return [_crm_hit(kind, row) for kind, row in await records.search_records(user, q, k)]
+
+
+def _crm_hit(kind: str, row: dict[str, Any], *, snippet: bool = True) -> Hit:
+    noun, fields, _tab, _param = CRM_KINDS[kind]
+    extra = next((str(row[f]).strip() for f in fields if str(row.get(f) or "").strip()), "")
+    return Hit(
+        app="crm", kind=kind, id=str(row["id"]), title=_title(_crm_title(kind, row)),
+        hint=f"{noun} · {extra}" if extra else noun,
+        href=crm_href(kind, row["id"]),
+        snippet=_clip(extra) if snippet else "", when=_when(row.get("last_activity_at")),
+        stamp=_when(row.get("last_activity_at")),
+    )
+
+
+async def _open_crm(user: UserContext, kind: str, ids: list[str]) -> list[Hit]:
+    """The kill switch, then ``require_crm_access``, then the app's read by
+    id (KG-6, §6). The access rule's 403 reaches the caller, which drops the
+    kind. ``Source.open`` checked the switch, and this checks it again, as
+    :func:`_crm` does."""
+    from gateway.routes.crm import access, flags, records
+
+    if kind not in CRM_KINDS or not flags.crm_org_allowed(user.organization_id):
+        return []
+    await access.require_crm_access(user)
+    return [_crm_hit(kind, row, snippet=False)
+            for row in await records.open_records(user, kind, ids)]
 
 
 # ── artifacts ───────────────────────────────────────────────────────────────
@@ -472,18 +562,28 @@ async def _artifacts(user: UserContext, q: str, k: int) -> list[Hit]:
         q=q, kind=None, made_by=None, via=None, session_id=None, scope=None,
         status="active", sort="recent", limit=k, offset=0, _user=user,
     )
-    out = []
-    for row in (answer.get("rows") or [])[:k]:
-        session = row.get("session_id")
-        out.append(Hit(
-            app="artifacts", kind="artifact", id=str(row["id"]),
-            title=_title(row.get("title") or row.get("path")),
-            hint=f"Artifact · {row.get('kind') or 'file'}",
-            href=f"/artifacts?session={quote(str(session))}" if session else "/artifacts",
-            when=_when(row.get("last_activity_at")),
-            stamp=_when(row.get("last_activity_at")),
-        ))
-    return out
+    return [_artifact_hit(row) for row in (answer.get("rows") or [])[:k]]
+
+
+def _artifact_hit(row: dict[str, Any]) -> Hit:
+    session = row.get("session_id")
+    return Hit(
+        app="artifacts", kind="artifact", id=str(row["id"]),
+        title=_title(row.get("title") or row.get("path")),
+        hint=f"Artifact · {row.get('kind') or 'file'}",
+        href=f"/artifacts?session={quote(str(session))}" if session else "/artifacts",
+        when=_when(row.get("last_activity_at")),
+        stamp=_when(row.get("last_activity_at")),
+    )
+
+
+async def _open_artifacts(user: UserContext, kind: str, ids: list[str]) -> list[Hit]:
+    """The registry switch and its owner rule, ``can_read`` (KG-6, §6)."""
+    from acb_memory import artifacts as registry
+
+    if not registry.enabled():
+        return []
+    return [_artifact_hit(row) for row in await registry.open_artifacts(ids, user.email or "")]
 
 
 # ── whatsapp ────────────────────────────────────────────────────────────────
@@ -500,21 +600,28 @@ async def _whatsapp(
         chat_id=None, contact=None, chat_kind=None, sent_after=after,
         sent_before=None, direction=None, has_media=None, user=user,
     )
-    out = []
-    for m in list(rows or [])[:k]:
-        row = _as_dict(m)
-        sender = row.get("sender_name") or ""
-        # The app reads no record parameter yet, so the link opens the app.
-        out.append(Hit(
-            app="whatsapp", kind="whatsapp", id=str(row["id"]),
-            title=_title(row.get("chat_name") or sender or "WhatsApp message"),
-            hint=f"WhatsApp · from {sender}" if sender else "WhatsApp",
-            href="/whatsapp",
-            snippet=_clip(row.get("body_text") or row.get("transcript_text")),
-            when=_when(row.get("sent_at")),
-            stamp=_when(row.get("sent_at")),
-        ))
-    return out
+    return [_whatsapp_hit(_as_dict(m)) for m in list(rows or [])[:k]]
+
+
+def _whatsapp_hit(row: dict[str, Any], *, snippet: bool = True) -> Hit:
+    sender = row.get("sender_name") or ""
+    # The app reads no record parameter yet, so the link opens the app.
+    return Hit(
+        app="whatsapp", kind="whatsapp", id=str(row["id"]),
+        title=_title(row.get("chat_name") or sender or "WhatsApp message"),
+        hint=f"WhatsApp · from {sender}" if sender else "WhatsApp",
+        href="/whatsapp",
+        snippet=_clip(row.get("body_text") or row.get("transcript_text")) if snippet else "",
+        when=_when(row.get("sent_at")),
+        stamp=_when(row.get("sent_at")),
+    )
+
+
+async def _open_whatsapp(user: UserContext, kind: str, ids: list[str]) -> list[Hit]:
+    """The chat access of the app: the member's own accounts (KG-6, §6)."""
+    from gateway.routes.whatsapp.transport.messages import open_messages
+
+    return [_whatsapp_hit(_as_dict(m), snippet=False) for m in await open_messages(user, ids)]
 
 
 # ── knowledge ───────────────────────────────────────────────────────────────
@@ -597,17 +704,49 @@ async def _knowledge(
     return out[:k]
 
 
+async def _open_knowledge(
+    user: UserContext, kind: str, ids: list[str], *, verified_only: bool = False,
+) -> list[Hit]:
+    """The Knowledge kill switch, then ``visible_pages_clause`` (KG-6, §6)."""
+    from gateway.routes.knowledge import flags
+    from gateway.routes.knowledge import search as kb_search
+
+    if not flags.knowledge_org_allowed(user.organization_id):
+        return []
+    return [
+        Hit(
+            app="knowledge", kind="page", id=str(row["page_id"]),
+            title=_title(row.get("title")),
+            hint=f"Knowledge · {row.get('space_name') or 'Knowledge'}",
+            href=f"/knowledge/pages/{quote(str(row['page_id']))}",
+            when=_when(row.get("updated_at")), stamp=_when(row.get("updated_at")),
+        )
+        for row in await kb_search.open_pages(user, ids, verified_only=verified_only)
+    ]
+
+
 #: Every source, in the order the command bar and the route ask them.
 REGISTRY: dict[str, Source] = {
     s.key: s
     for s in (
-        Source("tasks", "projects", "Tasks", _tasks),
-        Source("email", "email", "Email", _email, dated=True, vectors=True),
-        Source("people", "people", "People", _people),
-        Source("crm", "crm", "CRM", _crm, gate=_crm_open),
-        Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open),
-        Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True),
+        Source("tasks", "projects", "Tasks", _tasks, kinds=("task",), opener=_open_tasks),
+        Source("email", "email", "Email", _email, dated=True, vectors=True,
+               kinds=("email",), opener=_open_email),
+        Source("people", "people", "People", _people, kinds=("person",),
+               opener=_open_people),
+        Source("crm", "crm", "CRM", _crm, gate=_crm_open,
+               kinds=("lead", "deal", "contact", "company"), opener=_open_crm),
+        Source("artifacts", "artifacts", "Artifacts", _artifacts, gate=_artifacts_open,
+               kinds=("artifact",), opener=_open_artifacts),
+        Source("whatsapp", "whatsapp", "WhatsApp", _whatsapp, dated=True,
+               kinds=("whatsapp",), opener=_open_whatsapp),
         Source("knowledge", "knowledge", "Knowledge", _knowledge, meaning=True,
-               reviewed=True, gate=_knowledge_open),
+               reviewed=True, gate=_knowledge_open, kinds=("page",),
+               opener=_open_knowledge),
     )
 }
+
+
+def source_of_kind(kind: str) -> Source | None:
+    """The source that opens the node kind *kind*, or ``None`` (KG-6)."""
+    return next((s for s in REGISTRY.values() if kind in s.kinds), None)
