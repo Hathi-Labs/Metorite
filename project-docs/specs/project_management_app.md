@@ -897,6 +897,27 @@ guarantee.
 > ⚠️ The run has no acting member yet. The event carries no assigner, so the
 > agent can reply on the timeline and cannot edit the task. H-240 owns that gap.
 >
+> **Status, 2026-11-07 (H-240, task 688): the run acts for the assigner.**
+> `set_assignees`, `create_task` and `claim_task` put the signed-in member on
+> `pm.task.assigned` as `assigned_by`. The emitter reads the verified session,
+> never the body (`agent_dispatch.assigning_member`). The sink passes that
+> member to `run_agent` as `session_user` and as the run's `user_email`. So
+> each `skill-projects` call reaches this API as the member. The server then
+> limits each call to what the member may do.
+>
+> The event names nobody when the assigner is a signed outside agent, a
+> service caller or a suspended member. That run has no acting user, as before. A second run of one
+> agent on one task does not start while the first run is live.
+>
+> The flag stays OFF. H-443 holds three gaps for the flip:
+>
+> 1. No cap limits the live runs.
+> 2. A workflow node does not wait for the run.
+> 3. A card denies in a run with no chat.
+>
+> The run acts with the member's access. The code does not yet intersect it
+> with the agent identity through `EffectiveAccess.intersect()`.
+>
 > Fences: `tests/unit/test_projects_agent_dispatch_run.py` (the real sink and
 > the real executor, on the R8 database) and `tests/unit/test_projects_automation.py`.
 
@@ -4776,6 +4797,9 @@ dispatch. The seam is there. The product shape is not.
 The seam is dark. `PROJECTS_AGENT_DISPATCH` is OFF by default, and the flip
 is the owner's (§6.4, `work_plan.md` §6.1). The flip waits on this section and
 on H-240.
+
+**Status, 2026-11-07:** this change closes H-240. A dispatched run acts for
+the member who assigned the task (§6.4). The flip now waits on this section and on H-443.
 
 #### 9.12.11 The order, and why
 

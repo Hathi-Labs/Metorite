@@ -83,6 +83,17 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-443 · Close three gaps before the `PROJECTS_AGENT_DISPATCH` flip · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The parent is #688 (H-240).
+- **Why:** H-240 gives a dispatched run the member who assigned the task. The flag stays OFF, because three gaps stay open:
+  1. Nothing limits how many dispatched runs are live. Each run spends the credits of the organization.
+  2. A workflow node that assigns an agent no longer waits for the run. The sink starts the run and returns.
+  3. A `skill-projects` write shows a card. A dispatched run has no chat, so each card denies, and the agent cannot write.
+- **Do this:** Fix each gap with a fence, or record the owner's answer in `project_management_app.md` §9.12.10. Gap 3 is question 2 there.
+- **Check:** `grep -c 'live_run_count() >=' apps/services/gateway/gateway/routes/projects/agent_dispatch.py`. A count of 0 means gap 1 is open. Gaps 2 and 3 stay open until a PR names their fences here.
+- **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10.
+- **Added:** 2026-11-07 · H-240, branch `h240-mt-526d36b7`
+
 ### H-442 · Confirm migration 337 and its backup on production after the 2026-11-03 release · [AGENT]
 - **Why:** PZ-33b (merged 952e4315d) adds `chat_message.member_typed` in `infra/postgres/337_chat_message_member_typed.sql`. A migration is one-way (R6), and a deploy once reported success while it shipped nothing (CLAUDE.md §3 rule 8).
 - **Check:** on the box, read the ledger: `SELECT filename, applied_at FROM schema_migrations WHERE filename LIKE '337_%'`. No row means STILL PENDING. With a row, also read the deploy log for the pre-migration backup line of that release, and run `SELECT count(*) FROM information_schema.columns WHERE table_name = 'chat_message' AND column_name = 'member_typed'`. A count of 1 closes the entry.
@@ -1461,12 +1472,6 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `grep -rn "Content-Security-Policy" workbench/control_plane/next.config.ts workbench/control_plane/src/proxy.ts`
   → no hit means no app-wide CSP is set.
 - **Added:** 2026-10-04 · the chat click-to-load PR
-
-### H-240 · Give a dispatched agent run the member who assigned the task · [AGENT]
-- **Metorite:** #688. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -c "session_user" apps/services/gateway/gateway/routes/projects/agent_dispatch.py`
-  → `0` means the gap is open. The sink passes no member to `run_agent`.
-- **Added:** 2026-10-04 · PR #622
 
 ### H-297 · Register Metorite's Zoho OAuth client, and drop its two values · [OWNER]
 - **Metorite:** #736. The task holds the full entry (moved 2026-10-28, D118).
