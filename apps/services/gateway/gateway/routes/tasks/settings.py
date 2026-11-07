@@ -242,7 +242,8 @@ async def _load(db: Any, user_id: str, *, any_case: bool = False) -> UserSetting
         background_sync=bool(getattr(row, "background_sync", True)),
         mirror_done_tasks=bool(getattr(row, "mirror_done_tasks", False)),
         urgent_window_hours=int(getattr(row, "urgent_window_hours", 48) or 48),
-        day_start_hour=int(getattr(row, "day_start_hour", 7) or 7),
+        # 0 (midnight) is a valid start: only None takes the default.
+        day_start_hour=_int_or(getattr(row, "day_start_hour", None), 7),
         day_end_hour=int(getattr(row, "day_end_hour", 22) or 22),
         daily_capacity_mins=int(
             getattr(row, "daily_capacity_mins", 360) or 360),

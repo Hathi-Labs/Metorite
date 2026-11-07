@@ -10,6 +10,12 @@ private arm:
 * ``automation/identity.resolve_self_addresses``, through
   ``_MEMBER_MAILBOXES_SQL`` (``resolve_self`` reads the same SQL)
 
+H-334c (task 1812) adds three more reads that named no tenant on ``a``:
+
+* ``automation/identity.SELF_ADDRESSES_SQL`` (digest, Reply Zero, cleanup)
+* ``automation/identity.SELF_MAILBOX_IDS_SQL`` (``proven_own_send``)
+* ``transport/accounts._display_labels`` (create, set-default, update)
+
 Each now names ``organization_id = app.tenant_id``. Production's role
 ``acb_app`` does not bypass RLS, so RLS already keeps the other organization
 out. The predicate is defence in depth (R5). This file runs as the SUPERUSER,
@@ -24,6 +30,9 @@ binds org B.
   org B mailbox it is the org B address only.
 * (d) Non-vacuity: the member predicate alone, bound to org B, reads BOTH
   mailboxes. So the role bypasses RLS, and (a) to (c) prove the predicate.
+  The member clause of the self reads alone reads the org A mailbox too.
+* (e) Each H-334c read, bound to org B, keeps the org A mailbox out.
+* (f) Fail closed: with no tenant bound, each self read is empty.
 
 (a) and (b) run with ``EMAIL_SHARED_MAILBOX`` off and on.
 
@@ -118,6 +127,64 @@ class TestTheListReadsNameTheTenant:
             assert await resolve_self_addresses(db, boxes["box_b"]) == frozenset(
                 {boxes["addr_b"]})
 
+    async def test_self_addresses_sql_names_the_tenant(
+        self, promoted, boxes,  # noqa: F811
+    ):
+        """H-334c: the subquery of digest, Reply Zero and cleanup."""
+        from acb_common.db import tenant_session
+        from gateway.routes.email.automation.identity import SELF_ADDRESSES_SQL
+
+        async with _as_owner(promoted, promoted.org_b), tenant_session() as db:
+            other = (await db.execute(text(SELF_ADDRESSES_SQL),
+                                      {"aid": boxes["box_a"]})).fetchall()
+            this = (await db.execute(text(SELF_ADDRESSES_SQL),
+                                     {"aid": boxes["box_b"]})).fetchall()
+        assert other == []
+        assert [r.addr for r in this] == [boxes["addr_b"]]
+
+    async def test_self_mailbox_ids_sql_names_the_tenant(
+        self, promoted, boxes,  # noqa: F811
+    ):
+        """H-334c: the subquery of ``proven_own_send``."""
+        from acb_common.db import tenant_session
+        from gateway.routes.email.automation.identity import SELF_MAILBOX_IDS_SQL
+
+        async with _as_owner(promoted, promoted.org_b), tenant_session() as db:
+            other = (await db.execute(text(SELF_MAILBOX_IDS_SQL),
+                                      {"aid": boxes["box_a"]})).fetchall()
+            this = (await db.execute(text(SELF_MAILBOX_IDS_SQL),
+                                     {"aid": boxes["box_b"]})).fetchall()
+        assert other == []
+        assert [str(r.id) for r in this] == [boxes["box_b"]]
+
+    async def test_display_labels_names_the_tenant(
+        self, promoted, boxes, shared,  # noqa: F811
+    ):
+        """H-334c: the label read of create, set-default and update."""
+        from acb_common.db import tenant_session
+
+        async with _as_owner(promoted, promoted.org_b), tenant_session() as db:
+            labels, defaults = await accounts._display_labels(db, OWNER)
+        assert set(labels) == {boxes["box_b"]}
+        assert set(defaults) == {boxes["box_b"]}
+
+    def test_an_unbound_session_reads_no_self_row(
+        self, promoted, boxes,  # noqa: F811
+    ):
+        """Fail closed: with no ``app.tenant_id``, each self read is empty
+        for the role that bypasses RLS. It is never a set of another org."""
+        from gateway.routes.email.automation.identity import (
+            _MEMBER_MAILBOXES_SQL,
+            SELF_ADDRESSES_SQL,
+            SELF_MAILBOX_IDS_SQL,
+        )
+
+        with promoted.admin_engine.connect() as c:
+            for sql in (SELF_ADDRESSES_SQL, SELF_MAILBOX_IDS_SQL,
+                        _MEMBER_MAILBOXES_SQL):
+                for box in (boxes["box_a"], boxes["box_b"]):
+                    assert c.execute(text(sql), {"aid": box}).fetchall() == []
+
     async def test_the_role_bypasses_rls(self, promoted, boxes):  # noqa: F811
         """Non-vacuity: the member predicate alone, bound to org B, reads
         both mailboxes. Only the tenant predicate keeps org A out above."""
@@ -128,4 +195,13 @@ class TestTheListReadsNameTheTenant:
                 "SELECT id::text AS id FROM email_accounts WHERE "
                 + mailbox_access.mailbox_predicate(uid="uid", level="read")),
                 {"uid": OWNER})).fetchall()
+            # The member clause of the self reads, with no tenant predicate,
+            # reads the org A mailbox too (H-334c).
+            from gateway.routes.email.automation.identity import (
+                _member_mailboxes_from,
+            )
+            alien = (await db.execute(text(
+                "SELECT o.id::text AS id " + _member_mailboxes_from(":aid")),
+                {"aid": boxes["box_a"]})).fetchall()
         assert {r.id for r in rows} == {boxes["box_a"], boxes["box_b"]}
+        assert [r.id for r in alien] == [boxes["box_a"]]

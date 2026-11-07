@@ -374,12 +374,15 @@ def test_a_system_key_at_a_point_of_many_claims_is_no_conflict() -> None:
 # ── d. The one writer ──────────────────────────────────────────────────────
 
 
-_WRITE = re.compile(r"INSERT\s+INTO\s+package_(install|contribution)\b", re.I)
+_WRITE = re.compile(
+    r"(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+package_(install|contribution)\b", re.I)
 
 
 def test_only_the_store_writes_an_install_or_a_claim() -> None:
-    """The member purge deletes and counts rows, and that stays legal. A
-    second INSERT under ``apps/`` or ``packages/`` fails here."""
+    """A second INSERT, UPDATE or DELETE of an install or a claim under
+    ``apps/`` or ``packages/`` fails here (PKG-9). The member purge deletes
+    and counts rows through ``_PersonRows``, and that stays legal: its
+    statement names the table through a parameter."""
     writers = sorted(
         str(p.relative_to(_ROOT)).replace("\\", "/")
         for folder in ("apps", "packages")
@@ -388,7 +391,12 @@ def test_only_the_store_writes_an_install_or_a_claim() -> None:
     assert writers == ["apps/services/gateway/gateway/package_host/store.py"]
     members = (_ROOT / "apps/services/gateway/gateway/routes/admin/members.py").read_text(
         encoding="utf-8")
-    assert "package_install" in members and not _WRITE.search(members)
+    assert '_PersonRows("private_app_installs", "package_install"' in members
+    assert not _WRITE.search(members)
+    # The store holds each of the three statements of the disposal.
+    assert _WRITE.search(store._DELETE_INSTALL_SQL)
+    assert _WRITE.search(store._SET_STATE_SQL)
+    assert "FOR UPDATE" in store._STATE_SQL
 
 
 def test_the_store_reads_apps_and_never_writes_it() -> None:
@@ -405,6 +413,21 @@ def test_the_r8_twin_is_named_in_the_ci_skip_guard() -> None:
     entry, the R8 twin skips in CI with no database and the job stays green."""
     workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
     assert "tests/unit/test_package_host_store_r8.py" in workflow
+
+
+def test_the_disposal_r8_suite_is_named_in_the_ci_skip_guard() -> None:
+    """PKG-9. Without the entry, ``test_package_disposal_r8.py`` skips in CI
+    with no database and the job stays green. The name must be in the
+    ``--must-run`` list itself, not only somewhere in the file."""
+    lines = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(
+        encoding="utf-8").splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
+    listed: list[str] = []
+    for line in lines[start + 1:]:
+        listed.append(line.strip().removesuffix("\\").strip())
+        if not line.rstrip().endswith("\\"):
+            break
+    assert "tests/unit/test_package_disposal_r8.py" in listed
 
 
 def test_an_install_records_its_end_date() -> None:
