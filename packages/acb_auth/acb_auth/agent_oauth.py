@@ -345,6 +345,23 @@ def change_access_allowed(organization_id: object) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def playbook_allowed(organization_id: object) -> bool:
+    """True when ``playbook_orgs`` allows *organization_id*.
+
+    PB-2 (D186, ``orchestration_playbook.md`` §7). The ONE reader of the flag.
+    It keeps the playbook prompts dark: an organization that it refuses sees
+    only the prompts it saw before. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. It
+    reads the settings at each call. The caller passes the organization of the
+    token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().playbook_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
 def issuer() -> str:
     """The issuer, ``https://mcp.metorite.com`` by default. No trailing slash."""
     return get_settings().agent_issuer.rstrip("/")
@@ -1063,6 +1080,7 @@ __all__ = [
     "MCP_WRITE_ROUTES",
     "OFFLINE_ACCESS",
     "PROJECTS_READ",
+    "playbook_allowed",
     "PROJECTS_WRITE",
     "RESOURCE_SCOPES",
     "S256",
