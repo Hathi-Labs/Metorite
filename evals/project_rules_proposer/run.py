@@ -32,6 +32,8 @@ import asyncio
 import contextlib
 import json
 import sys
+import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -158,9 +160,17 @@ def within_budget(spent: float, estimate: float, budget: float) -> bool:
 
 
 async def run_live(pages: list[Path], member: str, budget: float) -> dict[str, Any]:
-    """One call for each page, until the budget stops the run."""
+    """One call for each page, until the budget or an error stops the run.
+
+    Each call has its own ``client_ref`` (``eval-live-<run>-<n>``), so two
+    runs never share one. The estimate of a call counts as spent before the
+    call, so a call that fails still shows in the spend. A refusal of the
+    Router or another error stops the run, and the caller still writes the
+    file with the spend so far.
+    """
     from acb_llm import routed
 
+    run = uuid.uuid4().hex[:8]
     spent, rows, stopped = 0.0, [], None
     for n, path in enumerate(pages, start=1):
         source = propose.Source(path.as_posix(), 0, path.stem,
@@ -176,15 +186,29 @@ async def run_live(pages: list[Path], member: str, budget: float) -> dict[str, A
         if not routed.routing_is_on():
             stopped = "the Router is off"
             break
-        raw = await propose._ask(member, messages, f"eval-live-{n}")
         spent += estimate
+        started = time.monotonic()
+        try:
+            raw = await propose._ask(member, messages, f"eval-live-{run}-{n}")
+        except routed.RoutedRefusal as exc:
+            rows.append({"page": source.page_id, "error": f"RoutedRefusal {exc.status}",
+                         "seconds": round(time.monotonic() - started, 2)})
+            stopped = f"the Router refused the call ({exc.status})"
+            break
+        except Exception as exc:  # the file must still record the spend
+            rows.append({"page": source.page_id, "error": type(exc).__name__,
+                         "seconds": round(time.monotonic() - started, 2)})
+            stopped = f"an error: {type(exc).__name__}"
+            break
+        seconds = round(time.monotonic() - started, 2)
         try:
             judged = propose.fit(propose.judge(raw, source.text), propose.Current())
         except propose.UnreadableAnswer:
-            rows.append({"page": source.page_id, "unreadable": True})
+            rows.append({"page": source.page_id, "unreadable": True, "seconds": seconds})
             continue
-        rows.append({"page": source.page_id, "dropped": judged.dropped, "proposals": [
-            {"sentence": p.sentence, "quote": p.quote, "accepted": None} for p in judged.kept]})
+        rows.append({"page": source.page_id, "seconds": seconds, "dropped": judged.dropped,
+                     "proposals": [{"sentence": p.sentence, "quote": p.quote, "accepted": None}
+                                   for p in judged.kept]})
     return {"mode": "live", "feature": propose.FEATURE, "model": propose.MODEL,
             "budget_usd": budget, "spent_usd_estimate": round(spent, 4),
             "stopped": stopped, "pages": rows}
@@ -230,7 +254,10 @@ def _live(args: argparse.Namespace) -> int:
     report = asyncio.run(run_live(list(args.page), args.member, args.budget_usd))
     args.out.write_text(json.dumps(report, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
     sys.stdout.write(json.dumps({k: v for k, v in report.items() if k != "pages"}) + "\n")
-    return EXIT_NO_GO if report["stopped"] == "the Router is off" else EXIT_PASS
+    if report["stopped"] == "the Router is off":
+        return EXIT_NO_GO
+    failed = any("error" in row for row in report["pages"])
+    return EXIT_FAIL if failed else EXIT_PASS
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -19,9 +19,12 @@ page signal is ALN-11. The route has no UI and no chat tool (ALN-5c).
 (``pm_project_authorities``, state ``active``) is a source.
 ``routes/projects/authorities.py`` stays the one writer of a pin. The page
 must be readable by the caller (:func:`knowledge.core.load_page`), published,
-and not in a ``me`` space. Mira reads the NEWEST version of the page, and
-each proposal names that version. The pin did the audience check of ALN-4,
-so this route runs none of its own.
+and not in a ``me`` space. Each holder of the project must read the page too:
+the route runs the audience check of ALN-4
+(``authorities._refuse_if_narrower``) again before the call and again under
+the lock. A move of the page writes a version with the same text, so the pin
+stays current, and only this check finds that the page got narrower. Mira
+reads the NEWEST version of the page, and each proposal names that version.
 
 **The call.** :func:`_ask` calls ``acb_llm.context.acompletion_with_fallback``
 with ``model="tier-fast"``, JSON mode and no reasoning, as
@@ -41,15 +44,21 @@ characters after a strip. Each quote holds :data:`MIN_QUOTE` to
 the page version (:func:`knowledge.core.quote_occurs`, one form of line end).
 An item that fails is dropped and never repaired. A sentence that equals an
 active or proposed rule of the project (case and spaces folded) is a
-duplicate. Under the lock, the route counts the proposals that wait on the
-same page version, and writes at most ``PAGE_CAP`` less that count.
+duplicate. So is a sentence of a retired rule that Mira proposed from the
+same page, so a retired proposal does not come back. The cap counts each rule
+that Mira proposed from the same page version, in each state: an accept or a
+retire does not make room. The route refuses a full version before the call,
+and under the lock it writes at most ``PAGE_CAP`` less that count.
 
 **The write.** One transaction under the advisory lock of the project
 (``project_rules._lock_project``), so two calls cannot pass the cap or
-write one sentence twice. Under the lock it reads the page again. A page
-with a new version since the read gives 409 and no row. An edit after that
-read is harmless: each row names its version, and the quote holds in it. Each row goes through
-``project_rules._insert``, the one writer of a rule row.
+write one sentence twice. Under the lock it checks the page again: still
+pinned, published, readable by the caller and not narrower than the project.
+Then it reads the text of the version that Mira read, and checks each quote
+against it. An edit during the call keeps the answer that the org paid for:
+each row names the version that Mira read. A page that left the pin, was
+unpublished, got narrower or became unreadable gives a refusal and no row.
+Each row goes through ``project_rules._insert``, the one writer of a rule row.
 
 **The answer.** ``{"proposed": [...], "dropped": {<reason>: <count>}}``.
 The counts are for each reason, never for each person (ALN-Q5).
@@ -79,6 +88,7 @@ from acb_skills.untrusted import UntrustedFrame
 from fastapi import APIRouter, Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes import project_rules as rules
+from gateway.routes.projects import authorities as pins
 from gateway.routes.projects.core import actor
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -92,7 +102,7 @@ MODEL = "tier-fast"
 SOURCE = "projects"
 FEATURE = "projects.rules_propose"
 APP = "projects"
-#: The most proposals of one page version (§4.2 rule 4).
+#: The most proposals of one page version (§4.2 rule 4), in each state.
 PAGE_CAP = 12
 #: The shortest quote. A quote of a few characters proves nothing (§4.2).
 MIN_QUOTE = 20
@@ -100,8 +110,9 @@ MIN_QUOTE = 20
 PAGE_MAX_CHARS = 60_000
 #: The longest wait for the answer.
 CALL_TIMEOUT_S = 30.0
-#: Twelve rules of a sentence and a quote each fit in this.
-ANSWER_TOKENS = 3000
+#: Twelve rules of a sentence and a quote each fit in this, with room for
+#: the JSON. The org pays only for the tokens that the model writes.
+ANSWER_TOKENS = 6000
 #: No reasoning. ``tier-fast`` thinks by default, and the reasoning spends the
 #: cap of the answer (see ``chat_summary_job.NO_THINKING``).
 NO_THINKING: dict[str, str] = {"type": "disabled"}
@@ -119,18 +130,22 @@ NOT_PINNED = (
     "This page is not pinned to this project. Pin the page first, then ask "
     "Mira again."
 )
-PAGE_EMPTY = "This page has no text, so Mira has nothing to propose."
+PAGE_EMPTY = (
+    "This page has no text yet, so Mira has nothing to propose. Add the rules "
+    "to the page, then ask again."
+)
 PAGE_TOO_LONG = (
     f"This page has more than {PAGE_MAX_CHARS:,} characters, so Mira cannot "
     "read it in one pass. Split the page, then ask again."
 )
 PAGE_FULL = (
-    f"This version of the page already has {PAGE_CAP} proposals that wait for "
-    "a lead. Accept or retire some of them, then ask again."
+    f"Mira already proposed {PAGE_CAP} rules from this version of the page. "
+    "That is the most for one version, so Mira made no new call. Write a rule "
+    "yourself, or ask again after the page changes."
 )
 PAGE_CHANGED = (
-    "The page changed while Mira read it, so no proposals were saved. Ask "
-    "again to read the new version."
+    "The page moved or changed while Mira read it, so no proposals were "
+    "saved. Ask again to read the page as it is now."
 )
 ROUTER_OFF = (
     "The AI service is off on this server, so Mira made no proposals and "
@@ -190,11 +205,13 @@ class Proposal:
 
 @dataclass(frozen=True)
 class Current:
-    """The rules of the project now: the folded sentences of each active or
-    proposed rule, and the count of proposals that wait on the source."""
+    """The rules of the project now. *sentences* holds the folded sentence of
+    each active or proposed rule, and of each retired rule that Mira proposed
+    from the source page. *made* counts the rules that Mira proposed from the
+    source page version, in each state."""
 
     sentences: frozenset[str] = frozenset()
-    waiting: int = 0
+    made: int = 0
 
 
 @dataclass
@@ -355,12 +372,12 @@ def judge(raw: Any, page_text: str) -> Judged:
 def fit(judged: Judged, current: Current) -> Judged:
     """The proposals of *judged* that the project takes now. Pure.
 
-    A sentence of an active or proposed rule is a ``duplicate``. The rest
-    fill the room of the page version, :data:`PAGE_CAP` less the proposals
-    that wait on it, and each one past the room is ``over_cap``.
+    A sentence of :attr:`Current.sentences` is a ``duplicate``. The rest
+    fill the room of the page version, :data:`PAGE_CAP` less the rules that
+    Mira proposed from it, and each one past the room is ``over_cap``.
     """
     out = Judged(dropped=dict(judged.dropped))
-    room = max(0, PAGE_CAP - current.waiting)
+    room = max(0, PAGE_CAP - current.made)
     for proposal in judged.kept:
         if fold(proposal.sentence) in current.sentences:
             out.dropped["duplicate"] += 1
@@ -368,6 +385,22 @@ def fit(judged: Judged, current: Current) -> Judged:
             out.dropped["over_cap"] += 1
         else:
             out.kept.append(proposal)
+    return out
+
+
+def hold(judged: Judged, page_text: str) -> Judged:
+    """The proposals of *judged* whose quote occurs in *page_text*. Pure.
+
+    The write reads the text of the version again under the lock, and each
+    quote must hold in it. A quote that does not hold counts as ``no_quote``.
+    """
+    out = Judged(dropped=dict(judged.dropped))
+    kb = rules._kb()
+    for proposal in judged.kept:
+        if kb.quote_occurs(proposal.quote, page_text):
+            out.kept.append(proposal)
+        else:
+            out.dropped["no_quote"] += 1
     return out
 
 
@@ -381,35 +414,40 @@ SELECT 1 FROM pm_project_authorities
  LIMIT 1
 """
 
-#: The newest version of each active or proposed rule of one project.
+#: The newest version of each rule of one project that is active or
+#: proposed, or that Mira proposed from the page. The WHERE on the writer
+#: picks one writer, and groups nothing by a person (ALN-Q5).
 _CURRENT_SQL = """
-SELECT cur.body, cur.state, cur.source_page_id, cur.source_page_version FROM (
-    SELECT DISTINCT ON (g.rule_key) g.body, g.state, g.source_page_id,
-           g.source_page_version
+SELECT cur.body, cur.state, cur.proposed_by, cur.source_page_id,
+       cur.source_page_version FROM (
+    SELECT DISTINCT ON (g.rule_key) g.body, g.state, g.proposed_by,
+           g.source_page_id, g.source_page_version
       FROM pm_agent_guidance g
      WHERE g.kind = 'rule' AND g.project_id = CAST(:pid AS uuid)
      ORDER BY g.rule_key, g.version DESC
 ) cur
  WHERE cur.state IN ('active', 'proposed')
+    OR (cur.proposed_by = :mira AND cur.source_page_id = CAST(:page AS uuid))
 """
 
 
-async def _read_source(
-    db: Any, user: UserContext, project_id: str, page_id: str,
-) -> Source:
-    """The newest version of a pinned page that the caller reads.
+async def _source_page(
+    db: Any, user: UserContext, project: Any, page_id: str,
+) -> tuple[Any, Any]:
+    """The page and its space, when the page may be a source of the project.
 
     404 for a page that the caller cannot see (the same 404 as an unknown
-    page). 422 for a page that is not pinned to the project, and for a page
-    with no text or too much text. 409 for a page that is not published or
-    is in a ``me`` space.
+    page). 422 for a page that is not pinned to the project. 409 for a page
+    that is not published, is in a ``me`` space, or is narrower than the
+    project. The pin ran the audience check of ALN-4 once. A later move of
+    the page does not make the pin stale, so this runs the check again.
     """
     kb = rules._kb()
     page = await kb.load_page(db, user, page_id)
     if page is None:
         raise kb.not_found()
     pinned = (await db.execute(
-        text(_PINNED_SQL), {"pid": project_id, "page": str(page.id)})).first()
+        text(_PINNED_SQL), {"pid": str(project.id), "page": str(page.id)})).first()
     if pinned is None:
         raise HTTPException(status_code=422, detail=NOT_PINNED)
     if str(page.state) != "published":
@@ -419,6 +457,20 @@ async def _read_source(
         raise kb.not_found()
     if str(space.kind) == "me":
         raise HTTPException(status_code=409, detail=rules.PERSONAL_PAGE_REFUSED)
+    await pins._refuse_if_narrower(db, user, project, str(page.id))
+    return page, space
+
+
+async def _read_source(
+    db: Any, user: UserContext, project: Any, page_id: str,
+) -> Source:
+    """The newest version of a pinned page that the caller reads.
+
+    The refusals of :func:`_source_page`, and 422 for a page with no text or
+    too much text.
+    """
+    kb = rules._kb()
+    page, space = await _source_page(db, user, project, page_id)
     version = await kb.latest_version(db, user, str(page.id))
     body = await kb.page_version_text(db, user, page, version, space=space)
     if body is None:
@@ -432,14 +484,16 @@ async def _read_source(
 
 async def _current(db: Any, project_id: str, source: Source) -> Current:
     """The rules of the project now, for the duplicate test and the room."""
-    rows = (await db.execute(text(_CURRENT_SQL), {"pid": project_id})).fetchall()
-    waiting = sum(
+    rows = (await db.execute(text(_CURRENT_SQL), {
+        "pid": project_id, "mira": PROPOSER, "page": source.page_id})).fetchall()
+    made = sum(
         1 for r in rows
-        if r.state == "proposed" and r.source_page_id is not None
+        if r.proposed_by == PROPOSER and r.source_page_id is not None
         and str(r.source_page_id) == source.page_id
+        and r.source_page_version is not None
         and int(r.source_page_version) == source.version
     )
-    return Current(frozenset(fold(str(r.body)) for r in rows), waiting)
+    return Current(frozenset(fold(str(r.body)) for r in rows), made)
 
 
 # ── The route ───────────────────────────────────────────────────────────────
@@ -448,15 +502,24 @@ async def _current(db: Any, project_id: str, source: Source) -> Current:
 async def _write(
     user: UserContext, project_id: str, source: Source, judged: Judged,
 ) -> dict[str, Any]:
-    """Write each proposal that fits, in one transaction under the lock."""
+    """Write each proposal that fits, in one transaction under the lock.
+
+    The page must still be a source (:func:`_source_page`). The rows name
+    the version that Mira read, and each quote must hold in its text. A
+    version that the caller cannot read now, as after a move to another
+    space, gives 409 and no row.
+    """
     me = actor(user).strip().lower()
+    kb = rules._kb()
     async with _tenant_session() as db:
-        await rules._writable_project(db, user, project_id)
+        project = await rules._writable_project(db, user, project_id)
         await rules._lock_project(db, project_id)
-        fresh = await _read_source(db, user, project_id, source.page_id)
-        if fresh.version != source.version:
+        page, space = await _source_page(db, user, project, source.page_id)
+        body = await kb.page_version_text(db, user, page, source.version, space=space)
+        if body is None:
             raise HTTPException(status_code=409, detail=PAGE_CHANGED)
-        fitted = fit(judged, await _current(db, project_id, source))
+        held = hold(judged, kb.same_line_ends(body))
+        fitted = fit(held, await _current(db, project_id, source))
         rows = [
             await rules._insert(db, pid=project_id, key=str(uuid.uuid4()), me=me, fields={
                 "body": p.sentence, "page": source.page_id, "page_version": source.version,
@@ -480,15 +543,15 @@ async def propose_rules(
     A lead (or a Projects admin) calls it. 403 for an agent connection and
     for a caller who is not a lead, 409 for an archived project, and the
     refusals of :func:`_read_source` for the page. 409 when the page version
-    already holds :data:`PAGE_CAP` proposals, with no call. 503 with the
-    Router off, with no call. Each new row is ``proposed``.
+    holds :data:`PAGE_CAP` rules that Mira proposed, in each state, with no
+    call. 503 with the Router off, with no call. Each new row is ``proposed``.
     """
     rules._refuse_agent(user)
     pid = rules._uuid_or_404(project_id, "Project")
     async with _tenant_session() as db:
-        await rules._writable_project(db, user, pid)
-        source = await _read_source(db, user, pid, payload.page_id)
-        if (await _current(db, pid, source)).waiting >= PAGE_CAP:
+        project = await rules._writable_project(db, user, pid)
+        source = await _read_source(db, user, project, payload.page_id)
+        if (await _current(db, pid, source)).made >= PAGE_CAP:
             raise HTTPException(status_code=409, detail=PAGE_FULL)
     # No session is open from here to the write.
     raw = await _answer(actor(user).strip().lower(), source)

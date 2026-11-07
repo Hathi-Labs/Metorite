@@ -66,8 +66,15 @@ uv run python -m evals.project_rules_proposer.run --live \
 
 The runner estimates the cost of each call before it sends it. It stops
 before a call that could pass the budget. A budget over USD 0.50 needs
-`--owner-approved`. A lead then marks each proposal in the file as
-`"accepted": true` or `false`. Then run:
+`--owner-approved`. Each call has its own `client_ref`. A refusal or an error
+stops the run, and the file still records the spend so far.
+
+The live run must measure the time of each call against `CALL_TIMEOUT_S`
+(30 seconds), because an answer of up to 6,000 tokens can take longer. Each
+row of the file records its `seconds`.
+
+A lead then marks each proposal in the file as `"accepted": true` or `false`.
+Then run:
 
 ```bash
 uv run python -m evals.project_rules_proposer.run --score <file>

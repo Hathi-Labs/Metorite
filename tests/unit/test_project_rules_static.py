@@ -469,12 +469,27 @@ def test_fit_drops_a_duplicate_and_keeps_the_room() -> None:
 
     kept = [propose.Proposal(f"Rule {n}", "q" * 20) for n in range(1, 6)]
     judged = propose.Judged(kept=list(kept))
-    current = propose.Current(frozenset({propose.fold("RULE  2")}), waiting=9)
+    current = propose.Current(frozenset({propose.fold("RULE  2")}), made=9)
     fitted = propose.fit(judged, current)
     assert [p.sentence for p in fitted.kept] == ["Rule 1", "Rule 3", "Rule 4"]
     assert (fitted.dropped["duplicate"], fitted.dropped["over_cap"]) == (1, 1)
-    full = propose.fit(judged, propose.Current(waiting=propose.PAGE_CAP + 3))
+    full = propose.fit(judged, propose.Current(made=propose.PAGE_CAP + 3))
     assert full.kept == [] and full.dropped["over_cap"] == 5
+
+
+def test_hold_keeps_each_quote_of_the_version_that_mira_read() -> None:
+    """Under the lock, the write checks each quote again against the text of
+    the version that Mira read. A quote that is not in it is ``no_quote``."""
+    from gateway.routes import project_rules_propose as propose
+
+    page = "The invoice service never writes to the ledger table directly."
+    judged = propose.Judged(kept=[
+        propose.Proposal("Keep off the ledger", "never writes to the ledger table"),
+        propose.Proposal("Invented", "always writes to the ledger table"),
+    ])
+    held = propose.hold(judged, page)
+    assert [p.sentence for p in held.kept] == ["Keep off the ledger"]
+    assert held.dropped["no_quote"] == 1 and judged.dropped["no_quote"] == 0
 
 
 def test_the_propose_route_is_dark_and_needs_projects(monkeypatch: pytest.MonkeyPatch) -> None:
