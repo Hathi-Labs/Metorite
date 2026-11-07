@@ -78,7 +78,8 @@ KEPT_PROJECTS = frozenset({
     "update_type", "watch",
 })
 #: The four CRM record writes. Each says ``open_world=True`` and keeps saying it.
-KEPT_CRM = frozenset({"convert_lead", "create_lead", "log_activity", "update_deal_status"})
+KEPT_CRM = frozenset({"convert_lead", "create_lead", "crm_create_pipeline", "log_activity",
+                      "update_deal_status"})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
 #: ``promote_reminder``. A covered run still holds them. ``answer_decision``
@@ -419,6 +420,9 @@ async def test_a_held_load_of_the_crm_pack_keeps_the_nine_tools(store, monkeypat
         return "live"
 
     monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS. The flag drop has its own fence
+    # (test_crm_pipelines_native.py).
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
     await _mark_chat()
     build = await _build("crm-records")
     assert build.held is True and build.dropped == ()

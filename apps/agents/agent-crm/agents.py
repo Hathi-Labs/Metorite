@@ -48,7 +48,9 @@ agent-whatsapp-assistant.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -171,7 +173,17 @@ def _headers() -> dict[str, str]:
         "Authorization": f"Bearer {_internal_token()}",
         "Content-Type": "application/json",
         "X-User-Email": user,
+        # WS-CRM CRM-M3a: the Change history row says `chat` for a change
+        # that this agent made. The gateway trusts the stamp only beside the
+        # internal bearer (`routes/crm/change_log.via_of`), and the BFF never
+        # forwards a browser's header, so a browser cannot claim it.
+        "X-Actor-Via": ACTOR_VIA,
     }
+
+
+#: The stamp of this agent on each gateway call (``X-Actor-Via``), in the
+#: grammar of ``acb_auth.agent_oauth.ACTOR_VIA_PATTERN``.
+ACTOR_VIA = "chat:crm-assistant"
 
 
 #: The verbs this agent may speak, enforced HERE at the single round-trip
@@ -698,7 +710,7 @@ _CARD_CONTEXT_LIMIT = CARD_CLIP
 _TRUNCATED = CUT_MARK
 
 
-def _fields_block(payload: dict[str, Any]) -> str:
+def _fields_block(payload: dict[str, Any], note: str = _ZOHO_NOTE) -> str:
     """The payload as the confirmation card's preformatted body.
 
     Rendered from the payload actually about to be sent, never re-typed from
@@ -718,16 +730,16 @@ def _fields_block(payload: dict[str, Any]) -> str:
     newline can forge a line of the card.
     """
     return card_body(
-        _ZOHO_NOTE, [(key, f"{key}: {one_line(value)}") for key, value in payload.items()])
+        note, [(key, f"{key}: {one_line(value)}") for key, value in payload.items()])
 
 
-async def _held_fields_block(payload: dict[str, Any]) -> str:
+async def _held_fields_block(payload: dict[str, Any], note: str = _ZOHO_NOTE) -> str:
     """:func:`_fields_block`, for a write's card. A chat that read outside mail
     refuses a cut card, because a cut text is not consent there (RX-1).
     ``egress.chat_is_held`` is the reader, and it fails closed. With no platform
     package, no run can be checked, so a cut card refuses.
     """
-    body = _fields_block(payload)
+    body = _fields_block(payload, note)
     if not is_cut(body):
         return body
     try:
@@ -846,6 +858,169 @@ async def create_lead(
         f"Created lead {created.get('lead_name') or name} "
         f"(id={created.get('id')}), owned by "
         f"{created.get('owner_email') or 'you'}."
+    )
+
+
+# ── A new pipeline (WS-CRM CRM-M3a) ──────────────────────────────────────────
+
+#: A new stage with its type: "Contract signed (won)". A name with no type is
+#: a stage that the CRM holds, or a new open stage.
+_TYPED_STAGE = re.compile(r"^(?P<name>.*?)\s*\((?P<type>open|won|lost)\)\s*$", re.IGNORECASE)
+
+#: What each stage of the plan is, in the words of the card.
+_STAGE_SOURCE_WORDS: dict[str, str] = {
+    "existing": "a stage the CRM has",
+    "new": "new",
+    "added": "added, so that a deal can close",
+}
+
+#: The first line of the card of a new pipeline. A pipeline is the set-up of
+#: the CRM, so it never queues for Zoho, and the Zoho note does not apply.
+_PIPELINE_NOTE = (
+    "A new pipeline changes the set-up of the whole CRM. Change history keeps "
+    "it, and its Undo removes the pipeline while no deal is in it."
+)
+
+_PIPELINES_OFF = (
+    "Nothing was changed. Making a pipeline is not open for this organization "
+    "yet. An admin can make one in CRM settings when it opens."
+)
+
+_PIPELINE_MIRROR = (
+    "A Mirror CRM takes its pipelines from Zoho. Make the pipeline in Zoho, and "
+    "the next sync brings it here."
+)
+
+
+def _stage_items(stages: list[str]) -> list[dict[str, str]]:
+    """Each stage name as the route takes it: ``{name}`` or ``{name, type}``."""
+    items: list[dict[str, str]] = []
+    for raw in stages:
+        text = " ".join(str(raw or "").split())
+        typed = _TYPED_STAGE.match(text)
+        if typed and typed.group("name").strip():
+            items.append({"name": typed.group("name").strip(),
+                          "type": typed.group("type").lower()})
+        elif text:
+            items.append({"name": text})
+    return items
+
+
+def _plan_lines(plan: dict[str, Any]) -> list[tuple[str, str]]:
+    """One card line for each stage of the plan, in order."""
+    lines: list[tuple[str, str]] = []
+    for index, stage in enumerate(plan.get("stages") or [], start=1):
+        if not isinstance(stage, dict):
+            continue
+        where = _STAGE_SOURCE_WORDS.get(str(stage.get("source") or ""), "")
+        lines.append((
+            f"stage {index}",
+            f"{stage.get('name')} · {stage.get('type')}" + (f" · {where}" if where else ""),
+        ))
+    return lines
+
+
+def _off_or_raise(refused: GatewayRefusal) -> str:
+    """The 404 of an org that ``CRM_PIPELINES_ORGS`` leaves out, in plain
+    words. Each other refusal raises, and the model reads it as text."""
+    if refused.status == 404 and "no_pipeline" not in str(refused.detail):
+        return _PIPELINES_OFF
+    raise refused
+
+
+# `open_world=True`, as each CRM write says: a pipeline never queues for Zoho,
+# but the claim is what makes a covered run hold the write off (H-236), and a
+# held chat keep it only through its card (`egress.HELD_CARD_WRITE_TOOLS`).
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_create_pipeline(
+    name: str,
+    stages: list[str] | None = None,
+    copy_from: str | None = None,
+) -> str:
+    """Create a new deal pipeline: a name, and its stages in order. Only a CRM
+    admin can, and the person you act for approves it on a card first.
+
+    Give EITHER ``stages`` OR ``copy_from``, never both. ``stages`` is the
+    stage names in order, as a person says them. A name that the CRM has
+    already is that same stage, so two pipelines can share "Proposal". A new
+    name becomes a new open stage. Add "(won)" or "(lost)" after a new name
+    to make a closing stage, such as "Contract signed (won)". ``copy_from``
+    is the NAME of a pipeline whose stages the new one takes, in order.
+
+    When the list has no won stage or no lost stage, the CRM adds its own, so
+    that a deal in the new pipeline can close. The card shows each stage
+    before anything is made. Use crm_list_pipelines to read the pipelines
+    and get_pipeline to read the stages."""
+    wanted = str(name or "").strip()
+    if not wanted:
+        return "A pipeline needs a name. Ask what to call it. Nothing was changed."
+    has_stages = any(str(s or "").strip() for s in stages or [])
+    source = str(copy_from or "").strip()
+    if has_stages and source:
+        return (
+            "Give the stages of the new pipeline, or the pipeline to copy, and "
+            "not both. Ask which one is meant. Nothing was changed."
+        )
+    body: dict[str, Any] = {"name": wanted}
+    if source:
+        pipelines = await _get("/crm/pipelines")
+        found = _matches_by_name(pipelines, "name", source)
+        if not found:
+            return (
+                f"There is no pipeline called '{source}', so nothing was changed. "
+                f"The pipelines are: {_name_list(pipelines, 'name')}."
+            )
+        if len(found) > 1:
+            return (
+                f"'{source}' matches more than one pipeline — "
+                f"{_quoted_names(found, 'name')} — so nothing was changed. Ask "
+                "which one is meant."
+            )
+        body["copy_from"] = str(found[0].get("id") or "")
+    elif has_stages:
+        body["stages"] = _stage_items(stages or [])
+    else:
+        return (
+            "Which stages should the new pipeline have? Name them in order, or "
+            "name a pipeline to copy. Nothing was changed."
+        )
+    # Read before asking: the gateway plans the pipeline with every check of
+    # the create, and reads only. So the card shows what Apply makes.
+    query = {k: v for k, v in body.items() if k != "stages"}
+    if "stages" in body:
+        query["stages"] = json.dumps(body["stages"])
+    try:
+        plan = await _get("/crm/pipelines/preview", query)
+    except _MirrorBlocked as blocked:
+        return f"Nothing was changed. {blocked} {_PIPELINE_MIRROR}"
+    except GatewayRefusal as refused:
+        return _off_or_raise(refused)
+    planned = plan if isinstance(plan, dict) else {}
+    title = str(planned.get("name") or wanted)
+    copy_of = planned.get("copy_of")
+    start = f"a copy of {copy_of}" if copy_of else "new"
+    count = len(planned.get("stages") or [])
+    card = {"pipeline": title, "starts from": start, **dict(_plan_lines(planned))}
+
+    from acb_skills.ask_tools import request_confirmation
+    if not await request_confirmation(
+        title=f"Create the pipeline {title}?",
+        detail=f"{title} · {start} · {count} stages",
+        context=await _held_fields_block(card, note=_PIPELINE_NOTE),
+    ):
+        return f"Cancelled — no pipeline was created. {title} does not exist."
+    try:
+        made = await _post("/crm/pipelines", body)
+    except _MirrorBlocked as blocked:
+        return f"Nothing was changed. {blocked} {_PIPELINE_MIRROR}"
+    except GatewayRefusal as refused:
+        return _off_or_raise(refused)
+    row = made if isinstance(made, dict) else {}
+    names = [str(s.get("name")) for s in row.get("stages") or [] if isinstance(s, dict)]
+    return (
+        f"Created the pipeline {row.get('name') or title} (id={row.get('id')}) "
+        f"with {len(names)} stages: {', '.join(names)}. The Deals board shows it "
+        "in the Pipeline switcher. Change history keeps the change, with Undo."
     )
 
 
@@ -1079,6 +1254,8 @@ _TOOLS = [
     update_deal_status,
     log_activity,
     convert_lead,
+    # WS-CRM CRM-M3a: a new deal pipeline, on one card.
+    crm_create_pipeline,
     # CRM-C7: the shared read tools (records, fields, pipelines, contacts,
     # owners, reports, totals, stage dwell and the mirrored modules).
     *CRM_TOOLS,

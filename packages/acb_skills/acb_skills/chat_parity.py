@@ -301,6 +301,9 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/crm/owners": "crm_list_owners",
     "GET /api/crm/pipeline": "get_pipeline",
     "GET /api/crm/pipelines": "crm_list_pipelines",
+    # WS-CRM CRM-M3a: the preview of the New pipeline dialog. The chat tool
+    # reads the same plan before its card.
+    "GET /api/crm/pipelines/preview": "crm_create_pipeline",
     "GET /api/crm/reports/funnel": "crm_report",
     "GET /api/crm/reports/owners": "crm_report",
     "GET /api/crm/reports/pipeline": "crm_report",
@@ -311,6 +314,8 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/crm/{}/{}/timeline": "get_timeline",
     "PATCH /api/crm/{}/{}": "update_deal_status",
     "POST /api/crm/leads/{}/convert": "convert_lead",
+    # WS-CRM CRM-M3a: the New pipeline dialog of CRM settings.
+    "POST /api/crm/pipelines": "crm_create_pipeline",
     "POST /api/crm/{}": "create_lead",
     "POST /api/crm/{}/{}/activities": "log_activity",
     # ── WhatsApp ──

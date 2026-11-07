@@ -51,6 +51,7 @@ import type {
   CrmReports,
   Deal,
   DealContact,
+  DealPipeline,
   EntitySlug,
   Lead,
   LostReason,
@@ -266,6 +267,12 @@ type CrmState = {
    * failed, the stage stays at the end and the error says so.
    */
   addStageBeforeClosed: (kind: StatusKind, body: Record<string, unknown>) => Promise<string | null>;
+  /**
+   * WS-CRM CRM-M3a: create a deal pipeline. The new pipeline, or null on a
+   * refusal, whose words are in `error`. The stages re-read, because a create
+   * can make new ones, and `usePipelines` wakes through the api call.
+   */
+  createPipeline: (body: Record<string, unknown>) => Promise<DealPipeline | null>;
   saveLostReason: (
     reasonId: string | null,
     body: Record<string, unknown>
@@ -941,6 +948,19 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       await get().loadVocabulary();
     }
     return created.id;
+  },
+
+  async createPipeline(body) {
+    set({ saving: true, error: null });
+    try {
+      return await api.createPipeline(body);
+    } catch (err) {
+      set({ error: message(err) });
+      return null;
+    } finally {
+      set({ saving: false });
+      await get().loadVocabulary();
+    }
   },
 
   async saveLostReason(reasonId, body) {

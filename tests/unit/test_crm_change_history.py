@@ -72,6 +72,9 @@ LOGGED: dict[str, str] = {
     "POST /crm/lost-reasons": "a new lost reason (team); Undo removes it",
     "PATCH /crm/lost-reasons/{reason_id}": "a lost reason edit (team)",
     "PATCH /crm/pipelines/{pipeline_id}": "a pipeline rename (company)",
+    # WS-CRM CRM-M3a: a new pipeline (company). Undo deletes it, and refuses
+    # while a deal names it. Each new stage logs its own deal_stage row.
+    "POST /crm/pipelines": "a new pipeline (company); Undo deletes it",
     "POST /crm/pipelines/{pipeline_id}/stages": "a stage into a pipeline (team)",
     "DELETE /crm/pipelines/{pipeline_id}/stages/{status_id}":
         "a stage out of a pipeline (team); Undo puts it back",

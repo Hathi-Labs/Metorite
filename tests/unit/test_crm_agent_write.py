@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -98,7 +99,19 @@ _LEAD = {"id": _LEAD_ID, "lead_name": "Ravi Menon", "email": "ravi@acme.test",
          "organization_name": "Acme Industries", "owner_email": _USER}
 
 _WRITE_TOOLS = ["create_lead", "update_deal_status", "log_activity",
-                "convert_lead"]
+                "convert_lead", "crm_create_pipeline"]
+
+#: WS-CRM CRM-M3a: the pipelines and the plan that the gateway answers.
+_PIPELINE_ID = str(uuid4())
+_PLAN = {
+    "name": "AMC contracts", "kind": "deal", "copy_of": None,
+    "stages": [
+        {"id": None, "name": "Site visit", "type": "open", "source": "new"},
+        {"id": _NEGOTIATION, "name": "Negotiation", "type": "open", "source": "existing"},
+        {"id": str(uuid4()), "name": "Closed Won", "type": "won", "source": "added"},
+        {"id": _CLOSED_LOST, "name": "Closed Lost", "type": "lost", "source": "added"},
+    ],
+}
 
 
 def _responder(call: dict) -> Any:
@@ -128,6 +141,16 @@ def _responder(call: dict) -> Any:
         return {"id": str(uuid4()), **body}
     if path == "/crm/leads" and method == "POST":
         return {**body, "id": _NEW_LEAD_ID, "owner_email": _USER}
+    if path == "/crm/pipelines" and method == "GET":
+        return [{"id": _PIPELINE_ID, "name": "Sales pipeline", "is_default": True,
+                 "position": 0, "stages": []}]
+    if path == "/crm/pipelines/preview" and method == "GET":
+        return dict(_PLAN, name=call["params"].get("name") or _PLAN["name"])
+    if path == "/crm/pipelines" and method == "POST":
+        return {"id": str(uuid4()), "name": body.get("name"), "is_default": False,
+                "position": 1, "stages": [
+                    {"id": s.get("id") or str(uuid4()), "name": s["name"], "position": i,
+                     "type": s["type"]} for i, s in enumerate(_PLAN["stages"])]}
     if method == "GET" and path.count("/") == 3:
         # Any other single record — the read `log_activity` now makes so its
         # card can name what it is writing to. Carries every column
@@ -154,6 +177,9 @@ _CALLS: dict[str, Any] = {
         "deals", _DEAL_ID, "call", "Intro call", body="Discussed the AMC",
     ),
     "convert_lead": lambda: _M.convert_lead(_LEAD_ID, deal_name="Acme AMC"),
+    "crm_create_pipeline": lambda: _M.crm_create_pipeline(
+        "AMC contracts", stages=["Site visit", "Negotiation"],
+    ),
 }
 
 #: The one tool that needs nothing from the gateway before it can describe what
@@ -173,6 +199,7 @@ _CARD_MUST_NAME: dict[str, str] = {
     "update_deal_status": "Acme AMC",  # the deal being moved
     "log_activity": "Acme AMC",        # the record being written to
     "convert_lead": "Ravi Menon",      # the lead being converted
+    "crm_create_pipeline": "AMC contracts",  # the pipeline being made
 }
 
 
@@ -858,3 +885,116 @@ async def test_log_activity_relays_a_mirror_mode_refusal(monkeypatch) -> None:
                  client_class=_MirrorRefusingClient)
     out = await _CALLS["log_activity"]()
     assert "Nothing was changed" in out and "read-only" in out
+
+
+# ── WS-CRM CRM-M3a: a new pipeline ──────────────────────────────────────────
+
+
+async def test_the_pipeline_tool_reads_the_plan_and_posts_the_same_body(monkeypatch) -> None:
+    """The card shows the gateway's plan, in order, and Apply sends the body
+    that the plan read. The read is a GET, before the card."""
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit", "Negotiation"])
+    assert [(c["method"], c["path"]) for c in calls] == [
+        ("GET", "/crm/pipelines/preview"), ("POST", "/crm/pipelines")]
+    sent = calls[1]["json"]
+    assert sent == {"name": "AMC contracts",
+                    "stages": [{"name": "Site visit"}, {"name": "Negotiation"}]}
+    assert json.loads(calls[0]["params"]["stages"]) == sent["stages"]
+    assert calls[0]["params"]["name"] == "AMC contracts"
+    context = cards[0]["context"]
+    order = [context.index(name) for name in
+             ("Site visit", "Negotiation", "Closed Won", "Closed Lost")]
+    assert order == sorted(order), context
+    assert "added, so that a deal can close" in context
+    assert "starts from: new" in context
+    assert "Created the pipeline AMC contracts" in out
+
+
+async def test_the_card_of_a_pipeline_says_what_it_changes_and_no_zoho_note(monkeypatch) -> None:
+    """A pipeline never queues for Zoho, so the Zoho note would be false."""
+    cards = approve(monkeypatch)
+    _gateway(monkeypatch)
+    await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert _M._ZOHO_NOTE not in cards[0]["context"]
+    assert _M._PIPELINE_NOTE in cards[0]["context"]
+
+
+async def test_a_typed_new_stage_sends_its_type(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_create_pipeline("Renewals", stages=["Renewal due", "Signed (won)", "Gone (LOST)"])
+    assert calls[-1]["json"]["stages"] == [
+        {"name": "Renewal due"}, {"name": "Signed", "type": "won"},
+        {"name": "Gone", "type": "lost"}]
+
+
+async def test_copy_from_takes_a_name_and_sends_the_id(monkeypatch) -> None:
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_create_pipeline("AMC contracts", copy_from="sales PIPELINE")
+    assert [c["path"] for c in calls] == [
+        "/crm/pipelines", "/crm/pipelines/preview", "/crm/pipelines"]
+    assert calls[1]["params"] == {"name": "AMC contracts", "copy_from": _PIPELINE_ID}
+    assert calls[2]["json"] == {"name": "AMC contracts", "copy_from": _PIPELINE_ID}
+    assert len(cards) == 1
+
+
+@pytest.mark.parametrize(("kwargs", "words"), [
+    ({"copy_from": "Renewals"}, "no pipeline called 'Renewals'"),
+    ({"copy_from": "Sales pipeline", "stages": ["Qualify"]}, "not both"),
+    ({}, "Which stages"),
+])
+async def test_a_bad_start_is_refused_before_any_card(monkeypatch, kwargs, words) -> None:
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_create_pipeline("AMC contracts", **kwargs)
+    assert words in out and "nothing was changed" in out.lower()
+    assert cards == [] and writes(calls) == []
+
+
+class _PreviewRefusingClient(FakeClient):
+    """The gateway answers the preview with one refusal."""
+
+    status = 404
+    detail: Any = "Not Found"
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        resp = await super().request(method, url, **kwargs)
+        if url.endswith("/crm/pipelines/preview"):
+            return FakeResponse({"detail": self.detail}, status_code=self.status)
+        return resp
+
+
+async def test_an_org_off_the_flag_reads_plain_words(monkeypatch) -> None:
+    """The run drops the tool for such an org. If it still runs, the 404 of
+    the route reads as words, with no card."""
+    cards = approve(monkeypatch)
+    calls = fake_gateway(_M, monkeypatch, _responder, user=_USER,
+                         client_class=_PreviewRefusingClient)
+    out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert out == _M._PIPELINES_OFF
+    assert cards == [] and writes(calls) == []
+
+
+async def test_a_mirror_org_reads_that_zoho_owns_its_pipelines(monkeypatch) -> None:
+    class _Mirror(_PreviewRefusingClient):
+        status = 409
+        detail = {"code": "mirror_mode_settings",
+                  "message": "The stages, pipelines and lost reasons come from Zoho."}
+
+    cards = approve(monkeypatch)
+    calls = fake_gateway(_M, monkeypatch, _responder, user=_USER, client_class=_Mirror)
+    out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert out.startswith("Nothing was changed.") and "Make the pipeline in Zoho" in out
+    assert cards == [] and writes(calls) == []
+
+
+async def test_each_call_of_the_agent_carries_its_chat_stamp(monkeypatch) -> None:
+    """The gateway logs ``via=chat`` only for this stamp beside the internal
+    bearer (``change_log.via_of``)."""
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert calls and all(c["headers"]["X-Actor-Via"] == "chat:crm-assistant" for c in calls)

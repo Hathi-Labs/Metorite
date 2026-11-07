@@ -86,6 +86,7 @@ import type { SettingsSectionId } from "../lib/settingsSections";
 import { useCrmStore } from "../lib/store";
 import ConvertMappingCard from "./ConvertMappingCard";
 import FieldMapCard from "./FieldMapCard";
+import NewPipelineDialog from "./NewPipelineDialog";
 import FieldsCard from "./FieldsCard";
 import RecordNamesCard from "./RecordNamesCard";
 import { Card, NameList, PipelineSections, STATE_ROW, VocabularyNotice } from "./SettingsCards";
@@ -202,6 +203,7 @@ export default function PipelineSettings({
   showAdminCards = false,
   readOnly = false,
   studioAdmin = false,
+  pipelineCreate = false,
   section,
   questions,
   rules,
@@ -230,6 +232,12 @@ export default function PipelineSettings({
    * lead-conversion mapping. The page gives the same value to the sections.
    */
   studioAdmin?: boolean;
+  /**
+   * WS-CRM CRM-M3a: the caller is an admin, the CRM is Native, and
+   * `CRM_PIPELINES_ORGS` holds the org (`pipeline_create` of `GET /crm/mode`).
+   * Then the Deal stages card shows "New pipeline". The route checks again.
+   */
+  pipelineCreate?: boolean;
   /** The Setup hub (it holds the connection, CRM-X0) and the Access card of an admin, in this order. */
   setup?: React.ReactNode;
   access?: React.ReactNode;
@@ -263,6 +271,21 @@ export default function PipelineSettings({
   onReorderLostReasons: (patches: PositionPatch[]) => Promise<void>;
 }) {
   const several = showPicker(pipelines);
+  const [newPipelineOpen, setNewPipelineOpen] = useState(false);
+  const createPipeline = useCrmStore((state) => state.createPipeline);
+  // CRM-M3a: "New pipeline", on the Native Deal stages card, for an admin.
+  const newPipeline =
+    pipelineCreate && !readOnly ? (
+      <Button
+        variant="secondary"
+        size="sm"
+        icon="Plus"
+        disabled={saving}
+        onClick={() => setNewPipelineOpen(true)}
+      >
+        New pipeline
+      </Button>
+    ) : undefined;
   const orderStatuses = useCrmStore((state) => state.orderStatuses);
   const resetStatusOrder = useCrmStore((state) => state.resetStatusOrder);
   const addStage = useCrmStore((state) => state.addStageBeforeClosed);
@@ -363,6 +386,7 @@ export default function PipelineSettings({
                   pipelines={pipelines}
                   fallback={dealStatuses}
                   note="Stage editing for several pipelines is not available yet."
+                  action={newPipeline}
                 />
               ) : (
                 <StageList
@@ -375,9 +399,23 @@ export default function PipelineSettings({
                   onOrder={orderStatuses}
                   onRemove={onRemoveStatus}
                   onAdd={addStage}
+                  action={newPipeline}
                 />
               )
             )}
+          {newPipeline && (
+            <NewPipelineDialog
+              open={newPipelineOpen}
+              pipelines={pipelines}
+              saving={saving}
+              onClose={() => setNewPipelineOpen(false)}
+              onCreate={async (body) => {
+                const made = await createPipeline(body);
+                if (made) setNewPipelineOpen(false);
+                return made !== null;
+              }}
+            />
+          )}
 
           {show("lead-statuses") &&
             held(
@@ -498,9 +536,12 @@ export function StageList({
   onResetOrder,
   onRemove,
   onAdd,
+  action,
 }: {
   kind: StatusKind;
   mode: "mirror" | "native";
+  /** One control at the right end of the header ("New pipeline", CRM-M3a). */
+  action?: React.ReactNode;
   /** Every row of the kind, hidden and gone ones included. */
   statuses: Status[];
   /** `GET /crm/pipelines`, or null with no such route. */
@@ -607,9 +648,12 @@ export function StageList({
   return (
     <section className="rounded-xl border border-border bg-card/40" aria-label={words.title}>
       <header className="space-y-3 border-b border-border px-4 py-3">
-        <div>
-          <h2 className="text-sm font-semibold text-foreground">{words.title}</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">{words.line}</p>
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold text-foreground">{words.title}</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">{words.line}</p>
+          </div>
+          {action && <div className="shrink-0">{action}</div>}
         </div>
         {mirror && (
           <div className="space-y-1">

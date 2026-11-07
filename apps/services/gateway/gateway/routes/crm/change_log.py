@@ -49,13 +49,14 @@ request.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from acb_auth import UserContext, get_current_user, require_internal_auth
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
     MAX_PAGE_SIZE,
@@ -77,6 +78,14 @@ VIA_UI = "ui"
 VIA_CHAT = "chat"
 VIA_WHATSAPP = "whatsapp"
 VIAS: tuple[str, ...] = (VIA_UI, VIA_CHAT, VIA_WHATSAPP, "ai_proposal", "system")
+
+#: The header in which an in-product agent names itself (``chat:crm-assistant``).
+#: The Projects skill sends the same header (``routes/projects/core.ACTOR_VIA``).
+ACTOR_VIA_HEADER = "X-Actor-Via"
+
+#: A chat stamp: ``chat:`` and an agent name. An ``mcp:`` stamp is an outside
+#: agent (branch 0 of ``acb_auth.deps``), and it never reads as ``chat``.
+_CHAT_STAMP = re.compile(r"^chat:[a-z0-9][a-z0-9_.-]{0,58}$")
 
 #: The trust ladder (D164, ``crm_conversational.md`` §4).
 OWN = "own"
@@ -208,6 +217,39 @@ def quoted(value: Any, limit: int = 80) -> str:
 def _email(value: str | None) -> str | None:
     folded = (value or "").strip().lower()
     return folded or None
+
+
+async def via_of(request: Request) -> str:
+    """``chat`` when an in-product agent made this request, else ``ui``.
+
+    The server decides it, and the body never does (WS-CRM CRM-M3a). Two
+    facts must both hold:
+
+    1. The request sends ONE ``X-Actor-Via`` header with a ``chat:`` stamp.
+       The CRM assistant sends ``chat:crm-assistant`` on each call.
+    2. Its ``Authorization`` is the internal bearer. Only an in-platform
+       caller holds it: the agent runtime and the BFF. The BFF builds its
+       upstream headers from ``gatewayHeaders()`` alone and forwards no
+       header of the browser (``app/api/crm/[...path]/route.ts``). So a
+       browser cannot put the stamp on a request that reaches the gateway.
+
+    Each other request is ``ui``: no stamp, two stamps, a stamp of another
+    shape, or a stamp with no internal bearer. A box with no internal token
+    is a dev box, where ``get_current_user`` trusts a bare ``X-User-Email``
+    too, so this check is never weaker than the identity of the row.
+    Fence: ``tests/unit/test_crm_pipelines_native.py``.
+    """
+    stamps = request.headers.getlist(ACTOR_VIA_HEADER)
+    if len(stamps) != 1 or not _CHAT_STAMP.fullmatch(stamps[0].strip().lower()):
+        return VIA_UI
+    authorization = request.headers.get("authorization") or ""
+    if not authorization.startswith("Bearer ") or not authorization[7:].strip():
+        return VIA_UI
+    try:
+        await require_internal_auth(authorization)
+    except HTTPException:
+        return VIA_UI
+    return VIA_CHAT
 
 
 #: The mode of the bound org. The text of ``core.is_mirror_mode``.
@@ -648,4 +690,5 @@ __all__ = [
     "undo_areas",
     "undo_change",
     "undoes",
+    "via_of",
 ]

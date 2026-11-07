@@ -93,6 +93,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # WS-CRM CRM-M1: the read of the CRM Change history.
     "crm_change_history": ("what changed in the crm last tuesday",
                            "who changed the crm setup this week"),
+    # WS-CRM CRM-M3a: a new deal pipeline.
+    "crm_create_pipeline": ("create a new crm pipeline for AMC contracts",),
     "get_pipeline": ("show the sales pipeline",),
     "get_record": ("show the Acme record in the crm",),
     "get_timeline": ("show the timeline of the Acme deals",),

@@ -1697,6 +1697,28 @@ MIRROR_RECORD_WRITES: frozenset[str] = frozenset({
     "create_lead", "update_deal_status", "convert_lead",
 })
 
+#: The CRM write that ``CRM_PIPELINES_ORGS`` keeps out of a run (WS-CRM
+#: CRM-M3a). An org off the list gets 404 from the route, so the tool leaves
+#: the run, and the model never offers it.
+PIPELINE_WRITES: frozenset[str] = frozenset({"crm_create_pipeline"})
+
+
+def _crm_pipelines_open() -> bool:
+    """True when ``CRM_PIPELINES_ORGS`` holds the org of this run (CRM-M3a).
+
+    The reader is ``gateway.routes.crm.flags.pipelines_allowed``, the one that
+    the create route reads. The org is the run's own (:func:`_run_org_or_none`),
+    never an argument (R5). It reads the settings only, and it fails closed:
+    no org, no gateway or an error reads as closed. Each build of a run asks
+    it (:func:`_drop_mirror_record_writes`, :func:`_drop_pack_mirror_writes`).
+    """
+    try:
+        from gateway.routes.crm.flags import pipelines_allowed
+        return bool(pipelines_allowed(_run_org_or_none()))
+    except Exception as exc:  # fail closed
+        _log.info("executor.crm_pipelines_flag_unread", error=str(exc)[:200])
+        return False
+
 
 async def _drop_mirror_record_writes(agents: list[Any]) -> None:
     """Take the CRM record writes from this run's agents in Mirror mode.
@@ -1714,15 +1736,23 @@ async def _drop_mirror_record_writes(agents: list[Any]) -> None:
     egress control drops the writes there (``egress.covered_chain``), and a
     covered run sends no request that it does not need (H-236). With the org off
     (``egress.held_card_writes_on``), a held run reads nothing too, as before.
+
+    CRM-M3a: first, an org that ``CRM_PIPELINES_ORGS`` leaves out loses
+    :data:`PIPELINE_WRITES`, in every run (:func:`_crm_pipelines_open`).
     """
     from acb_skills.egress import covered_chain, held_card_writes_on, no_egress_for_this_run
 
-    if covered_chain() or (no_egress_for_this_run() and not held_card_writes_on()):
-        return
     held = {
         _tool_name(t)
         for agent in agents for _attr, pool in _own_tool_pools(agent) for t in pool
     }
+    # CRM-M3a: the flag of the org first. It reads the settings only, so it
+    # runs in every run, a covered one too.
+    if held & PIPELINE_WRITES and not _crm_pipelines_open():
+        _drop_own_tools(agents, PIPELINE_WRITES)
+        _log.info("executor.crm_pipeline_writes_dropped", tools=sorted(PIPELINE_WRITES))
+    if covered_chain() or (no_egress_for_this_run() and not held_card_writes_on()):
+        return
     if not held & MIRROR_RECORD_WRITES:
         return
     try:
@@ -3295,7 +3325,9 @@ async def _pack_tools(
 async def _drop_pack_mirror_writes(
     tools: list[Any], dropped: list[str], *, held: bool = False,
 ) -> tuple[list[Any], list[str]]:
-    """Take the CRM record writes from a pack build in Mirror mode (OA-8a).
+    """Take the CRM record writes from a pack build in Mirror mode (OA-8a),
+    and ``crm_create_pipeline`` from the build of an org that
+    ``CRM_PIPELINES_ORGS`` leaves out (CRM-M3a, :func:`_crm_pipelines_open`).
 
     The drop is part of the builder, so each layer gets it: layer (a) runs
     :func:`_drop_mirror_record_writes` later in the executor, but a pack that
@@ -3310,6 +3342,12 @@ async def _drop_pack_mirror_writes(
     """
     from acb_skills.egress import held_card_writes_on
 
+    # CRM-M3a: an org off `CRM_PIPELINES_ORGS` builds no `crm_create_pipeline`.
+    if any(_tool_name(t) in PIPELINE_WRITES for t in tools) and not _crm_pipelines_open():
+        gone = [_tool_name(t) for t in tools if _tool_name(t) in PIPELINE_WRITES]
+        tools = [t for t in tools if _tool_name(t) not in PIPELINE_WRITES]
+        dropped = [*dropped, *gone]
+        _log.info("executor.crm_pipeline_writes_dropped", tools=gone, source="pack")
     if ((held and not held_card_writes_on())
             or not any(_tool_name(t) in MIRROR_RECORD_WRITES for t in tools)):
         return tools, dropped
