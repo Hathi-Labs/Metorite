@@ -60,9 +60,43 @@ describe("diffManifests", () => {
     expect(lines(base(), edit((m) => { m.views[0].object = "units"; }))).toEqual(["moves the view «Board» to the record type «units»"]);
     expect(lines(base(), edit((m) => { m.views[0].block = "table"; }))).toEqual(["changes the view «Board» from «board» to «table»"]);
   });
+  const rec = (verbs: string[], obj = "units") => verbs.map((v) => ({ id: `${obj}_${v}`, uses: `object:${obj}.${v}` }));
+  const ALL = ["list", "get", "create", "update", "delete"];
+  it("folds the five record actions of one record type into one line", () => {
+    const withAll = edit((m) => { m.actions.push(...(rec(ALL) as never[])); });
+    expect(lines(base(), withAll)).toEqual(["adds the record actions of «Units» (list, open, create, change, delete)"]);
+  });
+  it("lists only the record actions that are there", () => {
+    const some = edit((m) => { m.actions.push(...(rec(["get", "list"]) as never[])); });
+    expect(lines(base(), some)).toEqual(["adds the record actions of «Units» (list, open)"]);
+  });
+  it("keeps a custom action on its own line beside a full set", () => {
+    const mix = edit((m) => { m.actions.push(...(rec(ALL) as never[]), { id: "ship", uses: "x.y", title: "Ship" } as never); });
+    expect(lines(base(), mix)).toEqual(["adds the record actions of «Units» (list, open, create, change, delete)", "adds the action «Ship»"]);
+  });
+  it("folds a removal, and each record type on its own", () => {
+    const withAll = edit((m) => { m.actions.push(...(rec(ALL) as never[]), ...(rec(["list"], "visits") as never[])); });
+    expect(lines(withAll, base())).toEqual(["removes the record actions of «Units» (list, open, create, change, delete)", "removes the record actions of «visits» (list)"]);
+  });
+  it("reads the rule from uses and not from the id", () => {
+    const odd = edit((m) => { m.actions.push({ id: "units_list", uses: "custom.thing" } as never); });
+    expect(lines(base(), odd)).toEqual(["adds the action «units_list»"]);
+    const renamed = edit((m) => { m.actions.push({ id: "see_all", uses: "object:units.list" } as never); });
+    expect(lines(base(), renamed)).toEqual(["adds the record actions of «Units» (list)"]);
+  });
+  it("says makes for a first version, and counts the cap on folded lines", () => {
+    const withAll = edit((m) => { m.actions.push(...(rec(ALL) as never[])); });
+    expect(diffLines(diffManifests(null, withAll), 12, true)).toContain("makes the record actions of «Units» (list, open, create, change, delete)");
+    const many = edit((m) => { for (let i = 0; i < 3; i++) m.objects.push({ name: `o${i}`, fields: [] } as never); m.actions.push(...(rec(ALL) as never[])); });
+    const out = diffLines(diffManifests(base(), many), 3);
+    expect(out).toHaveLength(4);
+    expect(out[3]).toBe("and 1 more change");
+  });
   it("adds and removes an action", () => {
     expect(lines(base(), edit((m) => { m.actions.push({ id: "n", uses: "x", title: "New" }); }))).toEqual(["adds the action «New»"]);
-    expect(lines(base(), edit((m) => { m.actions.pop(); }))).toEqual(["removes the action «Peek»"]);
+    const custom = edit((m) => { m.actions.push({ id: "n", uses: "x", title: "New" }); });
+    expect(lines(custom, base())).toEqual(["removes the action «New»"]);
+    expect(lines(base(), edit((m) => { m.actions.pop(); }))).toEqual(["removes the record actions of «visits» (open)"]);
   });
   it("says a generic line for any other part", () => {
     const withSkill = { ...base(), skill: { description: "x" } };
@@ -71,7 +105,7 @@ describe("diffManifests", () => {
   });
   it("lists what a first version makes", () => {
     const out = diffLines(diffManifests(null, base()), 12, true);
-    expect(out).toEqual(["makes the record type «Units»", "makes the record type «visits»", "makes the view «Board»", "makes the action «Peek»"]);
+    expect(out).toEqual(["makes the record type «Units»", "makes the record type «visits»", "makes the view «Board»", "makes the record actions of «visits» (open)"]);
   });
   it("caps the list and counts the rest", () => {
     const big = edit((m) => { for (let i = 0; i < 15; i++) m.objects.push({ name: `o${i}`, fields: [] } as never); });
