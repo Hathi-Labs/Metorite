@@ -428,12 +428,12 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         ),
         "tools": (
             "convert_lead",
-            "crm_update_record",
-            "crm_update_task",
             "create_lead",
             # WS-CRM CRM-M1: the read of the Change history of the CRM set-up.
             "crm_change_history",
             "crm_search_notes",
+            "crm_update_record",
+            "crm_update_task",
             "get_pipeline",
             "get_record",
             "get_timeline",
