@@ -14,6 +14,7 @@ implementation too many; the server decides and the client renders.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -777,3 +778,153 @@ async def put_my_zone(
         _log.warning("auth.zone.write_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
     return {"timezone": body.timezone}
+
+
+# ── /auth/me/appearance — the member's mode, density and accent (PKG-20) ────
+#
+# `package_host.md` §9.5. Mode, density and accent lived in the browser only
+# (`lib/theme/storage.ts`), so a second device opened in the defaults. This
+# route keeps one copy for each member in each organization, in the column
+# `user_settings.appearance`. The workbench reads it once after the first
+# paint (`lib/theme/syncAppearance.ts`), and writes it only on a member's
+# change. The Design choice (`cc-look`) is not part of the record.
+#
+# It needs only a signed-in member, as `/auth/me/zone` does. It reads and
+# writes the member's OWN row in the session's tenant. The write is the one
+# write of the settings row (`write_member_settings`), so no second writer
+# exists. The member and the tenant come from the session only (R5). The body
+# names neither, and the model refuses a key it does not know. The SERVER
+# stamps `updated_at`, never the client. The last write wins.
+#
+# Fences: `tests/unit/test_auth_me_appearance.py` (with the accent sample
+# list that the TypeScript test reads too) and
+# `tests/unit/test_auth_me_appearance_r8.py`.
+
+#: The colour modes. next-themes runs with `enableSystem={false}`.
+APPEARANCE_MODES: tuple[str, ...] = ("dark", "light")
+
+#: The densities of `lib/theme/types.ts` `DENSITY_SCALE`. Null follows the org.
+APPEARANCE_DENSITIES: tuple[str, ...] = ("compact", "default", "comfortable")
+
+#: The longest accent, after the trim. The TypeScript rule has the same cap.
+MAX_ACCENT = 64
+
+#: The characters of `\s` and of `String.prototype.trim` in JavaScript. Python's
+#: own `\s` and `str.strip()` read a different set, so the port names them.
+_JS_SPACE = (
+    "\t\n\v\f\r \u00a0\u1680"
+    + "".join(chr(c) for c in range(0x2000, 0x200B))
+    + "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+#: A port of `SAFE_COLOR` in `workbench/control_plane/src/lib/theme/css.ts`.
+#: `re.ASCII` keeps `[a-z]` with IGNORECASE to the ASCII letters, as the
+#: JavaScript rule without the `u` flag does. The character class spells the
+#: JavaScript `\s` set. `fullmatch` stands for `^...$`. The fence that the two
+#: rules agree is the shared sample list `tests/fixtures/accent_samples.json`.
+SAFE_COLOR = re.compile(
+    "(#[0-9a-f]{3,8}|(rgb|hsl|oklch|lab|lch)a?\\([0-9a-z%.,/"
+    + _JS_SPACE
+    + "+-]*\\)|[a-z]{3,20})",
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def is_safe_color(value: Any) -> bool:
+    """The Python half of `isSafeColor` in `lib/theme/css.ts`."""
+    if not isinstance(value, str):
+        return False
+    v = value.strip(_JS_SPACE)
+    return 0 < len(v) <= MAX_ACCENT and SAFE_COLOR.fullmatch(v) is not None
+
+
+#: The answer for a member with no server copy.
+EMPTY_APPEARANCE: dict[str, Any] = {
+    "mode": None, "density": None, "accent": None, "updated_at": None,
+}
+
+_READ_APPEARANCE_SQL = (
+    "SELECT appearance FROM user_settings "
+    "WHERE organization_id = {org} AND user_id = :uid"
+)
+
+
+class AppearanceIn(BaseModel):
+    """What `PUT /auth/me/appearance` accepts: the whole record, less the stamp."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["dark", "light"]
+    density: Literal["compact", "default", "comfortable"] | None = None
+    accent: str | None = None
+
+    @field_validator("accent")
+    @classmethod
+    def _accent(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not is_safe_color(v):
+            raise ValueError("accent is a colour literal, such as #e11d48")
+        return v.strip(_JS_SPACE)
+
+
+def stored_appearance(raw: Any) -> dict[str, Any]:
+    """A stored value, as the route answers it. Lenient on purpose: a field
+    that is not valid reads as null, and the other fields still answer."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return dict(EMPTY_APPEARANCE)
+    if not isinstance(raw, dict):
+        return dict(EMPTY_APPEARANCE)
+    mode = raw.get("mode")
+    density = raw.get("density")
+    accent = raw.get("accent")
+    return {
+        "mode": mode if mode in APPEARANCE_MODES else None,
+        "density": density if density in APPEARANCE_DENSITIES else None,
+        "accent": accent.strip(_JS_SPACE) if is_safe_color(accent) else None,
+        "updated_at": _stamp(raw.get("updated_at")),
+    }
+
+
+@me_router.get("/me/appearance", summary="The caller's saved appearance (PKG-20)")
+async def get_my_appearance(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+    """The saved record, or all-null for a member with no server copy. A
+    failed read answers 503, never a default, so the browser changes nothing."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+    from sqlalchemy import text
+
+    uid = _member(user)
+    if not uid:
+        raise HTTPException(status_code=403, detail="Sign in to read your appearance")
+    try:
+        async with _tenant_session() as db:
+            row = (await db.execute(
+                text(_READ_APPEARANCE_SQL.format(org=_BOUND_ORG)), {"uid": uid},
+            )).first()
+    except Exception as exc:
+        _log.warning("auth.appearance.read_failed", error=str(exc)[:160])
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    return stored_appearance(row[0] if row is not None else None)
+
+
+@me_router.put("/me/appearance", summary="Save the caller's appearance (PKG-20)")
+async def put_my_appearance(
+    body: AppearanceIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Save the whole record in the member's own settings row. It needs a
+    signed-in member and no app feature. The server stamps ``updated_at``."""
+    from gateway.routes.tasks.settings import write_member_settings
+
+    uid = _member(user)
+    if not uid:
+        raise HTTPException(status_code=403, detail="Sign in to save your appearance")
+    record = {**body.model_dump(), "updated_at": _server_stamp()}
+    try:
+        await write_member_settings(uid, {"appearance": record})
+    except Exception as exc:
+        _log.warning("auth.appearance.write_failed", error=str(exc)[:160])
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    return record

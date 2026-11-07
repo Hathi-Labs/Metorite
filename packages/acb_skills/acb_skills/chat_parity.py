@@ -963,6 +963,7 @@ DEBT: dict[str, str] = {
     "DELETE /api/settings/branding": "P-8",
     "GET /api/auth/me": "P-8",
     "GET /api/auth/me/agent-access": "P-8",
+    "GET /api/auth/me/appearance": "P-8",
     "GET /api/auth/me/assistant-profile": "P-8",
     "GET /api/auth/me/assistant-profile/address": "P-8",
     "GET /api/auth/me/assistant-profile/block": "P-8",
@@ -975,6 +976,7 @@ DEBT: dict[str, str] = {
     "GET /api/settings/llm": "P-8",
     "GET /api/settings/number-system": "P-8",
     "PUT /api/auth/me/agent-access": "P-8",
+    "PUT /api/auth/me/appearance": "P-8",
     "PUT /api/auth/me/shell": "P-8",
     "PUT /api/auth/me/zone": "P-8",
     "PUT /api/settings/appearance": "P-8",
@@ -1062,7 +1064,7 @@ DEBT_CEILING: dict[str, int] = {
     "agents": 20,
     "chat": 25,
     "shell": 15,
-    "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
+    "settings": 28,  # PZ-35 added the three chat summary actions, RX-7 the zone read and write, and PKG-20 the appearance read and write.
     "admin": 36,
     "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
     "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2.
