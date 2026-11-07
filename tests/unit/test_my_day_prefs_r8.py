@@ -352,3 +352,36 @@ async def test_muted_rules_ignores_a_value_that_is_not_an_array(db) -> None:
             {"u": email, "o": db.org_a})
     async with tenant_engine_scope(_app_dsn(db)):
         assert await _muted(db.org_a, email) == frozenset()
+
+
+async def _block_notify(org: str, email: str) -> bool:
+    from acb_common.db import tenant_session
+    from gateway.routes.shell.prefs import block_notify
+
+    async with tenant_session(org) as session:
+        return await block_notify(session, email)
+
+
+async def test_block_notify_reads_any_spelling_and_isolates_tenants(db) -> None:
+    """BR-5 slice 2b-2: one ``true`` under any spelling of the address turns
+    the setting on, only in the bound tenant. A value that is not ``true``,
+    or no row, is off."""
+    low = _address()
+    mixed = low.replace("prefs.", "Prefs.").upper().replace("@MD2D.TEST", "@md2d.test")
+    off = _address()
+    db.made.extend([low, mixed, off])
+    with db.admin_engine.begin() as c:
+        for org, email, val in ((db.org_a, low, "false"),
+                                (db.org_a, mixed, "true"),
+                                (db.org_b, low, "false"),
+                                (db.org_a, off, '"true"')):
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+                "VALUES (:u, CAST(:o AS uuid), "
+                "jsonb_build_object('block_notify', CAST(:v AS jsonb)))"),
+                {"u": email, "o": org, "v": val})
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _block_notify(db.org_a, low) is True
+        assert await _block_notify(db.org_b, low) is False
+        assert await _block_notify(db.org_a, off) is False
+        assert await _block_notify(db.org_a, "nobody@md2d.test") is False

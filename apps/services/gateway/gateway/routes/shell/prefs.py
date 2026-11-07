@@ -18,6 +18,10 @@ Key                Value
                    ``reach.exceptions.RULES`` each (BR-5, ``core_brief.md``
                    §6). A muted rule matches nothing. Reach reads it through
                    :func:`muted_rules`. A mute never changes the feed.
+``block_notify``   A boolean (BR-5 slice 2b-2, ``core_brief.md`` §9 Q8 "One
+                   setting"). True marks every ``block_soon`` card with
+                   ``notify_me``, so exception rule 3 may fire. Reach reads
+                   it through :func:`block_notify`. It never changes the feed.
 =================  ==========================================================
 
 A kind is a row of ``feed_rank.BASE``, the one table of the feed's kinds.
@@ -67,7 +71,7 @@ logger = logging.getLogger(__name__)
 #: The keys of ``my_day_prefs``: three of §16 MD-2d, and ``hide_push_details``
 #: (WS-66 RE-9a), a boolean.
 PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections", "hide_push_details",
-                              "push_prompt", "rule_mutes")
+                              "push_prompt", "rule_mutes", "block_notify")
 #: The longest list of kinds that ``mutes`` and ``open_in_app`` take.
 MAX_KINDS = 30
 #: The most lines that ``corrections`` takes.
@@ -201,7 +205,7 @@ def _rule_mutes(value: Any) -> list[str]:
 
 _CLEAN = {"mutes": _kinds, "open_in_app": _kinds, "corrections": _corrections,
           "hide_push_details": _flag, "push_prompt": _push_prompt,
-          "rule_mutes": _rule_mutes}
+          "rule_mutes": _rule_mutes, "block_notify": _flag}
 
 
 class PrefPut(BaseModel):
@@ -210,7 +214,7 @@ class PrefPut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     key: Literal["mutes", "open_in_app", "corrections", "hide_push_details", "push_prompt",
-                 "rule_mutes"]
+                 "rule_mutes", "block_notify"]
     value: Any
 
     @model_validator(mode="after")
@@ -243,8 +247,9 @@ def stored_prefs(raw: Any) -> dict[str, Any]:
     if isinstance(v, list):
         ids = rule_ids()
         out["rule_mutes"] = _unique([x for x in v if isinstance(x, str) and x in ids])
-    if isinstance(raw.get("hide_push_details"), bool):
-        out["hide_push_details"] = raw["hide_push_details"]
+    for key in ("hide_push_details", "block_notify"):
+        if isinstance(raw.get(key), bool):
+            out[key] = raw[key]
     if isinstance(raw.get("push_prompt"), dict):
         # A stored object that fails the check drops from the answer, as a
         # stale kind does. The member sees the sheet again.
@@ -333,6 +338,30 @@ async def muted_rules(db: Any, member: str) -> frozenset[str]:
     rows = (await db.execute(text(_MUTED_ANY_CASE_SQL.format(org=_BOUND_ORG)),
                              {"uid": member})).all()
     return frozenset(str(r[0]) for r in rows) & rule_ids()
+
+
+#: The ``block_notify`` switch over EVERY spelling of the address in the
+#: BOUND tenant (BR-5 slice 2b-2), in the shape of ``_HIDE_ANY_CASE_SQL``.
+#: One JSON ``true`` under any spelling turns it on. No row, or no ``true``,
+#: is off.
+_BLOCK_NOTIFY_ANY_CASE_SQL = (
+    "SELECT COALESCE(bool_or("
+    "my_day_prefs -> 'block_notify' = CAST('true' AS jsonb)), false) "
+    "FROM user_settings "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:uid)"
+)
+
+
+async def block_notify(db: Any, member: str) -> bool:
+    """True when *member* asked to be told before each block starts
+    (``block_notify``), under ANY spelling of the address. Read on *db*, a
+    session that the caller bound to the tenant. A read error raises: the
+    caller logs it and counts the setting as off."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+    from sqlalchemy import text
+
+    return bool((await db.execute(text(_BLOCK_NOTIFY_ANY_CASE_SQL.format(org=_BOUND_ORG)),
+                                  {"uid": member})).scalar())
 
 
 async def _read(db: Any, uid: str) -> Any:
