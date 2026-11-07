@@ -351,6 +351,19 @@ def _size(value: object) -> int:
     return value
 
 
+def _was_confined(value: dict[str, Any]) -> bool:
+    """True when the child decoded inside its confinement (fix round 1, P2).
+
+    On Linux the child marks ``confined`` only after ``confine`` and
+    ``close_limits`` returned, and the parent takes nothing else. On a dev
+    box with no Landlock (Windows), it takes an answer that names this same
+    system in ``unconfined_os``. A child that skipped the confinement sends
+    neither mark, so its answer is refused on every system."""
+    if value.get("confined") is True:
+        return True
+    return sys.platform != "linux" and value.get("unconfined_os") == sys.platform
+
+
 def _parse(answer: bytes | None) -> Encoded:
     """The child's one line, checked field by field. The parent trusts no
     value of a child that read hostile bytes: the type, the size, the shares,
@@ -370,6 +383,9 @@ def _parse(answer: bytes | None) -> Encoded:
         raise SignatureImageError(message, status)
     if name != "ok" or not isinstance(value, dict):
         raise _bad()
+    if not _was_confined(value):
+        _log.warning("signature_image.unconfined_answer", platform=sys.platform)
+        raise SignatureImageError(*_REASONS["unavailable"])
     content_type = value.get("content_type")
     if content_type not in _MAGIC or not isinstance(value.get("data"), str):
         raise _bad()

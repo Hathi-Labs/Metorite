@@ -459,14 +459,14 @@ def test_the_public_route_never_calls_get_db() -> None:
 @pytest.mark.parametrize("answer", [
     b"", b"not json", b'{"ok": 1}', b'{"ok": {}, "x": 1}',
     b'{"ok": {"content_type": "text/html", "data": "PGI+", "width": 1, "height": 1,'
-    b' "dark_share": 0, "clear_share": 0}}',
+    b' "dark_share": 0, "clear_share": 0, "confined": true}}',
     # The type says PNG, and the bytes are HTML.
     b'{"ok": {"content_type": "image/png", "data": "PGh0bWw+", "width": 1, "height": 1,'
-    b' "dark_share": 0, "clear_share": 0}}',
+    b' "dark_share": 0, "clear_share": 0, "confined": true}}',
     b'{"ok": {"content_type": "image/png", "data": "iVBORw0KGgo=", "width": 481,'
-    b' "height": 1, "dark_share": 0, "clear_share": 0}}',
+    b' "height": 1, "dark_share": 0, "clear_share": 0, "confined": true}}',
     b'{"ok": {"content_type": "image/png", "data": "iVBORw0KGgo=", "width": 1,'
-    b' "height": 1, "dark_share": 2, "clear_share": 0}}',
+    b' "height": 1, "dark_share": 2, "clear_share": 0, "confined": true}}',
     b'{"refused": 7}',
 ])
 def test_a_bad_answer_is_a_plain_refusal(answer) -> None:
@@ -482,6 +482,63 @@ def test_a_refused_code_becomes_its_sentence() -> None:
     with pytest.raises(si.SignatureImageError) as caught:
         si._parse(b'{"refused": "unavailable"}')
     assert caught.value.status == 503
+
+
+# ── 7a. The parent takes only a confined answer (fix round 1, P2) ──────────
+
+_GOOD = {"content_type": "image/png", "data": base64.b64encode(b"\x89PNG\r\n\x1a\nx").decode(),
+         "width": 1, "height": 1, "dark_share": 0, "clear_share": 0}
+
+
+def _answer(**marks) -> bytes:
+    import json
+
+    return json.dumps({"ok": {**_GOOD, **marks}}).encode()
+
+
+def test_an_answer_with_no_confinement_mark_is_refused() -> None:
+    with pytest.raises(si.SignatureImageError) as caught:
+        si._parse(_answer())
+    assert caught.value.status == 503
+    assert "cannot isolate the image reader" in str(caught.value)
+    assert si._parse(_answer(confined=True)).width == 1
+
+
+def test_linux_never_takes_an_unconfined_answer(monkeypatch) -> None:
+    monkeypatch.setattr(si.sys, "platform", "linux")
+    with pytest.raises(si.SignatureImageError):
+        si._parse(_answer(confined=False, unconfined_os="linux"))
+
+
+def test_a_dev_box_takes_the_marker_of_its_own_system_only(monkeypatch) -> None:
+    monkeypatch.setattr(si.sys, "platform", "win32")
+    assert si._parse(_answer(confined=False, unconfined_os="win32")).width == 1
+    with pytest.raises(si.SignatureImageError):
+        si._parse(_answer(confined=False, unconfined_os="darwin"))
+
+
+async def test_a_child_with_its_confine_step_deleted_is_refused(monkeypatch) -> None:
+    """The real worker with ``_confine`` replaced by a no-op that sets no
+    mark: the parent refuses its answer, on Linux and on a dev box alike."""
+    from gateway import signature_image_worker as worker
+
+    script = (
+        "import importlib.util, sys\n"
+        f"s = importlib.util.spec_from_file_location('w', {str(worker.__file__)!r})\n"
+        "w = importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
+        "w._confine = lambda cc, spec, state: None\n"
+        "sys.exit(w.main(['w', sys.argv[1]]))\n"
+    )
+    real = si._worker_argv
+    monkeypatch.setattr(si, "_worker_argv", lambda spec: [
+        *real(spec)[:2], "-c", script, real(spec)[-1]])
+    with pytest.raises(si.SignatureImageError) as caught:
+        await si.encode(_png(40, 20), "logo")
+    assert caught.value.status == 503
+    assert "cannot isolate the image reader" in str(caught.value)
+    # The untouched worker is taken on this system.
+    monkeypatch.setattr(si, "_worker_argv", real)
+    assert (await si.encode(_png(40, 20), "logo")).width == 40
 
 
 async def test_a_child_that_floods_its_answer_is_killed(monkeypatch):

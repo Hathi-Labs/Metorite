@@ -18,7 +18,10 @@ bound, and the child caps its own memory.
 The child writes ONE JSON line on stdout and exits 0:
 
 * ``{"ok": {"content_type", "width", "height", "dark_share", "clear_share",
-  "data"}}``. ``data`` is the stored image as base64.
+  "data", "confined"}}``. ``data`` is the stored image as base64.
+  ``confined`` is true only after ``confine`` and ``close_limits`` ran on
+  Linux. On another system the answer carries ``unconfined_os`` in its place.
+  The parent refuses an answer with neither (fix round 1, P2).
 * ``{"refused": "<code>"}``. The parent owns every sentence for the member, so
   the child sends a code only: ``broken``, ``pixels``, ``too_big``, ``size``,
   ``unavailable`` or ``failed``.
@@ -284,7 +287,39 @@ def _emit(item: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def _confine(cc: Any, spec: dict[str, Any], state: dict[str, Any]) -> None:
+    """Landlock and the seccomp filter, then the mark of the answer.
+
+    On Linux ``confine`` raises when a step fails, so the mark ``confined``
+    is set only after it returned. On another system ``confine`` does
+    nothing, and the mark ``unconfined_os`` says so: the parent accepts such
+    an answer only on that same system, never on Linux (fix round 1, P2)."""
+    cc.confine(spec["landlock_abi"])
+    if sys.platform == "linux":
+        state["confined"] = True
+    else:
+        state["unconfined_os"] = sys.platform
+
+
+def _close_limits(cc: Any, state: dict[str, Any]) -> None:
+    """No fork, no new thread, no file growth, then the mark ``limits``."""
+    cc.close_limits()
+    state["limits"] = True
+
+
+def _marks(state: dict[str, Any]) -> dict[str, Any]:
+    """The confinement marks of the answer. ``confined`` is true only when
+    both steps ran on Linux."""
+    marks: dict[str, Any] = {
+        "confined": bool(state.get("confined") and state.get("limits")),
+    }
+    if state.get("unconfined_os") and state.get("limits"):
+        marks["unconfined_os"] = state["unconfined_os"]
+    return marks
+
+
 def main(argv: list[str]) -> int:
+    state: dict[str, Any] = {}
     try:
         spec = _spec(argv[1] if len(argv) > 1 else "")
         cc = _load_confine(spec["confine_path"])
@@ -293,16 +328,16 @@ def main(argv: list[str]) -> int:
         cc.close_inherited_fds()
         _limit_self(spec)
         # One thread here, so the confinement binds each later thread.
-        cc.confine(spec["landlock_abi"])
+        _confine(cc, spec, state)
         pymupdf = _preload()
-        cc.close_limits()
+        _close_limits(cc, state)
         # The untrusted bytes arrive only now, after the confinement.
         data = sys.stdin.buffer.read(spec["max_bytes"] + 1)
         if not data:
             raise _Refused("broken")
         if len(data) > spec["max_bytes"]:
             raise _Refused("size")
-        _emit({"ok": _encode(pymupdf, data, spec)})
+        _emit({"ok": {**_encode(pymupdf, data, spec), **_marks(state)}})
     except _Refused as exc:
         _emit({"refused": exc.reason})
     except MemoryError:
