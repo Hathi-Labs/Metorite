@@ -9,6 +9,7 @@ Verified against code on 2026-11-05, at `origin/main` `1e63f33d8`.
 template close-out at 18:30, with the sections `done` and `moved` (§4.3).
 `brief.run` takes a `kind` in its payload. A payload with no `kind` is a
 `brief`. The close-out makes no model call, even with `BRIEF_COMPOSE` on.
+
 No migration. The section `acted` waits for BR-7b. "Mail sent" stays out until
 an authorized read exists (§8). The phrase of the close-out lead waits for a
 later slice.
