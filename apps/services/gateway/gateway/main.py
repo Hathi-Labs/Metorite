@@ -480,6 +480,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.reach_loop_skipped", error=str(exc))
 
+    # KG-9 (task 786): the memory layer refuses to start while two or more
+    # organizations exist, because the Mem0 and Graphiti stores have no org
+    # scope. The gateway still starts. Only Mem0 and Graphiti stay down, and
+    # each call asks the guard again. With MEM0_ENABLED and GRAPHITI_ENABLED
+    # off this reads two settings and opens no session.
+    # Fence: tests/unit/test_memory_tenant_guard.py.
+    try:
+        from acb_memory.tenant_guard import MemoryTenancyRefused, check_memory_tenancy
+        try:
+            await check_memory_tenancy()
+        except MemoryTenancyRefused as exc:
+            _log.error("gateway.memory_refused", error=str(exc)[:300])
+    except Exception as exc:
+        _log.warning("gateway.memory_tenancy_check_skipped", error=str(exc)[:200])
+
     # Start the mailbox purge loop (routes/email/memory_purge.py; spec
     # email_app_master_plan.md §12.3.13.9, WS-17 EM-G11f2). It finishes each
     # Mem0 purge that a disconnect owes. No flag: with Mem0 off a tick ends
@@ -1453,7 +1468,8 @@ if _HAS_MAF:
                                 name=f"chat:{user_id[:20]}",
                                 content=_mem_last_user[:500],
                                 source_description="copilot_chat",
-                                group_id=user_id,
+                                # KG-9: the episode's group is its org.
+                                organization_id=_organization_id,
                             )
                     except ImportError:
                         pass
