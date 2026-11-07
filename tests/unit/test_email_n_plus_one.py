@@ -317,8 +317,10 @@ class _AccountsDb:
         if "FROM email_accounts" in sql and "WHERE user_id = :user_id" in sql:
             mine = [r for r in self.rows if self.owners[r.id] == p["user_id"]]
             return SimpleNamespace(fetchall=lambda: mine)
-        if sql == "SELECT id, email_address, label FROM email_accounts WHERE user_id = :uid":
-            # The display labels of EM-T8b read the mailboxes of the member.
+        if sql.startswith(
+                "SELECT id, email_address, label FROM email_accounts WHERE user_id = :uid"):
+            # The display labels of EM-T8b read the mailboxes of the member,
+            # in the bound tenant since H-334c. The R8 file proves the tenant.
             mine = [r for r in self.rows if self.owners[r.id] == p["uid"]]
             return SimpleNamespace(fetchall=lambda: mine)
         if sql.startswith("SELECT 1 FROM email_accounts"):
