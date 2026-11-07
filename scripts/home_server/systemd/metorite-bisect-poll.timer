@@ -1,0 +1,10 @@
+# CIV-5: poll every 5 minutes. The owner installs this timer, see the service file.
+[Unit]
+Description=Metorite bisect poll every 5 minutes (CIV-5)
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target
