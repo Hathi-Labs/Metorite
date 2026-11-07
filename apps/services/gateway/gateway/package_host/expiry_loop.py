@@ -13,6 +13,14 @@ with a time from :func:`utc_now`. The session commits at the end of the
 block. An error in one org is logged with the org id and the error type,
 and the tick goes on to the next org.
 
+**The clock guard.** Before ``expire_due``, the tick reads ``now()`` from the
+database in the same session. When the host clock and the database clock
+differ by more than :data:`MAX_CLOCK_SKEW`, the tick skips that org. It does
+not call ``expire_due``, and the session rolls back. A host clock that jumps
+forward would otherwise delete installs early, and the delete is one-way.
+The log line ``package_host.expiry.clock_skew`` gives the org id and the
+skew in seconds only.
+
 **The model.** ``routes/knowledge/proposal_expiry.py`` and
 ``agent_run_sweep.py``. The start, the stop and the error rules are theirs.
 One change: the first tick waits :data:`FIRST_DELAY_SECONDS` after the
@@ -22,8 +30,12 @@ start, so a restart does not delete data in the first second.
 deleted), and one line for each tick. Never a name, a title or an address.
 
 **Dark.** ``PACKAGE_EXPIRY_ENABLED`` (default OFF) gates the START inside
-:func:`start_package_expiry`, and each tick reads it again. With the flag
-off a tick reads nothing, not even the org list. 🔴 A flip on production is
+:func:`start_package_expiry`. A SIGHUP reload does not change it, because
+``flag_reload`` applies only the ``*_ORGS`` and ``*_MODES`` fields. The
+gateway reads it from the settings at the start, so only a restart changes
+it. Each tick checks it too, and with the flag off a tick reads nothing, not
+even the org list. ``PACKAGE_HOST_ORGS`` DOES reload on SIGHUP, and it
+selects the orgs where a tick may delete. 🔴 A flip on production is
 the owner's act only, because the tick deletes member data and the delete is
 one-way. ``_organization_ids`` is the one unbound read, a tenant-discovery
 site registered in ``tests/unit/test_db_engine_seam.py``. Fence, R8:
@@ -34,9 +46,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from acb_common import get_logger
 from sqlalchemy import text
@@ -56,6 +69,10 @@ FIRST_DELAY_SECONDS = 600.0
 #: Seconds to wait for a tick in progress when the gateway stops.
 STOP_GRACE_SECONDS = 30.0
 
+#: The largest difference between the host clock and the database clock that
+#: a tick accepts. A larger difference skips the org, and deletes nothing.
+MAX_CLOCK_SKEW = timedelta(minutes=5)
+
 _task: asyncio.Task[None] | None = None
 _stopping = asyncio.Event()
 
@@ -73,6 +90,15 @@ class TickResult:
     archived: int = 0
     deleted: int = 0
     failed: int = 0
+    skipped_skew: int = 0
+
+
+class _ClockSkew(Exception):
+    """Raised inside the tenant session so that the session rolls back."""
+
+    def __init__(self, seconds: float) -> None:
+        super().__init__(seconds)
+        self.seconds = seconds
 
 
 def expiry_enabled() -> bool:
@@ -93,11 +119,31 @@ async def _organization_ids() -> list[str]:
     return [str(r.id) for r in rows]
 
 
+async def db_now(db: Any) -> datetime:
+    """The clock of the database: ``now()``, the start of this transaction."""
+    return (await db.execute(text("SELECT now()"))).scalar_one()
+
+
 async def run_org(org: str, result: TickResult, *,
-                  clock: Callable[[], datetime] = utc_now) -> None:
-    """One org's share of a tick, in ONE tenant session and one transaction."""
-    async with tenant_session(org) as db:
-        got = await store.expire_due(db, now=clock())
+                  clock: Callable[[], datetime] = utc_now,
+                  db_clock: Callable[[Any], Awaitable[datetime]] = db_now) -> None:
+    """One org's share of a tick, in ONE tenant session and one transaction.
+
+    When the host clock and the database clock differ by more than
+    :data:`MAX_CLOCK_SKEW`, the org is skipped and its session rolls back.
+    """
+    try:
+        async with tenant_session(org) as db:
+            host_now = clock()
+            skew = abs(await db_clock(db) - host_now)
+            if skew > MAX_CLOCK_SKEW:
+                raise _ClockSkew(skew.total_seconds())
+            got = await store.expire_due(db, now=host_now)
+    except _ClockSkew as exc:
+        result.skipped_skew += 1
+        _log.warning("package_host.expiry.clock_skew", org=org,
+                     skew_secs=round(exc.seconds))
+        return
     result.archived += got["archived"]
     result.deleted += got["deleted"]
     _log.info("package_host.expiry.org", org=org, archived=got["archived"],
@@ -124,7 +170,8 @@ async def run_tick(*, clock: Callable[[], datetime] = utc_now) -> TickResult:
             _log.warning("package_host.expiry.org_failed", org=org,
                          error=type(exc).__name__)
     _log.info("package_host.expiry.tick", orgs=result.orgs, archived=result.archived,
-              deleted=result.deleted, failed=result.failed)
+              deleted=result.deleted, failed=result.failed,
+              skipped_skew=result.skipped_skew)
     return result
 
 
@@ -186,9 +233,11 @@ def loop_running() -> bool:
 
 __all__ = [
     "FIRST_DELAY_SECONDS",
+    "MAX_CLOCK_SKEW",
     "STOP_GRACE_SECONDS",
     "TICK_SECONDS",
     "TickResult",
+    "db_now",
     "expiry_enabled",
     "loop_running",
     "run_org",

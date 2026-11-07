@@ -32,13 +32,19 @@ e. The share of org A never touches a row of org B.
 f. The flag defaults to off. ``main.py`` starts and stops the loop and never
    reads the flag. The loop starts only when the flag is on, and the first
    tick waits for the first delay.
+g. The clock guard. When the host clock differs from the database clock by
+   more than ``MAX_CLOCK_SKEW``, the tick skips the org. It does not call
+   ``expire_due``, and it counts and logs the skip.
+h. A cancel in the middle of an org rolls that org back and ends the loop.
+   A stop between two orgs starts no further org.
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
-from datetime import datetime
+import contextlib
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -230,7 +236,191 @@ def test_d_one_org_that_fails_leaves_the_others_expired(monkeypatch: Any) -> Non
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# R8: the tick on a real database (b, c, d, e)
+# Hermetic: the clock guard (g), the cancel and the stop (h)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _FakeSession:
+    """A session double. It records the commit, the rollback and the close."""
+
+    def __init__(self, org: str, log: list[str]) -> None:
+        self.org = org
+        self.log = log
+
+
+def _fake_sessions(monkeypatch: Any) -> list[str]:
+    """Replace ``tenant_session`` with a double that has the commit rules of
+    the real one: commit at a clean end, rollback on an error, close always."""
+    log: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def fake(org: str) -> Any:
+        log.append(f"open:{org}")
+        try:
+            yield _FakeSession(org, log)
+            log.append(f"commit:{org}")
+        except Exception:
+            log.append(f"rollback:{org}")
+            raise
+        finally:
+            log.append(f"close:{org}")
+
+    monkeypatch.setattr(loop, "tenant_session", fake)
+    return log
+
+
+def _capture_warnings(monkeypatch: Any) -> list[tuple[str, dict[str, Any]]]:
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    class _Spy:
+        def __init__(self, real: Any) -> None:
+            self.real = real
+
+        def warning(self, event: str, **kw: Any) -> None:
+            seen.append((event, kw))
+
+        def info(self, event: str, **kw: Any) -> None:
+            seen.append((event, kw))
+
+    monkeypatch.setattr(loop, "_log", _Spy(loop._log))
+    return seen
+
+
+def _skew_case(monkeypatch: Any, offset: timedelta) -> tuple[loop.TickResult, list[str],
+                                                              list[str], list[Any]]:
+    """Run one org with a host clock *offset* from a fixed database clock."""
+    sessions = _fake_sessions(monkeypatch)
+    seen = _capture_warnings(monkeypatch)
+    expired: list[str] = []
+    db_time = datetime(2026, 11, 7, 12, 0, tzinfo=loop.UTC)
+
+    async def fake_expire(db: Any, *, now: datetime, **kw: Any) -> dict[str, int]:
+        expired.append(db.org)
+        assert now == db_time + offset
+        return {"archived": 1, "deleted": 1}
+
+    async def db_clock(db: Any) -> datetime:
+        return db_time
+
+    monkeypatch.setattr(loop.store, "expire_due", fake_expire)
+    result = loop.TickResult()
+    asyncio.run(loop.run_org("org-a", result, clock=lambda: db_time + offset,
+                             db_clock=db_clock))
+    return result, sessions, expired, seen
+
+
+def test_g_the_clock_guard_is_five_minutes() -> None:
+    assert timedelta(minutes=5) == loop.MAX_CLOCK_SKEW
+
+
+@pytest.mark.parametrize("offset", [timedelta(days=2), -timedelta(days=2)],
+                         ids=["host-2-days-fast", "host-2-days-slow"])
+def test_g_a_skewed_host_clock_skips_the_org(monkeypatch: Any, offset: timedelta) -> None:
+    result, sessions, expired, seen = _skew_case(monkeypatch, offset)
+    assert expired == []
+    assert (result.archived, result.deleted, result.skipped_skew) == (0, 0, 1)
+    assert sessions == ["open:org-a", "rollback:org-a", "close:org-a"]
+    skews = [kw for event, kw in seen if event == "package_host.expiry.clock_skew"]
+    assert skews == [{"org": "org-a", "skew_secs": 2 * 86400}]
+
+
+def test_g_a_small_skew_runs_the_org(monkeypatch: Any) -> None:
+    result, sessions, expired, seen = _skew_case(monkeypatch, timedelta(minutes=1))
+    assert expired == ["org-a"]
+    assert (result.archived, result.deleted, result.skipped_skew) == (1, 1, 0)
+    assert sessions == ["open:org-a", "commit:org-a", "close:org-a"]
+    assert not [e for e, _ in seen if e == "package_host.expiry.clock_skew"]
+
+
+def test_g_the_tick_log_line_counts_the_skip(monkeypatch: Any) -> None:
+    _flag(monkeypatch, True)
+    _host_orgs(monkeypatch, "*")
+    seen = _capture_warnings(monkeypatch)
+
+    async def orgs() -> list[str]:
+        return ["org-a", "org-b"]
+
+    async def run_org(org: str, result: Any, **kw: Any) -> None:
+        if org == "org-a":
+            result.skipped_skew += 1
+
+    monkeypatch.setattr(loop, "_organization_ids", orgs)
+    monkeypatch.setattr(loop, "run_org", run_org)
+    result = asyncio.run(loop.run_tick())
+    assert (result.orgs, result.skipped_skew, result.failed) == (2, 1, 0)
+    tick = [kw for e, kw in seen if e == "package_host.expiry.tick"]
+    assert tick and tick[0]["skipped_skew"] == 1
+
+
+def test_h_a_cancel_in_an_org_rolls_it_back_and_ends_the_loop(monkeypatch: Any) -> None:
+    """The tick task is cancelled while ``expire_due`` of org A waits. Org A
+    does not commit, the CancelledError reaches the loop task, and the task
+    ends. Org B never starts."""
+    _flag(monkeypatch, True)
+    _host_orgs(monkeypatch, "*")
+    sessions = _fake_sessions(monkeypatch)
+    expired: list[str] = []
+
+    async def orgs() -> list[str]:
+        return ["org-a", "org-b"]
+
+    async def db_clock(db: Any) -> datetime:
+        return loop.utc_now()
+
+    async def go() -> None:
+        entered = asyncio.Event()
+        never = asyncio.Event()
+
+        async def slow_expire(db: Any, **kw: Any) -> dict[str, int]:
+            expired.append(db.org)
+            entered.set()
+            await never.wait()
+            return {"archived": 0, "deleted": 0}
+
+        real_run_org = loop.run_org
+
+        async def run_org(org: str, result: Any, **kw: Any) -> None:
+            await real_run_org(org, result, db_clock=db_clock, **kw)
+
+        monkeypatch.setattr(loop.store, "expire_due", slow_expire)
+        monkeypatch.setattr(loop, "run_org", run_org)
+        monkeypatch.setattr(loop, "_organization_ids", orgs)
+        monkeypatch.setattr(loop, "FIRST_DELAY_SECONDS", 0.0)
+        task = asyncio.get_running_loop().create_task(loop._loop())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert task.done() and task.cancelled()
+
+    asyncio.run(go())
+    assert expired == ["org-a"]
+    assert "commit:org-a" not in sessions
+    assert sessions[-1] == "close:org-a"
+    assert not [s for s in sessions if s.endswith("org-b")]
+
+
+def test_h_a_stop_between_orgs_starts_no_next_org(monkeypatch: Any) -> None:
+    _flag(monkeypatch, True)
+    _host_orgs(monkeypatch, "*")
+    done: list[str] = []
+
+    async def orgs() -> list[str]:
+        return ["org-a", "org-b", "org-c"]
+
+    async def run_org(org: str, result: Any, **kw: Any) -> None:
+        done.append(org)
+        loop._stopping.set()  # the gateway stops while org A runs
+
+    monkeypatch.setattr(loop, "_organization_ids", orgs)
+    monkeypatch.setattr(loop, "run_org", run_org)
+    result = asyncio.run(loop.run_tick())
+    assert done == ["org-a"]
+    assert result.orgs == 3
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R8: the tick on a real database (b, c, d, e, g)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -359,3 +549,49 @@ def test_r8_e_the_share_of_org_a_never_touches_org_b(world: Any, monkeypatch: An
     assert (result.archived, result.deleted) == (1, 0)
     assert _row(world, a.id)[0] == "archived"
     assert _row(world, b.id) == before_b
+
+
+def _db_clock_now(w: Any) -> datetime:
+    """``now()`` of the real database, read through the app role."""
+    async def go() -> datetime:
+        async with tenant_engine_scope(_dsn(w.p.app_url)):
+            db = await loop.get_db()
+            try:
+                return await loop.db_now(db)
+            finally:
+                await db.close()
+
+    return asyncio.run(go())
+
+
+@_DB_GATE
+def test_r8_g_a_fast_host_clock_deletes_nothing(world: Any, monkeypatch: Any) -> None:  # noqa: F811
+    """The install was archived 29 days ago on the DATABASE clock, so it is
+    not spent. A host clock 2 days fast would read it as 31 days, and
+    delete it. The guard skips the org, so the row does not change."""
+    p = world.p
+    _flag(monkeypatch, True)
+    _host_orgs(monkeypatch, p.org_a)
+    db_time = _db_clock_now(world)
+    assert abs(db_time - loop.utc_now()) < loop.MAX_CLOCK_SKEW
+    kept = _install(world, "a1", "org", [_claim(_k("gf"))], ends_at=db_time - 40 * DAY)
+    _admin_write(
+        world,
+        "UPDATE package_install SET state = 'archived', archived_at = :a "
+        "WHERE id = CAST(:i AS uuid)",
+        {"a": db_time - 29 * DAY, "i": kept.id},
+    )
+    before = _row(world, kept.id)
+    calls = _spy_expire(monkeypatch)
+    monkeypatch.setattr(loop, "utc_now", lambda: datetime.now(loop.UTC) + 2 * DAY)
+    # run_tick binds its default clock when Python defines it. Pass the fast one.
+
+    async def go() -> loop.TickResult:
+        async with tenant_engine_scope(_dsn(world.p.app_url)):
+            return await loop.run_tick(clock=loop.utc_now)
+
+    result = asyncio.run(go())
+
+    assert calls == []
+    assert (result.orgs, result.deleted, result.skipped_skew, result.failed) == (1, 0, 1, 0)
+    assert _row(world, kept.id) == before
