@@ -1252,6 +1252,7 @@ They keep their own gates.
 - **Done when.** R8: the lead of the app gets 200 on Release and Resume. A member who is not the run's member and not the lead gets 403. A lead of another app gets 403. `can_act` on Needs attention agrees with the route.
 - **Fence.** `test_agent_runs_r8.py`, `test_agent_run_exclusive.py` and `test_needs_attention_r8.py`.
 - **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-44. Q5 and Q9.
+- **Built.** 2026-11-07, dark (branch `mt-23faedbe-sw48-lead-release-resume`). `authority.led_subtree_sql` is the public walk, and `person_may_end_sql` embeds it behind `:lead_runs`. The flag `APP_LEAD_RUNS_ORGS` is empty by default, so the rule stays as it was. `RELEASE_ADMIN_PERMISSION` did not change, and the lead does not answer. The new fence `test_app_ownership_seam.py` refuses a lead test outside `authority.py`. The flip is an `enforcement-flip`.
 
 #### SW-49 · Review capacity
 

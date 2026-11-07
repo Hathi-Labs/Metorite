@@ -129,15 +129,24 @@ CONVERT_REFUSED = (
     "project."
 )
 
-#: Each project that the member leads, and each project below one. ``UNION``
-#: and not ``UNION ALL``, so a cycle in the tree ends the walk.
-_LED_SUBTREE_SQL = (
-    "WITH RECURSIVE led AS ("
-    "  SELECT id FROM pm_projects WHERE lower(lead) = :me"
-    "  UNION"
-    "  SELECT p.id FROM pm_projects p JOIN led ON p.parent_project_id = led.id"
-    ") SELECT id FROM led"
-)
+def led_subtree_sql(me: str = "me") -> str:
+    """THE lead walk, in SQL: the id of each project that the member leads,
+    and of each project below one. It binds ``:me``, or the name in *me*, to
+    the member's address in lower case. ``UNION`` and not ``UNION ALL``, so a
+    cycle in the tree ends the walk.
+
+    Public, so a rule in another module that keys on the lead EMBEDS this
+    text and never copies it (``agent_coordination.md`` §3.10 rule 1). SW-48
+    embeds it in ``agent_runs.person_may_end_sql``. The names ``led`` and
+    ``lp`` are local to the text. Fence: ``tests/unit/test_app_ownership_seam.py``.
+    """
+    return (
+        "WITH RECURSIVE led AS ("
+        f"  SELECT id FROM pm_projects WHERE lower(lead) = :{me}"
+        "  UNION"
+        "  SELECT lp.id FROM pm_projects lp JOIN led ON lp.parent_project_id = led.id"
+        ") SELECT id FROM led"
+    )
 
 
 def _me(user: Any) -> str:
@@ -162,7 +171,7 @@ async def led_projects(db: Any, user: Any) -> frozenset[str]:
     me = _me(user)
     if not me:
         return frozenset()
-    rows = (await db.execute(text(_LED_SUBTREE_SQL), {"me": me})).fetchall()
+    rows = (await db.execute(text(led_subtree_sql()), {"me": me})).fetchall()
     return frozenset(str(r.id) for r in rows)
 
 

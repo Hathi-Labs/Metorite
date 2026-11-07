@@ -1312,6 +1312,25 @@ def agent_questions_allowed(organization_id: str | None) -> bool:
     return "*" in listed or org in listed
 
 
+def app_lead_runs_allowed(organization_id: str | None) -> bool:
+    """True when ``APP_LEAD_RUNS_ORGS`` holds the org, or holds ``*``.
+    Default OFF (WS-MCP SW-48, ``agent_coordination.md`` §3.10.2).
+
+    The one reader of the flag. ``agent_runs.may_end_run`` (Release and
+    Resume) and Needs attention (``can_act``) each bind its answer as
+    ``:lead_runs`` of ``agent_runs.person_may_end_sql``, so the route and the
+    button move together. The org comes from the session, never from request
+    input (R5). It reads ``get_settings()`` on each call, so a flag reload
+    applies a change with no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "app_lead_runs_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
 def held_by_of(hit: Any) -> dict[str, Any]:
     """The ``held_by`` of a task: who keeps it, through which client, since
     when, and whether the lease ended (EA-14a). ``stale`` here is the LEASE

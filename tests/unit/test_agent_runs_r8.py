@@ -1522,3 +1522,74 @@ class TestWithdrawAnAnswer:
             assert self._read_at(w, aid) is None
             assert seen.json()["run"]["answer"]["changeable"] is True
             assert (await _withdraw(call, w.a, rid, aid)).status_code == 200
+
+
+# ── SW-48: the app lead ends a run, and never answers by that rule ───────────
+
+
+def test_sw48_the_end_rule_embeds_the_lead_walk_and_the_answer_rule_does_not() -> None:
+    """Hermetic. ``person_may_end_sql`` embeds ``authority.led_subtree_sql``,
+    the one walk, behind ``:lead_runs``. The answer set reads no lead (SW-46
+    owns that change), so the lead gains Release and Resume only."""
+    from gateway.routes.projects.authority import led_subtree_sql
+
+    end = agent_runs.person_may_end_sql("r")
+    assert led_subtree_sql() in end
+    assert "CAST(:lead_runs AS boolean)" in end
+    assert led_subtree_sql() not in agent_runs.person_may_answer_sql("r")
+    assert "lead" not in agent_runs.person_may_answer_sql("r")
+
+
+LEAD = "ea12-lead@runs-r8.test"
+
+
+@contextlib.contextmanager
+def _led_by(w: Any, task: str, email: str):
+    """Name *email* the lead of the project of *task* for one test."""
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+            "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid)) "
+            "ON CONFLICT DO NOTHING"), {"e": email, "o": w.p.org_a})
+        project = c.execute(text("SELECT project_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+                            {"t": task}).scalar()
+        c.execute(text("UPDATE pm_projects SET lead = :e WHERE id = :p"),
+                  {"e": email, "p": project})
+    try:
+        yield _principal(email, w.p.org_a)
+    finally:
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_projects SET lead = NULL WHERE id = :p"), {"p": project})
+
+
+@_DB_GATE
+class TestTheAppLeadEndsARun:
+    async def test_flag_on_the_lead_releases_and_may_not_answer(self, w, monkeypatch):
+        """SW-48 with ``AGENT_QUESTIONS_ORGS`` on too: the lead's answer is
+        403 by D-EA-14, and the lead's Release is 200 by SW-48."""
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "agent_questions_orgs", w.p.org_a)
+        monkeypatch.setattr(get_settings(), "app_lead_runs_orgs", w.p.org_a)
+        with _led_by(w, w.task_a, LEAD) as lead:
+            async with _session(w.p) as call:
+                rid = (await _start(w, call))["id"]
+                asked = await _act(call, w.agent_a, rid, **_select())
+                assert asked.status_code == 201, asked.text
+                answer = await _act(call, lead, rid, type="prompt", selected=["pg"])
+                assert answer.status_code == 403, answer.text
+                assert await _status(call, w.a, rid) == ("awaiting", "awaiting")
+                released = await call(lead, "POST", f"/projects/agent-runs/{rid}/release", {})
+                assert released.status_code == 200, released.text
+                assert released.json()["run"]["status"] == "released"
+
+    async def test_flag_off_the_lead_is_refused_as_today(self, w, monkeypatch):
+        """Regression. ``APP_LEAD_RUNS_ORGS`` empty, the default: 403."""
+        from acb_common import get_settings
+
+        monkeypatch.setattr(get_settings(), "app_lead_runs_orgs", "")
+        with _led_by(w, w.task_a, LEAD) as lead:
+            async with _session(w.p) as call:
+                rid = (await _start(w, call))["id"]
+                refused = await call(lead, "POST", f"/projects/agent-runs/{rid}/release", {})
+                assert refused.status_code == 403, refused.text

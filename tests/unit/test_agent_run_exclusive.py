@@ -1014,6 +1014,46 @@ class TestOneAiForEachTask:
         assert blind.status_code == 404, blind.text
         assert len(_open_runs(w, task)) == 1
 
+    @pytest.mark.parametrize("ancestor", [False, True])
+    async def test_x10b_the_app_lead_releases_with_the_flag_on(self, w, monkeypatch, ancestor):
+        """SW-48. Eve leads the task's project, or a project above it. With
+        ``APP_LEAD_RUNS_ORGS`` empty she gets 403 as today. On for the org she
+        gets 200. Bob leads it too, and his AGENT still ends its own runs only."""
+        from acb_common import get_settings
+
+        task = _fresh(w)
+        project = _rows(w.p, "SELECT project_id FROM pm_tasks WHERE id = CAST(:t AS uuid)",
+                        t=task)[0].project_id
+        with w.p.admin_engine.begin() as c:
+            led = project
+            if ancestor:
+                led = c.execute(text(
+                    "INSERT INTO pm_projects (organization_id, name, created_by, owns_statuses)"
+                    " VALUES (:o, 'parent', :e, true) RETURNING id"),
+                    {"o": w.org, "e": ALICE}).scalar()
+                c.execute(text("UPDATE pm_projects SET parent_project_id = :par WHERE id = :p"),
+                          {"par": led, "p": project})
+            c.execute(text("UPDATE pm_projects SET lead = :e WHERE id = :p"),
+                      {"e": EVE.upper() if ancestor else EVE, "p": led})
+        async with _session(w.p) as call:
+            run = (await _claim(call, w.alice, task)).json()["agent_run_id"]
+            path = f"/projects/agent-runs/{run}/release"
+            monkeypatch.setattr(get_settings(), "app_lead_runs_orgs", "")
+            off = await call(w.eve_stranger, "POST", path, {})
+            assert off.status_code == 403, off.text
+            monkeypatch.setattr(get_settings(), "app_lead_runs_orgs", w.org)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_projects SET lead = :e WHERE id = :p"),
+                          {"e": BOB, "p": led})
+            agent = await call(w.bob, "POST", path, {})
+            assert agent.status_code == 403, agent.text
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE pm_projects SET lead = :e WHERE id = :p"),
+                          {"e": EVE, "p": led})
+            on = await call(w.eve_stranger, "POST", path, {})
+        assert on.status_code == 200, on.text
+        assert _open_runs(w, task) == []
+
     async def test_x11_an_agent_of_another_client_may_not_release(self, w):
         task = _fresh(w)
         async with _session(w.p) as call:

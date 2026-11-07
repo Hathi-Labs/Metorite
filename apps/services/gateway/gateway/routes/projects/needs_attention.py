@@ -44,6 +44,7 @@ from acb_auth import UserContext, agent_oauth, get_current_user
 from fastapi import Depends, Query
 from gateway.routes.projects.agent_runs import (
     RELEASE_ADMIN_PERMISSION,
+    lead_runs_param,
     person_may_end_sql,
 )
 from gateway.routes.projects.analytics import (
@@ -312,6 +313,8 @@ async def needs_attention(
         params: dict[str, Any] = {
             **load_params(vis, project_id),
             "me": actor(user).strip().lower(),
+            # SW-48: the lead arm of the rule of Release, as the route binds it.
+            "lead_runs": lead_runs_param(user),
             "parked": PARKED_CATEGORY,
             "cap": MAX_PER_KIND,
         }

@@ -111,6 +111,7 @@ from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_fo
 from acb_common import get_logger
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
+from gateway.routes.projects.authority import led_subtree_sql
 from gateway.routes.projects.core import (
     TaskModel,
     _tenant_session,
@@ -132,6 +133,7 @@ from gateway.routes.projects.filters import (
     agent_questions_allowed,
     agent_runs_enabled,
     answer_change_enabled,
+    app_lead_runs_allowed,
     attach_agent_state,
     connection_gone_sql,
     holder_free,
@@ -2208,15 +2210,33 @@ def person_may_end_sql(run: str) -> str:
     the caller's address in lower case. An org admin may too, and
     :func:`may_end_run` adds that half from the context.
 
+    SW-48 (``agent_coordination.md`` §3.10.2, Q9): a lead of the project of
+    the run's task, or of any ancestor project, may end the run too. The walk
+    is ``authority.led_subtree_sql``, embedded and not copied. The arm binds
+    ``:lead_runs``, the answer of ``filters.app_lead_runs_allowed`` for the
+    session's org. Off, the arm is false and the rule is EA-14a's exactly.
+    The lead gains Release and Resume only. The answer set
+    (:func:`person_may_answer_sql`) does not read this text.
+
     ONE text. The release route and the resume route read it through
     :func:`may_end_run`. Needs attention (``needs_attention.py``, WS-55 SW-11a,
     spec §12.7) reads it for ``can_act`` on each row, so the list never
-    offers a button that the route refuses.
+    offers a button that the route refuses. Each reader binds ``:lead_runs``
+    with :func:`lead_runs_param`.
     """
     return (
         f"({run}.member_email = :me OR EXISTS (SELECT 1 FROM pm_task_assignees ra"
-        f" WHERE ra.task_id = {run}.task_id AND lower(ra.assignee) = :me))"
+        f" WHERE ra.task_id = {run}.task_id AND lower(ra.assignee) = :me)"
+        f" OR (CAST(:lead_runs AS boolean) AND EXISTS (SELECT 1 FROM pm_tasks lt"
+        f" WHERE lt.id = {run}.task_id AND lt.project_id IN ({led_subtree_sql()}))))"
     )
+
+
+def lead_runs_param(user: UserContext) -> bool:
+    """The value of ``:lead_runs`` in :func:`person_may_end_sql` for *user*:
+    ``APP_LEAD_RUNS_ORGS`` on for the session's org (SW-48). The org comes
+    from the session, never from the request (R5)."""
+    return app_lead_runs_allowed(getattr(user, "organization_id", None))
 
 
 async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
@@ -2224,8 +2244,10 @@ async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
     (SW-11a).
 
     * An agent ends its OWN run only: the same member and the same stamp.
-    * A person ends a run when they are its member, an assignee of its task
-      (:func:`person_may_end_sql`), or hold :data:`RELEASE_ADMIN_PERMISSION`.
+    * A person ends a run when they are its member, an assignee of its task,
+      or, with ``APP_LEAD_RUNS_ORGS`` on, a lead of its task's project or an
+      ancestor (:func:`person_may_end_sql`), or hold
+      :data:`RELEASE_ADMIN_PERMISSION`.
     """
     via = _agent_via(user)
     me = _member(user)
@@ -2236,7 +2258,7 @@ async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
     held = (await db.execute(
         text(f"SELECT {person_may_end_sql('r')} FROM pm_agent_runs r"
              " WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"),
-        {"rid": str(run.id), "me": me},
+        {"rid": str(run.id), "me": me, "lead_runs": lead_runs_param(user)},
     )).scalar()
     return bool(held)
 
@@ -2392,7 +2414,8 @@ async def release_agent_run(
     * An agent releases its OWN run only: the same member and the same
       client stamp.
     * A person releases a run when they are its member, an assignee of the
-      task, or an org admin.
+      task, or an org admin. With the flag ``APP_LEAD_RUNS_ORGS`` on, the
+      lead of the task's project, or of an ancestor, may release too.
     * A caller who cannot see the task gets 404. A caller who sees it and
       has no right to release gets 403.
     * A run that is already ``released`` answers 200 again, with no write.
