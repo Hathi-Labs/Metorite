@@ -1,26 +1,30 @@
-"""Production moves once a day. A merge moves `staging` and deploys nothing.
+"""Production moves three times a day, at 05:30, 13:30 and 21:30 UTC
+(CIV-21, D194). A merge moves `staging` and deploys nothing.
 
 WS-38, ``project-docs/specs/staging_and_daily_release.md`` §4 and §5.6 phase 1.
 
 Measured 2026-10-16: 36 gateway starts on production in 24 hours, because
 every merge to ``main`` deployed. Each start ended every live agent run. The
-owner asked for one production release a day.
+owner asked for one production release a day. On 2026-11-07 the owner
+moved to three release slots a day (CIV-21, D194).
 
 What this file fences, in ``.github/workflows/deploy.yml``:
 
 1. A push publishes ``staging`` and never ``release``, and never deploys.
-2. The daily schedule and a manual dispatch publish ``release``, and the
+2. The slot schedule and a manual dispatch publish ``release``, and the
    unit tests gate them. ``skip_tests`` on a dispatch is the only way past.
 3. ``RELEASE_HOLD=1`` stops the schedule and says so. It does not stop a
    dispatch, which is a person's deliberate act.
 4. The deploy waits for ``release`` to move, and sends that exact commit.
 5. A schedule run that GitHub starts so late that it reaches the release
-   after 02:00 UTC waits a day, and says so (spec §4.1a). A plain dispatch
-   never waits.
-6. CIV-13 (D178): the home box dispatches with ``nightly=true`` at 21:30 UTC.
+   outside the window of each slot waits for the next slot, and says so
+   (spec §4.1a). A window opens 30 min before its slot: 21:00 to 02:00,
+   05:00 to 10:00 and 13:00 to 18:00 UTC. A plain dispatch never waits.
+6. CIV-13 (D178): the home box dispatches with ``nightly=true`` at each slot.
    A nightly dispatch is a nightly run: ``RELEASE_HOLD`` holds it, the window
-   holds it, and it cannot skip the tests. A night ships once. A nightly run
-   does not publish when another nightly run published since 21:00 UTC.
+   holds it, and it cannot skip the tests. A slot ships once. A nightly run
+   does not publish when another nightly run published since the window of
+   the current slot opened.
 
 And in ``.github/workflows/vps-health.yml``: the hourly delivery check
 compares the box with ``release``, not with ``main``. Under the daily clock a
@@ -144,9 +148,42 @@ def test_no_job_after_a_skipped_job_reads_a_bare_success(deploy: dict) -> None:
 # ── 2. The schedule and the dispatch publish release, behind the tests ───────
 
 
-def test_the_daily_schedule_exists(deploy: dict) -> None:
-    crons = [c["cron"] for c in _on(deploy)["schedule"]]
-    assert crons == ["30 21 * * *"], "21:30 UTC is 03:00 IST (spec §4.1)"
+# CIV-21 (D194): the three slots, in UTC, as (hour, minute).
+_SLOTS = [(5, 30), (13, 30), (21, 30)]
+# The window of each slot, in minutes of the UTC day, as (open, close).
+# Each opens 30 min before its slot. The 21:30 window spans midnight.
+_WINDOWS = [(21 * 60, 2 * 60), (5 * 60, 10 * 60), (13 * 60, 18 * 60)]
+
+
+def _crons(deploy: dict) -> list[str]:
+    return [c["cron"] for c in _on(deploy)["schedule"]]
+
+
+def _windows(deploy: dict) -> list[tuple[int, int]]:
+    env = deploy["jobs"]["release-window"]["steps"][0]["env"]
+    out = []
+    for w in env["WINDOWS"].split():
+        lo, hi = w.split("-")
+        out.append((int(lo), int(hi)))
+    return out
+
+
+def _inside(minute: int, window: tuple[int, int]) -> bool:
+    lo, hi = window
+    if lo < hi:
+        return lo <= minute < hi
+    return minute >= lo or minute < hi
+
+
+def test_the_slot_schedule_exists(deploy: dict) -> None:
+    assert _crons(deploy) == ["30 5 * * *", "30 13 * * *", "30 21 * * *"], (
+        "05:30, 13:30 and 21:30 UTC are 11:00, 19:00 and 03:00 IST (CIV-21, D194)"
+    )
+
+
+@pytest.mark.parametrize(("hour", "minute"), _SLOTS)
+def test_each_slot_has_a_cron(deploy: dict, hour: int, minute: int) -> None:
+    assert f"{minute} {hour} * * *" in _crons(deploy), f"the {hour:02d}:{minute:02d} UTC slot has no cron"
 
 
 def test_a_dispatch_can_release_outside_the_clock(deploy: dict) -> None:
@@ -209,10 +246,10 @@ def test_the_deploy_sends_its_own_sha(deploy: dict) -> None:
     assert '"DEPLOY_REF=${GITHUB_SHA} DEPLOY_FORCE=' in raw
 
 
-# ── 5. A late schedule run waits a day ──────────────────────────────────────
+# ── 5. A late schedule run waits for the next slot ──────────────────────────
 
 
-def test_a_late_nightly_run_waits_a_day(deploy: dict) -> None:
+def test_a_late_nightly_run_waits_for_the_next_slot(deploy: dict) -> None:
     job = deploy["jobs"]["release-window"]
     assert _if(job) == (
         "${{ always() && (github.event_name == 'schedule' || inputs.nightly) "
@@ -223,7 +260,7 @@ def test_a_late_nightly_run_waits_a_day(deploy: dict) -> None:
     # `once` writes `open` when the clock is open. A crash of `once` before
     # it writes falls back to the clock: the release ships (fail open, CIV-13).
     assert job["outputs"]["open"] == "${{ steps.once.outputs.open || steps.clock.outputs.open }}"
-    # A renamed step id would leave `open` empty, and hold every night.
+    # A renamed step id would leave `open` empty, and hold every slot.
     assert [s.get("id") for s in job["steps"]] == ["clock", "once"]
     publish = deploy["jobs"]["publish-release"]
     assert "release-window" in _needs(publish)
@@ -255,18 +292,35 @@ def test_the_run_name_marks_a_nightly_dispatch(deploy: dict) -> None:
     )
 
 
-def test_the_window_holds_the_planned_hour(deploy: dict) -> None:
-    env = deploy["jobs"]["release-window"]["steps"][0]["env"]
-    open_min, close_min = int(env["OPEN_MIN"]), int(env["CLOSE_MIN"])
-    assert (open_min, close_min) == (21 * 60, 2 * 60), "21:00 to 02:00 UTC (spec §4.1a)"
-    (cron,) = [c["cron"] for c in _on(deploy)["schedule"]]
-    minute, hour = (int(p) for p in cron.split()[:2])
-    planned = hour * 60 + minute
-    # The window spans midnight. Move OPEN_MIN with the cron, or an on-time
-    # run is held every night.
-    assert planned >= open_min or planned < close_min, (
-        "an on-time run must find the window open"
+def test_the_windows_are_the_planned_windows(deploy: dict) -> None:
+    assert _windows(deploy) == _WINDOWS, (
+        "21:00 to 02:00, 05:00 to 10:00 and 13:00 to 18:00 UTC (CIV-21, D194)"
     )
+
+
+@pytest.mark.parametrize(("hour", "minute"), _SLOTS)
+def test_each_slot_has_its_window(deploy: dict, hour: int, minute: int) -> None:
+    """Each window opens 30 min before its slot. Move a window with its
+    cron, or an on-time run of that slot is held each day."""
+    planned = hour * 60 + minute
+    mine = [w for w in _windows(deploy) if w[0] == planned - 30]
+    assert len(mine) == 1, f"the {hour:02d}:{minute:02d} UTC slot has no window"
+    assert _inside(planned, mine[0]), "an on-time run must find the window open"
+
+
+def test_each_cron_finds_a_window_open(deploy: dict) -> None:
+    for cron in _crons(deploy):
+        minute, hour = (int(p) for p in cron.split()[:2])
+        assert any(_inside(hour * 60 + minute, w) for w in _windows(deploy)), cron
+
+
+def test_the_windows_do_not_overlap(deploy: dict) -> None:
+    """Two windows that overlap would let one slot see the release of the
+    other as its own, and the step `once` would hold it."""
+    windows = _windows(deploy)
+    for minute in range(24 * 60):
+        inside = [w for w in windows if _inside(minute, w)]
+        assert len(inside) <= 1, f"minute {minute} is in {inside}"
 
 
 def _bash() -> str | None:
@@ -284,10 +338,15 @@ _BASH = _bash()
 @pytest.mark.parametrize(("clock", "attempt", "is_open"), [
     ("2059", "1", False), ("2100", "1", True), ("2130", "1", True), ("2359", "1", True),
     ("0000", "1", True), ("0159", "1", True), ("0200", "1", False),
-    # 08 and 09 are not octal. 10# reads them as base 10.
-    ("0806", "1", False), ("0959", "1", False), ("1200", "1", False),
+    # CIV-21: the 05:30 and 13:30 slots. 08 and 09 are not octal, and 10#
+    # reads them as base 10.
+    ("0459", "1", False), ("0500", "1", True), ("0530", "1", True),
+    ("0806", "1", True), ("0959", "1", True), ("1000", "1", False),
+    ("1200", "1", False), ("1259", "1", False), ("1300", "1", True),
+    ("1330", "1", True), ("1759", "1", True), ("1800", "1", False),
+    ("2000", "1", False),
     # A person's rerun of a held run releases, as a dispatch does.
-    ("1000", "2", True), ("0806", "3", True),
+    ("1000", "2", True), ("1200", "3", True),
 ])
 def test_the_window_reads_the_clock(deploy: dict, tmp_path: pathlib.Path,
                                     clock: str, attempt: str, is_open: bool) -> None:
@@ -306,8 +365,9 @@ def test_the_window_reads_the_clock(deploy: dict, tmp_path: pathlib.Path,
     if is_open:
         assert not summary.exists()
     else:
-        assert "::warning title=Release waits a day::" in done.stdout
-        assert "Release WAITS" in summary.read_text(encoding="utf-8")
+        assert "::warning title=Release waits for the next slot::" in done.stdout
+        text = summary.read_text(encoding="utf-8")
+        assert "Release WAITS" in text and "The next slot ships." in text
 
 
 # ── 6. Each kind of run, through the release conditions (CIV-13) ─────────────
@@ -476,7 +536,7 @@ def test_the_run_name_of_each_kind_of_run(deploy: dict, ctx: dict, title: str) -
     assert _eval(deploy["run-name"], ctx) == title
 
 
-# ── 7. A night ships once (CIV-13) ──────────────────────────────────────────
+# ── 7. A slot ships once (CIV-13, CIV-21) ───────────────────────────────────
 
 _REPO_ENV = {"GITHUB_REPOSITORY": "Hathi-Labs/Metorite", "GITHUB_RUN_ID": "500",
              "GITHUB_SERVER_URL": "https://github.com"}
@@ -554,7 +614,7 @@ def test_once_ships_when_no_nightly_run_shipped(deploy: dict, tmp_path: pathlib.
         jobs={"401": _publish("skipped")})
     assert open_ == "open=true"
     assert "::warning" not in stdout and not summary
-    # It reads the window of tonight, and never its own run.
+    # It reads the window of this slot, and never its own run.
     assert any("created=>=2026-11-05T21:00:00Z" in c for c in calls)
     assert not any("/runs/500/" in c for c in calls)
 
@@ -565,7 +625,7 @@ def test_once_holds_when_a_nightly_dispatch_shipped(deploy: dict, tmp_path: path
         deploy, tmp_path, dispatch=[_SELF_RUN, _NIGHTLY_RUN],
         jobs={"402": _publish("success")})
     assert open_ == "open=false"
-    assert "::notice title=Release shipped tonight::" in stdout
+    assert "::notice title=Release shipped in this slot::" in stdout
     assert "Release SKIPPED" in summary and "/actions/runs/402" in summary
 
 
@@ -595,8 +655,9 @@ def test_a_plain_dispatch_never_counts(deploy: dict, tmp_path: pathlib.Path) -> 
 
 @needs_bash
 def test_once_ships_with_a_warning_when_the_api_fails(deploy: dict, tmp_path: pathlib.Path) -> None:
-    """FAIL OPEN, on purpose. A second ship of one night is one more apply of
-    the same or a newer commit. A missed night is a day of merges held back."""
+    """FAIL OPEN, on purpose. A second ship of one slot is one more apply of
+    the same or a newer commit. A missed slot holds merges back until the
+    next slot."""
     open_, stdout, _, calls = _run_once(deploy, tmp_path, fail=True)
     assert open_ == "open=true"
     assert "::warning title=Release may ship twice::" in stdout
@@ -628,8 +689,19 @@ def test_a_rerun_skips_the_check(deploy: dict, tmp_path: pathlib.Path) -> None:
     ("2026-11-06T01:59:00Z", "2026-11-05T21:00:00Z"),
     ("2026-12-01T01:30:00Z", "2026-11-30T21:00:00Z"),
     ("2027-01-01T00:10:00Z", "2026-12-31T21:00:00Z"),
+    ("2026-11-06T04:59:59Z", "2026-11-05T21:00:00Z"),
+    # CIV-21: the 05:30 slot looks back to 05:00, not to the night before.
+    ("2026-11-06T05:00:00Z", "2026-11-06T05:00:00Z"),
+    ("2026-11-06T05:40:00Z", "2026-11-06T05:00:00Z"),
+    ("2026-11-06T09:59:00Z", "2026-11-06T05:00:00Z"),
+    # The 13:30 slot looks back to 13:00, not to 05:00.
+    ("2026-11-06T13:00:00Z", "2026-11-06T13:00:00Z"),
+    ("2026-11-06T13:40:00Z", "2026-11-06T13:00:00Z"),
+    ("2026-11-06T17:59:00Z", "2026-11-06T13:00:00Z"),
+    ("2026-11-06T20:59:00Z", "2026-11-06T13:00:00Z"),
+    ("2027-01-01T05:10:00Z", "2027-01-01T05:00:00Z"),
 ])
-def test_once_looks_back_to_the_window_open(deploy: dict, tmp_path: pathlib.Path,
+def test_once_looks_back_to_the_window_open_of_this_slot(deploy: dict, tmp_path: pathlib.Path,
                                             now: str, since: str) -> None:
     _, _, _, calls = _run_once(deploy, tmp_path, now=now)
     runs = [c for c in calls if "/workflows/deploy.yml/runs?" in c]

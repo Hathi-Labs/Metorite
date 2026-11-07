@@ -371,7 +371,7 @@ The buffer and the finish are ordinary tasks with the tags `Buffer` and `Milesto
 3. **Then:** PJP-6, then PJP-7, PJP-8 and PJP-10 in parallel.
 4. **Last:** PJP-5 and PJP-11.
 
-Each slice that changes what a member sees follows D145. That is a preview on this PC, the owner's Approve, the local gate and the merge. Production follows at the 21:30 UTC release.
+Each slice that changes what a member sees follows D145. That is a preview on this PC, the owner's Approve, the local gate and the merge. Production follows at the next release slot (D194).
 
 ---
 

@@ -219,7 +219,7 @@ delivery makes a silent failed deploy more likely, not less.
 > the local stack up (`scripts/dev_up.sh`) → **preview** it to the owner and
 > wait for **approval** → **verify** independently and **review** by risk tier,
 > beside the **local staging gate** (`scripts/stage_local.sh`). Then **merge
-> it**. Production takes it at the 21:30 UTC release.
+> it**. Production takes it at the next release slot (05:30, 13:30 or 21:30 UTC).
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
 never the implementer. A small slice (LOW, or STANDARD in build) skips the
@@ -236,10 +236,10 @@ The owner retired staging (D144), and this PC does its job now.
    merge with today's `main`. It runs the full suite and the production build.
    It rehearses the migrations on production's reduced copy, and runs smoke.
    A pass posts `local-staging` on the head commit, and `premerge.sh` needs it.
-3. **Production moves once a day, at 21:30 UTC.** Do not dispatch `deploy.yml`
-   after a merge. Dispatch only for a hotfix the owner asks for, or when
-   production is down.
-   The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
+3. **Production moves three times a day, at 05:30, 13:30 and 21:30 UTC (D194).**
+   Do not dispatch `deploy.yml` after a merge. Dispatch only for a hotfix the
+   owner asks for, or when production is down.
+   The home box starts each release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 
 A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
 `scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
