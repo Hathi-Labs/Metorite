@@ -296,6 +296,23 @@ def allowed_orgs() -> frozenset[str]:
     return _parse_orgs(str(get_settings().agent_access_orgs or ""))
 
 
+def protocol_allowed(organization_id: object) -> bool:
+    """True when ``agent_protocol_orgs`` allows *organization_id*.
+
+    SW-56. The ONE reader of the flag. It keeps the ``protocol`` block of the
+    ``claim_task`` and ``my_work`` results dark: an organization that it
+    refuses gets results with no such key. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. It
+    reads the settings at each call. The caller passes the organization of
+    the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().agent_protocol_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
 def org_allowed(organization_id: object) -> bool:
     """True when ``agent_access_orgs`` allows *organization_id*.
 
@@ -326,6 +343,23 @@ def change_access_allowed(organization_id: object) -> bool:
     if org is None:
         return False
     orgs = _parse_orgs(str(get_settings().agent_change_access_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+def playbook_allowed(organization_id: object) -> bool:
+    """True when ``playbook_orgs`` allows *organization_id*.
+
+    PB-2 (D186, ``orchestration_playbook.md`` §7). The ONE reader of the flag.
+    It keeps the playbook prompts dark: an organization that it refuses sees
+    only the prompts it saw before. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. It
+    reads the settings at each call. The caller passes the organization of the
+    token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().playbook_orgs or ""))
     return ALL_ORGS in orgs or org in orgs
 
 
@@ -1083,6 +1117,8 @@ __all__ = [
     "parse_scope",
     "path_shapes",
     "pkce_matches",
+    "playbook_allowed",
+    "protocol_allowed",
     "redirect_display",
     "redirect_host",
     "redirect_uri_matches",

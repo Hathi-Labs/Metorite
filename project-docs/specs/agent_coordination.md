@@ -1322,6 +1322,7 @@ They keep their own gates.
 - **Done when.** A client that ignores instructions and prompts still reads the block in the claim result.
 - **Fence.** `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`. The 3500-character budget fence belongs to task 1803.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** Task 1803 (no spec).
+- **As built (2026-11-07).** `tools.PROTOCOL_LINES` holds five lines. The key `protocol` is optional in the output schema of both tools. It shows only while the runs flag is on, because each line names a run tool, and only for an organization on `agent_protocol_orgs` (`agent_oauth.protocol_allowed`). The park-on-CI line waits for SW-60. Fence: `test_mcp_edge_context.py` `TestTheProtocolBlock` and `test_mcp_edge_claim.py` `TestTheClaimProtocolBlock`.
 
 #### SW-57 · The evidence of a pull request is a GitHub check
 
