@@ -24,6 +24,11 @@ it does not change who may flip it. The flip stays OWNER-GATE
 `/projects/my/focus-sessions` route answers 404 before any database work. A
 reload applies it. The flip stays OWNER-GATE (`enforcement-flip`).
 
+`WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
+(`waiting_on_me.md` §7.3). Its one reader is
+`gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
+flip stays OWNER-GATE (`enforcement-flip`).
+
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:
 
