@@ -1,5 +1,5 @@
 /**
- * Fixtures for the Today band tests (PKG-18a): a feed card and a feed answer.
+ * Fixtures for the Do first band tests (PKG-18a): a feed card and a feed answer.
  * Test support only. The product code never imports this file.
  */
 import type { FeedAnswer, FeedCard, FeedGroupId } from "./feed";

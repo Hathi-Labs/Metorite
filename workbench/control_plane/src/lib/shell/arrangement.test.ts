@@ -1,6 +1,6 @@
 /**
  * The R7 fence of `package_host.md` §14: a stable region moves only on a
- * member action (PKG-18a). Three checks on the Today band.
+ * member action (PKG-18a). Three checks on the Do first band.
  *
  * What this proves, and what it does not. It proves the BAND moves nothing,
  * by construction: the band is a pure function of the feed answer, the two
@@ -8,6 +8,13 @@
  * card order stay equal across two different feed answers. It does not prove
  * that no other code moves a stable region. PKG-19 and PKG-17 add their own
  * checks beside these.
+ *
+ * ⚠️ Check 3 cannot fail by construction: `todayBand` is pure and takes no
+ * arrangement, so the snapshot is equal whatever the band does. Check 2 is
+ * the real fence, because it refuses each way the band code could write the
+ * arrangement. Check 3 stays as a record of the regions this spec calls
+ * stable. The hold that keeps the band still within a visit has its own
+ * fence (`todayBand.test.ts`, "the hold").
  *
  * Mutations, run by hand (2026-11-07):
  *   - `todayBand` ignores `limit`: "shows at most five items" and "the band

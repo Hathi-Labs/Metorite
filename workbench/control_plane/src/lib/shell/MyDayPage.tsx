@@ -34,10 +34,10 @@
  * flag, `NEXT_PUBLIC_BRIEF_CARD` (`briefCardOn`). It sits above the cards or
  * the feed, in either layout, and draws nothing when the brief is absent.
  *
- * **The Today band** (`package_host.md` §9.3, PKG-18a) is a fourth flag,
+ * **The Do first band** (`package_host.md` §9.3, PKG-18a) is a fourth flag,
  * `NEXT_PUBLIC_TODAY_BAND` (`todayBandOn`). With the feed on, it sits above
  * the feed column and shows the top five cards with their reasons. It reads
- * the same feed answer as the column.
+ * the same feed answer as the column. `showTodayBand` is its one gate.
  */
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -67,7 +67,7 @@ import { cardOrderFor, cardsFor, dateLine, failedLines, seesApprovals, summaryLi
 import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
 import { BUILT_CARDS } from "./presets";
 import TodayBand from "./TodayBand";
-import { todayBandOn, todayBandOnServer } from "./todayBandFlag";
+import { showTodayBand, todayBandOn, todayBandOnServer } from "./todayBandFlag";
 import { homePane } from "./shellNav";
 import AiWaitingCard, { useAiWaiting } from "./AiWaitingCard";
 import { publishMyDayCount } from "./myDayCount";
@@ -251,7 +251,7 @@ export default function MyDay() {
         // FIRST, so "You are caught up" ends the page (visual review). The
         // start classes place each one at `xl`, whatever the order.
         <>
-        {bandOn && cards.needs ? <TodayBand feed={feed} className="mt-6" /> : null}
+        {showTodayBand(bandOn, feedOn, cards.needs) ? <TodayBand feed={feed} className="mt-6" /> : null}
         <div className="mt-6 grid grid-cols-1 items-start gap-4 xl:grid-cols-3">
           {cards.today ? (
             <TodayCard today={today} now={now} className="xl:sticky xl:top-4 xl:col-start-3 xl:row-start-1" />
