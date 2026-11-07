@@ -7,8 +7,8 @@ acts are REAL rows: the admin seeds ``audit_event`` and ``reach_outbox``,
 and the run reads them through ``acb_audit.read.acts`` and
 ``outbox.sent_rows`` under FORCE RLS.
 
-Part 1 needs no database: the lines, the links and the policy words of
-``gather``.
+The hermetic half (the lines, the links, the rank, the collapse and the lead)
+is ``test_brief_acted.py``. This module SKIPS whole without the database.
 
 **Mutations (R7).**
 
@@ -16,8 +16,6 @@ Part 1 needs no database: the lines, the links and the policy words of
   ``test_r8_three_sent_rows_and_two_acts_give_five_acted_claims`` goes red.
 * B2. ``run._acted_reads``: catch the fault and answer ``[], []``.
   ``test_r8_an_acted_read_that_fails_retries`` goes red.
-* B3. ``gather.audit_href``: answer the target's path with no pane check.
-  ``test_the_audit_link_is_a_live_pane_or_my_day`` goes red.
 """
 
 # ruff: noqa: F811
@@ -27,7 +25,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -35,9 +33,7 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from gateway.brief import gather, store
 from gateway.brief import run as brief_run
-from gateway.reach import plan
 from sqlalchemy import text
 
 from tests.unit.test_brief_closeout_r8 import (  # noqa: F401
@@ -65,122 +61,10 @@ from tests.unit.test_brief_run_r8 import (  # noqa: F401
     world,
 )
 
+pytestmark = _DB_GATE
+
 #: Inside the member's day of 2099-03-10 in Kolkata, before the run at TC1.
 NOON = datetime(2099, 3, 10, 6, 0, tzinfo=UTC)
-
-
-# ── Part 1: the lines and the links, with no database ───────────────────────
-
-
-def _act(action: str, *, policy: str | None = None, target: str = "agent:sales",
-         at: datetime = NOON, **payload: Any) -> SimpleNamespace:
-    return SimpleNamespace(id=str(uuid.uuid4()), at=at, action=action, target=target,
-                           policy=policy, payload=payload)
-
-
-def _row(kind: str = "brief", channel: str = "whatsapp", ids: tuple[str, ...] = ("tasks:1",),
-         at: datetime = NOON) -> SimpleNamespace:
-    return SimpleNamespace(id=str(uuid.uuid4()), kind=kind, channel=channel, signal_ids=ids,
-                           sent_at=at)
-
-
-def test_the_audit_link_is_a_live_pane_or_my_day() -> None:
-    """Mutation B3."""
-    assert gather.audit_href("app:projects.list_tasks") == "/projects"
-    assert gather.audit_href("app:crm.get_deal") == "/crm"
-    # Not a live pane, a path trick, an agent, a record: the My Day path.
-    assert gather.audit_href("app:settings.x") == gather.MY_DAY_PATH
-    assert gather.audit_href("app:..%2Fapi.x") == gather.MY_DAY_PATH
-    assert gather.audit_href("app:.x") == gather.MY_DAY_PATH
-    assert gather.audit_href("agent:sales") == gather.MY_DAY_PATH
-    assert gather.audit_href("deal:42") == gather.MY_DAY_PATH
-    assert gather.audit_href(None) == gather.MY_DAY_PATH
-    assert gather.in_app_href(gather.MY_DAY_PATH) == "/"
-
-
-def test_the_reach_link_is_the_card_of_the_first_signal() -> None:
-    cards = [card("tasks:1"), card("email:acc:t1")]
-    closed = [_closed("approvals:9", "Nine")]
-    assert gather.reach_href(("tasks:1", "email:acc:t1"), cards, closed) == "/tasks?x=1"
-    assert gather.reach_href(("email:acc:t1",), cards, closed) == "/email?x=1"
-    # A card that was closed today: the Handled row has its href.
-    assert gather.reach_href(("approvals:9",), cards, closed) == "/approvals?x=1"
-    # No card, no signal, or a card with an outside link: the My Day path.
-    assert gather.reach_href(("tasks:404",), cards, closed) == gather.MY_DAY_PATH
-    assert gather.reach_href((), cards, closed) == gather.MY_DAY_PATH
-    assert gather.reach_href(("crm:1",), [card("crm:1", href="https://x.test/")], []) == "/"
-
-
-def test_each_line_names_its_policy_or_says_no_policy_recorded() -> None:
-    door = _act("agent_door_call", policy="projects:read", target="app:projects.list_tasks",
-                app="projects", op="list_tasks")
-    push = _act("agent_push_by_reviewer", policy="chat:autopush")
-    broker = _act("execute:send_email")
-    assert gather.act_line(door) == (
-        "An outside agent used projects: list_tasks (policy: projects:read)")
-    assert gather.act_line(push) == (
-        "Mira pushed the reviewed changes of the agent sales (policy: chat:autopush)")
-    assert gather.act_line(broker) == "The Action Broker ran send_email (no policy recorded)"
-    assert gather.sent_line(_row("brief")) == "Sent your brief on WhatsApp (policy: brief)"
-    assert gather.sent_line(_row("reminder_due", "web_push")) == (
-        "Sent you a reminder as a push (no policy recorded)")
-
-
-def test_acted_claims_are_built_by_code_and_counted() -> None:
-    """The fence of §8.2 item 2: each claim with no policy is counted."""
-    acts = [_act("agent_door_call", policy="crm:read", target="app:crm.get_deal",
-                 app="crm", op="get_deal"),
-            _act("execute:send_email", at=NOON + timedelta(seconds=30))]
-    sent = [_row("brief", at=NOON + timedelta(minutes=1)),
-            _row("interrupt", ids=("email:acc:t1",), at=NOON - timedelta(minutes=1))]
-    got = gather.acted_claims(acts, sent, [card("email:acc:t1")], [], 3)
-    assert [c.position for c in got] == [3, 4, 5, 6]
-    assert all(c.section == "acted" for c in got)
-    assert [c.source_app for c in got] == ["reach", "audit", "audit", "reach"]
-    assert [c.source_kind for c in got] == [
-        "outbox", "agent_door_call", "execute:send_email", "outbox"]
-    assert [c.href for c in got] == ["/email?x=1", "/crm", "/", "/"]
-    assert got[0].source_id == f"reach:{sent[1].id}" and got[1].source_id == f"audit:{acts[0].id}"
-    assert gather.no_policy_count(got) == 2
-
-
-def test_acted_claims_are_cut_to_the_brief_lines() -> None:
-    sent = [_row(at=NOON + timedelta(minutes=i)) for i in range(plan.BRIEF_LINES + 3)]
-    assert len(gather.acted_claims([], sent, [], [], 0)) == plan.BRIEF_LINES
-
-
-def test_the_lead_counts_the_acts() -> None:
-    def claim(section: str) -> store.ClaimIn:
-        return store.ClaimIn(position=0, section=section, text="x", source_app="tasks",
-                             source_kind="k", source_id="tasks:1", href="/tasks")
-
-    day = date(2099, 3, 10)
-    assert gather.closeout_lead(day, [claim("acted")]) == "Your close-out, Tue 10 Mar. 1 act for you."
-    assert gather.closeout_lead(day, [claim("done"), claim("moved"), claim("acted"),
-                                      claim("acted")]) == (
-        "Your close-out, Tue 10 Mar. 1 done, 1 moved to tomorrow and 2 acts for you.")
-    assert gather.closeout_lead(day, [claim("done"), claim("moved")]) == (
-        "Your close-out, Tue 10 Mar. 1 done and 1 moved to tomorrow.")
-
-
-def test_the_day_window_is_the_local_day_of_the_slot() -> None:
-    from zoneinfo import ZoneInfo
-
-    slot = datetime(2099, 3, 10, 18, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
-    since, until = brief_run.day_window(date(2099, 3, 10), slot)
-    assert since == datetime(2099, 3, 9, 18, 30, tzinfo=UTC)
-    assert until - since == timedelta(days=1)
-    with pytest.raises(ValueError):
-        brief_run.day_window(date(2099, 3, 10), slot.replace(tzinfo=None))
-
-
-def test_the_brief_package_stays_free_of_send_seams() -> None:
-    """The BR-7a fence, after the new import of ``outbox.sent_rows``."""
-    from tests.unit.test_job_effects_fence import (
-        test_the_brief_package_imports_no_send_seam_and_no_write_route as fence,
-    )
-
-    fence()
 
 
 # ── Part 2: the close-out on a real database ────────────────────────────────
@@ -268,24 +152,46 @@ class TestActedSection:
         got = _claims(w, str(run.id))
         assert [c.section for c in got] == ["done", "moved"] + ["acted"] * 5
         acted = got[2:]
+        # The rank: the sent rows and the push first, the door read last.
         assert [c.source_id for c in acted] == [
             f"reach:{ids['brief']}", f"reach:{ids['interrupt']}", f"reach:{ids['reminder']}",
-            f"audit:{ids['door']}", f"audit:{ids['push']}"]
+            f"audit:{ids['push']}", f"audit:{ids['door']}"]
         assert [c.source_app for c in acted] == ["reach"] * 3 + ["audit"] * 2
         assert [c.source_kind for c in acted] == [
-            "outbox"] * 3 + ["agent_door_call", "agent_push_by_reviewer"]
+            "outbox"] * 3 + ["agent_push_by_reviewer", "agent_door_call"]
         assert [c.href for c in acted] == [
-            "/tasks?x=1", "/approvals?x=1", "/", "/projects", "/"]
+            "/tasks?x=1", "/approvals?x=1", "/", "/", "/projects"]
         assert [c.text for c in acted] == [
             "Sent your brief on WhatsApp (policy: brief)",
             "Sent you an alert on WhatsApp (no policy recorded)",
             "Sent you a reminder as a push (no policy recorded)",
-            "An outside agent used projects: list_tasks (policy: projects:read)",
-            "Mira pushed the reviewed changes of the agent sales (policy: chat:autopush)"]
+            "Mira pushed the reviewed changes of the agent sales (policy: chat:autopush)",
+            "An outside agent used projects: list_tasks (policy: projects:read)"]
         assert [c.position for c in got] == list(range(7))
         # Ben's day holds his one act, and nothing of Ana's.
         ben = _closeouts(w, BEN)[0]
         assert [c.source_kind for c in _claims(w, str(ben.id))] == ["agent_door_call"]
+
+    def test_r8_twenty_door_reads_and_one_push_show_the_push_and_the_true_total(
+            self, acts, monkeypatch):
+        """Review P1 of BR-7b-2: one busy client cannot push out a later act."""
+        w = acts
+        _on(w, monkeypatch)
+        _handled(w, monkeypatch)
+        reads = [_audit(w.p, w.p.org_a, "agent_door_call",
+                        {"member": ANA, "decision": "allowed", "policy": "projects:read",
+                         "app": "projects", "op": "list_tasks"},
+                        target="app:projects.list_tasks", at=NOON + timedelta(minutes=i))
+                 for i in range(20)]
+        push = _audit(w.p, w.p.org_a, "agent_push_by_reviewer",
+                      {"member": ANA, "policy": "chat:autopush"},
+                      at=datetime(2099, 3, 10, 9, 30, tzinfo=UTC))
+        _plan_and_run(w)
+        run = _closeouts(w, ANA)[0]
+        got = _claims(w, str(run.id))
+        assert [c.source_id for c in got] == [f"audit:{push}", f"audit:{reads[0]}"]
+        assert got[1].text == "An outside agent used projects: 20 reads (policy: projects:read)"
+        assert run.lead == "Your close-out, Tue 10 Mar. 21 acts for you."
 
     def test_r8_a_day_with_no_act_gives_no_acted_claim(self, acts, monkeypatch):
         w = acts

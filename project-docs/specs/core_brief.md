@@ -557,6 +557,13 @@ lands. Mira's acts of a member's own chat run are the main source now.
    open cards, then in the Handled rows of the day. The builder chose `/`
    for a row with no such card, so a sent row is never left out. The owner
    may change it.
+6. **The order and the cut, as built (BR-7b-2).** The changes go first.
+   They are a push, a broker act, a door write and each sent Reach row.
+   Other acts follow, and the door reads go last. The door reads of one app
+   and one policy make ONE line with a count. So one busy client cannot fill
+   the section. That line takes the id of its oldest row as `source_id`.
+   The section keeps `plan.BRIEF_LINES` lines. The lead names the true total
+   and the number shown, such as "25 acts for you, 7 shown".
 
 ### 8.3 Tenancy of `audit_event` and the R8 plan
 
@@ -622,6 +629,7 @@ The owner decided Q1 to Q7 on 2026-10-29 (epic #479, the comment
 | Q7 | Outside the app, when? | Web push is in v1, and it ships last, after the in-app surfaces |
 | Q8 | What does "the member asked to be told" mean for rule 3? | **OPEN, asked on task 590 on 2026-11-06.** Options: (a) one boolean in `my_day_prefs` that sets `notify_me` on every `block_soon` card, no migration (recommended), (b) only blocks that have a reminder, (c) drop rule 3, because the Notify me request (RE-5) already interrupts |
 | Q9 | What counts as an act in the `acted` section, and how does a claim link to it? | **DECIDED 2026-11-07 08:29 UTC (task 592).** The owner accepted the defaults of §8.1 to §8.4 and chose to build now, with a section that is mostly empty until AUTO-8. The defaults: the four-action allow-list, the member in `payload.member`, the policy in `payload.policy`, the prefixes `audit` and `reach`, and CRM, workflow and agent-mail acts out of BR-7b-1 |
+| Q10 | The close-out reads the acts at its slot. Does a late act fall between two close-outs? | **OPEN, asked on task 592.** The window runs from 00:00 to 24:00 of the local day. The run reads it at the slot, so an act after the read and before 24:00 is in no close-out. Proposed default: keep the window, and record the gap here. Alternative: read from the last close-out to now |
 
 ### 9.1 Gaps that the BR-2a-1 audit found
 
@@ -700,7 +708,7 @@ Each item is a "done when". Each fence runs red first, then green.
 | 13 | With the `notify_me` source of Q8 on, a `block_soon` card carries `notify_me` and rule 3 fires. With it off, rule 3 matches nothing | `test_reach_exceptions.py` (waits on Q8) |
 | 14 | The Settings screen lists the four rules in words. A switch mutes or unmutes one rule, and the route of slice 2a stores it | `test_reach_rule_mutes_route.py`, and the D145 preview |
 | 15 | **BUILT.** BR-7b-1 done when: a fake day with 3 sent rows and 2 allow-listed audit acts gives 5 acted claims, each with source, policy and href. An act of org B never appears for org A. An audit row that is not an act never appears. R8 uses the `promoted` fixture | `test_audit_acts_read_r8.py`, `test_brief_acted_r8.py` (a real database, two tenants) |
-| 16 | **BUILT.** BR-7b-2 done when: a fake day with 3 sent rows and 2 allow-listed audit acts gives a close-out with 5 acted claims, each with source, policy and href. An act of org B never appears for org A. An audit row that is not an act never appears. A day with no act gives `empty` for the section | `test_brief_acted_r8.py` |
+| 16 | **BUILT.** BR-7b-2 done when: a fake day with 3 sent rows and 2 allow-listed audit acts gives a close-out with 5 acted claims, each with source, policy and href. An act of org B never appears for org A. An audit row that is not an act never appears. A day with no act gives `empty` for the section | `test_brief_acted.py`, `test_brief_acted_r8.py` |
 
 All fences are under `tests/unit/`.
 
@@ -714,7 +722,7 @@ uv run pytest tests/unit/test_brief_store_r8.py tests/unit/test_brief_run.py \
   tests/unit/test_reach_exceptions.py tests/unit/test_brief_phrase.py \
   tests/unit/test_brief_phrase_r8.py tests/unit/test_brief_closeout.py \
   tests/unit/test_brief_closeout_r8.py tests/unit/test_audit_acts_read_r8.py \
-  tests/unit/test_brief_acted_r8.py -q
+  tests/unit/test_brief_acted.py tests/unit/test_brief_acted_r8.py -q
 uv run pytest tests/unit/test_reach_plan.py tests/unit/test_chat_brief_turn.py \
   tests/unit/test_chat_brief_turn_r8.py tests/unit/test_job_queue.py \
   tests/unit/test_tenant_coverage.py -q

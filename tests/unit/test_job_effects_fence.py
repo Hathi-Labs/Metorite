@@ -101,26 +101,79 @@ def unlabelled_calls(source: str) -> list[int]:
     return lines
 
 
-def forbidden_imports(source: str, package: str = "gateway.brief") -> list[str]:
-    """The imports of *source* that are not on the allowlist. A relative
-    import resolves against *package*. Pure."""
-    found: list[str] = []
+#: The packages outside ``gateway`` that hold a send seam or a write to a
+#: source system. The brief imports none of them (§8 item 1). Fence 3 used
+#: to read ``gateway.*`` only, so these were open.
+_FOREIGN_DENIED = ("whatsapp_ingestion", "whatsapp_bridge", "email_ingestion", "ingestion",
+                   "action_broker", "meeting_bot", "agent_edge", "web_worker", "reconciler",
+                   "customer_console")
+#: The words that name a send seam in any module path, foreign or not.
+_SEND_WORDS = ("whatsapp", "smtp", "sender", "send_")
+#: A foreign package of which the brief takes only these modules. ``acb_audit``
+#: holds a writer (``record``), ``orchestrator`` runs agents, and
+#: ``acb_skills`` holds the tools that act.
+_FOREIGN_NARROW: dict[str, tuple[str, ...]] = {
+    "acb_audit": ("acb_audit.read",),
+    "orchestrator": ("orchestrator.in_app_path",),
+    "acb_skills": ("acb_skills.untrusted",),
+}
+
+
+def import_targets(source: str, package: str = "gateway.brief",
+                   ) -> list[tuple[str, str | None, str | None]]:
+    """Each import of *source* as ``(module, name, alias)``. A plain
+    ``import a.b`` gives ``("a.b", None, alias)``. A relative import
+    resolves against *package*. Each name of a parenthesised list is its own
+    entry. Pure."""
+    out: list[tuple[str, str | None, str | None]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
-            found += [a.name for a in node.names
-                      if a.name.split(".")[0] == "gateway" and not _ok(a.name, None)]
+            out += [(a.name, None, a.asname) for a in node.names]
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if node.level:
                 parts = package.split(".")[: len(package.split(".")) - node.level + 1]
                 module = ".".join(parts + ([module] if module else []))
-            if module.split(".")[0] != "gateway":
-                continue
-            names = [a.name for a in node.names]
-            if module in _PACKAGE_NAMES:
-                found += [f"{module}.{n}" for n in names if n not in _PACKAGE_NAMES[module]]
-            else:
-                found += [f"{module}.{n}" for n in names if not _ok(module, n)]
+            out += [(module, a.name, a.asname) for a in node.names]
+    return out
+
+
+def _foreign_ok(module: str, name: str | None) -> bool:
+    """True when the brief may take *name* from the non-gateway *module*."""
+    full = f"{module}.{name}" if name else module
+    top = module.split(".")[0]
+    if any(w in full.lower() for w in _SEND_WORDS):
+        return False
+    if top in _FOREIGN_DENIED:
+        return False
+    narrow = _FOREIGN_NARROW.get(top)
+    if narrow is None:
+        return True
+    return any(full == n or full.startswith(n + ".") or module == n
+               or module.startswith(n + ".") for n in narrow)
+
+
+def forbidden_imports(source: str, package: str = "gateway.brief") -> list[str]:
+    """The imports of *source* that are not on the allowlist: a gateway
+    module off :data:`_ALLOWED`, a name off :data:`_ALLOWED_NAMES` or an
+    alias of one, and a foreign send package (:func:`_foreign_ok`). Pure."""
+    found: list[str] = []
+    for module, name, alias in import_targets(source, package):
+        full = f"{module}.{name}" if name else module
+        if module.split(".")[0] != "gateway":
+            if not _foreign_ok(module, name):
+                found.append(full)
+            continue
+        if any(w in full.lower() for w in _SEND_WORDS):
+            found.append(full)
+        elif name is None:
+            if not _ok(module, None):
+                found.append(full)
+        elif module in _PACKAGE_NAMES:
+            if name not in _PACKAGE_NAMES[module]:
+                found.append(full)
+        elif not _ok(module, name) or (alias and module in _ALLOWED_NAMES):
+            found.append(full)
     return found
 
 
@@ -233,6 +286,30 @@ def test_the_fences_see_a_planted_violation() -> None:
         "gateway.reach.outbox.plan"]
     assert forbidden_imports("from gateway.reach import outbox") == ["gateway.reach.outbox"]
     assert forbidden_imports("import gateway.reach.outbox") == ["gateway.reach.outbox"]
+    # BR-7b-2 repair: a foreign send package, an alias, and a parenthesised list.
+    assert forbidden_imports("from gateway.reach.outbox import sent_rows as s") == [
+        "gateway.reach.outbox.sent_rows"]
+    assert forbidden_imports("from gateway.reach.outbox import (sent_rows, plan)") == [
+        "gateway.reach.outbox.plan"]
+    assert forbidden_imports("from gateway.reach.outbox import (\n    sent_rows,\n    finish,\n)") == [
+        "gateway.reach.outbox.finish"]
+    assert forbidden_imports("from whatsapp_ingestion.providers.cloud_api import X") == [
+        "whatsapp_ingestion.providers.cloud_api.X"]
+    assert forbidden_imports("import whatsapp_ingestion") == ["whatsapp_ingestion"]
+    assert forbidden_imports("import whatsapp_ingestion.providers as p") == [
+        "whatsapp_ingestion.providers"]
+    assert forbidden_imports("from whatsapp_bridge import client") == ["whatsapp_bridge.client"]
+    assert forbidden_imports("from email_ingestion.providers.gmail import GmailProvider") != []
+    assert forbidden_imports("from action_broker.broker import execute") != []
+    assert forbidden_imports("from acb_audit import record") == ["acb_audit.record"]
+    assert forbidden_imports("from orchestrator.executor import run_agent") != []
+    assert forbidden_imports("from acb_skills.integrations import build_integrations") != []
+    assert forbidden_imports("from somepkg.whatsapp_send import go") != []
+    assert forbidden_imports("from acb_audit import read") == []
+    assert forbidden_imports("from acb_audit import read as audit_read") == []
+    assert forbidden_imports("from orchestrator.in_app_path import is_in_app_path") == []
+    assert forbidden_imports("from acb_skills.untrusted import UntrustedFrame") == []
+    assert forbidden_imports("from acb_llm import routed") == []
     assert forbidden_imports("from . import store\nfrom ..jobs import queue") == []
     assert unlabelled_calls("w.register('a.b', h)") == [1]
     assert unlabelled_calls("register('a.b', h, effect=None)") == [1]

@@ -265,10 +265,11 @@ async def _closeout_reads(org: str, member: str, user: Any, run: store.Run, snap
     claims = gather.closeout_claims(closed.closed, snap.cards, now)
     acts, sent = await _acted_reads(org, member, run.local_date, slot_at)
     acted = gather.acted_claims(acts, sent, snap.cards, closed.closed, len(claims))
-    if acted:
-        _log.info("brief.acted", acts=len(acted), no_policy=gather.no_policy_count(acted))
-    claims += acted
-    return claims, gather.closeout_lead(run.local_date, claims)
+    if acted.claims:
+        _log.info("brief.acted", lines=len(acted.claims), acts=acted.total, shown=acted.shown,
+                  no_policy=gather.no_policy_count(acted.claims))
+    claims += acted.claims
+    return claims, gather.closeout_lead(run.local_date, claims, acted)
 
 
 async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue.Claim,

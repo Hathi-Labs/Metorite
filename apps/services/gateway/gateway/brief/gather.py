@@ -38,6 +38,7 @@ grammar: the CHECK ``brief_claims_source_id_shape`` holds the shape.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -166,17 +167,27 @@ def closeout_claims(closed: list[Any], cards: list[dict[str, Any]],
     return out
 
 
-def closeout_lead(local_date: Any, claims: list[store.ClaimIn]) -> str | None:
+def closeout_lead(local_date: Any, claims: list[store.ClaimIn],
+                  acted: Acted | None = None) -> str | None:
     """The template lead of the close-out, from the counts of the claims:
     ``Your close-out, Thu 15 Oct. 2 done and 1 moved to tomorrow.`` With
-    acts (BR-7b-2): ``2 done, 1 moved to tomorrow and 3 acts for you.`` A
-    count of 0 is left out. None with no claim."""
+    acts (BR-7b-2) it names the TRUE total of the day from *acted*, and the
+    number that the lines show after a cut: ``2 done, 1 moved to tomorrow
+    and 25 acts for you, 7 shown.`` With no *acted* it counts the ``acted``
+    claims. A section with no claim names no act, so no number of the lead
+    lacks a source. A count of 0 is left out. None with no claim."""
     done = sum(1 for c in claims if c.section == "done")
     moved = sum(1 for c in claims if c.section == "moved")
-    acted = sum(1 for c in claims if c.section == ACTED)
+    lines = sum(1 for c in claims if c.section == ACTED)
+    total = (acted.total if acted is not None else lines) if lines else 0
+    shown = acted.shown if acted is not None else lines
+    acts = ""
+    if total:
+        acts = f"{total} act{'' if total == 1 else 's'} for you"
+        acts += f", {shown} shown" if shown < total else ""
     parts = (([f"{done} done"] if done else [])
              + ([f"{moved} moved to tomorrow"] if moved else [])
-             + ([f"{acted} act{'' if acted == 1 else 's'} for you"] if acted else []))
+             + ([acts] if acts else []))
     if not parts:
         return None
     words = parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
@@ -283,33 +294,108 @@ def sent_line(row: Any) -> str:
     return _with_policy(what, REACH_BRIEF_POLICY if row.kind == "brief" else None)
 
 
+#: The rank of an act before the cut (§8): a change and a sent row first,
+#: then any other act, then the door reads. A lower rank goes first.
+_RANK_CHANGE, _RANK_OTHER, _RANK_READ = 0, 1, 2
+#: The actions that change something: each keeps its own line.
+_CHANGE_ACTIONS = frozenset({"agent_push_by_reviewer", "mutation_commit_auto_pushed"})
+
+
+def _is_door_read(act: Any) -> bool:
+    """True for a door call whose policy is not a write scope. A row from
+    before BR-7b-1 has no policy, and it counts as a read."""
+    return str(act.action) == "agent_door_call" and not str(act.policy or "").endswith(":write")
+
+
+def _rank(act: Any) -> int:
+    action = str(act.action)
+    if action in _CHANGE_ACTIONS or action.startswith("execute:"):
+        return _RANK_CHANGE
+    if action == "agent_door_call":
+        return _RANK_READ if _is_door_read(act) else _RANK_CHANGE
+    return _RANK_OTHER
+
+
+@dataclass(frozen=True)
+class _Item:
+    rank: int
+    at: Any
+    app: str
+    source_id: str
+    kind: str
+    text: str
+    href: str
+    #: How many acts the line holds: more than 1 for the door reads of one app.
+    count: int = 1
+
+
+@dataclass(frozen=True)
+class Acted:
+    """The ``acted`` section: the claims, and the counts that the lead names."""
+
+    claims: list[store.ClaimIn]
+    #: Every act that the reads gave: audit rows and sent Reach rows.
+    total: int
+    #: The acts that the kept lines hold. Less than :attr:`total` after a cut.
+    shown: int
+
+
+def _door_reads_line(app: str, count: int, policy: str | None) -> str:
+    return _with_policy(f"An outside agent used {_part(app)}: {count} reads", policy)
+
+
 def acted_claims(acts: list[Any], sent: list[Any], cards: list[dict[str, Any]],
-                 closed: list[Any], start: int) -> list[store.ClaimIn]:
-    """The ``acted`` claims of the close-out (BR-7b-2): one for each audit
-    act and each sent Reach row, the oldest first, cut to
-    ``plan.BRIEF_LINES``. The positions start at *start*, after ``done`` and
-    ``moved``. A line with no valid href is skipped (``brief.claim_skipped``).
-    A line with no policy says :data:`NO_POLICY`, and the run logs the count
-    (``brief.acted_no_policy``)."""
-    items: list[tuple[Any, str, str, str, str, str]] = []
+                 closed: list[Any], start: int) -> Acted:
+    """The ``acted`` section of the close-out (BR-7b-2).
+
+    1. Each sent Reach row and each audit act makes one line. The door
+       reads of one app and one policy make ONE line with a count
+       (``An outside agent used projects: 12 reads``), so one busy client
+       cannot fill the section. Its ``source_id`` is the oldest row of the
+       group, and its href is the href of that row.
+    2. The lines go in rank order (:func:`_rank`): the changes and the sent
+       rows first, then the other acts, then the door reads. Inside a rank
+       the oldest goes first.
+    3. The cut keeps ``plan.BRIEF_LINES`` lines. :class:`Acted` carries the
+       true total and the number that the kept lines hold, and
+       :func:`closeout_lead` names both.
+
+    The positions start at *start*, after ``done`` and ``moved``. A line
+    with no valid href is skipped (``brief.claim_skipped``). A line with no
+    policy says :data:`NO_POLICY`."""
+    items: list[_Item] = []
+    reads: dict[tuple[str, str | None], list[Any]] = {}
     for act in acts:
-        items.append((act.at, AUDIT, f"{AUDIT}:{act.id}", str(act.action),
-                      act_line(act), audit_href(act.target)))
-    for row in sent:
-        items.append((row.sent_at, REACH, f"{REACH}:{row.id}", OUTBOX_KIND,
-                      sent_line(row), reach_href(row.signal_ids, cards, closed)))
-    items.sort(key=lambda i: (i[0], i[2]))
-    out: list[store.ClaimIn] = []
-    for _at, app, source_id, kind, text, href in items[:plan.BRIEF_LINES]:
-        if in_app_href(href) is None:
-            _log.info("brief.claim_skipped", kind=kind, reason="no_href")
+        if _is_door_read(act):
+            payload = act.payload if isinstance(act.payload, dict) else {}
+            reads.setdefault((str(payload.get("app") or ""), act.policy), []).append(act)
             continue
-        out.append(store.ClaimIn(position=start + len(out), section=ACTED, text=text,
-                                 source_app=app, source_kind=kind, source_id=source_id,
-                                 href=href))
+        items.append(_Item(_rank(act), act.at, AUDIT, f"{AUDIT}:{act.id}", str(act.action),
+                           act_line(act), audit_href(act.target)))
+    for (app, policy), group in reads.items():
+        group.sort(key=lambda a: (a.at, a.id))
+        first = group[0]
+        text = act_line(first) if len(group) == 1 else _door_reads_line(app, len(group), policy)
+        items.append(_Item(_RANK_READ, first.at, AUDIT, f"{AUDIT}:{first.id}", str(first.action),
+                           text, audit_href(first.target), len(group)))
+    for row in sent:
+        items.append(_Item(_RANK_CHANGE, row.sent_at, REACH, f"{REACH}:{row.id}", OUTBOX_KIND,
+                           sent_line(row), reach_href(row.signal_ids, cards, closed)))
+    items.sort(key=lambda i: (i.rank, i.at, i.source_id))
+    out: list[store.ClaimIn] = []
+    shown = 0
+    for item in items[:plan.BRIEF_LINES]:
+        if in_app_href(item.href) is None:
+            _log.info("brief.claim_skipped", kind=item.kind, reason="no_href")
+            continue
+        out.append(store.ClaimIn(position=start + len(out), section=ACTED, text=item.text,
+                                 source_app=item.app, source_kind=item.kind,
+                                 source_id=item.source_id, href=item.href))
+        shown += item.count
+    total = len(acts) + len(sent)
     if len(items) > plan.BRIEF_LINES:
-        _log.info("brief.acted_cut", left_out=len(items) - plan.BRIEF_LINES)
-    return out
+        _log.info("brief.acted_cut", left_out=len(items) - plan.BRIEF_LINES, total=total)
+    return Acted(claims=out, total=total if out else 0, shown=shown)
 
 
 def no_policy_count(claims: list[store.ClaimIn]) -> int:

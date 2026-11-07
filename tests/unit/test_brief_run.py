@@ -334,6 +334,64 @@ def test_the_run_payload_is_strict() -> None:
     assert member == "ana@b" and local_date == D and slot_at.utcoffset() == timedelta(hours=5, minutes=30)
 
 
+#: The modules of ``gateway/brief/`` that may name ``outbox`` and
+#: ``whatsapp`` as text: the close-out reads the sent rows (BR-7b-2).
+_READS_OUTBOX = frozenset({"gather.py", "run.py"})
+#: The ONE import of the outbox that the brief may hold.
+_OUTBOX_IMPORT = ("gateway.reach.outbox", "sent_rows", None)
+
+
+def send_text_problems(src: str, name: str) -> list[str]:
+    """What breaks the text guard of the brief's no-send rule. Pure.
+
+    * A module other than :data:`_READS_OUTBOX` names neither ``outbox``
+      nor ``whatsapp`` anywhere, as on main.
+    * In every module, no import (parsed with ``ast``, every name of a
+      parenthesised list, every alias) names ``whatsapp``.
+    * The one import that names ``outbox`` is exactly
+      ``from gateway.reach.outbox import sent_rows``, with no alias.
+    * No call of ``outbox.<name>(`` other than ``sent_rows``."""
+    import re
+
+    from tests.unit.test_job_effects_fence import import_targets
+
+    out: list[str] = []
+    if name not in _READS_OUTBOX and ("outbox" in src or "whatsapp" in src):
+        out.append("names outbox or whatsapp")
+    for module, item, alias in import_targets(src):
+        words = " ".join(x for x in (module, item, alias) if x).lower()
+        if "whatsapp" in words:
+            out.append(f"imports {module}.{item}" if item else f"imports {module}")
+        elif "outbox" in words and (module, item, alias) != _OUTBOX_IMPORT:
+            out.append(f"imports {module}.{item} as {alias}" if alias else f"imports {module}.{item}")
+    if re.search(r"\boutbox\.(?!sent_rows\b)\w+\(", src):
+        out.append("calls an outbox writer")
+    return out
+
+
+def test_the_text_guard_refuses_each_planted_send() -> None:
+    """The plants of the review of BR-7b-2. Each must be refused, also in
+    ``run.py`` and ``gather.py``."""
+    plants = [
+        "from whatsapp_ingestion.providers.cloud_api import WhatsAppCloudProvider",
+        "import whatsapp_ingestion",
+        "from gateway.reach import whatsapp",
+        "from gateway.reach.outbox import sent_rows as s",
+        "from gateway.reach.outbox import (sent_rows, plan)",
+        "from gateway.reach.outbox import (\n    plan,\n    sent_rows,\n)",
+        "import gateway.reach.outbox",
+        "from gateway.reach import outbox",
+        "from ..reach.outbox import finish",
+    ]
+    for plant in plants:
+        for name in ("run.py", "gather.py", "planner.py"):
+            assert send_text_problems(plant + "\n", name), (name, plant)
+    assert send_text_problems("from gateway.reach.outbox import sent_rows\n", "run.py") == []
+    assert send_text_problems("from gateway.reach.outbox import sent_rows\n", "planner.py")
+    assert send_text_problems("_W = {'whatsapp': 'on WhatsApp'}\n", "gather.py") == []
+    assert send_text_problems("x = outbox.plan(a)\n", "run.py")
+
+
 def test_phrase_is_the_one_model_site_and_the_brief_sends_nothing() -> None:
     """BR-2a-2: ``phrase.py`` is the ONE model site of ``gateway/brief/``.
     No other module of the package names the model seam, and no module
@@ -343,18 +401,12 @@ def test_phrase_is_the_one_model_site_and_the_brief_sends_nothing() -> None:
     and ``run.py`` name ``outbox`` and the channel ``whatsapp``. The one
     name that the package takes from ``reach.outbox`` is ``sent_rows``
     (``test_job_effects_fence.py`` holds it on the AST). No module imports
-    the WhatsApp sender."""
-    import re
-
+    the WhatsApp sender (:func:`send_text_problems`)."""
     package = _ROOT / "apps/services/gateway/gateway/brief"
     sites = []
     for path in sorted(package.glob("*.py")):
         src = path.read_text(encoding="utf-8")
-        assert "reach.whatsapp" not in src and "import whatsapp" not in src, path.name
-        if path.name not in {"gather.py", "run.py"}:
-            assert "outbox" not in src and "whatsapp" not in src, path.name
-        assert set(re.findall(r"outbox import (\w+)", src)) <= {"sent_rows"}, path.name
-        assert not re.search(r"\boutbox\.(?!sent_rows\b)\w+\(", src), path.name
+        assert send_text_problems(src, path.name) == [], path.name
         if "acompletion" in src:
             sites.append(path.name)
     assert sites == ["phrase.py"]
