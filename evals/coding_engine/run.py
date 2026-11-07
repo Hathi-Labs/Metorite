@@ -209,6 +209,11 @@ class Harness:
             # secret (WS-43v). A box with no usable secret has no member id
             # and refuses every skill, so this sweep uses a secret of its own.
             self._patches.set(settings, "gateway_session_secret", secrets.token_urlsafe(32))
+        if not (settings.gateway_internal_token or "").strip():
+            # WS-24b: a skill sends GATEWAY_INTERNAL_TOKEN as its bearer, and
+            # an empty one is not a legal header. The stub checks only that a
+            # bearer is present, so this sweep sends a token of its own.
+            self._patches.set(settings, "gateway_internal_token", "eval-internal-token")
         url = self.stub.url
         self._patches.set(projects_client, "gateway_url", lambda: url)
         self._module = load_agent_module(AGENT_DIR)

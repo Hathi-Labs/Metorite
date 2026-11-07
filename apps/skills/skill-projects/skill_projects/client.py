@@ -87,13 +87,9 @@ def internal_token() -> str:
         from acb_common import get_settings
 
         settings = get_settings()
-        return (
-            getattr(settings, "gateway_internal_token", "")
-            or getattr(settings, "litellm_master_key", "")
-            or "sk-local"
-        )
+        return (getattr(settings, "gateway_internal_token", "") or "").strip()
     except Exception:
-        return os.environ.get("LITELLM_MASTER_KEY", "sk-local")
+        return os.environ.get("GATEWAY_INTERNAL_TOKEN", "").strip()
 
 
 def headers() -> dict[str, str]:
