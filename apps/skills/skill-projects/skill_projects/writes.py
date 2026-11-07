@@ -5904,7 +5904,7 @@ _OVERLAY_CLEAR = {
 #: object is refused by name for a key the single tool does not take.
 OVERLAY_ARGUMENTS = (
     "disposition", "context", "energy", "next_action", "two_minute",
-    *_OVERLAY_TIMES, *_OVERLAY_FLAGS, "waiting_on", "expected_by", "clear",
+    *_OVERLAY_TIMES, *_OVERLAY_FLAGS, "waiting_on", "expected_by", "focus", "clear",
 )
 _NAIVE_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
 
@@ -5995,6 +5995,11 @@ async def _overlay_values(args: dict[str, Any], mine: dict[str, Any]) -> dict[st
             )
     if given.get("expected_by"):
         values["expected_by"] = _expected_by(given["expected_by"])
+    # WS-MDC CC-2 (D-MD-3): today's focus is the member's own today, from the
+    # same read as every other day this tool guesses. The route holds the cap.
+    focus = _yes_no(given.get("focus", ""), "focus")
+    if focus is not None:
+        values["focus_on"] = (await _member_clock())[0].isoformat() if focus else None
     refusal = _clear_into(values, given.get("clear", ""), _OVERLAY_CLEAR)
     return refusal or _block_refusal(values, mine) or values
 
@@ -6064,6 +6069,7 @@ async def set_my_overlay(
     waiting_on: str = "",
     waiting_since: str = "",
     expected_by: str = "",
+    focus: str = "",
     clear: str = "",
 ) -> str:
     """Set the member's OWN triage of a task: disposition (INBOX, NEXT,
@@ -6083,7 +6089,9 @@ async def set_my_overlay(
     member waits on. waiting_since is when the wait began, and it is now
     when not given. expected_by (YYYY-MM-DD) is the date that person
     promised. clear also takes block, actual, flexible, hard_date, deep_work,
-    waiting_on and expected_by."""
+    waiting_on and expected_by. focus (yes or no) marks the task as one of
+    today's focus tasks, or removes the mark. A day holds a few marks, and a
+    full day refuses a new one until the member removes a mark."""
     tid, task = await _task(task_id)
     unread = ""
     try:
@@ -6107,7 +6115,7 @@ async def set_my_overlay(
         "block_end": block_end, "flexible": flexible, "hard_date": hard_date,
         "actual_start": actual_start, "actual_end": actual_end, "deep_work": deep_work,
         "waiting_on": waiting_on, "waiting_since": waiting_since, "expected_by": expected_by,
-        "clear": clear,
+        "focus": focus, "clear": clear,
     }
     payload = await _overlay_values(given, mine if isinstance(mine, dict) else {})
     if isinstance(payload, str):

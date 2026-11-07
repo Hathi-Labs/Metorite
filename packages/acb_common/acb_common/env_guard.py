@@ -175,6 +175,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # a held chat in a fresh chat. It opens a way around a hold, so only the
     # owner writes it (work_plan.md §6 D4).
     "CHAT_CONTINUE_ORGS",
+    # my_day_command_centre.md §9.2 (WS-MDC CC-2): the orgs where the Today
+    # chip reads the one Today predicate. It changes what each member sees, so
+    # only the owner writes it (gate enforcement-flip).
+    "TODAY_RULE_ORGS",
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",

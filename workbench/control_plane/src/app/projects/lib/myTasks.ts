@@ -23,7 +23,7 @@
  * Fence: `myTasks.test.ts`.
  */
 
-import { isInToday } from "@/app/tasks/lib/today";
+import { inTodayChip } from "@/lib/shell/todayRule";
 import { STATUS_CATEGORIES, categoryLabel, landingLane } from "@/lib/statusCategory";
 
 import type { NodeSummary, StatusRow, TaskRow, ThroughputReport } from "./api";
@@ -174,7 +174,7 @@ export function chipForApp(id: string | null | undefined): MyTasksChip | null {
 }
 
 /** The overlay facts a chip reads off a row (`with_overlay=1`). */
-export type ChipRow = Pick<
+export type ChipRow = Partial<Pick<TaskRow, "id">> & Pick<
   TaskRow,
   | "disposition"
   | "is_mine"
@@ -191,15 +191,23 @@ export type ChipRow = Pick<
  *
  * - Next: the effective disposition is NEXT, and the task is assigned to me.
  * - Waiting, Someday and Done: the effective disposition.
- * - Today: `isInToday`, the one Today rule (`tasks/lib/today.ts`), which the
- *   server's `in_today` mirrors.
+ * - Today: `isInToday`, the old Today rule (`tasks/lib/today.ts`), which the
+ *   server's `in_today` mirrors. With `TODAY_RULE_ORGS` on, the summary sends
+ *   `today_ids`, the set of the one Today predicate (WS-MDC CC-2), and the
+ *   chip lists that set (`todayRule.ts` `inTodayChip`).
  * - New: the server's `is_new` (`mine.new_work`), no stated disposition of mine.
  * - All: every row but TRASH. TRASH is in no chip.
  *
  * `disposition` arrives EFFECTIVE (`effective_disposition`, D77), so a closed
  * lane already reads DONE here.
  */
-export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?: string): boolean {
+export function inChip(
+  row: ChipRow,
+  chip: MyTasksChip,
+  today: string,
+  timeZone?: string,
+  todayIds?: ReadonlySet<string> | null,
+): boolean {
   const effective = String(row.disposition ?? "");
   switch (chip) {
     case "all":
@@ -215,8 +223,9 @@ export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?
     case "done":
       return effective === "DONE";
     case "today":
-      return isInToday(
+      return inTodayChip(
         {
+          id: row.id ?? "",
           disposition: effective as never,
           isMine: Boolean(row.is_mine),
           archivedAt: row.archived_at ?? undefined,
@@ -225,8 +234,8 @@ export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?
           startDate: row.start_date ?? undefined,
           deferUntil: row.defer_until ?? undefined,
         },
-        today,
-        timeZone,
+        { today, timeZone },
+        todayIds,
       );
   }
 }
@@ -237,8 +246,84 @@ export function chipRows<T extends ChipRow>(
   chip: MyTasksChip,
   today: string,
   timeZone?: string,
+  todayIds?: ReadonlySet<string> | null,
 ): T[] {
-  return rows.filter((row) => inChip(row, chip, today, timeZone));
+  return rows.filter((row) => inChip(row, chip, today, timeZone, todayIds));
+}
+
+/**
+ * The rows of a chip, with the Today set (WS-MDC CC-2, fix round 1 item 1).
+ *
+ * The Today set is not a subset of mine: a mark, a block or the One Thing on
+ * a visible task of another member is part of my day. So with the flag on
+ * (`todayIds`), the Today chip lists the rows of the mine list that the set
+ * holds, and adds each task of the set that the list does not hold, from
+ * `GET /projects/my/today?with_tasks=true` (`setRows`). The count, the rows
+ * and the set are then one set. Any other chip, and the flag off, is
+ * `chipRows` as before.
+ */
+export function chipRowsWithSet<T extends ChipRow & { id: string }>(
+  rows: readonly T[],
+  chip: MyTasksChip,
+  today: string,
+  timeZone: string | undefined,
+  todayIds: ReadonlySet<string> | null,
+  setRows: readonly T[] | null | undefined,
+): T[] {
+  const listed = chipRows(rows, chip, today, timeZone, todayIds);
+  if (chip !== "today" || !todayIds || !setRows) return listed;
+  const held = new Set(rows.map((row) => row.id));
+  const added = setRows.filter(
+    (row) => !held.has(row.id) && todayIds.has(row.id) && inChip(row, chip, today, timeZone, todayIds),
+  );
+  return [...listed, ...added];
+}
+
+/** The line of a failed read of the Today set (CC-2 fix round 2). */
+export const TODAY_SET_FAILED =
+  "Metorite could not load all of today's tasks. The tasks assigned to you show below.";
+
+/** What the Today chip still waits for, or lost, from the read of the set. */
+export interface TodaySetGap {
+  /** The read failed, and the chip lacks rows that it counts. */
+  failed: boolean;
+  /** The read is on its way: one place for each id that the list lacks. */
+  pending: number;
+}
+
+/**
+ * The gap between the Today chip's count and its rows (CC-2 fix round 2).
+ *
+ * With the flag on, `today_ids` can name tasks that the mine list does not
+ * hold, and only the read of the set brings them. While that read is on its
+ * way, the chip reserves one place for each such id, so no row jumps in. When
+ * it fails, the chip says so, because the count then names more tasks than
+ * the rows. With the flag off, on another chip, or with the set read, there
+ * is no gap.
+ */
+export function todaySetGap(
+  rows: readonly { id: string }[],
+  chip: MyTasksChip,
+  todayIds: ReadonlySet<string> | null,
+  read: { data?: unknown; error?: string | null },
+): TodaySetGap {
+  const none: TodaySetGap = { failed: false, pending: 0 };
+  if (chip !== "today" || !todayIds || read.data) return none;
+  const held = new Set(rows.map((row) => row.id));
+  const missing = [...todayIds].filter((id) => !held.has(id)).length;
+  if (missing === 0) return none;
+  return read.error ? { failed: true, pending: 0 } : { failed: false, pending: missing };
+}
+
+/**
+ * The ids of the Today set, from the summary, or null for the old rule.
+ * `today_ids` comes only with `TODAY_RULE_ORGS` on (WS-MDC CC-2).
+ */
+export function todayIdsOf(
+  summary: Pick<NodeSummary, "today_rule" | "today_ids"> | null | undefined,
+): ReadonlySet<string> | null {
+  if (!summary?.today_rule || !Array.isArray(summary.today_ids)) return null;
+  return new Set(summary.today_ids.map(String));
 }
 
 /** The server count of a chip, or null when the summary has not said. */

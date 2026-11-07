@@ -115,6 +115,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "filters": { label: "Filters" },
   "first due": { label: "First due" },
   "flexible": { label: "Flexible", kind: "flag" },
+  // WS-MDC CC-2: the member's mark of today's focus, a date or cleared.
+  "focus_on": { label: "Today's focus", kind: "date" },
   // WS-64 OP-10: the folder that `convert_folder_to_project` turns into a project.
   "folder": { label: "Folder" },
   "from": { label: "From", kind: "task" },

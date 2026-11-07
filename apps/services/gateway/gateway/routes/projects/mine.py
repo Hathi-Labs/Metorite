@@ -29,7 +29,9 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common.db import current_tenant
 from fastapi import Depends, HTTPException
+from gateway.routes.projects import today_rule
 from gateway.routes.projects.core import (
     AGENT_TASK_SOURCE,
     CLOSING_CATEGORIES,
@@ -296,6 +298,12 @@ def in_today(
 
     Open, NEXT and mine, not deferred past today, started, and dated on or
     before today. An overdue task is in Today. The archive is out already.
+
+    WS-MDC CC-2: this is the ``due`` arm of the one Today predicate, in
+    Python. ``today_rule.due_arm_sql`` is the same arm in SQL, and
+    ``tests/fixtures/today_rule_cases.json`` holds the two to one answer.
+    With ``TODAY_RULE_ORGS`` on, the Today count calls the whole predicate
+    (``today_rule.today_ids``), and this function counts only with it off.
     """
     if completed_at is not None or effective != "NEXT" or not is_mine:
         return False
@@ -363,6 +371,7 @@ def new_work(
 
 def fold_dispositions(
     rows: list[Any], *, at: datetime, today: date, zone: str,
+    today_count: int | None = None,
 ) -> dict[str, int]:
     """The chip counts, with the rules of ``taskStore.viewCounts`` and ``inboxCount``.
 
@@ -375,6 +384,10 @@ def fold_dispositions(
     NEXT and assigned to me. ``waiting``, ``someday`` and ``done`` are the
     effective disposition. ``today`` is :func:`in_today`. TRASH is in no chip.
     The disposition is ``effective_disposition``, the one rule (D77).
+
+    ``today_count`` (WS-MDC CC-2) is the size of the set of the one Today
+    predicate (``today_rule``), read with ``TODAY_RULE_ORGS`` on. It replaces
+    the count of the old rule. ``None`` keeps the old rule, :func:`in_today`.
     """
     from gateway.routes.projects.personal import effective_disposition, not_yet
 
@@ -401,12 +414,14 @@ def fold_dispositions(
             ready_agent=_ready_from_row(row),
         ):
             counts["new"] += 1
-        if in_today(
+        if today_count is None and in_today(
             effective=effective, is_mine=mine, completed_at=row.completed_at,
             defer_until=row.p_defer_until, start_date=row.start_date,
             due_at=row.due_at, today=today, zone=zone,
         ):
             counts["today"] += 1
+    if today_count is not None:
+        counts["today"] = int(today_count)
     return counts
 
 
@@ -469,9 +484,23 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
     count a page. Archived projects are out. No row names a project the
     member cannot see. The member is the session's, and the route takes no
     parameter.
+
+    WS-MDC CC-2: with ``TODAY_RULE_ORGS`` on for the session's org, the Today
+    count is the set of the one predicate (``today_rule.today_ids``), and the
+    answer adds ``today_rule: true`` and ``today_ids``. With the flag off, the
+    answer is as before.
+
+    ⚠️ The set is not a subset of mine. A mark, a block or the One Thing on a
+    visible task of another member is part of my day. So the chip lists the
+    rows of the mine list that the ids name, and adds each row of the set
+    that the list does not hold, from ``GET /projects/my/today?with_tasks=true``
+    (``myTasks.ts`` ``todayChipRows``). The count, the rows and the set are
+    one set.
     """
     from gateway.routes.projects.personal import local_date, stored_zone, zone_name
 
+    rule_on = today_rule.today_rule_allowed(current_tenant())
+    ids: list[str] = []
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         where, params = mine_where(vis)
@@ -495,6 +524,8 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
             nodes = {str(n.id): n for n in found}
         clock = (await db.execute(text("SELECT now()"))).scalar() or datetime.now(UTC)
         zone = zone_name(await stored_zone(db, vis.email))
+        if rule_on:
+            ids = await today_rule.today_ids(db, vis, today_rule.window_of(zone, clock))
 
     today = local_date(zone, clock)
     return {
@@ -503,12 +534,20 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
         "level": "mine",
         **fold_mine_summary(rows, nodes),
         "due_soon_days": DUE_SOON_DAYS,
-        "by_disposition": fold_dispositions(rows, at=clock, today=today, zone=zone),
+        "by_disposition": fold_dispositions(
+            rows, at=clock, today=today, zone=zone,
+            today_count=len(ids) if rule_on else None,
+        ),
         "today": today.isoformat(),
         # The zone the Today count used (`stored_zone`, else UTC). The client
         # reads Today in this zone too, so a chip and its count agree when the
         # browser sits in another zone (WS-64 OP-11 fix round, item 8).
         "time_zone": zone,
+        # WS-MDC CC-2: the ids of the set. The chip lists each of them, the
+        # rows of the mine list and the rows of the Today read that the list
+        # does not hold. Absent with the flag off, so that answer does not
+        # change.
+        **({"today_rule": True, "today_ids": ids} if rule_on else {}),
     }
 
 

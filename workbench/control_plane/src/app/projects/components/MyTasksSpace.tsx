@@ -36,6 +36,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 
 import {
+  type MyTodaySet,
   type NodeSummary,
   type StatusRow,
   type TaskRow,
@@ -62,13 +63,15 @@ import {
   chipCount,
   chipNeedsEveryPage,
   MY_TASKS_EMPTY_TEXT,
-  chipRows,
+  chipRowsWithSet,
   mineStatuses,
   myTasksQuery,
   myTasksTrulyEmpty,
   planMineDrop,
   quickAddHome,
   stageGroups,
+  todayIdsOf,
+  todaySetGap,
   truncationNotice,
 } from "../lib/myTasks";
 import { useSubtaskComplete } from "./useSubtaskComplete";
@@ -82,6 +85,7 @@ import { NeedsAttentionList } from "./NeedsAttentionList";
 import { TableView } from "./TableView";
 import { TaskBoard } from "./TaskBoard";
 import { TaskList } from "./TaskList";
+import { TodaySetGap } from "./TodaySetGap";
 
 const MODE_OPTIONS: readonly ModeOption<MyTasksMode>[] = MY_TASKS_MODES;
 
@@ -103,6 +107,18 @@ export function useMySummary(enabled: boolean) {
   return useCachedResource<NodeSummary>(
     enabled ? projectsKey("my/summary") : null,
     () => projectsApi.mySummary(),
+  );
+}
+
+/**
+ * WS-MDC CC-2: the Today set, read only while the Today chip shows with
+ * `TODAY_RULE_ORGS` on. The chip adds each task of the set that the mine list
+ * does not hold.
+ */
+export function useMyTodaySet(enabled: boolean) {
+  return useCachedResource<MyTodaySet>(
+    enabled ? projectsKey("my/today", { with_tasks: "true" }) : null,
+    () => projectsApi.myTodaySet(),
   );
 }
 
@@ -455,8 +471,35 @@ export default function MyTasksSpace({
     attentionRead.error && !attentionRead.data ? `Could not read the list. ${attentionRead.error}` : null;
 
   // ── What the canvases draw ──────────────────────────────────────────────
-  const shown = useMemo(() => chipRows(list.rows, chip, today, zone), [list.rows, chip, today, zone]);
-  const statuses = useMemo(() => mineStatuses(list.rows, known), [list.rows, known]);
+  // WS-MDC CC-2: the server's Today set, or null for the old rule. With the
+  // flag on, the Today chip also reads the rows of the set, so it lists each
+  // task that it counts, also a task of another member (fix round 1, item 1).
+  const todayIds = useMemo(() => todayIdsOf(summary.data), [summary.data]);
+  const todaySet = useMyTodaySet(Boolean(todayIds) && chip === "today");
+  const setRows = useMemo(() => todaySet.data?.rows.map((row) => row.task) ?? null, [todaySet.data]);
+  useEffect(() => {
+    // The lanes of a project that only the Today set names, so its rows draw
+    // their status as the list rows do.
+    for (const id of new Set((setRows ?? []).map((row) => row.project_id))) {
+      if (!id || asked.current.has(id)) continue;
+      asked.current.add(id);
+      void ownStatuses(id);
+    }
+  }, [setRows, ownStatuses]);
+  // Fix round 2: the place of each task that the read still brings, or one
+  // line when the read failed (`todaySetGap`, `TodaySetGap`).
+  const gap = useMemo(
+    () => todaySetGap(list.rows, chip, todayIds, { data: todaySet.data, error: todaySet.error }),
+    [list.rows, chip, todayIds, todaySet.data, todaySet.error],
+  );
+  const shown = useMemo(
+    () => chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows),
+    [list.rows, chip, today, zone, todayIds, setRows],
+  );
+  const statuses = useMemo(
+    () => mineStatuses(setRows ? [...list.rows, ...setRows] : list.rows, known),
+    [list.rows, setRows, known],
+  );
   // A status is a lane of ONE project, so the roll-up groups by stage instead.
   // The same holds for the lanes: a status lane would name one project's
   // status for cards of every project.
@@ -476,8 +519,8 @@ export default function MyTasksSpace({
     [statusSets, statuses],
   );
   const calendarRows = useMemo(
-    () => chipRows(month.rows, chip, today, zone),
-    [month.rows, chip, today, zone],
+    () => chipRowsWithSet(month.rows, chip, today, zone, todayIds, setRows),
+    [month.rows, chip, today, zone, todayIds, setRows],
   );
 
   // A quick add files to the personal root, or nowhere: never "" (item 10).
@@ -485,6 +528,7 @@ export default function MyTasksSpace({
   const reloadAll = () => {
     again();
     summary.refresh();
+    if (todayIds && chip === "today") todaySet.refresh();
   };
 
   /**
@@ -595,7 +639,7 @@ export default function MyTasksSpace({
       action={{ label: "Go to Projects", icon: "FolderKanban", onClick: onOpenProjects }}
     />
   ) : (
-    chip !== "all" && listLoaded && shown.length === 0 ? (
+    chip !== "all" && listLoaded && shown.length === 0 && gap.pending === 0 ? (
       <EmptyState
         icon="ListChecks"
         message={`Nothing in ${MY_TASKS_CHIPS.find((c) => c.id === chip)?.label ?? chip}.`}
@@ -694,6 +738,9 @@ export default function MyTasksSpace({
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto">
         <LayoutBoundary key={`my-tasks:${mode}`} layout={`My tasks ${mode}`}>
+          {listLoaded && mode !== "overview" && gap.failed ? (
+            <TodaySetGap gap={gap} onRetry={todaySet.refresh} />
+          ) : null}
           {mode === "overview" ? (
             !summary.data && summary.error ? (
               // The read failed: say so, and offer it again. The other tabs
@@ -833,6 +880,9 @@ export default function MyTasksSpace({
               projectPrivate={privateOf}
             />
           )}
+          {listLoaded && (mode === "list" || mode === "table") && gap.pending > 0 ? (
+            <TodaySetGap gap={gap} onRetry={todaySet.refresh} />
+          ) : null}
           {compactChrome && !wantsAll && listMode ? (
             <MoreTasksBar
               atEnd

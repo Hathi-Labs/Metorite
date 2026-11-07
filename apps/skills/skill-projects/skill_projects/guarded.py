@@ -1250,6 +1250,11 @@ def _overlay_shown(value: Any) -> str:
     return data(value)
 
 
+#: The arguments of ``personal``: set_my_overlay's, less ``focus``. The cap of
+#: today's focus holds for one mark at a time, so the bulk route takes none.
+_BULK_OVERLAY_ARGUMENTS = tuple(a for a in OVERLAY_ARGUMENTS if a != "focus")
+
+
 async def _bulk_personal(ids: list[str], personal: str) -> str:
     """``action: personal`` (``bulk.py`` ``validate_personal``): the member's
     own overlay on every task of the selection, under one class C card."""
@@ -1260,8 +1265,12 @@ async def _bulk_personal(ids: list[str], personal: str) -> str:
     if not isinstance(given, dict):
         return (
             "personal is a JSON object with set_my_overlay's arguments, for example "
-            f'{{"disposition": "someday"}}. The arguments are {", ".join(OVERLAY_ARGUMENTS)}.'
+            f'{{"disposition": "someday"}}. The arguments are {", ".join(_BULK_OVERLAY_ARGUMENTS)}.'
         )
+    if "focus" in given:
+        # WS-MDC CC-2: the bulk route takes no mark, because the cap of
+        # today's focus holds for one mark at a time.
+        return "Mark today's focus on one task at a time, with set_my_overlay focus."
     values = await _overlay_values(given, {})
     if isinstance(values, str):
         return values

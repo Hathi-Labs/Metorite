@@ -1,0 +1,61 @@
+-- ============================================================================
+-- 349_today_focus_mark.sql - the today's-focus mark and its cap (WS-MDC CC-2,
+-- task 1969)
+-- ============================================================================
+-- Spec: project-docs/specs/my_day_command_centre.md §9.2 (D-MD-2, D-MD-3)
+-- · R5 · R6 · R8. R1: on 2026-11-07 origin/main held 347
+-- (347_studio_feature.sql) as its highest file, and the branch
+-- mt-0dd62e49-ea18a-revoke-reason held 348. No other branch or worktree held
+-- 349 or higher. So this file is 349. Check the number again at merge
+-- (scripts/premerge.sh).
+--
+-- What: two nullable columns.
+--   * `pm_task_personal.focus_on DATE`. The member's mark "today's focus" on
+--     a task is the member's local date of the mark. The mark counts only
+--     while it equals the member's today, so it expires by itself. NULL is
+--     no mark, and each row stored before this file.
+--   * `user_settings.today_focus_cap SMALLINT`. The number of marks that the
+--     member may hold for one day. NULL reads as 3. A write clamps it to
+--     1..10, and a read clamps it again
+--     (`gateway/routes/projects/today_rule.py::clamp_focus_cap`).
+--
+-- Who writes them:
+--   * `focus_on`: only `PATCH /projects/tasks/{task_id}/personal`, through
+--     `personal._upsert_personal` with the guard of
+--     `today_rule.focus_room_sql`. The guard counts the marks of the day and
+--     writes the mark in ONE statement, under a transaction lock on the
+--     organization, the member and the day. A write with no guard is refused.
+--   * `today_focus_cap`: only `PUT /tasks/settings`
+--     (`routes/tasks/settings.py::write_member_settings`), clamped.
+--
+-- Who reads them: the one Today predicate
+--   (`today_rule.today_set_sql`), the count of the cap and the overlay read.
+--
+-- Expand only (R6): no default, no backfill, no NOT NULL, no CHECK and no
+--   rename. The old code names each column by name, so it never reads the
+--   new ones. ADD COLUMN with no default changes the catalog only, and it
+--   does not rewrite the table. Idempotent: ADD COLUMN IF NOT EXISTS.
+--
+-- Tenancy (R5): both tables already carry the tenant `organization_id` and
+--   FORCE RLS with their policies (`generated/03_constraints.sql`,
+--   `generated/04_policies.sql`, and 239 for `user_settings`). A column
+--   changes neither. So this file adds no table, no policy and no
+--   `gen_tenant_migration.EXEMPT` row. The member and the tenant of each
+--   write come from the session only.
+--
+-- Never wait for the lock: `ALTER TABLE` takes ACCESS EXCLUSIVE, and each
+--   overlay write and each settings read needs these tables. So the file
+--   sets `lock_timeout` itself, as 337 and 345 do. On a lock timeout the
+--   runner tries the whole file again, and the file is idempotent.
+--
+-- Depends on: 147_projects_personal.sql (pm_task_personal),
+--   51_gtd_settings.sql and 239_user_settings_per_org.sql (user_settings).
+-- Pinned by: tests/unit/test_today_rule_r8.py and
+--   tests/unit/test_today_focus_cap_r8.py (R8).
+-- ============================================================================
+
+SET lock_timeout = '5s';
+
+ALTER TABLE pm_task_personal ADD COLUMN IF NOT EXISTS focus_on DATE;
+
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS today_focus_cap SMALLINT;
