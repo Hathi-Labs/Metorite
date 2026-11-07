@@ -133,7 +133,7 @@ def test_get_with_nothing_stored_is_the_empty_default(store: _Store) -> None:
 
 
 def test_a_stored_bad_entry_drops_alone(store: _Store) -> None:
-    store.blob = {"roles": {"member": {"pins": PANES}, "guest": {"pins": ["/x"]},
+    store.blob = {"roles": {"member": {"pins": PANES}, "guest": {"preset": "nope"},
                             "ghost": {}}}
     assert set(_client(_user()).get("/shell/layout").json()["roles"]) == {"member"}
 
@@ -158,7 +158,6 @@ def test_flag_off_is_404_before_403(store: _Store, monkeypatch, method: str,
 def test_a_store_fault_is_503(store: _Store) -> None:
     store.fail = True
     assert _client(_user(ADMIN)).put("/shell/layout", json=GOOD).status_code == 503
-    assert _client(_user()).get("/shell/layout").status_code == 503
 
 
 def test_no_tenant_comes_from_input(store: _Store) -> None:
@@ -175,10 +174,6 @@ def test_no_tenant_comes_from_input(store: _Store) -> None:
 
 # ── The resolver ───────────────────────────────────────────────────────────
 
-DEFAULT = {"roles": {
-    "member": {"preset": "new-hire", "pins": ["/a", "/b"]},
-    "admin": {"preset": "founder", "pins": ["/c"]},
-}}
 VALID = {"roles": {"member": {"preset": PRESET, "pins": PANES},
                    "admin": {"pins": PANES[:1]}}}
 
@@ -202,3 +197,42 @@ def test_precedence(prefs, role, pins, preset) -> None:
 def test_no_default_is_none() -> None:
     assert sl.resolve_layout({}, None, "member") == {"preset": None, "pins": None}
     assert sl.resolve_layout({}, {"roles": "bad"}, "member")["pins"] is None
+
+
+# ── The lenient read (P2-1) ────────────────────────────────────────────────
+
+
+def _coerce(entry: dict) -> sl.RoleLayout:
+    return sl.coerce_stored({"roles": {"member": entry}}).roles["member"]
+
+
+def test_a_retired_pane_drops_alone_and_the_preset_stays() -> None:
+    got = _coerce({"preset": PRESET, "pins": [PANES[0], "/retired", PANES[1]]})
+    assert got.pins == PANES[:2]
+    assert got.preset == PRESET
+
+
+def test_all_pins_unknown_leaves_the_preset() -> None:
+    got = _coerce({"preset": PRESET, "pins": ["/x", 7, None]})
+    assert got.pins == []
+    assert got.preset == PRESET
+
+
+def test_duplicate_pins_collapse_in_order() -> None:
+    assert _coerce({"pins": [PANES[1], PANES[0], PANES[1]]}).pins == [PANES[1], PANES[0]]
+
+
+def test_the_stored_pins_are_capped() -> None:
+    panes = sorted(me.SHELL_PANES)
+    assert _coerce({"pins": panes}).pins == panes[: me.MAX_PINS]
+
+
+def test_the_pins_cap_is_on_the_field() -> None:
+    # 25 unique panes cannot exist, so a behaviour test cannot see a dropped cap.
+    meta = sl.RoleLayout.model_fields["pins"].metadata
+    assert any(getattr(m, "max_length", None) == me.MAX_PINS for m in meta)
+
+
+def test_put_stays_strict_on_a_retired_pane(store: _Store) -> None:
+    body = {"roles": {"member": {"pins": [PANES[0], "/retired"]}}}
+    assert _client(_user(ADMIN)).put("/shell/layout", json=body).status_code == 422

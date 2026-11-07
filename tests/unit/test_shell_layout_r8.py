@@ -99,7 +99,7 @@ def test_r8_a_round_trip(world) -> None:
     assert _client(world.org_a, True).put("/shell/layout", json=GOOD).status_code == 200
     got = _client(world.org_a, False).get("/shell/layout")
     assert got.status_code == 200
-    assert got.json()["roles"] == GOOD["roles"] | {"member": {"preset": PRESET, "pins": PANES}}
+    assert got.json()["roles"] == {"member": {"preset": PRESET, "pins": PANES}}
     assert got.json()["updatedBy"].startswith("u@")
 
 

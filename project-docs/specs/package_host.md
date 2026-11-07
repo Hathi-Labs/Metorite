@@ -372,6 +372,8 @@ A nearer level wins: me, then the team lens, then the org default, then the syst
 
 A member with many roles gets the default of the highest role that has an entry. The order is `owner`, `admin`, `manager`, `member`, `guest`. A pane in a default that the member does not hold stays hidden. The client's `visibleSections` subset rule (PKG-17b) owns that rule, not this module.
 
+A read fault on `GET /shell/layout` answers the empty default, because `load_org_setting` hides every error. The PKG-17b admin form must not do a whole-document `PUT` from an empty answer without a confirmation.
+
 ### 9.2 Stable and adaptive regions
 
 | Region | Where | How it changes |

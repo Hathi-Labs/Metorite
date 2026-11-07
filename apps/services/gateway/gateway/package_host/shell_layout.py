@@ -16,6 +16,10 @@ no org. The shape is ``{"roles": {"<role>": {"preset": ..., "pins": [...]}}}``.
 **Dark.** Both routes answer 404 while ``PACKAGE_HOST_ORGS`` leaves the org
 out. The flag check runs before the permission check.
 
+**A read fault answers the empty default.** ``load_org_setting`` catches every
+error and returns the default, so ``GET`` never answers 503. A client must not
+do a whole-document ``PUT`` from an empty answer without a confirmation.
+
 **The vocabulary stays single.** The panes and the presets come from
 ``routes/admin/me.py`` (read only), and the roles from ``acb_auth``.
 
@@ -110,8 +114,9 @@ class LayoutResponse(ShellLayout):
 
 
 def coerce_stored(raw: Any) -> ShellLayout:
-    """A usable document from a stored blob. A bad role entry drops alone, so
-    one bad entry never resets the other roles."""
+    """A usable document from a stored blob. The read is lenient. A pane that
+    is no longer known (for example after a rename) drops alone. A bad role
+    entry drops alone too, so one bad entry never resets the other roles."""
     roles_raw = raw.get("roles") if isinstance(raw, dict) else None
     if not isinstance(roles_raw, dict):
         return ShellLayout()
@@ -119,6 +124,12 @@ def coerce_stored(raw: Any) -> ShellLayout:
     for role, entry in roles_raw.items():
         if role not in ROLE_ORDER:
             continue
+        if isinstance(entry, dict) and isinstance(entry.get("pins"), list):
+            seen: list[str] = []
+            for pane in entry["pins"]:
+                if isinstance(pane, str) and pane in SHELL_PANES and pane not in seen:
+                    seen.append(pane)
+            entry = {**entry, "pins": seen[:MAX_PINS]}
         try:
             roles[role] = RoleLayout.model_validate(entry)
         except ValueError:
@@ -177,11 +188,7 @@ async def get_layout(
     """The stored default for each role, or the empty default. Any member."""
     from acb_common import load_org_setting
 
-    try:
-        raw = load_org_setting(LAYOUT_KEY, default={})
-    except Exception:
-        _log.warning("shell_layout.read_failed", exc_info=True)
-        raise HTTPException(status_code=503, detail="Layout unavailable") from None
+    raw = load_org_setting(LAYOUT_KEY, default={})
     doc = coerce_stored(raw)
     blob = raw if isinstance(raw, dict) else {}
     return LayoutResponse(
