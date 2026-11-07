@@ -31,6 +31,8 @@ Mem0 and Graphiti memory providers.
 - An excluded compartment's scope key is never passed to `search()`. That is a boundary, not a request in a system prompt.
 - It has no dependencies on purpose. The CALLER decides `shared`, so acb_memory stays below acb_auth and the gateway in the import graph.
 - `session_cache` keys on the clearance fingerprint and on the thread.
+- `tenant_guard.py` is the ONE tenant guard of the memory layer (KG-9). While two organizations exist, Mem0 reads and writes nothing and Graphiti does not start. A delete still runs, and `MemoryClient.scope_ids` is its ungated owner read. A kept pass serves only the one org that the probe saw. A call bound to another org probes again at once. With both flags off it opens no session. The gateway lifespan calls `check_memory_tenancy`. Fence: `tests/unit/test_memory_tenant_guard.py`.
+- The org compartment is `org:<org id>` from the bound tenant (`org_scope`), and the Graphiti group is `org_<org id>`. With no tenant, both are empty and nothing is read or written. Never fall back to `org:global`.
 - `blob_store.py`: `purge_files` and `session_paths` delete the files and the history of a deleted chat. The gateway's `workspace.purge_thread_files` is their one caller. The purge never deletes a `_RUN_ROW` row. Fence: `tests/unit/test_h227_thread_scope.py` (R8).
 
 ### acb_graph/
@@ -70,6 +72,7 @@ Each module below holds ONE rule. Do not copy its rule into a caller.
   - `member_typed()` is the one binder of the typed words and of `member_sent()` (D-PZ-37). The chat route binds the words only with the ONE typed mark of the request. `sent` is the sent words, typed or tapped. They open only the confirm card of a profile write, and `sent_words()` feeds only the tool-pack chooser. They ground nothing. Fences: `tests/unit/test_profile_typed_words_route.py`, `tests/unit/test_profile_write_tools.py`.
   - `chat_summary_for(org)` is the one reader of `ASSISTANT_CHAT_SUMMARY_ORGS` (PZ-33). It needs `enabled_for(org)` too, and it reads the settings at each call. Fence: `tests/unit/test_chat_summary.py`.
   - `briefing_for(org)` is the one reader of `ASSISTANT_BRIEFING_ORGS` (PZ-34), with the same shape. `render_briefing` is the pure block of §15.4. It is `BRIEFING_MAX` (1,500) characters at most, and it sheds whole items, the tasks first. Fences: `tests/unit/test_chat_summary.py`, `tests/unit/test_executor_briefing_block.py`.
+- `celebrations.py` (WS-63 PZ-43, `personalization.md` §16.6): the birthday (month and day, never a year), the festival picks and the work-anniversary switch of a member, in the JSON profile under `celebrations`. There is no migration. `celebrations_for(org)` is the one reader of `CELEBRATIONS_ORGS`. `celebration_line` is pure, and it takes no name, region, language or mail, so no code guesses a religion or a community (DPDP). `FESTIVALS` is EMPTY until the check of §16.9 Q3. The first assistant reply of the member's local day gets the line, with no stored marker (`READ_SQL`). Fences: `tests/unit/test_celebrations.py`, `tests/unit/test_celebrations_r8.py`.
 - `env_guard.py`: the ONE rule for a write to `os.environ` and to the env file of the box (`check_env_write`, `EnvWriteRefused`). The deny list is defence in depth. The gate is the allowlist `BUILTIN_ENV_KEYS` in `gateway/routes/integrations.py`.
 - A new `Settings` field or literal env read goes onto the deny list, or onto the fence's list of integration fields. Fence: `tests/unit/test_integrations_env_hardening.py`.
 - `child_env.py`: the ONE env of every child process that the gateway starts, as an allowlist of literal names. Pass `env=` at every spawn and at every `CopilotClient(`. Never put `os.environ` in `extra=`.
@@ -94,8 +97,8 @@ Audit event recording.
 Authentication, roles and org access control.
 - Guards: `require_role(UserRole.EXECUTIVE)`, `require_permission("feature:whatsapp")` and the app-wide default-deny `require_authenticated(public=...)`.
 - **`permissions.FEATURES` is the feature vocabulary, not `feature_catalog`.** A new `feature_catalog` row always needs a `FEATURES` edit too. Fence: `tests/unit/test_org_access_control.py`. Checklist: `project-docs/specs/department_centers.md` §2.
-- Two DISTINCT secrets: `GATEWAY_INTERNAL_TOKEN` is service identity and `LITELLM_MASTER_KEY` is the `/v1` key that agents hold. With the internal token unset, `_resolve_internal_token()` falls back to the LLM key, and that ladder lives in one place.
-- `GATEWAY_REFUSE_LLM_KEY_IDENTITY` defaults OFF, and flipping it is OWNER-GATE.
+- Two DISTINCT secrets: `GATEWAY_INTERNAL_TOKEN` is service identity and `LITELLM_MASTER_KEY` is the `/v1` key that agents hold. `deps._get_internal_token()` reads the internal token only. It never falls back to the LLM key (WS-24b).
+- An unset internal token fails closed outside `ACB_ENV=dev` (`deps._unset_token_is_open`). `require_internal_auth` answers 401, and a bare `X-User-Email` resolves anonymous. A caller sends `gateway_internal_token` only, never the LLM key, as the bearer of an internal call. Fence: `tests/unit/test_service_identity_and_webhook_auth.py`.
 - `X-User-Email` and `X-User-Role` are internal-only headers. The reverse proxy strips them at the public vhost.
 - `resolve_access(..., record_request=False)`: the default must stay False, and `deps._with_resolved_access` stays its only caller that passes True. Fence: `tests/unit/test_signin_requests.py`.
 - `allowed_email_domain()` and `is_company_email()` give a label, not a boundary.

@@ -181,9 +181,6 @@ def _member(org: str) -> Any:
     return _principal("member@crm-sync.test", org, "feature:crm")
 
 
-_REQ_APP: Any = None
-
-
 def _req_app() -> Any:
     """The one ``/crm`` app that every ``_req`` call uses.
 
@@ -193,15 +190,9 @@ def _req_app() -> Any:
     state except the ``get_current_user`` override, and ``_req`` sets that
     override on each call. Tests run one after the other, so one app is safe.
     """
-    global _REQ_APP
-    if _REQ_APP is None:
-        from fastapi import FastAPI
-        from gateway.routes import crm as crm_package
+    from tests.unit._crm_app import crm_app
 
-        app = FastAPI()
-        app.include_router(crm_package.router)
-        _REQ_APP = app
-    return _REQ_APP
+    return crm_app()
 
 
 async def _req(user: Any, method: str, path: str, body: dict | None = None) -> Any:

@@ -80,6 +80,7 @@ import { SidePanelFitContext } from "@/lib/sidePanelFit";
 import {
   NO_PICK,
   carriedText,
+  chatToShow,
   findSession,
   recoverRefused,
   recoveredNotice,
@@ -88,8 +89,10 @@ import {
 } from "@/lib/railSessions";
 import { CHAT_GONE_NOTICE } from "@/lib/runActivity";
 import { IDLE_RUN, runViewText, type RunStatus } from "@/lib/runStatus";
+import type { ContinueOpened } from "@/lib/chatContinue";
 import {
   boundChatScope,
+  createSession,
   deleteSession,
   enrichSession,
   fetchAndMergeSessionsFromDb,
@@ -97,6 +100,7 @@ import {
   keepSession,
   renameSession,
   setSessionArchived,
+  upsertSession,
   type ChatSession,
 } from "@/lib/sessions";
 
@@ -207,10 +211,14 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   // list and can drop one in a racing save, so this page puts it back
   // (`keepSession`). Without it the chat has no row, and the panel waits.
   const madeHere = useRef(new Map<string, ChatSession>());
+  // The newest chat this page made, for the render. A full storage can refuse
+  // the list write, and then `sessions` never holds the chat. The dock shows
+  // this object and never waits for storage (production bug, 2026-11-06).
+  const [lastMade, setLastMade] = useState<ChatSession | null>(null);
   const makeFresh = useCallback(() => {
     const pick = startFresh(ASSISTANT_AGENT);
-    const made = getSessions().find((s) => s.id === pick.activeId);
-    if (made) madeHere.current.set(made.id, { ...made });
+    madeHere.current.set(pick.session.id, { ...pick.session });
+    setLastMade({ ...pick.session });
     return pick;
   }, []);
   const keepMine = useCallback((id: string) => {
@@ -223,6 +231,8 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   useEffect(() => {
     setRestoredId(null);
     setNotice(null);
+    setLastMade(null);
+    madeHere.current.clear();
     refresh();
   }, [scope, refresh]);
 
@@ -305,7 +315,8 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     // the old chat. A decision for it is lost when the new chat mounts, so
     // the next render decides (owner report, 2026-10-26).
     if (assistantState().sessionId !== st.sessionId) return;
-    const cur = getSessions().find((s) => s.id === st.sessionId);
+    // A chat this page made counts, also when a full storage lost its row.
+    const cur = getSessions().find((s) => s.id === st.sessionId) ?? madeHere.current.get(st.sessionId);
     // An empty chat of the member's own takes the words. Any other chat
     // takes them only if the bar may join it: never a room, never an
     // archived chat, never a stale one.
@@ -326,6 +337,9 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   useEffect(() => {
     const id = st.sessionId;
     if (!scope || !open || !id || getSessions().some((s) => s.id === id)) return;
+    // This page made the chat. The server may not list it yet, and a full
+    // storage may not hold it, so a look would only find "gone" by mistake.
+    if (madeHere.current.has(id)) return;
     let cancelled = false;
     void findSession(id).then((found) => {
       if (cancelled) return;
@@ -340,7 +354,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   }, [scope, open, st.sessionId, refresh]);
 
   const activeIdForBrief = st.sessionId ?? "";
-  const activeCount = sessions.find((s) => s.id === activeIdForBrief)?.messageCount;
+  const activeCount = chatToShow(sessions, activeIdForBrief, lastMade)?.messageCount;
 
   // A reminder link (WS-66 RM-4, §5.7). `/chat?reminder=<id>` asked for a
   // fresh chat AND the reminder, so the open waits until the effect above
@@ -424,6 +438,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       const own = getSessions().find((s) => s.id === helloId);
       closeAssistant();
       madeHere.current.delete(helloId);
+      setLastMade((made) => (made?.id === helloId ? null : made));
       if (assistantState().sessionId === helloId) setAssistantSession(prior);
       if (own && !own.messageCount && !own.hasUserMessage) deleteSession(helloId);
       refresh();
@@ -526,9 +541,10 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   );
   const onSessionRefused = useRestoredSessionGuard(activeId, restoredId, recover);
 
+  // The stored row, or the chat this page made when storage lost it.
   const active = useMemo(
-    () => sessions.find((s) => s.id === activeId) ?? null,
-    [sessions, activeId],
+    () => chatToShow(sessions, activeId, lastMade),
+    [sessions, activeId, lastMade],
   );
 
   const sendable =
@@ -551,6 +567,19 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     notice: notice ? { text: notice, onDismiss: () => setNotice(null) } : null,
     recoveredInput,
     consumeRecoveredInput: () => setRecoveredInput(undefined),
+    /**
+     * WT-2: open the fresh chat that the pill made. The server made the chat
+     * and chose the words. They go into the composer through the same slot as
+     * a recovered message, so nothing is sent: the member presses Send.
+     */
+    openContinued: (opened: ContinueOpened) => {
+      upsertSession({ ...createSession(ASSISTANT_AGENT), id: opened.sessionId });
+      setRestoredId(null);
+      setNotice(null);
+      setRecoveredInput(opened.text);
+      setAssistantSession(opened.sessionId);
+      refresh();
+    },
     /** Open a chat the member chose: a refusal of it is an error they see. */
     select: (id: string) => {
       setRestoredId(null);
@@ -559,6 +588,8 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     },
     remove: (id: string) => {
       deleteSession(id);
+      madeHere.current.delete(id);
+      setLastMade((made) => (made?.id === id ? null : made));
       if (id === activeId) setAssistantSession(null);
       refresh();
     },
@@ -1334,6 +1365,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 onActivity={chat.activity}
                 onArtifact={onArtifact}
                 onSessionRefused={chat.onSessionRefused}
+                onContinueHeld={chat.openContinued}
                 notice={chat.notice}
                 pendingInput={chat.recoveredInput ?? draftFor(st.draft, active.id)?.text}
                 pendingInputTyped={!chat.recoveredInput && draftFor(st.draft, active.id)?.typed === true}
