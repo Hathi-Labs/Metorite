@@ -205,6 +205,11 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "token under tenant_session(org) and RLS, and reads no mailbox "
         "(test_email_signature_images_r8.py)."
     ),
+    "signature_image_head": (
+        "WS-17 SG-1 fix round 1. The HEAD of signature_image_file: the same "
+        "read through _public_image, the same headers, and no body "
+        "(test_email_signature_images_r8.py)."
+    ),
 }
 
 # ── List 2: the modules outside routes/email that read an email child table ─

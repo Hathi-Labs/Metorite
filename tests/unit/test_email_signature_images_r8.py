@@ -180,6 +180,20 @@ class TestThePublicRoute:
             res = await routes.signature_image_file(promoted.org_a, token, "png")
         assert res.status_code == 200 and res.body == data
 
+    async def test_head_serves_the_headers_and_no_body(self, promoted, app_engine):  # noqa: F811
+        """Fix round 1, P3: HEAD gave 405. The token of A under B is 404 too."""
+        _, token, data = _seed_image(promoted.admin_engine, org=promoted.org_a)
+        async with tenant_engine_scope(_app_dsn(promoted)):
+            res = await routes.signature_image_head(promoted.org_a, token, "png")
+            with pytest.raises(HTTPException) as caught:
+                await routes.signature_image_head(promoted.org_b, token, "png")
+        assert res.status_code == 200 and res.body == b""
+        assert res.headers["content-length"] == str(len(data))
+        assert res.headers["content-type"] == "image/png"
+        for name, value in routes.PUBLIC_HEADERS.items():
+            assert res.headers[name] == value
+        assert caught.value.status_code == 404
+
 
 def _member(email: str, org: str) -> UserContext:
     return UserContext(

@@ -273,9 +273,8 @@ def _canonical_org(org: str) -> str | None:
     return org if str(parsed) == org else None
 
 
-@router.get(PUBLIC_ROUTE.removeprefix("/email"))
-async def signature_image_file(org: str, token: str, ext: str) -> Response:
-    """Serve one hosted image to anybody who holds its URL (D-EM-68)."""
+async def _public_image(org: str, token: str, ext: str) -> tuple[str, bytes]:
+    """``(content_type, bytes)`` of one hosted image, or the one 404."""
     tenant = _canonical_org(org)
     if tenant is None or not _TOKEN.fullmatch(token) or ext not in _EXT.values():
         raise HTTPException(status_code=404, detail="Not Found")
@@ -284,9 +283,24 @@ async def signature_image_file(org: str, token: str, ext: str) -> Response:
             text(PUBLIC_SQL), {"org": tenant, "token": token})).fetchone()
     if row is None or _EXT.get(row.content_type) != ext:
         raise HTTPException(status_code=404, detail="Not Found")
+    return row.content_type, bytes(row.bytes)
+
+
+@router.get(PUBLIC_ROUTE.removeprefix("/email"))
+async def signature_image_file(org: str, token: str, ext: str) -> Response:
+    """Serve one hosted image to anybody who holds its URL (D-EM-68)."""
+    content_type, data = await _public_image(org, token, ext)
+    return Response(content=data, media_type=content_type, headers=dict(PUBLIC_HEADERS))
+
+
+@router.head(PUBLIC_ROUTE.removeprefix("/email"))
+async def signature_image_head(org: str, token: str, ext: str) -> Response:
+    """The same answer as the GET, with no body (fix round 1, P3). A mail
+    client or a proxy can check an image this way. Every miss is the same 404."""
+    content_type, data = await _public_image(org, token, ext)
     return Response(
-        content=bytes(row.bytes), media_type=row.content_type,
-        headers=dict(PUBLIC_HEADERS))
+        content=b"", media_type=content_type,
+        headers={**PUBLIC_HEADERS, "Content-Length": str(len(data))})
 
 
 # ── The save of a signature (D-EM-70) ───────────────────────────────────────

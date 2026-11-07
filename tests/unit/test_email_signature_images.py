@@ -460,10 +460,31 @@ async def test_a_retire_of_a_bad_id_is_404_with_no_statement(monkeypatch):
 async def test_a_bad_shape_is_the_same_404_and_opens_no_session(monkeypatch, org, token, ext):
     db = _FakeDb()
     opened = _bind(monkeypatch, db)
-    with pytest.raises(HTTPException) as caught:
-        await routes.signature_image_file(org, token, ext)
-    assert caught.value.status_code == 404 and caught.value.detail == "Not Found"
+    for route in (routes.signature_image_file, routes.signature_image_head):
+        with pytest.raises(HTTPException) as caught:
+            await route(org, token, ext)
+        assert caught.value.status_code == 404 and caught.value.detail == "Not Found"
     assert opened == []
+
+
+async def test_head_answers_the_get_headers_and_no_body(monkeypatch) -> None:
+    """Fix round 1, P3: HEAD gave 405. It now answers as the GET, with no body."""
+    data = _png(20, 10)
+    row = SimpleNamespace(content_type="image/png", bytes=data)
+
+    @asynccontextmanager
+    async def _session(org=None):
+        yield SimpleNamespace(execute=AsyncMock(
+            return_value=MagicMock(fetchone=MagicMock(return_value=row))))
+
+    monkeypatch.setattr(routes, "_tenant_session", _session)
+    get = await routes.signature_image_file(_ORG, "a" * 43, "png")
+    head = await routes.signature_image_head(_ORG, "a" * 43, "png")
+    assert head.body == b"" and get.body == data
+    assert head.headers["content-length"] == str(len(data)) == get.headers["content-length"]
+    for name in ("content-type", "cache-control", "x-content-type-options",
+                 "content-security-policy", "cross-origin-resource-policy"):
+        assert head.headers[name] == get.headers[name], name
 
 
 def test_the_public_headers_are_the_spec_headers() -> None:
@@ -480,7 +501,8 @@ def test_the_public_route_never_calls_get_db() -> None:
 
     source = inspect.getsource(routes)
     assert "get_db" not in source.replace("never calls ``get_db``", "")
-    assert "_tenant_session(tenant)" in inspect.getsource(routes.signature_image_file)
+    assert "_tenant_session(tenant)" in inspect.getsource(routes._public_image)
+    assert "_public_image(" in inspect.getsource(routes.signature_image_head)
 
 
 # ── 7. The parent trusts no value of the child ─────────────────────────────
