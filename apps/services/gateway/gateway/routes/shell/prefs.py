@@ -341,12 +341,16 @@ async def muted_rules(db: Any, member: str) -> frozenset[str]:
 
 
 #: The ``block_notify`` switch over EVERY spelling of the address in the
-#: BOUND tenant (BR-5 slice 2b-2), in the shape of ``_HIDE_ANY_CASE_SQL``.
-#: One JSON ``true`` under any spelling turns it on. No row, or no ``true``,
-#: is off.
+#: BOUND tenant (BR-5 slice 2b-2). It FAILS CLOSED, unlike
+#: ``_HIDE_ANY_CASE_SQL``: ``true`` here SENDS an interrupt, so a union of
+#: ``true`` would keep the switch on after the member turned it off under
+#: another spelling. ``bool_and`` runs over the rows that hold the key only.
+#: The switch is on when each such row holds JSON ``true``. One row with any
+#: other value turns it off. No row with the key is off.
 _BLOCK_NOTIFY_ANY_CASE_SQL = (
-    "SELECT COALESCE(bool_or("
-    "my_day_prefs -> 'block_notify' = CAST('true' AS jsonb)), false) "
+    "SELECT COALESCE(bool_and("
+    "my_day_prefs -> 'block_notify' = CAST('true' AS jsonb)) "
+    "FILTER (WHERE my_day_prefs -> 'block_notify' IS NOT NULL), false) "
     "FROM user_settings "
     "WHERE organization_id = {org} AND lower(user_id) = lower(:uid)"
 )
@@ -354,7 +358,8 @@ _BLOCK_NOTIFY_ANY_CASE_SQL = (
 
 async def block_notify(db: Any, member: str) -> bool:
     """True when *member* asked to be told before each block starts
-    (``block_notify``), under ANY spelling of the address. Read on *db*, a
+    (``block_notify``). Each spelling of the address that holds the key must
+    hold ``true``, so one ``false`` under any spelling is off. Read on *db*, a
     session that the caller bound to the tenant. A read error raises: the
     caller logs it and counts the setting as off."""
     from gateway.routes.tasks.settings import _BOUND_ORG

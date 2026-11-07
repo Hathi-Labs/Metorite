@@ -59,16 +59,20 @@ _LOG_SQL = (
 )
 
 #: The rating of one alert (BR-5 slice 2b-1, migration 350). It changes the
-#: NEWEST log row of the member's card and rule in the bound tenant, and no
-#: other row. The member predicate keeps member B's row out, and the tenant
-#: predicate sits beside RLS. A second rating overwrites the first.
+#: NEWEST log row of the member's card and rule that Reach SENT, in the bound
+#: tenant, and no other row. A row with another outcome (``capped``,
+#: ``quiet``, ``deferred``, ``skipped``) sent no message, so the member never
+#: saw it and cannot rate it. The member predicate compares the address with
+#: no case, as each other read of the member does, and keeps member B's row
+#: out. The tenant predicate sits beside RLS. A second rating overwrites the
+#: first.
 _RATE_SQL = (
     "UPDATE reach_signal_log SET feedback = :fb, feedback_at = now() "
-    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
-    "AND signal_id = :s AND rule_id = :r "
+    f"WHERE organization_id = {_BOUND_ORG} AND lower(member_email) = lower(:m) "
+    "AND signal_id = :s AND rule_id = :r AND outcome = 'sent' "
     "AND fingerprint = (SELECT fingerprint FROM reach_signal_log "
-    f"WHERE organization_id = {_BOUND_ORG} AND member_email = :m "
-    "AND signal_id = :s AND rule_id = :r "
+    f"WHERE organization_id = {_BOUND_ORG} AND lower(member_email) = lower(:m) "
+    "AND signal_id = :s AND rule_id = :r AND outcome = 'sent' "
     "ORDER BY created_at DESC, fingerprint DESC LIMIT 1)"
 )
 
@@ -255,11 +259,21 @@ async def log(org: str, member: str,
 
     An item is a ``(signal_id, fingerprint)`` pair, or ``plan.entry`` of a
     card: the pair and the id of the rule that let it in (BR-5 slice 2b-1).
-    The id goes to ``rule_id``, so one card under one rule is one row."""
+    The id goes to ``rule_id``, so one card under one rule is one row.
+
+    Any other shape raises ValueError before any SQL runs: a string, a
+    tuple of one item or of four, or a part that is not a string. The rule
+    id may be None."""
     params = []
     for item in pairs:
-        signal_id, fingerprint, *rest = item
-        rule_id = rest[0] if rest else None
+        if not isinstance(item, tuple) or len(item) not in (2, 3):
+            raise ValueError("a log item is a (signal_id, fingerprint[, rule_id]) tuple")
+        signal_id, fingerprint = item[0], item[1]
+        rule_id = item[2] if len(item) == 3 else None
+        if not isinstance(signal_id, str) or not isinstance(fingerprint, str):
+            raise ValueError("a log item needs a str signal_id and fingerprint")
+        if rule_id is not None and not isinstance(rule_id, str):
+            raise ValueError("the rule_id of a log item is a str or None")
         params.append({"m": member, "s": signal_id, "f": fingerprint, "o": outcome,
                        "ob": outbox_id, "r": rule_id})
     if not params:
@@ -279,8 +293,9 @@ async def rate_alert(org: str, member: str, signal_id: str, rule_id: str,
     request (R5). *feedback* is one of ``exceptions.FEEDBACK``, and *rule_id*
     is a row of ``exceptions.RULES``. Anything else raises ValueError before
     any SQL runs. The rating lands on the newest log row of that card and
-    rule, and a second rating replaces the first. Answers True when a row
-    took it, and False when Reach logged no such alert for the member.
+    rule whose outcome is ``sent``, under any spelling of *member*. A second
+    rating replaces the first. Answers True when a row took it, and False
+    when Reach sent no such alert to the member.
 
     A rating only stores. It mutes no rule and changes no budget."""
     from gateway.reach import exceptions

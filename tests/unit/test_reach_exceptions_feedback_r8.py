@@ -22,6 +22,12 @@ phase-4-promoted catalog, as the NON-privileged role with RLS forced
   ``test_a_rating_changes_that_row_only`` goes red.
 * M3. ``outbox._RATE_SQL``: drop the newest-row subquery.
   ``test_a_rating_lands_on_the_newest_row_of_the_card`` goes red.
+* M4. ``outbox._RATE_SQL``: drop ``AND outcome = 'sent'``.
+  ``test_a_rating_skips_a_newer_row_that_sent_nothing`` goes red.
+* M5. ``outbox._RATE_SQL``: compare ``member_email = :m`` with case.
+  ``test_a_mixed_case_address_rates_the_lower_case_row`` goes red.
+* M6. ``outbox.log``: unpack ``signal_id, fingerprint, *rest`` again.
+  ``test_a_log_item_of_another_shape_is_refused`` goes red.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
@@ -226,6 +232,42 @@ class TestTheRating:
         rows = _rows(p, A)
         assert [r["feedback"] for r in rows] == [None, "useful"]
 
+    async def test_a_rating_skips_a_newer_row_that_sent_nothing(self, promoted):  # noqa: F811
+        """Reach sent the card at F1. The agent asked again at F2, and the
+        cap held that one back. A tap on the F1 message rates F1, never F2."""
+        p = promoted
+        async with _as_member(p, p.org_a):
+            await outbox.log(p.org_a, A, [("agent_asks:1", "F1", "agent_asks")], "sent")
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE reach_signal_log SET created_at = now() - interval '1 day' "
+                "WHERE member_email = :m"), {"m": A})
+        async with _as_member(p, p.org_a):
+            await outbox.log(p.org_a, A, [("agent_asks:1", "F2", "agent_asks")], "capped")
+            assert await outbox.rate_alert(p.org_a, A, "agent_asks:1", "agent_asks",
+                                           "useful")
+        got = {r["fingerprint"]: (r["outcome"], r["feedback"]) for r in _rows(p, A)}
+        assert got == {"F1": ("sent", "useful"), "F2": ("capped", None)}
+
+    async def test_a_card_that_never_went_out_takes_no_rating(self, promoted):  # noqa: F811
+        p = promoted
+        async with _as_member(p, p.org_a):
+            for fp, outcome in (("F1", "quiet"), ("F2", "capped"), ("F3", "deferred")):
+                await outbox.log(p.org_a, A, [("agent_asks:1", fp, "agent_asks")], outcome)
+            assert not await outbox.rate_alert(p.org_a, A, "agent_asks:1", "agent_asks",
+                                               "useful")
+        assert [r["feedback"] for r in _rows(p, A)] == [None, None, None]
+
+    async def test_a_mixed_case_address_rates_the_lower_case_row(self, promoted):  # noqa: F811
+        p = promoted
+        await _interrupt(p, p.org_a, A, [_card("agent_asks", "1")])
+        await _interrupt(p, p.org_a, B, [_card("agent_asks", "1")])
+        async with _as_member(p, p.org_a):
+            assert await outbox.rate_alert(p.org_a, A.upper(), "agent_asks:1",
+                                           "agent_asks", "not_useful")
+        assert [r["feedback"] for r in _rows(p, A)] == ["not_useful"]
+        assert [r["feedback"] for r in _rows(p, B)] == [None]
+
     async def test_a_rating_mutes_no_rule_and_changes_no_budget(self, promoted):  # noqa: F811
         p = promoted
         await _interrupt(p, p.org_a, A, [_card("agent_asks", "1")])
@@ -246,3 +288,31 @@ class TestTheRating:
         # The same rule still lets a new card of the kind through.
         got = plan.interrupt_candidates([_card("agent_asks", "2")], logged, NOW, rules=True)
         assert [c["signal_id"] for c in got] == ["agent_asks:2"]
+
+
+class TestTheLogShape:
+    @pytest.mark.parametrize("item", [
+        "ab",
+        "abc",
+        ("x:1",),
+        ("x:1", "fp", "agent_asks", "extra"),
+        ["x:1", "fp"],
+        ("x:1", 7),
+        (None, "fp"),
+        ("x:1", "fp", 3),
+    ])
+    async def test_a_log_item_of_another_shape_is_refused(self, promoted, item):  # noqa: F811
+        p = promoted
+        async with _as_member(p, p.org_a):
+            with pytest.raises(ValueError):
+                await outbox.log(p.org_a, A, [("x:0", "fp"), item], "sent")
+        # The check runs before any SQL, so the good item did not log either.
+        assert _rows(p, A) == []
+
+    async def test_a_pair_and_a_triple_with_no_rule_still_log(self, promoted):  # noqa: F811
+        p = promoted
+        async with _as_member(p, p.org_a):
+            assert await outbox.log(p.org_a, A, [("x:1", "fp"), ("x:2", "fp", None)],
+                                    "baseline") == 2
+        assert [(r["signal_id"], r["rule_id"]) for r in _rows(p, A)] == [
+            ("x:1", None), ("x:2", None)]

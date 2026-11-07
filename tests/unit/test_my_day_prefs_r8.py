@@ -362,26 +362,46 @@ async def _block_notify(org: str, email: str) -> bool:
         return await block_notify(session, email)
 
 
-async def test_block_notify_reads_any_spelling_and_isolates_tenants(db) -> None:
-    """BR-5 slice 2b-2: one ``true`` under any spelling of the address turns
-    the setting on, only in the bound tenant. A value that is not ``true``,
-    or no row, is off."""
-    low = _address()
-    mixed = low.replace("prefs.", "Prefs.").upper().replace("@MD2D.TEST", "@md2d.test")
+def _mixed(address: str) -> str:
+    return address.replace("prefs.", "Prefs.").upper().replace("@MD2D.TEST", "@md2d.test")
+
+
+async def test_block_notify_fails_closed_over_spellings_and_isolates_tenants(db) -> None:
+    """BR-5 slice 2b-2: the read FAILS CLOSED. The switch is on only when
+    each spelling of the address that holds the key holds ``true``. A member
+    who turned it on as ``Ravi.K@`` and off as ``ravi.k@`` gets no interrupt.
+    A value that is not ``true``, or no row, is off. Only the bound tenant
+    counts."""
+    split = _address()
+    on = _address()
     off = _address()
-    db.made.extend([low, mixed, off])
+    db.made.extend([split, _mixed(split), on, _mixed(on), off])
     with db.admin_engine.begin() as c:
-        for org, email, val in ((db.org_a, low, "false"),
-                                (db.org_a, mixed, "true"),
-                                (db.org_b, low, "false"),
+        for org, email, val in ((db.org_a, split, "false"),
+                                (db.org_a, _mixed(split), "true"),
+                                (db.org_a, _mixed(on), "true"),
+                                (db.org_b, on, "false"),
                                 (db.org_a, off, '"true"')):
             c.execute(text(
                 "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
                 "VALUES (:u, CAST(:o AS uuid), "
                 "jsonb_build_object('block_notify', CAST(:v AS jsonb)))"),
                 {"u": email, "o": org, "v": val})
+        # A spelling row with no block_notify key does not vote.
+        c.execute(text(
+            "INSERT INTO user_settings (user_id, organization_id, my_day_prefs) "
+            "VALUES (:u, CAST(:o AS uuid), CAST('{}' AS jsonb))"),
+            {"u": on, "o": db.org_a})
     async with tenant_engine_scope(_app_dsn(db)):
-        assert await _block_notify(db.org_a, low) is True
-        assert await _block_notify(db.org_b, low) is False
+        # A true row and a false row disagree: off, under each spelling.
+        assert await _block_notify(db.org_a, split) is False
+        assert await _block_notify(db.org_a, _mixed(split)) is False
+        # Only true rows hold the key: on, under each spelling.
+        assert await _block_notify(db.org_a, on) is True
+        assert await _block_notify(db.org_a, _mixed(on)) is True
+        # The false row of org B does not reach org A, nor the reverse.
+        assert await _block_notify(db.org_b, on) is False
+        # A JSON string "true" is not true.
         assert await _block_notify(db.org_a, off) is False
+        # No row: off.
         assert await _block_notify(db.org_a, "nobody@md2d.test") is False

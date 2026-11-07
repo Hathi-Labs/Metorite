@@ -415,7 +415,9 @@ first rule that matches, so one card has one rule and one row. The key of
 the log stays `(organization_id, member_email, signal_id, fingerprint)`.
 
 `outbox.rate_alert(org, member, signal_id, rule_id, feedback)` stores the
-rating on the newest row of that card and rule. The caller takes the org and
+rating on the newest row of that card and rule with the outcome `sent`. A row
+that sent no message, such as `capped` or `quiet`, takes no rating. The
+function compares the member address with no case. The caller takes the org and
 the member from the session. No route takes a rating in this slice. RE-6
 calls the function when it builds the buttons.
 
@@ -433,10 +435,14 @@ on every `block_soon` card, so rule 3 can fire. No migration.
 
 **BUILT 2026-11-06, dark.** `PUT /shell/feed/prefs` stores the key, as it
 stores `rule_mutes`. `loop.block_notify` reads it only with
-`BRIEF_EXCEPTIONS` on. A read error counts as off, so a fault sends no alert
-that the member did not ask for. `exceptions.with_notify` marks a copy of
-each `block_soon` card for the loop and `/reach/preview`. The feed's own card
-does not change.
+`BRIEF_EXCEPTIONS` on. `exceptions.with_notify` marks a copy of each
+`block_soon` card for the loop and `/reach/preview`. The feed's own card does
+not change.
+
+The read fails closed over the spellings of the member address. The switch
+is on only when each spelling row that holds the key holds `true`, so a
+`false` under any spelling turns it off. A read error
+counts as off, so a fault sends no alert that the member did not ask for.
 
 **The mute screen (slice 2b-3).** A member sets a rule mute in Settings. The
 screen is STANDARD tier and needs a D145 preview. It writes `rule_mutes` in
