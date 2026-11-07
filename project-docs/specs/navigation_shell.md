@@ -1916,15 +1916,78 @@ skip it. The question changes the starting layout and nothing else.
 
 ## 9. The phone
 
-Today the phone shell has no top bar. A bottom nav changes its tabs per app,
-and a Menu tab opens a drawer (`AppShell.tsx:186-236`).
+The phone shell has no top bar. A bottom bar changes its tabs per app, and
+its Menu tab opens a drawer (`AppShell.tsx`, `MobileBottomNavInner`).
 
-- **Keep the per-app bottom tabs.** They work, and each app tuned them.
-- **Add one row at the top of every screen**: the command bar and the scope
-  chip.
 - **The drawer takes the sidebar shape of §3.2.** My Day comes first.
-- **The dock opens as a full-screen sheet.** With `NEXT_PUBLIC_SHELL_CHAT`
-  on, the Ask tab at the right end of the bottom nav opens it (D99, §7.1).
+- **The Ask tab opens the assistant** (D99, §7.1). Since 2026-11-07 the
+  assistant opens as a sheet above the bar (§9.1), not over it.
+
+### 9.1 The bar always shows (owner, 2026-11-07, MOB-9, task 2002)
+
+The owner asked in chat: "have the bottom menu bar always show. currently the
+popup end up covering the menu."
+
+- **No overlay covers the bar.** The bar paints on `LAYER.bottomNav` (96).
+  That is above every sheet, drawer, card, dialog and panel. The guide (98),
+  a confirmation (`Modal` `alert`, 100) and a toast (110) paint above it.
+- **Each full-height layer ends at the bar's top edge.** One CSS rule in
+  `globals.css` does this under `:root[data-phone-nav]`, with the variable
+  `--phone-nav-h`. An overlay never sets that height itself. A sheet sized in
+  `vh` subtracts `--phone-nav-h`.
+- **A tab closes what is open, then does its job.** The shell sends one
+  bar-tap signal (`lib/phoneBarTap.ts`). Each overlay closes on it, and the
+  Focus room drops to its strip. A second tap on the tab that opened a sheet
+  closes the sheet. Ask opens and closes the assistant.
+- **A menu or a panel stops at the bar.** `AnchoredPanel` and
+  `lib/menuClamp.ts` measure the room to the bar's top edge.
+
+Fences: `layers.test.ts`, `phoneBarTap.test.ts`, `menuClamp.test.ts`,
+`AnchoredPanel.test.ts` and `e2e/phone-bar-always.spec.ts`.
+
+### 9.2 One rule for every bar (owner, 2026-11-07, MOB-12, task 2005)
+
+The owner asked that each bar make it "as obvious as possible to the user how
+to use the app". `src/lib/shell/phoneBar.ts` declares the bar of each app, and
+the shell draws it. `AppShell.tsx` holds no branch for one app.
+
+1. Menu comes first and Ask comes last. At most three app tabs go between
+   them.
+2. A place tab goes to a part of the app. While that part shows, its icon
+   sits in a tinted pill.
+3. An act tab does one thing. At most one act is the accent: the app's main
+   "new". Its icon sits in a filled circle.
+4. No tab opens an empty sheet. The page hides a tab that has nothing to do.
+5. No tab repeats a control that stays on the screen. On a phone, the page
+   drops the top control that the bar holds.
+6. An app with no places and no "new" declares no tabs, and it gives its
+   reason.
+
+A page tells the shell what shows with one event, `cc-phone-bar` (the selected
+tab, the tabs to hide, and the counts). CRM keeps its own list
+(`cc-crm-nav`), because its page knows the source's labels.
+
+| App | Tabs between Menu and Ask |
+|---|---|
+| My Day | None. One page. CC-9 (task 1977) puts Capture at the thumb |
+| Calendar | Today · Schedule (count) · Reminders (count, behind its flag). The floating button is gone |
+| People | Directory · Org chart · Find skills |
+| Projects | Projects · Capture · Search (`one_projects_app.md` MOB-10) |
+| CRM | The page's own list, then More |
+| Knowledge | Spaces · Search · New page |
+| Email | Mailboxes · Automation · Write |
+| WhatsApp | Triage (inbox only) · Sections |
+| Chat | None while Ask shows, because `/chat` then opens the assistant |
+| Studio | Library · Modules · New app |
+| Artifacts | Chats · Workspaces |
+| Approvals | None. One list, and each row holds Approve and Reject |
+| Organisation | Members · Requests (count) · Invite |
+| Appearance | None. One settings page |
+| Integrations | Views · Add |
+
+Fence: `phoneBar.test.ts`. It fails when a live pane has no declared bar,
+when a bar holds more than three tabs or two accents, or when no page answers
+a tab's event.
 
 ---
 
