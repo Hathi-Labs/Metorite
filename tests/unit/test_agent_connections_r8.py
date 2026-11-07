@@ -624,7 +624,8 @@ class TestTheStore:
 
     async def test_a_malformed_id_revokes_nothing(self, live):
         async def go() -> bool:
-            return await agent_tokens.revoke_connection_scoped(live.org_a, "nope")
+            return await agent_tokens.revoke_connection_scoped(
+                live.org_a, "nope", reason=agent_tokens.REVOKE_ADMIN)
         assert await _in_scope(live, go) is False
 
     async def test_an_empty_member_filter_is_a_caller_bug(self, live):
