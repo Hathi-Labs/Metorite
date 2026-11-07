@@ -93,10 +93,19 @@ def P(pid, ppid, hours, cmd, uid=ME, start=None):
     return reaper.Proc(pid, ppid, int(hours * H), uid, cmd, pid * 10 if start is None else start)
 
 
-def stale(procs, sessions=None, self_pid=9000, uid=ME):
+DEAD = 4_194_304  # above the default pid_max: no process has this pid
+
+
+def stale(procs, sessions=None, self_pid=9000, uid=ME, environ=None, cwds=None):
+    """`environ` and `cwds` are the fake /proc: pid -> its environment, pid -> its cwd."""
     rows = [*list(procs), P(self_pid, 8999, 0, "python3 scripts/reaper.py"), P(8999, 1, 0, "bash -c python3 scripts/reaper.py")]
-    env = reaper.Env(now=NOW, procs=rows, uid=uid, self_pid=self_pid, sessions=sessions or {})
+    env = reaper.Env(now=NOW, procs=rows, uid=uid, self_pid=self_pid, sessions=sessions or {},
+                     environ_of=(environ or {}).get, cwd_of=(cwds or {}).get)
     return [a["pid"] for a in reaper.stale_processes(env)]
+
+
+def of(cpid):
+    return {"CLAUDE_PID": str(cpid), "PATH": "/usr/bin"}
 
 
 def session(root_pid=100, idle_h=8.0, child_h=8.0, busy=False):
@@ -137,11 +146,13 @@ def test_loop_7h_under_an_active_session_is_not_listed():
 
 
 def test_loop_under_an_ended_session_is_listed_after_2h():
-    assert stale([P(10, 1, 2.1, LOOP)]) == [10]
-    assert stale([P(10, 1, 1.9, LOOP)]) == []
+    assert stale([P(10, 1, 2.1, LOOP)], environ={10: of(DEAD)}) == [10]
+    assert stale([P(10, 1, 1.9, LOOP)], environ={10: of(DEAD)}) == []
     # The Bash tool wrapper orphaned, the loop under it: a chain of shells only.
+    # Only the wrapper at the top has a readable environment. The loop takes it.
     wrapper = "/bin/bash -c source snap.sh && eval 'timeout 590 bash -c \"until x; do sleep 5; done\"'"
-    assert stale([P(20, 1, 7, wrapper), P(21, 20, 7, "timeout 590 bash -c until x; do sleep 5; done"), P(22, 21, 7, LOOP)]) == [20, 22]
+    chain = [P(20, 1, 7, wrapper), P(21, 20, 7, "timeout 590 bash -c until x; do sleep 5; done"), P(22, 21, 7, LOOP)]
+    assert stale(chain, environ={20: of(DEAD)}) == [20, 22]
 
 
 def test_loop_under_an_idle_session_is_listed_after_6h():
@@ -152,8 +163,8 @@ def test_loop_under_an_idle_session_is_listed_after_6h():
 def test_pytest_4h_under_no_session_is_listed():
     chain = [P(30, 1, 4, "/bin/bash -c eval 'timeout 9000 uv run pytest x'"), P(31, 30, 4, "timeout 9000 uv run pytest x"),
              P(32, 31, 4, "uv run pytest x"), P(33, 32, 4, PYTEST)]
-    assert stale(chain) == [33]
-    assert stale([P(33, 1, 2.9, PYTEST)]) == []
+    assert stale(chain, environ={30: of(DEAD)}) == [33]
+    assert stale([P(33, 1, 2.9, PYTEST)], environ={33: of(DEAD)}) == []
 
 
 def test_pytest_4h_whose_claude_root_has_a_2_minute_old_child_is_not_listed():
@@ -285,10 +296,15 @@ def test_no_proc_host_does_nothing(monkeypatch, capsys):
 LIVE = pytest.mark.skipif(not Path("/proc").is_dir() or shutil.which("ps") is None, reason="needs Linux ps and /proc")
 
 
-def _spawn_orphan(shell_text: str) -> int:
-    """Start `shell_text` in the background of a shell that exits, so init adopts it."""
+def _spawn_orphan(shell_text: str, cwd: Path) -> int:
+    """Start `shell_text` in the background of a shell that exits, so init adopts it.
+
+    Its CLAUDE_PID names a pid that no process has: its session ended. Its cwd
+    is a temp dir, so no live session on this box works there.
+    """
+    env = {**os.environ, "CLAUDE_PID": str(DEAD)}
     r = subprocess.run(["bash", "-c", f"{shell_text} >/dev/null 2>&1 </dev/null & echo $!"],
-                       capture_output=True, text=True, timeout=10)
+                       capture_output=True, text=True, timeout=10, env=env, cwd=cwd)
     return int(r.stdout.strip())
 
 
@@ -303,8 +319,10 @@ def test_live_orphan_loop_dies_and_working_look_alike_survives(tmp_path):
     script = tmp_path / "lookalike.sh"
     # The fake session: a loop at once, and a fresh `sleep 600` 3 s later.
     script.write_text(f"bash -c '{loop}' &\nsleep 3\nsleep 600 &\nwait\n", encoding="utf-8")
-    orphan = _spawn_orphan(f"bash -c '{loop}'")
-    root = _spawn_orphan(f"exec -a claude bash {script}")
+    orphan = _spawn_orphan(f"bash -c '{loop}'", tmp_path)
+    # The fake session works in another dir. In the dir of the orphan, the cwd rule would keep it.
+    (tmp_path / "session").mkdir()
+    root = _spawn_orphan(f"exec -a claude bash {script}", tmp_path / "session")
     young = []
     try:
         time.sleep(4.5)
@@ -322,7 +340,8 @@ def test_live_orphan_loop_dies_and_working_look_alike_survives(tmp_path):
         state, why = reaper.session_state(env, by_pid[twin[0]], 2, limits)
         assert state == "active" and "young process" in why
         log = []
-        reaper.apply(acts, Path("."), log=log.append)
+        claude_dir = tmp_path / "claude"
+        reaper.apply(acts, Path("."), log=log.append, recheck=lambda a: reaper.recheck_process(a, claude_dir, limits))
         assert reaper.proc_start(orphan) is None
         assert reaper.proc_start(twin[0]) is not None
         assert any(f"stop pid {orphan}" in m for m in log) and any("ended after SIGTERM" in m for m in log)
@@ -351,7 +370,7 @@ def test_session_info_reads_the_session_file_and_the_transcript(tmp_path):
     t.write_text("{}\n", encoding="utf-8")
     os.utime(t, (NOW - 8 * H, NOW - 8 * H))
     write()
-    assert reaper.session_info(5, 77, tmp_path, NOW) == reaper.Session(8 * H, False)
+    assert reaper.session_info(5, 77, tmp_path, NOW) == reaper.Session(8 * H, False, "/home/dev/Metorite")
     sub = proj / "s1" / "subagents" / "a.jsonl"
     sub.write_text("{}\n", encoding="utf-8")
     os.utime(sub, (NOW - 60, NOW - 60))
@@ -364,3 +383,147 @@ def test_session_info_reads_the_session_file_and_the_transcript(tmp_path):
     write()
     assert reaper.session_info(5, 77, tmp_path, NOW).idle_s is None
     assert reaper.session_info(6, 77, tmp_path, NOW) == reaper.Session(None)  # no session file
+
+
+# --- review round: orphans of a live session, a linear matcher, a re-check -------
+
+
+def test_orphan_with_claude_pid_of_a_live_busy_session_is_not_listed():
+    """A busy session ran `( ... ) &`. Its shell exited and init adopted the job."""
+    procs, sess = session(busy=True)
+    assert stale([*procs, P(10, 1, 3, LOOP)], sess, environ={10: of(100)}) == []
+    assert stale([*procs, P(33, 1, 5, PYTEST)], sess, environ={33: of(100)}) == []
+    procs, sess = session(idle_h=0.2)  # it wrote its transcript 12 min ago
+    assert stale([*procs, P(10, 1, 3, LOOP)], sess, environ={10: of(100)}) == []
+
+
+def test_orphan_with_claude_pid_of_a_live_idle_session_is_listed():
+    procs, sess = session(idle_h=8)
+    assert stale([*procs, P(10, 1, 3, LOOP)], sess, environ={10: of(100)}) == [10]
+
+
+def test_orphan_with_claude_pid_of_a_dead_or_reused_pid_is_listed():
+    assert stale([P(10, 1, 3, LOOP)], environ={10: of(DEAD)}) == [10]
+    # Pid 100 is a claude now, but it is younger than the orphan: the pid was reused.
+    procs, sess = session(busy=True)
+    assert stale([*procs, P(10, 1, 10, LOOP)], sess, environ={10: of(100)}) == [10]
+    # Pid 100 is no claude session: the session that started the loop is gone.
+    assert stale([P(100, 1, 9, "node x.js"), P(10, 1, 3, LOOP)], environ={10: of(100)}) == [10]
+
+
+def test_claude_pid_comes_from_an_ancestor_or_a_child_when_the_process_has_none():
+    procs, sess = session(busy=True)
+    test_run = [P(33, 1, 5, PYTEST), P(34, 33, 5, "python -c from xdist import worker")]
+    assert stale([*procs, *test_run], sess, environ={34: of(100)}) == []
+    assert stale([*procs, *test_run], sess, environ={33: {"PATH": "/usr/bin"}, 34: of(DEAD)}) == [33]
+
+
+def test_orphan_with_no_readable_claude_pid_needs_twice_its_limit():
+    # Under 2x the limit (4 h loop, 6 h test run): kept, with no session at all.
+    assert stale([P(10, 1, 3.9, LOOP)]) == []
+    assert stale([P(33, 1, 5.9, PYTEST)], environ={33: {"PATH": "/usr/bin"}}) == []
+    # Over 2x and no session on the box: listed.
+    assert stale([P(10, 1, 4.1, LOOP), P(33, 1, 6.1, PYTEST)]) == [10, 33]
+    # Over 2x, and every session is quiet past the limit: listed.
+    procs, sess = session(idle_h=8)
+    assert stale([*procs, P(10, 1, 4.1, LOOP)], sess) == [10]
+    # Over 2x, but a session wrote inside the limit, or has a young child: kept.
+    procs, sess = session(idle_h=1)
+    assert stale([*procs, P(10, 1, 4.1, LOOP)], sess) == []
+    procs, sess = session(idle_h=8, child_h=1)
+    assert stale([*procs, P(10, 1, 4.1, LOOP)], sess) == []
+    # Over 2x, and a session with no transcript: we cannot tell, so kept.
+    procs, _ = session()
+    assert stale([*procs, P(10, 1, 4.1, LOOP)], {100: reaper.Session(None)}) == []
+
+
+def test_orphan_in_the_cwd_of_a_busy_session_is_not_listed():
+    procs, _ = session()
+    busy = {100: reaper.Session(8 * H, True, "/home/dev/wt-a")}
+    # No readable CLAUDE_PID, over 2x: the cwd match keeps it.
+    assert stale([*procs, P(10, 1, 5, LOOP)], busy, cwds={10: "/home/dev/wt-a/apps"}) == []
+    # Even a dead CLAUDE_PID: a busy session works in that cwd.
+    assert stale([*procs, P(10, 1, 5, LOOP)], busy, environ={10: of(DEAD)}, cwds={10: "/home/dev/wt-a"}) == []
+    # The session sits in the main checkout, but a child of it works in the worktree.
+    main = {100: reaper.Session(8 * H, True, "/home/dev/Metorite")}
+    cwds = {10: "/home/dev/wt-a/apps", 101: "/home/dev/wt-a"}
+    assert stale([*procs, P(10, 1, 5, LOOP)], main, environ={10: of(DEAD)}, cwds=cwds) == []
+    # Another cwd, or an idle session in the same cwd: the dead CLAUDE_PID decides.
+    assert stale([*procs, P(10, 1, 5, LOOP)], main, environ={10: of(DEAD)}, cwds={10: "/home/dev/wt-b"}) == [10]
+    idle = {100: reaper.Session(8 * H, False, "/home/dev/wt-a")}
+    assert stale([*procs, P(10, 1, 5, LOOP)], idle, environ={10: of(DEAD)}, cwds={10: "/home/dev/wt-a"}) == [10]
+
+
+def test_loop_match_is_linear_and_still_finds_loops():
+    hostile = "bash -c " + "; while x do sleep 1 " * 1200
+    assert len(hostile) > 24_000
+    t0 = time.perf_counter()
+    assert not reaper.is_wait_loop(hostile)
+    assert not reaper.is_wait_loop("bash -c " + "eval " * 5000 + "x")
+    assert not reaper.is_wait_loop("bash -c eval" + " " * 20_000 + "x")
+    assert time.perf_counter() - t0 < 1.0
+    t0 = time.perf_counter()
+    assert reaper.command_label("bash -c " + "a" * 13_000)
+    assert time.perf_counter() - t0 < 1.0
+    for cmd in [
+        LOOP, "bash -c while true; do sleep 60; done",
+        "bash -c cd /x; (until [ -f done.txt ]; do sleep 60; done) &",
+        "/bin/bash -c source snap.sh && eval 'while ! curl -s x; do sleep 2; done' < /dev/null",
+        "bash -c eval \"until x; do sleep 2; done\"",
+        "bash -c set -e\nwhile pgrep x\ndo\n  sleep 5\ndone",
+    ]:
+        assert reaper.is_wait_loop(cmd), cmd
+    # A loop past the cap is not seen: the reaper keeps it.
+    assert not reaper.is_wait_loop("bash -c " + "x" * 5000 + "; while x; do sleep 1; done")
+
+
+def test_command_label_masks_a_secret_after_a_known_flag():
+    for flag in ("--token", "--password", "--api-key", "--access-token"):
+        label = reaper.command_label(f"curl {flag} s3cr3t https://x {flag}=t0p")
+        assert "s3cr3t" not in label and "t0p" not in label, label
+        assert f"{flag} ***" in label
+    # A short flag stays: `-p` is a prompt in claude and a plugin in pytest.
+    assert "-p no:cacheprovider" in reaper.command_label("pytest -p no:cacheprovider")
+
+
+def test_apply_reads_the_state_again_and_skips_a_process_whose_session_woke():
+    procs, sess = session(idle_h=8)
+    rows = [*procs, P(10, 100, 7, LOOP)]
+    env = reaper.Env(now=NOW, procs=rows, uid=ME, self_pid=9000, sessions=sess)
+    planned = reaper.stale_processes(env)
+    assert [a["pid"] for a in planned] == [10]
+
+    def woke(env2, claude_dir):  # the session writes again while docker stops
+        env2.now, env2.procs, env2.uid, env2.self_pid = NOW + 600, rows, ME, 9000
+        env2.sessions = {100: reaper.Session(30, False)}
+
+    sent, log = [], []
+    reaper.apply(planned, Path("."), log=log.append, stop=lambda *a, **k: sent.append(a),
+                 recheck=lambda a: reaper.recheck_process(a, Path("x"), collect=woke))
+    assert sent == [] and log == ["reaper: skip pid 10 (state changed to active)"]
+
+    def gone(env2, claude_dir):
+        env2.procs, env2.uid, env2.self_pid = [r for r in rows if r.pid != 10], ME, 9000
+        env2.sessions = sess
+
+    log.clear()
+    reaper.apply(planned, Path("."), log=log.append, stop=lambda *a, **k: sent.append(a),
+                 recheck=lambda a: reaper.recheck_process(a, Path("x"), collect=gone))
+    assert sent == [] and log == ["reaper: skip pid 10 (state changed to gone)"]
+
+
+def test_apply_stops_a_process_still_listed_and_names_the_children_it_leaves():
+    rows = [P(33, 1, 7, PYTEST), P(34, 33, 7, "python -c xdist worker"), P(35, 33, 7, "python -c xdist worker")]
+
+    def same(env2, claude_dir):
+        env2.now, env2.procs, env2.uid, env2.self_pid = NOW, rows, ME, 9000
+        env2.environ_of = {33: of(DEAD)}.get
+
+    env = reaper.Env(now=NOW, procs=rows, uid=ME, self_pid=9000, environ_of={33: of(DEAD)}.get)
+    planned = reaper.stale_processes(env)
+    assert planned[0]["kids"] == [34, 35]
+    sent, log = [], []
+    reaper.apply(planned, Path("."), log=log.append, stop=lambda pid, start, log: sent.append((pid, start)),
+                 recheck=lambda a: reaper.recheck_process(a, Path("x"), collect=same))
+    assert sent == [(33, 330)]
+    assert log[0].startswith("reaper: stop pid 33 (test run") and log[0].endswith("[children left: 34 35]")

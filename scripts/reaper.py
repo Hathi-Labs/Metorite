@@ -39,6 +39,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -69,10 +70,16 @@ WRAPPERS = SHELLS | {"timeout", "env", "nohup", "setsid", "nice", "uv", "xargs"}
 CLAUDE_INFRA = {"daemon", "bg-pty-host", "remote-control"}
 # The `until`/`while` must stand where a command starts: after `-c`, `eval '`,
 # `;`, `&&`, `|`, `(`, `{`, a new line or `do`. So `grep 'while ...'` is no loop.
-LOOP_RE = re.compile(
-    r"(?:^|[;&|(){}\n]|(?:\beval|\s-c|\bdo|\bthen|\belse)\s+['\"]?)\s*(?:until|while)\s.+?\bdo\b.*?\bsleep\b.*?\bdone\b",
-    re.S,
+# The match is linear: one start regex with no nested quantifier, then one
+# plain search for each of `do`, `sleep` and `done`, in order. A chain of lazy
+# `.*?` took 74 s on a 13 KB heredoc. The text is cut to LOOP_CAP first.
+LOOP_START_RE = re.compile(
+    r"(?:^|[;&|(){}\n]|(?:\beval|\s-c|\bdo|\bthen|\belse)(?:\s+['\"]|\s))\s*(?:until|while)\s"
 )
+LOOP_TOKENS = (re.compile(r"\bdo\b"), re.compile(r"\bsleep\b"), re.compile(r"\bdone\b"))
+LOOP_CAP = 4096
+# command_label masks secrets in this much text only. Its label is 100 characters.
+LABEL_CAP = 1000
 PYTEST_NAMES = {"pytest", "py.test"}
 PYTHON_RE = re.compile(r"^python[\d.]*$")
 
@@ -109,6 +116,11 @@ class Session:
 
     idle_s: float | None
     busy: bool = False
+    cwd: str | None = None  # the cwd of its session file
+
+
+def _no_read(pid: int) -> None:
+    return None
 
 
 @dataclass(frozen=True)
@@ -135,6 +147,10 @@ class Env:
     uid: int | None = None  # the user of the reaper. None: job 3 does nothing
     self_pid: int = 0  # the reaper. It, its parent and all its ancestors stay
     sessions: dict[int, Session] = field(default_factory=dict)  # claude root pid -> state
+    # pid -> its environment (dict) or None when the reaper cannot read it.
+    environ_of: Callable[[int], dict[str, str] | None] = _no_read
+    # pid -> its cwd or None when the reaper cannot read it.
+    cwd_of: Callable[[int], str | None] = _no_read
 
 
 def _busy(env: Env, wt: Worktree) -> bool:
@@ -175,7 +191,20 @@ def is_claude_session(cmd: str) -> bool:
 
 def is_wait_loop(cmd: str) -> bool:
     """A shell whose command is an `until`/`while` loop with `sleep` in it."""
-    return _argv0(cmd) in SHELLS and bool(LOOP_RE.search(cmd))
+    if _argv0(cmd) not in SHELLS:
+        return False
+    text = cmd[:LOOP_CAP]
+    m = LOOP_START_RE.search(text)
+    if m is None:
+        return False
+    # `.+?` of the old form: at least one character between the keyword and `do`.
+    pos = m.end() + 1
+    for tok in LOOP_TOKENS:
+        found = tok.search(text, pos)
+        if found is None:
+            return False
+        pos = found.end()
+    return True
 
 
 def is_pytest(cmd: str) -> bool:
@@ -198,6 +227,9 @@ SECRET_PATTERNS = [
     (re.compile(r"\bBearer\s+\S+", re.I), "Bearer ***"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{6,}"), "sk-***"),
     (re.compile(r"(://[^\s:/@]+):[^\s@/]+@"), r"\1:***@"),
+    # A secret as the next word of a known long flag: `--token abc`, `--api-key abc`.
+    (re.compile(r"(?<!\S)(--(?:token|password|passwd|api-key|apikey|secret|client-secret|auth-token|access-token))"
+                r"(\s+|=)(\"[^\"]*\"|'[^']*'|\S+)", re.I), r"\1\2***"),
 ]
 
 
@@ -218,7 +250,7 @@ def command_label(cmd: str) -> str:
         elif body.endswith(q):
             body = body[:-1]
         text = body.replace("'\\''", "'").replace("'\"'\"'", "'") if q == "'" else body
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text[:LABEL_CAP]).strip()
     for rx, to in SECRET_PATTERNS:
         text = rx.sub(to, text)
     return text[:100]
@@ -259,6 +291,97 @@ def _has_young_process(root: int, kids: dict[int, list[Proc]], young_s: float) -
     return False
 
 
+def _root_state(env: Env, r: Proc, kids: dict[int, list[Proc]], idle_need: float, limits: Limits) -> tuple[str, str]:
+    """The state of one live claude session root: 'idle', 'active' or 'unknown'."""
+    if _has_young_process(r.pid, kids, limits.young_child_s):
+        return "active", f"session {r.pid} has a young process"
+    info = env.sessions.get(r.pid)
+    if info is None or info.idle_s is None:
+        return "unknown", f"session {r.pid}: no transcript"
+    if info.busy:
+        return "active", f"session {r.pid} is busy"
+    if info.idle_s < idle_need:
+        return "active", f"session {r.pid} wrote {info.idle_s / 60:.0f} min ago"
+    return "idle", f"session {r.pid} idle {info.idle_s / 3600:.1f} h"
+
+
+def _descendants(pid: int, kids: dict[int, list[Proc]], cap: int = 200) -> list[Proc]:
+    """The processes under `pid`, nearest first, at most `cap`."""
+    out: list[Proc] = []
+    queue = [pid]
+    seen = {pid}
+    while queue and len(out) < cap:
+        for c in kids.get(queue.pop(0), []):
+            if c.pid not in seen:
+                seen.add(c.pid)
+                out.append(c)
+                queue.append(c.pid)
+    return out[:cap]
+
+
+def _claude_pid(env: Env, p: Proc, chain: list[Proc], kids: dict[int, list[Proc]]) -> int | None:
+    """CLAUDE_PID from the environment of `p`, else of the nearest ancestor, else of a descendant."""
+    for q in [p, *chain, *_descendants(p.pid, kids, cap=50)]:
+        value = (env.environ_of(q.pid) or {}).get("CLAUDE_PID", "")
+        if value.isdigit():
+            return int(value)
+    return None
+
+
+_WORKTREE_RE = re.compile(r"^(.*?/wt-[^/]+)")
+
+
+def _tree(path: str) -> str:
+    """The worktree root of `path` (the `.../wt-<slug>` part), or `path` itself."""
+    m = _WORKTREE_RE.match(path)
+    return m.group(1) if m else path
+
+
+def _contains(outer: str, inner: str) -> bool:
+    outer = outer.rstrip("/") or "/"
+    return inner == outer or inner.startswith(outer if outer == "/" else outer + "/")
+
+
+def _works_in(env: Env, s: Proc, kids: dict[int, list[Proc]], cwd: str) -> bool:
+    """True when session `s` has a cwd that holds `cwd`, or a process in the same worktree."""
+    info = env.sessions.get(s.pid)
+    own = [d for d in ((info.cwd if info else None), env.cwd_of(s.pid)) if d]
+    if any(_contains(d, cwd) for d in own):
+        return True
+    return any((d := env.cwd_of(c.pid)) and _tree(d) == _tree(cwd) for c in _descendants(s.pid, kids))
+
+
+def _orphan_state(env: Env, p: Proc, chain: list[Proc], limit_s: float, limits: Limits,
+                  by_pid: dict[int, Proc], kids: dict[int, list[Proc]]) -> tuple[str, str]:
+    """The state of a process with only shells up to init.
+
+    Init adopts a background job when its shell exits. So the session that
+    started it can still be live. CLAUDE_PID in its environment names it.
+    """
+    idle_need = max(limits.transcript_active_s, limit_s)
+    sessions = [x for x in env.procs if x.uid == env.uid and is_claude_session(x.cmd)]
+    cwd = env.cwd_of(p.pid)
+    if cwd:
+        for s in sessions:
+            if _root_state(env, s, kids, idle_need, limits)[0] != "idle" and _works_in(env, s, kids, cwd):
+                return "active", f"orphan in {cwd}, where session {s.pid} works"
+    cpid = _claude_pid(env, p, chain, kids)
+    if cpid is not None:
+        root = by_pid.get(cpid)
+        # A session cannot start a process older than itself: an older one means a reused pid.
+        if root is None or root.uid != env.uid or not is_claude_session(root.cmd) or root.age + 5 < p.age:
+            return "ended", f"orphan, its session {cpid} ended"
+        state, why = _root_state(env, root, kids, idle_need, limits)
+        return state, f"orphan of {why}"
+    if p.age <= 2 * limit_s:
+        return "unknown", "orphan, no CLAUDE_PID, under twice its limit"
+    for s in sessions:
+        info = env.sessions.get(s.pid)
+        if info is None or info.idle_s is None or info.idle_s < limit_s or _has_young_process(s.pid, kids, limit_s):
+            return "unknown", f"orphan, no CLAUDE_PID, session {s.pid} is not quiet"
+    return "ended", "orphan, no CLAUDE_PID, over twice its limit, no session works"
+
+
 def session_state(env: Env, p: Proc, limit_s: float, limits: Limits, by_pid=None, kids=None) -> tuple[str, str]:
     """('ended' | 'idle' | 'active' | 'unknown', why). Only 'ended' and 'idle' let a stop go on."""
     by_pid = by_pid if by_pid is not None else {x.pid: x for x in env.procs}
@@ -272,25 +395,19 @@ def session_state(env: Env, p: Proc, limit_s: float, limits: Limits, by_pid=None
     claudes = [a for a in chain if is_claude(a.cmd)]
     if not claudes:
         if all(_argv0(a.cmd) in WRAPPERS for a in chain):
-            return "ended", "orphan, no session" if p.ppid == 1 else "no claude session above it"
+            return _orphan_state(env, p, chain, limit_s, limits, by_pid, kids)
         return "unknown", "no claude session, but a parent that is not a shell"
     roots = [a for a in claudes if is_claude_session(a.cmd)]
     if not roots:
         return "unknown", "only claude infrastructure above it"
     idle_need = max(limits.transcript_active_s, limit_s)
-    idle = []
+    whys = []
     for r in roots:
-        if _has_young_process(r.pid, kids, limits.young_child_s):
-            return "active", f"session {r.pid} has a young process"
-        info = env.sessions.get(r.pid)
-        if info is None or info.idle_s is None:
-            return "unknown", f"session {r.pid}: no transcript"
-        if info.busy:
-            return "active", f"session {r.pid} is busy"
-        if info.idle_s < idle_need:
-            return "active", f"session {r.pid} wrote {info.idle_s / 60:.0f} min ago"
-        idle.append(info.idle_s)
-    return "idle", f"session {roots[0].pid} idle {min(idle) / 3600:.1f} h"
+        state, why = _root_state(env, r, kids, idle_need, limits)
+        if state != "idle":
+            return state, why
+        whys.append(why)
+    return "idle", whys[0]
 
 
 def stale_processes(env: Env, limits: Limits | None = None) -> list[dict]:
@@ -302,9 +419,15 @@ def stale_processes(env: Env, limits: Limits | None = None) -> list[dict]:
     - it is a shell wait loop or a pytest run,
     - it is older than its limit (orphan loop 2 h, loop 6 h, pytest 3 h),
     - its start time is known, so the stop can guard against pid reuse,
-    - its session ENDED (no claude above it, only shells up to init) or is
-      IDLE (each claude session above it has no young process, is not busy,
-      and wrote nothing inside the limit). Any doubt keeps the process.
+    - its session ENDED or is IDLE. IDLE: each claude session above it has no
+      young process, is not busy, and wrote nothing inside the limit.
+      A process with only shells up to init is an orphan. Its session is the
+      one that CLAUDE_PID in its environment names. That session must be gone,
+      or idle. With no CLAUDE_PID, the orphan must be over twice its limit,
+      and no session may be busy. A busy session whose cwd holds the cwd of
+      the orphan keeps it. `_orphan_state` holds this rule.
+    Any doubt keeps the process. A listed test run carries the pids of its
+    children ("kids"). The stop leaves them, and the log names them.
     """
     limits = limits or Limits()
     if env.uid is None or not env.procs:
@@ -334,11 +457,36 @@ def stale_processes(env: Env, limits: Limits | None = None) -> list[dict]:
         state, why = session_state(env, p, limit_s, limits, by_pid, kids)
         if state not in ("ended", "idle"):
             continue
-        out.append({
+        act = {
             "act": "stop-process", "pid": p.pid, "start": p.start, "age": p.age,
             "cmd": command_label(p.cmd), "why": f"{kind}, {p.age / 3600:.1f} h, {why}",
-        })
+        }
+        if kind == "test run":
+            act["kids"] = sorted(c.pid for c in kids.get(p.pid, []))
+        out.append(act)
     return out
+
+
+def recheck_process(act: dict, claude_dir: Path, limits: Limits | None = None,
+                    collect=None) -> tuple[dict | None, str]:
+    """Read the machine again for one stop-process act, just before its signal.
+
+    Returns (the fresh act, "listed") when the process is still listed, with
+    the same pid and start time. Else (None, the new state).
+    """
+    env = Env()
+    (collect or collect_procs)(env, claude_dir)
+    for a in stale_processes(env, limits):
+        if a["pid"] == act["pid"] and a["start"] == act["start"]:
+            return a, "listed"
+    p = next((x for x in env.procs if x.pid == act["pid"]), None)
+    if p is None or p.start != act["start"]:
+        return None, "gone"
+    limits = limits or Limits()
+    limit_s = limits.pytest_s if is_pytest(p.cmd) else limits.orphan_loop_s if p.ppid == 1 else limits.loop_s
+    if p.age < limit_s:
+        return None, "young"
+    return None, session_state(env, p, limit_s, limits)[0]
 
 
 def plan(env: Env, stack_hours: float = DEFAULT_STACK_HOURS, limits: Limits | None = None) -> list[dict]:
@@ -470,16 +618,38 @@ def session_info(pid: int, start: int | None, claude_dir: Path, now: float) -> S
     busy = data.get("status") not in (None, "idle")
     sid, cwd = data.get("sessionId"), data.get("cwd")
     if not sid or not cwd:
-        return Session(None, busy)
+        return Session(None, busy, str(cwd) if cwd else None)
     proj = claude_dir / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
     main = _mtime(proj / f"{sid}.jsonl")
     if main is None:
-        return Session(None, busy)  # no transcript, or an empty one (a remote session)
+        return Session(None, busy, str(cwd))  # no transcript, or an empty one (a remote session)
     marks = [main, _mtime(claude_dir / "sessions" / f"{pid}.json") or 0.0]
     sub = proj / str(sid) / "subagents"
     if sub.is_dir():
         marks += [m for m in (_mtime(f) for f in sub.glob("*.jsonl")) if m]
-    return Session(max(0.0, now - max(marks)), busy)
+    return Session(max(0.0, now - max(marks)), busy, str(cwd))
+
+
+def read_environ(pid: int) -> dict[str, str] | None:
+    """The environment of `pid` from /proc. None: gone, another user, or no /proc."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return None
+    out = {}
+    for item in raw.split(b"\0"):
+        key, sep, value = item.partition(b"=")
+        if sep:
+            out[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
+    return out
+
+
+def read_cwd(pid: int) -> str | None:
+    """The cwd of `pid` from /proc. None when the reaper cannot read it."""
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
 
 
 def collect_procs(env: Env, claude_dir: Path) -> None:
@@ -496,6 +666,7 @@ def collect_procs(env: Env, claude_dir: Path) -> None:
             p = Proc(p.pid, p.ppid, p.age, p.uid, p.cmd, proc_start(p.pid))
         full.append(p)
     env.procs, env.uid, env.self_pid = full, uid, os.getpid()
+    env.environ_of, env.cwd_of = read_environ, read_cwd
     for p in full:
         if p.uid == uid and is_claude_session(p.cmd):
             env.sessions[p.pid] = session_info(p.pid, p.start, claude_dir, env.now)
@@ -545,11 +716,22 @@ def counts(procs: list[Proc], uid: int) -> dict[str, int]:
 
 def _describe(a: dict) -> str:
     if a["act"] == "stop-process":
-        return f"pid {a['pid']} ({a['why']}): {a['cmd']}"
+        kids = f" [children left: {' '.join(map(str, a['kids']))}]" if a.get("kids") else ""
+        return f"pid {a['pid']} ({a['why']}): {a['cmd']}{kids}"
     return f"{a.get('repo') or a.get('path')} ({a['why']})"
 
 
-def apply(acts: list[dict], repo: Path, log=print, stop=stop_process) -> None:
+def apply(acts: list[dict], repo: Path, log=print, stop=stop_process, recheck=None) -> None:
+    """Do the acts in order.
+
+    A docker stop or a worktree removal can take minutes, and a session can
+    start work in that time. So each stop-process act reads the machine again
+    (`recheck`) just before its signal. It stops the process only when the
+    process is still listed.
+    """
+    if recheck is None:
+        def recheck(a: dict) -> tuple[dict | None, str]:
+            return recheck_process(a, Path.home() / ".claude")
     for a in acts:
         if a["act"] == "stop-stack":
             names = _run("docker", "ps", "-a", "--filter", f"label=metorite.dev_up={a['repo']}", "--format", "{{.Names}}").split()
@@ -558,8 +740,12 @@ def apply(acts: list[dict], repo: Path, log=print, stop=stop_process) -> None:
             if mine:
                 subprocess.run(["docker", "stop", *mine], capture_output=True, timeout=120)
         elif a["act"] == "stop-process":
-            log(f"reaper: stop {_describe(a)}")
-            stop(a["pid"], a["start"], log=log)
+            fresh, state = recheck(a)
+            if fresh is None:
+                log(f"reaper: skip pid {a['pid']} (state changed to {state})")
+                continue
+            log(f"reaper: stop {_describe(fresh)}")
+            stop(fresh["pid"], fresh["start"], log=log)
         else:
             log(f"reaper: remove worktree {a['path']} ({a['why']})")
             r = subprocess.run(["bash", str(repo / "scripts" / "worktree.sh"), "remove", a["slug"]], cwd=repo, capture_output=True, text=True, timeout=300)
@@ -595,7 +781,8 @@ def main(argv: list[str] | None = None) -> int:
             if a["act"] == "stop-process":
                 print(f"reaper: would stop {_describe(a)} (add --apply)")
         acts = [a for a in acts if a["act"] != "stop-process"]
-    apply(acts, repo)
+    claude_dir = Path(args.home) / ".claude"
+    apply(acts, repo, recheck=lambda a: recheck_process(a, claude_dir))
     return 0
 
 
