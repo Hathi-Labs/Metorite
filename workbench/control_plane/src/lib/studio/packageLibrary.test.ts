@@ -112,7 +112,9 @@ describe("chat first", () => {
   });
 
   it("opens the one assistant with the brief, and makes no Workshop app", () => {
-    expect(gallery).toContain("openAssistant({ draft: brief, fresh: true })");
+    // G3a fix 1: "Build it" goes through `startBuild`. The IDE sends the brief after its facts publish.
+    expect(gallery).toContain("startBuild(");
+    expect(gallery).not.toContain("openAssistant(");
     expect(gallery).toContain("/chat?q=");
     expect(gallery).not.toMatch(/fetch\("\/api\/apps",\s*\{\s*method: "POST"/);
     expect(gallery).not.toContain("?seed=");

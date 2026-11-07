@@ -402,6 +402,8 @@ def test_r8_the_owner_succeeds_on_each_route(world) -> None:
     assert [p["manifest_id"] for p in got[1][1]["packages"]] == [mid]
     assert "manifest" not in got[1][1]["packages"][0]
     assert got[2][1]["package"]["manifest"]["id"] == mid and got[2][1]["objects"] == []
+    # STU-G3a fix 1: the read gives the hash of the stored draft, as a real database keeps it.
+    assert got[2][1]["package"]["manifest_hash"] == manifest_hash(got[2][1]["package"]["manifest"])
     assert [v["version"] for v in got[5][1]["versions"]] == [1]
 
 

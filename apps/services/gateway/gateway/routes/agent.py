@@ -704,13 +704,18 @@ _AGENT_REGISTRY: list[dict] = [
     },
     {
         "name": "app-builder",
+        # Owner, 2026-11-07 (task 1909): the chat gave a Studio build to this
+        # agent. The description now keeps every new app away from it. The
+        # tool stays, so the base count of the chat and the pack budget do
+        # not move (test_projects_packs.py pins them).
         "description": (
-            "App Workshop builder — turns chat into small internal web apps "
-            "(Custom Apps). Each Workshop session is bound to its app's "
-            "workspace; the agent edits index.html and the app.json manifest "
-            "and keeps the preview renderable after every round."
+            "Legacy App Workshop editor. Use it ONLY when the member names an "
+            "existing App Workshop app (an index.html app) and asks to change "
+            "that app. NEVER use it to build a new app, tracker, board, form "
+            "or tool: AI Studio builds those with the studio tools "
+            "(studio_plan, studio_draft, studio_save)."
         ),
-        "tags": ["apps", "builder", "workshop"],
+        "tags": ["workshop", "legacy"],
         "status": "live",
         # Copilot-SDK engine: the builder needs native file/shell tools to
         # edit the app workspace. BYOK-routed through the gateway tiers (no
@@ -3418,6 +3423,12 @@ async def run_agent_stream_endpoint(
         # from the server's room and never the body. A room of one that
         # other members can read (visibility org or people) is not solo.
         solo_room=room_is_solo(room),
+        # PZ-39: the ids of this turn's own rows, so the greeting gap leaves
+        # them out. The request supplies both ids (`user_message_id` and
+        # `assistant_message_id`). A client can only skip rows of its own
+        # chat, so the worst case is one extra greeting for this member. The
+        # read stays bound to the run's org, member and session.
+        turn_row_ids=(_persist_message_id, _new_user_id),
     )
 
     # The roster this run's authority intersection is folded over, recorded so a

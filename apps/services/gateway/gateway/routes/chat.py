@@ -46,6 +46,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
 from acb_common.assistant_profile import PROFILE_USED_EVENT
+from acb_common.chat_continue_flag import continue_allowed
 from acb_common.pg_text import storable
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from gateway.rooms import (
@@ -1369,26 +1370,6 @@ class _NoLink(Exception):
     """The link did not land, so the new chat rolls back."""
 
 
-def continue_allowed(organization_id: str | None) -> bool:
-    """True when ``CHAT_CONTINUE_ORGS`` holds the org, or holds ``*``. Default OFF.
-
-    THE reader of the flag. The org comes from ``UserContext`` only, never
-    from the request (R5). It reads ``get_settings()`` on each call, so a
-    flag reload applies a change with no restart. A fault reads as off.
-    """
-    org = str(organization_id or "").strip().lower()
-    if not org:
-        return False
-    try:
-        from acb_common import get_settings
-
-        raw = str(getattr(get_settings(), "chat_continue_orgs", "") or "")
-    except Exception:
-        return False
-    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
-    return "*" in listed or org in listed
-
-
 def _carry_text(
     session_id: str, me: str, *, since_ms: int | None, organization_id: str | None,
 ) -> str | None:
@@ -1699,6 +1680,9 @@ async def continue_session(
     room = await asyncio.to_thread(
         resolve_room_access, session_id, me, organization_id=org,
     )
+    if room.resolve_failed:
+        # An outage and a refusal must never share an answer (`RoomAccess.refusal_status`).
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("continue this chat"))
     if not room.can_read or room.unknown_session:
         raise HTTPException(status_code=404, detail="Session not found")
 
