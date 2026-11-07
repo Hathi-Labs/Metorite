@@ -340,7 +340,8 @@ async def revoke(request: Request) -> Response:
                 continue
             if found.client_id == client_id:
                 await agent_tokens.revoke_connection(
-                    found.organization_id, found.connection_id)
+                    found.organization_id, found.connection_id,
+                    reason=agent_tokens.REVOKE_OAUTH_REVOKE)
                 _log.info(
                     "agent_edge.revoked",
                     client_host=_client_host(client_id),
