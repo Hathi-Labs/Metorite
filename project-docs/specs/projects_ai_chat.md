@@ -6876,7 +6876,10 @@ STANDARD. Frontend only.
 **IMG-3 (task 1999). The MCP gives an image on a task to the agent.** HIGH,
 because file bytes leave the platform for an outside agent. Spec audit and
 the Opus reviewer. **BUILT 2026-11-07** on branch `mt-2d62220d-img3`, with the
-R8 cases in `test_mcp_edge_attachment_r8.py`. **Gate:** cleared. The owner answered the transport
+R8 cases in `test_mcp_edge_attachment_r8.py`. On a write connection, the image
+sentence of the instructions sits after the cut at 4096 characters. So Claude
+Code reads that rule from the `get_task_context` description and from the
+`work_on_task` prompt. **Gate:** cleared. The owner answered the transport
 question on task 1999 on 2026-11-07 (§30.3). The audit of 2026-11-07 gave GO-NARROWED on the read half
 only, after the edits below.
 
