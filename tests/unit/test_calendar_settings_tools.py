@@ -188,3 +188,12 @@ def test_the_family_lists_them_and_parity_covers_the_routes() -> None:
     assert cp.COVERED["PUT /api/tasks/settings"] == UPD
     assert "GET /api/tasks/settings" not in cp.DEBT
     assert "PUT /api/tasks/settings" not in cp.DEBT
+
+
+def test_a_capacity_change_inside_one_hour_figure_still_shows() -> None:
+    """The verifier's finding 2: 100 -> 102 minutes is a change."""
+    from skill_my_tasks.core import _cal_view
+
+    assert _cal_view({"daily_capacity_mins": 100})["Daily capacity"] != \
+        _cal_view({"daily_capacity_mins": 102})["Daily capacity"]
+    assert _cal_view({"daily_capacity_mins": 360})["Daily capacity"] == "6 h"

@@ -1709,6 +1709,12 @@ def _hours(v: Any) -> str:
     return f"{int(v):d}"
 
 
+def _capacity_text(mins: int) -> str:
+    """Whole hours as "6 h", any other value in minutes. A one-minute change
+    then shows (a rounded hour figure hid 100 -> 102 and said "Nothing changes")."""
+    return f"{mins // 60} h" if mins % 60 == 0 else f"{mins} min"
+
+
 def _cal_view(s: dict) -> dict[str, str]:
     """The calendar fields of a settings body, each as the text the member sees."""
     ls, le = s.get("lunch_start_hour"), s.get("lunch_end_hour")
@@ -1719,7 +1725,7 @@ def _cal_view(s: dict) -> dict[str, str]:
         "Standing instruction": (_data(s["planning_prompt"]) if s.get("planning_prompt")
                                  else "the default"),
         "Working hours": f"{_hours(s.get('day_start_hour', 7))}-{_hours(s.get('day_end_hour', 22))}",
-        "Daily capacity": f"{round(int(s.get('daily_capacity_mins', 360)) / 60, 1):g} h",
+        "Daily capacity": _capacity_text(int(s.get("daily_capacity_mins", 360))),
         "Buffer between blocks": f"{int(s.get('buffer_mins', 0))} min",
         "Longest focus run": f"{int(s.get('max_focus_run_mins', 90))} min",
         "Break": f"{int(s.get('break_mins', 10))} min",
