@@ -70,6 +70,7 @@ from gateway.routes.crm.core import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 #: Through what a change came. CRM-M1 writes ``ui``, and the confirm of a
 #: business rule writes ``chat`` or ``whatsapp``. The CHECK of migration 341
@@ -615,6 +616,29 @@ async def list_changes(
 
 # ── Undo ────────────────────────────────────────────────────────────────────
 
+#: A deadlock (40P01), or a lock that was not free (55P03). Another write
+#: held the same rows at the same moment.
+_LOCK_STATES = frozenset({"40P01", "55P03"})
+
+#: The words of an Undo that met another write: what happened, and what next.
+UNDO_CONFLICT = (
+    "Someone changed this at the same moment. Nothing was undone. Try Undo again."
+)
+
+
+def _sqlstates(exc: BaseException) -> set[str]:
+    """The SQLSTATE codes along the chain of *exc*, from the fields of the
+    driver, never the message text."""
+    codes: set[str] = set()
+    seen: BaseException | None = exc
+    while seen is not None:
+        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
+        if isinstance(code, str):
+            codes.add(code)
+        seen = getattr(seen, "orig", None) or seen.__cause__
+    return codes
+
+
 _LOAD_SQL = f"SELECT {_COLUMNS} FROM crm_change_log WHERE id = CAST(:id AS uuid) AND "
 
 
@@ -650,12 +674,18 @@ async def undo_change(
             raise _refuse(409, "not_reversible", "This change cannot be undone.")
         if str(row.area) in ADMIN_AREAS and not admin:
             raise _refuse(403, "admin_only", "Only a CRM admin can undo this change.")
-        after_commit = await handler(db, user, Logged(
-            id=str(row.id), area=str(row.area), action=str(row.action),
-            entity_id=row.entity_id, before=from_jsonb(row.before),
-            after=from_jsonb(row.after), mode=row.mode,
-            actor_email=str(row.actor_email), private_to=row.private_to,
-        ))
+        try:
+            after_commit = await handler(db, user, Logged(
+                id=str(row.id), area=str(row.area), action=str(row.action),
+                entity_id=row.entity_id, before=from_jsonb(row.before),
+                after=from_jsonb(row.after), mode=row.mode,
+                actor_email=str(row.actor_email), private_to=row.private_to,
+            ))
+        except DBAPIError as exc:
+            if not _LOCK_STATES & _sqlstates(exc):
+                raise
+            # Postgres rolled the transaction back, so nothing was undone.
+            raise _refuse(409, "undo_conflict", UNDO_CONFLICT) from exc
         # Read the new row back: an Undo that wrote no row is no Undo.
         undo = (await db.execute(
             text(

@@ -100,13 +100,15 @@ export function emptyDraft(pipelines: readonly DealPipeline[] | null | undefined
 }
 
 /**
- * One row as the route takes it. An open row sends no type: a name that the
- * CRM has keeps the type of that stage, and a new name becomes an open stage.
- * Won and Lost are a choice, so they go. A closing word that the member set
- * to Open sends "open", because the route reads a bare closing word as closed.
+ * One row as the route takes it. A name of a stage that the CRM has sends no
+ * type: that stage keeps its own, and the route refuses a type that differs.
+ * An open row sends no type, so a new name becomes an open stage. Won and Lost
+ * are a choice, so they go. A closing word that the member set to Open sends
+ * "open", because the route reads a bare closing word as closed.
  */
-function stageBody(row: NewStageRow): Record<string, string> {
+function stageBody(row: NewStageRow, stored: ReadonlyMap<string, string>): Record<string, string> {
   const name = row.name.trim();
+  if (stored.has(foldName(name))) return { name };
   if (row.type !== "open") return { name, type: row.type };
   return closingType(name) ? { name, type: "open" } : { name };
 }
@@ -148,16 +150,21 @@ export function namedRows(rows: readonly NewStageRow[]): NewStageRow[] {
 
 /**
  * The body of the create and of the preview, or null while the draft has
- * nothing to plan: no name, no pipeline to copy, or no named stage.
+ * nothing to plan: no name, no pipeline to copy, or no named stage. `stored`
+ * holds the stages that the CRM has (:func:`storedTypes`). Their rows send no
+ * type.
  */
-export function pipelineBody(draft: NewPipelineDraft): Record<string, unknown> | null {
+export function pipelineBody(
+  draft: NewPipelineDraft,
+  stored: ReadonlyMap<string, string> = new Map(),
+): Record<string, unknown> | null {
   const name = draft.name.trim();
   if (!name) return null;
   if (draft.start === "copy") {
     return draft.copyFrom ? { name, copy_from: draft.copyFrom } : null;
   }
   const rows = namedRows(draft.stages);
-  return rows.length > 0 ? { name, stages: rows.map(stageBody) } : null;
+  return rows.length > 0 ? { name, stages: rows.map((row) => stageBody(row, stored)) } : null;
 }
 
 /** A field error of the draft, in words, or null. The gateway checks the rest. */
@@ -204,31 +211,24 @@ export function removeRow(rows: readonly NewStageRow[], key: string): NewStageRo
 }
 
 /**
- * The stored type of each stage that the plan reuses, by its folded name. A
- * row with such a name shows that type, never "Open": the stage keeps it.
+ * The type of each deal stage that the CRM has, by its folded name. A row
+ * with such a name shows that type and sends none (:func:`pipelineBody`), so
+ * the row and the body agree. It reads the stages of the store, so it holds
+ * before a plan loads, after a read fails, and in the phone tree.
  */
-export function reusedTypes(plan: PipelinePlan | null | undefined): Map<string, string> {
+export function storedTypes(statuses: readonly { name: string; type: string }[]): Map<string, string> {
   const out = new Map<string, string>();
-  for (const stage of plan?.stages ?? []) {
-    if (stage.source === "existing") out.set(foldName(stage.name), stage.type);
-  }
+  for (const status of statuses) out.set(foldName(status.name), status.type);
   return out;
 }
 
 /**
- * The type of each deal stage that the CRM has, by its folded name, joined
- * with the stages that the last plan reused. The plan wins on a clash. A row
- * with such a name keeps that type, also before a plan loads and after a read
- * fails, so the phone tree draws the same row as the desktop one.
+ * A row whose name is a stage of the CRM drops a type that the member picked
+ * before: that stage keeps its own. So a name that then changes to a new
+ * stage starts at Open again, not at a stale pick.
  */
-export function storedTypes(
-  statuses: readonly { name: string; type: string }[],
-  plan: PipelinePlan | null | undefined,
-): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const status of statuses) out.set(foldName(status.name), status.type);
-  for (const [name, type] of reusedTypes(plan)) out.set(name, type);
-  return out;
+export function settleRow(row: NewStageRow, stored: ReadonlyMap<string, string>): NewStageRow {
+  return row.type !== "open" && stored.has(foldName(row.name)) ? { ...row, type: "open" } : row;
 }
 
 /** A name as two names compare: inner spaces folded, in lower case. */

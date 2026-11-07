@@ -21,7 +21,7 @@ import {
   removeRow,
   closingType,
   renameRow,
-  reusedTypes,
+  settleRow,
   storedTypes,
   type NewPipelineDraft,
   type PipelinePlan,
@@ -215,30 +215,14 @@ describe("repair round 1", () => {
     expect(retryableFailure(new CrmError("taken", 409, "name_taken"))).toBe(false);
   });
 
-  it("shows the stored type of a stage that the plan reuses, by its folded name", () => {
-    const types = reusedTypes({
-      ...PLAN,
-      stages: [
-        ...PLAN.stages,
-        { id: "9a1f0e1e-0000-4000-8000-000000000005", name: "Needs  Analysis", type: "ongoing", source: "existing" },
-      ],
-    });
-    expect(types.get("proposal")).toBe("open");
-    expect(types.get("needs analysis")).toBe("ongoing");
-    expect(types.has("site visit")).toBe(false);
-    expect(types.has("won")).toBe(false);
-  });
-
-  it("keeps the stored type of a CRM stage before a plan loads and after a read fails", () => {
-    const statuses = [
+  it("keeps the stored type of each CRM stage, by its folded name", () => {
+    const types = storedTypes([
       { name: "Proposal", type: "ongoing" },
       { name: "Closed  Won", type: "won" },
-    ];
-    const none = storedTypes(statuses, null);
-    expect(none.get("proposal")).toBe("ongoing");
-    expect(none.get("closed won")).toBe("won");
-    // The plan wins on a clash: it is the newer read of the gateway.
-    expect(storedTypes(statuses, PLAN).get("proposal")).toBe("open");
+    ]);
+    expect(types.get("proposal")).toBe("ongoing");
+    expect(types.get("closed won")).toBe("won");
+    expect(types.has("site visit")).toBe(false);
   });
 
   it("marks a hidden stage of a copy in the preview", () => {
@@ -299,9 +283,91 @@ describe("repair round 1", () => {
     expect(useCrmStore.getState().newPipeline).toEqual({ open: false, draft: null });
   });
 
-  it("says on the read-only card what is coming and what to do now", () => {
-    expect(SEVERAL_PIPELINES_NOTE).toContain("in a later release");
-    expect(SEVERAL_PIPELINES_NOTE).toContain("undo the newest pipeline in Change history");
+  it("says on the read-only card what is coming, in words true for any count", () => {
+    expect(SEVERAL_PIPELINES_NOTE).toContain("Stage editing for each pipeline comes in a later release");
+    expect(SEVERAL_PIPELINES_NOTE).toContain("Until then, the stages stay as they are.");
+    // Round 2: an Undo makes the card editable only at two pipelines.
+    expect(SEVERAL_PIPELINES_NOTE).not.toMatch(/undo/i);
+  });
+});
+
+describe("repair round 2: a stale type in the body", () => {
+  const STATUSES = [
+    { id: "s-1", name: "Proposal", color: "", position: 1, type: "ongoing", is_default: false },
+  ] as const;
+  const known = storedTypes(STATUSES);
+
+  /** What the name field does with one keystroke: rename, then settle. */
+  const typeName = (r: ReturnType<typeof row>, name: string) => settleRow(renameRow(r, name), known);
+
+  it("sends no type for a CRM stage after the member picked Won on a part of its name", () => {
+    // The repro: type "Propos", pick Won, then type the rest of "Proposal".
+    let r = typeName(row(""), "Propos");
+    r = { ...r, type: "won" };
+    expect(pipelineBody(draft({ stages: [r] }), known)).toEqual({
+      name: "AMC contracts",
+      stages: [{ name: "Propos", type: "won" }],
+    });
+    r = typeName(r, "Proposa");
+    r = typeName(r, "Proposal");
+    // The stale pick is gone, and the body leaves the type out.
+    expect(r.type).toBe("open");
+    expect(pipelineBody(draft({ stages: [r] }), known)).toEqual({
+      name: "AMC contracts",
+      stages: [{ name: "Proposal" }],
+    });
+    // A body with a stale pick in the row still sends no type for the stage.
+    expect(pipelineBody(draft({ stages: [{ ...r, type: "won" }] }), known)).toEqual({
+      name: "AMC contracts",
+      stages: [{ name: "Proposal" }],
+    });
+    // A new name after it starts at Open, not at the old pick.
+    expect(typeName(r, "Proposal B").type).toBe("open");
+  });
+
+  it("draws the stored type, no type control, and an enabled Create for the repro", async () => {
+    const stages = [{ ...row("Proposal"), type: "won" as const }, row("Site visit")];
+    const repro = {
+      dealStatuses: [...STATUSES],
+      newPipeline: { open: true, draft: draft({ stages }) },
+    };
+    // The body that the preview and Create send has no type for the stage.
+    expect(pipelineBody(repro.newPipeline.draft, storedTypes(repro.dealStatuses))).toEqual({
+      name: "AMC contracts",
+      stages: [{ name: "Proposal" }, { name: "Site visit" }],
+    });
+    // A static render reads the first state of a zustand store, so the form
+    // gets a store module that answers with the repro.
+    vi.resetModules();
+    vi.doMock("../lib/store", async (importOriginal) => {
+      const real = await importOriginal<typeof import("../lib/store")>();
+      const fake = Object.assign(
+        (select: (state: unknown) => unknown) => select({ ...real.useCrmStore.getState(), ...repro }),
+        real.useCrmStore,
+      );
+      return { ...real, useCrmStore: fake };
+    });
+    try {
+      const { NewPipelineForm } = await import("./NewPipelineDialog");
+      const html = renderToStaticMarkup(
+        createElement(NewPipelineForm, {
+          pipelines: [SALES],
+          saving: false,
+          onCancel: () => undefined,
+          onCreate: async () => null,
+        }),
+      );
+      expect(html).toContain("In progress");
+      expect(html).not.toContain('aria-label="Stage 1 type"');
+      expect(html).toContain('aria-label="Stage 2 type"');
+      const create = html.match(/<button[^>]*type="submit"[^>]*>/)?.[0] ?? "";
+      expect(create).not.toBe("");
+      // The attribute, not the `disabled:` style classes of the button.
+      expect(create).not.toMatch(/\sdisabled(=|\s|>)/);
+    } finally {
+      vi.doUnmock("../lib/store");
+      vi.resetModules();
+    }
   });
 });
 

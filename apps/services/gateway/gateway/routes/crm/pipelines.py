@@ -53,7 +53,10 @@ The create logs one ``pipeline`` row at the ``company`` level, with the name
 and the ordered stages in "after", and each new stage logs its own
 ``deal_stage`` row. ``via`` is ``chat`` only for a call that the CRM
 assistant made (``change_log.via_of``). The Undo of the create deletes the
-pipeline, and refuses with the count while a deal names it.
+pipeline, and refuses with the count while a deal names it. It also deletes
+each stage that the create made, while no record and no other pipeline holds
+it, and logs one row for each. It locks those stages before the pipeline, in
+the order of a deal write, so the two cannot wait on each other.
 ``PipelineKind`` holds what is particular to deals, so CRM-M4 adds ``lead``
 there and keeps this one path.
 """
@@ -718,22 +721,38 @@ async def delete_pipeline_in(
     ), undoes=undoes)
 
 
-async def _new_stages_to_remove(
-    db: Any, pipeline_id: str, stages: list[dict[str, Any]],
+async def _lock_new_stages(
+    db: Any, stages: list[dict[str, Any]],
     kind: PipelineKind = PIPELINE_KINDS["deal"],
 ) -> list[Any]:
-    """The stages that the create made (``source`` ``new``), each locked,
-    that no other pipeline holds now. The Undo of the create removes them.
+    """The rows of the stages that the create made (``source`` ``new``), each
+    locked ``FOR UPDATE``, in the order of the create. A stage that is gone is
+    left out.
+
+    The Undo calls this BEFORE it locks the pipeline. A deal write takes the
+    key lock of its stage before the key lock of its pipeline, so the Undo
+    takes them in the same order and never waits on a deal write in a cycle
+    (40P01). The locks go in id order, so two Undos also agree."""
+    wanted = [str(s.get("id") or "") for s in stages if s.get("source") == "new"]
+    locked: dict[str, Any] = {}
+    for stage_id in sorted(set(wanted)):
+        row = await load_row(db, kind.status_table, stage_id, lock=True)
+        if row is not None:
+            locked[stage_id] = row
+    return [locked[i] for i in wanted if i in locked]
+
+
+async def _new_stages_to_remove(
+    db: Any, pipeline_id: str, rows: list[Any],
+    kind: PipelineKind = PIPELINE_KINDS["deal"],
+) -> list[Any]:
+    """Of the locked stages that the create made, the ones that no other
+    pipeline holds now. The Undo of the create removes them.
 
     A new stage that holds a record refuses the Undo with the name of the
     stage and the count. A stage that another pipeline holds now stays."""
     doomed: list[Any] = []
-    for stage in stages:
-        if stage.get("source") != "new":
-            continue
-        row = await load_row(db, kind.status_table, str(stage.get("id") or ""), lock=True)
-        if row is None:
-            continue
+    for row in rows:
         held = await status_in_use(db, kind.status_kind, str(row.id))
         if held:
             noun = kind.record_noun + ("" if held == 1 else "s")
@@ -964,19 +983,22 @@ async def _undo_pipeline(db: Any, user: Any, logged: Logged) -> None:
     holds no deal. Each stage that the create made goes too, through
     ``admin.delete_status_in``, while no record and no other pipeline holds
     it. A new stage that holds a record refuses the Undo, by name. A reused
-    stage stays. A rename: the old name goes back through
-    :func:`rename_pipeline_in`."""
+    stage stays. The new stages are locked before the pipeline, in the order
+    of a deal write (:func:`_lock_new_stages`). A rename: the old name goes
+    back through :func:`rename_pipeline_in`."""
+    after = logged.after or {}
+    stages = [s for s in after.get("stages") or [] if isinstance(s, dict)]
+    creates = logged.action == change_log.CREATE
+    new_rows = await _lock_new_stages(db, stages) if creates else []
     row = await load_row(db, "crm_pipelines", str(logged.entity_id or ""), lock=True)
     if row is None:
         raise change_log.gone(logged.area)
-    if logged.action == change_log.CREATE:
-        after = logged.after or {}
-        stages = [s for s in after.get("stages") or [] if isinstance(s, dict)]
+    if creates:
         made = [str(s.get("id")) for s in stages]
         current = await _stage_ids(db, str(row.id), lock=True)
         if row.name != after.get("name") or bool(row.is_default) or current != made:
             raise change_log.changed_since()
-        doomed = await _new_stages_to_remove(db, str(row.id), stages)
+        doomed = await _new_stages_to_remove(db, str(row.id), new_rows)
         await delete_pipeline_in(db, user, row, undoes=logged.id)
         for stage in doomed:
             await _remove_new_stage(db, user, stage, str(row.name))

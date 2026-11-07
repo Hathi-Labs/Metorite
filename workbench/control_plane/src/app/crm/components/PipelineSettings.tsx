@@ -503,11 +503,11 @@ const LIST_WORDS: Record<
 /**
  * The Native Deal stages card with two or more pipelines (CRM-M3a). It reads
  * only until the stage editor of each pipeline (CRM-M3c), so it says what is
- * coming and what a member can do now.
+ * coming. The words hold for any count of pipelines.
  */
 export const SEVERAL_PIPELINES_NOTE =
-  "Each pipeline lists its stages here to read. You can edit them here in a later release. " +
-  "To edit a stage now, undo the newest pipeline in Change history.";
+  "Each pipeline lists its stages here to read. Stage editing for each pipeline comes in a " +
+  "later release. Until then, the stages stay as they are.";
 
 /** The two choices of "Column order" (Mirror mode). */
 const ORDER_TABS: TabDef[] = [

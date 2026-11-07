@@ -40,11 +40,8 @@ export function retryableFailure(err: unknown): boolean {
 export function usePipelinePreview(
   body: Record<string, unknown> | null,
   delayMs = PREVIEW_DELAY_MS,
-): PipelinePreview & { retry: () => void; lastPlan: PipelinePlan | null } {
+): PipelinePreview & { retry: () => void } {
   const [round, setRound] = useState(0);
-  // The last plan that loaded. The rows keep the stored type of each stage
-  // that it reuses while a new read runs or fails.
-  const [lastPlan, setLastPlan] = useState<PipelinePlan | null>(null);
   const base = previewKey(body);
   // Each Retry is a new key, so the effect asks again for the same body.
   const key = base === null ? null : `${round}:${base}`;
@@ -55,9 +52,7 @@ export function usePipelinePreview(
     const timer = setTimeout(() => {
       api.previewPipeline(JSON.parse(base) as Record<string, unknown>).then(
         (plan) => {
-          if (!live) return;
-          setAnswer({ key, value: { state: "ready", plan } });
-          setLastPlan(plan);
+          if (live) setAnswer({ key, value: { state: "ready", plan } });
         },
         (err: unknown) => {
           const retryable = retryableFailure(err);
@@ -76,12 +71,11 @@ export function usePipelinePreview(
     };
   }, [key, base, delayMs]);
   const retry = () => setRound((n) => n + 1);
-  if (!key) return { state: "idle", retry, lastPlan };
-  if (answer?.key === key) return { ...answer.value, retry, lastPlan };
+  if (!key) return { state: "idle", retry };
+  if (answer?.key === key) return { ...answer.value, retry };
   return {
     state: "loading",
     plan: answer?.value.state === "ready" ? answer.value.plan : null,
     retry,
-    lastPlan,
   };
 }

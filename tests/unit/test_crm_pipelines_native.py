@@ -765,3 +765,88 @@ async def test_the_create_refuses_a_plan_that_changed_after_the_card(pns) -> Non
     ok = await _call(pns, admin, "POST", "/crm/pipelines",
                      {**AMC, "planned": [s["id"] for s in fresh["stages"]]})
     assert ok.status_code == 201, ok.text
+
+
+# ── Repair round 2 ──────────────────────────────────────────────────────────
+
+
+async def test_the_undo_of_a_create_locks_the_new_stages_before_the_pipeline(
+    pns, monkeypatch,
+) -> None:
+    """P3 (round 2). A deal write takes the key lock of its stage before the
+    key lock of its pipeline. The Undo takes them in the same order, so the
+    two never wait on each other in a cycle. Mutation: lock the pipeline
+    first in ``_undo_pipeline`` -> red."""
+    from gateway.routes.crm import pipelines
+
+    _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    assert (await _call(pns, admin, "POST", "/crm/pipelines", AMC)).status_code == 201
+    (row,) = [x for x in _rows(pns, pns.org_a) if x.area == "pipeline"]
+    real = pipelines.load_row
+    order: list[str] = []
+
+    async def spy(db: Any, table: str, row_id: str, **kw: Any) -> Any:
+        if kw.get("lock"):
+            order.append(table)
+        return await real(db, table, row_id, **kw)
+
+    monkeypatch.setattr(pipelines, "load_row", spy)
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
+    assert undo.status_code == 200, undo.text
+    assert order[:2] == ["crm_deal_statuses", "crm_pipelines"], order
+
+
+class _LockError(Exception):
+    """A driver error, as asyncpg raises it, with its SQLSTATE."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(f"lock failure {sqlstate}")
+        self.sqlstate = sqlstate
+
+
+@pytest.mark.parametrize("sqlstate", ["40P01", "55P03"])
+async def test_an_undo_that_meets_another_write_reads_plain_words(
+    pns, monkeypatch, sqlstate: str,
+) -> None:
+    """P3 (round 2). A deadlock (40P01) or a lock that is not free (55P03)
+    in an Undo is a 409 with plain words and a next step, never a 500. The
+    transaction rolls back, so nothing is undone."""
+    from gateway.routes.crm import change_log, pipelines
+    from sqlalchemy.exc import DBAPIError
+
+    _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    assert (await _call(pns, admin, "POST", "/crm/pipelines", AMC)).status_code == 201
+    (row,) = [x for x in _rows(pns, pns.org_a) if x.area == "pipeline"]
+
+    async def deadlock(*_a: Any, **_kw: Any) -> Any:
+        raise DBAPIError("SELECT ... FOR UPDATE", None, _LockError(sqlstate))
+
+    monkeypatch.setattr(pipelines, "load_row", deadlock)
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
+    assert undo.status_code == 409 and _code(undo) == "undo_conflict", undo.text
+    assert _words(undo) == change_log.UNDO_CONFLICT
+    assert "Try Undo again" in _words(undo)
+    assert _count(pns, "crm_pipelines", pns.org_a) == 2, "nothing was undone"
+
+
+async def test_another_database_error_of_an_undo_is_not_called_a_conflict(
+    pns, monkeypatch,
+) -> None:
+    """Only the two lock states map to the 409. Any other error stays an
+    error, so the mapping hides no defect."""
+    from gateway.routes.crm import pipelines
+    from sqlalchemy.exc import DBAPIError
+
+    _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    assert (await _call(pns, admin, "POST", "/crm/pipelines", AMC)).status_code == 201
+    (row,) = [x for x in _rows(pns, pns.org_a) if x.area == "pipeline"]
+
+    async def broken(*_a: Any, **_kw: Any) -> Any:
+        raise DBAPIError("SELECT 1", None, _LockError("42P01"))
+
+    monkeypatch.setattr(pipelines, "load_row", broken)
+    with pytest.raises(DBAPIError):
+        await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")

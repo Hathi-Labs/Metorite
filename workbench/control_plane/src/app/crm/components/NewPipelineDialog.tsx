@@ -21,7 +21,7 @@ import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import SelectButton, { type SelectOption } from "@/components/ui/SelectButton";
 import Tabs, { type TabDef } from "@/components/Tabs";
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import {
   blankRow,
   draftProblem,
@@ -35,6 +35,7 @@ import {
   pipelineBody,
   removeRow,
   renameRow,
+  settleRow,
   storedTypes,
   type NewPipelineDraft,
   type NewStageType,
@@ -89,7 +90,8 @@ export default function NewPipelineDialog({
   );
 }
 
-function NewPipelineForm({
+/** The form of the dialog. Exported for the tests. */
+export function NewPipelineForm({
   pipelines,
   saving,
   onCancel,
@@ -110,9 +112,12 @@ function NewPipelineForm({
   const [refusal, setRefusal] = useState<string | null>(null);
   const id = useId();
   const sources = pipelines && pipelines.length > 0 ? orderedPipelines(pipelines) : [];
-  const body = pipelineBody(draft);
-  const preview = usePipelinePreview(body);
+  // The stages that the CRM has. Their rows show the stored type and send
+  // none, so the row and the body agree.
   const dealStatuses = useCrmStore((state) => state.dealStatuses);
+  const known = useMemo(() => storedTypes(dealStatuses), [dealStatuses]);
+  const body = pipelineBody(draft, known);
+  const preview = usePipelinePreview(body);
   const problem = draftProblem(draft);
   const change = (next: Partial<NewPipelineDraft>) => {
     setDraft({ ...draft, ...next });
@@ -181,7 +186,7 @@ function NewPipelineForm({
             <StageRows
               draft={draft}
               disabled={saving}
-              reused={storedTypes(dealStatuses, preview.lastPlan)}
+              reused={known}
               onChange={(stages) => change({ stages })}
             />
           )}
@@ -241,7 +246,7 @@ function StageRows({
               placeholder="Stage name"
               value={row.name}
               disabled={disabled}
-              onChange={(e) => set(index, renameRow(row, e.target.value))}
+              onChange={(e) => set(index, settleRow(renameRow(row, e.target.value), reused))}
               className="min-w-0 flex-1"
             />
             <span className="ml-7 flex w-full items-center gap-2 sm:ml-0 sm:w-auto">

@@ -631,7 +631,7 @@ describe("the Deal stages screen (A8)", () => {
     // The prefix joins the accessible name: "Pipeline: Sales", the default.
     expect(mirror).toContain('aria-label="Pipeline: Sales"');
     const native = settings({ readOnly: false, dealStatuses: PART_STATUSES, pipelines: TWO });
-    expect(native).toContain("You can edit them here in a later release");
+    expect(native).toContain("Stage editing for each pipeline comes in a later release");
     expect(native).not.toContain(">Add stage<");
   });
 
