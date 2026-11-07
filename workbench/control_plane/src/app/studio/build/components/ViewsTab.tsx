@@ -15,7 +15,8 @@ import { EmptyState } from "@/components/EmptyState";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { Input, Select } from "@/components/ui/Input";
+import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { VIEW_BLOCKS, addView, objectsFor, removeView, updateView, viewUses, type ViewBlock } from "@/lib/studio/draftEdit";
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -44,15 +45,10 @@ export default function ViewsTab({ manifest, onChange, locked }: ViewsTabProps) 
 
   const adder = (
     <div className="flex flex-wrap items-center gap-2">
-      <Select inputSize="sm" className="w-32" aria-label="Block of the new view" value={block} disabled={locked}
-        onChange={(e) => setBlock(e.target.value as ViewBlock)}>
-        {VIEW_BLOCKS.map((b) => <option key={b} value={b}>{BLOCK_LABEL[b]}</option>)}
-      </Select>
-      <Select inputSize="sm" className="w-44" aria-label="Object of the new view" value={chosen}
-        disabled={locked || choices.length === 0} onChange={(e) => setObject(e.target.value)}>
-        {choices.length === 0 ? <option value="">No object fits</option> : null}
-        {choices.map((n) => <option key={n} value={n}>{label(n)}</option>)}
-      </Select>
+      <SelectButton label="Block of the new view" value={block} widthClass="w-32" disabled={locked}
+        options={VIEW_BLOCKS.map((b) => ({ value: b, label: BLOCK_LABEL[b] }))} onChange={(x) => setBlock(x as ViewBlock)} />
+      <SelectButton label="Object of the new view" value={chosen} widthClass="w-44" prompt="No object fits"
+        disabled={locked || choices.length === 0} options={choices.map((n) => ({ value: n, label: label(n) }))} onChange={setObject} />
       <Input inputSize="sm" className="w-48" aria-label="Title of the new view" placeholder="Title, such as All visits"
         value={title} maxLength={120} disabled={locked} onChange={(e) => setTitle(e.target.value)} />
       <Button size="sm" icon="Plus" disabled={locked || !chosen} onClick={() => {
@@ -87,11 +83,9 @@ export default function ViewsTab({ manifest, onChange, locked }: ViewsTabProps) 
                 <Input inputSize="sm" className="w-48" aria-label={`Title of the ${id} view`} value={str(v.title)} placeholder={id}
                   maxLength={120} disabled={locked} onChange={(e) => onChange(updateView(manifest, id, { title: e.target.value }))} />
                 {editable ? (
-                  <Select inputSize="sm" className="w-44" aria-label={`Object of the ${id} view`} value={fits.includes(own) ? own : ""}
-                    disabled={locked} onChange={(e) => onChange(updateView(manifest, id, { object: e.target.value }))}>
-                    {fits.includes(own) ? null : <option value="">{own ? `${own} (no select field)` : "No object"}</option>}
-                    {fits.map((n) => <option key={n} value={n}>{label(n)}</option>)}
-                  </Select>
+                  <SelectButton label={`Object of the ${id} view`} value={fits.includes(own) ? own : ""} widthClass="w-44" disabled={locked}
+                    prompt={own ? `${own} (no select field)` : "No object"} options={fits.map((n) => ({ value: n, label: label(n) }))}
+                    onChange={(x) => onChange(updateView(manifest, id, { object: x }))} />
                 ) : (
                   <span className="min-w-0 break-words text-xs text-muted-foreground" title="Mira sets this block. Change it in the Code tab.">
                     shows {own || "nothing yet"}

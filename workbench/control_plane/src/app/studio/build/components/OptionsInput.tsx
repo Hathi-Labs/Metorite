@@ -21,7 +21,7 @@ export default function OptionsInput({ label, options, disabled, onCommit }: {
   };
   return (
     <form onSubmit={(e) => { e.preventDefault(); commit(); }}>
-      <Input inputSize="sm" className="w-56" aria-label={label} value={text ?? shown} disabled={disabled}
+      <Input inputSize="sm" className="w-44" aria-label={label} value={text ?? shown} disabled={disabled}
         placeholder="Option 1, Option 2" onChange={(e) => setText(e.target.value)} onBlur={commit} />
     </form>
   );

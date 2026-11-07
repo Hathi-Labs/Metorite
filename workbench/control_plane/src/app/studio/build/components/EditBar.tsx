@@ -17,10 +17,13 @@ export interface EditBarProps {
   onSave: () => void;
   onRevert: () => void;
   onReload: () => void;
+  /** The Code tab shows the JSON fault under its editor, so the bar does not say it twice. */
+  hideJson?: boolean;
 }
 
-export default function EditBar({ state, dirty, newer, onSave, onRevert, onReload }: EditBarProps) {
-  const { notice, saving } = state;
+export default function EditBar({ state, dirty, newer, onSave, onRevert, onReload, hideJson = false }: EditBarProps) {
+  const { saving } = state;
+  const notice = hideJson && state.notice?.kind === "json" ? null : state.notice;
   const refused = notice && notice.kind !== "saved";
   return (
     <div className="border-b border-border" data-edit-bar>

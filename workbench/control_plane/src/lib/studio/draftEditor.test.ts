@@ -10,11 +10,13 @@
  * Mutation 7: drop the `fault` guard from the `edit` case. "locks the other tabs while the Code text is broken" turns red.
  * Mutation 8: keep the working copy after a save. "returns to clean after a save" turns red.
  * Mutation 9: call a manifest equal to the stored one an edit. "is no edit when the manifest is the stored one" turns red.
+ * Mutation 10: let `adopt` keep the old hash. "gives Mira the hash of the saved draft" turns red.
  */
 import { describe, expect, it, vi } from "vitest";
 
 import { CLEAN, commitSave, isDirty, newerDraft, reduce, shownManifest, type EditState } from "./draftEditor";
 import { SAVE_FAILED, SAVE_STALE, parseManifestText } from "./draftSave";
+import { ideFacts } from "./ideFacts";
 import type { PackageDraft } from "./packageDraft";
 
 const ID = "123e4567-e89b-12d3-a456-426614174000";
@@ -173,5 +175,15 @@ describe("the one save", () => {
   it("says the app is gone on a 404", async () => {
     const r = await commitSave(ID, edited(), draft(), reply(404, {}) as unknown as typeof fetch);
     expect(r.action.type === "settled" && r.action.notice.text).toContain("not available");
+  });
+});
+
+describe("Mira and the member together", () => {
+  it("gives Mira the hash of the saved draft, so her next save names it", async () => {
+    const fetchImpl = reply(200, { package: { name: "Y", manifest: m1, manifest_hash: H2 }, record_actions: { added: [], skipped: [] } });
+    const r = await commitSave(ID, edited(), draft(), fetchImpl as unknown as typeof fetch);
+    const facts = ideFacts({ id: ID, name: "Y" }, r.adopt?.manifest, r.adopt?.manifestHash ?? null);
+    expect(facts.facts.join(" ")).toContain(`The based_on of this draft is ${H2}.`);
+    expect(facts.facts.join(" ")).not.toContain(H1);
   });
 });

@@ -19,7 +19,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
-import { Input, Select } from "@/components/ui/Input";
+import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import {
   LIVE_FIELD_NOTE, SAFE_TYPES, TYPE_LABELS, addField, addObject, isLiveField, isLiveObject, linksTo, objectCut,
@@ -43,6 +43,8 @@ export interface DataTabProps {
   /** The Code tab holds JSON that does not parse, so an edit here would drop it. */
   locked: boolean;
 }
+
+const TYPE_OPTIONS = SAFE_TYPES.map((t) => ({ value: t, label: TYPE_LABELS[t] }));
 
 type Ask = { kind: "object"; name: string } | { kind: "field"; key: string } | null;
 
@@ -171,7 +173,7 @@ export default function DataTab({ manifest, object, onObject, onChange, live, lo
                   <tr key={key} className="border-b border-border align-top last:border-0">
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2">
-                        <Input inputSize="sm" className="w-44" aria-label={`Label of ${key}`} value={str(f.label)} placeholder={key}
+                        <Input inputSize="sm" className="w-40" aria-label={`Label of ${key}`} value={str(f.label)} placeholder={key}
                           maxLength={120} disabled={locked}
                           onChange={(e) => onChange(updateField(manifest, name, key, { label: e.target.value }))} />
                         {isLive ? <span title={LIVE_FIELD_NOTE}><Badge tone="neutral" size="xs">Live</Badge></span> : null}
@@ -180,10 +182,8 @@ export default function DataTab({ manifest, object, onObject, onChange, live, lo
                     </td>
                     <td className="px-3 py-2">
                       {known ? (
-                        <Select inputSize="sm" className="w-36" aria-label={`Type of ${key}`} value={type} disabled={locked}
-                          onChange={(e) => onChange(updateField(manifest, name, key, { type: e.target.value as FieldType }))}>
-                          {SAFE_TYPES.map((t) => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
-                        </Select>
+                        <SelectButton label={`Type of ${key}`} value={type} widthClass="w-32" disabled={locked} options={TYPE_OPTIONS}
+                          onChange={(v) => onChange(updateField(manifest, name, key, { type: v as FieldType }))} />
                       ) : (
                         <span className="text-muted-foreground" title="Mira sets this type. Change it in the Code tab.">{TYPE_LABELS[type] ?? type}</span>
                       )}
@@ -213,10 +213,8 @@ export default function DataTab({ manifest, object, onObject, onChange, live, lo
       <div className="flex flex-wrap items-center gap-2">
         <Input inputSize="sm" className="w-56" aria-label="Label of the new field" placeholder="New field, such as Phone"
           value={newField} maxLength={120} disabled={locked} onChange={(e) => setNewField(e.target.value)} />
-        <Select inputSize="sm" className="w-36" aria-label="Type of the new field" value={newType} disabled={locked}
-          onChange={(e) => setNewType(e.target.value as FieldType)}>
-          {SAFE_TYPES.map((t) => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
-        </Select>
+        <SelectButton label="Type of the new field" value={newType} widthClass="w-36" disabled={locked} options={TYPE_OPTIONS}
+          onChange={(v) => setNewType(v as FieldType)} />
         <Button size="sm" icon="Plus" disabled={!newField.trim() || locked} onClick={() => {
           onChange(addField(manifest, name, newField, newType).manifest);
           setNewField("");

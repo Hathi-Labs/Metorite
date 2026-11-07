@@ -225,7 +225,7 @@ function Ide({ pkg }: { pkg: string }) {
   const editorPane = (
     <>
       <Tabs tabs={TABS} activeTab={tab} onTabChange={setTab} variant="underline" chrome="inline" className="px-2 pt-1" />
-      <EditBar state={editor.state} dirty={editor.dirty} newer={editor.newer} onSave={editor.save} onRevert={editor.revert} onReload={editor.reload} />
+      <EditBar state={editor.state} dirty={editor.dirty} newer={editor.newer} onSave={editor.save} onRevert={editor.revert} onReload={editor.reload} hideJson={tab === "code"} />
       {stale}
       {lockedLine}
       {body}
