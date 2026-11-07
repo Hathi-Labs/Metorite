@@ -224,6 +224,14 @@ OUTSIDE_EMAIL_READERS: dict[str, str] = {
         "The task-close hop. _closer_owns_mailbox checks that the member who "
         "closes the task owns the mailbox before any write (EM-T2c item 8)."
     ),
+    "apps/services/gateway/gateway/routes/chat.py": (
+        "WT-1b (one_assistant_context.md §9.3 item 9). One function, "
+        "_member_mail_bodies, reads the caller's own mail to frame a pasted "
+        "carry of the continue route. Its _MAIL_BODIES_SQL binds "
+        "lower(user_id) = the caller, a private mailbox only (shared_since IS "
+        "NULL), and the bound tenant. It returns no body, only the frame "
+        "decision. test_continue_stranger_frame.py (R8) counts one read."
+    ),
     "apps/services/gateway/gateway/routes/notes/dispatch.py": (
         "Reads the signature of the account that _default_email_account "
         "selected with user_id = the meeting owner, after "
