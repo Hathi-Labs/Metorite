@@ -1941,6 +1941,13 @@ popup end up covering the menu."
   closes the sheet. Ask opens and closes the assistant.
 - **A menu or a panel stops at the bar.** `AnchoredPanel` and
   `lib/menuClamp.ts` measure the room to the bar's top edge.
+- **The bar's top edge is square, with a hairline** (owner, 2026-11-07). A
+  sheet ends on that edge. Round corners left two gaps where the sheet seemed
+  to run on behind the bar.
+- **The bar keeps space at its foot for an iPhone** (owner, 2026-11-07). The
+  foot (`--phone-bar-foot`) is the home-indicator inset, and never less than
+  0.75rem. The bar's height is `--phone-bar-h`, and every clearance of the
+  bar reads it. No file adds 3.5rem and the inset by hand.
 
 Fences: `layers.test.ts`, `phoneBarTap.test.ts`, `menuClamp.test.ts`,
 `AnchoredPanel.test.ts` and `e2e/phone-bar-always.spec.ts`.

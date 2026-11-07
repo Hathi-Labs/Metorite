@@ -1345,7 +1345,7 @@ export default function EmailPage() {
             })
           : null;
         return (
-          <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
+          <div className="fixed bottom-[calc(var(--phone-bar-h)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
             <span className="text-foreground">
               {isMessage ? (
                 n.title
@@ -1377,7 +1377,7 @@ export default function EmailPage() {
 
       {/* Undo-send toast — on mobile, sits above the fixed bottom nav bar */}
       {pendingSend && (
-        <div className="fixed bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
+        <div className="fixed bottom-[calc(var(--phone-bar-h)+1rem)] sm:bottom-4 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-3 bg-card border border-border shadow-xl rounded-lg px-4 py-2.5 text-xs">
           <span className="text-foreground">Sending message…</span>
           <button
             onClick={() => useEmailStore.getState().undoSend()}

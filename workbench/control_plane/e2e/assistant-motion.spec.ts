@@ -317,11 +317,12 @@ async function expectStrip(page: Page, height: number) {
       };
     })
     .toEqual({ rowHeight: 56, rowOnNav: true, reachesFoot: true });
-  // The page's last row moves up by the strip: the nav's 3.5rem, and 3.5rem more.
+  // The page's last row moves up by the strip: the bar's height (`--phone-bar-h`,
+  // 3.5rem and a 0.75rem foot where the inset is 0, as here), and 3.5rem more.
   await expect.poll(() => page.evaluate(() => document.documentElement.hasAttribute("data-assistant-peek"))).toBe(true);
   await expect
     .poll(() => page.evaluate(() => getComputedStyle(document.querySelector("main.pb-nav")!).paddingBottom))
-    .toBe("112px");
+    .toBe("124px");
   // The sheet's header is hidden and inert under the strip.
   await expect(panel(page).getByRole("button", { name: "Show as a strip" })).toHaveCount(0);
 }
@@ -638,9 +639,11 @@ test.describe("the phone opens on the chat, and one nudge (WS-62 CF-2)", () => {
     expect(b.y + b.height).toBeLessThanOrEqual(a.y + 1);
     expect(b.x + b.width).toBeGreaterThan(a.x);
     await expect.poll(() => page.evaluate(() => document.documentElement.hasAttribute("data-chat-nudge"))).toBe(true);
+    // The bar's height (`--phone-bar-h`: 3.5rem and a 0.75rem foot where the
+    // inset is 0, as here) and the bubble's 3rem: 68 + 48.
     await expect
       .poll(() => page.evaluate(() => getComputedStyle(document.querySelector("main.pb-nav")!).paddingBottom))
-      .toBe("104px");
+      .toBe("116px");
 
     // The first message. The sheet covers the bubble while it is open.
     await openSheet(page);

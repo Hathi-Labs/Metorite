@@ -116,7 +116,9 @@ async function expectBarReachable(page: Page, overlay: string) {
   for (const h of r.hits) expect(h.inside, `the "${h.label}" tab is covered`).toBe(true);
   expect(r.bottom, `${overlay} did not draw`).not.toBeNull();
   expect(r.bottom!, `${overlay} runs under the bar`).toBeLessThanOrEqual(r.barTop + 0.5);
-  expect(r.barHeight).toBeCloseTo(56, 0);
+  // `--phone-bar-h`: 3.5rem and the foot, which is never under 0.75rem (the
+  // inset is 0 in headless Chromium), so 56 + 12.
+  expect(r.barHeight).toBeCloseTo(68, 0);
 }
 
 test("the Menu drawer ends above the bar, and a tab tap closes it first", async ({ page }) => {

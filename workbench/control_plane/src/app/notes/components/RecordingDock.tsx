@@ -51,7 +51,7 @@ export function RecordingDock() {
   // when the Focus pill is up, stack a row higher. Desktop floats bottom-right.
   const bottomClass = focusPillShown
     ? "bottom-[calc(7rem+env(safe-area-inset-bottom))] sm:bottom-[5.5rem]"
-    : "bottom-[calc(3.5rem+env(safe-area-inset-bottom))] sm:bottom-4";
+    : "bottom-[var(--phone-bar-h)] sm:bottom-4";
 
   return (
     <div

@@ -407,11 +407,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             badge carries the pill's count. */}
         {chatOn ? null : <AgentPill />}
 
-        {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator.
-            MOB-9: it is exactly 3.5rem plus the inset tall, and it paints above every overlay
-            (`LAYER_CLASS.bottomNav`). `globals.css` ends each full-height fixed layer at its top
-            edge while `data-phone-nav` is on <html>. */}
-        <div data-phone-nav-bar="" className={`fixed bottom-0 inset-x-0 box-border h-[calc(3.5rem+env(safe-area-inset-bottom,0px))] ${LAYER_CLASS.bottomNav} border-t border-border bg-card/90 backdrop-blur pb-safe glass:border-t-0 glass:glass-chrome glass:rounded-t-2xl`}>
+        {/* Bottom navigation bar — fixed at viewport bottom, never scrolls.
+            MOB-9: it is `--phone-bar-h` tall (3.5rem plus its foot), and it paints above every
+            overlay (`LAYER_CLASS.bottomNav`). `globals.css` ends each full-height fixed layer at
+            its top edge while `data-phone-nav` is on <html>.
+            The foot (`--phone-bar-foot`) is the home-indicator inset and never less than 0.75rem,
+            so the labels keep clear of a rounded iPhone corner (owner, 2026-11-07).
+            The top edge is SQUARE and keeps its hairline, in the glass look too: a sheet ends on
+            that edge, and round corners with no line left two gaps where the sheet seemed to run
+            on behind the bar (owner, 2026-11-07, on the Calendar Schedule sheet). Fence:
+            `layers.test.ts`. */}
+        <div data-phone-nav-bar="" className={`fixed bottom-0 inset-x-0 box-border h-[var(--phone-bar-h)] ${LAYER_CLASS.bottomNav} border-t border-border bg-card/90 backdrop-blur pb-[var(--phone-bar-foot)] glass:glass-chrome`}>
           {/* CF-2: one nudge above the Ask tab, for a member who never wrote
               to the assistant. Behind the chat-first flag. */}
           {chatOn ? <ChatNudge placement="tab" /> : null}
@@ -805,7 +811,7 @@ function MobileBottomNavInner({
 
   return (
     <>
-    <nav className="flex h-full items-stretch justify-around gap-0.5 py-1 px-1">
+    <nav className="flex h-full items-stretch justify-around gap-0.5 px-2 py-1">
         <button
           onClick={() => {
             // A second tap on Menu closes it. A page's sheet gives way to the Menu.

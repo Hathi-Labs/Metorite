@@ -146,14 +146,51 @@ describe("the phone's bottom bar always shows (MOB-9)", () => {
 
   it("marks the bar, sets the attribute with the phone layout, and sizes the bar", () => {
     const shell = read("components/AppShell.tsx");
-    expect(shell).toMatch(/data-phone-nav-bar=""[^>]*h-\[calc\(3\.5rem\+env\(safe-area-inset-bottom,0px\)\)\]/);
+    expect(shell).toMatch(/data-phone-nav-bar=""[^>]*h-\[var\(--phone-bar-h\)\][^>]*pb-\[var\(--phone-bar-foot\)\]/);
+    // Square top corners, in the glass look too: a sheet ends on the bar's top
+    // edge, and round corners left two gaps where it seemed to run on behind
+    // the bar (owner, 2026-11-07).
+    const bar = shell.match(/data-phone-nav-bar=""[^>]*>/)?.[0] ?? "";
+    expect(bar).not.toMatch(/rounded-t/);
+    // The hairline stays in the glass look, so a list a sheet cuts off reads
+    // as ending at the bar, not as running on behind it.
+    expect(bar).toMatch(/border-t border-border/);
+    expect(bar).not.toMatch(/glass:border-t-0/);
     expect(shell).toMatch(/<PhoneNavFlag \/>/);
     expect(shell).toMatch(/setAttribute\("data-phone-nav", ""\)[\s\S]*removeAttribute\("data-phone-nav"\)/);
   });
 
+  it("sizes the bar in one place, with a foot that never drops under 0.75rem", () => {
+    // Owner, 2026-11-07: "on iPhone the corners are quite rounded ... you might
+    // need to have some space at the bottom". The foot is the home-indicator
+    // inset, never less than 0.75rem. Every clearance reads `--phone-bar-h`.
+    const css = read("app/globals.css");
+    expect(css).toMatch(/--phone-bar-foot:\s*max\(env\(safe-area-inset-bottom, 0px\), 0\.75rem\);/);
+    expect(css).toMatch(/--phone-bar-h:\s*calc\(3\.5rem \+ var\(--phone-bar-foot\)\);/);
+    // Nobody adds 3.5rem and the inset by hand any more: a second sum drifts
+    // from the bar the day the foot changes, and a dock then sits on a tab.
+    const src = fileURLToPath(new URL("../", import.meta.url));
+    const byHand: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) {
+          if (name !== "node_modules") walk(p);
+        } else if (/\.(tsx?|css)$/.test(name) && !/\.test\.tsx?$/.test(name)) {
+          const text = readFileSync(p, "utf-8");
+          if (/3\.5rem[^;"`\n]*safe-area-inset-bottom|safe-area-inset-bottom[^;"`\n]*3\.5rem/.test(text)) {
+            byHand.push(relative(src, p).split(sep).join("/"));
+          }
+        }
+      }
+    };
+    walk(src);
+    expect(byHand, "these files add 3.5rem and the inset by hand; read --phone-bar-h").toEqual([]);
+  });
+
   it("ends every full-height fixed layer at the bar's top edge, and never the bar", () => {
     const css = read("app/globals.css");
-    expect(css).toMatch(/:root\[data-phone-nav\]\s*\{\s*--phone-nav-h:\s*calc\(3\.5rem \+ env\(safe-area-inset-bottom/);
+    expect(css).toMatch(/:root\[data-phone-nav\]\s*\{\s*--phone-nav-h:\s*var\(--phone-bar-h\)/);
     const rule = css.match(/:root\[data-phone-nav\] :is\(([^)]*)\):not\(\[data-phone-nav-bar\]\)\s*\{\s*bottom:\s*var\(--phone-nav-h\)/);
     expect(rule, "the phone-nav rule moved or changed shape").not.toBeNull();
     for (const sel of [".fixed.inset-0", ".fixed.inset-y-0", ".fixed.bottom-0", ".phone-nav-clear"]) {

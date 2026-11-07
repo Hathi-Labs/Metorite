@@ -364,7 +364,7 @@ function FocusRoom({ itemId }: { itemId: string }) {
           ? "animate-pulse bg-success"
           : "animate-pulse bg-primary";
     return (
-      <div className="chat-fade-in fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-[60] sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-80">
+      <div className="chat-fade-in fixed inset-x-0 bottom-[var(--phone-bar-h)] z-[60] sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-80">
         <div className="flex items-center gap-2.5 border-t border-border bg-card/95 px-3 py-2 shadow-2xl backdrop-blur sm:rounded-xl sm:border">
           <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
           <button
