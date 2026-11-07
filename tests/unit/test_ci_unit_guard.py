@@ -355,3 +355,147 @@ def test_the_shard_step_env_names_cannot_leak_into_a_script_under_test() -> None
     assert env, "the step passes its selection through env"
     bad = sorted(k for k in env if not k.startswith("SHARD_"))
     assert not bad, f"generic env names leak into the scripts under test: {bad}"
+
+
+# ── CIV-4c: every R8 skip of the no-database run is in the --r8 list ──────
+#
+# deploy.yml's `test` job has no database, so each R8 suite skips there. The
+# release gate runs `affected_tests.py --r8` against two real databases. A
+# file that skips for an R8 reason and is not in that list runs nowhere.
+
+_LADDER = "TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres with the ladder"
+_CONSOLE = "CUSTOMER_CONSOLE_DATABASE_URL unset — R8 requires a REAL Postgres. "
+
+
+def _case(file: str, name: str, skip: str | None = None, collection: bool = False) -> str:
+    if skip is None:
+        inner = ""
+    elif collection:
+        inner = f'<skipped message="collection skipped">{file}:3: Skipped: {skip}</skipped>'
+    else:
+        inner = f'<skipped type="pytest.skip" message="{skip}">{file}:9: {skip}</skipped>'
+    klass = file[: -len(".py")].replace("/", ".")
+    return f'<testcase classname="{klass}" file="{file}" name="{name}" time="0.1">{inner}</testcase>'
+
+
+def _junit(tmp_path: Path, *cases: str) -> Path:
+    out = tmp_path / "junit"
+    out.mkdir(exist_ok=True)
+    body = "".join(cases)
+    (out / "test.xml").write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" '
+        f'tests="{len(cases)}">{body}</testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    return out
+
+
+def _list(tmp_path: Path, *paths: str) -> Path:
+    f = tmp_path / "r8_files.txt"
+    f.write_text("".join(f"{p}\n" for p in paths), encoding="utf-8")
+    return f
+
+
+A = "tests/unit/test_a_r8.py"
+B = "tests/unit/test_b.py"
+
+
+def test_r8_covered_fails_for_an_r8_skip_outside_the_list(tmp_path: Path) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_y", _CONSOLE))
+    problems = guard.r8_covered(junit, _list(tmp_path, A))
+    assert len(problems) == 1, problems
+    assert B in problems[0] and "--r8" in problems[0]
+
+
+def test_r8_covered_passes_when_every_r8_skip_is_listed(tmp_path: Path, capsys) -> None:
+    junit = _junit(
+        tmp_path,
+        _case(A, "test_x", _LADDER),
+        _case(A, "test_x2", _LADDER),
+        _case(B, "test_y", _CONSOLE),
+        _case("tests/unit/test_c.py", "test_runs"),
+    )
+    assert guard.r8_covered(junit, _list(tmp_path, A, B)) == []
+    assert "R8 skips checked: 2 files, all in the --r8 list" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "AGENT_WRITES_REDIS_URL or TENANT_LADDER_DATABASE_URL unset — no Redis",
+        "AGENT_WRITES_REDIS_URL or TENANT_LADDER_DATABASE_URL unset — this class "
+        "runs the nonce and the cap on a REAL Redis 7.",
+        "Windows only",
+        "requires docker",
+        "gateway not installed",
+    ],
+)
+def test_r8_covered_ignores_a_skip_of_another_reason(tmp_path: Path, reason: str) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_y", reason))
+    assert guard.r8_covered(junit, _list(tmp_path, A)) == []
+
+
+def test_r8_covered_counts_a_module_skipped_at_collection(tmp_path: Path) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_b", _CONSOLE, True))
+    problems = guard.r8_covered(junit, _list(tmp_path, A))
+    assert len(problems) == 1 and B in problems[0], problems
+
+
+def test_r8_covered_reads_a_real_collection_skip(tmp_path: Path) -> None:
+    """The report of a real pytest run, so a change in pytest's format shows here."""
+    junit = _report(tmp_path, _MODULE_SKIP, "test_gated.py")
+    assert any("test_gated.py" in p for p in guard.r8_covered(junit, _list(tmp_path, "other.py")))
+    assert guard.r8_covered(junit, _list(tmp_path, "test_gated.py")) == []
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "TENANT_LADDER_DATABASE_URL unset",
+        "CUSTOMER_CONSOLE_DATABASE_URL unset",
+        "TENANT_LADDER_DATABASE_URL unset — R8 needs a real Postgres",
+        "TENANT_LADDER_DATABASE_URL unset - R8 needs Postgres",
+        "TENANT_LADDER_DATABASE_URL unset. ⚠️ This suite is the ONLY one that",
+        "TENANT_LADDER_DATABASE_URL unset or CUSTOMER_CONSOLE_DATABASE_URL unset",
+        "R8 requires a REAL Postgres; set CUSTOMER_CONSOLE_DATABASE_URL",
+        "R8: set TENANT_LADDER_DATABASE_URL (scripts/dev_db.sh)",
+        "R8 needs TENANT_LADDER_DATABASE_URL",
+        "R8 requires a REAL Postgres.",
+    ],
+)
+def test_r8_covered_knows_each_r8_reason_of_the_repo(tmp_path: Path, reason: str) -> None:
+    assert guard.is_r8_reason(reason), reason
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_y", reason))
+    assert len(guard.r8_covered(junit, _list(tmp_path, A))) == 1
+
+
+def test_r8_covered_fails_closed_on_no_report(tmp_path: Path) -> None:
+    listed = _list(tmp_path, A)
+    (tmp_path / "empty").mkdir()
+    assert guard.r8_covered(tmp_path / "empty", listed)  # a directory with no report
+    assert guard.r8_covered(tmp_path / "absent", listed)  # no directory
+    zero = tmp_path / "zero"
+    zero.mkdir()
+    (zero / "test.xml").write_text(_EMPTY, encoding="utf-8")
+    assert any("no test" in p for p in guard.r8_covered(zero, listed))  # zero cases
+
+
+_EMPTY = '<?xml version="1.0"?><testsuites><testsuite name="pytest" tests="0"/></testsuites>'
+
+
+def test_r8_covered_fails_closed_on_an_empty_or_absent_list(tmp_path: Path) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER))
+    empty = tmp_path / "blank.txt"
+    empty.write_text("\n\n", encoding="utf-8")
+    assert any("empty" in p for p in guard.r8_covered(junit, empty))
+    assert guard.r8_covered(junit, tmp_path / "nothing.txt")
+
+
+def test_r8_covered_reaches_the_cli(tmp_path: Path) -> None:
+    junit = _junit(tmp_path, _case(A, "test_x", _LADDER), _case(B, "test_y", _CONSOLE))
+    base = [sys.executable, str(_ROOT / "scripts/ci_unit_guard.py"), "r8-covered", "--junit", str(junit)]
+    bad = subprocess.run([*base, "--list", str(_list(tmp_path, A))], capture_output=True, text=True)
+    assert bad.returncode == 1 and "::error::" in bad.stdout and B in bad.stdout, bad.stdout
+    good = subprocess.run([*base, "--list", str(_list(tmp_path, A, B))], capture_output=True, text=True)
+    assert good.returncode == 0, good.stdout + good.stderr
+    assert "R8 skips checked: 2 files" in good.stdout

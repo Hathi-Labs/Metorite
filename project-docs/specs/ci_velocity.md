@@ -4,9 +4,11 @@
 2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 and CIV-2 are
 done. CIV-3 and CIV-7 are built on branch `civ3-pr-tier` (2026-11-05), and
 they are done at merge. CIV-4, CIV-8 and CIV-9 are AGENT-SAFE.
-CIV-4, CIV-4b and CIV-13 are HIGH tier, because they change the deploy path.
+CIV-4, CIV-4b, CIV-4c and CIV-13 are HIGH tier, because they change the deploy path.
 CIV-6 is built (task 1634, PR open). CIV-4b merged on 2026-11-05 (task 1711). CIV-13 (D178) is BUILT on
 2026-11-05: the home box starts the 21:30 release. The owner installs its timer.
+
+CIV-4c is BUILT on 2026-11-07 (task 1736, branch `civ4c-r8-cover`).
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
@@ -332,6 +334,44 @@ After the merge, the live evidence is the first 21:30 UTC run: six green R8
 shards, a green `r8-gate`, and a moved `release` ref.
 AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
 
+### CIV-4c · Every R8 skip of a release runs in the R8 gate (HIGH: deploy path)
+
+**Status: BUILT (2026-11-07).** Branch `civ4c-r8-cover`. Task 1736.
+
+**Why.** `r8_files()` finds an R8 file by a text match, one level deep. A
+new file can get its database gate by import only, and name no mark. Then
+`--r8` leaves it out. The `test` job skips it, and the R8 gate never runs
+it. On 2026-11-07 the list held each such file, but no fence proved it.
+
+**Built:**
+- The `test` job of deploy.yml writes a JUnit report to `junit/test.xml`.
+  Its pytest command keeps `-x`, `-v`, `--reruns 1` and the fence ignore.
+- A new step after the unit run writes `affected_tests.py --r8` to
+  `r8_files.txt`. Then it runs `ci_unit_guard.py r8-covered`.
+- The step has no `if:`. It runs only after a green unit run, so a red run
+  stays red.
+- `r8-covered` fails for each file that skipped for an R8 reason and is not
+  in the list. A module that skipped at collection counts.
+- An R8 reason starts with `CUSTOMER_CONSOLE_DATABASE_URL` or
+  `TENANT_LADDER_DATABASE_URL`. Or it names `R8` and also a variable or
+  "real Postgres". A Redis or platform skip is not an R8 reason.
+- It fails closed. No report, a report with no test, a missing list and an
+  empty list each fail. The step also stops on an empty list before the
+  guard starts.
+- pr-check.yml gets no copy. Its shards have both databases, and its guard
+  already fails on each R8 skip.
+- `r8-suite`, `r8-gate`, `publish-release` and the release window do not
+  change.
+
+**Fence:** `tests/unit/test_ci_unit_guard.py` covers the rule with JUnit
+reports in a temporary folder. `tests/unit/test_deploy_pipeline.py` covers
+the step, its place, the old flags and the unchanged jobs.
+
+**Files:** `.github/workflows/deploy.yml`, `scripts/ci_unit_guard.py`,
+`tests/unit/test_ci_unit_guard.py`, `tests/unit/test_deploy_pipeline.py`.
+**Verify:** `uv run pytest tests/unit/test_ci_unit_guard.py tests/unit/test_deploy_pipeline.py -q`.
+AGENT-SAFE. **HIGH tier.**
+
 ### CIV-5 · A red batch names the PR that broke it
 
 **Done when:**
@@ -496,4 +536,4 @@ slice has one subtask:
 | CIV-3 | 1631 | CIV-8 | 1636 |
 | CIV-4 | 1632 | CIV-9 | 1637 |
 | CIV-5 | 1633 | CIV-4b | 1711 |
-| | | CIV-13 | 1721 |
+| CIV-4c | 1736 | CIV-13 | 1721 |
