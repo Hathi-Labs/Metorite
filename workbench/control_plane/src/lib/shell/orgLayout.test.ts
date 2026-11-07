@@ -11,6 +11,7 @@ import {
   fetchOrgLayout,
   keepOrgLayoutCopy,
   orgDefaultFor,
+  orgLayoutFetcher,
   orgLayoutKey,
   orgLayoutRead,
   orgLayoutSettled,
@@ -303,14 +304,48 @@ describe("the browser copy of the org default (P1-a)", () => {
     expect(readCachedOrgLayout(OTHER)).toBeUndefined();
   });
 
-  it("a 404 or an empty answer clears the copy", () => {
+  it("a 404 or an empty answer writes the 'no default' marker, and never removes the key", () => {
     keepOrgLayoutCopy(SCOPE, layout);
     keepOrgLayoutCopy(SCOPE, EMPTY_ORG_LAYOUT);
-    expect(readCachedOrgLayout(SCOPE)).toBeUndefined();
-    expect(storage.getItem(orgLayoutCacheKey(SCOPE)!)).toBeNull();
+    expect(readCachedOrgLayout(SCOPE)).toEqual(EMPTY_ORG_LAYOUT);
+    expect(JSON.parse(storage.getItem(orgLayoutCacheKey(SCOPE)!)!)).toEqual({ v: 1, layout: { roles: {} } });
+  });
+
+  it.each([
+    // what is stored, what reads back
+    ["the marker", { v: 1, layout: { roles: {} } }, EMPTY_ORG_LAYOUT],
+    ["a default", { v: 1, layout: doc }, layout],
+    ["a default with a junk entry", { v: 1, layout: { roles: { member: { pins: [A, "/nope"] }, admin: 7 } } }, parseOrgLayout({ roles: { member: { pins: [A] } } })],
+  ] as const)("the copy reads back: %s", (_name, value, back) => {
+    storage.setItem(orgLayoutCacheKey(SCOPE)!, JSON.stringify(value));
+    expect(readCachedOrgLayout(SCOPE)).toEqual(back);
+    expect(orgLayoutRead({ data: undefined, error: null, copy: readCachedOrgLayout(SCOPE) }).state).toBe("copy");
   });
 
   it("a bad copy reads as no copy and never throws", () => {
+    const hostile = [
+      "{not json",
+      "7",
+      "null",
+      '"x"',
+      "[]",
+      JSON.stringify({ roles: "bad" }),
+      JSON.stringify(doc), // the bare shape, with no version
+      JSON.stringify({ roles: {} }), // the bare empty shape is not the marker
+      JSON.stringify({ v: 2, layout: doc }),
+      JSON.stringify({ v: "1", layout: doc }),
+      JSON.stringify({ v: 1 }),
+      JSON.stringify({ v: 1, layout: null }),
+      JSON.stringify({ v: 1, layout: "bad" }),
+      JSON.stringify({ v: 1, layout: { roles: "bad" } }),
+      JSON.stringify({ v: 1, layout: { roles: [] } }),
+      JSON.stringify({ v: 1, layout: [] }),
+    ];
+    for (const bad of hostile) {
+      storage.setItem(orgLayoutCacheKey(SCOPE)!, bad);
+      expect(readCachedOrgLayout(SCOPE)).toBeUndefined();
+      expect(orgLayoutRead({ data: undefined, error: null, copy: readCachedOrgLayout(SCOPE) }).state).toBe("pending");
+    }
     for (const bad of ["{not json", "7", "null", JSON.stringify({ roles: "bad" })]) {
       storage.setItem(orgLayoutCacheKey(SCOPE)!, bad);
       expect(readCachedOrgLayout(SCOPE)).toBeUndefined();
@@ -318,6 +353,17 @@ describe("the browser copy of the org default (P1-a)", () => {
     vi.stubGlobal("window", undefined);
     expect(() => keepOrgLayoutCopy(SCOPE, layout)).not.toThrow();
     expect(readCachedOrgLayout(SCOPE)).toBeUndefined();
+  });
+
+  it("a sign-out clears the marker too, in every org of that email", () => {
+    keepOrgLayoutCopy(SCOPE, EMPTY_ORG_LAYOUT);
+    keepOrgLayoutCopy("priya@acme.example|org-beta", EMPTY_ORG_LAYOUT);
+    keepOrgLayoutCopy(OTHER, EMPTY_ORG_LAYOUT);
+    clearCachedLayouts(["Priya@Acme.example"]);
+    expect(storage.getItem(orgLayoutCacheKey(SCOPE)!)).toBeNull();
+    expect(readCachedOrgLayout(SCOPE)).toBeUndefined();
+    expect(readCachedOrgLayout("priya@acme.example|org-beta")).toBeUndefined();
+    expect(readCachedOrgLayout(OTHER)).toEqual(EMPTY_ORG_LAYOUT);
   });
 
   it("a sign-out clears it with the member's layout, in every org of that email", () => {
@@ -344,12 +390,135 @@ describe("the browser copy of the org default (P1-a)", () => {
     expect(orgLayoutRead({ data: newer, error: null, copy: layout }).layout).toEqual(newer);
   });
 
-  it("the hook reads the copy for its first render and keeps each answer (source fence)", () => {
+  it("the hook reads the copy for its first render, and only its scoped fetch keeps an answer (source fence)", () => {
     const src = readFileSync(fileURLToPath(new URL("./orgLayout.ts", import.meta.url)), "utf-8");
     const hook = src.slice(src.indexOf("export function useOrgLayout"));
     expect(hook).toMatch(/useMemo\(\(\) => \(enabled \? readCachedOrgLayout\(scope\) : undefined\)/);
-    expect(hook).toMatch(/keepOrgLayoutCopy\(scope, res\.data\)/);
+    expect(hook).toMatch(/const fetcher = useMemo\(\(\) => orgLayoutFetcher\(scope\), \[scope\]\)/);
+    expect(hook).toMatch(/useCachedResource<OrgLayout>\(enabled \? orgLayoutKey\(\) : null, fetcher,/);
     expect(hook).toMatch(/orgLayoutRead\(\{ data: res\.data, error: res\.error, copy \}\)/);
+    // P2: the hook never writes the copy from `res.data`, which can hold the
+    // answer of the previous account after a switch in the same tab.
+    const code = hook.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(code).not.toMatch(/keepOrgLayoutCopy|writeCachedOrgLayout|useEffect/);
+    expect(src).not.toMatch(/clearCachedOrgLayout|removeItem/);
+  });
+});
+
+describe("the 'no default' marker and the scoped write (review P1, P2)", () => {
+  const SCOPE = "priya@acme.example|org-acme";
+  const NEXT = "priya@acme.example|org-beta";
+  let storage: MemoryStorage;
+  const reply = (r: () => Response | Promise<Response>) => vi.stubGlobal("fetch", vi.fn(async () => r()));
+  const ok = (body: unknown) => () => new Response(JSON.stringify(body), { status: 200 });
+  const status = (n: number) => () => new Response(JSON.stringify(doc), { status: n });
+  beforeEach(() => {
+    storage = new MemoryStorage();
+    vi.stubGlobal("window", { localStorage: storage });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** A full page load: the first render reads the copy, with no answer yet. */
+  const firstFrame = (scope: string) => orgLayoutRead({ data: undefined, error: null, copy: readCachedOrgLayout(scope) });
+
+  it.each([
+    ["a 404 (the host is off)", status(404)],
+    ["an empty 200", ok({ roles: {} })],
+    ["a 200 it cannot read", ok({ roles: "bad" })],
+  ])("org with no default, %s: the second full load has state copy, an empty layout and NO hold", async (_n, r) => {
+    // First load: no copy, so the shell holds.
+    expect(firstFrame(SCOPE).state).toBe("pending");
+    expect(orgLayoutSettled({ storedPins: null, orgState: "pending", elapsedMs: 0 })).toBe(false);
+    reply(r);
+    expect(await orgLayoutFetcher(SCOPE)()).toEqual(EMPTY_ORG_LAYOUT);
+    // Second load.
+    const second = firstFrame(SCOPE);
+    expect(second).toEqual({ layout: EMPTY_ORG_LAYOUT, state: "copy" });
+    expect(orgLayoutSettled({ storedPins: null, orgState: second.state, elapsedMs: 0 })).toBe(true);
+    expect(orgLayoutSettled({ storedPins: undefined, orgState: second.state, elapsedMs: 0 })).toBe(true);
+    expect(shellLayout(stored(), ["member"], orgDefaultFor(second.layout, ["member"]))).toEqual(
+      shellLayout(stored(), ["member"]),
+    );
+  });
+
+  it("a default saved after a marker replaces it", async () => {
+    reply(status(404));
+    await orgLayoutFetcher(SCOPE)();
+    expect(firstFrame(SCOPE).layout).toEqual(EMPTY_ORG_LAYOUT);
+    reply(ok(doc));
+    await orgLayoutFetcher(SCOPE)();
+    expect(firstFrame(SCOPE)).toEqual({ layout, state: "copy" });
+  });
+
+  it("a 404 after a default replaces it with the marker", async () => {
+    reply(ok(doc));
+    await orgLayoutFetcher(SCOPE)();
+    reply(status(404));
+    await orgLayoutFetcher(SCOPE)();
+    expect(firstFrame(SCOPE)).toEqual({ layout: EMPTY_ORG_LAYOUT, state: "copy" });
+  });
+
+  it.each([401, 403, 500, 502, 503])("a %i keeps the marker and the copy untouched", async (n) => {
+    reply(status(404));
+    await orgLayoutFetcher(SCOPE)();
+    const marker = storage.getItem(orgLayoutCacheKey(SCOPE)!);
+    reply(status(n));
+    await expect(orgLayoutFetcher(SCOPE)()).rejects.toThrow();
+    expect(storage.getItem(orgLayoutCacheKey(SCOPE)!)).toBe(marker);
+    expect(firstFrame(SCOPE)).toEqual({ layout: EMPTY_ORG_LAYOUT, state: "copy" });
+
+    reply(ok(doc));
+    await orgLayoutFetcher(SCOPE)();
+    reply(status(n));
+    await expect(orgLayoutFetcher(SCOPE)()).rejects.toThrow();
+    expect(firstFrame(SCOPE).layout).toEqual(layout);
+  });
+
+  it("a network fault keeps the copy untouched", async () => {
+    reply(ok(doc));
+    await orgLayoutFetcher(SCOPE)();
+    reply(() => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(orgLayoutFetcher(SCOPE)()).rejects.toThrow();
+    expect(firstFrame(SCOPE).layout).toEqual(layout);
+  });
+
+  it("no scope: the fetch answers and writes nothing", async () => {
+    reply(ok(doc));
+    expect(await orgLayoutFetcher(null)()).toEqual(layout);
+    expect(storage.length).toBe(0);
+  });
+
+  it("scope A answered, then the scope is B with A's answer still in hand: B's copy never gets A's layout", async () => {
+    reply(ok(doc));
+    const data = await orgLayoutFetcher(SCOPE)(); // res.data of scope A
+    expect(readCachedOrgLayout(SCOPE)).toEqual(layout);
+    // The account switches in the same tab. `res.data` still holds A's
+    // answer, and the hook writes nothing from it.
+    expect(data).toEqual(layout);
+    expect(readCachedOrgLayout(NEXT)).toBeUndefined();
+    // B's first read fails: B has no copy, and A's default never leaks in.
+    reply(status(502));
+    await expect(orgLayoutFetcher(NEXT)()).rejects.toThrow();
+    expect(readCachedOrgLayout(NEXT)).toBeUndefined();
+    expect(firstFrame(NEXT).state).toBe("pending");
+    // B's own answer is kept under B, and A keeps its own.
+    reply(status(404));
+    await orgLayoutFetcher(NEXT)();
+    expect(readCachedOrgLayout(NEXT)).toEqual(EMPTY_ORG_LAYOUT);
+    expect(readCachedOrgLayout(SCOPE)).toEqual(layout);
+  });
+
+  it("a read of A that lands after the switch to B is kept under A only", async () => {
+    let land: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((res) => (land = res))));
+    const inFlight = orgLayoutFetcher(SCOPE)();
+    orgLayoutFetcher(NEXT); // the hook makes B's fetch on the switch
+    land(new Response(JSON.stringify(doc), { status: 200 }));
+    await inFlight;
+    expect(readCachedOrgLayout(SCOPE)).toEqual(layout);
+    expect(readCachedOrgLayout(NEXT)).toBeUndefined();
   });
 });
 

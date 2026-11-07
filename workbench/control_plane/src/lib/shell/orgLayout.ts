@@ -10,7 +10,13 @@
  *
  * The org default has a browser copy per account, as the member's layout has
  * (`shellCache.ts`). The copy draws the first frame, and the read confirms it
- * or replaces it. A 404 or an empty answer clears the copy.
+ * or replaces it. A 404 or an empty answer writes a "no default" marker
+ * (`OrgLayoutCopy` with an empty layout). So the next full page load of an
+ * org with the host off finds a copy, and the shell does not hold.
+ *
+ * Only the fetch writes the copy, under the scope that asked
+ * (`orgLayoutFetcher`). An answer of one account is never written into the
+ * copy of the next account in the same tab.
  *
  * With no copy yet, the shell holds its skeleton for a member with null pins
  * until the read answers, for `ORG_LAYOUT_WAIT_MS` at most
@@ -33,15 +39,11 @@
  *
  * Fence (R7): `orgLayout.test.ts`.
  */
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 
 import { cacheKey } from "@/lib/dataCache";
 import { STARRABLE, presetById, type PresetId } from "@/lib/shell/presets";
-import {
-  clearCachedOrgLayout,
-  readCachedOrgLayoutRaw,
-  writeCachedOrgLayout,
-} from "@/lib/shell/shellCache";
+import { readCachedOrgLayoutRaw, writeCachedOrgLayout } from "@/lib/shell/shellCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 /** The roles a person holds, the highest first (`shell_layout.ROLE_ORDER`). */
@@ -130,29 +132,68 @@ export async function fetchOrgLayout(): Promise<OrgLayout> {
   return parseOrgLayout(await res.json());
 }
 
-/** The account's browser copy of the org default, or undefined. A bad or empty copy is no copy. */
+/** The version of the stored shape. A copy of another version is no copy. */
+export const ORG_LAYOUT_COPY_VERSION = 1;
+
+/**
+ * The stored shape of the browser copy. `layout` is the server's last answer.
+ * An empty `layout` is the "no default" marker: the server answered, and the
+ * org has no default (a 404 or an empty 200).
+ */
+export interface OrgLayoutCopy {
+  v: typeof ORG_LAYOUT_COPY_VERSION;
+  layout: OrgLayout;
+}
+
+/**
+ * The account's browser copy of the org default, or undefined.
+ *
+ * - A good copy returns its layout. The "no default" marker returns
+ *   `EMPTY_ORG_LAYOUT`. Both count as a copy, so the shell does not hold.
+ * - A missing, bad or hostile value, or another version, is no copy
+ *   (undefined). The shell then holds as on a first visit.
+ */
 export function readCachedOrgLayout(scope: string | null | undefined): OrgLayout | undefined {
   const raw = readCachedOrgLayoutRaw(scope);
-  if (raw === undefined) return undefined;
-  const layout = parseOrgLayout(raw);
-  return isEmptyOrgLayout(layout) ? undefined : layout;
+  if (!isRecord(raw) || raw.v !== ORG_LAYOUT_COPY_VERSION) return undefined;
+  if (!isRecord(raw.layout) || !isRecord(raw.layout.roles)) return undefined;
+  return parseOrgLayout(raw.layout);
 }
 
 /**
  * Keep the server's answer in the browser copy. An answer with a default is
- * written. A 404 or an empty answer clears the copy, so a default that an
- * admin removed does not come back on the next page load.
+ * written. A 404 or an empty answer writes the "no default" marker. It
+ * replaces an older default, so a default that an admin removed does not
+ * come back on the next page load. A thrown read never comes here, so a
+ * fault keeps the copy or the marker as it was.
  */
 export function keepOrgLayoutCopy(scope: string | null | undefined, answer: OrgLayout): void {
-  if (isEmptyOrgLayout(answer)) clearCachedOrgLayout(scope);
-  else writeCachedOrgLayout(scope, answer);
+  const copy: OrgLayoutCopy = { v: ORG_LAYOUT_COPY_VERSION, layout: answer };
+  writeCachedOrgLayout(scope, copy);
+}
+
+/**
+ * The fetch of one account. It reads the org default and keeps the answer
+ * under `scope`, the account that asked, captured when the hook made it.
+ *
+ * So an answer is written only into the copy of the scope that requested it.
+ * An account switch in the same tab never writes the old org's default into
+ * the new org's copy. A thrown read writes nothing.
+ */
+export function orgLayoutFetcher(scope: string | null | undefined): () => Promise<OrgLayout> {
+  return async () => {
+    const answer = await fetchOrgLayout();
+    if (scope) keepOrgLayoutCopy(scope, answer);
+    return answer;
+  };
 }
 
 /**
  * How much the shell knows of the org default.
  *
  * - `pending`: no answer, no failure and no browser copy yet.
- * - `copy`: the browser copy draws, and the read may still be out.
+ * - `copy`: the browser copy draws, and the read may still be out. The
+ *   "no default" marker is a copy too, with an empty layout.
  * - `answered`: the read answered or failed. A failure with no copy and no
  *   earlier answer is "no org default", as before PKG-17b.
  */
@@ -218,16 +259,18 @@ export function orgLayoutRead(a: {
 /**
  * The org default for this account. The browser copy draws the first frame,
  * and the read through the cache confirms it or replaces it.
+ *
+ * ⚠️ The copy is written inside the fetch (`orgLayoutFetcher`), never from
+ * `res.data`. After an account switch `res.data` can still hold the answer
+ * of the previous account.
  */
 export function useOrgLayout(enabled: boolean, scope: string | null | undefined): OrgLayoutRead {
-  const res = useCachedResource<OrgLayout>(enabled ? orgLayoutKey() : null, fetchOrgLayout, {
+  const fetcher = useMemo(() => orgLayoutFetcher(scope), [scope]);
+  const res = useCachedResource<OrgLayout>(enabled ? orgLayoutKey() : null, fetcher, {
     ttl: ORG_LAYOUT_TTL_MS,
     revalidateOnFocus: true,
   });
   const copy = useMemo(() => (enabled ? readCachedOrgLayout(scope) : undefined), [enabled, scope]);
-  useEffect(() => {
-    if (enabled && scope && res.data !== undefined) keepOrgLayoutCopy(scope, res.data);
-  }, [enabled, scope, res.data]);
   if (!enabled) return { layout: EMPTY_ORG_LAYOUT, state: "answered" };
   return orgLayoutRead({ data: res.data, error: res.error, copy });
 }

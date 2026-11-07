@@ -25,7 +25,8 @@
  *   (`useShellPrefs().fresh`).
  * - **The org default has a copy too** (PKG-17b), under
  *   `cc-shell-org-layout:<email>|<organizationId>`, with the same rules. A
- *   404 or an empty answer clears it. `orgLayout.ts` reads and writes it.
+ *   404 or an empty answer writes a "no default" marker, and never clears
+ *   the key. `orgLayout.ts` reads and writes it.
  *
  * Fence: `shellCache.test.ts` and `orgLayout.test.ts`.
  */
@@ -156,8 +157,8 @@ export function clearCachedLayouts(emails: readonly string[]): void {
 // ── The org default's browser copy (PKG-17b, `package_host.md` §9.1) ───────
 // The same rules as the layout's copy above. One key per account, and only
 // an answer of the server is kept. `clearCachedLayouts` clears it on a
-// sign-out. The copy is raw JSON here. `orgLayout.ts` parses it with
-// `parseOrgLayout`, so a bad copy reads as no copy.
+// sign-out. The copy is raw JSON here. `orgLayout.ts` gives it its shape and
+// parses it, so a bad copy reads as no copy.
 
 /**
  * The key prefix of the copy, `cc-shell-org-layout:<email>|<org>`.
@@ -193,18 +194,6 @@ export function writeCachedOrgLayout(scope: string | null | undefined, layout: u
     store.setItem(key, JSON.stringify(layout));
   } catch {
     /* storage full or off: the next visit reads the server, as before */
-  }
-}
-
-/** Remove the copy of one account, after a 404 or an empty answer. Never throws. */
-export function clearCachedOrgLayout(scope: string | null | undefined): void {
-  const key = orgLayoutCacheKey(scope);
-  const store = storage();
-  if (!key || !store) return;
-  try {
-    store.removeItem(key);
-  } catch {
-    /* storage off: nothing is stored */
   }
 }
 
