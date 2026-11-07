@@ -5774,7 +5774,8 @@ _WAITING_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
         "on": {"type": "string", "enum": list(WAITING_ON),
-               "description": "What you wait on: subagents, ci, review, deploy or member."},
+               "description": ("What you wait on: ci, review, deploy, member, or"
+                               " agent (another agent, not your own sub-agents).")},
         "until_minutes": {"type": "integer", "minimum": 1, "maximum": MAX_WAITING_MINUTES,
                           "description": "How long you expect to wait, 1 to 120 minutes."},
         "note": {"type": "string", "maxLength": MAX_WAITING_NOTE,
@@ -5859,10 +5860,11 @@ POST_AGENT_ACTIVITY = Tool(
         " error also becomes a comment on the task. After an elicitation, call"
         " get_agent_run with wait_seconds 20 again and again until the answer"
         " arrives, or end the session. If the run in the result has the status"
-        " stopped, a person stopped it: stop the work at once. Before a wait of"
-        " more than 2 minutes on sub-agents, CI, a review, a deploy or a member,"
-        " add waiting with on and until_minutes (at most 120). The run then"
-        " reads waiting, not idle. A wait on a person for longer than 120"
+        " stopped, a person stopped it: stop the work at once. While your own"
+        " sub-agents work, send a thought at least once a minute. The run then"
+        " stays working. Before a wait of more than 2 minutes on CI, a review,"
+        " a deploy, a member or another agent, add waiting with on and"
+        " until_minutes (at most 120). The run then reads waiting, not idle. A wait on a person for longer than 120"
         " minutes is a question: use ask_on_task." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,

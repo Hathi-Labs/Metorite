@@ -786,7 +786,10 @@ class TestTheWaitingLine:
         ({"type": "thought", "body": "x", "waiting": {"on": "ci", "until_minutes": 0}},
          "The input 'waiting.until_minutes' must be at least 1."),
         ({"type": "thought", "body": "x", "waiting": {"on": "lunch", "until_minutes": 5}},
-         "The input 'waiting.on' must be one of subagents, ci, review, deploy, member."),
+         "The input 'waiting.on' must be one of ci, review, deploy, member, agent."),
+        # Owner, 2026-11-07: the agent's own sub-agents are work, not a wait.
+        ({"type": "thought", "body": "x", "waiting": {"on": "subagents", "until_minutes": 5}},
+         "The input 'waiting.on' must be one of ci, review, deploy, member, agent."),
         ({"type": "thought", "body": "x", "waiting": {"on": "ci"}},
          "The input waiting.until_minutes is required."),
         ({"type": "thought", "body": "x",
@@ -845,6 +848,9 @@ class TestTheWaitingLine:
         text = " ".join(tools.TOOLS["post_agent_activity"].describe()["description"].split())
         assert "more than 2 minutes" in text and "waiting" in text
         assert "ask_on_task" in text
+        # Owner, 2026-11-07: own sub-agents keep the run working.
+        assert "While your own sub-agents work, send a thought" in text
+        assert tools.WAITING_ON == ("ci", "review", "deploy", "member", "agent")
 
 
 class TestTheWaitingLineOverMcp:

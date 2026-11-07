@@ -21,8 +21,8 @@
  * says "idle" or "Queued for", so the stale and queued lines never repeat it.
  *
  * Task 1045a: "waiting" is still too, because motion means working (EA-13g).
- * The agent said that it waits on sub-agents, CI, a review, a deploy or a
- * person, and for about how long. The pill already names the client, and a
+ * The agent said that it waits on CI, a review, a deploy, a person or
+ * another agent, and for about how long. The pill already names the client, and a
  * card at 1440 cuts a line that names it twice, so the line leaves it out.
  */
 

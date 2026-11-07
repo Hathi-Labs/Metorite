@@ -1683,6 +1683,29 @@ class TestTheWaitingState:
                           r=rid) == 0
             assert _waits(w, rid) == (None, None)
 
+    async def test_own_sub_agents_are_no_wait_and_another_agent_is(self, w):
+        """Owner, 2026-11-07. While the agent's own sub-agents work, the run
+        is working, so ``subagents`` gets 422 and writes nothing. ``agent``
+        (another, external agent) is a wait. The CHECK refuses the old value
+        too. Mutation: put ``subagents`` back in ``RUN_WAITING_ON``."""
+        from sqlalchemy.exc import IntegrityError
+
+        async with _session(w.p) as call:
+            rid = (await _start(w, call))["id"]
+            old = await _act(call, w.agent_a, rid, type="thought", body="b",
+                             waiting={"on": "subagents", "until_minutes": 5})
+            assert old.status_code == 422, old.text
+            assert _waits(w, rid) == (None, None)
+            got = await _act(call, w.agent_a, rid, type="thought", body="Wait",
+                             waiting={"on": "agent", "until_minutes": 10})
+            assert got.status_code == 201, got.text
+            assert _waits(w, rid)[0] == "agent"
+            assert await _status(call, w.a, rid) == ("in_progress", "waiting")
+        with (pytest.raises(IntegrityError, match="pm_agent_runs_waiting_on"),
+              w.p.admin_engine.begin() as c):
+            c.execute(text("UPDATE pm_agent_runs SET waiting_on = 'subagents'"
+                           " WHERE id = CAST(:r AS uuid)"), {"r": rid})
+
     async def test_a_lease_below_two_hours_caps_the_wait(self, w, monkeypatch):
         """SW-4 item 2 (D140.8). With a lease of 30 minutes, a wait of 31
         minutes gets the coded 422, and a wait of 30 is taken."""

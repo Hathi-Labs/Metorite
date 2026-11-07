@@ -338,9 +338,12 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
 #: waiting line. It shows only with the runs flag, as the tool does.
 #: Fence: ``test_mcp_edge_prompts.py`` ``TestTheWaitingRule``.
 WAITING_RULE = (
-    "Before a wait of more than 2 minutes, post a waiting line: a thought"
+    "While your own sub-agents work, you work too. Continue to post a short"
+    " thought at least once a minute, and the run stays working. Post a"
+    " waiting line only before a wait of more than 2 minutes on CI, a deploy,"
+    " a review or a person, or another agent that is not yours: a thought"
     " with post_agent_activity and waiting {on, until_minutes, note}. on is"
-    " subagents, ci, review, deploy or member, and until_minutes is 1 to 120."
+    " ci, review, deploy, member or agent, and until_minutes is 1 to 120."
     " The task then shows the run as waiting, not idle. Your next activity"
     " ends the wait. A wait on a person for longer than 120 minutes is a"
     " question: call ask_on_task.")

@@ -37,6 +37,7 @@ import {
   AGENT_STATE_VALUES,
   ARCHIVE_CARD_TITLE,
   CLIENT_LABELS,
+  WAITING_ON_LABELS,
   activityAttribution,
   githubMergeReason,
   viaLabel,
@@ -121,6 +122,13 @@ describe("the pill: state → text, by the table in §12.1", () => {
       text: "Claude Code waiting",
       title: "Claude Code waiting on a review · about 30 min",
     });
+    // Owner, 2026-11-07: the agent's own sub-agents are work, never a wait.
+    // `agent` is another (external) agent.
+    expect(Object.keys(WAITING_ON_LABELS)).toEqual(["ci", "review", "deploy", "member", "agent"]);
+    expect(WAITING_ON_LABELS.agent).toBe("another agent");
+    expect(
+      agentPillText("waiting", { ...wait, waiting: { on: "agent" as const } }).title,
+    ).toBe("Claude Code waiting on another agent");
   });
 
   it("shows the newest thought as the tooltip of working", () => {

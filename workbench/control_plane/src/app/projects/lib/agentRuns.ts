@@ -189,8 +189,12 @@ export interface AgentRun {
   waiting?: AgentWaiting | null;
 }
 
-/** What a `waiting` run waits on (the CHECK of the gateway migration). */
-export type AgentWaitingOn = "subagents" | "ci" | "review" | "deploy" | "member";
+/**
+ * What a `waiting` run waits on (the CHECK of the gateway migration). Each is
+ * work that is not the agent's own. While its own sub-agents work, the run is
+ * working (owner, 2026-11-07). `agent` is another (external) agent.
+ */
+export type AgentWaitingOn = "ci" | "review" | "deploy" | "member" | "agent";
 
 /** The wait of a run (task 1045a): what, until when, and the agent's note. */
 export interface AgentWaiting {
@@ -202,11 +206,11 @@ export interface AgentWaiting {
 
 /** The words for each `on`, for "waiting on CI". */
 export const WAITING_ON_LABELS: Readonly<Record<AgentWaitingOn, string>> = {
-  subagents: "sub-agents",
   ci: "CI",
   review: "a review",
   deploy: "a deploy",
   member: "a person",
+  agent: "another agent",
 };
 
 /**

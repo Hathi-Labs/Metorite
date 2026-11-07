@@ -71,10 +71,15 @@ describe("agentCardLook", () => {
     // Seconds round up, so the line never says "about 0 min".
     expect(
       agentCardLook("waiting", {
-        waiting: { on: "subagents", until: "2026-11-06T10:00:20Z" },
+        waiting: { on: "agent", until: "2026-11-06T10:00:20Z" },
         nowMs: now,
       }).line,
-    ).toBe("Waiting on sub-agents · about 1 min");
+    ).toBe("Waiting on another agent · about 1 min");
+    // The agent's own sub-agents are work, not a wait (owner, 2026-11-07).
+    // A row with the old value reads as a wait the client does not name.
+    expect(
+      agentCardLook("waiting", { waiting: { on: "subagents" as never } }).line,
+    ).toBe("Waiting");
     // A row with no wait, or an `on` the client does not know, still reads.
     expect(agentCardLook("waiting", { clientVia: via }).line).toBe("Waiting");
     expect(

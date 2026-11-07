@@ -799,6 +799,10 @@ class TestTheWaitingRule:
         flat = " ".join((await _prompt_text({"task": TASK})).split())
         assert prompts.WAITING_RULE in flat
         assert "more than 2 minutes" in flat and "ask_on_task" in flat
+        # Owner, 2026-11-07: own sub-agents are work, never a wait.
+        assert "While your own sub-agents work, you work too." in flat
+        assert "on is ci, review, deploy, member or agent" in flat
+        assert "subagents" not in flat
         _runs_off(monkeypatch)
         flat = " ".join((await _prompt_text({"task": TASK})).split())
         assert "waiting {on" not in flat
@@ -808,7 +812,7 @@ class TestTheWaitingRule:
             self, armed, monkeypatch, on):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
         text = await _instructions()
-        sentence = "Set waiting for a wait over 2 minutes."
+        sentence = "Set waiting only for CI, people or another agent."
         assert -1 < text.find(sentence) < TestTheAnswerRule.CUT - len(sentence)
         _runs_off(monkeypatch)
         assert "Set waiting" not in await _instructions()

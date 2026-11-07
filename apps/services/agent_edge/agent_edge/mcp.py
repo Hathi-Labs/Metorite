@@ -175,9 +175,12 @@ _PROTOCOL_RUNS_ON = (
     # Task 1045a: the waiting line. The text sits at the cut of 4096 (task
     # 1803), so step 3 gave up the words ", such as one on another machine,"
     # to make room. The work_on_task steps (`prompts.py`) and the tool
-    # post_agent_activity hold the full rule.
-    " 5. Post a post_agent_activity thought at least once a minute."
-    " Set waiting for a wait over 2 minutes."
+    # post_agent_activity hold the full rule, with its 2 minutes. Owner,
+    # 2026-11-07: "only" and the list keep a run whose own sub-agents work
+    # out of `waiting`. The step keeps the length it had, because with the
+    # sessions flag off step 6 already ends near the cut.
+    " 5. Post a post_agent_activity thought each minute."
+    " Set waiting only for CI, people or another agent."
     " 6. End with exactly one disposition: the task moves to review or done,"
     " or a question waits on a named member (ask_on_task), or release_task"
     " gives the task back. A comment is evidence, never a disposition."

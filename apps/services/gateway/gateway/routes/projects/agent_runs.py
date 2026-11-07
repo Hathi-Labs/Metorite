@@ -295,7 +295,7 @@ class WaitingIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    on: Literal["subagents", "ci", "review", "deploy", "member"]
+    on: Literal["ci", "review", "deploy", "member", "agent"]
     until_minutes: int = Field(ge=1, le=AGENT_RUN_WAITING_MAX_MIN)
     note: str | None = Field(default=None, max_length=MAX_WAITING_NOTE)
 

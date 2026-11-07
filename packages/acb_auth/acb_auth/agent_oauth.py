@@ -190,7 +190,10 @@ def runs_enabled() -> bool:
 #: ``pm_agent_runs_waiting_on`` of the migration lists the same five. It lives
 #: here because the edge's ``tools.py`` may not hold the word as a literal
 #: (rule 15 of the edge's AGENTS.md).
-RUN_WAITING_ON: tuple[str, ...] = ("subagents", "ci", "review", "deploy", "member")
+#: The wait is on work that is not the agent's own (owner, 2026-11-07). While
+#: the agent's own sub-agents work, the run is working, so no value names
+#: them. ``agent`` is another (external) agent.
+RUN_WAITING_ON: tuple[str, ...] = ("ci", "review", "deploy", "member", "agent")
 #: The longest wait, in minutes (D140.8). A shorter lease lowers it.
 RUN_WAITING_MAX_MIN = 120
 

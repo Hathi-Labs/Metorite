@@ -11,8 +11,9 @@
 --
 -- What: two nullable columns on `pm_agent_runs`.
 --   waiting_on     TEXT NULL, with the named CHECK `pm_agent_runs_waiting_on`
---                  (subagents, ci, review, deploy, member). What the agent
---                  waits on.
+--                  (ci, review, deploy, member, agent). What the agent
+--                  waits on. `agent` is another (external) agent. The
+--                  agent's own sub-agents are work, so no value names them.
 --   waiting_until  TIMESTAMPTZ NULL. When the wait ends. The run reads
 --                  `waiting` until this time, and `stale` after it, while no
 --                  new activity comes (`filters.AGENT_RUN_STATE_SQL`).
@@ -58,13 +59,13 @@ BEGIN
     ) THEN
         ALTER TABLE pm_agent_runs ADD CONSTRAINT pm_agent_runs_waiting_on
             CHECK (waiting_on IS NULL
-                   OR waiting_on IN ('subagents', 'ci', 'review', 'deploy', 'member'));
+                   OR waiting_on IN ('ci', 'review', 'deploy', 'member', 'agent'));
     END IF;
 END
 $checks$;
 
 COMMENT ON COLUMN pm_agent_runs.waiting_on IS
-    'Task 1045a. What the agent waits on: subagents, ci, review, deploy or member. NULL when the newest activity set no wait.';
+    'Task 1045a. What the agent waits on: ci, review, deploy, member or agent (another agent). NULL when the newest activity set no wait.';
 
 COMMENT ON COLUMN pm_agent_runs.waiting_until IS
     'Task 1045a. When the wait ends. The run reads waiting until then, and stale after it, while no new activity comes. NULL when no wait is set.';
