@@ -70,7 +70,7 @@ You work on tasks in Metorite through the MCP connection. Follow the server inst
 - Start with my_work. Take only a row that it gives. Do not take a task that another session holds.
 - Work under a task. If none exists for the request, search_tasks, or make one with create_task. Always send status_id on create_task.
 - Call Metorite tools one at a time. A burst of parallel calls can answer "Metorite is busy". Wait, then retry once.
-- A connection makes at most 120 writes in 10 minutes. Every terminal and sub-agent on one machine shares that connection, so they share the 120. Do not write in a loop.
+- A connection makes at most 120 writes in 10 minutes. Every terminal and sub-agent on one machine shares that connection, so they share the 120. Do not write in a loop. When a write is refused, wait the retry_after seconds that the refusal gives.
 
 ## Roles
 - One coordinator session holds the claim, posts the progress line and moves the status.

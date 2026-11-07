@@ -88,7 +88,7 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 
 ## Limits
 
-- A connection makes at most 120 writes in 10 minutes. The 121st write is refused until the window passes. Every terminal and sub-agent on one machine shares that connection, so they share the 120.
+- A connection makes at most 120 writes in 10 minutes. The 121st write is refused, and the refusal holds retry_after: the seconds to wait. Every terminal and sub-agent on one machine shares that connection, so they share the 120.
 - Parallel calls can answer "Metorite is busy". Call the tools one at a time and retry once.
 - Send a `status_id` with every `create_task`. Send an `idempotency_key` too, so a retry makes no second task.
 - A read returns at most 100 tasks (`list_tasks`), 50 hits (`search_tasks`) and 25 rows (`my_work`).
@@ -111,7 +111,7 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 
 - **A tool answers "busy".** Wait a few seconds. Call one tool at a time.
 - **A claim is refused with `409 task_held`.** Take another task. Do not force it.
-- **A write is refused with 429.** You passed the write limit. Wait for the window to end.
+- **A write is refused with 429.** You passed the write limit. Wait the retry_after seconds that the refusal gives.
 - **You get a sign-in error.** The person revoked the connection, or it was idle for 90 days. Connect again.
 - **A task you expected is missing.** It may be assigned to another person, held by a session, or in a project outside your pins.
 - **A run stalls.** Name the cause with `failures`.
