@@ -19,13 +19,18 @@ temp ``HOME`` and a temp ``CLAUDE_CONFIG_DIR``. The real home, the live
 - ``claude mcp get`` and ``.claude.json`` hold ``${G17_BOX_TOKEN}``, never
   the value.
 - ``scripts/box_connect.sh`` against the same server, end to end.
+- A project ``.mcp.json`` that names the same server with no header, and
+  approved in the settings, wins over the user entry. ``claude mcp get``
+  then names the Project scope, and the script stops with exit 7. With the
+  approval removed, the user entry wins.
 
 The file skips when ``claude`` is not on the path. The sample tokens are made
 at run time, so no token literal is in the repo (``.gitleaks.toml``).
 
 Mutations that turn this file red (R7): a ``box_connect.sh`` that writes the
-literal token into the MCP entry (the ``.claude.json`` checks), and a Claude
-Code that falls back to OAuth on a 401 (the OAuth path checks). The mutation
+literal token into the MCP entry (the ``.claude.json`` checks), a Claude
+Code that falls back to OAuth on a 401 (the OAuth path checks), and a verify
+step that ignores the scope of ``claude mcp get`` (the project case). The mutation
 list of the secret rules is in ``test_box_token_secret_rules.py``.
 """
 from __future__ import annotations
@@ -180,10 +185,11 @@ def _env(home: Path, **extra: str) -> dict[str, str]:
     return env
 
 
-def _claude(home: Path, *args: str, timeout: int = 90, **extra: str) -> subprocess.CompletedProcess:
+def _claude(home: Path, *args: str, timeout: int = 90, cwd: Path | None = None,
+            **extra: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["timeout", "60", str(_CLAUDE), *args],
-        cwd=home, env=_env(home, **extra), capture_output=True, text=True,
+        cwd=cwd or home, env=_env(home, **extra), capture_output=True, text=True,
         encoding="utf-8", timeout=timeout, check=False,
     )
 
@@ -303,3 +309,45 @@ def test_box_connect_script_reports_a_revoked_token(home: Path) -> None:
         assert "OAuth fallback is disabled" in out
         assert "rejected the token" in out
         assert _oauth_requests(server) == []
+
+
+def _scope(out: str) -> str:
+    return next((ln.strip() for ln in out.splitlines() if ln.strip().startswith("Scope:")), "")
+
+
+def test_an_approved_project_entry_wins_and_the_script_stops(home: Path, tmp_path: Path) -> None:
+    good = _sample_token()
+    proj = tmp_path / "checkout"
+    proj.mkdir()
+    settings = home / "cfg" / "settings.json"
+    with _Server(good) as server:
+        # Like the repo's .mcp.json: the same name, the same address, no header.
+        (proj / ".mcp.json").write_text(json.dumps({"mcpServers": {"metorite": {
+            "type": "http", "url": server.url}}}), encoding="utf-8")
+        settings.write_text(json.dumps({"enabledMcpjsonServers": ["metorite"]}),
+                            encoding="utf-8")
+
+        run = _run_script(home, good, "--url", server.url, "--project", str(proj))
+        out = run.stdout + run.stderr
+        assert run.returncode == 7, out
+        assert good not in out
+        assert "Scope: Project config" in out
+        assert "Connected" not in out and "is connected" not in out
+        assert "disabledMcpjsonServers" in out
+
+        # The real client agrees: in the checkout the project entry wins.
+        got = _claude(home, "mcp", "get", "metorite", cwd=proj, METORITE_BOX_TOKEN=good)
+        assert _scope(got.stdout).startswith("Scope: Project config"), got.stdout + got.stderr
+        assert "${METORITE_BOX_TOKEN}" not in got.stdout
+
+        # With the approval removed, the user entry with the header wins.
+        settings.write_text("{}", encoding="utf-8")
+        got = _claude(home, "mcp", "get", "metorite", cwd=proj, METORITE_BOX_TOKEN=good)
+        assert _scope(got.stdout).startswith("Scope: User config"), got.stdout + got.stderr
+        assert "Authorization: Bearer ${METORITE_BOX_TOKEN}" in got.stdout
+
+        run = _run_script(home, good, "--url", server.url, "--project", str(proj), "--replace")
+        out = run.stdout + run.stderr
+        assert run.returncode == 0, out
+        assert "'metorite' is connected" in out
+        assert good not in out
