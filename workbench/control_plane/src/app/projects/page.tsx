@@ -92,7 +92,7 @@ import {
   myWorkNavCounts,
   projectsUndoScope,
 } from "./lib/myWork";
-import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, phoneMyTasksTap, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
+import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
 import MyTasksSpace, {
   DEFAULT_MY_TASKS_VIEW,
   MyTasksActionRow,
@@ -1513,19 +1513,13 @@ function ProjectsWorkspace() {
   useEffect(() => {
     const handler = (event: Event) => {
       const tab = (event as CustomEvent<string>).detail;
-      if (tab === "projects-tree") setSheet((s) => (s === "tree" ? null : "tree"));
-      else if (tab === "projects-views") setSheet((s) => (s === "views" ? null : "views"));
-      else if (tab === "projects-mywork") {
-        // WS-64 OP-11 — the phone's "My tasks" tab opens My tasks on its
-        // List. A second tap there opens the Projects sheet (`ProjectNav`:
-        // My work, Personal, Spaces). The shell's "Menu" keeps the drawer.
-        if (phoneMyTasksTap(appRef.current) === "sheet") {
-          setSheet((s) => (s === "tree" ? null : "tree"));
-        } else {
-          setSheet(null);
-          setApp("my-tasks");
-          setMyTasks((v) => ({ ...v, mode: "list", attention: false }), true);
-        }
+      // MOB-10: each tab closes the page's other overlays first, so two never
+      // stack. The shell has closed its own drawer and the assistant's sheet.
+      if (tab === "projects-tree" || tab === "projects-views") {
+        setSearching(false);
+        useTaskStore.getState().closeQuickCapture();
+        const which = tab === "projects-tree" ? "tree" : "views";
+        setSheet((s) => (s === which ? null : which));
       } else if (tab === "projects-capture") {
         // WS-64 OP-4 — Capture must work with no My work view open. The quick
         // capture lives in the task store and `MyWorkHost` mounts it, so open
@@ -1533,6 +1527,7 @@ function ProjectsWorkspace() {
         // the host mounts. OP-11: My tasks mounts no capture host, so it
         // opens the inbox too. The smallest change: no second capture host.
         setSheet(null);
+        setSearching(false);
         setApp("my-inbox");
         useTaskStore.getState().openQuickCapture("single");
       }
@@ -1540,6 +1535,7 @@ function ProjectsWorkspace() {
         // ⌘K has no phone equivalent, so the palette needs a control. It is a
         // full-screen overlay of its own — the drawer would be a second one.
         setSheet(null);
+        useTaskStore.getState().closeQuickCapture();
         setSearching(true);
       }
     };
