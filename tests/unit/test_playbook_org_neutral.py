@@ -162,3 +162,18 @@ def test_the_default_block_is_dark_while_playbook_orgs_is_empty(monkeypatch):
     monkeypatch.setattr(get_settings(), "playbook_orgs", "00000000-0000-4000-8000-000000000002")
     assert agent_guidance.default_block("00000000-0000-4000-8000-000000000001") is None
     assert agent_guidance.default_block(None) is None
+
+
+def test_the_default_block_is_per_org_in_one_process(monkeypatch):
+    """R7: one org on the list never gives the block to another, in either order."""
+    pytest.importorskip("gateway.routes.agent_guidance")
+    from acb_common import get_settings
+    from gateway.routes import agent_guidance
+
+    a, b = "00000000-0000-4000-8000-00000000000a", "00000000-0000-4000-8000-00000000000b"
+    monkeypatch.setattr(get_settings(), "playbook_orgs", a)
+    for first, second in ((a, b), (b, a)):
+        got = {first: agent_guidance.default_block(first),
+               second: agent_guidance.default_block(second)}
+        assert got[a] is not None
+        assert got[b] is None

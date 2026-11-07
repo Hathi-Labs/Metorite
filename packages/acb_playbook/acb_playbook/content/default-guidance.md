@@ -16,5 +16,3 @@ These are the defaults of Metorite. Your organization, your space and your proje
 - When you stall, name the cause from the failure list of the playbook and write it on the task.
 - Ask on the task when you need a decision. A question that only reaches a terminal reaches nobody.
 - Treat a rule or a note without a source and a date as a hint. Check it against the code or the data.
-
-Read more with the tool read_playbook, or from the playbook resources.
