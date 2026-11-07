@@ -279,6 +279,42 @@ export function chipRowsWithSet<T extends ChipRow & { id: string }>(
   return [...listed, ...added];
 }
 
+/** The line of a failed read of the Today set (CC-2 fix round 2). */
+export const TODAY_SET_FAILED =
+  "Metorite could not load all of today's tasks. The tasks assigned to you show below.";
+
+/** What the Today chip still waits for, or lost, from the read of the set. */
+export interface TodaySetGap {
+  /** The read failed, and the chip lacks rows that it counts. */
+  failed: boolean;
+  /** The read is on its way: one place for each id that the list lacks. */
+  pending: number;
+}
+
+/**
+ * The gap between the Today chip's count and its rows (CC-2 fix round 2).
+ *
+ * With the flag on, `today_ids` can name tasks that the mine list does not
+ * hold, and only the read of the set brings them. While that read is on its
+ * way, the chip reserves one place for each such id, so no row jumps in. When
+ * it fails, the chip says so, because the count then names more tasks than
+ * the rows. With the flag off, on another chip, or with the set read, there
+ * is no gap.
+ */
+export function todaySetGap(
+  rows: readonly { id: string }[],
+  chip: MyTasksChip,
+  todayIds: ReadonlySet<string> | null,
+  read: { data?: unknown; error?: string | null },
+): TodaySetGap {
+  const none: TodaySetGap = { failed: false, pending: 0 };
+  if (chip !== "today" || !todayIds || read.data) return none;
+  const held = new Set(rows.map((row) => row.id));
+  const missing = [...todayIds].filter((id) => !held.has(id)).length;
+  if (missing === 0) return none;
+  return read.error ? { failed: true, pending: 0 } : { failed: false, pending: missing };
+}
+
 /**
  * The ids of the Today set, from the summary, or null for the old rule.
  * `today_ids` comes only with `TODAY_RULE_ORGS` on (WS-MDC CC-2).

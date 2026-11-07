@@ -71,6 +71,7 @@ import {
   quickAddHome,
   stageGroups,
   todayIdsOf,
+  todaySetGap,
   truncationNotice,
 } from "../lib/myTasks";
 import { useSubtaskComplete } from "./useSubtaskComplete";
@@ -84,6 +85,7 @@ import { NeedsAttentionList } from "./NeedsAttentionList";
 import { TableView } from "./TableView";
 import { TaskBoard } from "./TaskBoard";
 import { TaskList } from "./TaskList";
+import { TodaySetGap } from "./TodaySetGap";
 
 const MODE_OPTIONS: readonly ModeOption<MyTasksMode>[] = MY_TASKS_MODES;
 
@@ -484,6 +486,12 @@ export default function MyTasksSpace({
       void ownStatuses(id);
     }
   }, [setRows, ownStatuses]);
+  // Fix round 2: the place of each task that the read still brings, or one
+  // line when the read failed (`todaySetGap`, `TodaySetGap`).
+  const gap = useMemo(
+    () => todaySetGap(list.rows, chip, todayIds, { data: todaySet.data, error: todaySet.error }),
+    [list.rows, chip, todayIds, todaySet.data, todaySet.error],
+  );
   const shown = useMemo(
     () => chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows),
     [list.rows, chip, today, zone, todayIds, setRows],
@@ -631,7 +639,7 @@ export default function MyTasksSpace({
       action={{ label: "Go to Projects", icon: "FolderKanban", onClick: onOpenProjects }}
     />
   ) : (
-    chip !== "all" && listLoaded && shown.length === 0 ? (
+    chip !== "all" && listLoaded && shown.length === 0 && gap.pending === 0 ? (
       <EmptyState
         icon="ListChecks"
         message={`Nothing in ${MY_TASKS_CHIPS.find((c) => c.id === chip)?.label ?? chip}.`}
@@ -730,6 +738,9 @@ export default function MyTasksSpace({
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto">
         <LayoutBoundary key={`my-tasks:${mode}`} layout={`My tasks ${mode}`}>
+          {listLoaded && mode !== "overview" && gap.failed ? (
+            <TodaySetGap gap={gap} onRetry={todaySet.refresh} />
+          ) : null}
           {mode === "overview" ? (
             !summary.data && summary.error ? (
               // The read failed: say so, and offer it again. The other tabs
@@ -869,6 +880,9 @@ export default function MyTasksSpace({
               projectPrivate={privateOf}
             />
           )}
+          {listLoaded && (mode === "list" || mode === "table") && gap.pending > 0 ? (
+            <TodaySetGap gap={gap} onRetry={todaySet.refresh} />
+          ) : null}
           {compactChrome && !wantsAll && listMode ? (
             <MoreTasksBar
               atEnd

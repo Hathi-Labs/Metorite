@@ -1549,8 +1549,12 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.convertFolder": "convert_folder_to_project",
     "projectsApi.grants": "project_access",
     # WS-MDC CC-2: the Today set (`GET /projects/my/today?with_tasks=true`) for
-    # the Today chip of My work. my_work reads the same route for the day and
-    # the zone. The chat reads the set with its plan tools in CC-10.
+    # the Today chip of My work. ⚠️ my_work has NO Today view: it reads this
+    # route for the member's day and zone only, and sends no `with_tasks`
+    # (FIELD_EXEMPT). The row names my_work because the fence takes no other
+    # shape: UI_PLANNED needs a class X route and a gap of
+    # `projects_agent_parity.md` §3.3, and UI_EXEMPT needs a class X route.
+    # The chat gets the set with its plan tools in CC-10 (task 1978).
     "projectsApi.myTodaySet": "my_work",
     # ── projectsApi: analytics and reports ───────────────────────────────
     "projectsApi.stuck": "analytics_stuck",

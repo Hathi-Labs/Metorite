@@ -1090,8 +1090,9 @@ class Settings(BaseSettings):
     # `today_rule_orgs` lists the organization ids where the Today chip of My
     # work and its count read the one Today predicate, or `*` for each one.
     # Empty means off, and the chip and its count keep the old rule. The read
-    # (`GET /projects/my/today?with_tasks=true`) and the mark answer with the
-    # flag off. The one reader is
+    # (`GET /projects/my/today?with_tasks=true`) answers with the flag off. A
+    # mark or a clear of today's focus answers 403 `today_focus_off`
+    # (`personal.check_focus_on`) until the flag holds the org. The one reader is
     # `gateway.routes.projects.today_rule.today_rule_allowed`, and it fails
     # closed. The name ends in `_orgs`, so a SIGHUP applies a change with no
     # restart (`docs/flag_reload.md`).

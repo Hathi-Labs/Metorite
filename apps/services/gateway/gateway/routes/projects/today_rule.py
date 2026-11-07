@@ -45,8 +45,10 @@ phases only.
 
 ``TODAY_RULE_ORGS`` (default empty) moves the count of the Today chip and its
 list to this rule (:func:`today_rule_allowed`). With the flag off, the chip
-and its count keep the old rule. The read and the mark exist with the flag
-off, and no surface calls them until CC-3 and CC-7.
+and its count keep the old rule, and the read still answers. A mark or a clear
+of today's focus answers 403 ``today_focus_off`` until the flag holds the org
+(``personal.check_focus_on``, fix round 1). With the flag on, the Today chip of
+My work reads the set (``myTasks.ts`` ``chipRowsWithSet``).
 
 Fences: ``tests/unit/test_today_rule_r8.py``,
 ``tests/unit/test_today_focus_cap_r8.py`` and ``src/lib/shell/todayRule.test.ts``.
@@ -107,7 +109,8 @@ def today_rule_allowed(organization_id: str | None) -> bool:
     """True when ``TODAY_RULE_ORGS`` holds the org, or holds ``*``. Default OFF.
 
     The one reader of the flag. ``mine.my_summary`` asks here for the count of
-    the Today chip and the ids of its list. The org comes from the session,
+    the Today chip and the ids of its list, and ``personal.check_focus_on``
+    asks before a mark or a clear. The org comes from the session,
     never from request input (R5). It reads ``get_settings()`` on each call,
     so a flag reload applies a change with no restart. A fault reads as off.
     """
