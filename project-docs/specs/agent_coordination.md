@@ -1006,6 +1006,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** An MCP client lists and reads the three resources. A resource that the member cannot see answers not found.
 - **Fence.** A transport test beside `test_mcp_edge_session.py`, and the coverage fence.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
+- **As built (2026-11-07, first part).** `edge/resources.py` serves `resources/list`, `resources/templates/list` and `resources/read` for `metorite://project/{id}` and `metorite://task/{id}`. Each read runs the tool `get_project` or `get_task`, so the authority is the tool's. `resources/list` holds no concrete row. A hidden or unknown resource answers `-32002`. It is dark behind `agent_resources_orgs`. `metorite://company/context` is not built: it needs the tool `get_company_context` (EA-5, D-EA-6). Fence: `tests/unit/test_mcp_edge_resources.py`.
 
 #### SW-34b · A read-only door
 

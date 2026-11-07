@@ -2046,6 +2046,14 @@ class Settings(BaseSettings):
     # the edge both read it, so both units need the same value. 🔴 A change
     # on a box is gate `enforcement-flip`.
     agent_access_orgs: str = ""
+    # SW-34a (agent_coordination.md SW-34a, external_agent_access.md §9.3): the
+    # organizations where the edge serves MCP resources (`resources/list`,
+    # `resources/templates/list`, `resources/read`). The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps them dark: the list is empty and a read is not found.
+    # `acb_auth.agent_oauth.resources_allowed` is the one reader, at each call.
+    # 🔴 A change on a box is gate `enforcement-flip`.
+    agent_resources_orgs: str = ""
     # EA-17c-1 (D-EA-13, spec §10.8): the organizations where a member may
     # change the grant of their own agent connection, through
     # `PATCH /agent-access/connections/{id}`. The same shape as
@@ -2055,6 +2063,14 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.change_access_allowed`
     # is the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     agent_change_access_orgs: str = ""
+    # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
+    # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
+    # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps them dark. Only the edge reads it, at each call, through
+    # `acb_auth.agent_oauth.playbook_allowed`. 🔴 A change on a box is gate
+    # `enforcement-flip`.
+    playbook_orgs: str = ""
     # EA-6a (EA3-29, spec §6.1 and §9.2): the second switch, for the WRITE
     # tools. Default OFF. While it is false, branch 0 refuses every method
     # other than GET with 401, so the read tools work and no write lands.

@@ -62,7 +62,7 @@ from acb_common import get_logger
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
-from agent_edge import bearer, prompts, tools
+from agent_edge import bearer, prompts, resources, tools
 
 _log = get_logger("agent_edge.mcp")
 
@@ -95,12 +95,17 @@ INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
 SERVED_METHODS = frozenset({"initialize", "ping", "tools/list", "tools/call",
-                            "prompts/list", "prompts/get"})
+                            "prompts/list", "prompts/get",
+                            "resources/list", "resources/templates/list",
+                            "resources/read"})
 
 #: The ``capabilities`` of ``initialize``, whatever the flags and the scopes
 #: (EA-6e, §9.6). ``prompts/list`` gives an empty list when the prompt hides.
+#: SW-34a adds ``resources``: no subscribe and no change notice. The list is
+#: empty for an organization off ``agent_resources_orgs``.
 CAPABILITIES: dict[str, Any] = {"tools": {"listChanged": False},
-                                "prompts": {"listChanged": False}}
+                                "prompts": {"listChanged": False},
+                                "resources": {"subscribe": False, "listChanged": False}}
 
 SERVER_INFO = {"name": "metorite", "title": "Metorite", "version": "0.1.0"}
 
@@ -476,7 +481,7 @@ async def endpoint(request: Request) -> Response:
         # MCP-P1a: a door tool's scope is the one of the app it names.
         required = (tools.scope_of(tool, params.get("arguments"))
                     if tool is not None else None)
-        if (tool is not None and tools.offered(tool)
+        if (tool is not None and tools.offered(tool, caller.lookup.organization_id)
                 and not bearer.covers(caller.scopes, required)):
             _log.info("agent_edge.insufficient_scope", tool=tool.name,
                       connection_id=caller.lookup.connection_id)
@@ -486,6 +491,27 @@ async def endpoint(request: Request) -> Response:
         return Response(status_code=202)
     return await _dispatch(message["id"], str(method), params, tool, caller, key,
                            session)
+
+
+async def _resources_method(request_id: Any, method: str, params: dict[str, Any],
+                            caller: bearer.Caller, ctx: tools.Context) -> Response:
+    """The three resource methods of SW-34a (``agent_edge.resources``)."""
+    org = caller.lookup.organization_id
+    if method == "resources/list":
+        return _result(request_id, {"resources": resources.listed(caller.scopes, org)})
+    if method == "resources/templates/list":
+        return _result(request_id, {"resourceTemplates": resources.templates(
+            caller.scopes, org)})
+    try:
+        result = await resources.read(ctx, params)
+    except resources.ResourceBadParams as refused:
+        return _rpc_error(request_id, INVALID_PARAMS, str(refused))
+    except resources.ResourceNotFound as refused:
+        return _rpc_error(request_id, resources.NOT_FOUND, str(refused))
+    except tools.GatewayUnauthorized:
+        return challenge_401(sent=True)
+    _log.info("agent_edge.resource_read", connection_id=caller.lookup.connection_id)
+    return _result(request_id, result)
 
 
 async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
@@ -520,13 +546,18 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
                                                       session=session))
         return _result(request_id, {"tools": listed})
     if method == "prompts/list":
-        return _result(request_id, {"prompts": prompts.listed(caller.scopes)})
+        return _result(request_id, {"prompts": prompts.listed(caller.scopes, caller.lookup.organization_id)})
+    if method.startswith("resources/"):
+        return await _resources_method(
+            request_id, method, params, caller,
+            tools.Context(caller=caller, key=key, session=session))
     if method == "prompts/get":
         try:
-            result = prompts.get(caller.scopes, params)
+            result = prompts.get(caller.scopes, params, caller.lookup.organization_id)
         except prompts.PromptRefused as refused:
             return _rpc_error(request_id, INVALID_PARAMS, refused.message)
-        _log.info("agent_edge.prompt_get", prompt=prompts.PROMPT_NAME,
+        _log.info("agent_edge.prompt_get",
+                  prompt=prompts.logged_name(params),
                   connection_id=caller.lookup.connection_id)
         return _result(request_id, result)
     if tool is None:
