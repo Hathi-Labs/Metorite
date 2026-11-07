@@ -118,5 +118,7 @@ export function useChatAttachments(sessionId: string) {
     for (const url of urls.current.values()) URL.revokeObjectURL(url);
   }, []);
 
-  return { items, add, remove, retry, clear };
+  const restore = useCallback((list: PendingFile[]) => dispatch({ type: "restore", items: list }), []);
+
+  return { items, add, remove, retry, clear, restore };
 }

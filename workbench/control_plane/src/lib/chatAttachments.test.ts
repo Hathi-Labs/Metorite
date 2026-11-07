@@ -3,6 +3,8 @@
  * rig runs in node with no DOM, so these cases drive the reducer that the
  * composer's hook runs. The browser half is `e2e/chat-attach-chip.spec.ts`.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -10,6 +12,7 @@ import {
   canSend,
   composeMessage,
   editStart,
+  restoreItems,
   safeFileName,
   hasFiles,
   pastedImageName,
@@ -126,5 +129,38 @@ describe("file names", () => {
     expect(safeFileName("my`file.png")).toBe("my'file.png");
     const name = safeFileName("my`file.png");
     expect(parseUploadNote(uploadNote([{ name, path: `inputs/t/${name}` }]))?.files[0].name).toBe("my'file.png");
+  });
+});
+
+describe("a refused send gives its message back (IMG-1 fix round 2)", () => {
+  const files = [{ name: "a.png", path: "inputs/t/a.png" }];
+  const text = `Words.\n\n${uploadNote(files)}`;
+
+  it("puts the words in the box and the files back as ready chips", () => {
+    const back = editStart(text);
+    expect(back.words).toBe("Words.");
+    const s = attachReducer([], { type: "restore", items: back.items });
+    expect(s.map((p) => [p.name, p.state])).toEqual([["a.png", "ready"]]);
+    expect(canSend(back.words, s)).toBe(true);
+  });
+
+  it("does not add a file twice", () => {
+    const back = editStart(text);
+    const once = restoreItems([], back.items);
+    expect(restoreItems(once, back.items)).toHaveLength(1);
+  });
+});
+
+describe("source fences", () => {
+  const read = (f: string) => readFileSync(join(process.cwd(), "src", f), "utf-8");
+
+  it("the Attach button never submits the composer form", () => {
+    const src = read("components/FileUploadButton.tsx");
+    expect(src).toMatch(/<button\s+type="button"\s+onClick=\{handleClick\}/);
+  });
+
+  it("every button of the chips is type=button", () => {
+    const src = read("components/ChatAttachmentChips.tsx");
+    for (const m of src.matchAll(/<(button|Button)(?=[\s>])[^>]*>/g)) expect(m[0], m[0]).toContain('type="button"');
   });
 });

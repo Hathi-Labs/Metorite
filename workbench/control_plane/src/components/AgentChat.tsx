@@ -24,11 +24,12 @@ import { subscribe as subscribeSidePanel, getOpenDocsForSession, openGenUI } fro
 import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
 import { wordsOfMessage } from "@/lib/chatUpload";
-import { PendingChips } from "@/components/ChatAttachmentChips";
+import { PendingChips, workspaceFileUrl } from "@/components/ChatAttachmentChips";
 import { useChatAttachments } from "@/hooks/useChatAttachments";
 import {
   canSend as canSendMessage,
   composeMessage,
+  editStart,
   hasFailed,
   hasFiles,
   isUploading,
@@ -902,6 +903,8 @@ export default function AgentChat({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // IMG-1 (projects_ai_chat §30.4): a file is a chip until the member sends.
   const att = useChatAttachments(sessionId);
+  const attRef = useRef(att);
+  attRef.current = att;
   const [dragOver, setDragOver] = useState(false);
   const hasReadyFiles = readyFiles(att.items).length > 0;
 
@@ -951,7 +954,10 @@ export default function AgentChat({
   useEffect(() => {
     restoreCappedRef.current = (text: string, typed: boolean) => {
       boxMarkRef.current = filled(boxMarkRef.current, typed);
-      setInput((prev) => mergeCappedText(prev, text));
+      // The words go in the box and the files come back as chips, never the note.
+      const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
+      setInput((prev) => mergeCappedText(prev, back.words));
+      if (back.items.length) attRef.current.restore(back.items);
       inputRef.current?.focus();
     };
   }, []);
@@ -1815,7 +1821,9 @@ export default function AgentChat({
   // member typed since then keeps its place (`mergeCappedText`).
   const giveBack = useCallback((text: string, notice: string, typed: boolean) => {
     boxMarkRef.current = filled(boxMarkRef.current, typed);
-    setInput((prev) => mergeCappedText(prev, text));
+    const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
+    setInput((prev) => mergeCappedText(prev, back.words));
+    if (back.items.length) attRef.current.restore(back.items);
     setComposerNotice(notice);
     inputRef.current?.focus();
   }, []);
@@ -1906,10 +1914,10 @@ export default function AgentChat({
     const typed = composerTyped(boxMarkRef.current);
     // A message with files is the member's words, then the note that names the
     // files (`composeMessage`). It never answers a question card.
+    const withFiles = att.items.length > 0;
     const sent =
-      att.items.length > 0
-        ? submitText(composeMessage(input, att.items), typed ? { typed: true } : undefined)
-        : answerTyped(input) || submitText(input, typed ? { typed: true } : undefined);
+      (!withFiles && answerTyped(input)) ||
+      submitText(withFiles ? composeMessage(input, att.items) : input, typed ? { typed: true } : undefined);
     if (sent) {
       setInput("");
       att.clear();
@@ -2874,11 +2882,11 @@ export default function AgentChat({
               inputRef.current?.focus();
             }}
             onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
-            dragOver ? "rounded-2xl border border-primary bg-primary/10 tech-transition" : "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
+            dragOver ? "rounded-2xl border border-primary bg-primary/10 tech-transition glass:ring-2 glass:ring-primary glass:bg-primary/10" : "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
             "glass:relative glass:z-10 glass:rounded-[20px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome glass:glass-spectrum-edge",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
-            <PendingChips items={att.items} onRemove={att.remove} onRetry={att.retry} />
+            <PendingChips items={att.items} onRemove={(id) => { att.remove(id); inputRef.current?.focus(); }} onRetry={att.retry} />
             <textarea ref={inputRef} value={input}
               onChange={(e) => { setInput(e.target.value); if (composerNotice) setComposerNotice(null); }}
               onPaste={(e) => {
@@ -3145,10 +3153,10 @@ export default function AgentChat({
                 onClick={primary === "stop" ? handleStop : undefined}
                 // A Stop waits for the server's answer (UXD-4).
                 loading={primary === "stop" ? stopping : uploadingFiles}
-                label={primary === "stop" && stopping ? "Stopping the reply" : uploadingFiles ? "Uploading…" : undefined}
+                label={primary === "stop" ? (stopping ? "Stopping the reply" : undefined) : uploadingFiles ? "Uploading…" : undefined}
                 title={
-                  primary === "stop" && stopping
-                    ? "Stopping…"
+                  primary === "stop"
+                    ? stopping ? "Stopping…" : undefined
                     : uploadingFiles
                       ? "Uploading…"
                       : failedFiles

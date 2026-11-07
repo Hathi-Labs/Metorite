@@ -35,6 +35,7 @@ export type AttachAction =
   | { type: "fail"; id: string; error: string }
   | { type: "retry"; id: string }
   | { type: "remove"; id: string }
+  | { type: "restore"; items: PendingFile[] }
   | { type: "clear" };
 
 export function attachReducer(state: PendingFile[], a: AttachAction): PendingFile[] {
@@ -51,6 +52,8 @@ export function attachReducer(state: PendingFile[], a: AttachAction): PendingFil
       return state.map((p) => (p.id === a.id ? { ...p, state: "uploading", error: undefined } : p));
     case "remove":
       return state.filter((p) => p.id !== a.id);
+    case "restore":
+      return restoreItems(state, a.items);
     case "clear":
       return [];
   }
@@ -112,6 +115,16 @@ export function editStart(
       previewUrl: urlFor && isImageName(f.name) ? urlFor(f.path) : undefined,
     })),
   };
+}
+
+/**
+ * Put files back as READY chips (a send that was refused gives its message
+ * back). A file that already has a chip, by its path, is not added twice.
+ */
+export function restoreItems(state: PendingFile[], items: PendingFile[]): PendingFile[] {
+  const have = new Set(state.map((p) => p.path).filter(Boolean));
+  const fresh = items.filter((p) => !p.path || !have.has(p.path));
+  return fresh.length ? [...state, ...fresh] : state;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");

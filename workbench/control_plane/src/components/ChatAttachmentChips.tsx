@@ -90,7 +90,7 @@ export function SentChips({ files, sessionId }: { files: readonly NotedFile[]; s
             </>
           );
           return (
-            <li key={f.path} data-chat-chip="sent" className={`${CHIP} max-w-full text-foreground sm:max-w-[16rem]`}>
+            <li key={f.path} data-chat-chip="sent" onDoubleClick={(e) => e.stopPropagation()} className={`${CHIP} max-w-full text-foreground sm:max-w-[16rem]`}>
               {src ? (
                 <button type="button" aria-label={`Open ${f.name} at full size`} onClick={() => setOpen(f)} className="flex min-w-0 items-center gap-2 text-left">
                   {inner}
@@ -105,7 +105,7 @@ export function SentChips({ files, sessionId }: { files: readonly NotedFile[]; s
       <Modal open={open !== null} onClose={() => setOpen(null)} title={open?.name} size="4xl">
         {open && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={workspaceFileUrl(sessionId, open.path)} alt={open.name} className="mx-auto max-h-[75vh] max-w-full object-contain" />
+          <img src={workspaceFileUrl(sessionId, open.path)} alt={open.name} className="mx-auto h-[75vh] w-full max-w-full object-contain" />
         )}
       </Modal>
     </>

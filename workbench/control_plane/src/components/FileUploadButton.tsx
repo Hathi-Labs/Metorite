@@ -142,6 +142,7 @@ export default function FileUploadButton({
       <>
         {fileInput}
         <button
+          type="button"
           onClick={handleClick}
           disabled={state.phase === "uploading"}
           title={state.phase === "error" ? state.message : "Attach files"}

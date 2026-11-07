@@ -580,10 +580,10 @@ function MessageBubble({
                   title="Send edited message"
                 />
               </div>
-              <div className="pb-2">
+              <div className={editItems.length > 0 ? "pb-2" : undefined}>
                 <PendingChips
                   items={editItems}
-                  onRemove={(id) => setEditItems((xs) => xs.filter((x) => x.id !== id))}
+                  onRemove={(id) => { setEditItems((xs) => xs.filter((x) => x.id !== id)); editRef.current?.focus(); }}
                   onRetry={() => {}}
                 />
               </div>
