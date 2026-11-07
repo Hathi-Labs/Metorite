@@ -1,6 +1,6 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
-> **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
+> **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-07 · **Owner:** vjvarada
 > **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. The bell part is not built. PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `787269f0a`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
@@ -388,9 +388,7 @@ Mira can compose a view for one member from blocks over existing actions. Exampl
 
 ### 9.5 Appearance
 
-Mode, density and accent live in the browser only today (`lib/theme/storage.ts`). PKG-19 stores them in `user_settings`, so they follow the member to a second device. The browser copy stays as the first paint.
-
----
+Mode, density and accent live in the browser only today (`lib/theme/storage.ts`). PKG-20 stores them in the column `user_settings.appearance`, so they follow the member to a second device. The record is `{mode, density, accent, updated_at}`. The mode is `dark` or `light`. The density is `compact`, `default` or `comfortable`, or null to follow the org default. The accent is null or a colour literal that the rule of `lib/theme/css.ts` accepts. The server stamps `updated_at`. The last write wins. The browser copy stays as the first paint. After the first paint, the workbench reads the server copy once. It applies a field that differs, unless the member changed appearance in this page session. Only a member action writes the server copy. A failed read changes nothing. The Design choice (`cc-look`) is not part of this record.
 
 ## 10. Slices
 
@@ -443,7 +441,7 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 | **PKG-17** | The org default and the team lens of §9.1 | An admin sets a sidebar order for a role. A member's own pins still win | STD | AGENT-SAFE |
 | **PKG-18** | The Today band, with a reason for each item (§9.3) | The band shows at most five items, each with a reason. A test shows that no stable region moves without a member action. D145 preview first | STD | AGENT-SAFE |
 | **PKG-19** | Pin suggestions with a reason, and generated personal views (§9.3, §9.4) | Yes writes the pin. No hides that suggestion for 30 days. A generated view is a private install with an end date | STD | AGENT-SAFE |
-| **PKG-20** | Appearance in `user_settings` (§9.5) | A second browser opens with the member's mode, density and accent | STD | AGENT-SAFE |
+| **PKG-20** | Appearance in `user_settings` (§9.5). A new nullable column `appearance JSONB`, and `GET` and `PUT /auth/me/appearance`. The BFF route is `/api/auth/me/appearance` | Browser 1 sets Light, Compact and Rose. Browser 2, with empty storage, opens with those three for the same member and org. Another member, and another org of the same member, keep their own. A failed read changes nothing. A change by the member before the read lands is not overwritten. The server refuses a value outside the three enums and the colour rule. Tests: `test_auth_me_appearance.py`, `test_auth_me_appearance_r8.py`, `syncAppearance.test.ts`. D145 preview first | STD | AGENT-SAFE |
 
 ### Phase P5 — Code tiers
 
@@ -517,6 +515,8 @@ Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch
 
 ---
 
+**New with PKG-20:** `routes/admin/me.py` (`/me/appearance`), `lib/theme/syncAppearance.ts`, `tests/unit/test_auth_me_appearance.py` and `tests/unit/test_auth_me_appearance_r8.py`.
+
 ## 13. Verification commands
 
 Each slice names its own tests. These bind every WS-PKG PR:
@@ -549,6 +549,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | The resolve shows an install only to the viewers of §5.2, and reads the one share rule | New with PKG-5b part 2: `tests/unit/test_package_host_resolve_r8.py`, `tests/unit/test_package_host_resolve.py` |
 | `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` leaves the org out | New with PKG-5b part 2: `tests/unit/test_package_host_flag.py` |
 | Removal leaves no contribution, and a pause hides the install at the next read | New with PKG-9: `tests/unit/test_package_disposal_r8.py` |
+| The server copy of appearance holds no value outside the enums and the colour rule | New with PKG-20: `tests/unit/test_auth_me_appearance.py` (includes the TS and Python accent sample fence) |
 | A stable region moves only on a member action | New with PKG-18: `src/lib/shell/arrangement.test.ts` |
 
 ---
