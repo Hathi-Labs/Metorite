@@ -45,6 +45,7 @@ Every company has work that no general product covers. A 3D-printer maker tracks
 3. **No raw credentials.** A package names a connection, never a key. The gateway resolves the credential at run time (D4).
 4. **No widening.** An app never shows a viewer a record that the viewer cannot open in its owning app (D12, D128.3).
 5. **No cross-company marketplace in this spec.** Templates are first-party. Sharing between organizations needs its own spec.
+   A `system` install from reviewed repo code is not a marketplace (D187, `agent_sandbox.md` §6.8).
 6. **No agent creator.** A member builds a skill that Mira loads, not a second assistant (D125, D141).
 7. **No member-authored code on the box.** A member's logic module (B5) and the code block (L1) run only on the off-box sandbox (D127.2, D130). First-party logic (B4) is reviewed repo code, like any gateway route.
 8. **No general ledger.** Accounting stays in Tally and Zoho Books. A Studio app posts to them through connectors.
@@ -272,6 +273,8 @@ The owner chose the layered model on 2026-10-31 (STU-Q1). The layers grow in pow
 | **4 · Custom UI block** | A shop-floor screen, a barcode scanner | A sandboxed frame with the `--cc-*` tokens only. Every call goes through the door | L1 |
 
 **Two kinds of logic module.** A **first-party** module (B4) is reviewed code in the repository, written by Metorite engineers. The MRP run of template K4 is one. A **member-authored** module (B5) runs only on the off-box sandbox, after SBX-9, because D127.2 keeps member code off the box. The workflow Module Studio (`workflows_app.md` §5) keeps its own scope and does not grow into this layer.
+
+**A member tool is a B5 module (D187).** A tool that the sandbox builds from the chat is a B5 module in a package (`agent_sandbox.md` §7). Where §19 names `tools:approve`, read `studio:publish`.
 
 **A worked example: inventory, procurement and MRP (templates K3 and K4).**
 
@@ -964,7 +967,7 @@ A new `runtime` key names one of four kinds. No key means `none`. The builder pi
 |---|---|---|---|
 | **`none`** | The platform | Manifest, rules, workflows, first-party actions and modules (B4). No member code | The usual review |
 | **`browser`** | The viewer's browser, in the sandboxed frame: `allow-scripts`, `connect-src 'none'` | A custom screen, a scanner, a bespoke chart (L1). Each call goes through the door | `studio:publish` reads the code |
-| **`sandbox`** | A sandbox with no network, on the standard image | Member Python or Node (B5) | A holder of `tools:approve` reads the code and approves one version (D130.3). The author may run a private version on sample data first |
+| **`sandbox`** | A sandbox with no network, on the standard image | Member Python or Node (B5) | A holder of `studio:publish` reads the code and approves one version (D130.3, D187). The author may run a private version on sample data first |
 | **`packages`** | The same sandbox, plus one frozen package layer | Code that needs a package outside the image (B8) | The same, and the reviewer reads the package list. Approval comes before the first real run |
 
 ```json
@@ -1028,7 +1031,7 @@ A member installs nothing to use these. A change to this list is a Metorite PR w
 | **Count** | At most 20 direct packages and 150 with their dependencies |
 | **Size** | One download at most 50 MiB. One layer at most 300 MiB unpacked, the cap of T2 today (`install_t2_deps.mjs`). An org holds at most 2 GiB of layers. A layer that two orgs share by hash counts once for each |
 | **Time** | An install takes at most 180 s, the T2 limit |
-| **Who** | The builder proposes the list. A holder of `tools:approve` approves it |
+| **Who** | The builder proposes the list. A holder of `studio:publish` approves it (D187) |
 
 ### 19.6 Data: existing, new, outside and searchable
 
