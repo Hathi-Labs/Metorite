@@ -64,6 +64,10 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\xff\xd8\xff", "image/jpeg"),
     (b"\x89PNG\r\n\x1a\n", "image/png"),
     (b"RIFF", "image/webp"),          # narrowed below — RIFF is a container
+    # GIF is known so a caller can accept it (a signature image, WS-17 SG-1).
+    # The profile picture does not: it is not in ACCEPTED.
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
 )
 
 ACCEPTED = ("JPEG", "PNG", "WebP")
@@ -79,7 +83,7 @@ class AvatarError(ValueError):
 
 
 #: The name of each sniffed type, as :data:`ACCEPTED` spells it.
-_NAMES = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WebP"}
+_NAMES = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WebP", "image/gif": "GIF"}
 
 #: Why an SVG is refused, for each ``what`` that a caller names. The default
 #: is the profile picture, so its sentence stays as it was.

@@ -154,12 +154,12 @@ def no_child(monkeypatch):
 @pytest.mark.parametrize(("data", "words"), [
     (b'<svg xmlns="http://www.w3.org/2000/svg"><script>x</script></svg>', "SVG is not accepted"),
     (b'<?xml version="1.0"?><svg/>', "SVG is not accepted"),
-    (b"GIF89a" + b"\x00" * 32, "not an image the product accepts"),
-    (b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 16, "not an image the product accepts"),
+    (b"BM" + b"\x00" * 32, "not an image the product accepts"),
+    (b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 16, "This image is a WebP file. Upload it again as a PNG or a JPEG."),
     (b"%PDF-1.7\n", "not an image the product accepts"),
     (b"MZ\x90\x00", "not an image the product accepts"),
 ])
-async def test_a_file_that_is_no_png_or_jpeg_never_starts_the_child(no_child, data, words):
+async def test_a_file_that_is_no_png_jpeg_or_gif_never_starts_the_child(no_child, data, words):
     with pytest.raises(si.SignatureImageError) as caught:
         await si.encode(data, "logo")
     assert words in str(caught.value)
@@ -172,7 +172,7 @@ async def test_the_svg_refusal_names_a_signature_image(no_child):
         await si.encode(b"<svg></svg>", "logo")
     text = str(caught.value)
     assert "a signature image" in text and "profile picture" not in text
-    assert "Use one of: JPEG, PNG." in text
+    assert "Use one of: JPEG, PNG, GIF." in text
 
 
 async def test_an_upload_past_the_byte_cap_never_starts_the_child(no_child):
@@ -638,6 +638,17 @@ def test_the_child_steps_the_edge_down_to_fit() -> None:
     assert len(base64.b64decode(second["data"])) < size_480
 
 
+async def test_a_gif_is_taken_and_stored_as_png() -> None:
+    """Fix round 1, P3: MuPDF 1.28.2 opens GIF (measured), so a legacy
+    data:image/gif no longer blocks a save."""
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (120, 40), (200, 10, 10, 255)).save(buf, "GIF")
+    out = await si.encode(buf.getvalue(), "logo")
+    assert out.content_type == "image/png" and (out.width, out.height) == (120, 40)
+
+
 async def test_an_image_that_never_fits_steps_down_and_refuses(monkeypatch) -> None:
     """The real child, with the cap lowered so no step can fit."""
     monkeypatch.setattr(si, "MAX_OUTPUT_BYTES", 2000)
@@ -741,4 +752,18 @@ async def test_a_save_of_the_stored_legacy_signature_changes_nothing(
 ):
     monkeypatch.delenv("GATEWAY_PUBLIC_URL", raising=False)
     assert await routes.signature_for_save(_ACCOUNT, _ME, _LEGACY) == (_LEGACY, [])
+    assert stored_legacy == []
+
+
+async def test_a_legacy_webp_in_a_save_names_the_fix(monkeypatch, base_url, stored_legacy):
+    """Fix round 1, P3: MuPDF cannot open WebP, so the refusal says what to do.
+    With the P1 fix the dialog shows it, and keeps the edit."""
+    webp = "data:image/webp;base64," + base64.b64encode(
+        b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 24).decode("ascii")
+    with pytest.raises(HTTPException) as caught:
+        await routes.signature_for_save(_ACCOUNT, _ME, f'<p>Jane</p><img src="{webp}">')
+    assert caught.value.status_code == 400
+    assert caught.value.detail == (
+        "One image in your signature could not be saved. "
+        "This image is a WebP file. Upload it again as a PNG or a JPEG.")
     assert stored_legacy == []

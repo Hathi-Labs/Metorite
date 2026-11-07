@@ -40,9 +40,12 @@ _log = get_logger("gateway.signature_image")
 
 #: The two kinds of image. A logo keeps its shape, and a photo is a square.
 KINDS = ("logo", "photo")
-#: The types that the sniff passes. MuPDF 1.28 cannot open WebP (measured on
-#: 2026-11-07: ``FileDataError``), so a WebP is refused before the child.
-ACCEPTED = ("JPEG", "PNG")
+#: The types that the sniff passes. MuPDF 1.28.2 opens GIF and re-encodes it
+#: as PNG (measured 2026-11-08). It cannot open WebP (``FileDataError``,
+#: measured 2026-11-07), so a WebP is refused before the child, with the fix.
+ACCEPTED = ("JPEG", "PNG", "GIF")
+#: The refusal of a WebP names the fix (fix round 1, P3).
+WEBP_REFUSED = "This image is a WebP file. Upload it again as a PNG or a JPEG."
 #: The bytes of one stored image (D-EM-67). The child steps the edge down to
 #: fit, then refuses.
 MAX_OUTPUT_BYTES = 200 * 1024
@@ -130,13 +133,15 @@ class Encoded:
 def check_type(data: bytes) -> str:
     """The byte cap and the sniff, in the request, before any decoder.
 
-    Raises :class:`SignatureImageError`. An SVG, a GIF, a WebP and a file that
-    is no image never reach the child."""
+    Raises :class:`SignatureImageError`. An SVG, a WebP and a file that is no
+    image never reach the child. JPEG, PNG and GIF do."""
     if not data:
         raise SignatureImageError("The file is empty.")
     if len(data) > MAX_UPLOAD_BYTES:
         message, status = _REASONS["size"]
         raise SignatureImageError(message, status)
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        raise SignatureImageError(WEBP_REFUSED)
     try:
         return sniff(data, what="a signature image", accepted=ACCEPTED)
     except AvatarError as exc:

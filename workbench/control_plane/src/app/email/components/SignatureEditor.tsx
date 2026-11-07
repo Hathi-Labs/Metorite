@@ -416,7 +416,7 @@ export function SignatureEditor({
         <input
           ref={fileRef}
           type="file"
-          accept="image/png,image/jpeg"
+          accept="image/png,image/jpeg,image/gif"
           className="hidden"
           aria-label="Upload an image"
           onChange={(e) => { void onPickImage(e.target.files?.[0]); e.target.value = ""; }}
