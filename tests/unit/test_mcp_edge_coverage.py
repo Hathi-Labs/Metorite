@@ -82,6 +82,13 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "SW-31a. `my_work` reads the id and version of the nearest guidance block"
         " of each row. It is not a Projects route (agent_coordination.md SW-31)."
     ),
+    # MCP-G19a: `board_stats` counts over the scope of `list_tasks`. The chat
+    # tool for it is a follow-up, so the manifest holds no row yet.
+    ("GET", "/projects/tasks/stats"): (
+        "MCP-G19a. `board_stats` counts the tasks that `list_tasks` lists, with"
+        " the same scope function. The Projects manifest has no chat tool for it"
+        " yet (spec §9.1)."
+    ),
     # MCP-P1a (spec §19.5, "The new pairs"): the two list routes of the app
     # door. They hold no data of an app.
     ("GET", "/agent-access/apps"): (

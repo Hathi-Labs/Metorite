@@ -1160,6 +1160,48 @@ TEXT_DESCENDANTS_NEED_PARENT = "include_descendants needs parent_task_id."
 STATUSES_ROUTE = "/projects/nodes/{project_id}/statuses"
 LIST_LIMIT_MAX = 100
 LIST_LIMIT_DEFAULT = 50
+#: MCP-G19a. The page cap of ``list_tasks`` with ``compact`` true. The gateway
+#: holds the same number (``COMPACT_MAX_PAGE_SIZE``), and a pin test compares.
+LIST_COMPACT_LIMIT_MAX = 500
+STATS_ROUTE = "/projects/tasks/stats"
+#: The group axes of ``board_stats``, as the gateway names them.
+STATS_GROUP_BY: tuple[str, ...] = (
+    "project", "status_category", "is_epic", "assignee", "holder", "updated_age",
+)
+STATUS_CATEGORIES: tuple[str, ...] = (
+    "backlog", "todo", "in_progress", "done", "cancelled",
+)
+#: An ISO 8601 date or timestamp. The gateway parses it and refuses a bad one.
+_WHEN_PATTERN = (r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?"
+                 r"(Z|[+-]\d{2}:\d{2})?)?")
+#: The audit filters that ``list_tasks`` and ``board_stats`` share (MCP-G19a).
+_AUDIT_FILTER_PROPERTIES: dict[str, Any] = {
+    "status_category": {
+        "type": "array", "minItems": 1, "maxItems": len(STATUS_CATEGORIES),
+        "items": {"type": "string", "enum": list(STATUS_CATEGORIES)},
+        "description": "Only tasks whose status is in one of these stages."},
+    "updated_before": {"type": "string", "pattern": _WHEN_PATTERN,
+                       "description": "Only tasks last changed before this ISO date"
+                                      " or time. A date reads as 00:00 UTC."},
+    "updated_after": {"type": "string", "pattern": _WHEN_PATTERN,
+                      "description": "Only tasks last changed on or after this"
+                                     " ISO date or time."},
+    "created_after": {"type": "string", "pattern": _WHEN_PATTERN,
+                      "description": "Only tasks made on or after this ISO date"
+                                     " or time."},
+    "due_before": {"type": "string", "pattern": _WHEN_PATTERN,
+                   "description": "Only tasks due before this ISO date or time."},
+    "has_parent": {"type": "boolean",
+                   "description": "False: only top-level tasks. True: only subtasks."},
+    "is_epic": {"type": "boolean",
+                "description": "True: only tasks of an epic type. False: no epics."},
+    "assigned": {"type": "boolean",
+                 "description": "False: only tasks with no assignee. True: only"
+                                " tasks with one or more."},
+    "title_prefix": {"type": "string", "minLength": 1, "maxLength": 100,
+                     "description": "Only tasks whose title starts with this text,"
+                                    " not case sensitive. Use a plan id such as CRM-Z10a."},
+}
 
 _LIST_TASKS_INPUT: dict[str, Any] = {
     "type": "object",
@@ -1193,12 +1235,40 @@ _LIST_TASKS_INPUT: dict[str, Any] = {
                            " parent_task_id. Each row has a depth, and 1 is a"
                            " direct subtask. A subtask that this member cannot"
                            " see, and the tasks under it, are not in the list."},
-        "limit": {"type": "integer", "minimum": 1, "maximum": LIST_LIMIT_MAX,
+        **_AUDIT_FILTER_PROPERTIES,
+        "compact": {"type": "boolean",
+                    "description": "True: small rows (id, number, title, project, status"
+                                   " stage and name, parent, updated, due) and a page of"
+                                   " up to 500. Use it to audit a large board."},
+        "limit": {"type": "integer", "minimum": 1, "maximum": LIST_COMPACT_LIMIT_MAX,
                   "default": LIST_LIMIT_DEFAULT,
-                  "description": "Rows on one page. Ignored when a cursor is sent."},
+                  "description": "Rows on one page. At most 100, or 500 with compact."
+                                 " Ignored when a cursor is sent."},
         "cursor": {"type": "string", "minLength": 1, "maxLength": cursor_mod.MAX_CHARS,
                    "description": "The nextCursor of the page before."},
     },
+    "additionalProperties": False,
+}
+
+#: MCP-G19a. The keys of one ``compact`` row.
+COMPACT_TASK_KEYS: tuple[str, ...] = (
+    "id", "task_number", "title", "project_id", "status_category", "status_name",
+    "parent_task_id", "updated_at", "due_at",
+)
+_COMPACT_TASK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "task_number": _NULLABLE_INTEGER,
+        "title": _UNTRUSTED_SCHEMA,
+        "project_id": {"type": "string"},
+        "status_category": _NULLABLE_STRING,
+        "status_name": _UNTRUSTED_OR_NULL,
+        "parent_task_id": _NULLABLE_STRING,
+        "updated_at": _NULLABLE_STRING,
+        "due_at": _NULLABLE_STRING,
+    },
+    "required": list(COMPACT_TASK_KEYS),
     "additionalProperties": False,
 }
 
@@ -1207,7 +1277,7 @@ _LIST_TASKS_OUTPUT: dict[str, Any] = {
     "properties": {
         "tasks": {
             "type": "array",
-            "items": {
+            "items": {"anyOf": [{
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
@@ -1224,7 +1294,7 @@ _LIST_TASKS_OUTPUT: dict[str, Any] = {
                 },
                 "required": list(LIST_TASK_KEYS),
                 "additionalProperties": False,
-            },
+            }, _COMPACT_TASK_SCHEMA]},
         },
         "total": {"type": "integer"},
         "nextCursor": _NULLABLE_STRING,
@@ -1244,6 +1314,16 @@ _LIST_TASKS_PARAMS: dict[str, str] = {
     "unheld": "unheld",
     "parent_task_id": "parent_task_id",
     "include_descendants": "include_descendants",
+    "status_category": "status_category",
+    "updated_before": "updated_before",
+    "updated_after": "updated_after",
+    "created_after": "created_after",
+    "due_before": "due_before",
+    "has_parent": "has_parent",
+    "is_epic": "is_epic",
+    "assigned": "assigned",
+    "title_prefix": "title_prefix",
+    "compact": "compact",
     "limit": "page_size",
     "cursor": "page",
 }
@@ -1326,8 +1406,49 @@ def _list_task_row(
     }
 
 
+def _compact_row(
+    row: dict[str, Any], names_by_project: Mapping[str, Mapping[str, str]],
+) -> dict[str, Any]:
+    """One ``compact`` row (MCP-G19a): the keys of :data:`COMPACT_TASK_KEYS`."""
+    status_id = row.get("status_id")
+    names = names_by_project.get(str(row.get("project_id")), {})
+    category = row.get("status_category")
+    return {
+        "id": str(row.get("id")),
+        "task_number": row.get("task_number"),
+        "title": untrusted(row.get("title") or ""),
+        "project_id": str(row.get("project_id")),
+        "status_category": category if isinstance(category, str) else None,
+        "status_name": untrusted(names.get(str(status_id))) if status_id is not None else None,
+        "parent_task_id": (
+            str(row["parent_task_id"]) if row.get("parent_task_id") is not None else None),
+        "updated_at": row.get("updated_at"),
+        "due_at": row.get("due_at"),
+    }
+
+
+def _audit_query(args: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """The query pairs of the MCP-G19a filters, shared by ``list_tasks`` and
+    ``board_stats`` so that both send the same pair for the same input."""
+    query: list[tuple[str, str]] = []
+    if args.get("status_category"):
+        query.append(("status_category", ",".join(args["status_category"])))
+    for name in ("updated_before", "updated_after", "created_after", "due_before",
+                 "title_prefix"):
+        if name in args:
+            query.append((name, str(args[name])))
+    for name in ("has_parent", "is_epic", "assigned"):
+        if isinstance(args.get(name), bool):
+            query.append((name, "true" if args[name] else "false"))
+    return query
+
+
 async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    page, size = _page_of(ctx, "list_tasks", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+    compact = args.get("compact") is True
+    cap = LIST_COMPACT_LIMIT_MAX if compact else LIST_LIMIT_MAX
+    page, size = _page_of(ctx, "list_tasks", args, LIST_LIMIT_DEFAULT, cap)
+    if "cursor" not in args and size > cap:
+        raise ToolError(f"The input 'limit' must be at most {cap}.")
 
     query: list[tuple[str, str]] = []
     for name in ("project_id", "status_id", "tag", "assignee", "text", "parent_task_id"):
@@ -1345,6 +1466,9 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if "parent_task_id" not in args:
             raise ToolError(TEXT_DESCENDANTS_NEED_PARENT)
         query.append((_LIST_TASKS_PARAMS["include_descendants"], "true"))
+    query += _audit_query(args)
+    if compact:
+        query.append((_LIST_TASKS_PARAMS["compact"], "true"))
     query += [("page", str(page)), ("page_size", str(size))]
 
     # A 404 names the task in descendants mode, so an unseen root reads as
@@ -1359,8 +1483,9 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(TEXT_BUSY)
     rows = [r for r in rows if isinstance(r, dict)]
     names = await _status_names(ctx, _distinct_projects(rows))
+    make_row = _compact_row if compact else _list_task_row
     return {
-        "tasks": [_list_task_row(r, names) for r in rows],
+        "tasks": [make_row(r, names) for r in rows],
         "total": total,
         "nextCursor": _next_cursor(ctx, "list_tasks", args, page=page, size=size,
                                    total=total, shown=len(rows)),
@@ -1372,7 +1497,9 @@ LIST_TASKS = Tool(
     title="List tasks",
     description=(
         "List the tasks this member can see, newest first, one page at a time."
-        " Filter by project, status, tag, assignee or text. A project_id reads"
+        " Filter by project, status, status stage, tag, assignee, text, title"
+        " prefix, dates (updated, created, due), parent, epic type or assigned."
+        " Send compact true for small rows and a page of up to 500. A project_id reads"
         " the project and every project under it, unless include_subtree is"
         " false. Send unheld true to"
         " see only tasks that no AI session holds. Send parent_task_id to get"
@@ -1397,6 +1524,148 @@ LIST_TASKS = Tool(
     not_found=TEXT_PROJECT_NOT_FOUND,
     run=_list_tasks,
     routes=(LIST_TASKS_ROUTE, STATUSES_ROUTE),
+)
+
+
+# ── board_stats (MCP-G19a) ──────────────────────────────────────────────────
+
+_BOARD_STATS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "group_by": {
+            "type": "array", "minItems": 1, "maxItems": 2,
+            "items": {"type": "string", "enum": list(STATS_GROUP_BY)},
+            "description": "One or two axes to count by. updated_age bands are"
+                           " <1d, 1-3d, 3-7d, 7-30d and >30d. With assignee, a task"
+                           " with two assignees counts once under each."},
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "Only tasks of this project. An id from list_projects."},
+        "include_subtree": {"type": "boolean", "default": True,
+                            "description": "With project_id: true counts the project and"
+                                           " every project under it."},
+        "status_id": {"type": "string", "pattern": _UUID_PATTERN,
+                      "description": "Only tasks in this status."},
+        "tag": {"type": "string", "minLength": 1, "maxLength": 100,
+                "pattern": "^[^,]+$", "description": "Only tasks with this tag."},
+        "assignee": {"type": "string", "minLength": 3, "maxLength": 320,
+                     "description": "Only tasks assigned to this address."},
+        "text": {"type": "string", "minLength": 1, "maxLength": 200,
+                 "description": "Only tasks whose title or description holds every word."},
+        "unheld": {"type": "boolean",
+                   "description": "True: only tasks that no AI session holds now."},
+        "parent_task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                           "description": "Only the direct subtasks of this task."},
+        **_AUDIT_FILTER_PROPERTIES,
+    },
+    "additionalProperties": False,
+}
+
+_BOARD_STATS_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "total": {"type": "integer"},
+        "group_by": {"type": "array", "items": {"type": "string"}},
+        "groups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "keys": {"type": "object"},
+                    "count": {"type": "integer"},
+                },
+                "required": ["keys", "count"],
+                "additionalProperties": False,
+            },
+        },
+        "truncated": {"type": "boolean"},
+    },
+    "required": ["total", "group_by", "groups", "truncated"],
+    "additionalProperties": False,
+}
+
+_BOARD_STATS_PARAMS: dict[str, str] = {
+    "group_by": "group_by",
+    "project_id": "project_id",
+    "include_subtree": "include_subtree",
+    "status_id": "status_id",
+    "tag": "tags",
+    "assignee": "assignee",
+    "text": "q",
+    "unheld": "unheld",
+    "parent_task_id": "parent_task_id",
+    "status_category": "status_category",
+    "updated_before": "updated_before",
+    "updated_after": "updated_after",
+    "created_after": "created_after",
+    "due_before": "due_before",
+    "has_parent": "has_parent",
+    "is_epic": "is_epic",
+    "assigned": "assigned",
+    "title_prefix": "title_prefix",
+}
+
+
+def _stats_key(axis: str, value: Any) -> Any:
+    """One group key. A member address is shaped (S). A project id and a stage
+    are plain. A bool and a null stay as they are."""
+    if value is None or isinstance(value, bool):
+        return value
+    if axis in ("assignee", "holder"):
+        return assignee(value)
+    return str(value)
+
+
+async def _board_stats(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    query: list[tuple[str, str]] = []
+    for name in ("project_id", "status_id", "tag", "assignee", "text", "parent_task_id"):
+        if name in args:
+            query.append((_BOARD_STATS_PARAMS[name], str(args[name])))
+    if "project_id" in args:
+        subtree = args.get("include_subtree", True) is not False
+        query.append(("include_subtree", "true" if subtree else "false"))
+    if args.get("unheld") is True:
+        query.append(("unheld", "true"))
+    if args.get("group_by"):
+        query.append(("group_by", ",".join(args["group_by"])))
+    query += _audit_query(args)
+    body = await _get(ctx, STATS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=query)
+    total = body.get("total") if isinstance(body, dict) else None
+    groups = body.get("groups") if isinstance(body, dict) else None
+    axes = body.get("group_by") if isinstance(body, dict) else None
+    if not isinstance(total, int) or not isinstance(groups, list) or not isinstance(axes, list):
+        raise ToolError(TEXT_BUSY)
+    out: list[dict[str, Any]] = []
+    for group in groups:
+        keys = group.get("keys") if isinstance(group, dict) else None
+        count = group.get("count") if isinstance(group, dict) else None
+        if not isinstance(keys, dict) or not isinstance(count, int):
+            continue
+        out.append({"keys": {a: _stats_key(a, keys.get(a)) for a in axes
+                             if isinstance(a, str) and a in STATS_GROUP_BY},
+                    "count": count})
+    return {"total": total, "group_by": [a for a in axes if a in STATS_GROUP_BY],
+            "groups": out, "truncated": body.get("truncated") is True}
+
+
+BOARD_STATS = Tool(
+    name="board_stats",
+    title="Count tasks",
+    description=(
+        "Count the tasks this member can see, with no rows. total is the number"
+        " of tasks that list_tasks returns for the same filters. Send group_by"
+        " with one or two of project, status_category, is_epic,"
+        " assignee, holder and updated_age to get a count for each group. A group key"
+        " is null when the task has no value. It takes the filters of list_tasks."
+        " Use it to audit a large board before you read rows." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_BOARD_STATS_INPUT,
+    output_schema=_BOARD_STATS_OUTPUT,
+    route=STATS_ROUTE,
+    params=_BOARD_STATS_PARAMS,
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_board_stats,
+    routes=(STATS_ROUTE,),
 )
 
 
@@ -7290,7 +7559,7 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
-    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
+    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, BOARD_STATS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
@@ -7428,6 +7697,7 @@ __all__ = [
     "AUDIENCE_WIDER",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
+    "BOARD_STATS",
     "CLAIM_TASK",
     "CLAIM_TEXTS",
     "CLOSING_CATEGORIES",

@@ -828,6 +828,8 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/nodes/{project_id}/fields"),
     ("GET", "/projects/nodes/{project_id}/tags"),
     ("GET", "/projects/tasks"),
+    # MCP-G19a: the counts of `board_stats`, over the same scope as the list.
+    ("GET", "/projects/tasks/stats"),
     ("GET", "/projects/tasks/{task_id}"),
     ("GET", "/projects/tasks/{task_id}/relations"),
     ("GET", "/projects/tasks/{task_id}/timeline"),
