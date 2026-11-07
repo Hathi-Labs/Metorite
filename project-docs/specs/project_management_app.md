@@ -909,7 +909,7 @@ guarantee.
 > service caller or a suspended member. That run has no acting user, as before. A second run of one
 > agent on one task does not start while the first run is live.
 >
-> The flag stays OFF. H-443 holds three gaps for the flip:
+> The flag stays OFF. H-444 holds three gaps for the flip:
 >
 > 1. No cap limits the live runs.
 > 2. A workflow node does not wait for the run.
@@ -4799,7 +4799,7 @@ is the owner's (§6.4, `work_plan.md` §6.1). The flip waits on this section and
 on H-240.
 
 **Status, 2026-11-07:** this change closes H-240. A dispatched run acts for
-the member who assigned the task (§6.4). The flip now waits on this section and on H-443.
+the member who assigned the task (§6.4). The flip now waits on this section and on H-444.
 
 #### 9.12.11 The order, and why
 

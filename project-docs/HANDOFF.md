@@ -83,7 +83,7 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-443 · Close three gaps before the `PROJECTS_AGENT_DISPATCH` flip · [AGENT]
+### H-444 · Close three gaps before the `PROJECTS_AGENT_DISPATCH` flip · [AGENT]
 - **Metorite:** no task yet, so the full entry is here. The parent is #688 (H-240).
 - **Why:** H-240 gives a dispatched run the member who assigned the task. The flag stays OFF, because three gaps stay open:
   1. Nothing limits how many dispatched runs are live. Each run spends the credits of the organization.
