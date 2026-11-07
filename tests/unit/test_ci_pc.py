@@ -38,6 +38,8 @@ _CTX = {
     "needs.changes.outputs.files": "",
     "steps.pick.outputs.mode": "full",
     "steps.pick.outputs.paths": "",
+    "steps.pick.outputs.splits": "6",
+    "needs.changes.outputs.shards": "[1,2,3,4,5,6]",
     "github.event.pull_request.base.sha": "abc",
 }
 

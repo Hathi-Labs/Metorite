@@ -34,6 +34,7 @@ from acb_common.priority import importance_for
 from fastapi import Depends, Header, HTTPException, Query
 from gateway.align.trigger import enqueue_check
 from gateway.db import current_tenant
+from gateway.routes.projects.agent_dispatch import MEMBER_KEY, assigning_member
 from gateway.routes.projects.authority import (
     assert_may_delete_task,
     assert_may_move_task,
@@ -119,6 +120,7 @@ from gateway.routes.projects.filters import (
     attach_parent_context,
     attach_relation_counts,
     build_task_filters,
+    task_closed_sql,
     unheld_clause,
 )
 from gateway.routes.projects.landing import (
@@ -1050,6 +1052,8 @@ async def create_task(
         await emit("pm.task.assigned", {
             "task_id": task_id, "assignees": sorted(assigned.added),
             "organization_id": str(getattr(row, "organization_id", "") or ""),
+            # H-240: the member a dispatched run acts for, from the session.
+            MEMBER_KEY: assigning_member(user),
         })
     # WS-57 TR-5 — `#N` and GitHub or document URLs in the new text, after
     # the commit and in a transaction of its own (`text_links.py`).
@@ -2287,6 +2291,10 @@ async def set_assignees(
             # The sink's ONLY tenant source. `agent_dispatch.on_event` refuses
             # a payload without it rather than running unbound.
             "organization_id": task_org,
+            # H-240: the member the dispatched run acts for. From the
+            # verified session (`user`), NEVER from `payload` (R11). An
+            # outside agent, a service caller or a suspended member is "".
+            MEMBER_KEY: assigning_member(user),
         })
     elif removed:
         # WS-58 MD-5a — a removal alone emits no event, and the task leaves
@@ -2363,6 +2371,40 @@ class ClaimIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     external_link: str | None = Field(default=None, max_length=2_048)
+
+
+#: SW-63 (agent_coordination.md §5.10). The most subtask ids a claim lists.
+CLAIM_OPEN_SUBTASKS_MAX = 5
+
+
+async def _warn_open_subtasks(
+    db: Any, vis: Any, task_id: str, result: dict,
+) -> None:
+    """Add ``warning`` and ``open_subtasks`` to *result* of a claim (SW-63).
+
+    An open subtask is a child that ``task_closed_sql`` does not match. Only a
+    child the caller can see counts (R5, D12), so a hidden child leaks neither
+    in the number nor in the ids. The text is fixed: it holds no user text. A
+    leaf task gets neither key.
+    """
+    rows = (await db.execute(
+        text(
+            "SELECT s.task_id FROM ("
+            " SELECT t.id AS task_id, t.created_at FROM pm_tasks t"
+            " WHERE t.parent_task_id = CAST(:tid AS uuid)"
+            f" AND {task_visibility_clause(vis)}) s"
+            f" WHERE NOT {task_closed_sql('s')}"
+            " ORDER BY s.created_at, s.task_id"
+        ),
+        {"tid": task_id, **vis.params},
+    )).fetchall()
+    if not rows:
+        return
+    result["warning"] = (
+        f"This task has {len(rows)} open subtasks."
+        " Claim the slice, not the epic.")
+    result["open_subtasks"] = [
+        str(r[0]) for r in rows[:CLAIM_OPEN_SUBTASKS_MAX]]
 
 
 @router.post("/tasks/{task_id}/claim")
@@ -2519,11 +2561,15 @@ async def claim_task(
         result["not_notified"] = notified["skipped"]
         # EA-13c: the run that this claim opened or found, else None.
         result["agent_run_id"] = run_id
+        # SW-63: a task with open subtasks still claims. The result warns.
+        await _warn_open_subtasks(db, vis, task_id, result)
 
     if added:
         await emit("pm.task.assigned", {
             "task_id": task_id, "assignees": added,
             "organization_id": task_org,
+            # H-240: the session's member, as `set_assignees` writes it.
+            MEMBER_KEY: assigning_member(user),
         })
     if moved is not None:
         await emit("pm.task.updated", {"task_id": task_id})

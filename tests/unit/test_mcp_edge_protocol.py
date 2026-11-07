@@ -65,6 +65,7 @@ from agent_edge import bearer, cursor, gateway_client, mcp, tools
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database  # noqa: E402
 from tests.unit._tenant_ladder import _LADDER_DIR, apply_ladder, tenant_engine_scope
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -777,8 +778,11 @@ class TestTheProtocolRules:
             result = r.json()["result"]
             assert result["protocolVersion"] == asked
             # EA-6e (EA3-39): the prompts capability, whatever the flags.
+            # SW-34a: the resources capability too, whatever the flags.
             assert result["capabilities"] == {"tools": {"listChanged": False},
-                                              "prompts": {"listChanged": False}}
+                                              "prompts": {"listChanged": False},
+                                              "resources": {"subscribe": False,
+                                                            "listChanged": False}}
             assert result["serverInfo"]["name"] == "metorite"
 
     @pytest.mark.parametrize("asked", ["2026-07-28", "2025-03-26", "garbage", None])
@@ -821,7 +825,8 @@ class TestTheProtocolRules:
         assert r.headers["www-authenticate"] == CHALLENGE_401
 
     # EA-6e serves prompts/list and prompts/get, so they leave this list.
-    @pytest.mark.parametrize("method", ["resources/list", "resources/templates/list",
+    # SW-34a serves resources/list, resources/templates/list and resources/read.
+    @pytest.mark.parametrize("method", ["resources/subscribe", "resources/unsubscribe",
                                         "completion/complete", "logging/setLevel",
                                         "prompts/unknown", "sampling/createMessage"])
     async def test_any_other_method_gets_minus_32601(self, armed, method):
@@ -2140,18 +2145,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(_URL)
     dedicated = f"{admin_url.database}_mcpprotocol"
-    _drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    _clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql",
-                  "03_constraints.sql", "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(_GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            _exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE "

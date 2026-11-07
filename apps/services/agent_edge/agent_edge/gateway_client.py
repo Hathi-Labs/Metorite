@@ -137,7 +137,10 @@ def actor_via(caller: TokenLookup) -> str:
     of this client by it (EA-15b). One function, so the two cannot differ.
     """
     return agent_oauth.actor_via_for(
-        caller.client_origin, client_id=caller.connection_client_id)
+        caller.client_origin, client_id=caller.connection_client_id,
+        # EA-19b: a box connection stamps `mcp:box:<slug>-<8 hex>`.
+        credential=caller.credential, connection_id=caller.connection_id,
+        client_name=caller.client_name)
 
 
 def signed_request_headers(

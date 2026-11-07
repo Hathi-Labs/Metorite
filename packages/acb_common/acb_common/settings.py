@@ -169,9 +169,9 @@ class Settings(BaseSettings):
     # GATEWAY_INTERNAL_TOKEN. Distinct from litellm_master_key ON PURPOSE:
     # the LLM key is handed to every agent's BYOK client, so while the two
     # were one value any agent could authenticate as the platform (BO-2
-    # residual #4). When this is unset the gateway still falls back to
-    # litellm_master_key so an un-migrated deployment keeps working, but it
-    # logs a warning on every resolution because the separation is then absent.
+    # residual #4). There is NO fallback to litellm_master_key (WS-24b,
+    # 2026-11-06). Unset fails closed outside ACB_ENV=dev: no Bearer is
+    # service identity, and require_internal_auth answers 401.
     #
     # Never hand this to a /v1 client — use `llm_api_key` below.
     gateway_internal_token: str = ""
@@ -576,6 +576,14 @@ class Settings(BaseSettings):
     # is `gateway.routes.knowledge.flags`. A flip on production is the owner's.
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_sync: str = ""
+    # WS-KG KG-4 (knowledge_graph.md §4.1 and §8). The organization ids whose
+    # records the graph sweep joins each night, in the grammar of
+    # `knowledge_orgs`. `*` is each org. Empty, the default, means no
+    # organization: the seed hook enqueues no job and the job writes no edge.
+    # The one reader is `gateway.kb_entities.graph.sweep_allowed`. It calls no
+    # model and spends nothing. AGENT-SAFE: a flip is gate `enforcement-flip`.
+    # Fences: tests/unit/test_kg_links_writer.py, test_kg_links_r8.py.
+    graph_sweep_orgs: str = ""
 
     # H-328 part (b): the orgs whose UNATTENDED workflow runs may start. A
     # schedule tick, a matured wait and the startup sweep act only for an org
@@ -630,6 +638,14 @@ class Settings(BaseSettings):
     # spends credits, so a flip on production is OWNER-GATE (core_brief.md
     # §10 row 4). Fence: tests/unit/test_brief_phrase.py.
     brief_compose: bool = False
+    # `brief_closeout` (WS-BRIEF BR-2b-1, 2026-11-06) is the planner's switch
+    # for the 18:30 close-out kind, default OFF. Off, the planner plans no
+    # close-out, and the 07:30 brief is as before. It needs `brief_enabled`
+    # and the org on `brief_orgs` too. The close-out makes no model call. The
+    # one reader is `gateway.brief.flags.closeout`. A flip on a box is gate
+    # `enforcement-flip`. Spec: core_brief.md §10 row 7. Fence:
+    # tests/unit/test_brief_closeout.py.
+    brief_closeout: bool = False
 
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #
@@ -872,6 +888,17 @@ class Settings(BaseSettings):
     # tests/unit/test_executor_briefing_block.py, tests/unit/test_chat_summary.py.
     assistant_briefing_orgs: str = ""
 
+    # ── Celebrations (WS-63 PZ-43, personalization.md §16.6) ────────────────
+    #
+    # CELEBRATIONS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default. On, the member can set a birthday (no year), festival picks
+    # and the work-anniversary switch, and the first chat reply of a day on
+    # which one falls opens with one wish. The profile switch must be on too.
+    # The one reader is `acb_common.celebrations.celebrations_for`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fences: tests/unit/test_celebrations.py.
+    celebrations_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -904,6 +931,14 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # SW-56 (agent_coordination.md SW-56): the organizations where the results
+    # of `claim_task` and `my_work` carry the `protocol` block, up to six short
+    # lines of fixed server text. The same shape as `agent_access_orgs`: ids
+    # with a comma between them, or `*`. Empty, the default, leaves the key
+    # out. Only the edge reads it, at each call, through
+    # `acb_auth.agent_oauth.protocol_allowed`. 🔴 A change on a box is gate
+    # `enforcement-flip`.
+    agent_protocol_orgs: str = ""
     # ── The trigger of the project alignment check (WS-ALN ALN-1, D160) ─────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -947,6 +982,19 @@ class Settings(BaseSettings):
     # a change. A flip is OWNER-GATE (`enforcement-flip`).
     # Fence: tests/unit/test_waiting_seam_r8.py.
     waiting_orgs: str = ""
+
+    # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the chat tools `create_status`, `update_status` and
+    # `delete_status` refuse to change a status set that the project shares,
+    # unless the member says so, and they send a `slot` and never a raw
+    # `position`. The one reader is `gateway.routes.projects.admin.
+    # status_set_guard_allowed`. It returns `guard_on` on the status-set read,
+    # and the tools read that. A SIGHUP reload applies a change. A flip is
+    # OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_projects_status_chat.py.
+    status_set_guard_orgs: str = ""
 
     # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
     #
@@ -1076,7 +1124,7 @@ class Settings(BaseSettings):
     # `chat_continue_orgs` lists the organization ids where
     # `POST /chat/sessions/{id}/continue` answers, or `*` for each one. Empty
     # means off, and the route answers 404 for each caller. The one reader is
-    # `gateway.routes.chat.continue_allowed`, and it fails closed. The name
+    # `acb_common.chat_continue_flag.continue_allowed`, and it fails closed. The name
     # ends in `_orgs`, so a SIGHUP applies a change with no restart
     # (`docs/flag_reload.md`).
     #
@@ -1541,6 +1589,18 @@ class Settings(BaseSettings):
     # `enforcement-flip`. `connections/github_app.py` reads the key file once
     # for each process. Fence: tests/unit/test_github_app_auth.py.
     github_app_enabled: bool = False
+    # ── The App for each organization (WS-MCP SW-53, agent_coordination.md) ─
+    #
+    # A comma list of organization ids, or `*` for each one. The master
+    # `github_app_enabled` comes first: off means off for every org. With the
+    # master on, an org that the list does not name is off. An EMPTY list
+    # turns every org off (fail closed). Off for an org: a webhook delivery
+    # for its installation answers 202 and writes nothing, the connect routes
+    # answer 404, and the reconcile poll skips it. The one reader is
+    # `gateway.connections.github_app.github_app_org_allowed`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_github_webhook_r8.py.
+    github_app_orgs: str = ""
     github_app_slug: str = ""                 # the App's URL name, e.g. "metorite"
     github_app_client_id: str = ""            # the JWT `iss`, and the OAuth client id
     github_app_client_secret: str = ""        # the OAuth client secret of the App
@@ -2046,6 +2106,14 @@ class Settings(BaseSettings):
     # the edge both read it, so both units need the same value. 🔴 A change
     # on a box is gate `enforcement-flip`.
     agent_access_orgs: str = ""
+    # SW-34a (agent_coordination.md SW-34a, external_agent_access.md §9.3): the
+    # organizations where the edge serves MCP resources (`resources/list`,
+    # `resources/templates/list`, `resources/read`). The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps them dark: the list is empty and a read is not found.
+    # `acb_auth.agent_oauth.resources_allowed` is the one reader, at each call.
+    # 🔴 A change on a box is gate `enforcement-flip`.
+    agent_resources_orgs: str = ""
     # EA-17c-1 (D-EA-13, spec §10.8): the organizations where a member may
     # change the grant of their own agent connection, through
     # `PATCH /agent-access/connections/{id}`. The same shape as
@@ -2082,6 +2150,16 @@ class Settings(BaseSettings):
     # Only the edge reads it. `acb_auth.agent_oauth.mcp_sessions_enabled` is
     # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_mcp_sessions_enabled: bool = False
+    # EA-19b (external_agent_access.md §10.9, D-EA-5): box tokens, the one
+    # access token of a headless agent box, with no refresh token. Default
+    # OFF. While it is false, the edge bearer check and the connection read
+    # of branch 0 refuse a box connection, so a box token gets 401. It is a
+    # pause and not a kill: `/oauth/revoke` and the revoke routes still work,
+    # and a flip back to on revives each box token that no one revoked. Both
+    # units read it, so both need the same value, and a change needs a
+    # restart of each. `acb_auth.agent_oauth.box_tokens_enabled` is the one
+    # reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_box_tokens_enabled: bool = False
     # SW-10a (spec §12.6): the sweep of stranded agent runs. Default OFF.
     # While it is false, the gateway starts no sweep task, so no fingerprint
     # and no recovery record exist, and no member gets a nudge. Only the

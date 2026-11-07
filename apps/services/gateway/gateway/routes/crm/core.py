@@ -1029,6 +1029,7 @@ def list_contract(
     owner: str | None = None,
     source: str | None = None,
     pipeline_id: str | None = None,
+    pipeline_takes_unset: bool = False,
     extra_where: tuple[str, ...] = (),
     extra_params: dict[str, Any] | None = None,
 ) -> ListQuery:
@@ -1086,7 +1087,7 @@ def list_contract(
                     "filter them. Drop the parameter."
                 ),
             )
-        clauses.append("pipeline_id = CAST(:pipeline_id AS uuid)")
+        clauses.append(pipeline_scope_sql(pipeline_takes_unset))
         params["pipeline_id"] = checked_uuid(pipeline_id, "pipeline_id")
     if owner:
         # R10 — email comparisons are case-insensitive on both sides.
@@ -1596,6 +1597,36 @@ async def add_stage_to_default_pipeline(db: Any, status_id: str) -> None:
         ),
         {"p": pipeline, "s": str(status_id)},
     )
+
+
+def pipeline_scope_sql(takes_unset: bool) -> str:
+    """The WHERE term for ``:pipeline_id`` on ``crm_deals``.
+
+    With *takes_unset* a deal with no pipeline matches too (see
+    :func:`pipeline_takes_unset`).
+    """
+    if takes_unset:
+        return "(pipeline_id = CAST(:pipeline_id AS uuid) OR pipeline_id IS NULL)"
+    return "pipeline_id = CAST(:pipeline_id AS uuid)"
+
+
+async def pipeline_takes_unset(db: Any, pipeline_id: str | None) -> bool:
+    """True when a deal with no pipeline belongs on *pipeline_id*'s board.
+
+    A deal with no pipeline belongs to the default pipeline (CRM-M4), but only
+    in an organization with two or more pipelines. With one or none, no
+    filter is in play and nothing changes. The list, the board, the export and
+    the aggregate all call this, so every reader agrees.
+    """
+    if not pipeline_id:
+        return False
+    row = (await db.execute(
+        text("SELECT count(*) AS total FROM crm_pipelines"), {},
+    )).first()
+    if row is None or int(row.total or 0) < 2:
+        return False
+    default = await default_pipeline_id(db)
+    return default is not None and str(default).lower() == str(pipeline_id).strip().lower()
 
 
 async def default_pipeline_id(db: Any) -> str | None:
@@ -2903,6 +2934,28 @@ async def load_default_status(db: Any, table: str) -> Any:
         status_code=422,
         detail=f"No statuses are configured in {table}; create one first.",
     )
+
+
+async def load_pipeline_start_status(db: Any, table: str, pipeline_id: Any) -> Any:
+    """The stage a new deal in *pipeline_id* starts in (CRM-M3).
+
+    The first not-closed stage (type ``open`` or ``ongoing``) that the pipeline
+    lists, else its first listed stage.
+    A pipeline that lists none falls back to :func:`load_default_status`.
+    """
+    if pipeline_id:
+        row = (await db.execute(
+            text(
+                f"SELECT s.* FROM {table} s "
+                "JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
+                "WHERE ps.pipeline_id = CAST(:p AS uuid) "
+                "ORDER BY (s.type IN ('open', 'ongoing')) DESC, ps.position, s.name LIMIT 1"
+            ),
+            {"p": str(pipeline_id)},
+        )).fetchone()
+        if row is not None:
+            return row
+    return await load_default_status(db, table)
 
 
 def has_column(entity: Entity, name: str) -> bool:
