@@ -103,7 +103,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     assert sf.pack_slugs() == (
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
-        "projects-reminders", "projects-reports", "projects-authority", "studio",
+        "projects-reminders", "projects-reports", "projects-authority", "calendar-day", "studio",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -273,7 +273,7 @@ PRODUCTION_TOOL_PACKS = (
     "email,email-setup,crm-records,projects,projects-plan,projects-structure,"
     "projects-bulk,projects-reminders")
 #: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
-FOLLOWERS = frozenset({"projects-reports", "projects-authority"})
+FOLLOWERS = frozenset({"projects-reports", "projects-authority", "calendar-day"})
 
 
 def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
@@ -316,7 +316,8 @@ def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
     registered pack, the two share one owner, and no pack is its own parent.
     Mutation: name a slug that is no pack, or a pack of another owner -> red."""
     assert tp.FOLLOWS == {"projects-reports": "projects-plan",
-                          "projects-authority": "projects"}
+                          "projects-authority": "projects",
+                          "calendar-day": "projects"}
     assert set(tp.FOLLOWS) == FOLLOWERS
     for follower, parent in tp.FOLLOWS.items():
         assert tp.pack(follower) is not None and tp.pack(parent) is not None
@@ -331,7 +332,7 @@ def test_with_followers_adds_each_following_pack_of_a_parent_and_nothing_else() 
     the slugs as they are -> a disabled parent leaves its following pack on
     -> red."""
     assert tp.with_followers({"projects-plan"}) == {"projects-plan", "projects-reports"}
-    assert tp.with_followers({"projects"}) == {"projects", "projects-authority"}
+    assert tp.with_followers({"projects"}) == {"projects", "projects-authority", "calendar-day"}
     assert tp.with_followers({"projects-reports"}) == {"projects-reports"}
     assert tp.with_followers({"email", "memory"}) == {"email", "memory"}
     assert tp.with_followers(()) == frozenset()

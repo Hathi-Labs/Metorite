@@ -114,8 +114,8 @@ export function NameList({ names, empty = "None yet." }: { names: string[]; empt
  * The stages of each pipeline, to read.
  *
  * Used when the org has two pipelines or more, and in Mirror mode. There is
- * one section for each pipeline. The stage routes of CRM-Q2 do not exist in
- * this build, so no stage here is editable and the note says why.
+ * one section for each pipeline. The stage routes of CRM-Q2 exist, and this
+ * list does not call them yet, so no stage here is editable and the note says why.
  */
 export function PipelineSections({
   pipelines,

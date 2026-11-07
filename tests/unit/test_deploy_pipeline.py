@@ -889,7 +889,9 @@ def test_each_r8_shard_runs_the_r8_files_in_pr_checks_split(parsed: dict, pr_che
     assert "--reruns 1" in run
     assert " -x " not in f" {run} ", "no -x: one run must report every failure"
     pr_run = _job_step(pr_check, "test", "Run unit tests (this shard)")["run"]
-    assert "--splits 6" in pr_run and "--splitting-algorithm duration_based_chunks" in pr_run
+    # CIV-17: pr-check sizes the split to the selection. A full run is 6.
+    assert "--splits ${{ steps.pick.outputs.splits }}" in pr_run
+    assert "--splitting-algorithm duration_based_chunks" in pr_run
     keep = _job_step(parsed, R8_SUITE, "Keep this shard's report")
     assert keep["if"] == "always()", "a red shard keeps its report too"
     assert keep["with"]["name"] == "r8-junit-shard-${{ matrix.shard }}"
@@ -1007,6 +1009,77 @@ def test_the_r8_step_gives_pytest_the_list_the_guard_files_and_the_split(
     assert rest[rest.index("--group") + 1] == "3"
     assert "--junitxml=junit/r8-shard-3.xml" in rest
     assert "-x" not in rest
+
+
+# ── CIV-4c: every R8 skip of the `test` job is in the --r8 list ─────────────
+#
+# The `test` job has no database, so each R8 suite skips there. The R8 gate
+# runs the `--r8` list. A file that skips for an R8 reason and is not in the
+# list runs nowhere. The step reads the job's report and fails on such a file.
+
+UNIT_RUN = "Run unit tests"
+R8_COVER = "Every R8 skip is in the release gate's R8 list"
+#: The pytest command of the `test` job before CIV-4c. No flag may go.
+UNIT_FLAGS = "uv run python -m pytest tests/unit/ -x -v --reruns 1 $(python3 scripts/fences.py pytest-ignore)"
+
+
+def test_the_unit_run_keeps_its_flags_and_writes_a_report(parsed: dict) -> None:
+    run = " ".join(_named_step(parsed, UNIT_RUN)["run"].split())
+    assert run.startswith(UNIT_FLAGS), "the unit run keeps -x, -v, --reruns 1 and the fence ignore"
+    assert "--junitxml=junit/test.xml" in run and "-o junit_family=xunit1" in run
+
+
+def test_the_r8_cover_step_runs_after_the_unit_run_and_only_on_its_success(parsed: dict) -> None:
+    steps = _steps(parsed, "test")
+    names = [s.get("name") for s in steps]
+    assert names.index(UNIT_RUN) + 1 == names.index(R8_COVER), "straight after the unit run"
+    step = _named_step(parsed, R8_COVER)
+    # No `if:`: the default is success(), so a red unit run is never hidden.
+    assert "if" not in step and "continue-on-error" not in step
+    run = step["run"]
+    assert "set -euo pipefail" in run
+    assert "python3 scripts/affected_tests.py --r8 > r8_files.txt" in run
+    assert "if ! grep -q . r8_files.txt; then" in run, "an empty list stops the step"
+    assert "python3 scripts/ci_unit_guard.py r8-covered --junit junit --list r8_files.txt" in run
+
+
+def test_the_r8_cover_step_leaves_the_jobs_and_the_gate_alone(parsed: dict) -> None:
+    jobs = parsed["jobs"]
+    assert jobs["test"]["needs"] == "lint"
+    assert jobs["test"]["if"] == "${{ !inputs.skip_tests }}"
+    for job in (R8_SUITE, R8_GATE):
+        text = str(jobs[job])
+        assert "r8-covered" not in text, f"{job} keeps its own design"
+
+
+@needs_bash
+@pytest.mark.parametrize(("listed", "code", "guard_ran"), [("", 1, False), ("tests/unit/test_a.py", 0, True)])
+def test_an_empty_r8_list_stops_the_cover_step(
+    parsed: dict, tmp_path: Path, listed: str, code: int, guard_ran: bool,
+) -> None:
+    """A lone newline is an empty list too. The guard must not start."""
+    log = tmp_path / "guard.log"
+    shims = (
+        "python3() {\n"
+        '  if [ "$1 $2" = "scripts/affected_tests.py --r8" ]; then printf \'%s\\n\' $R8_LIST; return 0; fi\n'
+        '  printf \'%s\\n\' "$@" > "$GUARD_LOG"\n'
+        "}\n"
+    )
+    env = {**os.environ, "R8_LIST": listed, "GUARD_LOG": log.as_posix()}
+    done = subprocess.run(
+        [_BASH, "--noprofile", "--norc", "-c", shims + _named_step(parsed, R8_COVER)["run"]],
+        env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path,
+    )
+    assert done.returncode == code, done.stdout + done.stderr
+    assert log.exists() is guard_ran
+    if guard_ran:
+        assert log.read_text(encoding="utf-8").split()[:2] == ["scripts/ci_unit_guard.py", "r8-covered"]
+
+
+def test_pr_check_has_no_copy_of_the_r8_cover_step(pr_check: dict) -> None:
+    """pr-check's guard already fails on any R8 skip, because its shards have
+    both databases. A selection run also skips files by design."""
+    assert "r8-covered" not in str(pr_check)
 
 
 # ── Verify by evidence, never by a green tick ───────────────────────────────
