@@ -612,6 +612,12 @@ async def test_the_probe_counts_real_organizations(monkeypatch) -> None:
         async with engine.connect() as conn:
             outer = await conn.begin()
             try:
+                # CI hands this shard a bare database: build the tenant schema
+                # first (idempotent, rolled back with the outer transaction).
+                from tests.unit._tenant_ladder import apply_ladder
+
+                await conn.run_sync(apply_ladder)
+
                 async def _get_db() -> AsyncSession:
                     return AsyncSession(bind=conn, join_transaction_mode="create_savepoint")
 
