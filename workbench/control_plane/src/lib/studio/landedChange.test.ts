@@ -27,7 +27,10 @@ describe("the words", () => {
   it("names the actor as far as the page knows", () => {
     expect(barHeading("you")).toBe("You saved:");
     expect(barHeading("other")).toMatch(/Mira or another tab/);
+    expect(barHeading("undo")).toBe("You undid the last change:");
+    expect(barHeading("redo")).toBe("You put the change back:");
     expect(undoLabel("undo")).toBe("Redo");
+    expect(undoLabel("redo")).toBe("Undo");
     expect(undoLabel("you")).toBe("Undo");
   });
   it("shows the first lines, then all of them", () => {
