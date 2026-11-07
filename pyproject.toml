@@ -72,6 +72,7 @@ dev = [
     # The CI shards rerun a failed test once (`--reruns 1`). Of 70 red runs on
     # 15-19 Oct, 18 were timing flakes or infrastructure, not the PR's code.
     "pytest-rerunfailures>=15.0",
+    "pytest-timeout>=2.3",
 ]
 
 [tool.uv.workspace]
@@ -158,6 +159,10 @@ exclude = ["workbench/", "infra/", "build/", "dist/"]
 # it fails on any skip (maf_coding_engine.md §10).
 addopts = "-ra --strict-markers -m 'not integration and not sandbox_docker'"
 asyncio_mode = "auto"
+# CIV-15: one hung test fails after 10 min with a stack trace that names it.
+# The signal method raises in the test, so the run goes on to the next test.
+timeout = 600
+timeout_method = "signal"
 testpaths = ["tests", "apps", "packages"]
 markers = [
     "integration: requires docker-compose stack",

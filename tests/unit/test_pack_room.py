@@ -731,3 +731,19 @@ def _held_card_writes_on(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+
+
+# ── Task 1573: the open app is a hint, and it leaves first at the cap ───────
+
+
+def test_a_pack_from_the_open_app_alone_leaves_before_a_pack_the_words_asked_for() -> None:
+    """The member has Projects open and asks for work of three other packs.
+    The Projects pack came in by the surface alone, so it leaves at the cap and
+    every pack the words asked for stays. Mutation: evict ``order[-1]`` with no
+    regard to the layer -> red (the last word pack leaves instead)."""
+    words = f"{REMIND} and send an email to Ravi and log it in the crm"
+    choice = tp.choose(_turn(words, surface="projects"), allowed=EVERY, base_tools=0)
+    assert set(choice.slugs) == {"email", "crm-records", REMINDERS}, choice
+    assert choice.skipped == ("projects",), choice
+    assert len(choice.slugs) <= tp.MAX_PACKS
+    assert _total(choice, 0) <= tp.MAX_REQUEST_TOOLS
