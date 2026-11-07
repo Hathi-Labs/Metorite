@@ -193,9 +193,9 @@ export function watchAnchor(o: {
 // is never built at run time either: Tailwind would not generate it. Rule 8
 // of `GuideSpotlight.test.ts` holds both.
 //
-// Layer: the dim, the ring and the card sit on the design system's `top` panel
-// layer (`PANEL_LAYERS`), above the phone Menu drawer (z-70) and a Modal
-// (z-50). They come in that order in ONE portal, so the card paints over the
+// Layer: the dim, the ring and the card sit on the design system's `guide` panel
+// layer (`PANEL_LAYERS`), above the phone Menu drawer (z-70), the phone's bottom
+// bar (z-96, which the tour dims and rings) and a Modal (z-50). They come in that order in ONE portal, so the card paints over the
 // ring and the ring over the dim. No z value is written here.
 
 export function prefersReducedMotion(win: { matchMedia?: (q: string) => { matches: boolean } } | undefined): boolean {
@@ -608,7 +608,7 @@ export function TourCard(p: TourCardProps & { rect: Rect | null; missing?: boole
       data-guide-card=""
       data-guide-side={at.side}
       style={{ left: at.left, width: at.width, ...edge }}
-      className={`fixed ${PANEL_LAYERS.top} p-3 outline outline-2 outline-primary ${PANEL_SURFACES.panel}`}
+      className={`fixed ${PANEL_LAYERS.guide} p-3 outline outline-2 outline-primary ${PANEL_SURFACES.panel}`}
     >
       <GuideCardBody {...p} />
     </div>
@@ -678,7 +678,7 @@ export function GuideDim({ rect }: GuideDimProps) {
     <svg
       aria-hidden="true"
       data-guide-dim=""
-      className={`pointer-events-none fixed inset-0 ${PANEL_LAYERS.top} h-full w-full`}
+      className={`pointer-events-none fixed inset-0 ${PANEL_LAYERS.guide} h-full w-full`}
     >
       <defs>
         <mask id={MASK_ID} maskUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%">
@@ -810,7 +810,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
         aria-hidden="true"
         data-guide-ring=""
         style={{ left: ring.left, top: ring.top, width: ring.width, height: ring.height }}
-        className={`pointer-events-none fixed ${PANEL_LAYERS.top} rounded-lg ring-2 ring-primary`}
+        className={`pointer-events-none fixed ${PANEL_LAYERS.guide} rounded-lg ring-2 ring-primary`}
       />
     </>
   );
