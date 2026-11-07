@@ -92,7 +92,7 @@ Audit event recording.
 - `record()` logs always and writes the DB best-effort. On an event loop it hands the sync write to `asyncio.to_thread` and returns at once. Call `await drain()` when you need the row now. Fence: `tests/unit/test_audit_non_blocking.py`.
 - `audit_event` is tenant-scoped behind `ACB_GRAPH_TENANT_BIND`. The org rides ON the `AuditEvent` object, and the caller stamps it on its own frame. Never read it from a ContextVar inside `_persist`.
 - A tenant-less event falls back to the operator org (`slug = 'default'` or `OPERATOR_ORG_ID`), so the row is kept. That fallback is correct for audit and wrong for keys.
-- ⚠️ That fallback is for SYSTEM events only. A writer whose event belongs to one tenant stamps `organization_id` from `current_tenant()` and calls `refuse_tenantless(event)` before `record(event)` (task 2189). With the bind on and no org, it skips the row and logs `audit.skipped_no_tenant`. Fences: `test_action_broker_audit_org_r8.py`, `test_llm_usage_audit_org_r8.py` (R8).
+- ⚠️ That fallback is for SYSTEM events only. A writer whose event belongs to one tenant stamps `organization_id` from `current_tenant()` and calls `refuse_tenantless(event)` before `record(event)` (task 2189). With the bind on and no org, it skips the row and logs `audit.skipped_no_tenant`. Fences: `test_action_broker_audit_org_r8.py`, `test_llm_usage_audit_org_r8.py`, `test_notes_dispatch_audit_org_r8.py` (R8).
 - Do not add `organization_id` to the ORM `AuditEvent` model, or SQLAlchemy sends a NULL that defeats the DEFAULT. Fence: `tests/unit/test_acb_graph_audit_bind.py` (R8).
 
 ### acb_auth/
