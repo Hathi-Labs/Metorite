@@ -6918,6 +6918,15 @@ STANDARD. Frontend only.
 - **Fence (R7):** `test_projects_agent_writes.py` (files on the card, the
   order of the posts, the refusals, the partial failure).
   `test_projects_attach_to_task.py` keeps passing on the shared helper.
+- **Built note (2026-11-07).** `create_task` takes `files`. The checks of
+  `attach_to_task` moved to `skill_projects/task_files.py`. Both tools call them.
+  The card has one lead line with each file and its size. After approval the
+  tool posts the task, then each file, then ONE description PATCH for the images.
+  A failed file or PATCH leaves the task, and the reply says so.
+
+  A held chat refuses `files` (`egress.HELD_REFUSED_PARAMS`). `attach_to_task`
+  is off there. `create_tasks` takes no files. The shared helper is held by
+  `test_projects_nudge_attach_tools.py`.
 
 **IMG-3 (task 1999). The MCP gives an image on a task to the agent.** HIGH,
 because file bytes leave the platform for an outside agent. Spec audit and

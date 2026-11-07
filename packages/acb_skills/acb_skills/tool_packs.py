@@ -649,7 +649,8 @@ No Projects agent exists to hand a task to.
 - nudge_task tells the person the member waits on. It sends one notification
   and no email. Call it once for one task, and never loop over tasks.
 - attach_to_task attaches a file that the member uploaded to this chat. The
-  member answers one card that names the file and the task.
+  member answers one card that names the file and the task. Use it for a task
+  that exists.
 - edit_task opens an editable form for one task in the chat. edit_comment
   changes a comment of the member.
 - watch follows a task or a project for the member.
