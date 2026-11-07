@@ -331,3 +331,48 @@ def test_the_numbered_migration_writes_the_tenant_policy() -> None:
     assert f"USING {pred}" in sql
     assert f"WITH CHECK {pred}" in sql
     assert "(true)" not in sql
+
+
+# ── PB-5: the Metorite default block ────────────────────────────────────────
+
+
+def _default_block() -> dict[str, Any]:
+    return {"id": _uuid(5900), "level": "default", "version": 1,
+            "source": {"kind": "default", "project_id": None, "name": None, "hidden": False},
+            "body": "default rule"}
+
+
+async def test_the_default_block_comes_last_and_is_wrapped(gboard) -> None:
+    gboard.blocks = [NEAR, FAR, _default_block()]
+    blocks = (await _context())["guidance"]["blocks"]
+    assert [b["level"] for b in blocks] == ["project", "company", "default"]
+    last = blocks[-1]
+    assert last["source"] == {"kind": "default", "project_id": None, "name": None,
+                              "hidden": False}
+    assert last["body"] == {"untrusted_text": "default rule"}
+    assert "default rule" not in _bare_strings(blocks)
+
+
+async def test_the_default_block_fits_the_output_schema(gboard) -> None:
+    gboard.blocks = [_default_block()]
+    body = await _context()
+    jsonschema.validate(body["guidance"], tools._GUIDANCE_SCHEMA)
+
+
+async def test_the_default_block_reaches_claim_context_too(gboard) -> None:
+    gboard.blocks = [_default_block()]
+    assert [b["level"] for b in (await _context())["guidance"]["blocks"]] == ["default"]
+
+
+async def test_an_unknown_level_is_still_dropped(gboard) -> None:
+    odd = {**_default_block(), "level": "metorite"}
+    gboard.blocks = [odd, FAR]
+    assert [b["level"] for b in (await _context())["guidance"]["blocks"]] == ["company"]
+
+
+async def test_the_default_block_never_reaches_a_my_work_ref(gboard) -> None:
+    """The ref names the nearest block of the org. The default is not a row of the
+    table, so the gateway never puts it in the refs read."""
+    gboard.refs = {PROJECT: None}
+    _assign(gboard, _uuid(7950))
+    assert all(r.get("guidance_ref") is None for r in await _work())

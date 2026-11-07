@@ -42,6 +42,7 @@ def test_the_required_topics_exist():
         "kit/verifier-agent",
         "kit/reviewer-agent",
         "kit/plugin-guide",
+        "default-guidance",
     }
     assert required <= slugs
 

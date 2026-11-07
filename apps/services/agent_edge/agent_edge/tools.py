@@ -2770,13 +2770,13 @@ GUIDANCE_KEYS: tuple[str, ...] = ("blocks", "dropped")
 #: The key of one ``my_work`` row that names the nearest block. No body.
 GUIDANCE_REF_KEY = "guidance_ref"
 #: The levels of a block.
-GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company")
+GUIDANCE_LEVELS: tuple[str, ...] = ("project", "space", "company", "default")
 #: The most projects of one refs read (the route's own cap).
 GUIDANCE_REFS_MAX = 25
 
 _GUIDANCE_SOURCE_SCHEMA: dict[str, Any] = {"anyOf": [
     _object({
-        "kind": {"type": "string", "enum": ["company", "project"]},
+        "kind": {"type": "string", "enum": ["company", "project", "default"]},
         "project_id": _NULLABLE_STRING,
         # The name of the project, or null for the org.
         "name": _UNTRUSTED_OR_NULL,
@@ -2830,7 +2830,8 @@ def _guidance_block(block: Mapping[str, Any]) -> dict[str, Any] | None:
     else:
         name = source.get("name")
         shown = {
-            "kind": "project" if source.get("kind") == "project" else "company",
+            "kind": (source["kind"] if source.get("kind") in ("project", "default")
+                     else "company"),
             "project_id": _id(source.get("project_id")),
             "name": untrusted(name) if isinstance(name, str) else None,
             "hidden": False,
