@@ -71,6 +71,12 @@ import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { StatusManager } from "./components/StatusManager";
 import ImportDialog from "./components/ImportDialog";
 import ProjectsSettings, { type SettingsSection } from "./components/ProjectsSettings";
+import {
+  type SettingsSeed,
+  nextSettingsSeed,
+  plainSettingsSeed,
+  settingsSeedKey,
+} from "./lib/settingsSeed";
 import { canImport, importEnabled } from "./lib/importFlow";
 import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
@@ -1148,19 +1154,18 @@ function ProjectsWorkspace() {
   const [importRunId, setImportRunId] = useState<string | null>(null);
   // WS-42 (D81) — where Projects settings opens. The sidebar row and a
   // `?app=settings` link clear it, so they start at the selected space.
-  const [settingsSeed, setSettingsSeed] = useState<{
-    section?: SettingsSection | null;
-    spaceId?: string | null;
-  }>({});
+  // Each open with a place bumps `run`, so the same place opens again
+  // (`lib/settingsSeed.ts`, the PST-1 fix round).
+  const [settingsSeed, setSettingsSeed] = useState<SettingsSeed<SettingsSection>>({});
   // Bumped when the wizard closes, so the pane's list of imports reads again.
   const [importsVersion, setImportsVersion] = useState(0);
   const openSettings = useCallback((section: SettingsSection | null, spaceId?: string | null) => {
-    setSettingsSeed({ section, spaceId: spaceId ?? null });
+    setSettingsSeed((prev) => nextSettingsSeed(prev, section, spaceId ?? null));
     setApp("settings");
   }, []);
   /** The sidebar's app rows: a plain open of Settings starts afresh. */
   const chooseApp = useCallback((id: ProjectAppId | null) => {
-    if (id === "settings") setSettingsSeed({});
+    if (id === "settings") setSettingsSeed(plainSettingsSeed);
     setApp(id);
   }, []);
   // WS-64 OP-11 — the My work counts come from the server summary of mine
@@ -3179,7 +3184,7 @@ function ProjectsWorkspace() {
     if (!appLink) return;
     const live = resolveAppLink(appLink, PROJECT_APP_SECTIONS);
     if (live) {
-      if (live === "settings") setSettingsSeed({});
+      if (live === "settings") setSettingsSeed(plainSettingsSeed);
       setApp(live);
     }
     // WS-64 OP-11 — My tasks keeps `?app=my-tasks&chip=…` in the address, so
@@ -3427,9 +3432,11 @@ function ProjectsWorkspace() {
         else if (what === "lifecycle") setManagingLifecycle(selected);
       },
       // Not while it is open: a re-seed remounts the pane and drops an edit.
-      openSettings: () => {
-        if (app === "settings") return;
-        openSettings(null, selected ? spaceOf(allRoots, selected).id : null);
+      // A named section (PST-1, "Space default statuses") is a request to go
+      // there, so it re-seeds even when the pane is open.
+      openSettings: (section) => {
+        if (app === "settings" && !section) return;
+        openSettings(section ?? null, selected ? spaceOf(allRoots, selected).id : null);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
@@ -4756,7 +4763,7 @@ function ProjectsWorkspace() {
     // WS-42 (D81) — every setting of the Projects app in one pane.
     <div className="min-w-0 flex-1 overflow-hidden">
       <ProjectsSettings
-        key={`${settingsSeed.section ?? ""}:${settingsSeed.spaceId ?? ""}`}
+        key={settingsSeedKey(settingsSeed)}
         spaces={allRoots}
         initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(allRoots, selected).id : null)}
         initialSection={settingsSeed.section ?? null}
@@ -4778,6 +4785,14 @@ function ProjectsWorkspace() {
           setTreeKey((k) => k + 1);
         }}
         importsVersion={importsVersion}
+        // PST-1: a row of "projects that keep their own statuses" opens that
+        // project's Statuses editor. `manageSpace` leaves the pane, selects
+        // the project and opens the dialog, as the row menu does.
+        onOpenStatuses={(project) => {
+          const row = flatten(visibleRoots).find((e) => e.node.id === project.id);
+          if (row) manageSpace(setManagingStatuses)(row.node as ProjectRow);
+          else router.push(`/projects?project=${encodeURIComponent(project.id)}`);
+        }}
         // The pane edits ANY space, so it never writes the board's own lanes,
         // fields or tags. It re-reads them from the server instead: the tree
         // key drives fields and tags, and `loadProject` the lanes and tasks.
