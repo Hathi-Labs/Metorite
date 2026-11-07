@@ -971,10 +971,14 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 #: WS-STU B2c-2a adds the decision of an app request. It approves a Studio
 #: write that a member identity asked for, and Mira calls as the member. So a
 #: tool that posts to it would approve its own write.
+#: WS-55 EA-19c adds the box-token routes. A box token is a long-lived secret
+#: that acts as the member, so only a person makes, rotates or revokes one
+#: (``external_agent_access.md`` §10.9). A tool that names them would mint a
+#: secret with no person present.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
                     "/agent-runs/{}/activities", "/agent-runs/{}/resume",
                     "/decisions/{}/answer", "/agent-runs/{}/outside-decision",
-                    "/requests/{}/decision")
+                    "/requests/{}/decision", "/agent-access/box-tokens")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.
@@ -1057,6 +1061,10 @@ def test_the_route_scan_reads_an_f_string() -> None:
     assert _routes_in(decision) == ["/requests/{}/decision"]
     assert _routes_in('u = f"/api/agent-access/requests/{rid}/decision"') == [
         "/requests/{}/decision"]
+    # WS-55 EA-19c: the box-token routes mint a secret that acts as the member.
+    assert _routes_in('u = "/agent-access/box-tokens/check"') == ["/agent-access/box-tokens"]
+    assert _routes_in('u = "/api/agent-access/box-tokens/revoke-all"') == [
+        "/agent-access/box-tokens"]
     # A plain string of each route still matches.
     assert _routes_in('u = "/api/actions/pending"') == ["/actions/pending"]
     assert _routes_in('u = "/agent/respond-input"') == ["/respond-input"]

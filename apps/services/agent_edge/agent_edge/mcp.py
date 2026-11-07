@@ -458,7 +458,11 @@ async def endpoint(request: Request) -> Response:
     try:
         if len(authorizations) > 1:
             raise bearer.BearerRefused(401, sent=True, reason="two_tokens")
-        caller = await bearer.authenticate(authorizations[0] if authorizations else None)
+        # EA-19b: the client address that uvicorn read from the proxy, never
+        # `X-Real-IP`, which a client could set. Only a box token reads it.
+        caller = await bearer.authenticate(
+            authorizations[0] if authorizations else None,
+            request.client.host if request.client else None)
     except bearer.BearerRefused as refused:
         if refused.status == 503:
             return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",

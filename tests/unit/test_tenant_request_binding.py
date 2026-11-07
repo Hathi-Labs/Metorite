@@ -1136,12 +1136,25 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: comes from the connection row, as the pins do. Nothing new is read from
 #: the request: the scan and the tripwire are as before. The pins before it
 #: were 3.12 ``8eff3015…1f25d2bc9`` and 3.13 ``340a6d01…d2bd756a``.
+#:
+#: EA-19b (2026-11-06, external_agent_access.md §10.9 question 1, D-EA-5):
+#: step 5 passes ``credential``, ``connection_id`` and ``client_name`` of the
+#: connection row to ``actor_via_for``. So a box connection expects the stamp
+#: ``mcp:box:<slug>-<8 hex>``, and an OAuth connection expects the same stamp
+#: as before. The three values come from the row, never from the request.
+#: The scan and the tripwire are as before. The box flag is read in
+#: ``agent_tokens.read_live_connection``, which this digest does not cover.
+#: The pins before it were 3.12 ``c737e1f1…0ae25127`` and 3.13
+#: ``034c2925…9155f094``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
     # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
     # This pin needs the diff-reviewer review and the independent verification.
-    (3, 12): "ec7a40ebd2470eefb69b9184e2a96d310cf70fe1303b285c6658fe92a945b693",
-    (3, 13): "792f53b413454a414a80a9b262efbf44189929bbfa749b61a04783e1a4c1ea5e",
+    # EA-19b (2026-11-07): the merge of main (the WS-24b pins above) with the
+    # EA-19b change of step 5 (see the EA-19b note above). Both digests were
+    # computed with this test's own function under 3.12 and 3.13.
+    (3, 12): "7ae2658e018e98f617808bc84cef63bd9c81151a79397f0b5a756c2c20167b95",
+    (3, 13): "6b30c96217c8d90841037ed617ce06b7ba397262c7b3d990d269b07b6cde0e96",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

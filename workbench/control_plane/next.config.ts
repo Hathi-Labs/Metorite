@@ -32,7 +32,12 @@ const nextConfig: NextConfig = {
     return STUDIO_REDIRECTS;
   },
   async headers() {
-    return [{ source: "/connect/:path*", headers: CONNECT_FRAME_HEADERS }];
+    return [
+      { source: "/connect/:path*", headers: CONNECT_FRAME_HEADERS },
+      // WS-55 EA-19d (§10.9 question 3): the page that makes a box token
+      // shows a secret once, so no other site may frame it either.
+      { source: "/integrations/:path*", headers: CONNECT_FRAME_HEADERS },
+    ];
   },
   // 🔴 **The deploy builds BESIDE the running build, never over it.**
   //
