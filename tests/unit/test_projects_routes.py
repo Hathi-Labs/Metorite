@@ -568,7 +568,68 @@ async def test_assigning_emits_only_the_added_assignees(
     assert assigned == [{
         "task_id": str(task.id), "assignees": ["agent:triage"],
         "organization_id": DEFAULT_ORGANIZATION,
+        # H-240: the signed-in assigner, for the dispatched run.
+        "assigned_by": USER.email,
     }]
+
+
+# ── H-240: the member on the event comes from the session, never the body ───
+
+
+async def test_the_assigner_on_the_event_is_the_session_member_not_the_body(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    """H-240. ``assigned_by`` names the caller that the auth seam resolved.
+    A body that names another person changes nothing, because
+    ``AssigneesIn`` has no such field and the emitter reads ``user`` only.
+
+    Mutation (R7): emit ``payload.model_extra`` or any body value as the
+    member, and this fails."""
+    from gateway.routes.projects.agent_dispatch import MEMBER_KEY
+
+    project, todo, _ = _project_with_statuses(db)
+    task = db.seed_task(project.id, todo.id)
+
+    body = pm_tasks.AssigneesIn.model_validate({
+        "assignees": ["agent:triage"],
+        MEMBER_KEY: "boss@fracktal.in", "user_email": "boss@fracktal.in",
+    })
+    await pm_tasks.set_assignees(str(task.id), body, user=USER)
+
+    [assigned] = [p for name, p in events if name == "pm.task.assigned"]
+    assert assigned[MEMBER_KEY] == USER.email
+    assert "boss@fracktal.in" not in str(assigned)
+
+
+async def test_an_outside_agent_or_a_suspended_member_puts_nobody_on_the_event(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    """H-240. A signed outside agent has a scope narrower than its member, so
+    a run as the member would widen it. A suspended member must not have a run
+    act for them. Both events carry ``""``, and the run has no acting user.
+
+    Mutation (R7): drop either check in ``assigning_member``, and this fails."""
+    import dataclasses
+
+    from acb_auth.permissions import EffectiveAccess
+    from gateway.routes.projects.agent_dispatch import MEMBER_KEY, assigning_member
+
+    suspended = dataclasses.replace(USER, access=EffectiveAccess(is_active=False))
+    outside = dataclasses.replace(USER, agent=object())
+    service = dataclasses.replace(USER, email="system:internal")
+    assert assigning_member(USER) == USER.email
+    assert assigning_member(suspended) == ""
+    assert assigning_member(outside) == ""
+    assert assigning_member(service) == ""
+
+    project, todo, _ = _project_with_statuses(db)
+    task = db.seed_task(project.id, todo.id)
+    await pm_tasks.set_assignees(
+        str(task.id), pm_tasks.AssigneesIn(assignees=["agent:triage"]),
+        user=suspended,
+    )
+    [assigned] = [p for name, p in events if name == "pm.task.assigned"]
+    assert assigned[MEMBER_KEY] == ""
 
 
 async def test_re_asserting_the_same_assignees_emits_nothing(

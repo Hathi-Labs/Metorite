@@ -95,11 +95,35 @@ export function restoreOrStart(agent: string): RailPick {
   return startFresh(agent);
 }
 
+/** A new chat, and the pick that opens it. */
+export interface FreshPick extends RailPick {
+  /**
+   * The chat as this call made it. A full storage can refuse the write of
+   * the list (production bug, 2026-11-06), so a caller must never wait for
+   * the chat to appear there. It keeps this object and shows it.
+   */
+  session: ChatSession;
+}
+
 /** A new session, opened on purpose. */
-export function startFresh(agent: string): RailPick {
+export function startFresh(agent: string): FreshPick {
   const s = createSession(agent);
   upsertSession(s);
-  return { activeId: s.id, restoredId: null };
+  return { activeId: s.id, restoredId: null, session: s };
+}
+
+/**
+ * The chat to show for `activeId`: the stored row, or else the chat that this
+ * page made (`startFresh`), when the stored list does not hold it. Null when
+ * neither names it. Fence: `sessionsQuota.test.ts`.
+ */
+export function chatToShow(
+  sessions: readonly ChatSession[],
+  activeId: string,
+  made: ChatSession | null | undefined,
+): ChatSession | null {
+  if (!activeId) return null;
+  return sessions.find((s) => s.id === activeId) ?? (made?.id === activeId ? made : null);
 }
 
 /** Open `id` on purpose. A refusal of it is then an error the member sees. */
