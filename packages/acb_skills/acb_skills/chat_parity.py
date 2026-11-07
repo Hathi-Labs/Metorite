@@ -669,6 +669,9 @@ DEBT: dict[str, str] = {
     "POST /api/email/reply-card/discard": "P-2",
     "POST /api/email/rules/generate": "P-2",
     "POST /api/email/rules/patterns/review": "P-2",
+    # Paid by SG-6 (task 2182): the chat sets a signature image from an image
+    # the member attaches.
+    "POST /api/email/signature/images": "P-2",
     # ── CRM ──
     "DELETE /api/crm/deals/{}/contacts/{}": "P-3",
     "DELETE /api/crm/field-sections": "P-3",
@@ -1063,7 +1066,7 @@ DEBT_CEILING: dict[str, int] = {
     "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
     "tasks": 11,
     "calendar": 1,
-    "email": 13,
+    "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
     "crm": 74,
     "notes": 51,
     "whatsapp": 25,
