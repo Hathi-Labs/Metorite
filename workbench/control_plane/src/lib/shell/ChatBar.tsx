@@ -571,6 +571,8 @@ export function AskField({
           <button
             type="button"
             aria-label="Open the chat beside the page"
+            // The dock hands focus back here when it closes (`AssistantDock.tsx`).
+            data-assistant-toggle="closed"
             title={`Chat beside the page (${keyLabel.replace("K", "J")})`}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() =>

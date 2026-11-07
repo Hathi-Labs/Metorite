@@ -1,0 +1,15 @@
+# The weekly delivery review (CIV-10). A user unit of `dev`.
+# metorite-delivery-review.timer starts it on Monday at 07:00 UTC.
+# NOT installed. The owner installs it: copy this file and the timer to
+# ~/.config/systemd/user/, copy delivery_review.sh to ~/.local/lib/metorite/,
+# then run: systemctl --user enable --now metorite-delivery-review.timer
+# Logs: journalctl --user -u metorite-delivery-review.service
+[Unit]
+Description=Metorite weekly delivery review: headless /delivery-review (CIV-10)
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+# OWNER: confirm the headless command inside delivery_review.sh.
+ExecStart=%h/.local/lib/metorite/delivery_review.sh
+TimeoutStartSec=1800
