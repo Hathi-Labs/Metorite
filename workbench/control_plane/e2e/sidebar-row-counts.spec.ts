@@ -279,7 +279,7 @@ test.describe("desktop", () => {
     const myDay = sidebar(page).locator("[data-nav-my-day]");
     // `textContent`: the label and the pill sit on one line now, so
     // `innerText` gave "Home\n5" where the matcher reads "Home5".
-    const before = await myDay.textContent();
+    const before = (await myDay.textContent()) ?? "";
 
     await row(page, "/projects").getByRole("link").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Hide from sidebar" }).click();
