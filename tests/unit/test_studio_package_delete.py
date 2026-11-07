@@ -1284,10 +1284,14 @@ def test_only_delete_package_deletes_a_package() -> None:
 
 
 def test_the_versions_go_by_the_cascade_and_no_statement_names_them() -> None:
-    """The A4 fence stays as it is: the store has no DELETE or UPDATE of
-    ``app_versions``. The cascade from ``apps`` removes the versions."""
+    """The store has no DELETE of ``app_versions``. The cascade from ``apps``
+    removes the versions. Its one UPDATE of ``app_versions`` is the review
+    move of J2 (owner, task 2174, 2026-11-07). It sets ``review_status``
+    only, and it is not a delete path."""
     source = _STORE_PY.read_text(encoding="utf-8")
-    assert not re.search(r"DELETE\s+FROM\s+app_versions|UPDATE\s+app_versions", source, re.I)
+    assert not re.search(r"DELETE\s+FROM\s+app_versions", source, re.I)
+    assert len(re.findall(r"UPDATE\s+app_versions", source, re.I)) == 1
+    assert store._REVIEW_MOVE_SQL.startswith("UPDATE app_versions SET review_status = :to WHERE ")
     assert store._DELETE_SQL.startswith("DELETE FROM apps ")
     assert "app_versions" not in store._DELETE_SQL
 

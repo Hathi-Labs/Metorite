@@ -690,7 +690,12 @@ def test_the_version_insert_and_the_audit_name_no_org_and_publish_locks_the_row(
 def test_a_version_row_is_never_updated_or_deleted_and_no_review_is_proposed() -> None:
     """A4 appends to `app_versions`. The review step of the App Workshop
     (`app.publish_review`) never runs for a package, and `record_app_audit`
-    (it opens its own session) is not used. The store imports no route."""
+    (it opens its own session) is not used. The store imports no route.
+
+    One exception, which the owner decided on 2026-11-07 (task 2174, J2):
+    `_REVIEW_MOVE_SQL` is the ONE UPDATE of `app_versions`. It sets
+    `review_status` and no other column, and it names the bound org and the
+    expected state. A second UPDATE, or a wider SET, fails here."""
     source = (_ROOT / "apps" / "services" / "gateway" / "gateway" / "studio"
               / "packages_store.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -703,7 +708,20 @@ def test_a_version_row_is_never_updated_or_deleted_and_no_review_is_proposed() -
     names = {n.id for n in code if isinstance(n, ast.Name)} | {
         n.attr for n in code if isinstance(n, ast.Attribute)}
     joined = "\n".join(literals)
-    assert not re.search(r"UPDATE\s+app_versions|DELETE\s+FROM\s+app_versions", joined, re.I)
+    assert not re.search(r"DELETE\s+FROM\s+app_versions", joined, re.I)
+    updates = [s for s in literals if re.search(r"UPDATE\s+app_versions", s, re.I)]
+    assert len(updates) == 1 and store._REVIEW_MOVE_SQL.startswith(updates[0]), updates
+    move = store._REVIEW_MOVE_SQL
+    assert len(re.findall(r"\bUPDATE\b", move, re.I)) == 1
+    [set_clause] = re.findall(r"\bSET\s+(.*?)\s+WHERE\b", move, re.I | re.S)
+    assert set_clause == "review_status = :to", set_clause
+    assert f"WHERE organization_id = {store._BOUND_ORG} AND " in move
+    assert "AND review_status = :expected" in move and "version = :v" in move
+    users = sorted(fn.name for fn in ast.walk(tree)
+                   if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
+                   and any(isinstance(n, ast.Name) and n.id == "_REVIEW_MOVE_SQL"
+                           for n in ast.walk(fn)))
+    assert users == ["_move_review"]
     assert "publish_review" not in joined and "propose" not in names
     assert "record_app_audit" not in names
     modules = {n.module or "" for n in code if isinstance(n, ast.ImportFrom)}

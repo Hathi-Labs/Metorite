@@ -46,14 +46,35 @@ and :func:`rollback` change the status, and only to ``live``. The trigger
 **Versions (A4).** :func:`publish_version` and :func:`rollback` write
 ``app_versions``. A version row holds the manifest, ``bundle_html = ''`` and
 ``bundle_sha256``, the SHA-256 of the manifest JSON text from
-:func:`check_manifest`. The store never updates or deletes a version row, so
-history is append-only. Both functions lock the package row first
+:func:`check_manifest`. The store never deletes a version row, and it never
+writes the manifest, the bundle or the hash of a version again, so history is
+append-only. The one exception is the review of J2 (below). Both functions
+lock the package row first
 (``FOR UPDATE``), so two writers get N and N+1. ``UNIQUE (app_id, version)``
 is the backstop. Each writes its ``app_audit`` row in the same transaction.
 ⚠️ A package skips the App Workshop review: no function here calls
 ``record_app_audit`` or proposes ``app.publish_review``. The organization
 approval is J2. The install is WS-PKG, and ``apps.live_version`` is only the
 pointer of the author.
+
+**The approval for the org (J2, PKG-11b-2).** The owner decided on
+2026-11-07 (task 2174) that ``app_versions.review_status`` records it, and
+that this store writes it. ``package_host.md`` §6.2 holds the rules.
+:func:`request_org_approval`, :func:`approve_version` and
+:func:`reject_version` move the state of ONE version along
+:data:`REVIEW_MOVES`: ``auto`` to ``pending``, then ``pending`` to
+``approved`` or ``rejected``. ``_REVIEW_MOVE_SQL`` is the one UPDATE of
+``app_versions``. It sets ``review_status`` only, and it names the bound
+org, the package, the version and the expected state. Each move reads the
+version row ``FOR UPDATE`` first, and the UPDATE must change exactly one
+row, or :class:`ApprovalConflict` raises. Each move writes ONE ``app_audit``
+row (op :data:`REVIEW_OP`) in the same transaction. The owner of the package
+asks. The publisher of the version and the owner of the package cannot
+approve it (PKG-Q10). The caller passes ``can_publish``, the check of
+``studio:publish`` that the future route makes, because a store does not
+read rights. A route, its flags and its chat twin are not built. The App
+Workshop review (``routes/apps/publish.py``, ``routes/apps/tools.py``) is a
+separate path for a ``code`` app, and this store does not reuse it.
 
 **The delete (A5c-1).** :func:`delete_preview` counts what a delete takes
 and gives :func:`confirm_token` of the counts. :func:`delete_package` is one
@@ -225,6 +246,45 @@ _ROLLBACK_POINT_SQL = (
 _AUDIT_SQL = (
     "INSERT INTO app_audit (app_id, app_version, user_email, kind, detail) "
     "VALUES (CAST(:id AS uuid), :v, :m, :kind, CAST(:detail AS jsonb))"
+)
+
+#: The moves of the review of one version (J2, PKG-11b-2): the name of a move
+#: to its expected state and its new state. No other move exists.
+REVIEW_MOVES: Mapping[str, tuple[str, str]] = {
+    "request": ("auto", "pending"),
+    "approve": ("pending", "approved"),
+    "reject": ("pending", "rejected"),
+}
+#: The op of the audit row of a review move.
+REVIEW_OP = "package.review"
+
+#: The locked read of a review move: the version row ``FOR UPDATE``, with the
+#: owner of its package. It does not filter on the member, because an
+#: approver is not the owner. RLS and the bound org scope it.
+_REVIEW_READ_SQL = (
+    "SELECT v.version, v.published_by, v.review_status, a.owner_email "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND v.organization_id = {_BOUND_ORG} "
+    "AND a.format = 'manifest' AND a.id = CAST(:id AS uuid) AND v.version = :v "
+    "FOR UPDATE OF v"
+)
+
+#: The ONE UPDATE of ``app_versions``. It sets ``review_status`` and no other
+#: column, of one version, only from the expected state. Fences:
+#: ``test_studio_packages_store.py`` and ``test_studio_package_delete.py``.
+_REVIEW_MOVE_SQL = (
+    "UPDATE app_versions SET review_status = :to "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "AND version = :v AND review_status = :expected "
+    f"RETURNING app_id::text, {_VERSION_FIELDS}"
+)
+
+#: The member who asked for the review of one version: the newest request row.
+_REVIEW_REQUESTER_SQL = (
+    "SELECT user_email FROM app_audit "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:id AS uuid) "
+    "AND app_version = :v AND kind = 'action' AND detail->>'op' = :op "
+    "AND detail->>'review' = 'pending' ORDER BY id DESC LIMIT 1"
 )
 
 #: The longest release note, in characters.
@@ -814,6 +874,146 @@ async def get_version(db: Any, member: str, package_id: str,
     row = (await db.execute(text(_VERSION_GET_SQL), {
         "m": _member(member), "id": _package_id(package_id), "v": version})).first()
     return None if row is None else _version(row)
+
+
+# --- the approval for the org (J2, PKG-11b-2) --------------------------------
+
+
+#: The refusal of a move without the right ``studio:publish``.
+NO_PUBLISH_RIGHT = "Only a holder of studio:publish can approve or reject a version."
+#: The refusal of an approval by the publisher or the owner (PKG-Q10).
+SELF_APPROVAL = ("The member who published this version, or the owner of the package, "
+                 "cannot approve it. Another holder of studio:publish approves.")
+
+
+class ApprovalConflict(Exception):
+    """The version is not in the state that the move expects. Nothing was
+    written. The route answers 409. ``current`` is the state that the store
+    read, or None when the guarded UPDATE changed no row."""
+
+    def __init__(self, message: str, current: str | None = None) -> None:
+        super().__init__(message)
+        self.current = current
+
+
+class ApprovalRefused(Exception):
+    """The actor may not make this move. Nothing was written. The route
+    answers 403."""
+
+
+@dataclass(frozen=True)
+class _ReviewRow:
+    version: int
+    published_by: str
+    review_status: str
+    owner_email: str
+
+
+def _same(a: str, b: str) -> bool:
+    return a.strip().lower() == b.strip().lower()
+
+
+async def _review_row(db: Any, pid: str, version: int) -> _ReviewRow | None:
+    """The version row, locked ``FOR UPDATE``, or None."""
+    row = (await db.execute(text(_REVIEW_READ_SQL), {"id": pid, "v": version})).first()
+    if row is None:
+        return None
+    return _ReviewRow(version=int(row[0]), published_by=str(row[1]),
+                      review_status=str(row[2]), owner_email=str(row[3]))
+
+
+def _right(can_publish: object) -> None:
+    """Only ``True`` passes. A truthy value that is not a bool is refused."""
+    if can_publish is not True:
+        raise ApprovalRefused(NO_PUBLISH_RIGHT)
+
+
+async def _move_review(db: Any, actor: str, pid: str, current: _ReviewRow, move: str,
+                       requested_by: str) -> PackageVersion:
+    """Move one version along :data:`REVIEW_MOVES`, with its audit row.
+
+    The caller holds the row lock of :func:`_review_row`. A state that is not
+    the expected one raises :class:`ApprovalConflict`. The guarded UPDATE must
+    change exactly one row, or :class:`ApprovalConflict` raises too."""
+    expected, to = REVIEW_MOVES[move]
+    if current.review_status != expected:
+        raise ApprovalConflict(
+            f"The version is {current.review_status}, so it cannot move to {to}. "
+            f"Only a version that is {expected} can.", current.review_status)
+    rows = (await db.execute(text(_REVIEW_MOVE_SQL), {
+        "id": pid, "v": current.version, "expected": expected, "to": to})).all()
+    if len(rows) != 1:
+        raise ApprovalConflict("The version changed under this move. Nothing was written.")
+    await _audit(db, actor, pid, current.version, "action", {
+        "op": REVIEW_OP, "review": to, "by": actor, "requested_by": requested_by})
+    return _version(rows[0])
+
+
+async def request_org_approval(db: Any, member: str, package_id: str,
+                               version: int) -> PackageVersion | None:
+    """Ask for the approval of *version* for the org: ``auto`` to ``pending``.
+
+    Only the owner of the package asks. Answers None when the bound org holds
+    no such version of a package of *member*. A ``pending`` version answers
+    as it is, and the call writes nothing. An ``approved`` or a ``rejected``
+    version raises :class:`ApprovalConflict`: the owner publishes a new
+    version and asks again. The move writes one audit row (``requested_by``
+    is the member)."""
+    m = _member(member)
+    pid = _package_id(package_id)
+    v = _version_number(version)
+    current = await _review_row(db, pid, v)
+    if current is None or not _same(current.owner_email, m):
+        return None
+    if current.review_status == "pending":
+        return await get_version(db, m, pid, v)
+    return await _move_review(db, m, pid, current, "request", m)
+
+
+async def _requester(db: Any, pid: str, current: _ReviewRow) -> str:
+    """The member of the newest request row, or the owner when no row exists."""
+    row = (await db.execute(text(_REVIEW_REQUESTER_SQL), {
+        "id": pid, "v": current.version, "op": REVIEW_OP})).first()
+    return current.owner_email if row is None else str(row[0])
+
+
+async def approve_version(db: Any, approver: str, package_id: str, version: int, *,
+                          can_publish: bool) -> PackageVersion | None:
+    """Approve *version* for the org: ``pending`` to ``approved``.
+
+    *can_publish* is the check of ``studio:publish`` that the caller made for
+    *approver*. Anything but ``True`` raises :class:`ApprovalRefused` before
+    any statement. Answers None when the bound org holds no such version.
+    The publisher of the version and the owner of the package raise
+    :class:`ApprovalRefused` (PKG-Q10). A version that is not ``pending``
+    raises :class:`ApprovalConflict`. The move touches this version only."""
+    a = _member(approver)
+    pid = _package_id(package_id)
+    v = _version_number(version)
+    _right(can_publish)
+    current = await _review_row(db, pid, v)
+    if current is None:
+        return None
+    if _same(current.published_by, a) or _same(current.owner_email, a):
+        raise ApprovalRefused(SELF_APPROVAL)
+    return await _move_review(db, a, pid, current, "approve", await _requester(db, pid, current))
+
+
+async def reject_version(db: Any, rejecter: str, package_id: str, version: int, *,
+                         can_publish: bool) -> PackageVersion | None:
+    """Reject *version* for the org: ``pending`` to ``rejected``.
+
+    The rule of the right is the rule of :func:`approve_version`. Any holder of
+    ``studio:publish`` can reject, the publisher and the owner too, because a
+    reject only narrows the share. A rejected version stays rejected."""
+    r = _member(rejecter)
+    pid = _package_id(package_id)
+    v = _version_number(version)
+    _right(can_publish)
+    current = await _review_row(db, pid, v)
+    if current is None:
+        return None
+    return await _move_review(db, r, pid, current, "reject", await _requester(db, pid, current))
 
 
 # --- the delete of a package (A5c-1) ----------------------------------------
