@@ -475,6 +475,33 @@ on linger, copies the script, and enables the timer. In WSL, the Windows
 task "Metorite WSL keep-alive" keeps the distro up.
 HIGH tier.
 
+### CIV-10: the weekly delivery review (task 1643)
+
+**Status: BUILT 2026-11-07** (task 1643, branch `civ10-review`). STANDARD tier.
+Owner directive, 2026-11-04: revisit the workflow and CI each week.
+
+A box user timer runs `/delivery-review` each Monday at 07:00 UTC. The command
+measures CI, reads the Metorite items through the MCP, and posts one report
+task. It opens one fix task for each item over its threshold, under epic
+task 1628. The thresholds live in the command file.
+
+**Files:** `scripts/delivery_metrics.py` (read-only, stdlib, prints one JSON
+object), `.claude/commands/delivery-review.md`,
+`scripts/home_server/delivery_review.sh`,
+`scripts/home_server/metorite-delivery-review.service`,
+`scripts/home_server/metorite-delivery-review.timer`.
+**Fence:** `tests/unit/test_delivery_metrics.py`.
+
+**The owner does two things.** Install the timer (the unit header says how).
+Confirm the headless command in `delivery_review.sh`, because the repo holds
+no tested launcher. The first run is manual:
+`python3 scripts/delivery_metrics.py --days 7` on the box.
+
+**Known limits.** A selection miss is matched through `commits/<sha>/pulls`,
+because a squash merge gives main a new sha. A red batch with no PR run in the
+window is not counted. Run time is `updated_at` minus `run_started_at`, so a
+rerun adds to it.
+
 ## 6. Order
 
 CIV-2 and CIV-4 start now, beside each other. CIV-4b follows CIV-4. It is a
@@ -528,3 +555,4 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-4 | 1632 | CIV-9 | 1637 |
 | CIV-5 | 1633 | CIV-4b | 1711 |
 | CIV-17 | 1988 | CIV-13 | 1721 |
+| CIV-10 | 1643 |  |  |
