@@ -41,6 +41,18 @@ settings, so a change of the env file needs a restart. With it on:
 * each hit carries ``stamp``, and the answer names the apps it
   ``searched``: each app that answered, with its switch open.
 
+**Fusion and meaning, behind the same flag** (WS-KG KG-3b,
+``knowledge_graph.md`` §9). With it on:
+
+* the answer is ONE list, sorted by :func:`score` across every app, in place
+  of :func:`_interleave`. That score is reciprocal rank fusion with k = 60,
+  lowered by age. A tie goes to the app named first, then to the lower rank;
+* Email also asks its vector half (``vectors``) and fuses it with its
+  lexical half by the same rank sum (``kb_index.query.rrf_scores``). An org
+  with no email vector gets the lexical answer, and no embed call is made;
+* the route opens a turn (:mod:`gateway.retrieval.turn_vector`), so the
+  query is embedded once, for every source that asks.
+
 With it off, the route does not read ``after`` at all, not even its
 length, and the answer is the one of KR-1, byte for byte.
 
@@ -64,6 +76,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
+from gateway.retrieval import turn_vector
 from gateway.retrieval.sources import REGISTRY, Hit, holds
 
 logger = logging.getLogger(__name__)
@@ -248,6 +261,22 @@ def _interleave(order: list[str], found: dict[str, list[Hit]]) -> list[Hit]:
     return out
 
 
+def by_fusion(order: list[str], found: dict[str, list[Hit]], now: datetime) -> list[Hit]:
+    """ONE list for every app, sorted by :func:`score` (KG-3b).
+
+    Each app's list is ranked from 1 in the order it arrived. A tie goes to
+    the app that comes first in *order*, then to the lower rank. Pure.
+    """
+    place = {key: i for i, key in enumerate(order)}
+    scored = [
+        (score(h, rank, now), place.get(key, len(place)), rank, h)
+        for key, hits in found.items()
+        for rank, h in enumerate(hits, start=1)
+    ]
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return [h for _s, _p, _r, h in scored]
+
+
 @router.get("/company")
 async def company_search(
     q: str = Query(..., min_length=MIN_CHARS, max_length=MAX_CHARS),
@@ -281,7 +310,9 @@ async def company_search(
     recency = recency_enabled()
     # Off, `after` is not read at all, as before CX-1.
     since = _after(after) if recency else None
-    options: dict[str, Any] = {"after": since, "reviewed": True} if recency else {}
+    options: dict[str, Any] = {"after": since, "reviewed": True, "vectors": True} if recency else {}
+    if recency:
+        turn_vector.begin_turn()
     only_verified = bool(recency and verified)
     if only_verified:
         options["verified_only"] = True
@@ -340,11 +371,9 @@ async def company_search(
             "skipped": skipped,
         }
     now = datetime.now(UTC)
-    for key, hits in found.items():
-        found[key] = by_recency(hits, now)
     return {
         "query": words,
-        "hits": [h.as_dict(stamp=True) for h in _interleave(order, found)],
+        "hits": [h.as_dict(stamp=True) for h in by_fusion(order, found, now)],
         "searched": [key for key in order if key in found and REGISTRY[key].reaches(user)],
         "skipped": skipped,
     }
