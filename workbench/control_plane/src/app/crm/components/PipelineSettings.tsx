@@ -32,8 +32,9 @@
  * courtesy half.
  *
  * Native mode with several pipelines (CRM-Q2) shows one read-only section for
- * each. The stage routes for a second pipeline are not in this build. Mirror
- * mode takes any count of pipelines, with a picker over the list.
+ * each. A second pipeline has its own stage routes (`/crm/pipelines/{id}/stages`),
+ * which the sections do not use yet. Mirror mode takes any count of pipelines,
+ * with a picker over the list.
  *
  * **Mirror mode** (WS-53 CRM-C3, crm_platform.md §20.6 item 14). Zoho owns the
  * stages, and an admin edits the Metorite overlay: the order, the win chance,
@@ -481,8 +482,9 @@ const laneOf = (status: Status) => ({ status, pipeline_position: null });
  * order on the board. A move saves at once, every id of the kind, through the
  * order route. On a failure the row goes back and the page shows the error.
  *
- * Mirror mode serves any count of pipelines. Native mode serves one pipeline
- * or none, and `PipelineSections` keeps the read-only list for more.
+ * Mirror mode serves any count of pipelines. Native mode edits the one
+ * pipeline on screen, and `PipelineSections` lists the stages of each pipeline
+ * to read when there are two or more.
  */
 export function StageList({
   kind,

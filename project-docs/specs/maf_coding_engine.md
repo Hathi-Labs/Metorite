@@ -25,6 +25,9 @@ spec only.**
 
 **H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
 root agent also compares the member's org with the run's org (§15.4).
+**H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
+push gate of agent code read the membership and the access in the run's
+org (§15.4).
 
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
@@ -4534,15 +4537,25 @@ first-party admin may run it.
 - The name match takes no case and no `agent-` prefix, so an alias is refused
   too. The registry lists still name the agent, and hiding it there is not
   part of this rule.
-- The gate also compares the member's org (`acb_auth.access.resolve_identity`)
-  with the run's org (H-232, 2026-11-05). It refuses a mismatch, an empty org
-  and a failed read. So an admin of one org cannot run it on a run of another
-  org. Fence: `tests/unit/test_root_agent_first_party.py`, section 1b.
-  Known limit: with `IDENTITY_CUTOVER` on, a person with two active
-  memberships resolves to no org, and the gate refuses them. Task 1712
-  replaces the read with one keyed on (email, org). The read is unbound, so
-  with phase-4 RLS on `app_user` and the cutover off, it finds no row, and
-  the gate refuses everyone. Phase 4 needs the cutover first.
+- The gate also compares the member's org with the run's org (H-232,
+  2026-11-05). It refuses a mismatch, an empty org and a failed read. So an
+  admin of one org cannot run it on a run of another org. Fence:
+  `tests/unit/test_root_agent_first_party.py`, sections 1b and 1c.
+- H-232b (task 1712, 2026-11-07) closed the multi-org lockout of H-232. The
+  gate asks two `acb_auth.access` reads keyed on (email, run org).
+  `is_active_member` reads the membership. With `IDENTITY_CUTOVER` on, it
+  reads `user_identity` and `org_membership`, so a person with two active
+  memberships passes for each org (PLN-Q5). With the flag off, it reads the
+  `app_user` row, as before. `resolve_access_in_org` reads the roles of the
+  `app_user` row of the run org only. So the roles of one org never count in
+  another org. Both reads fail closed. Both open `tenant_session` bound to
+  the run org, so they also work under phase-4 RLS on `app_user`.
+  `executor._agent_push_allowed` uses the same two reads, and it had no org
+  compare before. Fence: `tests/unit/test_member_of_org_read.py` (R8).
+- Known limit: the roles stay on the one `app_user` row of a person. A
+  person in two orgs holds roles only in the org of that row, and has no
+  access in the other org. Per-org roles wait for the role leg to move to
+  `user_role.user_identity_id` (D48).
 - Fence: `tests/unit/test_root_agent_first_party.py` (the access clause of
   WS43-F17). Eleven mutations turn the access clause red, and four more
   turn section 1b red.

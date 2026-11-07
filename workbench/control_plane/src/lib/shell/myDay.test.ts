@@ -20,6 +20,7 @@ import {
   emptyNeedsLine,
   failedLines,
   firstName,
+  GREETING_TABLE,
   greeting,
   greetingLine,
   groupNeeds,
@@ -56,12 +57,17 @@ const row = (id: string, kind: NeedsKind, extra: Partial<NeedsItem> = {}): Needs
 
 describe("the header", () => {
   it("greets by the member's local hour", () => {
-    expect(greeting(0)).toBe("Good morning");
+    expect(greeting(2)).toBe("Hello");
+    expect(greeting(4)).toBe("Hello");
+    expect(greeting(5)).toBe("Good morning");
     expect(greeting(11)).toBe("Good morning");
     expect(greeting(12)).toBe("Good afternoon");
-    expect(greeting(17)).toBe("Good afternoon");
-    expect(greeting(18)).toBe("Good evening");
-    expect(greeting(23)).toBe("Good evening");
+    expect(greeting(16)).toBe("Good afternoon");
+    expect(greeting(17)).toBe("Good evening");
+    expect(greeting(20)).toBe("Good evening");
+    expect(greeting(21)).toBe("Hello");
+    expect(greeting(23)).toBe("Hello");
+    expect(GREETING_TABLE).toHaveLength(4);
   });
 
   it("uses the first word of a display name, and never an address", () => {
