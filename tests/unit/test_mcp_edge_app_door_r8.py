@@ -465,7 +465,9 @@ class TestTheDoor:
             assert event.payload["via"] == VIA and event.payload["request_id"] is None
             assert set(event.payload) == {"organization_id", "connection_id", "member",
                                           "via", "app", "op", "class", "request_id",
-                                          "decision"}
+                                          "decision", "policy"}
+            # BR-7b: the policy is the scope of the door, from the manifest.
+            assert event.payload["policy"] == "knowledge:read"
 
     async def test_a_connection_without_personal_sees_no_me_page(self, live):
         """D-EA-4, §19.8. ``include_personal`` false: the member's ``me`` space

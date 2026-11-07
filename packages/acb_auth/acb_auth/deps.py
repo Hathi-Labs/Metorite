@@ -702,6 +702,9 @@ def _audit_door(
                 "class": door.route.cls,
                 "request_id": None,
                 "decision": decision,
+                # BR-7b (core_brief.md §8.2): the app scope that the door
+                # checks. The close-out names it on an allowed call.
+                "policy": door.scope,
             },
             organization_id=connection.organization_id,
         ))

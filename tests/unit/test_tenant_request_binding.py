@@ -1136,9 +1136,15 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: comes from the connection row, as the pins do. Nothing new is read from
 #: the request: the scan and the tripwire are as before. The pins before it
 #: were 3.12 ``8eff3015…1f25d2bc9`` and 3.13 ``340a6d01…d2bd756a``.
+#:
+#: BR-7b-1 (2026-11-07, core_brief.md §8.2): the audit row of a door call
+#: (`_audit_door`) also holds ``policy``, the app scope that the door
+#: checks (``door.scope``). The value comes from the manifest, never from
+#: the request, and no step of branch 0 changes. The pins before it were
+#: 3.12 ``c737e1f1…0ae25127`` and 3.13 ``034c2925…9155f094``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "c737e1f19f504f87f62fea3f76428c02c0a4861b23299dad137501ed0ae25127",
-    (3, 13): "034c2925beaec3fae77ed31ae84a05ad7917a2a32269fd8337164b209155f094",
+    (3, 12): "7c955afae9f3e40a14e91c44c446696133a4abe42c071a32ef72d11e6a81b34b",
+    (3, 13): "b16fc2b17bbe3873ce2a4214ef1bd377c45598c90427a0437b900cf32c7fabf2",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

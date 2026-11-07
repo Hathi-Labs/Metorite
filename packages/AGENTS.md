@@ -92,6 +92,9 @@ Audit event recording.
 - `audit_event` is tenant-scoped behind `ACB_GRAPH_TENANT_BIND`. The org rides ON the `AuditEvent` object, and the caller stamps it on its own frame. Never read it from a ContextVar inside `_persist`.
 - A tenant-less event falls back to the operator org (`slug = 'default'` or `OPERATOR_ORG_ID`), so the row is kept. That fallback is correct for audit and wrong for keys.
 - Do not add `organization_id` to the ORM `AuditEvent` model, or SQLAlchemy sends a NULL that defeats the DEFAULT. Fence: `tests/unit/test_acb_graph_audit_bind.py` (R8).
+- `read.py` is the ONE reader of the acts of a member's day (WS-BRIEF BR-7b-1, `core_brief.md` §8). `ACT_ACTIONS` and `ACT_PREFIXES` are the allow-list, and `EXCLUDED` names the rows that stay out. A new action is not an act until a person adds it.
+  - ⚠️ `acts(org, member, since, until)` opens `acb_graph.tenant_session(org)` and filters on the bound org and on `payload.member`. The caller takes both from its run, never from request input. A row with no member, or with a `decision` other than `allowed`, is never listed.
+  - The read is sync, so an async caller uses `asyncio.to_thread`. It needs the phase-4 column `organization_id`, and it never falls back to an unbound read. Fence: `tests/unit/test_audit_acts_read_r8.py` (R8).
 
 ### acb_auth/
 Authentication, roles and org access control.
