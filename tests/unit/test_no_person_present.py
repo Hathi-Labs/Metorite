@@ -759,6 +759,34 @@ def test_the_mark_ends_when_a_handler_raises() -> None:
     assert asyncio.run(main()) is False
 
 
+def test_the_headless_turn_runs_marked_and_names_no_setter(monkeypatch) -> None:
+    """WS-AUTO AUTO-8a: the handler of ``auto.turn`` runs under the worker's
+    mark. Its round task copies the mark, so the runner of each round reads
+    it, and the loop of the worker stays unmarked. The module of the turn
+    names neither the setter nor the reader (``_SETTERS``, ``_READERS``)."""
+    from gateway.jobs import headless_turn as ht
+
+    from tests.unit import test_headless_turn as t
+
+    w = t.make_world(monkeypatch)
+    goal = w.goals.add()
+    runner = t.FakeRunner(w.meter)
+    monkeypatch.setattr(ht, "_DEFAULT", ht.HeadlessTurn(
+        runner=runner, meter=w.meter, candidates=w.checks))
+    payload = t._payload(goal)
+    claim = t._claim(payload)
+
+    async def main() -> bool:
+        await worker._call(lambda: ht.run_turn(t.ORG, payload, claim), worker._Attempt())
+        return no_person_present()
+
+    assert asyncio.run(main()) is False
+    assert [c["marked"] for c in runner.calls] == [True]
+    assert w.jobs.done == [claim.id]
+    named = _names_in(ast.parse(Path(ht.__file__).read_text(encoding="utf-8")))
+    assert not named & (_SETTER_NAMES | {"no_person_present"})
+
+
 # ── The injection fixture ───────────────────────────────────────────────────
 
 
