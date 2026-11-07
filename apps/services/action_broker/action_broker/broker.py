@@ -56,11 +56,32 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from acb_audit import AuditEvent, record
+from acb_audit import AuditEvent, record, refuse_tenantless
 from acb_common import get_logger
 from acb_common.no_person import NO_PERSON_PRESENT, no_person_present, no_person_refusal
 
 _log = get_logger("action_broker")
+
+
+def _audit(event: AuditEvent) -> None:
+    """Record one broker event in the BOUND tenant (task 2189).
+
+    Each broker event belongs to the tenant whose action it is. ``propose:*``
+    even carries that tenant's payload. So this stamps ``organization_id`` from
+    ``current_tenant()``, the same value that the queue's ``tenant_session``
+    binds. It never reads a proposal or payload field (R5). With no bound
+    tenant and ``ACB_GRAPH_TENANT_BIND`` on, ``refuse_tenantless`` skips the
+    row, so it can never land under the operator org. The structlog line of
+    the skip keeps the trail. Fence:
+    ``tests/unit/test_action_broker_audit_org_r8.py``.
+    """
+    from acb_common.db import current_tenant
+
+    org = current_tenant()
+    event.organization_id = str(org) if org else None
+    if refuse_tenantless(event):
+        return
+    record(event)
 
 
 class AuthorityTier(StrEnum):
@@ -134,7 +155,7 @@ def propose(
         payload=payload, authority=authority, destructive=destructive,
         disposition=disposition,
     )
-    record(AuditEvent(
+    _audit(AuditEvent(
         actor=actor, action=f"propose:{action}", target=target,
         payload={
             "authority": authority.value,
@@ -179,7 +200,7 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
     the approver reads the handler's error. Any other result is a success.
     """
     if proposal.disposition == Disposition.REJECTED:
-        record(AuditEvent(
+        _audit(AuditEvent(
             actor="system:action_broker",
             action=f"execute_refused:{proposal.action}",
             target=proposal.target,
@@ -189,7 +210,7 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
 
     handler = _HANDLERS.get(proposal.action)
     if handler is None:
-        record(AuditEvent(
+        _audit(AuditEvent(
             actor="system:action_broker",
             action=f"execute_refused:{proposal.action}",
             target=proposal.target,
@@ -200,7 +221,7 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
             "error": f"no handler registered for action {proposal.action!r}",
         }
 
-    record(AuditEvent(
+    _audit(AuditEvent(
         actor="system:action_broker",
         action=f"execute:{proposal.action}",
         target=proposal.target,
@@ -281,7 +302,7 @@ def enqueue(proposal: ActionProposal) -> str | None:
                     "disposition": (proposal.disposition or Disposition.NEEDS_APPROVAL).value,
                 },
             )
-        record(AuditEvent(
+        _audit(AuditEvent(
             actor="system:action_broker",
             action=f"enqueue:{proposal.action}",
             target=proposal.target,
@@ -289,7 +310,7 @@ def enqueue(proposal: ActionProposal) -> str | None:
         ))
         return row_id
     except Exception as exc:  # best-effort: never lose the caller on a DB blip
-        record(AuditEvent(
+        _audit(AuditEvent(
             actor="system:action_broker",
             action=f"enqueue_failed:{proposal.action}",
             target=proposal.target,
@@ -490,7 +511,7 @@ def _refuse_no_person(act: str, action_id: str, reviewed_by: str) -> dict[str, A
     if not no_person_present():
         return None
     _log.warning("action_broker.no_person_refused", act=act, action_id=action_id)
-    record(AuditEvent(
+    _audit(AuditEvent(
         actor="system:action_broker",
         action=f"{act}_refused",
         target=action_id,
@@ -512,7 +533,7 @@ def reject(action_id: str, reviewed_by: str) -> dict[str, Any]:
         return refused
     if not _mark(action_id, "rejected", reviewed_by=reviewed_by, only_from="pending"):
         return {"ok": False, "error": f"no pending action {action_id!r}"}
-    record(AuditEvent(
+    _audit(AuditEvent(
         actor=reviewed_by,
         action="action_rejected",
         target=action_id,
