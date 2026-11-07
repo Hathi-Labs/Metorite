@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
-> **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. PKG-6b (task 1725) is built dark. The bell panel shows one setup row for each install that needs setup. The badge counts it. The bell draws a setup row only when the entry has a valid same-origin `setup_href`. A row without it is dropped from the bell and from the badge, because a row with no next step never clears (PKG-Q11). All apps lists an install pane. The access report no longer calls an install-only slug unmapped. An install pane has no star yet. The gateway accepts only `nav.ts` panes in `pins` and `known` (see the PKG-6 row). Star and hide for install panes moved to task 2195 (PKG-6c). PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. The rest of this spec is not built.
+> **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-07 · **Owner:** vjvarada
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. PKG-6b (task 1725) is built dark. The bell panel shows one setup row for each install that needs setup. The badge counts it. The bell draws a setup row only when the entry has a valid same-origin `setup_href`. A row without it is dropped from the bell and from the badge, because a row with no next step never clears (PKG-Q11). All apps lists an install pane. The access report no longer calls an install-only slug unmapped. An install pane has no star yet. The gateway accepts only `nav.ts` panes in `pins` and `known` (see the PKG-6 row). Star and hide for install panes moved to task 2195 (PKG-6c). PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. PKG-13 is built dark: the table `package_field_value` of §5.1 and its store `gateway/package_host/field_values.py` of §8.3 (migration 353 at build). No route, UI or flag calls the store yet. The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `787269f0a`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
@@ -197,6 +197,21 @@ Constraints and indexes of `package_install`:
 
 The primary key is `(organization_id, install_id, point, key)`.
 
+**`package_field_value`**: one row for each value of one extension field on one host record (§8.3, PKG-13).
+
+| Column | Type and rule |
+|---|---|
+| `organization_id` | `uuid NOT NULL`, the tenant default and the inline FK of 324, with REFERENCES before DEFAULT |
+| `install_id` | `uuid NOT NULL`. FK `(organization_id, install_id)` to `package_install (organization_id, id)`, `ON DELETE CASCADE` |
+| `record_kind` | `text NOT NULL`. CHECK on the shape `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`, at most 64 characters. `HOST_RECORD_KINDS` in `field_values.py` holds the list |
+| `record_id` | `uuid NOT NULL`, the id of the host row |
+| `field_key` | `text NOT NULL`. CHECK on the field key pattern of `studio_fields` |
+| `field_type` | `text NOT NULL`. CHECK in the 16 types of `studio_fields.FIELD_TYPES` |
+| `value` | `jsonb NOT NULL`. CHECK `octet_length(value::text) <= 65536` |
+| `created_at`, `updated_at` | `timestamptz NOT NULL DEFAULT now()` |
+
+The primary key is `(organization_id, install_id, record_kind, record_id, field_key)`. An index on `(organization_id, record_kind, record_id)` serves the read of one host record. The table has no column that names a member, so the member purge has no row for it. Org deletion cascades. `gateway/package_host/field_values.py` is the one writer.
+
 **`app_grants` is tenant-scoped.** The generated phases scope it. Lines 106 and 107 of `infra/postgres/generated/04_policies.sql` enable and force row level security on it. Line 109 adds the policy `app_grants_tenant_isolation`. `tests/unit/test_package_host_store_r8.py` confirms it on a real database (PKG-5b part 1).
 
 **The install store.** `gateway/package_host/store.py` is the one writer of both tables (PKG-5b part 1). It checks only that the app exists in the bound org, has `format = 'manifest'`, and is not archived. It reads that row of `apps` and never writes `apps`, because `gateway/studio/packages_store.py` owns those rows. The check "may this member use this app" belongs to the install routes of PKG-8 and PKG-12.
@@ -335,10 +350,19 @@ A sub-app is a package with `extends`. Example: an "Installations" package with 
 
 ### 8.3 Field extensions
 
-A package may add fields to a host record, such as "warranty end" on a CRM asset. The values live in one shared layer, keyed by the organization, the host record kind, the host record id and the package. The fields use the types of `ai_studio.md` §3.1. A read and a write go through the host app's door, as the viewer.
+A package may add fields to a host record, such as "warranty end" on a CRM deal. The values live in one shared table, `package_field_value` (§5.1). PKG-13 builds the table and its store. PKG-14 builds the host door that reads and writes the values as the viewer.
 
-The three stores of today (`pm_custom_fields`, `crm_field_defs`, `app_data`) stay. Merging them is a non-goal of this spec.
+**The declaration.** A field is a claim at the point `fields` (§4). Its key is `<record kind>:<field key>`, such as `task:warranty_end`. So the conflict rule of §4 gives one owner for each field on each record kind. The payload is a field spec of `ai_studio.md` §3.1 without its key: `type`, and as options `label`, `many` and `options`. The store parses it with `studio_fields.parse_field_spec`. A spec that sets `required`, `hot` or `to` is refused. PKG-13 also refuses the types `relation` and `file`.
 
+**The record kinds.** The kinds are `task` (a row of `pm_tasks`) and `crm.lead`, `crm.contact`, `crm.company` and `crm.deal` (the native tables of `144_crm.sql`). Each id is a uuid. One tuple, `HOST_RECORD_KINDS`, holds the list.
+
+**A value belongs to an install.** A removal of the install deletes each of its values by the FK cascade (§5.3). A promotion keeps the install id, so it keeps the values (§6.2). A pause or an archive keeps the values. The store writes and reads values of an `active` install only.
+
+**The type check.** The store reads the declaration from the `fields` claim of the same install. It checks the value with `studio_fields.check_value`, the one value check. A value of the wrong type raises `FieldError`, and the message names the field key. A key that the install does not claim raises `FieldNotDeclared`. A value `None` deletes the row. A read leaves out a value whose stored type differs from the current declaration.
+
+**Not in PKG-13.** PKG-13 adds no route, no UI and no flag. The store does not check that the host record exists, or that the viewer may see it. The host door of PKG-14 owns that check. **PKG-14 must close two gaps before it calls the store.** First, `get_values` and `set_value` take no viewer, so each returns or writes a value of any active install in the org, a private install of another member too. The door must pass the ids of the installs that the viewer sees (the visibility rule of §5.2), and the store must refuse an install outside that set. Second, the store counts an install as active by `state` only, while the resolve also hides an install past its `ends_at` and an install whose app is archived. The same set closes this gap. PKG-14 also calls `delete_values` from the delete paths of the host records.
+
+The three stores of today (`pm_custom_fields`, `crm_field_defs`, `app_data`) stay. They hold fields that an admin of the org defines. This table holds fields that a package declares. Merging them is a non-goal of this spec.
 ### 8.4 Overlays
 
 An overlay changes another package within the change points that the target allows. It is how an organization changes an app it already has.
@@ -431,7 +455,7 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **PKG-13** | The shared field-extension layer (§8.3) | Expand-only migration. R8: FORCE RLS holds. A value of the wrong type is refused with the field name | HIGH | AGENT-SAFE |
+| **PKG-13** | The shared field-extension layer (§8.3): the table `package_field_value` of §5.1, the store `gateway/package_host/field_values.py` (`set_value`, `get_values`, `delete_values`), and the generated tenant files. No route, no UI and no flag | Expand-only migration (R6). `test_tenant_coverage.py` passes with a new case. R8 in `tests/unit/test_package_field_values_r8.py`: org B reads and writes none of org A's values, and an unbound session reads and writes none. A value cannot point at an install of another org. A value of the wrong type raises `FieldError` with the field key and writes nothing. An undeclared key raises `FieldNotDeclared`. `remove_install` deletes each value of the install. A pause keeps the values, and `get_values` hides them and `set_value` refuses. A `set_value` after a removal raises `InstallNotFound`. A value `None` deletes the row. `tests/unit/test_package_field_values.py` holds the writer fence | HIGH | AGENT-SAFE |
 | **PKG-14** | Slots on the CRM record sheet and the task panel (§8.1) | A T1 package fills a panel and a button. A T2 block in a host slot is refused at install. The host tests pass unchanged. Visual review | STD | AGENT-SAFE |
 | **PKG-15** | Sub-apps: `extends`, the nav sub-entry, `needs_setup` when the host is missing | A sub-app of CRM shows under CRM. Without CRM it shows its setup card | STD | AGENT-SAFE |
 | **PKG-16** | Overlays (§8.4), and the layer list in the J4 admin view | An overlay hides and renames a job for its scope only. An overlay that changes an action's class is refused | HIGH | AGENT-SAFE |
@@ -517,6 +541,8 @@ Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch
 
 ---
 
+**New with PKG-13:** `packages/acb_common/acb_common/studio_fields.py` (the one value check), `gateway/package_host/field_values.py`, `tests/unit/test_package_field_values.py` and `tests/unit/test_package_field_values_r8.py`.
+
 ## 13. Verification commands
 
 Each slice names its own tests. These bind every WS-PKG PR:
@@ -549,6 +575,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | The resolve shows an install only to the viewers of §5.2, and reads the one share rule | New with PKG-5b part 2: `tests/unit/test_package_host_resolve_r8.py`, `tests/unit/test_package_host_resolve.py` |
 | `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` leaves the org out | New with PKG-5b part 2: `tests/unit/test_package_host_flag.py` |
 | Removal leaves no contribution, and a pause hides the install at the next read | New with PKG-9: `tests/unit/test_package_disposal_r8.py` |
+| Only the field store writes an extension value, and a value of the wrong type is refused | New with PKG-13: `tests/unit/test_package_field_values.py`, `tests/unit/test_package_field_values_r8.py` |
 | A stable region moves only on a member action | New with PKG-18: `src/lib/shell/arrangement.test.ts` |
 
 ---
@@ -565,6 +592,7 @@ The owner accepted PKG-Q1 to PKG-Q5 as recommended on 2026-11-01 (D147).
 | PKG-Q4 | How far may the product rearrange itself for each person? | **It suggests and never moves** a stable region (§9.2) |
 | PKG-Q5 | Which harness lessons go first? | **Replay tests and logged model inputs**, then the goal record. `web_research.md` §8 carries them |
 | PKG-Q6 | May the private claim of a member, for a DIFFERENT app, block an org install? | **OPEN.** PKG-8 decides it before its install route ships. The two options are below |
+| PKG-FQ1 | Does an extension value belong to the install or to the app? | **The install** (default, PKG-13). It matches §0 and the one disposal path of §5.3, and a promotion keeps the install id. The cost: a private install and an org install of one app hold separate values |
 | PKG-Q11 | Who sees the setup row? | **OPEN.** Every member whose resolve says needs_setup (now, only with a setup_href), or the installer and admins only? |
 
 **PKG-Q6 in detail.** Today the private claim blocks the org install, because an org claim conflicts with every claim (§4). So a member can squat on a key, and no route removes the install before PKG-9. PKG-8 picks one of two options:
