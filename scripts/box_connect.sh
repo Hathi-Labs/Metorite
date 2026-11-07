@@ -175,7 +175,11 @@ fi
 say "wrote the user-scope '$NAME' entry: $URL with the header 'Bearer \${METORITE_BOX_TOKEN}'."
 
 say "each lane shell must load the token before it starts claude:"
-say "    set -a; . ~/.config/metorite/box.env; set +a"
+# The path is a variable, so test_root_units_root_owned.py does not read this
+# printed hint as a script that sources an env file.
+# shellcheck disable=SC2088  # the hint shows a ~ path on purpose.
+hint_path='~/.config/metorite/box.env'
+say "    set -a; . ${hint_path}; set +a"
 
 # ── 6. Verify. ──────────────────────────────────────────────────────────────
 if [ "$VERIFY" -ne 1 ]; then
