@@ -690,5 +690,4 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-17 | 1988 | CIV-13 | 1721 |
 | CIV-10 | 1643 | CIV-4c | 1736 |
 | CIV-20 | 2207 | | |
-
 | CIV-19 | 2206 | | |
