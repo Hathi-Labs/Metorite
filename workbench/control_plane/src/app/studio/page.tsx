@@ -22,10 +22,13 @@
  *        modules    /api/workflows/modules* (ModuleStudio)
  */
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { startApp } from "@/lib/studio/startApp";
 import { AppTopBar } from "@/components/AppTopBar";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
@@ -65,11 +68,31 @@ function StudioLibrary() {
     router.replace(qs ? `${pathname}?${qs}` : pathname);
   }
 
+  // The phone bar (MOB-12): Library and Modules are the two tabs of the page,
+  // and New app starts a chat. The bar holds all three on a phone.
+  const { isMobile } = useViewMode();
+  usePhoneBar({
+    active: view.tab === "modules" ? "studio-modules" : "studio-library",
+    // With no Module Studio, Library is the only place, so its tab has no use.
+    hide: view.tabs.length > 1 ? [] : ["studio-library"],
+  });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab === "studio-library") go({ tab: "library" });
+      else if (tab === "studio-modules") go({ tab: "modules" });
+      else if (tab === "studio-new") startApp("", (url) => router.push(url));
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `go` reads the address and the router
+  }, [params, pathname]);
+
   return (
     <div className="flex flex-col h-full">
       <AppTopBar title="Studio" subtitle="Apps, workflows and skills in one library" />
 
-      {view.tabs.length > 1 && (
+      {view.tabs.length > 1 && !isMobile && (
         <Tabs tabs={view.tabs} activeTab={view.tab} onTabChange={(id) => go({ tab: id })} />
       )}
 

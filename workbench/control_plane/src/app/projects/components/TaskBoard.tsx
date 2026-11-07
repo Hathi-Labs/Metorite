@@ -1155,7 +1155,10 @@ export function TaskBoard({
       className="outline-none"
       aria-label="Task board — arrow keys move, Shift extends the selection, Enter opens"
     >
-      {onManageStatuses && groupBy === "status" ? (
+      {/* MOB-11 (task 2004): a phone draws no Statuses row. The status tabs are
+          its first row, and "Manage this project" in the title row holds the
+          Statuses item. Desktop keeps the button. */}
+      {onManageStatuses && groupBy === "status" && !phone ? (
         <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
           <Button
             variant="ghost"
@@ -1202,7 +1205,11 @@ export function TaskBoard({
             if (dir) setChosenTab(stepTab(tabs, shownTab, dir));
           }}
         >
-          <div className="sticky top-0 z-10 border-b border-border bg-background px-3 py-1.5">
+          {/* z-[5], not z-10: the header row (AppTopBar, relative z-10 in the glass
+              look) holds the "Manage this project" menu. An equal layer, later in
+              the tree, painted this strip over the menu's Custom fields and
+              Statuses rows on a phone (MOB-11, task 2004). */}
+          <div className="sticky top-0 z-[5] border-b border-border bg-background px-3 py-1.5">
             <ScrollStrip label="Statuses" className="gap-1.5" revealKey={shownTab ?? ""}>
               {tabs.map((tab) => (
                 <Button

@@ -7,6 +7,7 @@
  * set up yet" state when no provider key is configured.
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect, useState } from "react";
@@ -32,6 +33,8 @@ export default function JoinCallModal({
   meetingId,
   defaultTitle,
 }: JoinCallModalProps) {
+  // A bar tap closes the window (MOB-9).
+  useCloseOnBarTap(onClose);
   const [urls, setUrls] = useState("");
   const [busy, setBusy] = useState(false);
   const [configured, setConfigured] = useState<boolean | null>(null);
