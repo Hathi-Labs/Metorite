@@ -22461,7 +22461,11 @@ changes the egress pin in `acb_skills/egress.py`, and each change adds a fence.
 
 **Status: SPECIFIED, not built.** Task 1959. Owner request in chat, 2026-11-07: "design and
 create good signatures for our email." The orchestrator checked the anchors at `origin/main`
-`f7904d365` on 2026-11-07. Re-check each one at dispatch.
+`f7904d365` on 2026-11-07. A spec-auditor checked them again on the same day, and round 2 of
+this section applies its corrections. Re-check each anchor at dispatch.
+
+**Non-goals.** No write-back to Gmail in v1 (SG-9 is later). No icon images for links. No
+count of opens. No change to the table `email_assistant_settings`.
 
 ### 23.0 The answer, in seven rules
 
@@ -22470,47 +22474,53 @@ create good signatures for our email." The orchestrator checked the anchors at `
 2. **One renderer draws every signature.** The preview, the send, the draft and the chat call
    the same Python function. No TypeScript copy exists.
 3. **Sent mail never carries a `data:` image.** The member uploads a logo or a photo once. The
-   server re-encodes it and serves it from a signed public https address that lives for ever.
+   server re-encodes it and serves it from a public https address that lives for ever.
 4. **An admin sets the company signature once.** Each member's signature fills from it. The
    member adds only the personal fields.
 5. **A reply can carry a short signature.** Each mailbox chooses full, short or none for
    replies and forwards.
 6. **The chat makes and changes a signature,** through one card that shows the preview.
-7. **Nothing changes for a mailbox that has a signature today.** Its row stays in the mode
-   `custom`, and the send path gives the same bytes as before.
+7. **Nothing changes for a mailbox that has a signature today.** A mailbox with no row in the
+   new signature table resolves as `custom`, with no backfill. The send gives the same bytes
+   as before.
 
 ### 23.1 Measured state (at `f7904d365`)
 
 | Fact | Anchor |
 |---|---|
 | One column holds the signature, HTML or text, one row for each mailbox | `infra/postgres/20_email_assistant_settings.sql:14` (`email_assistant_settings.signature`) |
-| That table has no `organization_id` and no RLS. The `email_accounts` foreign key, `_tenant_session` and `_assert_account_owner` isolate it | `routes/email/automation/assistant.py:281-284` |
-| The helpers place the signature under the new text and above the quote. `signature.py` has no route | `routes/email/signature.py:45-141` (`sign_html`, `build_signed_bodies`) |
-| Four places read the signature: the send, the forward, the draft write, and the composer seed | `transport/send.py:211-221`, `transport/forward.py:287-293`, `automation/drafting.py:70-94`, `GET /email/assistant/settings` (`assistant.py:275`) read by `lib/signature.ts:35` |
+| The source DDL of that table has no `organization_id` and no RLS. The MT-1b generated phases add `organization_id` and FORCE RLS in production | `infra/postgres/generated/01_add_columns.sql:250`, `03_constraints.sql:714-721`, `04_policies.sql:435-438` |
+| The helpers place the signature under the new text and above the quote. `signature.py` has no route | `routes/email/signature.py:119` (`sign_html`), `:141` (`build_signed_bodies`) |
+| Eight raw SQL reads of the signature exist, in seven files (the list is in 23.3.3) | `grep -rn "signature" apps/services/gateway/gateway` for `email_assistant_settings` |
 | Replies, forwards and new mail use the same signature | No reply column exists |
 | The editor turns an uploaded image into a `data:` URI | `SignatureEditor.tsx:259-271` (`readAsDataURL`), `:110-125` (`allowBase64: true`) |
 | DOMPurify cleans the HTML only when the editor loads it. The save sends the raw HTML. The server stores it as is | `SignatureEditor.tsx:42-51`, `:198`. `assistant.py:475` |
-| No route serves a file at a public URL with no sign-in | `gateway/main.py:891-926` (`PUBLIC_ROUTES`), `workbench/control_plane/src/proxy.ts:48-100` |
-| The Graph webhook URL carries the organization and an HMAC with its own purpose. This is the idiom for a public URL that binds a tenant | `transport/sync.py:434-442`, `transport/signing.py:287-294` |
-| One module re-encodes an upload: it sniffs the type before the decoder, then decodes and re-encodes. SVG never reaches the decoder | `gateway/avatar.py:81-160` (`sniff`, `normalise`) |
+| No route serves a file at a public URL with no sign-in. `PUBLIC_ROUTES` is a set of exact route templates, not a prefix list. `api.metorite.com` reaches the gateway direct through Caddy, so the workbench `proxy.ts` is not on this path | `gateway/main.py:891-974`, `acb_auth/deps.py:1337` (`_route_template`), `deploy/hostinger/caddy/Caddyfile:47` |
+| The email router is feature-gated, with an `exempt` list for the routes that need no feature | `routes/email/core.py:73-76` (`require_feature_router("email", exempt=[...])`) |
+| A public route binds a tenant with `tenant_session(org)` after its own check, as the Graph webhook does | `transport/sync.py:~415`, `packages/acb_common/acb_common/db.py:510` |
+| `signing.py` keys each MAC with `gateway_session_secret`. A rotation of that secret makes every old MAC fail | `transport/signing.py:287-294` (`_mac`, `_secret`) |
+| One module re-encodes an avatar: it sniffs the type before the decoder, then decodes and re-encodes in the request process, with no time bound. SVG never reaches the decoder | `gateway/avatar.py:81-160` (`sniff`, `normalise`) |
+| One module confines a child process that parses a hostile file: Landlock, seccomp and limits. The OCR child and the web reader use it | `packages/acb_skills/acb_skills/child_confine.py`, `attachment_ocr_worker.py` |
+| The server has no HTML sanitizer for mail. `pdf_render.py` holds a standard-library allowlist parser | `gateway/pdf_render.py:423` (`_Sanitizer`) |
 | The company logo exists, as base64 in `org_settings` under the key `branding`. Writes need `admin:settings:manage` | `routes/settings.py:2215`, `:2334-2349`. `infra/postgres/234_org_settings_per_org.sql` |
 | The organization has a name. It has no address, phone or website | `organization.display_name` (`130_org_access_control.sql:37`) |
 | The member profile holds the name, the title and the phone | `people.name`, `preferred_name`, `title`, `phone`, `links` (`172_people_profile.sql`) |
 | The chat changes the signature through `update_assistant_settings`, with a card. A held run cannot change it | `apps/agents/agent-email-assistant/agents.py:4706-4710`, `:4509`, `:5044` |
-| The Gmail scopes include `gmail.modify` and `gmail.settings.basic`. Nothing calls `sendAs` | `email_ingestion/providers/gmail.py:314-317` |
+| The Gmail scopes include `gmail.modify` and `gmail.settings.basic`. Nothing calls `sendAs`. `list_filters` answers `[]` on a 403, which is the pattern for a settings read | `email_ingestion/providers/gmail.py:314-317`, `:2418-2432` |
+| `users.settings.sendAs.list` accepts `gmail.readonly`, `gmail.modify`, `gmail.settings.basic` or `mail.google.com` | Gmail API reference, read 2026-11-07 |
 | Microsoft Graph has no API that reads or writes an Outlook signature | Microsoft 365 developer forum, 2024 to 2025. Microsoft points vendors to the Outlook add-in method instead |
 
 ### 23.2 Decisions
 
 | Id | Decision | Why |
 |---|---|---|
-| **D-EM-64** | A mailbox signature has a mode: `custom`, `template` or `company`. Each row that exists today is `custom`. `custom` keeps the HTML in `email_assistant_settings.signature`, as now | Rule 7. R6 forbids a rename in place, so the old column stays the store of the free HTML |
+| **D-EM-64** | A mailbox signature has a mode: `custom`, `template` or `company`. A mailbox with no row in the new signature table is `custom`, with no backfill. `custom` keeps the HTML in `email_assistant_settings.signature`, as now | Rule 7. R6 forbids a rename in place, so the old column stays the store of the free HTML |
 | **D-EM-65** | One server renderer draws `template` and `company` signatures, from a layout id and a field map. The UI preview calls a preview route. It never renders by itself | One answer to "what does my signature look like". The chat card and the send must show the same bytes |
-| **D-EM-66** | One resolver, `resolve_signature(db, account_id, kind)` with `kind` in `new`, `reply`, `forward`, gives the signature to each of the four readers in 23.1. It renders `company` signatures at call time | An admin change then reaches each member at once, with no write into another member's row |
-| **D-EM-67** | Sent mail carries no `data:` image. The member uploads an image once. `gateway/avatar.py` (extended, not copied) re-encodes it, a tenant table holds it, and a public URL serves it. The URL never changes and the image is never deleted while an organization exists | Gmail does not draw `data:` images, and some filters quarantine them. A mail that went out last year still shows its logo |
-| **D-EM-68** | The public image URL carries the organization, the image id and an HMAC with the purpose `signature-image`, as the Graph webhook URL does. The route checks the HMAC, binds that tenant, and reads under RLS | R5: no tenant comes from input without a MAC. The design needs no `SECURITY DEFINER` function |
+| **D-EM-66** | One resolver, `resolve_signature(db, account_id, kind)` with `kind` in `new`, `reply`, `forward`, gives the signature to each reader in 23.3.3. It renders `company` signatures at call time. No code outside `signature.py` selects `signature` from `email_assistant_settings` | An admin change then reaches each member at once, with no write into another member's row. One reader that skips the resolver sends the wrong signature |
+| **D-EM-67** | Sent mail carries no `data:` image. The member uploads an image once. A confined child process decodes and re-encodes it, a tenant table holds it, and a public URL serves it. The URL never changes, and nothing deletes the image while the organization exists | Gmail does not draw `data:` images, and some filters quarantine them. A mail that went out last year still shows its logo. The input is hostile, and a 12,000-px source can decode to 144 megapixels, so the decoder runs where a time and memory bound can stop it |
+| **D-EM-68** | The public image URL carries the organization and a random token of 256 bits that the row stores. The route binds `tenant_session(org)` and selects the one row whose token matches, under RLS. It uses no MAC | The token is the capability, and RLS stops a token of one organization under the id of another. A MAC keyed by `gateway_session_secret` dies when that secret rotates, which breaks every logo already sent. A dedicated never-rotated key would be a second secret to keep for ever. A stored token needs neither. The design needs no `SECURITY DEFINER` function |
 | **D-EM-69** | The company signature is one key, `email_signature_brand`, in `org_settings`. `admin:settings:manage` writes it. Its logo starts as a copy of the Branding logo | The per-organization settings seam exists. A new table would be a second one |
-| **D-EM-70** | The server cleans each signature HTML on save, with one allowlist. Each `src` and `href` must be https, `mailto:` or `tel:`. The save converts a `data:` image into a hosted image first | Today nothing cleans the HTML on the server. The chat card will draw it, so the server must own the rule |
+| **D-EM-70** | The server cleans each signature HTML on save, with one allowlist in `signature.py`, built on the standard-library `html.parser` as `pdf_render._Sanitizer` is. No new dependency. Each `src` and `href` must be https, `mailto:` or `tel:`. The save converts a `data:` image into a hosted image first. The client DOMPurify list in `SignatureEditor.tsx` changes to the same schemes | Today nothing cleans the HTML on the server. The chat card will draw it, so the server must own the rule. Two lists that differ let the editor show what the server then removes |
 | **D-EM-71** | A mailbox has `reply_mode`: `full`, `short` or `none`. `short` is the `compact` layout of the same fields. Each existing mailbox starts at `full` | Outlook offers a second signature for replies. Rule 7 keeps today's mail the same |
 | **D-EM-72** | The chat gets `get_signature` (a read, no card) and `set_signature` (one card with the before and after preview). A held run refuses `set_signature` | Chat parity. A signature changes outbound mail, so it stays out of the held set, as `signature` is today |
 
@@ -22574,38 +22584,87 @@ The preview shows light, dark and phone width.
   - `company`: it reads `email_signature_brand`, merges the member's personal fields, and
     renders.
   - For `kind` `reply` or `forward`, it applies `reply_mode`.
-- The four readers in 23.1 call the resolver. `build_signed_bodies` and `sign_html` keep their
-  signatures.
+- The resolver is async and runs in the send path. `load_org_setting` is sync, so the resolver
+  reads `org_settings` through the open session, or wraps the call in `asyncio.to_thread`.
+- `build_signed_bodies` and `sign_html` keep their signatures.
 - `POST /email/signature/preview` renders a layout and a field map for the form. It writes
   nothing.
 
+**The readers.** Each one calls the resolver in SG-2 (anchors at `f7904d365`):
+
+| Reader | Anchor | `kind` |
+|---|---|---|
+| The send | `transport/send.py:216` | Of the draft |
+| The forward | `transport/forward.py:290` | `forward` |
+| The meeting-notes mail | `routes/notes/dispatch.py:319` | `new` |
+| `_account_signature`, with its eight callers and `held_card.py:949` | `automation/drafting.py:86-94` | Of the draft |
+| The second raw read beside `build_signed_bodies` | `automation/drafting.py:4100` | Of the draft |
+| `_load_assistant_about`, which feeds `step.signature`, `actions.py:748`, `:816` and `followups.py:248` | `automation/assistant.py:69-74` | Of the step |
+| `GET /email/assistant/settings` and the PUT answer, read by `lib/signature.ts:35` | `automation/assistant.py:286`, `:332-337`, `:517-518` | `new`, plus `reply` for SG-5 |
+| The reply card subselect | `automation/reply_card.py:95` | `reply` |
+
+**The same string reaches the strip.** `strip_signature_text` and `_holds_signature` look for
+the signature text in a draft. The draft write and the send must resolve with the same `kind`.
+Otherwise the send cannot find the text, and the mail carries two signatures or none.
+
 #### 23.3.4 Hosted images
 
-**The table.** `email_signature_images`: `id`, `organization_id` (FORCE RLS), `created_by`,
-`kind` (`logo` or `photo`), `content_type` (`image/png` or `image/jpeg`), `width`, `height`,
-`bytes` (`bytea`, at most 200 KB), `sha256`, `created_at`, `retired_at`. The pair
-`(organization_id, sha256)` is unique, so the table holds the same logo once. An organization holds
-at most 100 images.
+**The table.** `email_signature_images` holds these columns:
 
-**The upload.** `POST /email/signature/images` takes one file.
+- `id`, `organization_id`, `created_by`, `created_at`, `retired_at`.
+- `kind` (`logo` or `photo`), `content_type` (`image/png` or `image/jpeg`), `width`, `height`.
+- `bytes` (`bytea`, at most 200 KB) and `sha256`.
+- `public_token`: 256 random bits, URL-safe and unique.
 
-1. `gateway/avatar.py` sniffs the type before the decoder sees the bytes. Only JPEG, PNG and
-   WebP pass.
-2. A new `normalise_logo()` beside `normalise()` keeps the aspect ratio. It scales the long
-   edge to at most 480 px, which is twice the largest display size. It re-encodes to PNG, or
-   to JPEG for a photo with no transparency. EXIF and trailing bytes do not survive.
+The rules of the table:
+
+- The migration enables and forces RLS with one `USING` and `WITH CHECK` policy, in the shape
+  of `341_crm_change_log.sql`. The MT-1b generated phases do not cover a new table.
+- The pair `(organization_id, sha256)` is unique, so the table holds the same logo once.
+- An organization holds at most 100 images, and one member uploads at most 20.
+
+**The upload.** `POST /email/signature/images` takes one file. A member who may send from a
+mailbox of the organization may upload.
+
+1. `gateway/avatar.py` sniffs the type before any decoder sees the bytes. Only JPEG, PNG and
+   WebP pass. `sniff()` takes a `what=` text, so its refusal names a signature image and not
+   a profile picture.
+2. A new child worker decodes and re-encodes, confined by `child_confine.py`, with the OCR
+   child as its model. The parent stops it after 10 seconds, and the child sets a memory
+   limit. The child:
+   - It keeps the aspect ratio for a logo. It crops square for a photo, as `normalise()` does.
+   - It scales the long edge to at most 480 px. It computes the scale from points, not pixels.
+     MuPDF opens a 1000x400 px image as 750x300 points.
+   - It renders with `alpha=True` to the exact integer size with `Rect.torect`, because
+     `Matrix(scale, scale)` rounds outward.
+   - It writes PNG, or JPEG for a photo with no transparency. EXIF and trailing bytes do not
+     survive.
+   - When the output passes 200 KB, it steps the edge down to 360 px and then 240 px. Then it
+     refuses with a plain message.
+   - It returns the real pixmap width and height. It also returns the share of dark,
+     transparent pixels, for the dark-logo check.
 3. The route writes the row, and returns the id and the public URL.
 
-**The public route.** `GET /email/signature-image/{org}/{image_id}/{mac}.{ext}`.
+**Retire.** `DELETE /email/signature/images/{id}` sets `retired_at`. The uploader or an admin
+may call it. A retired image leaves the picker and stays served.
 
-- The prefix joins `PUBLIC_ROUTES` and the proxy's public paths, as the webhook prefix does.
-- The route checks the MAC with the purpose `signature-image`, binds `org`, and reads the row
-  under RLS.
-- A bad MAC and a missing row give the same 404, so a caller cannot probe ids.
+**The public route.** `GET /email/signature-image/{org}/{token}.{ext}`.
+
+- Add the exact route template, as FastAPI registers it, in three places:
+  - `PUBLIC_ROUTES` in `gateway/main.py`.
+  - The `exempt` list in `routes/email/core.py:73-76`.
+  - `GATED_ROUTERS["gateway.routes.email"]` in `tests/unit/test_org_access_enforcement.py`.
+- Caddy and `proxy.ts` need no change.
+- The route checks that `org` is a UUID, then binds `tenant_session(org)` and selects the row
+  whose `public_token` matches, under RLS. It never uses `get_db`.
+- `ext` must match the stored `content_type`, `png` or `jpg`.
+- A bad organization, a bad token and a wrong `ext` give the same 404, so a caller cannot probe.
 - A retired image is still served.
 - The headers: the stored `Content-Type`, `Cache-Control: public, max-age=31536000,
   immutable`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src
   'none'`, and `Cross-Origin-Resource-Policy: cross-origin`.
+- The route does one small read for each fetch that misses a cache. The immutable header lets
+  Gmail and the browsers keep the image, so the load stays small.
 - The base URL is `GATEWAY_PUBLIC_URL`, the base of the Graph webhook URL. With no base URL,
   the upload refuses and says why.
 
@@ -22622,7 +22681,8 @@ image in your signature may not show in Gmail" with a one-click "Fix it".
 - **Where.** Settings → Organization, a new "Email signature" section beside Branding. It needs
   `admin:settings:manage`.
 - **What the admin sets.** The layout, the logo, the accent colour, the website, the address,
-  the links and the legal line. One click copies the Branding logo into a hosted image.
+  the links and the legal line. One click sends the Branding logo through the upload child
+  into a hosted image. It never copies the bytes as they are.
 - **What a member sees.** A mailbox with no signature offers "Use the company signature" as
   its first choice, with a preview of the member's own fields. One click sets the mode
   `company`.
@@ -22635,7 +22695,8 @@ image in your signature may not show in Gmail" with a one-click "Fix it".
 #### 23.3.6 New mail, replies and forwards
 
 `reply_mode` sits beside the mode. The composers ask the resolver with the right `kind`, so a
-reply seeds the short signature. The send upgrades the text it finds to HTML, as today.
+reply seeds the short signature. The send upgrades the text it finds to HTML, as today. The
+draft write and the send pass the same `kind` (23.3.3), so the send finds the text it seeded.
 
 #### 23.3.7 The chat
 
@@ -22648,15 +22709,18 @@ reply seeds the short signature. The send upgrades the text it finds to HTML, as
 
 - The card draws the preview from the cleaned HTML, in a sandboxed frame with no script.
 - `update_assistant_settings(signature=...)` stays, for free HTML. Its card does not change.
-- A held run refuses `set_signature` (D-EM-72).
+- A held run refuses `set_signature` (D-EM-72). Add it to the refusal beside `_held_settings`
+  (`agents.py:5044`).
 - The new tools carry the chat tool fence set: the claim strings, the pack summary and the
-  pinned tables.
+  pinned tables. They join the email pack, so check the production `TOOL_PACKS` list.
 
 #### 23.3.8 Bring the old one in
 
-- **Gmail.** "Import from Gmail" calls `users.settings.sendAs.list` with the `gmail.modify`
-  scope that the app holds. It takes the `signature` of the entry that matches the mailbox
-  address. The server cleans it and saves it as `custom`. No new scope and no new consent.
+- **Gmail.** "Import from Gmail" calls `users.settings.sendAs.list`. The method accepts
+  `gmail.modify` and `gmail.settings.basic`, and the app holds both. It takes the `signature`
+  of the entry that matches the mailbox address. A 403 gives "nothing to import", as
+  `list_filters` answers `[]`. The server cleans the HTML and saves it as `custom`. No new
+  scope and no new consent.
 - **Outlook.** Graph has no signature API. The form says: "Open Outlook on the web, go to
   Settings, Signatures, copy your signature, and paste it here." The paste goes through the
   same cleaning, and its `data:` images become hosted images.
@@ -22678,15 +22742,23 @@ reply seeds the short signature. The send upgrades the text it finds to HTML, as
 
 ### 23.4 Tenancy (R5) and safety
 
-- `email_signature_images` and the new signature table (SG-2) carry `organization_id` with
-  FORCE RLS, and use `_tenant_session`.
-- The public route binds the tenant only from a valid MAC (D-EM-68).
+- `email_signature_images` and the new signature table (SG-2) carry their own
+  `organization_id`, with ENABLE and FORCE RLS and one policy, and use `_tenant_session`.
+- The public route binds the tenant from the URL, and returns a row only when the 256-bit token
+  matches under that tenant's RLS (D-EM-68). The id of the organization opens nothing by itself.
 - The key of the new signature table is `account_id`, and each route calls
   `_assert_account_owner(..., level="send")`, as `PUT /email/assistant/settings` does.
 - The company signature is per organization in `org_settings`. A member reads it, and only
   `admin:settings:manage` writes it.
-- The re-encode runs on bytes that a member sent. It uses the avatar module's sniff, its size
-  cap and its edge cap, and it runs the decoder the way the avatar upload runs it.
+- The re-encode runs on bytes that a member sent. The sniff and the 2 MB cap run first, in the
+  request. The decode runs in the confined child, with a time and a memory bound (D-EM-67).
+
+**Migrations (R1).** SG-1 and SG-2 each add one migration. The implementer takes the next free
+number at build time. The source is a fresh `origin/main` listing of `infra/postgres`, plus
+the open pull requests. The pull request body names the number.
+
+SG-2 takes its number after SG-1 merges. `bash scripts/premerge.sh` checks it again right
+before the merge.
 
 ### 23.5 Flags
 
@@ -22697,30 +22769,52 @@ its logo after a flag change.
 
 ### 23.6 Slices
 
-| Slice | What | Tier | Depends on | Task |
-|---|---|---|---|---|
-| **SG-0** | This section, and the slice tasks | LOW | — | 1959 |
-| **SG-1** | Hosted images: the table, `normalise_logo`, the upload route, the signed public route, the server allowlist (D-EM-70), the editor uploads in place of `data:` | HIGH (migration, public route) | — | 2177 |
-| **SG-2** | The renderer, the five layouts, the signature table (mode, layout, fields, `reply_mode`), the resolver at the four readers, the preview route | HIGH (migration, the send path) | SG-1 | 2178 |
-| **SG-3** | The member form: the layout gallery, the fields from the profile, the live preview in light, dark and phone width, the reply choice. An owner preview | STANDARD | SG-2 | 2179 |
-| **SG-4** | The company signature: the `org_settings` key, the admin section, "Use the company signature" | STANDARD | SG-2 | 2180 |
-| **SG-5** | Replies and forwards: the composers ask for `kind`, and the short signature seeds a reply | STANDARD | SG-2 | 2181 |
-| **SG-6** | The chat: `get_signature`, `set_signature`, the preview card, the fence set | STANDARD | SG-2 | 2182 |
-| **SG-7** | Import: Gmail `sendAs`, the Outlook paste | STANDARD | SG-1 | 2183 |
-| **SG-8** | The live check: the owner sends a signature with a logo to own addresses, and reads it in Gmail web, Outlook web, Outlook desktop and a phone app | OWNER | SG-3 | 2184 |
-| **SG-9** | Later: write the signature back to Gmail | Later | SG-7 | 2185 |
+| Slice | What | Tier | Gate | Depends on | Task |
+|---|---|---|---|---|---|
+| **SG-0** | This section, and the slice tasks | LOW | AGENT-SAFE | — | 1959 |
+| **SG-1** | Hosted images: the table, the confined upload child, the upload and retire routes, the public route in its three lists, the server allowlist (D-EM-70), the editor uploads in place of `data:` | HIGH (migration, public route) | AGENT-SAFE, dark | — | 2177 |
+| **SG-2** | The renderer, the five layouts, the signature table (mode, layout, fields, `reply_mode`), the resolver at each reader of 23.3.3, the grep fence, the preview route | HIGH (migration, the send path) | AGENT-SAFE, dark | SG-1 | 2178 |
+| **SG-3** | The member form: the layout gallery, the fields from the profile, the live preview in light, dark and phone width, the reply choice. An owner preview | STANDARD | AGENT-SAFE, dark | SG-2 | 2179 |
+| **SG-4** | The company signature: the `org_settings` key, the admin section, "Use the company signature" | STANDARD | AGENT-SAFE, dark | SG-2 | 2180 |
+| **SG-5** | Replies and forwards: the composers ask for `kind`, and the short signature seeds a reply | STANDARD | AGENT-SAFE, dark | SG-2 | 2181 |
+| **SG-6** | The chat: `get_signature`, `set_signature`, the preview card, the fence set | STANDARD | AGENT-SAFE, dark | SG-2 | 2182 |
+| **SG-7** | Import: Gmail `sendAs`, the Outlook paste | STANDARD | AGENT-SAFE, dark | SG-1 | 2183 |
+| **SG-8** | The live check: the owner sends a signature with a logo to own addresses, and reads it in Gmail web, Outlook web, Outlook desktop and a phone app | OWNER | OWNER-GATE (outbound mail) | SG-3 | 2184 |
+| **SG-9** | Later: write the signature back to Gmail | Later | — | SG-7 | 2185 |
+
+The flag flip of `EMAIL_SIGNATURE_TEMPLATES_ORGS` needs the `enforcement-flip` grant. The
+person who flips it names the flag and the box in the same message.
 
 ### 23.7 Fences (R7)
 
 | Rule | Test |
 |---|---|
 | Each layout obeys the render contract, and the renderer escapes each field | `tests/unit/test_email_signature_render.py` (SG-2) |
-| A `custom` row resolves to the stored bytes unchanged. Each of the four readers calls `resolve_signature` | `tests/unit/test_email_signature_resolver.py` (SG-2) |
-| An admin change reaches a `company` mailbox at the next resolve | `tests/unit/test_email_signature_resolver.py` (SG-4) |
-| Organization B cannot read an image of organization A. A bad MAC gives 404. The route serves a retired image | `tests/unit/test_email_signature_images_r8.py` (SG-1, R8) |
-| The allowlist removes script, `on*` attributes, `javascript:` and `data:` URLs | `tests/unit/test_email_signature_sanitize.py` (SG-1) |
+| A mailbox with no row resolves to the stored `custom` bytes unchanged | `tests/unit/test_email_signature_resolver.py` (SG-2) |
+| No code outside `signature.py` selects `signature` from `email_assistant_settings` (a source scan) | `tests/unit/test_email_signature_resolver.py` (SG-2) |
+| The draft write and the send resolve with the same `kind`, and a reply carries one signature | `tests/unit/test_email_signature_resolver.py` (SG-2, SG-5) |
+| An admin change reaches a `company` mailbox at the next resolve, and a member cannot write the brand key | `tests/unit/test_email_signature_resolver.py` (SG-4) |
+| Organization B cannot read an image of organization A. A token of A under the id of B gives 404. A bad token gives 404. The route serves a retired image | `tests/unit/test_email_signature_images_r8.py` (SG-1, R8) |
+| The public route is in `PUBLIC_ROUTES`, in the email `exempt` list and in `GATED_ROUTERS` | `tests/unit/test_org_access_enforcement.py`, `tests/unit/test_default_deny_auth.py` (SG-1) |
+| The upload refuses SVG and a non-image before the child runs. The parent stops a child that passes its time bound, and the route answers with a plain error. The route refuses a member past 20 images | `tests/unit/test_email_signature_images.py` (SG-1) |
+| The allowlist removes script, `on*` attributes, `javascript:`, `http:` and `data:` URLs | `tests/unit/test_email_signature_sanitize.py` (SG-1) |
+| The editor no longer calls `readAsDataURL` | `SignatureEditor.test.tsx` (SG-1, vitest) |
 | `set_signature` needs a card, and a held run refuses it | `tests/unit/test_email_signature_chat.py` (SG-6) |
 | The signature still goes under the new text and above the quote | `tests/unit/test_email_signature_placement.py` (exists) |
+
+**Verify with** (each slice runs the lines for its files):
+
+```
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8 needs the DB
+uv run pytest tests/unit/test_email_signature_sanitize.py tests/unit/test_email_signature_images.py \
+  tests/unit/test_email_signature_images_r8.py tests/unit/test_email_signature_placement.py \
+  tests/unit/test_org_access_enforcement.py tests/unit/test_default_deny_auth.py
+uv run pytest tests/unit/test_email_signature_render.py tests/unit/test_email_signature_resolver.py
+uv run ruff check apps/services/gateway
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
+uv run python scripts/affected_tests.py --run
+bash scripts/ci_local.sh && bash scripts/premerge.sh
+```
 
 ### 23.8 Acceptance
 
@@ -22737,16 +22831,22 @@ its logo after a flag change.
   went out before, unless the old host redirects. Treat `GATEWAY_PUBLIC_URL` as permanent once
   SG-1 is live.
 - **A company change between a draft and its send.** The draft holds the old plain text, so
-  the send may not find it to upgrade it to HTML. SG-4 adds a test, and the send must give one
-  signature, never two.
+  the send may not find it to upgrade it to HTML. SG-2 and SG-4 add a test, and the send must
+  give one signature, never two.
+- **The token is the capability.** Anybody who holds an image URL can fetch that image, as with
+  any logo on a website. The token never leaves in anything but a signature, and the image is
+  public by intent.
 - **Outlook desktop** draws images at 96 DPI and ignores rounded corners. The photo layout is
   square there. The explicit `width` and `height` keep the size right.
 - **A client that does not proxy images** shows the recipient's address to our server when it
   loads the logo. One URL for each image keeps that to the same fact any company logo gives.
-- **Board finding.** `email_assistant_settings` has no `organization_id` and no RLS. This plan
-  does not change it (CLAUDE.md §5). Task 2186 holds it.
 - **Board finding.** Today the server stores signature HTML with no cleaning. SG-1 closes it
   for each new save.
+- **Board finding.** `gateway/avatar.py` decodes a member's upload in the request process, with
+  no time bound. SG-1 does not change it. The avatar is a 256-px square, but the source can be
+  12,000 px on a side. Task 2186 holds it.
+- **Withdrawn (round 2).** Round 1 said `email_assistant_settings` has no `organization_id` and
+  no RLS. The MT-1b generated phases add both, so that finding was wrong.
 
 ### 23.10 Owner questions
 
