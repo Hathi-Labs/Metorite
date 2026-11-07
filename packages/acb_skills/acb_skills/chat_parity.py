@@ -196,8 +196,19 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/tasks/plan/apply": "my_tasks_plan_project",
     # ── Calendar ──
     "GET /api/projects/my/calendar/estimate-stats": "my_tasks_estimate_stats",
+    # CAL-1a (task 1675): the `calendar-day` pack puts these planner tools in the main
+    # chat. The `{}` key covers plan-today, replan-today and rollover-today
+    # (my_tasks_plan_day, my_tasks_replan_day, my_tasks_rollover). Fence:
+    # tests/unit/test_calendar_day_pack.py.
     "POST /api/tasks/calendar/{}": "my_tasks_plan_day",
     "PUT /api/tasks/calendar/day-state": "my_tasks_set_one_thing",
+    # CAL-2 (task 1676): the CALENDAR fields of the settings (the standing instruction,
+    # the working hours, capacity, buffer, focus run, break, lunch, energy windows,
+    # auto rollover, time zone). The model choices, the sync flags, capture_dedup and
+    # day_templates are not here: the tool has no parameter for them. Fence:
+    # tests/unit/test_calendar_settings_tools.py.
+    "GET /api/tasks/settings": "my_tasks_get_calendar_settings",
+    "PUT /api/tasks/settings": "my_tasks_update_calendar_settings",
     # ── Email ──
     "DELETE /api/email/accounts/{}": "update_account",
     "DELETE /api/email/knowledge/{}": "delete_knowledge",
@@ -634,7 +645,6 @@ DEBT: dict[str, str] = {
     "DELETE /api/studio/packages/{}": "P-9",
     "GET /api/studio/packages/{}/delete-preview": "P-9",
     # ── Tasks ──
-    "GET /api/tasks/settings": "P-1",
     "POST /api/tasks/ai/backfill-context": "P-1",
     "POST /api/tasks/capture/from-email": "P-1",
     "POST /api/tasks/capture/from-email/create": "P-1",
@@ -644,7 +654,6 @@ DEBT: dict[str, str] = {
     "POST /api/tasks/capture/from-reply/detect": "P-1",
     "POST /api/tasks/items/{}/enrich": "P-1",
     "POST /api/tasks/items/{}/suggest-title": "P-1",
-    "PUT /api/tasks/settings": "P-1",
     # ── Calendar ──
     "GET /api/tasks/calendar/day-state": "P-1",
     # ── Email ──
@@ -1053,7 +1062,7 @@ DEBT: dict[str, str] = {
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
     "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
-    "tasks": 11,
+    "tasks": 9,
     "calendar": 1,
     "email": 13,
     "crm": 74,
