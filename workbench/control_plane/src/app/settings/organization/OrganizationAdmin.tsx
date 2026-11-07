@@ -519,6 +519,13 @@ export default function OrganizationAdmin() {
               >
                 Roles
               </Link>
+              {/* SW-31b: the written rules for agents (Settings → Agents). */}
+              <Link
+                href="/settings/agents"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Agents
+              </Link>
               <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
                 Invite
               </Button>

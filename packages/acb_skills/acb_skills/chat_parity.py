@@ -112,6 +112,8 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/health", "shell"),
     ("/api/actions", "shell"),
     ("/api/settings", "settings"),
+    # SW-31b: Settings, Agents, Guidance. The gateway serves `/agent-guidance`.
+    ("/api/agent-guidance", "settings"),
     ("/api/auth", "settings"),
     ("/api/accounts", "settings"),
     ("/api/admin", "admin"),
@@ -953,6 +955,10 @@ DEBT: dict[str, str] = {
     "POST /api/shell/intent": "P-7",
     "PUT /api/shell/feed/prefs": "P-7",
     # ── Settings and the assistant profile ──
+    # SW-31b: Settings, Agents, Guidance reads the versions of a scope and
+    # saves a new version. The chat tool is SW-31c (task 1531).
+    "GET /api/agent-guidance/history": "P-8",
+    "POST /api/agent-guidance": "P-8",
     "DELETE /api/auth/me/assistant-profile": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview/{}": "P-8",
@@ -1062,7 +1068,7 @@ DEBT_CEILING: dict[str, int] = {
     "agents": 20,
     "chat": 25,
     "shell": 15,
-    "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
+    "settings": 28,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531).
     "admin": 36,
     "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
     "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2.
