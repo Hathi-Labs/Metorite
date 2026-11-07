@@ -938,6 +938,16 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_agent_questions_r8.py.
     agent_questions_orgs: str = ""
 
+    # ── Waiting: what waits on you (WS-AP AP-1a) ────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /shell/waiting` and `GET /shell/waiting/count`
+    # answer 404. The one reader is
+    # `gateway.routes.shell.waiting.waiting_allowed`. A SIGHUP reload applies
+    # a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_waiting_seam_r8.py.
+    waiting_orgs: str = ""
+
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

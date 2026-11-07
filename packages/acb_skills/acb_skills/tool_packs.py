@@ -1982,8 +1982,15 @@ def choose(
             victim = min(olds, key=_sticky_key).slug
             evicted.append(victim)
         else:
+            # Task 1573: the open app is only a hint. A pack that came in by
+            # the surface alone leaves before a pack the member's words asked for.
+            hinted = [slug for slug in order if layers.get(slug) == "surface"
+                      and matched_layer(slug, turn.words) is None]
             replacing = [slug for slug in order if _replaces_specialist(slug)]
-            victim = replacing[-1] if replacing and len(order) > 1 else order[-1]
+            if hinted and len(hinted) < len(order):
+                victim = hinted[-1]
+            else:
+                victim = replacing[-1] if replacing and len(order) > 1 else order[-1]
             skipped.append(victim)
         order.remove(victim)
         layers.pop(victim, None)

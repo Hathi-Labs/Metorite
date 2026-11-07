@@ -223,6 +223,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-AP AP-1a: WAITING_ORGS opens the list of what waits on a member for
+    # an org. The list reads held writes, chat questions, app requests and
+    # decisions, so only the owner writes it.
+    "WAITING_ORGS",
     # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
     # chat status tools. It changes what a chat write may do, so only the owner
     # writes it.
