@@ -41,7 +41,7 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 ## Roles and sub-agents
 
 - **The coordinator** is the one session that has the connection. It holds the claim, posts the progress line and moves the status.
-- **The implementer, the verifier and the reviewer** are sub-agents of the coordinator. They need no connection to Metorite. The coordinator reports for them.
+- **The implementer, the verifier and the reviewer** are sub-agents of the coordinator. They need no connection to Metorite. They do not claim tasks or write on the board. The coordinator reports for them.
 - The verifier is never the implementer. A second agent, or a person, checks the work.
 - Give each sub-agent a brief (`brief-contract`). The summary that comes back is the proof, so ask for evidence and not for an opinion.
 - Start with one agent (`patterns/one-agent-first`). Add a role only for a named bottleneck.
@@ -62,11 +62,11 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 4. Do the work. Post a line at least once each minute.
 5. Open the pull request. Put the url of the task in its body.
 6. Link the branch and the pull request with `add_task_reference`.
-7. Move the task to the review status. After the merge, move it to done.
+7. Move the task to an in-progress status whose name says review. If the project has none, the task stays in progress. After the merge, move it to done.
 
 ## Waits and heartbeats
 
-- The progress line is the heartbeat of the hold. After a long time with no line, another session can take the task.
+- The progress line is the heartbeat of the hold. After 5 minutes with no line, the card shows the run as idle. After 2 hours with no activity, the next claim takes the task.
 - Before each wait, post what you wait on and for how long. Do this on every open run of the session. A person who watches the board cannot see a silent wait.
 - If a run reads `stopping`, stop at once and end the run.
 - Set a time limit on each wait, and stop what you started when you finish.
@@ -88,7 +88,7 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 
 ## Limits
 
-- A connection makes at most 120 writes in 10 minutes. The 121st write is refused until the window passes.
+- A connection makes at most 120 writes in 10 minutes. The 121st write is refused until the window passes. Every terminal and sub-agent on one machine shares that connection, so they share the 120.
 - Parallel calls can answer "Metorite is busy". Call the tools one at a time and retry once.
 - Send a `status_id` with every `create_task`. Send an `idempotency_key` too, so a retry makes no second task.
 - A read returns at most 100 tasks (`list_tasks`), 50 hits (`search_tasks`) and 25 rows (`my_work`).
