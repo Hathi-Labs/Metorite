@@ -2158,7 +2158,8 @@ async def my_tasks_edit_day_rule(
     return stale or f"Saved. {shown}"
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=False)
+# A day rule is a setting: the member proposes, agrees, and can add it again.
+@_annotate_risk(idempotent=False, open_world=False)
 async def my_tasks_delete_day_rule(
     number: int, confirmed: bool = False, version: str = "",
 ) -> str:
