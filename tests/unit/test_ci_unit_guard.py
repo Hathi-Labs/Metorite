@@ -125,6 +125,8 @@ def test_every_shard_runs_and_writes_a_report() -> None:
     )
     assert "--splits ${{ steps.pick.outputs.splits }}" in run
     assert "--group ${{ matrix.shard }}" in run
+    # CIV-8k: a hung test prints its stack after 900 s, so the log names the cause.
+    assert "-o faulthandler_timeout=900" in run
     assert "junit_family=xunit1" in run
     assert "--junitxml=" in run
 
