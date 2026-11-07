@@ -19,17 +19,25 @@ import type { AccentHue } from "@/lib/statusAccent";
 import { clientName, newIdempotencyKey } from "./agentRuns";
 import { taskLabel, waitedFor } from "./waiting";
 
-/** The three kinds, in the order the server sends them and the list draws them. */
-export const ATTENTION_KINDS = ["stalled", "dangling", "blocked"] as const;
+/**
+ * The four kinds, in the order the server sends them and the list draws them.
+ * `no_lead` (WS-MCP SW-44) names a project, not a task: an app project with
+ * open tasks and no lead. Only a member who may set its lead gets the row.
+ */
+export const ATTENTION_KINDS = ["stalled", "dangling", "blocked", "no_lead"] as const;
 export type AttentionKind = (typeof ATTENTION_KINDS)[number];
 
-/** The acts. `resume` and `close_run` write. `open_blocker` only opens a task. */
-export type AttentionAction = "resume" | "close_run" | "open_blocker";
+/**
+ * The acts. `resume` and `close_run` write. `open_blocker` only opens a task,
+ * and `open_project` only opens a project.
+ */
+export type AttentionAction = "resume" | "close_run" | "open_blocker" | "open_project";
 
 /** One row of `GET /projects/needs-attention`. A field that does not apply is null. */
 export interface AttentionRow {
   kind: AttentionKind;
-  task_id: string;
+  /** Null on a `no_lead` row, which names a project. */
+  task_id: string | null;
   task_number: number | null;
   title: string;
   project_id: string;
@@ -63,6 +71,8 @@ export interface AttentionRow {
   connection_gone?: boolean;
   /** A stalled row the caller may resume: `can_act`, and a live connection. */
   can_resume?: boolean;
+  /** The open tasks of a `no_lead` project and the projects below it. */
+  open_tasks?: number | null;
 }
 
 /** The whole answer of the route. */
@@ -105,6 +115,11 @@ export const KIND_COPY: Readonly<
     hint: "The blocker sits in the backlog, and nobody holds it.",
     hue: "blue",
   },
+  no_lead: {
+    heading: "App projects with no lead",
+    hint: "This app project has open tasks and no lead of its own. Open the project and name its lead.",
+    hue: "violet",
+  },
 };
 
 /** The label of each act. One act has one label, everywhere. */
@@ -112,6 +127,7 @@ export const ACTION_LABEL: Readonly<Record<AttentionAction, string>> = {
   resume: "Resume",
   close_run: "Close the run",
   open_blocker: "Open the blocker",
+  open_project: "Open project",
 };
 
 /** The icon of each act. Lucide names, through `<Icon>`. */
@@ -119,6 +135,7 @@ export const ACTION_ICON: Readonly<Record<AttentionAction, string>> = {
   resume: "Play",
   close_run: "LogOut",
   open_blocker: "ArrowUpRight",
+  open_project: "FolderOpen",
 };
 
 /**
@@ -129,6 +146,7 @@ export const ACTION_HINT: Readonly<Record<AttentionAction, string>> = {
   resume: "Ask the same agent client to continue this run. The run keeps the task.",
   close_run: "End this run and free the task for anyone. The task keeps its status.",
   open_blocker: "Open the task that blocks this one.",
+  open_project: "Open this project. Its settings name its lead.",
 };
 
 /** The line of a stalled row whose agent connection is revoked or expired. */
@@ -155,7 +173,7 @@ export function badgeText(total: number | null | undefined): string | null {
 export function attentionPage(raw: unknown): AttentionPage {
   const body = (raw && typeof raw === "object" ? raw : {}) as Partial<AttentionPage>;
   const rows = Array.isArray(body.rows) ? body.rows.filter(isRow) : [];
-  const counts = { stalled: 0, dangling: 0, blocked: 0 };
+  const counts = { stalled: 0, dangling: 0, blocked: 0, no_lead: 0 };
   for (const kind of ATTENTION_KINDS) {
     const n = (body.counts as Record<string, unknown> | undefined)?.[kind];
     counts[kind] = typeof n === "number" && Number.isFinite(n) ? n : 0;
@@ -174,12 +192,12 @@ export function attentionPage(raw: unknown): AttentionPage {
 
 function isRow(value: unknown): value is AttentionRow {
   const row = value as Partial<AttentionRow> | null;
-  return Boolean(
-    row &&
-      typeof row.task_id === "string" &&
-      typeof row.kind === "string" &&
-      (ATTENTION_KINDS as readonly string[]).includes(row.kind),
-  );
+  if (!row || typeof row.kind !== "string") return false;
+  if (!(ATTENTION_KINDS as readonly string[]).includes(row.kind)) return false;
+  // A `no_lead` row names a project. Every other kind names a task.
+  return row.kind === "no_lead"
+    ? typeof row.project_id === "string"
+    : typeof row.task_id === "string";
 }
 
 /** One section of the list: a kind with its rows, in the server's order. */
@@ -205,11 +223,13 @@ export function attentionGroups(page: AttentionPage): AttentionGroup[] {
 
 /** A stable key for a row: one run, or one link. */
 export function rowKey(row: AttentionRow): string {
+  if (row.kind === "no_lead") return `no_lead:${row.project_id}`;
   return `${row.kind}:${row.run_id ?? row.blocker_id ?? ""}:${row.task_id}`;
 }
 
-/** "#12 Fix the extruder". */
+/** "#12 Fix the extruder", or the name of a `no_lead` project. */
 export function rowTitle(row: AttentionRow): string {
+  if (row.kind === "no_lead") return row.project_name || row.title || "A project";
   return taskLabel(row);
 }
 
@@ -220,6 +240,10 @@ function client(row: AttentionRow): string {
 
 /** Why the row is here, and since when, in one line. */
 export function rowDetail(row: AttentionRow): string {
+  if (row.kind === "no_lead") {
+    const n = typeof row.open_tasks === "number" ? row.open_tasks : 0;
+    return `${n === 1 ? "1 open task" : `${n} open tasks`}, and no lead.`;
+  }
   const age = waitedFor(row.age_hours);
   if (row.kind === "stalled") {
     return row.reason === "answer_unread"
@@ -257,13 +281,14 @@ export function rowActions(row: AttentionRow): AttentionAction[] {
   return acts.filter(
     (act) =>
       act === "open_blocker" ||
+      act === "open_project" ||
       (row.can_act && !(act === "resume" && row.connection_gone === true)),
   );
 }
 
 /** True when a row has a run act that the caller may not take. */
 export function runActBlocked(row: AttentionRow): boolean {
-  return row.kind !== "blocked" && !row.can_act;
+  return (row.kind === "stalled" || row.kind === "dangling") && !row.can_act;
 }
 
 /** The confirm of Close the run. It names the client, and what stays. */
@@ -289,7 +314,7 @@ export function resumeBody(idempotencyKey: string = newIdempotencyKey()): {
 /** What the list says when it holds nothing. */
 export const EMPTY_COPY = {
   message: "Nothing needs attention in this project.",
-  hint: "Stalled agent runs, runs on closed tasks and work blocked by a parked task show here.",
+  hint: "Stalled agent runs, runs on closed tasks, work blocked by a parked task and app projects with no lead show here.",
 } as const;
 
 /** The line under a list that holds only part of a kind. */

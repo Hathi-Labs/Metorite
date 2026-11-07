@@ -59,6 +59,27 @@ The fix round (2026-10-25):
 * A12. ``R`` ``person_may_end_sql``: no assignee arm.
   ``test_v7_can_act_is_the_rule_of_release`` and
   ``test_r3_an_assignee_and_an_admin_may_resume``.
+
+WS-MCP SW-44, the kind ``no_lead`` (``agent_coordination.md`` §3.10.1). ``A``
+is ``routes/projects/authority.py``:
+
+* L1. ``N`` ``no_lead_kind_sql``: no ``no_lead_sql`` (a led project shows).
+  ``test_l2_a_project_with_a_lead_gives_no_row``.
+* L2. ``N`` ``no_lead_kind_sql``: no ``open_tasks > 0``.
+  ``test_l3_a_project_with_no_open_task_gives_no_row``.
+* L3. ``N`` ``no_lead_kind_sql``: any descendant, not a direct child, of a
+  root. ``test_l4_a_project_outside_the_app_root_gives_no_row``.
+* L4. ``N`` ``_no_lead_hits``: no ``may_write_grant`` filter.
+  ``test_l5_only_a_member_who_may_write_a_grant_gets_the_row``.
+* L5. ``N`` ``app_roots_of``: ignore the org of a pair.
+  ``test_l6_another_org_sees_nothing``.
+* L6. ``N`` ``no_lead_kind_sql``: no ``vis.project_clause``.
+  ``test_l7_a_hidden_app_project_gives_no_row``. MALLORY leads the root and
+  is the assignee of one open task in the hidden app. The task clause lets
+  her see that task, so the count stays 1 and only the project clause hides
+  the row.
+* L7. ``A`` ``no_lead_sql``: ``lead IS NULL`` only (a blank lead hides the
+  row). ``test_l2_a_project_with_a_lead_gives_no_row``.
 """
 from __future__ import annotations
 
@@ -180,6 +201,23 @@ class TestTheChatRead:
         # A title is member text: it is fenced, and its newline forges no row.
         assert "\nnow" not in out
         assert "Showing 1-3 of 30. Call again with offset=3 for the rest." in out
+
+    async def test_a_no_lead_row_names_the_project_and_its_open_tasks(self, monkeypatch):
+        """SW-44. The row names a project, not a task, and its name is fenced."""
+        import skill_projects
+
+        from tests.unit._projects_agent_fakes import fake_gateway
+
+        row = {"kind": "no_lead", "task_id": None, "project_id": _TASK,
+               "project_name": "CRM\nnow", "open_tasks": 3, "action": "open_project",
+               "can_act": True, "yours": False}
+        fake_gateway(monkeypatch, {"rows": [row], "counts": {"no_lead": 1}, "total": 1,
+                                   "listed": 1})
+        out = await skill_projects.needs_attention()
+        assert "app projects with no lead 1)" in out
+        assert "an app project has open tasks and no lead · 3 open tasks" in out
+        assert f"project_id: {_TASK}" in out and "full_id" not in out
+        assert "\nnow" not in out
 
     async def test_an_empty_list_says_so(self, monkeypatch):
         import skill_projects
@@ -360,7 +398,7 @@ class TestTheKinds:
         assert row["can_act"] is True and row["yours"] is True
         assert row["connection_gone"] is False and row["can_resume"] is True
         assert row["age_hours"] >= 3 and row["run_status"] == "in_progress"
-        assert body["counts"] == {"stalled": 1, "dangling": 0, "blocked": 0}
+        assert body["counts"] == {"stalled": 1, "dangling": 0, "blocked": 0, "no_lead": 0}
         assert body["total"] == 1 and body["capped"] is False
 
     async def test_k1_near_misses_of_a_stalled_run(self, w):
@@ -520,7 +558,7 @@ class TestTheReadWritesNothing:
         before = _snapshot(w)
         for user in (w.alice, w.erin, w.dave):
             body = await _list(w, user, proj)
-            assert body["counts"] == {"stalled": 1, "dangling": 1, "blocked": 1}
+            assert body["counts"] == {"stalled": 1, "dangling": 1, "blocked": 1, "no_lead": 0}
             await _list(w, user)
         assert _snapshot(w) == before
 
@@ -605,7 +643,7 @@ class TestTheScope:
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
         body = await _list(w, w.alice, proj)
         assert _kinds(body) == [("blocked", blocked)]
-        assert body["counts"] == {"stalled": 0, "dangling": 0, "blocked": 1}
+        assert body["counts"] == {"stalled": 0, "dangling": 0, "blocked": 1, "no_lead": 0}
 
     async def test_v6_the_order_the_counts_and_the_page(self, w):
         proj = _project(w)
@@ -621,7 +659,7 @@ class TestTheScope:
         body = await _list(w, w.alice, proj)
         assert _kinds(body) == [("stalled", stalled), ("dangling", old), ("dangling", new),
                                 ("blocked", blocked)]
-        assert body["counts"] == {"stalled": 1, "dangling": 2, "blocked": 1}
+        assert body["counts"] == {"stalled": 1, "dangling": 2, "blocked": 1, "no_lead": 0}
         assert (body["total"], body["listed"]) == (4, 4)
         page = await _list(w, w.alice, proj, offset=1, limit=2)
         assert _kinds(page) == [("dangling", old), ("dangling", new)]
@@ -810,3 +848,194 @@ class TestClose:
         assert got.status_code == 403, got.text
         [row] = (await _list(w, w.dave, proj))["rows"]
         assert row["can_act"] is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WS-MCP SW-44 — the kind `no_lead`: an app project with open work and no lead
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTheAppRootsFlag:
+    """``APP_OWNER_ROOT_ORGS``: the one reader, hermetic."""
+
+    ROOT = "11111111-2222-4333-8444-555555555555"
+    OTHER = "66666666-7777-4888-9999-aaaaaaaaaaaa"
+
+    def test_empty_names_no_root(self, monkeypatch) -> None:
+        monkeypatch.setattr(get_settings(), "app_owner_root_orgs", "")
+        assert needs_attention.app_roots_of("org-a") == ()
+
+    def test_a_pair_names_the_root_of_its_org_only(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            get_settings(), "app_owner_root_orgs",
+            f" ORG-A = {self.ROOT} ,org-b={self.OTHER},org-a={self.OTHER},org-a={self.ROOT}")
+        assert needs_attention.app_roots_of("org-a") == (self.ROOT, self.OTHER)
+        assert needs_attention.app_roots_of("org-b") == (self.OTHER,)
+        assert needs_attention.app_roots_of("org-c") == ()
+        assert needs_attention.app_roots_of(None) == ()
+
+    def test_a_bad_pair_names_nothing(self, monkeypatch) -> None:
+        monkeypatch.setattr(get_settings(), "app_owner_root_orgs",
+                            f"org-a,org-a=not-a-uuid,*={self.ROOT},={self.ROOT}")
+        assert needs_attention.app_roots_of("org-a") == ()
+        assert needs_attention.app_roots_of("*") == (self.ROOT,)
+
+    def test_the_kind_joins_the_rules_that_exist(self) -> None:
+        """No second copy: the lead test is ``authority.no_lead_sql`` and the
+        open work is Load's open-work predicate."""
+        from gateway.routes.projects import authority
+        from gateway.routes.projects.analytics import load_open_where
+
+        vis = SimpleNamespace(unrestricted=True, agent=None, params={},
+                              project_clause=lambda column="id": f"{column} IN (VISIBLE)")
+        sql = needs_attention.no_lead_kind_sql("TRUE", vis)
+        assert authority.no_lead_sql("p") in sql
+        assert load_open_where("TRUE", vis) in sql
+        assert "p.id IN (VISIBLE)" in sql
+        assert needs_attention.KINDS[-1] == "no_lead"
+        assert needs_attention.ACTIONS["no_lead"] == ("open_project",)
+
+
+APP_ADMIN = "sw44-admin@attention.test"
+
+
+def _set(w: Any, proj: dict, **values: Any) -> None:
+    """Write columns of one project as the admin role (the fixture's seed)."""
+    with w.p.admin_engine.begin() as c:
+        for column, value in values.items():
+            c.execute(text(f"UPDATE pm_projects SET {column} = :v WHERE id = CAST(:p AS uuid)"),
+                      {"v": value, "p": proj["id"]})
+
+
+@pytest.fixture
+def apps(w, monkeypatch):
+    """An app root that ALICE leads, with one app project under it that has
+    no lead and two open tasks (one in a sub-project). The flag names the
+    root for org A."""
+    from acb_auth import UserContext, UserRole, build_access
+
+    root = _project(w)
+    _set(w, root, name="Metorite Application", lead=ALICE)
+    app = _project(w, parent=root)
+    _set(w, app, name="CRM")
+    sub = _project(w, parent=app)
+    _set(w, sub, name="CRM import")
+    _task(w, app)
+    _task(w, sub)
+    _task(w, app, category="done")
+    monkeypatch.setattr(get_settings(), "app_owner_root_orgs", f"{w.a}={root['id']}")
+    with w.p.admin_engine.begin() as c:
+        _name(c, w.a, APP_ADMIN, "Pat Admin")
+    admin = UserContext(
+        email=APP_ADMIN, role=UserRole.EMPLOYEE, organization_id=w.a,
+        access=build_access(["feature:projects", "data:org:read", "projects:settings:write"]))
+    return SimpleNamespace(root=root, app=app, sub=sub, admin=admin)
+
+
+def _no_lead(body: dict[str, Any]) -> list[dict[str, Any]]:
+    return [r for r in body["rows"] if r["kind"] == "no_lead"]
+
+
+@_DB_GATE
+class TestTheAppProjectWithNoLead:
+
+    async def test_l1_an_app_project_with_open_tasks_and_no_lead_shows_the_row(self, w, apps):
+        for scope in (None, apps.root, apps.app):
+            body = await _list(w, w.alice, scope)
+            [row] = _no_lead(body)
+            assert (row["project_id"], row["project_name"], row["title"]) == (
+                apps.app["id"], "CRM", "CRM")
+            assert row["open_tasks"] == 2
+            assert row["task_id"] is None and row["run_id"] is None
+            assert (row["action"], row["actions"]) == ("open_project", ["open_project"])
+            assert row["can_act"] is True and row["yours"] is False
+            assert body["counts"]["no_lead"] == 1
+            assert body["total"] == sum(body["counts"].values())
+        # The row is no member's own work, so `mine` never lists it.
+        mine = await _list(w, w.alice, apps.root, mine=True)
+        assert _no_lead(mine) == [] and mine["counts"]["no_lead"] == 0
+
+    async def test_l2_a_project_with_a_lead_gives_no_row(self, w, apps):
+        _set(w, apps.app, lead=DAVE)
+        assert _no_lead(await _list(w, w.alice, apps.root)) == []
+        # A blank lead names nobody, as `authority.py` reads it.
+        _set(w, apps.app, lead="   ")
+        assert len(_no_lead(await _list(w, w.alice, apps.root))) == 1
+
+    async def test_l3_a_project_with_no_open_task_gives_no_row(self, w, apps):
+        empty = _project(w, parent=apps.root)
+        closed = _project(w, parent=apps.root)
+        _task(w, closed, category="done")
+        archived = _task(w, closed)
+        _archive(w, archived)
+        rows = _no_lead(await _list(w, w.alice, apps.root))
+        assert [r["project_id"] for r in rows] == [apps.app["id"]]
+        assert _no_lead(await _list(w, w.alice, empty)) == []
+
+    async def test_l4_a_project_outside_the_app_root_gives_no_row(self, w, apps):
+        """The sub-project of an app is not an app, and a project beside the
+        root is not one either. An archived app project is out too."""
+        beside = _project(w)
+        _task(w, beside)
+        gone = _project(w, parent=apps.root)
+        _task(w, gone)
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_projects SET archived_at = now()"
+                           " WHERE id = CAST(:p AS uuid)"), {"p": gone["id"]})
+        body = await _list(w, w.alice)
+        assert [r["project_id"] for r in _no_lead(body)] == [apps.app["id"]]
+        assert _no_lead(await _list(w, w.alice, beside)) == []
+
+    async def test_l5_only_a_member_who_may_write_a_grant_gets_the_row(self, w, apps):
+        """ALICE leads the root and a Projects admin holds the setting, so both
+        may set the lead. DAVE sees every project and may not."""
+        assert len(_no_lead(await _list(w, w.alice, apps.root))) == 1
+        assert len(_no_lead(await _list(w, apps.admin, apps.root))) == 1
+        for user in (w.dave, w.erin):
+            body = await _list(w, user, apps.root)
+            assert _no_lead(body) == [] and body["counts"]["no_lead"] == 0
+        # A lead of the app project's own sub-project leads below it, not above.
+        _set(w, apps.sub, lead=ERIN)
+        assert _no_lead(await _list(w, w.erin, apps.root)) == []
+
+    async def test_l6_another_org_sees_nothing(self, w, apps, monkeypatch):
+        assert (await _list(w, w.bob))["rows"] == []
+        status, _ = await _get(w, w.bob, apps.root)
+        assert status == 404
+        # A pair of org B that names org A's root reads nothing for B.
+        monkeypatch.setattr(get_settings(), "app_owner_root_orgs", f"{w.b}={apps.root['id']}")
+        assert _no_lead(await _list(w, w.bob)) == []
+        # And then org A has no root of its own.
+        assert _no_lead(await _list(w, w.alice)) == []
+
+    async def test_l7_a_hidden_app_project_gives_no_row(self, w, apps):
+        """MALLORY leads the root, so she may write a grant on the app, but no
+        grant lets her see it. The row stays hidden (D12).
+
+        MALLORY is also the assignee of one open task in the app. The task
+        clause lets an assignee see her task, so only the project clause
+        keeps the hidden project's name out of her row."""
+        _set(w, apps.root, lead=MALLORY)
+        _task(w, apps.app, assignee=MALLORY, title="Fix the hidden import")
+        assert _no_lead(await _list(w, w.mallory)) == []
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO pm_project_grants (organization_id, project_id, subject,"
+                " created_by) VALUES (:o, :p, :s, :e)"),
+                {"o": w.a, "p": apps.root["id"], "s": MALLORY, "e": ALICE})
+        [row] = _no_lead(await _list(w, w.mallory))
+        assert row["project_id"] == apps.app["id"]
+
+    async def test_l8_an_empty_or_bad_setting_gives_no_row(self, w, apps, monkeypatch):
+        for value in ("", f"{w.a}", f"{w.a}=not-a-uuid", f"*={apps.root['id']}"):
+            monkeypatch.setattr(get_settings(), "app_owner_root_orgs", value)
+            body = await _list(w, w.alice, apps.root)
+            assert _no_lead(body) == [] and body["counts"]["no_lead"] == 0, value
+
+    async def test_l9_the_read_writes_nothing(self, w, apps):
+        before = _snapshot(w)
+        leads = _rows(w.p, "SELECT id, lead FROM pm_projects ORDER BY id")
+        for user in (w.alice, apps.admin, w.dave):
+            await _list(w, user, apps.root)
+        assert _snapshot(w) == before
+        assert _rows(w.p, "SELECT id, lead FROM pm_projects ORDER BY id") == leads

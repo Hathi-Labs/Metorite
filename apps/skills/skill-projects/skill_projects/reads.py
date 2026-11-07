@@ -1909,6 +1909,8 @@ ATTENTION_KINDS = {
     "stalled": "stalled: an agent run stopped, and a recovery record waits for a person",
     "dangling": "an agent run is still open on a closed task",
     "blocked": "blocked by parked work: the blocker is in the backlog, and nobody holds it",
+    # WS-MCP SW-44. The row names a project, not a task.
+    "no_lead": "an app project has open tasks and no lead",
 }
 
 #: The next action of each row, for the model to say. No chat tool takes
@@ -1920,6 +1922,7 @@ ATTENTION_ACTIONS = {
     ),
     "close_run": "Close the run (frees the task for anyone, and the task keeps its status)",
     "open_blocker": "open the blocker and give it an owner or move it on",
+    "open_project": "open the project, and a lead or a Projects admin names its lead",
 }
 
 #: The server's own answer, quoted: `can_act` is false for this caller. The
@@ -1949,6 +1952,15 @@ def _hours_ago(hours: Any) -> str:
 def _attention_lines(row: dict[str, Any]) -> list[str]:
     """One row: the task line, then its ids. Titles and names are fenced."""
     kind = str(row.get("kind") or "")
+    if kind == "no_lead":
+        # SW-44. A project row: the name, the open count and the project id.
+        count = row.get("open_tasks")
+        return [
+            f"- project {data(row.get('project_name'))} · {ATTENTION_KINDS[kind]}"
+            f" · {count if isinstance(count, int) else '?'} open tasks",
+            f"  next: {ATTENTION_ACTIONS['open_project']}",
+            f"  project_id: {row.get('project_id')}",
+        ]
     facts = [ATTENTION_KINDS.get(kind, kind)]
     if kind == "stalled":
         why = "did not read the answer" if row.get("reason") == "answer_unread" else "sent nothing"
@@ -2005,7 +2017,8 @@ async def needs_attention(project_id: str = "", mine: bool = False, offset: int 
         legend(),
         f"Needs attention in {scope}: {payload.get('total', 0)} {whose}"
         f" (stalled {counts.get('stalled', 0)}, open runs of closed tasks"
-        f" {counts.get('dangling', 0)}, blocked by parked work {counts.get('blocked', 0)}).",
+        f" {counts.get('dangling', 0)}, blocked by parked work {counts.get('blocked', 0)},"
+        f" app projects with no lead {counts.get('no_lead', 0)}).",
     ]
     for row in rows:
         out.extend(_attention_lines(row))

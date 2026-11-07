@@ -4873,6 +4873,13 @@ function ProjectsWorkspace() {
         error={attentionErrorHere}
         personLabels={personLabels}
         onOpenTask={(id) => void openTaskById(id)}
+        // SW-44: a `no_lead` row opens its project. A project the tree does
+        // not hold yet goes through the `?project=` deep link.
+        onOpenProject={(id) => {
+          const row = flatten(visibleRoots).find((e) => e.node.id === id);
+          if (row) setSelected(row.node as ProjectRow);
+          else router.push(`/projects?project=${encodeURIComponent(id)}`);
+        }}
         onBack={() => setAttentionFor(null)}
         onChanged={() => setAttentionVersion((v) => v + 1)}
       />

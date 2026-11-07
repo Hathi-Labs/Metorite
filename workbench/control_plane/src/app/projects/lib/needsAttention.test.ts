@@ -99,8 +99,31 @@ const blocked = row({
   age_hours: 0.5,
 });
 
+// WS-MCP SW-44 — an app project with open tasks and no lead. The row names a
+// project, so every task key is null.
+const APP = "3c2b1a09-8f7e-4d6c-b5a4-938271605f4e";
+const noLead = row({
+  kind: "no_lead",
+  task_id: null,
+  task_number: null,
+  title: "CRM",
+  project_id: APP,
+  project_name: "CRM",
+  category: null,
+  owner: null,
+  owner_name: null,
+  run_id: null,
+  run_status: null,
+  client_via: null,
+  client_name: null,
+  reason: null,
+  open_tasks: 3,
+  action: "open_project",
+  actions: ["open_project"],
+});
+
 function page(rows: AttentionRow[], over: Partial<AttentionPage> = {}): AttentionPage {
-  const counts = { stalled: 0, dangling: 0, blocked: 0 };
+  const counts = { stalled: 0, dangling: 0, blocked: 0, no_lead: 0 };
   for (const r of rows) counts[r.kind] += 1;
   return {
     rows,
@@ -133,7 +156,7 @@ describe("the page shape", () => {
       total: 1,
     });
     expect(got.rows).toEqual([stalled]);
-    expect(got.counts).toEqual({ stalled: 1, dangling: 0, blocked: 0 });
+    expect(got.counts).toEqual({ stalled: 1, dangling: 0, blocked: 0, no_lead: 0 });
     expect(got.total).toBe(1);
     expect(got.capped).toBe(false);
     expect(attentionPage(null).rows).toEqual([]);
@@ -330,5 +353,67 @@ describe("the page wires the lens", () => {
   it("keeps the lens off the view modes", () => {
     const commands = readFileSync(join(__dirname, "commands.ts"), "utf8");
     expect(commands).not.toContain("attention");
+  });
+});
+
+describe("the app project with no lead (SW-44)", () => {
+  const noop = () => {};
+  const html = (p: AttentionPage) =>
+    renderToStaticMarkup(
+      createElement(NeedsAttentionList, {
+        page: p,
+        error: null,
+        onOpenTask: noop,
+        onOpenProject: noop,
+        onBack: noop,
+        onChanged: noop,
+      }),
+    );
+
+  it("reads a project row with no task, and drops one with no project", () => {
+    const got = attentionPage({
+      rows: [noLead, { kind: "no_lead", task_id: null }],
+      counts: { no_lead: 1 },
+      total: 1,
+    });
+    expect(got.rows).toEqual([noLead]);
+    expect(got.counts.no_lead).toBe(1);
+  });
+
+  it("draws the kind last, with its heading and its own key", () => {
+    const groups = attentionGroups(page([noLead, blocked]));
+    expect(groups.map((g) => g.kind)).toEqual(["blocked", "no_lead"]);
+    expect(groups[1].heading).toBe("App projects with no lead");
+    expect(rowKey(noLead)).toBe(`no_lead:${APP}`);
+  });
+
+  it("names the project and its open tasks", () => {
+    expect(rowDetail(noLead)).toBe("3 open tasks, and no lead.");
+    expect(rowDetail(row({ ...noLead, open_tasks: 1 }))).toBe("1 open task, and no lead.");
+  });
+
+  it("offers Open project only, and no write", () => {
+    expect(rowActions(noLead)).toEqual(["open_project"]);
+    expect(rowActions(row({ ...noLead, can_act: false }))).toEqual(["open_project"]);
+    expect(runActBlocked(noLead)).toBe(false);
+    expect(ACTION_LABEL.open_project).toBe("Open project");
+  });
+
+  it("links the title and the act to the project, and draws no owner line", () => {
+    const out = html(page([noLead]));
+    expect(out).toContain("App projects with no lead");
+    expect(out).toContain(`href="/projects?project=${APP}"`);
+    expect(out).toContain(">CRM<");
+    expect(out).toContain("Open project");
+    expect(out).toContain("3 open tasks, and no lead.");
+    expect(out).not.toContain("Owner:");
+    expect(out).not.toContain("?task=");
+    expect(out).not.toContain(">Resume<");
+    expect(out).not.toContain(">Close the run<");
+  });
+
+  it("the page opens the project of the row", () => {
+    const src = readFileSync(join(__dirname, "../page.tsx"), "utf8");
+    expect(src).toMatch(/onOpenProject=\{\(id\) => \{/);
   });
 });
