@@ -110,6 +110,7 @@ EXPECTED_OPEN_WORLD = frozenset({
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    "crm_update_record", "crm_update_task",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })

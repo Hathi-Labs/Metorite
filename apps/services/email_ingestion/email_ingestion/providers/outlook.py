@@ -692,6 +692,10 @@ GRAPH_SCOPES = [
 ]
 
 
+#: Waits before the two retries of a 412 (message changed under us).
+_PRECONDITION_RETRY_WAITS = (0.5, 1.5)
+
+
 class OutlookProvider(BaseEmailProvider):
     """Microsoft Graph API email provider."""
 
@@ -780,6 +784,21 @@ class OutlookProvider(BaseEmailProvider):
                 await asyncio.sleep(min(max(delay, 0.0), _MAX_RETRY_AFTER_SECS))
                 continue
             return resp
+        return resp
+
+    async def _retry_on_412(self, attempt: Any) -> httpx.Response:
+        """Run ``attempt`` and run it again when Graph answers 412.
+
+        A 412 means the message changed between our read and our write.
+        There are at most two retries, after a wait of 0.5 s and then 1.5 s.
+        No other status gets a retry. The last answer goes back to the caller.
+        """
+        resp = await attempt()
+        for wait in _PRECONDITION_RETRY_WAITS:
+            if resp.status_code != 412:
+                return resp
+            await asyncio.sleep(wait)
+            resp = await attempt()
         return resp
 
     async def _graph_read(self, url: str, **kwargs: Any) -> httpx.Response:
@@ -1522,9 +1541,10 @@ class OutlookProvider(BaseEmailProvider):
                 patch["isRead"] = True
 
         if patch:
-            resp = await client.patch(
-                f"/me/messages/{provider_message_id}",
-                json=patch,
+            resp = await self._retry_on_412(
+                lambda: client.patch(
+                    f"/me/messages/{provider_message_id}", json=patch,
+                )
             )
             resp.raise_for_status()
 
@@ -1564,7 +1584,11 @@ class OutlookProvider(BaseEmailProvider):
             patch["flag"] = {"flagStatus": "flagged" if is_flagged else "notFlagged"}
         if patch:
             client = await self._get_client()
-            resp = await client.patch(f"/me/messages/{provider_message_id}", json=patch)
+            resp = await self._retry_on_412(
+                lambda: client.patch(
+                    f"/me/messages/{provider_message_id}", json=patch,
+                )
+            )
             resp.raise_for_status()
 
     async def move_to_folder(
@@ -1794,22 +1818,27 @@ class OutlookProvider(BaseEmailProvider):
         Missing categories are first created in the account's master category
         list so they show up as real, coloured Outlook categories."""
         await self._ensure_categories(add or [])
-        resp = await self._graph_send(
-            "GET", f"/me/messages/{provider_message_id}",
-            params={"$select": "categories"},
-        )
-        resp.raise_for_status()
-        current: list[str] = list(resp.json().get("categories", []) or [])
-        for name in add or []:
-            if name not in current:
-                current.append(name)
-        for name in remove or []:
-            if name in current:
-                current.remove(name)
-        patch = await self._graph_send(
-            "PATCH", f"/me/messages/{provider_message_id}",
-            json={"categories": current},
-        )
+
+        async def attempt() -> httpx.Response:
+            # A retry after a 412 reads the categories again.
+            resp = await self._graph_send(
+                "GET", f"/me/messages/{provider_message_id}",
+                params={"$select": "categories"},
+            )
+            resp.raise_for_status()
+            current: list[str] = list(resp.json().get("categories", []) or [])
+            for name in add or []:
+                if name not in current:
+                    current.append(name)
+            for name in remove or []:
+                if name in current:
+                    current.remove(name)
+            return await self._graph_send(
+                "PATCH", f"/me/messages/{provider_message_id}",
+                json={"categories": current},
+            )
+
+        patch = await self._retry_on_412(attempt)
         patch.raise_for_status()
 
     # Recurring polls stay shallow (newest pages only) — cheap and enough to

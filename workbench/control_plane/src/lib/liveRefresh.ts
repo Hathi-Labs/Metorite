@@ -17,7 +17,7 @@
  */
 import { useEffect, useRef } from "react";
 
-import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
+import { PROJECTS_CHANGED_EVENT } from "@/lib/projectsEvents";
 import { ASSISTANT_WROTE_EVENT, eventNamesApp, type LiveApp } from "@/lib/assistantWrites";
 
 /** The least gap between two reads that a wake (focus, visible) can cause. */

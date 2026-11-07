@@ -17,6 +17,12 @@ Spec ``project-docs/specs/external_agent_access.md`` §7.1 and §9.6, check 6.
 4. The effective scopes are the token scope intersected with the connection
    scopes. ``projects:write`` covers ``projects:read`` on both sides, and
    the write scope of an app covers its read scope (MCP-P1a).
+5. **A box token (EA-19b, spec §10.9).** A token of a connection of
+   credential ``box`` is a 401 while ``agent_oauth.box_tokens_enabled`` is
+   false, next to the allowlist check. After a check that passes, the edge
+   stamps the use with ``agent_tokens.touch_box_use`` and the client
+   address that ``mcp.py`` passes in (``request.client.host``, never
+   ``X-Real-IP``). A failed stamp never fails the request.
 
 The tenant comes from the token row and from nowhere else. This module reads
 one request input, the ``Authorization`` header, and it never sends that
@@ -102,8 +108,22 @@ def covers(scopes: frozenset[str], required: str | None) -> bool:
     return required is None or required in scopes
 
 
-async def authenticate(header_value: str | None) -> Caller:
-    """§7.1 steps 1 to 4, or raise :class:`BearerRefused`."""
+async def _touch_box(found: TokenLookup, client_addr: str | None) -> None:
+    """Stamp the use of a box token (step 5). Any error only logs."""
+    try:
+        await agent_tokens.touch_box_use(
+            found.connection_id, found.organization_id, client_addr)
+    except Exception as exc:
+        _log.warning("agent_edge.box_touch_failed", error=type(exc).__name__,
+                     connection_id=found.connection_id)
+
+
+async def authenticate(header_value: str | None, client_addr: str | None = None) -> Caller:
+    """§7.1 steps 1 to 4 and step 5, or raise :class:`BearerRefused`.
+
+    *client_addr* is the client address of the request. Only a box token
+    reads it (EA-19b).
+    """
     raw = token_of(header_value)
     if raw is None:
         raise BearerRefused(401, sent=False, reason="no_token")
@@ -124,9 +144,16 @@ async def authenticate(header_value: str | None) -> Caller:
     if not agent_oauth.org_allowed(found.organization_id):
         _log.info("agent_edge.token_org_not_allowed", connection_id=found.connection_id)
         raise BearerRefused(401, sent=True, reason="org_not_allowed")
+    # EA-19b: a box token is live only while the box flag is on (a pause).
+    box = found.credential == agent_tokens.BOX
+    if box and not agent_oauth.box_tokens_enabled():
+        _log.info("agent_edge.box_tokens_off", connection_id=found.connection_id)
+        raise BearerRefused(401, sent=True, reason="box_tokens_off")
     if found.resource != agent_oauth.resource():
         _log.info("agent_edge.token_wrong_audience", connection_id=found.connection_id)
         raise BearerRefused(401, sent=True, reason="audience")
+    if box:
+        await _touch_box(found, client_addr)
     return Caller(lookup=found, scopes=effective_scopes(found.scope, found.scopes))
 
 

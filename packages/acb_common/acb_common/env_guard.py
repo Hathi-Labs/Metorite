@@ -231,6 +231,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-MCP SW-53: GITHUB_APP_ORGS turns the GitHub App on for an org. On,
+    # deliveries write the org's pull requests and a merge can move its tasks,
+    # so only the owner writes it. The GITHUB_APP_ prefix covers it too.
+    "GITHUB_APP_ORGS",
     # WS-AP AP-1a: WAITING_ORGS opens the list of what waits on a member for
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.
@@ -278,6 +282,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
+    # CIV-14f: the answer watcher of the home box (scripts/home_server). The
+    # token is a read-only box token. A tenant must never save these.
+    "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
+    "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
     # Deploy, backup and watchdog scripts (variables they read).
     "APP_DIR", "ENV_FILE", "ACTIONS", "CURRENT", "DEST", "DRY_RUN", "EUID",
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",

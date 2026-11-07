@@ -34,6 +34,7 @@ from acb_common.priority import importance_for
 from fastapi import Depends, Header, HTTPException, Query
 from gateway.align.trigger import enqueue_check
 from gateway.db import current_tenant
+from gateway.routes.projects.agent_dispatch import MEMBER_KEY, assigning_member
 from gateway.routes.projects.authority import (
     assert_may_delete_task,
     assert_may_move_task,
@@ -1249,6 +1250,8 @@ async def create_task(
         await emit("pm.task.assigned", {
             "task_id": task_id, "assignees": sorted(assigned.added),
             "organization_id": str(getattr(row, "organization_id", "") or ""),
+            # H-240: the member a dispatched run acts for, from the session.
+            MEMBER_KEY: assigning_member(user),
         })
     # WS-57 TR-5 — `#N` and GitHub or document URLs in the new text, after
     # the commit and in a transaction of its own (`text_links.py`).
@@ -2486,6 +2489,10 @@ async def set_assignees(
             # The sink's ONLY tenant source. `agent_dispatch.on_event` refuses
             # a payload without it rather than running unbound.
             "organization_id": task_org,
+            # H-240: the member the dispatched run acts for. From the
+            # verified session (`user`), NEVER from `payload` (R11). An
+            # outside agent, a service caller or a suspended member is "".
+            MEMBER_KEY: assigning_member(user),
         })
     elif removed:
         # WS-58 MD-5a — a removal alone emits no event, and the task leaves
@@ -2759,6 +2766,8 @@ async def claim_task(
         await emit("pm.task.assigned", {
             "task_id": task_id, "assignees": added,
             "organization_id": task_org,
+            # H-240: the session's member, as `set_assignees` writes it.
+            MEMBER_KEY: assigning_member(user),
         })
     if moved is not None:
         await emit("pm.task.updated", {"task_id": task_id})

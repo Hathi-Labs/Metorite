@@ -26,7 +26,9 @@ MCP-G1 adds four pairs: the node POST and PATCH (``create_project`` and
 (``preview_move_tasks`` and ``move_tasks``). The preview is a POST that
 writes nothing, so its tool keeps the hints of a read (``READ_ONLY_POST_TOOLS``).
 ``move_tasks`` sends the preview before its move (a prior write), and it has
-``destructiveHint: true``. The grant routes stay OFF the edge.
+``destructiveHint: true``. The grant routes stay OFF the edge. IMG-3 adds
+one class X read, the bytes of a file (:data:`CLASS_X_READS`). Its tool,
+``get_attachment``, names that route in ``param_routes``, and rule 4 reads it.
 
 1. Each pair in ``MCP_ROUTES`` is a route the gateway serves. Its method is
    ``GET``, or ``PATCH``, ``POST`` or ``PUT`` for a pair of
@@ -116,6 +118,18 @@ CLASS_X_WRITES: dict[tuple[str, str], str] = {
         "EA-6h (EA3-51). The MCP door only: an outside agent deletes after the"
         " member's yes and with the member's switch on. The chat deletes"
         " through delete_task and its card."
+    ),
+}
+
+
+#: The GET pairs of ``MCP_ROUTES`` that are class X in the manifest, each with
+#: its reason. The chat never reaches them. A new entry needs a spec
+#: amendment (§9.5).
+CLASS_X_READS: dict[tuple[str, str], str] = {
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"): (
+        "IMG-3 (projects_ai_chat.md §30.4, owner answer 2026-11-07). The MCP door"
+        " only: get_attachment reads the bytes of an image or a text file, after"
+        " it finds the id in the list of the task. A chat answer carries text."
     ),
 }
 
@@ -295,7 +309,7 @@ def test_rule_2_each_pair_is_class_a_or_a_named_exception():
             continue
         cls = classes.get(pair)
         allowed = {"A", "B"} if pair in MCP_WRITE_ROUTES else {"A"}
-        if pair in CLASS_X_WRITES:
+        if pair in CLASS_X_WRITES or pair in CLASS_X_READS:
             allowed = {"X"}
         if cls not in allowed:
             wrong.append(f"{pair[0]} {pair[1]} (class {cls or 'none'})")
@@ -310,6 +324,23 @@ def test_every_named_exception_is_still_in_the_allowlist():
     stale = sorted(set(NAMED_EXCEPTIONS) - set(MCP_ROUTES))
     assert not stale, stale
     assert set(CLASS_X_WRITES) <= set(MCP_WRITE_ROUTES)
+    assert set(CLASS_X_READS) <= set(MCP_ROUTES) - set(MCP_WRITE_ROUTES)
+
+
+def test_the_bytes_read_is_the_one_class_x_read_and_only_get_attachment_reaches_it():
+    """IMG-3. The bytes route is a GET of ``MCP_ROUTES`` and not a write
+    pair, class X in the manifest, and one tool reaches it. Mutation: add the
+    pair to the ``routes`` of ``get_task``, and this test fails."""
+    from agent_edge.tools import TOOLS
+
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    assert set(CLASS_X_READS) == {("GET", "/projects/attachments/{attachment_id}/{filename}")}
+    for pair in CLASS_X_READS:
+        assert pair in MCP_ROUTES and pair not in MCP_WRITE_ROUTES, pair
+        assert classes[pair] == "X", pair
+        reaching = {t.name for t in TOOLS.values()
+                    if pair in {(t.method, r) for r in (t.route, *t.routes)}}
+        assert reaching == {"get_attachment"}, reaching
 
 
 # ── Rules 3 and 4: the edge's tool records (EA-3b-1) ────────────────────────
@@ -553,6 +584,14 @@ def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
             more = params.get(pair)
             if more is None:
                 wrong.append(f"{tool.name}: {pair[0]} {pair[1]} is not a gateway route")
+                continue
+            served |= more
+        # IMG-3: an input may fill a path parameter of another GET that the
+        # tool reads (``param_routes``). Only ``get_attachment`` has one.
+        for route in tool.param_routes:
+            more = params.get(("GET", route))
+            if more is None or route not in tool.routes:
+                wrong.append(f"{tool.name}: GET {route} is not a route it reads")
                 continue
             served |= more
         for name, parameter in sorted(tool.params.items()):

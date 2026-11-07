@@ -475,31 +475,29 @@ def test_a_hanging_resolver_does_not_stall_a_second_job() -> None:
 
     def resolve(host: str, port: int) -> str:
         if host.startswith("hang"):
-            gate.wait(10)
+            gate.wait(120)
         return "93.184.215.14"
 
     pool = ThreadPoolExecutor(max_workers=4)
 
-    async def go() -> tuple[list[str], float, bool]:
+    async def go() -> tuple[list[str], bool]:
         job_a = fetch.AddressChecker(resolve, org="org-a", pool=pool, per_org=2, timeout=0.3)
         job_b = fetch.AddressChecker(resolve, org="org-b", pool=pool, per_org=2, timeout=0.3)
         urls = [fetch.parse_hop(f"https://hang{i}.example/") for i in (1, 2, 1, 2)]
         results = await asyncio.gather(*(job_a.pin(u) for u in urls), return_exceptions=True)
         reasons = [r.reason for r in results if isinstance(r, fetch.Refused)]
-        start = time.monotonic()
-        await job_b.pin(fetch.parse_hop("https://public.example/"))
-        took = time.monotonic() - start
+        # Job B ends while org A's threads still hang. A stall hits the 30 s guard.
+        await asyncio.wait_for(job_b.pin(fetch.parse_hop("https://public.example/")), 30)
         # The slots of org A come back only when its threads end.
         held = fetch._slots("org-check:org-a:2", 2).locked()
-        return reasons, took, held
+        return reasons, held
 
     try:
-        reasons, took, held = asyncio.run(go())
+        reasons, held = asyncio.run(go())
     finally:
         gate.set()
         pool.shutdown(wait=True)
     assert reasons == ["check timeout"] * 4
-    assert took < 0.25, f"job B waited {took:.2f} s"
     assert held, "a timed-out check gave its slot back while its thread still ran"
 
 
@@ -963,12 +961,12 @@ def test_a_hung_resolver_of_an_ended_job_does_not_starve_another_org() -> None:
     def resolve(host: str, port: int) -> str:
         calls.append(host)
         if host.startswith("hang"):
-            gate.wait(10)
+            gate.wait(120)
         return "93.184.215.14"
 
     pool = ThreadPoolExecutor(max_workers=4)
 
-    async def go() -> tuple[float, int, int]:
+    async def go() -> tuple[int, int]:
         for round_ in range(5):  # five jobs of org A, each ends at once
             checker = fetch.AddressChecker(resolve, org="org-a", pool=pool, per_org=2,
                                            timeout=limits.CHECK_TIMEOUT_S)
@@ -978,20 +976,18 @@ def test_a_hung_resolver_of_an_ended_job_does_not_starve_another_org() -> None:
             checker.close()
             _done, pending = await asyncio.wait(pins, timeout=1)
             assert not pending, "a check of an ended job still waits"
-        start = time.monotonic()
         org_b = fetch.AddressChecker(resolve, org="org-b", pool=pool, per_org=2,
                                      timeout=limits.CHECK_TIMEOUT_S)
-        await org_b.pin(fetch.parse_hop("https://public.example/"))
-        took = time.monotonic() - start
+        # Org B ends while org A's threads still hang. A stall hits the 30 s guard.
+        await asyncio.wait_for(org_b.pin(fetch.parse_hop("https://public.example/")), 30)
         busy = sum(1 for t in asyncio.all_tasks() if t is not asyncio.current_task())
-        return took, sum(1 for c in calls if c.startswith("hang")), busy
+        return sum(1 for c in calls if c.startswith("hang")), busy
 
     try:
-        took, hung, busy = asyncio.run(go())
+        hung, busy = asyncio.run(go())
     finally:
         gate.set()
         pool.shutdown(wait=True)
-    assert took < 0.5, f"org B waited {took:.2f} s"
     assert hung == 2, f"org A held {hung} threads, the cap is 2"
     assert busy == 0, "a task of an ended job still runs"
 

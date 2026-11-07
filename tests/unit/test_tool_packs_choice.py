@@ -1848,3 +1848,26 @@ def _held_card_writes_on(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+
+
+@pytest.mark.parametrize("words", [
+    "Change the amount of the Acme deal in the CRM to 50000",
+    "Mark my CRM follow-up task with Acme as done",
+])
+async def test_a_crm_edit_turn_loads_the_record_edit_and_the_task_change(
+    words: str, store, orchestrator,
+) -> None:
+    """WS-CRM CRM-M2b (crm_conversational.md §8). A CRM turn loads
+    ``crm-records``, and the run then holds both new tools. The base does not
+    hold them: it is at the 110-tool cap. Mutation: drop a tool from the family
+    -> the run lacks it -> red."""
+    for name in ("crm_update_record", "crm_update_task"):
+        assert name not in CONFIG["tool_scope"]
+        assert name not in _names(orchestrator), "the base must not hold it"
+    with _tenant():
+        applied = await _apply(orchestrator, words, allowed=CRM_ONLY)
+    assert applied is not None and applied.record.slugs == ("crm-records",), applied
+    held = set(_names(orchestrator))
+    assert {"crm_update_record", "crm_update_task"} <= held
+    assert "crm_update_record" in tp.PACKS["crm-records"].rules
+    assert "crm_update_task" in tp.PACKS["crm-records"].rules
