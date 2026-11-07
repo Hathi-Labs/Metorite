@@ -36,7 +36,10 @@ writes nothing under an id that exists in another tenant.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
+import re
+import time
 import uuid
 from typing import Any, Literal
 
@@ -1403,6 +1406,160 @@ def _carry_text(
     return None if row is None else str(row.content or "")
 
 
+# ── WT-1b: the stranger-text frame (§9.3 item 9, owner option A, 2026-11-07) ──
+#
+# A typed row can hold mail that the member pasted. When the carry shares a
+# run of `_MAIL_RUN` normalized characters with a stored mail body of the
+# SAME member, the route wraps it in the one frame of
+# `acb_skills.untrusted.frame_untrusted`. Any fault, and a spent time budget,
+# give the frame. A text under `_MAIL_RUN` characters is never framed.
+
+#: The shortest common run, in normalized characters, that frames the carry.
+_MAIL_RUN = 80
+#: The newest bodies that the match reads, and their age bound in days.
+_MAIL_BODIES = 200
+_MAIL_DAYS = 30
+#: The characters of one body (and of the carry) that the match compares.
+#: A longer carry is framed with no match.
+_MAIL_CHARS = 20_000
+#: The time budget of the match, in seconds. The read is not in it.
+_MAIL_BUDGET_S = 0.020
+#: The statement timeout of the read. A timeout raises, so it frames.
+_MAIL_TIMEOUT_SQL = "SET LOCAL statement_timeout = '500ms'"
+#: The clock of the budget. A test patches it.
+_clock = time.monotonic
+
+#: The member's own mail: the private mailboxes whose `user_id` is the caller,
+#: in the bound tenant only (RLS, and the GUC predicate as defence in depth).
+#: The newest `_MAIL_BODIES` bodies of the last `_MAIL_DAYS` days, by
+#: `received_at`, so the index `(account_id, received_at DESC)` serves it. A
+#: row with no `received_at` is not read. Fence:
+#: `test_email_owner_scope_fence.py` (`OUTSIDE_EMAIL_READERS`).
+_MAIL_BODIES_SQL = (
+    "SELECT left(m.body_text, :cap) AS body_text, "
+    "CASE WHEN coalesce(m.body_text, '') = '' "
+    "THEN left(m.body_html, :html_cap) END AS body_html "
+    "FROM email_messages m JOIN email_accounts ea ON ea.id = m.account_id "
+    "WHERE lower(ea.user_id) = lower(:me) AND ea.shared_since IS NULL "
+    "AND ea.organization_id = "
+    "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid) "
+    "AND m.organization_id = ea.organization_id "
+    "AND m.received_at >= now() - make_interval(days => :days) "
+    "AND (coalesce(m.body_text, '') <> '' OR coalesce(m.body_html, '') <> '') "
+    "ORDER BY m.received_at DESC LIMIT :n"
+)
+
+_TAG_RE = re.compile(r"<[^>]{0,2000}>")
+
+
+def _normalize_mail(value: str) -> str:
+    """Lower case, each run of white space as one space. Both sides use it."""
+    from acb_skills.untrusted import collapse
+
+    return collapse(value).lower()
+
+
+def _html_text(value: str) -> str:
+    """The visible text of an HTML body: tags dropped, entities read."""
+    return html.unescape(_TAG_RE.sub(" ", value or ""))
+
+
+def _member_mail_bodies(me: str, *, organization_id: str | None) -> list[str]:
+    """The member's own mail bodies, as :data:`_MAIL_BODIES_SQL` reads them."""
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    with tenant_session(organization_id) as s:
+        # A slow read raises, and the caller then frames the carry.
+        s.execute(text(_MAIL_TIMEOUT_SQL))
+        rows = s.execute(text(_MAIL_BODIES_SQL), {
+            "me": me, "days": _MAIL_DAYS, "n": _MAIL_BODIES,
+            "cap": _MAIL_CHARS, "html_cap": _MAIL_CHARS * 3,
+        }).fetchall()
+    out: list[str] = []
+    for row in rows[:_MAIL_BODIES]:
+        body = row.body_text or _html_text(row.body_html or "")
+        if body:
+            out.append(body)
+    return out
+
+
+class _BudgetSpent(Exception):
+    """The match ran past :data:`_MAIL_BUDGET_S`."""
+
+
+def _shares_mail_run(carried: str, bodies: list[str]) -> bool:
+    """True when *carried* and one body share a run of :data:`_MAIL_RUN`
+    normalized characters. Raises :class:`_BudgetSpent` past the budget.
+
+    The half-run index: each run of ``2h`` characters (``h`` = half of
+    :data:`_MAIL_RUN`) holds a gram of ``h`` characters that starts at a
+    multiple of ``h`` in the body. So the match looks up those grams only,
+    in a set of every ``h``-gram of the carry, and extends each hit both ways.
+    """
+    deadline = _clock() + _MAIL_BUDGET_S
+    text_n = _normalize_mail(carried)
+    if len(text_n) < _MAIL_RUN:
+        return False
+    half = _MAIL_RUN // 2
+    grams: dict[str, list[int]] = {}
+    for i in range(len(text_n) - half + 1):
+        grams.setdefault(text_n[i:i + half], []).append(i)
+    for body in bodies:
+        if _clock() > deadline:
+            raise _BudgetSpent
+        body_n = _normalize_mail(body[:_MAIL_CHARS])
+        for j in range(0, len(body_n) - half + 1, half):
+            hits = grams.get(body_n[j:j + half])
+            if not hits:
+                continue
+            for i in hits[:32]:
+                left = 0
+                while (left < i and left < j
+                       and text_n[i - left - 1] == body_n[j - left - 1]):
+                    left += 1
+                right = half
+                while (i + right < len(text_n) and j + right < len(body_n)
+                       and text_n[i + right] == body_n[j + right]):
+                    right += 1
+                if left + right >= _MAIL_RUN:
+                    return True
+            if _clock() > deadline:
+                raise _BudgetSpent
+    return False
+
+
+def _frame_carry(text_value: str) -> str:
+    """*text_value* in the one stranger-text frame, with its data note first."""
+    from acb_skills.untrusted import frame_untrusted
+
+    framed, note = frame_untrusted(
+        "pasted mail", text_value,
+        what="This text matches a mail that a sender outside Metorite wrote.",
+    )
+    return f"{note}\n\n{framed}"
+
+
+def _guard_carry(carried: str, me: str, *, organization_id: str | None) -> str:
+    """The carry, framed when it matches the member's own stored mail.
+
+    A text under :data:`_MAIL_RUN` normalized characters comes back as is.
+    Each fault and a spent budget FAIL TOWARD THE FRAME, never to plain text.
+    """
+    size = len(_normalize_mail(carried))
+    if size < _MAIL_RUN:
+        return carried
+    try:
+        if size > _MAIL_CHARS:
+            raise _BudgetSpent
+        bodies = _member_mail_bodies(me, organization_id=organization_id)
+        matched = _shares_mail_run(carried, bodies)
+    except Exception as exc:  # fail toward the frame
+        _log.warning("chat.continue_frame_fault", error=type(exc).__name__)
+        return _frame_carry(carried)
+    return _frame_carry(carried) if matched else carried
+
+
 def _open_continued_chat(
     new_id: str, source_id: str, me: str, agent_name: str, *,
     organization_id: str | None,
@@ -1464,6 +1621,10 @@ async def continue_session(
             status_code=409,
             detail="This chat holds no message that you typed, so nothing can continue.",
         )
+    # WT-1b (§9.3 item 9): pasted mail crosses only inside the frame.
+    carried = await asyncio.to_thread(
+        _guard_carry, carried, me, organization_id=org,
+    )
 
     # §9.3 item 7: the server mints the id, and the new chat passes the two
     # doors of every new chat.

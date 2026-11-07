@@ -5,7 +5,7 @@ OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 
-§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-1b to WT-6 are not built.
+§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-1b is BUILT, dark behind the same flag (2026-11-07, task 1685). WT-2 to WT-6 are not built.
 
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
 
@@ -2458,10 +2458,10 @@ must stay green with `test_crm_answer_check.py`,
 
 ## 9. A way through a held chat (task 1648, owner brief 2026-11-05)
 
-**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). The rest is design
+**Status:** WT-1 and WT-1b BUILT, dark (2026-11-05 and 2026-11-07, tasks 1684 and 1685). The rest is design
 (2026-11-04). Task 1648. The review below is checked against
 the code on 2026-11-04 at `origin/main` `7ad8dc559`. It changes no guard. The slices
-in §9.4 build it, and the first one is dark. Owner of `chat_session.continued_from`:
+in §9.4 build it, and the first two are dark. Owner of `chat_session.continued_from`:
 this section. `chat_organization.md` §7.1 reads it and writes it never.
 
 ### 9.1 The rule
@@ -2545,7 +2545,7 @@ separate HIGH design, and it is out of scope here.
 | Slice | What | Tier | Gate |
 |---|---|---|---|
 | WT-1 | 🔨 **BUILT, dark (2026-11-05, task 1684).** Migration 345 (`345_chat_session_continued_from.sql`) adds `continued_from`, with its foreign key NOT VALID. A later release validates it. Route `continue_session`, flag reader `continue_allowed`. Fences: `test_continue_carry.py` (R8), `test_continued_from_readers.py`. Migration (next free number at build. It was 344 on 2026-11-04) for `continued_from`. Route `POST /chat/sessions/{id}/continue` in `routes/chat.py` by §9.3. Flag `CHAT_CONTINUE_ORGS` in `settings.py` and `env_guard.py`, default empty. | HIGH | AGENT-SAFE, dark |
-| WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. | HIGH | AGENT-SAFE, dark |
+| WT-1b | 🔨 **BUILT, dark (2026-11-07, task 1685).** Owner decision: option A (2026-11-07). The carry gets the one frame of `frame_untrusted` when it shares a run of 80 normalized characters with a stored mail body of the same member. Normalized means lower case, with each run of white space as one space. The route reads the newest 200 bodies of the last 30 days, from the private mailboxes of the caller, under the caller's tenant. The read has a statement timeout of 500 ms. The match compares 20,000 characters at most, in a budget of 20 ms. A fault, a timeout or a spent budget gives the frame. A text under 80 characters is never framed. Code: `_guard_carry` in `routes/chat.py`. No migration. | HIGH | AGENT-SAFE, dark |
 | WT-2 | The tap. A `Continue in a fresh chat` pill on the refusal and the hold note. The web shell opens the new chat and fills the composer. | STANDARD | AGENT-SAFE, dark |
 | WT-3 | Copy: the two `NO_WRITES` texts offer the tap, and no copy says "open a new chat". Update the pinned tests. | HIGH | AGENT-SAFE |
 | WT-4 | Topic change (not held): a suggestion chip, and a swap in place through `persona_for` and `load_tool`. Line: "Switched to Calendar". | STANDARD | AGENT-SAFE |
@@ -2572,6 +2572,12 @@ answer is 404, and the verification commands of §9.6 pass.
   - The route writes no `chat_message` row.
   - The new id is the server's.
   - The carry holds only `content`.
+- `tests/unit/test_continue_stranger_frame.py` (R8, WT-1b): a pasted run of own mail is framed.
+  A paraphrase is not framed. The mail of another member or another tenant never matches.
+  A text under 80 characters is never framed. A 201st body and a 31-day-old body do not match.
+  A fault, a slow read and a spent time budget give the frame.
+- `tests/unit/test_email_owner_scope_fence.py` lists `routes/chat.py` in
+  `OUTSIDE_EMAIL_READERS`. The continue route is the only chat reader of mail.
 - `tests/unit/test_continued_from_readers.py`: a structural scan allows the
   `continued_from` column in three places only. They are the WT-1 route, the
   session list and the CO-5 chip read.
@@ -2580,7 +2586,7 @@ answer is 404, and the verification commands of §9.6 pass.
 
 ```
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_continue_carry.py tests/unit/test_continued_from_readers.py tests/unit/test_delegation_no_egress.py tests/unit/test_chat_summary_r8.py tests/unit/test_held_card_writes.py tests/unit/test_tenant_coverage.py -q
+uv run pytest tests/unit/test_continue_carry.py tests/unit/test_continue_stranger_frame.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_continued_from_readers.py tests/unit/test_delegation_no_egress.py tests/unit/test_chat_summary_r8.py tests/unit/test_held_card_writes.py tests/unit/test_tenant_coverage.py -q
 uv run ruff check apps/services/gateway packages/acb_common
 uv run python scripts/affected_tests.py --run
 ```
