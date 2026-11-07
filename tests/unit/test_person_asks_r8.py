@@ -627,12 +627,16 @@ class TestPersonAsksOnARealDatabase:
                         " answered_by = decider, answer_key = 'not_me', answered_at = now()")
         # A close happens once, and a closed ask takes no answer.
         update(did, "closed_at = now(), closed_reason = 'withdrawn'")
-        for sets in ("closed_reason = 'task_closed'",
-                     "closed_at = now() + interval '1 second'",
-                     "closed_at = NULL, closed_reason = NULL",
-                     "answered_by = decider, answer_key = 'not_me', answered_at = now()"):
-            with pytest.raises(wall):
+        for sets, says in (
+            ("closed_reason = 'task_closed'", "an ask closes once"),
+            ("closed_at = now() + interval '1 second'", "an ask closes once"),
+            ("closed_at = NULL, closed_reason = NULL", "an ask closes once"),
+            ("answered_by = decider, answer_key = 'not_me', answered_at = now()",
+             "a closed ask takes no answer"),
+        ):
+            with pytest.raises(wall) as refused:
                 update(did, sets)
+            assert says in str(refused.value), sets
         # An answered ask takes no close.
         other = insert()
         update(other, "answered_by = decider, answer_key = 'not_me', answered_at = now()")

@@ -106,7 +106,7 @@ Nothing today shows a question with named options to a named person, and records
 | `expires_at` | Default 7 days after the ask |
 | `payload` | JSONB. It serves SW-18 and Studio B2c |
 | `answered_by`, `answer_key`, `answer_reason` | Nullable until the answer. The reason is optional |
-| `source` | `align` or `auto` |
+| `source` | `align`, `auto` or `person`. A `person` row is a person ask of WS-AP: `waiting_on_me.md` §7.1 adds it, with `due_at`, `closed_at` and `closed_reason` |
 
 A unique guard allows one answer for each decision. ALN-2a records four facts for the next slices. First, `REACH_CLASS["decision"]` reaches nobody until a signal kind `decision` exists. ALN-2b must add `decision` to `ASKING_NOTIFICATIONS`, the bell verb in `notifications.ts` and the needs provider before `DECISIONS_ORGS` goes on. Second, the answer writes a `comment` activity with the question of the asker, and it emits `pm.task.comment_added`. So a workflow triggered by a comment reads that text, and ALN-7 must know it. Third, only the decider reads a decision, including its answer. Other members read the comment on the task. Fourth, the chat reaches the decision by the tools `my_decisions` and `answer_decision`, and `answer_decision` refuses a run with no person present before it raises a card. The table is tenant-scoped with FORCE RLS (R5). It widens `pm_notifications_kind_check` with the kind `decision`.
 
