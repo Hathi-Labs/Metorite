@@ -1760,9 +1760,11 @@ async def test_a_failed_fetch_does_not_lift_the_share(
 
     assert len(fake.requests("/messages")) == 1
     assert _ids(result) == ["m1"]
-    assert result.rate_limited is False
-    assert result.catch_up_incomplete is True
-    assert result.new_history_id is None
+    # EM-G4b-f4: the failed mail at the top holds the bound, and the cycle
+    # counts in ``held``. Before it the sweep counted as short.
+    assert result.rate_limited is True
+    assert json.loads(result.new_history_id) == {
+        "held": 1, "reset": [None, None], "seed": "500", "v": 1}
 
 
 async def test_the_cut_bound_stays_above_a_failed_fetch(
@@ -1825,23 +1827,109 @@ async def test_a_limit_keeps_the_bound_above_a_failed_fetch(
 
 async def test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep(
         fake: _Gmail, cycle: SimpleNamespace,
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    """Acceptance 9. The newest mail fails in each cycle, so the bound cannot
-    move. Each cycle reads one page and counts as short. At
-    ``CATCH_UP_MAX_MISSES`` the scheduler abandons the sweep, and the seed
-    goes to the row, so the history read starts again."""
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture) -> None:
+    """EM-G4b-f4 (task 1448). The newest mail fails in each cycle, so the
+    bound cannot move. Two cycles hold it, with the count in ``held``. The
+    third moves the bound past the failed mail and logs
+    ``gmail.fetch_abandoned``. The fourth reads the older mail ``m3`` and
+    ends with the seed. Before EM-G4b-f4 the abandon after
+    ``CATCH_UP_MAX_MISSES`` wrote the seed, and ``m3`` stayed unread."""
     monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 2)
     _stale_history(fake)
     mails = _dated_mail(fake, m1=1, m2=2, m3=3)
     fake.message("m1", _refuse(503, "backendError"))
     fake.listing = _dated_list(mails, size=2)
 
-    for _ in range(sched.CATCH_UP_MAX_MISSES):
-        await cycle.run(_row(last_history_id="100"), from_loop=True)
+    stored = "100"
+    for _ in range(gmail_mod.GMAIL_FETCH_HOLD_CYCLES + 1):
+        await cycle.run(_row(last_history_id=stored), from_loop=True)
+        stored = cycle.phase_d()[-1]["history_id"]
 
     written = [p["history_id"] for p in cycle.phase_d()]
-    assert written == [None] * (sched.CATCH_UP_MAX_MISSES - 1) + ["500"]
-    assert len(fake.requests("/messages")) == sched.CATCH_UP_MAX_MISSES
+    assert [json.loads(w).get("held") for w in written[:2]] == [1, 2]
+    assert [json.loads(w)["reset"][1] for w in written[:2]] == [None, None]
+    after = json.loads(written[0])["reset"][0]
+    assert json.loads(written[2]) == {
+        "reset": [after, _second(mails["m2"])], "seed": "500", "v": 1}
+    assert written[3] == "500"
+    assert "m3" in {m.provider_message_id for m in cycle.upserts}
+    assert "m1" not in {m.provider_message_id for m in cycle.upserts}
+    abandoned = [r.getMessage() for r in caplog.records
+                 if "gmail.fetch_abandoned" in r.getMessage()]
+    assert abandoned == ["gmail.fetch_abandoned message_id=m1 held_cycles=3"]
+    assert len(fake.requests("/profile")) == 1
+
+
+async def test_a_held_reset_bound_records_the_abandoned_mail(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EM-G4b-f4. The cycle that moves past a failed mail records it in
+    ``errors`` with its id only, as the history path does. A held cycle
+    before the cap records no abandon."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 2)
+    _stale_history(fake)
+    mails = _dated_mail(fake, m1=1, m2=2, m3=3)
+    fake.message("m1", _refuse(503, "backendError"))
+    fake.listing = _dated_list(mails, size=2)
+    held = gmail_mod._format_reset(
+        "500", None, None, gmail_mod.GMAIL_FETCH_HOLD_CYCLES - 2)
+    last = gmail_mod._format_reset(
+        "500", None, None, gmail_mod.GMAIL_FETCH_HOLD_CYCLES - 1)
+
+    before = await _provider().sync_messages(history_id=held)
+    at_cap = await _provider().sync_messages(history_id=last)
+
+    assert not any("fetch_abandoned" in e for e in before.errors)
+    assert json.loads(before.new_history_id)["held"] == (
+        gmail_mod.GMAIL_FETCH_HOLD_CYCLES - 1)
+    cycles = gmail_mod.GMAIL_FETCH_HOLD_CYCLES
+    assert f"gmail.fetch_abandoned id=m1 held_cycles={cycles}" in at_cap.errors
+    assert json.loads(at_cap.new_history_id)["reset"][1] == _second(mails["m2"])
+    assert "held" not in json.loads(at_cap.new_history_id)
+
+
+async def test_the_cap_records_only_the_failed_mail_that_it_passes(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EM-G4b-f4, verifier finding. ``m1`` fails at the top, and ``m3``
+    fails at the bottom of the read. At the cap the bound moves to ``m2``,
+    the oldest mail that came. ``m3`` is older than that bound, so the next
+    cycle lists it again, and it gets no abandon record."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 3)
+    _stale_history(fake)
+    mails = _dated_mail(fake, m1=1, m2=2, m3=3, m4=4, m5=5)
+    fake.message("m1", _refuse(503, "backendError"))
+    fake.message("m3", _refuse(503, "backendError"))
+    fake.listing = _dated_list(mails, size=3)
+    last = gmail_mod._format_reset(
+        "500", None, None, gmail_mod.GMAIL_FETCH_HOLD_CYCLES - 1)
+
+    result = await _provider().sync_messages(history_id=last)
+
+    abandoned = [e for e in result.errors if "fetch_abandoned" in e]
+    cycles = gmail_mod.GMAIL_FETCH_HOLD_CYCLES
+    assert abandoned == [f"gmail.fetch_abandoned id=m1 held_cycles={cycles}"]
+    assert json.loads(result.new_history_id)["reset"][1] == _second(mails["m2"])
+
+
+async def test_a_bound_that_moves_clears_the_held_count(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EM-G4b-f4. The count belongs to the bound. A cycle whose failed mail
+    is below mail that it read moves the bound above the failed mail, and
+    the count goes back to 0. So a failed mail never holds the sweep for
+    more than ``GMAIL_FETCH_HOLD_CYCLES`` cycles in a row."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 3)
+    _stale_history(fake)
+    mails = _dated_mail(fake, m1=1, m2=2, m3=3, m4=4)
+    fake.message("m2", _refuse(503, "backendError"))
+    fake.listing = _dated_list(mails, size=3)
+    held = gmail_mod._format_reset("500", None, None, 2)
+
+    result = await _provider().sync_messages(history_id=held)
+
+    point = json.loads(result.new_history_id)
+    assert point["reset"][1] == _second(mails["m1"])
+    assert "held" not in point
+    assert not any("fetch_abandoned" in e for e in result.errors)
 
 
 async def test_a_reset_sweep_with_no_seed_reads_on(
@@ -1913,20 +2001,24 @@ async def test_a_reset_sweep_that_cannot_move_counts_as_short(
     '{"v":1,"seed":"5","reset":[1]}',
     '{"v":1,"seed":"5","reset":"xy"}',
     '{"v":1,"seed":"5","reset":["a",null]}',
+    '{"v":1,"seed":"5","reset":[null,null],"held":"x"}',
     "not json",
 ])
 def test_text_that_is_no_reset_cursor(form: str) -> None:
     assert gmail_mod._parse_reset(form) is None
 
 
-def test_a_reset_cursor_is_no_other_cursor() -> None:
+@pytest.mark.parametrize("held", [0, 2])
+def test_a_reset_cursor_is_no_other_cursor(held: int) -> None:
     """An older process reads it as no cursor, and sweeps from the start."""
-    form = gmail_mod._format_reset("500", None, datetime.now(UTC))
+    form = gmail_mod._format_reset("500", None, datetime.now(UTC), held)
 
     assert gmail_mod._parse_cursor(form) is None
     assert gmail_mod._parse_sweep(form) is None
     assert sched._log_cursor(form) is None
     assert gmail_mod._parse_reset(form)[0] == "500"
+    assert gmail_mod._parse_reset(form)[3] == held
+    assert ("held" in json.loads(form)) is (held > 0)
 
 
 async def test_a_deep_sync_keeps_its_error_when_the_sweep_raises(
