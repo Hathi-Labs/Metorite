@@ -889,7 +889,7 @@ def refuse_unless_kept_private(row: Sequence[Any], *, allow_draft: bool) -> None
 
     *row* is a row of :data:`_INSTALL_FOR_UPDATE_SQL`. A draft is refused
     too, unless *allow_draft*. Each refusal is a :class:`PromotionRefused`
-    with its own code (PKG-Q11: keep comes first).
+    with its own code (PKG-Q12: keep comes first).
     """
     _app, version, kind, _subject, _by, ends_at, state = row
     if kind != "private":

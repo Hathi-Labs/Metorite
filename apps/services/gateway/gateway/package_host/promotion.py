@@ -144,7 +144,7 @@ async def share_with_people(db: Any, *, install_id: str, emails: Sequence[str],
     *db* is a session that the caller opened with ``tenant_session(org)``.
     *sharer* is the address of the session member, who must own the
     install. Each person must be an active member of the bound org. The
-    install must be private, active and kept (PKG-Q11). A person whom another
+    install must be private, active and kept (PKG-Q12). A person whom another
     member already shares the app with refuses the whole call
     (``shared_by_another_owner``). Each refusal writes nothing. Answers the
     normalised addresses, in order. :class:`NotTheOwner` comes from
