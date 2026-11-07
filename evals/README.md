@@ -20,6 +20,7 @@ Three complementary layers, from cheapest/most-deterministic to most realistic:
 | [`orchestrator_cos/`](orchestrator_cos/README.md) | WS-52 §11. Fifteen member turns for the orchestrator's chief-of-staff role: status, attention, decisions, relays, facts, requests for detail, tool names, «» marks and one ask. Eleven deterministic checks score each reply (`bluf`, `length`, `no_dump`, `no_relay`, `recommendation`, `mentions`, `keeps_deliverable`, `voice`, `no_tool_name`, `no_guillemets`, `one_ask`), and an optional model judge adds a rubric. `--live --arm` records a before arm and an after arm | `--scripted`: no. `--live`: yes, a manual run through the Router | `--scripted`: the unit job (`test_orchestrator_cos_eval.py`) |
 | [`one_assistant_measure/`](one_assistant_measure/README.md) | WS-67 OA-5. 13 email chats (18 turns) through the real orchestrator run, two ways: delegation to the email assistant, and an eval-only email tool pack. Machine checks score each turn. A tap on the wire records the model calls, the tokens, the time and the cost | `--scripted`: no. `--live`: yes, a manual run through the Router | `--scripted` on both arms, and the checker mutations: the unit job (`test_one_assistant_measure.py`) |
 | [`routing/`](routing/README.md) | NS-6 slice 6d. 27 member questions for the one assistant, each with the specialist that must answer it, or none. The catalog checks read the real registry and the real orchestrator. A script drives one case of each answer through the real `orchestrator` run. `--live` asks the real model and writes the baseline | `--scripted`: no. `--live`: yes, a manual run | `--scripted`: `skill-eval.yml`. The checks and their mutations: the unit job (`test_routing_eval.py`) |
+| [`project_rules_proposer/`](project_rules_proposer/README.md) | WS-ALN ALN-5b. Six synthetic pages for the rule proposer, with a scripted answer for each. The real prompt, call shape, `judge` and `fit` run on each answer, and six bars score the run. `--live` reads pages of the repo and writes the proposals for a lead to mark. `--score` gives the share that the lead accepted | `--scripted`: no. `--live`: yes, through the Router, under a budget of USD 0.50 | `--scripted` and the checker mutations: the unit job (`test_project_rules_static.py`) |
 
 ## Golden workflow fixtures (`trajectories/workflows/*.json`)
 
@@ -64,6 +65,7 @@ evals/
   orchestrator_cos/     WS-52 §11: the fifteen chief-of-staff cases, the scripted answers, the runner
   one_assistant_measure/ WS-67 OA-5: the email chats, the eval-only tool pack, the checks, the runner
   routing/              NS-6 6d: the routing questions, the harness of many agents, the runner
+  project_rules_proposer/ WS-ALN ALN-5b: the synthetic pages, the scripted answers, the checks, the runner
 ```
 
 ## Running locally
