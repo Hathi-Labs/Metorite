@@ -1147,6 +1147,17 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_email_new_mail_card.py.
     email_edit_card_orgs: str = ""
 
+    # ── Outlook all-mail webhook (WS-17, task 1966) ─────────────────────────
+    #
+    # `outlook_all_mail_webhook_orgs` lists the organization ids whose Outlook
+    # push subscription watches ALL mail (`/me/messages`), so mail that a rule
+    # files into a user folder arrives at once and not at the next poll. Empty
+    # means off, and the subscription watches the Inbox only. The reader is
+    # `gateway.routes.email.transport.sync._all_mail_webhook_on`. The name ends
+    # in `_orgs`, so a SIGHUP applies a change with no restart.
+    # Fence: tests/unit/test_outlook_all_mail_webhook.py.
+    outlook_all_mail_webhook_orgs: str = ""
+
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #
     # `web_research_orgs` lists the organization ids whose `fetch_page` reads
