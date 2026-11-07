@@ -3696,3 +3696,28 @@ async def test_the_alt_text_keeps_every_r_and_drops_brackets_and_line_breaks() -
     assert md.startswith("![error1.png](")
     md = task_files.image_markdown({**row, "name": "a" + chr(13) + "b" + chr(10) + "c.png"})
     assert md.startswith("![abc.png](")
+
+
+async def test_one_file_under_two_spellings_is_one_file(monkeypatch) -> None:
+    """`shot.png` and `uploads/shot.png` resolve to one file: one card entry, one post."""
+    from acb_skills import attachment_tools
+
+    async def resolved(name: str) -> Any:
+        return PNG
+
+    monkeypatch.setattr(attachment_tools, "read_attachment_bytes", resolved)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await skill_projects.create_task(UUID, "Fix", files=["shot.png", "uploads/shot.png"])
+    assert asked[0]["context"].count("«shot.png»") == 1
+    assert len([c for c in calls if c["method"] == "POST" and c.get("files")]) == 1
+
+
+async def test_a_caller_header_never_replaces_the_identity(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, _files_gateway())
+    await client.request(
+        "GET", "/projects/tasks", headers={"X-User-Email": "evil@x.io", "If-Match": "t"}
+    )
+    sent = calls[0]["headers"]
+    assert sent["X-User-Email"] == "pm@fracktal.in"
+    assert sent["If-Match"] == "t"

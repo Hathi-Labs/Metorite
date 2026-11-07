@@ -166,8 +166,8 @@ async def request(
         raise GatewayRefusal(why, fixable=False, route=_template(method, path))
     # Both refusals come BEFORE the client exists: the manifest's, and the
     # no-acting-user one `headers()` raises. A refused call builds nothing.
-    sent = headers()
-    sent.update(kwargs.pop("headers", None) or {})
+    # The caller's headers go first, so the identity headers win (IMG-2 review).
+    sent = {**(kwargs.pop("headers", None) or {}), **headers()}
     if "files" in kwargs:
         # A multipart body sets its own Content-Type, with the boundary. The
         # JSON header would break the upload (WS-64 OP-6c).

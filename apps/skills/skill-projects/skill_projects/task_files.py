@@ -99,6 +99,8 @@ async def read_checked(names: list[str]) -> list[ChatFile] | str:
         if isinstance(got, str):
             return got
         name, content = got
+        if any(name == taken for taken, _c in out):
+            continue  # the same file under another spelling of its name
         why = file_refusal(name, content)
         if why:
             return why

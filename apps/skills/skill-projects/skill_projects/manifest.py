@@ -1300,7 +1300,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         ),
     },
     ("PATCH", "/projects/tasks/{task_id}"): {
-        "If-Match": "The browser's edit guard (D-PM-20). A chat write reads the row first.",
+        "If-Match": (
+            "The browser's edit guard (D-PM-20). A chat edit reads the row first. "
+            "The one chat write that sends it is the image PATCH of create_task with "
+            "files, and the witness fence cannot run it, because the stub upload is a PDF."
+        ),
         "project_id": "The route refuses it: a move goes through move_task.",
         "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
         "source": "Where a task came from is a fact of its create. An edit keeps it.",
