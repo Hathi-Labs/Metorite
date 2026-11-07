@@ -61,11 +61,25 @@ import { segmentsForCache } from "@/lib/chatPlacement";
 import {
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
+  NO_EDITS,
   confirmationReducer,
+  formEditsReducer,
+  liveCards,
+  liveEdits,
   receiptLabel,
   settleAnswer,
+  type FormEdits,
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
+import type { NewMailEdits } from "@/lib/replyCard";
+import {
+  UNCHANGED_CLOSE_MS,
+  changingLine,
+  pickCardDrafts,
+  type CardDraft,
+  type KeptDraft,
+  type SentVersion,
+} from "@/lib/redraftCard";
 import { sendRespondInputResult } from "@/lib/respondInput";
 import { createRejectHold } from "@/lib/rejectHold";
 import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
@@ -631,6 +645,24 @@ export default function AgentChat({
   // that a program puts in the box take it away until the box is empty
   // (`lib/typedMark.ts`). A ref: only the send reads it.
   const boxMarkRef = useRef<ComposerMark>(EMPTY_BOX);
+  // §18.11 step 1: the member's version of each open new-mail card that
+  // they edited, by card key (`lib/redraftCard.ts`). Each steer takes the
+  // newest one. The queue is declared below the hook, so its cards and its
+  // dispatch reach the steer through refs.
+  const cardDraftsRef = useRef(new Map<string, KeptDraft>());
+  const draftSeqRef = useRef(0);
+  const cardsRef = useRef<readonly PendingConfirmation[]>([]);
+  const markSentRef = useRef<(key: string, version: SentVersion) => void>(() => {});
+  const takeCardDraft = useCallback((): CardDraft[] => {
+    // P2: one version for EACH open new-mail card, an unedited card too.
+    const drafts = pickCardDrafts(cardsRef.current, cardDraftsRef.current);
+    // Each card keeps what went, so its next draft can say what changed,
+    // people included.
+    for (const d of drafts) {
+      markSentRef.current(d.request_id, { subject: d.subject, body: d.body, to: d.to, cc: d.cc, bcc: d.bcc });
+    }
+    return drafts;
+  }, []);
   const {
     messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages,
     stopping, stopError,
@@ -650,6 +682,8 @@ export default function AgentChat({
     // WS-51 D-3: the run cap refused the send. The words come back to the
     // composer, unless the member already typed something new.
     onRunCapped: restoreCappedText,
+    // §18.11: a steer carries the member's version of each open new-mail card.
+    cardDraft: takeCardDraft,
     onSessionRefused,
     // Load the FULL persisted history into memory so the context sent to the
     // model and the context-usage estimate are both accurate.  We only window
@@ -856,6 +890,9 @@ export default function AgentChat({
   // A remount's "checking" offers no Stop and no "working…" until the
   // server lists the run (`isRunActiveForUi`, re-review of #1171).
   const isRunActive = isRunActiveForUi(run);
+  // §18.11: a message goes as a steer now, the one path that carries the
+  // member's version of a card (`cardDraft`). A plain send carries none.
+  const steerOpen = sendRoute({ runActive: isRunActive, mode: effectiveRuntime }) === "steer";
   // Glass (GL-10b): the colour edge around the composer is always drawn. Its
   // state says what the run is doing, and the caller's CSS keys on it.
   const glowState = isRunActive ? (run.phase === "waiting_for_you" ? "waiting" : "live") : "rest";
@@ -1059,6 +1096,37 @@ export default function AgentChat({
     confirmationReducer,
     EMPTY_CONFIRMATIONS,
   );
+  // §18.11: the steer reads the queue's cards, and marks what it carried.
+  useEffect(() => { cardsRef.current = confirmations.cards; }, [confirmations.cards]);
+  useEffect(() => {
+    markSentRef.current = (key, version) => dispatchConfirmation({ type: "memberVersion", key, version });
+  }, []);
+  // A new-mail card reports the member's version after each edit, or null
+  // when it shows its own start again.
+  // Fix round 5: the member's edits of each new-mail form, by key. The CHAT
+  // holds them, and not the queue, because the queue mounts again on each new
+  // message and when its last card leaves. A ref: the form reads them once,
+  // when it mounts. `liveEdits` drops the entry of a card that closed for good.
+  const formEditsRef = useRef<FormEdits>(NO_EDITS);
+  const onFormEdits = useCallback((key: string, value: NewMailEdits) => {
+    formEditsRef.current = formEditsReducer(formEditsRef.current, { key, value });
+  }, []);
+  const savedFormEdits = useCallback((key: string) => formEditsRef.current.get(key), []);
+  useEffect(() => {
+    formEditsRef.current = liveEdits(formEditsRef.current, confirmations);
+  }, [confirmations]);
+  const onCardDraft = useCallback((key: string, draft: CardDraft | null) => {
+    if (draft) cardDraftsRef.current.set(key, { draft, seq: ++draftSeqRef.current });
+    else cardDraftsRef.current.delete(key);
+  }, []);
+  // §18.11 step 7: "The draft did not change." shows for a moment, and the
+  // slot then closes, as a card that closed with no answer does.
+  const hasUnchanged = confirmations.cards.some((c) => c.redraft === "unchanged");
+  useEffect(() => {
+    if (!hasUnchanged) return;
+    const t = setTimeout(() => dispatchConfirmation({ type: "closeUnchanged" }), UNCHANGED_CLOSE_MS);
+    return () => clearTimeout(t);
+  }, [hasUnchanged]);
   // Rejects held for Undo (`lib/rejectHold.ts`). A session switch or an
   // unmount sends every held REJECT at once: the rule that keeps a run from
   // parking. The cleanup runs before `sessionIdRef` moves on.
@@ -1126,11 +1194,18 @@ export default function AgentChat({
       // carries this too, so an answered card never comes back.
       if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
         const rid = (value as Record<string, unknown>).request_id;
-        if (rid) dispatchConfirmation({ type: "resolved", requestId: String(rid) });
+        const answer = (value as Record<string, unknown>).answer;
+        // The closing answer goes with it: a new-mail card that a chat
+        // message closed (REVISED) stays as the slot of its new draft (§18.11).
+        if (rid) {
+          dispatchConfirmation({
+            type: "resolved", requestId: String(rid),
+            ...(typeof answer === "string" ? { answer } : {}),
+          });
+        }
         // An answer from anywhere (another tab, another member of a room)
         // locks the blocking card too. A timeout or a cancel is no answer:
         // that card stays open, and a click on it goes out as a message.
-        const answer = (value as Record<string, unknown>).answer;
         if (rid && typeof answer === "string" && answer && !CARD_CLOSED_UNANSWERED.has(answer)) {
           setAskAnswers((prev) => new Map(prev).set(String(rid), answer));
         }
@@ -1205,6 +1280,12 @@ export default function AgentChat({
           submitText(message);
         }
       }
+    },
+    // §18.11 step 7: any end of a run ends a slot of a redraft, and a blocking
+    // card stays as it is (`runRested`).
+    onRunRested: ({ threadId }) => {
+      if (threadId && threadId !== sessionId) return;
+      dispatchConfirmation({ type: "runRested" });
     },
     onRunFinalized: ({ threadId }) => {
       if (threadId && threadId !== sessionId) return;
@@ -2169,6 +2250,10 @@ export default function AgentChat({
             errors={confirmations.errors}
             onAnswer={answerConfirmation}
             onSuggest={suggestToComposer}
+            onDraftChange={onCardDraft}
+            carriesEdits={steerOpen}
+            savedEdits={savedFormEdits}
+            onEdits={onFormEdits}
           />
         )}
 
@@ -2245,7 +2330,8 @@ export default function AgentChat({
     return fromTurns.length === 0 ? askAnswers : new Map([...fromTurns, ...askAnswers]);
   }, [askAnswers, restartAnswersKey]);
   const askSources = {
-    confirmations: confirmations.cards,
+    // A slot of a redraft (§18.11) waits on nobody.
+    confirmations: liveCards(confirmations.cards),
     elicitation: elicitationWaits ? elicitation : null,
     userInput: userInputWaits ? userInput : null,
     messages,
@@ -2341,7 +2427,11 @@ export default function AgentChat({
   // "…" control. The row above the box goes when it has nothing to say.
   const ringInComposer = !phoneChrome || contextUsage.pct >= PHONE_RING_PCT;
   const steerShown = primary === "send" && isRunActive && !!input.trim();
-  const composerRowShown = !phoneChrome || !!runView || ringInComposer || composerOverflow || steerShown;
+  // §18.11 step 7: while a new-mail card is open and a message goes as a
+  // steer, the composer names the emails that a message changes ("Changing:
+  // Email to Kim", "Changing: 2 emails"). After a Stop, it claims nothing.
+  const changing = steerOpen ? changingLine(confirmations.cards) : null;
+  const composerRowShown = !phoneChrome || !!runView || ringInComposer || composerOverflow || steerShown || !!changing;
   // The phone's tap size, on Attach and on Send (CF-8).
   const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";
   // A new chat in the full view centres its composer, with the greeting
@@ -2648,7 +2738,12 @@ export default function AgentChat({
             and took its bottom from the message. */}
         {composerRowShown && (
         <div className="max-w-3xl mx-auto mb-1.5 flex min-h-5 items-center gap-2 text-[11px] text-muted-foreground glass:text-caption">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+          {/* The status starts at its own width and can shrink, so a long
+              step cuts its words and the ring stays in the row. The
+              "Changing:" line keeps its width up to 60% of the row, so the
+              email's name stays readable at 390 px, and the status gives way
+              first (fix round 3). */}
+          <div className="flex min-w-0 flex-auto items-center gap-2">
             {runView ? (
               <RunStatusRow view={runView} placement="composer" />
             ) : null}
@@ -2657,7 +2752,14 @@ export default function AgentChat({
           </div>
           {/* A send during a run adds to the reply, or answers the one
               question that waits (`lib/typedAnswer.ts`). Said once, short. */}
-          {steerShown && (
+          {/* §18.11: a message while a new-mail card is open changes that
+              email, so the line names it, typed or not. A typed answer to
+              the one waiting question still says so. */}
+          {changing && !(steerShown && typedTarget) ? (
+            <span data-redraft-changing="" className="max-w-[60%] shrink-0 truncate text-[10px] text-primary">
+              {changing}
+            </span>
+          ) : steerShown && (
             <span data-steer-caption className="shrink-0 text-[10px] text-primary">
               {typedTarget ? ANSWER_CAPTION : STEER_CAPTION}
             </span>

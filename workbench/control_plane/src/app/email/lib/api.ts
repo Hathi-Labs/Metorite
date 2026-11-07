@@ -2526,7 +2526,27 @@ export interface ComposeAssistArgs {
   mode?: "new" | "reply" | "forward";
   messageId?: string;
   to?: string[];
+  /** A forward: the people who are copied. A reply and a new mail send none. */
+  cc?: string[];
   subject?: string;
+}
+
+/**
+ * The JSON of one compose-assist request, for the stream and the plain route.
+ * `cc` rides only when the caller gives it (a forward), so a reply and a new
+ * mail send the same body as before (task 1817).
+ */
+export function composeAssistBody(args: ComposeAssistArgs): string {
+  return JSON.stringify({
+    account_id: args.accountId,
+    body: args.body ?? "",
+    instruction: args.instruction ?? "",
+    mode: args.mode ?? "new",
+    message_id: args.messageId,
+    to: args.to,
+    cc: args.cc,
+    subject: args.subject ?? "",
+  });
 }
 
 export async function composeAssist(
@@ -2536,15 +2556,7 @@ export async function composeAssist(
   return gatewayFetch("/email/compose-assist", {
     method: "POST",
     signal,
-    body: JSON.stringify({
-      account_id: args.accountId,
-      body: args.body ?? "",
-      instruction: args.instruction ?? "",
-      mode: args.mode ?? "new",
-      message_id: args.messageId,
-      to: args.to,
-      subject: args.subject ?? "",
-    }),
+    body: composeAssistBody(args),
   });
 }
 
@@ -2634,15 +2646,7 @@ export async function composeAssistStream(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal,
-      body: JSON.stringify({
-        account_id: args.accountId,
-        body: args.body ?? "",
-        instruction: args.instruction ?? "",
-        mode: args.mode ?? "new",
-        message_id: args.messageId,
-        to: args.to,
-        subject: args.subject ?? "",
-      }),
+      body: composeAssistBody(args),
     });
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
   } catch (err) {

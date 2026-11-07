@@ -10,9 +10,19 @@ The code is `apps/services/gateway/gateway/flag_reload.py`. The fence is
 ## The flags that reload
 
 A reload applies only the `*_ORGS` and `*_MODES` fields of `Settings`. These
-are the per-org rollout lists, such as `CRM_ORGS`, `TOOL_PACKS_ORGS` and
-`DECIDE_FEATURE_MODES`. Each reader of them reads the value again on each
-call.
+are the per-org rollout lists, such as `CRM_ORGS`, `TOOL_PACKS_ORGS`,
+`AGENT_QUESTIONS_ORGS` and `DECIDE_FEATURE_MODES`. Each reader of them reads
+the value again on each call.
+
+`AGENT_QUESTIONS_ORGS` changes who may answer an agent's question
+(`external_agent_access.md` §12.8). A reload changes how the flip applies, and
+it does not change who may flip it. The flip stays OWNER-GATE
+(`enforcement-flip`).
+
+`WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
+(`waiting_on_me.md` §7.3). Its one reader is
+`gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
+flip stays OWNER-GATE (`enforcement-flip`).
 
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:

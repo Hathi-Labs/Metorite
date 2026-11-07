@@ -226,6 +226,8 @@ A slice is **AGENT-SAFE** unless it says **OWNER-GATE**.
 | DX-10 | Run-scoped tokens on WS-55's connection | A token works for one task and dies with the run | AGENT-SAFE, after D-DX-6 changes |
 | DX-11 | Local runner, optional | A daemon on the member's machine takes tasks through the inbound MCP | AGENT-SAFE, later |
 
+> **Specified in `agent_coordination.md` §3.11.4 (SW-77 to SW-79, D186).** DX-11 is the local runner. That spec owns its design.
+
 **Order.** DX-0, then DX-1, DX-2 and DX-4. Then DX-3 and DX-5 after WS-54's registry slice. Then DX-6 to DX-9.
 
 ## 13. What can start now, and what must wait

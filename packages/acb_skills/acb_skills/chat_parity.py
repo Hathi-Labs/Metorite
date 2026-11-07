@@ -373,6 +373,12 @@ COVERED: dict[str, str | tuple[str, str]] = {
 
 #: An action -> (kind, reason). The kind is a key of :data:`EXEMPT_KINDS`.
 EXEMPT: dict[str, tuple[str, str]] = {
+    # ── Shell ──
+    "GET /api/shell/manifest": (
+        "stream",
+        "The shell reads the installed packages to draw the sidebar and the command bar, and reads them "
+        "again every few seconds (PKG-6). No member click sends it. The chat acts on the same records.",
+    ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
         "download",
@@ -1054,7 +1060,7 @@ DEBT_CEILING: dict[str, int] = {
     "notes": 51,
     "whatsapp": 25,
     "people": 19,
-    "knowledge": 17,  # The Knowledge manifest's planned rows.
+    "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them.
     "memory": 5,
     "workflows": 24,
     "apps": 28,
