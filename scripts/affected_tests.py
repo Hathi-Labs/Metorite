@@ -360,7 +360,7 @@ def _source_files(root: Path) -> list[Path]:
 
     apps/ and packages/ hold the product code. CIV-3c (task 1720): a test
     helper ``tests/unit/_*.py`` is a source too, because it can import a test
-    module (``_agent_board_r8`` imports ``test_agent_runs_r8``) and 13 suites
+    module (``_agent_board_r8`` imports ``test_agent_runs_r8``) and 14 suites
     import the helper. Without that edge, a change to the first selected none
     of the 13.
     """
@@ -404,7 +404,11 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
             # One level up: source modules that import the changed module.
             for upstream in src_users.get(dotted, set()) - {dotted}:
                 users = test_users.get(upstream, set())
-                if len(users) <= HUB_LIMIT:
+                # A test helper (`tests.unit._x`) has no hub limit (CIV-3c
+                # review): it exists to be imported by many suites, and the
+                # limit dropped 17 of the 52 suites behind `_customer_console_
+                # ladder` when `store.py` changed. Six helpers are over it.
+                if len(users) <= HUB_LIMIT or upstream.startswith("tests.unit._"):
                     picked |= users
                 # CIV-18. A test that imports an aggregating package's
                 # `router` mounts every route module the package registers,

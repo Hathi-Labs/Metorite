@@ -748,3 +748,19 @@ def test_the_gate_selects_every_suite_behind_the_agent_board_helper() -> None:
     result = sel.gate(["tests/unit/test_agent_runs_r8.py"], root)
     assert not result["full"], result["reasons"]
     assert importers <= set(result["files"]), sorted(importers - set(result["files"]))
+
+
+def test_a_test_helper_has_no_hub_limit(tmp_path: Path, monkeypatch) -> None:
+    """CIV-3c review. A helper that more than HUB_LIMIT suites import still
+    carries a change of a product module it imports to all of them."""
+    monkeypatch.setattr(sel, "HUB_LIMIT", 1)
+    root = _repo(tmp_path)
+    _write(root, "tests/__init__.py")
+    _write(root, "tests/unit/__init__.py")
+    _write(root, "tests/unit/_fakes.py", "from pkg import leaf\n")
+    _write(root, "tests/unit/test_fake_a.py", "from tests.unit._fakes import leaf\n")
+    _write(root, "tests/unit/test_fake_b.py", "from tests.unit._fakes import leaf\n")
+    _write(root, "tests/unit/test_fake_c.py", "from tests.unit._fakes import leaf\n")
+    picked, _, _ = sel.select(["packages/pkg/pkg/leaf.py"], root)
+    assert {"tests/unit/test_fake_a.py", "tests/unit/test_fake_b.py",
+            "tests/unit/test_fake_c.py"} <= set(picked)
