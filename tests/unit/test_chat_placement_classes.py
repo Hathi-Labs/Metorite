@@ -123,7 +123,8 @@ def test_a_crm_read_is_evidence_and_a_crm_write_is_a_write() -> None:
     src = CRM_AGENT.read_text(encoding="utf-8")
     hints = {m.group(2): m.group(1)
              for m in re.finditer(r"@_annotate_risk\(([^)]*)\)\s*\n\s*async def (\w+)", src)}
-    assert len(hints) == 8
+    # 9 since WS-CRM CRM-M3a: crm_create_pipeline, a write.
+    assert len(hints) == 9
     wrong = []
     for name, hint in sorted(hints.items()):
         want = "evidence" if "read_only=True" in hint else "write"

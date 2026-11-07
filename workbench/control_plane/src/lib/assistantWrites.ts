@@ -65,9 +65,12 @@ const EMAIL_WRITES: ReadonlySet<string> = new Set([
   "set_sender_status", "categorize_senders", "send_digest", "sync_account", "resync_account",
 ]);
 
-/** CRM write tools (`agent-crm`). Each asks the member first. */
+/**
+ * CRM write tools (`agent-crm`). Each asks the member first. A new pipeline
+ * (CRM-M3a) wakes the pipeline read, so an open Deals board shows the switcher.
+ */
 const CRM_WRITES: ReadonlySet<string> = new Set([
-  "create_lead", "update_deal_status", "log_activity", "convert_lead",
+  "create_lead", "update_deal_status", "log_activity", "convert_lead", "crm_create_pipeline",
 ]);
 
 /** Knowledge write tools: a proposal lands in the review queue. */
