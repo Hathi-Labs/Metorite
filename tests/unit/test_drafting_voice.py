@@ -61,10 +61,6 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
     # WS-63 PZ-33b: the summary of a private chat, a note the member reads.
     "apps/services/gateway/gateway/chat_summary_job.py::_ask": (
         ("summary",), "apps/services/gateway/gateway/chat_summary_job.py::SYSTEM"),
-    # WS-BRIEF BR-2a-2: the sentences of the brief, prose a member reads.
-    # ``messages_for`` builds the system prompt that ``_ask`` sends.
-    "apps/services/gateway/gateway/brief/phrase.py::_ask": (
-        ("summary",), "apps/services/gateway/gateway/brief/phrase.py::messages_for"),
     # WS-53 CRM-Q28: the weekly CRM digest, prose a member reads on Reports.
     "apps/services/gateway/gateway/crm_sync/digest.py::_complete": (
         ("summary",), "apps/services/gateway/gateway/crm_sync/digest.py::SYSTEM"),
