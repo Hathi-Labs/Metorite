@@ -292,6 +292,18 @@ async def test_a_member_past_20_images_is_refused(monkeypatch, base_url, fake_en
     assert params == {"me": _ME}
 
 
+async def test_the_store_writes_the_member_in_lower_case(monkeypatch, base_url):
+    """Fix round 1, P3: the settings save passes the session address as it
+    came, and the CHECK of created_by needs lower case."""
+    db = _FakeDb()
+    _bind(monkeypatch, db)
+    await routes.store_image(_encoded(), kind="logo", member=" Jane.Doe@Acme.Example ",
+                             base=_BASE)
+    [(_, count)] = db.sql("count(*)")
+    [(_, insert)] = db.sql("INSERT INTO email_signature_images")
+    assert count["me"] == insert["me"] == "jane.doe@acme.example"
+
+
 async def test_member_19_may_upload(monkeypatch, base_url, fake_encode):
     db = _FakeDb(org_count=19, mine=routes.MEMBER_CAP - 1)
     _bind(monkeypatch, db)

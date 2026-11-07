@@ -166,7 +166,10 @@ async def store_image(
     The same bytes in the same org give the same row, so a second upload of
     a logo holds no second copy and counts no second time. Such a row that
     was retired comes back. The caps run under the advisory lock of the org,
-    so two uploads at once cannot pass a cap together."""
+    so two uploads at once cannot pass a cap together. ``member`` is written
+    in lower case, as the CHECK of ``created_by`` needs: the settings save
+    passes the session address as it came (fix round 1, P3)."""
+    member = (member or "").strip().lower()
     sha = hashlib.sha256(encoded.data).hexdigest()
     org = current_tenant()
     async with _tenant_session() as db:

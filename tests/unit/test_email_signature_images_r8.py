@@ -276,6 +276,32 @@ class TestTheSettingsSave:
         assert saved == stored
         assert hosted == 1
 
+    async def test_a_mixed_case_member_hosts_an_image_in_lower_case(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Fix round 1, P3: the session address can hold capitals, and the
+        CHECK of created_by refuses them. The save writes it in lower case."""
+        monkeypatch.setenv("GATEWAY_PUBLIC_URL", _BASE)
+        owner = f"Owner-{uuid.uuid4().hex[:8]}@Sig.Test"
+        acc = _seed_account(promoted.admin_engine, org=promoted.org_b, owner=owner)
+        data_uri = "data:image/png;base64," + b64encode(_png(48, 24, _colour())).decode("ascii")
+        user = _member(owner, promoted.org_b)
+        token = bind_tenant(promoted.org_b)
+        try:
+            async with tenant_engine_scope(_app_dsn(promoted)):
+                put = await assistant_mod.put_assistant_settings(
+                    AssistantSettingsModel(account_id=acc, signature=f'<img src="{data_uri}">'),
+                    user=user)
+        finally:
+            release_tenant(token)
+        assert put["signature"].startswith(f'<img src="{_BASE}/email/signature-image/')
+        with promoted.admin_engine.connect() as c:
+            who = c.execute(text(
+                "SELECT created_by FROM email_signature_images "
+                "WHERE organization_id = CAST(:o AS uuid) AND lower(created_by) = lower(:me)"),
+                {"o": promoted.org_b, "me": owner}).scalars().all()
+        assert who == [owner.lower()]
+
     async def test_a_save_of_the_stored_signature_changes_no_byte(
         self, promoted, app_engine,  # noqa: F811
     ):
