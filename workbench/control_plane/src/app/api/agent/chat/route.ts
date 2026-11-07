@@ -167,9 +167,11 @@ async function persistAssistantMessage(
     // lives in lib/assistantCheckpoint.ts.
     const payload = [assistantCheckpointRow(checkpoint)];
     // Write directly to the gateway's chat message store so messages survive
-    // even if the Next.js process restarts mid-stream.
+    // even if the Next.js process restarts mid-stream. The thread id comes
+    // from the body, so it is encoded: a `?` or `/` in it must not move the
+    // write to another route (H-280).
     await gatewayFetch(
-      `${GATEWAY_URL}/chat/sessions/${threadId}/messages`,
+      `${GATEWAY_URL}/chat/sessions/${encodeURIComponent(threadId)}/messages`,
       {
         method: "POST",
         headers: await gatewayHeaders({ "Content-Type": "application/json" }),

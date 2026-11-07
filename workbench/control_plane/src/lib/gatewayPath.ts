@@ -15,24 +15,30 @@
  *
  * Two layers, so a route that forgets the first still meets the second:
  *
- * 1. `refuseUnsafePath` in each catch-all proxy, right after it reads
- *    `params`. It answers 400.
+ * 1. `refuseUnsafePath` in each catch-all proxy and each single-param route
+ *    that builds a raw path, right after it reads `params`. It answers 400.
  * 2. `gatewayUrlEscape` inside `gatewayFetch`, the one fetch to the gateway.
  *    It refuses a path that can leave its PREFIX, read twice: as the URL
  *    parser reads it, and once decoded, as uvicorn gives it to Starlette.
  *    The second read matters because Starlette's trailing-slash redirect
- *    writes its Location from the decoded path, and `fetch` follows it with
- *    the token (verifier, 2026-10-08). So `%2F..` is refused, and
+ *    writes its Location from the decoded path, and a caller that asks for
+ *    `redirect: "follow"` sends the token there (verifier, 2026-10-08). So `%2F..` is refused, and
  *    `openai%2Fgpt-4o`, a model id the settings page sends, is not.
  *
- * ⚠️ What this does NOT stop. A single param such as `[sessionId]` that holds
- * a decoded `?`, `#` or `/` can still move the request to another route UNDER
- * the same prefix: an ancestor when it cuts off the fixed suffix, a
- * descendant when it adds a segment. It cannot leave the prefix, because that
- * takes a dot segment. Every such route still runs as the member, so the
- * gateway's own checks apply. HANDOFF H-280 holds the per-param fix.
+ * A single param, such as `[sessionId]`, needs layer 1 too (H-280). Layer 2
+ * cannot see it: a decoded `?`, `#` or `/` moves the request to another route
+ * UNDER the same prefix, and no dot segment is needed. A `?` cuts off the
+ * fixed suffix, so a DELETE of one participant becomes a DELETE of the
+ * session. A `/` adds a segment. So each handler that puts a raw param into
+ * a gateway path calls `refuseUnsafePath([param])` after it reads `params`.
+ * A param that goes in through `encodeURIComponent`, or through a shape
+ * regex of its own, needs no call.
  *
- * Fence: `gatewayPath.test.ts` and `gatewayFetch.test.ts`.
+ * `gatewayFetch` also never follows a redirect (its rule 11), so the bearer
+ * cannot reach a path that this guard did not check.
+ *
+ * Fence: `gatewayPath.test.ts` (the catch-all sweep and the single-param
+ * sweep) and `gatewayFetch.test.ts`.
  */
 import { NextResponse } from "next/server";
 
