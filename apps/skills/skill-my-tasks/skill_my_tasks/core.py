@@ -2324,9 +2324,11 @@ async def my_tasks_set_one_thing(item_id: str = "", date: str = "") -> str:
 # answers ``day``). A step that fails shows its own line and the rest stays.
 
 _NEXT_AFTER_AGREE = (
-    "The server keeps ONE pending proposal for the day: the last one. After the "
-    "member agrees to a step, call that tool again with apply=False, then with "
-    "apply=True, and say that it is done only after the tool says so.")
+    "The server keeps ONE pending proposal for the day: the last one. In the start "
+    "flow the rebuild was proposed last, so it is pending and the rollover proposal "
+    "was replaced. After the member agrees to a step, call that tool with "
+    "apply=False first and show it, then with apply=True. Say that it is done "
+    "only after the tool says so.")
 _CANDIDATES = 5
 
 
@@ -2413,9 +2415,9 @@ async def my_tasks_start_my_day(energy_note: str = "") -> str:
           candidates),
          ("Rebuild my day (proposal)", rebuild)],
         failed, [],
-        ["Rollover: my_tasks_rollover (apply=True) moves the overdue work back to the list.",
+        ["Rollover: my_tasks_rollover (apply=False, then apply=True) moves the overdue work back to the list.",
          "One Thing: my_tasks_set_one_thing with the id the member picks.",
-         "Rebuild: my_tasks_plan_day (apply=True, same energy_note) places the day. "
+         "Rebuild: my_tasks_plan_day (apply=False, then apply=True, same energy_note) places the day. "
          "Propose it again after a rollover, because the rollover changes the list."])
 
 
@@ -2490,6 +2492,6 @@ async def my_tasks_close_my_day() -> str:
          ("Move what is not done back to the list (proposal)", rollover),
          ("Candidates for tomorrow's ★ One Thing", seeds)],
         failed, notes,
-        ["Rollover: my_tasks_rollover (apply=True) moves the work that is not done back to the list.",
+        ["Rollover: my_tasks_rollover (apply=False, then apply=True) moves the work that is not done back to the list.",
          "Tomorrow's One Thing: my_tasks_set_one_thing with the id the member picks"
          + (f" and date {tomorrow}." if tomorrow else " and tomorrow's date.")])
