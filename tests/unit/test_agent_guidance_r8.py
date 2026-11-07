@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 import uuid
 from pathlib import Path
@@ -336,6 +337,72 @@ async def test_a_root_project_has_its_own_block_then_the_org(world) -> None:
         got = (await call(w.member_u, "GET", f"/agent-guidance/tasks/{w.task_space}")).json()
     assert [(b["level"], b["body"]) for b in got["blocks"]] == [
         ("space", "SPACE RULE"), ("company", "ORG RULE")]
+
+
+@_DB_GATE
+async def test_the_default_block_is_last_read_only_and_dark_until_playbook_orgs(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PB-5. With the org on ``playbook_orgs`` the answer ends with the Metorite
+    default, in this order: project, space, org, default. Off the list it is not
+    there. No route writes it, and the history never lists it.
+
+    Mutations (R7): ``default_block`` drops the ``playbook_allowed`` check, and
+    the dark half fails. ``blocks_for_project`` puts the default first, and the
+    order fails."""
+    from acb_playbook import load_topic
+
+    w = world
+    _reset(w)
+    async with _session(w.p) as call:
+        await _save(call, w.admin_u, None, "ORG RULE")
+        await _save(call, w.lead_s_u, w.space, "SPACE RULE")
+        await _save(call, w.lead_s_u, w.p1, "P1 RULE")
+        url = f"/agent-guidance/tasks/{w.task_p2}"
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "")
+        dark = (await call(w.member_u, "GET", url)).json()
+        monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
+        got = (await call(w.member_u, "GET", url)).json()
+        history = (await call(w.admin_u, "GET", "/agent-guidance/history")).json()
+    assert [b["level"] for b in dark["blocks"]] == ["project", "space", "company"]
+    assert [b["level"] for b in got["blocks"]] == ["project", "space", "company", "default"]
+    last = got["blocks"][-1]
+    assert last["version"] == load_topic("default-guidance").version
+    assert last["body"] == load_topic("default-guidance").body
+    assert last["source"] == {"kind": "default", "project_id": None, "name": None,
+                              "hidden": False}
+    assert got["dropped"] == 0
+    assert "default" not in json.dumps(history).lower().replace("default-guidance", "")
+
+
+@_DB_GATE
+async def test_a_task_with_no_org_guidance_still_gets_the_default(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    w = world
+    _reset(w)
+    monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
+    async with _session(w.p) as call:
+        got = (await call(w.member_u, "GET", f"/agent-guidance/tasks/{w.task_p2}")).json()
+    assert [b["level"] for b in got["blocks"]] == ["default"]
+
+
+@_DB_GATE
+async def test_the_cap_drops_the_default_first(
+        world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The three org blocks fit the cap with 100 characters to spare. The default
+    is the farthest block, so it is the one that goes."""
+    from acb_playbook import load_topic
+
+    w = world
+    _reset(w)
+    monkeypatch.setattr(get_settings(), "playbook_orgs", "*")
+    assert len(load_topic("default-guidance").body) > 100
+    async with _session(w.p) as call:
+        await _save(call, w.admin_u, None, "o" * 3900)
+        await _save(call, w.lead_s_u, w.space, "s" * 8000)
+        await _save(call, w.lead_s_u, w.p1, "p" * 8000)
+        got = (await call(w.member_u, "GET", f"/agent-guidance/tasks/{w.task_p2}")).json()
+    assert [b["level"] for b in got["blocks"]] == ["project", "space", "company"]
+    assert got["dropped"] == 1
 
 
 @_DB_GATE
