@@ -58,6 +58,7 @@ from uuid import UUID, uuid4
 
 from acb_audit import AuditEvent, record
 from acb_common import get_logger
+from acb_common.no_person import NO_PERSON_PRESENT, no_person_present, no_person_refusal
 
 _log = get_logger("action_broker")
 
@@ -171,6 +172,11 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
     * a ``rejected`` proposal is never executed;
     * an action with no registered handler is REFUSED (never silently applied);
     both are audited. On success the handler's result is returned.
+
+    A handler that answers a dict with ``"ok": False`` has REFUSED the work, as
+    ``workflow.resume_run`` does for a run that it will not resume (H-328). That
+    is a failure, never a success: ``approve`` then marks the row ``failed`` and
+    the approver reads the handler's error. Any other result is a success.
     """
     if proposal.disposition == Disposition.REJECTED:
         record(AuditEvent(
@@ -201,6 +207,12 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
         payload={"authority": proposal.authority.value},
     ))
     result = await handler(proposal)
+    if isinstance(result, dict) and result.get("ok") is False:
+        return {
+            "ok": False,
+            "error": str(result.get("error") or "the handler refused the action"),
+            "result": result,
+        }
     return {"ok": True, "result": result}
 
 
@@ -468,13 +480,36 @@ def _mark(
         return 0
 
 
+def _refuse_no_person(act: str, action_id: str, reviewed_by: str) -> dict[str, Any] | None:
+    """The refusal of a run with no person present, or ``None`` (AUTO-7a).
+
+    A marked run cannot settle a ``pending_actions`` row, so text in a page
+    or a mail cannot approve its own write (``proactive_agent.md`` §4.2). It
+    reads nothing and writes no row. The audit records the refusal.
+    """
+    if not no_person_present():
+        return None
+    _log.warning("action_broker.no_person_refused", act=act, action_id=action_id)
+    record(AuditEvent(
+        actor="system:action_broker",
+        action=f"{act}_refused",
+        target=action_id,
+        payload={"reason": NO_PERSON_PRESENT, "reviewed_by": reviewed_by},
+    ))
+    return no_person_refusal()
+
+
 def reject(action_id: str, reviewed_by: str) -> dict[str, Any]:
     """Reject a pending action — it is never executed. Audited.
 
     It answers ``ok: False`` when no pending row of the bound tenant has that
     id: another tenant's id, a missing id, or an action already decided. It
-    used to answer ``ok`` for all three (review, 2026-10-09).
+    used to answer ``ok`` for all three (review, 2026-10-09). A run with no
+    person present gets a refusal (:func:`_refuse_no_person`).
     """
+    refused = _refuse_no_person("reject", action_id, reviewed_by)
+    if refused is not None:
+        return refused
     if not _mark(action_id, "rejected", reviewed_by=reviewed_by, only_from="pending"):
         return {"ok": False, "error": f"no pending action {action_id!r}"}
     record(AuditEvent(
@@ -491,7 +526,11 @@ async def approve(action_id: str, reviewed_by: str) -> dict[str, Any]:
 
     Fails CLOSED: a missing/non-pending row is not run; a handler error marks
     the row ``failed`` (not ``applied``). The handler result is persisted.
+    A run with no person present gets a refusal (:func:`_refuse_no_person`).
     """
+    refused = _refuse_no_person("approve", action_id, reviewed_by)
+    if refused is not None:
+        return refused
     proposal, status = _load_proposal(action_id)
     if proposal is None:
         return {"ok": False, "error": f"no pending action {action_id!r}"}

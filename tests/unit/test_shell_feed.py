@@ -186,9 +186,10 @@ class FeedFakes(Fakes):
         await self._enter("get_user_settings", user, {"user": user})
         return SimpleNamespace(timezone=self.zone, day_start_hour=self.day_start.get(user.email, 7))
 
-    async def my_calendar(self, start, end, include_done=False, *, user):
+    async def my_calendar(self, start, end, include_done=False, *, user, with_entries=True):
         await self._enter("my_calendar", user, {"user": user, "start": start, "end": end,
-                                                "include_done": include_done})
+                                                "include_done": include_done,
+                                                "with_entries": with_entries})
         lo, hi = datetime.fromisoformat(start), datetime.fromisoformat(end)
         rows = [dict(b) for b in self.blocks.get(user.email, [])
                 if lo <= datetime.fromisoformat(b["scheduled_start"]) < hi
@@ -347,8 +348,10 @@ class TestOneRegistry:
         # adds `email_followups`, MD-3e `crm`, and MD-3f `people` and `chat`.
         # WS-61 KB-9a adds the gated `knowledge`. WS-66 RM-2b makes `reminders`
         # a needs provider: it registers before `approvals`, which stays last.
+        # WS-ALN ALN-2b adds the gated `decisions` at the end of `needs.py`.
         assert list(shell.REGISTRY) == ["tasks", "projects", "email", "reminders",
-                                        "approvals", "calendar", "tasks_followups",
+                                        "approvals", "decisions", "calendar",
+                                        "tasks_followups",
                                         "email_followups", "crm", "people", "chat",
                                         "knowledge"]
         again = shell.Provider("tasks", ("projects",), shell.REGISTRY["tasks"].run,
@@ -924,6 +927,9 @@ class TestTheCalendarKinds:
         assert start == fakes._midnight()
         assert end - start == timedelta(days=feed.WEEK_DAYS)
         assert call["include_done"] is True
+        # CE-4 repair round 1: the feed never asks for calendar entries.
+        assert all(kw["with_entries"] is False
+                   for n, _, kw in fakes.calls if n == "my_calendar")
 
 
 class TestTheLinks:
@@ -1169,7 +1175,7 @@ class TestTheCallsStayInStep:
         from gateway.routes.projects.personal import my_calendar
 
         assert list(inspect.signature(my_calendar).parameters) == [
-            "start", "end", "include_done", "user"]
+            "start", "end", "include_done", "user", "with_entries"]
 
     def test_the_self_read_takes_only_the_member(self):
         from gateway.routes.people.selfservice import get_me
@@ -1656,8 +1662,15 @@ class TestTheReminderCards:
         async def my_open_cards(user, *, now, limit):
             return rows[:limit], None
 
+        async def my_day_band(user, *, now, subjects):
+            self.seen_subjects = subjects
+            return self.band
+
+        self.band = {"rows": [], "subjects": {}}
+        self.seen_subjects = None
         monkeypatch.setattr(rem, "reminders_enabled", lambda: True)
         monkeypatch.setattr(rem, "my_open_cards", my_open_cards)
+        monkeypatch.setattr(rem, "my_day_band", my_day_band)
 
     def test_a_reminder_is_one_card_and_one_bell_row(self, fakes, monkeypatch):
         self._on(monkeypatch, [self._row("r-1"), self._row("r-2", step="check_back")])
@@ -1671,6 +1684,54 @@ class TestTheReminderCards:
         assert answer["source_apps"]["reminders"] == "calendar"
         bell = [i["id"] for i in answer["needs"]["items"] if i["app"] == "calendar"]
         assert sorted(bell) == ["reminders:r-1", "reminders:r-2"]
+
+    def test_the_band_rows_are_never_a_card_a_bell_row_or_a_count(self, fakes, monkeypatch):
+        """RX-3: today's upcoming reminders ride in `reminders_ahead` and
+        nowhere else, so they raise no count and take no slot."""
+        self._on(monkeypatch, [self._row("r-1")])
+        self.band = {
+            "rows": [{"id": "r-9", "title": "Stand-up notes", "kind": "action",
+                      "fire_at": (NOW + timedelta(hours=3)).isoformat(), "important": False}],
+            "subjects": {"r-1": {"kind": "task", "label": "Invoice"}},
+        }
+        answer = run_feed(member(*FULL))
+        assert [r["id"] for r in answer["reminders_ahead"]] == ["r-9"]
+        assert answer["reminder_subjects"] == {"r-1": {"kind": "task", "label": "Invoice"}}
+        assert not [c for c in answer["cards"] if "r-9" in c["signal_id"]]
+        assert "reminders:r-9" not in [i["id"] for i in answer["needs"]["items"]]
+        assert answer["needs"]["totals"]["reminders"] == 1
+
+    def test_the_band_asks_for_the_linked_object_of_a_fired_reminder(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1", subject_kind="task", subject_id="t-1"),
+                               self._row("r-2")])
+        run_feed(member(*FULL))
+        assert self.seen_subjects == [("r-1", "task", "t-1")]
+
+    def test_a_failed_band_read_gives_an_empty_band_and_is_not_stored(self, fakes, monkeypatch):
+        import gateway.routes.projects.reminders as rem
+
+        self._on(monkeypatch, [self._row("r-1")])
+
+        async def boom(user, *, now, subjects):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(rem, "my_day_band", boom)
+        fr = _bound(lambda: feed.feed_cards(member(*FULL), read=True))
+        assert fr.band == {"rows": [], "subjects": {}}
+        assert fr.band_ok is False
+        # The fired card still shows: only the upcoming rows are lost.
+        assert [c for c in fr.cards if c["signal_id"] == "reminders:r-1"]
+
+    def test_with_the_flag_off_the_band_reads_nothing(self, fakes, monkeypatch):
+        import gateway.routes.projects.reminders as rem
+
+        async def boom(*a, **k):
+            raise AssertionError("the band was read with the flag off")
+
+        monkeypatch.setattr(rem, "my_day_band", boom)
+        answer = run_feed(member(*FULL))
+        assert "reminders_ahead" not in answer
+        assert "reminder_subjects" not in answer
 
     def test_with_the_flag_off_there_is_no_card_and_no_row(self, fakes):
         answer = run_feed(member(*FULL))

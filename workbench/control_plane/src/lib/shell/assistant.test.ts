@@ -5,6 +5,7 @@
  *
  * Each case names the rule it holds, so a red case says what broke.
  */
+import { projectsAssistantFacts } from "@/app/projects/lib/assistantFacts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +20,7 @@ import {
   ASSISTANT_AGENT,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  GUIDE_PERSONA_LINE,
   CHAT_LANDED_KEY,
   DOCK_DEFAULT,
   DOCK_MAX,
@@ -39,6 +41,8 @@ import {
   currentAssistantFacts,
   dataText,
   dockFloats,
+  draftFor,
+  setAssistantSession,
   effectiveMode,
   navigateAct,
   modeOnOpen,
@@ -385,6 +389,21 @@ describe("the context of each turn", () => {
     expect(text).toContain("- They have the project «Launch» selected.");
   });
 
+  it("states once that the page is a hint, for every app (task 1558)", () => {
+    const text = surfaceContext(projects, { label: "Launch", facts: ["They have the space «Launch» selected (project_id: p1). \"This project\" or \"here\" means it."] });
+    expect(text).toContain("This page is a hint, not a scope.");
+    expect(text).toContain("match the request against everything the member can see");
+    expect(text).toContain("project_id: p1");
+    expect(text.split("is a hint, not a scope").length - 1).toBe(1);
+    const email = SECTIONS.flatMap((s) => s.items).find((p) => p.href === "/email")!;
+    expect(surfaceContext(email, null)).toContain("This page is a hint, not a scope.");
+    expect(ASSISTANT_PERSONA).toMatch(/search everything the member can see at once/);
+    const facts = projectsAssistantFacts({ node: { id: "sp1", name: "Content Creation", level: "space" } } as never);
+    const withSpace = surfaceContext(projects, facts);
+    expect(withSpace).toContain("project_id: sp1");
+    expect(withSpace).toContain("This page is a hint, not a scope.");
+  });
+
   it("says so when the page belongs to no app", () => {
     expect(surfaceContext(null, null)).toMatch(/belongs to no app/);
   });
@@ -492,8 +511,17 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
     expect(CHAT_FIRST_PERSONA_LINE).toContain("call show_in_app with its path");
     expect(CHAT_FIRST_PERSONA_LINE).toContain("Then say what they will see, in one sentence.");
     const dock = read("lib/shell/AssistantDock.tsx");
-    expect(dock).toContain("const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
+    expect(dock).toContain("const basePersona = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
     expect(dock).toMatch(/onNavigate: \(\{ path, threadId \}\) => \{\s*\/\/[^\n]*\n\s*if \(!chatFirstOn\(\)\) return;/);
+  });
+
+  it("the guide line is dark: it is not in ASSISTANT_PERSONA, and the dock joins it behind the guide flag", () => {
+    expect(ASSISTANT_PERSONA).not.toContain("find_guide");
+    expect(GUIDE_PERSONA_LINE).toContain("call find_guide");
+    expect(GUIDE_PERSONA_LINE).toContain("Never invent a button.");
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("const personaText = guideOn ? `${basePersona} ${GUIDE_PERSONA_LINE}` : basePersona;");
+    expect(dock).toContain("const guideOn = useGuideAllowed();");
   });
 
   it("beside the side panel, the page moves with the chat", () => {
@@ -644,8 +672,13 @@ describe("the source keeps the flag's two sides apart", () => {
   it("an ask the chat refuses waits in the composer, never vanishes (review, 2026-10-14)", () => {
     // The field clears on Enter. A live run that cannot take a steer refuses
     // the words, so they go back into the composer with the notice.
-    expect(read("components/AgentChat.tsx")).toContain(
-      "if (!submitText(autoSend.text)) setInput((prev) => mergeCappedText(prev, autoSend.text));",
+    // The typed words of the field keep the typed mark (WS-63 D-PZ-37).
+    const chat = read("components/AgentChat.tsx");
+    expect(chat).toContain(
+      "if (!submitText(autoSend.text, askTyped ? { typed: true } : undefined)) {",
+    );
+    expect(chat).toMatch(
+      /boxMarkRef\.current = filled\(boxMarkRef\.current, askTyped\);\s*setInput\(\(prev\) => mergeCappedText\(prev, autoSend\.text\)\);/,
     );
   });
 
@@ -931,7 +964,11 @@ describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () =
   it("the shell opens it once, from the rule, and marks the session", () => {
     const src = read("lib/shell/ChatNudge.tsx");
     expect(src).toContain("const settled = landingSettled({");
-    expect(src).toContain("if (!settled) return;\n    decided.current = true;");
+    // BUD-1: the hello waits on its own facts after `settled`, and both opens
+    // share the ONE decision (no second effect).
+    expect(src).toMatch(/if \(!settled\) return;[\s\S]*decided\.current = true;/);
+    expect(src).toContain("helloOpens({ guideAllowed, fresh, hasChats, guideActive })");
+    expect(src.match(/decided\.current = true;/g)?.length).toBe(1);
     expect(src).toContain('window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");');
     expect(src).toContain('openAssistant({ mode: "full" });');
     expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");
@@ -999,7 +1036,10 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
   it("the header keeps five controls on the phone, and Files moves into the \"…\" control", () => {
     const src = dock();
     expect(src).toContain('const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";');
-    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(4);
+    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(3);
+    // Task 1717: the chat switcher shows a title, so it is 44 px tall and never 44 px wide.
+    expect(src).toContain("className={phoneTapTall}");
+    expect(src).toContain('const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";');
     expect(src).toContain(") : chat.activeId && !phoneChrome ? (");
     expect(src).toMatch(/label: "This chat's files"/);
     expect(src).toContain("moreActs={moreActs}");
@@ -1022,13 +1062,31 @@ describe("the starter pills come from the feed (WS-62 CF-4, chat_first_surface.m
     // The one assistant's empty chat, and nothing else: no messages, no
     // history on its way, and not another agent's chat.
     expect(src).toContain(
-      "const starterFeedWanted = chatFirst && isOrchestrator && !loadingHistory && messages.length === 0;",
+      'const briefOnly = holdsOnlyBrief(messages);',
+    );
+    expect(src).toMatch(
+      /const starterFeedWanted =\s*chatFirst && isOrchestrator && !loadingHistory && \(messages\.length === 0 \|\| briefOnly\);/,
     );
     expect(src).toMatch(/starterPills\(\{\s*chatFirst: starterFeedWanted,\s*cards: starterFeedCards,/);
     // The empty state draws the rule's answer. The follow-up pills stay as they were.
     expect(src).toMatch(/<SuggestionPills\s+suggestions=\{starters\}\s+onPick=\{handleChoice\}\s*\/>/);
     expect(src).toMatch(/<SuggestionPills\s+suggestions=\{smartSuggestions\.length > 0/);
-    expect((src.match(/<SuggestionPills\b/g) ?? []).length).toBe(2);
+    expect((src.match(/<SuggestionPills\b/g) ?? []).length).toBe(3);
+  });
+
+  it("the pills show under a phone chat that holds only the brief, and the follow-ups give way (CF-4b)", () => {
+    const src = chat();
+    // A tap goes through the SAME call as the old starter pills: `handleChoice`, with the message.
+    expect(src).toMatch(
+      /\{briefOnly && starterFeedWanted && !isLoading && \(\s*<SuggestionPills\s+suggestions=\{starters\}\s+onPick=\{handleChoice\}/,
+    );
+    expect(src).toContain("!(briefOnly && starterFeedWanted)");
+    // Only the brief's own row counts (id `brief-<date>`), never a reminder's first row.
+    expect(src).toContain('import { holdsOnlyBrief } from "@/lib/shell/briefTurn";');
+    // The icon is the one My Day draws for the card's app. No second icon map.
+    expect(src).toContain("icon: p.app ? feedAppIcon(p.app) : undefined");
+    // The rule reads the groups, so a fyi, later or handled card never shows.
+    expect(read("lib/starterPills.ts")).toContain('ACTION_GROUPS: readonly string[] = ["now", "needs_you", "ready"]');
   });
 
   it("the feed comes through the key My Day reads, so the chat adds no second fetch and no route", () => {
@@ -1045,5 +1103,38 @@ describe("the starter pills come from the feed (WS-62 CF-4, chat_first_surface.m
     // The rule itself is pure: no fetch, no cache, no feed import.
     const rule = read("lib/starterPills.ts");
     expect(rule).not.toMatch(/\bfetch\(|useCachedResource|from "@\//);
+  });
+});
+
+describe("a draft that asks for a new chat (BETA-1 fix, owner report of the lost brief)", () => {
+  it("is held while the old chat is on screen, and goes to the new chat", () => {
+    setAssistantSession("old-chat");
+    openAssistant({ draft: "Build me an app: loans", fresh: true });
+    const draft = assistantState().draft;
+    expect(draft?.after).toBe("old-chat");
+    // The mounted chat reads the draft in its own effect. It gets none.
+    expect(draftFor(draft, "old-chat")).toBeNull();
+    // The fresh switch moves the dock to the new chat. That chat gets the brief.
+    expect(draftFor(draft, "new-chat")?.text).toBe("Build me an app: loans");
+  });
+
+  it("a draft with no fresh request goes to the chat on screen, as before", () => {
+    setAssistantSession("old-chat");
+    openAssistant({ draft: "find the BQ quote" });
+    expect(assistantState().draft?.after).toBeUndefined();
+    expect(draftFor(assistantState().draft, "old-chat")?.text).toBe("find the BQ quote");
+  });
+
+  it("holds the draft while no chat is chosen yet", () => {
+    setAssistantSession(null);
+    openAssistant({ draft: "x", fresh: true });
+    expect(draftFor(assistantState().draft, null)).toBeNull();
+    expect(draftFor(assistantState().draft, "first")?.text).toBe("x");
+  });
+
+  it("the dock reads the draft only through draftFor", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("draftFor(st.draft, active.id)?.text");
+    expect(dock).not.toContain("st.draft?.text");
   });
 });

@@ -3783,7 +3783,8 @@ bearer.
 the callback returns, with copy added to
 `workbench/control_plane/src/app/signin/errorCopy.ts` — the one refusal-copy
 seam, keyed on the `?error=` value and already carrying a `default` arm, so an
-unmapped code degrades to `Authentication error: <code>` rather than crashing:
+unmapped code degrades to `Sign-in failed (<code>). Try again…` rather than crashing
+(task 1529 changed that text, and set `pages.error` to `/signin`):
 
 | Code | When | Copy (D33.1: never blame the person) |
 |---|---|---|
@@ -9899,8 +9900,8 @@ names the route and its fences.
 `DECIDE_ENABLED`. The "As built" note under CP-13c names the fences.
 
 ✅ **CP-13d is BUILT and on main (#444).** The `decide` tool is in
-the core floor of every MAF agent. It sends no member, and the "As built" note
-under CP-13d says why.
+the core floor of every MAF agent. Since H-165 (2026-11-05) it sends the
+session-proven member only, and the "As built" note under CP-13d says why.
 
 **CP-13e to CP-13g are not built.** Owner directive, 2026-09-23:
 
@@ -10493,42 +10494,58 @@ not an agent.**
   no member field. The core family holds 20 tools, so
   `test_skills_registry.py` and `test_integrations_skills_route.py` count 20.
   The addendum has a full "Fast decisions" section and a compact line.
-- 🔴 **The R11 finding: the tool sends NO member.** Each run's member comes
+- 🔴 **The R11 finding: the tool sends the PROVEN member only.** Each run's member comes
   from `event_payload["user_email"]` or `["user_id"]`. `executor._payload_user`
   reads it, and `_bind_run_identity` binds it for the run.
   - Server-bound paths. The email chat (`email/automation/chat.py`) and email
-    drafting set the member from the session or the account owner. Workflow
-    nodes, Projects agent dispatch and scheduled runs name nobody. A sub-agent
-    from `call_agent` inherits its parent's binding.
+    drafting set the member from the session or the account owner. A
+    workflow run, scheduled runs too, binds a verified billing member from
+    our tables (`_workflow_billing_member`, `job_member_scope`, H-152). A
+    Projects agent dispatch inherits that binding. A sub-agent from
+    `call_agent` inherits its parent's binding.
   - Caller-chosen paths. Since H-337 (2026-10-30), `POST /agent/run/stream`,
     `POST /agent/run` and `POST /agent/run/async` drop a signed-in member's
     body claim (`_drop_identity_claims` in `routes/agent.py`). The two sync
     doors keep a claim of the member's own address, set to the session's
     address. A service caller keeps its claim. `POST /agent/webhook/{source}` spreads the signed
-    sender's payload.
+    sender's payload. Since H-438 (2026-11-07, task 1127), `POST /pull`
+    calls the same helper before its Mem0 read.
   - The Control Plane chat proxy builds its own payload with no member, so a
-    browser cannot choose one today. But the gateway takes the member from the
-    body, and any holder of the internal token or the webhook secret can name
-    a member.
-  - In a shared room the run's member is the room compartment, not an email.
-  - A tool cannot tell a server-bound member from a claimed one. On the
-    deployment arm `X-CC-Member` selects the tenant. So the tool sends no
-    member on every path.
+    browser cannot choose one. Since H-337 the three `/agent/run*` doors take
+    a signed-in member from the session (`session_user`), not from the body.
+    A service caller and the webhook door still name a member by claim, and
+    that claim stays unverified.
+  - In a shared room only the memory id is the room compartment
+    (`room:<thread>`). The run's `user` is the signed-in poster.
+  - On the deployment arm `X-CC-Member` selects the tenant. So the tool sends
+    a member only when the run binding proves it (H-165, 2026-11-05). Only a
+    server-side fact binds `member_verified="1"` (H-73): a signed-in session,
+    or a member from our own tables. `job_member_scope`, a workflow run and
+    the WhatsApp link bind the second kind. A request body never sets it.
+    `decide_tools._proven_member` reads it through
+    `write_artifact._verified_member`. It also needs an "@" in the user. Every
+    other path sends `member=None, member_proven=False`. The tool never reads
+    the memory user id, which can be a `room:` id or a claim.
   - The result: an org-key box serves, because its key names the organization.
-    A deployment-key box refuses in the client with no request, and the tool
-    gives the unavailable text. `agent` and `run_id` still come from
+    A deployment-key box serves a proven member. With no proven member it
+    refuses in the client with no request, and the tool gives the unavailable
+    text. `agent` and `run_id` still come from
     `get_run_context()`, because they only attribute a call.
-  - ⚠️ `member=None` on this tool does not close the gap alone. The executor
-    also binds the payload's member as the run-context `user` (`_corr_user`
-    in `executor.py`). `acb_llm/routed.py::_attribution` sends that value as
-    `member` on every routed completion, and on the deployment arm it selects
-    the tenant. So the repair belongs at the `/agent/run*` and webhook doors.
+  - The routed completions hold the same line. The executor still binds a
+    payload claim as the run-context `user` (`_corr_user` in `executor.py`),
+    with no proof flag. `acb_llm/routed.py::_attribution` sets
+    `member_proven` only for a verified binding (H-73). On the deployment arm
+    `console_resolve._require_proven_member_on_deployment` refuses an unproven
+    member in the client. The Console refuses it too
+    (`customer_console/auth.py`). So a claim cannot select the tenant.
   - **Severity: a defence-in-depth P2** (the reviewer, 2026-09-24). Only a
     holder of the internal bearer or the webhook HMAC secret can reach it.
     Both can already assert any identity (`acb_auth/deps.py`, branch 1b). The
     browser path, the Control Plane chat proxy, cannot name a member.
-  - The tool can send a member again only when the gateway doors stop taking
-    one from the body. HANDOFF H-165 holds that work.
+  - H-337 closed the three `/agent/run*` doors, and H-165 Slice A made the
+    tool send the proven member. H-165 Slice B (2026-11-05) closed the
+    webhook door: `_webhook_run_payload` removes `user_email` and `user_id`,
+    so a webhook run has no member. Fence: `test_webhook_run_memberless.py`.
 - Fences: `tests/unit/test_decide_tool.py` (hermetic, because no SQL runs on
   this path), `test_core_tool_floor.py::test_floor_includes_decide` and
   `test_tool_schema_diet.py`.

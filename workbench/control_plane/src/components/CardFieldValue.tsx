@@ -18,6 +18,8 @@
  * A change draws as the old value, muted, an arrow, and the new value.
  */
 
+import { useEffect, useRef, useState } from "react";
+
 import { FencedTaskRef } from "@/components/ChatTaskRef";
 import FencedText from "@/components/FencedText";
 import Icon from "@/components/Icon";
@@ -29,10 +31,12 @@ import {
   formatMinutes,
   formatPlain,
   formatWords,
+  isLongText,
+  isLongTextChange,
   parseFieldValue,
   personOf,
 } from "@/lib/cardFields";
-import { statusAccent } from "@/lib/statusAccent";
+import { accentForHue, resolveHue, statusAccent } from "@/lib/statusAccent";
 import { categoryLabel } from "@/lib/statusCategory";
 
 /** One short name with no mark: a lane's name or a category key. */
@@ -48,7 +52,7 @@ const LANE_WORD = /^[\p{L}\p{N}][\p{L}\p{N} _&/-]{0,39}$/u;
 function asChip(item: ValueItem, kind: FieldKind): boolean {
   if (item.named) return true;
   const text = item.text.trim();
-  if (kind === "category" || kind === "status") return LANE_WORD.test(text) && formatPlain(text) !== "none";
+  if (kind === "category" || kind === "status" || kind === "color") return LANE_WORD.test(text) && formatPlain(text) !== "none";
   if (kind === "person") return personOf(text).email !== undefined;
   return false;
 }
@@ -82,6 +86,17 @@ export function ValueElement({ item, kind }: { item: ValueItem; kind: FieldKind 
       return (
         <EntityPill fit kind="status" label={categoryLabel(text)} accent={statusAccent({ category: text, name: text })} />
       );
+    case "color": {
+      // PJP-1: a swatch in the hue, and the hue's name. A hex code maps by
+      // the same rule as the server (`resolveHue`).
+      const hue = resolveHue({ color: text });
+      return (
+        <span className="inline-flex items-center gap-1.5 text-foreground">
+          <span aria-hidden className={`inline-block size-2.5 shrink-0 rounded-full ${accentForHue(hue).dot}`} />
+          {formatWords(hue)}
+        </span>
+      );
+    }
     case "person": {
       if (text.startsWith("agent:")) return <EntityPill fit kind="agent" label={text.slice(6)} />;
       // "Priya (priya@x.io)" is a name and an address, never one label.
@@ -135,6 +150,80 @@ function Side({ items, kind, muted = false }: { items: ValueItem[]; kind: FieldK
   );
 }
 
+/**
+ * A change to a long text: the old text on a "Before" line, muted and cut to
+ * two lines with a "Show all" toggle, then the new text in full under "Now".
+ * Both captions stay, so the pair reads the same when either side is short.
+ * No lone arrow: in a narrow column it stood on a line of its own.
+ */
+function LongChange({
+  before,
+  after,
+  kind,
+  plain,
+}: {
+  before: ValueItem[];
+  after: ValueItem[];
+  kind: FieldKind;
+  plain: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const cuttable = before.some((i) => isLongText(i.text.trim()));
+  // The toggle shows only when the clamp cuts text: in a wide card a long
+  // old text can fit in two lines, and a toggle that opens nothing misleads.
+  const clamp = useRef<HTMLSpanElement>(null);
+  const [cut, setCut] = useState(cuttable);
+  useEffect(() => {
+    const el = clamp.current;
+    if (!el || open || typeof ResizeObserver === "undefined") return;
+    const check = () => setCut(el.scrollHeight > el.clientHeight + 1);
+    check();
+    const watch = new ResizeObserver(check);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [open]);
+  // A fenced side draws as its words in the colour of its line: the default
+  // element paints `text-foreground`, and Before must stay muted.
+  const words = (item: ValueItem, i: number) =>
+    item.named ? (
+      <span key={i}>
+        {item.number && `${item.number} `}
+        {item.text}
+      </span>
+    ) : (
+      <ValueElement key={i} item={item} kind={kind} />
+    );
+  return (
+    <span className="flex min-w-0 max-w-full flex-col gap-1" title={plain} data-card-long-change="">
+      <span className="flex min-w-0 flex-col items-start gap-0.5">
+        <span className="text-[11px] text-muted-foreground">Before</span>
+        <span
+          ref={clamp}
+          className={`min-w-0 max-w-full whitespace-pre-wrap break-words text-muted-foreground ${open ? "" : "line-clamp-2"}`}
+        >
+          {before.map(words)}
+        </span>
+        {cuttable && (cut || open) && (
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="rounded-sm text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {open ? "Show less" : "Show all"}
+          </button>
+        )}
+      </span>
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-[11px] text-muted-foreground">Now</span>
+        <span className="min-w-0 max-w-full whitespace-pre-wrap break-words text-foreground">
+          {after.map(words)}
+        </span>
+      </span>
+    </span>
+  );
+}
+
 export default function CardFieldValue({
   value,
   kind = "text",
@@ -149,6 +238,9 @@ export default function CardFieldValue({
 }) {
   if (!fenced) return <span className="min-w-0 break-words">{value}</span>;
   const parsed = parseFieldValue(value, many);
+  if (parsed.before && isLongTextChange(parsed, kind)) {
+    return <LongChange before={parsed.before} after={parsed.after} kind={kind} plain={parsed.plain} />;
+  }
   return (
     <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1" title={parsed.plain}>
       {parsed.before && (

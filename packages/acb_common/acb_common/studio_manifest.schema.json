@@ -71,6 +71,35 @@
       "title": "Card",
       "type": "object"
     },
+    "CellDef": {
+      "additionalProperties": false,
+      "properties": {
+        "span": {
+          "anyOf": [
+            {
+              "maximum": 4,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span"
+        },
+        "view": {
+          "pattern": "^[a-z][a-z0-9_-]{0,47}$",
+          "title": "View",
+          "type": "string"
+        }
+      },
+      "required": [
+        "view"
+      ],
+      "title": "CellDef",
+      "type": "object"
+    },
     "FieldDef": {
       "additionalProperties": false,
       "properties": {
@@ -190,12 +219,81 @@
           "pattern": "^[a-z][a-z0-9_]{0,47}$",
           "title": "Name",
           "type": "string"
+        },
+        "rules": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Rules",
+          "type": "array"
         }
       },
       "required": [
         "name"
       ],
       "title": "ObjectDef",
+      "type": "object"
+    },
+    "PageDef": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/CellDef"
+          },
+          "maxItems": 12,
+          "title": "Cells",
+          "type": "array"
+        },
+        "cols": {
+          "default": 2,
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Cols",
+          "type": "integer"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,47}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "side": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SideDef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tabs": {
+          "items": {
+            "$ref": "#/$defs/TabDef"
+          },
+          "maxItems": 8,
+          "title": "Tabs",
+          "type": "array"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "PageDef",
       "type": "object"
     },
     "Shell": {
@@ -270,6 +368,21 @@
         "object"
       ],
       "title": "ShellNeed",
+      "type": "object"
+    },
+    "SideDef": {
+      "additionalProperties": false,
+      "properties": {
+        "view": {
+          "pattern": "^[a-z][a-z0-9_-]{0,47}$",
+          "title": "View",
+          "type": "string"
+        }
+      },
+      "required": [
+        "view"
+      ],
+      "title": "SideDef",
       "type": "object"
     },
     "Skill": {
@@ -400,6 +513,37 @@
         }
       },
       "title": "Source",
+      "type": "object"
+    },
+    "TabDef": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/CellDef"
+          },
+          "maxItems": 12,
+          "title": "Cells",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,47}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "cells"
+      ],
+      "title": "TabDef",
       "type": "object"
     },
     "Trigger": {
@@ -746,6 +890,14 @@
         "type": "object"
       },
       "title": "Overrides",
+      "type": "array"
+    },
+    "pages": {
+      "items": {
+        "$ref": "#/$defs/PageDef"
+      },
+      "maxItems": 8,
+      "title": "Pages",
       "type": "array"
     },
     "purpose": {

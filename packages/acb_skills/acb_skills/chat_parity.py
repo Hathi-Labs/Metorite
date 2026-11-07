@@ -120,7 +120,7 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/signup", "admin"),
     ("/api/integrations", "integrations"),
     ("/api/agent-access", "integrations"),
-    # WS-STU. The gateway serves `/studio` (STU-B1). No UI request reaches it yet.
+    # WS-STU. The gateway serves `/studio` (STU-B1). The skill creator sends to it (STU-F2b).
     ("/api/studio", "studio"),
 )
 
@@ -179,6 +179,7 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
+    "packages/acb_skills/acb_skills/studio_tools.py",
 )
 
 #: An action -> the tool that sends its request to the gateway. A tuple
@@ -286,6 +287,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/email/drafts": "edit_draft",
     "PUT /api/email/voice-profile": "voice_profile",
     # ── CRM ──
+    # WS-CRM CRM-M1: the chat reaches this tool through the `crm-records`
+    # pack, and the CRM assistant holds it. The orchestrator's base does not
+    # (tests/unit/test_crm_change_history.py holds the reach).
+    "GET /api/crm/change-history": "crm_change_history",
     "GET /api/crm/deals/{}/contacts": "crm_deal_contacts",
     "GET /api/crm/fields/{}": "crm_list_fields",
     "GET /api/crm/lost-reasons": "update_deal_status",
@@ -350,10 +355,30 @@ COVERED: dict[str, str | tuple[str, str]] = {
         "POST /auth/me/assistant-profile/interview",
     ),
     "PUT /api/auth/me/assistant-profile": ("profile_set", "PUT /auth/me/assistant-profile"),
+    # ── AI Studio (STU-F2d) ──
+    "GET /api/studio/actions": "studio_list_actions",
+    # STU-D2b: the READ side of a package page. The door POST is a list from chat. A create,
+    # an update and a delete from chat wait for B2c-2 (no chat call carries a direct proof,
+    # so the door answers 403 approval_required). The fence reads only the route, so it
+    # cannot see that gap. chat_parity.md section 4 names it.
+    "GET /api/studio/packages": "studio_package_get",
+    "GET /api/studio/packages/{}": "studio_package_get",
+    "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
+    "GET /api/studio/skills": "studio_skill_list",
+    "GET /api/studio/skills/{}": "studio_skill_list",
+    "PATCH /api/studio/skills/{}/state": "studio_skill_state",
+    "POST /api/studio/skills": "studio_skill_save",
+    "POST /api/studio/skills/{}/versions": "studio_skill_save",
 }
 
 #: An action -> (kind, reason). The kind is a key of :data:`EXEMPT_KINDS`.
 EXEMPT: dict[str, tuple[str, str]] = {
+    # ── Shell ──
+    "GET /api/shell/manifest": (
+        "stream",
+        "The shell reads the installed packages to draw the sidebar and the command bar, and reads them "
+        "again every few seconds (PKG-6). No member click sends it. The chat acts on the same records.",
+    ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
         "download",
@@ -366,6 +391,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "GET /api/email/messages/{}/inline": (
         "download",
         "An inline picture of a mail for the reading pane. The chat reads the text of the mail.",
+    ),
+    "GET /api/email/reply-card/draft-state": (
+        "stream",
+        "A chat reply card polls whether its own draft is still in Drafts, to refresh its view "
+        "(task 1526). No member click sends it. compose_reply reads the same state.",
     ),
     "GET /api/email/oauth/providers": (
         "oauth",
@@ -515,6 +545,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "chat",
         "Asks the assistant for the brief as a turn of the thread.",
     ),
+    "POST /api/chat/sessions/{}/buddy-hello": (
+        "chat",
+        "Posts the hello once, on a member's first visit (BUD-1). The shell sends it, not the member.",
+    ),
     "POST /api/chat/sessions/{}/compact": (
         "chat",
         "Folds the old turns of a thread into a summary. It is the chat's own context step.",
@@ -591,6 +625,9 @@ EXEMPT: dict[str, tuple[str, str]] = {
 
 #: An action -> the wave that gives the chat a tool for it.
 DEBT: dict[str, str] = {
+    # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
+    "DELETE /api/studio/packages/{}": "P-9",
+    "GET /api/studio/packages/{}/delete-preview": "P-9",
     # ── Tasks ──
     "GET /api/tasks/settings": "P-1",
     "POST /api/tasks/ai/backfill-context": "P-1",
@@ -841,7 +878,6 @@ DEBT: dict[str, str] = {
     "GET /api/apps/{}/usage": "P-6",
     "GET /api/apps/{}/versions": "P-6",
     "PATCH /api/apps/{}": "P-6",
-    "POST /api/apps": "P-6",
     "POST /api/apps/{}/ai/complete": "P-6",
     "POST /api/apps/{}/build": "P-6",
     "POST /api/apps/{}/fork": "P-6",
@@ -920,6 +956,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/auth/me/assistant-profile": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview/{}": "P-8",
+    # PZ-35: the chat summaries. A chat write to them is a 422 today, as for
+    # the interview reset above.
+    "DELETE /api/auth/me/assistant-profile/summaries": "P-8",
+    "DELETE /api/auth/me/assistant-profile/summaries/{}": "P-8",
     "DELETE /api/settings/branding": "P-8",
     "GET /api/auth/me": "P-8",
     "GET /api/auth/me/agent-access": "P-8",
@@ -927,13 +967,16 @@ DEBT: dict[str, str] = {
     "GET /api/auth/me/assistant-profile/address": "P-8",
     "GET /api/auth/me/assistant-profile/block": "P-8",
     "GET /api/auth/me/assistant-profile/export": "P-8",
+    "GET /api/auth/me/assistant-profile/summaries": "P-8",
     "GET /api/auth/me/shell": "P-8",
+    "GET /api/auth/me/zone": "P-8",
     "GET /api/settings/appearance": "P-8",
     "GET /api/settings/branding": "P-8",
     "GET /api/settings/llm": "P-8",
     "GET /api/settings/number-system": "P-8",
     "PUT /api/auth/me/agent-access": "P-8",
     "PUT /api/auth/me/shell": "P-8",
+    "PUT /api/auth/me/zone": "P-8",
     "PUT /api/settings/appearance": "P-8",
     "PUT /api/settings/branding": "P-8",
     "PUT /api/settings/number-system": "P-8",
@@ -981,6 +1024,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/github": "P-8",
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
+    # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
+    # AppRequestCard. The chat tool and card are MCP-P1b-4 (task 1703).
+    "GET /api/agent-access/requests": "P-8",
+    "POST /api/agent-access/requests/{}/decision": "P-8",
     "GET /api/integrations/agent-connections": "P-8",
     "GET /api/integrations/connections": "P-8",
     "GET /api/integrations/github/account": "P-8",
@@ -1000,7 +1047,7 @@ DEBT: dict[str, str] = {
 #: The most debt that each app may carry. A count may go down, never up.
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
-    "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED.
+    "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
     "tasks": 11,
     "calendar": 1,
     "email": 13,
@@ -1008,16 +1055,17 @@ DEBT_CEILING: dict[str, int] = {
     "notes": 51,
     "whatsapp": 25,
     "people": 19,
-    "knowledge": 17,  # The Knowledge manifest's planned rows.
+    "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them.
     "memory": 5,
     "workflows": 24,
-    "apps": 29,
+    "apps": 28,
     "agents": 20,
     "chat": 25,
     "shell": 15,
-    "settings": 21,
+    "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
-    "integrations": 19,
+    "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
+    "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new
@@ -1032,5 +1080,11 @@ UNREAD_CEILING: dict[str, int] = {
     # The Undo of a profile tool: the verb comes with the card.
     "components/profile/ProfileToolCards.tsx": 1,
     # The reminder chips: `actRequest` returns the url, and the verb is set where it is sent.
-    "lib/shell/reminderOpen.ts": 4,
+    # RX-2 to RX-4 (epic task 1402): Done, Snooze, Later, Undo and Change time
+    # of a reminder go through `postReminder` and `moveRequest`, so the fence
+    # cannot read the verb. Each act has a chat tool: resolve_reminder,
+    # reschedule_reminder and reopen_reminder. The receipt's Change time is the
+    # one of `reminderReceipt.ts`.
+    "lib/reminderReceipt.ts": 1,
+    "lib/shell/reminderOpen.ts": 8,
 }

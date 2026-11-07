@@ -32,6 +32,7 @@ import { PANES } from "@/lib/nav";
 
 import { type PanelMode, narrowerPanel, widerPanel } from "./panelMode";
 import type { Hit } from "./search";
+import { SPACE_DEFAULT_STATUSES } from "./statusSetCopy";
 import { tasksLink } from "./tasksRedirect";
 
 /**
@@ -123,6 +124,11 @@ export interface CommandContext {
   panelMode: PanelMode;
   /** Desktop only — a phone reaches the tree through the drawer. */
   canToggleRail: boolean;
+  /**
+   * The canvases on offer. Absent = all. My tasks has no Timeline, so its
+   * context names the five it has and "Timeline view" is not offered there.
+   */
+  modes?: readonly ViewMode[];
 }
 
 /** What a command is allowed to do. The page supplies every one of these. */
@@ -133,8 +139,11 @@ export interface CommandActions {
   clearFilters(): void;
   toggleRail(): void;
   manage(what: "fields" | "tags" | "statuses" | "lifecycle"): void;
-  /** WS-42 — open Projects settings, at the selected project's space. */
-  openSettings(): void;
+  /**
+   * WS-42 — open Projects settings, at the selected project's space. With a
+   * section (PST-1), it opens at that section.
+   */
+  openSettings(section?: "statuses"): void;
   showShortcuts(): void;
 }
 
@@ -209,7 +218,10 @@ function viewCommands(): Command[] {
     keywords: ["view", "canvas", "layout", entry.id],
     icon: entry.icon,
     sequence: ["v", entry.key],
-    when: (ctx: CommandContext) => ctx.hasProject,
+    // MOB-1 verify: My tasks names its tabs in `modes` and needs no project,
+    // so its view commands show with no project selected.
+    when: (ctx: CommandContext) =>
+      (ctx.hasProject || Boolean(ctx.modes)) && (!ctx.modes || ctx.modes.includes(entry.id)),
     run: (actions: CommandActions) => actions.setMode(entry.id),
   }));
 }
@@ -282,16 +294,20 @@ const PROJECT_COMMANDS: Command[] = [
   },
   {
     id: "project.statuses",
-    label: "Statuses",
+    // PST-1 (D185, projects_settings.md §9.5): the entry carries the name of
+    // the settings section it opens, so the palette and the pane say the
+    // same thing. It opens the SPACE's set of the selected project. That
+    // section lists each project that keeps its own set, with a link to it,
+    // and the row menu still opens the Statuses of any one node.
+    label: SPACE_DEFAULT_STATUSES,
     section: "Project",
     // "Workflow" and "stage" are what people call this when they go looking
     // for it, and "category" is what the data calls the half that rolls up.
-    keywords: ["workflow", "stages", "lanes", "columns", "category"],
+    keywords: ["statuses", "default", "workflow", "stages", "lanes", "columns", "category"],
     icon: "Columns3",
-    // Any node, unlike the lifecycle policy: the gateway resolves the root, so
-    // a subproject opens its space's set rather than being refused.
+    // It needs a selected project to know which space to open.
     when: (ctx) => ctx.hasProject,
-    run: (actions) => actions.manage("statuses"),
+    run: (actions) => actions.openSettings("statuses"),
   },
   {
     id: "project.tags",

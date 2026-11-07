@@ -290,7 +290,14 @@ The one field is the Ask bar at the foot of the page column (`ChatBar.tsx`,
 `AskBar`). The bell is the sidebar's Needs you row, the activity control is
 the bar's "N running" pill and the Chat row's count, and the assistant opens
 from the bar. `glass_look.md` GL-12 has the detail. The paragraph below is
-the GL-11 frame it replaces.
+the GL-11 frame it replaces. The Chat row also marks a message that Reach
+posted and the member has not opened (D177, `proactive_reach.md` §19.2).
+
+**A region the Ask bar never sits on (owner, 2026-11-06, task 1816).** A page
+marks such a region with the attribute `data-ask-clear`. The Email composers
+carry it. The bar takes the largest form that does not overlap the region, at
+any overlap. Inside the region each control counts at any scroll for the
+corner button. The shell names no app. Fence: `askBarRest.test.ts`.
 
 **The frame since 2026-11-01 (owner, GL-11).** The owner said: "the burger
 icon being outside the sidebar kind of puts me off". The sidebar now runs
@@ -1202,7 +1209,9 @@ general agent, and a chat bar at the foot of the page opens it. Flag
   (§5.2 rule 2).
 - **The activity control stays in the shell bar.** It shows the running
   count and opens the list of runs. A row opens its chat in the assistant.
-  The control never opens a chat by itself.
+  The control never opens a chat by itself. The assistant itself may open
+  twice without a tap: the hello and Reach's pop (D177,
+  `proactive_reach.md` §19.3). Neither goes through this control.
 - **On a phone, an Ask tab replaces the bar** (owner, 2026-10-13). It sits
   at the right end of the bottom nav on every page, so the thumb learns one
   place. A tap opens the assistant as a full-screen sheet, with the cursor

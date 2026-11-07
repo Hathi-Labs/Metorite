@@ -24,6 +24,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -56,7 +57,10 @@ import { openAssistant } from "@/lib/shell/assistant";
 // D99: the one assistant, loaded on demand, so a shell with the flag off
 // never carries the chat in its bundle.
 const AssistantDock = dynamic(() => import("@/lib/shell/AssistantDock"), { ssr: false });
+// WS-OB GD-4: the guide runner's one host. It is a shell part, so no app mounts it.
+const GuideHost = dynamic(() => import("@/lib/shell/GuideHost"), { ssr: false });
 import AppLauncher from "@/lib/shell/AppLauncher";
+import { GUIDE_MENU_EVENT } from "@/lib/shell/guide";
 import {
   ADD_APPS_HINT,
   accountLinks,
@@ -71,6 +75,7 @@ import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { shouldPollWorkspace } from "@/lib/access";
+import { useSaveZone } from "@/lib/shell/saveZone";
 import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldProvider } from "@/components/SidebarFold";
@@ -86,6 +91,7 @@ import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
 import { myWorkEnabled } from "@/app/projects/lib/myWorkFlag";
 import { projectsPhoneTabs } from "@/app/projects/lib/phoneTabs";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
+import { LAYER_CLASS } from "@/lib/layers";
 // ---------------------------------------------------------------------------
 // Mobile drawer context — lets child pages inject content into the hamburger
 // drawer without AppShell needing to know about sessions or filters.
@@ -168,6 +174,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (signedInAs && inShell) clearSignOutNotice();
   }, [signedInAs, inShell]);
+  // RX-5: a member who stays on My Day still gets a saved zone. It replaces the
+  // UTC default only. RX-7: the route needs no app feature, so every member gets it.
+  useSaveZone(inShell ? signedInAs : null, cacheOrg);
   // The chat caches follow the same rule (PR #652): one namespace per account.
   // `useChatScope` binds the member's namespace, and a switch deletes nothing.
   // `useChatSignOutClear` clears the namespace of an account that signed out,
@@ -261,6 +270,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return (
       <SidebarFoldProvider placement="rail">
       <div data-app-shell="" className="relative flex h-dvh overflow-clip glass:bg-grouped">
+        <GuideHost />
         {frame === "full" ? (
           <>
             <Sidebar />
@@ -373,6 +383,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <AccessGate>{children}</AccessGate>
           </main>
         )}
+        <GuideHost phone />
         <WelcomeDialog />
         {/* WS-51 S3: the one activity panel, as a bottom sheet. The Menu
             drawer holds the control, with the shell bar flag on or off. */}
@@ -387,7 +398,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {chatOn ? null : <AgentPill />}
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
-        <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe glass:border-t-0 glass:glass-chrome glass:rounded-t-2xl">
+        <div className={`fixed bottom-0 inset-x-0 ${LAYER_CLASS.bottomNav} border-t border-border bg-card/90 backdrop-blur pb-safe glass:border-t-0 glass:glass-chrome glass:rounded-t-2xl`}>
           {/* CF-2: one nudge above the Ask tab, for a member who never wrote
               to the assistant. Behind the chat-first flag. */}
           {chatOn ? <ChatNudge placement="tab" /> : null}
@@ -542,7 +553,7 @@ function MobileBottomNavInner({
         {dockOn ? <ShellBell onBeforeOpen={close} className="h-10 w-10 shrink-0" /> : null}
         <ActivityControl onBeforeOpen={close} className="h-10 w-10 shrink-0" />
       </div>
-      <nav className="flex flex-col overflow-y-auto">
+      <nav data-guide="home.app-list" className="flex flex-col overflow-y-auto">
         {/* Same rule as the desktop rail (§8.1): an unresolved viewer gets
             placeholders, never the full list. The drawer opens on tap, so a
             list that rearranges under the thumb is worse here than on desktop. */}
@@ -733,6 +744,20 @@ function MobileBottomNavInner({
     window.addEventListener("cc-email-empty", h);
     return () => window.removeEventListener("cc-email-empty", h);
   }, []);
+
+  // WS-OB GD-4: the guide opens and closes the Menu drawer, which holds the
+  // phone's app list (`GuideHost` sends the event). The ref keeps the content
+  // current, so the listener binds once.
+  const menuRef = useRef(menuContent);
+  menuRef.current = menuContent;
+  useEffect(() => {
+    const h = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === "open") open(menuRef.current);
+      else close();
+    };
+    window.addEventListener(GUIDE_MENU_EVENT, h);
+    return () => window.removeEventListener(GUIDE_MENU_EVENT, h);
+  }, [open, close]);
 
   const dispatchNav = (detail: string) => {
     window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail }));
@@ -932,6 +957,7 @@ function MobileBottomNavInner({
             }}
             aria-label={tabBadge ? `Ask Metorite, ${tabBadge.label}` : "Ask Metorite"}
             data-ask-tab=""
+            data-guide="home.ask"
             className="relative flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-primary transition-colors"
           >
             <span className="relative">

@@ -78,13 +78,13 @@ export function pointAnchor(x: number, y: number): PanelAnchor {
  *
  * - `popover` (the default) is `z-[60]`, above a `Modal` at `z-50`.
  * - `top` is `z-[90]`, for a panel raised from inside a hand-rolled overlay
- *   that paints above `z-50`. My Tasks' `TaskFocusModal` is `z-[80]`, so a
+ *   that paints above `z-50`. My Tasks' `TaskFocusModal` is `z-[15]`, so a
  *   `popover` panel opened from a focused task drew BEHIND it. `top` stays
  *   under `Modal`'s `alert` (`z-[100]`), so a confirmation still wins.
  */
 export type PanelLayer = "popover" | "top";
 
-const PANEL_LAYERS: Record<PanelLayer, string> = {
+export const PANEL_LAYERS: Record<PanelLayer, string> = {
   popover: "z-[60]",
   top: "z-[90]",
 };

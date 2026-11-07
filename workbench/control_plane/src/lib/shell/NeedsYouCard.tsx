@@ -43,6 +43,10 @@ import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { CardError, HomeCard, rowMover } from "./HomeCard";
+import ReminderActs from "./ReminderActs";
+import type { InstallNeed } from "./packageManifest";
+import { rowOfNeeds } from "./reminderActions";
+import { isReminderKind } from "./reminderKinds";
 import { appIcon, emptyNeedsLine, failedLines, keepApprovals, rowTime, shownNeeds } from "./myDay";
 import { type NeedsApp, type NeedsFeed, type NeedsItem, countsByApp, fetchNeeds, floorApps, needsKey, runAct } from "./needs";
 import {
@@ -179,6 +183,7 @@ export function NeedsList({
   needs,
   now,
   first,
+  extra,
 }: {
   needs: NeedsYou;
   /** The page's clock, by the minute. A render reads no clock itself. */
@@ -188,6 +193,12 @@ export function NeedsList({
    * it. The bell's panel does not, so it keeps the server's order.
    */
   first?: string;
+  /**
+   * Setup rows that installs give (PKG-6b). The bell's panel passes them and
+   * My Day's card does not. They draw above the feed's groups. With none,
+   * the list is the one it was.
+   */
+  extra?: readonly InstallNeed[];
 }) {
   const [expanded, setExpanded] = useState(false);
   // The card and the bell's panel can both be on screen, so each list names
@@ -201,6 +212,9 @@ export function NeedsList({
     ) : (
       <CardError message="What needs you could not load." onRetry={needs.refresh} />
     );
+  } else if (needs.items.length === 0 && extra && extra.length > 0) {
+    // Setup rows are things that need the member, so "Nothing needs you" would lie.
+    body = null;
   } else if (needs.items.length === 0) {
     body = (
       <div className="flex items-center gap-2.5 px-2 py-4">
@@ -234,6 +248,7 @@ export function NeedsList({
                   nowMs={now?.getTime() ?? null}
                   error={needs.errors[item.id]}
                   onAct={(from) => needs.act(item, from)}
+                  onRefresh={needs.refresh}
                 />
               ))}
             </ul>
@@ -259,6 +274,13 @@ export function NeedsList({
   const failed = failedLines(needs.sources);
   return (
     <div data-needs-list="">
+      {extra && extra.length > 0 ? (
+        <ul className="flex flex-col" data-needs-install="">
+          {extra.map((n) => (
+            <InstallNeedRow key={n.installId} need={n} />
+          ))}
+        </ul>
+      ) : null}
       {body}
       {/* The caveat, said ONCE and where the gap is: one muted line per
           silent source, or one for a refresh that failed, and one Retry. */}
@@ -287,25 +309,63 @@ export function NeedsList({
   );
 }
 
+/**
+ * One "Finish setting up" row for an install (PKG-6b). It has the look of a
+ * feed row and no act. It links to the setup page. `installNeeds` makes no row
+ * without a setup page.
+ */
+export function InstallNeedRow({ need }: { need: InstallNeed }) {
+  const inner = (
+    <>
+      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${accentForHue("amber").soft} ${accentForHue("amber").text}`}>
+        <Icon name="Box" size={14} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm text-foreground">{need.title}</span>
+      </span>
+    </>
+  );
+  const row = "flex min-w-0 flex-1 items-center gap-3 rounded-lg py-1.5 pl-2";
+  return (
+    <li data-install-need={need.installId}>
+      <div className="flex min-h-11 items-center gap-2 rounded-lg pr-1 hover:bg-secondary/60 tech-transition">
+        <Link href={need.href} className={row}>
+          {inner}
+        </Link>
+      </div>
+    </li>
+  );
+}
+
 function NeedsRow({
   item,
   nowMs,
   error,
   onAct,
+  onRefresh,
 }: {
   item: NeedsItem;
   /** `null` before the client clock exists: the row then prints no time. */
   nowMs: number | null;
   error?: string;
   onAct: (from: HTMLElement) => void;
+  /** The list reads again after a reminder write. */
+  onRefresh: () => void;
 }) {
   const time = nowMs === null ? "" : rowTime(item, nowMs);
+  // RX-3: a reminder that waits on the member has Done and Snooze in place.
+  const reminder = rowOfNeeds(item);
   return (
     <li>
       <div className="flex min-h-11 items-center gap-2 rounded-lg pr-1 hover:bg-secondary/60 tech-transition">
         <Link href={item.href} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg py-1.5 pl-2">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
-            <Icon name={appIcon(item.app)} size={14} />
+          {/* A reminder wears the Bell, not the Calendar's icon (RX-3). */}
+          <span
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${
+              reminder ? `${accentForHue("amber").soft} ${accentForHue("amber").text}` : "bg-secondary text-muted-foreground"
+            }`}
+          >
+            <Icon name={isReminderKind(item.kind) ? "Bell" : appIcon(item.app)} size={14} />
           </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm text-foreground">{item.title}</span>
@@ -320,7 +380,9 @@ function NeedsRow({
         </Link>
         {/* On a phone the act is its icon alone, so the title keeps the row's
             width. The name stays whole for a screen reader at every size. */}
-        {item.act === "done" ? (
+        {reminder ? (
+          <ReminderActs row={reminder} refresh={onRefresh} quiet />
+        ) : item.act === "done" ? (
           <Button variant="ghost" size="sm" icon="Check" data-row-act="" onClick={(e) => onAct(e.currentTarget)} aria-label={`Mark ${item.title} done`} className="min-h-9 min-w-9">
             <span className="hidden sm:inline">Done</span>
           </Button>

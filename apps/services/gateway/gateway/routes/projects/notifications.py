@@ -28,10 +28,10 @@ missed run is recoverable; a missed notification is invisible.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common.mentions import mention_targets, new_mentions  # noqa: F401 — the route modules
 from fastapi import Depends, Query
 from gateway.routes.projects.core import (
     Page,
@@ -67,8 +67,12 @@ from sqlalchemy import text
 #: question an outside agent asks on a task (`agent_runs.py`, spec
 #: external_agent_access.md §12.1). The actor is the run's `mcp:<slug>`, so
 #: the run's member hears it too.
+#:
+#: `decision` (WS-ALN ALN-2a, the `pm_decisions` migration) is a question with
+#: named options for one named person (`decisions.py`, spec
+#: project_alignment.md §3.2). Only the decider hears it.
 NOTIFICATION_KINDS: tuple[str, ...] = (
-    "assigned", "mention", "comment", "nudge", "agent_question",
+    "assigned", "mention", "comment", "nudge", "agent_question", "decision",
 )
 
 #: How much of a comment a notification quotes. Long enough to know whether it
@@ -83,8 +87,8 @@ EXCERPT_CHARS = 160
 #: address is the join key everywhere else in this app (`pm_task_assignees`,
 #: the People Center's `lower(email)` index), and it is the join key here.
 #:
-#: The UI's picker inserts the address, so nobody types this by hand.
-_MENTION = re.compile(r"@([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+#: The UI's picker inserts the address, so nobody types this by hand. The parser
+#: is `acb_common.mentions`, because the card of a chat tool reads it too.
 
 
 class NotificationModel(BaseModel):
@@ -115,32 +119,6 @@ class ReadIn(BaseModel):
 
 
 # ── Producing ───────────────────────────────────────────────────────────────
-
-def mention_targets(body: str | None) -> list[str]:
-    """Addresses @mentioned in a comment, lowercased, in first-seen order.
-
-    Order is preserved and duplicates dropped so a comment that names somebody
-    twice produces one notification, and so the *skipped* list a caller gets
-    back reads in the order they wrote it.
-    """
-    seen: dict[str, None] = {}
-    for match in _MENTION.finditer(body or ""):
-        seen.setdefault(match.group(1).lower(), None)
-    return list(seen)
-
-
-def new_mentions(old_body: str | None, new_body: str | None) -> list[str]:
-    """Only the addresses an edit ADDED, in first-seen order (WS-27v).
-
-    Editing a comment or description must notify the *newly named* people and
-    nobody twice: without this diff, fixing a typo in a comment that mentions
-    three colleagues re-pings all three, and a bell that repeats itself is a
-    bell people mute. Set-differenced on the folded address, the same identity
-    every other mention read uses (R10).
-    """
-    before = set(mention_targets(old_body))
-    return [who for who in mention_targets(new_body) if who not in before]
-
 
 def excerpt_of(body: str | None) -> str | None:
     """A single-line snippet, ellipsised.
@@ -288,6 +266,40 @@ async def project_grant_holders(
         for row in rows:
             found.setdefault(str(row.id), set()).add(who)
     return {p: frozenset(v) for p, v in found.items()}
+
+
+#: How many addresses one answer of :func:`project_audience` names.
+AUDIENCE_SAMPLE = 8
+
+
+async def project_audience(
+    db: Any, project_id: str, organization_id: str | None, *,
+    people: list[str], beyond: str = "",
+) -> dict[str, Any]:
+    """Who opens *project_id*, for the card of a chat in a held chat (RX-1).
+
+    ``project_grant_holders`` is the one predicate, so this answer and the move
+    guard of an outside agent (``move._move_audience``) cannot disagree.
+    ``without_access`` is the part of *people* that the grant arm does not reach:
+    an assignment opens the task to them. ``gains`` is who opens the project and
+    does not open *beyond*: a move from *beyond* opens the task to them.
+    """
+    ids = [project_id, *([beyond] if beyond else [])]
+    holders = await project_grant_holders(db, ids, organization_id)
+    audience = holders.get(project_id, frozenset())
+    members = (await db.execute(
+        text(_TENANT_MEMBERS_SQL), {"org": organization_id},
+    )).fetchall() if organization_id else []
+    every = {str(m.email) for m in members if getattr(m, "email", None)}
+    gains = sorted(audience - holders.get(beyond, frozenset())) if beyond else []
+    return {
+        "count": len(audience),
+        "everyone": bool(every) and every <= audience,
+        "sample": sorted(audience)[:AUDIENCE_SAMPLE],
+        "without_access": [who for who in people if who not in audience],
+        "gains": gains[:AUDIENCE_SAMPLE],
+        "gains_count": len(gains),
+    }
 
 
 async def notify(
@@ -463,6 +475,34 @@ async def list_notifications(
     }
 
 
+async def mark_rows_read(db: Any, me: str, ids: list[str] | None) -> int:
+    """The ONE write of ``read_at``: mark the unread rows of the recipient
+    *me* read, in the caller's transaction. *ids* names the rows, and
+    ``None`` marks every unread row of *me*. The count of rows it marked.
+
+    Two callers: :func:`mark_read`, the member's own click, and the outside
+    decision of an agent (WS-55 MCP-G15, ``agent_runs.record_outside_decision``),
+    which marks the member's bell row of the question that the member
+    answered outside Metorite. It does not commit, and it does not move My
+    Day. Each caller calls ``personal.bump_my_day`` after its commit.
+    """
+    if ids is None:
+        sql = (
+            "UPDATE pm_notifications SET read_at = now() "
+            "WHERE recipient = :me AND read_at IS NULL"
+        )
+        params: dict[str, Any] = {"me": me}
+    else:
+        sql = (
+            "UPDATE pm_notifications SET read_at = now() "
+            "WHERE recipient = :me AND read_at IS NULL "
+            "AND id = ANY(CAST(:ids AS uuid[]))"
+        )
+        params = {"me": me, "ids": list(ids)}
+    result = await db.execute(text(sql), params)
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
 @router.post("/notifications/read")
 async def mark_read(
     payload: ReadIn, user: UserContext = Depends(get_current_user),
@@ -481,21 +521,7 @@ async def mark_read(
     if not payload.all and not payload.ids:
         return {"marked": 0}
     async with _tenant_session() as db:
-        if payload.all:
-            sql = (
-                "UPDATE pm_notifications SET read_at = now() "
-                "WHERE recipient = :me AND read_at IS NULL"
-            )
-            params: dict[str, Any] = {"me": me}
-        else:
-            sql = (
-                "UPDATE pm_notifications SET read_at = now() "
-                "WHERE recipient = :me AND read_at IS NULL "
-                "AND id = ANY(CAST(:ids AS uuid[]))"
-            )
-            params = {"me": me, "ids": list(payload.ids)}
-        result = await db.execute(text(sql), params)
-    marked = int(getattr(result, "rowcount", 0) or 0)
+        marked = await mark_rows_read(db, me, None if payload.all else list(payload.ids))
     if marked:
         # WS-58 MD-5a — after the commit: a read note leaves My Day, and
         # marking read emits no `pm.*` event (my_day_feed.md §8.4 item 5).

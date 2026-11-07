@@ -8,7 +8,8 @@ catches. What is locked:
    ``own_tool_scope``, no tool is in both, and the split is 31 and 28.
 2. A pack holds at most 35 tools.
 3. ``packs_on`` is the one reader of the flag, it fails closed, and no
-   caller reads it yet.
+   caller reads it yet. A pack of ``FOLLOWS`` is on wherever its parent
+   is on (PJP-2).
 4. A pack is not an injected family: a toggle of it narrows no injected
    scope, and the skill index and the per-agent matrix never list it.
 5. ``build_catalog`` prices a pack from its owner's tools and its rules, and
@@ -102,7 +103,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     assert sf.pack_slugs() == (
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
-        "projects-reminders", "studio",
+        "projects-reminders", "projects-reports", "projects-authority", "studio",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -267,6 +268,75 @@ def test_packs_on_keeps_only_real_pack_slugs(_flag) -> None:
     assert tp.packs_on(ORG_A) == frozenset({"email"})
 
 
+#: Production's ``TOOL_PACKS`` on 2026-11-04, as the owner gave it (task 1479).
+PRODUCTION_TOOL_PACKS = (
+    "email,email-setup,crm-records,projects,projects-plan,projects-structure,"
+    "projects-bulk,projects-reminders")
+#: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
+FOLLOWERS = frozenset({"projects-reports", "projects-authority"})
+
+
+def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
+    """Owner decisions "Inherit" (2026-11-04, task 1479). Production's list
+    names neither ``projects-reports`` (PJP-2) nor ``projects-authority``
+    (ALN-4), and both packs are on there: the reports pack follows
+    ``projects-plan``, and the authority pack follows the core ``projects``
+    pack. So the loader reaches the Projects owner in a turn with no Projects
+    pack held (current 57). Mutation: drop the ``FOLLOWS`` union from
+    ``packs_on``, or drop one entry of ``FOLLOWS`` -> a pack of the owner is
+    off and the owner is not reached -> red."""
+    _flag(PRODUCTION_TOOL_PACKS, ORG_A)
+    on = tp.packs_on(ORG_A)
+    assert on == frozenset(PRODUCTION_TOOL_PACKS.split(",")) | FOLLOWERS
+    plan = tp.plan_loader(on, (), current=57, removable={PROJECTS: 1})
+    assert PROJECTS in plan.via_loader
+    assert set(plan.offered) >= FOLLOWERS
+
+
+def test_a_following_pack_is_off_without_its_parent(_flag) -> None:
+    """A pack follows its parent and nothing else. Mutation: turn each pack of
+    ``FOLLOWS`` on always -> red. Mutation: drop the named slugs from the
+    result -> a list that names a following pack alone gives nothing -> red."""
+    names = PRODUCTION_TOOL_PACKS.split(",")
+    _flag(",".join(s for s in names if s != "projects-plan"), ORG_A)
+    on = tp.packs_on(ORG_A)
+    assert "projects-reports" not in on and "projects-authority" in on
+    _flag(",".join(s for s in names if s != "projects"), ORG_A)
+    on = tp.packs_on(ORG_A)
+    assert "projects-authority" not in on and "projects-reports" in on
+    for alone in sorted(FOLLOWERS):
+        _flag(alone, ORG_A)
+        assert tp.packs_on(ORG_A) == frozenset({alone})
+    _flag("*", ORG_A)
+    assert tp.packs_on(ORG_A) == frozenset(sf.pack_slugs())
+
+
+def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
+    """``FOLLOWS`` is data beside ``PACKS``. Each key and each value is a
+    registered pack, the two share one owner, and no pack is its own parent.
+    Mutation: name a slug that is no pack, or a pack of another owner -> red."""
+    assert tp.FOLLOWS == {"projects-reports": "projects-plan",
+                          "projects-authority": "projects"}
+    assert set(tp.FOLLOWS) == FOLLOWERS
+    for follower, parent in tp.FOLLOWS.items():
+        assert tp.pack(follower) is not None and tp.pack(parent) is not None
+        assert follower != parent and parent not in tp.FOLLOWS
+        assert sf.SKILL_FAMILIES[follower]["owner"] == sf.SKILL_FAMILIES[parent]["owner"]
+
+
+def test_with_followers_adds_each_following_pack_of_a_parent_and_nothing_else() -> None:
+    """PJP-2 fix round 3 (P3-1). ``with_followers`` is the one reader of
+    ``FOLLOWS``: ``packs_on`` widens the allow list with it, and the run
+    widens the families that an admin turned off with it. Mutation: return
+    the slugs as they are -> a disabled parent leaves its following pack on
+    -> red."""
+    assert tp.with_followers({"projects-plan"}) == {"projects-plan", "projects-reports"}
+    assert tp.with_followers({"projects"}) == {"projects", "projects-authority"}
+    assert tp.with_followers({"projects-reports"}) == {"projects-reports"}
+    assert tp.with_followers({"email", "memory"}) == {"email", "memory"}
+    assert tp.with_followers(()) == frozenset()
+
+
 def test_packs_on_fails_closed_on_a_settings_fault(monkeypatch) -> None:
     """Mutation: the reader lets a fault through, or answers a pack on it."""
     import acb_common
@@ -372,9 +442,11 @@ def test_no_pack_tool_is_on_the_injected_surface() -> None:
     scope (and in the skill index, with the index on)."""
     every = {n for slug in sf.pack_slugs() for n in sf.SKILL_FAMILIES[slug]["tools"]}
     # OA-8a: ``crm_search_notes`` is a tool of the injected ``crm`` family too.
-    # It is the only name that a pack shares with an injected family.
+    # WS-CRM CRM-M1: so is ``crm_change_history``, the read of the CRM Change
+    # history, which the chat reaches through ``crm-records``. They are the
+    # only names that a pack shares with an injected family.
     shared = every & sf.injected_tool_names()
-    assert shared == {"crm_search_notes"}, shared
+    assert shared == {"crm_search_notes", "crm_change_history"}, shared
     pack_tools = every - shared
     assert pack_tools, "non-vacuity: the packs hold tools of their own"
     assert not pack_tools & ti._registered_platform_surface()
@@ -470,7 +542,7 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
     monkeypatch.setattr(sk, "_count_tokens", len)
     monkeypatch.setattr(sk, "_core_tool_names",
                         lambda: frozenset(sf.SKILL_FAMILIES["core"]["tools"]))
-    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda: {})
+    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda _org: {})
     monkeypatch.setattr(sk, "_list_agents", lambda: [])
     out = await sk.skills_catalog(
         user=UserContext(email="admin@acme.test", role=UserRole.EXECUTIVE))
@@ -481,9 +553,13 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
 
 # ── 7. The CRM pack (WS-67 OA-8a, §4.3.2) ──────────────────────────────────
 
+#: Ten since WS-CRM CRM-M1: ``crm_change_history`` is in the pack, and not in
+#: the orchestrator's base, because the base was at the 110-tool cap beside
+#: the email and Projects core packs (``test_projects_packs.py``).
 CRM_TOOLS = (
-    "convert_lead", "create_lead", "crm_search_notes", "get_pipeline", "get_record",
-    "get_timeline", "log_activity", "search_crm", "update_deal_status",
+    "convert_lead", "create_lead", "crm_change_history", "crm_search_notes",
+    "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
+    "update_deal_status",
 )
 
 
@@ -496,17 +572,22 @@ def _crm_own_tool_scope() -> set[str]:
     return set(cfg["own_tool_scope"])
 
 
-def test_the_crm_pack_holds_nine_tools_of_the_crm_assistant() -> None:
-    """The pack is a subset of ``own_tool_scope`` (21 tools): the 4 reads, the
-    4 writes and ``crm_search_notes``. The other 12 are the shared ``crm_*``
-    reads that the orchestrator holds already. Mutation: add a tool the owner
-    lacks, or drop one of the 9 -> red."""
+def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
+    """The pack is a subset of ``own_tool_scope`` (22 tools): the 4 reads, the
+    4 writes, ``crm_search_notes`` and ``crm_change_history``. The other 12
+    are the shared ``crm_*`` reads that the orchestrator holds already. Since
+    WS-CRM CRM-M1 the owner declares 22 tools, not 21, and the pack holds 10,
+    not 9: the read of the CRM Change history joined both, and the
+    orchestrator does not hold it. Mutation: add a tool the owner lacks, or
+    drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
-    assert len(scope) == 21, "non-vacuity: the owner still declares 21 tools"
+    assert len(scope) == 22, "non-vacuity: the owner still declares 22 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
     assert len(scope - set(family["tools"])) == 12
+    assert "crm_change_history" in family["tools"]
+    assert "crm_change_history" not in _orchestrator_scope()
 
 
 def test_no_crm_pack_tool_is_in_another_pack() -> None:
@@ -516,18 +597,20 @@ def test_no_crm_pack_tool_is_in_another_pack() -> None:
         assert not crm & set(sf.SKILL_FAMILIES[slug]["tools"]), slug
 
 
-def test_one_crm_tool_is_also_an_injected_tool_and_the_orchestrator_lacks_it() -> None:
-    """``crm_search_notes`` is in the injected ``crm`` family and in the pack.
-    The orchestrator ``tool_scope`` does not hold it, so adding the pack
-    changes nothing with the flag off. Mutation: add it to the orchestrator
-    ``config.json`` -> the tool list changes with the flag off -> red."""
+def test_two_crm_tools_are_also_injected_tools_and_the_orchestrator_lacks_them() -> None:
+    """``crm_search_notes`` and, since WS-CRM CRM-M1, ``crm_change_history``
+    are in the injected ``crm`` family and in the pack. The orchestrator
+    ``tool_scope`` holds neither, so adding the pack changes nothing with the
+    flag off. Mutation: add one to the orchestrator ``config.json`` -> the
+    tool list changes with the flag off -> red."""
     shared = set(sf.SKILL_FAMILIES["crm-records"]["tools"]) & set(sf.SKILL_FAMILIES["crm"]["tools"])
-    assert shared == {"crm_search_notes"}
-    assert "crm_search_notes" not in _orchestrator_scope()
-    assert sf.family_of("crm_search_notes") == "crm"
+    assert shared == {"crm_search_notes", "crm_change_history"}
+    for name in shared:
+        assert name not in _orchestrator_scope(), name
+        assert sf.family_of(name) == "crm", name
 
 
-def test_the_built_crm_pack_is_exactly_the_nine_tools_as_coroutines() -> None:
+def test_the_built_crm_pack_is_exactly_the_ten_tools_as_coroutines() -> None:
     """The builder skips a tool that is no coroutine function and indexes by
     ``__name__``, so a tool of another shape would leave the pack empty and
     nobody would see it. Mutation: wrap a CRM tool in a ``FunctionTool`` ->
@@ -550,7 +633,8 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email_address", "owner_email", "as_user", "impersonate"}
     tools = tp.owner_tools("crm-records", _crm_module())
-    assert len(tools) == 9
+    # 10, not 9, since WS-CRM CRM-M1: the pack holds crm_change_history too.
+    assert len(tools) == 10
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))
@@ -562,9 +646,13 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
 
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
+#: The eight read-only tools, the three skill tools (STU-F2d), the two
+#: package tools (STU-G1c), then the two record tools (STU-D2b).
 STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_list_actions", "studio_outline", "studio_patch", "studio_plan",
-                "studio_validate")
+                "studio_validate", "studio_skill_list", "studio_skill_save",
+                "studio_skill_state", "studio_save", "studio_publish",
+                "studio_package_get", "studio_record_list")
 
 
 def _studio_scope() -> set[str]:
@@ -578,7 +666,7 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 8 <= tp.MAX_PACK_TOOLS == 35
+    assert len(family["tools"]) == 15 <= tp.MAX_PACK_TOOLS == 35
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:
@@ -627,7 +715,7 @@ def test_the_pack_loader_finds_the_owner_in_the_owner_list() -> None:
     assert tuple(tool_name(fn) for fn in tp.owner_tools("studio", module)) == STUDIO_TOOLS
 
 
-def test_the_built_studio_pack_is_the_eight_tools_as_coroutines() -> None:
+def test_the_built_studio_pack_is_the_fifteen_tools_as_coroutines() -> None:
     import inspect
 
     tools = tp.owner_tools("studio", load_agent_module(STUDIO_DIR))
@@ -638,8 +726,9 @@ def test_the_built_studio_pack_is_the_eight_tools_as_coroutines() -> None:
 def test_the_studio_rules_name_only_tools_of_the_pack() -> None:
     """Mutation: name a tool of another pack in the rules -> red."""
     found = tp.PACKS["studio"]
-    # "no_card" is a value of the "decision" of studio_plan, not a tool.
-    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"no_card"}
+    # "no_card" is a value of the "decision" of studio_plan, and "based_on" a
+    # parameter of studio_skill_save (STU-F2d review round 2). Neither is a tool.
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"no_card", "based_on"}
     assert named and named <= set(STUDIO_TOOLS), named - set(STUDIO_TOOLS)
     assert found.owner == STUDIO and found.delegation_refusal
     assert tp.owner_packs(STUDIO) == ("studio",)
@@ -663,6 +752,7 @@ async def test_the_studio_filter_empties_the_pack_for_an_org_not_in_studio_orgs(
 
     async def tool_a(): ...
     tool_a.__name__ = "studio_draft"
+    _member_holds(monkeypatch, HOLDER)
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-1")
     monkeypatch.setattr(flags, "studio_orgs", lambda: frozenset())
     kept, dropped = await ti._drop_pack_unless_studio([tool_a], [])
@@ -673,6 +763,91 @@ async def test_the_studio_filter_empties_the_pack_for_an_org_not_in_studio_orgs(
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: None)
     kept, _ = await ti._drop_pack_unless_studio([tool_a], [])
     assert kept == [], "no org fails closed"
+
+
+# -- 8b. The studio pack needs the member's feature:studio (J1-1 fix round 1)
+
+
+def _features(grants: list[str], overrides: list[tuple[str, str]] | None = None) -> frozenset[str]:
+    from acb_auth import build_access
+
+    return frozenset(build_access(grants, overrides or []).allowed_features())
+
+
+#: What ``in_app_path.member_features`` gives for each member: the real
+#: ``allowed_features`` of a guest, of a member with a deny override on
+#: ``feature:studio``, and of a member (``feature:*``).
+GUEST = _features(["feature:chat", "apps:use:*"])
+DENIED = _features(["feature:*"], [("feature:studio", "deny")])
+HOLDER = _features(["feature:*"])
+
+
+def _member_holds(monkeypatch, features: frozenset[str] | None) -> None:
+    from orchestrator import in_app_path as iap
+
+    async def _read() -> frozenset[str] | None:
+        return features
+
+    monkeypatch.setattr(iap, "member_features", _read)
+
+
+@pytest.mark.parametrize("who,features,kept", [
+    ("guest", GUEST, False), ("denied member", DENIED, False),
+    ("holder", HOLDER, True), ("no member known", None, False),
+])
+async def test_the_studio_filter_needs_the_members_studio_feature(
+    monkeypatch, who: str, features: frozenset[str] | None, kept: bool,
+) -> None:
+    """An org in ``STUDIO_ORGS`` still builds an empty pack for a member who
+    lacks ``feature:studio``, and for a member nobody can name (None fails
+    closed). So ``studio_draft`` and the other local tools never run for
+    them. Mutation: drop the member check from the filter -> the guest, the
+    denied member and None keep the tools -> red."""
+    async def tool_a(): ...
+    tool_a.__name__ = "studio_draft"
+    assert ("studio" in HOLDER) and ("studio" not in GUEST) and ("studio" not in DENIED)
+    monkeypatch.setattr(ti, "_studio_open", lambda: True)
+    _member_holds(monkeypatch, features)
+    out, dropped = await ti._drop_pack_unless_studio([tool_a], [])
+    assert (out == [tool_a]) is kept, who
+    assert (dropped == []) is kept, who
+
+
+@pytest.mark.parametrize("who,features,offered", [
+    ("guest", GUEST, False), ("denied member", DENIED, False),
+    ("holder", HOLDER, True), ("no member known", None, False),
+])
+async def test_the_loader_offers_the_studio_pack_only_to_a_member_who_holds_studio(
+    monkeypatch, who: str, features: frozenset[str] | None, offered: bool,
+) -> None:
+    """``_available`` asks the same member check as the filter. Mutation:
+    drop the member check from ``_available`` -> offered to a guest -> red."""
+    monkeypatch.setattr(ti, "_loader_agent_ok", lambda _agent: True)
+    monkeypatch.setattr(ti, "_pack_owner_module", lambda _owner: object())
+    monkeypatch.setattr(ti, "_studio_open", lambda: True)
+    _member_holds(monkeypatch, features)
+    plan = await ti._plan_pack_loader(
+        object(), frozenset({"studio"}), [], builds=[], current=40, pool=[], persona="",
+        bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
+    assert ("studio" in plan.offered) is offered, who
+    assert (STUDIO in plan.via_loader) is offered, who
+
+
+async def test_the_member_is_not_read_while_the_org_is_closed(monkeypatch) -> None:
+    """With ``STUDIO_ORGS`` closed, the check reads no member, so a turn on a
+    box with Studio off pays no access read."""
+    from orchestrator import in_app_path as iap
+
+    reads: list[int] = []
+
+    async def _read() -> frozenset[str] | None:
+        reads.append(1)
+        return HOLDER
+
+    monkeypatch.setattr(iap, "member_features", _read)
+    monkeypatch.setattr(ti, "_studio_open", lambda: False)
+    assert await ti._studio_member_open() is False
+    assert reads == []
 
 
 # -- 9. The studio owner is hidden and never runs (STU-G1 fix round 1) -------
@@ -853,6 +1028,7 @@ async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_th
     monkeypatch.setattr(ti, "_loader_agent_ok", lambda _agent: True)
     monkeypatch.setattr(ti, "_pack_owner_module", lambda _owner: object())
     monkeypatch.setattr(ti, "_studio_open", lambda: open_)
+    _member_holds(monkeypatch, HOLDER)
     plan = await ti._plan_pack_loader(
         object(), frozenset({"studio"}), [], builds=[], current=40, pool=[], persona="",
         bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)

@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { forgetThisDevice } from "@/lib/push";
+import { installNavPanes, mergeInstallNav, usePackageManifest } from "@/lib/shell/packageManifest";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -142,9 +143,15 @@ export default function Sidebar() {
   // read that takes longer than the proxy's timeout, draws every held app.
   const shell = useShellPrefs();
   const shellPending = useShellPending(shellNav && shell.loading);
-  const railSections = shellNav
+  // PKG-6: the panes an install gives join "Apps" AFTER `visibleSections` and
+  // the stars. With the package host off the list is empty and the SAME
+  // array comes back, so the rail is as it was.
+  const manifest = usePackageManifest();
+  const installPanes = installNavPanes(manifest, access.features);
+  const railBase = shellNav
     ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
+  const railSections = mergeInstallNav(railBase, installPanes);
   useEffect(() => {
     window.clearTimeout(peekTimer.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the peek ends when the fold or the page changes
@@ -426,7 +433,7 @@ export default function Sidebar() {
       }}
       className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome-flat ${
         collapsed && !peekOpen ? "w-14" : "w-64"
-      } ${peeking ? "absolute inset-y-0 left-0 z-40" : ""} ${peekOpen ? "shadow-2xl glass:shadow-glass" : ""}`}
+      } ${peeking ? "absolute inset-y-0 left-0 z-40" : ""} ${peekOpen ? "shadow-2xl" : ""}`}
     >
       {/* Header. With the full-width shell bar, the bar carries the logo and
           the fold control instead, so the logo stays in view when this rail
@@ -473,6 +480,7 @@ export default function Sidebar() {
       {/* `key` swaps the whole list on a fold, so the new shape fades in while
           the width moves (`.sidebar-swap`), rather than snapping. */}
       <nav
+        data-guide="home.app-list"
         ref={navRef}
         key={collapsed ? "rail" : "full"}
         data-more-below={edges.below ? "" : undefined}

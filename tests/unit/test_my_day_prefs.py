@@ -53,6 +53,9 @@ class _FakeDB:
         self.sql.append((sql, p))
         if sql.startswith("SELECT my_day_prefs"):
             return _Result(None if self.row is _NO_ROW else (self.row,))
+        if sql.startswith("UPDATE user_settings"):
+            # The hide switch under the other spellings (task 1209).
+            return _Result(None)
         # The write. Postgres does the merge; the fake only answers a value
         # of the right shape, so the route's answer can be read.
         base = self.row if isinstance(self.row, dict) else {}
@@ -110,7 +113,7 @@ def _put(body: Any, user: UserContext | None = None):
 class TestTheAllowlist:
     def test_the_keys_are_the_spec_s(self) -> None:
         assert prefs.PREF_KEYS == ("mutes", "open_in_app", "corrections",
-                                   "hide_push_details", "push_prompt")
+                                   "hide_push_details", "push_prompt", "rule_mutes")
         assert set(prefs._CLEAN) == set(prefs.PREF_KEYS)
 
     @pytest.mark.parametrize("body", [
@@ -213,7 +216,7 @@ class TestTheLimits:
         # added `kb_gap`, 25 since WS-61 KB-9b added `doc_needs_review`
         # 26 after KB-9b slice 2, and 29 since WS-66 RM-2 added the three
         # reminder kinds (§5.9 item 10.6: a ticket that adds a kind raises the cap).
-        assert prefs.MAX_KINDS == 29 == len(prefs.feed_kinds())
+        assert prefs.MAX_KINDS == 30 == len(prefs.feed_kinds())
 
     def test_a_list_keeps_its_order_and_loses_its_repeats(self, fake: _FakeDB) -> None:
         res = _put({"key": "mutes", "value": ["block_soon", "overdue", "block_soon"]})
@@ -328,6 +331,26 @@ class TestTheRead:
         assert res.status_code == 503
 
 
+class TestRuleMutes:
+    """BR-5: ``rule_mutes`` is a list of exception rule ids."""
+
+    def test_a_list_of_rules_is_written_deduplicated(self, fake: _FakeDB) -> None:
+        res = _put({"key": "rule_mutes", "value": ["agent_asks", "agent_asks"]})
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["pval"]) == ["agent_asks"]
+
+    @pytest.mark.parametrize("value", [["nope"], "agent_asks", [1], None, {"a": 1},
+                                       ["agent_asks", "agent_asks", "approval_waiting",
+                                        "block_soon_asked", "source_sync_failed", "x"]])
+    def test_a_bad_value_is_422(self, fake: _FakeDB, value: Any) -> None:
+        assert _put({"key": "rule_mutes", "value": value}).status_code == 422
+
+    def test_the_read_drops_an_unknown_rule(self) -> None:
+        got = prefs.stored_prefs({"rule_mutes": ["agent_asks", "gone", 3]})
+        assert got == {"rule_mutes": ["agent_asks"]}
+
+
 class TestHidePushDetails:
     """WS-66 RE-9a: ``hide_push_details`` is a boolean, written and read back."""
 
@@ -336,8 +359,12 @@ class TestHidePushDetails:
         res = _put({"key": "hide_push_details", "value": value})
         assert res.status_code == 200, res.text
         assert res.json()["hide_push_details"] is value
-        [(_, params)] = _writes(fake)
+        [(_, params)] = [w for w in _writes(fake) if "pkey" in w[1]]
         assert (params["pkey"], json.loads(params["pval"])) == ("hide_push_details", value)
+        # The same value goes to every other spelling of the address (1209).
+        [(other_sql, other)] = [w for w in _writes(fake) if "pkey" not in w[1]]
+        assert "lower(user_id) = lower(:uid)" in other_sql and "user_id <> :uid" in other_sql
+        assert json.loads(other["pval"]) is value
         # The other keys stay in the answer.
         assert res.json()["corrections"] == ["Acme mail never needs me"]
         fake.row = {"hide_push_details": value}

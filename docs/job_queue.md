@@ -67,6 +67,9 @@ The writes of a handler and `done` commit together, or neither commits.
 - **A handler must use only the session that it receives.** A second session
   is a second transaction. Its writes commit when the try fails, and its
   locks can wait on the row lock of the run.
+- **A handler runs with no person present (AUTO-7a).** The worker marks each
+  handler in both modes (`acb_common.no_person`). A marked handler cannot
+  approve, reject, resume or answer anything, and each card denies.
 - **A `session` handler runs while a session is open.** Do not call a model
   or a provider inside it. Use the `detached` mode for that work.
 - **A `detached` handler runs with no session open.** Register it with
@@ -163,6 +166,21 @@ await queue.enqueue(db, "email.send_later", {"draft_id": draft_id},
 ```
 
 A kind matches `[a-z][a-z0-9_.]{0,63}`.
+
+**State the effect (BR-7a).** `register` takes `effect`: `read`, `own_rows`,
+`send` or `write`. A `send` or `write` kind also names its `policy`, and
+`register` refuses it without one. `tests/unit/test_job_effects_fence.py`
+fails on a kind with no effect, on a `register` call in `gateway/` with no
+`effect=`, and on a send seam in the `gateway/brief/` imports.
+
+**A producer on a member's write.** `align/trigger.py::enqueue_check` (WS-ALN
+ALN-1) enqueues `align.check` on the session of a task write, inside
+`db.begin_nested()`. So the write and the job commit together, and a failed
+enqueue rolls back the savepoint only. Without the savepoint, a Postgres error
+aborts the member's write. The gate needs the worker on and the org in
+`ALIGN_JOBS_ORGS`, because `prune` deletes no queued row. Copy this form for a
+new producer on a request path. `project_alignment.md` §5 holds the design, and
+`test_align_trigger.py` is the fence.
 
 ## 5a. The detached mode (BR-1b-a, built)
 
@@ -267,11 +285,18 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
 - **The first consumer.** `brief/planner.py` seeds `brief.plan` for each org
   that `BRIEF_ENABLED` and `BRIEF_ORGS` admit. `brief/run.py` adds the hook
   at import, and `main.py` imports it before the worker starts.
-- **The next consumer (planned, not built).** WS-63 PZ-33b adds
-  `assistant_summaries.seed`. It enqueues the detached kind
-  `assistant.chat_summary` for each org that `ASSISTANT_CHAT_SUMMARY_ORGS`
-  admits, and only with the Router on. `personalization.md` §15.3 holds the
-  design.
+- **The second consumer (WS-63 PZ-33b, built dark).**
+  `assistant_summaries.seed` enqueues the detached kind
+  `assistant.chat_summary` for each idle private chat. It runs only for an
+  org that `ASSISTANT_CHAT_SUMMARY_ORGS` admits, and only with the Router
+  on. Its dedupe key is `summary:<session_id>:<through>`, so one chat and
+  one newest row give one live job. `chat_summary_job.py` adds the hook at
+  import, and `main.py` imports it. `personalization.md` §15.3 and §15.9
+  hold the design.
+- **The third consumer (BR-2d, built dark).** `brief/monitor.py` seeds the
+  session kind `brief.slo` once each hour and org, with the dedupe key
+  `slo:<hour>`. It logs `brief.slo_missed` at error when the org is under
+  99% on time over 7 days. `core_brief.md` §7 holds the rules.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 

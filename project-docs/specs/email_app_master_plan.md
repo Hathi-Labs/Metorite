@@ -30,7 +30,9 @@
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
 > 🔨 **§18.5.1 (H-374) is BUILT on branch `h374-send-draft`, not merged (2026-10-22).** The owner chose "Drafts, with a card" and "Schedule a send". A held chat now sends or schedules a saved draft behind a card. A forward, a new mail, a file, an unsubscribe and a settings change stay held.
+> 🔨 **§18.10 is BUILT on branch `mt-5f606b3e-email-edit-card`, not merged (2026-11-03).** A new mail from the chat shows ONE card. The member edits the subject and the text, ticks the people, and presses Send, Save draft or Discard. No migration. Dark behind `EMAIL_EDIT_CARD_ORGS` (default empty, off), with fix round 1.
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
+> 🔨 **§18.9.1 is BUILT on branch `mt-0f55cd43-reply-card-sent`, not merged (2026-11-03, task 1526), with fix round 1.** A reply card whose draft left Drafts sends and saves nothing. The act answers 409 `draft_gone` or `already_replied`, and the card collapses to its title and Close. No migration, and no flag.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
 > 🔨 **§21.13 (H-391) is BUILT on branch `email-whatsapp-confirm`, not merged (2026-10-24).** Archive, label, move, reply, send a draft, schedule, forward and new mail work from WhatsApp. The member approves each one with a reply code. Migration 298, dark behind `WHATSAPP_ASSISTANT_WRITES`.
@@ -562,7 +564,7 @@ or API client to create a pattern by hand.
 | **D-EM-11** | **The member chooses the import range at the first connect.** The choices are 0 to 6 months, and the default is 1 month. A choice of 0 imports no old mail, only the mail that arrives after the connect. (Owner, 2026-10-02.) **Amended by D-EM-54 and D-EM-55 (2026-10-07).** The choices are 1, 3, 6 or 12 months or a custom start date, and the default is 3 (§14.4.5). |
 | **D-EM-12** | **The import goes from the newest mail to the oldest, across all folders.** When the storage limit stops it, the newest mail is present and the gap is at the old end. (Owner, 2026-10-02.) |
 | **D-EM-13** | **A sync after a pause continues from the last sync point.** A pause is sync turned off, a token that failed, or a reconnect. The next sync gets the mail since the last sync point. It does not import the range again. (Owner, 2026-10-02.) |
-| **D-EM-14** | **Each mailbox has a storage limit of 500 MB.** The meter measures the copy that Metorite keeps: message rows, bodies, attachment records and embeddings. At the limit, the import stops going back, and Metorite asks the member to remove older mail from Metorite. A removal deletes the copy in Metorite only. Metorite never deletes or changes mail in the Outlook mailbox of the member. (Owner, 2026-10-02. The answers to three checks follow this table.) |
+| **D-EM-14** | **Each mailbox has a storage limit of 500 MB.** The meter measures the copy that Metorite keeps: message rows, bodies, attachment records and embeddings. At the limit, the import stops going back, and Metorite asks the member to remove older mail from Metorite. A removal deletes the copy in Metorite only. Metorite never deletes or changes mail in the Outlook mailbox of the member. (Owner, 2026-10-02. The answers to three checks follow this table.) **Amended 2026-11-04 (owner): the limit is 2 GB (2,048 MB) for each mailbox.** |
 | **D-EM-15** | **After the import, Metorite asks the member to set up AI rules.** The rules then run over the imported mail and give insights. The step offers no model choice, because EM-T5b moves the rules to the `decide` tier. Reply drafting is a separate step that the member turns on (D-EM-6). (Owner, 2026-10-02.) |
 | **D-EM-16** | **A short guided setup takes the member through each stage.** The stages are connect, the range, the import, the storage notice when it applies, AI rules, and done. The import shows real progress: the count of messages, an estimate of the total and the phase. A spinner alone is not progress. (Owner, 2026-10-02.) |
 | **D-EM-62** | **Build the cheaper triage decisions of EM-T16, dark, in the order PR-0 to PR-D** (owner, 2026-10-09). After PR-C merges, `email.cold_check` and `email.sender_pin` go to `on`. Two questions stay open for the owner. The record follows this table, and §10.4.17 holds the build. |
@@ -571,6 +573,7 @@ or API client to create a pattern by hand.
 **The owner answers to the three checks of EM-T6c (2026-10-02).** Each answer adds to D-EM-14. §10.4.7 gives the reason for each check.
 
 - **Q1 (owner, 2026-10-02).** The limit of 500 MB is for each mailbox, not for each member.
+- **Q1 amended (owner, 2026-11-04).** The limit is 2 GB (2,048 MB) for each mailbox. It is still for each mailbox, not for each member. A mailbox that stopped at 500 MB continues its import of older mail at a loop cycle after the release (EM-T6f, §10.4.7). The gateway resumes one such mailbox in each 5 minutes, so the mailboxes do not all start at once.
 - **Q2 (owner, 2026-10-02).** New mail continues to sync at the limit. Only the import of older mail stops.
 - **Q3 (owner, 2026-10-02).** At the limit, the body backfill and the embeddings stop. A message that the member opens still loads its body live from the provider.
 - **Q4 (owner, 2026-10-02).** At the limit, an open shows the body and stores nothing. So an open never takes a mailbox past the limit.
@@ -2268,7 +2271,7 @@ API, and EM-T4b adds the shared cap and the budget.
 
 Agent work that must land BEFORE the flip (review round 1, finding G). Neither item binds in `log`, the shipped mode.
 
-5. **The template fill at the budget. Decided and built (task 1128, 2026-11-01).** `_render_template` (`automation/actions.py`) never returns the raw template now. A fill that fails raises `TemplateFillFailed`. A spent budget (`LLMBudgetExhausted`), a failed model call and an answer with no text all fail the fill. Only that action does not run, and History shows the reason and the next step in plain words. The other actions of the rule still run. When one of them succeeds, the runner records the row as APPLIED with errors. Nothing retries the failed action. The subject of a rule draft fills BEFORE the thread check, because that check can trash the old draft. A failed fill keeps the old draft. Fence: `tests/unit/test_llm_empty_answers.py`.
+5. **The template fill at the budget. Decided and built (task 1128, 2026-11-01).** `_render_template` (`automation/actions.py`) never returns the raw template now. A fill that fails raises `TemplateFillFailed`. A spent budget (`LLMBudgetExhausted`), a failed model call and an answer with no text all fail the fill. Only that action does not run, and History shows the reason and the next step in plain words. The other actions of the rule still run. When one of them succeeds, the runner records the row as APPLIED with errors. Nothing retries the failed action. The subject of a rule draft fills BEFORE the thread check, because that check can trash the old draft. A failed fill keeps the old draft. **Follow-up (task 1128, 2026-11-02).** The thread check now only LOOKS before the model runs. It trashes the old unmodified draft after a good new draft exists, just before `create_draft`, and it looks again so an edit made while the model wrote still wins. A NO_DRAFT answer or an empty To keeps the old draft. The streaming drafter (`acompletion_stream_text`) takes a job, and a blank stream logs `acb_llm.empty_answer`. The rule draft and compose calls name the `writing` job. Fence: `tests/unit/test_llm_empty_answers.py`, `tests/unit/test_llm_jobs.py`.
 6. **One warning a day, not one a cycle.** In `enforce`, a spent mailbox logs WARNING lines on each cycle until UTC midnight. The lines are `decide.unavailable`, `email.classify_unavailable_skip` and `email.mark_thread_replied_failed`. Check the budget once for each job, and log once.
 7. **A timeout gives back spend that the model billed.** On a timeout, `_ask_all` gives back all its requests, also the ones that already answered (`llm_cap.py:303-309`). The drafter consult does the same for a whole agent run. In `enforce`, a mailbox whose calls keep running slow then never reaches its limit. Count the answered requests before the bound cancels them. In `log`, the same rule makes the count a little low for slow calls (re-verify of round 1, P2).
 8. **Shadow traffic shares the budget.** In `shadow`, the decide requests and the old call that acts spend one budget. In `enforce`, a shadow request can take the last unit, and the call that acts is then refused. Decide whether a shadow request counts.
@@ -2940,13 +2943,13 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e ✅ MERGED (#619, 2026-10-04), with review round 1 closed. Anchors re-verified at `3d11922c2` on 2026-10-04.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e ✅ MERGED (#619, 2026-10-04), with review round 1 closed. Anchors re-verified at `3d11922c2` on 2026-10-04. **EM-T6f BUILT 2026-11-04** (task 1572, branch `mt-d1e16ddc-mailbox-2gb`, not merged yet), with review round 1 (P1, P2, P3a and P3b) repaired the same day. The record is under EM-T6e, open points.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
 **EM-T6d, part 2 (rules step, drafting step and Done).** ✅ MERGED (#581, 2026-10-03). The notes are under EM-T6d below.
 
-**Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 500. A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
+**Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 2048 since 2026-11-04 (500 before). A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
 
 **Order.**
 
@@ -2956,7 +2959,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 4. EM-T6e waits for EM-T6c and EM-T6d.
 5. EM-T4d waits for EM-T6b, because both change `sync_messages` in `providers/outlook.py`.
 6. EM-T4e and EM-T6a both change `transport/accounts.py`, and each takes a migration number. The second to merge rebases and takes its number again (R1).
-7. EM-T6f waits for EM-T6e. EM-T6f is a path that resumes the import of a mailbox in the phase `limit` under the limit. This spec records it and does not specify it (EM-T6e, open points).
+7. EM-T6f waits for EM-T6e. EM-T6f is a path that resumes the import of a mailbox in the phase `limit` under the limit. It is BUILT (2026-11-04), and its record is under EM-T6e, open points.
 
 **Owner checks (answered, 2026-10-02).** §10.2 records each answer as a dated line. The reason for each check stays here.
 
@@ -3172,7 +3175,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 - `email_ingestion/storage.py` owns the limit, the meter, the preview and the steps of the removal. Each step takes a session, opens none and never commits.
 - The meter is one statement. It sums `pg_column_size` of 16 message columns, 5 attachment columns and 3 embedding columns. An R8 test compares the three lists with `pg_attribute`, so a new column of variable length fails until the meter names it.
-- The meter runs in the block of each import batch and in the block of phase (d). A first import at the limit writes `import_phase = 'limit'`. `_cycle_result` takes a keyword `limit`, and each import at the limit returns `limit: true`.
+- The meter runs in the block of each import batch and in the block of phase (d). EM-T6f review P1 bounds the full meters of an import (see the EM-T6f record). A first import at the limit writes `import_phase = 'limit'`. `_cycle_result` takes a keyword `limit`, and each import at the limit returns `limit: true`.
 - A deep sync that stops at the limit runs no import reconcile, and it logs `sync.import_reconcile_skipped reason=limit`. A page that the import did not read can hold mail of the same second as its last message.
 - Phases (e) and (f) moved into `_backfill_and_embed`. At the limit, neither phase runs, and the cycle logs `sync.storage_limit`. The write of refreshed credentials still runs between the two phases.
 - The two routes live in `transport/storage.py`. The preview answers `before`, `messages` and `bytes`. The removal answers `before`, `removed`, `stored_bytes` and `storage_limit_bytes`. `EmailAccountModel` carries `stored_bytes` and `storage_limit_bytes` for EM-T6e.
@@ -3209,7 +3212,7 @@ The R8 tests must show PASSED, not SKIPPED.
 - R-4 still holds: measure the time of the meter on the box after the deploy.
 - Before merge, the orchestrator reads the meter of each production mailbox (R-8). The read is the SELECT form only.
 - EM-T6e draws the notice and the dialog.
-- **(Review round 1, item 3) Nothing closes the gap of a `limit` phase.** A loop cycle runs no import, because `initial_sync_done` is true. A Resync (`deep=True`) imports from now down to `import_since`, so it can fill the gap up to the limit. It writes no progress column, so the phase stays `limit` and `import_reached_at` does not move. Only a removal with `before` at or after `import_reached_at` ends the phase. EM-T6e must decide a resume path, for example a deep import that ends the phase when it reaches the floor under the limit. **Closed for EM-T6e (2026-10-04):** EM-T6e draws the gap as one line with no action (D2). EM-T6f owns the resume path (Order, item 7).
+- **(Review round 1, item 3) Nothing closes the gap of a `limit` phase.** A loop cycle runs no import, because `initial_sync_done` is true. A Resync (`deep=True`) imports from now down to `import_since`, so it can fill the gap up to the limit. It writes no progress column, so the phase stays `limit` and `import_reached_at` does not move. Only a removal with `before` at or after `import_reached_at` ends the phase. EM-T6e must decide a resume path, for example a deep import that ends the phase when it reaches the floor under the limit. **Closed for EM-T6e (2026-10-04):** EM-T6e draws the gap as one line with no action (D2). EM-T6f owns the resume path (Order, item 7). **EM-T6f (2026-11-04):** a loop cycle now resumes the import under the limit, from `import_reached_at`.
 - **(Review round 1, item 6) A draft in a non-English Outlook mailbox is not kept.** `email_messages` has no draft flag, and the Outlook provider does not read `isDraft`. `providers/outlook.py:419-422` does not request `wellKnownName`, because a consumer account answers 400 to it. So a Drafts folder with a local name (`Entwürfe`, `Brouillons`) is a user folder, and its rows get `folder = 'entwürfe'`. G1 does not keep them, and `body_backfill.py:120` has the same rule.
 - **(Item 6, the provider follow-up)** Classify the Drafts folder by the alias `/me/mailFolders/drafts`, or store `isDraft` for each message. Then `KEPT_FOLDERS_SQL` reads it. The branch `email-delta-shadow` changes `outlook.py` now, so this round did not.
 - **(Review round 1, item 9) A large removal can take longer than 30 seconds.** The chunk loop runs inside the request, and the Control Plane proxy gives a POST 30 seconds. EM-T6e must plan for a long removal. For example, the dialog reads the meter again after a timeout of the proxy. **Closed by EM-T6e (2026-10-04):** the BFF gives the removal 120 seconds, and the dialog follows a removal that outlives the proxy through the preview (D1).
@@ -3252,7 +3255,7 @@ Item 6 of review round 1 changed no code, so it has no mutation.
 1. **The setting.** Add `email_mailbox_storage_limit_mb: int = 500` to `acb_common/settings.py`. The limit in bytes is that value times 1,048,576.
 2. **The meter.** Add `measure_stored_bytes(db, account_id)` to a new `email_ingestion/storage.py`. One SELECT sums `pg_column_size` of each column of variable length in the `email_messages` rows of the mailbox. It adds the `email_attachments` rows and the `email_embeddings` rows of the mailbox. It writes `stored_bytes` and `stored_bytes_at`.
 3. **The meter reads no body.** `pg_column_size` of a stored value reads its size from the stored header, so the meter does not fetch the bodies. Do not use `octet_length`, and do not take the size of a whole row.
-4. **When the meter runs.** After each import batch, and at the end of each sync in phase (d).
+4. **When the meter runs.** After each import batch, and at the end of each sync in phase (d). **Changed by EM-T6f review P1 (2026-11-04):** the full meter runs after the first batch of a run and near the limit only. Each other batch adds the growth of its own rows (`storage.ImportMeter`).
 5. **The limit stops the import.** After a batch, when `stored_bytes` is at or over the limit, the import fetches no next batch. A first import then writes `import_phase = 'limit'` and `initial_sync_done = true`. A deep sync of a member act stops in the same way, and `_sync_account` returns `limit: true` in its result.
 6. **(Q3) Phases (e) and (f) stop at the limit.** At or over the limit, the body backfill makes no provider call, and the embeddings make no model call. A message that the member opens still loads its body live.
 7. **(Q2) New mail still syncs at the limit.** The recurring sweep writes new mail at any meter value. Only the import of older mail stops.
@@ -3525,7 +3528,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 - **D1. A long removal.** The BFF gives `accounts/<id>/storage/remove-older` a budget of 120 seconds. A pattern match in a small module makes that choice, and the module has its own test. After a 502, a 504 or a network error from the removal, the dialog says "The removal continues". It reads the preview again every 5 seconds, with the same `before`. At 0 messages, it reads the accounts again and shows the new meter.
 - **D1, the end.** After 3 minutes, the dialog says that Metorite cannot confirm the removal. It never reports a failure that it cannot prove. It does not read the meter alone, because the meter does not tell a removal in progress from a removal that stopped. The gateway does not change, and it gets no 202.
-- **D2. The gap.** A mailbox in the phase `limit` under the limit shows one line with no action. For example: "Metorite imported this mailbox back to 14 Sep. It stopped there at the storage limit." EM-T6f owns a path that resumes the import (Order, item 7).
+- **D2. The gap.** A mailbox in the phase `limit` under the limit shows one line with no action. For example: "Metorite imported this mailbox back to 14 Sep. It stopped there at the storage limit." Since EM-T6f (2026-11-04), a loop cycle resumes that import, and the phase moves to `importing`. So the line shows only until that cycle. It also shows while the meter is under the limit by less than the margin of a resume (20 MB at 2 GB), or while the import has no `import_reached_at` to go on from.
 - **D3, which notice.** With one mailbox in view, Email shows the notice of that mailbox only. In All inboxes, Email shows one notice, for the first pooled mailbox at the limit in the order of the list. `storageMailbox` in `lib/mailbox.ts` decides it, beside `attentionMailbox`. A separate mailbox shows its notice in its own view only.
 - **D3, the switcher.** The switcher marks each mailbox at the limit, a separate one too. EM-T6e owns this mark of UC-12 (§11.5). The mark is a `Badge` or an icon with an `aria-label`, in the `warning` tone.
 - **D3, the name.** With two or more mailboxes, the notice and the dialog draw `MailboxChip` and the address, and the copy names the label. With one mailbox, the copy says "This mailbox". The dialog calls both routes with the id of the mailbox that it names, never the selected mailbox or `poolHome`.
@@ -3602,7 +3605,21 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - **(Visual review) The compact switcher cuts a label short.** At compact density, a separate mailbox at the limit shows "Cl…" beside the "Separate" badge and the mark.
 - **(Visual review) No capture beside Calendar.** The done-when of EM-T6d named a view beside Calendar. This review did not capture one.
 - **(Review round 1) Cmd+K opens over a dialog.** The command palette opens above any dialog of the page, and it offers "Delete" for the open mail. This is older than EM-T6e. A follow-up for the page shortcuts owns it.
-- **EM-T6f, a resume path (backend, recorded).** Nothing resumes the import of a mailbox in the phase `limit` under the limit (EM-T6c, review round 1, item 3). The candidate of the auditor: a route sets `initial_sync_done = false` and `import_phase = 'importing'` for such a mailbox, so `_run_import` resumes at `import_reached_at`. It needs R8 and its own audit.
+- **EM-T6f, a resume path (backend). BUILT 2026-11-04** (task 1572, branch `mt-d1e16ddc-mailbox-2gb`, not merged yet). Before it, nothing resumed the import of a mailbox in the phase `limit` under the limit (EM-T6c, review round 1, item 3). The owner raised the limit to 2 GB on 2026-11-04 and wants no manual step. So the resume is automatic, in the sync loop, and no route or button starts it.
+  - **The rule.** `storage.import_resumes` is the one rule, beside `at_limit` and `end_limit_phase`. The import goes on when four tests hold. The phase is `limit`. The meter ran (`stored_bytes` is not null). The meter is under the limit by at least `storage.resume_margin_bytes()`. `import_reached_at` is set. A mailbox in any other phase is never touched.
+  - **The margin (review P3a).** The margin is the larger of 20 MB and 1% of the limit, so 20.48 MB at 2 GB. It is never more than a tenth of the limit, so a small limit can still resume. A mailbox that stopped a few KB over the limit then does not resume when a deleted draft takes it just under.
+  - **The columns.** `storage.resume_import` writes `initial_sync_done = false` and `import_phase = 'importing'`, and nothing else. `_run_import` already resumes a first import while `initial_sync_done` is false. It asks for `until = import_reached_at` and keeps `import_count`. So the import goes on from that point down to the floor, and it does not read newer mail again. It ends `done`, or `limit` at the limit as before.
+  - **The write.** The UPDATE is conditional: `WHERE id = :aid AND import_phase = 'limit' AND stored_bytes = :stored`. A second write finds no row. A write after a change of the meter finds no row.
+  - **The lock.** Phase (a) of a loop cycle runs the write, in its own `tenant_session(org)` block. `_sync_account` holds the mailbox lock there, and the removal takes the same lock through `hold_mailbox`. So a removal, a webhook sync and a rerun cannot run at the same time. Phase (a) then reads the row again, and the cycle runs the import. Only the loop resumes (`from_loop`, `deep=None`). A manual sync, a webhook sync and a deep sync do not.
+  - **The load.** `scheduler.STORAGE_RESUME_GAP_SECS` (300 s) lets one mailbox of a gateway process resume in each gap. The others ask again at their next cycle. A write that finds no row gives the turn back. The import keeps its batch of 100 and the background lane of the pool (`db_background_max`).
+  - **The meter of an import (review P1).** The full meter reads every row of the mailbox, and it used to run after each batch. So the I/O of one resume grew with the square of the size of the mailbox. `storage.ImportMeter` now runs the full meter after the first batch of a run. Each later batch reads the sums of its own rows, by provider id, before and after its write. One UPDATE adds the difference to `stored_bytes`. When that sum reaches the limit, the full meter runs again and decides. A run makes at most `storage.IMPORT_FULL_METERS` (3) full meters, and after that the sum decides. With phase (d), a cycle makes at most 4 full meters, whatever the size of the gap. The import still stops after the batch that takes the meter to the limit. So a mailbox goes over the limit by at most one batch of 100 messages, as before, plus what a member stores by an open during the cycle. The same code serves the first import, the resume and the deep sync of a member act.
+  - **The cap of a cycle (review P2).** An import that goes on from `import_reached_at` reads at most `scheduler.RESUME_CYCLE_MAILS` (1,000) mails in a cycle, for each provider. A smaller cap of the provider wins, so Gmail keeps 400. The cycle then pauses, the recurring sweep runs, and the loop comes back after `SYNC_RESUME_SECS` (60 s). So new mail lands between the shares of a resume (owner answer Q2). A first import from now keeps the cap of its provider, which is none for Outlook and IMAP. A first import in its second cycle or later goes on from a point, so it takes the cap too.
+  - **The log.** `sync.storage_resume account=<id> stored=<bytes> limit=<bytes>`. A mailbox that waits for its turn logs `sync.storage_resume_waits`.
+  - **The UI.** `GET /email/accounts` sends `import_phase`, and `storageNoticeKind` draws the D2 gap line only for the phase `limit`. After the resume, the phase is `importing` and `initial_sync_done` is false. So the gap line goes, and the sync banner shows "Importing mail" until the import ends. A comment in `lib/storage.ts` now names EM-T6f.
+  - **The admin tile (review P3b).** `first_sync_pending` counts each mailbox whose import has not ended, and a resumed mailbox is one of them. So its tile in Settings, Organization, Email now says "Importing mail", not "Waiting for first sync". The count does not change.
+  - **IMAP.** The IMAP import is the default of `BaseEmailProvider`. It reads the newest 100 messages of INBOX only (`imap.py`, the UID SEARCH of `sync_messages`), and it keeps those at or older than `import_reached_at`. So an IMAP resume reads those 100 once, fills no gap, and ends `done`.
+  - **The fences.** `tests/unit/test_email_storage_limit.py`: `email-storage-t6f-rule`, `-resume`, `-stays`, `-once`, `-no-flap`, `-pace`, `-meter-bound`, `-cap` and `-margin`. `emailConnections.test.ts` holds the words of the admin tile. The R8 half ran on a private pgvector database with the full ladder. Ten mutants each turn a fence red: no phase test (rule and SQL), no meter test, no null test, a resume from now, no gap, a resume outside the loop, no bound of the full meters, no cap and no margin.
+  - **Open points.** A mailbox whose guided setup is still open shows the stage `importing` again until the import ends. Each share of a resume counts the mail below its point again (the estimate of the provider), and the banner shows `counting` for a moment. Measure the full meter on the box (R-4).
 
 ##### Recorded risks (EM-T6)
 
@@ -7125,6 +7142,18 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
   and `resolve_self`. One read of `resolve_self` gives the address, the label and the set. The
   label comes from `mailbox_identity.display_labels`. The SQL also compares the organization of
   each row. Row level security does the same, so the copy guards a session with no bind.
+  **Corrected 2026-11-06, H-334c (task 1812):** that compare joins each row to the
+  organization of `:aid` only, and named no bound tenant. A role that bypasses RLS, given
+  an `:aid` of another organization, read the addresses of that organization. The FROM
+  clause now names `a.organization_id = app.tenant_id`, so `SELF_ADDRESSES_SQL`,
+  `SELF_MAILBOX_IDS_SQL` and `resolve_self` read one tenant. A session with no bind reads
+  an empty set. `tests/unit/test_email_mailbox_list_tenant_r8.py` is the fence.
+  **Closed 2026-11-07, H-334d (task 1990):** the pair set read the same member clause with a
+  column anchor, and named no bound tenant. `_member_mailboxes_from` now holds the tenant
+  predicate, so `PAIRED_MAILBOX_IDS_SQL`, `ALSO_IN_SQL`, "also in" and the draft dedupe read
+  one tenant, as the self set does. Each caller reads inside `_tenant_session`. A session
+  with no bind reads no pair, so "also in" is empty and the dedupe takes no lock.
+  `tests/unit/test_email_self_reader_tenant_fence.py` keeps each reader on `tenant_session`.
 - **The callers.** The rule match payload, the thread status, the conversation check, the
   digest, the pin guard, the cleanup scope and the sender categories use the set. The recipient
   role uses it too, so a member in To under mailbox B is a direct recipient in mailbox A.
@@ -15194,6 +15223,16 @@ was withheld. Now a fault gives an UNKNOWN state, not a mark.
 gives. It can fill the form with facts from the knowledge base. The member reviews the draft
 before any send, because a model draft is never sent by itself.
 
+**"Draft with AI" on a forward (task 1817).** The composer sends the To and the Cc of the forward
+with the request. The note is to those people. The note names the sender of the forwarded email only as
+"forwarded from", and the model does not answer that email. With no To yet, the note is to an
+unnamed reader. A reply and a new email keep their prompts. Fence:
+`tests/unit/test_email_forward_draft_prompt.py`.
+
+**The Ask bar and the composers (task 1816).** Each Email composer is a region that the Ask bar
+never sits on (`data-ask-clear`, `navigation_shell.md`). The bar takes the pill or the corner
+button, and it covers no field or control of the composer.
+
 **Open gaps, ranked for the Google review.** The first gap is the most likely to matter.
 
 1. **The list tools.** `search_emails`, `query_inbox` and the other list tools still print the
@@ -15233,6 +15272,8 @@ Email app is not held (below), but a run that it calls can be.
 **A held run.** A run that binds `no_egress` is a held run. Two causes set it: a covered
 Projects run above it (H-236), or a chat session that read stranger mail (EM-G11d). A held run
 keeps only the delegation tools, the sandbox tools and the tools that say `open_world=False`.
+D169 adds the first-party writes of `egress.HELD_CARD_WRITE_TOOLS`, each behind its own card.
+It takes the other Projects and CRM writes out of a held chat.
 
 **The three classes.** The audit sorts each tool by what its code does, not by its name.
 
@@ -20734,6 +20775,7 @@ chat, and not only the Email app.
 | `schedule_send` in a held run: the pin, `expect` stored and checked when it fires | `tests/unit/test_email_chat_reply.py`, `tests/unit/test_email_send_later.py` |
 | No text offers a new conversation or a paste by hand (H-374) | `tests/unit/test_held_send_guidance.py` |
 | The real SQL of both routes, under FORCE RLS | `TestReplyCardRealSql` in the same file (R8) |
+| A reply that left Drafts sends and saves nothing (§18.9.1) | `tests/unit/test_reply_card_left_drafts.py`, `_r8.py`, `src/lib/replyCardLeft.test.ts` |
 | The card, its answer and the one renderer | `src/lib/replyCard.test.ts` |
 | The flow in the main chat | `e2e/email-chat-reply.spec.ts` |
 | A card before each write | `tests/unit/test_email_agent_write_cards.py` |
@@ -20841,6 +20883,564 @@ This replaces the save card of `draft_reply` (EM-G11c1). Nothing is sent without
 `tests/unit/test_email_reply_draft_upsert_r8.py`, `tests/unit/test_email_chat_reply.py`,
 `tests/unit/test_email_agent_write_cards.py`, `src/lib/replyCardDiscard.test.ts` and
 `src/app/email/lib/continueDraft.test.ts`.
+
+#### 18.9.1 A card whose draft left Drafts (2026-11-03, owner report)
+
+**Status:** 🔨 BUILT on branch `mt-0f55cd43-reply-card-sent`, not merged (Metorite task
+1526), with fix round 1. No migration, and no flag.
+
+**The defect.** The reply card writes its reply to Drafts at once (item 6). The member sent
+that draft from the Email app while the card still waited. Then the member pressed Send on
+the card. The act sent a new mail with the same text, so each person got the reply twice. A
+Save made an orphan draft.
+
+1. **The record of the card holds the draft.** `_write_reply_record` writes the time that
+   the card was made. A card with a text gets `draft_pending` in that same write. After the
+   draft write, `_note_card_draft` adds the LOCAL id of the draft and clears the flag. The
+   server writes all three, and no request of the act names them. A card whose record
+   write failed writes no draft.
+2. **A draft that the record never confirmed.** The act answers 409 `draft_unconfirmed`
+   while `draft_pending` is set and the record holds no draft id. A draft write that failed
+   clears the flag, and that card sends a fresh reply, as before. The code reads a raised
+   provider error as failed, and a timeout as unknown. An unknown outcome keeps the flag,
+   and the card collapses at once with one line that says why. The words of that refusal
+   claim no send.
+3. **The act refuses a reply that already left.** After the checks of the answer and of the
+   people, and before any send or save, `_reply_left` reads two facts. A 409 with
+   `detail.reason` `draft_gone` comes when the draft is no longer in the member's Drafts. A
+   409 with `already_replied` comes when the mailbox sent a reply in the thread after the
+   card (`RECENT_REPLY_SQL`). A fault of the check, or of the read of the record, is a 503.
+   Each refusal sends and saves nothing, and logs `email.reply_card_answer_refused`.
+4. **The tool says the fact.** `compose_reply` turns each reason into a line for the model,
+   and never "Sent". A draft that left Drafts is no proof of a send, because a rule can
+   replace an unedited draft. So that line tells the model to ask the member. A card that
+   closes, or that the member writes over, reads the draft state first. When the draft
+   left, or its state is unknown, the tool claims no send and names no gone draft.
+5. **One state read.** `GET /email/reply-card/draft-state` reads one draft row of the
+   member through `mailbox_predicate`, with no provider call. The email BFF proxy carries
+   it. The parity table holds it as kind `stream`, a poll that refreshes a view. A
+   database fault is a 503.
+6. **The card learns it.** `watchCardDraft` reads the state once at mount, on focus, and
+   when the page shows again. It also reads each 60 seconds while the page shows, and at
+   once on `cc-email-draft-left`. The Email app raises that event after `sendDraft` and
+   `deleteEmail`. When the draft left, the card collapses to its title, its subject, one
+   line and Close. Text that the member typed stays there, read only, under "Your text".
+7. **The words.** A card with a draft says "This reply is in the Drafts of …", and its Save
+   reads "Save draft". The old footer said that only Save puts the reply in Drafts. Discard
+   now says that it deletes only a draft that nobody changed. A card with no draft keeps
+   the words of before.
+
+**Known limits.**
+
+- A Gmail web edit gives a draft a new id, so the card reads its draft as gone. The act then
+  refuses a reply that did not leave. That refusal sends nothing, and a new card works.
+- A send from Gmail or Outlook outside Metorite shows here only after the sync. Until then,
+  the card and the act see neither the send nor the gone draft.
+- `RECENT_REPLY_SQL` counts a forward in the same thread as a reply.
+- A card made before this release has a record with no time, no flag and no draft id. Its
+  act checks nothing and sends as before. The record expires after about one hour, so this
+  gap closes.
+- A record expires after 3700 seconds, and a card waits 3600 seconds. A late answer, for
+  example to a parked card, meets no record. Its act then checks nothing, as for a card
+  made before this release, and its draft can still be in Drafts.
+- A draft write with an unknown outcome stops that card. A new card works only after the
+  fault is gone. A lasting fault, such as a provider that times out each time, stops each
+  new card too.
+
+**Fences.** `tests/unit/test_reply_card_left_drafts.py`, its R8 half
+`tests/unit/test_reply_card_left_drafts_r8.py`, and `src/lib/replyCardLeft.test.ts`.
+
+### 18.10 One email card for a new mail (2026-11-03, owner)
+
+**Status:** ✅ MERGED 2026-11-04 (PR 1676, `a221ab972`), dark. No migration. Metorite task
+1533, slice 2 of 4.
+
+**Dark.** `EMAIL_EDIT_CARD_ORGS` lists the organization ids that get the card, or `*` for
+each one, and it is empty (off) by default. Off, a new mail shows the cards of before,
+exactly, and the two routes of the card answer 404. `reply_card.edit_card_on` is the one reader,
+and it fails closed. To turn the card on for one org, set `EMAIL_EDIT_CARD_ORGS=<org id>`
+on the box and send SIGHUP to the gateway. A value on a box is an `enforcement-flip`.
+
+**Fix round 1.** After an edit, the chips hide, and the nudge line says that a request in
+the chat starts again from the assistant's draft. A subject takes the character rule of
+the text, so an emoji goes, and the act refuses each line break. A held form gives each file a
+tick and its hint, and the act sends only the ticked files.
+
+**Origin.** The owner asked on 2026-11-03 to edit a draft in the chat, and to ask the chat
+to improve it. The owner approved panel 2 of the design.
+
+Every email that the assistant writes uses ONE card. The member can edit the subject and
+the text. The buttons are Send, Save draft and Discard. This slice is the card of a NEW
+mail. Slice 3 redrafts the card in place through the chat.
+
+**The protocol.** The new-mail card is the reply card of §18.4 with `kind: "new"`. No
+second card mechanism exists.
+
+1. The tool posts the mail to the gateway first. `POST /email/new-card` checks the
+   mailbox, each address, the subject and the text. It records the people, the files and
+   the text in tenant Redis. The key is a card id that it mints for the member. A held chat
+   posts `POST /email/held-card` with kind `new`, as before. That route also gives the
+   form now.
+2. The card shows each person of the server with a tick box. It shows the subject and
+   the text to edit. The plain card shows the files as fixed rows. The held card gives
+   each file a tick box and its source, as §21.1 item 3 says. One line under the text
+   says "Want it changed? Tell me in the chat below." Two example chips put their words
+   in the chat box. A chip sends nothing.
+3. Send and Save draft answer `APPROVE {"reply": {...}}` with the keys `kind`, `action`,
+   `subject`, `body`, `to`, `cc` and `bcc`. A held answer may also give `files`, the ids
+   of the ticked files. The parser refuses any other key. A reply answer and a new-mail answer
+   never parse as each other. Discard answers `REJECT` and writes nothing.
+4. `POST /agent/respond-input` records the digest of the answer, as for a reply. The act
+   route takes the answer once and the record once.
+
+**The rules of the act.** `POST /email/new-card/act`, and `POST /email/held-card/act` for a
+held record of kind `new`, do these steps. Each refusal sends and saves nothing.
+
+1. The act takes the people from the record, never from the answer. A ticked person must
+   be on the record (`ticked_subset`). The act needs a ticked To.
+2. The act refuses hidden text in the answered text (`reply_body_refusal`). It then cleans
+   the text (`clean_reply_body`).
+3. The act refuses a subject with a line break or a hidden character, or one over 200
+   characters (`held_card._clean_subject`).
+4. A held record also refuses a look-alike word (`refuse_lookalike`), a Bcc to a new
+   address, and a text over `HELD_TEXT_MAX`. A new address starts unticked, as §21 says.
+5. The files come from the record. The plain act sends every recorded file. The held act
+   sends only the ticked files, and a file id that is not on the record refuses the
+   answer. The member cannot add a file.
+6. Send sends the answered subject and text. Save draft writes a NEW draft with them, and
+   sends nothing.
+
+**Where no card can take an edit.** A WhatsApp run and a run with no card channel keep the
+cards of before: the plain send card, and the rows card of §21. Neither of them sends
+without a card. A reply through `send_email` keeps the plain card. `compose_reply` is the
+reply card.
+
+**The model's side.** The tool answers the subject that went, and says when the member
+changed the text on the card. It then gives the text that went, so the chat does not claim
+that the first text went.
+
+**Fences.** `tests/unit/test_email_new_mail_card.py` holds the act, the parse and the held
+path. `src/components/newMailCard.test.ts` holds the answer of the client, the card, the
+chips and a chip that sends nothing. `tests/unit/test_email_chat_reply.py` holds the keys of the client and the server
+in step.
+
+### 18.11 A redraft through the chat keeps the member's edits (2026-11-05, owner)
+
+**Status:** 🔨 BUILT on branch `mt-5f606b3e-redraft-in-place`, not merged, dark behind
+`EMAIL_EDIT_CARD_ORGS`. No migration and no SQL. HIGH tier: the send path. Metorite task
+1533, slice 3 of 4 (task 1650).
+
+**Fix round 1 (2026-11-05, Opus review).** A steer carries a snapshot of each open
+new-mail card. Draft 2 keeps each unticked person unticked, and the "Changed:" line names
+the people. A slot closes with no false line when a new card arrived. Only its owner takes the
+link, and the tab count leaves out the slot. A closed `send_email` card says "Draft being changed".
+
+**Fix round 2 (2026-11-06, Opus review).** The gateway now keeps the people that the member
+unticked, and it starts them unticked on the next card (rule 7). Each path gets the same
+ticks: a slot, no slot, two revised cards, a remount, a reload and a replay. The client no
+longer changes a tick. A list of more than 8 snapshots keeps its first 8, with the edited
+cards first. A new card with no link takes the slot that waits, and the "Changed:" line has
+no semicolon.
+
+**Fix round 3 (2026-11-06, Opus review and verifier).** No count spends the member's unticks.
+The hash lives until its TTL, and each new-mail card of the member in the thread reads it.
+A re-tick clears a person. A text that fails its check keeps the ticks.
+
+The link goes only to a card whose To shares an address with the To of the revised card. So
+a new mail to another person shows as its own card, and the redraft keeps its slot.
+
+**Fix round 4 (2026-11-06, Opus review).** A long subject no longer stops the event loop. A
+slot ends with each end of a run: a Stop, a failed model call, and an end on the attach
+stream. A slot with no new draft reads its end line. The view leaves a slot for a live card.
+
+At rest, as after a Stop, the composer line goes and the nudge tells the truth. A change of
+tab keeps the member's edits. A fault of Redis shows no card, and it never starts a person
+ticked with no note. A re-tick clears at the door, so an untick of the same message wins.
+
+**Fix round 5 (2026-11-06, Opus review and verifier).** The revise writes the unticks and
+the link before it spends the card. So a fault of Redis at any step up to the spend answers
+503 and spends nothing. When the revise does not run, the old card comes back in place with
+the member's edits, and the next message is a steer again.
+
+The chat holds the kept form edits, so a new message no longer loses them. The view leaves a
+slot for the first live card. A rest that only the settle of 20 seconds made ends no slot.
+
+**Fix round 6 (2026-11-06, Opus review and verifier).** A card that came back says that the
+edits are on it only when its form started from them. After a chat switch or a new mount of
+the chat, it asks the member to check the people and the text. The revise writes the link
+after the spend again, so a card that came back and went out leaves no link.
+
+A 409 at the revise draws a new card, because the record is gone. A card that a chat message
+closed during its Send shows again as a new card. After the third comeback, the member hears
+that the card edits were lost.
+
+**CI gate (checked 2026-11-06).** `pr-check.yml` has no Redis service and does not set
+`HELD_R8_REDIS_URL`. So `TestTheOrderOnARealRedis` skips in pr-check, and only a local run
+holds it. A task must add the service: Metorite task 1856
+(https://app.metorite.com/projects?task=e02afc52-0b75-4ff2-ac93-65ee2cea5454).
+
+**Build notes.** The stream door keeps the snapshot in the STEER branch, before the steer
+goes out, because `_route_incoming_turn` only reads the world. The record of a card keeps
+the run's chat thread, which the tool sends from its run context (`_run_thread`), and its
+draft number. A record with no thread (a WhatsApp run) takes no snapshot and no revise.
+The draft label shows from "Draft 2" on, and a first draft shows none. The nudge line of
+§18.10 now says that the edits go with a chat request, and its chips stay after an edit.
+
+The owner approved this design on 2026-11-03 and asked for the build on 2026-11-04
+(Metorite task 1533, slice task 1650). It ships dark behind `EMAIL_EDIT_CARD_ORGS`, the
+flag of §18.10. With the flag off, nothing below runs.
+
+**Not in this slice.** The reply card (`compose_reply`). WhatsApp. A parked card
+(`CHAT_DURABLE_ASKS`), which is slice 4. Text edits kept across a page reload: the snapshot
+lives only in the page. The unticks of rule 7 live in the gateway, so a reload keeps them.
+The form edits after a chat switch or a new mount of the chat. Metorite task 1893 keeps
+them (https://app.metorite.com/projects?task=534f89c8-3496-4576-99b7-ba729d114ee0). Until
+then, a card that comes back with no kept edits asks the member to check it.
+
+**The problem.** While a new-mail card is open, a chat message such as "make it shorter"
+closes the card as REVISED (`close_on_steer`). The model then writes a new card from its
+own first text. The member's edits on the card never leave the browser, so they are lost.
+The new card also arrives with no link to the old one.
+
+**The order of one redraft.** Each step names its owner.
+
+1. **The client sends the snapshot.** `NewMailCardForm` keeps its subject, text and ticks
+   in a ref that `AgentChat` reads. The member sends a chat message while a new-mail card
+   is open. Then the chat request (`POST /api/agent/chat`, the steer path of
+   `lib/chatSteer.ts`) carries one optional field, `card_draft`. It is a list with one entry
+   for EACH open new-mail card: `{request_id, subject, body, to, cc, bcc}`. A card that the
+   member did not edit sends its start. So the gateway replaces a snapshot that an older
+   steer left. The card that the steer closes keeps its own edit. `to`, `cc` and `bcc` are
+   the people that the member left ticked. The gateway finds each unticked person from its
+   own record. Only the web chat sends it, because only the web chat draws the edit card.
+   - The list has at most 8 entries (`MAX_CARD_DRAFTS`). The edited cards go first.
+   - A card that starts a person unticked for the member (rule 7) goes next, then the rest.
+   - The chat proxy and the gateway keep the first 8 of a longer list, so no edit is lost.
+2. **The gateway checks and stores it.** The stream door (`run_agent_stream_endpoint`,
+   `routes/agent.py`) pops `card_draft`, and it keeps the field only for a steer.
+   `keep_card_draft` reads the flag. It reads the record of that card WITHOUT spending it, a
+   new `peek_record`. The record must belong to this member and this thread. The gateway then
+   deletes an older snapshot of that card. So a revise never reads a replaced version. It
+   checks the snapshot in two parts:
+   - The people. The entry has the keys of `CardDraft` and no others. Each person is on the
+     record, named once. A failure keeps nothing.
+   - The text. The subject has at most 200 characters and passes the subject rule of §18.10.
+     The text is no longer than the limit of the path. A failure keeps the ticks with no
+     text, so rule 7 still holds, and the model gets no version of the text.
+   - ⚠️ The gateway checks the length of the subject FIRST. `_clean_subject` scans each
+     character on the event loop, and `CardDraft` has no cap on the subject.
+
+   A list of more than 8 entries keeps its first 8. The steer goes on, whatever the checks
+   find. A snapshot goes to tenant Redis, through `acb_common.tenant_redis`, under
+   `email:card_draft:<thread>:<request_id>`, with a life of 900 seconds. The same step clears
+   each kept person that the member ticked again (rule 7).
+3. **The card closes as REVISED,** as today (`_close_on_new_steer`, `_steer_target`).
+4. **The tool spends the old card.** On REVISED, `send_email` calls a new gateway route,
+   `POST /email/new-card/revise`, with the old card id. Each safety write comes BEFORE the
+   spend (fix round 5). In this order, the route:
+   1. reads the record of the old card, and does not spend it (`peek_record`).
+   2. reads the snapshot of that card with a plain `GET`, if there is one.
+   3. keeps the people that the member unticked on that card (rule 7), with a life of 900
+      seconds, under `email:card_unticked:<thread>:<member>`.
+   4. spends the record (`take_record`), so a late answer finds no record.
+   5. writes the link `email:card_revised:<thread>` = `{card_id, draft, to}` with a life of
+      900 seconds. `draft` is the draft number of the old card plus one. `to` is the To of
+      the old card, in lower case. A link of the same member that waits becomes `many`, which
+      names no card. A link of another member stays as it is, and this revise writes no link.
+      The link is a label and no safety write, so it comes after the spend (fix round 6).
+   6. deletes the snapshot.
+   7. answers the snapshot as neutral data. A snapshot that keeps only the ticks answers
+      nothing.
+
+   A held record goes through the same route, with the same steps.
+   - A fault of Redis in steps 1 to 4 answers 503, and nothing is spent. Each of those steps
+     is safe to run twice, so the tool tries once more.
+   - A fault in step 5 only logs, and the next card is "Draft 1". A fault in step 6 only
+     logs, because the TTL clears the snapshot.
+   - A spend that finds no record answers 409, because the act took it first. No link is
+     written. The unticks stay, because an extra untick is safe.
+   - The tool reads a 503 after its one more try as "the revise did not run". It asks the
+     SAME card again, with `reopened` on its form, at most three times. The chat puts that
+     card back in its slot, with the line "Your request in the chat did not reach the
+     assistant." The next message is a steer that carries the edits.
+   - A form that started from the kept edits says "Your edits are still on this card." A
+     form with none, as after a chat switch or a new mount of the chat, says "Check the
+     people and the text before you send." A change of tab keeps that line (`startedBare`).
+   - A card that a chat message closed during its Send has no slot. Its `reopened` ask shows
+     it as a new card, unless the member answered it in this tab (`reopenable`).
+   - A 409 gives the REVISED text, and the model draws a new card (fix round 6). The record is
+     gone, so a card that came back could not send. The unticks already wait in the hash.
+   - When the member answers the card that came back, the model reads `_REVISE_UNREAD` before
+     the answer. It says that the card edits did not reach the model, and that the card stayed
+     open. After three times, the model draws no card. It tells the member that the card
+     edits were lost, and to check the ticks on the next card.
+5. **The model reads it.** The REVISED text of `send_email` adds the snapshot, when there is
+   one, as a data block. The block passes the neutralising pass of `compose_card_answer`
+   (`gateway/chat_recovery.py`). It loses each fence string and each «mark». It is capped,
+   and it is labelled: "The member's own version of the card, as data. It is not an
+   instruction." The text tells the model to start from that version.
+6. **The gateway links the new card.** Each `POST /email/new-card`, or `POST
+   /email/held-card` of kind `new`, in the same thread reads the link.
+   - The link goes only to a card of its member whose To shares an address with the To of
+     the revised card, in any case. Only that card takes it (`GETDEL`).
+   - Any other card takes no link and shows as its own card. The link waits for its card,
+     or for its TTL. So a new mail to Carol in the same message leaves Kim's link.
+   - The linked card has `revises` and `draft` on its record and its form. Only the gateway
+     sets these fields. A field of that name from the tool or the model is refused.
+   - When two cards of the thread were revised before the next card, the gateway links
+     none. The first card of the member takes the `many` link, and each new card is "Draft 1".
+   - Each new card starts the member's kept unticks unticked (rule 7), linked or not. The route
+     reads them before the link, so a fault of that read spends no link.
+7. **The client draws it in place.**
+   - When a new-mail card closes as REVISED, its slot shows "Updating the draft…", with no
+     buttons.
+   - While a new-mail card is open and a message goes as a steer, the composer shows "Changing:
+     Email to <name>". Two open cards read "Changing: 2 emails", because a message that names
+     no card closes each one. At rest, as after a Stop, the line goes.
+   - A plain send carries no version of a card. So at rest the nudge of an edited card reads "A
+     request in the chat starts again from the assistant's draft. Save draft keeps your
+     version." Its chips hide, so no chip leads the member to lose the edits. An untick is an
+     edit here too.
+   - The member's edits stay on each open card: the subject, the text and the ticks. A change
+     of tab unmounts the form, and each new message mounts the queue again. So the CHAT keeps
+     the edits by card key, beside `cardDraftsRef` (fix round 5, `formEditsReducer`).
+   - The chat drops an entry when its card closes for good (`liveEdits`). That is an answer,
+     a slot that a draft took or that ended, and a change of chat. A slot and a card whose
+     answer is in flight keep their entry, so a card that comes back still has the edits.
+   - The new card takes the slot of the card that its `revises` names, in the same tab
+     (D173), with the label "Draft <n>".
+   - It shows a "Changed:" line and marks the changed words. The client computes both
+     from its own copy of the member's last version and the new text. It uses `diffKeys` of
+     `workbench/control_plane/src/app/knowledge/lib/wordDiff.ts`, and never a claim of the
+     model.
+   - Each change reads as a phrase: "“x” to “y”", "added “y”" or "removed “x”". A comma
+     joins the phrases. The people go in their own sentences: "Now also to a." and "No
+     longer to b." The card and its accessible name draw the same pieces (`linePieces`).
+   - The card draws the gateway's start of the ticks, and the client never changes a tick
+     (rule 7). The note "Unticked earlier in this chat: <people>. Tick the box to include
+     them." reads the names on the form, so it shows on each path, also with no "Changed:"
+     line.
+   - A new-mail card with no link takes a slot that waits only when its To shares an address
+     with the To of the slot's card, in any case (`sharesTo`). This is the case of two
+     revised cards. The client cannot tell which of two such cards it replaces, so it draws
+     no "Changed:" line.
+   - Any other new-mail card shows as its own card, in its own tab, with no label and no
+     "Changed:" line. This is a new mail to another person in the same message.
+   - A slot that no card takes reads "Updating the draft…" until the run ends, by ANY end: a
+     `done` on either stream, a Stop or a failed model call. The hook tells the chat when the
+     run rests (`onRunRested`), and `runRested` moves only the slots. A blocking card stays.
+   - The member looks at a slot, and the queue changes. A card arrives, or the shown card
+     turns into a slot. The view then goes to the first live card, new or not, because the
+     run waits on the member there. The member can go back to the slot by its tab.
+   - A rest that only the settle of `FINISH_MAX_MS` made ends no slot (`restBlind`). The next
+     server list either names the run, which works again, or confirms the rest.
+   - At the run's end, a slot closes with no line when a card to the same people arrived after
+     it. Any other slot reads "The draft did not change.", so a card to other people never
+     closes the member's card with no word.
+   - The closed card in the transcript says that a new draft "can follow", or that the same
+     card can come back. The model may draw none.
+   - The tab count does not count a slot. It counts the cards that wait on the member. A
+     row of slots only reads "Updating 2 drafts", never "0 to approve".
+   - The closed `send_email` card says "Draft being changed", never "Email sent", because
+     nothing was sent.
+   - A run that ends with no new card turns the slot into "The draft did not change." and
+     then closes it, as `CARD_CLOSED_UNANSWERED` closes a card.
+   - A steer that closes a card of another kind closes it as today. Only a new-mail card
+     shows "Updating the draft…".
+
+**The rules.**
+
+1. The snapshot only informs the model. No act reads it. The send act of §18.10 sends only
+   the answered text of its own record.
+2. An answer to a revised card sends nothing and saves nothing. Step 4 spends its record.
+3. A snapshot from another member or another thread is refused (step 2).
+4. A held chat keeps every rule of §21. The new held card works out its classes and its ticks
+   again from the start. A tick in a snapshot never ticks a new address.
+5. After a restart, the Redis keys still hold the snapshot and the link until they expire.
+   After they expire, the new card is "Draft 1" and nothing is lost but the label.
+6. With the flag off, or on WhatsApp, the gateway ignores `card_draft`, and the revise route
+   answers 404.
+7. A person that the member unticked on the old card starts unticked on Draft 2. This holds
+   when the tool copies that person again (an always-copy colleague). The card still offers the
+   person, so one tick brings the person back. No snapshot ticks a person, and no snapshot
+   adds one. The GATEWAY owns this rule (fix round 2), so each path of the client gets the
+   same ticks:
+   - At revise (step 4.3), the gateway compares its record of the old card with the
+     member's version. Each person whose tick was the member's to take away, and that the
+     version does not tick, is an untick. A plain card ticks each person at its start.
+     A held card ticks only a row that its class ticks, so a new address is never an untick.
+   - With no snapshot, the gateway keeps the people that the old card itself started
+     unticked for this reason (`unticked` on its record). So a chain of drafts keeps them.
+   - The gateway keeps the unticks in one hash for the member and the thread, through
+     `tenant_redis`: `owner` and one field for each person. One MULTI writes the people and
+     the TTL, so two revises at the same moment both keep their people. Another member's
+     card never reads it.
+   - No count spends the hash (fix round 3). It lives until its TTL of 900 seconds. Each
+     new-mail card of the member in the thread, plain or held, reads it with one `HGETALL`
+     and spends nothing. So a card whose record write fails loses no untick.
+   - Each such card starts those people unticked, in any role (To, Cc or Bcc), and its form
+     names them (`unticked`). A lost untick sends mail to a person the member took out. An
+     extra untick costs one click, and the note on the card explains it.
+   - A re-tick clears. The member ticks again a person that the card started unticked for
+     this rule. The gateway removes the person from the hash at the door (step 2), before the
+     steer goes out.
+   - Each revise of that message lands after the clear. So when one card re-ticks a person and
+     another card of the message leaves that person unticked, the untick wins in either order.
+   - A person that a card started ticked clears nobody. So a tick on one card of a message
+     never undoes an untick on another card of that message.
+   - A re-tick at Send always wins, because the act sends only to the ticks of the answer.
+     It does not change the hash, so the note says "earlier in this chat".
+   - A re-tick on a card that the message does not close clears the person for the thread
+     too. The member can untick that person again on that card, but no revise puts the
+     person back in the hash. So a later card of the thread can start that person ticked.
+     The member ticked that person, so this sends no mail against the member's last choice.
+   - A fault of Redis on the read answers 503, and no card shows. The route says "The chat
+     could not check this email, so no card shows. Nothing was sent. Ask again in a moment."
+     It names no person, because the member may have taken nobody off.
+   - Each compare of addresses ignores the case.
+   - It only unticks. It never ticks a person, never adds one, and never removes one from
+     the lists. The record keeps every person, and the act sends only to the ticks of the
+     member's answer at Send.
+   - The tool copies the start and the names from the gateway's answer, and sets neither.
+     `clean_reply_form` refuses a name that is not a person of the card, or that starts
+     ticked. The card log stores the form, so a replay and a remount draw the same start.
+
+**Done when.**
+
+- The snapshot (steps 1 and 2): a steer with `card_draft` stores a checked snapshot. A bad
+  person or key stores nothing. A bad subject or text stores the ticks with no text. Each
+  case deletes the older snapshot of the card.
+- The spend (step 4): an answer to a revised card sends nothing.
+- The model's text (step 5): a hostile subject and text arrive neutral, as data.
+- The link (step 6): the new card carries `revises` and `draft`. Two revised cards give no
+  link. A card of another member in the same thread does not take the link. A revise of
+  another member leaves the link as it is. A card to other people does not take the link.
+- Two cards (step 1): a steer that closes only Bob's card keeps Bob's edit, though Kim's
+  edit is newer.
+- The unticks (rule 7): each new-mail card of the member in the thread starts an unticked
+  person unticked until the TTL ends. This holds with a slot, with no slot, for two revised
+  cards, after a remount and on a replay. Another member's card and another thread do not
+  change. The send goes only to the ticks at Send. A re-tick clears a person.
+- The mixed request (step 6 and rule 7): the member unticks Geo on Kim's card. One message
+  asks for a new email to Carol and a change of Kim's card, and Carol's card comes first.
+  Carol's card shows as its own tab with no label. Kim's card shows as "Draft 2" in Kim's
+  tab, with a "Changed:" line. Geo starts unticked on both.
+- The cap (step 1): with 9 or more open cards, the first 8 go, and each edited card is in them.
+- The client (step 7): the slot, the label, the "Changed:" line and the composer line show,
+  in light and dark, at 1440 and at 390.
+- The long subject (step 2): a subject over 200 characters keeps the ticks, and the scan never
+  runs on it.
+- The end of a slot (step 7): a Stop, a failed model call and an end on the attach stream each
+  end the slot. A blocking card stays. A card to other people leaves the slot its end line.
+- Two open cards and one redraft (step 7): the other card says that its draft did not change.
+- The view (step 7): a live card that arrives while the member looks at a slot comes into view.
+- At rest (step 7): after a Stop, no composer line shows, and the nudge says that the edits do
+  not go.
+- A change of tab (step 7): the member unticks a person, opens another tab and comes back. The
+  person stays unticked, Send does not go to that person, and a steer carries the version.
+- A fault (rule 7, step 4): a fault of the read answers 503 and shows no card. A fault at the
+  revise answers 503, spends nothing and gets one more try.
+- A fault in each step of the revise (step 4): a fault before the spend or at it spends
+  nothing. A second try keeps Geo unticked on the next card.
+- The card comes back (step 4): after two 503s, the old card is back in place with the
+  member's edits and Geo unticked. The next message carries the edits.
+- The edits stay (step 7): a steer about another card, a failed Send, a refused steer and a
+  plain message at rest keep the edits. Send on Bob after a steer about Kim does not name Geo.
+- The race (rule 7): one message re-ticks a person on one card and leaves that person unticked
+  on another. The person stays unticked in either order, on a real Redis too.
+- The line of a card that came back (step 4): a form with kept edits says so. A form with
+  none asks the member to check it, also after a change of tab.
+- A Send in flight (step 4): a card that a chat message closed during its Send shows again.
+  A card that the member answered stays closed.
+- The link (step 4): a card that came back and went out leaves no link. A 409 draws a new card.
+
+**Fences.** `tests/unit/test_email_redraft_snapshot.py`. Named mutations:
+
+- a snapshot read by an act.
+- a revised card that still sends.
+- a snapshot over the cap.
+- a `revises` value that the tool or the model sets.
+- a snapshot of another member or thread.
+- a hostile snapshot that keeps its marks.
+- two revised cards that still link.
+- a held snapshot that ticks a new address.
+- a link that another member's card spends (`link_fields` takes before it checks).
+- a steer that keeps only one snapshot of two open cards.
+- a copy of a gateway constant (`_MEMBER_VERSION_MAX`, `_NEW_MAIL_DRAFT_MAX`) that drifts.
+- rule 7: a new-card route that skips the kept unticks, a plain or a held one.
+- rule 7: a hash with no member in its key, or a read with no owner check.
+- rule 7: a count that spends the hash, or a delete at a read.
+- rule 7: a re-tick that does not clear, or a tick from the start that clears.
+- rule 7: a revise that keeps no unticks, or that counts a new address as one.
+- rule 7: a chain that reads only the snapshot, with no fallback to the record.
+- a list over the cap that the gateway drops whole.
+- step 2: a text failure that drops the ticks, or an older snapshot that stays.
+- step 4: a `many` link written over a link of another member.
+- step 6: a link that goes to a card to other people.
+- a compare of addresses that minds the case.
+- step 2: a subject that the scan reads before its length.
+- step 4: a fault at the revise that reads as "no card".
+- step 4: a tool with no second try, or one that asks for a card after a second 503.
+- rule 7: a fault of the read that starts a card with no note, or a read after the link.
+- rule 7: a re-tick that clears at the revise, in place of the door.
+- §18.10: an act that sends to the whole record, and not to the ticks of the answer.
+- step 4: a spend before the safety writes, or a fault of the spend that reads as no record.
+- step 4: a tool that asks for a new card after a revise that did not run.
+- step 4: a tool that asks the same card again with no cap.
+- step 4: a link written before the spend, or a fault at the link that escapes.
+- step 4: a tool that shows the card again after a 409.
+- step 4: words after the third comeback that do not say that the edits were lost.
+
+`workbench/control_plane/src/components/redraftCard.test.ts` holds the snapshot of each open
+card on a steer, the slot and the label. It holds the "Changed:" line with its people, and
+the end with no new card. It holds the server's unticks on each path: a slot, no slot, two revised cards,
+a remount through the card log, and a replay. It also holds the tab count of a slot and of
+slots only, and the cap of a steer's list. Its named mutations:
+
+- a form whose `unticked` the client does not read.
+- a note on the kept unticks that shows only beside a "Changed:" line.
+- a card with no link that takes no slot of its own people, or a slot of other people.
+- a To compare that minds the case.
+- a slot that still waits after the run's end.
+- a row of slots that reads "0 to approve".
+- a cut of a steer's list in the queue's order.
+- a line that joins its phrases with a semicolon.
+- a rest that emits no event, or that applies all of `runFinalized` and drops a blocking card.
+- a slot marked newer for a card to other people.
+- a view that stays on a slot when a live card arrives.
+- a composer line with no run, or one that names only the newest card.
+- a form that starts from its own start after a change of tab.
+- the kept edits in the queue again, where a new message loses them.
+- a card that comes back and stays a slot, or a replay that reopens an answered card.
+- a view that moves only for a NEW live card.
+- a slot that ends on the settle of `FINISH_MAX_MS` alone.
+- a kept line on a form that started with no kept edits, or with `startedBare`.
+- a card with no slot that never shows again, or an answered card that shows again.
+- a live card that takes the reopen path and loses its "Changed:" line.
+- a closed card whose words do not name the same card that comes back.
+
+`workbench/control_plane/src/components/newMailCard.test.ts` holds the nudge at rest: its words,
+and no chips.
+
+`workbench/control_plane/e2e/email-redraft.spec.ts` edits a card, asks for a change in the
+chat, and reads "Draft 2" in place. It also closes two cards with one message, and reads the
+colleague still unticked on the new card. It also runs the mixed request of "Done when". Fix
+round 4 adds a Stop, a failed model call, the attach stream and a mail to Carol alone. It also
+runs a change of tab twice: one run ends at Send, and one ends at a steer.
+
+Fix round 5 adds the card that comes back, and a steer about Kim with Send on Bob.
+It also adds a failed Send, a refused steer and a plain message at rest.
+Fix round 6 adds a card that came back with no kept edits, and a change of tab on it.
+
+**Verify with.**
+
+- `uv run pytest tests/unit/test_email_redraft_snapshot.py tests/unit/test_email_new_mail_card.py tests/unit/test_card_closes_on_steer.py tests/unit/test_email_chat_reply.py tests/unit/test_steer_routing.py tests/unit/test_held_send_classes.py tests/unit/test_chat_parity.py tests/unit/test_email_owner_scope_fence.py -q`
+  - Set `HELD_R8_REDIS_URL` to a PRIVATE real Redis, or `TestTheOrderOnARealRedis` skips.
+    A skip is not a pass.
+- In `workbench/control_plane`:
+  - `npx vitest run src/components/redraftCard.test.ts src/components/newMailCard.test.ts src/lib/cardTabs.test.ts src/lib/confirmationQueue.test.ts src/lib/chatCardConformance.test.ts`
+  - the focused strict tsc on the changed files
+  - `npx playwright test e2e/email-redraft.spec.ts e2e/approval-stack.spec.ts --project=chromium`
 
 ## 19. Send later (2026-10-21)
 
@@ -21116,7 +21716,7 @@ set match `CARD_BOUND_SEND_TOOLS`. Any new parameter makes it an egress tool aga
 | `fetch_page` and `web_search` | The URL carries data out. A card cannot show a URL as a safe act, because the member has no way to judge a query string. No card form is proposed |
 | The GitHub tools | They write to a service outside Metorite, and a repository can be public |
 | `save_memory`, `save_episode`, `save_agent_memory`, `save_org_memory`, `save_note` (`STORE_WRITES`) | A later run reads the store. A later run that holds a send tool can send what an injection parked there. A card for the member's own memory is possible later (open question 6) |
-| Any MCP tool, and any tool with no explicit `open_world=False` | The fail-closed rule of H-236 stays |
+| Any MCP tool, and any tool with no explicit `open_world=False` that is off the D169 list | The fail-closed rule of H-236 stays |
 | `create_rule`, `update_rule` and `run_rules` that widen an act | The rules have their own checks (`_outward_rule_refusal`, `_held_widening_refusal`). This section does not change them |
 
 ### 21.6 Remember and settings

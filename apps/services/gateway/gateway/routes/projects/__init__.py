@@ -46,14 +46,17 @@ from gateway.routes.projects import analytics_dataset as _analytics_dataset  # n
 from gateway.routes.projects import analytics_rebalance as _analytics_rebalance  # noqa: F401
 from gateway.routes.projects import activities as _activities  # noqa: F401
 from gateway.routes.projects import agent_runs as _agent_runs  # noqa: F401
+from gateway.routes.projects import agent_questions as _agent_questions  # noqa: F401
 from gateway.routes.projects import agent_summary as _agent_summary  # noqa: F401
 from gateway.routes.projects import assignees as _assignees  # noqa: F401
+from gateway.routes.projects import authorities as _authorities  # noqa: F401
 from gateway.routes.projects import admin as _admin  # noqa: F401
 from gateway.routes.projects import attachments as _attachments  # noqa: F401
 from gateway.routes.projects import bulk as _bulk  # noqa: F401
 from gateway.routes.projects import calendar as _calendar  # noqa: F401
 from gateway.routes.projects import candidates as _candidates  # noqa: F401
 from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F401
+from gateway.routes.projects import decisions as _decisions  # noqa: F401
 from gateway.routes.projects import delta as _delta  # noqa: F401
 from gateway.routes.projects import export as _export  # noqa: F401
 from gateway.routes.projects import imports as _imports  # noqa: F401

@@ -32,6 +32,8 @@ from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, client_label
 from acb_common import get_logger
 from acb_common.priority import importance_for
 from fastapi import Depends, Header, HTTPException, Query
+from gateway.align.trigger import enqueue_check
+from gateway.db import current_tenant
 from gateway.routes.projects.authority import (
     assert_may_delete_task,
     assert_may_move_task,
@@ -46,6 +48,7 @@ from gateway.routes.projects.cascade import (
     subtree_privacy_refusals,
 )
 from gateway.routes.projects.core import (
+    AGENT_TASK_SOURCE,
     CLIENT_TASK_SOURCES,
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -57,6 +60,7 @@ from gateway.routes.projects.core import (
     Page,
     TaskIn,
     TaskModel,
+    TaskPatchIn,
     _tenant_session,
     actor,
     apply_status_transition,
@@ -64,9 +68,9 @@ from gateway.routes.projects.core import (
     assert_assignable_here,
     assert_epic_has_no_parent,
     assert_holds_tasks,
-    assert_not_archived,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
+    assert_not_archived,
     clean_payload,
     count_where,
     diff_changes,
@@ -82,7 +86,9 @@ from gateway.routes.projects.core import (
     next_task_number,
     now,
     parent_lane_status,
+    parse_completed_at,
     parse_precondition,
+    reader_day_start,
     record_activity,
     record_field_change,
     remap_one_status,
@@ -113,6 +119,7 @@ from gateway.routes.projects.filters import (
     attach_parent_context,
     attach_relation_counts,
     build_task_filters,
+    task_closed_sql,
     unheld_clause,
 )
 from gateway.routes.projects.landing import (
@@ -174,9 +181,6 @@ AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
 #: project stays a person's step in the app, so `project_id`,
 #: `custom_fields`, `assignees` and `include_subtasks` are refused.
 AGENT_MOVE_FIELDS: frozenset[str] = frozenset({"parent_task_id"})
-#: The `pm_tasks.source` that the server stamps on a task an agent makes.
-AGENT_TASK_SOURCE = "mcp"
-
 #: WS-55 MCP-G2 (D78). The `importance` values that an agent may write: the
 #: two that the app writes for Important and for not Important
 #: (`acb_common.priority.importance_for`). A stored 1 or 3 is from before
@@ -733,6 +737,7 @@ async def list_tasks(
             parent_task_id=parent_task_id, status_id=status_id,
             status_category=status_category, assignee=assignee,
             assignees=assignees, unassigned=unassigned, overdue=overdue,
+            day_start=await reader_day_start(db, actor(user).lower()) if overdue else None,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
@@ -909,6 +914,15 @@ async def time_spent_mins(db: Any, task_id: str) -> int:
 
 # ── Writes ──────────────────────────────────────────────────────────────────
 
+async def _store_due(db: Any, user: UserContext, values: dict[str, Any]) -> None:
+    """A date-only ``due_at`` becomes local noon of the member who writes
+    (``personal.stored_due``, RX-5). ``personal`` imports this module."""
+    if values.get("due_at"):
+        from gateway.routes.projects.personal import stored_due
+
+        values["due_at"] = await stored_due(db, actor(user).lower(), values["due_at"])
+
+
 @router.post("/tasks", status_code=201)
 async def create_task(
     payload: TaskCreateIn, user: UserContext = Depends(get_current_user),
@@ -934,6 +948,7 @@ async def create_task(
     values["created_by"] = actor(user)
 
     async with _tenant_session() as db:
+        await _store_due(db, user, values)
         vis = await resolve_visibility(db, user)
         # FOR SHARE: a concurrent move of this project to the top (a space)
         # waits for this insert (`core.load_visible_project`).
@@ -1021,6 +1036,12 @@ async def create_task(
                 wanted=first_assignees, current=set(),
             ) if first_assignees else None
         )
+        # WS-ALN ALN-1 (`project_alignment.md` §5). In THIS transaction, so a
+        # crash can lose neither half alone. `target` is the row of the
+        # project, so a personal task (§1.2) costs no read and gets no job.
+        # Fence: `test_the_seam_*` in `test_align_trigger.py`.
+        if not getattr(target, "personal_owner", None):
+            await enqueue_check(db, task_id, current_tenant(), row=row, known_team=True)
         result = row_to_dict(row, TaskModel)
 
     await emit("pm.task.created", {
@@ -1039,7 +1060,7 @@ async def create_task(
 
 @router.patch("/tasks/{task_id}")
 async def patch_task(
-    task_id: str, payload: TaskIn,
+    task_id: str, payload: TaskPatchIn,
     user: UserContext = Depends(get_current_user),
     if_match: str | None = Header(None, alias="If-Match"),
     include_subtasks: bool = False,
@@ -1077,8 +1098,12 @@ async def patch_task(
             )
     new_status = values.pop("status_id", None)
     custom = values.pop("custom_fields", None)
+    # UNDO-1 round 2. Never a column write of its own: only the transition
+    # below may stamp it, and only on the crossing into a closing category.
+    done_at = parse_completed_at(values.pop("completed_at", None))
 
     async with _tenant_session() as db:
+        await _store_due(db, user, values)
         vis = await resolve_visibility(db, user)
         before = await load_visible_task(db, vis, task_id)
 
@@ -1134,6 +1159,7 @@ async def patch_task(
         if new_status is not None and str(new_status) != str(before.status_id):
             moved = await apply_status_transition(
                 db, after, str(new_status), created_by=actor(user),
+                completed_at=done_at,
             )
             # WS-55 EA-6d. Inside the transaction, so the refusal rolls the
             # whole PATCH back, the field changes too. EA-6f: an agent may
@@ -1172,6 +1198,13 @@ async def patch_task(
             await ensure_watchers(
                 db, task_id, mentioned["notified"], by=actor(user),
             )
+
+        # WS-ALN ALN-1 (`project_alignment.md` §5 item 2). In THIS transaction.
+        # Given `before`, `enqueue_check` does nothing unless the checked text
+        # changed, so an edit of a due date costs nothing. It also reads the
+        # project, because no row here says whether the task is personal.
+        # Fence: `test_align_trigger.py`.
+        await enqueue_check(db, task_id, current_tenant(), row=after, before=before)
 
         result = row_to_dict(after, TaskModel)
         # WS-55 EA-12c — the pill survives an edit. The client merges this
@@ -1278,6 +1311,9 @@ async def move_task_in(
     #: D-PM-38 decision 4 — the descendants this move takes along, read and
     #: checked BEFORE any write. `None` when the caller did not ask.
     subtree: list[Any] | None = None
+    #: WS-ALN ALN-1. True when this move takes the task out of a personal
+    #: project into a team project.
+    promoted = False
 
     if payload.parent_task_id is not None or "parent_task_id" in payload.model_fields_set:
         new_parent = payload.parent_task_id
@@ -1305,7 +1341,8 @@ async def move_task_in(
         # project it already lives in. Checked after the visibility load so
         # a caller who cannot see the destination still gets 404 and never
         # learns from a 422 that it exists (R5: 404, never 403).
-        await assert_move_keeps_privacy(db, task, str(payload.project_id))
+        left_owner = await assert_move_keeps_privacy(db, task, str(payload.project_id))
+        promoted = bool(left_owner) and not getattr(dest, "personal_owner", None)
         # WS-64 OP-8 (D-OP-14). A move to another project changes who sees
         # the task, so it needs the delete authority on the task as it is.
         # After the 404 and the shape refusals, before any write.
@@ -1469,6 +1506,15 @@ async def move_task_in(
                 user=None,
             )
             moved_ids.append(str(child.id))
+
+    # WS-ALN ALN-1 (`project_alignment.md` §5 item 3). A move out of a personal
+    # project is the moment a personal note becomes project work. A move that
+    # stays personal, or between two team projects, enqueues nothing. Each
+    # descendant comes through this seam, so each one gets its own job. On the
+    # caller's session, so the move and the job commit together. Fence:
+    # `test_align_trigger.py`.
+    if promoted:
+        await enqueue_check(db, task_id, current_tenant(), row=row, known_team=True)
 
     result = row_to_dict(row, TaskModel)
     result["notified"] = notified["notified"]
@@ -2310,9 +2356,54 @@ def _refuse_claim(code: str, message: str) -> NoReturn:
                         detail={"error": code, "message": message})
 
 
+class ClaimIn(BaseModel):
+    """``POST /projects/tasks/{id}/claim``. The body is optional (CIV-14a).
+    An agent may send ``external_link``, an https link to its session. The
+    tenant and the member never come from this body (R5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_link: str | None = Field(default=None, max_length=2_048)
+
+
+#: SW-63 (agent_coordination.md §5.10). The most subtask ids a claim lists.
+CLAIM_OPEN_SUBTASKS_MAX = 5
+
+
+async def _warn_open_subtasks(
+    db: Any, vis: Any, task_id: str, result: dict,
+) -> None:
+    """Add ``warning`` and ``open_subtasks`` to *result* of a claim (SW-63).
+
+    An open subtask is a child that ``task_closed_sql`` does not match. Only a
+    child the caller can see counts (R5, D12), so a hidden child leaks neither
+    in the number nor in the ids. The text is fixed: it holds no user text. A
+    leaf task gets neither key.
+    """
+    rows = (await db.execute(
+        text(
+            "SELECT s.task_id FROM ("
+            " SELECT t.id AS task_id, t.created_at FROM pm_tasks t"
+            " WHERE t.parent_task_id = CAST(:tid AS uuid)"
+            f" AND {task_visibility_clause(vis)}) s"
+            f" WHERE NOT {task_closed_sql('s')}"
+            " ORDER BY s.created_at, s.task_id"
+        ),
+        {"tid": task_id, **vis.params},
+    )).fetchall()
+    if not rows:
+        return
+    result["warning"] = (
+        f"This task has {len(rows)} open subtasks."
+        " Claim the slice, not the epic.")
+    result["open_subtasks"] = [
+        str(r[0]) for r in rows[:CLAIM_OPEN_SUBTASKS_MAX]]
+
+
 @router.post("/tasks/{task_id}/claim")
 async def claim_task(
-    task_id: str, user: UserContext = Depends(get_current_user),
+    task_id: str, payload: ClaimIn = ClaimIn(),
+    user: UserContext = Depends(get_current_user),
     if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
     """The caller takes the task: add them as an assignee, and start it.
@@ -2357,6 +2448,9 @@ async def claim_task(
     for a member and with the flag off.
     """
     me = actor(user).strip().lower()
+    from gateway.routes.projects import agent_runs
+
+    link = agent_runs.check_run_link(payload.external_link)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         # 1. The visibility load answers 404 for a task the caller cannot see.
@@ -2395,9 +2489,7 @@ async def claim_task(
         # the claim keeps that order (O-M9). Its place after the key does not
         # matter: no run writer takes an assignee key. A refusal below rolls
         # the run back with the claim. None for a member.
-        from gateway.routes.projects import agent_runs
-
-        run_id = await agent_runs.open_run_for_claim(db, task_id, user)
+        run_id = await agent_runs.open_run_for_claim(db, task_id, user, link)
 
         # 3. The row lock, and the row as the lock read it (fix round 1).
         # Two claims serialise here, and the second one sees the new
@@ -2462,6 +2554,8 @@ async def claim_task(
         result["not_notified"] = notified["skipped"]
         # EA-13c: the run that this claim opened or found, else None.
         result["agent_run_id"] = run_id
+        # SW-63: a task with open subtasks still claims. The result warns.
+        await _warn_open_subtasks(db, vis, task_id, result)
 
     if added:
         await emit("pm.task.assigned", {

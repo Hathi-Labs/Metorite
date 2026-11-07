@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 187
+-- Tables in this phase: 191
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -230,6 +230,30 @@ ALTER TABLE audit_event ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE audit_event ADD CONSTRAINT audit_event_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS audit_event_org_idx ON audit_event (organization_id);
+
+-- calendar_entries
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM calendar_entries WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: calendar_entries still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE calendar_entries ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE calendar_entries ADD CONSTRAINT calendar_entries_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS calendar_entries_org_idx ON calendar_entries (organization_id);
+
+-- calendar_entry_attendees
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM calendar_entry_attendees WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: calendar_entry_attendees still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE calendar_entry_attendees ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE calendar_entry_attendees ADD CONSTRAINT calendar_entry_attendees_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS calendar_entry_attendees_org_idx ON calendar_entry_attendees (organization_id);
 
 -- chat_message
 DO $$
@@ -2605,3 +2629,51 @@ ALTER TABLE goal_records ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE goal_records ADD CONSTRAINT goal_records_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS goal_records_org_idx ON goal_records (organization_id);
+
+-- pm_project_authorities
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_project_authorities WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_project_authorities still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_project_authorities ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_project_authorities ADD CONSTRAINT pm_project_authorities_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_project_authorities_org_idx ON pm_project_authorities (organization_id);
+
+-- pm_decisions
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_decisions WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_decisions still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_decisions ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_decisions ADD CONSTRAINT pm_decisions_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_decisions_org_idx ON pm_decisions (organization_id);
+
+-- pm_agent_guidance
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_agent_guidance WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_agent_guidance still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_agent_guidance ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_agent_guidance ADD CONSTRAINT pm_agent_guidance_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_agent_guidance_org_idx ON pm_agent_guidance (organization_id);
+
+-- crm_change_log
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM crm_change_log WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: crm_change_log still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE crm_change_log ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE crm_change_log ADD CONSTRAINT crm_change_log_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS crm_change_log_org_idx ON crm_change_log (organization_id);

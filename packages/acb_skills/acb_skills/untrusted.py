@@ -70,6 +70,7 @@ __all__ = [
     "defang_trusted",
     "frame_untrusted",
     "has_marker_shape",
+    "is_invisible",
     "neutralise",
     "neutralised_pattern",
     "new_token",
@@ -200,6 +201,16 @@ def _break_runs(text: str) -> str:
     return "".join(chars)
 
 
+def is_invisible(ch: str) -> bool:
+    """True when a reader cannot see *ch* and a model may still read it: an
+    invisible format character (Cf), a character of :data:`_INVISIBLE_SET`,
+    or a character of the TAG block. THE one rule of what a frame drops.
+    :func:`defang_trusted` drops each such character, and so does a card that
+    shows member text. The skill store refuses a wider set of owner text:
+    :mod:`acb_skills.hidden_text` (WS-STU F1b) is that rule."""
+    return ch in _INVISIBLE_SET or ord(ch) in _TAG_BLOCK or unicodedata.category(ch) == "Cf"
+
+
 def neutralise(text: str, token: str) -> str:
     """Mode (a), for text INSIDE a frame: no copy of *token*, and no run of
     three brackets. Linear in the length of the text. It removes no word,
@@ -227,9 +238,7 @@ def defang_trusted(text: str) -> str:
     becomes ``(`` or ``)``, so ``<a@b>`` reads ``(a@b)``. No output of this
     function is a bracket."""
     chars = [
-        ch for ch in unicodedata.normalize("NFKC", str(text or ""))
-        if not (ch in _INVISIBLE_SET or ord(ch) in _TAG_BLOCK
-                or unicodedata.category(ch) == "Cf")
+        ch for ch in unicodedata.normalize("NFKC", str(text or "")) if not is_invisible(ch)
     ]
     out: list[str] = []
     size = len(chars)

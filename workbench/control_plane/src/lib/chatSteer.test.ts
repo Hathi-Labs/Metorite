@@ -146,18 +146,19 @@ describe("the composer", () => {
     expect(block).toContain("steerMessage(trimmed)");
     expect(block).not.toMatch(/stopGeneration|enqueue|setMessages|slice\(0, -1\)/);
     // A refusal gives the words back with its notice.
-    expect(block).toContain('if (out.kind === "refused") giveBack(trimmed, out.notice);');
-    expect(src).toMatch(/setInput\(\(prev\) => mergeCappedText\(prev, text\)\);\s*setComposerNotice\(notice\);/);
+    // It keeps the typed mark of the send (WS-63 D-PZ-37).
+    expect(block).toContain('if (out.kind === "refused") giveBack(trimmed, out.notice, typed);');
+    expect(src).toMatch(/setInput\(\(prev\) => mergeCappedText\(prev, back\.words\)\);\s*if \(back\.items\.length\) attRef\.current\.restore\(back\.items\);\s*setComposerNotice\(notice\);/);
     // No send mode and no queue anywhere in the composer.
     expect(src).not.toMatch(/\bSendMode\b|\bsendMode\b|queueRef|enqueue\(|showSendMenu|saveQueue|getQueue/);
     // The one control follows the box.
-    expect(src).toContain("primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() })");
+    expect(src).toContain("primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() || hasReadyFiles })");
     expect(src).toMatch(/<ChatSendButton\s+action=\{primary\}\s+onClick=\{primary === "stop" \? handleStop : undefined\}/);
   });
 
   it("Esc stops a live run only from an empty box", () => {
     const src = code(read("../components/AgentChat.tsx"));
-    expect(src).toMatch(/e\.key === "Escape" && primaryAction\(\{[^}]*hasText: !!input\.trim\(\) \}\) === "stop"\) \{\s*e\.preventDefault\(\);\s*handleStop\(\);/);
+    expect(src).toMatch(/e\.key === "Escape" && primaryAction\(\{[^}]*hasText: !!input\.trim\(\) \|\| hasReadyFiles \}\) === "stop"\) \{\s*e\.preventDefault\(\);\s*handleStop\(\);/);
   });
 });
 
@@ -377,7 +378,8 @@ describe("an old queue goes into the box once", () => {
 
   it("the composer puts them in the box and has no drain that sends", () => {
     const src = code(read("../components/AgentChat.tsx"));
-    expect(src).toMatch(/const left = takeLeftoverQueue\(sessionId\);\s*if \(!left\) return;\s*setInput\(\(prev\) => mergeCappedText\(prev, left\)\);/);
+    // The words carry no typed mark (WS-63 D-PZ-37): no mark came with them.
+    expect(src).toMatch(/const left = takeLeftoverQueue\(sessionId\);\s*if \(!left\) return;\s*boxMarkRef\.current = filled\(boxMarkRef\.current, false\);\s*setInput\(\(prev\) => mergeCappedText\(prev, left\)\);/);
     expect(src).not.toMatch(/sendMessage\(next\)/);
   });
 });

@@ -60,6 +60,7 @@ import {
   type AgentStartResult,
   type AgentState,
   answerPayload,
+  answerHeldLine,
   answerTo,
   answeredLine,
   archiveApprovalPayload,
@@ -86,6 +87,9 @@ import {
   replyPayload,
   runToShow,
   stopPayload,
+  withdrawPayload,
+  withdrawShown,
+  withdrawTarget,
   writeFailure,
 } from "../lib/agentRuns";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
@@ -238,6 +242,20 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, state, run?.client_via, run?.member_email]);
 
+  // M1 (ORC-3): the panel sits above the task card's tabs, so its first read
+  // must not move the Add row and the tab bar. Until the read answers, keep
+  // the space of the "Ask an agent" row, the most common result. A run card
+  // is taller and still moves them, and it is the thing to see. Routes that
+  // are off (`false`) draw nothing.
+  if (enabled === null) {
+    return (
+      <div className="invisible mb-3 flex items-center" aria-hidden data-ask-agent-placeholder="">
+        <Button variant="ghost" size="sm" icon="Bot" tabIndex={-1} disabled>
+          {ASK_COPY.open}
+        </Button>
+      </div>
+    );
+  }
   if (!enabled) return null;
 
   // EA-12d: the caller may ask an agent while they have no open run here.
@@ -392,6 +410,21 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     });
     // The task is on the shelf now. The host learns it from the row.
     if (archivedAt) onTaskChanged?.({ ...task, archived_at: archivedAt });
+  }
+
+  /** SW-43. The member takes back an answer that no agent has read. */
+  async function withdraw() {
+    // The server names the live answer. The local copy may be a guess.
+    const target = run ? withdrawTarget(run) : null;
+    if (!target) return;
+    const body = withdrawPayload(target);
+    const ok = await write(
+      () => agentRunsApi.withdrawAnswer(shownRunId, body),
+      "awaiting",
+      "Could not withdraw the answer.",
+    );
+    // The question card is open again, so the member answers with it.
+    if (ok) setSent(null);
   }
 
   async function sendReply() {
@@ -601,6 +634,26 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
             {answeredLine(answer, elicitation, personLabels)}
           </span>
         </p>
+      ) : null}
+
+      {withdrawShown(run, answer, archiveMine, canReply) ? (
+        run.answer?.changeable ? (
+          <div className="flex items-center" data-agent-withdraw="">
+            <Button
+              size="sm"
+              variant="secondary"
+              icon="Undo2"
+              disabled={busy}
+              onClick={() => void withdraw()}
+            >
+              Withdraw my answer
+            </Button>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground" data-agent-held="">
+            {answerHeldLine(client)}
+          </p>
+        )
       ) : null}
 
       {canReply ? (

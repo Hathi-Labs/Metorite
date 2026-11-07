@@ -71,6 +71,17 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "EA-6h (EA3-51). The edge reads the member's delete switch at"
         " tools/list. It is not a Projects route. Its PUT stays off the edge."
     ),
+    # WS-MCP SW-31a (agent_coordination.md SW-31): the guidance of a task and
+    # the refs of `my_work`. They are not Projects routes (the editor is a
+    # Settings screen, and the chat tool is a follow-up).
+    ("GET", "/agent-guidance/tasks/{task_id}"): (
+        "SW-31a. `get_task_context` and `claim_task` read the org's guidance for"
+        " a task. It is not a Projects route (agent_coordination.md SW-31)."
+    ),
+    ("GET", "/agent-guidance/refs"): (
+        "SW-31a. `my_work` reads the id and version of the nearest guidance block"
+        " of each row. It is not a Projects route (agent_coordination.md SW-31)."
+    ),
     # MCP-P1a (spec §19.5, "The new pairs"): the two list routes of the app
     # door. They hold no data of an app.
     ("GET", "/agent-access/apps"): (
@@ -135,7 +146,9 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     adds the archive request (§9.5, EA3-40). EA-6h adds the agent delete
     (EA3-51). EA-14a adds the release (§12.3). MCP-G2 adds the PUT of the
     assignees and the task move (§9.2). MCP-G1 adds the node POST and PATCH,
-    the move preview and the move (§9.2)."""
+    the move preview and the move (§9.2). MCP-G15 adds the outside decision
+    (§12.1): an agent records a decision that its member made outside
+    Metorite, on its own awaiting run."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -152,6 +165,7 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
         ("POST", "/projects/agent-runs/{run_id}/release"),
+        ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
     }
@@ -224,6 +238,35 @@ def test_the_archive_and_its_approval_stay_off_the_edge():
 
     reached = _reached(TOOLS)
     assert not reached & set(ARCHIVE_ROUTES), reached & set(ARCHIVE_ROUTES)
+
+
+#: MCP-P1b-1 (§19.5, "The member routes"). A person's decision on an app
+#: request, and the member's list of requests. Neither is ever a pair of the
+#: edge or of the app door, so branch 0 refuses a signed call to either.
+MEMBER_ONLY_REQUEST_ROUTES = (
+    ("POST", "/agent-access/requests/{request_id}/decision"),
+    ("GET", "/agent-access/requests"),
+)
+
+
+def test_decision_route_not_in_door_sets():
+    """MCP-P1b-1 (§19.5, §19.11). The decision route serves a member session
+    only. It is in no set of the door: not ``MCP_ROUTES``, not
+    ``MCP_WRITE_ROUTES`` and not ``door_routes()``, and no edge tool reaches
+    it. Mutation: put the decision pair in ``MCP_WRITE_ROUTES``, and this
+    test fails."""
+    from acb_common import app_manifests
+
+    served = _gateway_routes()
+    door = set(app_manifests.door_routes())
+    for pair in MEMBER_ONLY_REQUEST_ROUTES:
+        assert pair in served, pair
+        assert pair not in MCP_ROUTES and pair not in MCP_WRITE_ROUTES, pair
+        assert pair not in door, pair
+    from agent_edge.tools import TOOLS
+
+    reached = _reached(TOOLS)
+    assert not reached & set(MEMBER_ONLY_REQUEST_ROUTES)
 
 
 def test_rule_1_each_pair_is_a_route_the_gateway_serves():
@@ -434,6 +477,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # EA-15b (§12.4). The edge cuts its merged rows to this length. No route
     # of `my_work` takes it.
     ("my_work", "limit"),
+    # MCP-G4. The edge keeps the runs whose session key is the caller's. The
+    # runs route takes no such parameter.
+    ("list_agent_runs", "mine_only"),
     # MCP-G1. The edge checks the level against the parent, and the node
     # route takes no level. The key uses the slot of `create_task`.
     ("create_project", "level"),
@@ -441,6 +487,8 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # MCP-G1. The edge compares it with the id of the preview that it runs
     # again. The move route takes no such field.
     ("move_tasks", "preview_id"),
+    # CIV-14c. The edge picks the page size and pages the timeline itself.
+    ("get_task_context", "comments"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in
@@ -464,7 +512,7 @@ def test_the_ea15_reads_are_listed_and_add_no_pair():
         for route in (tool.route, *tool.routes):
             assert ("GET", route) in MCP_ROUTES, (name, route)
     assert TOOLS["my_work"].edge_inputs == frozenset({"limit"})
-    assert TOOLS["get_task_context"].edge_inputs == frozenset()
+    assert TOOLS["get_task_context"].edge_inputs == frozenset({"comments"})
 
 
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():

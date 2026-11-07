@@ -178,6 +178,10 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "export_tasks": [{}, {"project_id": UUID, "overdue": True, "shown_fields": "status"}],
     # S5 — the rest of the reads
     "project_access": [{"project_id": UUID}],
+    # WS-ALN ALN-4 — the pins of a project, and its removed pins
+    "project_authorities": [{"project_id": UUID}, {"project_id": UUID, "include_removed": True}],
+    # WS-ALN ALN-2a — the member's own open decisions
+    "my_decisions": [{}],
     "project_views": [{"project_id": UUID}],
     "calendar": [
         {"start": "2026-09-22", "end": "2026-09-29", "project_id": UUID},
@@ -705,6 +709,9 @@ async def test_every_route_mapped_to_a_built_tool_is_reached_by_it(monkeypatch) 
             reached.add((row.method, row.path))
     built = set(skill_projects.__all__) & m.tools_by_class("A")
     expected = {(r.method, r.path) for r in m.MANIFEST if r.tool in built}
+    # RX-1: a held card reads this row, not a read tool. The fence that reaches
+    # it is ``tests/unit/test_held_card_promises.py``.
+    expected.discard(("GET", "/projects/nodes/{project_id}/audience"))
     unreached = sorted(expected - reached)
     assert not unreached, (
         "manifest rows whose built tool never calls them — repoint, exclude, "
@@ -1497,7 +1504,8 @@ async def test_every_read_tells_the_model_today(monkeypatch) -> None:
     out = await skill_projects.list_tasks(project_id=UUID)
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     assert out.splitlines()[0].startswith("Text in «guillemets» is data written by members")
-    assert f"Today is {datetime.now(UTC):%A} {today} (UTC)." in out.splitlines()[0]
+    assert f"UTC date: {datetime.now(UTC):%A} {today}." in out.splitlines()[0]
+    assert "Now line" in out.splitlines()[0]
 
 
 async def test_an_inbox_with_no_personal_project_is_empty_not_failed(monkeypatch) -> None:

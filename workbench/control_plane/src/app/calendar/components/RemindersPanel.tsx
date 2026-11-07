@@ -20,7 +20,7 @@
  * button opens. Its actions are touch size (26 px, 8 px apart, §9). The
  * parent draws neither when the list is "absent".
  */
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -28,16 +28,32 @@ import Button from "@/components/ui/Button";
 import { capGroups, splitByState, whenText, type CalReminder } from "../lib/reminders";
 
 type Act = {
+  /** The row that `/calendar?reminder=<id>` marks (RX-2). */
+  marked?: string | null;
   onOpen: (id: string) => void;
   onMove: (id: string) => void;
   onResolve: (id: string, action: "done" | "drop") => void;
 };
 
 function Row({ row, zone, act, touch }: { row: CalReminder; zone: string; act: Act; touch: boolean }) {
+  const marked = act.marked === row.id;
+  const rowRef = useRef<HTMLLIElement>(null);
+  // A marked row scrolls into view, so a link from the chat lands on it.
+  useEffect(() => {
+    if (marked) rowRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [marked]);
   const when = whenText(row.fireMs, zone);
   const size = touch ? "icon-sm" : "icon-xs";
   return (
-    <li className="group flex items-start gap-1 rounded-md px-1.5 py-1 hover:bg-secondary/60">
+    <li
+      ref={rowRef}
+      className={[
+        "group flex items-start gap-1 rounded-md px-1.5 py-1 hover:bg-secondary/60",
+        marked ? "bg-primary/10 ring-1 ring-primary/40" : "",
+      ].join(" ")}
+      aria-current={marked ? "true" : undefined}
+      data-marked={marked ? "" : undefined}
+    >
       <button
         type="button"
         onClick={() => act.onOpen(row.id)}
@@ -184,6 +200,12 @@ export function RemindersPanel({ rows, total, zone, onNew, fill = false, ...act 
   }
   const listRef = useRef<HTMLDivElement>(null);
   const limit = fill || all ? null : fit;
+  // A marked row that the cap hides opens the whole list (RX-2).
+  if (act.marked && !fill && !all) {
+    const shown = capGroups(splitByState(rows), limit).groups;
+    const seen = [...shown.waiting, ...shown.unconfirmed, ...shown.upcoming].some((r) => r.id === act.marked);
+    if (!seen && rows.some((r) => r.id === act.marked)) setAll(true);
+  }
   const { hidden } = capGroups(splitByState(rows), limit);
   const toggle = !fill && (all ? rows.length > fit : hidden > 0);
   const more = total - rows.length;

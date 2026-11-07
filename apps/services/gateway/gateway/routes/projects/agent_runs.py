@@ -15,6 +15,8 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
     POST /projects/tasks/{task_id}/archive-request    → {activity, run, created}
     POST /projects/agent-runs/{run_id}/archive-approval
                                                   → {activity, run, created, archived}
+    POST /projects/agent-runs/{run_id}/outside-decision
+                                                  → {activity, run, created}  (MCP-G15)
 
 An outside agent works on a task inside a RUN. The run holds typed
 ACTIVITIES: ``prompt``, ``thought``, ``action``, ``response``,
@@ -74,6 +76,22 @@ The rules, each one stated in the spec:
   open strand that the sweep of ``gateway/agent_run_sweep.py`` found). The sweep
   decides; the writes to these two tables stay here
   (:func:`close_archived_runs`, :func:`write_strand_line`).
+* **A decision made outside Metorite** (WS-55 MCP-G15, Metorite task 1567).
+  The member can answer the agent's question in another place, such as the
+  agent's own chat. The agent then records it through ``outside-decision``
+  on its OWN awaiting run. The route writes an AGENT ``response``, never a
+  ``prompt``: the server sets its ``in_reply_to`` to the open question and
+  types it with ``content_metadata.decided_elsewhere``. So every open-question
+  read finds the question closed, and the run moves ``awaiting`` →
+  ``in_progress``. A typed request (EA-6g) never closes this way: only the
+  member answers it, in Metorite.
+* **Who may answer** (WS-55 EA-18a, D-EA-14, spec §12.8). With
+  ``AGENT_QUESTIONS_ORGS`` on for the org, a person's answer to an open question
+  needs :func:`may_answer_run`: the creator of the task, an assignee, the run's
+  member, or the role owner, admin or manager. A Stop and a reply to a run that
+  is not ``awaiting`` stay open to each member who sees the task. The list of
+  ``agent_questions.py`` reads the same text, so it never offers a button that
+  this route refuses.
 """
 
 from __future__ import annotations
@@ -91,6 +109,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_for
 from acb_common import get_logger
+from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.core import (
     TaskModel,
@@ -110,18 +129,26 @@ from gateway.routes.projects.filters import (
     AGENT_RUN_ANSWER_WAITS_SQL,
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
+    agent_questions_allowed,
     agent_runs_enabled,
+    answer_change_enabled,
     attach_agent_state,
     connection_gone_sql,
     holder_free,
     holder_free_sql,
     lease_expired,
+    live_answer_sql,
     open_recovery_sql,
     open_strand_sql,
     strand_fits_sql,
     task_closed_sql,
 )
-from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
+from gateway.routes.projects.notifications import (
+    excerpt_of,
+    mark_rows_read,
+    notify,
+    task_audience,
+)
 from gateway.routes.projects.tasks import archive_task_in
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -214,6 +241,12 @@ async def require_agent_runs() -> None:
 _ENABLED = [Depends(require_agent_runs)]
 
 
+async def require_answer_change() -> None:
+    """404 while ``agent_answer_change_enabled`` is off (SW-43)."""
+    if not answer_change_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 # ── The request shapes ──────────────────────────────────────────────────────
 
 
@@ -294,6 +327,17 @@ class ResumeIn(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
+class WithdrawIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/answer/withdraw`` (SW-43, spec
+    ``agent_coordination.md`` §3.9). The answer to take back and the key. The
+    run is the path, and the actor is the context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer_id: str = Field(min_length=1, max_length=64)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
 class ArchiveRequestIn(BaseModel):
     """``POST /projects/tasks/{id}/archive-request`` (EA-6g). The key only.
     The target is the task of the path, the text and the options are the
@@ -311,6 +355,28 @@ class ArchiveApprovalIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["approve", "decline"]
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+#: MCP-G15. The longest ``decision`` and ``where`` of an outside decision.
+MAX_DECISION = 2_000
+MAX_WHERE = 80
+
+
+class OutsideDecisionIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/outside-decision`` (WS-55 MCP-G15).
+
+    ``decision`` is the member's decision in the member's words. ``selected``
+    names the option ids of the open question, when the member picked one.
+    ``where`` says where the member decided, for example "Claude Code chat".
+    The server sets ``in_reply_to`` and the marker. No body names them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str = Field(min_length=1, max_length=MAX_DECISION)
+    where: str = Field(min_length=1, max_length=MAX_WHERE)
+    selected: list[str] | None = Field(default=None, min_length=1, max_length=10)
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
@@ -404,6 +470,26 @@ _MOVES: dict[str, dict[str, str]] = {
     # as a `response`, and the run stays `completed`. Only `finish_agent_run`
     # passes it, after `_server_closed` holds.
     "late_summary": {"completed": "completed"},
+    # MCP-P1b-1 (spec §19.5, AD-5). An app run opens with its one request:
+    # `gateway/app_requests.open_request` writes the elicitation and moves a
+    # `created` run to `awaiting`. Only that function passes it.
+    "app_ask": {"created": "awaiting"},
+    # MCP-P1b-1. A decline closes a waiting app request (`app_requests.decide`).
+    # The spend closes an approved one: `acb_auth.app_requests.SPEND_SQL` writes
+    # that move in its one UPDATE, because `acb_auth` cannot import the
+    # gateway. An approve is the `member_prompt` above.
+    "app_close": {"awaiting": "completed", "in_progress": "completed"},
+    # WS-55 MCP-G15. The member decided outside Metorite, and the agent
+    # records it: its `response` closes the open question, so the run works
+    # again. Only `record_outside_decision` passes it, after its own checks.
+    # It is an AGENT event: no agent ever writes `member_prompt`. An app run
+    # (MCP-P1b-1) is 404 to it: `_load_visible_run` reads task runs only,
+    # so an agent never approves its own app request this way.
+    "agent_outside_decision": {"awaiting": "in_progress"},
+    # SW-43. The member takes back an answer that no agent has read. The
+    # question is open again, so the run waits for a person. Only
+    # `withdraw_agent_answer` passes it, after `answer_changeable_sql` holds.
+    "member_withdraw": {"in_progress": "awaiting"},
 }
 
 
@@ -580,7 +666,7 @@ _OPEN_STRANDS_SQL = f"""
 SELECT DISTINCT ON (s.run_id) s.run_id, s.reason, s.nudged_at, s.recovered_at
   FROM pm_agent_run_strands s
   JOIN pm_agent_runs r ON {strand_fits_sql('s', 'r')}
- WHERE s.run_id = ANY(CAST(:ids AS uuid[]))
+ WHERE s.run_id = ANY(CAST(:ids AS uuid[])) AND r.task_id IS NOT NULL
  ORDER BY s.run_id, s.nudged_at DESC
 """
 
@@ -604,6 +690,7 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
     questions: dict[str, dict[str, Any]] = {}
     lines: dict[str, dict[str, Any]] = {}
     strands: dict[str, Any] = {}
+    answers: dict[str, dict[str, Any]] = {}
     if ids:
         for found in (await db.execute(text(_OPEN_ELICITATIONS_SQL), {"ids": ids})).fetchall():
             questions[str(found.run_id)] = _activity_out(found)
@@ -611,6 +698,15 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             lines[str(found.run_id)] = _activity_out(found)
         for found in (await db.execute(text(_OPEN_STRANDS_SQL), {"ids": ids})).fetchall():
             strands[str(found.run_id)] = found
+        if answer_change_enabled():
+            for found in (await db.execute(
+                text(live_answer_sql("p.run_id = ANY(CAST(:ids AS uuid[]))")),
+                {"ids": ids},
+            )).fetchall():
+                answers[str(found.run_id)] = {
+                    "id": str(found.id), "seq": int(found.seq),
+                    "changeable": bool(found.changeable),
+                }
     out: list[dict[str, Any]] = []
     for row in rows:
         key = str(row.id)
@@ -658,12 +754,27 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
             "stranded": (_stranded_out(strand, getattr(row, "idle_s", None))
                          if strand is not None else None),
         })
+        if answer_change_enabled():
+            # SW-43. Only with the flag on, so a flag-off wire is unchanged.
+            out[-1]["answer"] = answers.get(key)
     return out
 
 
-async def _load_run(db: Any, run_id: str) -> Any:
+#: MCP-P1b-1 (AD-16). A run has ONE subject: a task, or an app (migration
+#: ``pm_agent_runs_app_subject``). Each read of this module names the task
+#: subject, so an app run never shows in the runs list, the pill, the board,
+#: ``my_work``, Needs attention or the sweep. Fence:
+#: ``test_every_pm_agent_runs_query_names_its_subject``.
+_LOAD_TASK_RUN_SQL = f"{_RUN_SELECT} WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"
+#: The load of an app run, for ``gateway/app_requests.py`` only.
+_LOAD_APP_RUN_SQL = f"{_RUN_SELECT} WHERE r.id = CAST(:rid AS uuid) AND r.app IS NOT NULL"
+
+
+async def _load_run(db: Any, run_id: str, *, app: bool = False) -> Any:
+    """One run by id, or 404. A task run, or with *app* an app run. A run of
+    the other subject is 404, never a 500 on its NULL task."""
     row = (await db.execute(
-        text(f"{_RUN_SELECT} WHERE r.id = CAST(:rid AS uuid)"), {"rid": run_id},
+        text(_LOAD_APP_RUN_SQL if app else _LOAD_TASK_RUN_SQL), {"rid": run_id},
     )).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Agent run not found")
@@ -682,13 +793,24 @@ async def _load_visible_run(db: Any, user: UserContext, run_id: str) -> Any:
     return row
 
 
-async def _lock_run(db: Any, run_id: str) -> Any:
-    """The run row, locked for this transaction (EA12-5)."""
+#: The lock of one run of each subject (EA12-5, MCP-P1b-1).
+_LOCK_TASK_RUN_SQL = (
+    "SELECT id FROM pm_agent_runs WHERE id = CAST(:rid AS uuid)"
+    " AND task_id IS NOT NULL FOR UPDATE"
+)
+_LOCK_APP_RUN_SQL = (
+    "SELECT id FROM pm_agent_runs WHERE id = CAST(:rid AS uuid)"
+    " AND app IS NOT NULL FOR UPDATE"
+)
+
+
+async def _lock_run(db: Any, run_id: str, *, app: bool = False) -> Any:
+    """The run row, locked for this transaction (EA12-5). *app* locks an app
+    run (MCP-P1b-1). A run of the other subject takes no lock and is 404."""
     await db.execute(
-        text("SELECT id FROM pm_agent_runs WHERE id = CAST(:rid AS uuid) FOR UPDATE"),
-        {"rid": run_id},
+        text(_LOCK_APP_RUN_SQL if app else _LOCK_TASK_RUN_SQL), {"rid": run_id},
     )
-    return await _load_run(db, run_id)
+    return await _load_run(db, run_id, app=app)
 
 
 async def _clock(db: Any) -> Any:
@@ -776,6 +898,8 @@ def _comment_body(kind: str, content: dict[str, Any], signal_meta: dict | None) 
     if kind == "error":
         return f"**Agent error:** {body}"
     if kind == "prompt":
+        if content.get("withdraws"):
+            return "Withdrew the answer"
         if content.get("signal") == "stop":
             return "Stopped the agent run." + (f"\n\n{body}" if body else "")
         labels = content.get("labels") or []
@@ -879,14 +1003,40 @@ async def _answer(
             status_code=422,
             detail="selected answers a question with options, and none is open.",
         )
+    labels = option_labels(meta, selected)
+    content["selected"] = list(selected)
+    content["labels"] = labels
+    return reply, {"question_id": str(question.id)}
+
+
+def option_labels(meta: dict[str, Any], selected: list[str]) -> list[str]:
+    """The labels of *selected*, the option ids of one ``select`` (R3).
+
+    Each id must be an option of the question, with no repeat, and one id
+    unless ``allow_multiple``. Else 422. ONE rule: a member's answer
+    (:func:`_answer`) and an outside decision (MCP-G15) both read it.
+    """
     by_id = {o["id"]: o for o in meta.get("options") or []}
     if len(set(selected)) != len(selected) or any(s not in by_id for s in selected):
         raise HTTPException(status_code=422, detail="selected names an id that is not an option.")
     if len(selected) > 1 and not meta.get("allow_multiple"):
         raise HTTPException(status_code=422, detail="This question takes one option.")
-    content["selected"] = list(selected)
-    content["labels"] = [by_id[s]["label"] for s in selected]
-    return reply, {"question_id": str(question.id)}
+    return [by_id[s]["label"] for s in selected]
+
+
+async def _prompt_reply(
+    db: Any, run: Any, content: dict[str, Any], selected: list[str] | None,
+    signal: str, *, typed: bool, withdraws: str | None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """``(in_reply_to, content_metadata)`` of a member prompt. A Stop and a
+    withdraw marker (SW-43, *withdraws*) answer no question. Any other prompt
+    answers the newest open one (:func:`_answer`)."""
+    if withdraws is not None:
+        content["withdraws"] = withdraws
+        return None, None
+    if signal == "stop":
+        return None, None
+    return await _answer(db, str(run.id), content, selected, typed=typed, status=run.status)
 
 
 class _Written:
@@ -896,6 +1046,19 @@ class _Written:
         self.activity = activity
         self.created = created
         self.commented = commented
+
+
+def _refuse_a_marked_prompt(kind: str, run_id: str) -> None:
+    """AUTO-7a (``proactive_agent.md`` §4.2). A prompt is a person's word, and
+    it answers the open question. A run with no person present gets 403
+    ``no_person_present``, before any read or write. The mark is a ContextVar,
+    so it binds an in-process caller. An HTTP call does not carry it."""
+    if kind == "prompt" and no_person_present():
+        _log.warning("agent_runs.no_person_refused", run_id=run_id)
+        raise HTTPException(
+            status_code=403,
+            detail={"error": NO_PERSON_PRESENT, "message": NO_PERSON_TEXT},
+        )
 
 
 async def _write_activity(
@@ -917,6 +1080,9 @@ async def _write_activity(
     typed: bool = False,
     extra: dict[str, Any] | None = None,
     quiet: bool = False,
+    closes: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    withdraws: str | None = None,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
@@ -931,9 +1097,24 @@ async def _write_activity(
 
     SW-11a. *quiet* keeps the timeline comment and sends no bell: Resume
     writes a note to the agent, not a comment to people (spec §12.7).
+
+    MCP-G15. *closes* and *metadata* go on an agent ``response`` only. Only
+    :func:`record_outside_decision` passes them, and it checks the kind:
+    *closes* is the id of the open question, which becomes ``in_reply_to``,
+    and *metadata* becomes ``content_metadata``. The server reads both,
+    never a request body.
+
+    SW-43. *withdraws* is the id of the answer that a member took back. It
+    types the prompt as the marker of a withdraw: no ``in_reply_to``, so
+    :func:`_answer` does not run. Only :func:`withdraw_agent_answer` passes
+    it.
+
+    AUTO-7a. This is the one write path of an activity, so a marked prompt
+    stops here (:func:`_refuse_a_marked_prompt`).
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
+    _refuse_a_marked_prompt(kind, run_id)
     found = await _existing_activity(db, run_id, key)
     if found is not None:
         return _Written(found, False, False)
@@ -954,10 +1135,11 @@ async def _write_activity(
         await _clear_for_reopen(db, run, user)
 
     content: dict[str, Any] = {"body": body}
-    content_metadata: dict[str, Any] | None = None
+    # MCP-G15: only `record_outside_decision` passes these, on a response.
+    content_metadata: dict[str, Any] | None = dict(metadata) if metadata is not None else None
     signal_out: str | None = None
     signal_meta: dict[str, Any] | None = None
-    in_reply_to: str | None = None
+    in_reply_to: str | None = closes
     if kind == "elicitation" and options:
         signal_out = "select"
         signal_meta = {
@@ -972,10 +1154,9 @@ async def _write_activity(
     elif kind == "prompt":
         signal_out = signal or "continue"
         content["signal"] = signal_out
-        if signal_out != "stop":
-            in_reply_to, content_metadata = await _answer(
-                db, run_id, content, selected, typed=typed, status=run.status,
-            )
+        in_reply_to, content_metadata = await _prompt_reply(
+            db, run, content, selected, signal_out, typed=typed, withdraws=withdraws,
+        )
     if extra:
         content.update(extra)
     if kind == "prompt" and reopened_end is not None:
@@ -1058,6 +1239,12 @@ async def _comment(
     only, because nobody else may answer it (EA12-8 as amended by EA3-40).
 
     *quiet* (SW-11a, Resume) writes the comment and sends no bell at all.
+
+    EA-18a (D-EA-14 point 4). With ``AGENT_QUESTIONS_ORGS`` on for the run's
+    org, the creator of the task joins the audience of a question. ``notify``
+    lower-cases and folds the recipients (``notifiable``), so one person gets
+    one row, whatever the case of each address. It also drops the actor and
+    each person who cannot open the task.
     """
     task_id = str(run.task_id)
     meta: dict[str, Any] = {
@@ -1083,8 +1270,11 @@ async def _comment(
     audience = [] if member_only else await task_audience(db, task_id)
     snippet = excerpt_of(text_)
     if question:
+        recipients = [run.member_email, *audience]
+        if not member_only and agent_questions_allowed(getattr(run, "organization_id", None)):
+            recipients.append(await _task_creator(db, task_id))
         await notify(
-            db, recipients=[run.member_email, *audience], kind="agent_question",
+            db, recipients=recipients, kind="agent_question",
             task_id=task_id, actor_id=run.client_via, activity_id=str(comment.id),
             excerpt=snippet,
         )
@@ -1094,6 +1284,15 @@ async def _comment(
             actor_id=author, activity_id=str(comment.id), excerpt=snippet,
         )
     return linked
+
+
+async def _task_creator(db: Any, task_id: str) -> str | None:
+    """``pm_tasks.created_by`` of one task, as written. ``None`` adds nobody:
+    ``notifiable`` drops an empty recipient."""
+    return (await db.execute(
+        text("SELECT created_by FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": task_id},
+    )).scalar()
 
 
 async def _move_run(
@@ -1204,6 +1403,7 @@ async def list_task_agent_runs(
         rows = (await db.execute(
             text(
                 f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) "
+                "   AND r.task_id IS NOT NULL"
                 " ORDER BY r.created_at DESC, r.id DESC LIMIT 50"
             ),
             {"tid": task_id},
@@ -1225,7 +1425,7 @@ _HOLDER_SQL = (
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
     "FROM pm_agent_runs r WHERE r.task_id = CAST(:tid AS uuid) "
-    "  AND r.status = ANY(:open) "
+    "  AND r.task_id IS NOT NULL AND r.status = ANY(:open) "
     "ORDER BY r.created_at DESC, r.id DESC LIMIT 1"
 )
 
@@ -1448,6 +1648,22 @@ _INSERT_RUN_SQL = (
 )
 
 
+#: CIV-14a. The newest link of the run's own caller wins.
+_SET_LINK_SQL = (
+    "UPDATE pm_agent_runs SET external_link = :link "
+    " WHERE id = CAST(:rid AS uuid) AND external_link IS DISTINCT FROM :link"
+)
+
+
+async def _set_run_link(db: Any, run_id: str, link: str | None) -> None:
+    """Set the link of an open run that the caller already owns. A call with no
+    link keeps the old one. The run came from the gate (``_gate_task``), so it
+    is the run of this member and connection (CIV-14a)."""
+    if link is None:
+        return
+    await db.execute(text(_SET_LINK_SQL), {"rid": run_id, "link": link})
+
+
 #: The ONE open-run read of EA12-6: the open run of a task for a member and a
 #: client stamp. The start, the archive request and the claim read it.
 #:
@@ -1474,6 +1690,7 @@ _INSERT_RUN_SQL = (
 #: person binds NULL connection and skips the arm.
 _OPEN_RUN_SQL = (
     f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
+    "   AND r.task_id IS NOT NULL"
     "   AND r.status = ANY(:open) AND r.client_via = :via "
     "   AND (CAST(:cid AS uuid) IS NULL OR r.connection_id = CAST(:cid AS uuid)) "
     "   AND (CAST(:cid AS uuid) IS NULL OR r.session_key IS NULL "
@@ -1506,7 +1723,8 @@ async def _replay_start(db: Any, me: str, key: str | None, task_id: str) -> dict
     if not key:
         return None
     by_key = (await db.execute(
-        text(f"{_RUN_SELECT} WHERE r.member_email = :me AND r.idempotency_key = :key"),
+        text(f"{_RUN_SELECT} WHERE r.member_email = :me AND r.idempotency_key = :key"
+             " AND r.task_id IS NOT NULL"),
         {"me": me, "key": key},
     )).fetchone()
     if by_key is None:
@@ -1607,6 +1825,10 @@ async def start_agent_run(
                                             session=own_session)
                 if existing is None:
                     raise HTTPException(status_code=409, detail="Start the run again.")
+        if existing is not None and via is not None:
+            # CIV-14a: an agent's start on its open run sets the link.
+            await _set_run_link(db, str(existing.id), link)
+            existing = await _load_run(db, str(existing.id))
         if existing is not None:
             # The open run is the answer (EA12-6). A member's instruction is
             # not dropped: it is a prompt on that run, and the status machine
@@ -1644,12 +1866,16 @@ async def list_my_agent_runs(
     client_via: str | None = None,
     limit: int = Query(50, ge=1, le=100),
     cursor: str | None = None,
+    order: str = Query("newest", pattern="^(newest|oldest)$"),
+    with_task: bool = False,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """The caller member's runs across the tasks they can see, newest first.
 
     ``cursor`` is the opaque ``next_cursor`` of the page before. A new agent
-    session calls this with ``needs_agent=true`` first.
+    session calls this with ``needs_agent=true`` first. ``order=oldest`` lists
+    the oldest run first (the "Waiting for you" list). ``with_task=true`` adds
+    ``task: {number, title, project_name}`` to each row, from one more query.
     """
     if status is not None and status not in RUN_STATUSES:
         raise HTTPException(
@@ -1683,16 +1909,109 @@ async def list_my_agent_runs(
         if client_via:
             clauses.append("r.client_via = :via")
             params["via"] = client_via.strip().lower()
+        direction = "r.created_at ASC" if order == "oldest" else "r.created_at DESC"
         rows = (await db.execute(
             text(
-                f"{_RUN_SELECT} WHERE {' AND '.join(clauses)} "
-                " ORDER BY r.created_at DESC, r.id DESC LIMIT :limit OFFSET :offset"
+                f"{_RUN_SELECT} WHERE r.task_id IS NOT NULL AND {' AND '.join(clauses)} "
+                f" ORDER BY {direction}, r.id {'ASC' if order == 'oldest' else 'DESC'}"
+                " LIMIT :limit OFFSET :offset"
             ),
             {**params, "limit": limit + 1, "offset": offset},
         )).fetchall()
         more = len(rows) > limit
         out = await _runs_out(db, list(rows[:limit]))
+        if with_task and out:
+            # One query for the page. The runs passed the visibility clause
+            # above, so their tasks are the member's to read.
+            facts = {
+                str(t.id): {"number": t.task_number, "title": t.title,
+                            "project_name": t.project_name}
+                for t in (await db.execute(
+                    text(
+                        "SELECT t.id, t.task_number, t.title, p.name AS project_name"
+                        "  FROM pm_tasks t LEFT JOIN pm_projects p ON p.id = t.project_id"
+                        " WHERE t.id = ANY(CAST(:ids AS uuid[]))"
+                    ),
+                    {"ids": [r["task_id"] for r in out]},
+                )).fetchall()
+            }
+            for item in out:
+                item["task"] = facts.get(item["task_id"])
     return {"rows": out, "next_cursor": str(offset + limit) if more else None}
+
+
+#: SW-43. Stamp ``read_at`` once on the live answer. The window of a withdraw
+#: closes at the first agent read.
+_STAMP_READ_SQL = (
+    "UPDATE pm_agent_run_activities SET content = content || CAST(:mark AS jsonb)"
+    " WHERE id = CAST(:aid AS uuid) AND NOT (content ? 'read_at')"
+)
+
+
+def _reads_for_member(run: Any, user: UserContext) -> bool:
+    """SW-43. True when the caller is the AGENT of the run's own member and
+    the flag is on. The agent of another member who sees the task reads the
+    run and closes no window."""
+    return (
+        answer_change_enabled()
+        and _agent_via(user) is not None
+        and str(run.member_email).strip().lower() == _member(user)
+    )
+
+
+_LIVE_PROBE = live_answer_sql("p.run_id = CAST(:rid AS uuid)")
+
+
+async def _live_unread(db: Any, run_id: str) -> Any | None:
+    """The live answer of the run when no agent has read it, else None."""
+    live = (await db.execute(text(_LIVE_PROBE), {"rid": run_id})).fetchone()
+    if live is None or not await _unread(db, str(live.id)):
+        return None
+    return live
+
+
+async def _stamp(db: Any, answer_id: str) -> None:
+    await db.execute(text(_STAMP_READ_SQL), {
+        "aid": answer_id, "mark": _jsonb({"read_at": (await _clock(db)).isoformat()}),
+    })
+
+
+async def _stamp_answer_read(db: Any, run: Any, user: UserContext) -> None:
+    """SW-43. A read by the run's own agent closes the window of its live
+    answer (the claim path). The plain probe takes no lock. The stamp takes
+    the lock of the run, the one that the withdraw route takes, then looks
+    again, so a read and a withdraw serialize: one wins."""
+    if not _reads_for_member(run, user) or await _live_unread(db, str(run.id)) is None:
+        return
+    await _lock_run(db, str(run.id))
+    live = await _live_unread(db, str(run.id))
+    if live is not None:
+        await _stamp(db, str(live.id))
+
+
+async def _unread(db: Any, answer_id: str) -> bool:
+    return not (await db.execute(
+        text("SELECT content ? 'read_at' FROM pm_agent_run_activities"
+             " WHERE id = CAST(:aid AS uuid)"), {"aid": answer_id},
+    )).scalar()
+
+
+async def _stamp_returned(db: Any, run_id: str, rows: list[Any], locked: bool) -> list[Any]:
+    """SW-43. Stamp the live answer when the rows just read hold it, so an
+    answer that an agent received is never unstamped. When the answer
+    committed after the first probe, the lock is taken now and the probe runs
+    again. An answer that a withdraw took back meanwhile is dropped from the
+    rows."""
+    live = await _live_unread(db, run_id)
+    if live is None or str(live.id) not in {str(r.id) for r in rows}:
+        return rows
+    if not locked:
+        await _lock_run(db, run_id)
+        again = await _live_unread(db, run_id)
+        if again is None or str(again.id) != str(live.id):
+            return [r for r in rows if str(r.id) != str(live.id)]
+    await _stamp(db, str(live.id))
+    return rows
 
 
 async def _read_run(user: UserContext, run_id: str, after: int | None) -> tuple[dict, list]:
@@ -1701,14 +2020,25 @@ async def _read_run(user: UserContext, run_id: str, after: int | None) -> tuple[
     read (EA12-4)."""
     async with _tenant_session() as db:
         run = await _load_visible_run(db, user, run_id)
-        rows = (await db.execute(
+        own = _reads_for_member(run, user)
+        locked = False
+        if own and await _live_unread(db, run_id) is not None:
+            # A live answer waits: lock first, so a withdraw cannot slip in
+            # between this read and the stamp.
+            await _lock_run(db, run_id)
+            locked = True
+        rows = list((await db.execute(
             text(
                 "SELECT * FROM pm_agent_run_activities "
                 " WHERE run_id = CAST(:rid AS uuid) AND seq > :after "
+                # SW-43. A withdrawn answer is gone from the read of the agent.
+                "   AND NOT (type = 'prompt' AND content ? 'withdrawn') "
                 " ORDER BY seq LIMIT :limit"
             ),
             {"rid": run_id, "after": -1 if after is None else after, "limit": MAX_ACTIVITIES},
-        )).fetchall()
+        )).fetchall())
+        if own:
+            rows = await _stamp_returned(db, run_id, rows, locked)
         return (await _runs_out(db, [run]))[0], [_activity_out(r) for r in rows]
 
 
@@ -1743,7 +2073,8 @@ async def post_agent_activity(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Write one activity. 201 with the new row, or 200 with the row that
-    already holds this ``idempotency_key`` (R5)."""
+    already holds this ``idempotency_key`` (R5). EA-18a: a person's answer to
+    an open question needs :func:`may_answer_run`, or it gets 403."""
     run_id = _parse_uuid(run_id, "Agent run")
     _require_write_scope(user)
     agent = _agent_via(user) is not None
@@ -1751,6 +2082,8 @@ async def post_agent_activity(
     async with _tenant_session() as db:
         await _load_visible_run(db, user, run_id)
         run = await _lock_run(db, run_id)
+        if not agent:
+            await _refuse_an_outside_answer(db, run, user, payload)
         written = await _write_activity(
             db, run, user, kind=payload.type, key=payload.idempotency_key,
             body=_clean_body(payload.body), options=payload.options,
@@ -1764,6 +2097,40 @@ async def post_agent_activity(
     if written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
     return {"activity": out_activity, "run": out_run, "created": written.created}
+
+
+async def _refuse_an_outside_answer(
+    db: Any, run: Any, user: UserContext, payload: ActivityIn,
+) -> None:
+    """The write rule of D-EA-14 (spec §12.8), on a LOCKED run, so the status
+    that it reads is the status that the write moves.
+
+    It binds ONLY an answer: a person's ``prompt`` while the run is ``awaiting``
+    on an open question that is not a typed archive request. D-EA-14 decided
+    who may answer, and it decided nothing else. So a Stop, and a reply to a run
+    that is not ``awaiting``, stay open to each member who sees the task
+    (D-EA-10 point 1). The narrower archive rule stays in :func:`_answer`.
+
+    The mark and the replay keep their order. A marked run still gets
+    ``no_person_present`` first. A retry of a key that the run already holds
+    returns its first row and writes nothing (R5).
+    """
+    if payload.type != "prompt" or payload.signal == "stop" or run.status != "awaiting":
+        return
+    if not agent_questions_allowed(getattr(user, "organization_id", None)):
+        return
+    run_id = str(run.id)
+    _refuse_a_marked_prompt(payload.type, run_id)
+    if await _existing_activity(db, run_id, payload.idempotency_key) is not None:
+        return
+    question = await _newest_open_question(db, run_id)
+    if question is None or archive_request_of(question) is not None:
+        return
+    if await may_answer_run(db, run, user):
+        return
+    raise HTTPException(status_code=403, detail=ANSWER_REFUSED.format(
+        name=getattr(run, "member_name", None) or run.member_email,
+    ))
 
 
 #: The statuses that a finish leaves: ``completed``, or ``stopped`` when a
@@ -1868,8 +2235,149 @@ async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
         return True
     held = (await db.execute(
         text(f"SELECT {person_may_end_sql('r')} FROM pm_agent_runs r"
-             " WHERE r.id = CAST(:rid AS uuid)"),
+             " WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"),
         {"rid": str(run.id), "me": me},
+    )).scalar()
+    return bool(held)
+
+
+# ── Who may answer (WS-55 EA-18a, D-EA-14, spec §12.8) ──────────────────────
+
+#: The organization roles that may answer any question the reader can see, and
+#: that read the "Everyone" tab. A role, and not a permission: the owner has not
+#: decided if a read permission may act on the run of another member (HANDOFF
+#: H-409 item 2). "Manager" is this role, not the manager of a space.
+ANSWER_REVIEW_ROLES: frozenset[str] = frozenset({"owner", "admin", "manager"})
+
+#: The 403 of an answer from a person outside the set. It says who may answer
+#: and what the person can do next. A comment stays open to them.
+ANSWER_REFUSED = (
+    "Only {name}, the creator of the task, its assignees, or an owner, admin or "
+    "manager can answer this question. Ask one of them, or open the task and add "
+    "a comment."
+)
+
+
+def answer_reason_sql(run: str, *, me: str = "me") -> str:
+    """Why a person sees the question of the run alias *run*: ``created``,
+    ``assigned`` or ``my_agent``, the first true test in that order, or NULL.
+
+    ONE text with :func:`person_may_answer_sql`, so ``why`` and the answer set
+    cannot disagree. It binds ``:me``, or the name in *me*, to the caller's
+    address in lower case. Each address test compares with ``lower()``, because
+    ``created_by`` holds the actor as written. The role test is not here, and it
+    never goes into this text (:func:`holds_answer_role`).
+    """
+    return (
+        "(CASE"
+        " WHEN EXISTS (SELECT 1 FROM pm_tasks qt"
+        f" WHERE qt.id = {run}.task_id AND lower(qt.created_by) = :{me}) THEN 'created'"
+        " WHEN EXISTS (SELECT 1 FROM pm_task_assignees qa"
+        f" WHERE qa.task_id = {run}.task_id AND lower(qa.assignee) = :{me}) THEN 'assigned'"
+        f" WHEN lower({run}.member_email) = :{me} THEN 'my_agent'"
+        " END)"
+    )
+
+
+def answerable_question_sql(run_id: str) -> str:
+    """The run whose id is the SQL expression *run_id* waits on a question that
+    a person answers through the generic route. Its NEWEST open elicitation, as
+    :data:`_OPEN_ELICITATIONS_SQL` picks it, is not a typed archive request.
+
+    The SQL twin of ``archive_request_of(question) is None``. Only the run's
+    member answers a typed request, through ``archive-approval``. So
+    :func:`listed_question_sql` shows a typed request to that member only.
+    """
+    return (
+        "EXISTS (SELECT 1 FROM (SELECT oq.content_metadata"
+        "   FROM pm_agent_run_activities oq"
+        f"  WHERE oq.run_id = {run_id} AND oq.type = 'elicitation'"
+        "    AND NOT EXISTS (SELECT 1 FROM pm_agent_run_activities op"
+        "                     WHERE op.run_id = oq.run_id AND op.in_reply_to = oq.id)"
+        "  ORDER BY oq.seq DESC LIMIT 1) nq"
+        " WHERE coalesce(nq.content_metadata -> 'request' ->> 'kind', '')"
+        f" <> '{ARCHIVE_REQUEST_KIND}')"
+    )
+
+
+def listed_question_sql(run: str, *, me: str = "me") -> str:
+    """ONE text of "the list shows the question of the run alias *run* to the
+    reader" (WS-55 EA-18a fix rounds 1 and 2, spec §12.8). It binds ``:me``,
+    or the name in *me*, to the reader's address in lower case.
+
+    * A question on a closed task shows to nobody.
+    * A typed archive request shows to the run's member only, because only
+      that member approves it (§12.1). Every other reader, the creator, an
+      assignee and an owner, admin or manager too, does not see it.
+    * Any other open question shows by the answer set of the caller.
+
+    ``agent_questions.questions_sql`` and the flag-on branch of
+    ``filters.agent_focus_clause("waiting")`` both read it, so "For me" and
+    "Waiting on me" count the same questions.
+    """
+    return (
+        f"(NOT {task_closed_sql(run)}"
+        f" AND ({answerable_question_sql(f'{run}.id')}"
+        f" OR lower({run}.member_email) = :{me}))"
+    )
+
+
+def question_reason_sql(run: str, *, me: str = "me") -> str:
+    """``why`` of a row of the list, over the run alias *run* (spec §12.8,
+    EA-18a fix round 4). It binds ``:me``, or the name in *me*.
+
+    For a typed archive request, the reason is always ``my_agent``. Only the
+    run's member answers it, so "Your agent asked" is the true reason, also
+    when that member created the task or is an assignee. Any other question
+    takes :func:`answer_reason_sql`, in the order created, assigned, own agent.
+    The answer set does not change: the member is in it in each case.
+    """
+    return (
+        f"(CASE WHEN NOT {answerable_question_sql(f'{run}.id')}"
+        f" AND lower({run}.member_email) = :{me} THEN 'my_agent'"
+        f" ELSE {answer_reason_sql(run, me=me)} END)"
+    )
+
+
+def person_may_answer_sql(run: str, *, me: str = "me") -> str:
+    """The three groups of D-EA-14: the creator of the task, an assignee, or
+    the run's member, in SQL over the run alias *run*.
+
+    ONE text, as :func:`person_may_end_sql` set for Release. The list reads it
+    for ``can_answer`` and for "For me" (``agent_questions.py``). The write
+    route reads it through :func:`may_answer_run`. ``filters.agent_focus_clause``
+    reads it for "Waiting on me". So the list never offers a button that the
+    route refuses.
+    """
+    return f"({answer_reason_sql(run, me=me)} IS NOT NULL)"
+
+
+def holds_answer_role(user: UserContext) -> bool:
+    """True for a PERSON with a role of :data:`ANSWER_REVIEW_ROLES`, from the
+    session. The other half of the answer set, and the gate of the "Everyone"
+    tab. A signed agent holds no role here: a prompt is a person's word, and a
+    connection does not carry its member's rank.
+    """
+    if getattr(user, "agent", None) is not None:
+        return False
+    return bool(user.roles & ANSWER_REVIEW_ROLES)
+
+
+async def may_answer_run(db: Any, run: Any, user: UserContext) -> bool:
+    """True when *user* may answer the open question of *run* (D-EA-14 point
+    2): the role test, or the one text of :func:`person_may_answer_sql`.
+
+    The caller has already passed ``_load_visible_run``, so the reader sees the
+    task (D87 rule 4). An agent never answers.
+    """
+    if _agent_via(user) is not None:
+        return False
+    if holds_answer_role(user):
+        return True
+    held = (await db.execute(
+        text(f"SELECT {person_may_answer_sql('r')} FROM pm_agent_runs r"
+             " WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"),
+        {"rid": str(run.id), "me": _member(user)},
     )).scalar()
     return bool(held)
 
@@ -1927,7 +2435,8 @@ RESUME_BODY = "Resume this work: pick this run up where it stopped."
 _OPEN_RECOVERY_SQL = (
     "SELECT s.id FROM pm_agent_run_strands s"
     " JOIN pm_agent_runs r ON r.id = s.run_id"
-    f" WHERE r.id = CAST(:rid AS uuid) AND {open_recovery_sql('s', 'r')}"
+    f" WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"
+    f"   AND {open_recovery_sql('s', 'r')}"
     " LIMIT 1"
 )
 
@@ -1936,6 +2445,7 @@ _OPEN_RECOVERY_SQL = (
 #: so Resume refuses, and Close the run is the act (spec §12.7).
 _RUN_CONNECTION_GONE_SQL = (
     f"SELECT {connection_gone_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+    " AND r.task_id IS NOT NULL"
 )
 
 #: The refusal of Resume on a run with a dead connection.
@@ -1950,6 +2460,7 @@ _RESUME_KEY_SQL = "UPDATE pm_agent_runs SET session_key = NULL WHERE id = CAST(:
 #: True when the task of the run is closed (``filters.task_closed_sql``).
 _RUN_TASK_CLOSED_SQL = (
     f"SELECT {task_closed_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+    " AND r.task_id IS NOT NULL"
 )
 
 
@@ -2031,6 +2542,85 @@ async def resume_agent_run(
             "created": written is not None and written.created}
 
 
+_ANSWER_STALE = "The agent already has your answer. Send a comment instead."
+_ANSWER_GONE = "This answer is no longer the live answer. The question may be open again."
+
+#: SW-43. The live answer of ONE run, with ``changeable``, read under the lock.
+_LIVE_ANSWER_ONE_SQL = live_answer_sql("p.run_id = CAST(:rid AS uuid)")
+
+#: SW-43. The mark on the answer: it answers nothing, and it keeps the id of
+#: the question in ``content_metadata`` so the history can name it.
+_WITHDRAW_MARK_SQL = (
+    "UPDATE pm_agent_run_activities SET in_reply_to = NULL,"
+    " content = content || CAST(:mark AS jsonb),"
+    " content_metadata = COALESCE(content_metadata, '{}'::jsonb)"
+    "                    || CAST(:qmeta AS jsonb)"
+    " WHERE id = CAST(:aid AS uuid)"
+)
+
+
+def _is_withdraw(row: Any) -> bool:
+    """True when *row* is the marker prompt of a withdraw (``content.withdraws``)."""
+    return row.type == "prompt" and bool((from_jsonb(row.content) or {}).get("withdraws"))
+
+
+@router.post("/agent-runs/{run_id}/answer/withdraw",
+             dependencies=[*_ENABLED, Depends(require_answer_change)])
+async def withdraw_agent_answer(
+    run_id: str, payload: WithdrawIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Take back the answer of a member until an agent reads it or posts,
+    whichever is first (SW-43, spec ``agent_coordination.md`` §3.9). An agent
+    read (``get_agent_run``, a claim that finds the run) stamps
+    ``content.read_at`` on the answer, under the lock of the run.
+
+    * Only the run's member, and never an agent caller (403). The task must
+      be visible (404).
+    * Under the lock of the run, :func:`filters.answer_changeable_sql` must
+      hold and *answer_id* must be the live answer, else 409. The agent post
+      takes the same lock, so the two writes serialize: one wins.
+    * The answer loses its ``in_reply_to``, so the question is open again for
+      every read. A quiet marker prompt (``content.withdraws``) tells an agent
+      that long polls. The run returns to ``awaiting``.
+    * A replay of the key returns the first answer and writes nothing.
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    answer_id = _parse_uuid(payload.answer_id, "Answer")
+    if _agent_via(user) is not None:
+        raise HTTPException(status_code=403, detail="Only a member withdraws an answer.")
+    written: _Written | None = None
+    async with _tenant_session() as db:
+        seen = await _load_visible_run(db, user, run_id)
+        if seen.member_email != _member(user):
+            raise HTTPException(status_code=403, detail="This agent run belongs to another member.")
+        run = await _lock_run(db, run_id)
+        replay = await _existing_activity(db, run_id, payload.idempotency_key)
+        if replay is not None and not _is_withdraw(replay):
+            raise HTTPException(status_code=409, detail=_KEY_USED)
+        if replay is None:
+            live = (await db.execute(text(_LIVE_ANSWER_ONE_SQL), {"rid": run_id})).fetchone()
+            if live is None or str(live.id) != answer_id:
+                raise HTTPException(status_code=409, detail=_ANSWER_GONE)
+            if not live.changeable:
+                raise HTTPException(status_code=409, detail=_ANSWER_STALE)
+            ts = await _clock(db)
+            await db.execute(text(_WITHDRAW_MARK_SQL), {
+                "aid": answer_id,
+                "mark": _jsonb({"withdrawn": {"at": ts.isoformat(), "by": _member(user)}}),
+                "qmeta": _jsonb({"question_id": str(live.in_reply_to)}),
+            })
+            written = await _write_activity(
+                db, run, user, kind="prompt", key=payload.idempotency_key,
+                body="Withdrew the answer", extra=None, quiet=True,
+                event="member_withdraw", withdraws=answer_id,
+            )
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        activity = written.activity if written is not None else replay
+        out_activity = _activity_out(activity)
+    return {"run": out_run, "activity": out_activity, "withdrawn": True,
+            "created": written is not None and written.created}
+
+
 # ── Stranded runs (WS-55 SW-10a, spec §12.6) ────────────────────────────────
 #
 # This module stays the only writer of `pm_agent_runs` and
@@ -2060,7 +2650,7 @@ async def close_archived_run(db: Any, run: Any) -> None:
 #: deploy window only. ``SKIP LOCKED``: a writer that holds the run wins.
 _ARCHIVE_APPLIED_SQL = (
     "SELECT r.id FROM pm_agent_runs r"
-    " WHERE r.status = 'in_progress'"
+    " WHERE r.status = 'in_progress' AND r.task_id IS NOT NULL"
     f"   AND {AGENT_RUN_ANSWER_WAITS_SQL}"
     "   AND EXISTS (SELECT 1 FROM pm_tasks t WHERE t.id = r.task_id"
     "               AND t.archived_at IS NOT NULL)"
@@ -2108,7 +2698,7 @@ def _closed_task_runs_sql() -> str:
         "  FROM pm_agent_runs r"
         "  JOIN pm_tasks t ON t.id = r.task_id"
         "  LEFT JOIN pm_task_statuses st ON st.id = t.status_id"
-        " WHERE r.status = 'in_progress'"
+        " WHERE r.status = 'in_progress' AND r.task_id IS NOT NULL"
         f"   AND {holder_free_sql('r')}"
         f"   AND {task_closed_sql('r')}"
         " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
@@ -2175,7 +2765,7 @@ async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> 
             "SELECT a.* FROM pm_agent_run_activities a "
             "  JOIN pm_agent_runs r ON r.id = a.run_id "
             " WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
-            "   AND a.idempotency_key = :key "
+            "   AND r.task_id IS NOT NULL AND a.idempotency_key = :key "
             " ORDER BY a.seq DESC LIMIT 1"
         ),
         {"tid": task_id, "me": me, "key": key},
@@ -2183,7 +2773,7 @@ async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> 
 
 
 async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
-                          via: str) -> tuple[str | None, bool]:
+                          via: str, link: str | None = None) -> tuple[str | None, bool]:
     """The id of the agent's open run on the task, or of a new
     ``in_progress`` run (EA12-6), and True when this call made it.
 
@@ -2198,12 +2788,13 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
                                 connection=_agent_connection(user),
                                 session=_agent_session(user))
     if existing is not None:
+        await _set_run_link(db, str(existing.id), link)
         return str(existing.id), False
     ts = await _clock(db)
     made = (await db.execute(text(_INSERT_RUN_SQL), {
         "tid": task_id, "me": me, "cid": str(user.agent.connection_id),  # type: ignore[union-attr]
         "via": via, "status": "in_progress", "by": via, "started": ts,
-        "link": None, "ts": ts, "agent_ts": ts, "key": None,
+        "link": link, "ts": ts, "agent_ts": ts, "key": None,
         "sk": _agent_session(user),
     })).fetchone()
     if made is not None:
@@ -2213,6 +2804,8 @@ async def _agent_open_run(db: Any, user: UserContext, task_id: str, me: str,
     existing = await _gate_task(db, task_id, me, via=via,
                                 connection=_agent_connection(user),
                                 session=_agent_session(user))
+    if existing is not None:
+        await _set_run_link(db, str(existing.id), link)
     return (str(existing.id) if existing is not None else None), False
 
 
@@ -2227,7 +2820,8 @@ async def _open_or_new_run(db: Any, user: UserContext, task_id: str, me: str,
     return await _lock_run(db, run_id)
 
 
-async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | None:
+async def open_run_for_claim(db: Any, task_id: str, user: UserContext,
+                             link: str | None = None) -> str | None:
     """WS-55 EA-13c (spec §12.2 item 3, EA3-42). A claim by an agent opens
     its run, so the card reads "working" even when the agent skips
     ``start_agent_run``. ``claim_task`` calls it in the claim's OWN
@@ -2237,7 +2831,9 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | 
       ``agent_runs_enabled`` is on. A member's claim opens no run, and None
       comes back.
     * With an open run of this task, member and stamp (EA12-6), it writes
-      nothing and returns that run. Else it
+      nothing and returns that run. CIV-14a: a *link* (already checked by
+      ``check_run_link``) is the one exception. It sets the link of the run
+      or of the new run, and the newest link wins. Else it
       inserts one ``in_progress`` run, started by the stamp, with the
       connection and ``last_agent_activity_at`` now. No activity row, no
       comment and no notification (C7 and C9 of EA-6b).
@@ -2255,8 +2851,17 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | 
     """
     if getattr(user, "agent", None) is None or not agent_runs_enabled():
         return None
-    run_id, _ = await _agent_open_run(db, user, task_id, _member(user), _agent_via(user) or "")
+    run_id, made = await _agent_open_run(db, user, task_id, _member(user),
+                                         _agent_via(user) or "", link)
+    if run_id is not None and not made:
+        # SW-43. The claim finds the run of the agent: that is a read.
+        await _stamp_answer_read(db, await _load_run(db, run_id), user)
     return run_id
+
+
+def check_run_link(value: str | None) -> str | None:
+    """The https check of ``external_link`` for the claim route (CIV-14a)."""
+    return _check_link(value)
 
 
 @router.post("/tasks/{task_id}/archive-request", status_code=201, dependencies=_ENABLED)
@@ -2419,6 +3024,204 @@ async def _task_now(db: Any, user: UserContext, task_id: str) -> dict[str, Any]:
     return row
 
 
+# ── A decision made outside Metorite (WS-55 MCP-G15, task 1567) ─────────────
+
+#: The key of the marker in ``content_metadata`` of the agent's response.
+DECIDED_ELSEWHERE = "decided_elsewhere"
+
+#: The stable codes of the refusals. Each detail is ``{"error", "message"}``,
+#: and the edge maps the code to its own fixed text (§9.6 rule 13).
+OUTSIDE_NOT_YOURS = "run_not_yours"
+OUTSIDE_NOT_AWAITING = "run_not_awaiting"
+OUTSIDE_NO_QUESTION = "no_open_question"
+OUTSIDE_TYPED = "typed_request"
+OUTSIDE_SELECTED = "selected_refused"
+OUTSIDE_CODES: tuple[str, ...] = (
+    OUTSIDE_NOT_YOURS, OUTSIDE_NOT_AWAITING, OUTSIDE_NO_QUESTION, OUTSIDE_TYPED,
+    OUTSIDE_SELECTED,
+)
+
+
+def _refusal(status: int, code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=status, detail={"error": code, "message": message})
+
+
+def typed_question(row: Any) -> bool:
+    """True when the elicitation *row* is typed by the server.
+
+    Only the server writes ``content_metadata`` on an elicitation, and no
+    request body can carry it (``extra="forbid"``). Today the one kind is the
+    archive request of EA-6g (:func:`archive_request_of`). Any later kind
+    counts too: only the member answers a typed request, in Metorite.
+    """
+    return bool(from_jsonb(getattr(row, "content_metadata", None)))
+
+
+def outside_comment(where: str, decision: str, labels: list[str]) -> str:
+    """The timeline text: "Decided outside Metorite (Claude Code chat):
+    Approve. <note>". The labels lead. When the decision already starts with
+    them, the decision stands alone, so the text never says a label twice."""
+    head = f"Decided outside Metorite ({where}): "
+    picked = ", ".join(labels)
+    if not labels or decision.casefold().startswith(picked.casefold()):
+        return head + decision
+    return f"{head}{picked}. {decision}"
+
+
+def _marked_outside(row: Any) -> bool:
+    """True when *row* is the response of an outside decision."""
+    meta = from_jsonb(row.content_metadata) or {}
+    return row.type == "response" and isinstance(meta.get(DECIDED_ELSEWHERE), dict)
+
+
+@router.post("/agent-runs/{run_id}/outside-decision", status_code=201,
+             dependencies=_ENABLED)
+async def record_outside_decision(
+    run_id: str, payload: OutsideDecisionIn, response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The agent records a decision that its member made outside Metorite.
+
+    The member can answer the agent's question in another place, such as the
+    agent's own chat. Without this route the run stays ``awaiting``, and the
+    task keeps asking the member for an answer that the member already gave.
+
+    * **An agent act, never a member prompt.** The route writes one AGENT
+      ``response`` through :func:`_write_activity`, the one write path. The
+      server sets its ``in_reply_to`` to the open question and its
+      ``content_metadata.decided_elsewhere`` (``where``, ``question_id`` and
+      ``decision``). So every open-question read finds the question closed:
+      ``_OPEN_ELICITATIONS_SQL``, :func:`_newest_open_question` and
+      :func:`_has_answered_select`. The event ``agent_outside_decision``
+      moves the run ``awaiting`` → ``in_progress``. The response is the
+      newest agent activity, so the derived state reads ``working``.
+    * **The agent's OWN run.** :func:`may_end_run` decides, the rule of
+      Release: the same member and the same client stamp. Else 403
+      ``run_not_yours``. A person gets 403: a person answers on the task.
+    * **One open question, and not a typed one.** A run that is not
+      ``awaiting`` gets 409 ``run_not_awaiting``. A run with no open question
+      gets 409 ``no_open_question``. A typed request (EA-6g, and any later
+      kind, :func:`typed_question`) gets 409 ``typed_request``: only the
+      member answers it, in Metorite.
+    * ``selected`` names option ids of that question, by the rule of a
+      member's answer (:func:`option_labels`). Else 422 ``selected_refused``.
+    * The same ``idempotency_key`` again returns the first response with
+      200. A key of another activity gets 409.
+    * **The bell** (fix round 1). The member's ``agent_question`` row of the
+      question becomes read in the same transaction
+      (:func:`_clear_question_bell`), so the bell and My Day stop asking.
+      After the commit, ``personal.bump_my_day`` moves My Day.
+
+    Fences: ``tests/unit/test_mcp_edge_outside_decision.py`` (R8 and
+    database-free).
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    _require_write_scope(user)
+    via = _agent_via(user)
+    if via is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an agent records a decision made outside Metorite. "
+                   "Answer the question on the task.",
+        )
+    decision = _clean_body(payload.decision)
+    where = " ".join((payload.where or "").replace("\x00", "").split())
+    if not decision or not where:
+        raise HTTPException(status_code=422, detail="decision and where need text.")
+    key = payload.idempotency_key
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if not await may_end_run(db, run, user):
+            raise _refusal(403, OUTSIDE_NOT_YOURS,
+                           "This agent run belongs to another member or another agent client.")
+        replay = await _existing_activity(db, run_id, key)
+        if replay is not None:
+            if not _marked_outside(replay):
+                raise HTTPException(status_code=409, detail=_KEY_USED)
+            response.status_code = 200
+            out_run = (await _runs_out(db, [run]))[0]
+            return {"activity": _activity_out(replay), "run": out_run, "created": False}
+        if run.status != "awaiting":
+            raise _refusal(409, OUTSIDE_NOT_AWAITING,
+                           f"This agent run is {run.status}. No question waits on the member.")
+        question = await _newest_open_question(db, run_id)
+        if question is None:
+            raise _refusal(409, OUTSIDE_NO_QUESTION, "This agent run has no open question.")
+        if typed_question(question):
+            raise _refusal(409, OUTSIDE_TYPED,
+                           "Only the member answers this request, on the task in Metorite.")
+        labels = _outside_labels(question, payload.selected)
+        record: dict[str, Any] = {
+            "where": where, "question_id": str(question.id), "decision": decision,
+        }
+        written = await _write_activity(
+            db, run, user, kind="response", key=key,
+            body=outside_comment(where, decision, labels),
+            event="agent_outside_decision", closes=str(question.id),
+            metadata={DECIDED_ELSEWHERE: record},
+            extra=({"selected": list(payload.selected), "labels": labels}
+                   if payload.selected is not None else None),
+        )
+        if not written.created:
+            response.status_code = 200
+        # Fix round 1 (P2). The member answered, so the bell row of the
+        # question, and the My Day card it makes, must go too.
+        cleared = (await _clear_question_bell(db, _member(user), question)
+                   if written.created else 0)
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        out_activity = _activity_out(written.activity)
+    if written.commented:
+        await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
+    if cleared:
+        # After the commit, as `notifications.mark_read` does: a read note
+        # leaves My Day, and a read emits no `pm.*` event.
+        from gateway.routes.projects.personal import bump_my_day
+
+        await bump_my_day(user.organization_id, _member(user))
+    return {"activity": out_activity, "run": out_run, "created": written.created}
+
+
+def _outside_labels(question: Any, selected: list[str] | None) -> list[str]:
+    """The labels of the option ids that the member chose, or ``[]`` with no
+    ids. A question with no options gets 422 ``selected_refused``, and so does
+    an id that :func:`option_labels` refuses."""
+    if selected is None:
+        return []
+    meta = from_jsonb(question.signal_metadata)
+    if question.signal != "select" or not meta:
+        raise _refusal(422, OUTSIDE_SELECTED, "selected names options, and this question has none.")
+    try:
+        return option_labels(meta, selected)
+    except HTTPException as exc:
+        raise _refusal(422, OUTSIDE_SELECTED, str(exc.detail)) from None
+
+
+#: The member's unread bell rows of one question: ``kind = 'agent_question'``,
+#: and ``activity_id`` is the timeline row of the question (``_comment``
+#: writes the bell with ``activity_id`` = that row).
+_QUESTION_BELL_SQL = (
+    "SELECT id FROM pm_notifications"
+    " WHERE recipient = :me AND kind = 'agent_question'"
+    " AND activity_id = CAST(:aid AS uuid) AND read_at IS NULL"
+)
+
+
+async def _clear_question_bell(db: Any, me: str, question: Any) -> int:
+    """Mark the member's bell row of *question* read, in the caller's
+    transaction, through the ONE writer of ``read_at``
+    (``notifications.mark_rows_read``). Only the member's own row: the bell
+    of an assignee or a watcher stays theirs to read. The count it marked."""
+    activity = getattr(question, "pm_activity_id", None)
+    if activity is None:
+        return 0
+    found = (await db.execute(text(_QUESTION_BELL_SQL),
+                              {"me": me, "aid": str(activity)})).fetchall()
+    if not found:
+        return 0
+    return await mark_rows_read(db, me, [str(row.id) for row in found])
+
+
 __all__ = [
     "ACTIVITY_TYPES",
     "ARCHIVE_APPROVE",
@@ -2428,8 +3231,15 @@ __all__ = [
     "ARCHIVE_REQUEST_KIND",
     "ARCHIVE_REQUEST_TTL",
     "CLOSED_TASK_BODIES",
+    "DECIDED_ELSEWHERE",
     "EPHEMERAL_CAP",
     "MAX_WAIT_S",
+    "OUTSIDE_CODES",
+    "OUTSIDE_NOT_AWAITING",
+    "OUTSIDE_NOT_YOURS",
+    "OUTSIDE_NO_QUESTION",
+    "OUTSIDE_SELECTED",
+    "OUTSIDE_TYPED",
     "POLL_S",
     "RUN_STATUSES",
     "TASK_HELD",
@@ -2438,6 +3248,7 @@ __all__ = [
     "ArchiveRequestIn",
     "FinishIn",
     "OptionIn",
+    "OutsideDecisionIn",
     "ReleaseIn",
     "StartIn",
     "archive_applied_run_ids",
@@ -2447,6 +3258,10 @@ __all__ = [
     "closed_task_runs",
     "load_run",
     "member_name",
+    "option_labels",
+    "outside_comment",
+    "record_outside_decision",
     "transition",
+    "typed_question",
     "write_strand_line",
 ]

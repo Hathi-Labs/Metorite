@@ -40,6 +40,12 @@ type UploadState =
 interface Props {
   sessionId: string;
   onUploadComplete?: (files: FileEntry[]) => void;
+  /**
+   * The chat composer's way (projects_ai_chat §30.4, IMG-1). The picked files
+   * go to the caller, which draws a chip and starts the upload. The button
+   * uploads nothing itself.
+   */
+  onPick?: (files: File[]) => void;
   className?: string;
   /** If true, renders as a full drop-zone instead of just an icon button. */
   dropZone?: boolean;
@@ -53,6 +59,7 @@ class UploadRefused extends Error {}
 export default function FileUploadButton({
   sessionId,
   onUploadComplete,
+  onPick,
   className = "",
   dropZone = false,
   children,
@@ -120,7 +127,10 @@ export default function FileUploadButton({
       accept={CHAT_UPLOAD_ACCEPT_ATTR}
       className="hidden"
       onChange={(e) => {
-        if (e.target.files) handleFiles(e.target.files);
+        if (e.target.files) {
+          if (onPick) onPick(Array.from(e.target.files));
+          else handleFiles(e.target.files);
+        }
         e.target.value = "";
       }}
     />
@@ -132,6 +142,7 @@ export default function FileUploadButton({
       <>
         {fileInput}
         <button
+          type="button"
           onClick={handleClick}
           disabled={state.phase === "uploading"}
           title={state.phase === "error" ? state.message : "Attach files"}

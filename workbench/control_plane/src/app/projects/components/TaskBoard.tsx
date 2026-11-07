@@ -105,6 +105,7 @@ import {
 import { ProjectPathChip } from "./ProjectPathChip";
 import { TaskCardActions } from "./TaskCardActions";
 import { useFlash } from "./useFlash";
+import { useTaskUndo } from "./useTaskUndo";
 import { useAccess } from "@/components/AccessProvider";
 
 const NOBODY: ReadonlySet<string> = new Set();
@@ -240,6 +241,13 @@ interface Props {
    */
   statusesFor?: (task: TaskRow) => readonly StatusRow[];
   /**
+   * Task 1792. Opens the Statuses dialog, where the order of the columns is
+   * edited. Shown above a board grouped by status, so the control sits one
+   * click from the columns it changes. Absent in My tasks, which spans many
+   * projects and has no one status set to edit.
+   */
+  onManageStatuses?: () => void;
+  /**
    * WS-64 OP-11 fix round. False hides the per-column quick add: My tasks
    * spans many projects, so a column names no home for a new task. Its one
    * add is the top Capture. Default true.
@@ -292,6 +300,7 @@ export function TaskBoard({
   projectPath,
   projectPrivate,
   statusesFor,
+  onManageStatuses,
   canQuickAdd = true,
   columnTotals = null,
   onLoadColumn,
@@ -319,6 +328,8 @@ export function TaskBoard({
    * drop does on its own schedule. Held in the parent, a reload redraws the
    * card with the half-typed title still in it.
    */
+  // UNDO-1 — an inline rename offers Undo.
+  const taskUndo = useTaskUndo();
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(
     null
   );
@@ -760,8 +771,14 @@ export function TaskBoard({
     setRenameBusyId(task.id);
     setRenameError(null);
     try {
-      await projectsApi.patchTask(task.id, { title });
+      const fresh = await projectsApi.patchTask(task.id, { title });
       closeRenameOf(task.id);
+      // UNDO-1 — an inline rename can be taken back.
+      taskUndo.edited(task, { title }, fresh, {
+        label: `renamed ${task.title}`,
+        receipt: "Task renamed",
+        after: () => onRenamed?.(),
+      });
       onRenamed?.();
     } catch (err) {
       // The field stays open with what was typed still in it, AND the reason
@@ -1138,6 +1155,19 @@ export function TaskBoard({
       className="outline-none"
       aria-label="Task board — arrow keys move, Shift extends the selection, Enter opens"
     >
+      {onManageStatuses && groupBy === "status" ? (
+        <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="Columns3"
+            onClick={onManageStatuses}
+          >
+            Statuses
+          </Button>
+        </div>
+      ) : null}
+
       {laned ? (
         <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
           <Button

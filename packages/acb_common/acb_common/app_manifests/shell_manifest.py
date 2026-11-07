@@ -23,6 +23,7 @@ nothing here is code. ``tests/unit/test_shell_manifests.py`` is the fence.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -127,6 +128,7 @@ def _job(raw: Any, source: str) -> JobSpec:
 
 _CONTRIBUTES_KEYS = {
     "jobs", "nav", "presets", "cards", "scope", "also_serves", "gates", "always_allowed",
+    "anchors",
 }
 #: Presets and cards belong to the home page, so only this file may name them.
 _HOME_ONLY = {"presets", "cards"}
@@ -368,3 +370,63 @@ def load_contributes(
             dup = sorted({k for k in keys if keys.count(k) > 1})
             raise ShellManifestError(f"duplicate {point} key: {dup}")
     return out
+
+
+# ── GD-1: the anchors a guide may ring (assistant_guide.md §5.1) ─────────────
+
+_ANCHOR_KEYS = {"id", "label", "route", "does"}
+_ANCHOR_ID = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
+
+
+@dataclass(frozen=True)
+class AnchorSpec:
+    """One part of a page that a guide may ring.
+
+    ``package`` is the id of the file that holds it. The component carries
+    ``data-guide="<package>.<id>"``, and :attr:`full_id` is that value.
+    """
+
+    package: str
+    id: str
+    label: str
+    route: str
+    does: str
+
+    @property
+    def full_id(self) -> str:
+        return f"{self.package}.{self.id}"
+
+
+def load_anchors(directory: Path | None = None) -> tuple[AnchorSpec, ...]:
+    """Every anchor of every ``shell/*.json`` file, in file order, then entry order.
+
+    An anchor holds exactly ``id``, ``label``, ``route`` and ``does``. The
+    ``route`` is a path with no ``?``. A full id (``package.id``) is unique.
+    """
+    out: list[AnchorSpec] = []
+    for name, contributes in _read(directory or SHELL_DIR):
+        package = name.removesuffix(".json")
+        for raw in contributes.get("anchors", []):
+            if not isinstance(raw, dict) or set(raw) != _ANCHOR_KEYS:
+                raise ShellManifestError(
+                    f"{name}: an anchors entry must hold exactly {sorted(_ANCHOR_KEYS)}"
+                )
+            anchor_id = _str(raw["id"], f"{name}: anchor id")
+            if not _ANCHOR_ID.match(anchor_id):
+                raise ShellManifestError(f"{name}: anchor id {anchor_id!r} must be lower-case words with '-'")
+            route = _str(raw["route"], f"{name}: anchor route")
+            _check_href(route, name, "anchor")
+            out.append(
+                AnchorSpec(
+                    package,
+                    anchor_id,
+                    _str(raw["label"], f"{name}: anchor label"),
+                    route,
+                    _str(raw["does"], f"{name}: anchor does"),
+                )
+            )
+    ids = [a.full_id for a in out]
+    if len(set(ids)) != len(ids):
+        dup = sorted({i for i in ids if ids.count(i) > 1})
+        raise ShellManifestError(f"duplicate anchor id: {dup}")
+    return tuple(out)

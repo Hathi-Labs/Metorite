@@ -360,12 +360,13 @@ class _FakeDB:
             raise AssertionError(f"unreadable EXISTS clause in fake: {s}")
         for ex in others:
             negated, inner = bool(ex.group(1)), self.rows.get(ex.group(2), [])
-            passes = self._others_test(ex.group(3), table, ex.group(4))
+            passes = self._others_test(ex.group(3), table, ex.group(4), p)
             found = [r for r in found if any(passes(g, r) for g in inner) is not negated]
         return found
 
     @staticmethod
-    def _others_test(alias: str, table: str, body: str) -> Any:
+    def _others_test(alias: str, table: str, body: str,
+                     params: dict[str, Any] | None = None) -> Any:
         """One test of a row ``g`` of the subquery against a row ``r`` of
         *table*, read from the conjuncts of *body*. Postgres compares text
         byte for byte, and so does this. A conjunct that this cannot read is
@@ -383,6 +384,11 @@ class _FakeDB:
             elif m := re.fullmatch(rf"lower\({a}\.(\w+)\) = {o}\.(\w+)", part):
                 tests.append(
                     lambda g, r, k=m[1], c=m[2]: str(g.get(k, "")).lower() == r.get(c))
+            elif (m := re.fullmatch(rf"lower\({a}\.(\w+)\) = :(\w+)", part)) and params:
+                # A bound value, such as the member's address (CE-4,
+                # ``calendar_attendances``). The route binds it lower-case.
+                tests.append(lambda g, r, k=m[1], v=str(params[m[2]]):
+                             str(g.get(k, "")).lower() == v)
             else:
                 raise AssertionError(f"unreadable EXISTS test in fake: {part}")
         return lambda g, r: all(t(g, r) for t in tests)

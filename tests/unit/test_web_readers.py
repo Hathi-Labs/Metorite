@@ -270,6 +270,16 @@ async def test_the_flags_are_read_on_each_call(monkeypatch) -> None:
     assert len(net.to_jina) == 2 and "J" * 400 in out
 
 
+async def test_a_jina_win_names_the_markdown_type(monkeypatch) -> None:
+    """With the local reader on, Jina's longer text wins. The header names
+    Markdown, not the type of the page that the local reader found short."""
+    _on(monkeypatch, "jina")
+    _serve(monkeypatch, _fixture("empty_result.html"), jina=_jina_page("J" * 400))
+    out = await web_tools.fetch_page(URL)
+    assert "J" * 400 in out and "Type: text/markdown" in out
+    assert "Type: text/html" not in out
+
+
 # ── 2. The flag off is the WEB-1 output ─────────────────────────────────────
 
 
@@ -404,7 +414,7 @@ async def test_the_title_cannot_close_its_block(monkeypatch) -> None:
     assert "Real words of the page" in body
 
 
-@pytest.mark.parametrize("ctype", ["text/plain; charset=utf-8", "application/json", "text/csv"])
+@pytest.mark.parametrize("ctype", ["text/plain; charset=utf-8", "application/json"])
 async def test_a_type_that_is_not_html_gets_the_strip_and_the_web3_line(
         monkeypatch, ctype: str) -> None:
     """Owner decision 2: with Jina off, the regex strip reads, and one plain
@@ -600,8 +610,6 @@ _PDF = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<</Length 6000>>\nstream\n" + _RA
 @pytest.mark.parametrize(("body", "ctype"), [
     pytest.param(_PDF, "application/pdf", id="a-pdf"),
     pytest.param(b"%PDF-1.4 an ASCII body of a PDF " * 40, "application/pdf", id="an-ascii-pdf"),
-    pytest.param(_RANDOM, "application/octet-stream", id="octet-stream"),
-    pytest.param(_ZIPPED, "application/zip", id="zip"),
     pytest.param(_RANDOM, "image/png", id="an-image"),
     pytest.param(_RANDOM, "application/vnd.ms-excel", id="old-excel"),
     pytest.param(_RANDOM, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -684,7 +692,7 @@ async def test_jina_is_asked_last_when_the_local_text_is_short(monkeypatch) -> N
     assert [str(r.url) for r in net.to_jina] == [f"https://r.jina.ai/{URL}"]
     assert [r.url.host for r in net.requests] == [PUBLIC_IP, "r.jina.ai"], "Jina was not last"
     _note, inside, _token = _block(out)
-    assert inside[:2] == [f"URL: {URL}", "Type: text/html; charset=utf-8"]
+    assert inside[:2] == [f"URL: {URL}", "Type: text/markdown"]
     assert "J" * 400 in "\n".join(inside)
 
 
@@ -1317,7 +1325,8 @@ def test_the_worker_imports_nothing_from_the_platform() -> None:
         elif isinstance(node, ast.ImportFrom):
             modules.append((node.module or "").split(".")[0])
     third_party = {m for m in modules if m not in sys.stdlib_module_names}
-    assert third_party == {"trafilatura"}, third_party
+    # WEB-3: file mode imports MarkItDown and pdfplumber, inside functions.
+    assert third_party == {"trafilatura", "markitdown", "pdfplumber"}, third_party
 
 
 def test_the_real_extract_opens_no_socket(monkeypatch) -> None:

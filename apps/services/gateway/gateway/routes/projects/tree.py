@@ -23,12 +23,13 @@ tree.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Query
 from gateway.routes.projects.authority import (
     assert_may_change_lead,
     assert_may_convert_node,
@@ -73,6 +74,7 @@ from gateway.routes.projects.core import (
     node_level,
     org_groups,
     personal_tree_owner,
+    reader_day_start,
     record_activity,
     record_field_change,
     remap_task_statuses,
@@ -91,6 +93,8 @@ from gateway.routes.projects.core import (
     validate_icon_slot,
     validate_lifecycle_settings,
 )
+from gateway.routes.projects.notifications import project_audience
+from gateway.routes.projects.due_day import overdue_sql
 from gateway.routes.projects.tasks import _narrow_agent_body
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -118,7 +122,9 @@ def _refuse_pinned_space(user: UserContext, parent_id: object) -> None:
 
     A node under a parent passes here: the parent must be visible, and the
     visibility seam narrows it to the pins (``core._narrow_for_agent``). A
-    no-op for a member and for a connection with no pins.
+    no-op for a member and for a connection with no pins. The test reads the
+    pins alone on purpose (D-EA-12, spec §10.8): a connection with only a
+    left-out list reaches wide, and a new space is under no left-out mark.
     """
     agent = getattr(user, "agent", None)
     if agent is None or parent_id or not agent.pinned_projects:
@@ -482,6 +488,31 @@ def _nest(nodes: dict[str, dict]) -> list[dict]:
     return roots
 
 
+async def grantable_project_ids(user: UserContext) -> frozenset[str]:
+    """The project ids that the member of the session may mark on one of
+    their own agent connections (WS-55 EA-17c-1, D-EA-13,
+    ``external_agent_access.md`` §10.8).
+
+    Each team project that :func:`_visible_projects` returns, and each root
+    of the member's own personal tree, as ``GET /projects/tree`` nests it in
+    ``personal``. Change access refuses any other id with 422.
+
+    ⚠️ It is the MEMBER's sight. The visibility drops ``user.agent``, so the
+    narrowing of an agent never decides what its member may grant. The
+    session is the request's own tenant (``_tenant_session``).
+    """
+    async with _tenant_session() as db:
+        vis = dataclasses.replace(await resolve_visibility(db, user), agent=None)
+        team = await _visible_projects(db, user, vis)
+        own = await _own_personal_projects(db, vis)
+    own_ids = {str(r.id) for r in own}
+    personal_roots = {
+        str(r.id) for r in own
+        if str(r.parent_project_id or "") not in own_ids
+    }
+    return frozenset({str(r.id) for r in team} | personal_roots)
+
+
 @router.get("/tree")
 async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     """The caller's forest, nested.
@@ -738,7 +769,7 @@ async def get_portfolio_summary(
                 f"SELECT t.project_id, s.category, count(*) AS n,"
                 f"       count(*) FILTER ("
                 f"         WHERE t.due_at IS NOT NULL"
-                f"           AND t.due_at < now()"
+                f"           AND {overdue_sql()}"
                 f"           AND s.category <> ALL(CAST(:closed AS text[]))"
                 f"       ) AS overdue"
                 f"  FROM pm_tasks t"
@@ -747,7 +778,8 @@ async def get_portfolio_summary(
                 f"   AND ({task_visibility_clause(vis, 't')})"
                 f" GROUP BY t.project_id, s.category"
             ),
-            {**vis.params, "closed": sorted(CLOSING_CATEGORIES)},
+            {**vis.params, "closed": sorted(CLOSING_CATEGORIES),
+             "day_start": await reader_day_start(db, vis.email)},
         )).fetchall()
 
     totals: dict[str, int] = {}
@@ -854,7 +886,7 @@ def node_counts_sql(visibility_clause: str) -> str:
         # the closed set must not leave this one counting finished work late.
         "       count(*) FILTER ("
         "         WHERE t.due_at IS NOT NULL"
-        "           AND t.due_at < now()"
+        f"           AND {overdue_sql()}"
         "           AND s.category <> ALL(CAST(:closed AS text[]))"
         "       ) AS overdue"
         "  FROM pm_tasks t"
@@ -1005,6 +1037,7 @@ async def get_node_summary(
                 **vis.params,
                 "ids": scope_ids,
                 "closed": sorted(CLOSING_CATEGORIES),
+                "day_start": await reader_day_start(db, vis.email),
             },
         )).fetchall()
 
@@ -1874,6 +1907,33 @@ async def list_grants(
             "you_see_all": bool(vis.unrestricted),
             "groups": await org_groups(db, getattr(node, "organization_id", None)),
         }
+
+
+@router.get("/nodes/{project_id}/audience")
+async def read_project_audience(
+    project_id: str,
+    people: str = Query(default="", max_length=4000),
+    beyond: str = Query(default="", max_length=64),
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Who can open a project, and who a change would open it to (WS-67 RX-1).
+
+    The chat reads it before a card in a chat that read outside mail, because a
+    grant row does not answer this: a grant on a parent counts, and so does a
+    group. *people* is a comma list of addresses. *beyond* is the project that a
+    move leaves. The caller must see each project, and the 404 is the same for
+    each (R5). It writes nothing.
+    """
+    asked = list(dict.fromkeys(p.strip().lower() for p in people.split(",") if p.strip()))
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        node = await load_visible_project(db, vis, project_id)
+        if beyond:
+            await load_visible_project(db, vis, beyond)
+        return await project_audience(
+            db, str(node.id), vis.organization_id, people=asked,
+            beyond=str(beyond).strip().lower(),
+        )
 
 
 @router.post("/nodes/{project_id}/grants", status_code=201)

@@ -1,6 +1,6 @@
 # One Projects app — My Tasks becomes a view, and the phone shows the work
 
-**Status: ACTIVE, 2026-10-23. OP-12b is BUILT 2026-10-30 (task 1108, UI only, no migration): one name and one heading for the private space (§4.1, D-OP-2).** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
+**Status: ACTIVE, 2026-10-23. PJP-14 is BUILT 2026-11-04 (task 1605, no migration): a ready agent task is not New (D170 amendment, §4.2). INB-1 is BUILT 2026-11-03 (D170, task 1522, no migration): the task inbox holds only captures, and assigned untriaged work shows in My tasks as New. OP-12b is BUILT 2026-10-30 (task 1108, UI only, no migration): one name and one heading for the private space (§4.1, D-OP-2).** The owner accepted D-OP-1 to D-OP-8 (§8). Owner directive of 2026-10-23, recorded in §1.
 Verified against code on 2026-10-23, at `origin/main` `f206f5251`. Board row
 **WS-64**. OP-1 is merged (#1255), dark behind `NEXT_PUBLIC_PROJECTS_COMPACT_CHROME`. OP-7 is merged (#1258), and done-when 4 is met (visual review passed 2026-10-23 at 390 and 1280 px, light, compact, changed accent). OP-6a is merged (#1260). OP-8 is merged (#1261), with fix round 1 (D-OP-14 and the lead write of D-OP-11). OP-6c is merged (#1262): `nudge_task`, `export_tasks` and `attach_to_task`, with eval cases PO-15 to PO-17 and an R8 test (`test_projects_nudge_attach_r8.py`). OP-6b is BUILT 2026-10-24, with fix round 1, in review: `grant_access` and `revoke_access`, with eval cases PO-18 to PO-20 and an R8 test (`test_projects_grant_tools_r8.py`). The OP-3 precondition of task #304 is BUILT 2026-10-24: each node of a private tree carries `personal_owner` (migration 297). OP-6d is BUILT 2026-10-24: `report_recipients`, `add_report_recipient`, `remove_report_recipient` and `set_report_schedule`, with eval cases PO-21 to PO-25 and an R8 test (`test_projects_report_delivery_r8.py`). OP-6 now owes no route, and `PENDING_OP6` is empty. OP-6e is BUILT 2026-10-24 (task #301): `waiting_agent_requests` lists the agent requests that wait for the member, with a card link for each, and answers none. The archive approval is class X (reason: D-OP-13, EA3-40), with eval cases PO-26 and PO-27 and an R8 test (`test_projects_agent_requests_r8.py`). OP-2 is BUILT 2026-10-24, dark, with fix round 2. OP-3 is BUILT 2026-10-24 (task #297), dark behind the OP-2 flag: the server half and the sidebar half. OP-10 is BUILT 2026-10-24, with fix rounds 1 and 2 (D-OP-16): a folder becomes a project through `POST /projects/nodes/{id}/convert`, with the tree menu entry, the chat tool `convert_folder_to_project`, eval case PO-28 and an R8 test (`test_projects_folder_convert.py`). OP-2b is BUILT 2026-10-24 and meets §4.3. OP-5 is not built. OP-4 is BUILT 2026-10-24 (task #298), dark behind the OP-2 flag, with fix round 2: the /tasks redirect keeps the NS-4b `fill.*` keys and opens capture through the `capture` ShellJob, and `chatLink` no longer rewrites /tasks. Post-merge fixes are BUILT 2026-10-25, with no migration. #128 has a stopgap: the board and My work read again on a chat write, and on focus or on a return to the tab (at most once in 15 s). #8 is fixed: the page closes the phone drawer only when it opened it. #11 is fixed: a move refreshes My work and the open panel. The feed names the app My work, and "Show all" opens `/projects?app=my-today`. "New task" falls back to `/tasks?do=capture` for a member with `feature:tasks` and no `feature:projects`. The visible "My Tasks" labels of Email, Notes and the chat cards now say My work. The labels of the two lists are renamed (WS-64, 2026-10-27, labels only): Inbox is now "My task inbox", and "My Next Actions" is now "My tasks". The internal ids `my-inbox`, `my-next`, `INBOX` and `NEXT` stay. The same change keeps archived projects out of the summaries, My work and every picker (§9, OP-11 slice 1). OP-11 "My tasks" is IN PROGRESS. Its server half is BUILT 2026-10-27, with no migration: one "mine" (`core.mine_clause`), `scope=mine` on the list and the calendar, `GET /projects/my/summary`, `subject=me` on Analytics, and the MCP edge fixes of audit P1-3 and P1-4 (§9 OP-11, "The server half"). Its UI half is BUILT 2026-10-27 on branch `ws64-op11-my-tasks-ui`, with fix round 1, behind the My work flag: the My tasks roll-up space with the project tabs, the chips, a board by stage, a project chip on each row, and the old list ids as aliases (§9 OP-11, "The UI half"). The Timeline tab is not built.
 
@@ -149,7 +149,7 @@ bottom sheet. Nothing uses it for filters.
 ```
 Projects
 ├── My work                     ← new section, for me only
-│   ├── My task inbox    12     capture lands here
+│   ├── My task inbox    12     capture lands here (D170: captures only)
 │   ├── Today             5     my tasks with a date of today or before
 │   ├── My tasks         31
 │   ├── Waiting for       4
@@ -186,6 +186,13 @@ Projects
 
 1. **Capture.** A quick add in My work, or the capture tab on the phone, makes
    a task in the personal root with no disposition. It shows in My task inbox.
+   Changed 2026-11-03 by D170 (INB-1): the inbox holds only captures. Assigned untriaged work shows in My tasks as New.
+   Amended 2026-11-04 by D170 (PJP-14, task 1605): a ready agent task is never New. Ready means all of these hold.
+   The task is on a company board, and its `source` is `mcp`. It has an assignee, a description and a type. Its status is not in the `triage` stage.
+   My assignment was made by the task's creator, so a person's hand-off still shows New.
+   A date or an estimate is not required. A ready task keeps its derived disposition, Next or Someday.
+   The rule writes nothing. An edit that breaks a condition makes the task New again.
+   `mine.is_ready_agent_task` and `mine.READY_AGENT_SQL` hold the rule. `personal.UNTRIAGED_CLAUSE` composes the SQL.
    A `#project` token or a project chip sends it straight to a project
    (S6g already built this in My Tasks).
 2. **Clarify.** My task inbox opens the Clarify flow of `ClarifyPanel.tsx`. The
@@ -1325,12 +1332,13 @@ is dark until a UI slice calls it.
    level by `core.node_level` (`/projects/tree` and `/projects/nodes/{id}`).
 10. **The inbox count.** `by_disposition.inbox` is the count of the "My task
     inbox" badge (`inbox.ts` `inboxCount`). It holds the INBOX rows that do
-    not wait for their date. It also holds the untriaged board rows. An
-    untriaged board row is open and on a company board. A colleague assigned
-    it to me, and I set no disposition. This is `personal.UNTRIAGED_CLAUSE`,
-    the set of `/my/inbox?untriaged=true`. Such a row also counts in `next`
-    or `someday`, because `viewCounts` counts it there. The client counters
-    are independent.
+    not wait for their date. Changed 2026-11-03 by D170 (INB-1): the inbox holds only captures. Assigned untriaged work shows in My tasks as New.
+    The untriaged board row is open and on a company board. A colleague
+    assigned it to me, and I set no disposition. This is
+    `personal.UNTRIAGED_CLAUSE`, the set of `/my/inbox?untriaged=true`. It
+    counts in `by_disposition.new` and in `next` or `someday`. A ready agent
+    task (D170 amendment) is not here. It shows under Next or Someday. The client
+    counters are independent.
 11. **Cost: measured, and not fixed here.** `/my/inbox` takes about 1.5 to
     2.3 s at 5000 tasks. This change did not cause it. The overlay join uses
     `lower(member_email)`, so it cannot use `idx_pm_task_personal_member`.
@@ -1431,6 +1439,99 @@ Overview  Board  List  Table  Calendar  Timeline │ My open bugs  Sprint │ + 
 Each slice is frontend only. Each one passes the visual review in light mode,
 compact density and a changed accent, at 1440, 1024, 768 and 390 px.
 
+
+## 9b. The phone, the inbox, Undo, select many and the archive (2026-11-03)
+
+**Status:** 📋 SPEC. MOB-1 and INB-1 are in build. Decisions: D170 and D171. Metorite: epic 1500 (the phone), tasks 1521 (MOB-1), 1522 (INB-1) and 1523 (this section).
+
+### 9b.1 The owner's asks
+
+On 2026-11-02 and 2026-11-03 the owner asked for five things.
+
+1. The Projects app must work very well on a phone. The owner asked for a full review of the phone view.
+2. "Shouldn't my task inbox be explicitly the task that I capture? Why are other tasks also coming in from elsewhere?" The owner chose captures only (D170).
+3. "When I make a mistake in the projects app, like reopening a task, I should be able to undo what I did."
+4. Select many tasks in every view, Done too, archive them in one act, and find them in an archive view. The owner chose no auto-archive (D170.4).
+5. When My tasks is empty, point to projects and spaces where the member can pick up work. WS-PJP owns this as PJP-12. MOB-5 below is the same slice.
+
+### 9b.2 What the code does on 2026-11-03
+
+- **The inbox.** `inboxRows` (`app/tasks/lib/inbox.ts:53-58`) adds each untriaged company task assigned to the member, under "From Projects". The count (`gateway/routes/projects/mine.py:257-310`) adds them too. So a project task shows twice.
+- **The chat tools.** `my_work(view="inbox")` lists all open work (`skill_projects/reads.py:654-668`). `my_tasks_list("inbox")` misses the untriaged rows (`skill_my_tasks/core.py:662`).
+- **Undo.** One shared engine exists (`lib/undo.ts`, Ctrl+Z, 50 steps). A plain status change has no Undo, and that includes a reopen. Panel edits, moves, merges and bulk acts have no Undo either. Delete asks first and has no Undo. My tasks has Undo only on the subtask cascade.
+- **Select many.** Only the List and the Board of one project select tasks (`page.tsx:2742-2761`, `BulkBar.tsx`). My tasks, its Done chip, Table, Calendar and Timeline select nothing. No Ctrl+A exists.
+- **The archive.** Archived tasks show only behind each project's Archived filter. No view lists them across projects. Done tasks never archive by themselves, unless a project opts in.
+
+### 9b.3 The phone audit
+
+The audit captured every Projects surface at 390 px and 360 px, in dark and light. It found 1 P0, 12 P1, 12 P2 and 7 P3. The record is `project-docs/research/projects_phone_audit_2026-11.md`.
+
+- **P0.** On a phone, a member cannot leave Overview. Only a reload gets out.
+- **The weakest surface.** The List is the landing screen. On a phone it draws the 640 px desktop table, so the due date is off-screen and a finish takes four taps.
+- **What holds up.** No page scrolls sideways. The bottom bar never covers content. The phone board and the task detail work well.
+
+### 9b.4 The slices
+
+| Slice | Task | What | Done when | Tier |
+|---|---|---|---|---|
+| MOB-1 | 1521 | Leave Overview on a phone | From each Overview at 390 px, one tap returns to the List. The command "List view" works from Overview | LOW |
+| MOB-2 | 1537 | A phone row for the List: tick, title, project, due, status | At 390 px and 360 px, the row shows all five with no sideways scroll. One tap finishes a task | MEDIUM |
+| MOB-3 | 1538 | The address follows the phone: `?task=` on open, Back closes the task, `?project=` stays | Back closes an open task. A reload keeps the project and the task | MEDIUM |
+| MOB-4 | 1539 | Find, add, capture: a title button opens the Projects sheet, capture stays in place, an empty project offers "Add a task" | Each of the three works at 390 px. No keyboard hint shows on a touch screen | MEDIUM |
+| MOB-5 | 1499 | Empty My tasks names projects with open work (PJP-12) | With no open task, up to 5 projects or spaces show, each with its count and a link | MEDIUM |
+| MOB-6 | 1540 | Phone shapes for Calendar (an agenda), Timeline (off the phone) and the View sheet (a grid) | No mode is hidden at 360 px. Calendar reads as a list of days | LOW |
+| MOB-7 | 1541 | Touch sizes and sheets: the bulk bar, card menus, remove buttons, `SelectButton` | Each control is 44 px or larger. The bulk bar takes at most 20% of the screen | LOW |
+| MOB-8 | 1542 | States: the phone skeleton, the search error, a failed tree read | Each state says what happened and offers the next step | LOW |
+| INB-1 | 1522 | The inbox holds captures only (D170) | The list, the count and both chat tools hold only captures. An assigned untriaged task shows in My tasks as New | MEDIUM |
+| PJP-14 | 1605 | A ready agent task is not New (D170 amendment) | An `mcp` task with an assignee, a description and a type, on a company board, outside triage, shows under Next or Someday and not under New. Breaking a condition makes it New again | MEDIUM |
+| UNDO-1 | 1528 | Undo for a status change (and a reopen), each panel edit, a move, archive and unarchive | Each act shows a toast with Undo and answers Ctrl+Z. Undo restores the exact state before | MEDIUM |
+| UNDO-2 | 1543 | Undo for bulk acts and delete | One Undo restores every task of a bulk act. Delete acts at once with Undo, as D109.5 asks | MEDIUM |
+| SEL-1 | 1544 | Select many in My tasks (each chip, Done too) and in Table, with Ctrl+A and a bulk bar across projects | The member selects every done task and archives them in one act, with Undo | MEDIUM |
+| ARC-1 | 1545 | One Archive view across projects in My work | It lists the member's archived tasks. Restore works for one task or many | LOW |
+
+### 9b.5 Fences
+
+- MOB-1: a vitest of the rule that decides which chrome shows in each mode.
+- INB-1: a test that a capture is in the inbox, that an assigned untriaged task is not, and that the count equals the list. The SQL runs against a real database (R8).
+- UNDO-1 and UNDO-2: a test for each act that its inverse restores the row it changed.
+- SEL-1 and ARC-1: a test that a bulk archive of the Done chip writes one request and that the Archive view lists the rows.
+
+Each fence is advisory until its slice builds.
+
+## 9c. The task card (D172, 2026-11-03)
+
+**Status:** 📋 SPEC. The design record is `project-docs/research/task_card_redesign_2026-11.md`. Its mockup put an Ask line on the card. D172.4 replaced that with the AI pill.
+
+**The frame and the tabs:** `one_record_card.md` (D181) owns them. ORC-2 and ORC-3 move this card onto them. This section keeps the card's content.
+
+### 9c.1 What is wrong today
+
+- **The chat goes away.** The card covers it. The Calendar card is a `fixed inset-0 z-[80]` window (`TaskFocusModal.tsx:64`). The Projects full card is `fixed z-50` (`projects/page.tsx:5809`). The phone card is `z-[60]`, over the bottom bar and its Ask tab (`:5575`).
+- **Two status truths.** "Next action" (the member's list) sits beside the board status "Backlog".
+- **Priority in four places.** "Urgent (auto)", "Low Priority", `Eliminate?` and "Not yet judged" all show at once.
+- **Duplicates.** The title shows twice, and the project shows twice.
+- **Too many live controls.** Ten controls sit in the header. Nine Details rows are all live controls.
+- **Two cards for one task.** Calendar draws `TaskDetail`, and Projects draws its own panel.
+
+### 9c.2 The slices
+
+Each slice except TC-1 ships behind `NEXT_PUBLIC_TASK_CARD_V2`. None needs a migration.
+
+| Slice | Task | What | Done when | Tier |
+|---|---|---|---|---|
+| TC-1 | 1527 | The pill stays. No card covers the AI pill, and Calendar publishes its open task to the assistant's facts | At each width, with a card open (side or full), the pill shows and opens the assistant. The facts name the open task in Projects, Tasks and Calendar | MEDIUM |
+| TC-2 | 1546 | The task chip in the pill (D172.4 to D172.6): a removable reference, one chat per task, and the Re-clarify and Fill details chips | A message with the chip goes to the task's chat and carries the task as context. Removing the chip sends to the normal chat. A change still asks on its card | MEDIUM, with the full review |
+| TC-3 | 1547 | One card everywhere: Calendar and `/tasks` use the Projects card. The side panel by default, and expand to full screen | The same component draws the card on the three surfaces. Expand and Escape work on each | MEDIUM |
+| TC-4 | 1548 | Read first: the header, the title and status pill, the five facts, edit on click, "More details" | Each fact reads as text and opens its editor on one click. The header holds at most five controls | LOW |
+| TC-5 | 1549 | The My plan line | My plan folds to one line by default and opens in place. Only the member sees it | MEDIUM |
+
+### 9c.3 Fences
+
+- TC-1: a test that the card layers sit below the pill's layer at each width.
+- TC-2: a test that the chip adds the task to the assistant's facts and routes to the task's chat.
+- TC-3: a source scan that no surface draws a second task card.
+
+Each fence is advisory until its slice builds.
 
 ## 10. Verification
 

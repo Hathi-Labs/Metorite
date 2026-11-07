@@ -480,6 +480,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.reach_loop_skipped", error=str(exc))
 
+    # KG-9 (task 786): the memory layer refuses to start while two or more
+    # organizations exist, because the Mem0 and Graphiti stores have no org
+    # scope. The gateway still starts. Only Mem0 and Graphiti stay down, and
+    # each call asks the guard again. With MEM0_ENABLED and GRAPHITI_ENABLED
+    # off this reads two settings and opens no session.
+    # Fence: tests/unit/test_memory_tenant_guard.py.
+    try:
+        from acb_memory.tenant_guard import MemoryTenancyRefused, check_memory_tenancy
+        try:
+            await check_memory_tenancy()
+        except MemoryTenancyRefused as exc:
+            _log.error("gateway.memory_refused", error=str(exc)[:300])
+    except Exception as exc:
+        _log.warning("gateway.memory_tenancy_check_skipped", error=str(exc)[:200])
+
     # Start the mailbox purge loop (routes/email/memory_purge.py; spec
     # email_app_master_plan.md §12.3.13.9, WS-17 EM-G11f2). It finishes each
     # Mem0 purge that a disconnect owes. No flag: with Mem0 off a tick ends
@@ -519,9 +534,23 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # The brief's kinds and hooks register at import (WS-BRIEF BR-2a-1,
         # gateway/brief/run.py), so the worker holds them from its first tick.
         # Its own try: an import error loses the brief, never the queue.
+        import gateway.brief.monitor  # noqa: F401  (BR-2d)
         import gateway.brief.run  # noqa: F401
     except Exception as exc:
         _log.warning("gateway.brief_jobs_skipped", error=str(exc))
+    try:
+        # The chat summary kind and its seed hook register at import (WS-63
+        # PZ-33b, gateway/chat_summary_job.py). Dark: the seed needs
+        # ASSISTANT_CHAT_SUMMARY_ORGS and the Router on. Its own try, as above.
+        from gateway import chat_summary_job  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.chat_summary_jobs_skipped", error=str(exc))
+    try:
+        # The stub of `align.check` registers at import (WS-ALN ALN-1,
+        # gateway/align/check.py). Its own try, for the reason above.
+        from gateway.align import check as _align_check  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.align_jobs_skipped", error=str(exc))
     try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
@@ -1439,7 +1468,8 @@ if _HAS_MAF:
                                 name=f"chat:{user_id[:20]}",
                                 content=_mem_last_user[:500],
                                 source_description="copilot_chat",
-                                group_id=user_id,
+                                # KG-9: the episode's group is its org.
+                                organization_id=_organization_id,
                             )
                     except ImportError:
                         pass
@@ -1459,9 +1489,18 @@ if _HAS_MAF:
             import time as _obs_time
             _obs_run_id = assistant_message_id or _thread_id or None
             _obs_started = _obs_time.monotonic()
+            # H-201c: the feed is keyed for each tenant. Capture the org of
+            # the request NOW, because the end event fires from the detached
+            # on_complete, which may run after the middleware released it.
+            try:
+                from acb_common.db import current_tenant as _obs_tenant
+                _obs_org = _obs_tenant()
+            except Exception:
+                _obs_org = None
             try:
                 from acb_common import publish_activity
                 publish_activity(
+                    organization_id=_obs_org,
                     kind="agent", phase="start", agent="orchestrator",
                     run_id=_obs_run_id, thread_id=_thread_id or None,
                     user=user_id or None, model=(_resolved_model or model or None),
@@ -1480,6 +1519,7 @@ if _HAS_MAF:
                     try:
                         from acb_common import publish_activity
                         publish_activity(
+                            organization_id=_obs_org,
                             kind="agent", phase="end", agent="orchestrator",
                             run_id=_obs_run_id, thread_id=_thread_id or None,
                             status="completed",
@@ -1873,6 +1913,12 @@ try:
     from gateway.routes.brief_today import router as _brief_today_router
 
     app.include_router(_brief_today_router)
+
+    # WS-BRIEF BR-2d — `GET /admin/brief/health`, the delivery stats of the org
+    # (`core_brief.md` §7). Dark: the brief off for the org answers 404.
+    from gateway.routes.admin_brief_health import router as _brief_health_router
+
+    app.include_router(_brief_health_router)
 except Exception:  # pragma: no cover
     pass
 
@@ -2126,6 +2172,40 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-MCP MCP-P1b-1 — the routes of an app request
+    # (external_agent_access.md §19.5): the ask of an agent, the member's list,
+    # one read and the member's decision. The store is
+    # `gateway/app_requests.py`. Ships dark: 404 while `agent_access_enabled`
+    # is off. No pair is in `MCP_ROUTES` yet (MCP-P1b-2).
+    from gateway.routes.agent_requests import router as _agent_requests_router
+
+    app.include_router(_agent_requests_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-MCP SW-31a — the org's written rules for agents
+    # (agent_coordination.md SW-31): the save, the history, the blocks that
+    # apply to a task, and the refs for `my_work`. Ships dark: 404 while
+    # `AGENT_GUIDANCE_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_guidance import router as _agent_guidance_router
+
+    app.include_router(_agent_guidance_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-ALN ALN-5a — the rules of a project (project_alignment.md §4.2), on
+    # the one guidance store: create, accept, edit, retire, the level, the
+    # list and the history. Ships dark: 404 while `PROJECT_RULES_ORGS` does
+    # not hold the caller's org.
+    from gateway.routes.project_rules import router as _project_rules_router
+
+    app.include_router(_project_rules_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):
@@ -2171,6 +2251,11 @@ class Version(BaseModel):
     #: shows whether a box serves them. With it off, every reminder route
     #: answers 404. Off by default.
     calendar_reminders: bool = False
+    #: WS-CAL CE-4 (`calendar_events_reminders.md` §9). The gateway's
+    #: `CALENDAR_EVENTS` flag, the ONE switch of the event store, so `curl`
+    #: shows whether a box serves it. With it off, every entry route
+    #: answers 404 and the calendar read has no `entries` key. Off by default.
+    calendar_events: bool = False
     #: True when a SIGHUP reloads the flags of this process with no restart
     #: (`gateway/flag_reload.py`). Check it BEFORE a SIGHUP: a gateway
     #: without the handler ends on that signal. `flags_reloaded_at` is the
@@ -2275,6 +2360,7 @@ async def version() -> Version:
     from gateway import flag_reload
     from gateway.push import flags as push_flags
     from gateway.routes.projects.reminders import reminders_enabled
+    from gateway.routes.tasks.entries import events_enabled
 
     applied_sha, applied_at = applied_marker()
     return Version(
@@ -2285,6 +2371,7 @@ async def version() -> Version:
         applied_at=applied_at,
         web_push=push_flags.enabled(),
         calendar_reminders=reminders_enabled(),
+        calendar_events=events_enabled(),
         flag_reload=flag_reload.installed(),
         flags_reloaded_at=flag_reload.last_reload(),
     )
@@ -2525,7 +2612,17 @@ async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user))
     from acb_llm.guardrails import CITATION_RE  # local import to avoid cold-start cost
 
     trace_id = uuid.uuid4().hex
-    user_id: str = req.user_email or getattr(_user, "email", "") or "anonymous"
+    # H-438 (task 1127): the session names the member, never the body. The
+    # member keys the Mem0 read below. The run doors' own helper drops a
+    # signed-in member's claim of another person, and keeps an own claim in
+    # any case as the session's address. A service caller keeps its claim.
+    # Lazy import, as the router mount does. Fence:
+    # tests/unit/test_chat_payload_identity_claims.py.
+    from gateway.routes.agent import _drop_identity_claims
+
+    claims: dict[str, str | None] = {"user_email": req.user_email} if req.user_email else {}
+    _drop_identity_claims(claims, _user, keep_own=True)
+    user_id: str = claims.get("user_email") or getattr(_user, "email", "") or "anonymous"
     _log.info("pull.received", query=req.query, user=user_id, trace_id=trace_id)
     try:
         from orchestrator.agents import build_orchestrator_agent, enrich_instructions_with_memory

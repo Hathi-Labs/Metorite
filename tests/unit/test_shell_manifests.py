@@ -19,6 +19,7 @@ from acb_common.app_manifests.shell_manifest import (
     SYSTEM_POINTS,
     ShellManifestError,
     SystemContribution,
+    load_anchors,
     load_contributes,
     load_gates,
     load_jobs,
@@ -28,24 +29,27 @@ from gateway.routes.shell import intent
 
 ROOT = Path(__file__).resolve().parents[2]
 GENERATED = ROOT / "workbench/control_plane/src/lib/shell/jobs.generated.ts"
+ANCHORS_TS = ROOT / "workbench/control_plane/src/lib/shell/anchors.generated.ts"
 VOCABULARY = ROOT / "workbench/control_plane/src/lib/shell/vocabulary.generated.ts"
 ME = ROOT / "apps/services/gateway/gateway/routes/admin/me.py"
 REGISTRY = ROOT / "workbench/control_plane/src/lib/shell/registry.ts"
 INTENT = ROOT / "apps/services/gateway/gateway/routes/shell/intent.py"
 
 ORDER = [
-    "capture", "compose", "plan-day", "new-project", "new-chat", "invite", "new-lead",
+    "capture", "compose", "plan-day", "set-reminder", "new-project", "new-chat", "invite", "new-lead",
     "new-deal", "log-call", "find-record", "add-mcp", "review-integrations",
     "connect-agent", "find-person", "find-knowledge", "write-page", "add-product",
-    "add-topic", "edit-profile", "appearance", "whatsapp-reply", "find-chat-file",
+    "add-topic", "new-space", "edit-profile", "appearance", "whatsapp-reply", "find-chat-file",
     "review-approvals",
 ]
 
 #: (id, label, meaning, feature, href, fields, admin, (fallback_feature, fallback_href))
 PRE_SLICE_PY = [
-    ('capture', 'New task', 'add a task, a to-do or a reminder for themselves', 'projects', '/projects?do=capture', {'title': "the task itself, in the member's own words, without 'remind me to'"}, False, ('tasks', '/tasks?do=capture')),
+    # RX-6 (2026-11-02): the capture job stopped taking a reminder. The set-reminder job is new.
+    ('capture', 'New task', 'add a task or a to-do for themselves. A reminder is a different job: set-reminder', 'projects', '/projects?do=capture', {'title': "the task itself, in the member's own words"}, False, ('tasks', '/tasks?do=capture')),
     ('compose', 'Write an email', 'write, send or reply to an email', 'email', '/email?do=compose', {'to': 'who the email goes to: a name or an email address', 'subject': 'a short subject line for the email'}, False, (None, None)),
     ('plan-day', 'Plan my day', 'plan, schedule or look at their day, their calendar or their agenda', 'tasks', '/calendar', {}, False, (None, None)),
+    ('set-reminder', 'New reminder', 'set a reminder for themselves at a time. A reminder is a moment, not a task: it asks the member at that time', 'projects', '/calendar?do=new-reminder', {'title': "what to remind them of, in their own words, without 'remind me to'"}, False, (None, None)),
     ('new-project', 'New space', 'start a new space, project or department board in Projects', 'projects', '/projects?do=new-project', {}, False, (None, None)),
     ('new-chat', 'New chat', 'start a new conversation with the AI assistant', 'chat', '/chat?do=new-chat', {}, False, (None, None)),
     ('invite', 'Invite a member', 'invite a new person to join the organization', None, '/settings/organization?do=invite', {}, True, (None, None)),
@@ -61,6 +65,7 @@ PRE_SLICE_PY = [
     ('write-page', 'Write a page', 'write a new page of company knowledge, such as a policy, a handbook entry or a how-to', 'knowledge', '/knowledge?do=write-page', {}, False, (None, None)),
     ('add-product', 'Add a product', 'add a product of the company to the Knowledge directory, with a name and other names', 'knowledge', '/knowledge?do=add-product', {}, False, (None, None)),
     ('add-topic', 'Add a topic', 'add a topic to the Knowledge directory, with a name and other names', 'knowledge', '/knowledge?do=add-topic', {}, False, (None, None)),
+    ('new-space', 'New knowledge space', 'make a new space in Knowledge for a group of people who need to see its pages', 'knowledge', '/knowledge?do=new-space', {}, False, (None, None)),
     ('edit-profile', 'Update my profile', 'change their own profile, skills, CV or working hours', None, '/people/me', {}, False, (None, None)),
     ('appearance', 'Change how Metorite looks', 'change the theme, dark or light mode, density or accent', None, '/settings/appearance', {}, False, (None, None)),
     ('whatsapp-reply', 'Reply on WhatsApp', 'answer the customers who wrote to the business on WhatsApp', 'whatsapp', '/whatsapp', {}, False, (None, None)),
@@ -70,9 +75,10 @@ PRE_SLICE_PY = [
 
 #: (id, label, words, app, href, icon, own feature, fallback)
 PRE_SLICE_TS = [
-    ('capture', 'New task', ['task', 'todo', 'to-do', 'capture', 'add', 'remind', 'reminder', 'note'], '/projects', '/projects?do=capture', 'CirclePlus', None, ('tasks', '/tasks?do=capture')),
+    ('capture', 'New task', ['task', 'todo', 'to-do', 'capture', 'add', 'note'], '/projects', '/projects?do=capture', 'CirclePlus', None, ('tasks', '/tasks?do=capture')),
     ('compose', 'Write an email', ['email', 'mail', 'compose', 'send', 'message', 'write'], '/email', '/email?do=compose', 'PenSquare', None, None),
     ('plan-day', 'Plan my day', ['calendar', 'schedule', 'plan', 'day', 'timebox', 'today', 'agenda'], '/calendar', '/calendar', 'CalendarClock', None, None),
+    ('set-reminder', 'New reminder', ['remind', 'reminder', 'nudge'], '/calendar', '/calendar?do=new-reminder', 'BellPlus', 'projects', None),
     ('new-project', 'New space', ['space', 'project', 'workspace', 'department', 'board'], '/projects', '/projects?do=new-project', 'FolderPlus', None, None),
     ('new-chat', 'New chat', ['chat', 'conversation', 'assistant', 'ai', 'talk', 'thread'], '/chat', '/chat?do=new-chat', 'MessageSquarePlus', None, None),
     ('invite', 'Invite a member', ['invite', 'join', 'onboard', 'welcome', 'newcomer'], '/settings/organization', '/settings/organization?do=invite', 'UserPlus', None, None),
@@ -88,6 +94,7 @@ PRE_SLICE_TS = [
     ('write-page', 'Write a page', ['page', 'pages', 'article', 'wiki', 'knowledge', 'handbook'], '/knowledge', '/knowledge?do=write-page', 'FilePlus', None, None),
     ('add-product', 'Add a product', ['product', 'products', 'item', 'catalogue', 'catalog', 'knowledge', 'add', 'new'], '/knowledge', '/knowledge?do=add-product', 'Package', None, None),
     ('add-topic', 'Add a topic', ['topic', 'topics', 'subject', 'theme', 'knowledge', 'add', 'new'], '/knowledge', '/knowledge?do=add-topic', 'Tag', None, None),
+    ('new-space', 'New knowledge space', ['knowledge', 'wiki', 'shared', 'group', 'team', 'handbook', 'new'], '/knowledge', '/knowledge?do=new-space', 'FolderPlus', None, None),
     ('edit-profile', 'Update my profile', ['profile', 'skills', 'cv', 'resume', 'hours', 'me'], '/people/me', '/people/me', 'UserPen', None, None),
     ('appearance', 'Change how Metorite looks', ['appearance', 'theme', 'dark', 'light', 'colour', 'color', 'density', 'accent', 'sidebar'], '/settings/appearance', '/settings/appearance', 'Palette', None, None),
     ('whatsapp-reply', 'Reply on WhatsApp', ['whatsapp', 'wa', 'reply', 'customer', 'customers'], '/whatsapp', '/whatsapp', 'MessageCircle', None, None),
@@ -189,7 +196,7 @@ def test_manifest_files_ship():
     count = sum(
         len(json.loads(f.read_text(encoding="utf-8"))["contributes"].get("jobs", [])) for f in files
     )
-    assert count == len(ORDER) == 23
+    assert count == len(ORDER) == 25
     assert not (shell_manifest.SHELL_DIR / "__init__.py").exists()
 
 
@@ -375,7 +382,7 @@ FROZEN_HREF_FEATURES = {
     "/dashboard": "dashboard",
     "/observability": "observability",
     "/artifacts": "artifacts",
-    "/studio": "workflows",  # STU-A1 added this pair
+    "/studio": "studio",  # STU-A1 added this pair, and STU-J1 moved it off `workflows`
     "/workflows": "workflows",
     "/settings/models": "models",
     "/agents": "agents",
@@ -511,3 +518,44 @@ def test_contributes_loader_rejects_bad_files(tmp_path):
         attempt(a={"nav": [{"href": "/a?do=x"}]})
     with pytest.raises(ShellManifestError, match="only 'key'"):
         attempt(home={"cards": [{"key": "c", "feature": "x"}]})
+
+
+# ── GD-1: the anchors a guide may ring (assistant_guide.md §5.1) ────────────
+
+
+def test_anchors_ts_is_current():
+    want = _generator().render_anchors_ts(load_anchors())
+    have = ANCHORS_TS.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert have == want, "anchors.generated.ts is stale: run `uv run python scripts/gen_shell_manifests.py`"
+
+
+def test_anchors_are_the_shell_parts_and_the_crm_parts():
+    got = load_anchors()
+    assert [a.full_id for a in got] == [
+        "chat.panel", "chat.message-field", "crm.new", "crm.pipeline", "crm.stage-column",
+        "crm.timeline-tab", "crm.add-note", "crm.search", "home.app-list", "home.ask",
+        "home.my-day", "home.account-menu",
+    ]
+    assert all(a.route.startswith("/") and a.label and a.does for a in got)
+
+
+def test_anchors_loader_rejects_bad_files(tmp_path):
+    def attempt(**files: dict):
+        for p in tmp_path.glob("*.json"):
+            p.unlink()
+        for name, contributes in files.items():
+            _vocab_write(tmp_path, name, contributes)
+        return load_anchors(tmp_path)
+
+    good = {"id": "x", "label": "X", "route": "/a", "does": "Does x."}
+    assert [a.full_id for a in attempt(a={"anchors": [good]})] == ["a.x"]
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"anchors": [{**good, "selector": "#x"}]})
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"anchors": [{"id": "x", "label": "X", "route": "/a"}]})
+    with pytest.raises(ShellManifestError, match="duplicate anchor id"):
+        attempt(a={"anchors": [good, good]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"anchors": [{**good, "route": "/a?x=1"}]})
+    with pytest.raises(ShellManifestError, match="lower-case"):
+        attempt(a={"anchors": [{**good, "id": "Bad Id"}]})

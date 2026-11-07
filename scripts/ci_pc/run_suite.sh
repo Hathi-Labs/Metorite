@@ -39,10 +39,13 @@ cd "$(dirname "$0")/../.."
 export PATH="$HOME/.local/bin:$PATH"
 
 E2E=no   # opt-in with --e2e: see "The browser suite" below
+SELECT_FILE=""   # --select-file F: run only the test files listed in F (CIV-6)
 avail_gb=$(awk '/^MemAvailable:/ {print int($2 / 1048576)}' /proc/meminfo)
 # Below 8 GB free, even 2 shards plus the other jobs could stall the VM that
 # Docker Desktop and every distro share. Refuse, and say why.
-if [ "$avail_gb" -lt 8 ]; then
+# Under ci_local.sh (CI_SLOT_GRANTED=1) slots.sh has already reserved the
+# memory, and other runs lower MemAvailable on purpose, so this does not apply.
+if [ -z "${CI_SLOT_GRANTED:-}" ] && [ "$avail_gb" -lt 8 ]; then
   echo "local CI: the WSL VM has only ${avail_gb} GB free. Something else holds it." >&2
   echo "Wait for it, or check with: bash scripts/ci_pc/doctor.sh (from Windows)" >&2
   exit 3
@@ -56,17 +59,22 @@ while [ $# -gt 0 ]; do
     --e2e) E2E=yes; shift ;;
     --no-e2e) E2E=no; shift ;;
     --shards) SHARDS="$2"; shift 2 ;;
+    --select-file) SELECT_FILE="$2"; shift 2 ;;
+    --full) SELECT_FILE=""; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 [ "$SHARDS" -ge 1 ] 2>/dev/null || { echo "--shards needs a number" >&2; exit 2; }
 
 SHA="$(git rev-parse --short HEAD)"
-TAG="$(date +%H%M%S)"
-RUN="$HOME/runs/$(date +%Y%m%d-%H%M%S)-$SHA"
+# $$ in both: two runs on one lane can start in the same second (CIV-6), and
+# container names and the log folder must not collide.
+TAG="$(date +%H%M%S)-$$"
+RUN="$HOME/runs/$(date +%Y%m%d-%H%M%S)-$SHA-$$"
 mkdir -p "$RUN"
 T0=$(date +%s)
-echo "local CI for $SHA, $SHARDS unit shards (${avail_gb} GB free). Logs: $RUN"
+if [ -n "$SELECT_FILE" ]; then what="$(wc -l < "$SELECT_FILE") selected test files"; else what="every test"; fi
+echo "local CI for $SHA, $what, $SHARDS unit shards (${avail_gb} GB free). Logs: $RUN"
 # Keep the last 10 runs. Their logs and reports grew the distro's disk.
 ls -dt "$HOME"/runs/*/ 2>/dev/null | tail -n +11 | xargs -r rm -rf
 
@@ -79,9 +87,35 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 # ── Dependencies: only when a lockfile moved ──────────────────────────────
+# Each run has its own checkout (CIV-6), so its .venv is its own: uv links
+# from its cache, which takes seconds. node_modules is the slow part. Under
+# ci_local.sh (CI_DEPS_DIR) it comes from a store keyed by the lockfile hash:
+# the first run with a new lockfile runs `npm ci`, and every other run copies
+# it with hard links. `.cache` is removed from the copy, because a tool that
+# rewrites a cached file in place would change the store through the link.
 uv sync -q || { echo "uv sync failed"; exit 1; }
 for app in control_plane operator_console; do
   lock="$(sha256sum "workbench/$app/package-lock.json" | cut -d' ' -f1)"
+  if [ -n "${CI_DEPS_DIR:-}" ]; then
+    mkdir -p "$CI_DEPS_DIR"
+    store="$CI_DEPS_DIR/$app-${lock:0:16}"
+    (
+      flock -w 1200 4 || exit 1
+      if [ ! -f "$store/.done" ]; then
+        echo "npm ci: $app (no store for this lockfile)"
+        rm -rf "$store"; rm -rf "workbench/$app/node_modules"
+        (cd "workbench/$app" && npm ci --no-audit --no-fund --loglevel=error) || exit 1
+        mkdir -p "$store" && cp -al "workbench/$app/node_modules" "$store/node_modules" || exit 1
+        rm -rf "$store/node_modules/.cache"; touch "$store/.done"
+      elif [ ! -d "workbench/$app/node_modules" ]; then
+        cp -al "$store/node_modules" "workbench/$app/node_modules" || exit 1
+      fi
+      touch "$store/.done"
+      # Keep the 3 newest stores of this app.
+      ls -dt "$CI_DEPS_DIR/$app"-*/ 2>/dev/null | tail -n +4 | xargs -r rm -rf
+    ) 4>"$CI_DEPS_DIR/$app.lock" || { echo "npm ci failed for $app"; exit 1; }
+    continue
+  fi
   if [ "$(cat "workbench/$app/node_modules/.ci-lock" 2>/dev/null)" != "$lock" ]; then
     echo "npm ci: $app (its lockfile moved)"
     (cd "workbench/$app" && npm ci --no-audit --no-fund --loglevel=error && echo "$lock" > node_modules/.ci-lock) \
@@ -90,6 +124,9 @@ for app in control_plane operator_console; do
 done
 (cd workbench/control_plane && npx playwright install chromium >/dev/null 2>&1)
 
+# ⚠️ -w "$PWD" on every job container. The image's WORKDIR is ~/metorite, so
+# without it a run in its own worktree (CIV-6) tested the shared clone, which
+# holds some OTHER run's commit. The first two-run test (2026-11-04) did that.
 # ── Containers, and their cleanup ─────────────────────────────────────────
 CONTAINERS=()
 cleanup() { [ ${#CONTAINERS[@]} -gt 0 ] && docker rm -f "${CONTAINERS[@]}" >/dev/null 2>&1; true; }
@@ -114,9 +151,18 @@ job() {
   local label="$1" pod="$2"; shift 2
   .venv/bin/python scripts/ci_pc/steps.py "$@" > "$RUN/$label.sh" || { echo "1 0" > "$RUN/$label.rc"; return; }
   local net=(); [ -n "$pod" ] && net=(--network "container:$pod")
+  # ⚠️ ONE backup-restore job at a time on the daemon (CIV-6, 2026-11-04). The
+  # rehearsal (rehearse_verify_scratch.sh) counts the verify containers of the
+  # WHOLE Docker daemon and fails when it sees another run's. It is about 30
+  # seconds, so the lock costs little. The lock file is on the host.
+  local lk=(); [ "$label" = backup-restore ] && lk=(flock "$HOME/.ci-backup-restore.lock")
+  # The same for the Next app's tests: some assert a wall-clock bound
+  # (bodyLook.test.ts: "under 100 ms"), and two vitest runs at once broke it
+  # (110 ms, 2026-11-04). The other jobs are not timed.
+  [ "$label" = frontend ] && lk=(flock "$HOME/.ci-frontend.lock")
   (
     s=$(date +%s)
-    docker run --rm --name "ci-job-$label-$TAG" "${net[@]}" --memory 4g --memory-swap 4g \
+    "${lk[@]}" docker run --rm --name "ci-job-$label-$TAG" -w "$PWD" "${net[@]}" --memory 4g --memory-swap 4g \
       -v "$HOME:$HOME" -v /var/run/docker.sock:/var/run/docker.sock --group-add "$DOCKER_GID" \
       "$IMAGE" bash "$RUN/$label.sh" > "$RUN/$label.log" 2>&1
     echo "$? $(( $(date +%s) - s ))" > "$RUN/$label.rc"
@@ -132,9 +178,27 @@ pg "ci-ladder-$TAG" pgvector/pgvector:pg16 5432 postgres ladder postgres || exit
 pg "ci-backup-$TAG" postgres:16 5432 postgres rehearsal postgres || exit 1
 
 # ── Jobs ──────────────────────────────────────────────────────────────────
+# The local CI tests the whole commit. So it gives pr-check's `changes` job
+# (CIV-3) a FULL result: every shard runs tests/unit, and the guard checks
+# every --must-run file. Fence: tests/unit/test_ci_pc.py.
+FULL_RUN=(--ctx needs.changes.result=success --ctx needs.changes.outputs.full=true --ctx needs.changes.outputs.files=
+          --ctx steps.pick.outputs.mode=full --ctx steps.pick.outputs.paths= --ctx steps.pick.outputs.splits=6
+          --ctx "needs.changes.outputs.shards=[1,2,3,4,5,6]")
 rm -rf junit
+# A selected run (CIV-6) gives the shard jobs a selection result in place of a
+# FULL one: pr-check's own pick step then runs the listed files, and pytest-split
+# still divides them over the shards. The "Unit tests" guard below needs every
+# shard's report for the WHOLE suite (--must-run files), so a selected run
+# skips it: each shard job already fails on a red test.
+SHARD_CTX=("${FULL_RUN[@]}")
+if [ -n "$SELECT_FILE" ]; then
+  SHARD_CTX=(--ctx needs.changes.result=success --ctx needs.changes.outputs.full=false
+             --ctx "needs.changes.outputs.files=$(tr '\n' ' ' < "$SELECT_FILE")"
+             --ctx steps.pick.outputs.mode=selection
+             --ctx "steps.pick.outputs.paths=$(tr '\n' ' ' < "$SELECT_FILE")")
+fi
 for i in $(seq 1 "$SHARDS"); do
-  job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "--replace=--splits 6=>--splits $SHARDS"
+  job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "${SHARD_CTX[@]}" "--replace=--splits 6=>--splits $SHARDS"
 done
 job lint "" lint
 job migrations "ci-ladder-$TAG" migrations
@@ -151,8 +215,10 @@ wait
 # The guard reads every shard's junit, so it runs after them.
 shards_ok=success
 for i in $(seq 1 "$SHARDS"); do [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 0 ] || shards_ok=failure; done
-job unit-tests "" unit-tests --ctx "needs.test.result=$shards_ok"
-wait
+if [ -z "$SELECT_FILE" ]; then
+  job unit-tests "" unit-tests --ctx "needs.test.result=$shards_ok" "${FULL_RUN[@]}"
+  wait
+fi
 
 # ── The browser suite: opt-in, AFTER the unit phase, in three parts ────────
 #
@@ -172,7 +238,7 @@ if [ "$E2E" = yes ]; then
     'for p in 1 2 3; do echo "== part $p of 3"; npx playwright test --project=ci --shard=$p/3 || rc=1; done' \
     'exit $rc' > "$RUN/e2e.sh"
   s=$(date +%s)
-  docker run --rm --name "ci-job-e2e-$TAG" --memory 10g --memory-swap 10g -v "$HOME:$HOME" "$IMAGE" \
+  docker run --rm --name "ci-job-e2e-$TAG" -w "$PWD" --memory 10g --memory-swap 10g -v "$HOME:$HOME" "$IMAGE" \
     bash "$RUN/e2e.sh" > "$RUN/e2e.log" 2>&1
   echo "$? $(( $(date +%s) - s ))" > "$RUN/e2e.rc"
 fi

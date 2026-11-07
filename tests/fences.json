@@ -47,6 +47,7 @@
       "tests/unit/test_email_follow_up_scan.py",
       "tests/unit/test_email_owner_scope_fence.py",
       "tests/unit/test_email_retry_and_uncategorized.py",
+      "tests/unit/test_email_self_reader_tenant_fence.py",
       "tests/unit/test_email_thread_status_parity.py",
       "tests/unit/test_email_upsert_unsubscribe_parity.py",
       "tests/unit/test_fence_lists.py",
@@ -61,6 +62,7 @@
       "tests/unit/test_member_seal.py",
       "tests/unit/test_migration_prefixes.py",
       "tests/unit/test_narrowing_one_seam.py",
+      "tests/unit/test_nightly_release_box.py",
       "tests/unit/test_no_copilot_sdk.py",
       "tests/unit/test_no_direct_ai_vendor_calls.py",
       "tests/unit/test_no_tenant_name_in_prompts.py",
@@ -95,6 +97,7 @@
       "tests/unit/test_chat_placement_classes.py",
       "tests/unit/test_chat_placement_instructions.py",
       "tests/unit/test_ci_pc.py",
+      "tests/unit/test_clarify_eval.py",
       "tests/unit/test_crm_field_type_change_parity.py",
       "tests/unit/test_crm_stage_discipline_parity.py",
       "tests/unit/test_decision_ids.py",
@@ -117,7 +120,8 @@
       "tests/unit/test_projects_report_sections_lockstep.py",
       "tests/unit/test_projects_ui_actions.py",
       "tests/unit/test_reference_links.py",
-      "tests/unit/test_shell_manifests.py"
+      "tests/unit/test_shell_manifests.py",
+      "tests/unit/test_task_routine.py"
     ]
   },
   "ts": {

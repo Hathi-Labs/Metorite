@@ -58,6 +58,9 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
     GW + "email/automation/drafting.py::_llm_compose_assist": (("email",), None),
     GW + "email/automation/rules.py::_llm_generate_rules": (("title",), None),
     GW + "email/digest.py::_digest_brief": (("summary",), GW + "email/digest.py::_BRIEF_SYSTEM"),
+    # WS-63 PZ-33b: the summary of a private chat, a note the member reads.
+    "apps/services/gateway/gateway/chat_summary_job.py::_ask": (
+        ("summary",), "apps/services/gateway/gateway/chat_summary_job.py::SYSTEM"),
     # WS-53 CRM-Q28: the weekly CRM digest, prose a member reads on Reports.
     "apps/services/gateway/gateway/crm_sync/digest.py::_complete": (
         ("summary",), "apps/services/gateway/gateway/crm_sync/digest.py::SYSTEM"),
@@ -73,7 +76,7 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
         ("summary", "title"), GW + "notes/templates.py::build_system_prompt"),
     GW + "notes/summaries.py::_map_reduce": (
         ("summary", "title"), GW + "notes/templates.py::build_system_prompt"),
-    GW + "tasks/ai.py::_llm_propose": (("title", "description"), None),
+    GW + "tasks/ai.py::_ask_clarify_model": (("title", "description"), None),
     GW + "tasks/ai.py::_llm_suggest_title": (("title",), None),
     GW + "tasks/calendar.py::_llm_rank_day": (("summary",), None),
     GW + "tasks/capture_email.py::_llm_capture": (("title", "description"), None),

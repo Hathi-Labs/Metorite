@@ -124,11 +124,13 @@ _PUSHES_COUNTED_SQL = (
 #: The planned push rows that no send step holds, one member after another,
 #: the oldest first. Each tick reads it for each org, so the partial index
 #: ``reach_outbox_push_planned_idx`` of migration 318 serves it.
+#: ``due_summary`` goes last: a morning of summaries is a long queue, and a
+#: reminder that fires at an exact time must never wait behind it (RX-5).
 _PLANNED_PUSHES_SQL = (
-    "SELECT id::text FROM reach_outbox "
+    "SELECT id::text, kind FROM reach_outbox "
     f"WHERE organization_id = {_BOUND_ORG} AND channel = 'web_push' "
     f"AND state = 'planned' AND NOT {_HELD} "
-    "ORDER BY member_email, created_at, id LIMIT :n"
+    "ORDER BY (kind = 'due_summary'), member_email, created_at, id LIMIT :n"
 )
 
 #: The claim. One statement, so two workers never both hold the row. The age
@@ -185,6 +187,22 @@ async def logged_pairs(org: str, member: str) -> set[tuple[str, str]]:
     async with tenant_session(org) as db:
         rows = (await db.execute(text(_LOGGED_SQL), {"m": member})).all()
     return {(str(r[0]), str(r[1])) for r in rows}
+
+
+async def muted_rules(org: str, member: str) -> frozenset[str]:
+    """The exception rules that *member* muted in ``my_day_prefs`` (BR-5).
+    The session opens here, the one site of Reach. A read error is logged and
+    counts as no mutes, so a fault never silences the loop."""
+    from acb_common import get_logger
+
+    from gateway.routes.shell.prefs import muted_rules as read
+
+    try:
+        async with tenant_session(org) as db:
+            return await read(db, member)
+    except Exception as exc:
+        get_logger(__name__).warning("reach.mutes_failed", error_class=type(exc).__name__)
+        return frozenset()
 
 
 async def has_log(org: str, member: str) -> bool:
@@ -298,13 +316,14 @@ async def pushes_counted(db: Any, member: str, *, kind: str, local_date: date,
         "lease": PUSH_LEASE_S})).scalar() or 0)
 
 
-async def planned_pushes(org: str, *, limit: int) -> list[str]:
-    """The ids of the planned push rows of *org* that no send step holds,
-    one member after another, the oldest first."""
+async def planned_pushes(org: str, *, limit: int) -> list[tuple[str, str]]:
+    """The id and the kind of the planned push rows of *org* that no send step
+    holds, one member after another, the oldest first. Each ``due_summary`` row
+    comes after every reminder row."""
     async with tenant_session(org) as db:
         rows = (await db.execute(text(_PLANNED_PUSHES_SQL),
                                  {"n": limit, "lease": PUSH_LEASE_S})).all()
-    return [str(r[0]) for r in rows]
+    return [(str(r[0]), str(r[1])) for r in rows]
 
 
 async def claim_push[T](org: str, outbox_id: str,

@@ -20,6 +20,12 @@ the lock drops the package, so it cannot go stale.
 
 The closure of ``acb_skills``, which WEB-2 changed, gets the strict form:
 each registry package of it must have metadata that this machine can read.
+
+**The web worker (WEB-6).** ``apps/services/web_worker`` is not in
+``uv.lock``. Its closure is ``requirements.lock.txt``, and the licence of
+each package of it is in ``licences.json``, read from PyPI. The lock and the
+table must name the same packages, so a new package fails until its licence
+is recorded. No licence and no name of the closure may be AGPL.
 """
 from __future__ import annotations
 
@@ -52,6 +58,31 @@ _AGPL_BY_NAME = frozenset({"pymupdf", "pymupdfb", "pymupdf4llm"})
 #: The packages that WEB-2 added for Trafilatura. Each must be checked.
 WEB2_CLOSURE = frozenset({"trafilatura", "courlan", "htmldate", "justext",
                           "lxml-html-clean", "dateparser", "babel", "tld"})
+#: The packages that WEB-3 added for the file readers (MarkItDown with the
+#: pdf, docx, pptx and xlsx extras, and pdfplumber). All are MIT, BSD, PSF or
+#: Apache-2.0 (checked on 2026-11-04). Each must be in the closure.
+WEB3_CLOSURE = frozenset({"markitdown", "pdfplumber", "pdfminer-six", "magika", "mammoth",
+                          "cobble", "markdownify", "beautifulsoup4", "soupsieve",
+                          "defusedxml", "python-pptx", "xlsxwriter", "pandas"})
+
+
+#: The web worker (WEB-6). Its closure is not in uv.lock.
+WEB6_DIR = REPO / "apps" / "services" / "web_worker"
+WEB6_REQUIREMENTS = sorted(WEB6_DIR.glob("requirements*.txt"))
+WEB6_LICENCES = WEB6_DIR / "licences.json"
+#: The direct packages of the worker (web_research.md section 5.1).
+WEB6_CLOSURE = frozenset({"playwright", "crawl4ai", "fastapi", "uvicorn"})
+
+_PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*==", re.MULTILINE)
+
+
+def _canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _pins(path: Path) -> set[str]:
+    """Each package that a requirements file pins."""
+    return {_canonical(m.group(1)) for m in _PIN.finditer(path.read_text(encoding="utf-8"))}
 
 
 def _lock() -> dict[str, dict]:
@@ -143,6 +174,7 @@ def test_the_acb_skills_closure_is_checked_in_full() -> None:
     lock = _lock()
     closure = _closure(lock, "acb-skills")
     assert closure >= WEB2_CLOSURE, sorted(WEB2_CLOSURE - closure)
+    assert closure >= WEB3_CLOSURE, sorted(WEB3_CLOSURE - closure)
     unread: list[str] = []
     for name in sorted(closure):
         if "registry" not in lock[name].get("source", {}):
@@ -182,3 +214,34 @@ def test_no_agpl_node_package() -> None:
             if _AGPL_RE.search(json.dumps(licence)):
                 faults.append(f"{path.relative_to(REPO).as_posix()}: {where}: {licence}")
     assert faults == [], f"an AGPL package in a Node lock: {faults}"
+
+
+def test_the_web_worker_closure_has_no_agpl_package() -> None:
+    """WEB-6: each requirements file of the worker is read. The lock and the
+    licence table name the same packages, and none of them is AGPL."""
+    names = {p.name for p in WEB6_REQUIREMENTS}
+    assert {"requirements.txt", "requirements.lock.txt"} <= names, names
+    pinned: set[str] = set()
+    for path in WEB6_REQUIREMENTS:
+        found = _pins(path)
+        assert found, f"{path.name} pins no package"
+        pinned |= found
+    lock = _pins(WEB6_DIR / "requirements.lock.txt")
+    assert _pins(WEB6_DIR / "requirements.txt") >= WEB6_CLOSURE
+    assert pinned == lock, f"a requirement is not in the lock: {sorted(pinned - lock)}"
+    table = {_canonical(n): v for n, v in
+             json.loads(WEB6_LICENCES.read_text(encoding="utf-8"))["licences"].items()}
+    assert set(table) == lock, (
+        f"record the licence of {sorted(lock - set(table))} in licences.json, "
+        f"and drop {sorted(set(table) - lock)}")
+    faults = [f"{n}: AGPL by its name" for n in sorted(lock) if n in _AGPL_BY_NAME]
+    faults += [f"{n}: {t}" for n, t in sorted(table.items()) if _AGPL_RE.search(t) or not t]
+    assert faults == [], f"an AGPL package in the web worker: {faults}"
+
+
+def test_the_web_worker_pin_reader_can_fail(tmp_path: Path) -> None:
+    sample = tmp_path / "requirements.txt"
+    sample.write_text("# x==1\nPyMuPDF==1.0 \\\n    --hash=sha256:ab\nfoo_bar[x]==2\n  # via y\n",
+                      encoding="utf-8")
+    assert _pins(sample) == {"pymupdf", "foo-bar"}
+    assert "pymupdf" in _AGPL_BY_NAME

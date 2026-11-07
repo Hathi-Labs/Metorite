@@ -28,6 +28,7 @@ from gateway.routes.projects.core import (
     COMPLETED_CATEGORY,
     EPIC_TYPE_NAME,
     LAST_DONE_REFUSAL,
+    MAX_DEPTH,
     SETTINGS_REFUSAL,
     STATUS_CATEGORIES,
     TRIAGE_CATEGORY,
@@ -39,6 +40,8 @@ from gateway.routes.projects.core import (
     can_manage_settings,
     clean_payload,
     count_where,
+    holds_lanes,
+    hue_values,
     is_org_wide,
     load_visible_project,
     org_wide_exists,
@@ -48,17 +51,19 @@ from gateway.routes.projects.core import (
     remap_task_statuses,
     require_done_status,
     require_known_tenant,
-    require_same_tenant,
     require_org_vocabulary_edit,
     require_org_vocabulary_write,
     require_row,
+    require_same_tenant,
     resolve_visibility,
     root_project_id,
     router,
     row_to_dict,
     shadowed,
+    status_order_sql,
     status_owner_id,
     status_scope_ids,
+    status_users,
     update_row,
     validate_choice,
     vocabulary_scope,
@@ -74,7 +79,7 @@ class StatusIn(BaseModel):
     position: int | None = None
     category: str | None = None
     #: ⚠️ ``is_default`` is GONE from a status (owner directive 2026-09-06).
-    #: The first lane by position is where work starts — see
+    #: The first open lane in stage order is where work starts — see
     #: ``core.load_default_status`` for why the flag was the wrong answer.
     #: Pydantic drops an unknown field, so a client still sending one is
     #: ignored rather than refused, which is what R6 asks of the release that
@@ -132,8 +137,8 @@ async def _clear_other_defaults(
     a two-step operation that is broken in between.
 
     ⚠️ **Statuses no longer come here at all** (owner directive 2026-09-06).
-    A status has no default any more: the first lane by position is where work
-    starts, and the drag that orders the lanes is the whole control. See
+    A status has no default any more: the first open lane in stage order is where
+    work starts, and the drag that orders the lanes is the whole control. See
     ``core.load_default_status``, which records why the flag lost — the owner
     could not see it, and on the dev database it was set wrong on every root.
 
@@ -162,7 +167,7 @@ async def list_statuses(
         rows = (await db.execute(
             text(
                 "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
-                "ORDER BY position, name"
+                f"ORDER BY {status_order_sql()}"
             ),
             {"root": root},
         )).fetchall()
@@ -199,7 +204,7 @@ async def create_status(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     assert_can_manage_settings(user)
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     name = str(values.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="A status needs a name.")
@@ -232,7 +237,7 @@ async def patch_status(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     assert_can_manage_settings(user)
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     validate_choice(values.get("category"), STATUS_CATEGORIES, "status category")
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_task_statuses", status_id, "Status")
@@ -502,7 +507,7 @@ async def _lanes_of(db: Any, owner_id: str) -> list[Any]:
     return list((await db.execute(
         text(
             "SELECT * FROM pm_task_statuses "
-            " WHERE project_id = CAST(:owner AS uuid) ORDER BY position, name"
+            f" WHERE project_id = CAST(:owner AS uuid) ORDER BY {status_order_sql()}"
         ),
         {"owner": owner_id},
     )).fetchall())
@@ -619,6 +624,110 @@ async def _overrides_below(db: Any, project_id: str) -> list[dict]:
     return [{"id": str(r.id), "name": r.name} for r in rows]
 
 
+#: The mark that stands for one or more hidden names in a ``path``.
+ELIDED = "…"
+
+#: Each breakaway and the chain above it, for the ``path`` of §9.4 (PST-1).
+#: Depth 0 is the breakaway itself, and depth 1 is its parent. Each row says
+#: if the caller may see that node, through ``{visible}``, which is
+#: ``Visibility.project_clause``, the rule of ``load_visible_project``. One
+#: query for the whole list, never one for each row. The walk stops at
+#: :data:`core.MAX_DEPTH`, as ``status_owner_id`` does.
+_OVERRIDE_CHAINS_SQL = """
+WITH RECURSIVE override_chain AS (
+    SELECT p.id AS leaf, p.id AS id, 0 AS depth
+      FROM pm_projects p WHERE p.id = ANY(CAST(:ids AS uuid[]))
+    UNION ALL
+    SELECT c.leaf, a.parent_project_id, c.depth + 1
+      FROM override_chain c JOIN pm_projects a ON a.id = c.id
+     WHERE a.parent_project_id IS NOT NULL AND c.depth < :max_depth
+)
+SELECT c.leaf, c.depth, a.name, ({visible}) AS visible
+  FROM override_chain c JOIN pm_projects a ON a.id = c.id
+ ORDER BY c.leaf, c.depth DESC
+"""
+
+
+def visible_path(chain: list[tuple[str, bool]]) -> list[str]:
+    """The names above a breakaway, with no name the caller cannot see.
+
+    ``chain`` is ``(name, visible)`` from the top, and the breakaway itself is
+    not in it. The path starts at the first node the caller can see (§9.4),
+    so a LEADING hidden run leaves no mark. A hidden run after a visible name
+    becomes one :data:`ELIDED`, so a hidden ancestor never shows its name. A
+    test of the flag, not of the text, keeps a project that is named "…"
+    apart from a hidden run.
+
+    ⚠️ Not ``core.visible_project_paths``. That climb stops at the first
+    hidden parent, so it drops a visible grandparent above it. §9.4 shows
+    that grandparent, with a mark for the hidden part.
+    """
+    path: list[str] = []
+    hidden_run = False
+    for name, visible in chain:
+        if visible:
+            path.append(str(name))
+            hidden_run = False
+        elif path and not hidden_run:
+            path.append(ELIDED)
+            hidden_run = True
+    return path
+
+
+async def _status_set_reach(db: Any, vis: Any, owner_id: str) -> dict:
+    """Who uses the set of ``owner_id``, and who left it (§9.4, PST-1).
+
+    * ``used_by`` counts every project that uses the set, the owner left out.
+      It counts a project the caller cannot see, because an edit changes it.
+      It leaves a folder out, because a folder holds no lanes.
+    * ``overrides`` holds only the breakaways of :func:`_overrides_below`
+      that the caller can see, each with its ``path`` and its own
+      ``used_by``. A path holds no hidden name.
+    * ``hidden_overrides`` counts the breakaways the caller cannot see. The
+      UI says "and N more that you cannot see", and names none of them.
+
+    The tenant session binds every read to one organization (RLS). Nothing
+    here takes a tenant or an identity from the request.
+    """
+    breakaways = await _overrides_below(db, owner_id)
+    ids = [row["id"] for row in breakaways]
+    chains: dict[str, list[Any]] = {}
+    if ids:
+        rows = (await db.execute(
+            text(_OVERRIDE_CHAINS_SQL.replace(
+                "{visible}", vis.project_clause("a.id"),
+            )),
+            {"ids": ids, "max_depth": MAX_DEPTH, **vis.params},
+        )).fetchall()
+        for row in rows:
+            chains.setdefault(str(row.leaf), []).append(row)
+
+    def _seen(pid: str) -> bool:
+        return any(r.depth == 0 and bool(r.visible) for r in chains.get(pid, []))
+
+    shown = [row for row in breakaways if _seen(row["id"])]
+    counts = await status_users(db, [owner_id, *(row["id"] for row in shown)])
+    overrides = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            # Ordered from the top by the query. Depth 0 is the breakaway
+            # itself, and its name is in `name`, so the path stops above it.
+            "path": visible_path([
+                (r.name, bool(r.visible))
+                for r in chains.get(row["id"], []) if r.depth > 0
+            ]),
+            "used_by": counts.get(row["id"], 0),
+        }
+        for row in shown
+    ]
+    return {
+        "used_by": counts.get(owner_id, 0),
+        "overrides": overrides,
+        "hidden_overrides": len(breakaways) - len(shown),
+    }
+
+
 async def _inherit_target(db: Any, node: Any) -> tuple[str | None, str | None]:
     """Where inheriting would take ``node`` — its PARENT's status owner.
 
@@ -662,19 +771,32 @@ async def describe_status_set(
             db, project_id,
         )
         may_edit = can_manage_settings(user)
+        # ⚠️ Asked of the OWNER, not of this node. The question the reader
+        # has is "I am about to edit these lanes — who sees the change?",
+        # and the answer is the owner's scope. A project that inherits is
+        # editing its ancestor's set, so the breakaways that matter are the
+        # ones that broke away from THAT. PST-1 (projects_settings.md §9.4)
+        # adds the counts, the paths and the hidden count.
+        reach = await _status_set_reach(db, vis, owner)
         return {
             "project_id": project_id,
             "owns": bool(getattr(node, "owns_statuses", False)),
             "owner_id": owner,
             "owner_name": owner_row.name,
+            # A space is a root. Migration 196's CHECK makes it own its set.
+            "owner_kind": (
+                "space" if owner_row.parent_project_id is None else "project"
+            ),
+            # The number in "shared with N" for the owner and for each user.
+            "used_by": reach["used_by"],
+            # Every board that an edit changes: the users, and the owner when
+            # its own board shows lanes (`core.holds_lanes`). A team space
+            # shows none. The N of "A change here changes the lanes of N".
+            "reach": reach["used_by"] + (1 if holds_lanes(owner_row) else 0),
             "inherit_from_id": inherit_from,
             "inherit_from_name": inherit_name,
-            # ⚠️ Asked of the OWNER, not of this node. The question the reader
-            # has is "I am about to edit these lanes — who sees the change?",
-            # and the answer is the owner's scope. A project that inherits is
-            # editing its ancestor's set, so the breakaways that matter are the
-            # ones that broke away from THAT.
-            "overrides": await _overrides_below(db, owner),
+            "overrides": reach["overrides"],
+            "hidden_overrides": reach["hidden_overrides"],
             # A space has nothing above it, so "inherit" is not a choice it can
             # make. The UI disables the control and says why rather than hiding
             # it — an absent option reads as a missing feature.
@@ -942,7 +1064,7 @@ async def create_type(
     project_id: str, payload: TypeIn,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     name = str(values.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="A task type needs a name.")
@@ -1022,7 +1144,7 @@ async def patch_type(
     type_id: str, payload: TypeIn,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     # `scope` selects where a NEW row lands; it is not a column and re-scoping an
     # existing row is not this ticket's (see `refuse_org_wide_write`). Dropped
     # rather than refused: it arrives from a client reusing one form model for

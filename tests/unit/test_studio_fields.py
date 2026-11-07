@@ -361,6 +361,9 @@ def test_the_stored_spec_round_trips() -> None:
     ("date", "2026-11-01", "ts", "2026-11-01T00:00:00Z"),
     ("datetime", "2026-11-01T04:00:00Z", "ts", "2026-11-01T04:00:00Z"),
     ("checkbox", False, "b", False),
+    ("relation", {"id": "0B9F5C1E-6F3A-4A52-9D57-8D3D3B0C8A11"}, "t",
+     "0b9f5c1e-6f3a-4a52-9d57-8d3d3b0c8a11"),
+    ("relation", {"id": "ext.7"}, "t", "ext.7"),
 ])
 def test_hot_value_fills_one_column(kind: str, value: Any, column: str, stored: Any) -> None:
     row = sf.hot_value(_field(kind, key="k", hot=True), value)
@@ -437,7 +440,7 @@ def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
     assert block, "the --must-run argument list is missing"
     for suite in ("test_studio_objects_r8", "test_studio_query_r8",
-                  "test_studio_objects_batch_r8"):
+                  "test_studio_objects_batch_r8", "test_studio_state_machine_r8"):
         assert re.search(rf"^[ \t]+tests/unit/{suite}\.py(?: \\)?$", block.group(1), re.M), suite
 
 
@@ -495,3 +498,26 @@ def test_a_url_with_no_credential_still_passes() -> None:
     url = _field("url")
     for good in ("https://example.com:8443/a?user=ana", "http://[::1]/x", "https://ex.com/@ana"):
         assert sf.check_value(url, good) == good
+
+
+# ── A hot relation (C7b) ────────────────────────────────────────────────────
+
+
+def test_a_relation_may_be_hot_and_holds_its_id_in_the_text_column() -> None:
+    assert "relation" in sf.HOT_TYPES and sf.HOT_TYPES[-1] == "relation"
+    field = _field("relation", key="account", hot=True)
+    row = sf.hot_value(field, {"id": "abc-1"})
+    assert row == {"k": "account", "t": "abc-1", "n": None, "ts": None, "b": None}
+
+
+def test_a_hot_relation_takes_no_many() -> None:
+    problems = sf.validate_field_spec(
+        {"key": "tags", "type": "relation", "to": "crm.account", "many": True, "hot": True})
+    assert [p.path for p in problems] == ["hot"]
+
+
+def test_a_record_id_in_any_spelling_has_one_hot_form() -> None:
+    plain = "0b9f5c1e-6f3a-4a52-9d57-8d3d3b0c8a11"
+    assert sf.relation_key(plain.upper()) == plain
+    assert sf.relation_key(plain.replace("-", "")) == plain
+    assert sf.relation_key("order-7") == "order-7"

@@ -237,8 +237,10 @@ async function setup(page: Page, opts: { feedDelayMs?: number } = {}): Promise<S
 
 const feed = (page: Page) => page.getByTestId("my-day-feed");
 const feedCard = (page: Page, id: string) => page.getByTestId(`feed-card-${id}`);
-const bell = (page: Page) => page.locator("[data-shell-bar] [data-shell-bell]");
 const sidebar = (page: Page) => page.locator("aside[data-collapsed]");
+// The desktop bell is gone (53a965c3e, 2026-11-01): the sidebar's My Day row
+// carries the one number, and it reads as the page's sentence does.
+const dayRow = (page: Page) => sidebar(page).locator("[data-nav-my-day]");
 
 /** The seen items of the posts, by card. */
 const seenIds = (store: Store) =>
@@ -280,13 +282,13 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
     expect(store.posts).toHaveLength(1);
   });
 
-  test("a menu act posts its item and hides the card, the bell and the sidebar keep their counts, and Undo restores it", async ({
+  test("a menu act posts its item and hides the card, the My Day row drops its count, and Undo restores it", async ({
     page,
   }) => {
     const store = await setup(page);
     await page.goto("/");
     await expect(feedCard(page, "tasks:t1")).toBeVisible();
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 3 items");
+    await expect(dayRow(page)).toHaveAttribute("aria-label", /, 3 need you$/);
     // My Tasks has no row since OP-4 (2026-10-25): its count is on Projects.
     const tasksRow = sidebar(page).getByRole("link", { name: "Projects, 2 need you", exact: true });
     await expect(tasksRow).toBeVisible();
@@ -308,9 +310,9 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
     expect(snooze?.items).toEqual([
       { signal_id: "tasks:t1", state_fp: "a41f09c2", kind: "overdue", action: "snooze", until: "tomorrow" },
     ]);
-    // §6.3: snooze never reaches the bell or the sidebar.
+    // The row and the page say one number (53a965c3e): a snooze takes the card off both.
     await expect(page.getByText("Snoozed until tomorrow")).toBeVisible();
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 3 items");
+    await expect(dayRow(page)).toHaveAttribute("aria-label", /, 2 need you$/);
     await expect(tasksRow).toBeVisible();
     // The feed read again after the write, and the card stays away.
     await expect.poll(() => store.feedAt.length).toBeGreaterThan(1);
@@ -322,16 +324,16 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
       { signal_id: "tasks:t1", state_fp: "a41f09c2", kind: "overdue", action: "restore", until: null },
     ]);
     await expect(feedCard(page, "tasks:t1")).toBeVisible();
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 3 items");
+    await expect(dayRow(page)).toHaveAttribute("aria-label", /, 3 need you$/);
   });
 
-  test("a slow feed holds the bell's needs read for 4 seconds, then the needs route answers", async ({ page }) => {
+  test("a slow feed holds the My Day row's needs read for 4 seconds, then the needs route answers", async ({ page }) => {
     test.setTimeout(60_000);
     const store = await setup(page, { feedDelayMs: 7_500 });
     await page.goto("/");
     await expect.poll(() => store.feedAt.length, { timeout: 20_000 }).toBeGreaterThan(0);
-    // The bell counts from the needs route, while the feed still waits.
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 3 items", { timeout: 7_000 });
+    // The row counts from the needs route, while the feed still waits.
+    await expect(dayRow(page)).toHaveAttribute("aria-label", /, 3 need you$/, { timeout: 7_000 });
     expect(store.needsAt.length).toBeGreaterThan(0);
     const wait = store.needsAt[0] - store.feedAt[0];
     expect(wait).toBeGreaterThan(3_500);
@@ -374,7 +376,7 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
 
   test("Handled draws folded and opens, and the summary counts the feed and makes the claim (MD-2c)", async ({ page }) => {
     const store = await setup(page);
-    // The bell's view counts 5: a snoozed card still counts there (§6.3).
+    // The needs route counts 5, but the row says the page's number (53a965c3e).
     store.needs = { ...NEEDS, count: 5, total: 5 };
     store.handled = {
       handled: [
@@ -387,7 +389,7 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
     await expect(feedCard(page, "tasks:t1")).toBeVisible();
     const summary = page.getByTestId("my-day-summary");
     await expect(summary).toHaveText("3 things need you. The rest is handled.");
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 5 items");
+    await expect(dayRow(page)).toHaveAttribute("aria-label", /, 3 need you$/);
 
     // Folded, after the cards, with its count.
     const fold = feed(page).getByRole("button", { name: "Handled today 2" });
@@ -413,12 +415,12 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
     // Handled is no card: no sighting mark, no menu.
     await expect(feed(page).locator('[data-feed-group="handled"] [data-feed-seen]')).toHaveCount(0);
 
-    // A snooze takes the card off the summary, and the bell keeps its count.
+    // A snooze takes the card off the summary and the row.
     await feedCard(page, "tasks:t1").getByRole("button", { name: "More for Send the quote" }).click();
     await page.getByRole("menu").getByRole("menuitem", { name: "Tomorrow" }).click();
     await expect(feedCard(page, "tasks:t1")).toHaveCount(0);
     await expect(summary).toHaveText("2 things need you. The rest is handled.");
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 5 items");
+    await expect(dayRow(page)).toHaveAttribute("aria-label", /, 2 need you$/);
   });
 
   test("an older gateway gives no Handled group and no claim (MD-2c)", async ({ page }) => {
@@ -427,5 +429,93 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
     await expect(feedCard(page, "tasks:t1")).toBeVisible();
     await expect(page.getByTestId("my-day-summary")).toHaveText("3 things need you.");
     await expect(feed(page).locator('[data-feed-group="handled"]')).toHaveCount(0);
+  });
+});
+
+/**
+ * Task 1898 (owner, 2026-11-06): on a phone, the acts of a row took the row,
+ * and a title kept one to twelve letters. Below `sm` the text takes the row:
+ * one icon for a first tap act, and every other act in the "···" menu.
+ *
+ * Mutations, run by hand (2026-11-06): draw the desktop acts on a phone
+ * (drop `hidden` from their row), and the first test fails on the title's
+ * share. Drop the acts from `phoneMenuItems`, and the second test fails on
+ * the menu. `feed.test.ts` fails when the phone controls lose `sm:hidden`.
+ */
+test.describe("My Day feed on a phone (task 1898)", () => {
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+  const LONG = {
+    ...CARDS[0],
+    title: "Send the revised quote to Fracktal for the printer order",
+    acts: [
+      ...CARDS[0].acts,
+      { id: "move-tomorrow", label: "Move to tomorrow", class: "A", way: "open", href: "/projects?task=t1" },
+    ],
+  };
+
+  async function phoneFeed(page: Page) {
+    await setup(page);
+    // The last route wins: this answer replaces the feed of `setup`.
+    await page.route((url) => url.pathname === "/api/shell/feed", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          cards: [LONG, CARDS[1], CARDS[2]],
+          groups: [{ id: "needs_you", count: 3 }],
+          needs: NEEDS,
+          sources: { tasks: "ok", projects: "ok", email: "ok", approvals: "absent", calendar: "ok" },
+          capped: [],
+        }),
+      }),
+    );
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+  }
+
+  test("the title keeps most of the row, one quick act stays, and no other act is drawn", async ({ page }) => {
+    await phoneFeed(page);
+    const row = feedCard(page, "tasks:t1");
+    const rowBox = (await row.boundingBox())!;
+    const titleBox = (await row.locator("h2").boundingBox())!;
+    // Before the fix the title kept 58 px of a 356 px row.
+    expect(titleBox.width / rowBox.width).toBeGreaterThan(0.5);
+    // The whole title shows, on two lines at most.
+    expect(titleBox.height).toBeLessThanOrEqual(44);
+    const done = row.getByRole("button", { name: `Done: ${LONG.title}` });
+    await expect(done).toBeVisible();
+    expect((await done.boundingBox())!.width).toBeLessThanOrEqual(44);
+    // The second act is in the menu, not on the row.
+    await expect(row.getByRole("link", { name: "Move to tomorrow" })).toHaveCount(0);
+    // A card with no act and no menu draws no phone controls.
+    await expect(feedCard(page, "email:acc1:a").locator("[data-feed-phone-acts]")).toHaveCount(0);
+    // The chips stay on one line.
+    const chips = (await feed(page).locator("[data-feed-filter]").boundingBox())!;
+    expect(chips.height).toBeLessThan(52);
+  });
+
+  test("the ··· holds the row's other act, then Snooze, Dismiss and Not useful, and the act opens its link", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await phoneFeed(page);
+    await feedCard(page, "tasks:t1").getByRole("button", { name: `More for ${LONG.title}` }).tap();
+    const menu = page.getByRole("menu");
+    await expect(menu.getByRole("menuitem")).toHaveText([
+      "Move to tomorrow",
+      "Later today",
+      "Tomorrow",
+      "Next week",
+      "Until it changes",
+      "Dismiss",
+      "Not useful",
+    ]);
+    // The router moves the URL after the next page loads, and a dev server
+    // compiles /projects on its first visit. The stub has no task t1, so the
+    // Projects page then drops `?task=`: wait for the first URL, not the last.
+    const went = page.waitForURL(/\/projects\?task=t1$/, { timeout: 60_000 });
+    await menu.getByRole("menuitem", { name: "Move to tomorrow" }).tap();
+    await went;
   });
 });

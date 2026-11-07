@@ -244,6 +244,21 @@ async def _route_incoming_turn(
     )
 
 
+async def _keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> None:
+    """Hand a steer's ``card_draft`` to the email module (§18.11 step 2).
+
+    The tenant and the member are the session's (*user*), never the body's.
+    ``keep_card_draft`` checks the snapshot against the card's own record, and
+    the flag (``EMAIL_EDIT_CARD_ORGS``). A fault keeps nothing and never stops
+    the steer."""
+    try:
+        from gateway.routes.email.automation.redraft import keep_card_draft
+
+        await keep_card_draft(user, thread_id, raw)
+    except Exception as exc:  # a snapshot never stops a steer
+        _log.warning("agent.card_draft_failed", error=type(exc).__name__)
+
+
 def _followup_refused(thread_id: str, reason: str) -> Response:
     """The 202 of a steer follow-up that starts no run. The chat drops its
     placeholder on it, as it does for a steer."""
@@ -2555,11 +2570,17 @@ class PromptToSave(BaseModel):
     content: str
     timestamp_ms: int
     custom_events: list[Any] = []
+    #: WS-63 D-PZ-37: True only when the member typed the turn in the
+    #: message box (the request's mark). The row keeps it in
+    #: ``chat_message.member_typed``, and only a True row is the member's
+    #: own words for the summary job.
+    member_typed: bool = False
 
 
 def prompt_to_save(
     *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
     actor: str, room: Any, supersedes: str = "", card_answer: Any = None,
+    typed: bool = False,
 ) -> PromptToSave | None:
     """The turn to save at run start, or ``None`` when the server saves nothing.
 
@@ -2578,6 +2599,10 @@ def prompt_to_save(
     writes too. Its earlier turns carry the browser clock, so a server clock
     could sort this turn above the reply before it. With no stamp, the server
     clock is used.
+
+    *typed* is the request's mark (WS-63 D-PZ-37): True only when the member
+    typed the turn in the message box. A card answer is never typed, so the
+    mark of a card answer is False.
     """
     import time
 
@@ -2608,6 +2633,7 @@ def prompt_to_save(
         marker.append(card)
     return PromptToSave(
         message_id=mid, content=words, timestamp_ms=ts, custom_events=marker,
+        member_typed=typed is True and card_answer is None,
     )
 
 
@@ -2627,7 +2653,12 @@ def _write_prompt_row(
 
     It is best effort, as the mint is. On a failure it logs
     ``agent.prompt_save_failed`` and the run goes on, because the browser save
-    still writes the turn.
+    still writes the turn. That row then has no mark, so it counts for
+    nothing (D-PZ-37).
+
+    It is the one writer of ``chat_message.member_typed`` (WS-63 D-PZ-37):
+    the mark of the request, True or False. The browser save names no mark,
+    so it cannot change this one.
     """
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
@@ -2640,6 +2671,7 @@ def _write_prompt_row(
                 custom_events=list(prompt.custom_events),
             )],
             actor_email=member, agent_name=agent_name,
+            member_typed=prompt.member_typed is True,
             organization_id=organization_id,
         )
         return not declined
@@ -2756,7 +2788,7 @@ async def _extract_run_memory(
                 name=f"agent:{agent_name}:{member[:20]}",
                 content=message[:500],
                 source_description=f"agent_{agent_name}",
-                group_id=member,
+                # KG-9: the bound tenant names the episode's group.
             )
         except Exception:  # an episode must never kill the relay
             _log.warning("agent.run_end_episode_failed", thread_id=thread_id[:12])
@@ -2862,6 +2894,11 @@ async def run_agent_stream_endpoint(
     # The display of a card answer that went as a new message. It is for the
     # saved turn only, and never reaches the executor.
     _card_answer = req.payload.pop("card_answer", None)
+    # §18.11: the member's own version of an open new-mail card, sent with a
+    # message during the run. Popped HERE, so it never reaches the executor.
+    # Only a STEER keeps it (`_keep_card_draft` below), and the email module
+    # checks it against the card's own record.
+    _card_draft = req.payload.pop("card_draft", None)
     # WS-67 OA-7d: the app slug of the dock, a hint for the tool packs. Popped
     # so the payload never carries it on. Cleaned against the packs that name
     # an app, bound for the run below, and never read for a tenant or a member.
@@ -2871,26 +2908,36 @@ async def run_agent_stream_endpoint(
     # goes always, so a room run keeps its `room:` memory id.
     _drop_identity_claims(req.payload, user)
     _edit_keep = [_new_user_id, req.assistant_message_id or ""]
+    # WS-63 D-PZ-37 (the owner, 2026-11-02): the ONE positive mark of a
+    # message that the member typed in the message box. Only the composer of
+    # the chat sends it, and only JSON `true` counts. A tapped pill, a
+    # choice, a card action, a feed starter and the Fix prompt send none.
+    # Popped HERE, so it never reaches the executor. It can make words count
+    # only for the member's own writes in their own session, so a client
+    # that sends it gets nothing more.
+    _typed_mark = req.payload.pop("typed", None) is True and _card_answer is None
+    _sent_words = str(req.payload.get("message") or req.payload.get("user_query") or "")
     # WS-51 S4: the member's turn, as they typed it. The server saves it
     # below, before the run starts, so a tab closed at once keeps it. The
     # words are read HERE, before a Continue note, a replayed steer or the
     # supersede note changes `message`.
     _prompt = prompt_to_save(
         thread_id=req.thread_id, message_id=_new_user_id,
-        text=str(req.payload.get("message") or req.payload.get("user_query") or ""),
+        text=_sent_words,
         timestamp=req.payload.pop("user_message_ts", None),
         actor=actor_email, room=room, supersedes=_supersedes,
-        card_answer=_card_answer,
+        card_answer=_card_answer, typed=_typed_mark,
     )
     # WS-63 PZ-6a fix round 2 (P1-a): the member's TYPED words, the only
     # words that may ground a profile write (`assistant_profile.member_typed`).
     # Read HERE, before the Continue note, a replayed steer or the supersede
     # note changes `message`. A card answer sent as a message holds the
     # card's text, which the model wrote, so it grounds nothing.
+    # D-PZ-37: a turn with no mark binds "" too. Its words open only the
+    # confirm card of a profile write (`_sent_text` below), never a save.
     # PZ-31: the member's own typed steers that the run reads are typed words
     # too. `count_member_steers` in `_serve` below adds them, apart from this.
-    _typed = "" if _card_answer is not None else str(
-        req.payload.get("message") or req.payload.get("user_query") or "")
+    _typed = _sent_words if _typed_mark else ""
     _edit_shared = bool(room is not None and room.is_shared)
     if _supersedes and req.thread_id:
         from gateway.chat_supersede import (  # noqa: PLC0415
@@ -2936,6 +2983,9 @@ async def run_agent_stream_endpoint(
     _resume = bool(req.payload.pop("resume", None))
     if _resume:
         _typed = ""  # a Continue turn: the member typed nothing (PZ-6a)
+        _typed_mark = False  # and its row is not typed (D-PZ-37)
+        _prompt = None if _prompt is None else _prompt.model_copy(
+            update={"member_typed": False})
     if _resume and req.thread_id:
         _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
         if _note is not None:
@@ -3022,7 +3072,23 @@ async def run_agent_stream_endpoint(
     _TAKEN_STEERS.set(_taken_steers)
     # PZ-31: a steer of this request is typed only when the member typed it.
     # A card answer holds the card's text, and a Continue turn the server's.
-    _STEER_TYPED.set(_card_answer is None and not _resume)
+    # D-PZ-37: the same mark as the turn. A steer with no mark is not typed,
+    # so a pill tapped during a run grounds nothing.
+    _STEER_TYPED.set(_typed_mark and _card_answer is None and not _resume)
+    # D-PZ-37: the words that the member sent in this turn, typed or tapped.
+    # A tap grounds no profile write, and it may only ask the confirm card of
+    # one (`profile_tools._ground`). The tool-pack chooser reads them too
+    # (`assistant_profile.sent_words`), so a tapped pill about a mail still
+    # loads the email pack. A Continue, a card answer, a steer follow-up and
+    # a paste send none, so they never get that card (PZ-32 repair 1).
+    _sent_text = (_sent_words
+                  if _card_answer is None and not _resume and not _followup else "")
+    # §18.11 step 2: a steer of the web chat keeps the member's version of an
+    # open new-mail card BEFORE the steer goes out, so the tool that the
+    # steer wakes finds it. This door is the web chat's: no WhatsApp turn
+    # reaches it. Any other route drops it.
+    if _card_draft is not None and _decision.route.name == "STEER":
+        await _keep_card_draft(user, req.thread_id or "", _card_draft)
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -3088,6 +3154,8 @@ async def run_agent_stream_endpoint(
         agent_name=agent_name,
         thread_id=req.thread_id,
         shared=_room_is_shared,
+        # KG-9: the org compartment is this member's org, from the session.
+        organization_id=_room_org,
     )
 
     try:
@@ -3230,6 +3298,12 @@ async def run_agent_stream_endpoint(
             # S15 (§21): the fold binds the run's tenant.
             organization_id=_room_org,
             holds_mail=_holds_mail,
+            # A run that a new run cancelled folds late. By then the new run
+            # has reset the thread's stream, so the replay holds the NEW run's
+            # events. Without this guard the old run wrote them again under
+            # its own message id: one reply, two rows (task 1533, bug B3).
+            # Fence: tests/unit/test_chat_fold_other_run.py.
+            expect_run_id=run_id,
         )
         if _superseded_ids:
             # A cancelled run on another worker can fold its row after the
@@ -3364,8 +3438,9 @@ async def run_agent_stream_endpoint(
             # WS-63 PZ-6a fix round 2: the typed words reach the run through
             # this ONE binding. The drain task that `run_detached` starts
             # copies the context here, so the run reads them, and nothing
-            # else does.
-            with member_typed(_typed), surface_scope(_surface):
+            # else does. D-PZ-37: `sent` is the sent words. They open only
+            # the confirm card, and they feed the tool-pack chooser.
+            with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
                 # PZ-31: the session's member is the run member. Their own
                 # typed steers that ENGAGE took count now, and a tool result
                 # that carries one later adds it (`steer.decorate_tool_result`).
@@ -3448,6 +3523,10 @@ async def run_agent_stream_endpoint(
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
+            # The run this response follows. The Next translator binds its
+            # reader to it, so a cancelled send never adopts the newer run's
+            # RUN_STARTED (task 1533, B3). Fence: test_run_started_producers.py.
+            "X-Run-Id": run_id,
         },
     )
 
@@ -5251,6 +5330,21 @@ def verify_webhook_signature(source: str, body: bytes, presented: str | None) ->
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
 
 
+def _webhook_run_payload(
+    source: str, event_type: str, payload: dict[str, Any],
+) -> dict[str, Any]:
+    """The run payload of a signed webhook. A webhook run has no member. H-165.
+
+    🔴 The HMAC proves the sender holds the shared secret. It does not prove
+    a person. The executor binds the run's member from ``user_email`` or
+    ``user_id``, so the sender's claim of one would name the member without
+    proof. This function removes both keys. The trust level of a webhook run
+    is memberless (H-152). Fence: ``tests/unit/test_webhook_run_memberless.py``.
+    """
+    clean = {k: v for k, v in payload.items() if k not in _IDENTITY_CLAIMS}
+    return {**clean, "source": source, "event_type": event_type}
+
+
 @router.post("/webhook/{source}", status_code=status.HTTP_202_ACCEPTED)
 async def receive_webhook(
     source: str,
@@ -5340,7 +5434,7 @@ async def receive_webhook(
         try:
             await run_agent(
                 agent_name,
-                {"source": source, "event_type": event.event_type, **event.payload},
+                _webhook_run_payload(source, event.event_type, event.payload),
                 run_id=run_id,
             )
         except Exception as exc:  # noqa: BLE001

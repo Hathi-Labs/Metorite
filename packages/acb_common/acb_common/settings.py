@@ -125,6 +125,16 @@ class Settings(BaseSettings):
     # hold several sessions. Fence: tests/unit/test_db_background_lane.py.
     db_background_max: int = 4
 
+    # H-249 (WS-29): what `tenant_session` does when its transaction is
+    # aborted at the clean end of a block. That happens when a caller swallows
+    # a failed statement. The commit then commits nothing. `log` (the default)
+    # only logs `db.tenant_session_aborted`, and the commit runs as before.
+    # `raise` logs, rolls back and raises `TenantTransactionAborted`. Any other value reads as
+    # `log`. The one reader is `tenant_session_abort_mode` below. The flag
+    # needs a restart (`docs/flag_reload.md`). A value on a box is the grant
+    # `enforcement-flip`. Fence: tests/unit/test_tenant_session_aborted_r8.py.
+    tenant_session_abort_mode: str = "log"
+
     # The pool of the sync `acb_graph` engine. It counts against the SAME
     # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
@@ -456,6 +466,19 @@ class Settings(BaseSettings):
     # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
     calendar_reminders: bool = False
 
+    # ── Calendar events (WS-CAL CE-4, D138, 2026-10-31) ─────────────────────
+    #
+    # `calendar_events` is the switch of the event store, default OFF. With
+    # it off, each route under `/tasks/calendar/entries` answers 404 and
+    # writes nothing, and `GET /projects/my/calendar` gives the body of today
+    # with no `entries` key. `/version` carries the value as
+    # `calendar_events`. The one reader is `events_enabled()` in
+    # gateway/routes/tasks/entries.py. The browser half is
+    # `NEXT_PUBLIC_CALENDAR_EVENTS` (CE-5). Spec
+    # project-docs/specs/calendar_events_reminders.md §9. A flip on a box is
+    # gate `enforcement-flip`. Fence: tests/unit/test_calendar_entries_r8.py.
+    calendar_events: bool = False
+
     # ── The shared job queue (WS-BRIEF BR-1a, 2026-10-28) ───────────────────
     #
     # `job_queue` is the switch of the job worker in the gateway, default
@@ -554,6 +577,14 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_sync: str = ""
 
+    # H-328 part (b): the orgs whose UNATTENDED workflow runs may start. A
+    # schedule tick, a matured wait and the startup sweep act only for an org
+    # in this comma list. Empty, the default, means no org, and there is no
+    # `*`. The one reader is `gateway.routes.workflows.unattended`. A run can
+    # send mail or WhatsApp and spend credits, so a flip is the owner's. Fence:
+    # tests/unit/test_workflows_unattended_flag.py.
+    workflow_unattended_orgs: str = ""
+
     reach_enabled: bool = False
     reach_orgs: str = ""
     reach_members: str = ""
@@ -581,6 +612,32 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Spec: core_brief.md §5 and §10 row 5. Fence:
     # tests/unit/test_brief_today.py.
     brief_in_app: bool = False
+    # `brief_exceptions` (WS-BRIEF BR-5, 2026-11-04) is the switch of the
+    # exception engine, default OFF. On, only the four rules of
+    # `core_brief.md` §6 let a card interrupt in Reach (WhatsApp and the
+    # preview), and a card with no rule waits. Off, the class table of
+    # `reach/classes.py` decides, as before. It holds for an org only when
+    # `BRIEF_ENABLED` and `BRIEF_ORGS` hold too. The one reader is
+    # `gateway.brief.flags.exceptions`. A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_reach_exceptions.py.
+    brief_exceptions: bool = False
+    # `brief_compose` (WS-BRIEF BR-2a-2, 2026-11-05) is the switch of the
+    # phrase step, default OFF. On, a run with 4 claims or more makes ONE
+    # `tier-fast` call through the Console Router, and the model writes the
+    # lead. Off, or with the Router off, the lead is the template lead, as
+    # before. It holds for an org only when `BRIEF_ENABLED` and `BRIEF_ORGS`
+    # hold too. The one reader is `gateway.brief.flags.compose`. The call
+    # spends credits, so a flip on production is OWNER-GATE (core_brief.md
+    # §10 row 4). Fence: tests/unit/test_brief_phrase.py.
+    brief_compose: bool = False
+    # `brief_closeout` (WS-BRIEF BR-2b-1, 2026-11-06) is the planner's switch
+    # for the 18:30 close-out kind, default OFF. Off, the planner plans no
+    # close-out, and the 07:30 brief is as before. It needs `brief_enabled`
+    # and the org on `brief_orgs` too. The close-out makes no model call. The
+    # one reader is `gateway.brief.flags.closeout`. A flip on a box is gate
+    # `enforcement-flip`. Spec: core_brief.md §10 row 7. Fence:
+    # tests/unit/test_brief_closeout.py.
+    brief_closeout: bool = False
 
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #
@@ -603,11 +660,29 @@ class Settings(BaseSettings):
     # opens none. Reader: `gateway.push.flags.prompt_allowed`. Spec:
     # calendar_events_reminders.md section 10.4.
     push_prompt_orgs: str = ""
+    # RX-5: DUE_PUSH_ORGS lists the org ids whose members get the morning
+    # summary push of due tasks. `*` opens every org. Empty opens none. It
+    # reaches a real person, so a flip in production is the owner's. Reader:
+    # `gateway.reach.flags.due_push_allowed`. Spec:
+    # calendar_events_reminders.md section 5.11.
+    due_push_orgs: str = ""
     # STU-B1: STUDIO_ORGS lists the org ids that may read the AI Studio
     # action catalog (GET /studio/actions). `*` opens every org. Empty opens
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
+    # of the guide's tour (the welcome button and the account menu row). `*`
+    # opens every org. Empty opens none. Reader: `acb_common.guide_flags.
+    # guide_allowed`, returned as `guide` from GET /auth/me/shell. Spec:
+    # assistant_guide.md section 7.
+    guide_orgs: str = ""
+    # WS-PKG PKG-5b: PACKAGE_HOST_ORGS lists the org ids that may read the
+    # resolved shell manifest (GET /shell/manifest). `*` opens every org.
+    # Empty opens none. Reader:
+    # `gateway.package_host.flags.package_host_allowed`. Spec:
+    # package_host.md section 10.
+    package_host_orgs: str = ""
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
@@ -793,6 +868,127 @@ class Settings(BaseSettings):
     # tests/unit/test_chat_summary.py.
     assistant_chat_summary_orgs: str = ""
 
+    # ── The briefing at the start of a chat (WS-63 PZ-34, D142) ─────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. It opens the block of PZ-34: the newest summaries of the
+    # member's other private chats and their tasks that are due
+    # (`personalization.md` §15.4). The profile switch (`enabled_for`) must be
+    # on for the org too. The one reader is
+    # `acb_common.assistant_profile.briefing_for`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model. Fences:
+    # tests/unit/test_executor_briefing_block.py, tests/unit/test_chat_summary.py.
+    assistant_briefing_orgs: str = ""
+
+    # ── Celebrations (WS-63 PZ-43, personalization.md §16.6) ────────────────
+    #
+    # CELEBRATIONS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default. On, the member can set a birthday (no year), festival picks
+    # and the work-anniversary switch, and the first chat reply of a day on
+    # which one falls opens with one wish. The profile switch must be on too.
+    # The one reader is `acb_common.celebrations.celebrations_for`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fences: tests/unit/test_celebrations.py.
+    celebrations_orgs: str = ""
+
+    # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the decision routes answer 404, no decision is asked
+    # and no bell row is written, so nothing reaches a member. The one reader
+    # is `gateway.routes.projects.decisions.decisions_allowed`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_decisions.py.
+    decisions_orgs: str = ""
+    # ── Park and ask (WS-AUTO AUTO-7b, proactive_agent.md §4.2) ─────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the approval gate of a workflow run with no person
+    # present asks the workflow's owner through ONE decision, instead of a
+    # broker proposal. `decisions_orgs` must list the org too. Off, the gate
+    # files the broker proposal of AUTO-7a, byte for byte. The one reader is
+    # `gateway.routes.workflows.park.park_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). Fence: tests/unit/test_auto_park.py.
+    # ⚠️ The wait scan settles a parked gate only for an org on
+    # `workflow_unattended_orgs`. If the org leaves that list, a yes resumes
+    # nothing and no expiry ends the run, until the org is on it again.
+    auto_park_orgs: str = ""
+    # ── Guidance for agents (WS-MCP SW-31a, agent_coordination.md SW-31) ────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the `/agent-guidance` routes answer 404 and the MCP
+    # answers of `get_task_context`, `claim_task` and `my_work` carry no
+    # `guidance` key. The one reader is
+    # `gateway.routes.agent_guidance.guidance_allowed`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_agent_guidance.py.
+    agent_guidance_orgs: str = ""
+    # ── The trigger of the project alignment check (WS-ALN ALN-1, D160) ─────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. A task write of a listed org enqueues one `align.check`
+    # job, and only while `job_queue` is on too. `prune` deletes no queued
+    # row, so a queue with no worker would grow without a bound
+    # (`project_alignment.md` §5 item 8). The one reader is
+    # `gateway/align/trigger.py::jobs_enabled`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). The handler of ALN-1 is a stub, so a
+    # flip spends nothing, and it is gate `enforcement-flip`. Fence:
+    # tests/unit/test_align_trigger.py.
+    align_jobs_orgs: str = ""
+
+    # ── The authority page of a project (WS-ALN ALN-4) ───────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the three authority routes answer 404 and the three
+    # chat tools make no card. The one reader is
+    # `gateway.routes.projects.authorities.authority_pins_allowed`. A SIGHUP
+    # reload applies a change. A flip needs a D145 preview of the chat cards
+    # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
+    authority_pins_orgs: str = ""
+
+    # ── Questions for me (WS-55 EA-18a, external_agent_access.md §12.8) ──────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/agent-questions` answers 404, the
+    # creator joins no `agent_question` audience, and any member who sees the
+    # task may answer (D-EA-10 point 1). On, all five points of D-EA-14 apply.
+    # The one reader is `gateway.routes.projects.filters.agent_questions_allowed`.
+    # A SIGHUP reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_agent_questions_r8.py.
+    agent_questions_orgs: str = ""
+
+    # ── Waiting: what waits on you (WS-AP AP-1a) ────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /shell/waiting` and `GET /shell/waiting/count`
+    # answer 404. The one reader is
+    # `gateway.routes.shell.waiting.waiting_allowed`. A SIGHUP reload applies
+    # a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_waiting_seam_r8.py.
+    waiting_orgs: str = ""
+
+    # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, each `/project-rules` route answers 404 and no rule
+    # row is written. The one reader is
+    # `gateway.routes.project_rules.project_rules_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_project_rules.py.
+    project_rules_orgs: str = ""
+
+    # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the four request routes of `/agent-access` answer 404,
+    # and Integrations, AI agents shows no list "Waiting for you". It is the
+    # dark switch of the approval store, because `AGENT_ACCESS_ENABLED` is on in
+    # production. The one reader is `gateway.app_requests.requests_allowed`.
+    # A SIGHUP reload applies a change. Only the owner flips it, under a dated
+    # `enforcement-flip` grant, after MCP-P1b-2 or STU-B2c-2 can ask. Fence:
+    # tests/unit/test_app_requests_r8.py.
+    app_requests_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,
@@ -880,6 +1076,48 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_spawn_subagents.py.
     spawn_subagents_orgs: str = ""
 
+    # ── The held card writes of a chat that read outside mail (WS-67 RX-1) ──
+    #
+    # `held_card_writes_orgs` lists the organization ids where a held chat keeps
+    # the writes that a card shows (`work_plan.md`, the decision of RX-1), or
+    # `*` for each one. Empty means off, and a held chat then works as it did
+    # before the slice. The one reader is `egress.held_card_writes_on`, and it
+    # fails closed. It is the kill switch of the decision: the name ends in
+    # `_orgs`, so a SIGHUP applies a change with no restart (`docs/flag_reload.md`).
+    #
+    # A value on a box is an `enforcement-flip`. It moves what a chat that read
+    # mail may write, so name the flag and the box in the same message.
+    # Fence: tests/unit/test_held_card_writes.py.
+    held_card_writes_orgs: str = ""
+
+    # ── Continue a held chat in a fresh chat (one_assistant_context.md §9, WT-1) ─
+    #
+    # `chat_continue_orgs` lists the organization ids where
+    # `POST /chat/sessions/{id}/continue` answers, or `*` for each one. Empty
+    # means off, and the route answers 404 for each caller. The one reader is
+    # `gateway.routes.chat.continue_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4, slice WT-5). The flip also waits for WT-1b and WT-2 (§9.3 item 9).
+    # Fence: tests/unit/test_continue_carry.py.
+    chat_continue_orgs: str = ""
+
+    # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
+    #
+    # `email_edit_card_orgs` lists the organization ids whose chat shows a new
+    # mail on the ONE email card that the member edits, or `*` for each one.
+    # Empty means off, and a new mail shows the cards of before: the plain send
+    # card, and the rows card of a held chat. The one reader is
+    # `acb_skills.reply_card.edit_card_on`, and it fails closed. The name ends
+    # in `_orgs`, so a SIGHUP applies a change with no restart.
+    #
+    # A value on a box is an `enforcement-flip`: it changes the card of a send.
+    # Name the flag and the box in the same message.
+    # Fence: tests/unit/test_email_new_mail_card.py.
+    email_edit_card_orgs: str = ""
+
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #
     # `web_research_orgs` lists the organization ids whose `fetch_page` reads
@@ -895,6 +1133,21 @@ class Settings(BaseSettings):
     # is under 200 characters. Any other value means no remote reader.
     # 🔴 OWNER-ONLY on a box: `jina` sends each URL to a third party (WEB-Q3).
     web_reader_remote: str = ""
+    # `searxng_url` is the base URL of the self-hosted SearXNG (WEB-4, §3.3),
+    # for example `http://127.0.0.1:8888`. Empty means no SearXNG, and the
+    # provider list skips it. The URL is not a member input: only the operator
+    # writes it (`env_guard`, prefix `SEARXNG_`).
+    # Fence: tests/unit/test_web_search_providers.py.
+    searxng_url: str = ""
+    # WEB-7 (§3.2, §5.1): the web worker that renders a page with Chromium.
+    # `web_worker_url` is its base URL, for example `http://127.0.0.1:8096`.
+    # `web_worker_token` is its bearer. With either one empty, `fetch_page`
+    # renders nothing. Only the operator writes them (`env_guard`, prefix
+    # `WEB_WORKER_`). 🔴 The token is a secret: no log line, no tool output
+    # and no error text may carry it. The one reader is
+    # `acb_skills.web_render_client`. Fence: tests/unit/test_web_render.py.
+    web_worker_url: str = ""
+    web_worker_token: str = ""
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
@@ -1669,11 +1922,13 @@ class Settings(BaseSettings):
     email_outlook_delta_accounts: str = ""
 
     # The storage limit of ONE mailbox, in MB (WS-17 EM-T6c, D-EM-14, owner
-    # answer Q1). The meter counts the copy that Metorite keeps, never the
-    # mailbox in Outlook. ``email_ingestion.storage`` reads it, and the limit
-    # in bytes is this value times 1,048,576. A change on a box is gate
-    # ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
-    email_mailbox_storage_limit_mb: int = 500
+    # answer Q1). It is 2 GB since the owner's word of 2026-11-04. The meter
+    # counts the copy that Metorite keeps, never the mailbox in Outlook.
+    # ``email_ingestion.storage`` reads it, and the limit in bytes is this
+    # value times 1,048,576. A mailbox that the old limit stopped goes on
+    # with its import at its next loop cycle (EM-T6f). A change on a box is
+    # gate ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
+    email_mailbox_storage_limit_mb: int = 2048
 
     # ── The HTML hot window (WS-17 EM-S1, D-EM-49) ──────────────────────────
     #
@@ -1810,6 +2065,23 @@ class Settings(BaseSettings):
     # the edge both read it, so both units need the same value. 🔴 A change
     # on a box is gate `enforcement-flip`.
     agent_access_orgs: str = ""
+    # SW-34a (agent_coordination.md SW-34a, external_agent_access.md §9.3): the
+    # organizations where the edge serves MCP resources (`resources/list`,
+    # `resources/templates/list`, `resources/read`). The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps them dark: the list is empty and a read is not found.
+    # `acb_auth.agent_oauth.resources_allowed` is the one reader, at each call.
+    # 🔴 A change on a box is gate `enforcement-flip`.
+    agent_resources_orgs: str = ""
+    # EA-17c-1 (D-EA-13, spec §10.8): the organizations where a member may
+    # change the grant of their own agent connection, through
+    # `PATCH /agent-access/connections/{id}`. The same shape as
+    # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
+    # default, keeps the route dark, so it answers 404. Only the gateway
+    # reads it, at each call, so a SIGHUP reload applies a change
+    # (`docs/flag_reload.md`). `acb_auth.agent_oauth.change_access_allowed`
+    # is the one reader. 🔴 A change on a box is gate `enforcement-flip`.
+    agent_change_access_orgs: str = ""
     # EA-6a (EA3-29, spec §6.1 and §9.2): the second switch, for the WRITE
     # tools. Default OFF. While it is false, branch 0 refuses every method
     # other than GET with 401, so the read tools work and no write lands.
@@ -1824,6 +2096,12 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.runs_enabled` is the one reader. 🔴 A flip on a
     # box is gate `enforcement-flip`.
     agent_runs_enabled: bool = False
+    # SW-43 (spec agent_coordination.md §3.9): a member takes back an answer
+    # to an agent's question, while no agent activity follows it. Default
+    # OFF. While it is false, the withdraw route answers 404 and the run wire
+    # has no `answer` field. `acb_auth.agent_oauth.answer_change_enabled` is
+    # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_answer_change_enabled: bool = False
     # SW-7 (spec §12.5): MCP sessions at the edge. Default OFF. While it is
     # false, `initialize` answers no `Mcp-Session-Id`, an id that a client
     # still sends is read as no session (never a 404), and no
@@ -1896,6 +2174,16 @@ class Settings(BaseSettings):
     agent_edge_signing_key: str = ""
     agent_edge_signing_key_previous: str = ""
     agent_edge_gateway_url: str = "http://127.0.0.1:8080"
+
+    # STU-B2c-1, the direct proof of a Studio write (`ai_studio.md` §20.4).
+    # The workbench BFF signs the direct-proof header under this key, and the action
+    # door checks it. `acb_auth.direct_proof` is the one reader. The key is in
+    # the gateway `.env` and in the workbench `.env.local` (`scripts/vps_apply.sh`
+    # copies it). A key under 32 bytes, or equal to GATEWAY_INTERNAL_TOKEN or to
+    # LITELLM_MASTER_KEY, counts as unset. With no usable key, no write is
+    # direct. No skill and no orchestrator code reads it.
+    # 🔴 Setting the key on a box is gate `env-write`.
+    studio_direct_key: str = ""
 
     # ── My Day's read cache (WS-58 MD-5a, 2026-10-14) ───────────────────────
     #
@@ -1980,6 +2268,25 @@ def crm_answer_check_mode() -> str:
         return "off"
     mode = raw.strip().lower()
     return mode if mode in CRM_ANSWER_CHECK_MODES else "off"
+
+
+#: The modes of ``TENANT_SESSION_ABORT_MODE`` (H-249).
+TENANT_SESSION_ABORT_MODES: tuple[str, ...] = ("log", "raise")
+
+
+def tenant_session_abort_mode() -> str:
+    """The ONE reader of ``TENANT_SESSION_ABORT_MODE``: ``log`` or ``raise``.
+
+    Any other value, and a settings load that fails, read as ``log``.
+    ``acb_common.db.tenant_session`` reads it only when a transaction is
+    aborted, so a clean block never pays for the read.
+    """
+    try:
+        raw = str(getattr(get_settings(), "tenant_session_abort_mode", "log") or "log")
+    except Exception:  # a broken settings load never turns the raise on
+        return "log"
+    mode = raw.strip().lower()
+    return mode if mode in TENANT_SESSION_ABORT_MODES else "log"
 
 
 #: The modes of ``TOOL_RESULT_SPILL`` (CTX-1).

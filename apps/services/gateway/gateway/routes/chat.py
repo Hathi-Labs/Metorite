@@ -10,6 +10,7 @@ DELETE /chat/sessions/{session_id}             Delete session + all its messages
 GET    /chat/sessions/{session_id}/messages    Fetch messages the caller may read
 POST   /chat/sessions/{session_id}/messages    Upsert a batch of messages
 POST   /chat/sessions/{session_id}/supersede   An edit replaces the last message
+POST   /chat/sessions/{session_id}/continue    Continue a held chat in a fresh chat (WT-1)
 
 Authorization moved from ownership to membership (migration 138 + gateway/rooms.py).
 Every predicate that used to be ``WHERE user_id = :uid`` is now "is this person
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user, require_feature_router
@@ -368,53 +370,65 @@ def _ensure_session(
     first run, because that writer makes neither.
     """
     from acb_graph import tenant_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
 
     with tenant_session(organization_id) as s:
-        # S15 fix round 1: `ON CONFLICT (id) DO NOTHING` also "succeeds" on
-        # another tenant's row, and the two inserts below would then attach
-        # rows of this tenant to it. So refuse first.
-        _refuse_if_elsewhere(s, session_id)
+        _ensure_session_rows(s, session_id, user_id, agent_name)
+
+
+def _ensure_session_rows(
+    s: Any, session_id: str, user_id: str, agent_name: str,
+) -> None:
+    """The body of :func:`_ensure_session`, on a bound session *s*.
+
+    The continue route (WT-1) calls it too, so the new chat and its link
+    are written in one transaction, by the same SQL.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    # S15 fix round 1: `ON CONFLICT (id) DO NOTHING` also "succeeds" on
+    # another tenant's row, and the two inserts below would then attach
+    # rows of this tenant to it. So refuse first.
+    _refuse_if_elsewhere(s, session_id)
+    s.execute(
+        text(
+            """
+            INSERT INTO chat_session (id, user_id, agent_name)
+            VALUES (:id, :uid, :agent_name)
+            ON CONFLICT (id) DO NOTHING
+            """
+        ),
+        {"id": session_id, "uid": user_id or "default",
+         "agent_name": agent_name or "orchestrator"},
+    )
+    # A session is a room of one from birth. Creating the owner row here
+    # rather than only in migration 138's backfill means membership is
+    # never something a session acquires later — every read path can trust
+    # the participant table instead of falling back to chat_session.user_id.
+    if user_id and "@" in user_id:
         s.execute(
             text(
-                """
-                INSERT INTO chat_session (id, user_id, agent_name)
-                VALUES (:id, :uid, :agent_name)
-                ON CONFLICT (id) DO NOTHING
-                """
+                "INSERT INTO chat_session_participant (session_id, subject, role) "
+                "SELECT :id, :uid, 'owner' FROM chat_session "
+                "WHERE id = :id AND user_id = :uid "
+                # Round 2: only a room with no membership yet. A creator
+                # whom an owner removed must not win the role back.
+                "AND NOT EXISTS (SELECT 1 FROM chat_session_participant "
+                "WHERE session_id = :id) "
+                "ON CONFLICT DO NOTHING"
             ),
-            {"id": session_id, "uid": user_id or "default",
-             "agent_name": agent_name or "orchestrator"},
+            {"id": session_id, "uid": user_id},
         )
-        # A session is a room of one from birth. Creating the owner row here
-        # rather than only in migration 138's backfill means membership is
-        # never something a session acquires later — every read path can trust
-        # the participant table instead of falling back to chat_session.user_id.
-        if user_id and "@" in user_id:
-            s.execute(
-                text(
-                    "INSERT INTO chat_session_participant (session_id, subject, role) "
-                    "SELECT :id, :uid, 'owner' FROM chat_session "
-                    "WHERE id = :id AND user_id = :uid "
-                    # Round 2: only a room with no membership yet. A creator
-                    # whom an owner removed must not win the role back.
-                    "AND NOT EXISTS (SELECT 1 FROM chat_session_participant "
-                    "WHERE session_id = :id) "
-                    "ON CONFLICT DO NOTHING"
-                ),
-                {"id": session_id, "uid": user_id},
-            )
-        if agent_name:
-            s.execute(
-                text(
-                    "INSERT INTO chat_session_agent (session_id, agent_name, role) "
-                    "SELECT :id, :agent, 'primary' WHERE NOT EXISTS ("
-                    "  SELECT 1 FROM chat_session_agent "
-                    "  WHERE session_id = :id AND role = 'primary') "
-                    "ON CONFLICT DO NOTHING"
-                ),
-                {"id": session_id, "agent": agent_name},
-            )
+    if agent_name:
+        s.execute(
+            text(
+                "INSERT INTO chat_session_agent (session_id, agent_name, role) "
+                "SELECT :id, :agent, 'primary' WHERE NOT EXISTS ("
+                "  SELECT 1 FROM chat_session_agent "
+                "  WHERE session_id = :id AND role = 'primary') "
+                "ON CONFLICT DO NOTHING"
+            ),
+            {"id": session_id, "agent": agent_name},
+        )
 
 
 def _patch_session(
@@ -782,12 +796,20 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #: A conflict that fails the ``WHERE`` leaves the row alone and raises
 #: nothing. ``RETURNING id`` then gives no row, and ``_upsert_messages``
 #: reports that id as unchanged.
+#:
+#: 🔴 **``member_typed`` is the mark of a typed message** (WS-63 D-PZ-37,
+#: migration 337). Only the run route sets it, through the keyword of
+#: ``_upsert_messages``. Every other write binds NULL, so its insert stores
+#: NULL and its update keeps the stored value (the COALESCE). So a client
+#: save can neither set the mark nor clear it. ``RETURNING`` also says
+#: whether the row is new (``xmax = 0``), so the seam can move the chat's
+#: ``updated_at`` (``_TOUCH_SESSION_SQL``).
 _MESSAGE_UPSERT_SQL = """
     INSERT INTO chat_message
         (id, session_id, role, content, timestamp_ms,
          tool_events, progress_lines, reasoning, agent_state, custom_events,
          author_email, author_kind, authority,
-         run_member_email, run_final_at)
+         run_member_email, run_final_at, member_typed)
     SELECT
         CAST(:id AS text), CAST(:sid AS text), CAST(:role AS text),
         CAST(:content AS text), CAST(:ts AS bigint),
@@ -797,7 +819,8 @@ _MESSAGE_UPSERT_SQL = """
         CAST(:author_email AS text), CAST(:author_kind AS text),
         CAST(:authority AS jsonb),
         CAST(:run_member_email AS text),
-        CASE WHEN CAST(:author_from_run AS boolean) THEN now() END
+        CASE WHEN CAST(:author_from_run AS boolean) THEN now() END,
+        CAST(:member_typed AS boolean)
     WHERE CAST(:may_insert AS boolean)
        OR EXISTS (SELECT 1 FROM chat_message
                   WHERE session_id = CAST(:sid AS text)
@@ -817,6 +840,7 @@ _MESSAGE_UPSERT_SQL = """
         run_member_email = COALESCE(
             chat_message.run_member_email, EXCLUDED.run_member_email),
         run_final_at   = COALESCE(EXCLUDED.run_final_at, chat_message.run_final_at),
+        member_typed   = COALESCE(EXCLUDED.member_typed, chat_message.member_typed),
         tool_events    = CASE
             WHEN jsonb_array_length(COALESCE(EXCLUDED.tool_events, '[]'::jsonb)) > 0
             THEN EXCLUDED.tool_events ELSE chat_message.tool_events END,
@@ -852,7 +876,21 @@ _MESSAGE_UPSERT_SQL = """
             END
         ELSE false
         END
-    RETURNING id
+    RETURNING id, (xmax = 0) AS inserted
+"""
+
+#: A new row moves its chat's ``updated_at`` (WS-63 PZ-33b round 4). The seed
+#: of the summary job reads only the chats that a row reached in its window,
+#: and it finds them by ``updated_at`` (``assistant_summaries.IDLE_SQL``). So
+#: each new row must move it. This seam holds the one ``INSERT INTO
+#: chat_message`` of the product: the browser save, the run route's save of
+#: the member's turn, the mint, the fold, the brief and WhatsApp all come
+#: through here. ``GREATEST`` never moves the time back. An update of a row
+#: that exists moves nothing, so a browser that saves an old chat again does
+#: not raise it in the list. Fence: ``tests/unit/test_chat_summary_r8.py``.
+_TOUCH_SESSION_SQL = """
+    UPDATE chat_session SET updated_at = GREATEST(updated_at, now())
+    WHERE id = CAST(:sid AS text)
 """
 
 
@@ -887,6 +925,7 @@ def _upsert_messages(
     authority: dict[str, Any] | None = None,
     author_from_run: bool = False,
     mint: bool = False,
+    member_typed: bool | None = None,
     organization_id: str | None,
 ) -> list[str]:
     """Write a batch of turns, stamping who produced each one.
@@ -908,6 +947,18 @@ def _upsert_messages(
     ``mint`` is for ``routes/agent.py`` ONLY (WS-27bm S14, §20). The gateway
     creates the agent row of a run before it opens the stream. A mint only
     inserts. When a row with that id exists, the mint changes nothing.
+
+    ``member_typed`` is for ``routes/agent.py`` ONLY (WS-63 D-PZ-37,
+    ``_write_prompt_row``). It is the mark of the run request: True when the
+    member typed the turn in the message box, False for every other turn.
+    It reaches a human row only. ``None``, the value of every other caller,
+    stores NULL on an insert and keeps the stored mark on an update. So the
+    client save of the thread can neither set the mark nor clear it.
+    ``test_chat_summary_r8.py`` checks the source of each caller.
+
+    A write that inserts a row moves the chat's ``updated_at`` to now
+    (``_TOUCH_SESSION_SQL``, PZ-33b round 4). The seed of the summary job
+    finds the chats of its window by that column.
 
     ⚠️ **No setup value is stored** (WS-54 fix round 2, item 5). Every text
     field of every turn passes through ``acb_common.setup_markers``, so a
@@ -941,7 +992,9 @@ def _upsert_messages(
     authority_json = json.dumps(authority) if authority else None
     # An empty member is no member: store NULL, so only the fold may update.
     run_member = (actor_email or "").strip().lower() or None
+    typed_mark = None if member_typed is None else bool(member_typed)
     declined: list[str] = []
+    inserted = False
 
     with tenant_session(organization_id) as s:
         # S15 fix round 1: the `chat_message` foreign key ignores RLS, so a
@@ -990,12 +1043,20 @@ def _upsert_messages(
                     "may_insert": may_insert,
                     # Only an agent row belongs to a run (S13).
                     "run_member_email": run_member if kind == "agent" else None,
+                    # D-PZ-37: only the run route names the mark, and only a
+                    # human row takes it. NULL keeps the stored mark.
+                    "member_typed": typed_mark if kind == "human" else None,
                 },
             )
             # RETURNING gives no row when the WHERE declined the update, or
             # when the insert guard declined a new row (S14).
-            if result.first() is None:
+            row = result.first()
+            if row is None:
                 declined.append(m.id)
+            elif getattr(row, "inserted", False) is True:
+                inserted = True
+        if inserted:
+            s.execute(text(_TOUCH_SESSION_SQL), {"sid": session_id})
     return declined
 
 
@@ -1266,6 +1327,162 @@ async def supersede_message(
     except SupersedeRefused as refused:
         raise HTTPException(status_code=refused.status, detail=refused.detail()) from None
     return {"ok": True, "removed": plan.removed_ids}
+
+
+# ---------------------------------------------------------------------------
+# Continue a held chat in a fresh chat (one_assistant_context.md §9.3, WT-1)
+# ---------------------------------------------------------------------------
+# A held chat cannot do some acts. A fresh chat has no hold mark, so it can.
+# The carry takes ONE text across: the newest row that the caller typed. A
+# tool result lives in an assistant row, a pill or a card answer has
+# `member_typed` FALSE or NULL, and a row of another member has another
+# author, so none of them can cross. The route writes no `chat_message` row.
+# It gives the text back, the composer shows it, and the member sends it.
+# Then `routes/agent.py::_write_prompt_row` stays the one writer of the mark.
+#
+# 🔴 `continued_from` has three readers only: this route, the session list and
+# the chip of CO-5. Fence: `test_continued_from_readers.py`.
+
+#: The carry: the newest row that the caller typed in this chat. `content` is
+#: the only column that it reads (§9.3 item 5). `{waterline}` is empty, or the
+#: late-joiner bound of a `since_join` room, as `_get_messages` reads it.
+_CARRY_SQL = (
+    "SELECT content FROM chat_message "
+    "WHERE session_id = :sid AND role = 'user' AND member_typed IS TRUE "
+    "AND lower(author_email) = lower(:me){waterline} "
+    "ORDER BY timestamp_ms DESC, id DESC LIMIT 1"
+)
+
+#: The link. The EXISTS reads the source under the tenant of the caller
+#: (RLS), so a link never names a chat of another tenant.
+_LINK_SQL = (
+    "UPDATE chat_session SET continued_from = :src "
+    "WHERE id = :new AND user_id = :me AND continued_from IS NULL "
+    "AND EXISTS (SELECT 1 FROM chat_session src WHERE src.id = :src)"
+)
+
+
+class _NoLink(Exception):
+    """The link did not land, so the new chat rolls back."""
+
+
+def continue_allowed(organization_id: str | None) -> bool:
+    """True when ``CHAT_CONTINUE_ORGS`` holds the org, or holds ``*``. Default OFF.
+
+    THE reader of the flag. The org comes from ``UserContext`` only, never
+    from the request (R5). It reads ``get_settings()`` on each call, so a
+    flag reload applies a change with no restart. A fault reads as off.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "chat_continue_orgs", "") or "")
+    except Exception:
+        return False
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+def _carry_text(
+    session_id: str, me: str, *, since_ms: int | None, organization_id: str | None,
+) -> str | None:
+    """The ``content`` of the newest row that *me* typed, or None."""
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    params: dict[str, Any] = {"sid": session_id, "me": me}
+    waterline = ""
+    if since_ms is not None:
+        waterline = " AND timestamp_ms >= :waterline"
+        params["waterline"] = since_ms
+    with tenant_session(organization_id) as s:
+        row = s.execute(text(_CARRY_SQL.format(waterline=waterline)), params).first()
+    return None if row is None else str(row.content or "")
+
+
+def _open_continued_chat(
+    new_id: str, source_id: str, me: str, agent_name: str, *,
+    organization_id: str | None,
+) -> bool:
+    """Make the new chat and write its link, in one transaction.
+
+    True when the link landed. False writes nothing: the transaction rolls
+    back, so no chat without its link stays.
+    """
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    try:
+        with tenant_session(organization_id) as s:
+            _ensure_session_rows(s, new_id, me, agent_name)
+            linked = s.execute(
+                text(_LINK_SQL), {"src": source_id, "new": new_id, "me": me},
+            ).rowcount
+            if linked != 1:
+                raise _NoLink
+    except _NoLink:
+        return False
+    return True
+
+
+@router.post(
+    "/sessions/{session_id}/continue",
+    status_code=status.HTTP_200_OK,
+    summary="Continue a held chat in a fresh chat",
+)
+async def continue_session(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Open a fresh chat that continues *session_id*. Answers ``{session_id, text}``.
+
+    ``text`` is the newest row that the caller typed in the source chat. The
+    web shell puts it in the composer of the new chat. The answer is 404
+    while ``CHAT_CONTINUE_ORGS`` does not hold the caller's org, and when the
+    caller cannot read the source. It is 409 when the source holds no row
+    that the caller typed. The request names no id, no org and no member.
+    """
+    org = user.organization_id
+    me = (user.email or "").strip()
+    if not continue_allowed(org) or not me:
+        raise HTTPException(status_code=404, detail="Not Found")
+    room = await asyncio.to_thread(
+        resolve_room_access, session_id, me, organization_id=org,
+    )
+    if not room.can_read or room.unknown_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    carried = await asyncio.to_thread(
+        _carry_text, session_id, me,
+        since_ms=room.since_message_ts, organization_id=org,
+    )
+    if carried is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This chat holds no message that you typed, so nothing can continue.",
+        )
+
+    # §9.3 item 7: the server mints the id, and the new chat passes the two
+    # doors of every new chat.
+    new_id = str(uuid.uuid4())
+    try:
+        if not await asyncio.to_thread(_session_is_new, new_id, organization_id=org):
+            raise HTTPException(status_code=503, detail="Try again.")
+        await prepare_new_session(new_id, org)
+        linked = await asyncio.to_thread(
+            _open_continued_chat, new_id, session_id, me,
+            room.agent_name or "orchestrator", organization_id=org,
+        )
+    except SessionOfAnotherTenant:
+        raise HTTPException(status_code=503, detail="Try again.") from None
+    if not linked:
+        # The source left between the read and the write.
+        raise HTTPException(status_code=404, detail="Session not found")
+    _log.info("chat.continued", source=session_id[:12], session_id=new_id[:12])
+    return {"session_id": new_id, "text": carried}
 
 
 class MessageFeedbackRequest(BaseModel):

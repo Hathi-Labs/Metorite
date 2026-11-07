@@ -56,7 +56,36 @@ describe("the edit composer is a variant of the chat composer", () => {
     // One control, Send or Stop (owner, 2026-10-12, `lib/chatSteer.ts`).
     expect(chat).toMatch(/<ChatSendButton\s+action=\{primary\}/);
     // A Stop that waits for the server is disabled until it answers (UXD-4).
-    expect(chat).toContain('disabled={primary === "send" ? !input.trim() || loadingHistory : stopping}');
+    expect(chat).toContain('disabled={primary === "send" ? !canSendMessage(input, att.items) || loadingHistory : stopping}');
     expect(chat.match(/<ChatSendButton\b/g)).toHaveLength(1);
+  });
+});
+
+describe("an edit that cannot go says why (task 1653)", () => {
+  it("no message offers Edit while the saved history still loads", () => {
+    const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf8");
+    expect(chat).toMatch(/loadingHistory \? null : editableLastUserId\(/);
+  });
+
+  it("a thread still loading refuses the edit with a reason, not a silent close", () => {
+    const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf8");
+    expect(chat).toContain("if (loadingHistory) return EDIT_LOADING;");
+    expect(chat).not.toMatch(/if \(loadingHistory\) return null;\s*\n\s*const out = await submitEdit/);
+  });
+});
+
+describe("Edit then Send with unchanged text re-runs the turn (task 1653)", () => {
+  const src = readFileSync(join(__dirname, "MessageBubble.tsx"), "utf8");
+  const start = src.indexOf("const handleEditSubmit");
+  const fn = src.slice(start, src.indexOf("const cancelEdit", start));
+
+  it("does not close silently on an unchanged text", () => {
+    expect(start).toBeGreaterThan(0);
+    expect(fn).not.toMatch(/trimmed === message\.content\.trim\(\)/);
+    expect(fn).toContain("await onEditLast(message.id, trimmed)");
+  });
+
+  it("only an empty text closes without a send", () => {
+    expect(fn).toContain("if (!trimmed || !onEditLast) {");
   });
 });

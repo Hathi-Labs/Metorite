@@ -31,6 +31,8 @@ import { chipClass } from "./tags";
 
 const NOW = Date.parse("2026-08-07T12:00:00Z");
 const hours = (n: number) => new Date(NOW + n * 3_600_000).toISOString();
+/** Local noon of the day of NOW: "today" in every zone that runs this file. */
+const TODAY_NOON = new Date(new Date(NOW).setHours(12, 0, 0, 0)).toISOString();
 
 /**
  * The values of the CHECK on `pm_tasks.source`, read from the migrations.
@@ -188,7 +190,7 @@ describe("cardChips", () => {
     expect(
       cardChips(
         row({
-          due_at: hours(-2),
+          due_at: TODAY_NOON,
           subtasks: { done: 1, total: 3 },
           blocked_by_count: 1,
           importance: 3,
@@ -200,9 +202,10 @@ describe("cardChips", () => {
       ["blocked", "1"],
       // S6. Priority sits between "do not start this" and "when". That is
       // the order a reader scans a column in. D78 names the matrix level.
-      // Important and due in the past is Urgent.
+      // Important and due within the 48-hour window is Urgent.
       ["importance", "Urgent"],
-      ["due", "2h ago"],
+      // A due date is a day, so the chip says the day (RX-5).
+      ["due", "today"],
       ["subtasks", "1/3"],
       ["tags:ops", "ops"],
     ]);
@@ -421,6 +424,15 @@ describe("visibleChips — the shown-fields gate (WS-27x)", () => {
       // can hide, which is the same defect as a chip nobody can gate.
       expect(FIELD_KEYS as readonly string[]).toContain(field);
     }
+  });
+
+  it("a New task (D170, INB-1) leads with a New chip that no field gate hides", () => {
+    const fresh = row({ is_new: true, blocked_by_count: 1 });
+    expect(cardChips(fresh, NOW)[0]).toMatchObject({ key: "new", label: "New", tone: "accent" });
+    // A state notice, not a field: it shows even when the view shows no field.
+    expect(visibleChips(fresh, [], NOW).map((c) => c.key)).toEqual(["new"]);
+    // A task the member has stated a disposition for earns none.
+    expect(cardChips(row({ is_new: false }), NOW).map((c) => c.key)).not.toContain("new");
   });
 });
 

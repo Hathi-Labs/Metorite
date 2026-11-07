@@ -108,6 +108,15 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'crm_search_notes': {'params': {'limit': 'integer', 'query': 'string'},
                          'required': ['query']},
     'crm_stage_dwell': {'params': {'days': 'integer', 'page': 'integer'}, 'required': []},
+    # WS-CRM CRM-M1 (crm_conversational.md §8): the read of the Change history
+    # of the CRM set-up. A new tool, so no call breaks. No member or org
+    # argument: the gateway binds them (R5). It is in the `crm` family, so it
+    # is injectable. The chat reaches it through the `crm-records` pack, and
+    # the orchestrator's base does not hold it, so the core floor and its
+    # total do not move.
+    'crm_change_history': {'params': {'area': 'string', 'page': 'integer',
+                                      'since': 'string', 'until': 'string'},
+                           'required': []},
     # WS-53 CRM-Q32-8 (crm_platform.md §18.14.10): the reply of a CRM question
     # card. It loads with the `crm` family only, with org_facts, so the core
     # floor and its total do not move. `choice` is the KEY of an option. No
@@ -126,7 +135,8 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                           'options': 'string', 'question': 'string'},
                'required': ['context', 'question']},
     'emit_generative_ui': {'params': {'ui': 'string'}, 'required': ['ui']},
-    'fetch_page': {'params': {'max_chars': 'integer', 'url': 'string'},
+    # WEB-7: + render (a boolean, optional), so no call breaks.
+    'fetch_page': {'params': {'max_chars': 'integer', 'render': 'boolean', 'url': 'string'},
                    'required': ['url']},
     'get_errors': {'params': {'filePaths': 'string'}, 'required': []},
     'get_workflow_run': {'params': {'run_id': 'string'},
@@ -207,7 +217,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                   'required': ['fact', 'path']},
     'save_org_memory': {'params': {'fact': 'string'}, 'required': ['fact']},
     'share_artifact': {'params': {'path': 'string'}, 'required': ['path']},
-    'web_search': {'params': {'max_results': 'integer', 'query': 'string'},
+    'web_search': {'params': {'max_results': 'integer', 'query': 'string', 'source': 'string'},
                    'required': ['query']},
     'write_artifact': {'params': {'content': 'string',
                                   'encoding': 'string',
@@ -241,7 +251,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # The tool returns them on demand (write_artifact.genui_guide), and the
     # docstring keeps the names. Measured 641.
     "emit_generative_ui": 700,
-    "fetch_page": 270,
+    "fetch_page": 310,  # WEB-7: + render (measured 233 -> 273, +40)
     "get_errors": 170,
     "list_integrations": 190,
     "load_artifact_kit": 430,
@@ -262,7 +272,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # tools now say "name the file, and paste no link". share_artifact
     # measured 196 (was 201) and write_artifact 533 (was 575).
     "share_artifact": 210,
-    "web_search": 280,
+    "web_search": 320,  # WEB-4: + source (web, papers, wiki)
     "write_artifact": 550,
 }
 
@@ -272,7 +282,8 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
 #: 2026-10-15, agent reads page part 2: recall_notes gained an `offset`
 #: (193 -> 215, +22), and paid for it itself. Its worked example left the
 #: docstring, so it measured 180, and the floor 6,693 -> 6,680.
-CORE_SCHEMA_TOTAL_CEILING = 6_700
+#: WEB-4 added `source` to web_search (+28).
+CORE_SCHEMA_TOTAL_CEILING = 6_780  # WEB-7: + render on fetch_page (+40)
 
 
 def _tools_by_name() -> dict[str, object]:

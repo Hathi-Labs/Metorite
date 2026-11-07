@@ -16,6 +16,10 @@ What this proves:
   profile switch off, on for ``*``, and it reads the settings at each call;
 - the flag name: a platform name of the env guard, a reload name, and a name
   that the staging tool may write, with the comment that it spends credits.
+- PZ-34: ``briefing_for(org)`` follows the same rules. It is off by default,
+  it needs ``enabled_for``, it reads ``*`` and the settings at each call, and
+  it fails closed. Its name ``ASSISTANT_BRIEFING_ORGS`` is a platform name, a
+  reload name and a name that the staging tool may write.
 
 Review round 1 (2026-10-31) adds:
 
@@ -24,20 +28,32 @@ Review round 1 (2026-10-31) adds:
 - a sensitive line stays only when the member typed each sensitive term, and
   a line with a form that ``grounded`` cannot match drops (P1-b);
 - a card answer is not a typed row (P1-c), with a leading space too;
-- review round 2: one to three marks between two digits join one number,
-  for the flag and for the grounding, and a domain in words behind the end
-  of a sentence is flagged (``_DIGIT_JOINT``, ``_SPOKEN_DOT``).
+- review round 2: a domain in words behind the end of a sentence is flagged
+  (``_SPOKEN_DOT``).
+
+PZ-33b replaces the number joints of rounds 1 to 3 with ONE strict digit
+rule (``digit_runs``, ``personalization.md`` §15.9, "Open"). Each character
+that is not a real letter joins two digits, and a run of 6 digits or more
+must be a run of the member's typed words. Digits of each script count,
+after NFKD. A modifier letter and a click letter read as marks.
+Every long-number probe of the three PZ-33a reviews is a drop here. A typed
+number in any marks, a version, a ratio, a short price and a 5-digit room
+stay. A time range, a date and a price of 6 digits or more that the member
+did not type drop: the agent accepted that cost.
 
 Mutations, each red here: drop the sensitive-line rule of ``_keep``; drop
 the sensitive-term rule; drop the joined-text check (``_passes``); put the
-round-1 ``_DIGIT_JOINT`` back; count a card answer as typed; let ``member_texts`` skip ``typed_text``; let
+punctuation joint of round 3 back in place of ``digit_runs``; count a card
+answer as typed; let ``member_texts`` skip ``typed_text``; let
 ``prompt_rows`` read ``tool_events``; drop the brief-row check; drop
 ``enabled_for`` from ``chat_summary_for``.
 """
 
+# ruff: noqa: RUF001 - the probes hold digits and marks of other scripts on purpose
 from __future__ import annotations
 
 import json
+import random
 import re
 from datetime import date
 from pathlib import Path
@@ -80,9 +96,13 @@ def _pasted_mail() -> str:
 
 
 def _row(id_: str, role: str, content: str, **extra: object) -> dict[str, object]:
+    """One row. A ``user`` row carries the typed mark unless a test says
+    otherwise, as the run route stores it for a message that the member typed
+    in the message box (D-PZ-37)."""
     row: dict[str, object] = {"id": id_, "role": role, "content": content,
                               "author_kind": None, "author_email": None,
-                              "tool_events": [], "custom_events": [], "reasoning": None}
+                              "tool_events": [], "custom_events": [], "reasoning": None,
+                              "member_typed": role == "user"}
     row.update(extra)
     return row
 
@@ -117,7 +137,7 @@ def test_a_pasted_mail_over_the_cap_reaches_neither_the_prompt_nor_the_words() -
     rows = _chat()
     texts = summaries.member_texts(rows, MEMBER)
     words = summaries.member_words(rows, MEMBER)
-    prompt = " ".join(w for _who, w in summaries.prompt_rows(rows, MEMBER))
+    prompt = " ".join(summaries.prompt_rows(rows, MEMBER))
     assert len(texts) == 2, texts
     for leak in (PASTED_PHONE, PASTED_MAIL, PASTED_SALARY, "quarterly numbers"):
         assert leak not in words
@@ -136,7 +156,9 @@ def test_a_tool_event_reasoning_and_a_custom_event_stay_out_of_the_prompt() -> N
     joined = json.dumps(prompt)
     for leak in ("556677889900", "4455667788", "99887766", "read_mail"):
         assert leak not in joined
-    assert ("mira", "Sure. Three tiers, and the old price stays.") in prompt
+    # The owner, 2026-11-02: the prompt holds the member's own words only.
+    assert "Sure. Three tiers" not in joined, "a reply of Mira stays out"
+    assert prompt == summaries.member_texts(_chat(), MEMBER)
 
 
 def test_the_brief_row_and_a_system_row_stay_out_of_the_prompt() -> None:
@@ -164,16 +186,55 @@ def test_a_user_row_of_another_author_is_not_the_members() -> None:
     assert summaries.member_texts(legacy, MEMBER) == ["Plan the offsite."]
 
 
+#: A tapped pill of Mira's own words, with a token that only it holds.
+PILL_TOKEN = "PILLTOKEN-4471 billing@pill-only.example 9988776655"
+
+
+@pytest.mark.parametrize("mark", [False, None, "true", 1],
+                         ids=["tapped", "no mark", "a string", "a number"])
+def test_round_4_only_the_typed_mark_counts(mark: object) -> None:
+    """D-PZ-37 (the owner, 2026-11-02): only a row whose mark is ``True``
+    counts. A tapped pill, a choice, a card action, a feed starter and the
+    Fix prompt store False. A row from before the mark stores NULL. Neither
+    reaches the prompt, the words that ground a line, or the count of typed
+    rows. A value that is not ``True`` is no mark."""
+    tapped = _row("p1", "user", f"Draft a reply to Ravi: {PILL_TOKEN}",
+                  author_kind="human", author_email=MEMBER, member_typed=mark)
+    typed = _row("m1", "user", "Book the review.", author_kind="human",
+                 author_email=MEMBER)
+    rows = [tapped, typed]
+    assert summaries.member_texts(rows, MEMBER) == ["Book the review."]
+    assert summaries.prompt_rows(rows, MEMBER) == ["Book the review."]
+    assert "PILLTOKEN" not in summaries.member_words(rows, MEMBER)
+    # A line that copies the pill's address or number grounds nothing.
+    raw = json.dumps({"text": "Write to billing@pill-only.example about 9988776655.",
+                      "follow_ups": []})
+    assert summaries.check_answer(raw, summaries.member_words(rows, MEMBER)) is None
+
+
+def test_pz33b_no_row_of_an_agent_reaches_the_prompt() -> None:
+    """A reply of Mira can restate a mail, a CRM record or a tool answer, and
+    the text of a mentioned agent is a stranger's too. So no agent row goes
+    in, and a legacy row with no author neither (the owner, 2026-11-02)."""
+    rows = [_row("a1", "assistant", "CRM agent: Acme paid 4.2 lakh",
+                 author_kind="agent", author_email="crm-assistant"),
+            _row("a2", "assistant", "Sure, I saved it.",
+                 author_kind="agent", author_email="orchestrator"),
+            _row("a3", "assistant", "An older reply."),
+            _row("m1", "user", "Book the review.", author_email=MEMBER)]
+    assert summaries.prompt_rows(rows, MEMBER) == ["Book the review."]
+
+
 def test_the_prompt_keeps_the_newest_rows_under_the_cap() -> None:
-    rows = [_row(f"a{i}", "assistant", f"{i:03d}" + "x" * 97) for i in range(200)]
+    rows = [_row(f"m{i}", "user", f"{i:03d}" + "x" * 97, author_email=MEMBER)
+            for i in range(200)]
     kept = summaries.prompt_rows(rows, MEMBER)
-    total = sum(len(w) for _who, w in kept)
-    assert total == summaries.INPUT_MAX
-    assert kept[-1][1].startswith("199"), "the newest row must go in"
-    assert kept[0][1].startswith("080"), "the oldest rows drop first"
+    assert sum(len(w) for w in kept) == summaries.INPUT_MAX
+    assert kept[-1].startswith("199"), "the newest row must go in"
+    assert kept[0].startswith("080"), "the oldest rows drop first"
     short = summaries.prompt_rows(rows, MEMBER, limit=150)
-    assert [w[:3] for _who, w in short] == ["198", "199"]
-    assert len(short[0][1]) == 50, "the oldest row that goes in loses its end"
+    assert [w[:3] for w in short] == ["198", "199"]
+    assert len(short[0]) == 50, "the oldest row that goes in loses its end"
 
 
 # ── Item 7: the answer checks drop what the member did not type ─────────────
@@ -382,7 +443,309 @@ def test_round_2_two_typed_rows_never_join_into_one_number() -> None:
     assert summaries.check_answer(_answer("Call 98450–12345 today."), words) is None
 
 
+# ── PZ-33b: the strict digit rule ──────────────────────────────────────────
+
+#: Two typed rows that each hold one half of a number (review rounds 1 to 3).
+HALVES_APART = [_row("m1", "user", "Room 98450 is booked.", author_email=MEMBER),
+                _row("m2", "user", "Ticket 12345 is open.", author_email=MEMBER)]
+#: Both halves in one typed row, with words between them.
+HALVES_ONE_ROW = [_row("m1", "user", "Room 98450 is booked and ticket 12345 is open.",
+                       author_email=MEMBER)]
+#: The two halves at the edges of two typed rows (review round 3).
+HALVES_AT_THE_EDGES = [_row("m1", "user", "Call 98450", author_email=MEMBER),
+                       _row("m2", "user", "12345 today", author_email=MEMBER)]
+
+#: Each long-number probe of the three PZ-33a reviews: the answer text, the
+#: follow-ups and the typed rows. Each stored a number that the member did
+#: not type, before PZ-33b or in a round before it.
+STRICT_DROPS: list[tuple[str, str, list[str], list[dict[str, object]] | None]] = [
+    # Round 1 and its verifier.
+    ("a line break", "Call 98450\n12345 waits.", [], None),
+    ("a full stop", "Call Priya on 98450. 12345 is the code.", [], None),
+    ("a bang and a space", "Call 98450! 12345 waits.", [], None),
+    ("halves in two rows", "Call 98450\n12345 waits.", [], HALVES_APART),
+    ("halves in one row", "Call 98450\n12345 waits.", [], HALVES_ONE_ROW),
+    ("Arabic-Indic digits", "Call ٩٨٤٥٠١٢٣٤٥ today.", [], None),
+    ("Arabic-Indic, split", "Call ٩٨٤٥٠\n١٢٣٤٥ waits.", [], None),
+    ("fullwidth digits, split", "Call ９８４５０\n１２３４５ waits.", [], None),
+    ("Devanagari digits, split", "Call ९८४५०\n१२३४५ waits.", [], None),
+    ("a spaced hyphen", "Call 98450 - 12345 today.", [], None),
+    ("a zero-width space", "Call the vendor on 98450​12345 about the deck.", [], None),
+    ("a slash", "Call the vendor on 98450/12345 about the deck.", [], None),
+    # Round 2.
+    ("a plain phone", "Call 98450 12345 today.", [], None),
+    ("three parts with commas", "Call 984, 501, 2345 today.", [], None),
+    ("an en dash", "Call 98450–12345 today.", [], None),
+    ("an en dash over the follow-up", "Call Priya on 98450 –", ["12345 later"], None),
+    ("a comma over the follow-up", "Call Priya on 98450,", ["12345 later"], None),
+    # Round 3.
+    ("a minus sign", "Call 98450−12345 today.", [], None),
+    ("a figure dash", "Call 98450‒12345 today.", [], None),
+    ("a non-breaking hyphen", "Call 98450‑12345 today.", [], None),
+    ("a dot leader", "Call 98450…12345 today.", [], None),
+    ("a spaced minus sign", "Call 98450 − 12345 today.", [], None),
+    ("a no-break space", "Call 98450 12345 today.", [], None),
+    ("an ideographic comma", "Call 98450、12345 today.", [], None),
+    ("spaces only", "Call 98450 12345 6 today.", [], None),
+    ("four bangs", "Call 98450!!!!12345 today.", [], None),
+    ("four commas", "Call 98450,,,,12345 today.", [], None),
+    ("spaced commas", "Call 98450 , , 12345 today.", [], None),
+    ("spaced bangs", "Call 98450 ! ! 12345 today.", [], None),
+    ("spaced underscores", "Call 98450 _ _ 12345 today.", [], None),
+    ("a slash over the follow-up", "Call Priya on 98450/", ["12345 later"], None),
+    ("four bangs over the follow-up", "Call Priya on 98450!!!!", ["12345 later"], None),
+    ("spaced commas over the follow-up", "Call Priya on 98450 , ,", ["12345 later"], None),
+    ("halves apart, a comma", "Call 98450, 12345 today.", [], HALVES_APART),
+    ("halves apart, a space", "Call 98450 12345 today.", [], HALVES_APART),
+    ("halves at the edges, an en dash", "Call 98450–12345 today.", [], HALVES_AT_THE_EDGES),
+    ("halves at the edges, a comma", "Call 98450, 12345 today.", [], HALVES_AT_THE_EDGES),
+    ("superscript digits, a bang", "Call ⁹⁸⁴⁵⁰!¹²³⁴⁵ today.", [], None),
+    ("superscript digits, a comma", "Call ⁹⁸⁴⁵⁰, ¹²³⁴⁵ today.", [], None),
+    ("circled digits, a bang", "Call ⑨⑧④⑤⓪!①②③④⑤ today.", [], None),
+    ("fullwidth digits, a fullwidth bang", "Call ９８４５０！１２３４５ today.", [], None),
+    ("superscript digits", "Call ⁹⁸⁴⁵⁰¹²³⁴⁵ today.", [], None),
+    # Letters that read as marks (the review of PZ-33b).
+    ("a modifier colon", "Call 98450\u02d012345 today.", [], None),
+    ("a spaced modifier colon", "Call 98450 \u02d0 12345 today.", [], None),
+    ("a prolonged sound mark", "Call 98450\u30fc12345 today.", [], None),
+    ("a halfwidth prolonged sound mark", "Call 98450\uff7012345 today.", [], None),
+    ("a tatweel", "Call 98450\u064012345 today.", [], None),
+    ("a modifier h", "Call 98450\u02b012345 today.", [], None),
+    ("a dental click", "Call 98450\u01c012345 today.", [], None),
+    ("an alveolar click", "Call 98450\u01c312345 today.", [], None),
+    # Symbols that NFKD turns into letters (the review of round 2, F9).
+    ("a trade mark sign", "Call 98450\u212212345 today.", [], None),
+    ("a numero sign", "Call 98450\u211612345 today.", [], None),
+    ("a roman numeral one", "Call 98450\u216012345 today.", [], None),
+    ("a circled small a", "Call 98450\u24d012345 today.", [], None),
+]
+
+
+@pytest.mark.parametrize(("text", "follow", "rows"), [p[1:] for p in STRICT_DROPS],
+                         ids=[p[0] for p in STRICT_DROPS])
+def test_pz33b_each_long_number_probe_of_the_reviews_drops(
+        text: str, follow: list[str], rows: list[dict[str, object]] | None) -> None:
+    words = summaries.member_words(PROBE_ROWS if rows is None else rows, MEMBER)
+    assert summaries.check_answer(_answer(text, follow), words) is None
+
+
+@pytest.mark.parametrize("text", [
+    "Call 98450!!!!12345 today.", "Call 98450 , , 12345 today.",
+    "Call 98450 _ _ 12345 today.", "Call 98450–12345 today.",
+    "Call ９８４５０／１２３４５ today.", "Call ٩٨٤٥٠ ١٢٣٤٥ today.",
+    "Call 98450 12345 today.",
+])
+@pytest.mark.parametrize("typed", ["call 98450-12345 today", "call 98450 12345 today",
+                                   "call 98450/12345 today"])
+def test_pz33b_a_typed_number_stays_in_any_marks(text: str, typed: str) -> None:
+    rows = [_row("m1", "user", typed, author_email=MEMBER)]
+    out = summaries.check_answer(_answer(text), summaries.member_words(rows, MEMBER))
+    assert out is not None and out.text == text
+
+
+@pytest.mark.parametrize("text", [
+    "Planned the deck. Send it to Priya.",
+    "Ship the deck v2.3.1 to Priya.",
+    "Use a 3:2 ratio for the deck.",
+    "Keep the old price of ₹1,200 for current customers.",
+    "Room 40512 is booked for the review.",
+    "Meet at 10:30 for the Q3, 2026 plan.",
+    "The team won 3-2, 4-1 this week.",
+    "Rooms 40512 and 40513 are booked.",
+], ids=["two sentences", "a version", "a ratio", "a price of 4 digits",
+        "a room of 5 digits", "a time and a quarter", "two scores",
+        "two rooms with a word between"])
+def test_pz33b_a_short_run_stays(text: str) -> None:
+    out = summaries.check_answer(_answer(text), summaries.member_words(PROBE_ROWS, MEMBER))
+    assert out is not None and out.text == text
+
+
+@pytest.mark.parametrize(("text", "typed"), [
+    ("Meet Priya 10:30–11:00 on the deck.", "meet priya 10:30–11:00 on the deck"),
+    ("The deck is due 31/10/2026 for Priya.", "the deck is due 31/10/2026 for priya"),
+    ("Keep the old price of ₹1,20,000 for current customers.",
+     "keep the old price of rs 1,20,000 for current customers"),
+], ids=["a time range", "a date", "a lakh price"])
+def test_pz33b_the_accepted_cost_a_long_run_stays_only_when_typed(text: str, typed: str) -> None:
+    """A time range, a date and a price of 6 digits or more drop when the
+    member did not type them (the cost that the agent accepted, §15.9), and
+    stay when the member did."""
+    untyped = summaries.member_words(PROBE_ROWS, MEMBER)
+    assert summaries.check_answer(_answer(text), untyped) is None
+    rows = [_row("m1", "user", typed, author_email=MEMBER)]
+    out = summaries.check_answer(_answer(text), summaries.member_words(rows, MEMBER))
+    assert out is not None and out.text == text
+
+
+def test_pz33b_a_part_of_a_longer_typed_run_does_not_count() -> None:
+    """The digit strings must be equal. The member typed the country code,
+    so a number without it is not a run of the typed words."""
+    rows = [_row("m1", "user", "call +91 98450 12345 today", author_email=MEMBER)]
+    words = summaries.member_words(rows, MEMBER)
+    assert summaries.check_answer(_answer("Call +91 98450 12345 today."), words) is not None
+    assert summaries.check_answer(_answer("Call 98450 12345 today."), words) is None
+
+
+def test_pz33b_an_address_keeps_its_shape_for_the_grounding() -> None:
+    """The joint of an address ("@") stays when a number becomes one run, so
+    a typed domain never grounds an address of the same digits."""
+    rows = [_row("m1", "user", "write to a1.2b.example about the deck", author_email=MEMBER)]
+    words = summaries.member_words(rows, MEMBER)
+    assert summaries.check_answer(_answer("Write to a1.2b.example about the deck."),
+                                  words) is not None
+    assert summaries.check_answer(_answer("Write to a1@2b.example about the deck."),
+                                  words) is None
+
+
+def test_pz33b_the_digit_runs() -> None:
+    assert summaries.digit_runs("98450!!!!12345") == ["9845012345"]
+    assert summaries.digit_runs("98450 , , 12345 and 77") == ["9845012345", "77"]
+    assert summaries.digit_runs("Room 12, floor 3") == ["12", "3"]
+    assert summaries.digit_runs("٩٨٤ ९८४ ９８４ ⁹⁸⁴ ⑨⑧④") == ["984984984984984"]
+    assert summaries.digit_runs("v2.3.1 then 10:30") == ["231", "1030"]
+    assert summaries.digit_runs("98450\u02d012345") == ["9845012345"]
+    assert summaries.digit_runs("98450\u02b012345") == ["9845012345"]
+    assert summaries.digit_runs("98450\u01c012345") == ["9845012345"]
+    assert summaries.digit_runs("98450x12345") == ["98450", "12345"]
+    # A symbol is no letter, even when NFKD makes one of it.
+    for joint in ("\u2122", "\u2116", "\u2160", "\u24d0", "\u2121"):
+        assert summaries.digit_runs(f"98450{joint}12345") == ["9845012345"], joint
+    # A symbol that holds digits gives its digits, and no letter of it.
+    assert summaries.digit_runs("98450\u33e512345") == ["98450612345"]
+    assert summaries.digit_runs("") == [] and summaries.digit_runs(None) == []
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "a real letter ends a run. The agent made that call, and the owner may "
+    "overrule it (§15.9). A number split by a real letter is two runs"))
+@pytest.mark.parametrize("text", ["Call 98450x12345 today.", "Call 98450 x 12345 today."],
+                         ids=["an x", "a spaced x"])
+def test_pz33b_the_boundary_a_real_letter_splits_a_number(text: str) -> None:
+    """Two probes of review round 3 put a real letter between the digit
+    groups. The rule reads a real letter as the end of a run, so these stay
+    today. A letter that reads as a mark joins (``STRICT_DROPS``). This test
+    records the boundary: it turns red when a change closes it."""
+    words = summaries.member_words(PROBE_ROWS, MEMBER)
+    assert summaries.check_answer(_answer(text), words) is None
+
+
+# ── PZ-33b: the bound on the words of the check (round 3, F12) ─────────────
+
+
+def test_pz33b_the_words_of_the_check_keep_the_newest_whole_rows() -> None:
+    rows = [_row(f"m{i}", "user", f"{i:03d} " + "x" * 996, author_email=MEMBER)
+            for i in range(60)]
+    words = summaries.member_words(rows, MEMBER, limit=summaries.WORDS_MAX)
+    assert len(words) <= summaries.WORDS_MAX
+    parts = words.split(summaries._ROW_BREAK)
+    assert parts[-1].startswith("059"), "the newest row must go in"
+    assert all(len(p) == 1000 for p in parts), "no row is cut"
+    assert summaries.member_words(rows, MEMBER) == summaries._ROW_BREAK.join(
+        summaries.member_texts(rows, MEMBER)), "no limit, every row"
+    one = [_row("m1", "user", "y" * 1500, author_email=MEMBER)]
+    assert summaries.member_words(one, MEMBER, limit=summaries.WORDS_MAX) == "y" * 1500
+
+
+def test_pz33b_the_prompt_takes_the_house_voice_of_a_summary() -> None:
+    from acb_llm.voice import CORE, JSON_NOTE, OVERLAYS
+    from gateway import chat_summary_job
+
+    system = chat_summary_job.SYSTEM
+    assert CORE in system and OVERLAYS["summary"] in system and JSON_NOTE in system
+    assert system.index("member's own words") < system.index(CORE)
+
+
+def test_pz33b_the_job_grounds_on_the_capped_words() -> None:
+    source = (ROOT / "apps/services/gateway/gateway/chat_summary_job.py").read_text(
+        encoding="utf-8")
+    assert "member_words(chat.rows, chat.member, limit=WORDS_MAX)" in source
+
+
+def test_round_4_only_the_run_route_writes_the_typed_mark() -> None:
+    """D-PZ-37: ``_upsert_messages(member_typed=...)`` is for the run route's
+    save of the turn only (``routes/agent.py::_write_prompt_row``). Each other
+    caller binds NULL, so the client save of the thread can neither set the
+    mark nor clear it. ``test_chat_summary_r8.py`` proves the SQL."""
+    found: dict[str, list[str]] = {}
+    for base in ("apps", "packages"):
+        for path in (ROOT / base).rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+            body = path.read_text(encoding="utf-8", errors="replace")
+            hits = re.findall(r"\bmember_typed\s*=(?!=)[^\n]*", body)
+            if hits:
+                found[path.relative_to(ROOT).as_posix()] = hits
+    assert set(found) == {"apps/services/gateway/gateway/routes/agent.py",
+                          "apps/services/gateway/gateway/routes/chat.py"}, found
+    chat = found["apps/services/gateway/gateway/routes/chat.py"]
+    assert chat == ["member_typed   = COALESCE(EXCLUDED.member_typed, chat_message.member_typed),"]
+    agent = found["apps/services/gateway/gateway/routes/agent.py"]
+    assert agent == ["member_typed=typed is True and card_answer is None,",
+                     "member_typed=prompt.member_typed is True,"], agent
+    from gateway.routes import chat as chat_route
+
+    assert "member_typed" not in chat_route.MessageRecord.model_fields, (
+        "a client record must name no mark")
+
+
+# ── PZ-33b: the bound on the shared worker ─────────────────────────────────
+
+
+def test_pz33b_one_org_holds_the_shared_worker_for_a_bounded_time() -> None:
+    """The worker runs the orgs in turn and one job at a time, so the summary
+    jobs of one org must not start the brief of another org late."""
+    from gateway import chat_summary_job
+    from gateway.jobs import worker
+
+    assert summaries.SUMMARY_SEED_MAX == 5
+    assert chat_summary_job.CALL_TIMEOUT_S == 30
+    assert summaries.SUMMARY_SEED_MAX * chat_summary_job.CALL_TIMEOUT_S <= 150
+    assert chat_summary_job.CALL_TIMEOUT_S < worker.HANDLER_TIMEOUT
+
+
+# ── PZ-33b: the member's switch and the dedupe key ─────────────────────────
+
+
+def test_pz33b_the_switch_reads_on_unless_the_member_stored_false(monkeypatch) -> None:
+    """PZ-35 declares ``apps.chat.summaries`` later. Before it, a stored
+    false turns the switch off, and a missing value or a wrong type reads
+    on. After it, the profile's own reader and default decide."""
+    assert "chat" not in ap.APP_PREFERENCES or "summaries" in ap.APP_PREFERENCES["chat"]
+    for stored, on in ((None, True), ({}, True), ({"summaries": True}, True),
+                       ({"summaries": False}, False), ({"summaries": "no"}, True),
+                       ('{"summaries": false}', False), ("not json", True), ([1], True)):
+        assert summaries.switch_on(stored) is on, stored
+    monkeypatch.setitem(ap.APP_PREFERENCES, "chat", {"summaries": True})
+    assert summaries.switch_on({"summaries": False}) is False
+    assert summaries.switch_on(None) is True
+    assert summaries.switch_on({"summaries": "no"}) is True
+
+
+def test_pz33b_the_dedupe_key_names_the_chat_and_its_newest_row() -> None:
+    from gateway.jobs.queue import DEDUPE_CHARS
+
+    assert summaries.dedupe_key("chat-1", "a2") == "summary:chat-1:a2"
+    long_key = summaries.dedupe_key("c" * 150, "m" * 100)
+    assert len(long_key) <= DEDUPE_CHARS and long_key.startswith("summary:")
+    assert long_key == summaries.dedupe_key("c" * 150, "m" * 100)
+    assert long_key != summaries.dedupe_key("c" * 150, "m" * 99 + "n")
+
+
 # ── Review round 1, P1-c: a card answer is not a typed row ──────────────────
+
+
+def test_pz33b_a_card_answer_is_no_new_turn() -> None:
+    """The prompt holds the member's typed words only, and a card answer is
+    none of them (the owner, 2026-11-02). So it cannot count as new: a call
+    on it would see nothing new."""
+    from gateway.chat_recovery import compose_card_answer
+
+    card = _row("m9", "user", compose_card_answer("Send the deck to Priya?", "APPROVE"),
+                author_email=MEMBER)
+    assert summaries.member_texts([card], MEMBER) == []
+    assert summaries.member_words([card], MEMBER) == ""
+    assert summaries.prompt_rows([card], MEMBER) == []
+    assert summaries.member_texts([_row("m6", "user", "Book it.", author_email=MEMBER)], MEMBER)
 
 
 def test_a_card_answer_is_not_a_typed_row() -> None:
@@ -399,7 +762,7 @@ def test_a_card_answer_is_not_a_typed_row() -> None:
     # A leading space does not hide a card answer (review round 2).
     spaced = [rows[0], _row("m4", "user", "  " + card, author_email=MEMBER)]
     assert summaries.member_texts(spaced, MEMBER) == ["Help me answer Ravi."]
-    assert all("ravi.k" not in w for _who, w in summaries.prompt_rows(rows, MEMBER))
+    assert all("ravi.k" not in w for w in summaries.prompt_rows(rows, MEMBER))
     words = summaries.member_words(rows, MEMBER)
     assert summaries.check_answer(_answer(
         "Sent the reply to ravi.k@vendor.example about his diagnosis report."),
@@ -431,6 +794,36 @@ def test_the_follow_ups_keep_three_of_one_hundred_and_twenty_characters() -> Non
     assert all(len(f) <= summaries.FOLLOW_UP_MAX for f in out.follow_ups)
 
 
+@pytest.mark.parametrize("mark", ["\u200b", "\u200d", "\ufeff", "\u00ad", "\u2060"])
+def test_pz33b_a_format_character_cannot_hide_a_sentence_from_the_cap(mark: str) -> None:
+    """A zero-width space after each full stop hid the sentence ends from the
+    split, and ``Answer`` then raised on the same text. It must keep the
+    cap, and never raise."""
+    out = summaries.check_answer(_answer(f"A.{mark} B.{mark} C.{mark} D."), "")
+    assert out is not None and out.text == "A. B. C."
+
+
+def test_pz33b_check_answer_never_raises_and_keeps_the_caps() -> None:
+    """Any text of the model gives None or an answer inside the caps."""
+    rng = random.Random(7)
+    parts = ["A", "deck", ".", "!", "?", " ", "\n", "\t", "\x0b", "\x1c", "\u2028", "\u0085",
+             "\u00a0", "\u200b", "\u200d", "\ufeff", "\u00ad", "9", "98450", "salary"]
+    for _ in range(3000):
+        text = "".join(rng.choice(parts) for _ in range(rng.randint(0, 40)))
+        items = ["".join(rng.choice(parts) for _ in range(rng.randint(0, 30)))
+                 for _ in range(rng.randint(0, 5))]
+        out = summaries.check_answer(_answer(text, items), "A deck")
+        if out is not None:
+            assert len(out.text) <= summaries.TEXT_MAX
+            assert len(summaries.sentences(out.text)) <= summaries.SENTENCES_MAX
+            assert len(out.follow_ups) <= summaries.FOLLOW_UPS_MAX
+
+
+def test_pz33b_a_nest_too_deep_to_parse_gives_no_summary() -> None:
+    deep = '{"text": ' + "[" * 100_000 + "]" * 100_000 + "}"
+    assert summaries.check_answer(deep, "") is None
+
+
 def test_white_space_folds_and_a_fence_of_code_parses() -> None:
     raw = "```json\n" + _answer("Planned   the\n deck.", ["  Send\tthe deck "]) + "\n```"
     out = summaries.check_answer(raw, "")
@@ -457,6 +850,16 @@ def test_an_answer_over_the_caps_cannot_be_built() -> None:
         summaries.Answer(text="Ok.", follow_ups=("x" * 121,))
     with pytest.raises(summaries.SummaryShapeError):
         summaries.Answer(text="")
+
+
+def test_pz33b_the_waterline_is_the_newest_of_the_summary_and_the_mark() -> None:
+    read = summaries.stored
+    assert read({"v": 1, "through": "m3", "through_ms": 17}).waterline == 17
+    assert read({"v": 1, "mark": {"through": "m4", "through_ms": 23}}).waterline == 23
+    assert read({"v": 1, "through_ms": 17, "mark": {"through_ms": 23}}).waterline == 23
+    assert read({"v": 1, "through_ms": 30, "mark": {"through_ms": 23}}).waterline == 30
+    assert read({"v": 1, "mark": {"through": "m4", "at": "x"}}).waterline is None
+    assert read({"v": 1, "through_ms": True, "mark": {"through_ms": "23"}}).waterline is None
 
 
 def test_the_stored_read_is_lenient() -> None:
@@ -562,3 +965,105 @@ def test_the_staging_tool_may_write_the_flag_and_names_its_credit_spend() -> Non
     readme = [ln for ln in STAGING_README.read_text(encoding="utf-8").splitlines()
               if ln.startswith(f"| `{FLAG}`")]
     assert len(readme) == 1 and "credits" in readme[0], readme
+
+
+# ── briefing_for(org), the flag of PZ-34 ────────────────────────────────────
+
+BRIEFING_FLAG = "ASSISTANT_BRIEFING_ORGS"
+
+
+@pytest.fixture
+def briefing_flags():
+    """Set the briefing list and the profile switch on a copy, and install it
+    as a reload does."""
+    original = get_settings()
+
+    def _set(orgs: str, *, profile: bool = True, profile_orgs: str = "") -> None:
+        install_settings(original.model_copy(update={
+            "assistant_briefing_orgs": orgs,
+            "assistant_profile_enabled": profile,
+            "assistant_profile_orgs": profile_orgs,
+        }))
+
+    yield _set
+    install_settings(original)
+
+
+def test_pz34_the_briefing_is_off_for_an_org_off_the_list(briefing_flags) -> None:
+    briefing_flags("")
+    assert ap.briefing_for(ORG) is False
+    briefing_flags(OTHER_ORG)
+    assert ap.briefing_for(ORG) is False
+    assert ap.briefing_for(OTHER_ORG) is True
+
+
+def test_pz34_star_and_a_list_turn_the_briefing_on(briefing_flags) -> None:
+    briefing_flags("*")
+    assert ap.briefing_for(ORG) is True
+    briefing_flags(f" {ORG.upper()} , {OTHER_ORG}")
+    assert ap.briefing_for(ORG) is True
+    assert ap.briefing_for("") is False
+    assert ap.briefing_for(None) is False
+
+
+def test_pz34_the_profile_switch_off_turns_the_briefing_off(briefing_flags) -> None:
+    """``enabled_for`` is needed too."""
+    briefing_flags("*", profile=False)
+    assert ap.briefing_for(ORG) is False
+    briefing_flags("*", profile=True, profile_orgs=OTHER_ORG)
+    assert ap.briefing_for(ORG) is False
+    assert ap.briefing_for(OTHER_ORG) is True
+
+
+def test_pz34_the_briefing_flag_reads_the_settings_at_each_call(briefing_flags) -> None:
+    """A SIGHUP reload installs new settings. The next call reads them, with
+    no restart."""
+    briefing_flags("")
+    assert ap.briefing_for(ORG) is False
+    briefing_flags(ORG)
+    assert ap.briefing_for(ORG) is True
+    briefing_flags("")
+    assert ap.briefing_for(ORG) is False
+
+
+def test_pz34_the_briefing_flag_fails_closed(briefing_flags, monkeypatch) -> None:
+    """A fault in the settings read gives False, never an open block."""
+    briefing_flags("*")
+
+    def _broken():
+        raise RuntimeError("settings are broken")
+
+    import acb_common
+
+    monkeypatch.setattr(acb_common, "get_settings", _broken)
+    assert ap.briefing_for(ORG) is False
+
+
+def test_pz34_the_summary_list_does_not_open_the_briefing(flags) -> None:
+    """Two flags, two readers: the list of PZ-33 opens no briefing."""
+    flags("*")
+    assert ap.chat_summary_for(ORG) is True
+    assert ap.briefing_for(ORG) is False
+
+
+def test_pz34_the_briefing_flag_is_a_reloadable_platform_name_with_an_empty_default() -> None:
+    from acb_common.settings import Settings
+    from gateway.flag_reload import RELOADABLE
+
+    assert Settings.model_fields["assistant_briefing_orgs"].default == ""
+    assert BRIEFING_FLAG in RELOADABLE
+    assert env_guard.is_platform_env(BRIEFING_FLAG)
+    assert BRIEFING_FLAG in env_guard.PLATFORM_ENV_NAMES
+
+
+def test_pz34_the_staging_tool_may_write_the_briefing_flag() -> None:
+    """§15.8: the name matches neither wall of the tool, it is in the
+    allowlist, and the README lists it."""
+    for wall in ("DENY_RE", "HELD_RE"):
+        assert not _bash_regex(wall).search(BRIEFING_FLAG), f"{wall} refuses {BRIEFING_FLAG}"
+    body = STAGING_TOOL.read_text(encoding="utf-8")
+    block = re.search(r"^readonly ALLOWED_KEYS=\(\n(.*?)^\)$", body, re.M | re.S)
+    assert block and BRIEFING_FLAG in block.group(1).split()
+    readme = [ln for ln in STAGING_README.read_text(encoding="utf-8").splitlines()
+              if ln.startswith(f"| `{BRIEFING_FLAG}`")]
+    assert len(readme) == 1, readme

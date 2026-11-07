@@ -24,6 +24,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { orderStageList, stageAccent } from "../lib/board";
 import { pickable } from "../lib/emptyStages";
 import { useCrmModeValue } from "../lib/modeContext";
+import { STATUS_TYPE_LABELS } from "../lib/settings";
 import type { Status } from "../lib/types";
 
 export default function StatusPill({
@@ -196,7 +197,7 @@ export default function StatusPill({
               ) : null}
               {option.type === "won" || option.type === "lost" ? (
                 <span className="text-[10px] uppercase opacity-60">
-                  {option.type}
+                  {STATUS_TYPE_LABELS[option.type]}
                 </span>
               ) : null}
             </button>

@@ -24,6 +24,7 @@
  */
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
@@ -47,7 +48,8 @@ import {
   type OtherAccount,
 } from "@/lib/accountSwitch";
 import type { NavSection } from "@/lib/nav";
-import { accountMenu, type AccountLink, type AccountMenuItem } from "@/lib/shell/shellNav";
+import { TOUR_HREF, useGuideAllowed } from "@/lib/shell/guide";
+import { TAKE_TOUR_ITEM, accountMenu, type AccountLink, type AccountMenuItem } from "@/lib/shell/shellNav";
 import { CHANGE_LAYOUT } from "@/lib/shell/shellPrefs";
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 
@@ -388,6 +390,7 @@ export function SidebarAccountFooter({
     <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2" : "px-2 py-2"}`}>
       <div ref={rootRef} className={collapsed ? "" : "flex items-center gap-1"}>
         <button
+          data-guide="home.account-menu"
           onClick={toggle}
           aria-haspopup="dialog"
           aria-expanded={open}
@@ -498,6 +501,9 @@ export function AccountFoot({
   // WS-63 PZ-25: the "Assistant settings" row, only with the profile on for this org.
   // Read here, where the foot always mounts, so the row is known at open.
   const assistant = useAssistantProfileEnabled();
+  // WS-OB GD-5a: "Take the tour", only while GUIDE_ORGS holds the org.
+  const tour = useGuideAllowed();
+  const router = useRouter();
   // With the switcher off, the session names the account. Access answers
   // first in a fresh tab, so it stands in until the session does.
   const fallback = session?.user?.email ? session : access.email ? { user: { email: access.email } } : null;
@@ -619,6 +625,8 @@ export function AccountFoot({
               sections={sections}
               layout={layout}
               assistant={assistant}
+              tour={tour}
+              go={router.push}
               onChanged={() => void reload(true)}
               onCover={setCover}
               onDone={close}
@@ -632,8 +640,12 @@ export function AccountFoot({
 }
 
 /** What each `action` item sends. One line per action id. */
-const ACTIONS: Record<Extract<AccountMenuItem, { kind: "action" }>["id"], () => void> = {
+const ACTIONS: Record<Extract<AccountMenuItem, { kind: "action" }>["id"], (go: (href: string) => void) => void> = {
   "change-layout": () => window.dispatchEvent(new CustomEvent(CHANGE_LAYOUT)),
+  // WS-OB GD-5a: the menu closes first (`done`), then the member goes to `/`
+  // with the guide link. Stop 4 rings My Day, which lives on `/` only, and
+  // the host starts a guide from the address alone (fence F4).
+  "take-tour": (go) => go(TOUR_HREF),
 };
 
 /** One rhythm for every row of the menu, a link or a button. */
@@ -664,6 +676,8 @@ export function AccountFootMenu({
   onDone,
   pages = true,
   assistant = false,
+  tour = false,
+  go,
 }: {
   accounts: Accounts;
   orgName: string;
@@ -673,6 +687,13 @@ export function AccountFootMenu({
   pages?: boolean;
   /** True adds the "Assistant settings" row to Settings (PZ-25, PZ-28). `AccountFoot` reads it. */
   assistant?: boolean;
+  /** True adds "Take the tour" to Settings (WS-OB GD-5a). `AccountFoot` reads the guide's switch. */
+  tour?: boolean;
+  /**
+   * Moves the page: the app router's `push`, which `AccountFoot` passes. Absent
+   * (a test render, which has no router), a full load does the move.
+   */
+  go?: (href: string) => void;
   onChanged: () => void;
   /**
    * Raises and lowers the cover, which `AccountFoot` holds, outside this menu.
@@ -707,7 +728,7 @@ export function AccountFootMenu({
     }
   };
 
-  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages, assistant });
+  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages, assistant, tour });
 
   const row = (item: AccountMenuItem) => {
     switch (item.kind) {
@@ -804,7 +825,7 @@ export function AccountFootMenu({
             layout="flex items-center"
             onClick={() => {
               done();
-              ACTIONS[item.id]();
+              ACTIONS[item.id](go ?? ((href) => window.location.assign(href)));
             }}
             className={ROW}
           >
@@ -1072,6 +1093,9 @@ export function DrawerAccountFoot({
 }) {
   const { accounts } = useAccounts();
   const { data: session } = useSession();
+  // WS-OB GD-5a: "Take the tour", only while GUIDE_ORGS holds the org.
+  const tour = useGuideAllowed();
+  const router = useRouter();
   if (!session?.user) return <>{children}</>;
   const others = accounts.enabled ? accounts.others.length : 0;
   const row =
@@ -1099,6 +1123,20 @@ export function DrawerAccountFoot({
         >
           <Icon name="LayoutTemplate" size={16} className="shrink-0" />
           Change my layout
+        </button>
+      )}
+      {/* GD-5a: the drawer closes first, then the tour starts. */}
+      {you && tour && (
+        <button
+          type="button"
+          onClick={() => {
+            onNavigate?.();
+            router.push(TOUR_HREF);
+          }}
+          className={row}
+        >
+          <Icon name={TAKE_TOUR_ITEM.icon} size={16} className="shrink-0" />
+          {TAKE_TOUR_ITEM.label}
         </button>
       )}
       {children}

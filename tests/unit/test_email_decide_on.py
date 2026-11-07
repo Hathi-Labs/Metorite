@@ -172,8 +172,9 @@ async def test_on_is_accepted_for_each_email_feature(monkeypatch, tenant, featur
         assert df.mode_for(feature) == "on"
     assert _records(caps, "decide.mode_refused") == []
     # WS-53 CRM-Q26: `crm.note_labels` has no old path, so `on` is legal for
-    # it too. Every email feature, and nothing else of the email set.
-    assert frozenset(df.FEATURES) | frozenset(df.CRM_FEATURES) == df.ON_FEATURES
+    # it too. Task 1338: so is `my_day.day_plan`, whose old path is the LLM call.
+    assert (frozenset(df.FEATURES) | frozenset(df.CRM_FEATURES)
+            | frozenset(df.DAY_PLAN_FEATURES)) == df.ON_FEATURES
 
 
 async def test_the_orchestrator_value_turns_all_four_on(monkeypatch, tenant) -> None:

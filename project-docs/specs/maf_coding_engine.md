@@ -22,6 +22,10 @@ the chat save to memory on unmount only the default agent's turns. H-227
 WS-43t2 (the session store, migration 228) is built and dark
 (2026-10-08). D86 paused it and D92 restarted it. Every other slice is
 spec only.**
+
+**H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
+root agent also compares the member's org with the run's org (§15.4).
+
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
 network control that WS-43w waited on is built (H-236, §16.3), and it fails
@@ -4530,8 +4534,18 @@ first-party admin may run it.
 - The name match takes no case and no `agent-` prefix, so an alias is refused
   too. The registry lists still name the agent, and hiding it there is not
   part of this rule.
+- The gate also compares the member's org (`acb_auth.access.resolve_identity`)
+  with the run's org (H-232, 2026-11-05). It refuses a mismatch, an empty org
+  and a failed read. So an admin of one org cannot run it on a run of another
+  org. Fence: `tests/unit/test_root_agent_first_party.py`, section 1b.
+  Known limit: with `IDENTITY_CUTOVER` on, a person with two active
+  memberships resolves to no org, and the gate refuses them. Task 1712
+  replaces the read with one keyed on (email, org). The read is unbound, so
+  with phase-4 RLS on `app_user` and the cutover off, it finds no row, and
+  the gate refuses everyone. Phase 4 needs the cutover first.
 - Fence: `tests/unit/test_root_agent_first_party.py` (the access clause of
-  WS43-F17). Eleven mutations turn it red.
+  WS43-F17). Eleven mutations turn the access clause red, and four more
+  turn section 1b red.
 
 ### 15.5 Agents from a repo
 
@@ -5010,7 +5024,9 @@ decision inside D86, after review: the control fails closed.
   depth, binds `no_egress=True` in its artifact context. Such a run holds
   only three kinds of tool: the platform's own four delegation tools, the
   sandbox tools, and tools whose annotation says `open_world=False`
-  explicitly.
+  explicitly. Each card-bound send joins them. Outside this chain, D169
+  adds the listed first-party writes, each behind its own card. A covered run
+  and each run under it keep this rule.
 - **A tool with no annotation is an egress tool.** So is a tool whose
   annotation has no `open_world` key, an MCP tool, and a tool that MAF made
   from an MCP server. A tool write to a store that later runs read is one
@@ -5957,9 +5973,11 @@ acceptance, fence and risk tier. The risk follows the item.
      It never adds a loop.
   3. AI Studio (D127) streams the same CA-8 events into its own pane. It shows
      the same CA-9 approval cards.
-  4. A Studio object that the harness builds (a tool, a workflow or an app)
-     is saved through the SBX registry, with the versions and the org-sharing
-     approval of D130.3. It is not saved as a file in the workspace.
+  4. (D187) The SBX registry is the Studio package store. A Studio object
+     that the harness builds (a tool, a workflow or an app) is a package. A
+     tool version is an `app_versions` row, and a holder of `studio:publish`
+     approves a share (`agent_sandbox.md` §7, §8). It is not saved as a file
+     in the workspace.
   5. The STU-0 spec (WS-STU, epic 491) and `agent_sandbox.md` §6 cite this
      harness. They do not describe a runner of their own.
 - **Acceptance.** On staging, the Studio tool builder and `code_task` both run

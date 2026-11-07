@@ -28,10 +28,14 @@ interface Props {
   className?: string;
   /** Compact trigger for tight cells (calendar days). */
   compact?: boolean;
+  /** Open at once, as the board's header "+" asks (`BoardColumn`). */
+  startOpen?: boolean;
+  /** Esc closed the box. A box that opened at once leaves with it. */
+  onClose?: () => void;
 }
 
-export function QuickAdd({ label, onAdd, className = "", compact = false }: Props) {
-  const [open, setOpen] = useState(false);
+export function QuickAdd({ label, onAdd, className = "", compact = false, startOpen = false, onClose }: Props) {
+  const [open, setOpen] = useState(startOpen);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +65,7 @@ export function QuickAdd({ label, onAdd, className = "", compact = false }: Prop
           setOpen(false);
           setTitle("");
           setError(null);
+          onClose?.();
         }
         e.stopPropagation();
       }}

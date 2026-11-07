@@ -703,7 +703,7 @@ SYSTEM_FIELDS: dict[str, tuple[SystemField, ...]] = {
         _sf("status_id", "Stage", "select"),
         _sf("amount", "Amount", "currency"),
         _sf("currency", "Currency", "text"),
-        _sf("probability", "Probability", "percent"),
+        _sf("probability", "Win chance", "percent"),
         _sf("expected_close_date", "Closing date", "date"),
         _sf("next_step", "Next step", "text"),
         _sf("lead_id", "Lead", "lookup", "leads"),
@@ -1645,9 +1645,17 @@ async def savepoint(db: Any) -> AsyncIterator[None]:
         yield
 
 
-async def load_row(db: Any, table: str, record_id: str) -> Any | None:
+async def load_row(
+    db: Any, table: str, record_id: str, *, lock: bool = False,
+) -> Any | None:
+    """One row by id, or None. ``lock=True`` reads it ``FOR UPDATE``, so a
+    check of its values holds until the write of the same transaction (the
+    Undo of a change, CRM-M1)."""
     return (await db.execute(
-        text(f"SELECT * FROM {table} WHERE id = CAST(:id AS uuid)"),
+        text(
+            f"SELECT * FROM {table} WHERE id = CAST(:id AS uuid)"
+            + (" FOR UPDATE" if lock else "")
+        ),
         {"id": record_id},
     )).fetchone()
 
@@ -2799,9 +2807,11 @@ RESET_TABLES: tuple[str, ...] = (
 #: views, the run history, and the cursor of the mail hook (not a record).
 #: CRM-Q33: the business rules too. A rule describes the business ("all
 #: amounts net of GST"), never the old Zoho account.
+#: CRM-M1: the Change history too. It is the record of what changed, and a
+#: start over does not erase it. The Undo of a row whose thing went refuses.
 RESET_KEEPS: tuple[str, ...] = (
     "crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors",
-    "crm_business_rules",
+    "crm_business_rules", "crm_change_log",
 )
 
 

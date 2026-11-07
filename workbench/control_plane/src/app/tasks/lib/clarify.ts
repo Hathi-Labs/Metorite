@@ -88,6 +88,30 @@ export interface ClarifyProposal {
    *  proposal, scoped to the matched project). Lets the card file it as a
    *  subtask under that task instead of as a standalone. */
   parentSuggestion?: ParentMatch;
+  /** who answered (server proposal only). "heuristic" means the rule-based
+   *  fallback: the card shows a "Rule-based suggestion" mark (CL-1). */
+  clarifiedBy?: "llm" | "heuristic";
+  /** why the model did not answer: truncated, bad_json, unknown_disposition,
+   *  empty_next_action, timeout or error. Absent when the model was off. */
+  fallbackReason?: string;
+}
+
+/** The plain words for a fallback reason, for the mark's tooltip. */
+export function fallbackReasonText(reason?: string): string {
+  switch (reason) {
+    case "timeout":
+      return "The assistant took too long to answer.";
+    case "truncated":
+      return "The assistant's answer was cut off.";
+    case "bad_json":
+    case "unknown_disposition":
+    case "empty_next_action":
+      return "The assistant's answer could not be used.";
+    case "error":
+      return "The assistant could not be reached.";
+    default:
+      return "The assistant is switched off for clarify.";
+  }
 }
 
 /** A likely-existing PM-tool task the inbox capture may duplicate (dedup). */
@@ -719,30 +743,22 @@ export function whereVisibilityHint(input: {
 /**
  * The items a Clarify session walks, oldest first (GTD processes FIFO).
  *
- * Two sets feed the walk. The first is my captures, which are INBOX. The
- * second is the "From Projects" group (S6e): a board task that a colleague
- * assigned to me and that I have not triaged. Its disposition is derived
- * (NEXT, SOMEDAY or WAITING), so a walk that reads INBOX alone skips it, and
- * the modal used to close on the first render for every such row.
+ * The walk is the inbox: my captures, which are INBOX (D170, INB-1). An
+ * assigned, untriaged board task is no longer in the inbox, so it is not in
+ * the walk. Clarify can still open on it from My tasks (`isClarifiable`).
  *
  * `done` is the ids decided in this session. They never come back into the
- * walk, whatever a stale re-read of `fromProjectIds` says. A re-read that
- * lands before the triage write puts the id straight back into that set, and
- * the walk used to open the same row a second time (review of PR #440, P1).
+ * walk.
  */
 export function clarifyQueue<
   T extends { id: string; disposition: string; createdAt: string; archivedAt?: string },
 >(
   items: readonly T[],
-  fromProjectIds: ReadonlySet<string>,
   done: ReadonlySet<string> = new Set(),
 ): T[] {
   return items
     .filter((i) => !done.has(i.id))
-    .filter(
-      (i) =>
-        i.disposition === "INBOX" || (fromProjectIds.has(i.id) && !i.archivedAt),
-    )
+    .filter((i) => i.disposition === "INBOX")
     .sort(
       (a, b) =>
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),

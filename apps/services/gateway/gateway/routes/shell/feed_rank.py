@@ -73,6 +73,9 @@ BASE: dict[str, int] = {
     # kinds at once, so MD-3d to MD-3f add only their providers. This table
     # is also the vocabulary of kinds that the prefs accept (``prefs.py``).
     "agent_asks": 43,
+    # WS-ALN ALN-2b: a question that waits on the member by name. It ties
+    # with `agent_asks`, which also waits on an answer.
+    "decision": 43,
     "promise_due": 42,
     "crm_followup_due": 41,
     "block_overlap": 40,
@@ -207,9 +210,10 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     """The old-path group of a kind (§4.3, and §5.9 item 3 for MD-3).
     ``today`` is the member's own date. An unknown kind raises, as ``base``
     does."""
-    if kind in ("overdue", "approval", "needs_reply", "no_plan_yet",
+    if kind in ("overdue", "due_today", "approval", "needs_reply", "no_plan_yet",
                 "waiting_quiet", "source_sync_failed", "absent_on_due", "no_answer",
-                "deal_close_passed", "agent_asks"):
+                "deal_close_passed", "agent_asks", "decision"):
+        # A due date is a day, so no hour moves a due task into Now (RX-5).
         return "needs_you"
     if kind == "unblocked":
         return "ready"
@@ -221,9 +225,6 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
         return "needs_you" if facts.get("money") is True else "fyi"
     if kind in ("promise_due", "crm_followup_due"):
         return "now" if _due_within_soon(facts, now) else "needs_you"
-    if kind == "due_today":
-        due = _instant(facts.get("due_at"))
-        return "now" if due is not None and due - now <= SOON else "needs_you"
     if kind == "notification":
         return "needs_you" if facts.get("notification") in ASKING_NOTIFICATIONS else "fyi"
     if kind in ("block_soon", "reminder_due"):

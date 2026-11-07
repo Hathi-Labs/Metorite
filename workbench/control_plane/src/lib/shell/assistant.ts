@@ -61,6 +61,7 @@ export const ASSISTANT_PERSONA = [
   "You act for the member, through the member's own access.",
   "Each app has a specialist, and you call it as a tool.",
   "Use the app the member is in to choose the workflow. It is a hint, not a limit.",
+  "The open page is a hint, not a scope. Look there first. When the request does not name the open place, or the first look finds nothing, search everything the member can see at once, with no question. Never say \"not found\" after one scoped look.",
   "When the request is about another app, call that app's specialist. The page moves to that app on its own, so do not tell the member to open it.",
   "Give the specialist every id it needs from the page context below.",
   "When you cannot tell which record, project, task or mailbox the member means, ask one short question with ask_questions before you act. Do not guess.",
@@ -74,6 +75,14 @@ export const ASSISTANT_PERSONA = [
  */
 export const CHAT_FIRST_PERSONA_LINE =
   "When the member asks to see a page, a list or a record, call show_in_app with its path. Then say what they will see, in one sentence.";
+
+/**
+ * The line that joins the persona when the guide is on for the org (WS-OB GD-7,
+ * `assistant_guide.md` §5.4, `guide` of `GET /auth/me/shell`). The dock joins it,
+ * so `ASSISTANT_PERSONA` stays what every other build sends.
+ */
+export const GUIDE_PERSONA_LINE =
+  "When the member asks how to do something in Metorite, call find_guide. Answer in at most three short steps from its result, then offer Show me (show_guide) or Open. Never invent a button.";
 
 // ── The forms ────────────────────────────────────────────────────────────────
 
@@ -278,6 +287,25 @@ export function navigateAct(a: {
 }
 
 /**
+ * What the assistant does when the live run names a guide (WS-OB GD-4,
+ * `assistant_guide.md` §3 G1). The same page-move rule as `navigateAct`: only
+ * while the member watches that chat, and a tour starts at once only beside
+ * the side panel (`runMovesPage`). Elsewhere (a phone, the full view) the run
+ * leaves a "Show me" chip and the member taps it.
+ */
+export function guideAct(a: {
+  open: boolean;
+  threadId: string | undefined;
+  activeId: string | null | undefined;
+  guideId: string | undefined;
+  phone: boolean;
+  form: AssistantMode;
+}): "start" | "offer" | "none" {
+  if (!a.open || !a.threadId || a.threadId !== a.activeId || !a.guideId) return "none";
+  return runMovesPage(a) ? "start" : "offer";
+}
+
+/**
  * The browser-session mark of the landing open (CF-2). `sessionStorage`, so
  * a new tab lands on the chat again and a reload in this tab does not.
  * ⚠️ The key keeps the shell prefix. A key that starts with "cc-" and then
@@ -333,6 +361,18 @@ export interface AssistantAsk {
    * stays live beside the open panel).
    */
   join?: boolean;
+  /**
+   * A draft that asked for a new chat (`fresh`): the chat that the dock held
+   * when the draft was made. The mounted chat must not take the draft. Only the
+   * chat that the fresh request starts takes it (BETA-1 fix, `draftFor`).
+   */
+  after?: string | null;
+  /**
+   * WS-63 D-PZ-37: the member typed these words, in the Ask field or the
+   * command bar. Only then does the send carry the typed mark
+   * (`lib/typedMark.ts`). A start pill and "Get to know me" leave it unset.
+   */
+  typed?: boolean;
 }
 
 export interface AssistantState {
@@ -357,6 +397,11 @@ export interface AssistantState {
    * message once, then takes it (`consumeReminder`).
    */
   reminder: string | null;
+  /**
+   * The next fresh chat opens with the hello (WS-BUD BUD-1). The dock asks
+   * the server for the first message once, then takes it (`consumeHello`).
+   */
+  hello: boolean;
   /** Grows when the cursor should go to the assistant's composer. */
   focusSeq: number;
   /** The side panel's width. */
@@ -402,6 +447,7 @@ const CLOSED: AssistantState = {
   draft: null,
   freshSeq: 0,
   reminder: null,
+  hello: false,
   focusSeq: 0,
   width: DOCK_DEFAULT,
 };
@@ -433,6 +479,11 @@ export interface OpenOptions {
   fresh?: boolean;
   /** A reminder id to open in the fresh chat that this open asks for (RM-4). */
   reminder?: string;
+  /** The fresh chat that this open asks for opens with the hello (BUD-1): pass `fresh` too. */
+  hello?: boolean;
+  /** WS-63 D-PZ-37: the member typed `text` or `draft` in a box of the
+   *  shell. Leave it unset for words that a click sends. */
+  typed?: boolean;
 }
 
 /**
@@ -477,10 +528,18 @@ export function openAssistant(opts: OpenOptions = {}): void {
     open: true,
     mode: modeOnOpen({ phone, open: base.open, current: base.mode, opts }),
     sessionId: opts.sessionId !== undefined ? opts.sessionId : base.sessionId,
-    ask: text ? { seq: ++_askSeq, text, join: base.open } : base.ask,
-    draft: draft ? { seq: ++_askSeq, text: draft } : base.draft,
+    ask: text
+      ? { seq: ++_askSeq, text, join: base.open, ...(opts.typed === true ? { typed: true } : {}) }
+      : base.ask,
+    draft: draft
+      ? {
+        seq: ++_askSeq, text: draft, ...(opts.typed === true ? { typed: true } : {}),
+        ...(opts.fresh ? { after: base.sessionId } : {}),
+      }
+      : base.draft,
     freshSeq: opts.fresh ? base.freshSeq + 1 : base.freshSeq,
     reminder: reminder || base.reminder,
+    hello: opts.hello === true ? true : base.hello,
     focusSeq: base.focusSeq + 1,
   });
 }
@@ -488,7 +547,19 @@ export function openAssistant(opts: OpenOptions = {}): void {
 /** Close the assistant. The chat it showed stays its chat for next time. */
 export function closeAssistant(): void {
   if (!_state.open) return;
-  _set({ ..._state, open: false, ask: null, draft: null, reminder: null });
+  _set({ ..._state, open: false, ask: null, draft: null, reminder: null, hello: false });
+}
+
+/**
+ * The draft that the chat on screen may take. A draft that asked for a new chat
+ * waits while the chat of the dock is still the old one. The mounted chat reads
+ * the draft in its own effect, before the dock switches to the new chat, so a
+ * draft that it took would be lost. Same race as the ask (owner report 2026-10-26).
+ */
+export function draftFor(draft: AssistantAsk | null, activeId: string | null): AssistantAsk | null {
+  if (!draft) return null;
+  if (draft.after === undefined) return draft;
+  return activeId && activeId !== draft.after ? draft : null;
 }
 
 /** The composer took the draft. */
@@ -501,6 +572,12 @@ export function consumeDraft(): void {
 export function consumeReminder(): void {
   if (!_state.reminder) return;
   _set({ ..._state, reminder: null });
+}
+
+/** The dock asked the server for the hello: drop it, so it opens once. */
+export function consumeHello(): void {
+  if (!_state.hello) return;
+  _set({ ..._state, hello: false });
 }
 
 /** Change the form of this open. Nothing is kept for the next one. */
@@ -764,6 +841,13 @@ export function dataText(value: string): string {
 }
 
 /**
+ * The rule that every page context carries (task 1558). The open page is
+ * where the chat looks first. It never limits what the chat may search.
+ */
+export const PAGE_HINT_RULE =
+  "This page is a hint, not a scope. Look here first. When the request does not name this place, or the first look finds nothing, match the request against everything the member can see, at once, and do not ask. Narrow to this place only when the member says \"here\" or \"this project\", or names it. A write with no place named still goes to the place with the ids above.";
+
+/**
  * The page context of one turn: where the member is, and what the app said.
  * Every word an app passes is data, and the block says so.
  */
@@ -784,6 +868,7 @@ export function surfaceContext(
     );
     for (const f of said) lines.push(`- ${f}`);
   }
+  if (here) lines.push(PAGE_HINT_RULE);
   return lines.join("\n");
 }
 

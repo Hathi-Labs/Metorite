@@ -19,9 +19,10 @@ Schema export is ``studio_manifest.schema.json`` beside this file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -31,6 +32,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -48,7 +50,16 @@ from acb_common.studio_fields import (
     MAX_LABEL_CHARS,
     MAX_OBJECTS_PER_PACKAGE,
     NAME_PATTERN,
+    FieldError,
+    FieldSpec,
+    parse_field_spec,
     validate_field_spec,
+)
+from acb_common.studio_rules import (
+    ConstraintError,
+    RollupSource,
+    check_rules_fit,
+    parse_rules,
 )
 
 STUDIO_VERSION = 1
@@ -76,6 +87,13 @@ OBJECT_OP_CLASSES: dict[str, str] = {
     "delete": "C",
 }
 
+#: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).
+#: A page reads each source when it opens, on window focus and on refresh, with
+#: no click. So a source must resolve to a read: an object ``list`` or ``get``,
+#: or an action of class A in the catalog. `_check_view_source` refuses each
+#: other source. A test reads this text, so keep it stable.
+SOURCE_NOT_A_READ = "A view source must read data."
+
 #: The 13 contribution points of package_host.md section 4.
 CONTRIBUTION_POINTS: tuple[str, ...] = (
     "nav", "page", "jobs", "search", "needs", "cards", "skill", "actions",
@@ -85,6 +103,10 @@ CONTRIBUTION_POINTS: tuple[str, ...] = (
 #: A `contributes` key is a point of section 4 or a P0-only key that the shell loader reads.
 #: The loader owns the second list (`_CONTRIBUTES_KEYS`), so this module keeps no copy of it.
 ALLOWED_POINTS: frozenset[str] = frozenset(CONTRIBUTION_POINTS) | frozenset(_P0_POINTS)
+
+#: Points that only a shipped `system` file holds. An anchor is the guide's contract with the
+#: shipped shell code (assistant_guide.md section 5.7), so a package never declares one.
+SYSTEM_ONLY_POINTS: frozenset[str] = frozenset({"anchors"})
 
 #: The error type of a field that only a `studio` manifest must hold.
 _STUDIO_NEEDS = "studio_needs_field"
@@ -96,14 +118,28 @@ MAX_LIST_ITEMS = 500
 MAX_DEPTH = 20  # the same bound as `_GENUI_MAX_DEPTH` in `acb_skills/write_artifact.py`
 
 #: A key that v1 refuses, and the slice that lifts the refusal.
+# `rules` is an object key since C6 (a list beside `fields`). `state_machine` and `states`
+# stay refused, so a rule has one spelling. A formula is a rule of kind `formula` (C7a),
+# so the key `formula` has no use and C7a lifts its refusal.
+# `formula` and `rollup` stay refused as field types, so a formula and a roll-up have
+# one spelling each: a rule of that kind in the rules list (C7a, C7b).
 RESERVED_KEYS: dict[str, str] = {
     "rules": "C6",
     "state_machine": "C6",
     "states": "C6",
-    "formula": "C7",
     "code": "L1",
 }
-RESERVED_FIELD_TYPES: dict[str, str] = {"formula": "C7", "rollup": "C7"}
+RESERVED_FIELD_TYPES: dict[str, str] = {"formula": "C7a", "rollup": "C7b"}
+#: The refusal of a field of type `rollup`: the roll-up is a rule, so one spelling holds.
+_ROLLUP_TYPE_MESSAGE = (
+    "Field type `rollup` is not a field type. Fill a field with a rule of kind `rollup` "
+    "in the `rules` of its object."
+)
+#: The refusal of a field of type `formula`: the formula is a rule, so one spelling holds.
+_FORMULA_TYPE_MESSAGE = (
+    "Field type `formula` is not a field type. Fill a field with a rule of kind `formula` "
+    "in the `rules` of its object."
+)
 RESERVED_BLOCKS: dict[str, str] = {"code": "L1", "custom": "L1", "customUi": "L1"}
 
 #: Subtrees that hold member data, not structure. The reserved-key scan skips them.
@@ -197,6 +233,9 @@ class ObjectDef(_Strict):
     #: The CHECK `studio_objects_label` of C1 holds the same cap.
     label: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
     fields: list[FieldDef] = Field(default_factory=list)
+    #: The constraints and state machines of the object (C6). The one parser is
+    #: `studio_rules.parse_rules`, and `_check_objects` calls it.
+    rules: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ActionDef(_Strict):
@@ -236,6 +275,40 @@ class ViewDef(_Strict):
     sort: str | None = None
     actions: list[str] = Field(default_factory=list)
     text: str | None = None
+
+
+#: The caps of the page shape (STU-D11a). `pageModel.ts` holds the same numbers, and
+#: `pageModel.test.ts` checks them against the `maxItems` of the schema file.
+MAX_PAGES = 8
+MAX_TABS_PER_PAGE = 8
+MAX_CELLS_PER_PAGE = 12
+MAX_COLS = 4
+
+
+class CellDef(_Strict):
+    #: A view of `views`. The check that it exists is `_check_pages`.
+    view: str = Field(pattern=rf"^{_DASHED}$")
+    #: Columns the cell spans. `_check_pages` refuses a span wider than `cols`.
+    span: int | None = Field(default=None, ge=1, le=MAX_COLS)
+
+
+class SideDef(_Strict):
+    view: str = Field(pattern=rf"^{_DASHED}$")
+
+
+class TabDef(_Strict):
+    id: str = Field(pattern=rf"^{_DASHED}$")
+    title: str = Field(min_length=1, pattern=r"\S")
+    cells: list[CellDef] = Field(max_length=MAX_CELLS_PER_PAGE)
+
+
+class PageDef(_Strict):
+    id: str = Field(pattern=rf"^{_DASHED}$")
+    title: str | None = None
+    cols: int = Field(default=2, ge=1, le=MAX_COLS)
+    tabs: list[TabDef] = Field(default_factory=list, max_length=MAX_TABS_PER_PAGE)
+    cells: list[CellDef] = Field(default_factory=list, max_length=MAX_CELLS_PER_PAGE)
+    side: SideDef | None = None
 
 
 class Trigger(_Strict):
@@ -302,6 +375,8 @@ class Manifest(_Strict):
     objects: list[ObjectDef] = Field(default_factory=list)
     actions: list[ActionDef] = Field(default_factory=list)
     views: list[ViewDef] = Field(default_factory=list)
+    #: How the views sit on a page (STU-D11a). A view stays one block.
+    pages: list[PageDef] = Field(default_factory=list, max_length=MAX_PAGES)
     workflows: list[WorkflowDef] = Field(default_factory=list)
     skill: Skill | None = None
     # The old `shell` block stays as it is. Its job shape (`verb`, `view`) differs from the
@@ -318,9 +393,12 @@ class Manifest(_Strict):
     @field_validator("contributes")
     @classmethod
     def _points_are_known(
-        cls, v: dict[str, list[dict[str, Any]]]
+        cls, v: dict[str, list[dict[str, Any]]], info: ValidationInfo
     ) -> dict[str, list[dict[str, Any]]]:
-        unknown = sorted(set(v) - ALLOWED_POINTS)
+        allowed = ALLOWED_POINTS
+        if info.data.get("kind") != "system":
+            allowed = ALLOWED_POINTS - SYSTEM_ONLY_POINTS
+        unknown = sorted(set(v) - allowed)
         if unknown:
             raise PydanticCustomError("unknown_point", "Unknown point.", {"point": unknown[0]})
         return v
@@ -431,7 +509,9 @@ def _scan(
         for k, v in node.items():
             here = [*loc, k]
             lk = str(k).lower()
-            if isinstance(k, str) and k in RESERVED_KEYS and key not in _DATA_KEYS:
+            in_object = k == "rules" and len(loc) == 2 and loc[0] == "objects"
+            if (isinstance(k, str) and k in RESERVED_KEYS and key not in _DATA_KEYS
+                    and not in_object):
                 out.append(_err(_path(here), _reserved(k, RESERVED_KEYS[k], "Key ")))
                 continue
             if lk in _COLOR_KEYS:
@@ -499,7 +579,11 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
                 msg = f"Block is unknown. Use {', '.join(BLOCKS[:-1])} or {BLOCKS[-1]}.{_got(val)}"
                 limit = 25 + len(BLOCKS)
         elif last == "type" and typ == "literal_error":
-            if isinstance(val, str) and val in RESERVED_FIELD_TYPES:
+            if val == "formula":
+                msg = _FORMULA_TYPE_MESSAGE
+            elif val == "rollup":
+                msg = _ROLLUP_TYPE_MESSAGE
+            elif isinstance(val, str) and val in RESERVED_FIELD_TYPES:
                 msg = _reserved(val, RESERVED_FIELD_TYPES[val], "Field type ")
             else:
                 msg = (
@@ -507,6 +591,8 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
                     f"Use {', '.join(FIELD_TYPES[:-1])} or {FIELD_TYPES[-1]}.{_got(val)}"
                 )
                 limit = 25 + len(FIELD_TYPES)
+        elif typ == "too_long" and "max_length" in (e.get("ctx") or {}):
+            msg = f"This list holds at most {e['ctx']['max_length']} items. Remove the extra ones."
         elif typ == "missing":
             msg = f"`{_short(last)}` is required here."
         else:
@@ -611,6 +697,67 @@ def _check_view(
             _undeclared(f"{p}.actions[{i}]", "Action", name, "`actions`", out)
 
 
+def _check_view_source(
+    vi: int,
+    v: ViewDef,
+    uses_by_id: Mapping[str, str],
+    catalog: Mapping[str, str] | None,
+    out: list[ManifestError],
+) -> None:
+    """A view source is a read (STU-B2c-1, fix round 1).
+
+    A page reads each source with no click, so a source that writes would
+    write each time the page opens. The class of an object op comes from
+    `OBJECT_OP_CLASSES`, and the class of each other action from the catalog.
+    Only class A passes. With no catalog, the class of a door op is unknown,
+    so publish checks it. `_check_view` and `_check_uses` refuse an id or a
+    `uses` that names nothing, so this check skips them."""
+    name = v.source.action if v.source else None
+    uses = uses_by_id.get(name) if name else None
+    ref = parse_uses(uses)
+    if uses is None or ref is None:
+        return
+    if ref.source == "object":
+        cls = OBJECT_OP_CLASSES.get(str(ref.op))
+    elif catalog is None or catalog.get(uses) not in set(CLASSES) - {"X"}:
+        return
+    else:
+        cls = catalog[uses]
+    if cls != "A":
+        out.append(
+            _err(
+                f"$.views[{vi}].source.action",
+                f"{SOURCE_NOT_A_READ} Use the list or get action of an object,"
+                f" or an action of class A.{_got(uses)}",
+            )
+        )
+
+
+def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> None:
+    """A page lays out declared views. A page has tabs or cells, never both."""
+    _dupes([p.id for p in m.pages], "$.pages", "page id", out)
+
+    def cell_errors(cells: list[CellDef], base: str, cols: int) -> None:
+        for ci, c in enumerate(cells):
+            if c.view not in view_ids:
+                _undeclared(f"{base}[{ci}].view", "View", c.view, "`views`", out)
+            if c.span is not None and c.span > cols:
+                out.append(_err(f"{base}[{ci}].span", f"A cell spans at most {cols} columns."))
+
+    for pi, pg in enumerate(m.pages):
+        p = f"$.pages[{pi}]"
+        if pg.tabs and pg.cells:
+            out.append(_err(p, "A page has tabs or cells, not both. Remove one."))
+        elif not pg.tabs and not pg.cells:
+            out.append(_err(p, "A page needs tabs or cells. Add one."))
+        _dupes([t.id for t in pg.tabs], f"{p}.tabs", "tab id", out)
+        for ti, t in enumerate(pg.tabs):
+            cell_errors(t.cells, f"{p}.tabs[{ti}].cells", pg.cols)
+        cell_errors(pg.cells, f"{p}.cells", pg.cols)
+        if pg.side and pg.side.view not in view_ids:
+            _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
+
+
 def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[ManifestError]) -> None:
     """The field rules are `studio_fields.validate_field_spec`, the one check
     that the object store runs too. This adds the JSON path and the caps."""
@@ -631,6 +778,41 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
             for problem in validate_field_spec(f.model_dump(), objects=objects):
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
+        _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
+
+
+def _rollup_sources(others: Sequence[ObjectDef], own: str) -> dict[str, RollupSource]:
+    """The other objects of the package, as the sources of a roll-up (C7b). An
+    object whose fields or rules do not parse is left out, and its own refusal
+    is in the list already."""
+    out: dict[str, RollupSource] = {}
+    for other in others:
+        if other.name == own:
+            continue
+        try:
+            fields = tuple(parse_field_spec(f.model_dump()) for f in other.fields)
+            rules = parse_rules(other.rules) if other.rules else ()
+        except (ConstraintError, FieldError):
+            continue
+        out[other.name] = RollupSource(other.name, fields, rules)
+    return out
+
+
+def _check_rules(o: ObjectDef, path: str, out: list[ManifestError],
+                 others: Sequence[ObjectDef] = ()) -> None:
+    """The rules of an object run through the one parser of the object store.
+    The fit check needs fields that passed their own check. A roll-up reads the
+    other objects of the package."""
+    if not o.rules:
+        return
+    try:
+        rules = parse_rules(o.rules)
+        specs: list[FieldSpec] = [parse_field_spec(f.model_dump()) for f in o.fields]
+        check_rules_fit(rules, specs, object_name=o.name, sources=_rollup_sources(others, o.name))
+    except ConstraintError as exc:
+        out.append(_err(path, exc.message))
+    except FieldError:
+        pass  # the field refusal is in the list already
 
 
 def _check_skill_ref(
@@ -728,8 +910,14 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         if bad:
             out.append(bad)
         _check_set_keys(ai, a, objects, out)
+    # The door runs the first action of an id, so the first one wins here too.
+    uses_by_id: dict[str, str] = {}
+    for a in m.actions:
+        uses_by_id.setdefault(a.id, a.uses)
     for vi, v in enumerate(m.views):
         _check_view(vi, v, objects, action_ids, out)
+        _check_view_source(vi, v, uses_by_id, catalog, out)
+    _check_pages(m, {v.id for v in m.views}, out)
     _check_links(m, objects, catalog, out)
     return out
 
@@ -762,6 +950,39 @@ def validate_manifest(doc: Any, *, catalog: Mapping[str, str] | None = None) -> 
             seen.add((e.path, e.message))
             unique.append(e)
     return sorted(unique, key=lambda e: e.path)
+
+
+def _canonical(value: Any) -> Any:
+    """*value* with each zero float written as ``0.0``. A ``jsonb`` number is a
+    numeric, and a numeric has no sign of zero, so the store keeps ``-0.0`` as
+    ``0.0`` (G1c review round 2). An int stays an int."""
+    if isinstance(value, float) and value == 0.0:
+        return 0.0
+    if isinstance(value, dict):
+        return {k: _canonical(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def manifest_hash(manifest: Any) -> str:
+    """The SHA-256 of the canonical JSON of *manifest*: sorted keys, no space,
+    each zero float as ``0.0``, UTF-8. Pure, and it never raises (STU-G1c).
+
+    THE one hash of a draft. The package store compares it under its row lock
+    (``packages_store.publish_version`` and ``update_manifest``), and the chat
+    tools send it as ``based_on`` and key the approval of a plan on it.
+
+    The hash of a manifest that the store took equals the hash of the stored
+    manifest. The store keeps a manifest as ``jsonb``, which changes two
+    things: it orders the keys in its own way, and it drops the sign of a
+    zero. The sorted keys and the written zero cover both. A float keeps its
+    shortest decimal text, and the store refuses an exponent, a NaN and a
+    float of 10^15 or more (``packages_store.first_bad_value``). Fences: the
+    R8 tests a and g of ``test_studio_chat_build_r8.py``."""
+    text = json.dumps(_canonical(manifest), sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, default=repr)
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def validate_shell_manifests(directory: Path | None = None) -> list[ManifestError]:

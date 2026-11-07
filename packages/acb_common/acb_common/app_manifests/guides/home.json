@@ -1,0 +1,45 @@
+[
+  {
+    "id": "home.tour",
+    "app": "home",
+    "feature": null,
+    "admin_only": false,
+    "title": "Take the tour",
+    "asks": [
+      "give me a tour",
+      "show me around",
+      "take the tour",
+      "how does this app work",
+      "where do I start",
+      "tour"
+    ],
+    "steps": [
+      {
+        "kind": "point",
+        "anchor": "home.app-list",
+        "say": "Your apps live here. You see only the ones your company turned on."
+      },
+      {
+        "kind": "point",
+        "anchor": "home.ask",
+        "say": "Type here to find any app, any job, or to ask a question."
+      },
+      {
+        "kind": "point",
+        "anchor": "chat.panel",
+        "say": "Ask me how to do anything, or ask me to do it."
+      },
+      {
+        "kind": "point",
+        "anchor": "home.my-day",
+        "say": "Your day starts here."
+      },
+      {
+        "kind": "point",
+        "anchor": "chat.message-field",
+        "say": "Try it: ask 'How do I add a deal?'"
+      }
+    ],
+    "do_tool": null
+  }
+]

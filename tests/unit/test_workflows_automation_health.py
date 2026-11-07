@@ -272,7 +272,10 @@ def test_a_finished_run_reports_its_trigger_kind_to_the_policy(monkeypatch) -> N
     async def fake_finish(*_a: Any, **_kw: Any) -> None:
         return None
 
-    async def fake_health(wid: str, name: str, *, trigger_kind: str, status: str) -> bool:
+    async def fake_health(
+        wid: str, name: str, *, trigger_kind: str, status: str,
+        organization_id: str | None = None,
+    ) -> bool:
         seen.append({"workflow_id": wid, "trigger_kind": trigger_kind, "status": status})
         return False
 

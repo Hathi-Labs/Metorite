@@ -163,7 +163,7 @@ const PLACEMENT: Record<ModalPlacement, string> = {
  *
  * ⚠️ `alert` exists because not every overlay is a Modal yet. Measured
  * 2026-09-24: hand-rolled `fixed` overlays sit at `z-[55]` up to `z-[95]`.
- * My Tasks' TaskFocusModal is `z-[80]`, so a delete confirmed from it opened
+ * My Tasks' TaskFocusModal is `z-[15]`, so a delete confirmed from it opened
  * BEHIND it at `z-50`. Focus went to a confirm button nobody could see, and
  * Enter deleted the task with no visible prompt.
  *
@@ -207,7 +207,7 @@ const CALLER_SETS_MAX_HEIGHT = /(?:^|\s)(?:[\w-]+:)*max-h-/;
  * The landmark focus lands on when the opener is gone. First in document
  * order, which on every Metorite page is `AppShell`'s own `<main>`.
  */
-const LANDMARK = "main, [role='main']";
+export const LANDMARK = "main, [role='main']";
 
 /**
  * Focus a landmark that is not focusable, and leave the DOM as it was found.
@@ -223,7 +223,7 @@ const LANDMARK = "main, [role='main']";
  * its **first tabbable child** — i.e. the first control on the page, which is
  * a jump, not a return.
  */
-function focusLandmark(el: HTMLElement): void {
+export function focusLandmark(el: HTMLElement): void {
   const owned = !el.hasAttribute("tabindex");
   if (owned) el.setAttribute("tabindex", "-1");
   queueMicrotask(() => {

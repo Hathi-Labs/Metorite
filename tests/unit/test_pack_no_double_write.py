@@ -15,6 +15,9 @@ turns it red (R7).
 3. Reverse: a hand-off, then a write tool of the owner's pack -> refused,
    while the specialist tool stays in the run. A hand-off that failed or
    timed out still refuses the write, with its own text.
+3b. Task 1533: after a hand-off ended and reported its calls, a pack write
+   refuses only when the hand-off did the same kind of write. The cases run
+   the real streaming seam, through ``call_agent`` and the specialist tool.
 4. One model step with both calls: exactly one runs, in either order.
 5. Email and CRM parity. Both directions hold only while the specialist tool
    stays in the run, so the email setup hand-off stays open after a mail read.
@@ -49,8 +52,12 @@ from tests.unit.test_tool_packs_choice import CONFIG, MEMBER, ORG, SESSION
 PA = "projects-assistant"
 EA = "email-assistant"
 CRM = "crm-assistant"
+#: Each Projects pack but ``projects-reports`` (PJP-2), so the loader cannot
+#: reach the owner and the specialist stays. That is the case when an admin
+#: turns the reports family off. ``packs_on`` adds the reports pack wherever
+#: ``projects-plan`` is on (``tool_packs.FOLLOWS``).
 PROJ = frozenset(("projects", "projects-plan", "projects-structure", "projects-bulk",
-                  "projects-reminders"))
+                  "projects-reminders", "projects-authority"))
 UUID = "0b0b0b0b-0000-4000-8000-0000000000b1"
 #: The turn of OA-8e run 4 on the Tasks page. The surface loads the core
 #: pack, and the plan and structure packs cannot join it, so the specialist
@@ -336,6 +343,243 @@ async def test_a_stop_before_the_sub_run_starts_still_counts_as_not_finished(
     assert applied.record.handed_failed == {PA} and made == _failed()
 
 
+# ── 3b. Task 1533: a hand-off that reported its calls ───────────────────────
+#
+# Production, 2026-11-03: the one assistant handed "create a task, assign
+# Kiran and Veena, watch it" to the specialist. The hand-off made the task and
+# watched it. Then the pack tool ``set_reminder`` was refused, and the
+# member's reminder was never set. After a hand-off ended and reported its
+# calls, a pack write refuses only when the hand-off did the same kind of
+# write (``tool_packs.write_kind``).
+
+#: The turn of the defect on the Tasks page. The surface loads the core pack
+#: and the words load the reminders pack. The specialist stays.
+REMIND = "Make a task for Kiran and Veena, watch it, and remind me in 30 minutes"
+
+
+def _handed(tool: str) -> str:
+    return tp.HANDED_WRITE_REFUSED.format(tool=tool)
+
+
+async def _held_reminders(agents: list[Any]) -> Any:
+    """The run of the defect: the core pack and the reminders pack, and the
+    specialist tool stays."""
+    applied = await _apply_on(agents, REMIND)
+    assert applied is not None and set(applied.record.slugs) == {"projects", "projects-reminders"}
+    assert PA not in applied.record.replaced and PA not in applied.record.via_loader
+    assert "projects_assistant" in L._names(agents[0].default_options["tools"]), "non-vacuity"
+    return applied
+
+
+def _seam(monkeypatch, tmp_path, calls: list[str]) -> list[str]:
+    """The REAL streaming seam (``executor._run_sub_agent_streaming``) with a
+    stub load and a stub batch run of the specialist. The sub-run reports the
+    calls *calls*, in the shape of ``executor._tool_calls_of``. Returns the
+    names of the sub-runs that ran."""
+    ran: list[str] = []
+
+    class _Loaded:
+        def __init__(self, name: str, **_k: Any) -> None:
+            self.agent_dir = tmp_path / "agent"
+            self.agent_dir.mkdir(exist_ok=True)
+            self.agent_name = name
+            self.config: dict[str, Any] = {}
+
+        def build_agents(self) -> list[Any]:
+            return [types.SimpleNamespace(name=self.agent_name)]
+
+        def __enter__(self) -> _Loaded:
+            return self
+
+        def __exit__(self, *_a: Any) -> bool:
+            return False
+
+    async def run_agent(name: str, payload: dict, **_k: Any) -> dict:
+        ran.append(name)
+        return {"result": "Done.", "tool_calls": [
+            {"name": n, "args": {}, "result": "ok", "success": True} for n in calls]}
+
+    async def nothing(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def empty(*_a: Any, **_k: Any) -> str:
+        return ""
+
+    monkeypatch.setattr(ex, "run_agent", run_agent)
+    monkeypatch.setattr(ex, "load_agent", _Loaded)
+    monkeypatch.setattr(ex, "build_integrations", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(ex, "_assert_may_run_agent", nothing)
+    monkeypatch.setattr(ex, "_get_current_head", empty)
+    monkeypatch.setattr(ex, "_settle_agent_push", empty)
+    return ran
+
+
+async def _hand(path: str, agents: list[Any], task: str) -> str:
+    """A hand-off to the specialist on *path*: ``call_agent``, which asks
+    the rule and then the streaming seam asks it again for the same sub-run,
+    or the specialist tool, which reaches the seam alone."""
+    if path == "call_agent":
+        return await L.agent_tools.call_agent(PA, task)
+    return await _tool(agents, "projects_assistant").func(task=task)
+
+
+def _cards_on(monkeypatch) -> list[dict]:
+    approve(monkeypatch)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open", lambda: True)
+    return fake_gateway(monkeypatch, _gateway)
+
+
+PATHS = pytest.mark.parametrize("path", ["call_agent", "specialist"])
+
+
+@PATHS
+async def test_the_production_turn_sets_the_reminder_after_the_hand_off(
+    store, agents, monkeypatch, tmp_path, path: str,
+) -> None:
+    """Task 1533 through the real seam. The hand-off made a task, assigned it
+    and watched it. The reminder is a write of another kind, so it runs and
+    posts. A later hand-off to the specialist then refuses with the reminder
+    named, as after a write before any hand-off. Mutation: drop ``calls=`` at
+    the ``finally`` of ``_run_sub_agent_streaming`` -> the hand-off reads as
+    unknown -> red. Mutation: count the second start of one sub-run again
+    (fix round 1, P1) -> the ``call_agent`` hand-off stays open -> red.
+    Mutation: drop the ``wrote_after`` record of ``PackRun.write_refusal`` ->
+    the later hand-off runs -> red."""
+    ran = _seam(monkeypatch, tmp_path, ["create_task", "assign", "watch"])
+    calls = _cards_on(monkeypatch)
+    applied = await _held_reminders(agents)
+    with L._in_run(applied), _queue():
+        handed = await _hand(path, agents, "Create a task, assign Kiran and Veena, watch it")
+        reminded = await _tool(agents, "set_reminder").func(title="Check the task", in_minutes=30)
+        again = await L.agent_tools.call_agent(PA, "Also set its due date to Friday")
+    assert ran == [PA] and handed == "Done.", handed
+    assert applied.record.handed_open == {PA: set()} and applied.record.handed_unknown == set()
+    assert applied.record.handed_kinds == {PA: {"task.create", "task.update", "watch"}}
+    assert not str(reminded).startswith("Not run"), reminded
+    assert [c["path"] for c in _posts(calls)] == ["/projects/my/reminders"], calls
+    assert applied.record.wrote_after == {PA: "set_reminder"}
+    assert again == _wrote("set_reminder") and ran == [PA]
+
+
+@PATHS
+@pytest.mark.parametrize("reported", ["create_task", "create_tasks"], ids=["same-tool", "bulk"])
+async def test_a_write_of_a_kind_that_the_hand_off_did_refuses(
+    store, agents, monkeypatch, tmp_path, path: str, reported: str,
+) -> None:
+    """The hand-off made a task, with ``create_task`` or with the bulk
+    sibling ``create_tasks``. The pack tools ``create_task`` and
+    ``create_personal_task`` make a task too, so each refuses and posts
+    nothing. A reminder still runs. Mutation: compare the tool names in
+    place of ``write_kind`` -> ``create_personal_task`` lands -> red."""
+    _seam(monkeypatch, tmp_path, [reported])
+    calls = _cards_on(monkeypatch)
+    applied = await _held_reminders(agents)
+    with L._in_run(applied), _queue():
+        await _hand(path, agents, "Make a task: confirm 250 boards")
+        personal = await _tool(agents, "create_personal_task").func(title="Confirm 250 boards")
+        team = await _tool(agents, "create_task").func(project_id=UUID, title="Confirm 250 boards")
+        reminded = await _tool(agents, "set_reminder").func(title="Check the boards", in_minutes=30)
+    assert personal == _handed("create_personal_task") and team == _handed("create_task")
+    assert not str(reminded).startswith("Not run"), reminded
+    assert [c["path"] for c in _posts(calls)] == ["/projects/my/reminders"], calls
+
+
+@pytest.mark.parametrize("nested", ["call_agent", "call_agent_background"])
+async def test_a_hand_off_that_handed_work_on_refuses_every_write(
+    store, agents, monkeypatch, tmp_path, nested: str,
+) -> None:
+    """The sub-run handed work to another agent. That agent's calls are not
+    reported, so the work of the hand-off is not known, and the reminder
+    refuses as before task 1533. Mutation: drop ``_hands_work_on`` from
+    ``PackRun.handoff_ended`` -> the reminder lands -> red."""
+    _seam(monkeypatch, tmp_path, ["create_task", nested])
+    calls = _cards_on(monkeypatch)
+    applied = await _held_reminders(agents)
+    with L._in_run(applied), _queue():
+        await _hand("call_agent", agents, "Make a task and tell the team")
+        reminded = await _tool(agents, "set_reminder").func(title="Check the task", in_minutes=30)
+    assert reminded == _handed("set_reminder") and _posts(calls) == []
+    assert applied.record.handed_unknown == {PA}
+
+
+def test_one_sub_run_asked_twice_is_one_hand_off() -> None:
+    """``call_agent`` asks with ``starts=True``, and the streaming seam asks
+    again for the same sub-run. The end of that run closes it. A second run
+    that is still open refuses. Mutation: count each start (fix round 1, P1)
+    -> the first run stays open -> red."""
+    run = _record(("projects",))
+    ctx = {tp.PACKS_KEY: run}
+    assert tp.delegation_refusal(PA, ctx, starts=True, run_id="r-1") is None
+    assert tp.delegation_refusal(PA, ctx, starts=True, run_id="r-1") is None
+    assert run.handed_open == {PA: {"r-1"}}
+    assert run.write_refusal(PA, "set_reminder") == _handed("set_reminder"), "open"
+    tp.handoff_ended(PA, ctx, finished=True, tools=["create_task"], run_id="r-1")
+    assert run.handed_open == {PA: set()}
+    assert tp.delegation_refusal(PA, ctx, starts=True, run_id="r-2") is None
+    assert run.write_refusal(PA, "set_reminder") == _handed("set_reminder"), "r-2 is open"
+    tp.handoff_ended(PA, ctx, finished=True, tools=["comment"], run_id="r-2")
+    assert run.write_refusal(PA, "set_reminder") is None
+
+
+def test_a_write_after_the_hand_offs_ended_refuses_a_later_hand_off() -> None:
+    """Fix round 1, P1: a write that runs after the hand-offs ended is
+    recorded. A later hand-off to the owner refuses with the text of a write
+    before any hand-off. The ask that frames an answer after a fan-out keeps
+    its answer, and a refused start opens no run. Mutation: drop the
+    ``wrote_after`` record -> the later hand-off runs -> red."""
+    run = _record(("projects",))
+    ctx = {tp.PACKS_KEY: run}
+    assert tp.delegation_refusal(PA, ctx, starts=True, run_id="r-1") is None
+    tp.handoff_ended(PA, ctx, finished=True, tools=["create_task", "watch"], run_id="r-1")
+    assert run.write_refusal(PA, "set_reminder") is None
+    assert run.write_refusal(PA, "create_task") == _handed("create_task")
+    assert run.wrote_after == {PA: "set_reminder"} and run.wrote == {}
+    assert tp.delegation_refusal(PA, ctx, starts=True, run_id="r-2") == _wrote("set_reminder")
+    assert tp.delegation_refusal(PA, ctx) is None, "the ask of a fan-out keeps its answer"
+    assert run.handed_open == {PA: set()}
+
+
+def test_an_open_or_unreported_hand_off_refuses_every_write() -> None:
+    """A hand-off still open, one that reported no calls, one that did not
+    finish and one with no run id may do any work. Mutation: treat each as
+    'did not do that kind' -> red."""
+    run = _record(("projects",))
+    run.handoff_starts(PA, "r-1")
+    assert run.write_refusal(PA, "set_reminder") == _handed("set_reminder")
+    tp.handoff_ended(PA, {tp.PACKS_KEY: run}, finished=True, tools=["create_task"], run_id="r-1")
+    assert run.write_refusal(PA, "set_reminder") is None
+    for start, end, tools in (("r-2", "r-2", []), ("", "", ["create_task"]),
+                              ("r-3", "", ["create_task"])):
+        again = _record(("projects",))
+        again.handoff_starts(PA, start)
+        tp.handoff_ended(PA, {tp.PACKS_KEY: again}, finished=True, tools=tools, run_id=end)
+        assert again.write_refusal(PA, "set_reminder") == _handed("set_reminder"), (start, end)
+    failed = _record(("projects",))
+    failed.handoff_starts(PA, "r-4")
+    tp.handoff_ended(PA, {tp.PACKS_KEY: failed}, finished=False, tools=["comment"], run_id="r-4")
+    assert failed.write_refusal(PA, "set_reminder") == _failed("set_reminder")
+
+
+def test_the_write_kinds_cover_each_projects_write() -> None:
+    """``WRITE_KINDS`` names a kind for each write tool of the Projects packs,
+    and for nothing else. A new Projects write must join a kind, or it
+    matches only itself and its siblings write twice. The bulk sibling makes
+    a task, as ``create_task`` does. Mutation: drop ``create_tasks`` from
+    the ``task.create`` kind -> red."""
+    import skill_projects  # noqa: F401  (it registers the risk marks)
+    from acb_skills.subagent_contract import annotated_read_only
+
+    owner = {slug for slug in sf.pack_slugs() if sf.SKILL_FAMILIES[slug].get("owner") == PA}
+    assert owner == PROJ | {"projects-reports"}, "non-vacuity"  # PJP-2 + ALN-4: 7 packs
+    writes = {name for slug in owner for name in sf.SKILL_FAMILIES[slug]["tools"]
+              if not annotated_read_only(name) and name not in tp.CHAT_FILE_TOOLS}
+    assert set(tp.WRITE_KINDS) == writes
+    assert tp.write_kind("create_tasks") == tp.write_kind("create_task") == tp.write_kind(
+        "create_personal_task") == "task.create"
+    assert tp.write_kind("set_reminder") != tp.write_kind("create_task")
+    assert tp.write_kind("send_email") == "send_email", "no entry: its own kind"
+
+
 # ── 3a. A pack tool that writes only a file of the chat ─────────────────────
 
 
@@ -360,16 +604,19 @@ def test_the_chat_file_tools_equal_the_projects_chat_file_writers() -> None:
 
 
 async def test_a_report_then_a_hand_off_stays_open(store, agents, monkeypatch) -> None:
-    """On a Projects page, "show the stuck tasks" loads ``projects-plan`` in
-    place of the core pack, and the specialist stays. The model draws
+    """On a Projects page, "show the status report" loads ``projects-reports``
+    beside the core pack (PJP-2: the report tools left the plan pack). The
+    reminders pack is out of the list, so the owner is not reached and the
+    specialist stays. The model draws
     ``status_report``, then routes a structure step to ``call_agent``. The
     report wrote only a chat file, so the hand-off runs, and nothing says
     that the report "already did this work". Mutation: drop the
     ``CHAT_FILE_TOOLS`` skip in ``pack_write_refusal`` -> red."""
     ran = L._fake_run_agent(monkeypatch)
     fake_gateway(monkeypatch, _gateway)
-    applied = await _apply_on(agents, "Show the stuck tasks", "projects")
-    assert applied is not None and applied.record.slugs == ("projects-plan",), "non-vacuity"
+    applied = await _apply_on(agents, "Show the status report", "projects",
+                              (PROJ | {"projects-reports"}) - {"projects-reminders"})
+    assert applied is not None and "projects-reports" in applied.record.slugs, "non-vacuity"
     assert PA not in applied.record.replaced
     assert ta.get_annotations("status_report")["read_only"] is False, "non-vacuity"
     with L._in_run(applied):
@@ -545,7 +792,7 @@ def test_an_older_refusal_keeps_its_text_and_the_new_one_only_adds() -> None:
     """Every answer of OA-7c and OA-7i stays as it was. Only where the old
     rule gives None may OA-8i refuse. Mutation: return the OA-8i answer first
     -> red."""
-    full = _record(tuple(PROJ))
+    full = _record(tp.owner_packs(PA))  # PJP-2: every pack, projects-reports too
     full.write_refusal(PA, "create_task")
     assert full.refusal(PA) == tp.PACKS["projects"].delegation_refusal
     reached = _record((), via=(PA,))

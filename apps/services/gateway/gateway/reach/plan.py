@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from gateway.reach import exceptions
 from gateway.reach.classes import NOT_ON_WHATSAPP, REACHING, reach_class, reach_kind
 from gateway.routes.shell import feed_rank
 from gateway.routes.shell.needs import _instant
@@ -105,16 +106,29 @@ def _reply_fresh(card: dict[str, Any], now: datetime) -> bool:
 
 
 def interrupt_candidates(cards: list[dict[str, Any]], logged: set[Pair],
-                         now: datetime) -> list[dict[str, Any]]:
+                         now: datetime, *, rules: bool = False,
+                         muted: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     """The cards that may interrupt now, in the feed's order.
 
     A card qualifies when its class is ``interrupt`` or ``urgent``, its pair
     is not in *logged*, it is open, and, for ``needs_reply``, the thread
     waits for 12 hours or less.
+
+    With *rules* on (``BRIEF_EXCEPTIONS``, BR-5), the exception engine
+    decides instead of the class: only a card that matches an interrupt rule,
+    or an explicit "tell me" request, qualifies. Every other card waits for
+    the brief. The pair, open and fresh-reply tests above still apply.
+    *muted* holds the rules that the member muted. A muted rule matches
+    nothing. It has no effect with *rules* off.
     """
     out = []
     for card in cards:
-        if reach_class(card) not in REACHING or pair(card) in logged:
+        if rules:
+            if not exceptions.may_interrupt(card, now, muted=muted):
+                continue
+        elif reach_class(card) not in REACHING:
+            continue
+        if pair(card) in logged:
             continue
         if not is_open(card):
             continue

@@ -18,7 +18,7 @@ import { useKnowledge } from "./KnowledgeContext";
 import KnowledgeHome from "./KnowledgeHome";
 
 export default function SpaceCards() {
-  const { spaces, openNewPage } = useKnowledge();
+  const { spaces } = useKnowledge();
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-5xl px-4 py-5 sm:px-6">
@@ -51,27 +51,6 @@ export default function SpaceCards() {
               </Link>
             </li>
           ))}
-          {/* The member's own space exists only after the first write
-              (§4.1). Until then this card makes the first page there. */}
-          {spaces.some((s) => s.kind === "me") ? null : (
-            <li>
-              <button
-                type="button"
-                onClick={() => openNewPage({ spaceId: null })}
-                className="cc-link flex h-full w-full flex-col gap-2 rounded-lg border border-dashed border-border p-4 text-left tech-transition hover:border-primary/40 hover:bg-muted/40"
-              >
-                <span className="flex items-center gap-2">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                    <Icon name="Lock" size={16} />
-                  </span>
-                  <span className="text-sm font-medium text-foreground">My notes</span>
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  Your private drafts. Only you can see them. Write your first page here.
-                </span>
-              </button>
-            </li>
-          )}
         </ul>
         {/* KB-2f: Recently updated, Favourites and Created by me. */}
         <KnowledgeHome />

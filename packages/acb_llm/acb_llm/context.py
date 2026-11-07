@@ -31,6 +31,7 @@ from typing import Any
 from acb_common import get_logger
 
 from acb_llm.message_compress import compress_message_content
+from acb_llm.message_hygiene import strip_placeholder_lines
 from acb_llm.model_limits import get_limits
 
 # Stats from the most recent assemble_run_context() call in THIS async
@@ -172,7 +173,19 @@ def fit_messages_to_context(
     repeatedly trimmed (keeping a head + tail around a marker) until the prompt
     fits. System/developer messages are protected: they are only trimmed when
     no other message has trimmable content left (a degraded persona beats a
-    provider 4xx, but only as the last resort — audit CX5)."""
+    provider 4xx, but only as the last resort — audit CX5).
+
+    This is also the last stop before ``acompletion`` for ``acb_llm.client``,
+    so it applies the shared message hygiene (task 1787): no empty text block,
+    and no litellm placeholder line in a stored turn. It does NOT set the
+    empty content of a tool-call turn. That value depends on the vendor, and
+    the gateway and the Router own it. A list that is already clean comes back
+    as the same object."""
+    from acb_llm.message_hygiene import clean_model_messages
+
+    _cleaned = clean_model_messages(messages, set_tool_call_content=False)
+    if _cleaned != messages:
+        messages = _cleaned
     budget = context_window_for(model) - max_output_tokens - safety_margin
     if budget < 1024:
         # Pathologically small window (or huge max_tokens): the requested
@@ -488,6 +501,7 @@ async def acompletion_stream_text(
     first_chunk_s: float | None = None,
     idle_s: float | None = None,
     total_s: float | None = None,
+    job: str | None = None,
     **extra: Any,
 ) -> tuple[str, str]:
     """Streaming counterpart of :func:`acompletion_with_fallback` for callers
@@ -509,6 +523,12 @@ async def acompletion_stream_text(
 
     ``feature`` names the call, as :func:`acompletion_with_fallback` takes it.
 
+    ``job`` names the kind of work (:mod:`acb_llm.jobs`, task 1128), as on
+    :func:`acompletion_with_fallback`. It sets thinking and the cap floor,
+    adds the word "json" to a JSON-mode request, and drops a thinking
+    parameter that the model does not take. A stream that ends with no text
+    logs ``acb_llm.empty_answer``, and the caller keeps its own rule for it.
+
     ``first_chunk_s``, ``idle_s`` and ``total_s`` bound the stream. ``None``
     takes the module constant. A stream past a bound raises a
     :class:`StreamTimeout` subclass, and the caller decides what to do.
@@ -519,7 +539,7 @@ async def acompletion_stream_text(
         return await _stream_text(
             model=model, messages=messages, max_tokens=max_tokens,
             temperature=temperature, on_delta=on_delta, source=_source,
-            extra=extra, **bounds,
+            extra=extra, job=job, **bounds,
         )
     from acb_common._log import automation_agent_scope
 
@@ -527,7 +547,7 @@ async def acompletion_stream_text(
         return await _stream_text(
             model=model, messages=messages, max_tokens=max_tokens,
             temperature=temperature, on_delta=on_delta, source=_source,
-            extra=extra, **bounds,
+            extra=extra, job=job, **bounds,
         )
 
 
@@ -570,6 +590,7 @@ async def _stream_text(
     first_chunk_s: float | None = None,
     idle_s: float | None = None,
     total_s: float | None = None,
+    job: str | None = None,
 ) -> tuple[str, str]:
     """The body of :func:`acompletion_stream_text`, with ``source`` resolved.
 
@@ -586,14 +607,25 @@ async def _stream_text(
         _ensure_keys_loaded,
         ensure_model_registered,
     )
+    from acb_llm.jobs import (
+        apply_job,
+        ensure_json_word,
+        is_empty_answer,
+        note_empty_answer,
+        params_for_model,
+    )
 
     _source = source
+    # Task 1128: the job sets thinking and the cap floor, before the fit.
+    max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=extra)
+    messages = ensure_json_word(messages, extra.get("response_format"))
     _litellm.drop_params = True
     _litellm.suppress_debug_info = True
     await _ensure_keys_loaded()
 
     resolved = resolve_underlying_model(model)
     ensure_model_registered(resolved)
+    extra = params_for_model(extra, resolved)
     fitted, _was_truncated = fit_messages_to_context(
         messages, model, max_output_tokens=max_tokens,
     )
@@ -667,13 +699,22 @@ async def _stream_text(
                     pass
     # Rebuild a response object from the chunks so usage/cost accounting fires
     # for streamed calls too. Best-effort — never fail the draft over it.
+    rebuilt = None
     try:
         rebuilt = _litellm.stream_chunk_builder(chunks, messages=fitted)
         if rebuilt is not None:
             _emit_usage(resolved, "", rebuilt, source=_source)
     except Exception:  # noqa: BLE001
         pass
-    return "".join(content_parts), resolved
+    text = "".join(content_parts)
+    if not text.strip():
+        # A blank stream is a failure that the caller reads as "no draft".
+        # Log it, as the non-streaming arm does.
+        note_empty_answer(
+            rebuilt if rebuilt is not None and is_empty_answer(rebuilt)
+            else {"model": resolved},
+            model=resolved, job=job, max_tokens=max_tokens)
+    return text, resolved
 
 
 # ── Server-side run-context assembler (C2) ──────────────────────────────────
@@ -760,7 +801,12 @@ def assemble_run_context(
     hist_turns: list[dict[str, Any]] = []
     for m in src[-max_turns:]:
         role = str(m.get("role") or "user")
-        content = str(m.get("content") or "").strip()
+        content = str(m.get("content") or "")
+        if role == "assistant":
+            # A stored turn may hold litellm's placeholder line. Drop it, so
+            # the model does not copy it (task 1787).
+            content = strip_placeholder_lines(content)
+        content = content.strip()
         if content and role in ("user", "assistant", "system"):
             hist_turns.append({"role": role, "content": content})
 

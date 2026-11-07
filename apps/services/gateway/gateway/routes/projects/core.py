@@ -35,7 +35,7 @@ correct in the UI and silently empties the timeline — the CRM learned this in
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -58,8 +58,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 # `TenantUnbound` rather than defaulting: fail closed, never "the usual org".
 # ⚠️ It reads as UNUSED inside this module — it is a re-export. `ruff --fix`
 # deletes it and takes 25 test modules with it; do not let a linter "tidy" it.
-from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel, field_validator
+from gateway.db import tenant_session as _tenant_session
+from skill_projects.hues import hue_of
 from sqlalchemy import text
 
 _log = get_logger("gateway.projects")
@@ -266,6 +267,23 @@ def is_runnable(project: Any) -> bool:
     return get("status") in RUNNABLE_STATUSES and get("archived_at") is None
 
 
+def _ancestor_chain_sql(seed: str) -> str:
+    """The CTE ``chain``: each project that *seed* selects, and every project
+    above it. The verdict of :data:`_ANCESTOR_RUNNABLE_SQL` and the paths of
+    :func:`visible_project_paths` read this one text (§12.8 of
+    ``external_agent_access.md``, "it adds no third walk").
+    """
+    return f"""
+WITH RECURSIVE chain AS (
+    SELECT id, parent_project_id, status, archived_at
+      FROM pm_projects WHERE {seed}
+    UNION ALL
+    SELECT p.id, p.parent_project_id, p.status, p.archived_at
+      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id
+)
+"""
+
+
 #: One project's ancestor chain, itself included, reduced to a single verdict.
 #:
 #: `bool_and` over the chain: the whole chain must be runnable for the answer to
@@ -273,14 +291,7 @@ def is_runnable(project: Any) -> bool:
 #: NULL-safe — `bool_and` of an empty chain is NULL, which :func:`
 #: is_runnable_with_ancestors` reads as False, so a project id that resolves to
 #: nothing fails closed rather than running work in a project nobody can find.
-_ANCESTOR_RUNNABLE_SQL = """
-WITH RECURSIVE chain AS (
-    SELECT id, parent_project_id, status, archived_at
-      FROM pm_projects WHERE id = CAST(:pid AS uuid)
-    UNION ALL
-    SELECT p.id, p.parent_project_id, p.status, p.archived_at
-      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id
-)
+_ANCESTOR_RUNNABLE_SQL = _ancestor_chain_sql("id = CAST(:pid AS uuid)") + """\
 SELECT bool_and(status = 'active' AND archived_at IS NULL) FROM chain
 """
 
@@ -317,9 +328,45 @@ async def is_runnable_with_ancestors(db: Any, project_id: Any) -> bool:
 #: colour are the owner's; this is what completion, the personal mirror (§6.1)
 #: and automation gates (§6.3) key off. `triage` (WS-27u, migration 164) is the
 #: parked-at-the-front-door value that :func:`triage_exclusion_clause` keys off.
+#: Triage sits LAST here, which is what the list sort by Status shows
+#: (``_CATEGORY_RANK_ARRAY``).
+#:
+#: This is the ONE written list of stages (task 1792). ``_LIFECYCLE`` and
+#: ``STATUS_STAGE_ORDER`` derive from it. Keep it a literal:
+#: ``projectToolRows.test.ts`` reads this line and compares it with
+#: ``STATUS_CATEGORIES`` in ``statusCategory.ts``.
 STATUS_CATEGORIES: tuple[str, ...] = (
     "backlog", "todo", "in_progress", "done", "cancelled", "triage",
 )
+
+#: The five stages in lifecycle order: every category but triage.
+_LIFECYCLE: tuple[str, ...] = tuple(c for c in STATUS_CATEGORIES if c != "triage")
+
+#: The order a BOARD draws its lanes (task 1792): triage first, then the
+#: lifecycle. ONE rule orders status lanes everywhere: stage rank, then
+#: ``position``, then ``name``. Position orders lanes INSIDE a stage and never
+#: moves a lane into another stage, so a Done row with the lowest position
+#: still draws after In progress. Mirrors ``STATUS_CATEGORIES`` in
+#: ``workbench/control_plane/src/lib/statusCategory.ts``. An unknown stage
+#: sorts last.
+STATUS_STAGE_ORDER: tuple[str, ...] = ("triage", *_LIFECYCLE)
+
+
+def status_order_sql(alias: str = "") -> str:
+    """The ONE SQL ``ORDER BY`` body for status lanes: stage, position, name.
+
+    ``alias`` is the table alias with no dot (``"n"`` gives ``n.category``).
+    The stage names are constants, never request input.
+    """
+    a = f"{alias}." if alias else ""
+    whens = " ".join(
+        f"WHEN '{c}' THEN {i}" for i, c in enumerate(STATUS_STAGE_ORDER)
+    )
+    return (
+        f"CASE {a}category {whens} ELSE {len(STATUS_STAGE_ORDER)} END, "
+        f"{a}position, {a}name"
+    )
+
 
 #: The one category the default list reads exclude (WS-27u). A constant rather
 #: than a literal in the clause below so the vocabulary word and the predicate
@@ -378,7 +425,9 @@ TASK_SOURCES: tuple[str, ...] = (
 #: WS-55 EA-6d. The sources that only the server stamps. `mcp` marks a task
 #: that an outside agent made through the MCP edge, and `tasks.create_task`
 #: sets it from `UserContext.agent`, never from a request body.
-SERVER_TASK_SOURCES: tuple[str, ...] = ("mcp",)
+#: The one spelling of the agent stamp (``pm_tasks.source``, migration 265).
+AGENT_TASK_SOURCE = "mcp"
+SERVER_TASK_SOURCES: tuple[str, ...] = (AGENT_TASK_SOURCE,)
 #: The sources that a request body may name. A body that names `mcp` gets 422.
 #: Each route that reads a source from a request checks it against THIS tuple.
 CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
@@ -924,6 +973,18 @@ class TaskIn(BaseModel):
     source: str | None = None
 
 
+class TaskPatchIn(TaskIn):
+    """The body of ``PATCH /tasks/{id}``: :class:`TaskIn`, and a done date.
+
+    ``completed_at`` is a PATCH-only key (UNDO-1 round 2). Undo of a Reopen
+    sends the task back to its done lane with the date it held. The server
+    honours it ONLY when the same write moves the task INTO a closing
+    category (``apply_status_transition``). ``POST /tasks`` does not take it.
+    """
+
+    completed_at: str | None = None
+
+
 class StatusModel(BaseModel):
     id: str
     project_id: str
@@ -1212,9 +1273,31 @@ def actor(user: Any) -> str:
     return email or "anonymous"
 
 
+async def reader_day_start(db: Any, email: str) -> datetime:
+    """The instant that *email*'s own today started: the value of
+    ``:day_start`` in ``due_day.overdue_sql`` (RX-5). *email* is the reader, so
+    a card and the count of a shared board agree for the one who reads them.
+    ``personal`` imports this module, so the import waits for the call."""
+    from gateway.routes.projects.personal import member_day_start
+
+    return await member_day_start(db, email)
+
+
 def now() -> datetime:
     """The one clock this package reads, so tests can freeze it in one place."""
     return datetime.now(UTC)
+
+
+def hue_values(values: dict[str, Any]) -> dict[str, Any]:
+    """Map a colour in a status, type or tag body to one of the six hues (PJP-1).
+
+    The map is ``skill_projects.hues``, the one the chat tools use, so the app
+    and the chat store the same value. An empty or null colour stays as it is:
+    null clears the field, and the create route keeps its default.
+    """
+    if values.get("color"):
+        values["color"] = hue_of(values["color"])
+    return values
 
 
 def clean_payload(payload: BaseModel) -> dict[str, Any]:
@@ -1360,22 +1443,58 @@ WHERE organization_id = CAST(:vis_org AS uuid)
 _AGENT_NOT_PERSONAL_SQL = """
   AND personal_owner IS NULL"""
 
-#: Added when the connection has pins: the pinned ids in ``:vis_org`` and every
-#: project beneath them. A POSITIVE ``IN``, never ``NOT IN``, because one NULL
-#: makes ``NOT IN`` match nothing. ``:vis_pins`` binds as ``uuid[]``.
-_AGENT_PINS_SQL = """
+#: Added when the connection has pins or a left-out list (WS-55 EA-17a,
+#: D-EA-12, external_agent_access §10.8). The reach follows the nearest mark.
+#:
+#: * It starts at each pin. With no pin, it starts at each root of the
+#:   organization (:data:`_AGENT_REACH_FROM_ROOTS`), so the reach is every
+#:   project less each left-out subtree.
+#: * It walks down ``parent_project_id`` and stops at a left-out project, so
+#:   that project and every project beneath it stay out.
+#: * A pin beneath a left-out project is a start of its own, so the nearest
+#:   mark wins. A project that is a pin and left out stays out.
+#: * Each step filters by ``:vis_org``. So a pin or a left-out id of another
+#:   organization changes nothing, and so does a left-out id that no start
+#:   reaches. ``UNION`` ends the walk on a cycle.
+#:
+#: The walk can only narrow. The seal and the personal switch of
+#: :data:`_AGENT_PROJECTS_SQL` still apply to each project it reaches, so a
+#: mark on a sealed project, or on a personal one with the switch off,
+#: changes nothing. A POSITIVE ``IN``, never ``NOT IN``, because one NULL
+#: makes ``NOT IN`` match nothing. The left-out test is a ``NOT (= ANY)`` on
+#: one row: a NULL there stops the walk, so it fails closed. ``:vis_pins``
+#: and ``:vis_left_out`` bind as ``uuid[]``.
+_AGENT_REACH_SQL = """
   AND id IN (
-    WITH RECURSIVE pinned AS (
+    WITH RECURSIVE reach AS (
         SELECT pp.id FROM pm_projects pp
         WHERE pp.organization_id = CAST(:vis_org AS uuid)
-          AND pp.id = ANY(CAST(:vis_pins AS uuid[]))
+          AND {start}
+          AND NOT (pp.id = ANY(CAST(:vis_left_out AS uuid[])))
         UNION
         SELECT c.id FROM pm_projects c
-        JOIN pinned q ON c.parent_project_id = q.id
+        JOIN reach q ON c.parent_project_id = q.id
         WHERE c.organization_id = CAST(:vis_org AS uuid)
+          AND NOT (c.id = ANY(CAST(:vis_left_out AS uuid[])))
     )
-    SELECT id FROM pinned
+    SELECT id FROM reach
   )"""
+
+#: The starts of :data:`_AGENT_REACH_SQL`: the pins, or with no pin, the
+#: roots of the organization.
+_AGENT_REACH_FROM_PINS = "pp.id = ANY(CAST(:vis_pins AS uuid[]))"
+_AGENT_REACH_FROM_ROOTS = "pp.parent_project_id IS NULL"
+
+
+def _agent_has_marks(agent: AgentScope) -> bool:
+    """True when the connection has pins or a left-out list (D-EA-12 rule 8).
+
+    The ONE test of when :data:`_AGENT_REACH_SQL` runs and its two binds go
+    in. ``_refuse_pinned_space`` (``tree.py``) and the pinned branch of the
+    edge test the pins alone, on purpose: a connection with only a left-out
+    list reaches wide.
+    """
+    return bool(agent.pinned_projects or agent.left_out_projects)
 
 
 def _narrow_for_agent(clause: str, column: str, agent: AgentScope | None) -> str:
@@ -1389,8 +1508,12 @@ def _narrow_for_agent(clause: str, column: str, agent: AgentScope | None) -> str
     projects = _AGENT_PROJECTS_SQL
     if not agent.include_personal:
         projects += _AGENT_NOT_PERSONAL_SQL
-    if agent.pinned_projects:
-        projects += _AGENT_PINS_SQL
+    if _agent_has_marks(agent):
+        start = (
+            _AGENT_REACH_FROM_PINS if agent.pinned_projects
+            else _AGENT_REACH_FROM_ROOTS
+        )
+        projects += _AGENT_REACH_SQL.replace("{start}", start)
     return f"({clause} AND {column} IN ({projects}\n))"
 
 
@@ -1442,8 +1565,10 @@ class Visibility:
                 "vis_groups": list(self.groups),
                 "vis_org": self.organization_id,
             }
-        if self.agent is not None and self.agent.pinned_projects:
+        if self.agent is not None and _agent_has_marks(self.agent):
             params["vis_pins"] = [str(p) for p in self.agent.pinned_projects]
+            params["vis_left_out"] = [
+                str(p) for p in self.agent.left_out_projects]
         return params
 
     def project_clause(self, column: str = "id") -> str:
@@ -1647,6 +1772,46 @@ async def load_visible_project(
     if row is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return row
+
+
+async def visible_project_paths(
+    db: Any, vis: Visibility, project_ids: Iterable[Any],
+) -> dict[str, list[dict[str, str]]]:
+    """For each project, ``[{id, name}, ...]`` from the root down to it, in
+    the projects the reader can see (WS-55 EA-18a, spec §12.8).
+
+    The walk is :func:`_ancestor_chain_sql`. The name of a project comes back
+    only when ``Visibility.project_clause`` keeps it. The climb then stops at
+    the first parent that is not there, so a hidden name never shows, and a
+    visible grandparent above a hidden parent does not show either. A project
+    that the reader cannot see itself, such as the project of a task they only
+    hold as its assignee, has an empty path.
+    """
+    wanted = sorted({str(p) for p in project_ids if p})
+    if not wanted:
+        return {}
+    rows = (await db.execute(
+        text(
+            _ancestor_chain_sql("id = ANY(CAST(:path_leaves AS uuid[]))")
+            + "SELECT DISTINCT c.id, c.parent_project_id, p.name"
+            "  FROM chain c JOIN pm_projects p ON p.id = c.id"
+            f" WHERE {vis.project_clause('c.id')}"
+        ),
+        {"path_leaves": wanted, **vis.params},
+    )).fetchall()
+    seen = {str(row.id): row for row in rows}
+    paths: dict[str, list[dict[str, str]]] = {}
+    for leaf in wanted:
+        path: list[dict[str, str]] = []
+        current: str | None = leaf
+        # MAX_DEPTH bounds the climb, as `root_project_id` bounds its own.
+        while current in seen and len(path) < MAX_DEPTH:
+            row = seen[current]
+            path.append({"id": current, "name": row.name})
+            current = str(row.parent_project_id) if row.parent_project_id else None
+        path.reverse()
+        paths[leaf] = path
+    return paths
 
 
 async def load_visible_task(db: Any, vis: Visibility, task_id: str) -> Any:
@@ -1894,7 +2059,7 @@ async def personal_tree_owner(db: Any, node_id: str) -> str | None:
 
 async def assert_move_keeps_privacy(
     db: Any, task: Any, new_project_id: str,
-) -> None:
+) -> str | None:
     """A task may only move INTO a personal project it already lives in.
 
     The rule in one sentence, covering all five combinations:
@@ -1925,6 +2090,11 @@ async def assert_move_keeps_privacy(
     incoherent whoever performs it. Phrasing it on the two PROJECTS rather than
     on the actor is also what lets an admin tidy somebody's own tree without a
     special case.
+
+    Answers the lower-case owner of the project that the task leaves, or None
+    for a team project. The read is here anyway, so ``tasks.move_task_in``
+    takes it to see a promotion (WS-ALN ALN-1) and adds no statement. A caller
+    that only guards ignores the answer. Fence: ``test_align_trigger.py``.
     """
     rows = (await db.execute(
         text(
@@ -1934,11 +2104,12 @@ async def assert_move_keeps_privacy(
         {"old": str(task.project_id), "new": str(new_project_id)},
     )).fetchall()
     owners = {str(r.id): (r.personal_owner or "").lower() or None for r in rows}
+    source = owners.get(str(task.project_id))
     destination = owners.get(str(new_project_id))
     if destination is None:
-        return  # moving into team work is always fine
-    if owners.get(str(task.project_id)) == destination:
-        return  # already inside that same person's private tree
+        return source  # moving into team work is always fine
+    if source == destination:
+        return source  # already inside that same person's private tree
     raise HTTPException(
         status_code=422,
         detail=(
@@ -2839,6 +3010,72 @@ async def status_scope_ids(db: Any, project_id: str) -> list[str]:
     return [str(r.id) for r in rows]
 
 
+#: How many projects use each set in ``:owners``, with the owner left out. It
+#: is ``used_by`` of ``GET /nodes/{id}/status-set`` (projects_settings.md §9.4,
+#: PST-1).
+#:
+#: The walk of :data:`_STATUS_SCOPE_SQL`, from many owners at once, with one
+#: count for each owner. So a list of N owners costs one query, not N.
+#:
+#: ⚠️ The ``NOT p.owns_statuses`` sits in the RECURSIVE arm, as it does in
+#: :data:`_STATUS_SCOPE_SQL`. A nested owner and every node under it use
+#: another set, so the walk must not go through it. A test at the end would
+#: count the children of a nested owner. Fence:
+#: ``tests/unit/test_projects_status_set_read_r8.py``.
+#:
+#: ⚠️ The walk goes THROUGH a folder, so a project under a folder counts. The
+#: count leaves the folder out, because a folder holds no lanes (the rule of
+#: :func:`node_kind`, and of ``hasStatusSet`` in the frontend ``tree.ts``). A
+#: NULL kind reads as a project (R6 expand).
+#:
+#: It counts every row that the tenant session reads, and Postgres RLS binds
+#: that session to one organization. A project that the caller cannot see
+#: still counts, because an edit changes its lanes too.
+_STATUS_USERS_SQL = """
+WITH RECURSIVE status_users AS (
+    SELECT id AS owner_id, id, kind FROM pm_projects
+     WHERE id = ANY(CAST(:owners AS uuid[]))
+    UNION ALL
+    SELECT u.owner_id, p.id, p.kind FROM pm_projects p
+      JOIN status_users u ON p.parent_project_id = u.id
+     WHERE NOT p.owns_statuses
+)
+SELECT owner_id,
+       count(*) FILTER (
+           WHERE id <> owner_id AND COALESCE(kind, 'project') <> 'folder'
+       ) AS used_by
+  FROM status_users GROUP BY owner_id
+"""
+
+
+def holds_lanes(node: Any) -> bool:
+    """True when ``node``'s own board shows lanes, so a status edit reaches it.
+
+    A folder holds no lanes (:func:`node_kind`). A team space holds no task and
+    shows no board (:func:`is_team_space`, owner directive 2026-08-31). A
+    personal root holds the Inbox, so it counts. The reach of a status edit
+    (PST-1, §9.5) adds the owner only when this is true.
+    """
+    return (
+        node_kind(getattr(node, "kind", None)) != "folder"
+        and not is_team_space(node)
+    )
+
+
+async def status_users(db: Any, owner_ids: list[str]) -> dict[str, int]:
+    """``{owner id: projects that use its set, the owner left out}``.
+
+    One grouped query for every owner in ``owner_ids``. An id that has no row
+    in the tenant is not in the answer.
+    """
+    if not owner_ids:
+        return {}
+    rows = (await db.execute(
+        text(_STATUS_USERS_SQL), {"owners": list(owner_ids)},
+    )).fetchall()
+    return {str(r.owner_id): int(r.used_by) for r in rows}
+
+
 #: Where a task lands when its lane is not in the set it now resolves to.
 #:
 #: Name first, then the same category, then the first lane that is not triage.
@@ -2858,9 +3095,9 @@ COALESCE(
   (SELECT n.id FROM pm_task_statuses n
     WHERE n.project_id = CAST(:owner AS uuid)
       AND n.category <> :triage
-    ORDER BY n.position, n.name LIMIT 1)
+    ORDER BY __ORDER__ LIMIT 1)
 )
-"""
+""".replace("__ORDER__", status_order_sql("n"))
 
 
 async def remap_task_statuses(
@@ -3167,7 +3404,7 @@ async def reserve_task_numbers(db: Any, root_id: str, count: int) -> int:
 async def load_default_status(
     db: Any, root_id: str, category: str | None = None,
 ) -> Any:
-    """The status a task lands in: the FIRST lane, by position.
+    """The status a task lands in: the first OPEN lane in stage order.
 
     ⚠️ **There is no "default status" setting any more** (owner directive
     2026-09-06). ``is_default`` used to be consulted first and the position was
@@ -3181,8 +3418,9 @@ async def load_default_status(
     four category columns therefore had no flagged answer at all and fell
     through to the position anyway. The fallback was doing the work.
 
-    So position IS the rule, and position is a thing people already see and
-    already drag. The column stays on the table under R6 and goes in a later
+    So the lane order IS the rule: stage, then position, then name
+    (:func:`status_order_sql`, task 1792). Position is a thing people already
+    see and already drag, and it orders lanes inside a stage. The column stays on the table under R6 and goes in a later
     release; nothing reads it for a status any more. Task TYPES keep their own
     ``is_default`` — a type list has no order to read the answer out of.
 
@@ -3203,29 +3441,35 @@ async def load_default_status(
         clauses.append("category = :category")
         params["category"] = category
     else:
-        clauses.append("category <> :triage")
+        # Task 1792. A new task never starts in a closed lane. Stage rank
+        # orders the rest, so a Done row at position 1 cannot win.
+        closed = ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+        clauses.append(f"category <> :triage AND category NOT IN ({closed})")
         params["triage"] = TRIAGE_CATEGORY
     row = (await db.execute(
         text(
             "SELECT * FROM pm_task_statuses WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY position, name LIMIT 1"
+            + f" ORDER BY {status_order_sql()} LIMIT 1"
         ),
         params,
     )).fetchone()
     if row is not None:
         return row
-    if category is not None:
+    if category is None:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"This project has no {category.replace('_', ' ')} status; "
-                "add one first."
+                "This project has no open status for a new task. Add a "
+                "Backlog, To do or In progress status first."
             ),
         )
     raise HTTPException(
         status_code=422,
-        detail="No task statuses are configured for this project; create one first.",
+        detail=(
+            f"This project has no {category.replace('_', ' ')} status; "
+            "add one first."
+        ),
     )
 
 
@@ -3315,9 +3559,48 @@ async def require_status_in_project(db: Any, root_id: str, status_id: str) -> An
     return row
 
 
+def parse_completed_at(raw: str | None) -> datetime | None:
+    """A ``completed_at`` the client sent → an aware datetime, or 422.
+
+    A bad stamp is refused whatever the status does, so a typo never hides
+    behind a write that happens not to close the task.
+    """
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="The done date is not a valid date and time. "
+                   "Send it as an ISO 8601 stamp, or leave it out.",
+        ) from None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _checked_completed_at(task: Any, when: datetime) -> datetime:
+    """Refuse a done date in the future or before the task existed."""
+    if when > now():
+        raise HTTPException(
+            status_code=422,
+            detail="The done date is in the future. Leave it out to use the "
+                   "current time, or send a date that has passed.",
+        )
+    created = getattr(task, "created_at", None)
+    if isinstance(created, datetime):
+        created = created if created.tzinfo else created.replace(tzinfo=UTC)
+        if when < created:
+            raise HTTPException(
+                status_code=422,
+                detail="The done date is before the task was created. Leave "
+                       "it out to use the current time, or send a later date.",
+            )
+    return when
+
+
 async def apply_status_transition(
     db: Any, task: Any, new_status_id: str, *, created_by: str,
-    automation: bool = False,
+    automation: bool = False, completed_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Move a task to a new status. **Three effects, one helper.**
 
@@ -3331,6 +3614,11 @@ async def apply_status_transition(
     Every mutator that can move a status calls this — the PATCH route today, the
     sync and the automation action later — because a write that sets only the
     column looks right in the UI and silently empties the timeline.
+
+    ``completed_at`` (UNDO-1 round 2) is honoured ONLY on the crossing INTO a
+    closing category: Undo of a Reopen passes the date the task held. It may
+    not be in the future or before ``task.created_at`` (422). Every other
+    caller leaves it ``None`` and gets the stamp ``now()``.
     """
     old_status = await require_row(
         db, "pm_task_statuses", str(task.status_id), "Status",
@@ -3347,7 +3635,10 @@ async def apply_status_transition(
     was_closed = old_status.category in CLOSING_CATEGORIES
     is_closed = new_status.category in CLOSING_CATEGORIES
     if is_closed and not was_closed:
-        values["completed_at"] = now()
+        values["completed_at"] = (
+            _checked_completed_at(task, completed_at)
+            if completed_at is not None else now()
+        )
     elif was_closed and not is_closed:
         values["completed_at"] = None
 

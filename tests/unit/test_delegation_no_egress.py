@@ -322,6 +322,9 @@ def test_the_open_world_tools_are_pinned_and_the_egress_set_is_the_rule() -> Non
     want = (EXPECTED_OPEN_WORLD | specialists | (eg.STORE_WRITES & set(names))) - eg.DELEGATION_TOOLS
     # EM-CR and H-374: the card-bound sends stay in a held run although they send.
     want -= set(eg.CARD_BOUND_SEND_TOOLS)
+    # RX-1 (D169): the listed writes stay, outside a covered chain. This frame
+    # binds no chain. test_a_covered_parent_calls_crm_assistant binds one.
+    want -= set(eg.HELD_CARD_WRITE_TOOLS)
     assert egress == want, (sorted(egress - want), sorted(want - egress))
 
 
@@ -699,7 +702,7 @@ def test_the_call_time_refusal_holds_when_injection_misses_a_tool(
     sandbox, monkeypatch,  # noqa: F811
 ) -> None:
     _register_every_annotation()
-    monkeypatch.setattr(ti, "_withhold_egress_from_agent", lambda agent: [])
+    monkeypatch.setattr(ti, "_withhold_egress_from_agent", lambda agent, **_k: [])
     email = _email_turns()
     sent = _harness(monkeypatch, sandbox, {PA: _parent_calls(EMAIL), EMAIL: email})
     _run_parent(ORG_A)
@@ -800,6 +803,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: export_tasks reads through the gateway and saves one CSV into the chat, as render_report does.
 #: 2026-10-24 (WS-64 OP-6b, D-OP-9): grant_access and revoke_access joined. Each writes
 #: only through the gateway, behind one card, and says open_world=False.
+#: 2026-11-02 (WS-ALN ALN-4, D-OP-9): project_authorities (a read), pin_authority and
+#: unpin_authority (one card each) joined. Each reaches only the gateway, and says open_world=False.
 #: 2026-10-24 (WS-64 OP-6d, D-OP-9): report_recipients (a read) and add_report_recipient,
 #: remove_report_recipient and set_report_schedule (one card each) joined. None sends mail.
 #: 2026-10-24 (WS-64 OP-6e, D-OP-13): waiting_agent_requests (a read) joined. It lists, links the
@@ -811,6 +816,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: 2026-10-25 (WS-66 RM-3, D114): list_reminders (a read) and the six reminder writes
 #: joined. Each write is the member's own reminder, through the gateway, behind one
 #: card, and says open_world=False. None sends anything outside Metorite.
+#: 2026-11-02 (WS-PJP PJP-4, D168.1): update_tasks joined. Each ticked row is one
+#: update_task patch through the gateway, behind one card, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -821,7 +828,8 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "create_type", "create_types", "defer",
     "create_area", "delete_area", "rename_area",
     "nudge_task", "export_tasks", "attach_to_task",
-    "grant_access", "revoke_access",
+    "grant_access", "revoke_access", "pin_authority", "unpin_authority", "project_authorities",
+    "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
     "waiting_agent_requests", "needs_attention",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
@@ -843,7 +851,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "save_view", "set_my_overlay", "set_recurrence", "set_status_set",
     "status_report", "task_dataset", "task_detail", "team_capacity",
     "triage_intake", "unarchive_project", "unarchive_task", "unlink_tasks",
-    "update_field", "update_project", "update_status", "update_tag", "update_task",
+    "update_field", "update_project", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "vocabulary", "watch", "watchers",
     "list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
     "reopen_reminder", "reschedule_reminder", "promote_reminder",
@@ -2704,3 +2712,223 @@ def test_only_platform_code_may_register_a_platform_callable() -> None:
     own = load("orchestrator._h236_registry_probe")
     assert eg._platform_owned(own.run_diagnostics, "run_diagnostics") is True
     assert eg._platform_owned(own.wrapper, "run_diagnostics") is True
+
+
+# ── RX-1: each run boundary binds the chain and the mark (direct fences) ─────
+#
+# The review of RX-1 mutated these binds, and four mutations survived, because
+# only the seams under them were tested. These run the real boundaries.
+
+
+def _boundaries(monkeypatch) -> dict[str, list[dict[str, Any]]]:
+    """What each boundary bound: ``bind`` holds the keyword arguments of each
+    ``bind_artifact_context``, and ``inject`` the context that each injection
+    saw, because ``_covered_hold`` reads that frame."""
+    import sys
+
+    # The package names a function ``write_artifact`` too, so read the module.
+    wa = sys.modules["acb_skills.write_artifact"]
+    seen: dict[str, list[dict[str, Any]]] = {"bind": [], "inject": []}
+    real_bind, real_inject = wa.bind_artifact_context, executor._inject_agent_tools
+
+    def bind(**kwargs: Any) -> Any:
+        seen["bind"].append(kwargs)
+        return real_bind(**kwargs)
+
+    def inject(agents: Any, **kwargs: Any) -> Any:
+        seen["inject"].append({**dict(wa.artifact_context()), "_for": kwargs.get("agent_name")})
+        return real_inject(agents, **kwargs)
+
+    monkeypatch.setattr(wa, "bind_artifact_context", bind)
+    monkeypatch.setattr(executor, "_inject_agent_tools", inject)
+    return seen
+
+
+def _of(rows: list[dict[str, Any]], agent: str, key: str = "agent_name") -> dict[str, Any]:
+    return next(row for row in rows if row.get(key) == agent)
+
+
+def _mark_in_redis(org: str, thread: str) -> None:
+    """The chat read mail, in an earlier process: Redis holds the mark, and the
+    process cache does not."""
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = bind_tenant(org)
+    try:
+        assert asyncio.run(eg.mark_untrusted_answer({"session_id": thread}))
+    finally:
+        release_tenant(token)
+    eg._MARKED_SESSIONS.clear()
+
+
+def test_the_stream_boundary_binds_a_covered_run(sandbox, monkeypatch) -> None:  # noqa: F811
+    """Mutation: drop ``covered_chain=`` from the bind of ``run_agent_stream``, or
+    from its derive -> red."""
+    _register_every_annotation()
+    seen = _boundaries(monkeypatch)
+    _harness(monkeypatch, sandbox, {PA: _Model([_say("ok")])})
+    _run_top(PA, ORG_A)
+    assert _of(seen["bind"], PA)["covered_chain"] is True
+    assert _of(seen["bind"], PA)["chat_marked"] is False
+    assert _of(seen["inject"], PA, "_for")[eg.COVERED_CHAIN_KEY] is True
+    assert _of(seen["inject"], PA, "_for")[eg.CHAT_MARK_KEY] is False
+
+
+def test_the_stream_boundary_binds_an_open_run(sandbox, monkeypatch) -> None:  # noqa: F811
+    """Non-vacuity of the case above. Mutation: bind True at the boundary -> red."""
+    _register_every_annotation()
+    seen = _boundaries(monkeypatch)
+    _harness(monkeypatch, sandbox, {PA: _Model([_say("ok")])})
+    _run_top(PA, ORG_B)
+    assert _of(seen["bind"], PA)["covered_chain"] is False
+    assert _of(seen["bind"], PA)["chat_marked"] is False
+
+
+def test_the_stream_boundary_reads_the_mark_from_redis(sandbox, monkeypatch) -> None:  # noqa: F811
+    """A restart leaves the process cache empty, and the mark still binds. Mutation:
+    drop ``chat_marked=`` from the bind or the derive -> red. Mutation: read the
+    process cache at the boundary -> red."""
+    _register_every_annotation()
+    seen = _boundaries(monkeypatch)
+    thread = new_thread()
+    _harness(monkeypatch, sandbox, {PA: _Model([_say("ok")])})
+    _mark_in_redis(ORG_B, thread)
+    _run_top(PA, ORG_B, thread=thread)
+    assert _of(seen["bind"], PA)["chat_marked"] is True
+    assert _of(seen["inject"], PA, "_for")[eg.CHAT_MARK_KEY] is True
+
+
+def test_a_top_level_run_in_a_marked_chat_holds_no_class_c_tool(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """D169 item 3 claimed this, and the code did not do it: a top-level run binds
+    ``no_egress=False``. Mutation: drop ``_apply_chat_hold`` -> red."""
+    _register_every_annotation()
+    thread = new_thread()
+    model = _Model([_call("delete_task", {"task_id": "x", "reason": "y"}), _say("no")])
+    sent = _harness(monkeypatch, sandbox, {PA: model})
+    _mark_in_redis(ORG_B, thread)
+    _run_top(PA, ORG_B, thread=thread)
+    first = _offered(model.bodies[0])
+    assert not {"delete_task", "grant_access", "archive_task"} & first
+    assert {"create_task", "set_reminder", "update_task"} <= first
+    assert any("delete_task is off now" in r for r in _results(model.bodies[1])), _results(
+        model.bodies[1])
+    assert sent == []
+
+
+def test_a_top_level_run_in_a_clear_chat_keeps_each_tool(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """Non-vacuity, and the whole difference: a marked chat loses each class C tool
+    and nothing else. Mutation: drop the mark from ``ChatHoldProvider._off`` -> red.
+    Mutation: count an injected tool as the owner's -> a platform tool leaves -> red."""
+    _register_every_annotation()
+    clear = _Model([_say("ok")])
+    marked = _Model([_say("ok")])
+    _harness(monkeypatch, sandbox, {PA: clear})
+    _run_top(PA, ORG_B)
+    have = _offered(clear.bodies[0])
+    assert {"delete_task", "grant_access", "create_task"} <= have
+    thread = new_thread()
+    _harness(monkeypatch, sandbox, {PA: marked})
+    _mark_in_redis(ORG_B, thread)
+    _run_top(PA, ORG_B, thread=thread)
+    assert have - _offered(marked.bodies[0]) == {n for n in have if eg.is_held_off_write(n)}
+
+
+def test_a_top_level_run_keeps_each_egress_tool_behind_its_card(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """The chat hold takes the class C writes and nothing else: H-236 stays as it was
+    for a top-level run. Mutation: bind ``no_egress`` in a marked chat -> red."""
+    _register_every_annotation()
+    thread = new_thread()
+    seen = _boundaries(monkeypatch)
+    model = _Model([_say("ok")])
+    _harness(monkeypatch, sandbox, {PA: model})
+    _mark_in_redis(ORG_B, thread)
+    _run_top(PA, ORG_B, thread=thread)
+    assert _of(seen["bind"], PA)["no_egress"] is False
+
+
+def test_a_sub_run_binds_the_chain_of_a_covered_parent(sandbox, monkeypatch) -> None:  # noqa: F811
+    """Mutation: drop ``covered_chain=`` from the bind or the derive of
+    ``_run_sub_agent_streaming`` -> red."""
+    _register_every_annotation()
+    seen = _boundaries(monkeypatch)
+    _harness(monkeypatch, sandbox, {PA: _parent_calls(EMAIL), EMAIL: _Model([_say("ok")])})
+    _run_parent(ORG_A)
+    assert _of(seen["bind"], EMAIL)["covered_chain"] is True
+    assert _of(seen["bind"], EMAIL)["no_egress"] is True
+    assert _of(seen["inject"], EMAIL, "_for")[eg.COVERED_CHAIN_KEY] is True
+
+
+def test_a_sub_run_binds_the_mark_of_its_chat(sandbox, monkeypatch) -> None:  # noqa: F811
+    """Mutation: drop ``chat_marked=`` from the bind or the derive of
+    ``_run_sub_agent_streaming`` -> red."""
+    _register_every_annotation()
+    seen = _boundaries(monkeypatch)
+    thread = new_thread()
+    _harness(monkeypatch, sandbox, {PA: _parent_calls(CRM), CRM: _Model([_say("ok")])})
+    _mark_in_redis(ORG_B, thread)
+    _run_top(PA, ORG_B, thread=thread)
+    assert _of(seen["bind"], CRM)["chat_marked"] is True
+    assert _of(seen["bind"], CRM)["covered_chain"] is False
+    assert _of(seen["inject"], CRM, "_for")[eg.CHAT_MARK_KEY] is True
+
+
+def test_a_sub_run_of_a_clear_chat_binds_the_clear_mark(sandbox, monkeypatch) -> None:  # noqa: F811
+    """A clear chat binds False to its sub-run. Mutation: bind ``chat_marked=True``
+    -> red. Dropping the key survives: ``derive_artifact_context`` then keeps the
+    value of the parent run, which is the same False."""
+    _register_every_annotation()
+    seen = _boundaries(monkeypatch)
+    thread = new_thread()
+    _harness(monkeypatch, sandbox, {PA: _parent_calls(CRM), CRM: _Model([_say("ok")])})
+    _run_top(PA, ORG_B, thread=thread)
+    assert _of(seen["bind"], CRM)["chat_marked"] is False
+    assert _of(seen["inject"], CRM, "_for")[eg.CHAT_MARK_KEY] is False
+
+
+def test_a_batch_run_binds_the_chain_and_the_mark(sandbox, monkeypatch) -> None:  # noqa: F811
+    """Mutation: drop either key from the bind of ``_run_agent_inner`` -> red."""
+    _register_every_annotation()
+    seen = _boundaries(monkeypatch)
+    _harness(monkeypatch, sandbox, {EMAIL: _Model([_say("ok")])})
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = bind_tenant(ORG_B)
+    try:
+        asyncio.run(executor.run_agent(
+            EMAIL, {"message": "x", "mode": "sub_task"}, run_id="r-rx1-batch",
+            organization_id=ORG_B,
+        ))
+    finally:
+        release_tenant(token)
+    assert _of(seen["bind"], EMAIL)["covered_chain"] is False
+    assert _of(seen["bind"], EMAIL)["chat_marked"] is False
+
+
+def test_a_covered_chain_keeps_the_crm_writes_off_in_a_grandchild(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """RX-1 lists the CRM writes, and a covered chain must not read that list.
+    Mutation: drop the chain from ``is_egress_tool`` -> ``create_lead`` shows -> red."""
+    _register_every_annotation()
+    email = _Model([_call("call_agent", {"agent_name": CRM, "message": "log it"}), _say("asked")])
+    crm = _Model([_say("no")])
+    sent = _harness(monkeypatch, sandbox, {PA: _parent_calls(EMAIL), EMAIL: email, CRM: crm})
+    _run_parent(ORG_A)
+    assert crm.bodies, "the grandchild never ran"
+    assert not {"create_lead", "log_activity"} & _offered(crm.bodies[0])
+    assert sent == []
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

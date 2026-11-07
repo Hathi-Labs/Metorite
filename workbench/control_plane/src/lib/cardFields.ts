@@ -32,6 +32,7 @@ export type FieldKind =
   | "tag"
   | "status"
   | "category"
+  | "color"
   | "person"
   | "project"
   | "date"
@@ -63,6 +64,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "actual_start": { label: "Started", kind: "date" },
   "after": { label: "After" },
   "amount": { label: "Amount" },
+  "answer": { label: "Your answer" },
   "archive_after_months": { label: "Archive after (months)" },
   "archived": { label: "Archived", kind: "date" },
   "area": { label: "Area" },
@@ -74,10 +76,11 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   // `link_tasks_batch` (2026-10-19): a link the batch leaves out, and why.
   "cannot link N": { label: "Cannot link", plural: "Cannot link" },
   "cannot move N": { label: "Cannot move", plural: "Cannot move" },
+  "cannot change N": { label: "Cannot change", plural: "Cannot change" },
   "capacity": { label: "Capacity" },
   "category": { label: "Category", kind: "category" },
   "close_after_months": { label: "Close after (months)" },
-  "color": { label: "Colour", kind: "words" },
+  "color": { label: "Colour", kind: "color" },
   "comment": { label: "Comment" },
   "config": { label: "Settings" },
   "contact": { label: "Contact" },
@@ -166,6 +169,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "priority": { label: "Priority" },
   "project": { label: "Project", kind: "project" },
   "project_id": { label: "Project" },
+  "question": { label: "Question" },
   "reopens": { label: "Reopens" },
   "repeat day": { label: "Repeat day" },
   "repeats": { label: "Repeats" },
@@ -227,26 +231,37 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "with parent N": { label: "With parent", plural: "With parent" },
 };
 
+/**
+ * The spec of one map key, or `undefined`. ⚠️ An OWN key only (MCP-P1b-1
+ * re-review P1). A key comes from tool and agent data, and a bare index or
+ * `in` reads the prototype chain: `constructor` gave a function with no
+ * label, and the card threw. Each read of the map goes through here.
+ */
+function ownSpec(key: string): FieldSpec | undefined {
+  return Object.hasOwn(CARD_FIELDS, key) ? CARD_FIELDS[key] : undefined;
+}
+
 /** The map key of a card key: digits read as `N`, a custom field as `field *`. */
 export function cardKey(raw: string): string {
   const key = raw.trim();
-  if (/^field\s+\S/.test(key) && !(key in CARD_FIELDS)) return "field *";
+  if (/^field\s+\S/.test(key) && !ownSpec(key)) return "field *";
   return key.replace(/\d+/g, "N");
 }
 
 /** The custom field's own name, for `field <Name>`. */
 function customFieldName(raw: string): string | null {
   const m = /^field\s+(.+)$/.exec(raw.trim());
-  return m && !(raw.trim() in CARD_FIELDS) ? m[1] : null;
+  return m && !ownSpec(raw.trim()) ? m[1] : null;
 }
 
 /** The spec of a card key. A key with no line reads as words, never raw. */
 export function fieldSpec(raw: string): FieldSpec {
   const custom = customFieldName(raw);
   if (custom) return { label: custom };
-  const spec = CARD_FIELDS[cardKey(raw)];
+  const spec = ownSpec(cardKey(raw));
   if (spec) return spec;
-  const words = raw.trim().replace(/_/g, " ");
+  // `__proto__` reads "Proto": the underscores at the ends go with the space.
+  const words = raw.trim().replace(/_/g, " ").trim() || raw.trim();
   return { label: words.charAt(0).toUpperCase() + words.slice(1) };
 }
 
@@ -415,4 +430,34 @@ export function repeatsLine(value: string, shown: readonly (string | undefined)[
   const norm = (s: string) => unfenced(s).replace(/\s+/g, " ").trim().toLowerCase();
   const v = norm(value);
   return v !== "" && shown.some((s) => s !== undefined && norm(s) === v);
+}
+
+// ── Long values ──────────────────────────────────────────────────────────────
+
+/**
+ * A text of more than this many characters is "long": its row stacks (label
+ * above value) and a change to it draws as a Before / Now block. 80 is about
+ * two lines at 12 px in the 330 px Ask panel, where the value column of a
+ * side-by-side row is only about 200 px wide.
+ */
+export const LONG_VALUE_CHARS = 80;
+
+/** True when a plain text is long: over the limit, or on more than one line. */
+export function isLongText(text: string): boolean {
+  return text.length > LONG_VALUE_CHARS || text.includes("\n");
+}
+
+/** True when any side of a parsed value holds a long text. */
+export function valueIsLong(parsed: FieldValue): boolean {
+  return [...(parsed.before ?? []), ...parsed.after].some((i) => isLongText(unfenced(i.text).trim()));
+}
+
+/**
+ * True when a field draws as a Before / Now block: a change to a text field
+ * (no chip, no status, no person) with one side long. The server fences each
+ * side (`description: «old» → «new»`), so a side is a named item, and in a
+ * text field a named item still draws as text.
+ */
+export function isLongTextChange(parsed: FieldValue, kind: FieldKind): boolean {
+  return !!parsed.before && kind === "text" && valueIsLong(parsed);
 }

@@ -17,6 +17,7 @@ import {
   type ProviderAvailability,
 } from "./connect";
 import type { ForwardBody } from "./forward";
+import { announceDraftLeft } from "@/lib/draftLeftEvent";
 
 /** The answer of `POST /email/forward`. */
 export interface ForwardResult {
@@ -1082,6 +1083,9 @@ export async function updateEmailLabels(
 
 export async function deleteEmail(id: string): Promise<void> {
   await gatewayFetch(`/email/messages/${id}`, { method: "DELETE" });
+  // The message can be the draft of a chat reply card. The card reads its
+  // state again at once (owner report, 2026-11-03).
+  announceDraftLeft(id);
 }
 
 // ── Attachments ────────────────────────────────────────────────────────────
@@ -1290,7 +1294,7 @@ export async function sendDraft(
   draftId: string,
   allowTextOnly?: boolean,
 ): Promise<{ sent: boolean }> {
-  return gatewayFetch("/email/drafts/send", {
+  const out = await gatewayFetch<{ sent: boolean }>("/email/drafts/send", {
     method: "POST",
     body: JSON.stringify({
       account_id: accountId,
@@ -1298,6 +1302,10 @@ export async function sendDraft(
       ...(allowTextOnly === undefined ? {} : { allow_text_only: allowTextOnly }),
     }),
   });
+  // A chat reply card that wrote this draft must stop its Send now, or the
+  // reply goes out twice (owner report, 2026-11-03).
+  announceDraftLeft(draftId);
+  return out;
 }
 
 /**
@@ -2518,7 +2526,27 @@ export interface ComposeAssistArgs {
   mode?: "new" | "reply" | "forward";
   messageId?: string;
   to?: string[];
+  /** A forward: the people who are copied. A reply and a new mail send none. */
+  cc?: string[];
   subject?: string;
+}
+
+/**
+ * The JSON of one compose-assist request, for the stream and the plain route.
+ * `cc` rides only when the caller gives it (a forward), so a reply and a new
+ * mail send the same body as before (task 1817).
+ */
+export function composeAssistBody(args: ComposeAssistArgs): string {
+  return JSON.stringify({
+    account_id: args.accountId,
+    body: args.body ?? "",
+    instruction: args.instruction ?? "",
+    mode: args.mode ?? "new",
+    message_id: args.messageId,
+    to: args.to,
+    cc: args.cc,
+    subject: args.subject ?? "",
+  });
 }
 
 export async function composeAssist(
@@ -2528,15 +2556,7 @@ export async function composeAssist(
   return gatewayFetch("/email/compose-assist", {
     method: "POST",
     signal,
-    body: JSON.stringify({
-      account_id: args.accountId,
-      body: args.body ?? "",
-      instruction: args.instruction ?? "",
-      mode: args.mode ?? "new",
-      message_id: args.messageId,
-      to: args.to,
-      subject: args.subject ?? "",
-    }),
+    body: composeAssistBody(args),
   });
 }
 
@@ -2626,15 +2646,7 @@ export async function composeAssistStream(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal,
-      body: JSON.stringify({
-        account_id: args.accountId,
-        body: args.body ?? "",
-        instruction: args.instruction ?? "",
-        mode: args.mode ?? "new",
-        message_id: args.messageId,
-        to: args.to,
-        subject: args.subject ?? "",
-      }),
+      body: composeAssistBody(args),
     });
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
   } catch (err) {

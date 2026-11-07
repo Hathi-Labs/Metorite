@@ -91,6 +91,13 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "forward_email joins user_id, and a file comes through "
         "_fetch_owned_attachment."
     ),
+    "revise_new_mail_card": (
+        "§18.11. Reads no email table and no mailbox. It peeks and then spends "
+        "the caller's own card record of one thread (peek_record and "
+        "take_record check the owner of the record), and its own snapshot and "
+        "link in tenant Redis. It sends and saves nothing "
+        "(test_email_redraft_snapshot.py)."
+    ),
     "cleanup_status": (
         "Reads the in-process _SWEEP_JOBS registry, and answers idle unless "
         "the job's owner is the caller. No table read."
@@ -125,6 +132,13 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "A thin wrapper. _load_mail reads the mail with REPLY_ROW_SQL, whose "
         "join holds ea.user_id = :uid, and _save_draft opens provider_session "
         "for the caller (EM-CR)."
+    ),
+    "reply_card_draft_state": (
+        "A thin wrapper (task 1526, 2026-11-03). draft_in_drafts reads the one "
+        "draft row with _DRAFT_STATE_SQL, whose join holds mailbox_predicate("
+        "'ea', level='read') for the session's own email. A draft of another "
+        "member reads as not in Drafts. It writes nothing and calls no "
+        "provider (R8: test_reply_card_left_drafts_r8.py)."
     ),
     "compose_assist": (
         "A thin wrapper. _compose_assist_run calls _assert_account_owner "

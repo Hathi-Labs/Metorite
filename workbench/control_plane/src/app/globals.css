@@ -406,6 +406,10 @@ html[data-look="glass"] {
   --glass-edge: rgb(255 255 255 / 0.1);
   --glass-highlight: rgb(255 255 255 / 0.14);
   --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3);
+  /* A panel that floats over the live page (the sidebar's peek): a crisp
+     edge and a deep lift, so it parts from the page under it. */
+  --glass-float-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.16), 0 2px 6px rgb(0 0 0 / 0.35),
+    0 16px 40px rgb(0 0 0 / 0.55), 0 40px 90px rgb(0 0 0 / 0.45);
   /* Menus: near-opaque, because a menu opened inside glass cannot blur what
      is behind that glass (backdrop-filter stops at the nearest blurred
      ancestor). */
@@ -498,6 +502,8 @@ html[data-look="glass"].light {
   --glass-edge: rgb(0 0 0 / 0.07);
   --glass-highlight: rgb(255 255 255 / 0.9);
   --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.05);
+  --glass-float-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06),
+    0 12px 32px rgb(0 0 0 / 0.14), 0 32px 80px rgb(0 0 0 / 0.12);
   --glass-thick-bg: rgb(248 248 250 / 0.94);
   --card-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.07), 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 14px rgb(0 0 0 / 0.035);
 
@@ -1363,6 +1369,16 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
 .pb-nav {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px));
 }
+/* Clearance for the floating Ask bar of the desktop shell (`ChatBar.tsx`,
+   `bottom-5`, a 44 px field). A page whose last line sits at the foot of its
+   scroller takes it, so the bar never covers that line. From `sm` up only:
+   the phone's Ask tab sits in the bottom nav, which `.pb-nav` clears. */
+@media (min-width: 640px) {
+  /* Unlayered, so it beats a Tailwind utility such as `p-4`, which sits in a layer. */
+  .pb-askbar {
+    padding-bottom: 5.5rem;
+  }
+}
 /* The shared toast viewport's bottom edge. On a phone it sits ABOVE the fixed
    bottom nav (the same 3.5rem + safe-area clearance as .pb-nav, plus a gap),
    or every toast covers the nav for its whole life. From `sm` up there is no
@@ -1431,6 +1447,20 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
 :root[data-assistant-peek] .pb-nav {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3.5rem);
 }
+/* The phone's task card (TC-1, `lib/layers.ts` TASK_CARD_FRAME.phone). The box
+   runs under the nav (z-50 over z-15), like the peek strip's box above, so no
+   band of page shows. Its foot is padded by the nav clearance, and by the
+   strip's height while the strip shows. */
+:root {
+  --task-card-nav-clear: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+  --task-card-peek-h: 3.5rem;
+}
+.task-card-phone {
+  padding-bottom: var(--task-card-nav-clear);
+}
+:root[data-assistant-peek] .task-card-phone {
+  padding-bottom: calc(var(--task-card-nav-clear) + var(--task-card-peek-h));
+}
 /* The thin progress line. It slides only when the member allows motion. With
    reduced motion it is a still third of the line. */
 @keyframes agent-pill-progress {
@@ -1446,8 +1476,11 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
 /* EA-13g, EA-13h: an agent's card looks alive while the agent holds it. The
    `<li>` of a board card carries `data-agent-edge` (`agentCardLook`). No edge
    is dashed (owner, 2026-10-30). Tokens only, so each organisation's accent
-   shows through.
-   - live: the accent travels round the card and fades out behind itself.
+   shows through the quiet edges.
+   - live: the chat box's spectrum (`--glow-1` … `--glow-5`) turns round the
+     card at the chat box's speed (owner, 2026-11-04: "use the same colored
+     spinner that we use for the text box of the chat"). It turns a layer
+     (transform only, §4), where the chat box turns `--glow-angle`.
    - breathing (idle): a soft accent glow rises and falls. The glow is a still
      layer (`::after`) whose opacity moves (§4: transform and opacity only).
    - steady (queued): a still, thin, solid accent edge.
@@ -1490,7 +1523,7 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
   overflow: hidden;
   isolation: isolate;
   padding: 2px;
-  background: var(--primary);
+  background: conic-gradient(var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
 }
 [data-agent-edge="live"] > [role="button"] {
   z-index: 1;
@@ -1508,9 +1541,6 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
   50%      { opacity: 0.35; }
 }
 @media (prefers-reduced-motion: no-preference) {
-  [data-agent-edge="live"] {
-    background: color-mix(in srgb, var(--primary) 30%, transparent);
-  }
   [data-agent-edge="live"]::before {
     content: "";
     position: absolute;
@@ -1519,9 +1549,10 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
     width: 300%;
     aspect-ratio: 1;
     z-index: 0;
-    background: conic-gradient(from 0deg, transparent 0 70%, var(--primary) 100%);
+    background: conic-gradient(var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
     transform: translate(-50%, -50%);
-    animation: agent-edge-travel 3s linear infinite;
+    /* 5 s: the turn of the chat box's live edge (`glass-glow-turn`). */
+    animation: agent-edge-travel 5s linear infinite;
   }
   [data-agent-edge="breathing"]::after {
     animation: agent-edge-breathe 3.5s ease-in-out infinite;
@@ -2380,6 +2411,16 @@ html[data-look="glass"] .sidebar-rail[data-peek] [data-rail-row]:not([aria-curre
 html[data-look="glass"] .sidebar-rail[data-peek] {
   background-color: transparent;
 }
+/* The peek lies over the live page, and its tint is within a few percent of
+   the page's own (owner, 2026-11-03: "they are mixing into each other"). So
+   it parts from the page by its edge and its lift, never by a second colour:
+   a crisp hairline and a deeper shadow than a menu's. The lift holds while
+   the peek closes, so it does not drop off mid-motion. */
+html[data-look="glass"] .sidebar-rail[data-peek] {
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    var(--glass-float-shadow);
+}
 html[data-look="glass"] .sidebar-rail[data-peek]::before {
   content: "";
   position: absolute;
@@ -2647,6 +2688,19 @@ html.ask-morph::view-transition-new(ask-panel) {
   animation: ask-panel-in var(--panel-duration) var(--panel-easing) both;
 }
 
+/* The Ask bar takes a new resting form (`lib/shell/askBarRest.ts`): the
+   field, the pill or the corner button springs into its place. Scale only:
+   an opacity under 1 on an ancestor of the glass would switch its blur off
+   until the fade ends. The morph to and from the chat draws its own glide. */
+@keyframes ask-rest-in {
+  from { transform: translateY(4px) scale(0.92); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  html:not(.ask-morph) [data-ask-form] {
+    animation: ask-rest-in var(--spring-duration) var(--spring-easing) both;
+  }
+}
+
 /* Subtle bounce for the scroll-to-bottom button */
 @keyframes bounce-subtle {
   0%, 100% { transform: translateY(0); }
@@ -2654,89 +2708,6 @@ html.ask-morph::view-transition-new(ask-panel) {
 }
 .animate-bounce-subtle {
   animation: bounce-subtle 1.5s ease-in-out infinite;
-}
-
-/* A stack of cards that wait on the member (components/ui/CardStack.tsx,
-   owner 2026-10-24: "the card moves a little bit to the side in slight
-   angle and then comes back like a spring … almost like Tinder"). The top
-   card swings out once, turned, and springs back past its rest; the card
-   behind lifts as it goes. A release after a drag uses the spring easing.
-   With reduced motion nothing moves, and the banner and the edges say it. */
-@keyframes card-stack-nudge {
-  0%   { transform: translateX(0) rotate(0); }
-  30%  { transform: translateX(-28px) rotate(-4deg); }
-  52%  { transform: translateX(9px) rotate(1.2deg); }
-  70%  { transform: translateX(-4px) rotate(-0.5deg); }
-  85%  { transform: translateX(2px) rotate(0.2deg); }
-  100% { transform: translateX(0) rotate(0); }
-}
-@keyframes card-stack-lift {
-  0%, 100% { translate: 0 0; scale: 1; }
-  30%      { translate: 0 -6px; scale: 1.02; }
-}
-@media (prefers-reduced-motion: no-preference) {
-  .card-stack-nudge[data-nudge] {
-    transform-origin: 50% 100%;
-    animation: card-stack-nudge 1.25s var(--motion-easing) 0.35s 1 both;
-  }
-  .card-stack-lift {
-    animation: card-stack-lift 1.25s var(--motion-easing) 0.35s 1;
-  }
-}
-
-/* A change of card moves as the deck does (`swapStackCard`, owner
-   2026-11-01: "make the animation for the task cards better when I switch
-   between the cards"). Forward, the card left is thrown to the left and
-   turned, as a swipe throws it, and the next one rises from the deck on the
-   spring. Back is the mirror: the card comes back from the left on the
-   spring, and the one left sinks into the deck. The card that moves to the
-   side is always on top. The page does not cross-fade: the tabs and the
-   deck's edges stay live under the card. */
-/* ⚠️ The card on top stays SOLID while it moves, and fades only at its far
-   end. A card that faded the whole way let the one under it show through,
-   and the two read as a double exposure (measured 2026-11-01). The card
-   below is whole from the start: it is the deck's next card. */
-@keyframes card-swap-throw {
-  55%  { opacity: 1; }
-  100% { transform: translateX(-55%) rotate(-8deg); opacity: 0; }
-}
-@keyframes card-swap-rise {
-  from { transform: translateY(10px) scale(0.96); }
-}
-@keyframes card-swap-return {
-  0%  { transform: translateX(-55%) rotate(-8deg); opacity: 0; }
-  35% { opacity: 1; }
-}
-@keyframes card-swap-sink {
-  70%  { opacity: 1; }
-  100% { transform: translateY(10px) scale(0.96); opacity: 0; }
-}
-html.card-swap::view-transition-old(root),
-html.card-swap::view-transition-new(root) {
-  animation: none;
-}
-html.card-swap::view-transition-group(stack-card) {
-  animation-duration: var(--panel-duration);
-  animation-timing-function: var(--panel-easing);
-}
-html.card-swap::view-transition-old(stack-card),
-html.card-swap::view-transition-new(stack-card) {
-  transform-origin: 50% 100%;
-  mix-blend-mode: normal;
-}
-html.card-swap[data-card-swap="next"]::view-transition-old(stack-card) {
-  z-index: 1;
-  animation: card-swap-throw var(--panel-duration) var(--panel-easing) both;
-}
-html.card-swap[data-card-swap="next"]::view-transition-new(stack-card) {
-  animation: card-swap-rise var(--spring-duration) var(--spring-easing) both;
-}
-html.card-swap[data-card-swap="prev"]::view-transition-old(stack-card) {
-  animation: card-swap-sink var(--panel-duration) var(--panel-easing) both;
-}
-html.card-swap[data-card-swap="prev"]::view-transition-new(stack-card) {
-  z-index: 1;
-  animation: card-swap-return var(--spring-duration) var(--spring-easing) both;
 }
 
 /* ── Scrollbars ────────────────────────────────────────────── */

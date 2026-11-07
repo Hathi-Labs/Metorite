@@ -1,9 +1,9 @@
 # Project alignment — Metorite checks work against the project's rules (WS-ALN)
 
-> **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 📋 **SPEC, NOTHING BUILT.** ALN-0 (this spec) is the first slice. ALN-1 is next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
+> **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-07 · **Owner:** vjvarada
+> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec), ALN-1 (§5, the durable trigger) and ALN-4 (§4.1, the pin: the table `pm_project_authorities`, migration 339, three routes and three chat tools, no UI) are built. `ALIGN_JOBS_ORGS` and `AUTHORITY_PINS_ORGS` ship empty and `JOB_QUEUE` ships off, so no job and no pin exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a (the table and the service of one person decides, migration 332, merged e827f2012) is built dark behind `DECISIONS_ORGS`. ALN-2b (a My Day card and a task panel block for one decision, built 2026-11-04) is built dark. It adds the gated feed-only source `decisions`, so an org needs `DECISIONS_ORGS` and `MY_DAY_PROVIDERS=decisions`. The Reach sender for `decision` stays its own slice. **ALN-5a (§4.2, the rules of a project) is built dark on 2026-11-04:** rule rows on `pm_agent_guidance`, migration 343, seven routes under `/project-rules`, an exact-quote check, no UI, no chat tool and no model call. `PROJECT_RULES_ORGS` ships empty. ALN-4b and ALN-5b are next. **On 2026-11-06 the owner chose the recommended answer to each of ALN-Q1 to ALN-Q5 (D192, §14).** Only the number of the ALN-Q4 cap stays open, and ALN-7 measures it.
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §11 was read on that commit. Earlier task text came from a read at `308df8828`, and §2 lists each fact that changed.
-> **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
+> **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160, and D192 for the answers of §14. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Projects/Tasks App", epic 1368, this spec task 1369. The questions are tasks 1370 to 1374. The slices ALN-1 to ALN-14 are tasks 1375 to 1388, in order.
 > **Research first:** the comment "Research notes, 2026-11-02 (project alignment)" on epic 1368, copied into §9.
 > **Gate summary:** every slice is AGENT-SAFE. The flag that spends credits stays the owner's flip. An eval over USD 0.50 needs the owner's OK. Each slice that changes what a member sees follows the D145 loop.
@@ -45,10 +45,10 @@ Many people create tasks and edit documents in Metorite. A product manager write
 2. **No check of a personal task.** A task in a member's personal project (`pm_projects.personal_owner`) is never read by the checker. A move into a project is the moment it becomes project work.
 3. **No second rule engine.** §3.4 says why.
 4. **No external document.** A Google or Notion page that `pm_task_refs` links is out. The checker quotes only what Metorite can read.
-5. **No hard block at first.** ALN-12 is optional and waits on ALN-Q2.
+5. **No hard block at first.** A deviation warns by default (ALN-Q2, D192). A lead can mark one rule "needs approval". Then ALN-12 holds a move to Done, after the ALN-8 eval gate.
 6. **No grant from a rule.** A rule is guidance. D140.2 holds: the member is the only authority.
 7. **No check of a comment** in v1. The title, the description and the acceptance text are in.
-8. **No auto-move of a task** into a project (ALN-Q3).
+8. **No auto-move of a task** into a project (ALN-Q3, D192). Mira suggests the project, and one tap accepts.
 
 ---
 
@@ -73,12 +73,12 @@ The facts of task 1369 were re-read on `ce29836ea`. Two of them changed.
 | A project suggestion | `routes/tasks/ai.py` (`_suggest_project`, line 151) | A keyword match on the member's own personal tree only |
 | Task context for agents | `apps/services/agent_edge/agent_edge/tools.py` (`get_task_context`, line 2865) | It returns the task, parents, project with description, blockers, subtasks, runs, refs and 20 comments. It returns no rule and no guidance |
 | Documents | `infra/postgres/272_knowledge_pages.sql` | `kb_pages` has `state` (`draft`, `published`, `archived`). `kb_links` allows `target_kind = 'project'`, and its only writer (`routes/knowledge/backlinks.py`) writes `page` targets |
-| The store of rules | `project-docs/specs/agent_coordination.md` line 445 (SW-31, task 1048) | **Not built.** No `pm_agent_guidance` exists in any `.sql` file |
+| The store of rules | `project-docs/specs/agent_coordination.md` line 445 (SW-31, task 1048) | **Table built** by SW-31a (migration 340, `pm_agent_guidance`, in the shape of §4.2, dark). ALN-5a adds the rule CHECKs (migration 343) and the rule routes (`routes/project_rules.py`, dark). The editor (SW-31b) is not built |
 | The lead | `infra/postgres/146_projects.sql` line 64 (`pm_projects.lead`) | One email, nullable. `routes/projects/authority.py` counts the lead of any ancestor project. No product manager role exists |
 
 **⚠️ Two changes since the task text.**
 
-1. **SW-31 is a planned spec, not code.** ALN-5 cannot extend a table that does not exist. §4.2 fixes this: the first slice to need the table builds it in one shape.
+1. **SW-31a built the table.** `pm_agent_guidance` has the columns of §4.2 from migration 340, and its unique index is NULL-safe. ALN-5a adds the `state` logic and the quote check, and ALN-5b adds the proposer. ALN-6 adds the `rules` key. No slice adds a table.
 2. **`kb_links` has no version column and no state.** KG-4 (not built) adds a `relation` and a `removed_at`, and still no version. So the pin of §4.1 is its own small table.
 
 ---
@@ -95,7 +95,7 @@ The facts of task 1369 were re-read on `ce29836ea`. Two of them changed.
 
 ### 3.2 One person decides (ALN-2)
 
-Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The shape is a new table `pm_decisions`, in migration 326 (recheck the number at dispatch, R1). `pm_intake` has fixed verbs, no named decider and no options. An `agent_runs` elicitation needs a run. The table reuses the bell, Reach and the My Day provider registry, and it runs no action. So it is not a third approval stack.
+Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The shape is a new table `pm_decisions`, in migration 332 (other slices took 326 to 331, recheck at merge, R1). `pm_intake` has fixed verbs, no named decider and no options. An `agent_runs` elicitation needs a run. The table reuses the bell, Reach and the My Day provider registry, and it runs no action. So it is not a third approval stack.
 
 | Column | Meaning |
 |---|---|
@@ -108,7 +108,7 @@ Nothing today shows a question with named options to a named person, and records
 | `answered_by`, `answer_key`, `answer_reason` | Nullable until the answer. The reason is optional |
 | `source` | `align` or `auto` |
 
-A unique guard allows one answer for each decision. The table is tenant-scoped with FORCE RLS (R5). It widens `pm_notifications_kind_check` with the kind `decision`.
+A unique guard allows one answer for each decision. ALN-2a records four facts for the next slices. First, `REACH_CLASS["decision"]` reaches nobody until a signal kind `decision` exists. ALN-2b must add `decision` to `ASKING_NOTIFICATIONS`, the bell verb in `notifications.ts` and the needs provider before `DECISIONS_ORGS` goes on. Second, the answer writes a `comment` activity with the question of the asker, and it emits `pm.task.comment_added`. So a workflow triggered by a comment reads that text, and ALN-7 must know it. Third, only the decider reads a decision, including its answer. Other members read the comment on the task. Fourth, the chat reaches the decision by the tools `my_decisions` and `answer_decision`, and `answer_decision` refuses a run with no person present before it raises a card. The table is tenant-scoped with FORCE RLS (R5). It widens `pm_notifications_kind_check` with the kind `decision`.
 
 A decision has a subject (a task or a page), a named decider, two to four options, a one-line question, an expiry and an answer. The answer writes one `pm_activities` row. A second answer is refused. AUTO-7 (task 1391) parks a blocked action on the same primitive.
 
@@ -137,7 +137,7 @@ If the owner wants a hand-written rule ("a task in Billing needs a due date"), t
 
 ## 4. Data shapes
 
-Every table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and every migration is expand only (R6). Migration numbers are taken at build time (R1). Migration 324 is the highest on `ce29836ea`.
+Every table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and every migration is expand only (R6). Migration numbers are taken at build time (R1). Migration 324 was the highest on `ce29836ea`. When ALN-4 was built on 2026-11-02, main held up to 325, and branches held 326, 327 and 328. So ALN-4 took 329. At merge on 2026-11-03, main held 332 (ALN-2a) and a branch held 333, so the file became 334. Main then reached 337 (PZ-33b), and branches held 336 and 338, so the file became 339.
 
 ### 4.1 The pin of a page to a project (ALN-4)
 
@@ -157,13 +157,25 @@ One active pin for each project and page. A project lead, or a member with `proj
 
 **The leak check at the pin.** A page with narrower grants than its project would leak its text through the quotes of a finding. The pin refuses that case. A lead must widen the page, or choose another page. This is the safer of the two options in task 1378. The warning option can come later.
 
+**As built (ALN-4, migration `339_pm_project_authorities.sql`, code `routes/projects/authorities.py`).**
+
+- **Routes.** `GET`, `POST` and `DELETE` on `/projects/nodes/{id}/authorities`. A pin and a removal call `assert_may_write_grant`, so a lead of the project or of an ancestor, or a holder of `projects:settings:write`, may act. A project in a personal tree has no pin and gets its own 403 sentence. A page of another org and a page the caller cannot read give the same 404. A second pin of the same page returns the existing pin with 200. A removal sets `state = 'removed'`, `removed_by` and `removed_at`, and keeps the row. A lead can pin a removed page again, and that makes a new row.
+- **The version.** `kb_pages` has no version column. `page_version` is the highest `kb_page_versions.version` of the page, read with the page row locked.
+- **The GET derives `stale` at read time.** Knowledge emits no event on an archive. The stored `state` is `active` or `removed`, and nothing writes `stale` in ALN-4. The GET shows `stale` when the page is not `published`, or when the title or text of its newest version differs from the pinned version. A restore after an archive changes no word, so the pin shows `active` again. An edit shows `stale`. If a page is deleted, its pins go with it, because the foreign key cascades. ALN-5 may write `stale` and may read the same rule.
+- **The leak rule refuses on doubt.** The pin proves that every holder of the project can read the page, with `project_grant_holders` and the one Knowledge predicate `visible_pages_clause` (helper `audience_can_read_page`). A holder with `data:org:read` and no grant on the page fails the check. A page in a `me` space, an unpublished page, an empty audience and any error all give a refusal. The refusal names no page title.
+- **Same-org link.** `pm_projects` and `kb_pages` have no `UNIQUE (organization_id, id)`. A key on two hot tables is not part of this slice. Two plain foreign keys give the cascade. A trigger on the pin table refuses a project or a page of another org, for each role.
+- **A reader without the page** sees `page_hidden: true` and no title and no space (§7.2 point 2). `stale_reason` and `page_version` are null too, so the reader does not learn that a hidden page changed. `state` stays `active` or `stale`, so the reader still sees that the authority needs care.
+- **Residual risk.** The leak check runs at the pin only. A later move of the page to a narrower space, or a later grant change on the project, is not checked again. ALN-5 must check page visibility for each recipient when it quotes (§7.2 point 2). The pin costs one query for each org member (`notifications.project_grant_holders`). It costs one more for each holder (`audience_can_read_page`). Both run while the page row lock is held. That is slow for a large org. It fails closed, and a later slice batches it.
+- **The flag.** `AUTHORITY_PINS_ORGS` is a list of org ids or `*`, and it is empty by default. While the org is not in it, all three routes answer 404 and the three chat tools make no card. A flip needs a D145 preview of the chat cards (ALN-4b), and the owner writes the value.
+- **Chat tools (ALN-4 repair).** `project_authorities` (class A), `pin_authority` and `unpin_authority` (class C, one card each) reach the three routes. The three tools sit in their own pack, `projects-authority` (3 tools). The reminders and bulk packs cannot hold them, because each must fit under `MAX_REQUEST_TOOLS` (110) in its measured turns. With the tools, the reminders pack held 12 and a busy chat did not load it for "remind me" (RX-1). With the tools, the bulk pack (24) did not fit beside email for an archive request. The other Projects packs are full (`MAX_PACK_TOOLS`, 35). The pack comes last of the Projects packs, so the cap drops it first. Production needs `projects-authority` in the `TOOL_PACKS` list before the ALN-4b flip, and the owner writes it. The pin card names the page by id. The unpin card names the title only when the member can read the page.
+
 KG-4 may mirror each pin as a `governs` relation for graph reads. The pin table stays the authority.
 
 ### 4.2 The rule (ALN-5)
 
 SW-31 plans `pm_agent_guidance`: one markdown block for each scope and version. A project needs many rules, each with its own history. So the store gets one shape for both.
 
-**What SW-31 must add** (task 1048 changes, or ALN-5 builds the table in this shape if SW-31 has not):
+**The columns of a rule.** SW-31a built the table in this shape (migration 340):
 
 | Column | Meaning |
 |---|---|
@@ -172,10 +184,10 @@ SW-31 plans `pm_agent_guidance`: one markdown block for each scope and version. 
 | `source_page_id`, `source_page_version` | Nullable. The page and the version that the rule came from. NULL for a rule that a lead typed |
 | `quote` | The exact words of the page. At most 400 characters. NULL for a typed rule |
 | `level` | `soft` or `hard` |
-| `state` | `proposed`, `active`, `needs_review` or `retired` |
+| `state` | `proposed`, `active` or `retired`. ALN-11 adds `needs_review` |
 | `proposed_by` | `mira` or an email |
 
-The unique index of SW-31 is (org, project, version). That index would force one rule for each project. It must become (org, project, `kind`, `rule_key`, `version`), with `rule_key` NULL for guidance. Guidance keeps its limit of 8,000 characters. A rule body is one sentence of at most 300 characters.
+The unique index of migration 340 keys on (org, project, `kind`, `rule_key`, `version`), with NULL-safe forms of `project_id` and `rule_key`. So a project holds many rules, and guidance keeps one block for each scope. Guidance keeps its limit of 8,000 characters. A rule body is one sentence of at most 300 characters.
 
 **Rules.**
 
@@ -186,6 +198,32 @@ The unique index of SW-31 is (org, project, version). That index would force one
 5. Page text is untrusted input. The proposer gets no tools.
 6. The nearest rule wins on a conflict, as SW-31 plans. A rule on a child project beats a rule on its parent.
 7. Rules return to agents in their own key (`rules`) beside `guidance`, so the 8,000-character block of guidance stays one block.
+
+**The split.** ALN-5 has two slices. ALN-5a is the store, the rule that a lead writes, the quote check, the state changes with their history, and R8. ALN-5b is the proposer (rules 2, 4 and 5 above, and the cap of 12 for each page) and the eval of "the lead accepts at least half".
+
+**As built (ALN-5a, migration `343_pm_agent_guidance_rules.sql`, code `routes/project_rules.py`).**
+
+- **No third store.** A rule is a row of `kind = 'rule'` on `pm_agent_guidance`. Migration 343 adds six CHECKs, a guard on UPDATE and a partial index. It adds no table and no column.
+- **Append only.** An accept, an edit, a retire and a change of level each add a version row of the same `rule_key`. The newest row is the rule now. The guard refuses an UPDATE of a rule row for each role, as for guidance. The header of 340 said that a rule row may change `state`. ALN-5a chose append only, so the history of a rule is its rows.
+- **Three states.** `proposed`, `active` and `retired`. A lead makes a rule `active` at the create, or `proposed` on request. Only the accept route moves `proposed` to `active`. A retired rule does not change again. ALN-11 can widen the CHECK with `needs_review`.
+- **Routes.** `GET` and `POST` on `/project-rules/projects/{id}` list and create. `GET /project-rules/rules/{key}/history` reads the versions. `POST .../accept`, `PATCH /project-rules/rules/{key}`, `POST .../retire` and `POST .../level` change a rule. The prefix is not `/projects`, as SW-31a's is not.
+- **Who writes.** Every write asks `authority.guidance_write_refusal`, the one rule: a lead of the project or of an ancestor, or a holder of `projects:settings:write`. The route answers its two refusals with the words of a rule, never "guidance". A personal tree gets 403, an archived project 409, and an agent connection 403. The tenant and the actor come from the session. A body key for either gets 422.
+- **The quote check.** A quote, its page and its page version come together or not at all. The writer must see the page (`knowledge.core.load_page`). The page must have the state `published`, in a space that is not a `me` space. `knowledge.core.page_version_text` reads that version, under the history floor. `knowledge.core.quote_occurs` then needs an exact substring, after CRLF and CR become LF. There is no fuzzy match and no model. A quote that fails gets 422 and writes no row.
+- **A fixed version.** A rule names its page version. An edit of the page later does not change the rule or its check.
+- **Who reads.** Any member who can open the project reads its rules. The quote shows only to a reader of the page AND of the version that the rule quotes. Each other reader gets the sentence, the level and the state. For that reader, `quote`, `source_page_id` and `source_page_version` are null, and `quote_hidden` is true. The list and the history call `knowledge.core.readable_page_versions`: `visible_pages_clause` for the page, then `history_floor` for the version, the rule of the Knowledge history route. So a version from before a move to a wider space stays hidden from the readers of the new space. ALN-6 must hide the quote on the MCP `rules` key by the same helper.
+- **Caps.** The route strips a sentence and a quote first. Then a sentence holds 1 to 300 characters and a quote 1 to 400. A project holds at most 40 active rules, and the 41st gets 409. One advisory lock for each project keeps the count and the next version free of a race. The list answers `count`, the number of rows in that answer, not a total of the project.
+- **No score for a person** (ALN-Q5). No column, index or statement groups by `written_by` or `proposed_by`. A static fence scans for it.
+- **The flag.** `PROJECT_RULES_ORGS` is a list of org ids or `*`, and it is empty by default. While the org is not in it, each route answers 404. Only the owner writes the value, and a SIGHUP reload applies it.
+- **Chat parity.** ALN-5a gives these routes no chat tool, so a member cannot yet write a rule from the chat. A follow-up slice adds the chat tools, in a pack of their own, as ALN-4 did. The flag stays empty until that slice lands.
+- **Residual risk: the sentence shows to every reader of the project.** That is by design (§7.2 point 2). The quote hides by the right of the reader to the page and to its version. The sentence does not hide. So a lead must not copy words of a page that some members cannot read into the sentence. A create does not run the audience check of ALN-4, because §4.1 asks for that check at the pin only. A rule may also quote a page that is not pinned to the project. ALN-5b must decide whether the proposer runs the audience check, or reads only pinned pages.
+- **A note for ALN-5b.** A quote of 1 character passes the check of ALN-5a. A quote that short proves nothing, so the proposer needs a minimum length for a quote.
+
+**Verify ALN-5a.** R8 needs a private database:
+
+```bash
+export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/<private db>
+uv run pytest tests/unit/test_project_rules.py tests/unit/test_project_rules_static.py tests/unit/test_agent_guidance_r8.py tests/unit/test_agent_guidance.py -q -rfEs
+```
 
 ### 4.3 The finding (ALN-7)
 
@@ -219,13 +257,14 @@ A new table `pm_alignment_findings`.
 
 ## 5. The trigger seam (ALN-1)
 
-**The seam is the four handlers**, because no single write seam exists. The D80 fence (`tests/unit/test_pm_task_insert_sites.py`) holds the creators. ALN-1 does not hook `insert_row` or `update_row`.
+**The seam is four handlers**: `create_task`, `patch_task`, `move_task_in` and the intake capture `capture_intake`. No single write seam exists, so the list is by hand. The D80 fence (`tests/unit/test_pm_task_insert_sites.py`) holds the creators. ALN-1 does not hook `insert_row` or `update_row`.
 
-1. In `create_task`, `patch_task` and `move_task_in`, the handler enqueues one job of kind `align.check` with `jobs.queue.enqueue(db, ...)`. It uses the same tenant session that the handler holds. The enqueue runs in the same transaction as the write, inside a savepoint (`db.begin_nested()`). A crash between a commit and a later enqueue would lose the job, and this form cannot. `create_personal_task` is not in the list, because a personal task is never checked (§1.2). The payload holds the task id only and no org, because the session binds the tenant. The dedupe key is `align:<task_id>:<content_hash>`, which fits the 200-character limit.
-2. `patch_task` enqueues only when the hash of the title, the description and the acceptance text changed. An edit of a due date enqueues nothing.
+1. In `create_task`, `patch_task`, `move_task_in` and `capture_intake`, the handler enqueues one job of kind `align.check` with `jobs.queue.enqueue(db, ...)`. It uses the same tenant session that the handler holds. The enqueue runs in the same transaction as the write, inside a savepoint (`db.begin_nested()`). A crash between a commit and a later enqueue would lose the job, and this form cannot. `create_personal_task` is not in the list, because a personal task is never checked (§1.2). The payload holds the task id only and no org, because the session binds the tenant. The dedupe key is `align:<task_id>:<content_hash>`, which fits the 200-character limit.
+2. `patch_task` enqueues only when the hash of the title, the description and the acceptance text changed. An edit of a due date enqueues nothing. `pm_tasks` has no acceptance column (read at `f41bc2257`), so `trigger.content_hash` reads the title and the description.
 3. A move out of the personal root (`move_task_in`) enqueues, because that is the moment a personal note becomes project work.
 4. The page signal is not part of ALN-1. Pins arrive with ALN-4, so the `kb.page.published` job for each pinned project belongs to ALN-5 or ALN-11. With no pin, a publish enqueues nothing.
-5. Recurrence and the file import stay out in v1. A recurring copy repeats text that was checked. An import is a bulk load that an owner would not want to check. Both are stated here so a later slice can reverse the choice.
+5. Five writes stay out in v1. They are recurrence and the file import. They are also the revert of an edit (`activities.py`), an automation patch (`automation.py`) and the merge (`merge.py`, `_fold_scalars`). A recurring copy repeats text that was checked. An import is a bulk load that an owner would not want to check. A revert, a rule and a merge restore or fold text that a member wrote before. ALN-7 reads the current task, so the next edit through `patch_task` catches up. A later slice can reverse each choice.
+   The dedupe scope is `(organization_id, kind, dedupe_key)`, and only while a job is `queued` or `running`. A title that goes A, then B, then back to A enqueues again. So two live jobs can exist. ALN-7 must read the current task text and not the text at enqueue.
 6. ALN-1 does not stamp `organization_id` on the events. H-328 part (c) owns that stamp, once, in `routes/projects/core.py` (`emit`). No check depends on the bus.
 7. A failed enqueue never fails the member's write. The savepoint rolls back, and the handler swallows the error, logs it and goes on.
 8. The queue is dark: `job_queue` is OFF by default. A new per-org flag `ALIGN_JOBS_ORGS` (default empty) gates the enqueue. A handler enqueues only when `worker_enabled()` is true AND the org is in the list. The reason: `prune` deletes only `done` and `failed` rows, so queued rows would grow without a bound while the worker is off. ALN-1 adds the flag to the settings list.
@@ -251,9 +290,9 @@ The mode order is `off`, `shadow`, then `on` (D75.7, D100.2). `mode_for` needs a
 
 ### 6.3 Who pays and the cap
 
-ALN-Q4 sets the payer. The working default is the org's AI allowance. `job_member_scope` needs a member from our own tables, never from request input. ALN-7 uses the nearest project lead. With no lead, it uses the first org admin. ALN-7 names the exact read.
+The org's AI allowance pays (ALN-Q4, D192). `job_member_scope` needs a member from our own tables, never from request input. ALN-7 uses the nearest project lead. With no lead, it uses the first org admin. ALN-7 names the exact read.
 
-The cap is a working default of **300 checks for each org each day**, in Redis, and an admin can see the count. ALN-7 measures the real cost in a week of shadow data on our own org, and the owner then sets the number.
+The cap is daily and for each org. It lives in Redis, and an admin can see the count (D192). **The number is still open.** ALN-7 starts at 300 checks for each org each day. It measures the real cost in a week of shadow data on our own org. Then the owner sets the number.
 
 **Order of cost.** The cheap checks come first: no rules, a personal task, an unchanged hash, a dismissal that stands. Each one stops before any model call.
 
@@ -263,7 +302,7 @@ The cap is a working default of **300 checks for each org each day**, in Redis, 
 
 ### 7.1 Who hears (ALN-Q1)
 
-The working default: the person hears first. The lead hears after 2 working days with no action, or at once when the rule is `hard`. "The person" is the member who last changed the task, or its assignee when the change came from an agent.
+The person hears first (ALN-Q1, D192). The lead hears after 2 working days with no action, or at once when the rule is `hard`. "The person" is the member who last changed the task, or its assignee when the change came from an agent.
 
 ### 7.2 Visibility
 
@@ -337,15 +376,17 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **ALN-1** (1375) | The durable trigger (§5), the flag `ALIGN_JOBS_ORGS` and a stub `align.check` handler. Needs ALN-0 | R8: a task change enqueues one job in the bound org, and the stub completes it. With the worker off or the org not listed, no row appears. An edit with the same text enqueues none. Org B sees none of org A's jobs. A failed enqueue never fails the write. With the flag off, no job row appears | HIGH | AGENT-SAFE |
-| **ALN-2a** (1376) | The table, the service (ask, answer, expire), the activity row, the bell kind, the verb, `REACH_CLASS` and `KIND_ORDER` (§3.2). Flag `DECISIONS_ORGS` (default empty). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. An expired decision takes no answer | HIGH | AGENT-SAFE |
-| **ALN-2b** (1376) | The My Day provider and the task-card UI. `needs.py` offers only a link act until MD-8, so the act opens the task card. Needs ALN-2a | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
+| **ALN-2a** (1376, built, branch `ws-aln-2a-mt-94ca4c39`) | The table, the service (ask, answer, expire), the activity row, the bell kind, the verb, `REACH_CLASS` and `KIND_ORDER` (§3.2). Flag `DECISIONS_ORGS` (default empty). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. An expired decision takes no answer | HIGH | AGENT-SAFE |
+| **ALN-2b** (1376) | The My Day provider and the task-card UI. `needs.py` offers only a link act until MD-8, so the act opens the task card. Before the flag goes on, it adds `decision` to `ASKING_NOTIFICATIONS`, the bell verb in `notifications.ts` and the needs provider. Needs ALN-2a | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
 
 ### Phase 2 — The source of truth
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **ALN-4** (1378) | The pin (§4.1). Needs ALN-0 | R8: a lead pins a page. A member with no authority gets 403. Org B sees none of it. A page of another org cannot be pinned. A page with narrower grants is refused. An archived page shows the pin as `stale` | HIGH | AGENT-SAFE |
-| **ALN-5** (1379) | The rule store (§4.2) and the proposer. Needs ALN-4 | R8: only a lead makes a rule active. Org B reads none. A proposal with an invented quote is refused. On a real architecture document, a lead accepts at least half of the proposals, and the report names the number | HIGH | AGENT-SAFE |
+| **ALN-4** (1378) | The pin (§4.1). Needs ALN-0 | R8: a lead pins a page. A member with no authority gets 403. Org B sees none of it. A page of another org cannot be pinned. A page with narrower grants is refused. An archived page shows the pin as `stale` | HIGH | AGENT-SAFE. ✅ **Built 2026-11-02** (table and routes, no UI). Fence: `tests/unit/test_project_authorities_r8.py` |
+| **ALN-4b** | The overview UI of the pins: list, pin, remove and a stale badge. The routes of ALN-4 are inert without it. Needs ALN-4 | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
+| **ALN-5a** (1379) | The rule store (§4.2): rule rows on `pm_agent_guidance`, the rule that a lead writes, the quote check, accept, edit, retire and the level, with history. Needs ALN-4 | R8: only a lead makes a rule active. Org B reads none. The server refuses a proposal with an invented quote. A quote that is not a substring of the page version gets 422. The server stores a rule with no quote. An edit or a retire adds a version row, and the history lists both. The command is in §4.2 | HIGH | AGENT-SAFE. ✅ **Built 2026-11-04** (migration 343, routes, no UI, no chat tool). Fences: `tests/unit/test_project_rules.py` (R8), `tests/unit/test_project_rules_static.py` |
+| **ALN-5b** (1379) | The proposer (§4.2 rules 2, 4 and 5): one model call with no tools, and the cap of 12 for each page. Needs ALN-5a | Each quote that the model returns passes the check of ALN-5a. An injection fixture makes no tool call. On a real architecture document, a lead accepts at least half of the proposals, and the report names the number | HIGH | AGENT-SAFE. **OWNER-GATE** for an eval run over USD 0.50 |
 | **ALN-6** (1380) | Follow the rules first. Needs ALN-5 | An agent that claims a task in a project with 3 rules gets all 3 in `get_task_context`. A project with no rules and a rule on a parent project both pass a test. New chat tools have a `skill_projects/manifest.py` row, and new edge routes are in `MCP_WRITE_ROUTES` | STD | AGENT-SAFE |
 
 ### Phase 3 — The silent check
@@ -374,7 +415,7 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **ALN-12** (1386) | The optional gate on Done. Needs ALN-10, and ALN-Q2 must choose it | R8: a task with an open hard finding cannot move to done. After the lead's answer it can. With the checker off or over its cap, the move passes | HIGH | AGENT-SAFE. Build only if the owner picks option A or C |
+| **ALN-12** (1386) | The gate on Done, for a rule that a lead marks "needs approval". Needs ALN-10 and the ALN-8 eval gate | R8: a task with an open hard finding cannot move to done. After the lead's answer it can. With the checker off or over its cap, the move passes | HIGH | AGENT-SAFE. In scope: ALN-Q2 chose option A (D192) |
 | **ALN-14** (1388) | Check an agent's plan and a linked pull request. Needs ALN-8, SW-18 (task 349) | A pull request that names a rule's forbidden approach raises one finding. A run with no pull request raises none | STD | AGENT-SAFE |
 
 ### Build order and parallel work
@@ -399,7 +440,7 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 
 **The first dispatchable slice is ALN-1,** once this spec merges. ALN-2a and ALN-4 are dispatchable at the same time. ALN-1 comes first because ALN-7 and ALN-11 read through it.
 
-**⚠️ An outside prerequisite.** ALN-5 needs the rule store of SW-31 (task 1048). If SW-31 has not built the table, ALN-5 builds it in the shape of §4.2. SW-31 then adds only its editor and its MCP return.
+**An outside prerequisite, now met.** ALN-5 needed the rule store of SW-31 (task 1048). SW-31a built the table in the shape of §4.2 (migration 340), and ALN-5a adds only the rule CHECKs (migration 343).
 
 ---
 
@@ -419,7 +460,10 @@ Each path was read on `ce29836ea`.
 - `apps/services/gateway/gateway/decide_features.py`, `crm_sync/note_labels.py`
 - `apps/services/gateway/gateway/routes/knowledge/pages.py` (`publish_page`), `routes/knowledge/proposals.py`, `routes/knowledge/backlinks.py`, `kb_index/query.py`
 - `apps/services/agent_edge/agent_edge/tools.py` (`get_task_context`, `_create_task`)
-- `infra/postgres/146_projects.sql`, `147_projects_personal.sql`, `255_pm_task_refs.sql`, `272_knowledge_pages.sql`
+- `infra/postgres/146_projects.sql`, `147_projects_personal.sql`, `255_pm_task_refs.sql`, `272_knowledge_pages.sql`, `339_pm_project_authorities.sql` (ALN-4)
+- `apps/services/gateway/gateway/routes/projects/authorities.py` (ALN-4, the one writer of the pins)
+- `infra/postgres/340_pm_agent_guidance.sql` (SW-31a) and `343_pm_agent_guidance_rules.sql` (ALN-5a, the rule CHECKs and the guard)
+- `apps/services/gateway/gateway/routes/project_rules.py` (ALN-5a, the one writer of a rule row) and `routes/knowledge/core.py` (`page_version_text`, `quote_occurs`)
 - `project-docs/specs/agent_coordination.md` (SW-31), `workflows_app.md` (G5), `knowledge_graph.md` §3.2 (KG-4), `proactive_reach.md`
 - `tests/unit/test_pm_task_insert_sites.py` (the D80 fence)
 
@@ -431,6 +475,7 @@ Each path was read on `ce29836ea`.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8 needs a database
 uv run python scripts/affected_tests.py --run
 uv run pytest tests/unit/test_align_trigger.py tests/unit/test_align_findings.py -q
+uv run pytest tests/unit/test_project_rules.py tests/unit/test_project_rules_static.py tests/unit/test_agent_guidance_r8.py -q -rfEs   # ALN-5a
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_pm_task_insert_sites.py -q
 uv run ruff check apps/services/gateway apps/services/agent_edge
 bash scripts/ci_local.sh
@@ -447,7 +492,11 @@ For this spec only: `uv run pytest tests/unit/test_index_completeness.py tests/u
 | A task write enqueues a check, and an unchanged text enqueues none | New with ALN-1: `tests/unit/test_align_trigger.py` (R8) |
 | No hook sits on `insert_row` or `update_row` | `tests/unit/test_pm_task_insert_sites.py`, plus a scan in the new file |
 | A new table is tenant-scoped | `tests/unit/test_tenant_coverage.py` |
-| A rule is active only by a lead, and its quote exists in the page version | New with ALN-5: `tests/unit/test_project_rules.py` (R8) |
+| A rule is active only by a lead, and its quote exists in the page version | Built with ALN-5a: `tests/unit/test_project_rules.py` (R8) |
+| A rule row is append only, and migration 343 holds the CHECKs and the guard | Built with ALN-5a: `tests/unit/test_project_rules.py` (R8) and `tests/unit/test_project_rules_static.py` |
+| A reader who cannot open the page gets no quote | Built with ALN-5a: `tests/unit/test_project_rules.py` (R8) |
+| A guidance read is the same with rule rows present | Built with ALN-5a: `tests/unit/test_agent_guidance_r8.py` (R8) and `tests/unit/test_project_rules_static.py` |
+| No statement of the rule store groups by a person | Built with ALN-5a: `tests/unit/test_project_rules_static.py` |
 | A finding has a real task quote, and a dismissal stands | New with ALN-7: `tests/unit/test_align_findings.py` (R8) |
 | No score for any person: no table or column of this feature groups by a person | New with ALN-7: a schema scan in `test_align_findings.py`. Advisory for the views until ALN-13 |
 | A personal task is never checked | New with ALN-7: same file |
@@ -460,14 +509,16 @@ For this spec only: `uv run pytest tests/unit/test_index_completeness.py tests/u
 
 ## 14. Owner questions
 
-On 2026-11-02 the owner approved the full project plan and told us to start. The owner left these five questions open. Each answer below is a **working default, not an owner decision**. The build uses it. The question task stays open. If the owner changes an answer, this spec changes with it.
+On 2026-11-02 the owner approved the full project plan and told us to start. The owner left these five questions open. **On 2026-11-06 the owner chose the recommended answer to each one** ("go ahead with your recommendations for all the decisions"). D192 records them. Each question task is Done, with its answer in a comment.
 
-| Id | Question | Working default, not an owner decision |
+**One part stays open.** The ALN-Q4 cap has no number yet. ALN-7 starts at 300 and measures the real cost, and then the owner sets the number.
+
+| Id | Question | The owner's answer (D192) |
 |---|---|---|
 | **ALN-Q1** (1370) | Who hears first when work deviates? | **The person hears first** (option A). The lead hears after 2 working days, or at once for a hard rule. Sets ALN-9 and ALN-10 |
 | **ALN-Q2** (1371) | Can a deviation stop the work until the lead approves? | **Warn by default** (option A). A lead can mark one rule "needs approval". Then ALN-12 holds a move to Done. Never at capture. A block needs the gate of ALN-8 first |
 | **ALN-Q3** (1372) | May Metorite move a task into a project by itself? | **Suggest only** (option A). One tap accepts. Sets ALN-3 |
-| **ALN-Q4** (1373) | Who pays for the checks, and what is the daily cap? | **The org's AI allowance**, under a daily cap for each org that an admin can see (option A). The first number is 300 checks. Text that did not change is never checked twice. A check over the cap waits for the next day. ALN-7 measures the real cost first |
+| **ALN-Q4** (1373) | Who pays for the checks, and what is the daily cap? | **The org's AI allowance**, under a daily cap for each org that an admin can see (option A). The number is open: ALN-7 starts at 300 checks and measures the real cost first. Metorite never checks unchanged text twice. A check over the cap waits for the next day |
 | **ALN-Q5** (1374) | Does Metorite ever keep a score for each person? | **No** (the recommended line). Personal tasks are never checked. No report ranks people. Counts are for each project and each rule. An org admin can turn the feature off. Binds ALN-7, ALN-10 and ALN-13 |
 
-**What the working defaults do not change.** Each slice ships dark. Each slice that changes what a member sees needs a D145 preview and the owner's approval. The flag that spends credits stays the owner's flip. An eval over USD 0.50 needs the owner's OK.
+**What the answers do not change.** Each slice ships dark. Each slice that changes what a member sees needs a D145 preview and the owner's approval. The flag that spends credits stays the owner's flip. An eval over USD 0.50 needs the owner's OK.

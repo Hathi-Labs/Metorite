@@ -68,7 +68,9 @@ import {
 import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
 import AddEntityDialog from "./components/AddEntityDialog";
 import NewPageDialog from "./components/NewPageDialog";
+import SpaceDialog from "./components/SpaceDialog";
 import { usePendingCount } from "./components/useProposals";
+import { withPendingMe } from "./lib/labels";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
 import {
   ENTITY_TYPES,
@@ -219,10 +221,12 @@ function KnowledgeShell({ children }: { children: ReactNode }) {
       </Frame>
     );
   }
-  return <KnowledgeReady spaces={read.data.spaces}>{children}</KnowledgeReady>;
+  return <KnowledgeReady realSpaces={read.data.spaces}>{children}</KnowledgeReady>;
 }
 
-function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: ReactNode }) {
+function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; children: ReactNode }) {
+  // KB-2s: "My notes" shows from the first open, before the `me` row exists.
+  const spaces = useMemo(() => withPendingMe(realSpaces), [realSpaces]);
   const pathname = usePathname() ?? KNOWLEDGE_HOME;
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -233,6 +237,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
   const [focus, setFocus] = useState<PageFocus | null>(null);
   const [ask, setAsk] = useState<NewPageAsk | null>(null);
   const [adding, setAdding] = useState<CreatableType | null>(null);
+  const [makingSpace, setMakingSpace] = useState(false);
   const [archiving, setArchiving] = useState<PageSummary | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
   const toast = useToast();
@@ -325,6 +330,9 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
     else act();
   }, []);
 
+  // KB-2q: the New space form, for a holder of knowledge:manage. The gateway checks again.
+  const openNewSpace = useCallback(() => requestLeave(() => setMakingSpace(true)), [requestLeave]);
+
   // Go to an address through the leave guard. On the Search view, the rail's
   // Search row and the bar's Search tool focus the box and keep the words.
   const go = useCallback(
@@ -399,6 +407,7 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
       ? { selected: atMaintenance, count: expiredCount(maintenanceRead.data) }
       : null,
     onArchive: setArchiving,
+    onNewSpace: manager ? openNewSpace : undefined,
     onAddEntity: canAdd ? (type: CreatableType) => requestLeave(() => openAddEntity(type)) : undefined,
   };
 
@@ -422,6 +431,14 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
                 closeDrawer();
                 setArchiving(page);
               }}
+              onNewSpace={
+                railProps.onNewSpace
+                  ? () => {
+                      closeDrawer();
+                      railProps.onNewSpace?.();
+                    }
+                  : undefined
+              }
               onAddEntity={
                 railProps.onAddEntity
                   ? (type) => {
@@ -449,6 +466,8 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
       {/* KC-8e: the two entity jobs. No writable space, or a refused types read: nothing opens. */}
       <ShellJob id="add-product" onOpen={() => canAdd && requestLeave(() => openAddEntity("product"))} />
       <ShellJob id="add-topic" onOpen={() => canAdd && requestLeave(() => openAddEntity("topic"))} />
+      {/* KB-2q: the New space job. A member without knowledge:manage gets nothing. */}
+      <ShellJob id="new-space" onOpen={() => manager && openNewSpace()} />
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         <AppTopBar
           rail={{ open: rail.open, onToggle: rail.toggle, noun: "the spaces" }}
@@ -521,6 +540,16 @@ function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: React
         busy={archiveBusy}
         onCancel={() => setArchiving(null)}
         onConfirm={() => void archive()}
+      />
+      <SpaceDialog
+        target={makingSpace && manager ? { mode: "new" } : null}
+        onClose={() => setMakingSpace(false)}
+        onSaved={(space) => {
+          setMakingSpace(false);
+          invalidate(KNOWLEDGE_CACHE);
+          toast.show({ key: `kb-space:${space.id}`, title: `Made ${space.name}` });
+          go(spaceHref(space.id));
+        }}
       />
       <AddEntityDialog
         type={canAdd ? adding : null}

@@ -31,8 +31,10 @@ from skill_projects.reads import _day, _task_line, legend
 from skill_projects.writes import (
     CANCELLED,
     MAX_BATCH,
+    _access_lines,
     _confirm,
     _fields_block,
+    _held_chat,
     _node,
     _priority_card,
     _resolve_assignee,
@@ -101,6 +103,69 @@ async def project_access(project_id: str) -> str:
     if not rows:
         out.append("(no grants of its own; visibility comes from its Center or the org)")
     return "\n".join(out)
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def project_authorities(project_id: str, include_removed: bool = False) -> str:
+    """The Knowledge pages pinned to a project as its authority (the pages
+    that hold its rules), each with its pin_id and its state: active or
+    stale. A page the member cannot read shows no title. pin_authority pins a
+    page and unpin_authority removes a pin, each behind a card.
+    include_removed=true lists removed pins too."""
+    pid, node = await _node(project_id)
+    params = {"include_removed": True} if include_removed else None
+    try:
+        got = (await get(f"/projects/nodes/{pid}/authorities", params)) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return "Authority pages are not on for this organization yet."
+        raise
+    rows = got.get("rows") or []
+    out = [legend(), f"Authority pages of {data(node.get('name'))} ({len(rows)} pins):"]
+    for row in rows:
+        hidden = row.get("page_hidden") is True
+        name = "a page hidden from you" if hidden else data(row.get("title"))
+        state = str(row.get("state") or "?")
+        if state == "stale" and row.get("stale_reason"):
+            state = f"stale ({data(row.get('stale_reason'))})"
+        out.append(
+            f"- {name} · {state} · pinned by {data(row.get('pinned_by') or '?')}"
+            f" · pin_id {row.get('id')} · page_id {row.get('page_id')}"
+        )
+    if not rows:
+        out.append("(no page is pinned as its authority)")
+    return "\n".join(out)
+
+
+#: What the member reads while DECISIONS_ORGS is off for the organization.
+DECISIONS_OFF = "Decisions are not on for this organization yet."
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def my_decisions() -> str:
+    """The questions that wait for the member's own answer: a question, two to
+    four options, and the task each one is about. Each has a decision_id.
+    answer_decision answers one, behind a card. The member sees only the
+    decisions that name them."""
+    try:
+        rows = ((await get("/projects/decisions")) or {}).get("decisions") or []
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return DECISIONS_OFF
+        raise
+    out = [legend(), f"Decisions that wait for you ({len(rows)}):"]
+    for row in rows:
+        options = " | ".join(
+            f"{o.get('key')} = {data(o.get('label'))}" for o in row.get("options") or []
+        )
+        out.append(
+            f"- {data(row.get('question'))} · options: {options}"
+            f" · task_id {row.get('subject_id')} · decision_id {row.get('id')}"
+            f" · expires {row.get('expires_at')}"
+        )
+    if not rows:
+        out.append("(no decision waits for you)")
+    return chr(10).join(out)
 
 
 def subject_words(subject: str) -> str:
@@ -188,7 +253,7 @@ def _clean_area_name(name: str) -> str:
     return clean
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_area(name: str) -> str:
     """Make a new area: a category for the member's private tasks in My
     Tasks, such as Home or Finance. Nobody else sees it. The card shows the
@@ -535,7 +600,7 @@ async def _change_view(
     return f"Saved view {data(label or row.get('name'))}.\n  view_id: {vid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def save_view(
     project_id: str,
     name: str = "",
@@ -584,7 +649,7 @@ async def save_view(
         shown.update(_config_card(payload["config"]))
     if not await _confirm(
         title="Save this view?",
-        detail=f"{data(label)} [{kind}] in {data(node.get('name'))}",
+        detail=f"{data(label)} in {data(node.get('name'))}",
         context=_fields_block({**shown, "project": data(node.get("name"))}),
     ):
         return CANCELLED
@@ -592,7 +657,7 @@ async def save_view(
     return f"Saved view {data(row.get('name') or label)} [{kind}] in {data(node.get('name'))}.\n  view_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @takes_priority
 async def capture_intake(
     title: str,
@@ -657,10 +722,15 @@ async def capture_intake(
     card: dict[str, Any] = {}
     origin = source.strip()[:80]
     reference = source_ref.strip()[:200]
+    held = await _held_chat()
     if origin:
         payload["source"] = origin
-        if origin.lower() == "email":
-            card["mailbox"] = mailbox_line(where)
+    if held or origin.lower() == "email":
+        # RX-1: a held chat says it from the server's answer, because a steered
+        # model would leave out `source`.
+        card["mailbox"] = mailbox_line(where)
+    if held:
+        card.update(await _access_lines(str(payload["project_id"])))
     if reference:
         payload["source_ref"] = reference
     if not await _confirm(
@@ -686,7 +756,7 @@ async def capture_intake(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def triage_intake(
     task_id: str, action: str, status: str = "", duplicate_of: str = "", until: str = ""
 ) -> str:
@@ -746,7 +816,7 @@ async def triage_intake(
     return "\n".join([f"Intake: {verb}.", *_task_line(merged)])
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def mark_notifications_read(ids: str = "", all_unread: bool = False) -> str:
     """Clear the bell: mark the listed notification ids read
     (comma-separated, from notifications), or every unread one with
@@ -787,8 +857,10 @@ __all__ = [  # noqa: RUF022 — reads first, then the writes
     "my_led_projects",
     "notifications",
     "project_access",
+    "project_authorities",
     "project_views",
     "watchers",
+    "my_decisions",
     "capture_intake",
     "mark_notifications_read",
     "save_view",

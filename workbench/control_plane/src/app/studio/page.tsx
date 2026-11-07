@@ -9,48 +9,49 @@
  *
  * The page owns the one page heading, through `AppTopBar`. The sections under it
  * head themselves with an `<h2>`. The Apps section shows only to a member who
- * holds `build.apps`. Skills have no data yet, so that section is a plain
- * empty state and never a fake row.
+ * holds `build.apps`. The Workflows pill, the Workflows section and the Module
+ * Studio tab show only to a member who holds `workflows`, because their API
+ * keeps that feature (J1-1). `studioLibraryView` decides all of it. The Skills
+ * section reads the list of the skill creator
+ * (STU-F2b). An org outside `STUDIO_ORGS` gets 404, and then that section
+ * keeps a plain empty state, with no button and no error.
  *
  * Data:  apps       GET /api/apps       (AppsGallery)
  *        workflows  GET /api/workflows  (WorkflowsGallery)
+ *        skills     GET /api/studio/skills (SkillsGallery)
  *        modules    /api/workflows/modules* (ModuleStudio)
  */
 
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
 import { AppTopBar } from "@/components/AppTopBar";
-import { EmptyState } from "@/components/EmptyState";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import ModuleStudio from "@/app/workflows/components/ModuleStudio";
-import { canUseFeature } from "@/lib/access";
+import { useLiveRefresh } from "@/lib/liveRefresh";
+import { studioLibraryView, type StudioKind } from "@/lib/studio/library";
 import AppsGallery from "./components/AppsGallery";
+import SkillsGallery from "./components/SkillsGallery";
 import WorkflowsGallery from "./components/WorkflowsGallery";
 
-const KINDS = ["all", "apps", "workflows", "skills"] as const;
 /** The raised panel every library section sits on (DESIGN_SYSTEM §3 `bg-card`). */
 const PANEL = "rounded-xl border border-border bg-card overflow-hidden shrink-0";
-
-type Kind = (typeof KINDS)[number];
-
-function readKind(raw: string | null): Kind {
-  return (KINDS as readonly string[]).includes(raw ?? "") ? (raw as Kind) : "all";
-}
 
 function StudioLibrary() {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
   const { access } = useAccess();
+  // An app or skill that the assistant saves in chat shows with no reload: the
+  // bumped key remounts each gallery, and each one reads its list again.
+  const [librarySeq, setLibrarySeq] = useState(0);
+  useLiveRefresh(() => setLibrarySeq((n) => n + 1), "studio");
 
-  const kind = readKind(params.get("kind"));
-  const tab = params.get("tab") === "modules" ? "modules" : "library";
-  const canBuildApps = canUseFeature(access, "build.apps");
+  const view = studioLibraryView(access, params.get("kind"), params.get("tab"));
 
-  function go(next: { kind?: Kind; tab?: string }) {
+  function go(next: { kind?: StudioKind; tab?: string }) {
     const q = new URLSearchParams(params.toString());
     if (next.kind !== undefined) {
       if (next.kind === "all") q.delete("kind");
@@ -64,53 +65,27 @@ function StudioLibrary() {
     router.replace(qs ? `${pathname}?${qs}` : pathname);
   }
 
-  const kindItems = [
-    { id: "all", label: "All" },
-    ...(canBuildApps ? [{ id: "apps", label: "Apps" }] : []),
-    { id: "workflows", label: "Workflows" },
-    { id: "skills", label: "Skills" },
-  ];
-  const showApps = canBuildApps && (kind === "all" || kind === "apps");
-  const showWorkflows = kind === "all" || kind === "workflows";
-  const showSkills = kind === "all" || kind === "skills";
-
   return (
     <div className="flex flex-col h-full">
       <AppTopBar title="Studio" subtitle="Apps, workflows and skills in one library" />
 
-      <Tabs
-        tabs={[
-          { id: "library", label: "Library", icon: "LayoutGrid" },
-          { id: "modules", label: "Module Studio", icon: "Boxes" },
-        ]}
-        activeTab={tab}
-        onTabChange={(id) => go({ tab: id })}
-      />
+      {view.tabs.length > 1 && (
+        <Tabs tabs={view.tabs} activeTab={view.tab} onTabChange={(id) => go({ tab: id })} />
+      )}
 
-      {tab === "modules" ? (
+      {view.tab === "modules" ? (
         <ModuleStudio />
       ) : (
         <>
           <FilterPills
-            items={kindItems}
-            activeId={kind === "apps" && !canBuildApps ? "all" : kind}
-            onChange={(id) => go({ kind: id as Kind })}
+            items={view.kindItems}
+            activeId={view.activeKind}
+            onChange={(id) => go({ kind: id as StudioKind })}
           />
           <div className="flex-1 overflow-y-auto p-3 sm:p-4 flex flex-col gap-3 sm:gap-4">
-            {showApps && <div className={PANEL}><AppsGallery /></div>}
-            {showWorkflows && <div className={PANEL}><WorkflowsGallery /></div>}
-            {showSkills && (
-              <section aria-label="Skills" className={`flex flex-col ${PANEL}`}>
-                <div className="px-4 sm:px-6 py-3 border-b border-border">
-                  <h2 className="text-sm font-bold text-foreground">Skills</h2>
-                </div>
-                <EmptyState
-                  icon="Sparkles"
-                  message="Skills arrive with the skill creator."
-                  hint="Your skills will list here with your apps and workflows."
-                />
-              </section>
-            )}
+            {view.showApps && <div key={`apps-${librarySeq}`} className={PANEL}><AppsGallery /></div>}
+            {view.showWorkflows && <div key={`workflows-${librarySeq}`} className={PANEL}><WorkflowsGallery /></div>}
+            {view.showSkills && <div key={`skills-${librarySeq}`} className={PANEL}><SkillsGallery /></div>}
           </div>
         </>
       )}

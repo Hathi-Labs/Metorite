@@ -141,6 +141,13 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     fake.seed_rows("user_settings", {"user_id": PRIYA})
     # ── her two private reminders (WS-66 RM-1) ──
     fake.seed_rows("reminders", {"member_email": PRIYA}, {"member_email": PRIYA})
+    # ── her two calendar entries, and her seat on a colleague's event (CE-4) ──
+    fake.seed_rows("calendar_entries", {"id": "entry-p1", "owner_email": PRIYA},
+                   {"id": "entry-p2", "owner_email": PRIYA})
+    # Her seat on a colleague's entry. The ids matter: the purge clause leaves
+    # out a seat on her own entry, which the cascade of her entries deletes.
+    fake.seed_rows("calendar_entry_attendees",
+                   {"member_email": PRIYA, "entry_id": "entry-colleague"})
     # ── her one private AI Studio skill (WS-STU F1) ──
     fake.seed_rows("studio_skills", {"owner_email": PRIYA})
     # ── her app installs (WS-PKG PKG-4): a private one that nobody else
@@ -503,6 +510,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
         "crm_member_rules": 0,
+        # WS-CRM CRM-M1: the fake holds no private Change history row.
+        "crm_private_changes": 0,
         # WS-61 KB-2f: the fake holds no star of the member.
         "knowledge_favorites": 0,
         # WS-66 RM-1: her two private reminders. The ledger goes by cascade.
@@ -520,6 +529,10 @@ async def test_the_response_says_what_happened_table_by_table(
         "member_settings": 1,
         # WS-66 PN-1: the fake holds no push device of the member.
         "push_devices": 0,
+        # WS-CAL CE-4: her two entries (their attendee rows go by cascade),
+        # and her seat on the event of a colleague.
+        "calendar_entries": 2,
+        "calendar_attendances": 1,
         "member_record": 1,
     }
     assert out.kept == {
@@ -756,6 +769,53 @@ def test_the_briefs_of_this_org_go_and_their_claims_by_cascade() -> None:
     assert "brief_claims" not in {r.table for r in _PURGE_DELETES}
 
 
+def test_the_calendar_entries_of_this_org_go_before_any_connection() -> None:
+    """WS-CAL CE-4 (D138): the purge deletes the member's calendar entries
+    and their seats on the events of colleagues.
+
+    Only the owner changes an entry, so an entry that a purge left behind
+    could never be deleted. Both clauses name the bound org, because the same
+    address may hold entries in another org. The attendee rows of the
+    member's own entries go by the cascade of migration 331, so the seat
+    clause leaves them out, and no row is counted twice.
+
+    ⚠️ ``calendar_entries.connection_id`` has NO cascade (migration 331). A
+    connection delete fails while an entry names it. So the delete loop of
+    ``_PURGE_DELETES`` must run before ``purge_knowledge_member``, the one
+    connection delete of the purge, and the registry must not cascade to the
+    entries.
+
+    ⚠️ Mutation-checked: dropping the org predicate fails here, and
+    ``test_calendar_entries_r8.py`` fails on the real database. Dropping an
+    entry fails the count dict above.
+    """
+    import inspect
+
+    from gateway.routes.admin import members
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [entries] = [r for r in _PURGE_DELETES if r.table == "calendar_entries"]
+    assert entries.key == "calendar_entries"
+    assert entries.where == (
+        f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}")
+    [seats] = [r for r in _PURGE_DELETES if r.table == "calendar_entry_attendees"]
+    assert seats.key == "calendar_attendances"
+    assert seats.where.startswith(
+        f"lower(member_email) = :email AND organization_id = {_BOUND_ORG} ")
+    assert "NOT EXISTS" in seats.where and "lower(e.owner_email) = :email" in seats.where
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("calendar_entries") < keys.index("member_record")
+    assert keys.index("calendar_attendances") < keys.index("member_record")
+    assert "calendar_entry_attendees" in cascade_closure("calendar_entries")
+    assert "calendar_entries" not in cascade_closure("integration_" + "connections")
+    body = inspect.getsource(members.purge_member_rows)
+    deletes = body.index("text(rows.delete_sql)")
+    assert deletes < body.index("purge_knowledge_member(")
+
+
 def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
     """WS-STU F1: the purge deletes the member's AI Studio skills.
 
@@ -833,6 +893,31 @@ def test_the_goals_of_this_org_go_and_no_other() -> None:
     assert cascade_closure("goal_records") == set()
 
 
+def test_the_member_s_private_change_history_goes() -> None:
+    """WS-CRM CRM-M1: the Change history rows private to the member go.
+
+    A row private to the member holds the text of a private view or an own
+    rule, which only the member reads, so the row goes too. The purge
+    deletes the own rules, and not the saved views. The clause keys on
+    ``private_to``, not on the actor, because an admin may change a
+    member's rule and that row is still the member's. The org's rows stay
+    with the address, as ``app_audit`` does, and are not on the keep side.
+
+    ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
+    above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [gone] = [r for r in _PURGE_DELETES if r.table == "crm_change_log"]
+    assert gone.key == "crm_private_changes"
+    assert gone.where == (
+        f"lower(private_to) = :email AND organization_id = {_BOUND_ORG}")
+    assert "crm_change_log" not in {r.table for r in _PURGE_KEEPS}
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("crm_private_changes") < keys.index("member_record")
+
+
 def test_the_two_halves_of_chat_session_partition_it() -> None:
     """The one table split by `visibility`. The two clauses must be
     complements — a gap would leave sessions belonging to nobody, an overlap
@@ -905,9 +990,11 @@ def test_the_two_halves_of_package_install_do_not_overlap() -> None:
     # granted to herself, and the delete would then disagree with the count,
     # because her grants go first. A test that counted a grant that she did
     # not make would keep an install for a colleague's consent row.
-    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
+    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL, SHARE_ROW
 
     assert _OTHERS_SEE_THE_APP is OTHERS_SEE_THE_INSTALL
+    # The purge and the resolve of PKG-5b part 2 read one share rule.
+    assert f"WHERE {SHARE_ROW})" in _OTHERS_SEE_THE_APP
     assert _OTHERS_SEE_THE_APP == (
         "EXISTS (SELECT 1 FROM app_grants AS g"
         " WHERE g.app_id = package_install.app_id"

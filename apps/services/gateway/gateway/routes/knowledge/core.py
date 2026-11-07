@@ -685,6 +685,211 @@ async def has_children(db: Any, user: UserContext, page_id: str) -> bool:
     )).scalar() is True
 
 
+#: A viewer that no email equals and no grant names, so a read as this viewer
+#: matches only an ``org`` grant (ALN-4). No email starts with ``!``, and
+#: ``kb_spaces.owner_email`` of a company space is NULL or an email.
+_ORG_WIDE_VIEWER = "!org-wide"
+
+
+async def latest_version(db: Any, user: UserContext, page_id: str) -> int:
+    """The highest ``kb_page_versions.version`` of a page, or 0 for none.
+
+    Reads ``kb_page_versions``, not ``kb_pages``, and returns a number. The
+    caller loaded the page through :func:`load_page` first (ALN-4).
+    """
+    return int((await db.execute(
+        text("SELECT COALESCE(MAX(v.version), 0) FROM kb_page_versions v "
+             "WHERE v.organization_id = CAST(:org AS uuid) "
+             "AND v.page_id = CAST(:pid AS uuid)"),
+        {"org": org_of(user), "pid": page_id},
+    )).scalar() or 0)
+
+
+async def page_version_text(
+    db: Any, user: UserContext, page: Any, version: int, *, space: Any = None,
+) -> str | None:
+    """The text of one version of a page that the caller sees, or None.
+
+    THE one read of the text of a page version for a quote check (ALN-5a,
+    ``project_alignment.md`` §4.2 rule 3). The caller loaded *page* through
+    :func:`load_page` first, so the one visibility rule ran. *space* is the
+    space of the page, for :func:`history_floor`. None for a version under
+    the history floor, as ``history.get_version`` answers 404, so a quote
+    check cannot read a private draft from before a move. None for a version
+    that does not exist too.
+    """
+    ver = int(version)
+    if ver < 1 or ver > MAX_VERSION or ver < history_floor(user, page, space):
+        return None
+    row = (await db.execute(
+        text("SELECT v.body_md FROM kb_page_versions v "
+             "WHERE v.organization_id = CAST(:org AS uuid) "
+             "AND v.page_id = CAST(:pid AS uuid) AND v.version = :ver"),
+        {"org": org_of(user), "pid": str(page.id), "ver": ver},
+    )).first()
+    return None if row is None else str(row.body_md or "")
+
+
+def same_line_ends(value: str) -> str:
+    """*value* with each CRLF and each lone CR made LF. No other change."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def quote_occurs(quote: str, body: str) -> bool:
+    """True when *quote* is an exact substring of *body* (ALN-5a).
+
+    Both get one form of line end first (:func:`same_line_ends`). There is no
+    other change: no case fold, no space fold, no fuzzy match and no model.
+    An empty quote never occurs.
+    """
+    wanted = same_line_ends(quote)
+    return bool(wanted) and wanted in same_line_ends(body)
+
+
+async def pin_currency(
+    db: Any, user: UserContext, page_id: str, page_version: int,
+) -> dict[str, Any]:
+    """Where a pinned page stands now: ``{"exists", "state", "changed"}``.
+
+    An integrity read (listed in the visibility fence): a pin shows ``stale``
+    to a member who cannot open the page, so the state of the page and
+    whether its words moved since the pin must be read with no member's
+    clause. The answer is a bool, a state word and a bool. It carries no
+    title, no text and no space. ``changed`` is true when the title or the
+    text of the newest version differs from the pinned version, so an archive
+    and a restore that change no word leave a pin alone (ALN-4).
+    """
+    row = (await db.execute(
+        text("SELECT p.state AS state, "
+             "(pin.body_md IS NULL OR cur.body_md IS NULL "
+             " OR pin.body_md IS DISTINCT FROM cur.body_md "
+             " OR pin.title IS DISTINCT FROM cur.title) AS changed "
+             "FROM kb_pages p "
+             "LEFT JOIN LATERAL (SELECT v.body_md, v.title "
+             " FROM kb_page_versions v WHERE v.page_id = p.id "
+             " AND v.organization_id = p.organization_id "
+             " ORDER BY v.version DESC LIMIT 1) cur ON true "
+             "LEFT JOIN LATERAL (SELECT v.body_md, v.title "
+             " FROM kb_page_versions v WHERE v.page_id = p.id "
+             " AND v.organization_id = p.organization_id "
+             " AND v.version = :ver) pin ON true "
+             "WHERE p.organization_id = CAST(:org AS uuid) "
+             "AND p.id = CAST(:pid AS uuid)"),
+        {"org": org_of(user), "pid": page_id, "ver": int(page_version)},
+    )).first()
+    if row is None:
+        return {"exists": False, "state": None, "changed": True}
+    return {"exists": True, "state": str(row.state), "changed": bool(row.changed)}
+
+
+async def audience_can_read_page(
+    db: Any, org: str, emails: list[str] | frozenset[str], page_id: str,
+) -> bool:
+    """True only when EVERY person in *emails* can read the page (ALN-4).
+
+    The project pin refuses a page that is narrower than its project, because
+    a finding quotes the page (``project_alignment.md`` §4.1, §7.2). The
+    answer is built on :func:`visible_pages_clause` and no copy of it. First
+    it asks for a viewer that only an ``org`` grant admits. A yes there means
+    each member of the org reads the page. Else it asks for each person in
+    turn, as a member with no permission, so ``knowledge:manage`` never widens
+    the answer. A person who cannot read the page, an empty audience, an
+    unpublished page, and any error give False: the check refuses whenever it
+    cannot prove the page is at least as wide. A ``me`` space matches no
+    viewer here, so it gives False too.
+    """
+    from acb_auth import UserRole
+
+    def stand_in(email: str) -> UserContext:
+        return UserContext(
+            email=email, role=UserRole.EMPLOYEE, organization_id=org,
+        )
+
+    async def reads(email: str) -> bool:
+        vis, params = visible_pages_clause(stand_in(email), "p")
+        return (await db.execute(
+            text("SELECT 1 FROM kb_pages p "
+                 "WHERE p.id = CAST(:pid AS uuid) AND p.state = 'published' "
+                 f"AND {vis}"),
+            {**params, "pid": page_id},
+        )).first() is not None
+
+    try:
+        # A savepoint, so an error here cannot abort the caller's transaction.
+        async with db.begin_nested():
+            if await reads(_ORG_WIDE_VIEWER):
+                return True
+            people = sorted({str(e).strip().lower() for e in emails if str(e).strip()})
+            if not people:
+                return False
+            for who in people:
+                if not await reads(who):
+                    return False
+            return True
+    except Exception:  # any doubt is a refusal
+        _log.warning("audience_can_read_page failed; refusing", exc_info=True)
+        return False
+
+
+async def visible_page_heads(
+    db: Any, user: UserContext, page_ids: list[str],
+) -> dict[str, dict[str, str]]:
+    """The title and space of each page that the CALLER can read, by id.
+
+    A page that the caller cannot read is left out, so the pin list shows
+    ``page_hidden`` and no title for it (``project_alignment.md`` §7.2).
+    """
+    ids = [p for p in (parse_id(x) for x in page_ids) if p]
+    if not ids:
+        return {}
+    vis, params = visible_pages_clause(user, "p")
+    rows = (await db.execute(
+        text("SELECT p.id, p.title, p.space_id FROM kb_pages p "
+             f"WHERE p.id = ANY(CAST(:pids AS uuid[])) AND {vis}"),
+        {**params, "pids": ids},
+    )).fetchall()
+    return {
+        str(r.id): {"title": r.title, "space_id": str(r.space_id)} for r in rows
+    }
+
+
+async def readable_page_versions(
+    db: Any, user: UserContext, pairs: list[tuple[str, int]],
+) -> set[tuple[str, int]]:
+    """The ``(page id, version)`` pairs of *pairs* that the CALLER can read.
+
+    ALN-5a (``project_alignment.md`` §4.2, §7.2 point 2): a rule shows its
+    quote only to a reader of the page AND of that version. Two steps, the
+    rule of ``history.get_version``: :func:`visible_pages_clause` for the
+    page, then :func:`history_floor` for the version. So a version from
+    before a move to a wider space stays hidden from the readers of the new
+    space, as its history route answers 404 for it. A pair that fails either
+    step is left out.
+    """
+    wanted: dict[str, set[int]] = {}
+    for page_id, version in pairs:
+        pid = parse_id(page_id)
+        if pid is not None and version is not None:
+            wanted.setdefault(pid, set()).add(int(version))
+    if not wanted:
+        return set()
+    vis, params = visible_pages_clause(user, "p")
+    rows = (await db.execute(
+        text("SELECT p.id, p.history_from, s.kind, s.owner_email FROM kb_pages p "
+             "JOIN kb_spaces s ON s.id = p.space_id "
+             "AND s.organization_id = p.organization_id "
+             f"WHERE p.id = ANY(CAST(:pids AS uuid[])) AND {vis}"),
+        {**params, "pids": sorted(wanted)},
+    )).fetchall()
+    out: set[tuple[str, int]] = set()
+    for row in rows:
+        # The row holds the page column and the two space columns that
+        # history_floor reads, so it serves as both.
+        floor = history_floor(user, row, row)
+        out.update((str(row.id), v) for v in wanted.get(str(row.id), ()) if v >= floor)
+    return out
+
+
 async def sibling_rows(
     db: Any, user: UserContext, space_id: str, parent_id: str | None,
 ) -> list[Any]:

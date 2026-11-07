@@ -152,6 +152,7 @@ def stalled_sql(scope_sql: str, vis: Any) -> str:
         f"  JOIN pm_projects tp ON tp.id = t.project_id"
         f"  LEFT JOIN pm_task_statuses s ON s.id = t.status_id"
         f" WHERE {open_recovery_sql('s2', 'r')}"
+        f"   AND r.task_id IS NOT NULL"
         f"   AND NOT {task_closed_sql('r')}"
         f"   AND {_run_where(scope_sql, vis)}"
         f" ORDER BY r.id, s2.recovered_at DESC"
@@ -177,6 +178,7 @@ def dangling_sql(scope_sql: str, vis: Any) -> str:
         f"  JOIN pm_projects tp ON tp.id = t.project_id"
         f"  LEFT JOIN pm_task_statuses s ON s.id = t.status_id"
         f" WHERE r.status IN ({_OPEN_LIST})"
+        f"   AND r.task_id IS NOT NULL"
         f"   AND {task_closed_sql('r')}"
         f"   AND {_run_where(scope_sql, vis)}"
     )

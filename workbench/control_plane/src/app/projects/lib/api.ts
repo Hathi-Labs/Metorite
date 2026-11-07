@@ -3,6 +3,7 @@ import { cacheKey, invalidate } from "@/lib/dataCache";
 import type { ParentFact, PullRequestFact } from "@/lib/taskCard";
 
 import {
+  type AgentActivity,
   type AgentPromptBody,
   type AgentRun,
   type AgentRunDetail,
@@ -12,9 +13,11 @@ import {
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
+import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
 import {
   ATTENTION_LIMIT,
   type AttentionPage,
@@ -23,6 +26,7 @@ import {
   resumeBody,
 } from "./needsAttention";
 import type { Rule as RecurrenceRule } from "./recurrence";
+import { taskVersions } from "./taskUndo";
 
 /**
  * Projects · the browser's client for /api/projects/*.
@@ -306,7 +310,7 @@ export interface NodeSummary {
   due_soon?: number;
   due_soon_days?: number;
   by_disposition?: Partial<
-    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done", number>
+    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done" | "new", number>
   >;
   today?: string;
   time_zone?: string;
@@ -1838,6 +1842,11 @@ export interface TaskRow {
    */
   disposition?: string | null;
   is_triaged?: boolean;
+  /**
+   * D170 (INB-1) — "New": assigned to me on a company board and I have not
+   * stated a disposition yet (`mine.new_work`). A disposition write clears it.
+   */
+  is_new?: boolean;
   is_mine?: boolean;
   context?: string | null;
   energy?: string | null;
@@ -1865,6 +1874,24 @@ export interface StatusRow {
   is_default: boolean;
 }
 
+/**
+ * A project below the owner that keeps its own set (PST-1, §9.4).
+ *
+ * ⚠️ `path` and `used_by` are optional for the release window: an old gateway
+ * sends `{id, name}` only. The copy module reads them with a default.
+ */
+export interface StatusSetOverride {
+  id: string;
+  name: string;
+  /**
+   * The names above it, from the first one the caller can see. A hidden
+   * run after a visible name is one "…", so no hidden name reaches the browser.
+   */
+  path?: string[];
+  /** Projects that use ITS set, it left out. */
+  used_by?: number;
+}
+
 /** Where a project's lanes come from — `projectsApi.statusSet`. */
 export interface StatusSetInfo {
   project_id: string;
@@ -1887,6 +1914,27 @@ export interface StatusSetInfo {
    */
   inherit_from_id: string | null;
   inherit_from_name: string | null;
+  /*
+   * ⚠️ The PST-1 fields below are optional for the release window. For a few
+   * minutes an old gateway sends none of them, and the screen then draws the
+   * sentences with no count (`statusSetCopy.ts`).
+   */
+  /** The kind of the owner node. A space is a root (PST-1, §9.4). */
+  owner_kind?: "space" | "project";
+  /**
+   * Projects that use the set, the owner left out. It counts every depth
+   * below the owner and stops at a node that owns a set. It leaves a folder
+   * out, because a folder holds no lanes. It counts projects the caller
+   * cannot see, because an edit changes them too. It is the N of "shared
+   * with N" (§9.4).
+   */
+  used_by?: number;
+  /**
+   * Every board that an edit changes: `used_by`, plus the owner when its own
+   * board shows lanes. A team space shows none, and a project does. The N
+   * of "A change here changes the lanes of N projects".
+   */
+  reach?: number;
   /**
    * Projects under the OWNER that keep their own lanes — an edit here does not
    * reach them.
@@ -1897,8 +1945,13 @@ export interface StatusSetInfo {
    * Immediate breakaways only. A project that overrode a project that overrode
    * this one was never getting these lanes, and listing it would grow this
    * list with the tree rather than with the decisions somebody took.
+   *
+   * Only the ones the caller can see (PST-1). `hidden_overrides` counts the
+   * rest, and no name of them reaches the browser.
    */
-  overrides: { id: string; name: string }[];
+  overrides: StatusSetOverride[];
+  /** Breakaways the caller cannot see. The UI counts them and names none. */
+  hidden_overrides?: number;
   /** False on a space: there is nothing above it to inherit from. */
   can_inherit: boolean;
   /** A set it owned before, kept so switching back restores those lanes. */
@@ -2687,6 +2740,9 @@ export const projectsApi = {
    * the open subtasks too. `opts.ifMatch` is the row's `updated_at` as last
    * read, so a write that lands after somebody else's answers 412 (D79,
    * Undo). Both are optional and absent means the old request exactly.
+   *
+   * UNDO-1 — each answer's `updated_at` goes into `taskVersions`, so an undo
+   * sends the version of this session's last write as its If-Match.
    */
   patchTask: (
     taskId: string,
@@ -2700,7 +2756,10 @@ export const projectsApi = {
         body: JSON.stringify(payload),
         ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
       },
-    ),
+    ).then((row) => {
+      taskVersions.note(taskId, row?.updated_at);
+      return row;
+    }),
 
   /**
    * File a task out of every default list, board, calendar and search.
@@ -2766,10 +2825,16 @@ export const projectsApi = {
       `tasks/${taskId}/subtree`,
     ),
 
-  setAssignees: (taskId: string, assignees: string[]) =>
+  /**
+   * `opts.ifMatch` is the row's `updated_at` as last read, under the PATCH's
+   * rule (`tasks._check_version`): a field change since answers 412. Absent
+   * means the old request exactly. UNDO-1 sends it on an undo.
+   */
+  setAssignees: (taskId: string, assignees: string[], opts?: { ifMatch?: string | null }) =>
     call<{ task_id: string; assignees: string[] }>(`tasks/${taskId}/assignees`, {
       method: "PUT",
       body: JSON.stringify({ assignees }),
+      ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
     }),
 
   /**
@@ -3118,6 +3183,30 @@ export const refsApi = {
 };
 
 /**
+ * WS-ALN ALN-2b — the decisions of a task (`project_alignment.md` §3.2). The
+ * pure rules are in `decisions.ts`. `forTask` gives `null` while the routes
+ * are OFF (`DECISIONS_ORGS`): every route answers 404, and the block draws
+ * nothing. `answer` is the ONE answer route, the one the chat tool calls.
+ */
+export const decisionsApi = {
+  forTask: async (taskId: string): Promise<TaskDecisions | null> => {
+    try {
+      const raw = await call<unknown>(`decisions?task_id=${encodeURIComponent(taskId)}`);
+      return readTaskDecisions(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  answer: (decisionId: string, key: string, reason: string) =>
+    call<{ decision: unknown }>(`decisions/${encodeURIComponent(decisionId)}/answer`, {
+      method: "POST",
+      body: JSON.stringify(answerBody(key, reason)),
+    }),
+};
+
+/**
  * WS-55 EA-12c — agent runs on a task (`external_agent_access.md` §12.1).
  * The wire types and the pure rules are in `agentRuns.ts`.
  */
@@ -3186,6 +3275,17 @@ export const agentRunsApi = {
     ),
 
   /**
+   * SW-43. The run's member takes back an answer that no agent has read.
+   * 404 while the gateway flag is off, 403 for any other caller, 409 when the
+   * agent already has the answer. A retry with the same key writes once.
+   */
+  withdrawAnswer: (runId: string, body: WithdrawBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; withdrawn: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/withdraw`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -3206,6 +3306,21 @@ export const agentRunsApi = {
       return true;
     } catch {
       return false;
+    }
+  },
+
+  /**
+   * CIV-14k. Every open question of the caller, oldest first, with the task
+   * number, title and project name on each row. `null` means the routes are
+   * OFF (404), and then the Approvals page draws no list.
+   */
+  waiting: async (): Promise<AgentRun[] | null> => {
+    try {
+      const raw = await call<unknown>("agent-runs?status=awaiting&order=oldest&with_task=true&limit=100");
+      return agentRunRows<AgentRun>(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
     }
   },
 
@@ -3241,8 +3356,9 @@ export const attentionApi = {
 
 export interface NotificationRow {
   id: string;
-  /** `agent_question`: an outside agent asks on a task (WS-55 EA-12c). */
-  kind: "assigned" | "mention" | "comment" | "nudge" | "agent_question";
+  /** `agent_question`: an outside agent asks on a task (WS-55 EA-12c).
+   *  `decision`: one person decides (WS-ALN ALN-2a). */
+  kind: "assigned" | "mention" | "comment" | "nudge" | "agent_question" | "decision";
   task_id: string;
   actor: string;
   excerpt?: string | null;

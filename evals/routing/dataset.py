@@ -57,6 +57,13 @@ class Case:
     #: (WS-62 CF-3, ``chat_first_surface.md`` §4.4), or None. Then ``expected``
     #: is None too: the orchestrator opens the page itself, and no specialist runs.
     opens: str | None = None
+    #: WS-OB GD-7 (``assistant_guide.md`` §5.4). True when the right act is
+    #: ``find_guide``: the orchestrator answers from the guide's steps, with no
+    #: specialist. ``guide`` is the id that the token match ranks first for the
+    #: words (None: no guide matches). ``shows`` adds ``show_guide`` for ``guide``.
+    finds: bool = False
+    guide: str | None = None
+    shows: bool = False
     #: Why this case is here, for a reader of the table.
     note: str = ""
 
@@ -159,6 +166,9 @@ CASES: tuple[Case, ...] = (
          "/chat", "app-builder",
          note="App Workshop is a preview pane, so the page does not move. "
               "app-builder is the one Copilot specialist left (owner, 2026-10-19)"),
+    Case("B2", "Build me an app to track site visits.",
+         "/studio", "app-builder",
+         note="Studio is a live pane since 2026-11-05 (D179), and app-builder is its agent"),
 
     # ── orchestrator answers itself ────────────────────────────────────────
     Case("N1", "What can you do?", "/chat", None),
@@ -177,6 +187,21 @@ CASES: tuple[Case, ...] = (
     Case("S3", "Take me to my inbox.", "/projects", None, facts=_PROJECT,
          opens="/email",
          note="cross-app: asked in Projects, a page of My Email"),
+
+    # ── The guide: find_guide and show_guide (WS-OB GD-7) ──────────────────
+    # "How do I" is answered from a guide's steps. "Show me" starts the guide.
+    Case("G1", "How do I add a deal?", "/crm", None, finds=True, guide="crm.add-deal",
+         note="a how-to: find_guide, then the steps in words, with no page move"),
+    Case("G2", "Show me how to add a lead.", "/crm", None, finds=True, guide="crm.add-lead",
+         shows=True, note="a show-me: find_guide, then show_guide starts the guide"),
+    Case("G3", "Give me a tour.", None, None, finds=True, guide="home.tour", shows=True,
+         note="the tour is a guide with no feature, from My Day"),
+    Case("G4", "How do I log a note on a deal?", "/crm", None, finds=True, guide="crm.log-note",
+         note="a how-to in the CRM"),
+    Case("G5", "Where do I find a contact?", "/crm", None, finds=True, guide="crm.find-contact",
+         note="a where-is question that a guide answers"),
+    Case("G6", "How do I fold the moon?", "/crm", None, finds=True, guide=None,
+         note="no guide matches: the orchestrator offers to open the app"),
 
     # ── Ambiguous: ask the member first ────────────────────────────────────
     Case("A1", "Move it to next week.", None, None, asks=True,

@@ -5,6 +5,8 @@ OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 
+§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-1b to WT-6 are not built.
+
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
 
 OA-8b is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-8b" in §4.3.2). The flag flip is OWNER-GATE.
@@ -16,6 +18,8 @@ OA-8g is BUILT (2026-10-29, "As built, OA-8g" in §4.3.2). It repairs the pack r
 OA-8h is BUILT (2026-10-29, "As built, OA-8h" in §4.3.2). It repairs the Projects pack rules and two harness words that OA-8e run 3 found. The Projects packs stay dark.
 
 OA-8i is BUILT (2026-10-30, "As built, OA-8i" in §4.3.2). In one turn it refuses a hand-off to an owner after a write tool of the owner's pack, and the reverse. Both directions hold only while the owner's specialist tool stays in the run, so today they bind the Projects owner only. It has no flag of its own and acts only in a run that `TOOL_PACKS` serves. The OA-8e report counts a refused hand-off on its own row.
+
+Task 1533 NARROWS OA-8i (2026-11-03, "Narrowed, task 1533" in §4.3.2). After a hand-off ended and reported its calls, a pack write refuses only when the hand-off did the same kind of write.
 
 Fix MT-1228 (2026-10-31): the seven reminder tools left `projects-bulk` (28 to 21 tools) for a new pack, `projects-reminders` (7). A "remind me" turn had loaded the core pack only, and the model made a private task. The core pack could not take the tools, because it fills the 110-tool cap beside `email`. The new pack loads on the words `remind`, `remind me`, `reminder`, `reminders`, `nudge me`, `ping me`, `alert me` and `don't let me forget`. It carries the same flag, `TOOL_PACKS`.
 
@@ -44,6 +48,10 @@ guarded builder its live caller.
 
 OA-7c is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7c"
 below, PR #1383). The flag is off on each box, so no run loads a pack yet.
+
+RX-1 is BUILT, not merged (2026-11-02, D169, "As built, RX-1" in §4.2.3). A held chat keeps the writes that a card shows, and a load makes room. It ships dark behind `HELD_CARD_WRITES_ORGS`, which is empty by default, and a merge changes no held chat until a person names an org. `TOOL_PACKS` must name `projects-reminders`, or no run loads that pack.
+
+Task 1747 is BUILT, in review (2026-11-06, "As built, task 1747" in §4.2.3). A pack that this turn named, and a pack that the last member turn used, never step aside. A load by the model is sticky. The reach of the Projects owner counts a spare pack as free. A load moves out a pack that came in only by the words (D169 item 8, as amended on 2026-11-06). A turn that a sticky pack left at its start says so.
 
 OA-7e is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7e"
 below, PR #1389). It adds layer (b), the meta tool `load_skill_tools`.
@@ -206,8 +214,8 @@ hand-off, dark behind `TOOL_PACKS`. The rule is in the OA-7i block of §4.2.8.
   names `load_skill_tools` and `crm-records`, so the two texts agree.
 - **A held chat.** Nothing in `_start_pack_turn` or the offer excludes a held
   chat. A no-egress run and a marked chat keep the replacement. The pack loads
-  held, with its sends dropped, as layer (a) does. A no-egress run gets no MCP
-  server.
+  held, with its held set dropped, as layer (a) does (D169). A no-egress run
+  gets no MCP server.
 - **Unchanged.** `call_agent_background`, scheduled jobs, workflows, the app
   rails, registry quick actions and the Copilot path.
 - **Open.** The base count is an estimate before the injection. A granted app
@@ -244,6 +252,7 @@ middle of a turn.
   `persona_for` (`_rules_block`). A held pack adds its hold note.
 - **The same caps.** A load refuses past 3 packs, past 35 tools a pack, or
   past 110 tools on the live list. The live count holds the load tool too.
+  D169: at either cap, a spare pack gives way first ("As built, RX-1").
   A refusal past a cap names `spawn_subagents` with the slug of the pack.
   The cap of layer (a) counts the load tool too, when the run offers it.
   The catalog offers a pack only if it can load. The live count is the
@@ -255,11 +264,13 @@ middle of a turn.
   own tool by identity, never by name. One load runs at a time in a run.
 - **A pack that the run holds.** A second load of it builds nothing, and
   its answer tells the model to call the tools.
-- **Not sticky on load.** A mere load is not use. A pack becomes sticky
-  only after one of its tools runs (`note_used` in the pack call). So a
-  wrong pack never becomes sticky. A pack that the model loads and calls
-  is sticky from the next turn on. The tool list then stays stable for the
-  prompt cache.
+- **Sticky on load (task 1747, 2026-11-06).** A load by the model is
+  sticky from the next turn on, also when none of its tools runs
+  (`note_used` in `LoadSkillTools._load`). In production, the next turn
+  lost such a pack, and its call gave 'Function "create_status" not found'.
+  A pack that the model loads and does not use is idle from then on. The
+  cap, the step-aside and the decay can take it out. A load by the turn
+  kind (layer (c)) is still not sticky until one of its tools runs.
 - **The held answer.** The build reads it once, as layer (a) does. The
   strict hold within a turn stays.
 - **Mail beside an MCP server.** A load of a pack of the email assistant
@@ -274,10 +285,11 @@ middle of a turn.
   the run every email pack. From that call on, a hand-off to the email
   assistant gets the pack refusal (`PackRun.refusal`). The answer gives the
   line "No email agent exists to hand a task to." back.
-- **What stays for the turn.** A load is monotonic, so the
-  `email_assistant` tool, the persona and its "Delegatable agents" block
-  stay as they are. `PackRun.replaced` does not change. The next turn holds
-  the pack by layer (a), and that turn swaps them.
+- **What stays for the turn.** The `email_assistant` tool, the persona and
+  its "Delegatable agents" block stay as they are. `PackRun.replaced` does
+  not change. The next turn holds the pack by layer (a), and that turn swaps
+  them. D169 ended "a load is monotonic": a load at a cap can move a sticky
+  pack out.
 - **Where both email packs load.** The verifier measured 52 tools in the
   live request of a flag-off run. With `email`, the load tool and
   `email-setup`, that request holds 111 tools or more, so the cap refuses
@@ -587,17 +599,21 @@ the member's words, and the words of a pack. The surface came with OA-7d.
   `cc:<org>:tool-packs:<session>:<member hash>`. One field counts the member
   turns with `HINCRBY`. Each other field is one pack, with its first load and
   its last use.
-- **Sticky on use.** A pack becomes sticky only after one of its tools ran
-  (`tool_packs.note_used`). That write changes one field only (`HSET`), so
-  two calls at once lose no update. A sticky pack leaves when no tool of it
-  ran in the last 8 member turns.
+- **Sticky on use.** A pack becomes sticky after one of its tools ran
+  (`tool_packs.note_used`), or after the model loaded it (task 1747). That
+  write changes one field only (`HSET`), so two calls at once lose no
+  update. A sticky pack leaves when the chat did not use it in the last 8
+  member turns. A tool of it that ran is a use, and so is a load by the
+  model.
 - **The words.** Each email word needs an email context (fix round 1, P1-B).
   A bare "draft" or "unread" loads no pack, and "draft a reply" does. A run
   with the email pack gets no registry MCP server. So a false match took the
   MCP tools of a Notion or Linear draft away from the member.
 - **The cap.** A request holds at most 3 packs and 110 tools. A pack of more
   than 35 tools never loads. Past the cap, the least recently used sticky
-  pack leaves first. The words of this turn count as the newest use.
+  pack leaves first. The words of this turn count as the newest use. D169:
+  a sticky pack that the member names in this turn leaves after each other
+  sticky pack.
 - **Two new packs past the cap.** The pack that replaces its owner's
   specialist leaves first (fix round 1, P1-A). So when both email packs
   match and one fits, `email-setup` stays, and the `email_assistant` tool
@@ -713,9 +729,9 @@ dropped names and the skipped names. A slug that is no pack gives None.
   executor's `_mark_untrusted_session`. It closes the profile writes after
   the call, also after a raise. It writes the email working set through
   `_email_working_set_for` and `_record_email_working_set`.
-- **The held set.** A held pack drops each tool that `_is_egress` names.
-  This drop is the only held-set control of a pack run, because a pack run
-  gets no `EgressGuardProvider`.
+- **The held set.** A held pack drops each tool that `_is_egress` or
+  `_is_held_off` names (D169). This drop is the only held-set control of a
+  pack run, because a pack run gets no `EgressGuardProvider`.
 - **The texts of a pack call.** `owner_scope` sets `egress.PACK_CALL_KEY`.
   A held answer of a pack call is `EGRESS_HELD_PACK_ANSWER`, or its cards
   form. It names no other assistant. It does not say that the web is off,
@@ -1097,10 +1113,10 @@ Three layers choose the packs, in the order that D117 item 3 sets. Layer (a) dec
 
 **Layer (a): a fixed choice, with no model call.** It runs during setup, from server-side inputs only (R5). It loads the union of four sets:
 
-1. **Sticky packs.** These are the packs that this chat used before, in their first-load order. They live in tenant Redis at `cc:<org>:tool-packs:<session>`. They use the idiom (`acb_skills/email_chat_context.py:22-27`) and the 1.0 s timeout (`:57`) of the email working set. A pack becomes sticky only after one of its tools ran.
+1. **Sticky packs.** These are the packs that this chat used before, in their first-load order. They live in tenant Redis at `cc:<org>:tool-packs:<session>`. They use the idiom (`acb_skills/email_chat_context.py:22-27`) and the 1.0 s timeout (`:57`) of the email working set. A pack becomes sticky after one of its tools ran, or after the model loaded it with `load_skill_tools` (task 1747).
 2. **The surface.** This is the app that the member is in. Today it reaches the server only as text in `system_context` (`cp/lib/shell/assistant.ts:738-756`, `cp/app/api/agent/chat/route.ts:823`). OA-7d adds a structured `surface` field. The field is a hint. It can add the core pack of the app, and nothing else.
 3. **References.** These are an in-app link or a record id in the words of the member, for example `/email?email=<id>`. Each pack registers a pattern for them.
-4. **Words.** This is a short word list for each pack. The loader matches it against the typed words of the member in this turn.
+4. **Words.** This is a short word list for each pack. The loader matches it against the words that the member sent in this turn. Since D-PZ-37 (`personalization.md` §15.3) those are `assistant_profile.sent_words()`: typed or tapped. They choose tools only, and they ground no write.
 
 **Layer (b): the meta tool `load_skill_tools(family)`.** `skills_scope_out.md` §7.5 designed this tool and did not build it (`:265-309`). Its description lists the index line of each pack that is not loaded. A call adds the tools of the pack to the live run, and returns the rules block of the pack as its text. A load is monotonic: no tool leaves during a run.
 
@@ -1137,8 +1153,8 @@ The first build of a pack in a process imports the owner module once. A delegati
 - A request carries at most 110 tools and at most 3 packs. OA-5 measured 110 tools at 51 of 54 turns (report `:85`, `:121`).
 - A pack holds at most 35 tools.
 - At the start of a turn, a load past the cap first drops the least recently used pack.
-- In the middle of a turn, `load_skill_tools` refuses a load past the cap. Its answer names `spawn_subagents` with that pack (§6).
-- A sticky pack leaves at the start of a turn when no tool of it ran in the last 8 member turns.
+- In the middle of a turn, a load past the cap first moves a sticky pack out, the least recently used first (D169). Then it moves a pack that came in only by the words, the last one first (D169 item 8, as amended). A pack of the surface or of a reference stays, and so does a sticky pack that the member named in this turn. A pack with a tool that ran or started in this run stays too. With no such pack, `load_skill_tools` refuses. Its answer names `spawn_subagents` with that pack (§6), or the hand-off (`LOAD_NO_PATH`) for an owner that the loader reached.
+- A sticky pack leaves at the start of a turn when the chat did not use it in the last 8 member turns. A tool of it that ran counts as a use, and so does a load by the model (task 1747).
 
 **Typical tool counts.** These are estimates from the OA-5 base of 53 tools (report `:118`).
 
@@ -1174,7 +1190,51 @@ The tools of OA-4 have the same scope (the "As built, OA-4" notes at the top of 
 
 1. **The held answer, once per run.** At run start, the loader computes the held answer for each pack. It is `_run_no_egress(owner, run_ctx)` (`orchestrator/_tool_injection.py:417-429`), or a known mark in Redis (`acb_skills/agent_tools.py:220-227`). It uses the server-side org and thread of the run. A delegation to the owner would bind the same answer now (`orchestrator/executor.py:2085-2087`). For email it is true when the chat read mail before this run (`orchestrator/_tool_injection.py:411-413`). A Redis fault, and a run with no tenant or no session, are held too. The first email call of a clean turn marks the chat. Each later call of that turn runs held (STRICT, confirmed by the owner on 2026-10-27). So the first call of a clean chat is open, and each later call and turn is held.
 2. **The scope of the owner, per call.** Each pack call runs in `artifact_context_scope()` with `agent_name=<owner>` and `no_egress=<held>`. This is the idiom of `_delegate_held` (`acb_skills/agent_tools.py:230-243`). The scope is the outermost wrapper, and the permission gate sits inside it.
-3. **The held set, at load.** A held pack drops each tool that `_is_egress` names (`orchestrator/_tool_injection.py:432-447`). That is the held set of the owner itself (`tests/unit/test_no_egress_tool_audit.py:61-89`).
+3. **The held set, at load.** A held pack drops each tool that `_is_egress` names (`orchestrator/_tool_injection.py:432-447`), and each write of `egress.is_held_off_write` (D169). That is the held set of the owner itself (`tests/unit/test_no_egress_tool_audit.py:61-89`).
+
+**As built, RX-1 (2026-11-02, D169).** A held chat keeps the writes that a card shows. The rule and its reasons are D169. The list is `egress.HELD_CARD_WRITE_TOOLS`.
+
+- **What the code said before.** Each Projects tool says `open_world=False`, so a held Projects pack dropped nothing, class C included. The note said that the pack held no write, and the model believed the note. A held pack dropped only the four CRM writes.
+- **Native, not MCP.** Each Projects and CRM pack tool is native: a `_StrictTool`, or a plain function. So the list needs no exception for MCP. `is_egress_tool` tests `_from_mcp` before the list, and `is_held_card_write` tests it too. An MCP tool with a borrowed name, mark and parameters is egress.
+- **The 52 tools that stay.** The 47 class B tools of `skill_projects.manifest` stay. That is 10 of the core pack, 6 of `projects-bulk`, 11 of `projects-plan`, 15 of `projects-structure` and the 5 reminder writes. `promote_reminder` stays too. So do `create_lead`, `update_deal_status`, `log_activity` and `convert_lead`.
+- **The 29 tools that stay off.** Each is a class C tool of `skill_projects.manifest`, and `OFF_PROJECTS` of `tests/unit/test_held_card_writes.py` is the table.
+  - Archive: `archive_project`, `archive_task` and `unarchive_project`.
+  - Delete: `delete_area`, `delete_attachment`, `delete_comment`, `delete_field`, `delete_project`, `delete_status`, `delete_tag`, `delete_task`, `delete_type`, `delete_view` and `report_delete`.
+  - Many rows or a merge: `bulk_update`, `merge_tags`, `merge_tasks`, `revert_activity` and `set_status_set`.
+  - A move or a new name: `convert_folder_to_project`, `move_project` and `rename_area`.
+  - Access: `grant_access` and `revoke_access`.
+  - People and reports: `add_report_recipient`, `attach_to_task`, `nudge_task`, `remove_report_recipient` and `set_report_schedule`.
+- **Why those stay off.** Each is hard to undo, acts on many rows, or changes who sees or gets something. `add_report_recipient` and `set_report_schedule` are paths out of Metorite, because a report goes by mail.
+- **A covered chain keeps H-236 as it was.** A CRM write can reach Zoho, and a run under a covered run holds member data of a sandboxed turn. So each run boundary binds `covered_chain` from `_tool_injection._covered_chain`, and `is_egress_tool` keeps a listed write only outside that chain. Fences: `test_a_covered_parent_calls_crm_assistant_and_the_writes_are_gone` and `test_a_grandchild_keeps_the_flag`.
+- **Two tests, on purpose.** `is_held_off_write` is a second test beside `is_egress_tool`, because a covered run keeps its pinned tools. `_apply_no_egress` asks `_covered_hold` once for the run. A held pack always applies it, because a covered org builds no Projects pack.
+- **The Mirror drop reads the mode in a held chat too.** A held run used to skip that read, because the egress rule took the writes. Now the writes stay, so the read must run. A failed read keeps the tools, and the 409 relay is the fallback. A covered chain still reads nothing, because the egress rule takes the writes there.
+- **The switch.** `egress.held_card_writes_on` is the one reader of `HELD_CARD_WRITES_ORGS`. Off, `is_held_card_write` and `is_held_off_write` keep nothing and drop nothing, the two `_NO_WRITES` texts stand, `chat_is_held` reads False, `PackRun.spare` is empty, and `_chat_marked` asks Redis nothing. So a flip is the whole of the slice, and a SIGHUP undoes it.
+- **A top-level run.** `no_egress` lives on the run and the mark lives on the session, so a top-level run in a marked chat bound `no_egress=False`. `_tool_injection._apply_chat_hold` puts `egress.ChatHoldProvider` on a run that holds a write of `is_held_off_write`. It withholds and refuses those writes while `chat_marked_now` is true. It reads that at each request, so a mark in the middle of a turn counts. It touches no egress tool.
+- **The mark at a run boundary.** Injection is sync, and the process cache misses a mark after a restart. So each boundary awaits `_chat_marked` once and binds `egress.CHAT_MARK_KEY`. It fails closed, and a parent's True passes down. `_covered_hold` reads it through `chat_marked_now`.
+- **A write of an owner outside a pack family.** `is_held_off_write` takes an `owner`, because the run of an owner can hold a write that no family names. `_apply_no_egress` passes the agent of the run. A tool that the platform injected is not the owner's own tool. A bare name proves nothing here.
+- **A bare name holds to the pin.** `tool_annotations.CARD_WRITE_PARAMS` records the parameters of each `card_write` tool, and `is_held_card_write` reads that record for a name. So `permission_policy._reaches_out` no longer skips the pin.
+- **The card.** `acb_common.card_body` is the one rule of a card body, for the Projects tools and the CRM tools. `writes._confirm` is the door: a body past the clip refuses in each chat, and a cut refuses in a held chat. `writes._held_chat` reads `egress.chat_is_held`. The CRM twin is `_held_fields_block`.
+- **The audience.** `GET /projects/nodes/{id}/audience` takes `people` and `beyond`. It answers `count`, `everyone`, `sample`, `without_access`, `gains` and `gains_count` from `notifications.project_grant_holders`, the predicate of the move guard of an outside agent. The read costs one query per member, so only a held card asks it. `GET /projects/tasks/{id}/watchers` adds `audience`, the list that `add_comment` reads.
+- **A mention.** `acb_common.mentions` is the one parser. The gateway imports it, so the card and the write cannot disagree.
+- **A pack with a tool in flight stays.** `note_used` runs after a tool returns, and a send can wait on its card for minutes. `_pack_call` calls `pack_tool_runs` before any await, and `PackRun.spare` reads that record. `_admit_pack` reads it again after the build, and nothing awaits from there until the pack leaves.
+- **The reader.** `egress.write_must_show_card` is the one reader for a write that a rule lets act at once. It reads `no_egress_for_this_run`, then the mark of the session, and a Redis fault reads as marked.
+- **The room rule.** `PackRun.spare` names the packs that can leave, with no tool that ran or started in this run. It is a sticky pack that the member did not name in this turn. It can also be a pack that came in only by the words (D169 item 8, as amended). `plan_loader` takes them as *spare*, so a full run still offers a pack, and the run holds `load_skill_tools`. `LoadSkillTools._make_room` moves the pack out with `context.remove_tools`, after the new tools join, and it calls `drop_sticky`. The answer of the load says which tools left.
+- **The reach on a promise (task 1747).** For an owner of `SPECIALIST_STAYS_UNTIL_REACHED`, the reach counts a spare pack as free too. This reverses the old note "*spare* widens the offer only". Two Projects packs fill a request, and a specialist that stays brings the hand-off of 2026-11-02 back. The trade: the specialist and the route line leave on a promise. When the promise breaks in the turn, the load refuses, `via_failed` opens the hand-off, and `LOAD_NO_PATH` names it. The reach of each other owner does not change.
+- **After a pack leaves.** `PackRun.holds` leaves it out, so `note_used` writes nothing for it and `PackRun.refusal` reads the rest. A hand-off to its owner opens if the loader was the only path. The persona keeps its rules until the next turn. A pack that left is not on offer again in this turn.
+- **Layer (c) moves no pack.** MAF copies the tool list before `before_run`, so a move there cannot reach the request. The model can load in its first step.
+- **Fences.** `tests/unit/test_held_card_writes.py` holds the table, the fail-closed cases, MCP, the card door, the pack path and the reader. `tests/unit/test_pack_room.py` holds the room rule, with two real stream runs.
+
+**As built, task 1747 (2026-11-06, in review).** The production thread a398b43e failed on 2026-11-05 UTC. The member saw 'Function "create_task" not found', and the same text for five other Projects tools. `choose` picks the packs again at the start of each member turn. A pack that held the tool left, and the model's history still showed the tool. Nothing told the model.
+
+- **A pack that the last turn used stays.** `choose` passes the packs that the last member turn used to `_step_aside` (`fresh`), and no order moves such a pack. Four rows of the production table were this case: `create_tasks`, `update_status`, `set_status_set` and `delete_status`.
+- **Two orders of the step-aside (fix round 2).** With a spare pack, the plan reaches the owner. Then only a sticky pack that this turn does not name (`named`) steps aside. So the core pack and a pack that this turn asked for stay. The spare pack gives the reach ("The reach on a promise", above). With no spare pack, the order of PJP-2 fix round 3 applies, with the guard of `fresh`. So an org that `HELD_CARD_WRITES_ORGS` does not name keeps its reach (D169 item 13).
+- **A load by the model is sticky.** `LoadSkillTools._load` calls `note_used` after the tools join. So the next turn holds the pack, also when none of its tools ran. A load by layer (c) is not sticky until one of its tools runs.
+- **The turn says which packs left.** `PackRun.gone` holds the sticky packs that left at the start of the turn (`Choice.evicted`). `PackRun.gone_offered` names the ones that the loader offers. `tool_packs.left_line` is the one text, modelled on `LOAD_MADE_ROOM`. It tells the model to call `load_skill_tools` first for an offered pack, and not to call the tools of the others in this turn. `executor._pack_left_block` puts the line last in the context of the turn, after the cache break, so the persona keeps its bytes. A delegated run drops the record, so it gets no line.
+- **An explicit load beats a words-only pack (D169 item 8, as amended on 2026-11-06, option A).** In three rows the cap moved the Projects pack out for packs that the member's words named (email, CRM, bulk). Then the reload did not fit. Now such a pack gives way. `PackRun.words` holds the packs of the layer "words", and `PackRun.spare` gives them after the old sticky packs, the last one first. With the room still full, the reload answers `LOAD_NO_PATH`, and the chat hands off.
+- **The answer when a words pack leaves (fix round 2).** The member asked for the work of that pack in this turn. So `made_room_line` gives `LOAD_MADE_ROOM_ASKED`, not `LOAD_MADE_ROOM`. It names the hand-off to the owner of the pack when `PackRun.refusal` gives None, as `LOAD_NO_PATH` does. `PackRun.leaves` opens the hand-off to a Projects owner that the loader reached. Else it tells the model to say which part did not run. Row 16:37:28 is this case: the bulk pack leaves for the core pack.
+- **A tool of a spare pack in the same step (fix round 2).** MAF starts each call of a step as its own task. A build can end with no suspension, so a load could read `PackRun.ran` before a sibling call reached `pack_tool_runs`. `_admit_pack` yields once before that check. When a call still starts after the move, `note_used` writes the pack that left, and `_make_room` keeps its state. The next turn then holds the pack again, or names it in the line of the turn.
+- **When the owner stays unreached.** Each Projects pack in the request was used in the last member turn, and no pack is spare. With the switch off, "now tidy them up" after a turn that used the core and plan packs is this case.
+- **Fences.** `tests/unit/test_pack_turn_keeps_used_packs.py`: the name of a test of a row starts with its time in the production table. `evals/trajectories/test_pack_turn_trajectory.py` runs the turns of the report.
 
 In this table, `_tool_injection.py` and `executor.py` are in `orchestrator/`. `egress.py` is in `acb_skills/`. `agents.py` is `agent-email-assistant/agents.py`.
 
@@ -1243,6 +1303,7 @@ OA-5 §7 named OA-4 as the home of the rule (report `:324-326`). The owner chose
 - **`TOOL_PACKS`** is a comma list of pack slugs, or `*`. Empty means off.
 - **`TOOL_PACKS_ORGS`** lists the organization ids that may use packs, or `*`. Empty allows none.
 - **The one reader** is `acb_skills.tool_packs.packs_on(org)`. It fails closed.
+- **A pack follows its parent** (owner decisions "Inherit", 2026-11-04, task 1479). `packs_on` adds each pack of `tool_packs.FOLLOWS` wherever the list names its parent. `projects-reports` follows `projects-plan` (PJP-2), and `projects-authority` follows `projects` (ALN-4). See `project_planning.md` §3.3. So a new pack of an owner turns no tool off on a box with an explicit list. An admin who turns a parent family off for an agent turns its following pack off too (`with_followers`). Fence: `tests/unit/test_tool_packs_registry.py`.
 - **The gate** is OWNER-GATE in production, and `work_plan.md` §6 D4 names it. The flag moves the guards and the spend.
 
 **Off leaves these byte-identical:**
@@ -1498,7 +1559,7 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - The words are whole words: `crm`, `zoho`, `sales pipeline`, `deal pipeline`, `pipeline stage`, `deals`, `leads`, `new lead`, `create a lead`, `convert the lead`, `log a call`, `lost reason`. The surface is `crm`.
 - The hand-off is refused whenever the pack loads, because it is the only pack of the owner. `call_agent_background`, scheduled jobs, workflows, the CRM app rail, registry quick actions and an OA-9 child stay delegated.
 - A held CRM pack names its real reason. The hold note takes the session of the run. So a chat that read mail gets the mail reason, in the persona and in the answer of a load. `egress.py` holds the CRM wording for an owner that does not read mail itself: `EGRESS_HOLD_NOTE_PACK_OTHER` and `EGRESS_HELD_PACK_ANSWER_OTHER`. The email owner keeps the email wording. `NO_PERSONA_BULLETS` names the owners with no persona text, and any other owner with no bullet raises.
-- Redis can mark a chat after the pack built open. The gate of the pack then asks the untrusted card besides the card of the write, because the CRM owner does not read mail itself. This fails safe. A chat marked before the build holds the pack, with no write tool.
+- Redis can mark a chat after the pack built open. D169: a CRM write then asks only its own card, because it is no egress tool. A chat marked before the build holds the pack, with its writes.
 
 **OA-8b. Projects.** Build AGENT-SAFE. The flag flip is OWNER-GATE.
 - **Files.**
@@ -1517,6 +1578,7 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - **Verify.** `uv run pytest tests/unit/test_projects_packs.py tests/unit/test_tool_packs_registry.py tests/unit/test_tool_packs_choice.py tests/unit/test_skills_registry.py tests/unit/test_tool_packs_off.py tests/unit/test_load_skill_tools.py tests/unit/test_turn_kind_pack_items.py tests/unit/test_pack_guards.py tests/unit/test_projects_agent.py tests/unit/test_projects_agent_refusals.py tests/unit/test_no_egress_tool_audit.py tests/unit/test_delegation_no_egress.py -q`, and `npx vitest run src/lib/shell/surface.test.ts` in `workbench/control_plane`.
 
 **As built, OA-8b (2026-10-28).**
+- **Changed by PJP-2 (2026-11-02).** The pack sizes above are old. `projects-plan` is 24, `projects-structure` is 24, `projects-reminders` is 19, `projects-bulk` is 22, and the new pack `projects-reports` is 11. See `project_planning.md` §3.3. `projects-reports` is on wherever `projects-plan` is on (§4.2.7), so `TOOL_PACKS` need not name it.
 - There are 120 tools, not 113. The four families are `projects` (23 tools), `projects-plan` (35), `projects-structure` (34) and `projects-bulk` (28). No tool is in two packs. The union is `skill_projects.__all__` and the `own_tool_scope` of the owner.
 - The core pack holds 23 tools, not 27. The base is 55 tools, because it counts the four specialist tools. The request also carries `load_skill_tools` (1) and the `email` pack (31). That leaves 23 for the core pack, and the total is 110, the cap. `choose` does not credit the specialist tool that a pack removes, so a larger core pack would drop out beside `email`. The fence is `test_the_core_pack_loads_beside_the_email_pack_at_the_measured_base`. It fails when the base grows or when the core pack grows. `edit_task`, `watch`, `create_project`, `needs_attention`, `show_view` and `my_led_projects` moved out of the core pack, and the summary of its new family names each one.
 - The owner builds `FunctionTool` objects of the class `_StrictTool`. The old builder skipped every tool that was no coroutine function, so each Projects pack was empty. `_pack_func` reads `fn.func`. `_pack_call` returns a shallow copy of the tool with `func` swapped, as `_gate_own_maf_tools` does. The class and the input model stay, so the schema keeps `additionalProperties: false`. `_as_agent_tools` already keeps a `FunctionTool` as it is. `owner_tools` and the catalog price read the name through `tool_guard.tool_name`.
@@ -1588,6 +1650,12 @@ The orchestrator offers each registry agent as a tool (`orchestrator/agents.py:7
 - **The harness count.** `checks.refused_handoffs_of` reads the result of each hand-off call. A result that is a refusal text of `tool_packs` in full counts in `handoffs_refused`, not in `handoffs`. Such a try fails no `no_*_delegation` check, and stop result 11 does not count it. The report shows it on its own row, and stop result 11 names the count. A hand-off that ran still fails. `no_email_delegation` reads the tasks, so a hand-off of mail work that the product refused still fails it.
 - **Not done.** The email read tools stay without a read-only mark, because that mark also lets an OA-9c child hold them. The specialist tool with no run queue goes to the batch path, and that path asks no pack rule, as before.
 - **Known gaps.** The batch fallback of `call_agent` and `call_agents_parallel` runs `run_agent` when the run has no queue and no relay. It records no end of a hand-off, so a failed batch hand-off reads as finished. A pack chat run always has a relay, so it does not take that path. `handed_failed` is never cleared, so a later hand-off to the same owner that finishes keeps the text of the failed one. Both only refuse.
+- **Narrowed, task 1533 (2026-11-03).** After a hand-off ended and reported its calls, a pack write refuses only when the hand-off did the same kind of write. In production a hand-off made a task and watched it, and the guard then refused `set_reminder`.
+  - **The kind.** `tool_packs.WRITE_KINDS` gives the kind of each write tool of the Projects packs. A tool with no entry is its own kind. So `create_tasks` and `create_personal_task` are the same kind as `create_task`, and `set_reminder` is not. A fence keeps the keys equal to the Projects write tools.
+  - **Still refused.** An open hand-off, a failed one, and one that reported no call still refuse each write. A hand-off that handed work on also refuses each write, because the calls of that agent are not reported. A reported call in `egress.DELEGATION_TOOLS` hands work on.
+  - **One sub-run, one record.** The record keeps each open hand-off by its sub-run id. `call_agent` and the streaming seam both ask for the same sub-run, so the record counts it once, and its end closes it.
+  - **A write after the hand-off.** A write that runs after the hand-offs ended joins `PackRun.wrote_after`. A later hand-off to the owner then answers `WROTE_HANDOFF_REFUSED`, as after a write before any hand-off. The ask that frames the answers of a fan-out keeps its answer.
+  - **A batch hand-off.** The batch fallback records no end of a hand-off. So the hand-off stays open, and it refuses each pack write of its owner for the rest of the turn.
 - **Fence.** `tests/unit/test_pack_no_double_write.py`, and the OA-8i cases of `tests/unit/test_one_assistant_measure_oa8e.py`.
 
 **OA-8c. WhatsApp.**
@@ -1958,7 +2026,7 @@ context has no live tool list. The decorator emits `ExperimentalWarning`.
 - **OA-7g.** Shipped live ahead of OA-7, owner 2026-10-26 (PR #1356, `344cad4fc`, fence `tests/unit/test_no_unasked_draft.py`). The orchestrator persona and `handoff._RULES` carry the rule against an unasked draft, both always on. OA-7h checks it: `no_write` passes on `reply_correction` turn 1, 3 of 3, on both arms.
 - **OA-7i.** With the flag on and the loader offered, a turn with no pack held has no `email_assistant` tool. A hand-off to the email assistant answers a refusal that names `load_skill_tools`. A pack that cannot load keeps the specialist. So does an MCP server that may attach. Fence: `tests/unit/test_loader_replaces_handoff.py`.
 - **OA-7h.** On the 18 email turns, 3 runs each, with the tier flags of production, the pack arm passes at least as many turns as delegation. From turn 2, each email chat sends through the held card. No act shows two cards.
-- **OA-8a.** Each CRM write asks its card in the stream of the orchestrator. Mirror mode drops the 3 record writes. A held pack drops the 4 writes. Fence: `tests/unit/test_pack_guards.py`.
+- **OA-8a.** Each CRM write asks its card in the stream of the orchestrator. Mirror mode drops the 3 record writes. D169: a held pack keeps the 4 writes. Fence: `tests/unit/test_pack_guards.py`.
 - **OA-8b.** The four Projects families together equal `skill_projects.__all__`, and each holds 35 tools or fewer. A pack tool keeps its strict arguments. In a covered org, no Projects pack loads. A batch tool shows one card with its counts. The core pack fits beside the `email` pack at the measured base. Fences: `tests/unit/test_projects_packs.py` and `tests/unit/test_tool_packs_registry.py`.
 - **OA-8c.** The held set of the `whatsapp` pack equals the held set of its owner. Fence: `tests/unit/test_pack_guards.py`.
 - **OA-8d.** Optional. OA-8e shows that the turns of the `integrations` pack lose nothing.
@@ -2386,4 +2454,133 @@ must stay green with `test_crm_answer_check.py`,
 
 - An image-reading model for drawings. The owner chose OCR first.
 - WhatsApp (D115).
-- A change to the held-chat guard itself.
+- A change to the held-chat guard itself. §9 adds a way around it (a fresh chat) and changes no guard.
+
+## 9. A way through a held chat (task 1648, owner brief 2026-11-05)
+
+**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). The rest is design
+(2026-11-04). Task 1648. The review below is checked against
+the code on 2026-11-04 at `origin/main` `7ad8dc559`. It changes no guard. The slices
+in §9.4 build it, and the first one is dark. Owner of `chat_session.continued_from`:
+this section. `chat_organization.md` §7.1 reads it and writes it never.
+
+### 9.1 The rule
+
+No reply ends at a refusal and "open a new chat". When this chat cannot do an
+act, the reply offers ONE tap. The tap continues the request in a fresh chat.
+A fresh chat has no hold mark (`test_delegation_no_egress.py:1708`), so it can
+do the act. The member's own words go across. Untrusted text never goes across.
+
+A swap in place is **not** a way through a hold. The mark is keyed on
+`(org, session_id)` and slides for 400 days (`packages/acb_skills/acb_skills/egress.py:328-453`, slide at :430). No code
+clears it. `_pack_held` re-reads the same mark (`_tool_injection.py:3198`), so
+a new persona or a reloaded pack stays held. A swap in place is for a **topic
+change that is not held**. It reuses `persona_for` (`tool_packs.py:1907`) and
+`load_tool` (`:2515`), and adds no second router. A mark-clear act is a
+separate HIGH design, and it is out of scope here.
+
+### 9.2 The review: each act the hold removes
+
+| Act | Reason | Verdict |
+|---|---|---|
+| `send_email`, `forward_email`, `unsubscribe_sender` | egress, new recipient | Card (RX-1). `EMAIL_HELD_CARD_SEND` already does it. |
+| `update_assistant_settings` closed keys | later egress | Card. `org_domains` and `always_copy` stay refused. |
+| Projects class B writes, reminders, CRM writes | first-party or open-world write | Card. `HELD_CARD_WRITES_ORGS` already does it. |
+| `nudge_task`, report recipients, `set_report_schedule` | tells a person, later mail | Card later, with the person-class tick of email plan §21.4. |
+| Class C (`delete_*`, `archive_*`, `merge_*`, `revert_activity`, `move_project`) | hard to undo | Card with an Undo receipt later. Until then: fresh chat. |
+| `save_memory`, `save_episode`, `save_note`, `save_knowledge`, `voice_profile` | store that a later run reads | Leaves the chat. No card shows a hidden later read. Fresh chat. |
+| `web_search`, `fetch_page`, `run_workflow`, MCP tools | open world | Leaves the chat. The orchestrator keeps its web tools behind a card. Fresh chat. |
+| Delegation, `spawn_copilot_agent`, `my_tasks_delegate` | the child run has no hold | Leaves the chat. Fresh chat. |
+| `grant_access`, `revoke_access`, `pin_authority`, `lead`, `org_wide` | a steered model would choose the access | Leaves the chat. Fresh chat. |
+| `bulk_update`, `apply_settings_to_mailboxes` | bulk | Leaves the chat. Fresh chat. |
+
+**Today's cause of the "new chat" copy.** It is live only while
+`HELD_CARD_WRITES_ORGS` is empty, which is the default
+(`packages/acb_common/acb_common/settings.py:989`). The texts are `EGRESS_HELD_PACK_ANSWER_NO_WRITES` and
+`EGRESS_HOLD_NOTE_PACK_NO_WRITES` (`packages/acb_skills/acb_skills/egress.py:823,830`).
+
+### 9.3 The carry
+
+1. The server does the carry. The client never builds the text.
+2. **Selection.** The route takes the newest row with `role = 'user'`,
+   `member_typed IS TRUE` and `author_email` equal to the caller, by
+   `timestamp_ms`. Tool results live in assistant rows (`tool_events`,
+   `custom_events`), so none can cross. `NULL` and `FALSE` rows do not cross.
+   With no such row the route answers 409.
+3. **Author.** In a shared room, only the caller's own row can cross. A row of
+   another member never runs in the caller's unheld chat.
+4. **Access.** The route reads the source chat with `resolve_room_access(...)`
+   and needs `can_read`, as `get_messages` does. It answers 404 when the caller
+   cannot read it, or when `CHAT_CONTINUE_ORGS` does not hold the caller's
+   organization. The organization comes from `UserContext` only (R5e).
+5. **Fields.** The carry copies `content` and nothing else. It never copies
+   `custom_events`, `agent_state`, `authority`, `tool_events`,
+   `member_summary` or a file reference. `prepare_new_session` purges by id
+   only, so no file id crosses.
+6. **No seed row.** The route writes no `chat_message` row. It returns
+   `{session_id, text}`. The web shell puts `text` in the composer, and the
+   member sends it. `_write_prompt_row` (`apps/services/gateway/gateway/routes/agent.py:2625`)
+   then writes the `member_typed = TRUE` row. That function stays the only
+   writer (migration 337).
+7. **Session id.** The server mints the id and never takes it from the
+   request. The new session passes `_session_is_new` and `prepare_new_session`
+   (`routes/chat.py:241,261`).
+8. **The link.** A new nullable column `chat_session.continued_from TEXT`.
+   It is a foreign key to `chat_session(id)` with `ON DELETE SET NULL`, added
+   `NOT VALID` and validated in a later release (the pattern of migration
+   148), with `SET lock_timeout` (as migration 337). The RLS policy does not
+   change (R5). The route reads the source under the caller's tenant before it
+   writes the link. **Only three readers may use the column:** the WT-1 route,
+   the session list, and the chip of CO-5. A context builder, the summary job
+   and memory assembly never read the old chat through it.
+9. **Pasted mail text** is the residual risk. A pasted row is still `TRUE`.
+   Because WT-1 returns the text to the composer, the member sees it before it
+   runs. An API caller skips that preview. So the flag flip waits for WT-2
+   (the composer) and for slice WT-1b (a stranger-text frame when the text
+   matches a stored mail body), or for the owner's written acceptance of the
+   risk.
+
+### 9.4 Slices
+
+| Slice | What | Tier | Gate |
+|---|---|---|---|
+| WT-1 | 🔨 **BUILT, dark (2026-11-05, task 1684).** Migration 345 (`345_chat_session_continued_from.sql`) adds `continued_from`, with its foreign key NOT VALID. A later release validates it. Route `continue_session`, flag reader `continue_allowed`. Fences: `test_continue_carry.py` (R8), `test_continued_from_readers.py`. Migration (next free number at build. It was 344 on 2026-11-04) for `continued_from`. Route `POST /chat/sessions/{id}/continue` in `routes/chat.py` by §9.3. Flag `CHAT_CONTINUE_ORGS` in `settings.py` and `env_guard.py`, default empty. | HIGH | AGENT-SAFE, dark |
+| WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. | HIGH | AGENT-SAFE, dark |
+| WT-2 | The tap. A `Continue in a fresh chat` pill on the refusal and the hold note. The web shell opens the new chat and fills the composer. | STANDARD | AGENT-SAFE, dark |
+| WT-3 | Copy: the two `NO_WRITES` texts offer the tap, and no copy says "open a new chat". Update the pinned tests. | HIGH | AGENT-SAFE |
+| WT-4 | Topic change (not held): a suggestion chip, and a swap in place through `persona_for` and `load_tool`. Line: "Switched to Calendar". | STANDARD | AGENT-SAFE |
+| WT-5 | The flips: `CHAT_CONTINUE_ORGS`, `HELD_CARD_WRITES_ORGS`, `EMAIL_HELD_CARD_SEND`. | — | **OWNER-GATE** (`work_plan.md` §6 D4) |
+| WT-6 | Class C cards with an Undo receipt, and the person-class tick for `nudge_task`. | HIGH | AGENT-SAFE, dark |
+
+**WT-1 done when:** each case of §9.5 passes on a real database, the flag-off
+answer is 404, and the verification commands of §9.6 pass.
+
+### 9.5 Fences (R7)
+
+- `tests/unit/test_continue_carry.py`: a held chat with a mail body in an
+  assistant row and in a tool result. The new chat holds none of it. A `NULL`
+  row and a `FALSE` row do not cross. The test runs on a real database (R8).
+- `tests/unit/test_no_new_chat_copy.py`: no `EGRESS_HOLD_NOTE_*` or
+  `EGRESS_HELD_*` text holds "new chat". Each text holds the tap.
+- `test_delegation_no_egress.py:1708` stays green: a fresh chat has no mark.
+- `tests/unit/test_continue_carry.py` also holds these cases:
+  - The newest typed row of ANOTHER member in a shared room does not cross.
+    With no own row, the route answers 409.
+  - A caller who cannot read the source gets 404.
+  - Another organization gets 404.
+  - The flag off gives 404.
+  - The route writes no `chat_message` row.
+  - The new id is the server's.
+  - The carry holds only `content`.
+- `tests/unit/test_continued_from_readers.py`: a structural scan allows the
+  `continued_from` column in three places only. They are the WT-1 route, the
+  session list and the CO-5 chip read.
+
+### 9.6 Verification
+
+```
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_continue_carry.py tests/unit/test_continued_from_readers.py tests/unit/test_delegation_no_egress.py tests/unit/test_chat_summary_r8.py tests/unit/test_held_card_writes.py tests/unit/test_tenant_coverage.py -q
+uv run ruff check apps/services/gateway packages/acb_common
+uv run python scripts/affected_tests.py --run
+```

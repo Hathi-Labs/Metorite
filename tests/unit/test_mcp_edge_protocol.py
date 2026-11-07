@@ -777,8 +777,11 @@ class TestTheProtocolRules:
             result = r.json()["result"]
             assert result["protocolVersion"] == asked
             # EA-6e (EA3-39): the prompts capability, whatever the flags.
+            # SW-34a: the resources capability too, whatever the flags.
             assert result["capabilities"] == {"tools": {"listChanged": False},
-                                              "prompts": {"listChanged": False}}
+                                              "prompts": {"listChanged": False},
+                                              "resources": {"subscribe": False,
+                                                            "listChanged": False}}
             assert result["serverInfo"]["name"] == "metorite"
 
     @pytest.mark.parametrize("asked", ["2026-07-28", "2025-03-26", "garbage", None])
@@ -821,7 +824,8 @@ class TestTheProtocolRules:
         assert r.headers["www-authenticate"] == CHALLENGE_401
 
     # EA-6e serves prompts/list and prompts/get, so they leave this list.
-    @pytest.mark.parametrize("method", ["resources/list", "resources/templates/list",
+    # SW-34a serves resources/list, resources/templates/list and resources/read.
+    @pytest.mark.parametrize("method", ["resources/subscribe", "resources/unsubscribe",
                                         "completion/complete", "logging/setLevel",
                                         "prompts/unknown", "sampling/createMessage"])
     async def test_any_other_method_gets_minus_32601(self, armed, method):
@@ -1377,24 +1381,26 @@ def _structured(result: dict[str, Any]) -> dict[str, Any]:
 
 
 class TestWhoami:
-    """D9 for ``whoami``: exactly six keys, each from its source (§9.1)."""
+    """D9 for ``whoami``: exactly seven keys, each from its source (§9.1).
+    EA-17a added ``left_out_projects`` (D-EA-12)."""
 
-    async def test_whoami_returns_exactly_its_six_keys(self, armed):
+    async def test_whoami_returns_exactly_its_seven_keys(self, armed):
         armed.store.tokens[GOOD] = TokenLookup(
             connection_id=CONN, organization_id=ORG, kind="access",
             client_id="https://client.example/meta.json", resource=RESOURCE,
             scope="projects:write offline_access",
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             scopes=("projects:write", "context:read"), pinned_projects=(P_TEAM, P_SALES),
-            include_personal=True, client_origin=ORIGIN)
+            include_personal=True, left_out_projects=(P_SALES,), client_origin=ORIGIN)
         body = _structured(await _tool("whoami"))
         assert tuple(body) == tools.WHOAMI_KEYS
         assert set(body) == {"email", "organization_id", "scopes", "pinned_projects",
-                             "include_personal", "server_time"}
+                             "left_out_projects", "include_personal", "server_time"}
         assert body["email"] == "agent-member@x.test"
         assert body["organization_id"] == ORG, "from the token row, not /auth/me"
         assert body["scopes"] == ["projects:read", "projects:write"]
         assert body["pinned_projects"] == [P_TEAM, P_SALES]
+        assert body["left_out_projects"] == [P_SALES], "from the token row"
         assert body["include_personal"] is True
         stamp = datetime.fromisoformat(body["server_time"].replace("Z", "+00:00"))
         assert stamp.utcoffset() == timedelta(0)
@@ -2573,6 +2579,7 @@ class TestTheFiveToolsOverMcp:
         assert body["organization_id"] == live.org
         assert body["scopes"] == ["projects:read"]
         assert body["pinned_projects"] == [live.p[p] for p in pins]
+        assert body["left_out_projects"] == []
         assert body["include_personal"] is personal
 
     @pytest.mark.parametrize("name", ["open", "pinned", "no_personal"])

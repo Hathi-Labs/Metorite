@@ -1,6 +1,7 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import Badge from "@/components/ui/Badge";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -9,6 +10,7 @@ import {
   proposeClarification,
   defaultStatus,
   delegateAllowed,
+  fallbackReasonText,
   initialOwner,
   initialWhere,
   isPersonalTask,
@@ -32,6 +34,7 @@ import {
   type PromoteFieldsState,
 } from "@/app/projects/components/PromoteFields";
 import { nameOf } from "@/app/projects/lib/destinations";
+import { dueInstantForDay } from "@/app/projects/lib/quickAdd";
 import { destinations, useCompanyTree } from "../lib/companyTree";
 import { PROMOTE_HINT, promotePlan } from "../lib/promote";
 
@@ -183,6 +186,9 @@ export function ClarifyPanel({
   // True once the user changed ANY field — a late server proposal must never
   // stomp on human edits.
   const dirtyRef = useRef(false);
+  // Set when the server proposal failed to arrive (CL-1). The local rule-based
+  // proposal stays on screen, and the card says so in plain words.
+  const [proposeFailed, setProposeFailed] = useState(false);
 
   // ── Local title state (vague-title gate) ────────────────────────────────
   const [title, setTitle] = useState(item.title);
@@ -345,7 +351,8 @@ export function ClarifyPanel({
         seedFromProposal(sp);
       })
       .catch(() => {
-        /* server proposal is an upgrade, not a dependency — keep the local one */
+        // The local rule-based proposal stays usable. Say so, do not hide it.
+        if (!cancelled) setProposeFailed(true);
       });
     return () => {
       cancelled = true;
@@ -487,7 +494,7 @@ export function ClarifyPanel({
     // Actionable — Shape applies.
     const na = nextAction.trim();
     if (!na) return null;
-    const dueIso = when === "date" && dueAt ? new Date(dueAt).toISOString() : undefined;
+    const dueIso = when === "date" && dueAt ? dueInstantForDay(dueAt) : undefined;
     const delegateTo = owner === "delegate" ? (assignee ?? undefined) : undefined;
     if (owner === "delegate" && !delegateTo) return null; // must pick someone
 
@@ -988,14 +995,25 @@ export function ClarifyPanel({
               Improves once the title is clear
             </span>
           )}
-          <div className="mb-1.5 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+            <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-primary">
               <AppIcon name="Sparkles" className="h-3.5 w-3.5" />
               Assistant recommends
             </div>
+            <span className="flex flex-wrap items-center gap-1.5">
+            {proposal.clarifiedBy === "heuristic" && (
+              <Badge
+                size="xs"
+                icon="ListChecks"
+                className="whitespace-nowrap"
+                title="Rule-based picks. Check them before you accept."
+              >
+                Rule-based suggestion
+              </Badge>
+            )}
             <span
               className={[
-                "rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
+                "whitespace-nowrap rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
                 proposal.confidence === "high"
                   ? "bg-primary/15 text-primary"
                   : "bg-secondary text-muted-foreground",
@@ -1008,7 +1026,13 @@ export function ClarifyPanel({
             >
               {proposal.confidence === "high" ? "Confident" : "Best guess"}
             </span>
+            </span>
           </div>
+          {proposal.clarifiedBy === "heuristic" && (
+            <p className="mb-1.5 text-[11px] text-muted-foreground">
+              {fallbackReasonText(proposal.fallbackReason)} Check the picks before you accept.
+            </p>
+          )}
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Meta.icon className="h-4 w-4 text-primary" />
             {Meta.label}
@@ -1079,6 +1103,13 @@ export function ClarifyPanel({
           )}
 
           <p className="mt-1.5 text-[11px] italic text-muted-foreground">{proposal.rationale}</p>
+          {proposeFailed && (
+            <p role="status" className="mt-1.5 text-[11px] text-warning">
+              The assistant did not answer, so this is a rule-based suggestion. Check
+              the fields below and adjust them, or close this item and open it again
+              to retry.
+            </p>
+          )}
           {/* The one decision row: Accept (primary) · Adjust (open the manual
               form) · Trash (escape hatch). Accept disables — instead of
               silently no-opping — when the decision can't build yet; the form
