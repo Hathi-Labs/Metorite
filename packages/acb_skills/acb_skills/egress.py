@@ -1441,8 +1441,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     # The CRM record writes.
     "create_lead": _pin("lead_name email phone organization_name description"),
     "update_deal_status": _pin("deal_id stage lost_reason"),
-    "log_activity": _pin("entity record_id activity_type subject body"),
+    "log_activity": _pin("entity record_id activity_type subject body due_at"),
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
+    "crm_update_record": _pin("entity record_id fields"),
+    "crm_update_task": _pin("activity_id completed due_at"),
 }
 
 #: The pack owners whose every write needs the list. Their tools say
