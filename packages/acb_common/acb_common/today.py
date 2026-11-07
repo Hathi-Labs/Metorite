@@ -79,32 +79,128 @@ def today_line(
     return f"Today is {local:%A}, {local.day} {local:%B %Y} ({tz.key})."
 
 
-def part_of_day(zone: str | None, now: datetime | None = None) -> str:
-    """``morning`` (5 to 11), ``afternoon`` (12 to 16), ``evening`` (17 to
-    20) or ``night``, at the hour of *zone*. A bad or missing zone reads as
-    :data:`DEFAULT_ZONE`. A naive *now* reads as UTC."""
+#: The ONE table of greetings (PZ-39). Each row is ``(first hour, part of the
+#: day, greeting)``. A row runs until the next row starts. The last row runs
+#: past midnight until the first row starts again at 05:00. The late hours
+#: read "Hello" and never "Good night", because "Good night" is a goodbye.
+#: My Day holds the same table in ``myDay.ts`` as ``GREETING_TABLE``.
+#: Fence: ``tests/unit/test_greeting_table.py``.
+GREETING_TABLE: tuple[tuple[int, str, str], ...] = (
+    (5, "morning", "Good morning"),
+    (12, "afternoon", "Good afternoon"),
+    (17, "evening", "Good evening"),
+    (21, "night", "Hello"),
+)
+
+
+def _hour_at(zone: str | None, now: datetime | None) -> int:
     tz = _zone(zone)
     moment = now or datetime.now(tz)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=ZoneInfo("UTC"))
-    hour = moment.astimezone(tz).hour
-    if 5 <= hour <= 11:
-        return "morning"
-    if 12 <= hour <= 16:
-        return "afternoon"
-    if 17 <= hour <= 20:
-        return "evening"
-    return "night"
+    return moment.astimezone(tz).hour
 
 
-def part_of_day_line(zone: str | None, now: datetime | None = None) -> str:
-    """"Part of the day for the member: morning." One short line.
+def _row_at(zone: str | None, now: datetime | None) -> tuple[int, str, str]:
+    hour = _hour_at(zone, now)
+    row = GREETING_TABLE[-1]
+    for entry in GREETING_TABLE:
+        if entry[0] <= hour:
+            row = entry
+    return row
+
+
+def part_of_day(zone: str | None, now: datetime | None = None) -> str:
+    """``morning`` (5 to 11), ``afternoon`` (12 to 16), ``evening`` (17 to
+    20) or ``night``, at the hour of *zone*. The rows come from
+    :data:`GREETING_TABLE`. A bad or missing zone reads as
+    :data:`DEFAULT_ZONE`. A naive *now* reads as UTC."""
+    return _row_at(zone, now)[1]
+
+
+def greeting_for(zone: str | None, now: datetime | None = None) -> str:
+    """The greeting word for the hour of *zone*, from :data:`GREETING_TABLE`:
+    "Good morning", "Good afternoon", "Good evening" or "Hello"."""
+    return _row_at(zone, now)[2]
+
+
+#: The gap that ends a conversation (PZ-39, owner 2026-11-06). The chat greets
+#: in the first reply of a chat, and in the first reply after this many hours
+#: with no message in that chat. It never greets in the middle of one.
+GREET_GAP_HOURS = 4
+
+
+def greet_due(last_message_ms: int | None, now_ms: int, *, first_reply: bool) -> bool:
+    """True when this turn opens a conversation. Pure.
+
+    *first_reply* means the chat holds no earlier message. Otherwise
+    *last_message_ms* is the newest stored message BEFORE this turn, and the
+    gap must reach :data:`GREET_GAP_HOURS`. A missing time gives False."""
+    if first_reply:
+        return True
+    if last_message_ms is None:
+        return False
+    return now_ms - last_message_ms >= GREET_GAP_HOURS * 3600 * 1000
+
+
+def part_of_day_line(
+    zone: str | None, now: datetime | None = None, *, greet: bool | None = None,
+    language: str | None = None,
+) -> str:
+    """One short line: the part of the day, and what to do about a greeting.
 
     WS-63 PZ-4 (``personalization.md`` §5.2): the greeting rule says "for the
     time of day", and :func:`today_line` gives no hour. *zone* is the
-    member's ``people.timezone``. Fence:
-    ``tests/unit/test_executor_profile_block.py``."""
-    return f"Part of the day for the member: {part_of_day(zone, now)}."
+    member's resolved zone. *greet* has three states:
+
+    * ``True``: the run decided that this turn opens a conversation. The line
+      says "Greet now." and names the greeting.
+    * ``False``: the run decided that it does not. The line says not to greet.
+    * ``None``: no decision exists (a WhatsApp, delegated, batch or group
+      run). The line keeps the old rule: greet only in the first reply of the
+      conversation, and never again in it.
+
+    The late hours never say "Good night", because it is a goodbye. From 21:00
+    to 23:59 the line offers "Hello" or "Good evening". From 00:00 to 04:59 it
+    offers "Hello" only. When *language* is a tag whose primary subtag is not
+    ``en``, the line asks for the common hello of that language, and it bars a
+    good-night phrase in any language. The line never guesses a language from
+    a name or a region. Fence: ``tests/unit/test_executor_profile_block.py``."""
+    part = part_of_day(zone, now)
+    base = f"Part of the day for the member: {part}."
+    if greet is False:
+        return f"{base} Do not greet in this reply."
+    lead = "Greet now." if greet else (
+        "Greet only in the first reply of the conversation, and never again in it.")
+    tag = (language or "").strip()
+    if tag and tag.replace("_", "-").split("-")[0].lower() != "en":
+        return (
+            f"{base} {lead} The member's language is \"{tag}\". Greet with "
+            "the common hello of that language, for example Namaste, Namaskaram "
+            "or Vanakkam. Do not copy a time-of-day phrase from forwarded messages. "
+            "Never use a good-night phrase in any language, such as \"Shubha "
+            "ratri\", because it is a farewell."
+        )
+    word = greeting_for(zone, now)
+    if part != "night":
+        return f"{base} {lead} Greet with \"{word}\"."
+    offer = f'\"{word}\"'
+    if _hour_at(zone, now) >= 21:
+        offer += ' or \"Good evening\"'
+    return (
+        f"{base} {lead} Greet with {offer}. "
+        "Never say \"Good night\", because it is a goodbye."
+    )
 
 
-__all__ = ["DEFAULT_ZONE", "part_of_day", "part_of_day_line", "resolve_zone", "today_line"]
+__all__ = [
+    "DEFAULT_ZONE",
+    "GREETING_TABLE",
+    "GREET_GAP_HOURS",
+    "greet_due",
+    "greeting_for",
+    "part_of_day",
+    "part_of_day_line",
+    "resolve_zone",
+    "today_line",
+]
