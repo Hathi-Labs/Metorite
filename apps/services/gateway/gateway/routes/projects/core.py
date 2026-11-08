@@ -3765,11 +3765,11 @@ _LOCK_TASK_SQL = (
 
 async def lock_task(db: Any, task_id: str) -> Any:
     """Lock one task row until the transaction ends, and return the row as
-    the lock read it. Only ``claim_task`` calls it. The claim has passed its
-    visibility load, so the lock reads by id only. 404 when a delete crossed
-    that load."""
-    # WS-55 EA-6h: `tasks.agent_delete_task` calls it too, after its own
-    # visibility load, so the version and title checks hold until the delete.
+    the lock read it. Three routes call it, each after its own visibility
+    load, so the lock reads by id only: ``claim_task``, ``agent_delete_task``
+    (EA-6h, so the version and title checks hold until the delete) and
+    ``epic_contract.put_epic_contract`` (SP-8a, so the version check and the
+    save hold together). 404 when a delete crossed that load."""
     row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")

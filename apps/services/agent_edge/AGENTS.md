@@ -43,6 +43,7 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - `update_task` sends the input `epic_contract` in a call of its own to `PUT /projects/tasks/{task_id}/epic-contract`, the second `alt_writes` pair. The body is `{"epic_contract": {...}}` and nothing more (`EPIC_CONTRACT_BODY_KEYS`). `create_task` sends the same key in its POST body.
   - The input schema holds the rules: 3 to 7 checks, the caps and the risk tiers. Each `EPIC_*` constant is a copy of `routes/projects/epic_contract.py`, pinned equal. Each 422 of the route maps by its `detail` (`_EPIC_DETAILS`).
   - The input type `number` is new in `check_input` (`_type_ok`), for the two appetite inputs. A bool, an infinity and a NaN are not numbers.
+  - Dark behind `EPIC_CONTRACT_ORGS`, read by the gateway only. Its 404 has its own detail, which the edge maps to `TEXT_EPIC_CONTRACTS_OFF` (and `TEXT_CREATE_CONTRACTS_OFF` for a create).
   - Fence: `tests/unit/test_epic_contract_r8.py`.
 
 - MCP-G2 adds `set_assignees` over `PUT /projects/tasks/{task_id}/assignees`, the first `PUT` of `MCP_WRITE_ROUTES` (spec §9.2, EA3-52). `create_task` and `update_task` gain the four planning fields of the app, and `create_task` gains `assignees`. `update_task` sends `parent_task_id` to `POST /projects/tasks/{task_id}/move` in place of its PATCH.

@@ -45,10 +45,25 @@ Run::
 * M7. ``G/epic_contract.py``: ``_require_version`` gives an agent the member
   rule (``require_precondition``) in place of ``require_exact_version``.
   ``test_a_stale_version_is_refused_after_a_save``.
+
+Repair round 1 (the verifier of 8e7e828ac). Each new test below failed on
+that commit (R7), and passes now:
+
+* P1-a. The card drew raw text, because the body had two note lines before
+  its first row. ``TestTheCard`` parses the REAL card body with the twin of
+  ``ConfirmationCard.parseCardBody`` and finds labelled rows.
+* P1-b. Dark behind ``EPIC_CONTRACT_ORGS``: ``TestTheFlag`` (R8) and
+  ``test_the_chat_makes_no_card_while_the_flag_is_off``.
+* P2-a. A member's stale ``If-Match`` passed the range rule:
+  ``test_a_members_stale_version_is_refused``.
+* P2-b. The card listed every check, so a tick of one check of a full
+  contract did not fit: ``test_a_tick_of_one_long_check_fits_on_the_card``.
+* P3. ``test_the_route_takes_a_number_only_for_the_appetite``.
 """
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,6 +74,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_auth import agent_oauth
+from acb_common import get_settings
 from agent_edge import tools
 from gateway.routes.projects import core
 from gateway.routes.projects import epic_contract as ec
@@ -66,12 +82,15 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
+from tests.unit import _card_words
 from tests.unit import test_mcp_edge_task_writes as t
 from tests.unit import test_mcp_edge_writes as w
+from tests.unit import test_projects_agent_writes as tw
+from tests.unit._projects_agent_fakes import FakeResponse, approve, fake_gateway
+from tests.unit._projects_agent_fakes import writes as sent_writes
 
 _DB_GATE = w._DB_GATE
 live_app = t.live_app
-live = t.live
 redis_fake = t.redis_fake
 _mcp = t._mcp
 _send = t._send
@@ -139,9 +158,32 @@ class TestTheRecords:
             (tools.NOT_EPIC_DETAIL, core.NOT_EPIC_DETAIL),
             (tools.EPIC_CHECK_COUNT_DETAIL, ec.CHECK_COUNT_DETAIL),
             (tools.EPIC_DUPLICATE_CHECK_DETAIL, ec.DUPLICATE_CHECK_DETAIL),
+            (tools.EPIC_CONTRACTS_OFF_DETAIL, ec.CONTRACTS_OFF_DETAIL),
         }
         for edge, gateway in pairs:
             assert edge == gateway
+        # Repair round 1 (P3): the chat checks the same caps before its card.
+        from skill_projects import writes
+
+        for chat, gateway in (
+                (writes.EPIC_MIN_CHECKS, ec.MIN_CHECKS), (writes.EPIC_MAX_CHECKS, ec.MAX_CHECKS),
+                (writes.EPIC_RISK_TIERS, ec.RISK_TIERS),
+                (writes.EPIC_MAX_CHECK_CHARS, ec.MAX_CHECK_CHARS),
+                (writes.EPIC_MAX_EVIDENCE_CHARS, ec.MAX_EVIDENCE_CHARS),
+                (writes.EPIC_MAX_OUTCOME_CHARS, ec.MAX_OUTCOME_CHARS),
+                (writes.EPIC_MAX_OUT_OF_SCOPE_CHARS, ec.MAX_OUT_OF_SCOPE_CHARS),
+                (writes.EPIC_MAX_WORKSTREAM_CHARS, ec.MAX_WORKSTREAM_CHARS),
+                (writes.EPIC_MAX_SPEC_LINK_CHARS, ec.MAX_SPEC_LINK_CHARS),
+                (writes.EPIC_MAX_APPETITE_CREDITS, ec.MAX_APPETITE_CREDITS),
+                (writes.EPIC_MAX_APPETITE_REVIEW_HOURS, ec.MAX_APPETITE_REVIEW_HOURS)):
+            assert chat == gateway
+
+    def test_the_edge_texts_of_a_create_name_no_update(self) -> None:
+        """P3. No task exists after a refused create, so no text of the
+        create sends the agent to update_task."""
+        for text_ in (tools.TEXT_CREATE_NOT_EPIC, tools.TEXT_CREATE_CONTRACTS_OFF):
+            assert "update_task" not in text_ and "No task was made" in text_
+        assert tools.TEXT_EPIC_CONTRACTS_OFF.startswith(ec.CONTRACTS_OFF_DETAIL)
 
     def test_the_put_is_a_write_pair_and_an_alt_write_of_update_task(self) -> None:
         pair = ("PUT", tools.EPIC_CONTRACT_ROUTE)
@@ -182,6 +224,154 @@ class TestTheRecords:
                           "evidence": "PR 9"}
         assert out[1] == {"text": "Two", "done": False}
         assert writes._epic_checks("One\nTwo", saved).startswith("An epic contract needs 3")
+
+
+# ── The card of the chat tool, as the card client reads it (repair round 1) ──
+
+#: The twin of ``ConfirmationCard.tsx`` ``FIELD`` and ``TRUNCATED``.
+#: ``test_the_twin_is_the_rule_of_the_client`` pins both to the source.
+_CARD_FIELD = re.compile(r"^([^:«»]{1,48}):\s(.*)$")
+_CARD_TRUNCATED = re.compile(r"^…\s*\[truncated")
+_CARD_TS = REPO / "workbench" / "control_plane" / "src" / "components" / "ConfirmationCard.tsx"
+
+
+def parse_card_body(context: str) -> list[tuple[str, str]] | None:
+    """The rows of a card body, or ``None`` when the client draws it as raw text.
+
+    The twin of ``ConfirmationCard.parseCardBody``: at most ONE note line
+    before the first field, and then every line a field (or the truncation
+    marker). Any other body is drawn as text, with its marks and keys.
+    """
+    lines = [line.rstrip() for line in (context or "").split("\n") if line.strip()]
+    first = next((i for i, line in enumerate(lines) if _CARD_FIELD.match(line)), -1)
+    rest = lines[first:] if first >= 0 else []
+    if not (0 <= first <= 1 and all(
+            _CARD_FIELD.match(line) or _CARD_TRUNCATED.match(line.strip()) for line in rest)):
+        return None
+    return [(m.group(1).strip(), m.group(2).strip())
+            for line in rest if (m := _CARD_FIELD.match(line))]
+
+
+def _labelled(rows: list[tuple[str, str]]) -> list[str]:
+    """The keys of *rows* that have NO label in ``cardFields.ts``."""
+    return [key for key, _ in rows if _card_words.card_key(key) not in _card_words.card_keys()]
+
+
+def _long_contract() -> dict[str, Any]:
+    """7 checks of 200 characters, each with 300 characters of evidence."""
+    return {
+        "outcome": "Members fill an epic contract.", "out_of_scope": None,
+        "risk_tier": "HIGH", "appetite_credits": 40.0, "appetite_review_hours": 3.5,
+        "workstream": "L4", "spec_link": None, "updated_by": MEMBER, "updated_at": None,
+        "acceptance": [
+            {"id": f"c{i}", "text": f"Check {i} " + "x" * 192, "done": False,
+             "evidence": f"Evidence {i} " + "y" * 288}
+            for i in range(1, 8)],
+    }
+
+
+def _contract_gateway(before: dict[str, Any] | None):
+    """The fake gateway of the chat tests: the task UUID is an epic whose
+    contract is *before*."""
+    def answer(call: dict) -> Any:
+        if call["path"] == f"/projects/tasks/{tw.UUID}/epic-contract":
+            if call["method"] == "GET":
+                return {"task_id": tw.UUID, "is_epic": True, "epic_contract": before}
+            return {"task_id": tw.UUID, "is_epic": True, "changed": ["epic_acceptance"],
+                    "epic_contract": call["json"]["epic_contract"]}
+        return tw.responder(call)
+    return answer
+
+
+class TestTheCard:
+    """P1-a and P2-b. The REAL card body of ``set_epic_contract``, read with
+    the rule of the card client."""
+
+    def test_the_twin_is_the_rule_of_the_client(self) -> None:
+        source = _CARD_TS.read_text(encoding="utf-8")
+        assert "const FIELD = /^([^:«»]{1,48}):\\s(.*)$/;" in source
+        assert "const TRUNCATED = /^…\\s*\\[truncated/;" in source
+        assert "first >= 0 && first <= 1 &&" in source
+
+    async def test_a_first_contract_draws_as_labelled_rows(self, monkeypatch) -> None:
+        from skill_projects import writes
+
+        cards = approve(monkeypatch)
+        calls = fake_gateway(monkeypatch, _contract_gateway(None))
+        said = await writes.set_epic_contract(
+            tw.UUID, "One check\nTwo check\nThree check", outcome="It ships.",
+            appetite_credits="40", appetite_review_hours="3.5")
+        assert said.startswith("Saved the epic contract"), said
+        # The text parts go on the wire as text. A `_blank` of this module
+        # that answers a bool once replaced them with True and False.
+        sent = sent_writes(calls)[-1]["json"]["epic_contract"]
+        assert (sent["outcome"], sent["workstream"], sent["spec_link"]) == (
+            "It ships.", None, None)
+        assert (sent["appetite_credits"], sent["appetite_review_hours"]) == (40.0, 3.5)
+        rows = parse_card_body(cards[0]["context"])
+        assert rows is not None, cards[0]["context"]
+        assert not _labelled(rows), _labelled(rows)
+        keys = [key for key, _ in rows]
+        assert keys[0] == "impact" and "new check 3" in keys
+        shown = dict(rows)
+        assert shown["appetite credits"] == "40" and shown["appetite review hours"] == "3.5"
+        assert "40.0" not in cards[0]["context"]
+
+    async def test_a_tick_of_one_long_check_fits_on_the_card(self, monkeypatch) -> None:
+        """P2-b. 7 checks of 200 characters with 300 characters of evidence
+        each. Ticking one check draws one changed row, and the rest as a count."""
+        from skill_projects import writes
+
+        before = _long_contract()
+        cards = approve(monkeypatch)
+        calls = fake_gateway(monkeypatch, _contract_gateway(before))
+        lines = [("[x] " if i == 1 else "") + c["text"]
+                 for i, c in enumerate(before["acceptance"], start=1)]
+        said = await writes.set_epic_contract(
+            tw.UUID, "\n".join(lines), outcome=before["outcome"], risk_tier="HIGH",
+            appetite_credits="40", appetite_review_hours="3.5", workstream="L4")
+        assert said.startswith("Saved the epic contract"), said
+        rows = parse_card_body(cards[0]["context"])
+        assert rows is not None and not _labelled(rows), cards[0]["context"]
+        assert [key for key, _ in rows] == ["impact", "changed check 1", "checks unchanged"]
+        assert dict(rows)["checks unchanged"] == "6"
+        sent = sent_writes(calls)[-1]["json"]["epic_contract"]
+        assert [c["done"] for c in sent["acceptance"]] == [True] + [False] * 6
+        assert all(c.get("evidence") for c in sent["acceptance"])
+
+    async def test_the_chat_checks_the_caps_before_the_card(self, monkeypatch) -> None:
+        """P3. A text over its cap and an appetite out of range make no card."""
+        from skill_projects import writes
+
+        cards = approve(monkeypatch)
+        calls = fake_gateway(monkeypatch, _contract_gateway(None))
+        checks = "One\nTwo\nThree"
+        for kwargs in ({"outcome": "o" * (ec.MAX_OUTCOME_CHARS + 1)},
+                       {"workstream": "w" * (ec.MAX_WORKSTREAM_CHARS + 1)},
+                       {"appetite_credits": str(ec.MAX_APPETITE_CREDITS + 1)},
+                       {"appetite_review_hours": "-1"}):
+            said = await writes.set_epic_contract(tw.UUID, checks, **kwargs)
+            assert "Nothing was changed" in said, (kwargs, said)
+        said = await writes.set_epic_contract(
+            tw.UUID, "One\n" + "t" * (ec.MAX_CHECK_CHARS + 1) + "\nThree")
+        assert "Nothing was changed" in said, said
+        assert cards == [] and sent_writes(calls) == []
+
+    async def test_the_chat_makes_no_card_while_the_flag_is_off(self, monkeypatch) -> None:
+        """P1-b. The route answers 404 with its own text, and the tool says
+        so with no card and no write."""
+        from skill_projects import writes
+
+        def off(call: dict) -> Any:
+            if call["path"].endswith("/epic-contract"):
+                return FakeResponse({"detail": ec.CONTRACTS_OFF_DETAIL}, 404)
+            return tw.responder(call)
+
+        cards = approve(monkeypatch)
+        calls = fake_gateway(monkeypatch, off)
+        said = await writes.set_epic_contract(tw.UUID, "One\nTwo\nThree")
+        assert said == writes.EPIC_CONTRACTS_OFF
+        assert cards == [] and sent_writes(calls) == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -262,6 +452,19 @@ def world():
     w._drop_database(admin_url, dedicated)
 
 
+@pytest.fixture
+async def live(live_app, monkeypatch):
+    """:func:`test_mcp_edge_task_writes.live`, with ``EPIC_CONTRACT_ORGS`` on
+    for every org. A flag test turns it off with the same ``monkeypatch``.
+    The gateway reads the list on each call, as a reload does."""
+    monkeypatch.setattr(get_settings(), "epic_contract_orgs", "*", raising=False)
+    if not getattr(live_app, "warmed", False):
+        r = await _send(live_app, "GET", "/projects/tree")
+        assert r.status_code == 200, r.text
+        live_app.warmed = True
+    return live_app
+
+
 def _epic(live: Any, title: str, *, project: str | None = None,
           type_id: str | None = None) -> str:
     """A task of the Epic type in *project* (the team project by default)."""
@@ -312,7 +515,7 @@ class TestOnlyAnEpic:
         made = await _mcp(live, "write", "create_task", {
             "project_id": live.team, "title": "sp8 refused create", "type_id": live.types.bug,
             "epic_contract": _body()["epic_contract"]})
-        assert _text(made) == tools.TEXT_NOT_EPIC
+        assert _text(made) == tools.TEXT_CREATE_NOT_EPIC
         assert t._count(live, "sp8 refused create") == 0
         # With the Epic type, the contract lands in the create's own transaction.
         made = await _mcp(live, "write", "create_task", {
@@ -577,3 +780,106 @@ class TestThePinAndTheTenant:
                 "SELECT count(*) FROM pg_policies WHERE tablename = 'pm_epic_contracts'")).scalar()
         assert (row.relrowsecurity, row.relforcerowsecurity) == (True, True)
         assert policies == 1
+
+
+def _off(monkeypatch: Any, orgs: str = "") -> None:
+    """``EPIC_CONTRACT_ORGS`` to *orgs*: empty is off for every org."""
+    monkeypatch.setattr(get_settings(), "epic_contract_orgs", orgs, raising=False)
+
+
+class TestTheFlag:
+    """P1-b. Dark behind ``EPIC_CONTRACT_ORGS``, on each path."""
+
+    pytestmark = _DB_GATE
+
+    async def test_off_the_routes_answer_404_with_their_own_text(self, live, monkeypatch):
+        epic = _epic(live, "sp8 flag routes")
+        saved = await _send(live, "PUT", ROUTE.format(epic), body=_body(outcome="On."),
+                            signed=None)
+        assert saved.status_code == 200, saved.text
+        version = await _version(live, epic)
+        _off(monkeypatch)
+        got = await _send(live, "GET", ROUTE.format(epic), signed=None)
+        put = await _send(live, "PUT", ROUTE.format(epic), body=_body(outcome="Off."),
+                          signed=None)
+        for answer in (got, put):
+            assert answer.status_code == 404, answer.text
+            assert answer.json()["detail"] == ec.CONTRACTS_OFF_DETAIL
+        wrote = await _mcp(live, "write", "update_task", {
+            "task_id": epic, "expected_version": version,
+            "epic_contract": {"acceptance": _checks(3), "outcome": "Off."}})
+        assert _text(wrote) == tools.TEXT_EPIC_CONTRACTS_OFF
+        assert _stored(live, epic).outcome == "On."
+        # One org on, by its id: the list reloads with no restart.
+        _off(monkeypatch, f"{uuid.uuid4()},{live.org}")
+        again = await _send(live, "GET", ROUTE.format(epic), signed=None)
+        assert again.status_code == 200, again.text
+
+    async def test_off_get_task_and_its_context_give_null(self, live, monkeypatch):
+        epic = _epic(live, "sp8 flag reads")
+        saved = await _send(live, "PUT", ROUTE.format(epic), body=_body(outcome="Stored."),
+                            signed=None)
+        assert saved.status_code == 200, saved.text
+        _off(monkeypatch)
+        task = await _send(live, "GET", f"/projects/tasks/{epic}", signed=None)
+        assert task.status_code == 200 and task.json()["epic_contract"] is None
+        read = await _mcp(live, "write", "get_task", {"task_id": epic})
+        context = await _mcp(live, "write", "get_task_context", {"task_id": epic})
+        assert read["structuredContent"]["epic_contract"] is None
+        assert context["structuredContent"]["epic_contract"] is None
+        assert _stored(live, epic).outcome == "Stored."
+
+    async def test_off_a_create_with_a_contract_makes_no_task(self, live, monkeypatch):
+        _off(monkeypatch)
+        made = await _mcp(live, "write", "create_task", {
+            "project_id": live.team, "title": "sp8 flag create", "type_id": live.types.epic,
+            "epic_contract": _body()["epic_contract"]})
+        assert _text(made) == tools.TEXT_CREATE_CONTRACTS_OFF
+        direct = await _send(live, "POST", "/projects/tasks", body={
+            "project_id": live.team, "title": "sp8 flag create", "type_id": live.types.epic,
+            **_body()}, signed=None)
+        assert direct.status_code == 404 and direct.json()["detail"] == ec.CONTRACTS_OFF_DETAIL
+        assert t._count(live, "sp8 flag create") == 0
+        # A create with no contract still works while the flag is off.
+        plain = await _mcp(live, "write", "create_task", {
+            "project_id": live.team, "title": "sp8 flag plain", "type_id": live.types.epic})
+        assert plain["isError"] is False, plain
+
+
+class TestTheRepairs:
+    pytestmark = _DB_GATE
+
+    async def test_a_members_stale_version_is_refused(self, live):
+        """P2-a. The member reads V1, another save lands, and the member's
+        replace with V1 gets 412. A field edit first, so the range rule of
+        ``precondition_holds`` would have passed V1."""
+        epic = _epic(live, "sp8 member stale")
+        renamed = await _send(live, "PATCH", f"/projects/tasks/{epic}",
+                              body={"title": "sp8 member stale 2"}, signed=None)
+        assert renamed.status_code == 200, renamed.text
+        v1 = (await _send(live, "GET", f"/projects/tasks/{epic}", signed=None)).json()["updated_at"]
+        other = await _send(live, "PUT", ROUTE.format(epic), body=_body(outcome="Other"),
+                            signed=None)
+        assert other.status_code == 200, other.text
+        stale = await _send(live, "PUT", ROUTE.format(epic), body=_body(outcome="Mine"),
+                            headers={"If-Match": v1}, signed=None)
+        assert stale.status_code == 412, stale.text
+        assert _stored(live, epic).outcome == "Other"
+        fresh = await _send(live, "PUT", ROUTE.format(epic), body=_body(outcome="Mine"),
+                            headers={"If-Match": other.json()["version"]}, signed=None)
+        assert fresh.status_code == 200, fresh.text
+        assert _stored(live, epic).outcome == "Mine"
+
+    async def test_the_route_takes_a_number_only_for_the_appetite(self, live):
+        """P3. "40" and true are refused, and 40 is stored."""
+        epic = _epic(live, "sp8 strict appetite")
+        for value in ("40", True):
+            for part in ("appetite_credits", "appetite_review_hours"):
+                sent = await _send(live, "PUT", ROUTE.format(epic),
+                                   body=_body(**{part: value}), signed=None)
+                assert sent.status_code == 422, (part, value, sent.text)
+        assert _stored(live, epic) is None
+        ok = await _send(live, "PUT", ROUTE.format(epic), body=_body(appetite_credits=40),
+                         signed=None)
+        assert ok.status_code == 200, ok.text
+        assert float(_stored(live, epic).appetite_credits) == 40.0

@@ -3135,10 +3135,31 @@ TEXT_EPIC_DUPLICATE_CHECK = (
 TEXT_EPIC_CONTRACT_ALONE = (
     "Send epic_contract in a call of its own. Then change the other fields"
     " with the new version.")
+#: The ``detail`` of the 404 while ``EPIC_CONTRACT_ORGS`` does not hold the
+#: org. A copy of ``epic_contract.CONTRACTS_OFF_DETAIL``, pinned equal. The
+#: edge never reads the flag: the gateway answers for it.
+EPIC_CONTRACTS_OFF_DETAIL = "Epic contracts are not on for this organization."
+TEXT_EPIC_CONTRACTS_OFF = (
+    "Epic contracts are not on for this organization. Nothing changed.")
+#: The texts of ``create_task``. No task exists, so none names update_task.
+TEXT_CREATE_NOT_EPIC = (
+    "The type is not an epic type, so the new task takes no epic contract. No"
+    " task was made. Send epic_contract with type_id of the Epic type, or leave"
+    " epic_contract out.")
+TEXT_CREATE_CONTRACTS_OFF = (
+    "Epic contracts are not on for this organization. No task was made. Leave"
+    " epic_contract out.")
 _EPIC_DETAILS: Mapping[tuple[int, str], str] = {
     (422, NOT_EPIC_DETAIL): TEXT_NOT_EPIC,
     (422, EPIC_CHECK_COUNT_DETAIL): TEXT_EPIC_CHECK_COUNT,
     (422, EPIC_DUPLICATE_CHECK_DETAIL): TEXT_EPIC_DUPLICATE_CHECK,
+    (404, EPIC_CONTRACTS_OFF_DETAIL): TEXT_EPIC_CONTRACTS_OFF,
+}
+#: The same refusals for ``create_task``, which made no task.
+_CREATE_EPIC_DETAILS: Mapping[tuple[int, str], str] = {
+    **_EPIC_DETAILS,
+    (422, NOT_EPIC_DETAIL): TEXT_CREATE_NOT_EPIC,
+    (404, EPIC_CONTRACTS_OFF_DETAIL): TEXT_CREATE_CONTRACTS_OFF,
 }
 
 
@@ -5411,7 +5432,7 @@ async def _create(ctx: Context, args: dict[str, Any],
     _, row = await _write(ctx, "POST", CREATE_ROUTE, TEXT_PROJECT_NOT_FOUND,
                           json_body=payload,
                           details={(422, EPIC_PARENT_DETAIL): TEXT_EPIC_PARENT,
-                                   **_EPIC_DETAILS},
+                                   **_CREATE_EPIC_DETAILS},
                           coded=_assignee_codes(args.get("assignees") or ()))
     if not isinstance(row, dict) or _id(row.get("id")) is None:
         raise ToolError(TEXT_BUSY)
@@ -9125,6 +9146,7 @@ __all__ = [
     "DOOR_SCHEMA_MAX_BYTES",
     "EPIC_CHECK_COUNT_DETAIL",
     "EPIC_CHECK_KEYS",
+    "EPIC_CONTRACTS_OFF_DETAIL",
     "EPIC_CONTRACT_BODY_KEYS",
     "EPIC_CONTRACT_KEYS",
     "EPIC_CONTRACT_ROUTE",
@@ -9266,6 +9288,8 @@ __all__ = [
     "TEXT_COMMENT_KEY_UNKNOWN",
     "TEXT_COMMENT_NUL",
     "TEXT_CREATE_CLOSED",
+    "TEXT_CREATE_CONTRACTS_OFF",
+    "TEXT_CREATE_NOT_EPIC",
     "TEXT_DELETE_OFF",
     "TEXT_DELETE_TITLE",
     "TEXT_DOOR_CONFLICT",
@@ -9277,6 +9301,7 @@ __all__ = [
     "TEXT_DOOR_NOT_FOUND",
     "TEXT_DOOR_READ_CAP",
     "TEXT_EPIC_CHECK_COUNT",
+    "TEXT_EPIC_CONTRACTS_OFF",
     "TEXT_EPIC_CONTRACT_ALONE",
     "TEXT_EPIC_DUPLICATE_CHECK",
     "TEXT_EPIC_PARENT",

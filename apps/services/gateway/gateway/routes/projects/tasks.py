@@ -120,6 +120,7 @@ from gateway.routes.projects.epic_contract import (
     EpicContractIn,
     clean_contract,
     epic_contract_of,
+    refuse_when_off,
     save_contract,
 )
 from gateway.routes.projects.filters import (
@@ -1143,6 +1144,9 @@ async def create_task(
     # SP-8a. Not a column either: the contract lands after the insert. Its
     # rules run here, before any read, so a refused contract makes no task.
     raw_contract = values.pop("epic_contract", None)
+    if raw_contract is not None:
+        # Dark: no contract, and no task, while EPIC_CONTRACT_ORGS lacks the org.
+        refuse_when_off(getattr(user, "organization_id", None))
     contract = (
         clean_contract(EpicContractIn.model_validate(raw_contract))
         if raw_contract is not None else None

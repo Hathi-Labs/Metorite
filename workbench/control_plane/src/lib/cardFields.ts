@@ -82,9 +82,9 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "cannot change N": { label: "Cannot change", plural: "Cannot change" },
   "capacity": { label: "Capacity" },
   "category": { label: "Category", kind: "category" },
-  // SP-8a: each acceptance check of an epic contract, and their count.
-  "check N": { label: "Check", plural: "Checks" },
-  "checks": { label: "Number of checks" },
+  // SP-8a: the checks of an epic contract that a save adds, changes or removes.
+  "changed check N": { label: "Changed check", plural: "Changed checks" },
+  "checks unchanged": { label: "Checks unchanged" },
   "close_after_months": { label: "Close after (months)" },
   "color": { label: "Colour", kind: "color" },
   "comment": { label: "Comment" },
@@ -155,6 +155,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "move to": { label: "Move to", kind: "status" },
   "moves": { label: "Moves" },
   "name": { label: "Name" },
+  // SP-8a: a check that a save adds to, or removes from, an epic contract.
+  "new check N": { label: "New check", plural: "New checks" },
   "next copy": { label: "Next copy" },
   "next_action": { label: "Next action" },
   "no longer the default": { label: "No longer the default" },
@@ -187,6 +189,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "repeat day": { label: "Repeat day" },
   "repeats": { label: "Repeats" },
   "recipient": { label: "Recipient" },
+  "removed check N": { label: "Removed check", plural: "Removed checks" },
   "report": { label: "Report" },
   "required": { label: "Required", kind: "flag" },
   // SP-8a: the review depth of an epic, which the lead sets.

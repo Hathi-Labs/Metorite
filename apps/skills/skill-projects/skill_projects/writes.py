@@ -2097,17 +2097,31 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
 
 # ── SP-8a — the contract of an epic (project_management_app.md §13.3) ──────
 #
-# One class B tool. The route replaces the whole contract, and the card shows
-# each part before anything is saved. The draft lives on the card: the store
-# keeps no contract with fewer than 3 checks.
+# One class B tool. The route replaces the whole contract. The card shows
+# only what changes: the parts that move, and one row for each check that is
+# added, removed or changed. The draft lives on the card: the store keeps no
+# contract with fewer than 3 checks.
 
-#: The count of acceptance checks, and the risk tiers. Copies of the
-#: gateway's ``epic_contract.MIN_CHECKS``, ``MAX_CHECKS`` and ``RISK_TIERS``.
+#: The rules of a contract. Copies of the gateway's ``epic_contract.py``,
+#: and ``test_epic_contract_r8.py`` pins each pair equal. The tool checks
+#: them BEFORE the card, so a card never asks for a save that the route
+#: refuses.
 EPIC_MIN_CHECKS = 3
 EPIC_MAX_CHECKS = 7
 EPIC_RISK_TIERS: tuple[str, ...] = ("LOW", "STANDARD", "HIGH")
+EPIC_MAX_CHECK_CHARS = 300
+EPIC_MAX_EVIDENCE_CHARS = 1000
+EPIC_MAX_OUTCOME_CHARS = 500
+EPIC_MAX_OUT_OF_SCOPE_CHARS = 2000
+EPIC_MAX_WORKSTREAM_CHARS = 120
+EPIC_MAX_SPEC_LINK_CHARS = 500
+EPIC_MAX_APPETITE_CREDITS = 1_000_000_000
+EPIC_MAX_APPETITE_REVIEW_HOURS = 100_000
+#: The answer while ``EPIC_CONTRACT_ORGS`` does not hold the org. The route
+#: answers 404, and the tool makes no card.
+EPIC_CONTRACTS_OFF = "Epic contracts are not on for this organization yet. Nothing was changed."
 #: A list mark at the start of a line of checks: "- ", "* ", "1. " or "2) ".
-_CHECK_BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d{1,2}[.)])\s+")
+_CHECK_BULLET = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+")
 #: A done mark at the start of a check: "[x] " or "[ ] ". The word "check"
 #: before it is the line of task_detail, so a copied line reads right.
 _CHECK_DONE = re.compile(r"^(?:check\s+)?\[([xX ])\]\s*", re.IGNORECASE)
@@ -2118,6 +2132,17 @@ _EPIC_PARTS: tuple[tuple[str, str], ...] = (
     ("appetite_review_hours", "appetite review hours"),
     ("workstream", "workstream"), ("spec_link", "spec link"),
 )
+#: The cap of each text part, with the name that a refusal uses.
+_EPIC_TEXT_CAPS: tuple[tuple[str, str, int], ...] = (
+    ("outcome", "outcome", EPIC_MAX_OUTCOME_CHARS),
+    ("out_of_scope", "out_of_scope", EPIC_MAX_OUT_OF_SCOPE_CHARS),
+    ("workstream", "workstream", EPIC_MAX_WORKSTREAM_CHARS),
+    ("spec_link", "spec_link", EPIC_MAX_SPEC_LINK_CHARS),
+)
+#: The impact line of the card. It is a ``key: value`` row, so the card
+#: client draws the body as rows (one note line at most before the rows).
+_EPIC_FIRST = "This is the first contract of this epic."
+_EPIC_CHANGE = "Only the rows below change. The rest of the contract stays as it is."
 
 
 def _epic_items(acceptance: str) -> list[dict[str, Any]] | str:
@@ -2174,6 +2199,9 @@ def _epic_checks(acceptance: str, stored: list[dict[str, Any]]) -> list[dict[str
     saved = {str(c.get("text") or "").casefold(): c for c in stored if isinstance(c, dict)}
     out: list[dict[str, Any]] = []
     for item in items:
+        if len(item["text"]) > EPIC_MAX_CHECK_CHARS:
+            return (f"A check is longer than {EPIC_MAX_CHECK_CHARS} characters. "
+                    "Nothing was changed. Make each check one short sentence.")
         old = saved.get(item["text"].casefold()) or {}
         check: dict[str, Any] = {
             "text": item["text"],
@@ -2183,13 +2211,19 @@ def _epic_checks(acceptance: str, stored: list[dict[str, Any]]) -> list[dict[str
             check["id"] = str(old["id"])
         evidence = item["evidence"] if "evidence" in item else old.get("evidence")
         if isinstance(evidence, str) and evidence.strip():
+            if len(evidence.strip()) > EPIC_MAX_EVIDENCE_CHARS:
+                return (f"The evidence of a check is longer than {EPIC_MAX_EVIDENCE_CHARS} "
+                        "characters. Nothing was changed. Link to the evidence.")
             check["evidence"] = evidence.strip()
         out.append(check)
+    texts = [c["text"].casefold() for c in out]
+    if len(set(texts)) != len(texts):
+        return "Two checks have the same text. Nothing was changed. Give each check its own text."
     return out
 
 
-def _appetite(value: Any, name: str) -> float | str | None:
-    """A number of 0 or more, ``None`` for blank, or a refusal string."""
+def _appetite(value: Any, name: str, cap: int) -> float | str | None:
+    """A number from 0 to *cap*, ``None`` for blank, or a refusal string."""
     raw = str(value if value is not None else "").strip().replace(",", "")
     if not raw:
         return None
@@ -2197,32 +2231,96 @@ def _appetite(value: Any, name: str) -> float | str | None:
         number = float(raw)
     except ValueError:
         number = -1.0
-    if not math.isfinite(number) or number < 0:
-        return f"{name} is a number, 0 or more, such as 40. Nothing was changed."
+    if not math.isfinite(number) or not 0 <= number <= cap:
+        return f"{name} is a number from 0 to {cap:,}, such as 40. Nothing was changed."
     return number
 
 
-def _blank(value: Any) -> str | None:
+def _epic_text(value: Any) -> str | None:
+    """A stripped text part, ``None`` for blank. (``_blank`` of this module
+    is another helper that answers a bool, so the name differs.)"""
     text_ = str(value or "").strip()
     return text_ or None
 
 
-def _epic_card(contract: dict[str, Any] | None) -> dict[str, Any]:
-    """The card rows of a contract: each part, then each check."""
-    found = contract or {}
+def _epic_number(value: Any) -> Any:
+    """A number as a member reads it: 40, not 40.0."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def _epic_shown(value: Any) -> Any:
+    """One part on the card: "(none)" for an empty part, a whole number with
+    no ".0"."""
+    if value is None or value == "":
+        return "(none)"
+    return _epic_number(value)
+
+
+def _check_line(check: dict[str, Any]) -> str:
+    line = f"{'[x]' if check.get('done') else '[ ]'} {check.get('text') or ''}"
+    if check.get("evidence"):
+        line += f" (evidence: {check['evidence']})"
+    return line
+
+
+def _epic_change_rows(
+    before: dict[str, Any] | None, after: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(rows, before_rows)`` of the card: only what changes.
+
+    A part that changes shows its old and new value. A first contract shows
+    each part that it sets. Each check that is added, removed or changed has
+    one row, and "checks unchanged" counts the rest. So a tick of one check
+    makes a card of a few lines, whatever the size of the contract.
+    """
+    found = before or {}
     rows: dict[str, Any] = {}
+    old_rows: dict[str, Any] = {}
     for part, label in _EPIC_PARTS:
-        value = found.get(part)
-        rows[label] = "(none)" if value is None or value == "" else value
-    checks = [c for c in found.get("acceptance") or () if isinstance(c, dict)]
-    rows["checks"] = len(checks)
-    for number, check in enumerate(checks, start=1):
-        mark = "[x]" if check.get("done") else "[ ]"
-        line = f"{mark} {check.get('text') or ''}"
-        if check.get("evidence"):
-            line += f" (evidence: {check['evidence']})"
-        rows[f"check {number}"] = line
-    return rows
+        old, new = found.get(part), after.get(part)
+        if before is None:
+            if new not in (None, ""):
+                rows[label] = _epic_shown(new)
+            continue
+        if _epic_shown(old) != _epic_shown(new):
+            rows[label] = _epic_shown(new)
+            old_rows[label] = _epic_shown(old)
+    kept = {str(c.get("text") or "").casefold(): c
+            for c in found.get("acceptance") or () if isinstance(c, dict)}
+    seen: set[str] = set()
+    added = changed = same = 0
+    for check in after.get("acceptance") or ():
+        key = str(check.get("text") or "").casefold()
+        seen.add(key)
+        old = kept.get(key)
+        if old is None:
+            added += 1
+            rows[f"new check {added}"] = _check_line(check)
+        elif _check_line(old) != _check_line(check):
+            changed += 1
+            rows[f"changed check {changed}"] = (
+                f"{data(_check_line(old))} → {data(_check_line(check))}")
+        else:
+            same += 1
+    removed = 0
+    for key, old in kept.items():
+        if key not in seen:
+            removed += 1
+            rows[f"removed check {removed}"] = _check_line(old)
+    if before is not None and same:
+        rows["checks unchanged"] = same
+    return rows, old_rows
+
+
+def _epic_too_long(contract: dict[str, Any]) -> str:
+    """A refusal for a text part over its cap, or ``""``."""
+    for part, name, cap in _EPIC_TEXT_CAPS:
+        value = contract.get(part)
+        if isinstance(value, str) and len(value) > cap:
+            return f"{name} is longer than {cap} characters. Nothing was changed."
+    return ""
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
@@ -2247,9 +2345,15 @@ async def set_epic_contract(
     part to keep. A check with the text of a saved check keeps its id, its
     done mark and its evidence. Only a task of the Epic type takes a
     contract. Draft the outcome and the checks for the member: the card shows
-    each part, and nothing is saved before the member approves."""
+    what changes, and nothing is saved before the member approves."""
     tid, task = await _task(task_id)
-    current = (await get(f"/projects/tasks/{tid}/epic-contract")) or {}
+    try:
+        current = (await get(f"/projects/tasks/{tid}/epic-contract")) or {}
+    except GatewayRefusal as exc:
+        # The task was just read, so a 404 here is the flag of the org.
+        if getattr(exc, "status", None) == 404:
+            return EPIC_CONTRACTS_OFF
+        raise
     if not current.get("is_epic"):
         return (
             f"{_ref(task)} is not an epic, so it takes no epic contract. Nothing was "
@@ -2263,34 +2367,34 @@ async def set_epic_contract(
     tier = str(risk_tier or "").strip().upper()
     if tier and tier not in EPIC_RISK_TIERS:
         return "risk_tier is LOW, STANDARD or HIGH. Nothing was changed."
-    credits = _appetite(appetite_credits, "appetite_credits")
+    credits = _appetite(appetite_credits, "appetite_credits", EPIC_MAX_APPETITE_CREDITS)
     if isinstance(credits, str):
         return credits
-    hours = _appetite(appetite_review_hours, "appetite_review_hours")
+    hours = _appetite(appetite_review_hours, "appetite_review_hours",
+                      EPIC_MAX_APPETITE_REVIEW_HOURS)
     if isinstance(hours, str):
         return hours
     contract: dict[str, Any] = {
-        "outcome": _blank(outcome),
+        "outcome": _epic_text(outcome),
         "acceptance": checks,
-        "out_of_scope": _blank(out_of_scope),
+        "out_of_scope": _epic_text(out_of_scope),
         "risk_tier": tier or None,
         "appetite_credits": credits,
         "appetite_review_hours": hours,
-        "workstream": _blank(workstream),
-        "spec_link": _blank(spec_link),
+        "workstream": _epic_text(workstream),
+        "spec_link": _epic_text(spec_link),
     }
-    after_rows = _epic_card(contract)
-    before_rows = _epic_card(before) if before is not None else None
-    if before_rows is not None and before_rows == after_rows:
+    too_long = _epic_too_long(contract)
+    if too_long:
+        return too_long
+    rows, old_rows = _epic_change_rows(before, contract)
+    if before is not None and set(rows) <= {"checks unchanged"}:
         return f"The epic contract of {_ref(task)} already says that. Nothing was changed."
-    lead = (
-        "This replaces the whole contract. A part shown as (none) is cleared."
-        if before is not None else "This is the first contract of this epic."
-    )
+    lead = "impact: " + (_EPIC_FIRST if before is None else _EPIC_CHANGE)
     if not await _confirm(
         title="Save this epic contract?" if before is None else "Change this epic contract?",
         detail=_ref(task),
-        context=_fields_block(after_rows, before=before_rows, lead=lead),
+        context=_fields_block(rows, before=old_rows, lead=lead),
     ):
         return _not_confirmed()
     saved = (await put(f"/projects/tasks/{tid}/epic-contract", {"epic_contract": contract})) or {}

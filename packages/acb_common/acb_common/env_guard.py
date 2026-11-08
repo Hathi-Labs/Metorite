@@ -229,6 +229,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # project for an org. A pin changes what a finding quotes, so only the
     # owner writes it.
     "AUTHORITY_PINS_ORGS",
+    # SP-8a: EPIC_CONTRACT_ORGS opens the contract of an epic for an org. A
+    # tenant must not open it for another org, so only the owner writes it.
+    "EPIC_CONTRACT_ORGS",
     # WS-KG KG-4: GRAPH_SWEEP_ORGS opens the nightly sweep that writes graph
     # edges into kb_links for an org. A tenant must not open it for another
     # org, so only the operator writes it.

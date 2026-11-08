@@ -993,6 +993,16 @@ class Settings(BaseSettings):
     # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
     authority_pins_orgs: str = ""
 
+    # ── The contract of an epic (SP-8a, project_management_app.md §13.3) ────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET` and `PUT /projects/tasks/{id}/epic-contract`
+    # answer 404, `get_task` carries `epic_contract: null`, a create with a
+    # contract makes no task, and the chat tool makes no card. The one reader
+    # is `gateway.routes.projects.epic_contract.epic_contracts_allowed`. A
+    # SIGHUP reload applies a change. Fence: tests/unit/test_epic_contract_r8.py.
+    epic_contract_orgs: str = ""
+
     # ── Questions for me (WS-55 EA-18a, external_agent_access.md §12.8) ──────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

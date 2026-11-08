@@ -558,8 +558,12 @@ def _epic_contract_block(contract: Any) -> list[str]:
         value = contract.get(key)
         if value in (None, ""):
             out.append(f"  {label}: (none)")
+        elif isinstance(value, str):
+            out.append(f"  {label}: {data(value)}")
         else:
-            out.append(f"  {label}: {data(value) if isinstance(value, str) else value}")
+            # A whole number reads as 40, not 40.0.
+            shown = int(value) if isinstance(value, float) and value.is_integer() else value
+            out.append(f"  {label}: {shown}")
     for check in contract.get("acceptance") or ():
         if not isinstance(check, dict):
             continue

@@ -41,13 +41,19 @@ connection sees only the tasks inside its pin (``core.Visibility``), so it
 reads and writes only those contracts. A hidden task answers 404.
 
 **The version.** ``If-Match`` carries the version of the TASK
-(``pm_tasks.updated_at``), as for the PUT of the assignees. A signed agent
-must send it (428 without it), and its match is strict
-(``core.require_exact_version``, the one strict check of a replace): any
-change after the read gives 412. A save writes one ``field_change`` activity,
-which touches the task, so the next agent must read again. A member's header
-follows the one rule (``core.require_precondition``), and a member without
-it writes, as D-PM-20 allows.
+(``pm_tasks.updated_at``). A save replaces the whole contract, so a header
+that the caller sends matches strictly (``core.require_exact_version``, the
+one strict check of a replace): any change after the read gives 412. A
+signed agent must send it (428 without it). A member without it writes, as
+D-PM-20 allows, and the app form will send it. A save writes one
+``field_change`` activity, which touches the task, so the next writer must
+read again.
+
+**Dark (``EPIC_CONTRACT_ORGS``).** :func:`epic_contracts_allowed` reads the
+list on each call, so a reload applies a flip with no restart. Off, both
+routes answer 404 with :data:`CONTRACTS_OFF_DETAIL`, ``GET /tasks/{id}``
+carries ``epic_contract: null``, and a create that sends a contract answers
+the same 404 and makes no task. The table stays, and is harmless dark.
 
 **The record.** A save that changes something writes ONE ``field_change``
 activity through ``core.record_field_change``. It names each part that
@@ -69,9 +75,10 @@ import math
 import re
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_settings
 from fastapi import Depends, Header, HTTPException
 from gateway.routes.projects.core import (
     TaskModel,
@@ -84,13 +91,12 @@ from gateway.routes.projects.core import (
     lock_task,
     record_field_change,
     require_exact_version,
-    require_precondition,
     resolve_visibility,
     router,
     row_to_dict,
     task_is_epic,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Strict
 from sqlalchemy import text
 
 #: The count of acceptance checks in each save (§13.3).
@@ -135,6 +141,40 @@ VERSION_REQUIRED_DETAIL = (
     "An agent sends If-Match with the version of the task. Read the task, "
     "then send its version."
 )
+#: The 404 of both routes, and of a create with a contract, while
+#: ``EPIC_CONTRACT_ORGS`` does not hold the org. A text of its own, so the
+#: edge and the chat tell it from a task that is not there.
+CONTRACTS_OFF_DETAIL = "Epic contracts are not on for this organization."
+
+
+def epic_contracts_allowed(organization_id: str | None) -> bool:
+    """True when ``EPIC_CONTRACT_ORGS`` holds the org, or holds ``*``.
+    Default OFF.
+
+    The org comes from the session or from a row that the session bound,
+    never from request input (R5). It reads ``get_settings()`` on each call,
+    so a flag reload needs no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "epic_contract_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+def refuse_when_off(organization_id: str | None) -> None:
+    """404 with :data:`CONTRACTS_OFF_DETAIL` while the org is off."""
+    if not epic_contracts_allowed(organization_id):
+        raise HTTPException(status_code=404, detail=CONTRACTS_OFF_DETAIL)
+
+
+async def require_epic_contracts(user: UserContext = Depends(get_current_user)) -> None:
+    """The route dependency. It runs before the body is read."""
+    refuse_when_off(getattr(user, "organization_id", None))
+
+
+_ENABLED = [Depends(require_epic_contracts)]
 
 
 class AcceptanceCheckIn(BaseModel):
@@ -159,8 +199,9 @@ class EpicContractIn(BaseModel):
     acceptance: list[AcceptanceCheckIn] | None = None
     out_of_scope: str | None = None
     risk_tier: str | None = None
-    appetite_credits: float | None = None
-    appetite_review_hours: float | None = None
+    #: Strict: a number only. "40" and true are a 422, never a stored guess.
+    appetite_credits: Annotated[float, Strict()] | None = None
+    appetite_review_hours: Annotated[float, Strict()] | None = None
     workstream: str | None = None
     spec_link: str | None = None
 
@@ -311,8 +352,12 @@ async def epic_contract_of(db: Any, task: Any) -> dict[str, Any] | None:
     """The contract of a visible task row, or ``None``.
 
     ``None`` for a task that is not an epic, even when a row from an earlier
-    epic type stays (§13.3), and for an epic with no contract yet.
+    epic type stays (§13.3), and for an epic with no contract yet. ``None``
+    too while ``EPIC_CONTRACT_ORGS`` does not hold the org of the task, which
+    is the bound tenant.
     """
+    if not epic_contracts_allowed(str(getattr(task, "organization_id", "") or "")):
+        return None
     if not await task_is_epic(db, getattr(task, "type_id", None)):
         return None
     row = await _stored(db, task)
@@ -399,21 +444,19 @@ async def save_contract(db: Any, user: UserContext, task: Any,
 
 async def _require_version(db: Any, task: Any, if_match: str | None,
                            user: UserContext) -> None:
-    """``If-Match`` on the version of the task, as the PUT of the assignees
-    checks it (``tasks.set_assignees``).
+    """``If-Match`` on the version of the task, strict for every caller.
 
     ``precondition_holds`` passes a token from before a satellite bump, and
-    a contract save is itself such a bump. An agent's replace on that token
-    would drop another writer's save in silence. So a signed agent sends the
-    header, and its match is strict (``core.require_exact_version``, the one
-    strict check of a replace). A member keeps the one rule
-    (``core.require_precondition``).
+    a contract save is itself such a bump. A whole-contract replace on that
+    token would drop another writer's save in silence. So a header that the
+    caller sends matches strictly (``core.require_exact_version``, the one
+    strict check of a replace). A signed agent must send it. A member may
+    leave it out (D-PM-20).
     """
-    if getattr(user, "agent", None) is None:
-        require_precondition(task, if_match, row_to_dict(task, TaskModel))
-        return
     if not isinstance(if_match, str):
-        raise HTTPException(status_code=428, detail=VERSION_REQUIRED_DETAIL)
+        if getattr(user, "agent", None) is not None:
+            raise HTTPException(status_code=428, detail=VERSION_REQUIRED_DETAIL)
+        return
     await require_exact_version(db, str(task.id), if_match)
 
 
@@ -427,7 +470,7 @@ def _reply(task: Any, contract: dict[str, Any] | None, *, epic: bool) -> dict[st
     }
 
 
-@router.get("/tasks/{task_id}/epic-contract")
+@router.get("/tasks/{task_id}/epic-contract", dependencies=_ENABLED)
 async def get_epic_contract(
     task_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict:
@@ -441,7 +484,7 @@ async def get_epic_contract(
         return _reply(task, contract_out(row) if row is not None else None, epic=epic)
 
 
-@router.put("/tasks/{task_id}/epic-contract")
+@router.put("/tasks/{task_id}/epic-contract", dependencies=_ENABLED)
 async def put_epic_contract(
     task_id: str, payload: EpicContractPut,
     user: UserContext = Depends(get_current_user),
@@ -473,6 +516,7 @@ async def put_epic_contract(
 
 __all__ = [
     "CHECK_COUNT_DETAIL",
+    "CONTRACTS_OFF_DETAIL",
     "CONTRACT_PARTS",
     "DUPLICATE_CHECK_DETAIL",
     "MAX_APPETITE_CREDITS",
@@ -495,7 +539,10 @@ __all__ = [
     "clean_contract",
     "contract_out",
     "epic_contract_of",
+    "epic_contracts_allowed",
     "get_epic_contract",
     "put_epic_contract",
+    "refuse_when_off",
+    "require_epic_contracts",
     "save_contract",
 ]
