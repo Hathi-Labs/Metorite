@@ -82,7 +82,9 @@ async function mock(page: Page): Promise<string[]> {
 
 const CAPTURE_INPUT = (page: Page) => page.getByRole("textbox", { name: "Capture to my task inbox" });
 
-test("at 390 the bar reads Menu, My tasks, Capture, Search, Ask", async ({ page }) => {
+// MOB-10 (task 2003): the bar names the whole company, so "Projects" took the
+// place of "My tasks". My tasks is a row of the Projects sheet.
+test("at 390 the bar reads Menu, Projects, Capture, Search, Ask", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 390, height: 844 });
   await mock(page);
@@ -90,7 +92,7 @@ test("at 390 the bar reads Menu, My tasks, Capture, Search, Ask", async ({ page 
   const bar = page.locator("nav").filter({ has: page.locator("[data-ask-tab]") }).last();
   await expect(bar.locator("[data-ask-tab]")).toBeVisible({ timeout: 60_000 });
   const labels = (await bar.locator("button").allInnerTexts()).map((t) => t.trim()).filter(Boolean);
-  expect(labels).toEqual(["Menu", "My tasks", "Capture", "Search", "Ask"]);
+  expect(labels).toEqual(["Menu", "Projects", "Capture", "Search", "Ask"]);
 });
 
 test("Capture writes to the Inbox with no My work view open", async ({ page }) => {
@@ -107,7 +109,7 @@ test("Capture writes to the Inbox with no My work view open", async ({ page }) =
   await expect.poll(() => written, { timeout: 15_000 }).toEqual(["Buy printer toner"]);
 });
 
-test("Menu opens the global drawer, and My tasks opens My tasks, then the Projects sheet", async ({ page }) => {
+test("Menu opens the global drawer, and Projects opens the Projects sheet at once", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 390, height: 844 });
   await mock(page);
@@ -121,18 +123,18 @@ test("Menu opens the global drawer, and My tasks opens My tasks, then the Projec
   await page.waitForLoadState("networkidle");
   await bar.getByRole("button", { name: "Menu" }).dispatchEvent("click");
   await expect(page.getByRole("button", { name: "Search or ask anything" })).toBeVisible({ timeout: 30_000 });
-  // The tab "My tasks" is on the bar. The sheet row "My task inbox" is not.
+  // The Menu is not the Projects sheet: the sheet row "My task inbox" is not there.
   await expect(page.getByRole("button", { name: /^My task inbox/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Close", exact: true }).first().click();
   await expect(page.getByRole("button", { name: "Search or ask anything" })).toHaveCount(0);
-  // OP-11: My tasks opens the My tasks space on its List, with the chip row.
-  await bar.getByRole("button", { name: "My tasks" }).click();
-  await expect(page.getByTestId("my-tasks-space")).toHaveAttribute("data-mode", "list", { timeout: 30_000 });
-  await expect(page.locator("[data-my-tasks-chips]")).toBeVisible();
-  // A second tap opens the Projects sheet, with the "My work" heading on top.
-  await bar.getByRole("button", { name: "My tasks" }).click();
+  // MOB-10: one tap on Projects opens the Projects sheet, with "My work" on top.
+  await bar.getByRole("button", { name: "Projects", exact: true }).click();
   await expect(page.getByRole("button", { name: /^My task inbox/ }).first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("My work", { exact: true }).first()).toBeVisible();
+  // Its "My tasks" row opens the My tasks space on its List, with the chip row (OP-11).
+  await page.getByRole("button", { name: /^My tasks/ }).first().click();
+  await expect(page.getByTestId("my-tasks-space")).toHaveAttribute("data-mode", "list", { timeout: 30_000 });
+  await expect(page.locator("[data-my-tasks-chips]")).toBeVisible();
 });
 
 test("/tasks?do=capture lands on the Inbox with capture open", async ({ page }) => {

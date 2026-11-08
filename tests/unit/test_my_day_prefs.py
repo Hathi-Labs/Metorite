@@ -53,6 +53,9 @@ class _FakeDB:
         self.sql.append((sql, p))
         if sql.startswith("SELECT my_day_prefs"):
             return _Result(None if self.row is _NO_ROW else (self.row,))
+        if sql.startswith("UPDATE user_settings"):
+            # The hide switch under the other spellings (task 1209).
+            return _Result(None)
         # The write. Postgres does the merge; the fake only answers a value
         # of the right shape, so the route's answer can be read.
         base = self.row if isinstance(self.row, dict) else {}
@@ -110,7 +113,8 @@ def _put(body: Any, user: UserContext | None = None):
 class TestTheAllowlist:
     def test_the_keys_are_the_spec_s(self) -> None:
         assert prefs.PREF_KEYS == ("mutes", "open_in_app", "corrections",
-                                   "hide_push_details", "push_prompt", "rule_mutes")
+                                   "hide_push_details", "push_prompt", "rule_mutes",
+                                   "block_notify")
         assert set(prefs._CLEAN) == set(prefs.PREF_KEYS)
 
     @pytest.mark.parametrize("body", [
@@ -356,8 +360,12 @@ class TestHidePushDetails:
         res = _put({"key": "hide_push_details", "value": value})
         assert res.status_code == 200, res.text
         assert res.json()["hide_push_details"] is value
-        [(_, params)] = _writes(fake)
+        [(_, params)] = [w for w in _writes(fake) if "pkey" in w[1]]
         assert (params["pkey"], json.loads(params["pval"])) == ("hide_push_details", value)
+        # The same value goes to every other spelling of the address (1209).
+        [(other_sql, other)] = [w for w in _writes(fake) if "pkey" not in w[1]]
+        assert "lower(user_id) = lower(:uid)" in other_sql and "user_id <> :uid" in other_sql
+        assert json.loads(other["pval"]) is value
         # The other keys stay in the answer.
         assert res.json()["corrections"] == ["Acme mail never needs me"]
         fake.row = {"hide_push_details": value}

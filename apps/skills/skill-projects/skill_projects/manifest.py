@@ -163,8 +163,17 @@ MANIFEST: tuple[Route, ...] = (
     # one card, and the route refuses an agent connection.
     Route("GET", "/projects/decisions", "my_decisions", "A"),
     Route("POST", "/projects/decisions/{decision_id}/answer", "answer_decision", "C"),
+    # WS-AP AP-8a (waiting_on_me.md §7.2): a member asks a member. Dark behind
+    # WAITING_ORGS and DECISIONS_ORGS. The route refuses an agent connection
+    # and a run with no person present. AP-10 builds the tool `ask_person`.
+    Route("POST", "/projects/tasks/{task_id}/asks", "ask_person", "C"),
+    # The asker withdraws an ask on its card (AP-9). A member does it by a
+    # click, so D-OP-9 gives it a chat tool: AP-10 builds `withdraw_ask`.
+    Route("POST", "/projects/asks/{ask_id}/withdraw", "withdraw_ask", "C"),
     # ── tasks.py ─────────────────────────────────────────────────────────
     Route("GET", "/projects/tasks", "list_tasks", "A"),
+    # MCP-G19a (task 1957): the count read. The chat tool is task 2223.
+    Route("GET", "/projects/tasks/stats", "board_stats", "A"),
     Route("GET", "/projects/tasks/{task_id}", "task_detail", "A"),
     # D-OP-10 (OP-7): the subtasks a delete card offers, hidden ones counted.
     Route("GET", "/projects/tasks/{task_id}/subtree", "delete_task", "C"),
@@ -542,6 +551,8 @@ MANIFEST: tuple[Route, ...] = (
 #: builds each. The coverage fence holds this against ``__all__``: a tool is
 #: exported OR it is here, never both and never neither.
 PLANNED: dict[str, str] = {
+    # MCP-G19a: the route is built. The chat tool waits on Metorite task 2223.
+    "board_stats": "Metorite task 2223, chat parity for the board count",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
@@ -561,6 +572,9 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-14a. A person releases a run from the card. The chat gets the
     # tool with the other run tools in EA-12e.
     "release_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # WS-AP AP-8a built the person ask route. AP-10 builds its chat tool.
+    "ask_person": "WS-AP AP-10, the chat tools of Waiting",
+    "withdraw_ask": "WS-AP AP-10, the chat tools of Waiting",
     # WS-55 SW-11a. A person resumes a stalled run from Needs attention. The
     # chat gets the tool with the other run tools in EA-12e.
     "resume_agent_run": "WS-55 EA-12e, in-product chat parity",
@@ -599,7 +613,10 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # the custom values in the create itself, which checks them (#679).
     # WS-46 P7: a weekly rule with no day takes today in the member's zone,
     # from my_work's `GET /projects/my/today`.
-    "create_task": frozenset({"assign", "set_recurrence", "my_work"}),
+    # WS-IMG IMG-2: `files` posts each file through `attach_to_task`'s route
+    # and then patches the description through `update_task`'s, under the
+    # same card. Its own row makes it class B. A held chat refuses `files`.
+    "create_task": frozenset({"assign", "set_recurrence", "my_work", "attach_to_task"}),
     "set_recurrence": frozenset({"my_work"}),
     # WS-46 P7: a block time with no offset is read in the member's zone.
     "set_my_overlay": frozenset({"my_work"}),
@@ -1204,6 +1221,16 @@ _MAPPING_CARD_REASON = (
     "The answer on the app's mapping card. Without it the server's own rule maps "
     "each row, and the preview the chat card shows already counts that rule."
 )
+#: MCP-G19a (task 1957). The audit filters of the agent door. The chat
+#: gets them with its count tool, Metorite task 2223.
+_AUDIT_FILTER_REASON = (
+    "An audit filter of the agent door (MCP-G19a). The chat gets it with "
+    "the board count tool, Metorite task 2223."
+)
+_STATS_ROUTE_REASON = (
+    "A field of the board count route of the agent door (MCP-G19a). Its "
+    "chat tool is Metorite task 2223."
+)
 _READ_FILTER_REASON = (
     "A filter of the app's list. The chat narrows tasks through list_tasks, "
     "which prints the facts this filter reads."
@@ -1243,7 +1270,45 @@ _TASK_PREFIX_REASON = (
 #: it read. The model never names it.
 _HELD_CARD_REASON = "The card of a held chat sets it from the rows it read."
 
+_STATUS_PLACE_REASON = (
+    "create_status and update_status send it when the model passes slot or after, in "
+    "every organization, and the route accepts it at all times. "
+    "test_projects_status_chat.py proves the send."
+)
+
+
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/projects/tasks/stats"): {
+        "assigned": _STATS_ROUTE_REASON,
+        "assignee": _STATS_ROUTE_REASON,
+        "created_after": _STATS_ROUTE_REASON,
+        "due_before": _STATS_ROUTE_REASON,
+        "group_by": _STATS_ROUTE_REASON,
+        "has_parent": _STATS_ROUTE_REASON,
+        "include_archived": _STATS_ROUTE_REASON,
+        "include_subtree": _STATS_ROUTE_REASON,
+        "is_epic": _STATS_ROUTE_REASON,
+        "parent_task_id": _STATS_ROUTE_REASON,
+        "project_id": _STATS_ROUTE_REASON,
+        "q": _STATS_ROUTE_REASON,
+        "status_category": _STATS_ROUTE_REASON,
+        "status_id": _STATS_ROUTE_REASON,
+        "tags": _STATS_ROUTE_REASON,
+        "title_prefix": _STATS_ROUTE_REASON,
+        "unheld": _STATS_ROUTE_REASON,
+        "updated_after": _STATS_ROUTE_REASON,
+        "updated_before": _STATS_ROUTE_REASON,
+    },
+    # WS-42 PST-4: the place of a lane. The tools send them when the model
+    # passes a place, and this fence's witnesses pass none.
+    ("POST", "/projects/nodes/{project_id}/statuses"): {
+        "slot": _STATUS_PLACE_REASON,
+        "after": _STATUS_PLACE_REASON,
+    },
+    ("PATCH", "/projects/statuses/{status_id}"): {
+        "slot": _STATUS_PLACE_REASON,
+        "after": _STATUS_PLACE_REASON,
+    },
     # WS-ALN ALN-2a: the list is the member's own, and the chat reads only that.
     ("GET", "/projects/decisions"): {
         "task_id": "my_decisions lists the decisions that name the member, across tasks."
@@ -1252,6 +1317,14 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "reason": "The chat answer carries no reason. The card shows the option only."
     },
     ("GET", "/projects/tasks"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
+        "compact": "A row shape of the agent door (MCP-G19a), not a filter. The chat prints its own rows.",
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. list_tasks filters by status_category, and render_board "
@@ -1278,6 +1351,13 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     },
     # WS-64 OP-6c: the export takes the same subset as list_tasks.
     ("GET", "/projects/export/tasks.csv"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. export_tasks filters by status_category, as list_tasks does."
@@ -1298,7 +1378,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         ),
     },
     ("PATCH", "/projects/tasks/{task_id}"): {
-        "If-Match": "The browser's edit guard (D-PM-20). A chat write reads the row first.",
+        "If-Match": (
+            "The browser's edit guard (D-PM-20). A chat edit reads the row first. "
+            "The one chat write that sends it is the image PATCH of create_task with "
+            "files, and the witness fence cannot run it, because the stub upload is a PDF."
+        ),
         "project_id": "The route refuses it: a move goes through move_task.",
         "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
         "source": "Where a task came from is a fact of its create. An edit keeps it.",
@@ -1469,11 +1553,17 @@ FIELD_GAPS: dict[str, str] = {
     "G23": "EA-12e",
     # G24 (the reminder routes of WS-66 RM-1) closed in RM-3 (2026-10-25).
     # Its rows are in SENDS.
+    # WS-AP AP-8a: the person ask. The chat gets `ask_person` in AP-10.
+    "G25": "AP-10",
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
+    # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
+    ("POST", "/projects/tasks/{task_id}/asks"): {
+        "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",
+    },
     # G23 (WS-55 EA-12a, EA12-9): the agent-run routes. The chat gets them in
     # EA-12e. Today an outside agent reaches them over MCP.
     # `status` and `limit` are sent by `waiting_agent_requests` (OP-6e, SENDS).
@@ -1644,6 +1734,11 @@ UI_ACTIONS: dict[str, str] = {
     # (`withdraw_agent_answer`, PLANNED for SW-43c).
     "agentRunsApi.withdrawAnswer": "withdraw_agent_answer",
     "attentionApi.list": "needs_attention",
+    # The Needs attention lens of My tasks: the same route with `mine=true`.
+    "attentionApi.mine": "needs_attention",
+    # The decisions of one task and the answer of one decision (D173).
+    "decisionsApi.forTask": "my_decisions",
+    "decisionsApi.answer": "answer_decision",
     # EA-6g: the run's member approves or declines an archive request. It is in
     # UI_EXEMPT: the chat never answers one (D-OP-13).
     # ── notificationsApi ─────────────────────────────────────────────────
@@ -1681,6 +1776,11 @@ UI_EXEMPT: dict[str, str] = {
     ),
     "projectsApi.setPositions": (
         "The hand-dragged order of cards on a saved view. " + _UI_STATE_REASON
+    ),
+    "projectsApi.mySummary": (
+        "The counts that the Overview tab of My tasks draws (WS-64 OP-11). The "
+        "route is class X: the chat reads the same tasks with my_work and "
+        "list_tasks, and it counts them in its answer."
     ),
     "projectsApi.vocabulary": (
         "The shared vocabulary list of Projects settings. The chat reads a "
@@ -1728,9 +1828,19 @@ def tools_by_class(cls: str) -> set[str]:
     return direct | {t for t in COMPOSITE if tool_class(t) == cls}
 
 
+#: A tool that also writes through another tool's route, but is NOT a composite
+#: of it. ``create_task`` with ``files`` patches the description once, to put
+#: each image in it (IMG-2). Its values go in the create itself, with no PATCH
+#: (``test_projects_task_fields.py`` holds that), so ``update_task`` stays out
+#: of COMPOSITE.
+ALSO_WRITES_THROUGH: dict[str, frozenset[str]] = {
+    "create_task": frozenset({"update_task"}),
+}
+
+
 def reaches(tool: str, route_tool: str) -> bool:
     """May ``tool`` issue a call on a route the manifest gives ``route_tool``?"""
-    if tool == route_tool:
+    if tool == route_tool or route_tool in ALSO_WRITES_THROUGH.get(tool, ()):
         return True
     return any(reaches(t, route_tool) for t in COMPOSITE.get(tool, ()))
 

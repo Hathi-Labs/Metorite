@@ -4055,7 +4055,9 @@ The first production run PASSED on 2026-09-29, all four steps, on
 ### 21.13 H-201 — the other readers bind the tenant
 
 **Status: BUILT 2026-09-30, part 1 of H-201, with fix rounds 1 and 2. The
-observability, debug, skills and plugin rows BUILT 2026-11-05 (task 612).** This part binds the readers
+observability, debug, skills and plugin rows BUILT 2026-11-05 (task 612).
+The expand half of the `agent_avatars` key BUILT 2026-11-07 (H-201d, task
+1719, migration 354). The contract half is OPEN (HANDOFF H-443).** This part binds the readers
 that are nearest to chat. It also adds the room check on the answer path.
 H-201 in `HANDOFF.md` lists the work that is still open.
 
@@ -4076,9 +4078,29 @@ policy on each table below.
 | `routes/integrations.py` `GET /plugins`, `DELETE /plugins/{id}` | `plugins` | a request | `current_tenant()` | bound 2026-11-05 |
 
 With no tenant, each 2026-11-05 reader gives an empty answer, and a debug get
-or flag gives 404. An avatar write gives 403, and a plugin delete gives 404. `agent_avatars` keeps the key
-`agent_name` alone, so org B cannot save a name that org A holds. Task 1719
-owns that key.
+or flag gives 404. An avatar write gives 403, and a plugin delete gives 404.
+
+**The `agent_avatars` key (H-201d, task 1719).** Migration 64 made
+`agent_name` alone the primary key, so org B cannot save a name that org A
+holds. The fix is an expand/contract pair (R6), because the deploy applies
+migrations before it restarts the services.
+
+1. **Expand, migration 354 (built).** It adds the unique index
+   `uq_agent_avatars_org_agent` on `(organization_id, agent_name)` and keeps
+   the old key. `_save_avatar` names the new index in `ON CONFLICT`. A
+   same-org save updates the row. A save of a name that another org holds
+   still fails, on `agent_avatars_pkey`, and never reaches the other row.
+2. **Contract, a later release (open, HANDOFF H-443).** It drops
+   `agent_avatars_pkey`. Then each org keeps its own avatar for one name.
+   It cannot ship with 354. The old gateway runs on the new schema until the
+   restart, and its `ON CONFLICT (agent_name)` needs a unique rule on
+   exactly `(agent_name)`.
+
+Production holds no row with a NULL `organization_id`, because tenancy
+phase 3 sets the column NOT NULL. A unique index treats each NULL as
+distinct, so on a database without the tenancy phases it does not constrain
+a NULL row. `tests/unit/test_agent_avatars_key_per_tenant_r8.py` proves both
+states as the app role under FORCE RLS.
 
 **The rules.**
 
@@ -6714,3 +6736,303 @@ Each template in `TEMPLATE_CATALOG` names its family.
 
 **Advisory.** The cut runs in a browser only (`e2e/chat-card-clamp.spec.ts`).
 The node suite holds its pure rule.
+
+## 30. An image from the chat goes onto a task, and the agent sees it (2026-11-07)
+
+**Status.** SPECIFIED 2026-11-07. Epic: Metorite task 1997. IMG-1 is BUILT and
+merged (cb38e1473). IMG-2 (`mt-0595dfe1-img2`) and IMG-3 (`mt-2d62220d-img3`)
+are BUILT 2026-11-07, and each one merges after its checks. IMG-4 needs an
+audit before a build. No migration.
+
+### 30.1 The request
+
+The owner wrote on 2026-11-07, in chat:
+
+```text
+"I want to attach an image to a chat and add that image into a task along
+with other things. I'm trying to add a task and also add an image as a
+reference, but the moment I attached it, which is bad UX. So this flow where
+I can attach an image and use it as a file/attachment in a task card, and the
+MCP mentions to the agent taking up the task the additional context of the
+image as well, should be built up properly."
+```
+
+The flow has three steps. The member attaches an image in the chat. One card
+makes the task and puts the image on it. An agent that takes the task over
+the MCP sees the image.
+
+### 30.2 What the code does today
+
+The audit read `origin/main` at `15895c1be`.
+
+1. **The attach writes raw text into the box.** The paperclip
+   (`FileUploadButton`) uploads at once. Then `AgentChat.tsx` (about line
+   2874) puts `uploadNote` (`lib/chatUpload.ts`) into the message box. The
+   member reads "📎 Uploaded 1 file(s)", a path in `inputs/<thread slug>/`
+   and "Read them with read_attachment". No chip, no thumbnail and no
+   remove exist. That text is the bad moment at attach.
+2. **Paste and drop do nothing.** The composer textarea has `onChange` and
+   `onKeyDown` only. The `/chat` Files drawer has a drop zone, and it only
+   adds the file to the drawer.
+3. **The model gets the name and the path only.** The chat request carries
+   text (`useAgentChat.ts`, `message: userMsg.content`). `read_attachment`
+   refuses an image unless `ATTACHMENT_OCR` is on, and it is off.
+4. **A task with an image takes two cards.** `create_task`
+   (`skill_projects/writes.py`) takes no file. `attach_to_task`
+   (`skill_projects/guarded.py`, WS-64 OP-6c) attaches one chat file to a
+   task that exists. It reads the bytes with `read_attachment_bytes`, checks
+   the 10 MB task budget, shows a card and posts the file to
+   `POST /projects/tasks/{id}/attachments`.
+5. **The MCP gives metadata only.** `get_task_context` lists the files of a
+   task (MCP-G18, `external_agent_access.md` §12.4). Each row has a name, a
+   MIME type, a size and a kind. No link and no bytes leave the edge, by the
+   owner decision of 2026-11-06. No MCP tool returns the image.
+
+### 30.3 The design
+
+1. **A chat file is a chip until the member sends.** The chip shows a
+   thumbnail for an image, the name and the size. It has a remove control.
+   The message box holds only the words that the member types.
+2. **The note stays the model's contract.** The send adds `uploadNote` to
+   the message, as today, so the model gets the same text. The thread draws
+   that note as chips and never as raw text (`parseUploadNote` beside
+   `uploadNote`). A reload draws the same chips, because the saved message
+   holds the note.
+3. **One card makes the task and attaches its files.** `create_task` takes
+   `files`, the names of files attached in this chat. The card names each
+   file and its size. Approval makes the task, then attaches each file
+   through the one attachments route.
+4. **The MCP gives the image to the agent.** A new read tool,
+   `get_attachment`, returns an image as MCP image content. `get_task_context`
+   tells the agent to call it for each image.
+5. **No second store.** A chat file stays in the thread folder of §22.9. A
+   task file stays in `attachments` and `pm_task_attachments`. The task copy
+   goes through the route that the app uses, so the budget, the blocked
+   types and the timeline apply once.
+
+**The owner decision that this opens.** On 2026-11-06 the owner kept MCP-G18
+to metadata. The read of the bytes waited on the "base64 transport". The
+request of 2026-11-07 asks the agent to get the image itself. That is a
+product wish, not an answer to the named decision. So the agent asked one
+explicit question on task 1999. **The owner answered "yes" on 2026-11-07, in
+chat** ("okay, go ahead with the next step"). An agent may read the images
+and the text files of a task that it can see. `external_agent_access.md`
+§15 row IMG-3 records it. IMG-3 covers the READ half only. The
+server encodes the bytes, so the model never writes them. The upload over
+the MCP still waits (task 413).
+
+### 30.4 Slices
+
+**IMG-1 (task 1998). The composer shows a chip, and takes paste and drop.**
+STANDARD. Frontend only.
+
+✅ built 2026-11-07, branch `mt-10bf2e89-img1`.
+
+**Built.** The build differs from the plan in seven ways.
+1. The composer state is a pure reducer in `lib/chatAttachments.ts`. The hook
+   `hooks/useChatAttachments.ts` runs the uploads. The vitest rig has no DOM,
+   so `chatAttachments.test.ts` drives the reducer, and the browser half was
+   driven by hand. No `e2e/chat-attach-chip.spec.ts` exists, because that rig
+   stubs every route of the shell.
+2. A failed chip blocks Send until the member retries or removes it. The plan
+   did not say. A silent drop of a file is worse.
+3. `FileUploadButton` has a new `onPick` prop. The Files drawer drop zone
+   keeps its old upload.
+4. `wordsOfMessage` (beside `parseUploadNote`) gives the thread title and the
+   Copy action the words only. Edit opens the words, and the files come back
+   as ready chips with a remove control (`editStart`). A save sends the words
+   and the note of the kept files. A note that does not parse edits as raw
+   text. Chat search reads the saved text on the server, so it can show the
+   raw note. That is not changed here.
+5. A paste that carries text stays text, so a copy from a page does not
+   attach its picture.
+6. The send trims the member's words before the note.
+7. A backtick in a file name becomes an apostrophe before the upload. An
+   upload keeps the thread that was open when the file was attached.
+
+- **Files:** `components/AgentChat.tsx` (composer and message bubble),
+  `components/FileUploadButton.tsx`, `lib/chatUpload.ts`, and a new
+  `components/ChatAttachmentChips.tsx`.
+- **Do:**
+  1. Keep a list of pending files in the composer. Each one has a state:
+     sent, ready or failed. The upload starts at once, through the route of today.
+  2. Draw a chip for each pending file above the textarea. An image chip
+     shows a thumbnail from the local file (an object URL). A chip shows the
+     name, the size and a remove control. A failed chip shows the gateway's
+     sentence (`uploadErrorMessage`) and a retry.
+  3. Paste: a pasted image goes the same way. A clipboard image has no real
+     name, so it gets `Screenshot <date> <time>.png`. Pasted text stays text.
+  4. Drop: a file dropped on the composer goes the same way. The composer
+     shows a drop state while a file is over it.
+  5. Remove takes the file out of this message. The file stays in the
+     thread's Files list.
+  6. Send waits for the uploads. While one runs, the send control says
+     "Uploading…". A message with files and no words is valid.
+  7. The send adds `uploadNote(files)` after the member's words.
+  8. The bubble of a member message finds the note with `parseUploadNote`.
+     It draws the words, then the chips. An image chip draws a thumbnail
+     through the workspace file route
+     (`/api/agent/workspace/{sessionId}/file`). A click opens the image at
+     full size. A note that does not parse stays text.
+- **Done when:**
+  1. Attach, paste and drop each make a chip, and the box holds no path.
+  2. Remove before send drops the file from the message.
+  3. The sent message and the reloaded thread show the chips, and the model
+     gets the same note as before.
+  4. The look passes in light mode, at compact density, under a changed
+     accent and at 390 px, in `/chat` and in the Projects rail.
+- **Fence (R7):** `chatUpload.test.ts` (`parseUploadNote` reads what
+  `uploadNote` writes, round trip, and refuses a changed note). A component
+  test for the composer (paste, drop, remove, send waits).
+  `e2e/chat-attach-chip.spec.ts` (advisory, browser only).
+
+**IMG-2 (task 1599). One card makes a task with its files.** STANDARD.
+
+- **Files:** `skill_projects/writes.py` (`create_task`),
+  `skill_projects/guarded.py` (reuse the checks of `attach_to_task`),
+  `acb_skills/tool_packs.py` (the rule bullet), and
+  `agent-projects/instructions.md`.
+- **Do:**
+  1. `create_task` takes `files: list[str] | None`, the names of files
+     attached in this chat.
+  2. Before the card, read each file with `read_attachment_bytes`. Refuse an
+     empty file, a blocked type, a missing name or a total above the task
+     budget. The refusal names the file and the reason. Move the checks of
+     `attach_to_task` into one helper that both tools call.
+  3. The card adds one line: "With 2 files: a.png (240 KB), b.pdf (1.1 MB)
+     · everyone who can open the task can open them".
+  4. After approval, make the task, then post each file to
+     `POST /projects/tasks/{id}/attachments`.
+  5. Put each image in the description, at the end, as TR-4 does for a
+     paste (`![name](<served url>)`, `inlineUploads.ts`). The agent that
+     reads the description then sees where the image belongs.
+  6. If a file fails after the task exists, the task stays. The reply names
+     the file that did not land and why, and offers `attach_to_task`.
+  7. The rule text says: when the member attached files and asks for a
+     task, pass them in `files`. Do not call `attach_to_task` after it.
+- **Done when:**
+  1. "Make a task for this bug" with a screenshot in the chat gives one
+     card. Approval gives a task that shows the image in its attachments,
+     inline in its description and on its timeline.
+  2. The tool refuses a file over the budget before the card.
+- **Fence (R7):** `test_projects_agent_writes.py` (files on the card, the
+  order of the posts, the refusals, the partial failure).
+  `test_projects_attach_to_task.py` keeps passing on the shared helper.
+- **Built note (2026-11-07).** `create_task` takes `files`. The checks of
+  `attach_to_task` moved to `skill_projects/task_files.py`. Both tools call them.
+  The card has one lead line with each file and its size. After approval the
+  tool posts the task, then each file, then ONE description PATCH for the images.
+  A failed file or PATCH leaves the task, and the reply says so.
+
+  A held chat refuses `files` (`egress.HELD_REFUSED_PARAMS`). `attach_to_task`
+  is off there. `create_tasks` takes no files. The shared helper is held by
+  `test_projects_nudge_attach_tools.py`.
+
+**IMG-3 (task 1999). The MCP gives an image on a task to the agent.** HIGH,
+because file bytes leave the platform for an outside agent. Spec audit and
+the Opus reviewer. **BUILT 2026-11-07** on branch `mt-2d62220d-img3`, with the
+R8 cases in `test_mcp_edge_attachment_r8.py`. On a write connection, the image
+sentence of the instructions sits after the cut at 4096 characters. So Claude
+Code reads that rule from the `get_task_context` description and from the
+`work_on_task` prompt. **Gate:** cleared. The owner answered the transport
+question on task 1999 on 2026-11-07 (§30.3). The audit of 2026-11-07 gave GO-NARROWED on the read half
+only, after the edits below.
+
+- **Files:** `agent_edge/tools.py`, `agent_edge/gateway_client.py`,
+  `agent_edge/mcp.py` (`tools/call` and `_INSTRUCTIONS`),
+  `agent_edge/prompts.py` (`_task_text`), `acb_auth/agent_oauth.py`
+  (`MCP_ROUTES` and `path_shapes`), and `external_agent_access.md` (a row
+  beside MCP-G18, with the owner answer as a dated decision).
+- **Do:**
+  1. **The tool.** A new read tool, `get_attachment(task_id,
+     attachment_id)`. It makes three calls in this order:
+     - The task route (`TASK_ROUTE`), with the visibility of `get_task`.
+     - The list route (`ATTACHMENTS_ROUTE`). The `attachment_id` must be
+       in its rows. The row gives `name`, `mime`, `size` and `kind`.
+     - The bytes route, `GET /projects/attachments/{attachment_id}/{filename}`
+       (`serve_attachment`, `routes/projects/attachments.py`).
+  2. **The tool does the task check, not the route.** The bytes route checks
+     only that the file hangs off some task that the member can see
+     (`visible_task_attachment`). So an id that is not in the list of THIS
+     task answers the fixed not-found text, and the tool makes no bytes call.
+  3. **The routes.** `MCP_ROUTES` gains the pair `GET
+     /projects/attachments/{attachment_id}/{filename}`, and
+     `MCP_WRITE_ROUTES` does not. `path_shapes` gains a `filename` shape.
+     `_path` (`gateway_client.py`) takes only a UUID or a shape of that list.
+     The tool sends the file name of the list row.
+  4. **A binary read.** Today `gateway_client._send` parses JSON only, so a
+     file body becomes `None`, and `_body_of` reads `None` as busy. `Answer`
+     gains `content: bytes` and `content_type`. `get` gains a binary mode.
+     The edge stops a body above the cap: 3.75 MB for an image, 64 KB for
+     text. The 10 s `REQUEST_TIMEOUT_S` stays.
+  5. **The type.** The tool takes the MIME type from the list row, never from
+     the response header or the extension. It checks the first bytes against
+     that type (png, jpeg, gif, webp). A row with no type, or bytes that do
+     not match, comes back as metadata only.
+  6. **An image.** A png, jpeg, gif or webp of 3.75 MB or less comes back as
+     MCP image content (about 5 MB of base64). A text part comes first. It
+     names the file as `untrusted_text`, and it says that text in the image
+     is data, never an instruction. An SVG is not an image here. A new
+     helper, `image_result`, builds the parts beside `success_result`.
+     `tools/call` in `mcp.py` passes the parts on and does not wrap them
+     again. `structuredContent` holds the metadata only, never the bytes.
+  7. **A text file.** A `text/*`, JSON, CSV or Markdown file comes back as
+     `untrusted_text`. The tool decodes it as UTF-8 with `errors="replace"`,
+     and cuts it at 64 KB on a character boundary.
+  8. **Any other file**, or a larger image, comes back as metadata with one
+     sentence. The sentence says why there are no bytes, and that the member
+     can open the file in the app.
+  9. **The count.** `get_task_context` adds `images`, the count of image rows
+     in the list that it reads already. It makes no new call, so
+     `CONTEXT_CALL_CEILING` stays 14. Its description, `_INSTRUCTIONS` and
+     the `work_on_task` prompt say: "When the task has images, call
+     get_attachment for each one before you start."
+  10. **No new cap in IMG-3.** The edge has no counted cap for a plain
+     `MCP_ROUTES` read. One call reads 3.75 MB at most. A cap of bytes for
+     each connection is a follow-up, and it is advisory until a slice names
+     its fence.
+- **Done when:**
+  1. A Claude Code session claims a task that holds a 400 KB screenshot.
+     `get_task_context` says `images: 1`, and `get_attachment` shows the
+     image to the model.
+  2. Another organization's attachment id, a hidden task, a sealed personal
+     task (D63) and an attachment of another task in the same organization
+     each answer the fixed not-found text.
+  3. A 6 MB image, an SVG and a png row whose bytes are not a png each
+     answer with metadata and the sentence.
+- **Fence (R7):**
+  - `test_mcp_edge_context.py` (`TestTheAttachments`: the `images` count).
+  - `test_mcp_edge_prompts.py` (the prompt text).
+  - A new `test_mcp_edge_attachment.py`: image, text, other, too large, the
+    wrong task, a type mismatch, no re-wrap in `tools/call`.
+  - `test_personal_privacy_r8.py` already holds the bytes route's 404 for
+    another organization and a hidden task (about line 809). IMG-3 adds R8
+    cases through the edge: an attachment of another task in the same
+    organization, and one on a sealed personal task.
+  - Before the build, grep the tests that pin the list of tool names, and
+    add `get_attachment` there.
+
+**IMG-4 (task 1598). The chat model sees an attached image.** Not
+dispatchable yet. It needs an audit of three things:
+
+- Which router tiers take image input (`router_tier_routing`).
+- How the chat request carries an image part (`useAgentChat.ts`, the
+  gateway chat route and the MAF message).
+- The cost per image, inside the AI credits of `launch_surface.md` §4.
+
+Until IMG-4, the chat makes a task from a screenshot with the member's own
+words. The agent that takes the task sees the image through IMG-3.
+
+### 30.5 Order
+
+IMG-1 and IMG-3 go first, in parallel. They touch different services. IMG-2
+follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4
+follows its audit.
+
+### 30.6 What §30 does not do
+
+- **No upload over the MCP.** Task 413 keeps it, behind the base64 and
+  signed-link decisions.
+- **No change to the 10 MB task budget**, or to the 25 MB chat upload cap.
+- **No OCR flip.** `ATTACHMENT_OCR` stays as it is.
+- **No delete on remove.** A removed chip leaves the file in the thread.

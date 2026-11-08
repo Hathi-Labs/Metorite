@@ -4,15 +4,21 @@
 2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 and CIV-2 are
 done. CIV-3 and CIV-7 are built on branch `civ3-pr-tier` (2026-11-05), and
 they are done at merge. CIV-4, CIV-8 and CIV-9 are AGENT-SAFE.
-CIV-4, CIV-4b and CIV-13 are HIGH tier, because they change the deploy path.
+CIV-4, CIV-4b, CIV-4c and CIV-13 are HIGH tier, because they change the deploy path.
 CIV-6 is built (task 1634, PR open). CIV-4b merged on 2026-11-05 (task 1711). CIV-13 (D178) is BUILT on
 2026-11-05: the home box starts the 21:30 release. The owner installs its timer.
+
+CIV-4c is BUILT on 2026-11-07 (task 1736, branch `civ4c-r8-cover`).
+
+CIV-21 (D194) is BUILT on 2026-11-07 (task 2210, branch
+`civ21-three-releases-mt-06e30527`). Production releases three times a day,
+at 05:30, 13:30 and 21:30 UTC. The owner installs the new timer.
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
-keeps the two-speed rules. `staging_and_daily_release.md` keeps the 21:30 UTC
-release. This spec links to them and adds nothing to them.
+keeps the two-speed rules. `staging_and_daily_release.md` keeps the release
+slots at 05:30, 13:30 and 21:30 UTC (D194). This spec links to them and adds nothing to them.
 
 ---
 
@@ -24,7 +30,8 @@ release. This spec links to them and adds nothing to them.
   unit tests that its diff can affect. Target: about 10 minutes.
 - After the merge, `main` runs the full suite in batches. While one run goes,
   new merges wait, and the next run tests them together.
-- The 21:30 UTC release ships only a `main` whose full suite is green.
+- Each release slot (05:30, 13:30 and 21:30 UTC, D194) ships only a `main`
+  whose full suite is green.
 - **R8 runs at the release.** The batch has no database, so its R8 suites
   skip. Each release runs every R8 file against two real Postgres servers,
   and a red R8 gate holds the release (CIV-4b). CIV-9 makes the R8 files
@@ -65,7 +72,9 @@ waited up to 22 minutes for a runner.
 - No GitHub self-hosted runner while the repo is public. A fork PR could run
   code on it. The home box takes work only from our own sessions, over
   Tailscale (task 1534).
-- No change to when production moves. It moves at 21:30 UTC only (D145).
+- This spec does not change the full-suite rule of a release. CIV-21
+  (D194) changes only the clock: production moves three times a day, at
+  05:30, 13:30 and 21:30 UTC.
 - No change to the owner's preview step for a UI slice (D145 step 1).
 
 ## 4. The tiers
@@ -75,7 +84,7 @@ waited up to 22 minutes for a runner.
 | 0. Local | Home box first, this PC second (`ci_local.sh`) | The affected tests, lint, the touched app's type check | Advice before a push |
 | 1. PR | GitHub (pr-check) | Lint, secret scan, type checks, SAFETY fences, the affected tests. The full set when the diff is FULL. | The 7 required checks |
 | 2. Batch | GitHub (deploy.yml on push to `main`) | The full unit suite with no database, so R8 skips until CIV-9. One run at a time. Pending merges fold into the next run. | Signal. Red means fix forward now. |
-| 3. Release | GitHub (deploy.yml at 21:30 UTC) | The full suite on the tip of `main`, and the R8 files in 6 shards with both databases (CIV-4b) | Gate for the release |
+| 3. Release | GitHub (deploy.yml at 05:30, 13:30 and 21:30 UTC, D194) | The full suite on the tip of `main`, and the R8 files in 6 shards with both databases (CIV-4b) | Gate for the release |
 
 ## 5. Slices
 
@@ -332,6 +341,44 @@ After the merge, the live evidence is the first 21:30 UTC run: six green R8
 shards, a green `r8-gate`, and a moved `release` ref.
 AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
 
+### CIV-4c · Every R8 skip of a release runs in the R8 gate (HIGH: deploy path)
+
+**Status: BUILT (2026-11-07).** Branch `civ4c-r8-cover`. Task 1736.
+
+**Why.** `r8_files()` finds an R8 file by a text match, one level deep. A
+new file can get its database gate by import only, and name no mark. Then
+`--r8` leaves it out. The `test` job skips it, and the R8 gate never runs
+it. On 2026-11-07 the list held each such file, but no fence proved it.
+
+**Built:**
+- The `test` job of deploy.yml writes a JUnit report to `junit/test.xml`.
+  Its pytest command keeps `-x`, `-v`, `--reruns 1` and the fence ignore.
+- A new step after the unit run writes `affected_tests.py --r8` to
+  `r8_files.txt`. Then it runs `ci_unit_guard.py r8-covered`.
+- The step has no `if:`. It runs only after a green unit run, so a red run
+  stays red.
+- `r8-covered` fails for each file that skipped for an R8 reason and is not
+  in the list. A module that skipped at collection counts.
+- An R8 reason starts with `CUSTOMER_CONSOLE_DATABASE_URL` or
+  `TENANT_LADDER_DATABASE_URL`. Or it names `R8` and also a variable or
+  "real Postgres". A Redis or platform skip is not an R8 reason.
+- It fails closed. No report, a report with no test, a missing list and an
+  empty list each fail. The step also stops on an empty list before the
+  guard starts.
+- pr-check.yml gets no copy. Its shards have both databases, and its guard
+  already fails on each R8 skip.
+- `r8-suite`, `r8-gate`, `publish-release` and the release window do not
+  change.
+
+**Fence:** `tests/unit/test_ci_unit_guard.py` covers the rule with JUnit
+reports in a temporary folder. `tests/unit/test_deploy_pipeline.py` covers
+the step, its place, the old flags and the unchanged jobs.
+
+**Files:** `.github/workflows/deploy.yml`, `scripts/ci_unit_guard.py`,
+`tests/unit/test_ci_unit_guard.py`, `tests/unit/test_deploy_pipeline.py`.
+**Verify:** `uv run pytest tests/unit/test_ci_unit_guard.py tests/unit/test_deploy_pipeline.py -q`.
+AGENT-SAFE. **HIGH tier.**
+
 ### CIV-5 · A red batch names the PR that broke it
 
 **Done when:**
@@ -347,6 +394,42 @@ AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
 **Verify:** `uv run pytest tests/unit/test_bisect_main.py -q`, with a fixture
 repo in which one known commit breaks one test.
 AGENT-SAFE. STANDARD tier.
+
+**Status: BUILT 2026-11-07** (task 1633, branch `civ5-bisect`). Not live: the
+owner has not installed the timer.
+
+**Built.**
+- `scripts/bisect_main.sh <good> <bad> <test id>...` searches the first-parent
+  commits in (good, bad]. It does not call `git bisect`. Each probe has a
+  detached worktree in a temp dir, and the EXIT trap removes it. It checks
+  first that the good commit passes and the bad commit fails, else it exits 3.
+  A probe exit code of 0 is good and 1 is bad. Any other code skips the commit.
+  Adjacent commits that cannot be judged give exit 4 and the range. The cap
+  is 12 probes (exit 5). It prints `FIRST_BAD <sha> <subject> PR=<n or none>`.
+- `scripts/home_server/bisect_poll.sh` is one poll pass. It acts only when the
+  newest completed batch run is red and new. It finds the last green batch as
+  the good sha, reads the failed ids with `scripts/junit_failed_ids.py`, runs
+  the bisect and prints `BISECT_RESULT <json>`. State is `handled` in
+  `~/.cache/metorite-bisect`. It never reruns or cancels a run.
+- `scripts/home_server/systemd/metorite-bisect-poll.{service,timer}` are unit
+  files. Nobody installed them.
+- Fence: `tests/unit/test_bisect_main.py` (18 tests, a fixture repo and a
+  shimmed `gh_cmd`).
+
+**By hand.** `bash scripts/bisect_main.sh <good> <bad> tests/unit/test_x.py::test_y`.
+The default probe is `uv run python -m pytest -x -q -p no:cacheprovider "$@"`.
+Set `BISECT_TEST_CMD` to reuse a prepared lane or venv. `BISECT_TIMEOUT_S` and
+`BISECT_MAX_PROBES` set the limits.
+
+**Left for the owner.**
+- Install the timer (steps in the service file).
+- A lane session reads the `BISECT_RESULT` line in the journal and posts it on
+  a Metorite task. The script has no Metorite credentials.
+- Known gap: the push batch job writes no JUnit file. Only the R8 shards
+  upload one (`r8-junit-shard-N`). The poller reads an artifact named
+  `unit-junit` (`BISECT_ARTIFACT`). A later slice must add
+  `--junitxml` and an upload step to `test` in `deploy.yml`. Until then the
+  poller records a red run with "no failed test id".
 
 ### CIV-6 · Local tier: the affected tests by default, several runs at once on the box
 
@@ -475,10 +558,151 @@ on linger, copies the script, and enables the timer. In WSL, the Windows
 task "Metorite WSL keep-alive" keeps the distro up.
 HIGH tier.
 
+D194 (CIV-21) moves this timer to three slots. The text above keeps the
+record of 2026-11-05.
+
+### CIV-21 · Production releases three times a day (HIGH: deploy path)
+
+**Status: BUILT 2026-11-07** (task 2210, branch
+`civ21-three-releases-mt-06e30527`). Owner decision, 2026-11-07 (D194). It
+supersedes D145 point 5 and the time in D178 point 1.
+
+**What changes.**
+- Production moves three times a day: at 05:30, 13:30 and 21:30 UTC. That
+  is 11:00, 19:00 and 03:00 IST.
+- `deploy.yml` has three crons: `30 5 * * *`, `30 13 * * *` and
+  `30 21 * * *`.
+- The step `clock` of `release-window` opens a window for each slot. Each
+  window opens 30 min before its slot: 21:00 to 02:00, 05:00 to 10:00 and
+  13:00 to 18:00 UTC. The windows do not overlap. A late nightly run waits
+  for the next slot. A person's rerun is not held.
+- A slot ships once. The step `once` looks back to the open time of the
+  window of the current slot. That is the latest of 05:00, 13:00 and 21:00
+  UTC that is not after now.
+- The home box timer has three `OnCalendar` lines. The script dispatches
+  only from 21:00 to 01:00, 05:00 to 09:00 and 13:00 to 17:00 UTC.
+
+**What does not change.** The input `nightly`, the step id `once`, the
+output names and the unit name keep their names. `RELEASE_HOLD`, the R8
+gate, the full-suite rule and a plain dispatch behave as before.
+
+**Acceptance.**
+1. Each slot has a cron, a window and a timer line. A test fails when one
+   is missing.
+2. The windows do not overlap, and a test fails when two do.
+3. A nightly run in a slot does not publish when another nightly run
+   published since the window of that slot opened.
+4. D194 and the doc lines are in place.
+
+**Files:** `.github/workflows/deploy.yml`,
+`scripts/home_server/nightly_release.sh`,
+`scripts/home_server/metorite-nightly-release.service`,
+`scripts/home_server/metorite-nightly-release.timer`.
+**Fence:** `tests/unit/test_daily_release.py` and
+`tests/unit/test_nightly_release_box.py`.
+**Install (owner, on the home box, as `dev`):** run
+`bash ~/Metorite/scripts/home_server/nightly_release.sh install` again
+after the merge. Until then the box fires at 21:30 UTC only.
+HIGH tier.
+
+### CIV-20: fewer PRs sent back (task 2207)
+
+**Status: slices 1 and 3 BUILT 2026-11-07. Slice 2 is CIV-8** (PR 1872, merged).
+STANDARD tier. Of the PRs that lane-merge handled from 2026-11-06 22:05 UTC,
+21 went BACK, about 1 in 3. The causes: 8 merge conflicts, 6 a missing
+"Visual review:" line, 6 a red test, 1 a migration number below main's highest.
+
+**Slice 1.** `scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane>
+<note>` is the one way a lane hands a PR over. It appends the line to
+`~/lanes/merge-queue.tsv` only after these checks pass: the worktree is clean
+and sits at the PR head, the body has the Visual review line when the diff
+touches `workbench/control_plane/src`, a trial merge of `origin/main` has no
+conflict, and each new migration number is above main's highest and free of
+other open PRs. A failed check prints the reason and appends nothing.
+**Fence:** `tests/unit/test_lane_handover.py`.
+
+**Slice 3.** `.gitattributes` gives `project-docs/INDEX.md` the `union` merge
+driver, so two PRs that each add a row no longer conflict. A fence checks that
+no spec row repeats in one section. Other append-only files stay out: a union
+there would keep both sides of a real clash in one line.
+**Fence:** `tests/unit/test_index_union.py`.
+
+**Open.** The lane rules live outside the repo. Rule 14 must name
+`lane_handover.sh`. The done test is a BACK rate under 1 in 10 over 20
+hand-overs.
+
+### CIV-19: the lane keeper (task 2206)
+
+**Status: BUILT 2026-11-07** (task 2206). STANDARD tier.
+On 2026-11-07 the box lanes sat idle for about 5 hours. An account switch ended
+the turn of 8 lanes. The loops that wake lanes ran on the owner's PC, and the
+PC went quiet.
+
+A box user timer runs `lane_keeper.py` every 10 minutes. Only the lanes named in
+`~/lanes/keeper-lanes.txt` (one name per line) may wake, and with no file nothing
+wakes. The keeper reads `claude agents --json` and keeps the newest session of
+each listed lane. A lane is ended when the state is done, blocked or idle and the
+transcript is more than 10 minutes old. A lane in a `sleep 600` has state
+working, so the keeper leaves it alone. The keeper also leaves a lane alone when
+it has a busy session. That is a busy session with the lane's name, or a busy
+session of any name whose transcript header names the lane.
+
+**The fork rule (2026-11-08).** A resume of a session that still runs starts a
+copy. The first keeper woke the old session again at each pass, and lane-merge
+reached 3 live copies. Now the keeper runs `claude stop <old id>` while the old
+session has a process, and it resumes only when the stop worked. The resume is
+`claude --bg --resume <id> -n <lane> --remote-control=<lane> <note>`. One session
+of the lane is left, and it has the lane's name, so the next pass finds it. The
+busy check reads the header of a busy session's transcript: a fork copies the
+header of its parent, so it still starts with the lane's name.
+
+A lane wakes once in 30 minutes. After an account change the keeper wakes every
+ended listed lane once, with no cap. Each wake goes to `~/lanes/keeper.log`.
+The keeper stops only the ended session that it is about to resume, and it
+never starts a new lane. `lane-chat` and `lane-bill` are also on the default skip
+list, because they wait on the owner.
+
+The account switch is a hook. `KEEPER_SWITCH_CMD` names the command, and the
+keeper gives it `KEEPER_SKIP_ACCOUNTS`. The keeper does not run it while the box
+sits on a skip-list account. The repo holds no switch command, so the owner
+supplies it.
+
+**Files:** `scripts/home_server/lane_keeper.py`,
+`scripts/home_server/metorite-lane-keeper.service`,
+`scripts/home_server/metorite-lane-keeper.timer`.
+**Fence:** `tests/unit/test_lane_keeper.py`.
+
+### CIV-10: the weekly delivery review (task 1643)
+
+**Status: BUILT 2026-11-07** (task 1643, branch `civ10-review`). STANDARD tier.
+Owner directive, 2026-11-04: revisit the workflow and CI each week.
+
+A box user timer runs `/delivery-review` each Monday at 07:00 UTC. The command
+measures CI, reads the Metorite items through the MCP, and posts one report
+task. It opens one fix task for each item over its threshold, under epic
+task 1628. The thresholds live in the command file.
+
+**Files:** `scripts/delivery_metrics.py` (read-only, stdlib, prints one JSON
+object), `.claude/commands/delivery-review.md`,
+`scripts/home_server/delivery_review.sh`,
+`scripts/home_server/metorite-delivery-review.service`,
+`scripts/home_server/metorite-delivery-review.timer`.
+**Fence:** `tests/unit/test_delivery_metrics.py`.
+
+**The owner does two things.** Install the timer (the unit header says how).
+Confirm the headless command in `delivery_review.sh`, because the repo holds
+no tested launcher. The first run is manual:
+`python3 scripts/delivery_metrics.py --days 7` on the box.
+
+**Known limits.** A selection miss is matched through `commits/<sha>/pulls`,
+because a squash merge gives main a new sha. A red batch with no PR run in the
+window is not counted. Run time is `updated_at` minus `run_started_at`, so a
+rerun adds to it.
+
 ## 6. Order
 
 CIV-2 and CIV-4 start now, beside each other. CIV-4b follows CIV-4. It is a
-sharded R8 gate. It runs on the 21:30 release and on a dispatch, beside
+sharded R8 gate. It runs on each release slot and on a dispatch, beside
 `test`, and `publish-release` needs it green. CIV-3 merges only after CIV-4b,
 because the PR gate then skips R8 suites that CIV-4b still covers. CIV-7
 lands with CIV-3. CIV-5, CIV-6, CIV-8 and CIV-9 follow, in any
@@ -489,6 +713,37 @@ order.
 The Metorite epic is task 1628, under the Developer Workflow project. Each
 slice has one subtask:
 
+### CIV-17 · pr-check sizes its unit shards to the selection (task 1988)
+
+The org is on GitHub Free: 20 jobs at once for every repo. One pr-check run
+used about 17, and 13 box lanes pushed at once on 2026-11-06. Runs queued for
+1 to 3 hours. CIV-3 made a shard run only the selected tests, but all six
+shard jobs still started for an empty selection.
+
+**What changes.**
+- The `changes` job also puts out `shards`, a JSON list: `[]` for an empty
+  selection, `[1]` for 40 test files or fewer, `[1,2,3]` for 120 or fewer, and
+  `[1,2,3,4,5,6]` otherwise. `scripts/ci_unit_guard.py` owns the rule
+  (`SHARD_TIERS`). The limits are a first guess. Re-pick them from the next 10
+  PRs.
+- The `test` matrix reads `fromJSON(needs.changes.outputs.shards ||
+  '[1,2,3,4,5,6]')`, so a failed `changes` job runs all six. `--splits` comes
+  from the pick step, which calls the same function.
+- The `test` job does not start for `[]`, because GitHub fails a matrix with
+  no values. `Unit tests` still runs (`if: always()`). It passes a skipped
+  `test` job ONLY when `changes` succeeded and `shards` is `[]`. Any other skip
+  stays red (#1077).
+- Drafts are NOT skipped. The first design skipped the heavy jobs on a draft.
+  A skipped required check leaves a passing twin on the head SHA (#1077), and
+  skipping the browser suite breaks D-PM-21. So every job runs on a draft too.
+
+**Fence:** `tests/unit/test_ci_unit_guard.py`, `tests/unit/test_fence_lists.py`.
+**Verify:** a docs-only PR starts no shard and `Unit tests` passes. A PR that
+breaks one test turns `Unit tests` red. Compare jobs per PR before and after
+on 10 PRs.
+AGENT-SAFE. STANDARD tier, with an Opus diff review.
+
+
 | Slice | Task | Slice | Task |
 |---|---|---|---|
 | CIV-1 | 1629 | CIV-6 | 1634 |
@@ -496,4 +751,8 @@ slice has one subtask:
 | CIV-3 | 1631 | CIV-8 | 1636 |
 | CIV-4 | 1632 | CIV-9 | 1637 |
 | CIV-5 | 1633 | CIV-4b | 1711 |
-| | | CIV-13 | 1721 |
+| CIV-17 | 1988 | CIV-13 | 1721 |
+| CIV-10 | 1643 | CIV-4c | 1736 |
+| CIV-21 | 2210 | | |
+| CIV-20 | 2207 | | |
+| CIV-19 | 2206 | | |

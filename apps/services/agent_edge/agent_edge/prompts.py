@@ -75,6 +75,13 @@ PR_RULE = (
     " task N. Write the URL of the pull request, or call add_task_reference."
 )
 
+#: IMG-3 (``projects_ai_chat.md`` §30.4 item 9). The one sentence that sends
+#: an agent to the images of a task. The prompt, the ``initialize``
+#: instructions and the ``get_task_context`` description each hold it. Fence:
+#: ``test_mcp_edge_prompts.py`` ``TestTheImageRule``.
+IMAGE_RULE = ("When the task has images, call get_attachment for each one before"
+              " you start.")
+
 #: SW-43 (agent_coordination.md §3.9). One sentence, shown only while
 #: ``agent_answer_change_enabled`` is on. The member may take an answer back
 #: until an agent activity follows it, so the agent posts a thought first.
@@ -268,7 +275,9 @@ def _queued_text() -> str:
         " activity ends a stopping run. When its reason is run_queued or"
         " run_answered, call get_agent_run with its run_id to read the request."
         " Then call claim_task with the task_id and the version of the row."
-        + _LINK_HINT,
+        + _LINK_HINT +
+        " When claim_task returns a warning about open subtasks, claim a"
+        " subtask from the list, not the epic.",
         "When claim_task says that another session holds the task (a 409"
         " task_held), do not try that task again. Take the next row, and do"
         " step 2 again. When claim_task refuses for another reason, tell me"
@@ -306,7 +315,8 @@ def _context_step(*, start_run: bool) -> str:
     when the claim opened none (EA-13c gives ``agent_run_id``)."""
     step = (
         "Call get_task_context for the task. It shows why the task exists: its"
-        " parents, its project, its blockers and the newest comments.")
+        " parents, its project, its blockers and the newest comments. "
+        + IMAGE_RULE)
     if start_run:
         step += " Call start_agent_run only when claim_task gave no agent_run_id."
     return step
@@ -391,9 +401,10 @@ __all__ = [
     "ANSWER_RULE",
     "ARGUMENT",
     "BRIEF_RULE",
-    "PR_RULE",
+    "IMAGE_RULE",
     "MAX_DIGITS",
     "PROMPT_NAME",
+    "PR_RULE",
     "TEXT_BAD_TASK",
     "TEXT_EXTRA",
     "TEXT_NO_TASK",

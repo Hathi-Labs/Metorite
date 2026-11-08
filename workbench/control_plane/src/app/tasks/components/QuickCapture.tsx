@@ -1,5 +1,6 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
 import { useEffect, useRef, useState } from "react";
@@ -97,6 +98,9 @@ function QuickCapturePanel() {
     setPhase("write");
     setSplitFromSingle(false);
   };
+
+  // A tap on a tab of the phone's bar closes it, and the tab then acts.
+  useCloseOnBarTap(close);
 
   // Escape closes.
   useEffect(() => {

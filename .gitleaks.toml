@@ -43,4 +43,10 @@ regexes = [
     # PR scan reads the commits that hold it, so it must stay here. The entry
     # matches this exact value and no other: never widen it.
     '''BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U''',
+    # CIV-9: the fake AWS key of AWS's own docs examples, in the id of a
+    # parametrized test (test_studio_manifest.py::test_credential_shaped_string).
+    # `.test_durations` lists every test id, so it holds the value. It is a
+    # test sentinel, never a key. The entry matches this exact value and no
+    # other: never widen it.
+    '''AKIAABCDEFGHIJKLMNOP''',
 ]

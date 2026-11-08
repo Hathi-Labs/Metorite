@@ -8,6 +8,21 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
+**PZ-39 BUILT 2026-11-06, in the working tree, not merged** (task 1823). One
+greeting table (`acb_common.today.GREETING_TABLE`) is mirrored in `myDay.ts`.
+Fence: `tests/unit/test_greeting_table.py`. The part-of-day line uses the zone
+of the "now" line. The late hours say "Hello", never "Good night".
+
+The chat greets in the first reply and after a gap of 4 hours or more
+(`today.GREET_GAP_HOURS`). The gap comes from the server time `created_at` of the stored `chat_message`
+rows. A regenerate never greets.
+
+The `brief` and `warm` greetings follow the greeting rule of the part-of-day
+line. A run with no decision (WhatsApp, delegated, batch, group) keeps the old
+rule: the first reply of the conversation only. So §5.1 and D-PZ-6 below read
+"first reply of a chat" as that rule. The buddy
+hello opens with the greeting for the member's time of day.
+
 **PZ-35 BUILT 2026-11-01, dark** (task 1133). The switch `apps.chat.summaries`,
 the three routes, the section "Recent chats", the relays, Forget, removal,
 export and the staging blank are in. The section shows only with
@@ -18,6 +33,21 @@ gets the briefing block. It holds the newest 3 summaries of the member's
 other private chats, and at most 3 of their due tasks. The block shows only
 with `ASSISTANT_BRIEFING_ORGS` on for the org. See §15.4 "As built, PZ-34",
 §15.9 and D-PZ-38 in §15.11.
+
+**§17 ACCEPTED 2026-11-06 (D189). No slice is built.** It adds the epic
+"Tone of voice" (Metorite task 1469). A member can choose a persona. The
+persona changes how the assistant sounds in four places. It never goes into
+a draft to another person, a fact or a card (D-PZ-43 to D-PZ-46).
+
+**§16 ACCEPTED 2026-11-06 (D184). PZ-41 and PZ-43 are merged, and PZ-43 is
+dark behind `CELEBRATIONS_ORGS`. PZ-39 is built. PZ-40 and PZ-42 are not
+built.** It adds the epic "Salutations" (Metorite task 1820). PZ-39 gives
+one greeting table for the time of day and a new greeting after 4 quiet
+hours. PZ-40 adds a sourced catalogue of Indian forms of address. PZ-41
+fixes the email drafter, so a title is not a name.
+
+PZ-42 learns what other people call the member from received mail, and asks
+first. PZ-43 adds the birthday and the festivals that the member picks (§16).
 
 **§15 ACCEPTED 2026-10-30 (D142). PZ-33a, PZ-33b, PZ-34 and PZ-35 are built
 dark, and the rest is not built.** It adds the epic "Recent chats and open
@@ -200,7 +230,7 @@ Measured on 2026-10-23. Paths are from the repository root.
 
 | Piece | Where | State |
 |---|---|---|
-| Mem0 per-member recall | `packages/acb_memory/acb_memory/mem0_client.py` | Built, **dark**. `mem0_enabled` defaults to False (`acb_common/settings.py:1340`). Mem0 rows carry no `organization_id` (H-307). H-336, H-407 and H-438 (task 1127) hold it off. H-337 closed on 2026-10-30 |
+| Mem0 per-member recall | `packages/acb_memory/acb_memory/mem0_client.py` | Built, **dark**. `mem0_enabled` defaults to False (`acb_common/settings.py:1340`). Mem0 rows carry no `organization_id` (H-307). H-336 and H-407 hold it off. H-337 closed on 2026-10-30. H-438 (task 1127) closed on 2026-11-07: `POST /pull` takes a member from the session, not the body |
 | Memory compartments | `acb_memory/compartments.py:72` `scope_key` | Built. `prefs:<email>` is the only store of preferences, and it lives in Mem0, so it is dark too |
 | Memory pre-read for each turn | `apps/services/gateway/gateway/memory_preread.py:95` | Built. Reads nothing while Mem0 is off. A shared room reads no private memory |
 | Memory tools | `packages/acb_skills/acb_skills/memory_tools.py` | Built. **Defect, §2.1** |
@@ -443,8 +473,9 @@ the language of the answer, and the chat still follows a member who writes
 in another language. On WhatsApp, the channel limits of WS-47 win over
 `detailed`.
 
-The persona of the assistant does not change. It is still "Metorite". This
+The identity of the assistant does not change. It is Mira (D125). This
 spec personalizes what the assistant knows and how it talks, not who it is.
+§17 lets a member choose how it sounds in the places of §17.4.
 
 **As built (PZ-3, 2026-10-24).** Each length and the language have one line
 in the block, in `LENGTH_LINES` and `_style_line`. A style key or a
@@ -956,8 +987,9 @@ Each slice is one PR. Each lands dark. The risk tier follows
 
 **Tasks that this spec does not use.** #248 (short-term session memory) is
 built: the chat history window and the Redis memory block. #250 (semantic
-recall) is Mem0, and WS-7 owns its turn-on (H-307, H-336, H-407, H-438 for
-task 1127). H-337 closed on 2026-10-30. #254 and #255 wait on D-PZ-9.
+recall) is Mem0, and WS-7 owns its turn-on (H-307, H-336, H-407). H-337
+closed on 2026-10-30. H-438 (task 1127) closed on 2026-11-07. #254 and #255
+wait on D-PZ-9.
 
 ---
 
@@ -1265,7 +1297,8 @@ The owner decided on 2026-10-30 that the PZ-20b mark shows only when the member'
   do this. Our phase 2 reads sent mail only after consent, and keeps
   derived features only (§12).
 - **Mem0 for this.** It stays off until WS-7 fixes its tenancy (H-307,
-  H-336, H-407, H-438 for task 1127). H-337 closed on 2026-10-30.
+  H-336, H-407). H-337 closed on 2026-10-30. H-438 (task 1127) closed on
+  2026-11-07.
 
 ---
 
@@ -2766,3 +2799,800 @@ answers.
 6. **A number split by a real letter (PZ-33b).** The agent's call: a real
    letter ends a digit run. So `98450x12345` stays in a summary as two runs
    of 5 digits. Default: it stands until the owner overrules it.
+
+## 16. Salutations (ACCEPTED, 2026-11-06)
+
+`work_plan.md` §3 records this section as **D184**. The epic is "Salutations"
+(Metorite task 1820). It adds five slices, PZ-39 to PZ-43. The owner answered
+all four questions of §16.8 on 2026-11-06 at 05:41 UTC. PZ-39 is built. The
+other four slices are not built.
+
+### 16.1 The owner's ask
+
+The owner wrote this in chat on 2026-11-06:
+
+```text
+"depending on the time of the day or night, when I am using the Metorite platform and chatting with the chat, it should give me an appropriate salutation that matches the time of the day. Also wanted to check if the system for reading drafts from the emails and other communications and seeing what other people call me in email can be used to also understand what exactly to call the user. In terms of their preference for naming, celebrations, etc. We should be covering Indian salutations like "Ji", "Gaaru" etc that covers all the different kinds of salutations from across the country."
+```
+
+The ask has four parts:
+
+1. **A greeting for the time of day** in the chat (PZ-39).
+2. **Indian forms of address**, such as "ji" and "garu", for the whole
+   country (PZ-40 and PZ-41).
+3. **What other people call the member**, read from mail (PZ-42).
+4. **Celebrations** (PZ-43).
+
+### 16.2 What exists (PZ-4), and the defects
+
+PZ-4 (§5.2, task 252) is built. The profile holds `address.name` (free text,
+40 characters), `formality`, and `greeting` (`none`, `brief` or `warm`). With
+`brief`, the chat greets for the time of day in the first reply of a chat.
+`acb_common.today.part_of_day` gave morning (5 to 11), afternoon (12 to 16),
+evening (17 to 20) or night.
+
+A member can already say "call me Vijay ji". The chat keeps it as
+`address.name`. The mail reader learns the member's outbound voice from sent
+mail only (WS-52 S3). Nothing reads how other people address the member.
+§12.3 says that a message from another person is never a source of the
+member's voice.
+
+Measured on `main` at 182334889, five defects:
+
+| # | Defect | Slice |
+|---|---|---|
+| D1 | Two rules for the time of day. My Day (`myDay.ts` `greeting`) said "Good morning" before 12:00, "Good afternoon" before 18:00, and "Good evening" after. It said "Good morning" at 02:00. At 17:30 My Day said afternoon and the chat said evening | PZ-39 |
+| D2 | The chat read the part of the day from `people.timezone` only. The "now" line reads the browser zone first (task 1649) | PZ-39 |
+| D3 | The word "night" invites "Good night". That phrase is a farewell in English and in Indian English | PZ-39 |
+| D4 | The email drafter greets an Indian title as a name. `_salutation_name` knows Mr, Mrs, Ms, Mx, Dr, Prof and Er. For "Shri Ramesh Kumar" it writes "Dear Shri,". Sri, Smt., Kum., Thiru and Tmt. fail the same way | PZ-41 |
+| D5 | The chat greeted once in each chat. A member who returns to the same chat the next morning got no greeting | PZ-39 |
+
+### 16.3 The time of day (PZ-39, built)
+
+PZ-39 (task 1823) is built. The owner approved the preview on 2026-11-06 at
+09:43 UTC. The pull request is https://github.com/Hathi-Labs/Metorite/pull/1775.
+
+**One table.** `acb_common.today.GREETING_TABLE` is the rule. `myDay.ts`
+holds a copy of the same table. The server and My Day read the same hours:
+
+| Hours (member's zone) | Greeting |
+|---|---|
+| 05:00 to 11:59 | "Good morning" |
+| 12:00 to 16:59 | "Good afternoon" |
+| 17:00 to 20:59 | "Good evening" |
+| 21:00 to 04:59 | "Hello" (the line offers "Good evening" too from 21:00 to 23:59, in English only) |
+
+**The zone.** The part-of-day line uses the zone of the "now" line. The
+code reads `resolve_zone(user_settings.timezone, people.timezone,
+profile_zone)` in `executor.py`. That is the member's saved setting (the
+browser zone) first, then the People row, then the profile (D2).
+
+**When the chat greets** (`executor._prime_greet_due` and `_greet_decision`):
+
+- In the first reply of a chat.
+- In the first reply after `GREET_GAP_HOURS = 4` hours or more with no message
+  in that chat. Never in the middle of a conversation (D5).
+- The gap reads stored `chat_message` rows by their server time
+  (`created_at`). It never reads the client's history. It skips the rows of
+  this turn by id.
+- A regenerate or a retry never greets. A fault or a timeout of 1 second
+  gives no greeting, and the turn goes on.
+
+**Runs with no decision** keep the old rule. These are WhatsApp, a delegated
+run, a batch run and a group room. They greet only in the first reply of the
+conversation.
+
+**Late hours.** The chat says "Hello", or "Good evening" before midnight. It
+never says "Good night", and it uses no good-night phrase in any language (D3).
+
+**The language hello.** A profile language other than English asks for the
+common hello of that language: Namaste, Namaskaram or Vanakkam. Nothing picks
+a language from a name or a region.
+
+**The buddy hello.** The first-visit hello (`chat_brief.HELLO_COPY`) opens
+with the same greeting, for example "Good morning, Vijay. Welcome to
+Metorite." The zone comes from the member's own rows. A failed read uses the
+default zone and never fails the hello.
+
+**Cost.** One indexed read on each orchestrator turn of an org with the
+profile on. The median is 5.8 ms, and the worst case is the 1 s limit.
+
+**Fence.** `tests/unit/test_greeting_table.py` reads `myDay.ts` and fails when
+the two tables differ.
+
+### 16.4 Forms of address (PZ-40 and PZ-41)
+
+A form of address is a word that goes with the name: "ji", "garu", "sir". A
+research catalogue of forms by language is the source of this section.
+Section 16.4.1 gives the rules. Section 16.4.2 gives the list that a builder
+needs. Section 16.4.3 gives the drafter fix.
+
+#### 16.4.1 The rules
+
+1. **Source tags.** Each row has a tag. `[V]` means a fetched page confirms
+   it. `[K]` means many people use the form, with no fetched citation.
+   `[U]` means unverified.
+2. **What ships.** A `[V]` row ships as a fixed choice. A `[K]` row ships
+   after one reviewer confirms it. A `[U]` row needs a native-speaker check
+   first. A `[K]` row in a language that the reviewer does not speak needs the
+   same check. The research legend says only that a row with no `[V]` tag
+   needs a human reviewer. The finer rule is this spec's.
+3. **Nothing infers a form.** No code picks a form from the name, the region,
+   the language guess or the community. Surnames such as Rao, Naidu, Singh
+   and Sheth link to a caste or a community. Greetings with a religious
+   origin come from the member or from observed mail.
+4. **No choice means the name only (Q4, D-PZ-42).** With no choice made, the
+   chat calls the member by the name alone ("Vijay"). It uses "Vijay ji" or
+   "Vijay garu" only after the member chooses it.
+5. **The name question offers "just my name" first.** The forms that fit the
+   member's language follow it. The language comes from the profile
+   (`style.language`) or from the member's own answer, and never from a guess. A kinship form is never a default (rule 7).
+6. **The block uses the chosen form as written.** It does not respell, split
+   or move the form.
+7. **Kinship forms imply age and rank.** Anna, akka, dada, didi, bhai, chechi,
+   chettan and tai place the speaker as younger. The list offers them only
+   when the member asks for them.
+8. **Marital titles.** Smt., Sau., Thirumathi, Begum and Mrs. imply married.
+   Kum., Kumari, Selvi and Miss imply unmarried. The list offers a neutral
+   form first.
+9. **Spelling variants are one form.** Count "garu" and "gaaru" as one. The
+   same holds for ji and jee, sahab, saheb, sahib and saab, avare and avaru,
+   and avargal, avarkal and avl.
+10. **Generic salutations carry no information.** "Dear Sir/Madam", "Team" and
+    "All" say nothing about the member.
+
+PZ-40 puts the list in one catalogue module, `acb_common.honorifics`. No
+second list may exist.
+
+#### 16.4.2 The catalogue
+
+The column "Where" says where the form goes with the name. "Suffix" means
+after the name. "Prefix" means before it. "Attached" means joined to the
+name, as in "Vijaybhai".
+
+**Pan-Indian and English**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| sir (Sar, Saar) | suffix or alone | formal, warm | [K] |
+| madam (Mam, Ma'am) | suffix or alone | formal | [K] |
+| Mr., Mrs., Ms., Miss | prefix | formal | [K] |
+| Dr. | prefix | formal | [K] |
+| name only ("Vijay") | bare | casual, the safe default | [K] |
+| initials ("VJ") | bare | casual | [K] |
+
+**Hindi belt (Hindi, Bhojpuri, Rajasthani, Haryanvi, Maithili)**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| ji (jee) | suffix, spaced or attached | respectful, warm | [K] |
+| Shri (Sri, Shree, Sree, Shrii, Shiri) | prefix | formal, male | [V] |
+| Shrimati (Smt.) | prefix | formal, female, married | [V] |
+| Sushri | prefix | formal, female, any status | [V] |
+| Kumari (Kum.) | prefix | formal, female, unmarried | [K] |
+| Sahab (Sahib, Saheb, Saab) | suffix | respectful, old style | [V] |
+| Bhaisahab | suffix | respectful kinship | [K] |
+| Bhai, Bhaiya | suffix | kinship | [K] |
+| Didi, Behenji | suffix | kinship | [K] |
+| Dada | suffix | kinship. Ambiguous: grandfather in Hindi, elder brother in Bengali and Marathi | [K] |
+| Pandit (Pt.) | prefix | title, linked to a community | [V] |
+
+Do not offer these. Memsahib is colonial. Uncle and Aunty carry
+an age. Sethji links to wealth and a community. Babu and Babuji sound like a
+clerk. Thakur and Chaudhary are clan names.
+
+**Punjabi and Sikh**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| ji | suffix | respectful | [K] |
+| Sardar (Sardarji) | prefix or suffix | respectful, male. Muslims in Punjab also use it | [V] |
+| Giani | prefix | title, a religious or scholarly role | [V] |
+| Bhaji | suffix | kinship | [K] |
+
+Singh and Kaur are surname parts. Never strip them. "Sat Sri Akal" and
+"Waheguru ji ka Khalsa" are religious greetings. Do not use "Waheguru ji
+ka Khalsa". Use "Sat Sri Akal" only when the member asks.
+
+**Gujarati**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| -bhai | attached, sometimes spaced | respectful, warm, male | [K] |
+| -ben | attached | respectful, warm, female | [K] |
+| -ji | attached | respectful | [K] |
+| Saheb | suffix | respectful | [V] |
+| Shri, Shrimati | prefix | formal | [K] |
+
+Seth, Sheth and Shah are surnames. Do not strip them.
+
+**Marathi and Konkani**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Shri | prefix | formal, male | [K] |
+| Sau. | prefix | formal, female, married | [K] |
+| Kum. | prefix | formal, female, unmarried | [K] |
+| -rao | attached | traditional, male | [K] |
+| Saheb | suffix | respectful | [V] |
+| Tai | suffix | kinship, elder sister | [K] |
+| Dada (Anna, Bhau) | suffix | kinship, elder brother | [K] |
+
+Konkani uses the Marathi forms. The Konkani rows in the research file are
+`[K]` or `[U]`. Patil and Deshmukh are surnames.
+
+**Bengali**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| -da (Dada) | attached or suffix | kinship, elder brother | [K] |
+| -di (Didi) | attached or suffix | kinship, elder sister | [K] |
+| Babu | attached to a name | respectful, old style | [K] |
+| Moshai (Mashai) | suffix | formal, rare in business | [K] |
+| Sri (Shree) | prefix | formal, male | [V] |
+| Srimati | prefix | formal, female, married | [V] |
+
+**Odia, Assamese and the northeast**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Sri, Srimati (Odia, Assamese) | prefix | formal | [K] |
+| Bhai, Bhaina (Odia) | suffix | kinship | [U] |
+| Apa, Bhauni (Odia) | suffix | kinship | [U] |
+| Baideo, Bhai (Assamese) | suffix | kinship | [U] |
+| Pu, Pi (Mizo) | prefix | formal, respectful | [K] |
+| Sap (Mizo) | suffix | respectful, from "sahib" | [V] |
+| Kong, Bah (Khasi) | prefix | respectful | [K] |
+
+The research file has the least confidence here. The Mizo and Khasi rows
+keep their research tags, and they also need a native-speaker check before
+they ship. Treat Manipuri, Naga and Bodo forms as `[U]`. The Khasi particles "U" and "Ka" are
+name articles, not honorifics. Do not strip them.
+
+**Telugu**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| garu (gaaru) | suffix, spaced or attached | respectful to formal, any gender | [K] |
+| Sri ... garu | prefix and suffix | formal, male | [K] |
+| Srimathi | prefix | formal, female, married | [K] |
+| Anna, Akka | suffix | kinship | [K] |
+
+Telugu names often put the family name first. Rao, Naidu, Reddy and
+Chowdary are surnames. A parser must not assume the surname is last.
+
+**Tamil**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Thiru (Tiru) | prefix | formal, male | [V] |
+| Thirumathi (Tmt.) | prefix | formal, female, married | [V] |
+| Selvi | prefix | formal, female, unmarried. Also a given name | [K] |
+| avargal (avarkal, Avl.) | suffix | very formal, rare in chat | [K] |
+| Anna, Akka | suffix | kinship | [K] |
+| Selvan | prefix | young men, on invitations | [U] |
+
+Many Tamil names start with initials for the father's name or the village.
+The initial is not a first name. Never use Thambi or Thangachi (younger
+person) for a member.
+
+**Kannada**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| avare (avaru) | suffix, spaced | respectful, formal or spoken | [K] |
+| Shri, Shrimathi, Kumari | prefix | formal | [K] |
+| Anna, Akka | suffix | kinship | [K] |
+
+Gowda, Shetty and Rao are surnames.
+
+**Malayalam**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Chettan | suffix | kinship, elder brother | [K] |
+| Chechi | suffix | kinship, elder sister | [K] |
+| Shri, Smt., Kum. | prefix | formal, government use | [K] |
+| avarkal | suffix | formal | [U] |
+
+Malayalam names often carry a house name or initials first. Kutty is a name
+part. Achayan is Christian usage. Never infer it.
+
+**Urdu and Muslim usage**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Janab | prefix | formal, male | [K] |
+| Mohtaram, Mohtarma | prefix | formal, male or female | [K] |
+| Sahab (Sahib), Sahiba | suffix | respectful | [V] |
+| Begum | suffix | traditional, female, married | [V] |
+| Haji, Hafiz, Maulana, Maulvi, Qari, Mufti | prefix | religious title | [K] |
+| Bhai jaan | suffix | kinship | [K] |
+| Apa, Baji | suffix | kinship, elder sister | [K] |
+
+Khan, Syed and Mirza are surnames. Never infer religion from a name.
+
+**Professional prefixes (all regions)**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Er. (Engineer), Adv. (Advocate) | prefix | title | [K] |
+| CA, CS | prefix or suffix | regulated title | [K] |
+| Prof., Dr. | prefix | title | [K] |
+| Col., Maj., Capt., Lt., Gen., Cdr. | prefix | rank. Retired officers keep it | [K] |
+| IAS, IPS, IFS | suffix | civil service | [K] |
+| Hon'ble | prefix | judges and ministers | [K] |
+
+**Greetings by language.** In Indian business chat, the English "Good
+morning" is the common form. The native time greetings appear mostly in
+social groups and in formal letters. Examples are Suprabhat, Shubhodayam,
+Kaalai vanakkam and Suprabhatham.
+
+The generic hellos are Namaste, Namaskar (Marathi, Bengali, Odia), Vanakkam
+(Tamil), Namaskara (Kannada) and Namaskaram (Malayalam, Telugu). Every row is
+`[K]` or `[U]`. A language hello ships by the rule of §16.4.1 only. Mizo and
+Khasi use English.
+
+**Not covered.** Manipuri, Naga languages, Bodo, Kashmiri, Dogri, Sindhi,
+Nepali, Tulu and Santali have no rows. Do not claim coverage for them.
+
+#### 16.4.3 PZ-41: titles are not names
+
+D4 is a parse error. The drafter takes "Shri" as the first name of "Shri
+Ramesh Kumar". The fix strips the title first and takes the next token as
+the first name:
+
+- The titles are Shri, Sri, Shree, Sree, Shrii, Smt., Shrimati, Srimati,
+  Srimathi, Thirumathi and Tmt. They also include Kum., Kumari, Sushri, Thiru,
+  Tiru, Selvi, Pandit and Pt. The list goes on with Janab, Mohtaram, Mohtarma,
+  Haji, Maulana, Er., Adv., CA, CS and the military ranks.
+- A title that takes a given name keeps the title the name already has. For
+  "Shri Ramesh Kumar" the drafter writes "Dear Shri Ramesh,". It never writes
+  "Dear Shri,". "Sri Lakshmi" gives "Dear Sri Lakshmi,", which is right
+  whether Sri is a title or part of the given name.
+- Dr, Prof, Mr, Mrs, Ms, Mx, Miss, the ranks and Hon'ble keep
+  "<title> <surname>", as before. Er takes the given name ("Er. Sunil").
+- Adv., CA and CS are professional titles, not forms of address. The drafter
+  greets the given name alone ("Dear Priya,").
+- A title with no name after it gives "Hello,". This holds for a lone "Dr."
+  too.
+- Kumari, Selvi, Selvan and a few more are also given names. They count as a
+  title only when a name follows them. A lone "Kumari" stays a name.
+- A surname token (Rao, Naidu, Reddy, Sharma, Gowda, Pillai, Nair, Iyer,
+  Menon, Shetty, Singh, Kaur, Kumar, Devi) is never a title.
+- A suffix that the display name already has stays as written: "Ramesh Garu"
+  gives "Dear Ramesh Garu,". The drafter keeps a suffix only from a
+  catalogue row with the suffix placement.
+- The drafter never adds "ji", "garu", "sir" or a kinship form. It never
+  picks one from the region or the surname.
+- The titles come from `acb_common.honorifics`, the one catalogue. The
+  drafter keeps no list of its own (fence: `tests/unit/test_salutation_titles.py`).
+  PZ-40 extends the catalogue.
+
+Greeting a recipient as the member does stays in PZ-13 (task 307).
+
+### 16.5 What other people call the member (PZ-42)
+
+**Decision (Q2).** The assistant may learn what other people call the member,
+from mail the member receives. It is a suggestion only.
+
+- **What it reads.** The first non-empty line of a received mail in the
+  member's connected mailboxes: "Dear Vijay sir,", "Hi VJ,", "Vijay garu,".
+  It excludes quoted replies and signatures.
+- **What it keeps.** Counts of each form, per sender group (a design detail, not an owner decision). It keeps no mail
+  text, no subject and no sender address in the count.
+- **How it parses.** It drops the greeting word, then reads `[title] name
+  [suffix]`. It splits an attached suffix ("Vijaybhai") only when the stem
+  matches the member's first name, a nickname, initials or the display name.
+  It normalizes spelling variants (§16.4.1 rule 9) before it counts. It
+  ignores generic salutations (rule 10).
+- **What it does with the counts.** When one form leads, it asks the
+  member one card: "Most people write to you as 'Vijay sir'. Should I call
+  you that, or something else?" Nothing changes without a yes. A no stops the
+  question (a design detail, not an owner decision).
+- **Why a card.** What a team calls the member ("sir") is not always what the
+  member wants from the assistant.
+- **§12.3 still holds.** A message from another person is never the member's
+  voice. This slice reads a form of address. It does not read a voice, and it
+  learns no phrase, tone or style from the sender.
+
+Tier: **HIGH**. The slice reads mail and writes the profile. The other choice
+was to read no received mail and only ask. The owner did not take it.
+
+### 16.6 Celebrations (PZ-43)
+
+**Decision (Q3).** The assistant asks. It never guesses.
+
+- The member gives a birthday as a day and a month. The profile keeps no
+  year.
+- The member picks the festivals for a greeting from an all-India list. The
+  list holds no festival by default.
+- The assistant greets once on the day.
+- It never guesses a religion or a community from the name, the region or
+  mail. That is sensitive personal data under the DPDP Act.
+- It does not suggest a festival from mail signals, such as birthday wishes
+  that the member received. That was the other choice, and the owner did not
+  take it.
+- The pick is the member's own data. It follows the rules of §7: Settings
+  shows it, Forget clears it, and export holds it.
+
+### 16.7 The slices
+
+Each slice is one PR. The tier follows `next-ticket.md` step 1b. A fence
+that does not exist yet is advisory until its slice builds (R7).
+
+| Slice | What | Done when | Fence (R7) | Gate · tier |
+|---|---|---|---|---|
+| **PZ-SAL-0** · task 1822 | This section, D184 and the INDEX sentence | The section, D184 and the INDEX sentence are in `main`. `test_decision_ids.py`, `test_index_completeness.py` and `test_doc_names_resolve.py` stay green | Advisory. Docs only | AGENT-SAFE · LOW |
+| **PZ-39** · task 1823 · **BUILT 2026-11-06** | The time-of-day table, the zone, the 4-hour gap, the late hello, the language hello and the buddy hello (§16.3) | At 02:00 My Day and the chat both say "Hello". At 17:30 both say "Good evening". The chat greets in the first reply after 4 hours or more of quiet, and never in the middle of a conversation. A regenerate, a retry and a fault give no greeting. No reply says "Good night" | `tests/unit/test_greeting_table.py` fails when `myDay.ts` and `GREETING_TABLE` differ. `test_executor_greet_due.py` and `test_executor_greet_due_r8.py` hold the gap rule, the second on a real database. `test_buddy_hello_r8.py` holds the hello zone and text on a real database | AGENT-SAFE · STANDARD |
+| **PZ-40** · task 1824 | `acb_common.honorifics`, the one catalogue (§16.4.2). The name question offers "just my name" first, then the forms for the member's language. The block uses the chosen form as written | A unit test: the catalogue holds the forms of §16.4.2 with their tags. A `[U]` row has no entry in the shipped choices. With no choice, the block holds the name only. A chosen form shows as written. No code reads the name, the region or the language to pick a form | Planned `tests/unit/test_honorifics.py`, advisory until PZ-40 builds. It also fails on a second list of forms outside the module | AGENT-SAFE · STANDARD |
+| **PZ-41** · task 1821 · **MERGED 2026-11-07** (86b80433e) | The drafter strips an Indian title before it takes the first name (§16.4.3) | A unit test: "Shri Ramesh Kumar", "Smt. Priya Rao", "Thiru Kumar Raja", "Kum. Anita", "Pandit Mohan Lal" and "Er. Sunil Singh" each give the right first name and never a title. A name that is only "Shri" stays. Surname tokens never count as titles | `tests/unit/test_salutation_titles.py` | AGENT-SAFE · STANDARD |
+| **PZ-42** · task 1825 | The first-line reader of received mail, the counts, the suggestion card (§16.5) | An R8 test: counts form per member and per org, and a mail of another member never counts. The slice stores no mail text, subject or address. A quoted line and a signature do not count. A generic salutation does not count. Nothing changes in the profile without a yes on the card, and a no stops the question. A message from another person adds no voice sample (§12.3) | Planned `tests/unit/test_address_form_learner.py` and an R8 file, advisory until PZ-42 builds. It extends the §12.3 fence that keeps another person's message out of the voice | Q2 approved · **HIGH** (reads mail, writes the profile) |
+| **PZ-43** · task 1826 · **MERGED 2026-11-07, dark** (f21694924, `CELEBRATIONS_ORGS`) | The birthday (day and month), the festival picks, the all-India list, and one greeting on the day (§16.6) | A test: the birthday that the profile keeps holds no year. The chat greets once on the day, and not a second time that day. A member with no pick gets no festival greeting. No code reads the name, the region or mail to pick a festival. Forget and export cover the new fields | `tests/unit/test_celebrations.py`, and `tests/unit/test_celebrations_r8.py` on a real database. The interview question is task 2193 | Q3 approved · STANDARD |
+
+Verification commands. Run from the repository root. Each slice creates the
+test files that it names:
+
+```bash
+# PZ-39
+uv run pytest tests/unit/test_greeting_table.py tests/unit/test_executor_greet_due.py tests/unit/test_executor_greet_due_r8.py tests/unit/test_buddy_hello_r8.py -q
+cd workbench/control_plane && npx vitest run src/lib/shell/myDay.test.ts src/lib/shell/buddyHello.test.ts src/lib/shell/addressName.test.ts
+# PZ-40 and PZ-41
+uv run pytest tests/unit/test_honorifics.py tests/unit/test_salutation_titles.py -q
+# PZ-42
+uv run pytest tests/unit/test_address_form_learner.py -q
+# PZ-43
+uv run pytest tests/unit/test_celebrations.py -q
+```
+
+### 16.8 Decisions
+
+`work_plan.md` §3 records these as **D184**. The owner answered all four on
+epic task 1820 on 2026-11-06 at 05:41 UTC: "Approve all four recommendations".
+The D-PZ-n ids and the PZ-n slice numbers are two separate sequences. D-PZ-39
+is not the decision of PZ-39. A check of `origin/main` at merge confirms the
+numbers (R1).
+
+| # | Question | Decision |
+|---|---|---|
+| **D-PZ-39** | When does the chat greet? (Q1) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** In the first reply of a chat, and in the first reply after 4 hours or more with no message in that chat. Never in the middle of a conversation. Late at night it says "Hello" or "Good evening", never "Good night". It greets in the member's language when the profile sets one. **Source of "Hello":** Q1 said "Hi". The PZ-39 preview that the owner approved on 2026-11-06 at 09:43 UTC (task 1823) says "Hello". "Hello" stands |
+| **D-PZ-40** | May the assistant learn what other people call the member, from mail? (Q2) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** Yes, as a suggestion only. It reads the first line of received mail, keeps counts of each form and no mail text, and asks once. Nothing changes without a yes |
+| **D-PZ-41** | How do celebrations work? (Q3) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** Ask, never guess. The member gives a birthday (no year) and picks festivals from an all-India list. One greeting on the day. No guess of religion or community, and no suggestion from mail signals |
+| **D-PZ-42** | What does the chat call the member when no choice is made? (Q4) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** The name only. A form such as "ji" or "garu" comes after the member chooses it. The setup question offers the forms that fit the member's language, from a sourced list |
+
+### 16.9 Open questions
+
+These are real and open. Each has a default, and the default stands until a
+person answers.
+
+1. **Who confirms the `[K]` rows?** A row with no `[V]` tag needs a human
+   reviewer before it ships as a fixed rule. The common forms ("sir", "ji",
+   "garu") are `[K]`. Default: PZ-40 ships the `[V]` rows and the name-only
+   choice. It also ships the `[K]` rows that the owner confirms in the PZ-40
+   preview.
+2. **A native-speaker check.** A `[U]` row needs one (§16.4.1 rule 2). A
+   `[K]` row needs one when the reviewer does not speak its language. Eleven
+   languages are in question: Telugu, Tamil, Kannada, Malayalam, Bengali,
+   Gujarati, Marathi, Odia, Assamese, Mizo and Khasi. Default: those rows
+   stay out of the choices until the check is done.
+3. **The festival list (PZ-43).** The content of the all-India list needs an
+   owner or native-speaker check. Default: PZ-43 builds the picker with an
+   empty list, and the list fills after the check.
+4. **The late-evening hours.** The research file marks the exact cutoff as
+   `[U]`. PZ-39 uses 21:00 as the start of "Hello". Default: that stands.
+5. **Parser tests on real mail (PZ-42).** The research file asks to test the
+   first-line rules on real first lines from a consenting member. Default:
+   PZ-42 tests on made-up lines first, and a consenting member's mail comes
+   after the owner agrees.
+
+## 17. Tone of voice (ACCEPTED, 2026-11-06)
+
+`work_plan.md` §3 records this section as **D189**. The epic is "Tone of
+voice" (Metorite task 1469). It adds the slices PZ-44 to PZ-50. The owner
+answered all four questions of §17.8 on 2026-11-06 at 18:28 UTC. This slice
+(PZ-44) is the spec only. No other slice is built.
+
+### 17.1 The ask
+
+The owner wrote this on task 1469 on 2026-11-02:
+
+```text
+"personalization.md gains §17, with the owner decisions recorded as D-series entries. It must say where a persona voice applies (drafting, nudges, reminders, interview questions) and where it never applies (facts, figures, safety and sensitive cards, tool output, quoted text). Covers the ambiguity rule: when a quote and a task conflict, the task is stated plainly and the persona only colours the encouragement."
+```
+
+The ask has three parts:
+
+1. **A voice the member picks**, for example a Yoda-like nudge that comes
+   with a quote.
+2. **A list of places** where the voice applies, and a list where it never
+   applies.
+3. **The ambiguity rule.** The task stays plain. The persona colours only
+   the added line.
+
+### 17.2 What exists
+
+The code on `main` has no persona. Each fact below was read on `origin/main`
+on 2026-11-06.
+
+- **The profile has no persona key.** `formality` (`casual`, `neutral`,
+  `formal`) renders as "Tone: <formality>." (`_address_line`, in
+  `packages/acb_common/acb_common/assistant_profile.py`). `style.notes` holds
+  at most 5 notes of 200 characters (`NOTES_MAX`, `NOTE_MAX`). The whole
+  profile is at most `PROFILE_MAX` = 6,000 characters. The rendered block is
+  at most `RENDER_MAX` = 6,000.
+- **The house voice is `acb_llm.voice`.** `CORE` holds 12 rules, and
+  `voice_prompt(...)` adds one overlay (`chat`, `email`, `message`,
+  `summary` and others). Rule 12 says the rules cover the assistant's own
+  words, never quoted text, code or data.
+- **Drafts to other people use the member's voice.** The email drafter adds
+  `voice_prompt("email")` and the member's own writing voice (WS-52 S3,
+  `voice_profile.py`). The WhatsApp drafters add `voice_prompt("message")`.
+- **No model writes an interrupt.** `proactive_reach.md` says the words of a
+  reminder or a nudge are the card's own templates. `chat_first_surface.md`
+  says "No model in the nudge or the brief".
+- **One bounded model site.** `brief/phrase.py` writes the lead sentence of a
+  brief, behind the claim fence.
+- **A WhatsApp template message has fixed text.** Meta approves that text.
+- **The interview has 12 areas and no area for tone** (`AREAS`, §14).
+- **The evaluation set of PZ-10 does not exist yet.**
+
+### 17.3 Identity and tone
+
+Mira is the name of the assistant (D125). A persona never changes the name, what
+it knows, or what it may do.
+
+A persona changes how the assistant sounds in the places of §17.4, and
+nowhere else.
+
+The older line in §5.3 said the persona stays "Metorite". This change amends
+that line. The client constant `ASSISTANT_NAME` in
+`workbench/control_plane/src/lib/shell/assistant.ts` still says "Metorite".
+It is older than D125. It is a finding for the board and not part of this
+spec (§17.10).
+
+### 17.4 Where a persona applies, and where it never does
+
+The owner decided this as Q1 (D-PZ-43). A member has ONE persona and one
+tick list of places. There is no separate persona for each app. This
+settles PZ-50.
+
+| Place | Default when a persona is on |
+|---|---|
+| Reminders | On |
+| Nudges | On |
+| The hello and the encouragement in the chat | On |
+| Interview questions | On |
+| Chat answers | Off. The member turns on "chat answers too" |
+
+**Never,** in any setting:
+
+- A draft to another person: email, WhatsApp, or any outbound message. These
+  use the member's own voice (Q1).
+- A fact, a number or a date (Q1).
+- A name or a decision. The text of task 1474 says "Voice never changes a
+  number, a date, a name or a decision".
+- A card: confirm, sensitive or profile (Q1).
+- A tool result (Q1).
+- Quoted text (Q1). Code and data come from rule 12 of `acb_llm.voice` CORE,
+  which says the rules never cover them.
+- A summary that other people read. It falls under "a draft to another
+  person" in Q1.
+
+**The ambiguity rule.** When a persona line and a task conflict, the
+assistant states the task in plain words. The persona colours only the one
+added line. The persona never rewrites the task text.
+
+**Where each persona line comes from.** This table is the reading of this
+spec. The owner confirms it at the PZ-48 preview (§17.10).
+
+| Place | Where the line comes from | Counts toward the cap of 3 a day |
+|---|---|---|
+| Reminders and nudges (messages that arrive without a request) | One line from the bank, after the fixed fact text. No model writes at send time | Yes |
+| The hello and the encouragement line in the chat | The model writes them inside its chat reply. The persona line in the profile block colours them. They do not come from the bank. The hello keeps the pace of the PZ-39 greeting rule: the first reply of a chat, and after 4 quiet hours. A reply holds at most one encouragement line, after the answer | No |
+| Interview questions | The model asks them in the chat. The persona line in the profile block colours them. The question and its reason stay plain (the PZ-30 rules) | No |
+| Chat answers, with "chat answers too" on | The persona colours the register of the answer. The fact rules still bind | No |
+
+The cap of 3 counts the bank lines on reminders and nudges only. Inside a
+chat that the member started, the pace rules of the chat apply.
+
+**This section amends two older rules.**
+
+- Today a nudge is a fixed string (`chat_first_surface.md`, "No model in the
+  nudge or the brief").
+- Also "No model writes an interrupt" (`proactive_reach.md`).
+
+The fact text stays the fixed template. One bank line may follow it. No model
+writes at send time, so both rules still hold in substance. PZ-48 updates
+those two specs in its own PR.
+
+### 17.5 Presets and the free-text line
+
+The owner decided this as Q2 (D-PZ-44). The presets are original styles. No
+preset holds a character name.
+
+| Preset | Sample line for "send the GST invoice to Fracktal, due 5 pm" |
+|---|---|
+| Plain (default) | (no line) |
+| Coach | One clear push and this one is done. |
+| Sage | A river reaches the sea one bend at a time. Today, this bend. |
+| Dry wit | The invoice will not send itself. I checked. |
+| Cheerful friend | Quick one before chai, then you are free! |
+
+- **Plain means no added line.** It is the default.
+- **Sage is the Yoda-like preset.** It has no character name.
+- **A free-text style** is one line of at most 140 characters.
+- **A save-time check** refuses a named film, book, TV or game character and
+  a real person. It offers the nearest preset. The owner said "film
+  character". This spec extends it to book, TV and game characters for the
+  same copyright reason. The PZ-47 preview confirms the extension.
+- **No character name** appears in any preset, prompt or line.
+
+The reasons come from news and law-firm reports. No court document was read.
+Reports say Disney sent Character.AI a legal notice in September 2025 that
+named Yoda. Reports also say the Delhi High Court protects the voice and the
+catchphrases of actors against AI imitation. The cases are Anil Kapoor in 2023
+and Jackie Shroff in 2024.
+
+**A lawyer must confirm these points before launch.**
+
+### 17.6 The line bank
+
+The owner decided this as Q3 (D-PZ-45).
+
+- **Presets.** We write and check about 30 original lines for each preset.
+  PZ-48 keeps them in the repository in one data module. One fence test reads
+  that module.
+- **A free-text style.** The model writes 20 lines once, when the member saves
+  the style. The member sees the lines first. Only the lines the member
+  accepts go live.
+- **Each message picks one line.** No line repeats within 14 days.
+- **No model writes at send time.** The rule "no model writes an interrupt"
+  holds (§17.2).
+- **No line comes from a film or a book.** Those are copyright.
+- **Later option.** A bank of public-domain quotes (Thiruvalluvar, Kabir,
+  Tagore, Vivekananda), each with a checked source (§17.10).
+
+### 17.7 Limits and the fallback
+
+The owner decided this as Q4 (D-PZ-46).
+
+1. **At most 3 persona lines a day** for each member.
+2. **Never on a serious message:** a failed payment, a security alert, a
+   sensitive card or an error.
+3. **Never on a WhatsApp template message.** Meta approves its fixed text.
+4. **Checks on each line before it goes live:**
+   - It is at most 120 characters, in one or two sentences. This is a
+     default. The PZ-49 preview confirms it.
+   - It holds no number, date, name or claim. This is how the build meets
+     the owner's "a changed fact". A line with no fact in it cannot change
+     one.
+   - It holds no flattery.
+   - It does not claim to be a character or a person.
+5. **A failed check means the message goes out plain.**
+6. **An admin can turn personas off** for the whole organization.
+7. **Forget and offboarding (PZ-9) delete** the persona and its lines.
+8. **Data law.** We treat a persona as an ordinary preference. This point is
+   unverified. The research file holds it from memory. The lawyer's check
+   covers it (§17.10).
+
+The evidence: no study shows that a quote or a playful tone gets more tasks
+done. This is a preference and not a promise of more output. A flattery test
+runs before launch, because a persona can make an assistant agree too easily.
+Reports of the GPT-4o update of April 2025 describe that fault.
+
+### 17.8 The decisions of the owner, and the data they need
+
+The owner answered this question on task 1469 (run 292432fe, question 2672,
+answer 2688) on 2026-11-06 at 18:28 UTC with "Approve all four
+recommendations". The question, word for word:
+
+```text
+The assistant stays Mira (D125). A persona changes how it sounds in some places, never who it is or what it knows.
+
+Reminder: send the GST invoice to Fracktal, due 5 pm.
+| Plain (default) | (no line) | Coach | One clear push and this one is done. | Sage | A river reaches the sea one bend at a time. Today, this bend. | Dry wit | The invoice will not send itself. I checked. | Cheerful friend | Quick one before chai, then you are free! |
+
+Q1. Where does the persona apply? Recommended: only to what the assistant says *to you*: reminders, nudges, the chat's hello and encouragement, and the interview questions. Chat answers stay plain, unless you turn on "chat answers too". It never goes into a draft to another person (email or WhatsApp), because those use *your* voice. It never touches a fact, a number, a date, a card, a tool result or quoted text. You get one persona and a tick list of these places, so no separate persona for each app (this answers task 1475).
+
+Q2. Characters such as Yoda? Recommended: original styles only. "Sage" is the Yoda-like preset, with no character name. You can also describe your own style in one line (140 characters). When that line names a film character or a real person, the assistant offers the nearest style. The reason: in September 2025 Disney sent Character.AI a legal notice that named Yoda. Also, the Delhi High Court protects the voice and catchphrases of actors (Anil Kapoor, Jackie Shroff) against AI imitation.
+
+Q3. Where does the quote come from? Recommended: original lines, never lines from films or books (those are copyright). We write and check about 30 lines for each preset. For your own style, the model writes 20 lines once when you save it, and you see them before they go live. Each reminder picks one line, and no line repeats within 14 days. No model writes at send time, so the rule "no model writes an interrupt" holds. Also possible later: a bank of public-domain quotes (Thiruvalluvar, Kabir, Tagore, Vivekananda), each with a checked source.
+
+Q4. How often, and where never? Recommended: at most 3 persona lines a day. None on a serious message: a failed payment, a security alert, a sensitive card or an error. None on a WhatsApp template message, because Meta approves its fixed text. When a line fails a check (too long, flattery, a changed fact), the message goes out plain. An admin can turn personas off for the whole organization.
+
+Note: no study shows that a quote or a playful tone gets more tasks done. This is a preference, not a promise of more output. A flattery test runs before launch, because a persona can make an assistant agree too easily. The legal points come from news and law-firm reports. A lawyer must confirm them before launch.
+```
+
+**The data and the seams** (design for the slices):
+
+- **The persona record** lives on the profile, inside `PROFILE_MAX`. It holds
+  the preset id, the free-text line, the tick list and an on/off switch.
+- **Only one short line enters the profile block,** and only when a chat
+  surface is on. The line reads "Persona: <preset label>. <the style line, at
+  most 140 characters>. Use it for: <the chat surfaces that are on>." It is at
+  most 200 characters. Over `RENDER_MAX` it drops together with the style
+  notes, and the drop order does not change otherwise.
+- **Who can set a free-text style.** Only words that the member typed, with
+  the typed mark (D-PZ-37), can set it. A card answer can set a preset only.
+- **The line bank does not go in the profile block.** It would break the
+  `RENDER_MAX` cap and the cached prefix. It is a tenant-scoped table (R5).
+  PZ-45 builds it with expand-only migration rules (R6). The builder takes
+  the migration number at build time (R1).
+- **The send path reads the bank and never a model.**
+- **Extend the existing seams:** `assistant_profile`, the reminder text
+  builders and `acb_llm.voice`. Add no parallel voice module.
+
+### 17.9 The slices
+
+Each slice is one PR. The tier follows `next-ticket.md` step 1b. The feature
+ships dark behind the flag `ASSISTANT_PERSONA_ORGS`, default off. A fence that
+does not exist yet is advisory until its slice builds (R7).
+
+| Slice | What | Done when | Fence (R7) | Gate · tier |
+|---|---|---|---|---|
+| **PZ-44** · task 1469 | This section, D189 and the INDEX sentence | The section, D189 and the INDEX sentence are in `main`. The four doc tests still pass | Advisory. Docs only | AGENT-SAFE · LOW |
+| **PZ-45** · task 1470 | The persona record on the profile, and the tenant-scoped line-bank table (§17.8) | A persona holds a label, a preset or one line, a tick list and an off switch. A row of one tenant never shows to another tenant. Forget deletes the persona and its lines | Planned `tests/unit/test_persona_store.py` and an R8 file, advisory until PZ-45 builds | AGENT-SAFE · **HIGH** (a migration) |
+| **PZ-46** · task 1471 | An interview area for tone. It saves the answer as a persona proposal | The question reuses the one-question-a-day shape. A yes on the card saves the proposal. Nothing saves without a yes. Only typed words (D-PZ-37) can set a free-text style, and a card answer sets a preset only | Planned `tests/unit/test_persona_interview.py`, advisory until PZ-46 builds | AGENT-SAFE · STANDARD |
+| **PZ-47** · task 1472 | The picker in Settings, Assistant settings, with the presets, the free line, a preview and one switch. The chat path covers WhatsApp too | The preview shows a nudge in the chosen voice before the save. The switch turns the persona off. The save-time check of §17.5 refuses a character or a person | Planned `tests/unit/test_persona_picker.py` and a vitest file, advisory until PZ-47 builds | AGENT-SAFE · STANDARD |
+| **PZ-48** · task 1473 | The line on reminders and nudges, from the bank, with the 14-day rotation | Each message picks one line. No line repeats within 14 days. No model runs at send time. Over 3 lines a day, the member gets the plain message | Planned `tests/unit/test_persona_lines.py`, advisory until PZ-48 builds. It also fails when a send path imports a model client | AGENT-SAFE · STANDARD |
+| **PZ-49** · task 1474 | The guards of §17.7 and a flattery test | Each guard has a test. A failed check gives a plain message. The evaluation set of PZ-10 covers each guard | Planned `tests/unit/test_persona_guards.py`, advisory until PZ-49 builds | AGENT-SAFE · STANDARD |
+| **PZ-50** · task 1475 | None. D-PZ-43 decided it: one persona and one tick list | The rows of §17.4 hold | No build | Decided |
+
+Verification commands for the spec slice. Run from the repository root:
+
+```bash
+uv run pytest tests/unit/test_decision_ids.py tests/unit/test_index_completeness.py tests/unit/test_doc_names_resolve.py tests/unit/test_board_index.py -q
+```
+
+Each later slice creates the test files that it names:
+
+```bash
+# PZ-45 to PZ-49
+uv run pytest tests/unit/test_persona_store.py tests/unit/test_persona_interview.py tests/unit/test_persona_picker.py tests/unit/test_persona_lines.py tests/unit/test_persona_guards.py -q
+```
+
+### 17.10 Decisions and open questions
+
+`work_plan.md` §3 records these as **D189**. The D-PZ-n ids and the PZ-n slice
+numbers are two separate sequences. D-PZ-43 is not the decision of PZ-43.
+A check of `origin/main` at merge confirms the numbers (R1).
+
+| # | Question | Decision |
+|---|---|---|
+| **D-PZ-43** | Where does the persona apply? (Q1) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** "Approve all four recommendations". Reminders, nudges, the chat's hello and encouragement, and the interview questions. Chat answers stay plain unless "chat answers too" is on. Never in a draft to another person, a fact, a card, a tool result or quoted text. One persona and one tick list. This settles PZ-50 |
+| **D-PZ-44** | Characters such as Yoda? (Q2) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** Original styles only. "Sage" is the Yoda-like preset. A free line of 140 characters. A named character or a real person gets the nearest style |
+| **D-PZ-45** | Where does the quote come from? (Q3) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** Original lines, about 30 for each preset. 20 model lines for a free style, written once and accepted by the member. One line for each message, no repeat within 14 days. No model at send time |
+| **D-PZ-46** | How often, and where never? (Q4) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** At most 3 persona lines a day. None on a serious message or a WhatsApp template. A failed check means a plain message. An admin can turn personas off for the organization |
+
+**Open questions.** Each has a default, and the default stands until a person
+answers.
+
+1. **The lawyer's check.** A lawyer must confirm the legal points of §17.5
+   before launch. Default: PZ-47 ships with the flag off until the check is
+   done.
+2. **The public-domain quote bank.** Default: not built. It comes after PZ-48,
+   if the owner asks.
+3. **Languages other than English.** Default: the preset banks start in
+   English. A member whose profile language is not English gets lines in
+   that language. The lines come through the same save-time flow, with a
+   preview.
+4. **The `ASSISTANT_NAME` constant.** It still says "Metorite" and D125 says
+   Mira. Default: a finding for the board. This spec does not change it.
+5. **The reading of Q4.** The cap of 3 counts the bank lines on reminders and
+   nudges only (§17.4). This is the reading of this spec. The owner confirms
+   it at the PZ-48 preview.
+
+**The exception to the house voice.** `acb_llm.voice` CORE
+(`packages/acb_llm/acb_llm/voice.py`, owned by `agent_writing_voice.md`,
+WS-52) conflicts with the presets. Rule 9 bans enthusiasm that the writer
+puts on. Rule 2 says "plain words". Rule 4 says "do not build up to a
+reveal".
+
+The line "Quick one before chai, then you are free!" and the Sage riddle break
+these rules. The owner approved those lines, and they need the exception.
+
+Rules 2, 4 and 9 give way to the chosen style in two places only. These are
+the persona line and the hello and encouragement line of the chat. Rules 7
+(no em dashes), 10 (never invent a name, number, date or quote) and 12 (the
+reader's language) always bind. "Chat answers too" changes the register only,
+so every CORE rule still binds the answer itself. Plain keeps every rule.
