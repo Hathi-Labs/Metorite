@@ -34,18 +34,26 @@ d. A roll-up over the lines changes in the same transaction: the parent, its
 e. The door path (a direct write) and the chat path (an ask, the member's
    approval, then the resend) both hold.
 
-**The mutations (R7).** Commit before each, and restore with git after.
+**The mutations (R7).** Commit before each, and restore with git after. Each
+result below was run on 2026-11-09, with ``test_studio_lines.py`` too.
 
-* L1. ``objects_store._LINE_PARENTS_SQL``: drop ``AND {_IN_PACKAGE}``.
-  ``test_r8_a_line_cannot_move_to_a_parent_of_another_package`` goes red.
-* L2. ``objects_store._new_parents``: skip each mark (``continue`` first).
-  The package test and ``test_r8_a_line_cannot_move_to_a_parent_of_another_org``
-  go red.
+* L1. ``objects_store._LINE_PARENTS_SQL``: drop the filters of the object and of
+  the package (``_IN_PACKAGE``). ``test_r8_a_line_cannot_move_to_a_parent_of_another_package``
+  and ``test_each_lines_statement_names_the_org_and_the_package`` go red. The
+  org test stays green, because the org filter and RLS still hold.
+* L2. ``objects_store._new_parents``: skip each mark (``continue`` first). The
+  package test, ``test_r8_a_line_cannot_move_to_a_parent_of_another_org`` and
+  ``test_r8_a_parent_id_that_is_not_a_uuid_is_refused`` go red.
 * L3. ``invoke._do_object_write``: call ``apply_writes`` once for each write.
-  ``test_r8_a_failure_on_line_17_writes_nothing`` goes red.
+  ``test_r8_a_failure_on_line_17_writes_nothing``, the roll-up range test, the
+  two tests of the shape of a save, and the hermetic one-batch fence go red.
 * L4. ``objects_store._apply_write``: skip the check that a linked update is a
   line of its parent. ``test_r8_a_line_of_another_parent_is_refused_in_a_save``
   goes red.
+* L5. ``invoke._split_lines``: compare the total with ``MAX_LINES_PER_SAVE + 1``.
+  ``test_r8_fifty_lines_are_refused_and_forty_nine_are_saved``,
+  ``test_r8_a_chat_ask_with_fifty_lines_opens_no_request`` and
+  ``test_fifty_lines_are_refused_before_any_write`` go red.
 """
 
 from __future__ import annotations

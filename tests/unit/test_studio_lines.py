@@ -12,12 +12,15 @@ Code: ``studio_fields`` (the spec rule and ``lines_problem``), ``studio_manifest
 check of a new parent). ``test_studio_lines_r8.py`` runs the store and the door
 on a real Postgres.
 
-**The mutations (R7).** Commit before each, and restore with git after.
+**The mutations (R7).** Commit before each, and restore with git after. Each
+result below was run on 2026-11-09.
 
-* H1. ``studio_fields._check_lines``: return at once.
-  ``test_a_lines_relation_refuses_a_bad_spec`` goes red.
+* H1. ``studio_fields._check_lines``: return at once. The seven cases of
+  ``test_a_lines_relation_refuses_a_bad_spec`` go red.
 * H2. ``invoke._split_lines``: compare the total with ``MAX_LINES_PER_SAVE + 1``.
   ``test_fifty_lines_are_refused_before_any_write`` goes red.
+* The mutations of the store and the door on a real database are in
+  ``test_studio_lines_r8.py``.
 """
 
 from __future__ import annotations
