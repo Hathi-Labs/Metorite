@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -120,6 +121,33 @@ class TestTheFixtures:
         assert r.finish == {"mins": 540, "working_days": 2, "date": "2026-11-03"}
 
 
+class TestLinksThatAreNoDependency:
+    def test_a_self_loop_is_ignored_and_listed(self):
+        r = analyze_plan([T("a", 10), T("b", 10)], [("a", "a"), ("a", "b")])
+        assert r.cycle is None and r.critical_path == ["a", "b"]
+        assert r.ignored_links == [{"blocker": "a", "blocked": "a", "reason": "same task"}]
+
+    def test_an_epic_linked_to_its_own_child_is_ignored(self):
+        tasks = [T("E"), T("e1", 10, parent="E"), T("e2", 10, parent="E")]
+        r = analyze_plan(tasks, [("E", "e1")])
+        assert r.ignored_links == [
+            {"blocker": "E", "blocked": "e1", "reason": "parent and child"}]
+        assert r.cycle is None and r.ready == ["e1", "e2"]
+
+    def test_the_verifier_case_gives_no_false_cycle(self):
+        tasks = [T("E"), T("e1", 10, parent="E"), T("e2", 10, parent="E")]
+        r = analyze_plan(tasks, [("E", "e1"), ("e1", "e2")])
+        assert r.cycle is None
+        assert r.ready == ["e1"] and r.waves == [["e1"], ["e2"]]
+        assert r.critical_path == ["e1", "e2"]
+        assert [x["reason"] for x in r.ignored_links] == ["parent and child"]
+
+    def test_a_grandchild_counts_as_a_child(self):
+        tasks = [T("E"), T("m", parent="E"), T("g", 10, parent="m")]
+        r = analyze_plan(tasks, [("g", "E")])
+        assert [x["reason"] for x in r.ignored_links] == ["parent and child"]
+
+
 class TestTheRules:
     def test_an_epic_link_expands_to_its_slices(self):
         tasks = [T("e1"), T("e2"),
@@ -208,28 +236,67 @@ def test_the_module_imports_no_io_library():
     assert not (seen & _IO_MODULES), seen & _IO_MODULES
 
 
-_SORT_DEF = re.compile(
-    r"^\s*(?:async\s+)?def\s+\w*(?:topological|toposort|critical_path|kahn|forward_pass|"
-    r"backward_pass|longest_path)\w*", re.IGNORECASE | re.MULTILINE)
-_SORT_TOKEN = re.compile(r"\b(?:indegree|in_degree|indeg)\b")
+_QUEUE = re.compile(r"\b(?:deque|heapq|indegree|in_degree|indeg)\b")
+_DEPENDENCY = re.compile(
+    r"\b(?:blocked_by|blockers|predecessors|successors|preds|succs)\b")
+_PASS = re.compile(
+    r"earliest_?(?:start|finish)|latest_?(?:start|finish)|critical_path|"
+    r"\b(?:topological|toposort)\w*", re.IGNORECASE)
+
+#: Files that match a token pair and are not a task-order engine. Each has a reason.
+_ALLOWED: dict[str, str] = {
+    "apps/skills/skill-projects/skill_projects/forms.py": (
+        "`_block_cycle` only finds a loop among the rows of a plan the member "
+        "proposes, before the card. It computes no order, wave, slack or date."
+    ),
+}
+
+
+def _scan(bases: list[Path]) -> list[str]:
+    found: list[str] = []
+    for base in bases:
+        for path in base.rglob("*.py"):
+            parts = set(path.parts)
+            if parts & {"node_modules", ".venv"} or path.name.startswith("test_"):
+                continue
+            rel = path.relative_to(ROOT).as_posix()
+            if rel == "packages/acb_common/acb_common/planning.py" or rel in _ALLOWED:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if _PASS.search(text) or (_QUEUE.search(text) and _DEPENDENCY.search(text)):
+                found.append(rel)
+    return found
 
 
 def test_no_other_module_sorts_a_graph():
     """The one home is ``packages/acb_common/acb_common/planning.py`` (D195 Q8).
 
-    The gateway and ``skill_projects`` call ``analyze_plan``. A topological sort
-    or a critical-path pass in either is a second engine.
+    A file in ``apps/`` or ``packages/`` that holds a work queue AND a
+    dependency word, or a name of a schedule pass, is a second engine. Call
+    ``analyze_plan`` instead. A file that is not a task-order engine goes in
+    ``_ALLOWED`` with a reason.
     """
-    roots = [ROOT / "apps/services/gateway", ROOT / "apps/skills/skill-projects"]
-    found: list[str] = []
-    for base in roots:
-        for path in base.rglob("*.py"):
-            if "node_modules" in path.parts or ".venv" in path.parts:
-                continue
-            text = path.read_text(encoding="utf-8")
-            if _SORT_DEF.search(text) or _SORT_TOKEN.search(text):
-                found.append(str(path.relative_to(ROOT)))
+    found = _scan([ROOT / "apps", ROOT / "packages"])
     assert not found, (
         "A graph sort lives only in packages/acb_common/acb_common/planning.py. "
         f"Call analyze_plan instead. Found in: {found}"
     )
+
+
+def test_the_fence_flags_a_renamed_kahn_loop(tmp_path, monkeypatch):
+    """A planted file with a Kahn loop under a new name fails the scan."""
+    fake = tmp_path / "apps"
+    fake.mkdir()
+    (fake / "order_things.py").write_text(
+        "from collections import deque\n"
+        "def go(preds, succs):\n"
+        "    q = deque(n for n in preds if not preds[n])\n"
+        "    while q:\n"
+        "        n = q.popleft()\n"
+        "        for m in succs[n]:\n"
+        "            preds[m].discard(n)\n"
+        "            if not preds[m]:\n"
+        "                q.append(m)\n",
+        encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    assert _scan([fake]) == ["apps/order_things.py"]

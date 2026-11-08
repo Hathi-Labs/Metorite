@@ -82,6 +82,8 @@ class PlanResult:
     outside_blockers: list[dict[str, Any]] = field(default_factory=list)
     held: list[str] = field(default_factory=list)
     slices: int = 0
+    #: Links that are not dependencies: `{blocker, blocked, reason}`.
+    ignored_links: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -131,6 +133,28 @@ class _Graph:
     held_by: dict[str, set[str]]
     preds: dict[str, set[str]]
     succs: dict[str, set[str]]
+    ignored: list[dict[str, str]]
+
+
+def _is_ancestor(by_id: Mapping[str, PlanTask], up: str, down: str) -> bool:
+    """True when ``up`` is a parent, grandparent and so on of ``down``."""
+    seen: set[str] = set()
+    cur = by_id[down].parent
+    while cur in by_id and cur not in seen:
+        if cur == up:
+            return True
+        seen.add(cur)  # type: ignore[arg-type]
+        cur = by_id[cur].parent  # type: ignore[index]
+    return False
+
+
+def _not_a_dependency(by_id: Mapping[str, PlanTask], a: str, b: str) -> str | None:
+    """Why a link is no dependency: it ends where it starts, or joins a parent to its child."""
+    if a == b:
+        return "same task"
+    if a in by_id and b in by_id and (_is_ancestor(by_id, a, b) or _is_ancestor(by_id, b, a)):
+        return "parent and child"
+    return None
 
 
 def _leaves(children: Mapping[str, list[str]], task_id: str) -> list[str]:
@@ -169,8 +193,13 @@ def _build(
     slice_set = set(slices)
     edges: dict[tuple[str, str], set[str]] = defaultdict(set)
     held_by: dict[str, set[str]] = defaultdict(set)
+    ignored: list[dict[str, str]] = []
     for blocker, blocked in links:
         if blocked not in by_id:
+            continue
+        why = _not_a_dependency(by_id, blocker, blocked)
+        if why:
+            ignored.append({"blocker": blocker, "blocked": blocked, "reason": why})
             continue
         for to_id in (x for x in _leaves(children, blocked) if x in slice_set):
             if blocker in by_id:
@@ -185,7 +214,7 @@ def _build(
     for a, b in edges:
         succs[a].add(b)
         preds[b].add(a)
-    return _Graph(by_id, children, slices, edges, held_by, preds, succs)
+    return _Graph(by_id, children, slices, edges, held_by, preds, succs, ignored)
 
 
 def _missing(g: _Graph) -> dict[str, Any]:
@@ -323,6 +352,7 @@ def analyze_plan(
         {"task_id": s, "blocked_by": sorted(g.held_by[s])} for s in g.slices if g.held_by[s]
     ]
     result.missing = _missing(g)
+    result.ignored_links = g.ignored
 
     order = _order(g)
     if len(order) < len(g.slices):

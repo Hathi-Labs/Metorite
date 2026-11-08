@@ -249,6 +249,7 @@ Production's list names `projects-plan` and `projects`, so both following packs 
 - A working day is 360 minutes (`WORKING_DAY_MINS`). Dates skip Saturday and Sunday. No holidays. Day 1 is the start date, or the next Monday when the start is a weekend.
 - A slice is an open leaf under the root: a task with no children. An epic-to-epic `blocks` link expands to every slice of the blocker epic blocking every slice of the blocked epic. That is the strict reading, and it needs no extra data. A done slice blocks nothing.
 - A blocker outside the root that is done is ignored. A blocker outside the root that is open holds its task, and the result names it in `outside_blockers`. A slice that it holds, and each slice after it, is in `held` and has no wave. A blocker that the caller cannot see is counted in `hidden.outside_blockers` and does not hold the task.
+- A link is not a dependency when both ends are the same task, or when one end is a parent (or any ancestor) of the other. The engine drops it before the expansion and lists it in `ignored_links` as `{blocker, blocked, reason}`, with the reason "same task" or "parent and child". It is never a cycle.
 - A cycle reports `cycle.task_ids` and `cycle.epic_ids`, and then no waves, no path and no finish.
 - `next_slice` is the ready slice with the least slack, then the best priority rank (`acb_common/priority.py`, 1 first), then the least id. It prefers a ready slice with zero slack.
 - Below 2 linked open slices the result says `not_enough: "need 2 linked tasks"`. It still lists `ready`, `waves` and `missing`.
@@ -468,7 +469,7 @@ The live measure of PJP-2 runs the OA-8e harness with `--budget-usd 0.50`.
 | A batch tool validates like its single tool | For each batch tool, a test sends one bad row and checks the same refusal text as the single tool | PJP-3, PJP-4 |
 | The planning arithmetic | Module tests of `packages/acb_common/acb_common/planning.py` on five fixed graphs: a chain, a diamond, a cycle, a task with no estimate, and a graph with no links. A sixth test holds the SP-12 case (an epic with 6 slices and 5 `blocks` links). `tests/unit/test_planning_module.py` | PJP-6 to PJP-10 |
 | The module does no I/O | An import scan of `planning.py` refuses `httpx`, `sqlalchemy`, `asyncpg`, `os`, `socket`, `requests` and the gateway (`test_the_module_imports_no_io_library`) | PJP-6a |
-| One engine, one home | A scan of `apps/services/gateway` and `apps/skills/skill-projects` refuses a topological sort or a critical-path pass. The allowed home is `acb_common/planning.py` (`test_no_other_module_sorts_a_graph`) | PJP-6a |
+| One engine, one home | A scan of `apps/` and `packages/` refuses a file that holds a work queue and a dependency word, or a schedule-pass name (`critical_path`, earliest or latest start or finish). A planted Kahn loop under a new name fails it. One path is allowed, with a reason in the test: `forms.py`, whose `_block_cycle` only finds a loop in a proposed plan. The allowed home is `acb_common/planning.py` (`test_no_other_module_sorts_a_graph`) | PJP-6a |
 | The read route keeps tenancy and visibility | An R8 test of `GET /projects/plan/analysis`: tenant isolation, a hidden slice counted and not named, a pinned agent narrowed (`tests/unit/test_plan_analysis_r8.py`) | PJP-6a |
 | Each stage set keeps its limits | A test over `stage_sets.py` | PJP-5 |
 
