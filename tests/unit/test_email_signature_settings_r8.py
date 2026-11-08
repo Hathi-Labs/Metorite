@@ -33,9 +33,8 @@ from acb_auth.permissions import EffectiveAccess
 from acb_auth.roles import UserContext, UserRole
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
-from gateway.routes.email import AssistantSettingsModel
+from gateway.routes.email import AssistantSettingsModel, signature_render
 from gateway.routes.email import signature as sig
-from gateway.routes.email import signature_render
 from gateway.routes.email.automation import assistant as assistant_mod
 from gateway.routes.email.automation import drafting
 from gateway.routes.email.core import _tenant_session
@@ -130,9 +129,8 @@ def _flag(monkeypatch, value: str) -> None:
 async def _resolve(promoted, org: str, account_id: str, kind: str) -> str:  # noqa: F811
     token = bind_tenant(org)
     try:
-        async with tenant_engine_scope(_app_dsn(promoted)):
-            async with _tenant_session() as db:
-                return await sig.resolve_signature(db, account_id, kind)
+        async with tenant_engine_scope(_app_dsn(promoted)), _tenant_session() as db:
+            return await sig.resolve_signature(db, account_id, kind)
     finally:
         release_tenant(token)
 
