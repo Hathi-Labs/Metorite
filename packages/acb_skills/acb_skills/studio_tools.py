@@ -2833,7 +2833,8 @@ async def studio_publish(package_id: str, notes: str = "") -> dict[str, Any]:
         # and the tool calls of one response run at once. So the POST names
         # the hash that the plan approved, and the store compares it under its
         # row lock (review round 1, P1).
-        reply = await _send("POST", f"{PACKAGES_PATH}/{pid}/versions",
+        # The path is a literal, so the chat-parity fence reads the route (STU-G5).
+        reply = await _send("POST", f"/studio/packages/{pid}/versions",
                             {"notes": notes, "based_on": digest}, "publish",
                             _PKG_MAYBE_PUBLISHED)
     except _Refused as exc:
