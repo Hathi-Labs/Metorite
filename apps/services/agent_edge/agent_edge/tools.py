@@ -1754,6 +1754,204 @@ BOARD_STATS = Tool(
 )
 
 
+# ── get_plan (SP-12) ────────────────────────────────────────────────────────
+
+PLAN_ROUTE = "/projects/plan/analysis"
+
+_ID_SCHEMA: dict[str, Any] = {"type": "string", "pattern": _UUID_PATTERN}
+_ID_LIST: dict[str, Any] = {"type": "array", "items": _ID_SCHEMA}
+
+_GET_PLAN_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "root_task_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "The goal, epic or project task to plan. An id from"
+                           " list_tasks or search_tasks."},
+    },
+    "required": ["root_task_id"],
+    "additionalProperties": False,
+}
+
+_GET_PLAN_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "root_task_id": _ID_SCHEMA,
+        "slices": {"type": "integer"},
+        "ready": _ID_LIST,
+        "waves": {"type": "array", "items": _ID_LIST},
+        "critical_path": _ID_LIST,
+        "slack": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "next_slice": {"type": ["string", "null"]},
+        "finish": {
+            "type": ["object", "null"],
+            "properties": {
+                "mins": {"type": "integer"},
+                "working_days": {"type": "integer"},
+                "date": {"type": ["string", "null"]},
+            },
+            "additionalProperties": False,
+        },
+        "held": _ID_LIST,
+        "outside_blockers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"task_id": _ID_SCHEMA, "blocked_by": _ID_LIST},
+                "required": ["task_id", "blocked_by"],
+                "additionalProperties": False,
+            },
+        },
+        "cycle": {
+            "type": ["object", "null"],
+            "properties": {"task_ids": _ID_LIST, "epic_ids": _ID_LIST},
+            "additionalProperties": False,
+        },
+        "missing": {
+            "type": "object",
+            "properties": {
+                "no_estimate": {"type": "integer"},
+                "no_owner": {"type": "integer"},
+                "no_estimate_ids": _ID_LIST,
+                "no_owner_ids": _ID_LIST,
+                "words": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        },
+        "not_enough": {"type": ["string", "null"]},
+        "ignored_links": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"blocker": _ID_SCHEMA, "blocked": _ID_SCHEMA,
+                               "reason": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+        "labels": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {"number": {"type": ["integer", "null"]},
+                               "title": _UNTRUSTED_OR_NULL},
+                "additionalProperties": False,
+            },
+        },
+        "hidden": {
+            "type": "object",
+            "properties": {"slices": {"type": "integer"},
+                           "outside_blockers": {"type": "integer"}},
+            "required": ["slices", "outside_blockers"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["root_task_id", "slices", "ready", "waves", "critical_path",
+                 "next_slice", "finish", "held", "outside_blockers", "hidden"],
+    "additionalProperties": False,
+}
+
+#: The ``reason`` values of an ignored link, as the engine words them.
+_PLAN_IGNORED_REASONS = frozenset({"same task", "parent and child"})
+
+
+def _int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _plan_finish(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    when = value.get("date")
+    return {"mins": _int(value.get("mins")), "working_days": _int(value.get("working_days")),
+            "date": when if isinstance(when, str) else None}
+
+
+async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    body = await _get(ctx, PLAN_ROUTE, TEXT_TASK_NOT_FOUND,
+                      query=[("root_task_id", str(args["root_task_id"]))])
+    if not isinstance(body, dict) or _id(body.get("root_task_id")) is None:
+        raise ToolError(TEXT_BUSY)
+    slack = body.get("slack")
+    hidden = body.get("hidden") if isinstance(body.get("hidden"), dict) else {}
+    missing = body.get("missing") if isinstance(body.get("missing"), dict) else {}
+    cycle = body.get("cycle")
+    nxt = body.get("next_slice")
+    words = missing.get("words")
+    waves = body.get("waves")
+    labels = body.get("labels")
+    return {
+        "root_task_id": body["root_task_id"],
+        "slices": _int(body.get("slices")),
+        "ready": _ids(body.get("ready")),
+        "waves": [_ids(w) for w in waves] if isinstance(waves, list) else [],
+        "critical_path": _ids(body.get("critical_path")),
+        "slack": ({k: _int(v) for k, v in slack.items() if _id(k) is not None}
+                  if isinstance(slack, dict) else {}),
+        "next_slice": _id(nxt),
+        "finish": _plan_finish(body.get("finish")),
+        "held": _ids(body.get("held")),
+        "outside_blockers": [
+            {"task_id": row["task_id"], "blocked_by": _ids(row.get("blocked_by"))}
+            for row in _dicts(body.get("outside_blockers"))
+            if _id(row.get("task_id")) is not None
+        ],
+        "cycle": ({"task_ids": _ids(cycle.get("task_ids")),
+                   "epic_ids": _ids(cycle.get("epic_ids"))}
+                  if isinstance(cycle, dict) else None),
+        "missing": {
+            "no_estimate": _int(missing.get("no_estimate")),
+            "no_owner": _int(missing.get("no_owner")),
+            "no_estimate_ids": _ids(missing.get("no_estimate_ids")),
+            "no_owner_ids": _ids(missing.get("no_owner_ids")),
+            "words": ([w for w in words if isinstance(w, str)]
+                      if isinstance(words, list) else []),
+        },
+        "not_enough": (body["not_enough"]
+                       if isinstance(body.get("not_enough"), str) else None),
+        "ignored_links": [
+            {"blocker": row["blocker"], "blocked": row["blocked"], "reason": row["reason"]}
+            for row in _dicts(body.get("ignored_links"))
+            if _id(row.get("blocker")) is not None and _id(row.get("blocked")) is not None
+            and row.get("reason") in _PLAN_IGNORED_REASONS
+        ],
+        "labels": ({
+            k: {"number": v["number"] if isinstance(v.get("number"), int) else None,
+                "title": untrusted(v.get("title"))}
+            for k, v in labels.items() if _id(k) is not None and isinstance(v, dict)
+        } if isinstance(labels, dict) else {}),
+        "hidden": {"slices": _int(hidden.get("slices")),
+                   "outside_blockers": _int(hidden.get("outside_blockers"))},
+    }
+
+
+GET_PLAN = Tool(
+    name="get_plan",
+    title="Get the plan of a goal, epic or project",
+    description=(
+        "Read the order of work under one goal, epic or project task. The server"
+        " computes it from the open slices (tasks with no subtasks) and the"
+        " blocks links. ready holds the slices that can start now. waves holds"
+        " the slices in layers: wave 1 is ready now, and wave 2 is ready when"
+        " wave 1 is done. critical_path is the longest chain, and slack is the"
+        " minutes a slice can slip off it. finish is one date from the"
+        " length of that chain. It is not a forecast. next_slice is the slice to"
+        " start. held holds the slices that wait on an open blocker outside the"
+        " tree, and outside_blockers names those blockers. hidden counts the"
+        " slices and blockers that this member cannot see, and never names them."
+        " cycle lists a loop of links, and then no path is given. labels gives"
+        " the number and title of the tasks that the answer names." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_GET_PLAN_INPUT,
+    output_schema=_GET_PLAN_OUTPUT,
+    route=PLAN_ROUTE,
+    params={"root_task_id": "root_task_id"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_get_plan,
+    routes=(PLAN_ROUTE,),
+)
+
+
 # ── search_tasks ────────────────────────────────────────────────────────────
 
 #: The keys of one ``search_tasks`` hit (§9.1).
@@ -8411,7 +8609,7 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
-    BOARD_STATS, GET_TASK, GET_TASK_TIMELINE,
+    BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,
@@ -8596,6 +8794,7 @@ __all__ = [
     "GET_AGENT_RUN",
     "GET_ATTACHMENT",
     "GET_ATTACHMENT_KEYS",
+    "GET_PLAN",
     "GET_PROJECT",
     "GET_TASK",
     "GET_TASK_CONTEXT",

@@ -268,6 +268,13 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
      [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
     ("my_tasks_delete_day_rule", {"number": 1, "confirmed": True, "version": RULES_VERSION},
      [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    # CAL-4 (task 1678): the two day flows. Reads and apply=False proposals only.
+    ("my_tasks_start_my_day", {},
+     [("GET", "/tasks/calendar/day-summary"), ("POST", "/tasks/calendar/rollover-today"),
+      ("GET", "/projects/my/inbox"), ("POST", "/tasks/calendar/plan-today")]),
+    ("my_tasks_close_my_day", {},
+     [("GET", "/tasks/calendar/day-summary"), ("POST", "/tasks/calendar/rollover-today"),
+      ("GET", "/projects/my/inbox")]),
 ]
 
 

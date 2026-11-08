@@ -97,8 +97,8 @@ PENDING_OP6: dict[str, str] = {}
 #: the slice that moves the route to class A. Keep this list short: a route
 #: waits here only while its chat tool is being built.
 PENDING_TOOL: dict[str, str] = {
-    # PJP-6a (task 1483) built the one plan engine and its read route.
-    "GET /projects/plan/analysis": "PJP-6b",
+    # Empty since SP-12 (task 2295): the plan route of PJP-6a got its chat
+    # tool, get_plan, and is class A.
 }
 
 #: The slices that may own a pending route. OP-6e (agent runs) owns no route.
@@ -138,7 +138,8 @@ def test_the_counts_the_spec_states() -> None:
     the Overview of My tasks, a second door to a read the chat has: 29."""
     assert len(STAYS_X) == 29
     assert len(PENDING_OP6) == 0
-    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 30
+    assert len(PENDING_TOOL) == 0
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 29
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:

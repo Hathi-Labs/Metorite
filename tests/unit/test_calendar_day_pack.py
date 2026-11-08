@@ -1,6 +1,6 @@
 """CAL-1a (task 1675): the ``calendar-day`` tool pack of the main chat.
 
-The pack holds the fourteen day planner, calendar settings and day rule tools of ``skill_my_tasks``. The Projects
+The pack holds the sixteen day planner, calendar settings, day rule and day flow tools of ``skill_my_tasks``. The Projects
 assistant builds them in ``_agent_tools()`` only. Each case names, in its
 docstring, the mutation that turns it red (R7).
 
@@ -29,20 +29,22 @@ EIGHT = (
 )
 #: CAL-2 (task 1676): the two calendar settings tools.
 SETTINGS = ("my_tasks_get_calendar_settings", "my_tasks_update_calendar_settings")
-#: CAL-3 (task 1677): the four day rule tools. The pack holds fourteen.
+#: CAL-4 (task 1678): the two day flows.
+FLOWS = ("my_tasks_start_my_day", "my_tasks_close_my_day")
+#: CAL-3 (task 1677): the four day rule tools. The pack holds sixteen with CAL-4.
 DAY_RULES = ("my_tasks_list_day_rules", "my_tasks_add_day_rule",
              "my_tasks_edit_day_rule", "my_tasks_delete_day_rule")
-FOURTEEN = tuple(sorted((*EIGHT, *SETTINGS, *DAY_RULES)))
+SIXTEEN = tuple(sorted((*EIGHT, *SETTINGS, *DAY_RULES, *FLOWS)))
 
 
-def test_the_family_is_the_fourteen_planner_settings_and_day_rule_tools() -> None:
-    """Mutation: drop a tool, add the fifteenth (estimate_stats), or name one that
+def test_the_family_is_the_sixteen_planner_settings_day_rule_and_flow_tools() -> None:
+    """Mutation: drop a tool, add the seventeenth (estimate_stats), or name one that
     skill_my_tasks lacks -> red."""
     fam = sf.SKILL_FAMILIES[SLUG]
-    assert tuple(fam["tools"]) == FOURTEEN == tuple(sorted(FOURTEEN))
+    assert tuple(fam["tools"]) == SIXTEEN == tuple(sorted(SIXTEEN))
     assert fam["owner"] == PA and sf.is_pack(SLUG) and not fam["core"]
-    assert set(FOURTEEN) <= set(skill_my_tasks.__all__)
-    assert len(FOURTEEN) <= tp.MAX_PACK_TOOLS
+    assert set(SIXTEEN) <= set(skill_my_tasks.__all__)
+    assert len(SIXTEEN) <= tp.MAX_PACK_TOOLS
 
 
 def test_the_specialist_keeps_its_own_tool_list() -> None:
@@ -52,11 +54,11 @@ def test_the_specialist_keeps_its_own_tool_list() -> None:
     mod = ti._pack_owner_module(PA)
     own = {tool_name(t) for t in mod._own_tools()}
     assert own == set(skill_projects.__all__)
-    assert not own & set(FOURTEEN)
-    assert set(FOURTEEN) <= {tool_name(t) for t in mod._agent_tools()}
+    assert not own & set(SIXTEEN)
+    assert set(SIXTEEN) <= {tool_name(t) for t in mod._agent_tools()}
     for slug, fam in sf.SKILL_FAMILIES.items():
         if slug != SLUG and fam.get("owner") == PA:
-            assert not set(fam["tools"]) & set(FOURTEEN), slug
+            assert not set(fam["tools"]) & set(SIXTEEN), slug
 
 
 def test_the_pack_builds_the_same_functions_with_their_risk() -> None:
@@ -64,7 +66,7 @@ def test_the_pack_builds_the_same_functions_with_their_risk() -> None:
     with the risk of each. Mutation: copy the bodies, or drop the wrapper -> red."""
     mod = ti._pack_owner_module(PA)
     built = ti._owner_pack_tools(SLUG, PA, mod)
-    assert tuple(tool_name(t) for t in built) == FOURTEEN
+    assert tuple(tool_name(t) for t in built) == SIXTEEN
     for tool in built:
         name = tool_name(tool)
         assert type(tool).__name__ == "_StrictTool", name
@@ -102,7 +104,7 @@ def test_the_rules_carry_each_planner_rule() -> None:
     assert "deep_work" in flat and "energy windows" in flat
     assert "apply=False" in flat and "show the member the block list" in flat
     assert "apply=True only after the member agrees" in flat
-    for name in FOURTEEN:
+    for name in SIXTEEN:
         assert name in flat, name
     assert "No Projects agent exists to hand a task to." in rules
     assert "Never name a tool to the member." in rules
@@ -131,14 +133,14 @@ def test_the_cap_drops_the_pack_before_email() -> None:
 def test_the_day_planner_pack_does_not_count_as_a_way_to_reach_the_owner() -> None:
     """The tools of this pack edit no task, so the pack must not stand in for a
     Projects work pack in the reach test of ``plan_loader``, and the core pack
-    steps aside as before. Since CAL-3 (task 1677) the pack holds 14 tools, more
+    steps aside as before. Since CAL-3 (task 1677) the pack holds 14 tools (16 since CAL-4), more
     than the 11 of ``projects-reports``, so the COUNT alone cannot keep it out.
     ``REACH_NOT_WORK`` names it. Mutation: empty ``REACH_NOT_WORK`` -> the core
     pack stays, the specialist leaves, and no work pack can load -> red."""
     from tests.unit.test_projects_packs import _BASE, _SPECIALIST, _sticky_turn
 
     assert SLUG in tp.REACH_NOT_WORK
-    assert len(FOURTEEN) >= tp.REACH_MIN_TOOLS, "non-vacuity: the count would let it in"
+    assert len(SIXTEEN) >= tp.REACH_MIN_TOOLS, "non-vacuity: the count would let it in"
     turn = _sticky_turn("archive tasks that are done", "projects",
                         tp.Sticky("projects-bulk", (19, 0), 19))
     choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)

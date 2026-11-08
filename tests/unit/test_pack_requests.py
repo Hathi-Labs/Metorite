@@ -141,6 +141,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "export_tasks": ("export the tasks to CSV",),
     "find_conflicts": ("are there scheduling conflicts in the project plan?",),
     "fit_for_task": ("who is the best fit for this task?",),
+    "get_plan": ("what can start now in this epic?",),
     "link_tasks": ("make this task block the other task",),
     "link_tasks_batch": ("link these tasks in order as dependencies",),
     "update_tasks": ("update these tasks, a different due date for each",),
@@ -279,6 +280,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                               "add a focus block on Fridays"),
     "my_tasks_edit_day_rule": ("move my focus block to 9 to 12",),
     "my_tasks_delete_day_rule": ("delete the second day rule",),
+    # -- calendar-day flows (CAL-4, task 1678) --
+    "my_tasks_start_my_day": ("start my day", "good morning plan"),
+    "my_tasks_close_my_day": ("close my day", "wrap up my day"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"
