@@ -2588,7 +2588,7 @@ def _new_parents(batch: _Batch) -> dict[str, dict[str, tuple[int, _Lines]]]:
 
 def _no_parent(link: _Lines) -> FieldError:
     return FieldError(link.via, f"Field `{link.via}` names no `{link.parent}` record of this "
-                      f"app. Pick a `{link.parent}` record of this app.")
+                      f"app. Pick a record of `{link.parent}` in this app.")
 
 
 async def _check_line_parents(db: Any, batch: _Batch, deadline: float) -> None:
