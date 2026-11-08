@@ -117,13 +117,24 @@ export interface AgentConnection {
   created_at: string;
   last_used_at: string | null;
   expires_at: string;
+  /** `box` for a box token (EA-19d). Absent or `oauth` for an OAuth connection. */
+  credential?: "oauth" | "box" | string;
+  /** The address of the newest box call. Box only. */
+  last_seen_addr?: string | null;
+  /** When that address changed. The new-address mark reads it. Box only. */
+  addr_changed_at?: string | null;
 }
 
 /**
  * The headline: the VERIFIED host the client document came from, as the
  * consent page names it (spec §10.5). The scheme goes, a port stays.
  */
-export function agentHost(row: Pick<AgentConnection, "client_origin">): string {
+export function agentHost(
+  row: Pick<AgentConnection, "client_origin"> & Partial<Pick<AgentConnection, "credential" | "client_name">>,
+): string {
+  // A box has no client document and no host. Its name is the box name that
+  // the member chose (EA-19d), so the row is headed by it.
+  if (row.credential === "box" && row.client_name?.trim()) return row.client_name.trim();
   const origin = (row.client_origin || "").trim();
   const host = origin.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
   return host || "Unknown agent";
@@ -134,7 +145,10 @@ export function agentHost(row: Pick<AgentConnection, "client_origin">): string {
  * when it says nothing the host does not already say: approve stores the
  * host as the name when the document gives none.
  */
-export function agentClaim(row: Pick<AgentConnection, "client_name" | "client_origin">): string | null {
+export function agentClaim(
+  row: Pick<AgentConnection, "client_name" | "client_origin"> & Partial<Pick<AgentConnection, "credential">>,
+): string | null {
+  if (row.credential === "box") return null;
   const name = (row.client_name || "").trim();
   if (!name) return null;
   const host = agentHost(row);
