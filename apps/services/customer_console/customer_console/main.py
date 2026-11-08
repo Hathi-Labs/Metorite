@@ -54,6 +54,7 @@ import logging
 import os
 import re
 import time
+import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
@@ -10904,9 +10905,23 @@ def _try_provider_text(
     """
     cause = failed.__cause__
     raw = str(cause) if cause is not None else ""
+    # A vendor can echo the key, the base URL (a token can sit in its query),
+    # or the key URL-encoded or JSON-escaped. Remove each form.
+    needles: list[str] = []
     for cred in credentials.values():
-        if cred is not None and cred.secret:
-            raw = raw.replace(cred.secret, "[key]")
+        if cred is None:
+            continue
+        if cred.secret:
+            needles += [
+                cred.secret,
+                urllib.parse.quote(cred.secret, safe=""),
+                json.dumps(cred.secret)[1:-1],
+            ]
+        if cred.api_base:
+            needles.append(cred.api_base)
+    # Longest first, so a base URL that holds the key goes whole.
+    for needle in sorted({n for n in needles if n}, key=len, reverse=True):
+        raw = raw.replace(needle, "[key]")
     raw = _KEY_SHAPE.sub("[key]", raw)
     return " ".join(raw.split())[:_TRY_ERROR_MAX]
 
@@ -10982,7 +10997,13 @@ def try_transcription(
         raise HTTPException(status_code=400, detail="the clip has no bytes")
     filename = _upload_name(file.filename)
     measured = wav_seconds(audio)
-    if measured is not None and measured > _TRY_AUDIO_SECONDS:
+    if measured is None:
+        # The panel records WAV only, so every try can be measured and held to
+        # the 60 s cap. A clip of another type never reaches the chain.
+        raise HTTPException(
+            status_code=415, detail="a try takes a WAV clip (.wav) only"
+        )
+    if measured > _TRY_AUDIO_SECONDS:
         raise HTTPException(
             status_code=413, detail=f"a try takes audio up to {_TRY_AUDIO_SECONDS} seconds"
         )
@@ -10990,9 +11011,8 @@ def try_transcription(
     chain, credentials, invocations = _try_chain(
         TRY_STT_TIER, TRANSCRIBE_TASK, with_invocations=True
     )
-    # The door's own step filter: the 503 for no key, and the 415 for a
-    # non-WAV clip when only a WAV-only step is left.
-    attempts = _transcribe_attempts(chain, credentials, invocations, is_wav=measured is not None)
+    # The door's own step filter: the 503 for no key. The clip is WAV here.
+    attempts = _transcribe_attempts(chain, credentials, invocations, is_wav=True)
     request_id = f"try-{uuid.uuid4().hex}"
 
     def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
@@ -11018,7 +11038,9 @@ def try_transcription(
         credentials=credentials,
         detail={"audio_bytes": len(audio)},
     )
-    seconds = measured if measured is not None else router_mod.duration_seconds(response)
+    seconds = measured
+    # 🔴 The served row goes in before any step that can raise: the vendor
+    # was paid for this call.
     _audit_try(
         "catalog.transcribe_try",
         staff.actor,
@@ -11136,12 +11158,25 @@ def try_vision(
         credentials=credentials,
         detail={"image_bytes": len(data), "image_type": mime},
     )
-    usage = router_mod.usage_from_response(response)
-    cost = (
-        usage.vendor_reported_cost_usd
-        if usage.vendor_reported_cost_usd is not None
-        else _try_cost_from_profile(resolved.model, usage, started_at)
-    )
+    # 🔴 The served row goes in before any step that can raise. A field that
+    # fails reads null in the row, and the error is logged.
+    usage: ExtractedUsage | None = None
+    cost: Decimal | None = None
+    try:
+        usage = router_mod.usage_from_response(response)
+    except Exception:
+        _log.exception("catalog.vision_try_usage_failed")
+    if usage is not None:
+        try:
+            cost = (
+                usage.vendor_reported_cost_usd
+                if usage.vendor_reported_cost_usd is not None
+                else _try_cost_from_profile(resolved.model, usage, started_at)
+            )
+        except Exception:
+            _log.exception("catalog.vision_try_cost_failed")
+    input_tokens = None if usage is None else usage.prompt_tokens
+    output_tokens = None if usage is None else usage.completion_tokens
     _audit_try(
         "catalog.vision_try",
         staff.actor,
@@ -11152,8 +11187,8 @@ def try_vision(
             "upstream_status": 200,
             "image_bytes": len(data),
             "image_type": mime,
-            "input_tokens": usage.prompt_tokens,
-            "output_tokens": usage.completion_tokens,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
             "vendor_cost_usd": None if cost is None else str(cost),
             "latency_ms": latency_ms,
         },
@@ -11162,10 +11197,7 @@ def try_vision(
         "tier": resolved.tier,
         "model": resolved.model,
         "text": _completion_text(response),
-        "usage": {
-            "input_tokens": usage.prompt_tokens,
-            "output_tokens": usage.completion_tokens,
-        },
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
         "latency_ms": latency_ms,
         "vendor_cost_usd": None if cost is None else str(cost),
     }

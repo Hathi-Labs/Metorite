@@ -7384,8 +7384,8 @@ edits.
 STANDARD, and treated as HIGH, because it spends the platform key at a vendor.
 
 - **Files:** `workbench/operator_console/src/lib/providerGuides.ts`, the Tiers
-  page (`tiers/TierBoard`, `TrySpeech`, `TryVision`), two BFF routes under
-  `api/operator/catalog/`, and two Console routes in `customer_console/main.py`.
+  page (`tiers/TierBoard`, `TrySpeech`, `TryVision`). Add two BFF routes under
+  `api/operator/catalog/`. Add two Console routes in `customer_console/main.py`.
 - **Do:**
   1. Provider cards for Sarvam (speech-to-text, the four modes) and
      ElevenLabs Scribe (speech-to-text). VOX-2 wrote the Sarvam card. The
@@ -7407,9 +7407,9 @@ STANDARD, and treated as HIGH, because it spends the platform key at a vendor.
   one `control_audit` row for each call that reached the vendor, served or
   failed. The two routes are `POST /catalog/transcribe/try` and
   `POST /catalog/vision/try`. Both need the `admin` role.
-- **Limits of a try.** A clip takes 10 MB and 60 seconds. An image takes 4 MB
-  (png, jpeg, gif or webp, read from the first bytes). A question takes 500
-  characters.
+- **Limits of a try.** A clip is WAV only, and it takes 10 MB and 60 seconds.
+  A clip of another type gets a 415. An image takes 4 MB (png, jpeg, gif or
+  webp, read from the first bytes). A question takes 500 characters.
 - **Done when:** an operator binds Sarvam to `tier-stt` and a vision model to
   `tier-vision`, and tries both from the Tiers page.
 - **Fence (R7):** `tests/unit/test_customer_console_try_voice.py` (R8, the
@@ -7470,6 +7470,10 @@ its tier and its flag turns on.
 | VOX-2 | https://github.com/Hathi-Labs/Metorite/pull/1967 | 1d82796cd | A `sarvam/` binding on `tier-stt` |
 | VOX-3 | https://github.com/Hathi-Labs/Metorite/pull/1970 | e6bf9be1e | `IMAGE_ANALYSIS_ORGS` |
 
+VOX-4 adds the two operator tries, `POST /catalog/transcribe/try` and
+`POST /catalog/vision/try`. They follow CP-13b: the platform key only, one
+audit row, and no usage row (§31.5 VOX-4, `customer_console.md` §6A.14).
+
 The code is the fact. The build differs from §31.5 in these places.
 
 **VOX-1.**
@@ -7519,4 +7523,4 @@ The code is the fact. The build differs from §31.5 in these places.
   Scribe v2 rank 2) and `tier-vision` in the operator console.
 - Before either flag turns on, one live clip and one live image analysis on
   production, each with its `usage_event` row.
-- VOX-4 (task 2264) and VOX-5 (task 2265).
+- VOX-5 (task 2265).

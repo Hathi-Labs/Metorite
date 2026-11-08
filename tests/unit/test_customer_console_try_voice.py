@@ -33,12 +33,12 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from customer_console import handlers  # noqa: E402
-from customer_console import router as router_mod  # noqa: E402
-from customer_console.image_sniff import IMAGE_TYPES, sniff_image  # noqa: E402
-from sqlalchemy import create_engine, text  # noqa: E402
+from customer_console import handlers
+from customer_console import router as router_mod
+from customer_console.image_sniff import IMAGE_TYPES, sniff_image
+from sqlalchemy import create_engine, text
 
-from tests.unit._customer_console_ladder import (  # noqa: E402
+from tests.unit._customer_console_ladder import (
     DEFAULT_DEPLOYMENT_LABEL,
     apply_ladder,
     ensure_deployment,
@@ -137,6 +137,45 @@ class TestTheProviderTextHoldsNoKey:
         assert "abc.def" not in said
         # A model id is not a key, and the operator needs it.
         assert "elevenlabs/scribe_v2" in said
+
+    def test_an_api_base_with_a_token_in_its_query_is_removed(self):
+        from customer_console import main
+
+        base = "https://gw.example.com/v1?token=tkn_Zq81"
+        cred = router_mod.Credential(secret="topsecretvalue1234567890", api_base=base, byok=False)
+        said = main._try_provider_text(
+            self._failed(f"Connection refused at {base} for the model"), {"elevenlabs": cred}
+        )
+        assert base not in said
+        assert "tkn_Zq81" not in said
+        assert "Connection refused" in said
+
+    def test_a_url_encoded_key_is_removed(self):
+        from customer_console import main
+
+        secret = "ab+cd/ef=gh1234"
+        cred = router_mod.Credential(secret=secret, api_base=None, byok=False)
+        encoded = "ab%2Bcd%2Fef%3Dgh1234"
+        said = main._try_provider_text(
+            self._failed(f"GET /v1/models?key={encoded} gave 401"), {"elevenlabs": cred}
+        )
+        assert encoded not in said
+        assert "%2Bcd" not in said
+        assert "gave 401" in said
+
+    def test_a_json_escaped_key_is_removed(self):
+        from customer_console import main
+
+        secret = r'ab"cd\ef1234'
+        cred = router_mod.Credential(secret=secret, api_base=None, byok=False)
+        escaped = json.dumps(secret)[1:-1]
+        assert escaped != secret
+        said = main._try_provider_text(
+            self._failed('{"error": "bad key ' + escaped + '"}'), {"elevenlabs": cred}
+        )
+        assert escaped not in said
+        assert "ef1234" not in said
+        assert "bad key" in said
 
     def test_it_is_bounded(self):
         from customer_console import main
@@ -389,12 +428,39 @@ class TestTrySpeechToText:
         assert detail["model"] == STT_MODEL
         assert PLATFORM_KEY not in json.dumps(detail)
 
-    def test_a_non_wav_clip_reports_the_vendor_seconds(self, client, db, stt, fake):
-        headers, _ = _operator(db, "admin")
-        fake["stt"] = {"text": "hi", "duration": 2.5}
+    def test_a_non_wav_clip_is_a_415_before_the_chain_resolves(
+        self, client, db, stt, fake
+    ):
+        headers, email = _operator(db, "admin")
         r = _stt(client, headers, b"\x1a\x45\xdf\xa3" + b"\x00" * 64, "clip.webm")
-        assert r.status_code == 200, r.text
-        assert r.json()["seconds"] == pytest.approx(2.5)
+        assert r.status_code == 415, r.text
+        assert "WAV" in r.json()["detail"]
+        assert fake["calls"] == []
+        assert _audits(db, "catalog.transcribe_try", email) == []
+
+    def test_a_non_wav_clip_meets_the_415_even_with_no_tier_bound(
+        self, client, db, rig, fake
+    ):
+        # The 415 comes before the chain: an unbound tier does not mask it.
+        rig.bind("tier-stt", "transcribe", [None], invocation=None)
+        headers, _ = _operator(db, "admin")
+        r = _stt(client, headers, b"ID3" + b"\x00" * 64, "clip.mp3")
+        assert r.status_code == 415, r.text
+
+    def test_the_served_row_exists_when_the_transcript_step_raises(
+        self, client, db, stt, fake, monkeypatch
+    ):
+        from customer_console import main
+
+        def _boom(_response):
+            raise RuntimeError("transcript shape unknown")
+
+        monkeypatch.setattr(main, "_transcript_of", _boom)
+        headers, email = _operator(db, "admin")
+        with pytest.raises(RuntimeError):
+            _stt(client, headers, make_wav(2))
+        [(_, audit)] = _audits(db, "catalog.transcribe_try", email)
+        assert audit["outcome"] == "served"
 
     def test_a_sarvam_step_gets_the_typed_payload(self, client, db, rig, fake):
         rig.bind("tier-stt", "transcribe", [SARVAM_MODEL], invocation="native_sarvam")
@@ -407,7 +473,7 @@ class TestTrySpeechToText:
         assert payload.organization_id is None
         assert payload.api_key == PLATFORM_KEY
 
-    def test_sarvam_alone_refuses_a_clip_that_is_not_wav_with_a_415(
+    def test_sarvam_refuses_a_clip_that_is_not_wav_with_a_415(
         self, client, db, rig, fake
     ):
         rig.bind("tier-stt", "transcribe", [SARVAM_MODEL], invocation="native_sarvam")
@@ -535,6 +601,39 @@ class TestTryImageAnalysis:
         assert org_id is None
         assert (audit["outcome"], audit["input_tokens"]) == ("served", 11)
         assert "base64" not in json.dumps(audit)
+
+    def test_the_served_row_exists_when_the_cost_step_raises(
+        self, client, db, vision, fake, monkeypatch
+    ):
+        from customer_console import main
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("price read failed")
+
+        monkeypatch.setattr(main, "_try_cost_from_profile", _boom)
+        headers, email = _operator(db, "admin")
+        r = _see(client, headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["vendor_cost_usd"] is None
+        [(_, audit)] = _audits(db, "catalog.vision_try", email)
+        assert audit["outcome"] == "served"
+        assert audit["vendor_cost_usd"] is None
+        assert audit["input_tokens"] == 11
+
+    def test_the_served_row_exists_when_the_usage_step_raises(
+        self, client, db, vision, fake, monkeypatch
+    ):
+        def _boom(_response):
+            raise RuntimeError("usage shape unknown")
+
+        monkeypatch.setattr(router_mod, "usage_from_response", _boom)
+        headers, email = _operator(db, "admin")
+        r = _see(client, headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["usage"] == {"input_tokens": None, "output_tokens": None}
+        [(_, audit)] = _audits(db, "catalog.vision_try", email)
+        assert audit["outcome"] == "served"
+        assert audit["input_tokens"] is None
 
     def test_a_blank_question_becomes_the_default(self, client, db, vision, fake):
         headers, _ = _operator(db, "admin")
