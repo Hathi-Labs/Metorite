@@ -180,14 +180,14 @@ async def create_folder(
                     status_code=400,
                     detail="This account type doesn't support creating folders.",
                 )
-            except FolderCheckIncomplete:
+            except FolderCheckIncomplete as exc:
                 raise HTTPException(
                     status_code=502,
                     detail=(
                         "Outlook did not answer when Metorite checked your "
                         "folders, so no folder was made. Try again in a minute."
                     ),
-                )
+                ) from exc
 
             # Mirror into email_folders so the folder is queryable immediately.
             await db.execute(

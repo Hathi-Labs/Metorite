@@ -1023,7 +1023,7 @@ class OutlookProvider(BaseEmailProvider):
                                 {"$top": 200, "$select": select},
                             )
                             break
-                        except Exception as exc:  # noqa: BLE001
+                        except Exception as exc:
                             if attempt:
                                 resp = getattr(exc, "response", None)
                                 self._folder_list_failures.append(
