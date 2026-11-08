@@ -98,6 +98,8 @@ class TestTheEdge:
         assert tools.TASK_NUMBER_MAX == gateway_tasks.TASK_NUMBER_MAX
         rule = tools.TOOLS["list_tasks"].input_schema["properties"]["task_number"]
         assert rule["minimum"] == 1 and rule["maximum"] == tools.TASK_NUMBER_MAX
+        name = tools.TOOLS["list_tasks"].input_schema["properties"]["type_name"]
+        assert name["maxLength"] == gateway_tasks.MAX_TYPE_NAME
 
     def test_a_bad_value_is_refused_at_the_edge(self):
         schema = tools.TOOLS["list_tasks"].input_schema
@@ -451,6 +453,8 @@ class TestTheNumber:
         for value in ("0", "-1", "abc", "9223372036854775808"):
             r = await _get(armed, "member", "/projects/tasks", f"task_number={value}")
             assert r.status_code == 422, (value, r.text)
+        r = await _get(armed, "member", "/projects/tasks", "type_name=" + "x" * 101)
+        assert r.status_code == 422, r.text
 
 
 @_DB_GATE

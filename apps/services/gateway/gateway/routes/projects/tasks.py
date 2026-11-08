@@ -565,6 +565,8 @@ COMPACT_MAX_PAGE_SIZE = 500
 #: MCP-G19c. ``task_number`` is a BIGINT, so a larger number is a 422 and not
 #: a cast error in SQL.
 TASK_NUMBER_MAX = 9_223_372_036_854_775_807
+#: MCP-G19c. The longest ``type_name`` filter. The edge holds the same cap.
+MAX_TYPE_NAME = 100
 #: A compact read still selects ``t.*``: ``row_to_model`` builds a full
 #: ``TaskModel``, and a narrow SELECT leaves required fields (``source``) as
 #: None, which is a 500. The edge trims the row to the compact keys.
@@ -765,9 +767,11 @@ async def list_tasks(
     title_prefix: str | None = None,
     # MCP-G19c. The type of a task, by id or by name, and its number. All
     # optional. `build_task_filters` holds them.
+    # Plain defaults, not `Query(...)`: tests and other routes call this
+    # function directly, and a `Query` default is not a value.
     type_id: str | None = None,
-    type_name: str | None = Query(None, min_length=1, max_length=100),
-    task_number: int | None = Query(None, ge=1, le=TASK_NUMBER_MAX),
+    type_name: str | None = None,
+    task_number: int | None = None,
     # MCP-G19a. Small rows and a page of up to COMPACT_MAX_PAGE_SIZE: the row
     # query, the stage of each status, and nothing else. The agent door reads it.
     compact: bool = False,
@@ -815,6 +819,14 @@ async def list_tasks(
     )
 
     mine = check_scope(scope)
+    if type_name is not None and len(type_name) > MAX_TYPE_NAME:
+        raise HTTPException(
+            status_code=422, detail=f"type_name is at most {MAX_TYPE_NAME} characters.",
+        )
+    if task_number is not None and not 1 <= task_number <= TASK_NUMBER_MAX:
+        raise HTTPException(
+            status_code=422, detail="task_number is not a valid task number.",
+        )
     if compact and page.page_size > COMPACT_MAX_PAGE_SIZE:
         raise HTTPException(
             status_code=422,
