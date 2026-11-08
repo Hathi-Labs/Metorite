@@ -16,7 +16,9 @@ statement. No function takes an org. An INSERT writes no
 statement filters on ``_BOUND_ORG`` too.
 
 **The member.** Every function takes the member as a required argument, and
-every statement filters on it. A goal is private to its member. ⚠️ The store
+every statement filters on it. The one exception is :func:`goal_member`, which
+reads the member of a goal by its id for the job of that goal (WS-AUTO
+AUTO-8a). A goal is private to its member. ⚠️ The store
 does not authenticate. It only scopes. The caller resolves the member from a
 trusted source, never from request input (R5, contract R11). A goal of
 another member or of another org reads as None.
@@ -137,6 +139,13 @@ _CREATE_SQL = (
 )
 
 _GET_SQL = f"SELECT {_COLUMNS} FROM goal_records {_WHERE_GOAL}"
+
+#: The member of one goal, by its id alone (WS-AUTO AUTO-8a). The job of a
+#: headless turn holds the goal id only, so it reads the payer here.
+_MEMBER_SQL = (
+    f"SELECT member_email FROM goal_records WHERE organization_id = {_BOUND_ORG} "
+    "AND id = CAST(:id AS uuid)"
+)
 
 _LIST_SQL = (
     f"SELECT {_COLUMNS} FROM goal_records "
@@ -399,6 +408,20 @@ async def get_goal(db: Any, member: str, goal_id: str) -> Goal | None:
     params = {"m": _member(member), "id": _uuid(goal_id, "goal_id")}
     row = (await db.execute(text(_GET_SQL), params)).first()
     return None if row is None else _goal(row)
+
+
+async def goal_member(db: Any, goal_id: str) -> str | None:
+    """The member of the goal *goal_id* in the bound org, or None.
+
+    The one read that takes no member (WS-AUTO AUTO-8a). A job holds only
+    the id of its goal, and the member is the payer of the job. So the job
+    reads the member from this row, never from its payload (R5, contract
+    R11). RLS and the filter on the bound org hide a goal of another org.
+    The caller then reads the goal with :func:`get_goal` as that member.
+    """
+    params = {"id": _uuid(goal_id, "goal_id")}
+    row = (await db.execute(text(_MEMBER_SQL), params)).first()
+    return None if row is None else str(row[0])
 
 
 async def list_goals(db: Any, member: str, *, limit: int = 50) -> list[Goal]:

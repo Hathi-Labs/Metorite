@@ -1843,3 +1843,19 @@ def test_contact_id_reads_the_deal_contact_link_with_a_bound_id() -> None:
     assert bound == {"contact_id": _CONTACT}
     # The id is a bound parameter. The statement carries no caller text.
     assert all(_CONTACT not in clause for clause in where)
+
+
+async def test_get_activity_reads_one_entry_and_404s_for_a_missing_one(db) -> None:
+    """CRM-M2b: ``GET /crm/activities/{id}`` reads through the same tenant
+    session as the PATCH, so another organization's row is a 404 under RLS."""
+    deal = db.seed("crm_deals", name="Acme AMC")
+    row = db.seed(
+        "crm_activities", type="task", subject="Send quote", deal_id=deal.id,
+        created_by="a@b.in",
+    )
+    got = await crm_activities.get_activity(str(row.id), USER)
+    assert got["subject"] == "Send quote" and got["deal_id"] == str(deal.id)
+    assert "completed_at" in got and "due_at" in got
+    with pytest.raises(HTTPException) as err:
+        await crm_activities.get_activity(str(uuid4()), USER)
+    assert err.value.status_code == 404

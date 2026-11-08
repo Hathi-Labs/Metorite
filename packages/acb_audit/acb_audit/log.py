@@ -155,6 +155,47 @@ def _persist(event: AuditEvent) -> None:
         _log.warning("audit.persist_failed", error=str(exc))
 
 
+def refuse_tenantless(event: AuditEvent) -> bool:
+    """``True`` when a TENANT event has no org and must not be recorded (task 2189).
+
+    Some events always belong to one tenant: a broker action, a model call, a
+    meeting dispatch. Their payload names that tenant's work. :func:`_persist`
+    files an event with no org under the OPERATOR org (Option-A). For a
+    tenant event that is a cross-tenant leak, so the writer calls this first::
+
+        if refuse_tenantless(event):
+            return
+        record(event)
+
+    With ``ACB_GRAPH_TENANT_BIND`` on and no ``organization_id`` on the event,
+    it logs ``audit.skipped_no_tenant`` and answers ``True``. The writer then
+    records nothing. With the flag off, ``audit_event`` has no tenant column,
+    so nothing can leak, and it answers ``False``: the old row is kept. If
+    ``acb_graph`` cannot load, it fails closed and answers ``True``.
+
+    The Option-A fallback in :func:`_persist` stays for real system events.
+    Fences: ``tests/unit/test_action_broker_audit_org_r8.py``,
+    ``test_llm_usage_audit_org_r8.py``, ``test_notes_dispatch_audit_org_r8.py``.
+    """
+    if event.organization_id:
+        return False
+    try:
+        from acb_graph import tenant_bind_enabled
+
+        bind = tenant_bind_enabled()
+    except Exception:  # no DB layer: fail closed, never the operator org
+        bind = True
+    if not bind:
+        return False
+    _log.warning(
+        "audit.skipped_no_tenant",
+        action=event.action,
+        actor=event.actor,
+        target=event.target,
+    )
+    return True
+
+
 def record(event: AuditEvent) -> None:
     """Persist an audit event. Logs always; DB write is best-effort.
 

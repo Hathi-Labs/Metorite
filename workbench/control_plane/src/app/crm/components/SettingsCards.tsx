@@ -34,17 +34,23 @@ import {
 export function Card({
   title,
   note,
+  action,
   children,
 }: {
   title: string;
   note?: React.ReactNode;
+  /** One control at the right end of the header, such as "New pipeline" (CRM-M3a). */
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="rounded-xl border border-border bg-card/40" aria-label={title}>
-      <header className="border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-        {note && <p className="mt-0.5 text-xs text-muted-foreground">{note}</p>}
+      <header className="flex items-start gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          {note && <p className="mt-0.5 text-xs text-muted-foreground">{note}</p>}
+        </div>
+        {action && <div className="shrink-0">{action}</div>}
       </header>
       {children}
     </section>
@@ -122,6 +128,7 @@ export function PipelineSections({
   fallback,
   note,
   title = "Deal stages",
+  action,
 }: {
   pipelines: DealPipeline[] | null;
   /** The one implicit pipeline: the deal statuses, when there is no pipeline list. */
@@ -129,13 +136,15 @@ export function PipelineSections({
   note: string;
   /** The card heading. It is the label of the rail row (CRM-C1). */
   title?: string;
+  /** A control at the right end of the header ("New pipeline", CRM-M3a). */
+  action?: React.ReactNode;
 }) {
   const sections =
     pipelines && pipelines.length > 0
       ? [...pipelines].sort((a, b) => a.position - b.position)
       : null;
   return (
-    <Card title={title} note={note}>
+    <Card title={title} note={note} action={action}>
       {sections ? (
         <div className="divide-y divide-border/60">
           {sections.map((pipeline) => {
