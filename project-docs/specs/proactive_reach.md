@@ -117,6 +117,8 @@ and the scale plan for all of them.
 - **No message to anyone but the member.** Reach never writes to a customer,
   a colleague or a group. An outward message to another person stays an
   Action Broker act with its own approval.
+  A post to a team channel is CH-TEAM's (`whatsapp_assistant_channel.md`
+  §19), and this spec adds nothing for it.
 - **No marketing template.** Every template is in the utility category.
 - **No SMS and no email channel in v1.** The member already has their own
   email digest (`email/digest.py`).

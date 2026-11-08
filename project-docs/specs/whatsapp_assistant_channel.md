@@ -1,5 +1,7 @@
 # WhatsApp assistant channel — a member chats with Metorite from their own WhatsApp
 
+**CH-TEAM (§19) is specified, and nothing is built (2026-11-09, epic task 2431).** Mira in team channels: the audience check, a post step, the daily standup, a WhatsApp group, Mira's email address and Slack later. D115 still binds its WhatsApp parts.
+
 **Status:** H-391 built on the branch `email-whatsapp-confirm`, not merged
 (2026-10-24, owner directive). The email writes of the chat work from
 WhatsApp: archive, label, move, reply, send a draft, schedule, forward and
@@ -135,6 +137,7 @@ and building").** Four changes, recorded in §11:
 **Created:** 2026-10-06, by owner directive in chat. **Owner:** vjvarada.
 
 **Single owner.** This spec owns WhatsApp as a way to TALK to Metorite.
+Since 2026-11-09, §19 also owns team channels (CH-TEAM): a WhatsApp group, Mira's email address and, later, Slack.
 `whatsapp_message_manager.md` (WS-20) owns the WhatsApp INBOX app: a member's
 own business number, triage and drafts. The two share the transport code and
 nothing else. `whatsapp_calls_note_taker.md` owns calls.
@@ -2163,3 +2166,272 @@ with no text does not park.
 | E5 | An approval sends exactly the recorded rows, through the act route of the web card | the same file, `h391-sends-the-record` |
 | E6 | The code record holds on the real table under FORCE RLS. The migration runs twice with no change (R8) | `tests/unit/test_wac_email_confirm_r8.py` |
 | E7 | The recorded answer is the answer that the act route takes, once, on a real Redis (R8) | the same file |
+
+---
+
+## 19. Amendment of 2026-11-09: Mira in team channels (CH-TEAM)
+
+**Status: SPEC, nothing built.** The owner chose this theme on 2026-11-08 on task 2348: "Plan 4 and 2 first, then 6 and 8". It is theme 2 of the coverage check of the user stories under task 2258. Metorite: epic task 2431 in the WhatsApp project. Verified against code on 2026-11-09 at `main` `0c5118d4c`.
+
+**Stories.** 1761 is a daily standup that Metorite posts to the team channel. 1749 is Metorite as a contributor in WhatsApp, email and Slack.
+
+**The scope grows here.** This section widens this spec from one WhatsApp chat to team channels: a WhatsApp group, an email address and, later, Slack. The rest of the spec does not change.
+
+⚠️ **D115 still binds.** The WhatsApp work stays frozen, except brief task 8 (D122.3). Only the owner lifts D115 for these slices (Q-CHT-2). CH-TEAM-1, CH-TEAM-2 with the email adapter, CH-TEAM-3 and CH-TEAM-5 need no WhatsApp change.
+
+### 19.1 The answer
+
+- A team channel is one record: a WhatsApp group, a list of member addresses or, later, a Slack channel. It belongs to one org (CH-TEAM-1).
+- Every message that Mira puts in a team channel passes one audience check. She shares a record only when every person in the channel can open it (CH-TEAM-1).
+- A workflow step, `channel.post`, posts to a team channel through the Action Broker (CH-TEAM-2).
+- The daily standup is a workflow template on that step (CH-TEAM-3).
+- In a WhatsApp group, a linked member tags Mira, and she answers inside the audience check (CH-TEAM-4).
+- Metorite's own number is the bot number of this spec (D-WAC-1). Its email address is a shared mailbox that the org names (CH-TEAM-5).
+- Slack follows as a connector with the same rules (CH-TEAM-6).
+
+### 19.2 What Meta allows in a group (read on 2026-11-09)
+
+These facts come from Meta's Groups API pages. The sources are at the end of this section.
+
+1. **Only an Official Business Account (OBA) can use the Groups API.** A WhatsApp Business app number cannot use it.
+2. **The business number makes the group, and it is the admin.** A person joins only through an invite link that the business sends. The API has no call that adds a person.
+3. **A group holds 8 participants at most.** One number can make 10,000 groups.
+4. **A group message is text, media, or a text or media template.** Interactive messages (buttons and lists), calls, and disappearing and view-once messages do not work in a group.
+5. **The `messages` webhook fires when "a WhatsApp user or a business sends a message to a group".** The message carries `group_id`. `from` is absent when the sender uses a username, and `from_user_id` is always present.
+6. **A group message has a price for each message.**
+
+**Not confirmed.** The Meta pages do not say these things:
+
+- Does the webhook carry every message of the group, or only some?
+- Does a message carry data about an @-mention?
+- Can the business join a group that a person made?
+- Does the 24-hour window apply to a group?
+
+**What follows from the facts.**
+
+- Mira cannot join a team group that a person made. A team that wants Mira in a group uses a group that Metorite makes, with 8 people at most.
+- A Confirm button cannot run in a group. Each approval goes to the asker in the 1:1 chat with the bot (§14, §18), or to a card in the web app.
+- The link table keys a phone (§5.3). A sender with a username has no phone in the webhook. So a link must also keep the `from_user_id` of the phone.
+- The AI-provider rule of Meta (§2.3) binds in a group too. Mira answers about the org's work only (D-WAC-5).
+- D122.2 binds. Metorite uses no linked-device reader, so no unofficial path reads a group that a person made.
+
+**Sources.**
+
+- Groups API: https://developers.facebook.com/documentation/business-messaging/whatsapp/groups/
+- Groups reference: https://developers.facebook.com/documentation/business-messaging/whatsapp/groups/reference
+- Group messaging: https://developers.facebook.com/documentation/business-messaging/whatsapp/groups/groups-messaging
+- The group message webhook: https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/group
+- Slack `app_mention`: https://docs.slack.dev/reference/events/app_mention
+
+### 19.3 The slices
+
+Each slice ships dark behind `TEAM_CHANNELS_ORGS`, off by default. The name of the flag is a working default. The verification commands of §8 bind each slice, with the fence that the slice names.
+
+| Id | Task | What | Tier | Gate | Depends on | Fence |
+|---|---|---|---|---|---|---|
+| **CH-TEAM-1** | 2442 | The team channel and the audience check | HIGH | AGENT-SAFE | Nothing | `tests/unit/test_team_channel_audience.py` (planned) |
+| **CH-TEAM-2** | 2443 | Post to a team channel: the step `channel.post` | HIGH | AGENT-SAFE build. **OWNER-GATE** for a live post to real people | CH-TEAM-1. The email adapter needs a sending mailbox (task 733 for a shared one) | `tests/unit/test_workflow_channel_post.py` (planned) |
+| **CH-TEAM-3** | 2444 | The daily standup and other group digests | STANDARD | AGENT-SAFE | CH-TEAM-2, the team pulse T1 (built), Q-CHT-5 | `tests/unit/test_team_digest.py` (planned) |
+| **CH-TEAM-4** | 2445 | Mira in a WhatsApp group | HIGH | Half A: AGENT-SAFE after Q-CHT-2. Half B: AGENT-SAFE build after Q-CHT-1 and Q-CHT-2. **OWNER-GATE** for the OBA, the live number (WAC-0) and a live group | CH-TEAM-1, WAC-8. Half B: CH-TEAM-2 | `tests/unit/test_wac_group_tag.py` (planned) |
+| **CH-TEAM-5** | 2446 | Metorite's own number and Mira's email address | HIGH | AGENT-SAFE build. **OWNER-GATE** for the OBA and a live address | CH-TEAM-1, task 733 (SM-3 to SM-9), `ai_studio.md` O17 (task 2421), Q-CHT-4 | `tests/unit/test_mira_inbound_address.py` (planned) |
+| **CH-TEAM-6** | 2447 | Slack, later | HIGH | AGENT-SAFE build. **OWNER-GATE** for the Slack app and its secrets | CH-TEAM-1, CH-TEAM-2, Q-CHT-6 | `tests/unit/test_slack_connector.py` (planned) |
+
+#### CH-TEAM-1. The team channel and the audience check (task 2442)
+
+**Gate.** AGENT-SAFE. **HIGH tier**: privacy, identity and a migration. R5 and R6 bind. The migration takes the next free number at build time (R1).
+
+**The record.** One tenant-scoped table, named at build time, holds each team channel:
+
+- The org, and the kind: `whatsapp_group`, `email` or `slack`.
+- The provider id: a `group_id`, a Slack channel id, or none for email.
+- A title, the member who made it, and its state.
+
+**The participants.**
+
+- **WhatsApp.** The people who joined through the invite link. The group-info call and the join events give the list.
+- **Email.** The member addresses that the channel names. An email channel never holds a list address, because Metorite cannot see who reads a list.
+- **Slack.** The members of the Slack channel.
+
+A participant maps to a member through the link table (a phone or a `from_user_id`), a member email, or the email of a Slack profile. A participant who maps to no member of the channel's org is an **outsider**.
+
+**The audience check.** It has two halves, and nothing can skip either one.
+
+1. **On read.** In a run for a team channel, each tool result keeps only the records that every participant can open. Each participant passes the owning app's own read for each record. An outsider passes no read. So the model never sees a record that it cannot share.
+2. **On send.** Before a send, the check reads each record that the message names. That is an entity pill, a citation, a link or a file. A record that fails comes out of the message. The asker gets the rest in a private reply.
+
+**The run.** A run for a team channel acts as the asker. It gets no personal memory, no profile facts and no private mail of the asker.
+
+**Done when.**
+
+1. A channel holds Asha and Ben, and Ben cannot open the deal Atlas. Asha's run names Atlas, and the message goes out without it. Asha gets Atlas in a private reply.
+2. A channel with an outsider shares no record at all.
+3. A thread from a private mailbox never reaches a channel.
+4. A tool result in a channel run holds no record that one participant cannot open.
+5. A channel of another org never resolves (R5, R8).
+6. A structural test fails when a team channel adapter sends without the check.
+
+**Fence.** `tests/unit/test_team_channel_audience.py` (planned), R8, with two members and an outsider. The structural test is in the same file.
+
+#### CH-TEAM-2. Post to a team channel (task 2443)
+
+**Gate.** AGENT-SAFE build. **HIGH tier.** **OWNER-GATE** for a live post to real people (CLAUDE.md §3a rule 3).
+
+**Not Reach.** Reach sends only to the member (`proactive_reach.md` §2.2, D103). A post to a group is an outward act, with its own approval.
+
+**Build.**
+
+- A workflow tool, `channel.post`, in `routes/workflows/tools.py`. It goes through the Action Broker with `_broker_write`. Its arguments are the channel, the text and the record refs.
+- **The trust ladder (D131).** A workflow that a member makes starts at Ask each run. A post to the channel that the workflow names may climb to Act and report. A post to another channel always asks.
+- **The adapters.**
+  - WhatsApp group: the bot transport. It waits on CH-TEAM-4 half B.
+  - Email: one mail to the named member addresses, from the workflow owner's mailbox or from a shared mailbox with `send` (SM-4 records the send).
+  - Slack: CH-TEAM-6.
+- **The limits.** Each post passes the audience check of CH-TEAM-1. A channel gets 10 posts each day at most, a working default. An org admin can pause all team posts in one step.
+
+**Done when.**
+
+1. A workflow posts to an email channel of 3 members. It sends one mail to those 3 addresses.
+2. A record that one member cannot open comes out of the post.
+3. At Ask each run, the run waits on the owner's card.
+4. A post to a channel that the workflow does not name asks.
+5. The 11th post of the day stops, and the run console says why.
+6. A paused org sends nothing.
+
+**Fence.** `tests/unit/test_workflow_channel_post.py` (planned).
+
+#### CH-TEAM-3. The daily standup and other group digests (task 2444)
+
+**Gate.** AGENT-SAFE. **Tier** STANDARD.
+
+**Build.**
+
+- A workflow template, "Daily standup". A timer starts it at the time that the team picks, on the org's working days. A step reads the team pulse (`projects_reports.md` T1, the `pulse` section) for the team. Then `channel.post` sends it.
+- Each person gets one line: done yesterday, today's focus and blocked work. The numbers come from the pulse reads, with no new arithmetic.
+- **What a digest never shows.**
+  - A private task.
+  - A task in a project that one participant cannot open (the audience check).
+  - The labels "Needs help" and "Behind". A digest gives no score for a person.
+  - The line of a member who turned their line off (Q-CHT-5).
+- Other digests use the same shape, for example the weekly team pulse, or the CRM weekly digest (`crm_platform.md` CRM-I4) to a sales channel.
+
+**Done when.**
+
+1. A team of 3 with tasks gets one post at 09:00 on a working day, with 3 lines.
+2. No post goes out on a day that is not a working day.
+3. A private task never shows.
+4. A task in a project that one participant cannot open never shows.
+5. A member who turned their line off is not in the post.
+6. The post needs no manual input.
+
+**Fence.** `tests/unit/test_team_digest.py` (planned).
+
+#### CH-TEAM-4. Mira in a WhatsApp group (task 2445)
+
+**Gate.** **HIGH tier.** Half A is AGENT-SAFE after Q-CHT-2. Half B is AGENT-SAFE to build after Q-CHT-1 and Q-CHT-2. **OWNER-GATE:** the OBA application, the live number (WAC-0, H-251) and any live group with real people.
+
+**Half A: the forward path.** It needs no group API.
+
+- A member forwards messages from any group to the bot, in the 1:1 chat, and asks a question.
+- The run treats the forwarded text as the words of other people. It is untrusted data and never an instruction. It is never the member's own words (D-PZ-37).
+- The answer goes to the member only.
+
+**Half B: a group that Metorite makes.**
+
+1. **Make the group.** A member asks: "Make a WhatsApp group for the Design team." The bot makes the group through the Groups API and is its admin. Mira sends the invite link to each named member, in their 1:1 chat. A team channel binds the group to the org of the asker's current link.
+2. **Who may tag.** A participant whose phone or `from_user_id` maps to an active link in the channel's org, with `feature:chat`. A tag from anyone else gets no answer.
+3. **What counts as a tag.** A tag is the name of the bot at the start of a word, for example "@Metorite". A reply to a message of the bot is a tag too. Mira answers nothing else. Meta may send mention data, but no Meta page says so.
+4. **What Mira reads.** A tenant table keeps the text of the last 24 hours of a group, 50 messages at most. A job deletes older rows each hour. A tag run reads the messages before the tag in that window. It also reads the messages of the 2 minutes after the tag.
+5. **What Mira keeps.** No group message goes into memory, Knowledge, a profile or a summary. The run treats each message as untrusted data.
+6. **The group knows.** When the group starts, the bot posts a notice. It says: "Metorite reads the last 24 hours of this group only when a member tags it. It shares only what everyone here can open." The member who made the group can turn reading off.
+7. **The answer.** The run acts as the asker, inside the audience check of CH-TEAM-1. The reply goes to the group. A part that the check removes goes to the asker in the 1:1 chat.
+8. **Acts.** A task, a mail or any other write parks for the asker. The asker confirms it in the 1:1 chat (§14, §18) or on a web card. The act runs as the asker, so the asker's own rights bound it.
+9. **Files.** A file goes into the group only when the audience check passes for that file. An example is a deck from the brand hub.
+10. **One org.** A group belongs to one org. A linked member of another org gets no answer (D-WAC-3).
+
+**Done when.** The tests use webhook payloads, because a live group needs the OBA.
+
+1. A forwarded message in the 1:1 chat reaches the run as untrusted data. The reply goes to the member only.
+2. A group payload with a tag from a linked member starts one run as that member. The same payload from an unlinked phone starts no run.
+3. A group message with no tag starts no run.
+4. A record that one participant cannot open never reaches the group, and the asker gets it in the 1:1 chat.
+5. A message older than 24 hours is gone from the table.
+6. A request for a task in the group parks for the asker. Nothing writes before the asker confirms.
+7. A structural test fails when a writer of memory, Knowledge or a profile reads the group table.
+
+**Fence.** `tests/unit/test_wac_group_tag.py` (planned), R8 for the group table and the link lookup.
+
+#### CH-TEAM-5. Metorite's own number and Mira's email address (task 2446)
+
+**Gate.** AGENT-SAFE build. **HIGH tier**, because an email address is easy to forge. **OWNER-GATE** for the OBA and a live address.
+
+**The number.** Metorite's own WhatsApp number is the bot number of this spec (§5.1, D-WAC-1). This slice adds no number. An org that wants its own number uses O6 (`ai_studio.md` §20), and that number answers people outside the org. A group needs the OBA (§19.2), and the owner applies for it.
+
+**The address.**
+
+- An org names one shared mailbox as Mira's address, for example `mira@fracktal.in`. It reuses the connection, the grants and the send record of `shared_mailbox.md`. It reuses O17 (task 2421) for the channel event. The open STU-IDE spec change adds O17 to `ai_studio.md`. It adds no mail server and no second inbox.
+- **A member writes or forwards to it.** Mira counts the sender as a member only when both are true:
+  - The From address is the email of an active member of the org.
+  - The provider reports that the mail passed its sender checks, DKIM or SPF.
+- The member's own words above a forward are the request. Mira reads the forwarded text as untrusted data.
+- Mira then files the mail on a CRM record, drafts a reply in the member's own mailbox, or proposes a task. Each write waits on the member's card in the web app (`waiting_on_me.md`). An email never approves a write.
+- **Anyone else.** A mail from a person who is not a member takes the O17 path. When no flow claims the mailbox, the mail stays in the shared mailbox for the members with a grant, as today.
+
+**Done when.**
+
+1. A mail from a member's own address passed its checks. It makes one card for that member, with the proposed task.
+2. A mail that claims a member's address and failed its checks makes no card. The mailbox marks it.
+3. An instruction inside the forwarded text causes no act.
+4. Nothing writes before the member presses the card.
+5. A member of another org who writes to the address gets no card.
+
+**Fence.** `tests/unit/test_mira_inbound_address.py` (planned), R8.
+
+#### CH-TEAM-6. Slack, later (task 2447)
+
+**Gate.** AGENT-SAFE build. **HIGH tier**: a new connection, OAuth and identity. **OWNER-GATE** for the registration of the Slack app and its secrets. It comes after CH-TEAM-3.
+
+**Build.**
+
+- One Metorite Slack app. An admin installs it in the org's Slack workspace with one OAuth click. The install is one row of `integration_connections` (D96).
+- Slack sends `app_mention` only for a message that mentions the app, in a conversation that the app is in. So Mira reads only the tag. With the history scope, a tag run may also read the thread of the tag, and nothing more.
+- A Slack user maps to a member by the email of the Slack profile.
+- The audience check of CH-TEAM-1 runs over the members of the Slack channel.
+- `channel.post` gets a Slack adapter.
+- Read the current API terms of Slack about AI use of message data at build time. This spec did not read them.
+
+**Done when.**
+
+1. An `app_mention` payload from a mapped member gets an answer in the thread.
+2. A mention from a user who maps to no member gets no answer.
+3. The audience check removes a record that one channel member cannot open.
+4. `channel.post` posts one message to a test channel.
+
+**Fence.** `tests/unit/test_slack_connector.py` (planned).
+
+### 19.4 Order
+
+CH-TEAM-1 comes first. Then CH-TEAM-2 with the email adapter, then CH-TEAM-3. Half A of CH-TEAM-4 follows the answer to Q-CHT-2. CH-TEAM-5 follows task 733 and O17. Half B of CH-TEAM-4 follows Q-CHT-1 and the OBA. CH-TEAM-6 comes last.
+
+### 19.5 Open questions for the owner
+
+| ID | Question | Evidence | Recommendation | Blocks |
+|---|---|---|---|---|
+| **Q-CHT-1** | Which path puts Mira in a WhatsApp team chat? | §19.2. Only an OBA can use the Groups API. The business makes the group, a person joins by link, and a group holds 8 people at most. Interactive messages do not work in a group. D122.2 rules out a linked-device reader | Build half A, the forward path, first. It works on the 1:1 bot of today. Build half B after the OBA. Use Slack (CH-TEAM-6) for a team larger than 8 | Half B of CH-TEAM-4 |
+| **Q-CHT-2** | Does the owner lift D115 for the WhatsApp parts of CH-TEAM? | D115 freezes new WhatsApp work. D122.3 lifts it for brief task 8 only | Lift it for the build of CH-TEAM-4, dark. A live switch-on stays an owner gate | CH-TEAM-4 |
+| **Q-CHT-3** | Which number makes the groups: the shared bot number, or an org's own O6 number? | The shared number already holds the member links (D-WAC-2). An O6 number answers outside people, and needs an OBA for each org | The shared bot number. One OBA covers every org. The risk is one quality rating for all orgs | Half B of CH-TEAM-4 |
+| **Q-CHT-4** | Is Mira's address a shared mailbox that the org connects, or an address on a Metorite domain? | The owner accepted the spec of the shared mailbox (task 733), and O17 makes it a channel. A Metorite domain needs new mail infrastructure | A shared mailbox first. A Metorite address can come later | CH-TEAM-5 |
+| **Q-CHT-5** | What does a standup show about a person, and can a member leave their line out? | Story 1761 asks for yesterday, today and blockers. The team pulse also holds "Needs help" and "Behind" | Show done, focus and blocked work, with no label. Each member can leave their own line out | CH-TEAM-3 |
+| **Q-CHT-6** | When does Slack come, and does Microsoft Teams come too? | Story 1749 says "Slack later". No pilot asked for Teams | Slack after CH-TEAM-3. No Teams until a pilot asks for it | CH-TEAM-6 |
+
+**Working defaults.** These are not owner decisions. The slice audit may change them.
+
+| ID | Default |
+|---|---|
+| W-CHT-1 | A group table keeps 24 hours, or 50 messages, whichever is less. |
+| W-CHT-2 | A tag run reads the messages of the 2 minutes after the tag. |
+| W-CHT-3 | A channel gets 10 posts each day at most. |
+| W-CHT-4 | A tag from a person who is not a member gets no answer. |
+
+### 19.6 Single owner
+
+This section owns CH-TEAM. `proactive_reach.md` keeps the messages to one member, and it links here for a post to a group. `shared_mailbox.md` keeps the shared mailbox. `ai_studio.md` keeps O6, O7, O9, O17 and O20. `projects_reports.md` keeps the team pulse. Those documents link here and add nothing.
