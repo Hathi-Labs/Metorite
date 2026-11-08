@@ -652,6 +652,8 @@ SERVING_INVOCATIONS = frozenset(
         "native_aimlapi",
         # VOX-2 (2026-11-08): Sarvam speech to text, on the transcribe door.
         "native_sarvam",
+        # VOX-6 (2026-11-08): AssemblyAI Sync speech to text, same door.
+        "native_assemblyai",
     }
 )
 
