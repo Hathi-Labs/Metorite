@@ -2627,6 +2627,9 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 **Built 2026-11-08, dark, on branch `ws43-s1-app-builder-maf-mt-3d248be7`
 (task 2280).** These facts change or add to the text above.
 
+- **The owner's answers, 2026-11-08.** Build on MAF's own harness and adapt
+  it, with no CodeAct. The soak follows rule A. The production flip of
+  `app_builder` is an owner act (WS43-G10).
 - **The factory (done-when 1).** `agent-app-builder/agents.py` asks
   `code_session.app_builder_engine_for_run()` on each run. With
   `app_builder:<org>` for the run's org, it builds
@@ -2690,7 +2693,9 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   build on this engine yet.
 
 Fence: WS43-F12, `tests/unit/test_app_builder_engine.py`. Its
-`sandbox_docker` test is the token probe of done-when 5.
+`sandbox_docker` test is the token probe of done-when 5. It passed on the
+real image on 2026-11-08: Node 22 runs, the build copy and `.git` are
+read-only, and no GitHub token or LLM key is in the container.
 
 ### WS-43i — Parity eval through the broker 🔲
 
