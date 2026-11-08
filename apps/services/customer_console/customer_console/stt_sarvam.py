@@ -106,7 +106,9 @@ def split_model(model: str) -> tuple[str, str] | None:
     prefix, sep, rest = model.strip().partition("/")
     if prefix != SARVAM_PROVIDER or not sep:
         return None
-    vendor_model, _, mode = rest.partition("/")
+    vendor_model, mode_sep, mode = rest.partition("/")
+    if mode_sep and not mode:
+        return None  # a trailing slash names an empty mode
     mode = mode or DEFAULT_MODE
     if not vendor_model or mode not in MODES:
         return None

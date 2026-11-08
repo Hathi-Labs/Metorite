@@ -207,6 +207,11 @@ class TestTheModeIsInTheModelId:
         assert stt_sarvam.split_model(model) is None
         assert stt_sarvam.model_refusal(model) is not None
 
+    def test_a_trailing_slash_is_refused_at_declare_time(self):
+        with pytest.raises(catalog.CatalogRefused):
+            catalog.check_model_for_invocation(
+                "sarvam/saaras:v3/", "native_sarvam", task="transcribe")
+
     def test_a_wrong_mode_is_refused_at_declare_time(self):
         with pytest.raises(catalog.CatalogRefused) as exc:
             catalog.check_model_for_invocation(

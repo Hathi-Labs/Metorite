@@ -1415,6 +1415,17 @@ class TestSarvamOnTheTranscribeDoor:
         [row] = _rows(db, org_id)
         assert row.quantity == WAV_3S_MINUTES
 
+    @pytest.mark.parametrize("rate", [0, 999, 384_001], ids=["zero", "below", "above"])
+    def test_an_unmeasurable_rate_on_a_litellm_binding_keeps_the_old_rule(
+            self, client, db, org_key, org_id, priced_stt, provider, rate):
+        audio = bytearray(WAV_3S)
+        at = audio.index(b"fmt ")
+        audio[at + 12: at + 16] = struct.pack("<I", rate)
+        _, key = org_key
+        assert _transcribe(client, key, audio=bytes(audio)).status_code == 200
+        [row] = _rows(db, org_id)
+        assert row.quantity == MINUTES  # the vendor's 90 s, as for any non-WAV
+
     def test_a_zero_sample_rate_on_a_sarvam_binding_answers_415(
             self, client, db, org_key, org_id, sarvam_vendor, stt_tier):
         audio = bytearray(WAV_3S)
