@@ -687,3 +687,77 @@ class TestPersonAsksOnARealDatabase:
                 "UPDATE pm_decisions SET answered_by = decider, answer_key = 'not_me',"
                 " answered_at = now() WHERE id = CAST(:i AS uuid)"), {"i": ask_id})
         assert _row(w.p, ask_id).answered_at is None
+
+
+# ── AP-9a: the extended read ────────────────────────────────────────────────
+
+
+@_DB_GATE
+class TestTheExtendedReadOnARealDatabase:
+    """``GET /projects/decisions?task_id=`` is the one read of the chip (§7.2)."""
+
+    async def test_the_asker_reads_the_id_and_a_third_reader_reads_no_question(self, w):
+        async with _session(w.p) as (call, _):
+            ask_id = await self._ask(w, call)
+            path = f"/projects/decisions?task_id={w.task}"
+            mine = (await call(w.u_a, "GET", path)).json()
+            assert [a["id"] for a in mine["asks"]] == [ask_id]
+            assert set(mine["asks"][0]) == {"id", "decider", "due_at", "created_at"}
+            assert mine["asks"][0]["decider"] == w.d
+            assert [(x["decider"], x["source"]) for x in mine["waiting_on"]] == [(w.d, "person")]
+            # A third reader sees who waits and the source, never the text.
+            third = await call(w.u_o, "GET", path)
+            body = third.json()
+            assert body["asks"] == [] and body["decisions"] == []
+            assert [(x["decider"], x["source"]) for x in body["waiting_on"]] == [(w.d, "person")]
+            assert ASK not in third.text and ask_id not in third.text
+            for key in ("question", "options", "answer_key"):
+                assert key not in third.text
+            # The addressee reads the row as the decider and sees no asks.
+            theirs = (await call(w.u_d, "GET", path)).json()
+            assert [d["id"] for d in theirs["decisions"]] == [ask_id] and theirs["asks"] == []
+            assert theirs["waiting_on"] == []
+            # A withdraw removes the ask from the asker's read.
+            gone = await call(w.u_a, "POST", f"/projects/asks/{ask_id}/withdraw")
+            assert gone.status_code == 200
+            after = (await call(w.u_a, "GET", path)).json()
+            assert after["asks"] == [] and after["waiting_on"] == []
+
+    async def _ask(self, w: Any, call: Any) -> str:
+        made = await call(w.u_a, "POST", _asks_path(w.task), {"addressee": w.d, "question": ASK})
+        assert made.status_code == 201, made.text
+        return made.json()["decision"]["id"]
+
+    async def test_a_reader_who_cannot_open_the_task_gets_404(self, w):
+        async with _session(w.p) as (call, _):
+            await self._ask(w, call)
+            for user in (w.u_x, w.u_b):
+                gone = await call(user, "GET", f"/projects/decisions?task_id={w.task}")
+                assert gone.status_code == 404, user.email
+                assert ASK not in gone.text
+
+    async def test_with_waiting_off_the_read_adds_no_source_and_no_asks(self, w, monkeypatch):
+        from acb_common import get_settings
+
+        async with _session(w.p) as (call, _):
+            await self._ask(w, call)
+            monkeypatch.setattr(get_settings(), "waiting_orgs", "")
+            body = (await call(w.u_a, "GET", f"/projects/decisions?task_id={w.task}")).json()
+            assert "asks" not in body
+            assert all("source" not in x for x in body["waiting_on"])
+            monkeypatch.setattr(get_settings(), "waiting_orgs", w.p.org_a)
+            monkeypatch.setattr(get_settings(), "decisions_orgs", "")
+            off = await call(w.u_a, "GET", f"/projects/decisions?task_id={w.task}")
+            assert off.status_code == 404
+
+    async def test_org_isolation_of_the_asks_of_the_read(self, w, monkeypatch):
+        from acb_common import get_settings
+
+        async with _session(w.p) as (call, _):
+            await self._ask(w, call)
+            monkeypatch.setattr(get_settings(), "decisions_orgs", "*")
+            monkeypatch.setattr(get_settings(), "waiting_orgs", "*")
+            other = await call(w.u_b, "GET", f"/projects/decisions?task_id={w.task}")
+            assert other.status_code == 404
+            own = (await call(w.u_b, "GET", f"/projects/decisions?task_id={w.task_b}")).json()
+            assert own["asks"] == [] and own["waiting_on"] == []

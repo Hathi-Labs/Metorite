@@ -451,6 +451,15 @@ class AnswerIn(BaseModel):
 # ── Routes ──────────────────────────────────────────────────────────────────
 
 
+def waiting_on_flag(user: UserContext) -> bool:
+    """True when ``WAITING_ORGS`` holds the caller's org (R5: the session org).
+    The extended read of AP-9a adds ``source`` and ``asks`` only then. The
+    import is local, because the shell package imports this module."""
+    from gateway.routes.shell.waiting import waiting_allowed
+
+    return waiting_allowed(getattr(user, "organization_id", None))
+
+
 @router.get("/decisions", dependencies=_ENABLED)
 async def list_decisions(
     task_id: str | None = Query(default=None),
@@ -460,6 +469,7 @@ async def list_decisions(
     can open, newest first, answered or not. Without: the open ones. A decision
     is shown to its decider only. Other members read the answer as the comment
     on the task. No count of people."""
+    mine: list[Any] = []
     async with _tenant_session() as db:
         if task_id is not None:
             try:
@@ -483,7 +493,7 @@ async def list_decisions(
             # 404 as for a task with no decision.
             waiting = (await db.execute(
                 text(
-                    "SELECT d.decider, d.expires_at FROM pm_decisions d"
+                    "SELECT d.decider, d.expires_at, d.source FROM pm_decisions d"
                     " WHERE d.subject_kind = 'task' AND d.subject_id = CAST(:tid AS uuid)"
                     " AND lower(d.decider) <> :me AND d.answered_at IS NULL"
                     " AND d.closed_at IS NULL"
@@ -491,6 +501,20 @@ async def list_decisions(
                 ),
                 {"tid": tid, "me": actor(user).strip().lower(), "lim": LIST_LIMIT},
             )).fetchall()
+            # AP-9a: with both flags on, the asker reads the id of each open
+            # person ask of their own, so the card can offer "Withdraw". The
+            # question and the answer stay with the parties (ALN-2b).
+            if waiting_on_flag(user):
+                mine = (await db.execute(
+                    text(
+                        "SELECT d.id, d.decider, d.due_at, d.created_at FROM pm_decisions d"
+                        " WHERE d.subject_kind = 'task' AND d.subject_id = CAST(:tid AS uuid)"
+                        " AND d.source = 'person' AND lower(d.asked_by) = :me"
+                        " AND d.answered_at IS NULL AND d.closed_at IS NULL"
+                        " AND d.expires_at > now() ORDER BY d.created_at, d.id LIMIT :lim"
+                    ),
+                    {"tid": tid, "me": actor(user).strip().lower(), "lim": LIST_LIMIT},
+                )).fetchall()
         else:
             rows = (await db.execute(
                 text(
@@ -521,9 +545,22 @@ async def list_decisions(
             wire = keep
     out: dict[str, Any] = {"decisions": wire}
     if task_id is not None:
+        flag = waiting_on_flag(user)
         out["waiting_on"] = [
-            {"decider": str(w.decider), "expires_at": _iso(w.expires_at)} for w in waiting
+            {
+                "decider": str(w.decider), "expires_at": _iso(w.expires_at),
+                **({"source": str(w.source)} if flag else {}),
+            }
+            for w in waiting
         ]
+        if flag:
+            out["asks"] = [
+                {
+                    "id": str(a.id), "decider": str(a.decider),
+                    "due_at": _iso(a.due_at), "created_at": _iso(a.created_at),
+                }
+                for a in mine
+            ]
     return out
 
 

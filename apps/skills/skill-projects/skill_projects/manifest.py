@@ -1739,6 +1739,11 @@ UI_ACTIONS: dict[str, str] = {
     # The decisions of one task and the answer of one decision (D173).
     "decisionsApi.forTask": "my_decisions",
     "decisionsApi.answer": "answer_decision",
+    # WS-AP AP-9a: the task card asks and withdraws. The route is class C with
+    # the planned tools, so the fence wants UI_ACTIONS (UI_PLANNED takes class
+    # X routes only). AP-10 builds both tools and closes gap G25.
+    "decisionsApi.askPerson": "ask_person",
+    "decisionsApi.withdrawAsk": "withdraw_ask",
     # EA-6g: the run's member approves or declines an archive request. It is in
     # UI_EXEMPT: the chat never answers one (D-OP-13).
     # ── notificationsApi ─────────────────────────────────────────────────

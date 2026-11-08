@@ -80,6 +80,12 @@ interface Props {
   taskId?: string;
   /** Who already holds the task, so "Suggested" never offers them again. */
   assigned?: readonly string[];
+  /**
+   * WS-AP AP-9a — "Wait on someone" asks a PERSON. With this on, the list
+   * drops the Agents group. The rows keep their warnings: "no login — cannot
+   * see the task" says that the person cannot open the task.
+   */
+  peopleOnly?: boolean;
 }
 
 export function AssigneePicker({
@@ -95,6 +101,7 @@ export function AssigneePicker({
   commitOnBlur = true,
   taskId,
   assigned,
+  peopleOnly = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   /** The field the portalled list measures from. State, not a ref, so the
@@ -170,7 +177,7 @@ export function AssigneePicker({
   }, [open, taskId, due, askForFit]);
 
   // One rule, tested without a DOM — see `pickerGroups`.
-  const groups = pickerGroups(res);
+  const groups = pickerGroups(res).filter((g) => !peopleOnly || g.heading === "People");
   // And one more — see `suggestedRows`. Empty without the HR grant.
   const suggested = taskId && askForFit
     ? suggestedRows(fit?.taskId === taskId ? fit.res : null, { assigned, query: value })

@@ -121,6 +121,11 @@ export interface CommandContext {
   filtered: boolean;
   /** A task panel is open, so the panel-width commands mean something. */
   panelOpen: boolean;
+  /**
+   * WS-AP AP-9a. The person ask is on for the org, so `W` can open "Wait on
+   * someone" on the open task. Absent means off.
+   */
+  canWaitOnSomeone?: boolean;
   panelMode: PanelMode;
   /** Desktop only — a phone reaches the tree through the drawer. */
   canToggleRail: boolean;
@@ -145,6 +150,8 @@ export interface CommandActions {
    */
   openSettings(section?: "statuses"): void;
   showShortcuts(): void;
+  /** WS-AP AP-9a — open "Wait on someone" on the open task. */
+  waitOnSomeone?(): void;
 }
 
 /** The sections, in the order the palette and the sheet print them. */
@@ -240,6 +247,18 @@ const PANEL_COMMANDS: Command[] = [
     icon: "Maximize2",
     when: (ctx) => ctx.panelOpen && ctx.panelMode !== "full",
     run: (actions, ctx) => actions.setPanelMode(widerPanel(ctx.panelMode)),
+  },
+  {
+    // WS-AP AP-9a: the key `W`. It acts on the open task, so it is offered
+    // only while a task card is open and the person ask is on for the org.
+    id: "panel.waitOnSomeone",
+    label: "Wait on someone",
+    section: "Panel",
+    keywords: ["ask", "person", "need", "reply", "waiting", "question"],
+    icon: "Hourglass",
+    sequence: ["w"],
+    when: (ctx) => ctx.panelOpen && Boolean(ctx.canWaitOnSomeone),
+    run: (actions) => actions.waitOnSomeone?.(),
   },
   {
     id: "panel.backToSide",
