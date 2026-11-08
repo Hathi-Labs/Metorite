@@ -198,8 +198,8 @@ export function currentMatchChip(
 ): { label: string; cls: string } {
   if (gone) return { label: GONE_MAIL_LABEL, cls: accentForHue("gray").chip };
   if (matched)
-    return { label: ruleName || "Matched", cls: "bg-emerald-500/15 text-emerald-400" };
-  return { label: "No match found", cls: "bg-red-500/15 text-red-400" };
+    return { label: ruleName || "Matched", cls: "bg-success/15 text-success" };
+  return { label: "No match found", cls: "bg-destructive/15 text-destructive" };
 }
 
 /** The prefix of the reason line in the popover. */

@@ -2430,6 +2430,8 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-55 MCP-G19a: the board count read serves an outside agent over MCP.
     # The chat tool for the same counts is Metorite task 2223.
     mcp_g19a = {"board_stats"}
+    # WS-55 MCP-G21: the assignable member read serves an outside agent.
+    mcp_g21 = {"assignable_members"}
     # WS-66 RM-3 built the seven reminder tools that RM-1 planned, so no
     # reminder tool is planned now.
     # WS-AP AP-8a: the person ask and its withdraw. AP-10 builds both tools.
@@ -2438,7 +2440,7 @@ async def test_every_manifest_tool_is_now_built() -> None:
     sp_5 = {"list_cycles", "cycle_detail", "create_cycle", "update_cycle", "delete_cycle",
             "plan_cycle", "start_cycle", "close_cycle"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
-                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | sp_5), m.PLANNED
+                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 
