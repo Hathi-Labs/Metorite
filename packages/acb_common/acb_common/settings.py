@@ -921,6 +921,16 @@ class Settings(BaseSettings):
     # `workflow_unattended_orgs`. If the org leaves that list, a yes resumes
     # nothing and no expiry ends the run, until the org is on it again.
     auto_park_orgs: str = ""
+    # ── The headless turn (WS-AUTO AUTO-8a, proactive_agent.md §4.4) ────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, a job of kind `auto.turn` runs one capped turn with no
+    # person present. It is the on switch and the kill switch: the turn reads
+    # it again before each round. The one reader is
+    # `gateway.jobs.headless_turn.headless_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A turn spends the member's AI credits,
+    # so only the owner flips it. Fence: tests/unit/test_headless_turn.py.
+    headless_turn_orgs: str = ""
     # ── Guidance for agents (WS-MCP SW-31a, agent_coordination.md SW-31) ────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1146,6 +1156,17 @@ class Settings(BaseSettings):
     # Name the flag and the box in the same message.
     # Fence: tests/unit/test_email_new_mail_card.py.
     email_edit_card_orgs: str = ""
+
+    # ── Outlook all-mail webhook (WS-17, task 1966) ─────────────────────────
+    #
+    # `outlook_all_mail_webhook_orgs` lists the organization ids whose Outlook
+    # push subscription watches ALL mail (`/me/messages`), so mail that a rule
+    # files into a user folder arrives at once and not at the next poll. Empty
+    # means off, and the subscription watches the Inbox only. The reader is
+    # `gateway.routes.email.transport.sync._all_mail_webhook_on`. The name ends
+    # in `_orgs`, so a SIGHUP applies a change with no restart.
+    # Fence: tests/unit/test_outlook_all_mail_webhook.py.
+    outlook_all_mail_webhook_orgs: str = ""
 
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #

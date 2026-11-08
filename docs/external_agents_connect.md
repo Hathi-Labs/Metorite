@@ -114,14 +114,15 @@ For a team of people who each run agents on one board, read `docs/external_agent
 
 ## What the agent can do
 
-Nine tools read:
+Ten tools read:
 
 | Tool | What it reads |
 |---|---|
 | `whoami` | The member and the organization of the connection, its scopes and its pins |
 | `list_projects` | The projects you see |
 | `get_project` | One project |
-| `list_tasks` | The tasks you see, at most 100 in one call |
+| `list_tasks` | The tasks you see, at most 100 in one call. It filters by project, status, tag, assignee and text. It also filters by `status_category` (a list of backlog, todo, in_progress, done and cancelled), `updated_before`, `updated_after`, `created_after` and `due_before` (ISO dates), `has_parent` (false gives top-level tasks), `is_epic`, `assigned` (false gives tasks with no assignee) and `title_prefix` (not case sensitive, such as a plan id). With `compact` true, each row is small and one call gives up to 500 rows |
+| `board_stats` | The number of tasks you see, with no rows. It takes the filters of `list_tasks`. `group_by` takes one or two of `project`, `status_category`, `is_epic`, `assignee`, `holder` and `updated_age` (bands `<1d`, `1-3d`, `3-7d`, `7-30d`, `>30d`). Its `total` equals the rows that `list_tasks` gives for the same filters. A task with two assignees counts once for each under `assignee` |
 | `get_task` | One task, with its references |
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |

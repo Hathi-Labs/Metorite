@@ -81,11 +81,15 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
 /**
  * The studio pack's write tools (`studio_tools.py`, the `studio` pack): they
  * save and publish packages and skills, which the Studio library lists. The
- * read tools (draft, validate, patch, outline, plan, describe, list_actions,
- * package_get, record_list, skill_list, interview) change nothing stored.
+ * three record writes (STU-B2c-2b) add, change and delete a record of an app
+ * when a resend runs the approved change, so an open app re-reads. A first
+ * call only asks, and its re-read finds nothing new. The read tools (draft,
+ * validate, patch, outline, plan, describe, list_actions, package_get,
+ * record_list, skill_list, interview) change nothing stored.
  */
 const STUDIO_WRITES: ReadonlySet<string> = new Set([
   "studio_save", "studio_publish", "studio_skill_save", "studio_skill_state",
+  "studio_record_create", "studio_record_update", "studio_record_delete",
 ]);
 
 /** The assistant profile tools write the settings page, which no live app shows. */

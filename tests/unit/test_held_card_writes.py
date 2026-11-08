@@ -77,8 +77,11 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The four CRM record writes. Each says ``open_world=True`` and keeps saying it.
-KEPT_CRM = frozenset({"convert_lead", "create_lead", "log_activity", "update_deal_status"})
+#: The six CRM record writes. Each says ``open_world=True`` and keeps saying it.
+KEPT_CRM = frozenset({
+    "convert_lead", "create_lead", "log_activity", "update_deal_status",
+    "crm_update_record", "crm_update_task",
+})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
 #: ``promote_reminder``. A covered run still holds them. ``answer_decision``

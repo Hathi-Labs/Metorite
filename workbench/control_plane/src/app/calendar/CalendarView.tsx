@@ -10,6 +10,7 @@
 // AppShell). Specs: calendar_timeboxing.md, calendar_focus_os.md,
 // calendar_ai_review.md.
 
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -352,6 +353,27 @@ export function CalendarView() {
   // schedule). The gateway planner reads the same rule (`plannerCandidates`).
   const unscheduled = useMemo(() => plannerCandidates(items), [items]);
 
+  // The phone bar (MOB-12): Today, Schedule and Reminders. The bar holds what
+  // the floating button and the top bell held. Month has no time to place a
+  // task in, and a closed reminders flag draws no list. Reminders hides only
+  // when the flag is off ("absent"). While the list loads the tab stays, so
+  // the bar does not reflow, and its sheet shows a loading row.
+  usePhoneBar({
+    hide: [...(mode === "month" ? ["calendar-schedule"] : []), ...(remList.status === "absent" ? ["calendar-reminders"] : [])],
+    counts: { "calendar-schedule": unscheduled.length, "calendar-reminders": remList.total },
+  });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab === "calendar-today") pickAnchor(startOfDay(new Date()));
+      else if (tab === "calendar-schedule") setSheet({ day: mode === "week" ? startOfWeek(anchor) : anchor });
+      else if (tab === "calendar-reminders" && remList.status !== "absent") setRemSheet(true);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `pickAnchor` only sets state
+  }, [mode, anchor, remList.status]);
+
   // Deadline radar: unscheduled next actions with a due date approaching (≤14d)
   // — the ones most likely to slip because they were never timeboxed.
   const dueSoon = useMemo(() => {
@@ -560,16 +582,19 @@ export function CalendarView() {
       ? Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(anchor), i))
       : [anchor];
 
-  // Back, Today and on. One group, so the phone bar and the desktop bar
-  // draw the same three buttons.
+  // Back, Today and on. One group. On a phone the bottom bar holds Today, so
+  // the arrows stay and Today leaves.
   const dayNav = (
     <div className="flex items-center gap-0.5">
       <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Previous" onClick={() => step(-1)} className="rounded-md">
         <Icon name="ChevronLeft" className="h-4 w-4" />
       </Button>
-      <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => pickAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
-        Today
-      </Button>
+      {/* On a phone the bar's Today tab holds it (MOB-12). */}
+      {!isMobile && (
+        <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => pickAnchor(startOfDay(new Date()))} className="rounded-md px-2 py-1 text-xs">
+          Today
+        </Button>
+      )}
       <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" aria-label="Next" onClick={() => step(1)} className="rounded-md">
         <Icon name="ChevronRight" className="h-4 w-4" />
       </Button>
@@ -651,18 +676,6 @@ export function CalendarView() {
         >
           <Icon name="BellPlus" className="h-3.5 w-3.5" />
           <span className="hidden 2xl:inline">New reminder</span>
-        </button>
-      )}
-      {remShown && isMobile && (
-        <button
-          type="button"
-          onClick={() => setRemSheet(true)}
-          title="Your open reminders"
-          aria-label={`Reminders, ${remList.total} open`}
-          className="tech-transition inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-        >
-          <Icon name="Bell" className="h-3.5 w-3.5" />
-          {remList.total > 0 && <span className="tabular-nums">{remList.total}</span>}
         </button>
       )}
       <button
@@ -908,26 +921,6 @@ export function CalendarView() {
         )}
       </div>
 
-      {/* Mobile scheduling entry point — the rail is desktop-only and touch has
-          no drag-and-drop, so on a phone this is how you timebox: pick a task
-          (auto-placed) or Plan the whole day. Anchored to the calendar area so
-          it sits above the app's bottom bar. */}
-      {mode !== "month" && (
-        <button
-          type="button"
-          onClick={() =>
-            setSheet({ day: mode === "week" ? startOfWeek(anchor) : anchor })
-          }
-          aria-label="Schedule a task"
-          className="tech-transition absolute bottom-4 right-4 z-30 inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-3 font-semibold text-primary-foreground shadow-lg hover:opacity-90 md:hidden"
-        >
-          <Icon name="CalendarPlus" className="h-5 w-5" />
-          {unscheduled.length > 0 && (
-            <span className="text-sm tabular-nums">{unscheduled.length}</span>
-          )}
-        </button>
-      )}
-
       {remShown && remForm?.mode === "new" && (
         <ReminderFormModal
           mode="new"
@@ -947,8 +940,11 @@ export function CalendarView() {
           onClose={() => setRemForm(null)}
         />
       )}
-      {remSheet && remShown && (
+      {remSheet && remList.status !== "absent" && (
         <Modal open onClose={() => setRemSheet(false)} title="Reminders" icon="Bell" placement="sheet" size="md" className="max-h-[80dvh]">
+          {!remShown ? (
+            <p className="px-3 py-4 text-xs text-muted-foreground">Loading your reminders…</p>
+          ) : (
           <RemindersSheetBody
             rows={remList.rows}
             total={remList.total}
@@ -968,6 +964,7 @@ export function CalendarView() {
             }}
             onResolve={(id, action) => void resolveReminderAs(id, action)}
           />
+          )}
         </Modal>
       )}
 

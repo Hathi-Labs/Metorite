@@ -1,5 +1,6 @@
 "use client";
 
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import AssistantToggle from "@/components/AssistantToggle";
@@ -190,12 +191,8 @@ function TasksPageBody() {
     if (tasksEntryView(now) !== now) selectView(tasksEntryView(now));
   }, [selectView]);
 
-  // Tell the mobile bottom bar which My Tasks section is active (for its highlight).
-  useEffect(() => {
-    window.dispatchEvent(
-      new CustomEvent("cc-tasks-section", { detail: selectedView }),
-    );
-  }, [selectedView]);
+  // Tell the mobile bottom bar which My Tasks section is active (for its highlight), in the one `cc-phone-bar` event.
+  usePhoneBar({ active: selectedView === "inbox" ? "tasks-inbox" : "tasks-lists" });
 
   // Mobile bottom-nav tabs (from AppShell) → drive the tasks app.
   useEffect(() => {
