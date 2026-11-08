@@ -462,6 +462,21 @@ def test_the_package_registry_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_package_field_value_table_is_tenant_scoped() -> None:
+    """WS-PKG PKG-13 (``package_host.md`` §5.1 and §8.3). An extension value
+    holds the data that one organization wrote on its host records. The table
+    may not be exempt, and the committed policy phase must carry it (R5)."""
+    table = "package_field_value"
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
 @pytest.mark.parametrize(
     "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"],
 )

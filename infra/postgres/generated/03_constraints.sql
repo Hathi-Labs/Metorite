@@ -2678,6 +2678,19 @@ ALTER TABLE crm_change_log ADD CONSTRAINT crm_change_log_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS crm_change_log_org_idx ON crm_change_log (organization_id);
 
+-- package_field_value
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM package_field_value WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: package_field_value still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE package_field_value ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE package_field_value ADD CONSTRAINT package_field_value_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS package_field_value_org_idx ON package_field_value (organization_id);
+
+
 -- pm_project_updates
 DO $$
 BEGIN
@@ -2689,3 +2702,4 @@ ALTER TABLE pm_project_updates ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE pm_project_updates ADD CONSTRAINT pm_project_updates_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_project_updates_org_idx ON pm_project_updates (organization_id);
+

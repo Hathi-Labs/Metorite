@@ -271,6 +271,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "my_tasks_schedule": ("block an hour for the report",),
     "my_tasks_set_one_thing": ("make the report my one thing for today",),
     "my_tasks_unschedule": ("block an hour, then take that block off",),
+    # -- calendar-day settings (CAL-2, task 1676) --
+    "my_tasks_get_calendar_settings": ("what are my working hours?",),
+    "my_tasks_update_calendar_settings": (
+        "I work 8 to 6", "never book meetings before 10", "I'm sharpest 9 to 12",
+        "turn on auto rollover"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"

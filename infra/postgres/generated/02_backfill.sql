@@ -684,5 +684,8 @@ UPDATE pm_agent_guidance SET organization_id = (SELECT id FROM organization WHER
 UPDATE crm_change_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE package_field_value SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE pm_project_updates SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
