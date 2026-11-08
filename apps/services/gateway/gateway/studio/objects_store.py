@@ -145,6 +145,17 @@ skipped. A child that a money roll-up counts, in another currency than the rule,
 is refused. A roll-up that does not fit now, or that the store cannot read,
 refuses the batch.
 
+**The lines (C13).** A relation field of a parent with ``lines`` names a line
+object of the same package and its field ``via`` that points back. The parent
+holds no value for it (``studio_fields.validate_record``). A write with
+``parent`` names the create or the update of its parent earlier in the batch:
+a linked create gets ``via`` from that record, and a linked update must be a
+line of it. A line that names a parent by itself, on a create or a move, must
+name a record of the parent object of this package, in one statement after
+the writes. A record of another package or another org is not found, so the
+line is refused. :func:`_find_lines` reads the relations after the org lock,
+and a relation that no longer fits its line object refuses the batch.
+
 **The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
 package to the ``objects`` of a published manifest, and the publish route is
 its one caller. It adds an object (:func:`define_object`, whose one caller it
@@ -230,10 +241,13 @@ from acb_common.studio_fields import (
     NAME_PATTERN,
     FieldError,
     FieldSpec,
+    RecordError,
     check_can_be_hot,
     hot_value,
+    lines_problem,
     parse_field_spec,
     record_json,
+    relation_key,
     storable_text,
     stored_field,
     validate_record,
@@ -404,6 +418,20 @@ _OBJECT_NAMES_SQL = (
     "AND id = ANY(CAST(:oids AS uuid[]))"
 )
 
+#: Each lines relation of one package (C13): the parent object, the key of its
+#: field, the field of the line object that names the parent, and the id of the
+#: line object, which a name of the same package finds. Each alias names the org.
+_LINES_SQL = (
+    "SELECT p.id::text, p.name, f.key, f.spec ->> 'lines', c.id::text, c.name "
+    "FROM studio_object_fields f "
+    f"JOIN studio_objects p ON p.organization_id = {_BOUND_ORG} AND p.id = f.object_id "
+    "AND p.package_id = CAST(:pid AS uuid) "
+    f"LEFT JOIN studio_objects c ON c.organization_id = {_BOUND_ORG} "
+    "AND c.package_id = CAST(:pid AS uuid) AND c.name = f.spec ->> 'to' "
+    f"WHERE f.organization_id = {_BOUND_ORG} AND f.type = 'relation' "
+    "AND (f.spec -> 'lines') IS NOT NULL ORDER BY p.id, f.key"
+)
+
 _SET_RULES_SQL = (
     "UPDATE studio_objects SET constraints = CAST(:rules AS jsonb), updated_at = now() "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
@@ -415,6 +443,15 @@ _IN_PACKAGE = (
     "EXISTS (SELECT 1 FROM studio_objects o "
     f"WHERE o.organization_id = {_BOUND_ORG} AND o.id = CAST(:oid AS uuid) "
     "AND o.package_id = CAST(:pid AS uuid))"
+)
+
+#: The parent records that the lines of a batch name (C13), of one parent
+#: object of the package. A parent of another package or another org is not
+#: found, so its line is refused.
+_LINE_PARENTS_SQL = (
+    "SELECT id::text FROM studio_records "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    f"AND id = ANY(CAST(:ids AS uuid[])) AND {_IN_PACKAGE}"
 )
 
 #: Every object of one package, and then every field of those objects. The
@@ -640,12 +677,19 @@ class Record:
 class Write:
     """One write of a batch. ``create`` takes ``data``. ``update`` takes
     ``record_id`` and ``data``, the fields that change. ``delete`` takes
-    ``record_id``."""
+    ``record_id``.
+
+    ``parent`` (C13) links a line to its parent in the same batch: the place
+    of an earlier create or update of the parent record. A create of a line
+    gets the parent field filled with that id. An update of a line must be a
+    line of that parent, and cannot change the parent field. A delete takes
+    no ``parent``."""
 
     op: str
     object_id: str
     record_id: str | None = None
     data: Mapping[str, Any] | None = None
+    parent: int | None = None
 
 
 def _actor(actor: object) -> str:
@@ -1094,7 +1138,7 @@ FIELD_REFUSED = "field_refused"
 STORE_REFUSED = "store_refused"
 
 #: The parts of a field that a sync cannot change. ``hot`` is not one of them.
-_FIELD_ATTRS = ("type", "many", "options", "to", "required", "label")
+_FIELD_ATTRS = ("type", "many", "options", "to", "required", "label", "lines")
 
 
 @dataclass(frozen=True)
@@ -2318,6 +2362,21 @@ class _Batch:
         self.readers: dict[str, set[str]] = {}
         #: The first write that made each parent stale, for the place of an error.
         self.firsts: dict[tuple[str, str], int] = {}
+        #: The lines relation of each line object of the batch (C13), by its id.
+        self.lines: dict[str, _Lines] = {}
+        #: The id of the record that each create of the batch made, by its place.
+        self.made: dict[int, str] = {}
+
+
+@dataclass(frozen=True)
+class _Lines:
+    """One lines relation of the package (C13): the parent object, its field,
+    and ``via``, the field of the line object that names the parent."""
+
+    parent_id: str
+    parent: str
+    key: str
+    via: str
 
 
 def _clean_write(write: Any) -> Write:
@@ -2325,6 +2384,9 @@ def _clean_write(write: Any) -> Write:
     if not isinstance(write, Write) or write.op not in _WRITE_OPS:
         raise ObjectStoreError(f"A write is a Write with the op {', '.join(_WRITE_OPS)}.")
     oid = _uuid(write.object_id, "object_id")
+    if write.parent is not None and (
+            write.op == "delete" or type(write.parent) is not int or write.parent < 0):
+        raise ObjectStoreError("parent is the place of an earlier write, on a create or an update.")
     if write.op == "create":
         if write.record_id is not None:
             raise ObjectStoreError("A create takes no record_id, because the store gives the id.")
@@ -2343,10 +2405,15 @@ def _clean_writes(writes: Any) -> list[Write]:
         raise ObjectStoreError("writes must be a list of writes")
     if len(writes) > MAX_WRITES_PER_BATCH:
         raise BudgetExceeded(f"A batch holds at most {MAX_WRITES_PER_BATCH} writes.")
-    out = []
+    out: list[Write] = []
     for i, write in enumerate(writes):
         try:
-            out.append(_clean_write(write))
+            clean = _clean_write(write)
+            if clean.parent is not None and (
+                    clean.parent >= i or out[clean.parent].op not in ("create", "update")):
+                raise ObjectStoreError(
+                    "parent is the place of an earlier create or update in the batch.")
+            out.append(clean)
         except ObjectStoreError as exc:
             raise BatchError(i, exc) from exc
     return out
@@ -2418,12 +2485,140 @@ def _live_mark(batch: _Batch, step: Write) -> _Mark:
     return mark
 
 
+# --- the lines (C13) ------------------------------------------------------------
+#
+# A lines relation is a relation field of a parent object, with `lines` naming
+# the field of the line object (`via`) that points back to the parent. The
+# parent holds no value for it. The door saves a parent and its lines as ONE
+# batch, so they are written all or none. Three steps join the batch:
+#
+#   1c. `_find_lines` reads the lines relations of the package after the org
+#       lock, and `_check_lines_fit` checks each one against the fields of its
+#       line object after the object locks. A relation that does not fit
+#       refuses the batch (it fails closed).
+#   4.  A write with `parent` is linked to the create or the update of its parent
+#       earlier in the batch (`_link`). A linked create gets `via` from that
+#       record, and a linked update must be a line of it. Neither names `via`.
+#   4a. `_check_line_parents` runs after the writes. A line that names a new
+#       parent by itself, on a create or a move, must name a record of the
+#       parent object of this package. A record of another package or another
+#       org is not found, so the line is refused.
+
+
+def _parent_of(via: str, data: Mapping[str, Any] | None) -> str | None:
+    """The parent id that a line names in its field *via*, in the one form of
+    a hot relation, or None."""
+    raw = None if data is None else data.get(via)
+    if isinstance(raw, Mapping) and isinstance(raw.get("id"), str):
+        return relation_key(raw["id"])
+    return None
+
+
+def _link(batch: _Batch, step: Write) -> tuple[_Lines, str] | None:
+    """The lines relation of a linked write, and the id of its parent record,
+    or None for a write with no ``parent``. Runs no statement."""
+    if step.parent is None:
+        return None
+    link = batch.lines.get(step.object_id)
+    parent = batch.steps[step.parent]
+    if link is None or parent.object_id != link.parent_id:
+        raise RecordError("This write is not a line of the record of its parent write.")
+    if isinstance(step.data, Mapping) and link.via in step.data:
+        raise FieldError(link.via, f"Field `{link.via}` of a line comes from the record that "
+                         "it is saved with. Remove it from the line.")
+    rid = batch.made[step.parent] if parent.op == "create" else str(parent.record_id)
+    return link, rid
+
+
+async def _find_lines(db: Any, batch: _Batch) -> None:
+    """Step 1c (C13). The lines relation of each line object of the batch. The
+    org lock is held, and every change of a field takes it too, so the answer is
+    stable. One statement. An object that two relations name refuses the batch,
+    because its parent would be unclear."""
+    rows = (await db.execute(text(_LINES_SQL), {"pid": batch.pid})).all()
+    first: dict[str, int] = {}
+    for i, step in enumerate(batch.steps):
+        first.setdefault(step.object_id, i)
+    for parent_id, parent, key, via, child_id, child in rows:
+        if child_id is None or str(child_id) not in first:
+            continue
+        if str(child_id) in batch.lines:
+            batch.index = first[str(child_id)]
+            raise RecordError(f"Object `{child}` is the lines of two fields. "
+                              "Publish the app again with one.")
+        batch.lines[str(child_id)] = _Lines(str(parent_id), str(parent), str(key), str(via))
+
+
+def _check_lines_fit(batch: _Batch) -> None:
+    """Step 1c (C13), after the object locks. Fail closed: a stored lines
+    relation that does not fit its line object now refuses the batch. The rule
+    is ``studio_fields.lines_problem``, the one that A2 runs."""
+    for oid, link in batch.lines.items():
+        held = batch.objects[oid]
+        spec = FieldSpec(key=link.key, type="relation", to=held.name, lines=link.via)
+        problem = lines_problem(link.parent, spec, held.name, held.fields)
+        if problem is not None:
+            batch.index = next(i for i, s in enumerate(batch.steps) if s.object_id == oid)
+            raise RecordError(f"The lines of `{link.parent}` do not fit now. {problem}")
+
+
+def _new_parents(batch: _Batch) -> dict[str, dict[str, tuple[int, _Lines]]]:
+    """The parent ids that the lines of the batch name by themselves, by
+    parent object, each with its first write. A linked create took its parent
+    from the batch, and a write that keeps the parent of the line names none.
+    An id that is not a UUID names no record, so it is refused here."""
+    out: dict[str, dict[str, tuple[int, _Lines]]] = {}
+    for mark in sorted(batch.marks.values(), key=lambda m: m.index):
+        link = batch.lines.get(mark.object_id)
+        if link is None or mark.after is None:
+            continue
+        new = _parent_of(link.via, mark.after)
+        if new is None or (mark.before is not None and new == _parent_of(link.via, mark.before)):
+            continue
+        if mark.before is None and batch.steps[mark.index].parent is not None:
+            continue
+        batch.index = mark.index
+        try:
+            uuid.UUID(new)
+        except ValueError:
+            raise _no_parent(link) from None
+        out.setdefault(link.parent_id, {}).setdefault(new, (mark.index, link))
+    return out
+
+
+def _no_parent(link: _Lines) -> FieldError:
+    return FieldError(link.via, f"Field `{link.via}` names no `{link.parent}` record of this "
+                      f"app. Pick a `{link.parent}` record of this app.")
+
+
+async def _check_line_parents(db: Any, batch: _Batch, deadline: float) -> None:
+    """Step 4a (C13). Each new parent of a line is a record of the parent
+    object of this package. One statement for each parent object, under the one
+    deadline of the batch. The org lock is held, and every record write takes
+    it first, so no parent goes before the commit."""
+    wanted = _new_parents(batch)
+    if not wanted:
+        return
+    async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        for parent_id, ids in sorted(wanted.items()):
+            found = {str(r[0]) for r in (await timed.execute(text(_LINE_PARENTS_SQL), {
+                "oid": parent_id, "pid": batch.pid, "ids": sorted(ids)})).all()}
+            for rid, (index, link) in sorted(ids.items(), key=lambda kv: kv[1][0]):
+                if rid not in found:
+                    batch.index = index
+                    raise _no_parent(link)
+
+
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     """Step 4, for one write. Only this function runs the three write statements."""
     oid = step.object_id
     held = batch.objects[oid]
     plain = held.fields if held.plan is None else list(held.plan.plain)
+    linked = _link(batch, step)
     if step.op == "create":
+        if linked is not None and isinstance(step.data, Mapping):
+            # C13: the line takes its parent from the batch, never from its data.
+            step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
@@ -2433,8 +2628,12 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
             "hot": _hot_rows(held.fields, clean)})).one()
         made = _record(row)
         batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
+        batch.made[batch.index] = made.id
         return made
     mark = _live_mark(batch, step)
+    if linked is not None and _parent_of(linked[0].via, mark.after) != linked[1]:
+        raise RecordError("A line of this save is not a line of this record. "
+                          "Change it through its own record.")
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
     if step.op == "delete":
         await db.execute(text(_DELETE_RECORD_SQL), binds)
@@ -2734,15 +2933,19 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     The caller holds the SAVEPOINT."""
     await _lock_org(db)
     await _find_rollups(db, batch)
+    await _find_lines(db, batch)
     await _lock_objects(db, batch)
+    _check_lines_fit(batch)
     await _lock_records(db, batch)
     answers: list[Record | bool] = []
     for i, step in enumerate(batch.steps):
         batch.index = i
         answers.append(await _apply_write(db, batch, step))
-    # One deadline (C1b) for every read after the writes: the aggregates and the
-    # derived writes of the roll-ups (C7b), then the key checks.
+    # One deadline (C1b) for every read after the writes: the parents of the
+    # lines (C13), the aggregates and the derived writes of the roll-ups (C7b),
+    # then the key checks.
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    await _check_line_parents(db, batch, deadline)
     await _recompute_parents(db, batch, deadline)
     await _check_keys(db, batch, _check_records(batch), deadline)
     return answers
