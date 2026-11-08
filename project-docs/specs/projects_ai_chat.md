@@ -7040,8 +7040,9 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 ## 31. Voice input and image analysis in the chat (VOX, 2026-11-08)
 
-**Status.** SPECIFIED 2026-11-08. Epic: Metorite task 2240. The owner decided
-the four calls of §31.6 on 2026-11-08. No migration.
+**Status.** VOX-1 to VOX-4 BUILT 2026-11-08, dark (§31.9). VOX-5 is not built.
+Epic: Metorite task 2240. The owner decided the four calls of §31.6 on
+2026-11-08. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
 
 ### 31.1 The request
@@ -7380,28 +7381,45 @@ edits.
   - `uv run python scripts/affected_tests.py --run`.
 
 **VOX-4 (task 2264). Set up and try the models in the operator console.**
-STANDARD.
+STANDARD, and treated as HIGH, because it spends the platform key at a vendor.
 
 - **Files:** `workbench/operator_console/src/lib/providerGuides.ts`, the Tiers
-  page (`tiers/TierBoard`, `TryDecision`), and an operator API route that
-  calls the two doors with the operator's own org.
+  page (`tiers/TierBoard`, `TrySpeech`, `TryVision`). Add two BFF routes under
+  `api/operator/catalog/`. Add two Console routes in `customer_console/main.py`.
 - **Do:**
   1. Provider cards for Sarvam (speech-to-text, the four modes) and
-     ElevenLabs Scribe (speech-to-text).
-  2. A note on the vision models that read images.
-  3. A key that does not work shows the provider's error in the Try box.
+     ElevenLabs Scribe (speech-to-text). VOX-2 wrote the Sarvam card. The
+     ElevenLabs card declares `elevenlabs/scribe_v2` with the verb
+     `atranscription`.
+  2. A note on the vision models that read images. It names
+     `gemini/gemini-3.1-flash-lite` and `anthropic/claude-haiku-5-5`.
+  3. A key that does not work shows the provider's error in the Try box. The
+     Console removes the key from that text and cuts it to 300 characters.
   4. On the Tiers page, a Try box for `tier-stt` (upload a clip, read the
-     transcript and the minutes) and for `tier-vision` (upload an image and
-     a question, read the answer). The Console meters each try to the
-     operator's org.
+     transcript and the seconds) and for `tier-vision` (upload an image and
+     a question, read the answer).
+- **How the tries are metered (the CP-13b rule, `customer_console.md`
+  §6A.14).** No platform organization exists, and `usage_event.organization_id`
+  is NOT NULL. So a try never calls the customer door and writes no
+  `usage_event` row. The route resolves the chain itself. It reads the platform
+  credential only (`organization_id IS NULL`), so a key that belongs to an org
+  is never spent. It calls the provider through `router.call_chain`. It writes
+  one `control_audit` row for each call that reached the vendor, served or
+  failed. The two routes are `POST /catalog/transcribe/try` and
+  `POST /catalog/vision/try`. Both need the `admin` role.
+- **Limits of a try.** A clip is WAV only, and it takes 10 MB and 60 seconds.
+  A clip of another type gets a 415. An image takes 4 MB (png, jpeg, gif or
+  webp, read from the first bytes). A question takes 500 characters.
 - **Done when:** an operator binds Sarvam to `tier-stt` and a vision model to
   `tier-vision`, and tries both from the Tiers page.
-- **Fence (R7):** operator console unit tests of the cards and the Try box.
+- **Fence (R7):** `tests/unit/test_customer_console_try_voice.py` (R8, the
+  routes), `workbench/operator_console/src/lib/voiceTry.test.ts` and
+  `providerGuides.test.ts`.
 
 **VOX-5 (task 2265). Prove "only when needed".** STANDARD.
 
-- **Files:** `evals/trajectories/` (beside the attachment scope trajectory).
-- **Do:** trajectory cases with an attached image.
+- **Files:** `evals/image_need/`, built on the pattern of `evals/routing/`. The trajectory folder never calls a model, so it cannot test the choice of the model.
+- **Do:** cases with an attached image.
   - No `analyze_image` call: "attach this to task X", "make a task with this
     screenshot", "email this to Priya", "put it in the Files".
   - One call: "what does this screenshot say", "read the invoice number",
@@ -7409,8 +7427,8 @@ STANDARD.
     (the description needs what the image shows).
 - **Done when:** the cases pass on the default chat tier. An eval run that
   costs over USD 0.50 waits for the owner's OK.
-- **Fence (R7):** the trajectory file runs in the eval suite. It is advisory
-  until the owner sets its schedule.
+- **Fence (R7):** `tests/unit/test_image_need_eval.py` and the `--scripted` line of
+  `skill-eval.yml`. The live run is manual and advisory until the owner sets its schedule.
 
 ### 31.6 Owner calls
 
@@ -7440,3 +7458,69 @@ VOX-3.
 - **No voice output** (text to speech).
 - **No live streaming captions in the chat.** The Console transcribes a clip
   after stop.
+
+### 31.9 What was built (2026-11-08)
+
+VOX-1, VOX-2 and VOX-3 merged on 2026-11-08. Each is dark until the owner binds
+its tier and its flag turns on.
+
+| Slice | Pull request | Squash | Switch |
+|---|---|---|---|
+| VOX-1 | https://github.com/Hathi-Labs/Metorite/pull/1965 | 2ffe78dc3 | `CHAT_VOICE_ORGS` |
+| VOX-2 | https://github.com/Hathi-Labs/Metorite/pull/1967 | 1d82796cd | A `sarvam/` binding on `tier-stt` |
+| VOX-3 | https://github.com/Hathi-Labs/Metorite/pull/1970 | e6bf9be1e | `IMAGE_ANALYSIS_ORGS` |
+
+VOX-4 adds the two operator tries, `POST /catalog/transcribe/try` and
+`POST /catalog/vision/try`. They follow CP-13b: the platform key only, one
+audit row, and no usage row (§31.5 VOX-4, `customer_console.md` §6A.14).
+
+The code is the fact. The build differs from §31.5 in these places.
+
+**VOX-1.**
+
+- The gateway takes a WAV clip only (`audio/wav`, `audio/x-wav`,
+  `audio/wave`). The slice also named webm, mp4 and ogg. The recorder writes
+  WAV, and the Console measures only WAV, so no other type has a use.
+- The gateway counts the frames that the bytes hold. It does not trust the
+  data size in the header. It refuses a clip above 120 s, and its chunk walk
+  stops at 64 chunks. So a false header cannot pass the 120 s limit.
+- `member_proven` comes from the run context that the session bound
+  (`run_attribution`, H-73). The slice named `member_proof.verify_member`.
+- The fence of `customer_console.md` §6A.10 clause 7 now lists the callers of
+  each door. `console_resolve.py` is the one caller of
+  `/v1/audio/transcriptions`. The two media doors have no caller.
+
+**VOX-2.**
+
+- A Sarvam REST call takes 30 s of audio at most. The handler cuts a clip
+  into parts of 29 s and joins the text of the parts.
+- A WAV clip bills the minutes that the Console counts from its bytes. The
+  figure of the provider never sets the bill of a WAV clip. The slice said
+  "the `wave` module", but `wave` trusts the data size in the header. So the
+  Console reads the RIFF chunks with `struct` and counts the frames that are
+  present.
+- The Console refuses a WAV clip above 600 s with 413, before any provider
+  call. It reads 64 chunks at most. It takes PCM (format tag 1) only, and it
+  refuses `WAVE_FORMAT_EXTENSIBLE` (0xFFFE).
+- `customer_console.md` §6A.10a and §6A.14 hold these rules.
+
+**VOX-3.**
+
+- The image sniffer moved from the gateway to `acb_common/image_probe.py`,
+  because `acb_skills` cannot import the gateway.
+- With `IMAGE_ANALYSIS_ORGS` off, the tool and its rule also leave the
+  injected addendum. This keeps about 370 tokens off each chat turn. The cache
+  key of the addendum holds the flag, so an org never gets the text of
+  another org.
+- A refused or failed model call gives its slot of the cap (20 an hour) back.
+- One constant, `acb_llm.routed.OUT_OF_CREDITS`, holds the credits sentence.
+  The bot reply uses it too.
+- `CORE_SCHEMA_TOTAL_CEILING` in `test_tool_schema_diet.py` is 7040.
+
+**Still open.**
+
+- The owner binds `tier-stt` (`sarvam/saaras:v3/translit` rank 1, ElevenLabs
+  Scribe v2 rank 2) and `tier-vision` in the operator console.
+- Before either flag turns on, one live clip and one live image analysis on
+  production, each with its `usage_event` row.
+- VOX-5 (task 2265).

@@ -85,6 +85,12 @@ export type ViewSheetProps = Pick<
   lenses?: readonly SheetLens[];
   /** False hides the Saved views block. My tasks has no saved views. Default true. */
   savedViews?: boolean;
+  /**
+   * OP-12 (D-OP-17): false on a desktop and a tablet. The canvases and the
+   * saved views are the tab row then (`ViewTabs`), and the sheet drops its
+   * strip and its list of views. The phone keeps both. Default true.
+   */
+  tabs?: boolean;
 };
 
 /** One door beside the tabs of the View sheet (`ViewSheetProps.lenses`). */
@@ -124,6 +130,7 @@ export function ViewSheetBody({
   onExport,
   lenses,
   savedViews = true,
+  tabs = true,
 }: ViewSheetProps) {
   const subGroupBy = lanes.subGroupBy;
   const [naming, setNaming] = useState(false);
@@ -147,7 +154,7 @@ export function ViewSheetBody({
 
   return (
     <div className="flex flex-col gap-3" data-view-sheet="">
-      {lenses && lenses.length > 0 ? (
+      {!tabs ? null : lenses && lenses.length > 0 ? (
         <div className="flex flex-wrap items-center gap-1" data-sheet-lenses="">
           <ModeSwitch modes={modes} mode={mode} layout="toolbar" onPick={onMode} />
           {lenses.map((lens) => (
@@ -281,9 +288,11 @@ export function ViewSheetBody({
 
       {savedViews ? (
       <div className="flex flex-col gap-1.5 border-t border-border pt-3">
-        <span className="text-[11px] font-medium text-muted-foreground">Saved views</span>
+        {tabs ? (
+          <span className="text-[11px] font-medium text-muted-foreground">Saved views</span>
+        ) : null}
         <div className="flex flex-wrap items-center gap-1">
-          {views.map((view) => (
+          {(tabs ? views : []).map((view) => (
             <span key={view.id} className="inline-flex items-center">
               <Button
                 variant="ghost"
@@ -407,7 +416,7 @@ export function ViewSheet(props: ViewSheetProps & { phone: boolean }) {
   const { phone, ...rest } = props;
   return (
     <SheetButton label="View" title="View" icon="SlidersHorizontal" phone={phone}>
-      {() => <ViewSheetBody {...rest} />}
+      {() => <ViewSheetBody {...rest} tabs={phone} />}
     </SheetButton>
   );
 }

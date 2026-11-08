@@ -10401,6 +10401,35 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
 - `METERING_EXEMPTION` and `_CAPABILITY_GATED_ROUTES` did not change. The
   route reaches no credit write, and a deployment key meets 401 on it.
 
+**VOX-4 (2026-11-08): two more tries, by the same rule.** Spec:
+`projects_ai_chat.md` §31.5.
+
+- **The routes are `POST /catalog/transcribe/try` and `POST /catalog/vision/try`.**
+  Both take a multipart `file`. The vision route also takes a `question` of up
+  to 500 characters. Neither takes a tier. They try `tier-stt` on task
+  `transcribe` and `tier-vision` on task `vision`.
+- **The metering rule is the one above.** The platform key only, a call
+  through `router.call_chain`, and no `usage_event` row. One `control_audit`
+  row for each call that reached the vendor, with the action
+  `catalog.transcribe_try` or `catalog.vision_try`. The outcome is `served`,
+  `upstream_failed` or `unreadable`. `_audit_try` writes it, and it never raises.
+- **The speech route uses the door's helpers.** `_transcribe_attempts` picks the
+  steps. `_transcribe_kwargs` builds the call. `wav.py` measures a WAV clip
+  from its bytes, so a WAV clip answers the length that the Console measured.
+  A try takes 10 MB and 60 seconds. A try takes WAV only, and a clip that is
+  not WAV gets a 415 before the chain resolves.
+- **The vision route sends one chat call with one image part.** The door serves
+  `vision` with the chat verb. The route reads the format from the first
+  bytes (`image_sniff.py`) and decodes no pixel. It takes 4 MB. The system text
+  is the text of `analyze_image` in VOX-3.
+- **A vendor failure shows the vendor's words.** The door never echoes them.
+  A try does, because the operator needs them to fix a key. The Console removes
+  every credential it read and any text shaped like a key, and it cuts the text
+  to 300 characters. The status still goes through `_upstream_refusal`.
+- **The `MATRIX` rows are `admin`, with no elevation window.** `_PROBES` in
+  `test_operator_roles.py` and `NOT_COMMERCIAL` in `test_customer_console_catalog.py`
+  gained both routes. The suite is `test_customer_console_try_voice.py`.
+
 #### CP-13c · The tenant client
 
 The tenant gateway reaches the Router for chat only today. A search for
