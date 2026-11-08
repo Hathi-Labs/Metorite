@@ -70,7 +70,8 @@ def test_the_local_gate_runs_before_the_merge():
 def test_no_dispatch_follows_a_merge():
     land = _flat(_land())
     assert "Do not dispatch `deploy.yml` after a merge" in land
-    assert "reaches production at tonight's release" in land
+    # CIV-21 (D194): three release slots a day, so the next slot, not tonight.
+    assert "reaches production at the next release slot" in land
 
 
 def test_the_spec_names_what_the_pc_cannot_test():
