@@ -147,6 +147,8 @@ class TestTheToolRecords:
              "updated_at": "u", "due_at": None, "assignees": ["x"]},
             {"p": {"s": "To do"}})
         assert tuple(row) == tools.COMPACT_TASK_KEYS
+        # MCP-G19c adds three keys. `tests/unit/test_mcp_g19c_r8.py` holds them.
+        assert tools.COMPACT_TASK_KEYS[-3:] == ("type", "tags", "created_at")
         assert row["status_category"] == "todo"
         assert row["status_name"] == {"untrusted_text": "To do"}
 
