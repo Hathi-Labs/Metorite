@@ -8926,6 +8926,8 @@ synced board shows the subtasks that Hidden folded away.
 
 **The bottom line.** Projects runs five work styles as presets over one set of blocks. A cycle is a time box that people and agents share. A cycle is sized by the review hours of named people and by credits. A Goal sits above the epic, and one engine in `project_planning.md` computes the order of work.
 
+**Rule D binds §13 too.** A step in this section that sorts, ranks, selects or classifies follows §14.1 rule 8: the decision tier, never a JSON prompt on an LLM tier.
+
 ### 13.1 The work-style catalogue (WM-0, task 979)
 
 A **block** is a part that a project can show or hide. Examples are WIP limits, the Backlog canvas, cycles, a cooldown, milestones, baselines, a hill chart and priority scores. A **style** is a named set of blocks with defaults. No style adds a table of its own. The slices of the epic WM (task 977) build the blocks. This section only names them.
@@ -9229,6 +9231,11 @@ The research for cycles of agent teams is in §2 and §12 of `project-docs/resea
 5. **Text from outside is untrusted.** This covers intake text, mail, a form answer and a linked page. A suggester or a drafter gets no tools. An instruction inside the text is content, never an order.
 6. **A row with a vague task states its narrowest first slice.** The row says "First slice". The first slice ships and the rest stays on the task.
 7. **Anchors.** Verify each file path and line number at dispatch. A line number in a task may be stale.
+8. **Rule D: a choice runs on the decision tier.** A step that sorts, ranks, selects or classifies uses `acb_llm.decide` through `gateway/decide_features.py`. It does not use a JSON prompt on an LLM tier. Owner rule, 2026-11-01. Register a `projects.<step>` feature with the modes off, shadow and on. A step with more than 16 questions splits into parallel chunks. The step has a fallback that works with no model. An LLM tier writes prose that a person reads, or makes a real judgement. Code computes any value that has a rule. Each row names its question type (Boolean, Choice or Score), or says "code" or "LLM". Fence: `tests/unit/test_projects_ai_uses_decide.py` (task 2308). The seam work is DEC-1 (task 2306), and the moves of six existing picks are DEC-2 (task 2307). Until it lands, the rule is advisory.
+   - LP-1: health has a rule, so code computes it from the roll-up and the engine's finish against the due date. The lead can change it. The update text is LLM.
+   - LP-2: Choice questions pick the project, the assignee and the type. A Boolean question per candidate judges a tag or a duplicate. Code ranks the assignees first.
+   - LP-4: a Choice question picks the customer record from the candidates that the reader may open.
+   - SP-3, the next slice and the risk tier of SP-8: code. No model.
 
 ### 14.2 The slice table
 
