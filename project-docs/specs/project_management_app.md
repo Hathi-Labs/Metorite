@@ -9295,7 +9295,7 @@ Each question is for the owner. The owner answered both on 2026-11-08, and `work
 | B. All named approvers must approve | Plane's multi-level flow. It is slower, and the research did not verify it. |
 | C. Do not build approvals | The WM-2 gates become a plain checklist with no enforcement. |
 
-**Blocks.** Option A or B unblocks LP-7 and the phase gates of WM-2 (task 981). Until the answer, WM-2 builds milestones only. The quote, buying and publish sign-offs also wait.
+**Blocks.** Nothing now. Option A (D197) unblocks LP-7 and the phase gates of WM-2 (task 981). The quote, buying and publish sign-offs can use the same gate.
 
 **Question 2: the public intake form (D-PM-14, LP-8, task 995).** D-PM-14 defers public read-only boards (§8). A public form is a different case. An anonymous person would write into a tenant. The research in `plane_pm_research_2026-08.md` §6 Q1 names the risks of a public read.
 
@@ -9307,7 +9307,7 @@ Each question is for the owner. The owner answered both on 2026-11-08, and `work
 | B. A public form with a capability URL | An anonymous write route, a limit per sender, a kill switch per form and an injection fence. The gateway has no such route today. Identity and outside parties apply (CLAUDE.md §3a rule 3). |
 | C. Never | Record the refusal as a decision. |
 
-**Blocks.** Only option B blocks anything: the public half of LP-8. Option A needs no answer to build the rest of LP-8.
+**Blocks.** Nothing. Option A (D197) keeps intake for members only, so LP-8 builds the internal form and the intake address with no anonymous write route.
 
 ### 14.6 What we refuse, and why
 
