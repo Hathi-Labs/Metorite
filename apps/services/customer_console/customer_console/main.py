@@ -157,6 +157,7 @@ from customer_console.handlers import (
     TranscribePayload,
     native_requires_wav,
 )
+from customer_console.image_sniff import sniff_image
 from customer_console.keys import (
     ENV_DISCOUNT,
     is_discount_code,
@@ -187,7 +188,6 @@ from customer_console.router import (
     usage_from_response,
 )
 from customer_console.seats import CORE_PLAN_SLUG, decide_assignment, seat_counts
-from customer_console.image_sniff import sniff_image
 from customer_console.wav import wav_seconds
 
 _log = logging.getLogger("platform.router")
