@@ -97,6 +97,10 @@ _TABLES = ("pm_templates", "pm_template_applies")
 
 #: Every bound on a wait. Broken code goes red and never hangs.
 _WAIT = 120
+#: How long the probe of the counter lock waits for a task create. The
+#: create takes well under a second. With the old code it waits for the
+#: apply, which the test holds open until this ends.
+_PROBE = 30
 
 #: The three routes of TPL-1a, as the router mounts them.
 ROUTES = {
@@ -882,34 +886,62 @@ class TestTheTemplateStoreOnARealDatabase:
 
     # ── The counter lock (review P1-b) ──────────────────────────────────
 
-    async def test_a_task_create_in_the_space_does_not_wait_for_an_apply(self, w):
+    async def test_a_task_create_in_the_space_does_not_wait_for_an_apply(self, w, monkeypatch):
         """The apply reserves its numbers in a short transaction of its own.
         A task create of another member in the same space finishes while the
-        long apply still runs. Before the repair it waited for the whole
-        apply (48.7 s in the review)."""
-        loop = asyncio.get_running_loop()
+        apply still holds its main transaction open. Before the repair it
+        waited for the whole apply (48.7 s in the review).
+
+        The test holds the apply at a known point: after its tasks are made,
+        before its commit. With the old code the counter row is locked there,
+        so the create waits. A timer decided this before, and a fast runner
+        ended the apply before the probe (CI shard 5)."""
+        reached = asyncio.Event()
+        release = asyncio.Event()
+        real = templates._apply_tasks
+
+        async def held(*args: Any, **kwargs: Any) -> Any:
+            made = await real(*args, **kwargs)
+            reached.set()
+            await release.wait()
+            return made
+
+        monkeypatch.setattr(templates, "_apply_tasks", held)
+        count = 20
         async with _session(w.p) as call:
             tag = _tag()
             space = await _space(call, w.u_alice, f"Busy {tag}")
             here = await _project(call, w.u_alice, space, f"Busy work {tag}")
             await _make_task(call, w.u_alice, {"project_id": here, "title": "The first"})
-            tid = _store(w.p, w.p.org_a, w.alice, f"Long {tag}",
-                         _payload(_flat(templates.MAX_TASKS)))
+            tid = _store(w.p, w.p.org_a, w.alice, f"Long {tag}", _payload(_flat(count)))
             applying = asyncio.ensure_future(_apply(call, w.u_alice, tid, space, f"long-{tag}"))
-            await asyncio.sleep(2.0)
-            assert not applying.done(), "the apply ended too soon to probe; make it longer"
-            started = loop.time()
-            await _make_task(call, w.u_bob, {"project_id": here, "title": "Meanwhile"})
-            took = loop.time() - started
-            waited_for_it = applying.done()
-            made = await applying
+            creating = None
+            try:
+                at_hold = asyncio.ensure_future(reached.wait())
+                await asyncio.wait({at_hold, applying}, timeout=_WAIT,
+                                   return_when=asyncio.FIRST_COMPLETED)
+                at_hold.cancel()
+                assert reached.is_set(), (
+                    applying.result().text if applying.done() else "the apply never made its tasks")
+                creating = asyncio.ensure_future(
+                    _make_task(call, w.u_bob, {"project_id": here, "title": "Meanwhile"}))
+                await asyncio.wait({creating}, timeout=_PROBE)
+                finished_first = creating.done()
+            finally:
+                release.set()
+                left = [f for f in (applying, creating) if f is not None and not f.done()]
+                if left:
+                    await asyncio.wait(left, timeout=_WAIT)
+            assert finished_first, (
+                f"the create waited more than {_PROBE} s for the open transaction of the apply")
+            creating.result()
+            made = applying.result()
             assert made.status_code == 201, made.text
-            assert made.json()["created"]["tasks"] == templates.MAX_TASKS
-            assert not waited_for_it, f"the create waited {took:.1f} s for the apply"
+            assert made.json()["created"]["tasks"] == count
             numbers = [r.task_number for r in _all(
                 w.p, "SELECT task_number FROM pm_tasks WHERE root_project_id = CAST(:s AS uuid)",
                 s=space)]
-            assert len(numbers) == len(set(numbers)) == templates.MAX_TASKS + 2
+            assert len(numbers) == len(set(numbers)) == count + 2
 
     # ── Two applies of one moment (review P2-b) ─────────────────────────
 
