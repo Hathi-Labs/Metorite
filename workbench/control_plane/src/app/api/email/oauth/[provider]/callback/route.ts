@@ -56,8 +56,10 @@
  *
  * NOTE ON ROUTING: `src/app/api/email/[...path]/route.ts` also matches this URL.
  * Next resolves a static segment ahead of a catch-all, so this file wins. That
- * matters: the catch-all fetches with the default `redirect: "follow"`, and it
- * would return the JSON of the callback page fetch instead of a redirect.
+ * matters: the catch-all is not built to pass the gateway's 302 on as a
+ * redirect. Since H-280, `gatewayFetch` never follows a redirect by default
+ * (its rule 11). Before that, the catch-all followed it and returned the
+ * JSON of the callback page fetch instead of a redirect.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";

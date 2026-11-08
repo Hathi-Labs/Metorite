@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -45,20 +46,24 @@ _GATEWAY = _ROOT / "apps/services/gateway/gateway"
 #: Every module that registers a kind at import, as ``main.py`` imports them.
 _MODULES = ("gateway.jobs.worker", "gateway.brief.run", "gateway.brief.monitor",
             "gateway.chat_summary_job", "gateway.align.check",
-            "gateway.kb_entities.graph")
+            "gateway.kb_entities.graph", "gateway.jobs.headless_turn")
 
 #: The ONLY gateway modules that the brief may import (an allowlist, so a new
 #: send seam is refused until someone adds it here on purpose). ``reach.loop``
 #: serves the reads ``resolve`` and ``snapshot``, and its senders stay out
 #: (:data:`_ALLOWED_NAMES`). ``routes.shell.feed``, ``.state`` and ``.handled`` (BR-2b-1) are reads.
+#: ``reach.outbox`` serves the read ``sent_rows`` of the acts (BR-7b-2), and
+#: its writers stay out.
 _ALLOWED = ("gateway.brief", "gateway.jobs", "gateway.reach.plan", "gateway.reach.loop",
+            "gateway.reach.outbox",
             "gateway.my_day_loop", "gateway.routes.shell.feed", "gateway.routes.shell.state",
             "gateway.routes.shell.handled",
             "gateway.work_schedule", "gateway.db")
 #: The names that the brief may take from a module of :data:`_ALLOWED` that
 #: also holds a sender.
 _ALLOWED_NAMES: dict[str, frozenset[str]] = {
-    "gateway.reach.loop": frozenset({"resolve", "snapshot", "Snapshot"})}
+    "gateway.reach.loop": frozenset({"resolve", "snapshot", "Snapshot"}),
+    "gateway.reach.outbox": frozenset({"sent_rows", "SentRow"})}
 #: ``from gateway.reach import <name>``: only these modules.
 _PACKAGE_NAMES: dict[str, frozenset[str]] = {
     "gateway.reach": frozenset({"plan", "loop"}),
@@ -98,26 +103,102 @@ def unlabelled_calls(source: str) -> list[int]:
     return lines
 
 
-def forbidden_imports(source: str, package: str = "gateway.brief") -> list[str]:
-    """The imports of *source* that are not on the allowlist. A relative
-    import resolves against *package*. Pure."""
-    found: list[str] = []
+#: The packages outside ``gateway`` that hold a send seam or a write to a
+#: source system. The brief imports none of them (§8 item 1). Fence 3 used
+#: to read ``gateway.*`` only, so these were open.
+_FOREIGN_DENIED = ("whatsapp_ingestion", "whatsapp_bridge", "email_ingestion", "ingestion",
+                   "action_broker", "meeting_bot", "agent_edge", "web_worker", "reconciler",
+                   "customer_console")
+#: The words that name a send seam in any module path, foreign or not.
+_SEND_WORDS = ("whatsapp", "smtp", "sender", "send_")
+#: A foreign package of which the brief takes only these modules. ``acb_audit``
+#: holds a writer (``record``), ``orchestrator`` runs agents, and
+#: ``acb_skills`` holds the tools that act.
+_FOREIGN_NARROW: dict[str, tuple[str, ...]] = {
+    "acb_audit": ("acb_audit.read",),
+    "orchestrator": ("orchestrator.in_app_path",),
+    "acb_skills": ("acb_skills.untrusted",),
+}
+
+
+def import_targets(source: str, package: str = "gateway.brief",
+                   ) -> list[tuple[str, str | None, str | None]]:
+    """Each import of *source* as ``(module, name, alias)``. A plain
+    ``import a.b`` gives ``("a.b", None, alias)``. A relative import
+    resolves against *package*. Each name of a parenthesised list is its own
+    entry. Pure."""
+    out: list[tuple[str, str | None, str | None]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
-            found += [a.name for a in node.names
-                      if a.name.split(".")[0] == "gateway" and not _ok(a.name, None)]
+            out += [(a.name, None, a.asname) for a in node.names]
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if node.level:
                 parts = package.split(".")[: len(package.split(".")) - node.level + 1]
                 module = ".".join(parts + ([module] if module else []))
-            if module.split(".")[0] != "gateway":
-                continue
-            names = [a.name for a in node.names]
-            if module in _PACKAGE_NAMES:
-                found += [f"{module}.{n}" for n in names if n not in _PACKAGE_NAMES[module]]
-            else:
-                found += [f"{module}.{n}" for n in names if not _ok(module, n)]
+            out += [(module, a.name, a.asname) for a in node.names]
+    return out
+
+
+def _foreign_ok(module: str, name: str | None) -> bool:
+    """True when the brief may take *name* from the non-gateway *module*."""
+    full = f"{module}.{name}" if name else module
+    top = module.split(".")[0]
+    if any(w in full.lower() for w in _SEND_WORDS):
+        return False
+    if top in _FOREIGN_DENIED:
+        return False
+    narrow = _FOREIGN_NARROW.get(top)
+    if narrow is None:
+        return True
+    return any(full == n or full.startswith(n + ".") or module == n
+               or module.startswith(n + ".") for n in narrow)
+
+
+def dynamic_imports(source: str) -> list[str]:
+    """Each call in *source* that imports by a string at run time, whatever
+    its argument: ``__import__(...)``, ``<any>.__import__(...)``,
+    ``<any>.import_module(...)``, and a name that a ``from importlib import
+    import_module [as x]`` bound. The AST fence cannot read the string, so
+    the brief may hold no such call at all. Pure."""
+    bound = {"__import__"}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "importlib":
+            bound |= {a.asname or a.name for a in node.names
+                      if a.name in ("import_module", "__import__")}
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if isinstance(fn, ast.Name) and fn.id in bound:
+            found.append(f"dynamic import: {fn.id}() at line {node.lineno}")
+        elif isinstance(fn, ast.Attribute) and fn.attr in ("import_module", "__import__"):
+            found.append(f"dynamic import: .{fn.attr}() at line {node.lineno}")
+    return found
+
+
+def forbidden_imports(source: str, package: str = "gateway.brief") -> list[str]:
+    """The imports of *source* that are not on the allowlist: a gateway
+    module off :data:`_ALLOWED`, a name off :data:`_ALLOWED_NAMES` or an
+    alias of one, and a foreign send package (:func:`_foreign_ok`). Pure."""
+    found: list[str] = dynamic_imports(source)
+    for module, name, alias in import_targets(source, package):
+        full = f"{module}.{name}" if name else module
+        if module.split(".")[0] != "gateway":
+            if not _foreign_ok(module, name):
+                found.append(full)
+            continue
+        if any(w in full.lower() for w in _SEND_WORDS):
+            found.append(full)
+        elif name is None:
+            if not _ok(module, None):
+                found.append(full)
+        elif module in _PACKAGE_NAMES:
+            if name not in _PACKAGE_NAMES[module]:
+                found.append(full)
+        elif not _ok(module, name) or (alias and module in _ALLOWED_NAMES):
+            found.append(full)
     return found
 
 
@@ -125,14 +206,18 @@ def _ok(module: str, name: str | None) -> bool:
     if not any(module == a or module.startswith(a + ".") for a in _ALLOWED):
         return False
     allowed = _ALLOWED_NAMES.get(module)
-    return allowed is None or name is None or name in allowed
+    # A module that also holds a sender gives its named reads only: a bare
+    # ``import`` of it would reach the senders too (BR-7b-2).
+    return allowed is None or (name is not None and name in allowed)
 
 
 def _registry() -> dict[str, tuple[str | None, str | None]]:
     code = ("import json\n" + "".join(f"import {m}\n" for m in _MODULES)
             + "from gateway.jobs import worker\nprint(json.dumps(worker.effects()))\n")
+    # JOB_QUEUE on: a kind that registers only with the queue on (``auto.turn``)
+    # must show in the registry too, or this fence cannot see it.
     done = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True,
-                          check=True, cwd=_ROOT, env=None)
+                          check=True, cwd=_ROOT, env={**os.environ, "JOB_QUEUE": "1"})
     return {k: tuple(v) for k, v in json.loads(done.stdout.splitlines()[-1]).items()}
 
 
@@ -141,7 +226,7 @@ def _registry() -> dict[str, tuple[str | None, str | None]]:
 
 def test_every_registered_kind_states_its_effect_and_its_policy() -> None:
     effects = _registry()
-    assert {"brief.plan", "brief.run", "brief.slo", "jobs.prune"} <= set(effects)
+    assert {"brief.plan", "brief.run", "brief.slo", "jobs.prune", "auto.turn"} <= set(effects)
     assert violations(effects) == []
 
 
@@ -223,6 +308,45 @@ def test_the_fences_see_a_planted_violation() -> None:
     assert forbidden_imports("from ..reach.loop import member_pass") != []
     assert forbidden_imports("from gateway.reach import plan") == []
     assert forbidden_imports("from gateway.reach.loop import resolve, snapshot") == []
+    assert forbidden_imports("from gateway.reach.outbox import sent_rows") == []
+    assert forbidden_imports("from gateway.reach.outbox import plan") == [
+        "gateway.reach.outbox.plan"]
+    assert forbidden_imports("from gateway.reach import outbox") == ["gateway.reach.outbox"]
+    assert forbidden_imports("import gateway.reach.outbox") == ["gateway.reach.outbox"]
+    # BR-7b-2 repair: a foreign send package, an alias, and a parenthesised list.
+    assert forbidden_imports("from gateway.reach.outbox import sent_rows as s") == [
+        "gateway.reach.outbox.sent_rows"]
+    assert forbidden_imports("from gateway.reach.outbox import (sent_rows, plan)") == [
+        "gateway.reach.outbox.plan"]
+    assert forbidden_imports("from gateway.reach.outbox import (\n    sent_rows,\n    finish,\n)") == [
+        "gateway.reach.outbox.finish"]
+    assert forbidden_imports("from whatsapp_ingestion.providers.cloud_api import X") == [
+        "whatsapp_ingestion.providers.cloud_api.X"]
+    assert forbidden_imports("import whatsapp_ingestion") == ["whatsapp_ingestion"]
+    assert forbidden_imports("import whatsapp_ingestion.providers as p") == [
+        "whatsapp_ingestion.providers"]
+    assert forbidden_imports("from whatsapp_bridge import client") == ["whatsapp_bridge.client"]
+    assert forbidden_imports("from email_ingestion.providers.gmail import GmailProvider") != []
+    assert forbidden_imports("from action_broker.broker import execute") != []
+    assert forbidden_imports("from acb_audit import record") == ["acb_audit.record"]
+    assert forbidden_imports("from orchestrator.executor import run_agent") != []
+    assert forbidden_imports("from acb_skills.integrations import build_integrations") != []
+    assert forbidden_imports("from somepkg.whatsapp_send import go") != []
+    assert forbidden_imports("from acb_audit import read") == []
+    assert forbidden_imports("from acb_audit import read as audit_read") == []
+    assert forbidden_imports("from orchestrator.in_app_path import is_in_app_path") == []
+    assert forbidden_imports("from acb_skills.untrusted import UntrustedFrame") == []
+    assert forbidden_imports("from acb_llm import routed") == []
+    # A dynamic import by string is refused whatever its argument.
+    for plant in ("__import__('whatsapp_ingestion.providers.cloud_api')",
+                  "import importlib\nimportlib.import_module('gateway.reach.outbox')",
+                  "__import__('gateway.reach.outbox', fromlist=['finish'])",
+                  "from importlib import import_module as im\nim('x')",
+                  "from importlib import import_module\nimport_module('x')",
+                  "import importlib as il\nil.import_module('x')",
+                  "import builtins\nbuiltins.__import__('x')"):
+        assert any(f.startswith("dynamic import") for f in forbidden_imports(plant)), plant
+    assert dynamic_imports("import_module = 1\nx = len('a')") == []
     assert forbidden_imports("from . import store\nfrom ..jobs import queue") == []
     assert unlabelled_calls("w.register('a.b', h)") == [1]
     assert unlabelled_calls("register('a.b', h, effect=None)") == [1]

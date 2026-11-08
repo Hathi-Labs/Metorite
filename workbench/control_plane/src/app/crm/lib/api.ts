@@ -43,6 +43,7 @@ import type {
 } from "./questions";
 import type { BusinessRule, MyChoice, RuleScope, RulesBody } from "./rules";
 import { CHANGE_PAGE_SIZE, type ChangeList } from "./changeHistory";
+import type { PipelinePlan } from "./newPipeline";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
 import type {
@@ -324,6 +325,36 @@ export function listPipelines(): Promise<DealPipeline[] | null> {
 }
 
 /**
+ * What a new deal pipeline would hold, in order (WS-CRM CRM-M3a). It reads
+ * only. The gateway answers each refusal of the create here too, so the
+ * dialog shows it before the member presses Create. Admin only, and 404 for
+ * an org off `CRM_PIPELINES_ORGS`.
+ */
+export function previewPipeline(body: Record<string, unknown>): Promise<PipelinePlan> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined || value === null) continue;
+    // The stages go as one JSON value, the shape of the body of a create.
+    query.set(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+  return call<PipelinePlan>(`/pipelines/preview?${query.toString()}`);
+}
+
+/**
+ * Create a deal pipeline (WS-CRM CRM-M3a). Native mode only: Mirror mode is
+ * 409. It wakes every CRM read, `usePipelines` too, so the Deals board shows
+ * the pipeline switcher when the org has two pipelines.
+ */
+export function createPipeline(body: Record<string, unknown>): Promise<DealPipeline> {
+  return writeAndWake(() =>
+    call<DealPipeline>("/pipelines", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/**
  * The one place a deal changes lane. `board.moveRequest` decides the shape and
  * this issues it — the drag and the status pill therefore send the same
  * request by construction rather than by two functions agreeing.
@@ -597,6 +628,11 @@ export type CrmModeBody = {
    * then does the cutover card read the status of the switch.
    */
   cutover_done?: boolean;
+  /**
+   * CRM-M3a: true when `CRM_PIPELINES_ORGS` lets an admin of this Native CRM
+   * create a pipeline. Each other CRM leaves it out.
+   */
+  pipeline_create?: boolean;
 };
 
 /**

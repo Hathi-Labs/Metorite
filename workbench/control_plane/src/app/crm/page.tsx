@@ -150,6 +150,7 @@ import {
   useFieldDefs,
   useFieldLayout,
   useOwners,
+  usePipelineCreate,
   usePipelines,
   useSyncStatus,
 } from "./lib/useCrmMode";
@@ -226,6 +227,8 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   // The deal pipelines (CRM-Q3). Null until read, and null when the gateway
   // has no pipelines route: then there is one implicit pipeline and no picker.
   const { pipelines, loading: pipelinesLoading } = usePipelines(true);
+  // CRM-M3a: "New pipeline" for an admin of a Native CRM on the flag.
+  const pipelineCreate = usePipelineCreate(ctx.isAdmin && ctx.mode === "native");
   const [remembered, setRemembered] = useState<string | null>(() => readRemembered());
   /** The pipeline a request filters by, or null for "no filter". */
   const pipelineId = resolvePipeline(pipelines, view.pipelineId, remembered);
@@ -1145,6 +1148,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               pipelines={pipelines}
               pipelineId={pipelineId}
               showAdminCards={ctx.isAdmin}
+              pipelineCreate={ctx.isAdmin && pipelineCreate}
               dealStatuses={store.dealStatuses}
               leadStatuses={store.leadStatuses}
               lostReasons={store.lostReasons}

@@ -112,6 +112,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "field *": { label: "Field" },
   "field_type": { label: "Field type", kind: "words" },
   "file": { label: "File" },
+  // IMG-2: the files that `create_task` attaches, with their sizes.
+  "files": { label: "Files" },
   "filters": { label: "Filters" },
   "first due": { label: "First due" },
   "flexible": { label: "Flexible", kind: "flag" },
@@ -165,6 +167,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "place": { label: "Place" },
   "people on the list now": { label: "On the list now" },
   "person": { label: "Person" },
+  // WS-CRM CRM-M3a: the card of `crm_create_pipeline`.
+  "pipeline": { label: "Pipeline" },
   "position": { label: "Position" },
   "priority": { label: "Priority" },
   "project": { label: "Project", kind: "project" },
@@ -189,8 +193,12 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "source N": { label: "Source", kind: "task" },
   "source_ref": { label: "Reference" },
   "stage": { label: "Stage" },
+  // WS-CRM CRM-M3a: each stage of a new pipeline, in order.
+  "stage N": { label: "Stage", plural: "Stages" },
   "start": { label: "Start", kind: "date" },
   "start_date": { label: "Start", kind: "date" },
+  // WS-CRM CRM-M3a: where a new pipeline starts, "new" or "a copy of X".
+  "starts from": { label: "Starts from" },
   "status": { label: "Status", kind: "status" },
   "status set": { label: "Status set", kind: "project" },
   "status_category": { label: "Status category", kind: "category" },

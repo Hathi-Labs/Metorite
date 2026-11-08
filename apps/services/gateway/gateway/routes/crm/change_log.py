@@ -49,13 +49,14 @@ request.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException, Query
+from acb_auth import UserContext, get_current_user, require_internal_auth
+from fastapi import Depends, HTTPException, Query, Request
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.core import (
     MAX_PAGE_SIZE,
@@ -69,6 +70,7 @@ from gateway.routes.crm.core import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 #: Through what a change came. CRM-M1 writes ``ui``, and the confirm of a
 #: business rule writes ``chat`` or ``whatsapp``. The CHECK of migration 341
@@ -77,6 +79,14 @@ VIA_UI = "ui"
 VIA_CHAT = "chat"
 VIA_WHATSAPP = "whatsapp"
 VIAS: tuple[str, ...] = (VIA_UI, VIA_CHAT, VIA_WHATSAPP, "ai_proposal", "system")
+
+#: The header in which an in-product agent names itself (``chat:crm-assistant``).
+#: The Projects skill sends the same header (``routes/projects/core.ACTOR_VIA``).
+ACTOR_VIA_HEADER = "X-Actor-Via"
+
+#: A chat stamp: ``chat:`` and an agent name. An ``mcp:`` stamp is an outside
+#: agent (branch 0 of ``acb_auth.deps``), and it never reads as ``chat``.
+_CHAT_STAMP = re.compile(r"^chat:[a-z0-9][a-z0-9_.-]{0,58}$")
 
 #: The trust ladder (D164, ``crm_conversational.md`` §4).
 OWN = "own"
@@ -210,6 +220,39 @@ def _email(value: str | None) -> str | None:
     return folded or None
 
 
+async def via_of(request: Request) -> str:
+    """``chat`` when an in-product agent made this request, else ``ui``.
+
+    The server decides it, and the body never does (WS-CRM CRM-M3a). Two
+    facts must both hold:
+
+    1. The request sends ONE ``X-Actor-Via`` header with a ``chat:`` stamp.
+       The CRM assistant sends ``chat:crm-assistant`` on each call.
+    2. Its ``Authorization`` is the internal bearer. Only an in-platform
+       caller holds it: the agent runtime and the BFF. The BFF builds its
+       upstream headers from ``gatewayHeaders()`` alone and forwards no
+       header of the browser (``app/api/crm/[...path]/route.ts``). So a
+       browser cannot put the stamp on a request that reaches the gateway.
+
+    Each other request is ``ui``: no stamp, two stamps, a stamp of another
+    shape, or a stamp with no internal bearer. A box with no internal token
+    is a dev box, where ``get_current_user`` trusts a bare ``X-User-Email``
+    too, so this check is never weaker than the identity of the row.
+    Fence: ``tests/unit/test_crm_pipelines_native.py``.
+    """
+    stamps = request.headers.getlist(ACTOR_VIA_HEADER)
+    if len(stamps) != 1 or not _CHAT_STAMP.fullmatch(stamps[0].strip().lower()):
+        return VIA_UI
+    authorization = request.headers.get("authorization") or ""
+    if not authorization.startswith("Bearer ") or not authorization[7:].strip():
+        return VIA_UI
+    try:
+        await require_internal_auth(authorization)
+    except HTTPException:
+        return VIA_UI
+    return VIA_CHAT
+
+
 #: The mode of the bound org. The text of ``core.is_mirror_mode``.
 _MODE_SQL = (
     "SELECT mode FROM crm_settings WHERE organization_id = CAST(:organization_id AS uuid)"
@@ -320,6 +363,26 @@ async def log_change(
         if marked is None:
             raise _refuse(409, "already_undone", "This change is undone already.")
     return new_id
+
+
+#: The newest row of one thing, area and action that no Undo reached yet.
+_OPEN_CHANGE_SQL = (
+    "SELECT id FROM crm_change_log WHERE organization_id = CAST(:organization_id AS uuid) "
+    "AND area = :area AND action = :action AND entity_id = :entity_id "
+    "AND undone_by IS NULL AND undoes_id IS NULL ORDER BY at DESC, id DESC LIMIT 1"
+)
+
+
+async def open_change(db: Any, area: str, action: str, entity_id: str) -> str | None:
+    """The id of the newest row of *entity_id* in *area* with *action* that
+    no Undo reached, or None. A change that removes the thing of that row
+    passes it as ``undoes``, so the row offers no Undo of a thing that is
+    gone (CRM-M3a: the Undo of a pipeline removes the stages it made)."""
+    row = (await db.execute(text(_OPEN_CHANGE_SQL), {
+        "organization_id": _bound_org(), "area": area, "action": action,
+        "entity_id": entity_id,
+    })).first()
+    return str(row.id) if row is not None else None
 
 
 # ── Refusals ────────────────────────────────────────────────────────────────
@@ -553,6 +616,29 @@ async def list_changes(
 
 # ── Undo ────────────────────────────────────────────────────────────────────
 
+#: A deadlock (40P01), or a lock that was not free (55P03). Another write
+#: held the same rows at the same moment.
+_LOCK_STATES = frozenset({"40P01", "55P03"})
+
+#: The words of an Undo that met another write: what happened, and what next.
+UNDO_CONFLICT = (
+    "Someone changed this at the same moment. Nothing was undone. Try Undo again."
+)
+
+
+def _sqlstates(exc: BaseException) -> set[str]:
+    """The SQLSTATE codes along the chain of *exc*, from the fields of the
+    driver, never the message text."""
+    codes: set[str] = set()
+    seen: BaseException | None = exc
+    while seen is not None:
+        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
+        if isinstance(code, str):
+            codes.add(code)
+        seen = getattr(seen, "orig", None) or seen.__cause__
+    return codes
+
+
 _LOAD_SQL = f"SELECT {_COLUMNS} FROM crm_change_log WHERE id = CAST(:id AS uuid) AND "
 
 
@@ -588,12 +674,18 @@ async def undo_change(
             raise _refuse(409, "not_reversible", "This change cannot be undone.")
         if str(row.area) in ADMIN_AREAS and not admin:
             raise _refuse(403, "admin_only", "Only a CRM admin can undo this change.")
-        after_commit = await handler(db, user, Logged(
-            id=str(row.id), area=str(row.area), action=str(row.action),
-            entity_id=row.entity_id, before=from_jsonb(row.before),
-            after=from_jsonb(row.after), mode=row.mode,
-            actor_email=str(row.actor_email), private_to=row.private_to,
-        ))
+        try:
+            after_commit = await handler(db, user, Logged(
+                id=str(row.id), area=str(row.area), action=str(row.action),
+                entity_id=row.entity_id, before=from_jsonb(row.before),
+                after=from_jsonb(row.after), mode=row.mode,
+                actor_email=str(row.actor_email), private_to=row.private_to,
+            ))
+        except DBAPIError as exc:
+            if not _LOCK_STATES & _sqlstates(exc):
+                raise
+            # Postgres rolled the transaction back, so nothing was undone.
+            raise _refuse(409, "undo_conflict", UNDO_CONFLICT) from exc
         # Read the new row back: an Undo that wrote no row is no Undo.
         undo = (await db.execute(
             text(
@@ -642,10 +734,12 @@ __all__ = [
     "list_changes",
     "log_change",
     "name_taken",
+    "open_change",
     "plain",
     "quoted",
     "same_values",
     "undo_areas",
     "undo_change",
     "undoes",
+    "via_of",
 ]

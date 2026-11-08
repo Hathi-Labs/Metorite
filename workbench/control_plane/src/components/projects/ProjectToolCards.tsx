@@ -46,6 +46,7 @@ import { noteReminderReceipt } from "@/lib/shell/reminderOpen";
 import { ALREADY_HEAD, readReminderReceipt } from "@/lib/reminderReceipt";
 import ReminderReceiptCard from "./ReminderReceiptCard";
 import { glassToneFrame } from "@/components/glassCard";
+import { PROJECTS_CHANGED_EVENT } from "@/lib/projectsEvents";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -239,9 +240,10 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
  * The event the Projects page listens for to reload the board after a chat
  * write (S4). Fired once per receipt that reports a done write. The page
  * owns its loaders, so this is the one seam between the two; a card never
- * reaches into the page's state.
+ * reaches into the page's state. The name lives in `lib/projectsEvents.ts`,
+ * so the shell can listen with no import of this file (PKG-8a fix round 2).
  */
-export const PROJECTS_CHANGED_EVENT = "cc-projects-changed";
+export { PROJECTS_CHANGED_EVENT };
 const announced = new Set<string>();
 
 /**

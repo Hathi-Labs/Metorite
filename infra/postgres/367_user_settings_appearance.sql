@@ -1,5 +1,5 @@
 -- ============================================================================
--- 358_user_settings_appearance.sql — the member's appearance (WS-PKG PKG-20)
+-- 367_user_settings_appearance.sql — the member's appearance (WS-PKG PKG-20)
 -- ============================================================================
 -- Spec: project-docs/specs/package_host.md §9.5 and the PKG-20 row · R5 · R6.
 --
