@@ -1,9 +1,9 @@
 # AI Studio — skills, workflows and apps that a company builds for itself (WS-STU)
 
-> **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-05 · **Owner:** vjvarada
+> **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-09 · **Owner:** vjvarada
 > **Status:** 🔨 **In build.** §14 holds the state of each slice, and a built row starts with 🔨 **BUILT**. Every built slice is dark behind `STUDIO_ORGS`, which is empty on every box, and no org has the `studio` tool pack. The `/studio` pane (A1, E1) is live in the nav for the beta since 2026-11-05 (D179), and its routes still need `STUDIO_ORGS`. An org that the flag does not list sees a "not open yet" state. §15 holds the stages, and §20 holds the plan for apps that serve people outside the org. A slice never edits this line.
 > **Verified against code on 2026-11-01 at `82157e5fd`.** Each path in §16 was read on that commit.
-> **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates). D124, D130, D131 and D136 bind it too.
+> **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates), **D193** (the Studio IDE), **D202** (the full web IDE, the UI kit, the sandbox for each org and person, and the new blocks). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
 > **Gate summary:** every slice is AGENT-SAFE unless §14 says otherwise. The owner answered STU-Q1, Q2, Q3, Q5 and Q6 and the template question on 2026-10-31 (D146). The owner answered STU-Q4 on 2026-11-04 and STU-Q4b on 2026-11-05 (D180). Three questions stay open: Q7, Q8 and Q9 (§12).
 
@@ -18,6 +18,10 @@ Every company has work that no general product covers. A 3D-printer maker tracks
 **The bet is composition first, and code in a box (D146).** A Studio app is data. It names objects, actions, workflows, views and a skill. One renderer draws its views in the one look, from the same blocks that Projects, the Calendar and the CRM use. So a generated app looks native, works on a phone, renders inside chat, and reaches outside agents through the MCP.
 
 **Four layers, each with its own containment (§3.7).** The manifest holds structure. Rules hold formulas, roll-ups, state machines and constraints. Logic modules hold computation, such as an MRP run. A custom UI block holds the rare screen that no block covers. Every layer reaches data only through the one action door. So a company can build a full inventory, procurement or manufacturing app with no hole in the platform.
+
+**The goal is a full web IDE inside Metorite (D202).** A company builds the apps that extend Metorite to fit its own work. The IDE builds with blocks first: the same board, list, table, tabs and form that Projects and the CRM use. Where no block fits, a member writes code files in TypeScript, from the same UI kit and with the same look. Every read and every write goes through the one door, with the rights of the viewer. The sandbox keeps each organization apart, and an admin decides who in it writes code.
+
+**Three layers on one door (D202.7).** Core apps serve every org: the CRM, Projects, the Calendar, Email, WhatsApp, People and Knowledge. Packages fit a core app to one org, with slots, fields, sub-apps and overlays (`package_host.md` §8). Custom apps, such as a clinic app or an HRMS, are Studio packages. All three layers use one door, one look and one channel layer: the org's own WhatsApp number and mailboxes (§20).
 
 **The moat is the platform under the app.** Zapier, Airtable and Retool can draw a form. They cannot call Mira, read the company's tasks, CRM and mail with the viewer's own rights, ask on an approval card, or reach the same app from Claude Code over the MCP. Every Studio app gets all of that by construction.
 
@@ -47,7 +51,7 @@ Every company has work that no general product covers. A 3D-printer maker tracks
 5. **No cross-company marketplace in this spec.** Templates are first-party. Sharing between organizations needs its own spec.
    A `system` install from reviewed repo code is not a marketplace (D187, `agent_sandbox.md` §6.8).
 6. **No agent creator.** A member builds a skill that Mira loads, not a second assistant (D125, D141).
-7. **No member-authored code on the box.** A member's logic module (B5) and the code block (L1) run only on the off-box sandbox (D127.2, D130). First-party logic (B4) is reviewed repo code, like any gateway route.
+7. **No member-authored code on the box.** A member's logic module (B5) runs only on the off-box sandbox (D127.2, D130). A custom screen (L1) compiles and runs only in the browser of the member and of the viewer (D202.4). First-party logic (B4) is reviewed repo code, like any gateway route.
 8. **No general ledger.** Accounting stays in Tally and Zoho Books. A Studio app posts to them through connectors.
 
 ---
@@ -122,6 +126,55 @@ The catalog seeds the templates (K1) and the builder eval (G6). Each row names i
 | U24 | Stuck-task nudge: no update in five days → a note to the assignee | S1 | — |
 | U25 | An invoice screen over Zoho Books, or a ledger over Tally | Connector app | table, detail |
 | U26 | Any MCP server the organization adds → a generated app over its tools | Connector app | table, detail, form |
+
+### 2.2 Patterns and industries (D202)
+
+The use-case brainstorm of 2026-11-08 (task 2326) read 12 industries. The owner answered "looks good" in chat on 2026-11-09 (D202.5). §2.1 holds the use cases by team, and §20.7 holds the apps that serve people outside the org. This section repeats neither of them.
+
+**Thirteen patterns cover the apps that a company asks for.** Each pattern is a template that Mira can start from. No block carries the name of an industry, so an industry gets a template and no new code.
+
+| # | Pattern | What it does | Examples |
+|---|---|---|---|
+| P1 | Tracker | A thing moves through stages | Shipment, ticket, NCR, RFI, sample |
+| P2 | Guided procedure | A person does steps in order | Assembly, installation, an SOP run, an R&D process |
+| P3 | Register | A list of things that the org owns or watches | Assets, sites, suppliers, safety data sheets, permits |
+| P4 | Request and approval | A person asks, and another person approves | Buy request, leave, change control, quote |
+| P5 | Inspection or audit | Checks, scores and photos, with findings as tasks | Vehicle check, shelf audit, safety walk |
+| P6 | Schedule | Slots, rounds, shifts and batches | Dock slots, maintenance rounds, classes |
+| P7 | Notebook | A record of work that locks after a sign-off | Lab notebook, site diary, case notes |
+| P8 | Controlled documents | Revisions with an approval | SOPs, procedures, specifications |
+| P9 | Calculator or configurator | Inputs and rules give a price or a quantity | Freight quote, formulation, BOQ, cost roll-up |
+| P10 | Link for outsiders | A person outside the org sees or sends one thing | Tracking link, supplier form, QR report, client review |
+| P11 | Dashboard or monitor | Numbers and alerts over records | OEE, impact, cold chain, schemes |
+| P12 | Screen over another system | Views and actions over a connection | Tally, Zoho, any MCP server (U25, U26) |
+| P13 | Diagram or map | Shapes and places that link to records | Process chart, plant layout, routes, lot tree |
+
+**The industries.** Each row names the first apps and the patterns that they use. §14 holds the blocks.
+
+| Industry | First apps | Patterns |
+|---|---|---|
+| Logistics and transport | Shipment tracker, fleet and driver log, dock and yard slots, freight quote, exception desk | P1, P2, P6, P9, P10 |
+| Manufacturing | Assembly guide, process charts, job traveller, BOM and routing, NCR and CAPA, downtime and OEE | P1, P2, P9, P11, P13 |
+| Chemicals, pharma and R&D labs | Lab notebook, formulation sheet, sample and batch tracking, stage gates, process documents, safety data and risk library, deviation and change control | P1, P2, P3, P7, P8, P9 |
+| Construction, real estate and EPC | Daily site report, snag list on drawings, RFI and submittal log, BOQ and progress bills, permit to work | P1, P3, P4, P5, P9 |
+| Telecom, energy and field sites | Site survey, installation and commissioning, maintenance rounds, solar EPC pipeline, fault tickets (U8, U13) | P1, P2, P5, P6 |
+| Retail, distribution and FMCG | Beat plan and shop visits, order capture on the phone, merchandising audit, scheme tracker | P5, P6, P9, P11, P13 |
+| Food and agriculture | Farmer and supplier register, buying at collection centres, lot traceability, cold-chain log | P3, P9, P11, P13 |
+| Clinics and diagnostics | Patient intake and appointments, sample to report, calibration register. Task 2327 holds the full clinic study | P1, P3, P6, P10 |
+| Education and training | Batches and attendance, assessments and certificates, training matrix | P3, P5, P6 |
+| Professional services and agencies | Engagement tracker, compliance calendar, time sheets and bills, client review by link | P1, P4, P6, P10 |
+| Facilities and hospitality | Work orders from a QR on each asset, maintenance and housekeeping checklists, visitor check-in, event run sheet | P1, P5, P6, P10 |
+| Non-profit and CSR | Beneficiary register and field surveys in local languages, grant milestones, impact dashboard | P3, P5, P11 |
+
+**How Studio stays flexible.** Seven rules keep one set of blocks useful in every industry.
+
+1. **Generic blocks, and the industry in a template.** A formulation sheet is an editable grid, line items and a "sums to 100 %" rule. It is not a chemistry block.
+2. **One way down at each layer.** Field, then formula, then rule, then logic module. Block, then page layout, then custom screen. Built-in connector, then MCP server, then code. A member goes down a level only when the level above cannot do the job.
+3. **One door for every read and write.** So each new block gets permissions, approvals, the audit row, chat and the MCP with no extra work.
+4. **An app is data.** Mira can read, diff, undo and template a manifest.
+5. **Link, never copy.** Tasks stay in Projects, people in People, and documents in Knowledge. An app points to them.
+6. **One look, few words.** A member sees App, Record, View, Step and Run.
+7. **Chat parity.** What a screen can do, Mira can do too (F10).
 
 ---
 
@@ -270,7 +323,7 @@ The owner chose the layered model on 2026-10-31 (STU-Q1). The layers grow in pow
 | **1 · Manifest** | Objects, relations, product lines, views, workflows, permissions | Validated data. No code | A2, C1, D, E |
 | **2 · Rules** | Formula fields, roll-ups (stock on hand is the sum of the moves), state machines (a PO goes draft → approved → sent), constraints | A closed JSON tree with no I/O, no loops and a step cap | C6, C7a, C7b |
 | **3 · Logic modules** | Computation: an MRP run, a cost roll-up, reorder suggestions, a schedule | A typed function that the catalog serves as an action. It gets its input through the door and returns **proposed** writes. The platform applies them in one transaction, with an audit row and the member's card for class B or C | B4 first-party, B5 member-authored |
-| **4 · Custom UI block** | A shop-floor screen, a barcode scanner | A sandboxed frame with the `--cc-*` tokens only. Every call goes through the door | L1 |
+| **4 · Custom UI block** | A shop-floor screen, a barcode scanner, a 3D scene. D202 calls it a custom screen | Code from the UI kit, in a sandboxed frame in the viewer's browser, with the `--cc-*` tokens only. Every call goes through the door (§5.4) | L1, L4 |
 
 **Two kinds of logic module.** A **first-party** module (B4) is reviewed code in the repository, written by Metorite engineers. The MRP run of template K4 is one. A **member-authored** module (B5) runs only on the off-box sandbox, after SBX-9, because D127.2 keeps member code off the box. The workflow Module Studio (`workflows_app.md` §5) keeps its own scope and does not grow into this layer.
 
@@ -328,6 +381,23 @@ A block is one data-agnostic view component. It takes rows from a `source`, a fi
 | **Map** | — | New. Needs a map library and tiles (D10, STU-Q8) |
 | **Markdown, document** | tiptap 3, the `markdown` primitive | Read-only first |
 
+**New blocks of D202.** The brainstorm of task 2326 and the clinic study of task 2327 add these rows. Each one reuses what exists before it adds code.
+
+| Block | What exists to reuse | Work to make it a block |
+|---|---|---|
+| **Guided step player** | The Form block (`components/studio/StudioForm.tsx`), the checklist plan (D9) | One step on each screen, with media, checks and a sign-off, over a run of C16 (D14) |
+| **Editable diagram canvas** | The workflow editor on `@xyflow/react`, the read-only flow (D8) | An editable canvas with swimlanes and a set of symbols. Each shape links to a record (D15) |
+| **Image annotation** | `components/MarkdownImage.tsx` draws an image. Nothing places a pin | Pins on an image or a body outline, each pin a record (D16) |
+| **Editable grid** | `DataGrid` in `genUITemplates.tsx`, the inline edit of `projects/TableView.tsx`, the formulas of C7a | Line items (C13) edited as a sheet, with a paste of rows (D17) |
+| **Tree** | `components/AccessTree.tsx` draws the project tree of a grant | A generic tree over a hierarchy (C18), with lazy load (D18) |
+| **Gallery, matrix, compare** | The Board block (D3) for cards, a group query (C2b) for cells | Cards with a cover image (D19). Rows by columns (D20). Records side by side, and a photo overlay (D21) |
+| **Activity feed** | `projects/components/TaskPanel.tsx` shows the activity timeline and the comments of a task | One feed of comments, changes (C4) and the threads of the linked contact (D22, O19) |
+| **Queue board** | The Board block (D3), auto-number (C15) | Tokens by counter, with a view for a TV and a view for the phone (D30) |
+| **Capture fields** | The `geo` field (C1), `components/VoiceInputButton.tsx` (VOX-2), the `attachments` table | Photo, video, signature, scan and GPS inputs in a form and a step (D24, D25) |
+| **3D model viewer, scene and figure** | Nothing. The app has no three.js today | A GLB viewer on three.js and react-three-fiber (D27), then records in a scene (D28) and a figure that reads records (D29) |
+| **DICOM viewer** | Nothing | OHIF over an outside archive, health only (D31) |
+| **Custom screen** | `SandboxedHtml`, `SandboxedReact`, and the kit `@cc/ui` (`lib/artifactUi.tsx`) | Code from the UI kit (L4), compiled in the browser (§5.4, L1) |
+
 ⚠️ **The Calendar and the Timeline pull-outs touch live apps.** D5 and D6 change no behaviour of the Calendar app or of Projects. Their own tests and a visual review prove that.
 
 ### 5.2 The renderer
@@ -345,9 +415,18 @@ The renderer is `components/GenerativeUINode.tsx`, grown, not a second one. Toda
 
 A page is a grid of blocks, with tabs and an optional side panel. At 390 px the grid becomes one column, and a block may name a phone form of itself (a board becomes a grouped list).
 
-### 5.4 The code block
+### 5.4 The code block: custom screens from the UI kit (D202)
 
-Some needs no block covers: a custom chart, a scanner, a bespoke calculator. The App Workshop path already runs code in `SandboxedHtml` and `SandboxedReact`, with the `window.cc` bridge (`build/apps/lib/ccBridge.ts`). Slice L1 makes that path **one block inside a package**. It gets the `--cc-*` tokens only, and its bridge calls go through the same catalog door. Build-time code runs on the off-box sandbox only (D127.2).
+Some needs no block covers: a custom chart, a scanner, a bespoke calculator, a 3D scene. **A custom screen** covers them. It is TypeScript or TSX code that a member writes in the IDE (G8), from the Metorite UI kit (L4). The owner chose this on 2026-11-08 (D202.2 and D202.4).
+
+- **The kit.** The code frame gets the same Board, Table, List, Tabs, Form, Detail and chart components that the app uses. They come from the same source files, with the same tokens and with TypeScript types. L4 grows the kit that exists, `@cc/ui` (`lib/artifactUi.tsx`), and adds no second kit.
+- **The standard set.** React, the UI kit, the icons (`lucide-react`) and three.js (L5). A screen imports nothing else. A screen gets no package list. B8 packages serve server code only, after SBX-9.
+- **Where it runs.** The viewer's browser runs it in the sandboxed frame of `SandboxedHtml`: `allow-scripts`, `connect-src 'none'` (§19.3, kind `browser`). The frame reaches data only through the `window.cc` bridge (`build/apps/lib/ccBridge.ts`). Each call goes through the catalog door as the viewer.
+- **Where it compiles.** In the browser, never on our servers (D127.2, D202.4). Today chat artifacts compile on the server (`lib/compileArtifact.ts`, `app/api/artifacts/compile/route.ts`). The Studio path does not use that route for member code. L3 must prove the browser compile first. If it fails, custom screens wait for SBX-9.
+- **Source only.** The server stores the source of a version, never a bundle that a browser sent. Each viewer's browser compiles the approved source, and keeps the output by the hash of the source. So the code that runs is the code that the reviewer read (§19.10 rule 15).
+- **One React.** Today the app runs React 19.2.4. The artifact frame runs `preact/compat`, and the T2 vendor cache holds React 18.3.1 (§19.4). L4 picks one runtime for the kit and the frame, and a test holds them equal.
+
+Slice L1 makes this path **one block inside a package**. The App Workshop path (`SandboxedHtml`, `SandboxedReact`) is its base, not a second frame. Server code is a logic module (B5). It runs on the off-box sandbox only, after SBX-9 (D127.2).
 
 ---
 
@@ -423,11 +502,89 @@ A rule of the `studio` pack tells Mira to edit the package that the facts name. 
 
 **Publish** is not in the IDE in G3a. Mira publishes after the member approves the plan card. A Publish button waits for G5.
 
+**Code in the IDE (D202.1).** The owner's goal of 2026-11-08 makes the IDE a full web IDE. Blocks stay first, and code files become a first-class part. The D193 route, layout and dock stay as they are.
+
+| Part | What it does | Slice |
+|---|---|---|
+| **Files** | A branch of the Explorer beside Data, Views and Rules. Each file is TypeScript or TSX, in Monaco, with type hints for the UI kit and the door client | G8 |
+| **Preview on save** | A save compiles the screen in the member's browser, and the preview frame reloads. After an error, the last good preview stays | G9 |
+| **Console** | The logs and the errors of the frame, with the file and the line | G9 |
+| **Tests** | Skill tests, workflow dry runs and a render test of each screen | G10 |
+| **Packages** | What a module may import: the standard set for a screen, and the reviewed list for server code | G11 |
+| **Version history** | The versions, a diff of the manifest and the files, and a rollback | G12 |
+| **Mira** | She uses blocks first, and writes a file only where no block fits. The plan card names the gap that each file fills. She checks her own screens in captures | G16, G13 |
+
+**Git in the IDE (D202.9).** The owner asked for git on 2026-11-09. Three rows give it:
+
+- **Save history (G17).** Each save of a draft is a revision, with its author, a message and a diff. A member reverts to any revision, and a publish tags a version (A4).
+- **Named drafts (G18).** A branch. A member tries a change away from the main draft, then merges it with a diff and a conflict view.
+- **GitHub sync (G19).** An optional two-way sync with a folder in the repository of the org. A push makes a draft revision and never publishes. The token stays in `integration_connections`, and no git process runs on a sandbox dir.
+
+**Who writes code.** Every Studio member builds with blocks. Only a member that the code right names (J7) writes files, and each other member sees the files read only. A holder of `studio:publish` approves each version with code before it reaches anybody but its author (§19.10).
+
 ### 6.4 The engine under the builder
 
 A manifest is data, so the builder needs **no sandbox and no code run**. It is a Mira run with the builder tools (G1). That is why S0 to S3 can ship before the off-box sandbox.
 
-The code block (L1) needs code. It runs on the one coding harness, profile `app_builder` (CA-14, D139, task #1042). Studio adds no second harness.
+Server code (B5) runs on the one coding harness, profile `app_builder` (CA-14, D139, task #1042). Studio adds no second harness. A custom screen (L1) needs no harness: Mira writes its files with builder tools (G16), and the browser compiles them (D202.4).
+
+### 6.5 Building a Studio app outside Metorite (D202.10)
+
+The owner asked on 2026-11-09 for a scaffold and a harness, so that an app that a member builds in VS Code stays compatible with Studio.
+
+**The rule: an app built in VS Code is the same package as one built in Studio.** It has one manifest format, one validator, one build and one review. The kit adds no second implementation of any seam. The CLI calls the validator, the rule evaluator and the dry run (F4) of the server, and never ports them.
+
+**The scaffold (G21).** `npx @metorite/create-studio-app`, or `metorite studio init`, makes one folder:
+
+| Path | What it holds |
+|---|---|
+| `metorite.json` | The package id, the org, the version of the Studio API contract, and the link |
+| `manifest/` | The app, objects, views, actions, rules and workflows as files, and the skill as `SKILL.md` (the format of F8) |
+| `screens/*.tsx` | Custom screens on the UI kit (L4) |
+| `modules/` | Logic modules (B5) |
+| `samples/` | Sample data for the preview |
+| `tests/` | The tests of the app |
+| `AGENTS.md`, `CLAUDE.md` | The rules for coding agents |
+| `package.json` | Pinned versions of `@metorite/studio-sdk` and `@metorite/ui` |
+
+**The sync.** The CLI joins the files into one manifest and splits it again, so each git diff stays small. The server reads only the joined manifest. A manifest from files may grow to the A2 cap of 256 KiB (`studio_manifest.py` `MAX_DOC_BYTES`). The chat cap is 24,000 characters (`studio_tools.py` `MAX_MANIFEST_CHARS`), for a save from chat and for the facts of the IDE (§6.3). Above that cap, the IDE says that Mira in the dock cannot edit the whole draft, and Mira edits it file by file through the harness (G26). This is agent design.
+
+**The SDK (G22).** One package, `@metorite/studio-sdk`:
+
+- TypeScript types for the manifest, made from the live JSON Schema that `studio_describe` serves (G1b).
+- A `json.schemas` mapping for VS Code, for IntelliSense.
+- A typed door client (`metorite.records.list`, `metorite.actions.run`), made from the manifest of the app.
+- The UI kit with its types (L4, D202.2). The SDK takes the kit, and copies no part of it.
+- A mock door with the sample rows, for the unit tests of custom screens.
+
+**The CLI (G23, G24).**
+
+| Command | What it does |
+|---|---|
+| `login` | A device code. It reuses the WS-55 connection for outside agents and its scopes (D136), so no second token type exists |
+| `check` | The validator of the server, with each error at its file and line |
+| `test` | The rule tests and the workflow dry runs on the server, and local vitest for screens on the mock door |
+| `dev` | It watches the folder and pushes to a dev draft. The preview of the Studio IDE reloads on sample data (G4), so one renderer stays |
+| `push` | A new draft revision (G17) |
+| `diff`, `pull` | The diff with the draft, and the draft into the folder |
+
+**The CLI has no `publish`.** A publish stays in Studio, with the review of `studio:publish`.
+
+**Source only (G25).** Metorite accepts source, and never a bundle that a laptop built. Server code builds in a throwaway sandbox of Metorite (L7, §19.10 rule 12). A screen compiles from the approved source in the browser (L1, §19.10 rule 15). The local build serves only the preview and the tests.
+
+**Compatibility (G20).**
+
+- `metorite.json` pins the version of the Studio API contract. The server refuses an unknown or a retired version with the code `contract_unsupported` (§19.10).
+- The SDK and the server publish a support window, and `check` warns before a version retires.
+- A golden-file test locks the manifest schema, so a server change that breaks the kit fails CI.
+
+**The AI harness (G26, G27).**
+
+- A Claude Code skill or plugin, `metorite-studio`. It teaches the manifest, the blocks, the door and the guardrails. It runs `check` after each edit, and takes the visual captures of each custom screen (§11.2).
+- The same tools work over the Metorite MCP (MCP-P5, task 869), so Claude Code in VS Code can build with no CLI.
+- A VS Code extension comes later, with the schema, a preview pane and the state of the sync (G27).
+
+**Git.** The GitHub sync (G19) uses the same folder. A push from the CLI and a push to GitHub both make draft revisions (G17).
 
 ---
 
@@ -543,6 +700,47 @@ The WS-PKG research of 2026-10-31 read `github.com/deepseek-ai/deepseek-harness`
 
 **Not copied:** dsh runs plugins in process with full trust, keeps config in files, and loads React slot code into the page. Studio runs member code off the box only (D127.2), keeps installs and config in Postgres, and draws UI from the block catalog.
 
+### 11.2 Anatomy and Dynamic Apps (research, 2026-11-09, D202)
+
+The owner sent two repositories as references for the full IDE goal (task 2326). The research read each README and one more file. It ran no code. The tag **[unverified]** marks a fact that no read file confirmed. The full notes are on epic 491, in the comment of 2026-11-09. **Rule: Metorite takes the patterns below and copies no code.**
+
+#### 11.2.1 Anatomy
+
+`github.com/wheresryan22/anatomy`. A Claude skill from a third party, under MIT. Read: the README and `SKILL.md`. The kit code was not read.
+
+| Fact | What it means for Studio |
+|---|---|
+| It explains an idea with a working, interactive drawing of a machine: SVG, SVG with WebGL effects, and 3D in beta | The live explainer figure (D29) |
+| One small model drives every number and every moving part of the figure | A Studio figure binds to the records of the app, so the drawing stays true |
+| It captures each output at desktop and 390 px, in both themes, and reads each capture | Mira checks her own screens (G13), in the member's browser |
+| It builds from a kit of parts, never from nothing | The Metorite UI kit (L4) |
+| It proposes the smaller figure first | Mira's plan card proposes the smaller app first |
+| Its output is standalone HTML or React, with no npm dependencies, both themes and reduced motion [unverified for the 3D mode] | Nothing new. The renderer already owns themes |
+
+**We do not take** its own 3D engine. The owner asked for three.js, which loads GLB models (D27, L5). We do not take its build time of minutes to hours as a default.
+
+#### 11.2.2 Dynamic Apps
+
+`github.com/rivet-dev/dynamic-apps`. Open source from the vendor Rivet, in TypeScript. Read: the README and the API contract file. Nothing was run. The research of 2026-11-03 on epic 491 found no licence file [unverified now], so it is no dependency.
+
+| Fact | What it means for Studio |
+|---|---|
+| A throwaway build VM builds the source into an immutable release | Build once in a throwaway sandbox (§19.10 rule 12, L7) |
+| The live pointer moves only after a complete write. A failed build leaves the old release live | The atomic switch (§19.10 rule 13). A4 already publishes this way |
+| A cached VM serves each release, with limits on memory, time and queue | Warm runtimes for each org and each version (L7) |
+| The host injects host functions. Management credentials never enter the sandbox | The door and the `window.cc` bridge are our host functions (§19.10 rule 14) |
+| Limits as numbers: 64 MB of heap, a 30 s run, a 1 MiB request, a 4 MiB response, 4 MiB of source, 2,000 files and 256 dependencies | The limits table of §19.10 |
+| Golden tests lock the error codes | The fixed error codes of §19.10 (L6) |
+| Its contract states no network rule at run time [unverified] | §19.3 keeps no network at run time |
+
+**We do not take** Rivet actors or its cloud. They would be a second runtime beside the sandbox and MAF, and our data stays in Postgres under RLS (D15, D146.4). We do not take a backend for each user, because our unit is the app of an org. We do not take npm installs that run scripts (B8 forbids them).
+
+#### 11.2.3 What both teach
+
+1. **Compose from a kit.** Both build from parts. Studio uses blocks first, and the UI kit second.
+2. **Check what you built.** Both check their own output before they show it, with a capture or a smoke test.
+3. **Limits are data.** Both write their limits down. Studio keeps one table for each version (§19.10).
+
 ---
 
 ## 12. Open owner questions
@@ -634,6 +832,16 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **B6** | **A run with no viewer.** An install names one `run_as` member, chosen by an admin. A scheduled or event run holds the rights of that member, cut down to the `uses` of the package. Each write carries `system:package:<id>` and that name (§19.2) | A run cannot reach what `run_as` cannot read. A run stops when `run_as` loses access or leaves. The audit row names both | HIGH | AGENT-SAFE. After H-328 |
 | **B7** | **The `runtime` key** (§19.3). The four kinds in the A2 model, the import scan against the image lock, the plan-card line and the rule that the builder picks the lowest kind. `hosts` is no key | No key means `none`. An import outside the lock is an error with a JSON path. A `hosts` key is refused. `studio_describe` serves the kinds. No sandbox runs in this slice | STD | AGENT-SAFE |
 | **B8** | **Package layers** (§19.5). The registry proxy, the install at build time, the frozen layer with its hash, the review of the list | Each rule of §19.5 has a refusal test. A run has no network. A new package list is a new version | HIGH | AGENT-SAFE. After SBX-9 and the sandbox meter |
+| **B9** | **Photo or PDF to fields** (task 2331). Wave 1 (D202). A first-party action reads a photo or a PDF from `attachments`. It proposes values for the fields of a form: a delivery note, a certificate, a nameplate. It reuses the vision path of VOX-3, and each value is a suggestion (C21) | A photo of a test delivery note proposes the 5 fields of a test form, each with its reason. Nothing writes until the member accepts a value. A restricted field gets a proposal only when an admin opened it to the AI (D174.6, §19.10 rule 11). Each call writes one `usage_event` row | HIGH | AGENT-SAFE. After C21 and D24 |
+| **B10** | **Photo check against a reference** (task 2332). Wave 1 (D202). A first-party action takes a photo and a question, or a reference photo. It answers pass, fail or unsure, with a reason: "Is the label on?" A workflow uses it as a node (E5), and the step player (D14) uses it as a check | On a fixed set of 20 test photos, the PR records the measured pass rate. "Unsure" never counts as a pass. Each call writes one `usage_event` row | HIGH | AGENT-SAFE. After D24 |
+| **B11** | **Voice into a record** (task 2333). Wave 1 (D202). A member dictates into one field, or speaks a note, and the note fills a whole record, in their own language. It reuses the speech to text of VOX-2. A note for more than one field gives suggestions (C21) | A spoken note in Hindi proposes the values of a test form. A dictated field shows its text before the member saves. A restricted field takes no dictation unless an admin opened it to the AI (D174.6). Each call writes one `usage_event` row | HIGH | AGENT-SAFE. After C21 |
+| **B12** | **Translate for the floor** (task 2334). Wave 2 (D202). A first-party action translates a guide, the labels of a form and the text of each step into Hindi, Tamil and the other languages of the speech path. A translation belongs to one version, and it carries a mark that a machine made it | A member whose language is Hindi sees a test guide in Hindi. A new version of the source marks its translation stale. Each call writes one `usage_event` row | HIGH | AGENT-SAFE. After C17 and D14 |
+| **B13** | **Video to steps** (task 2335). Wave 2 (D202). The flagship flow: a phone video of an expert at work gives key frames at each change of scene, and a transcript (VOX-2). Mira drafts a procedure template from them, with one frame and one instruction for each step. She links each step to its manual section (I5). The draft is a new version that a supervisor reviews and publishes (C17) | A test video of 3 minutes gives a draft of at least 5 steps, each with a frame and a text. Nothing publishes until a person approves the version. The app refuses a video over the cap (proposed: 10 minutes and 200 MiB) before the upload. Each call writes one `usage_event` row | HIGH | AGENT-SAFE. After C16, C17, D14 and D24. The plan card shows the cap and the credit cost |
+| **B14** | **Draft from documents** (task 2336). Wave 2 (D202). Mira turns a manual in Knowledge, or an uploaded PDF, into a draft procedure template or a draft process chart (D15). Each step cites its source section (I5) | A test manual of 10 pages gives a draft, and each step cites a section. The draft is a new version that waits for a person. Each call writes one `usage_event` row | HIGH | AGENT-SAFE. After C16, C17 and I5 |
+| **B15** | **Generated images** (task 2337). Wave 2 (D202). Step illustrations, cover images, icons and label art, and edits of an uploaded photo. Each image carries a "generated" mark, and each one costs credits | A generated image shows its mark wherever it shows. A run past the credit cap stops and says so. Each call writes one `usage_event` row | HIGH | AGENT-SAFE. **Waits on task 1406** (the image tier, PLN-19) |
+| **B16** | **CAD to 3D** (task 2340). Wave 3 (D202). A STEP file becomes a GLB model for the 3D viewer (D27). The converter is native code, so it runs only in the sandbox (D127.2) | A test STEP file of one part gives a GLB that D27 opens. The converter refuses a file over the cap. The run has no network | HIGH | AGENT-SAFE after SBX-9. **A licence check of the converter comes first.** A licence outside MIT, BSD, Apache, ISC and MPL is an OWNER-GATE |
+| **B17** | **The consultation scribe** (task 2341). Wave 2, health only (D202.8). With the patient's consent, the app records the talk, and speech to text makes a transcript (VOX-2). Mira drafts a note, and the doctor edits it and signs it (J8). The note is a restricted field, so the draft is a suggestion (§19.10 rule 11) | A test recording with consent gives a draft note. It stays a draft until a doctor signs it. With no consent row, nothing records. Each call writes one `usage_event` row | HIGH | AGENT-SAFE (D202.8). Only with the consent of the patient, an admin opening (D174.6) and the acceptance of the doctor. Sample data until WS-37 and a lawyer clear real patients |
+| **B18** | **The attendance rule set** (task 2342). Later (owner, 2026-11-09), when HR is built (D202.7). A first-party logic module (B4) with settings: shifts that cross midnight, grace minutes, half days, overtime, holidays and weekly offs. It turns punches into one attendance day for each person (§19.8 step 2) | On a fixed test set of punches, each attendance day equals the expected one: a night shift, a late mark inside the grace, a half day, overtime and a holiday. A change of a setting is a new version, and a closed month keeps its version | HIGH | AGENT-SAFE. After B4 and C11 |
 
 ### Group C — Objects
 
@@ -654,6 +862,20 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **C10** | **Retention and the org caps.** `retention_days`, the sweep, 1,000,000 records and 2 GiB for an org, more hot fields after a measure of the write cost | A record past its date goes with its hot rows and vectors. A write past a cap is refused in one plain sentence. R8 | HIGH | AGENT-SAFE |
 | **C11** | **Ingest and import.** A CSV into an object with a field map, and a signed endpoint for a device or a vendor push, with a token for each install, a rate limit and a key for each row | A second delivery of one punch writes no second row. A wrong signature writes nothing. The endpoint binds the tenant. Rows go in chunks of 50 | HIGH | AGENT-SAFE. After H-328 |
 | **C12** | **Exports between packages.** Off by default. A package names what it exports, and a reader needs its install and the viewer's rights | With no export, package B reads nothing of A. C8 still binds | HIGH | AGENT-SAFE |
+| **C13** | **Line items** (task 2343). Wave 1 (D202). Child rows inside a parent, edited and saved as one: BOM lines, ingredients, order lines, a BOQ. A `lines` relation names the child object. The door saves the parent and its lines in one `apply_writes` batch (C1b), so a save holds at most 49 lines | A parent with 20 lines saves all of them or none. A line cannot move to a parent of another package. A roll-up over the lines (C7b) changes in the same transaction. R8 | HIGH | AGENT-SAFE. After B2c-1 |
+| **C14** | **More field types** (task 2344). Wave 1 (D202). Rich text, rating or score, duration, quantity with unit, percent and barcode, in `acb_common/studio_fields.py`, the one module. Image and signature are file fields of D24 | Each type has a value check in `studio_fields.py`, a form input and a display. `test_one_field_type_module`, the A2 schema test and `test_studio_manifest_ts_parity.py` pass | STD | AGENT-SAFE |
+| **C15** | **Auto-number** (task 2345). Wave 1 (D202). The store fills the field with the next number of its object, with an optional prefix and an optional reset each day: an order number, a clinic ID, a token for each day and each counter | Two writers at once never get the same number. A write that rolled back can leave a gap, and the row says so. R8 | HIGH | AGENT-SAFE. A migration at the next free number at build time (R1) |
+| **C16** | **Template and run** (task 2346). Wave 1 (D202). A template record makes runs. A run copies the steps and the fields of the template version that it came from, and names that version: a protocol, a checklist, a procedure | A run keeps its steps after the template changes. A run names its template version. A run of 30 steps writes in batches of at most 50 writes (C1b) | STD | AGENT-SAFE. After C13 |
+| **C17** | **Versioned records and the version lock** (task 2347). Wave 1 (D202.5). An approved revision of a record locks. A change makes a new revision, and record history (C4) shows each one. C4 joins wave 1 with it | The store refuses an edit of a locked revision, with a sentence that says how to make a new one. Two writers on one revision give one new revision. R8 | HIGH | AGENT-SAFE. With C4 |
+| **C18** | **Hierarchy** (task 2349). Wave 2 (D202). Parent and child records inside one object: BOM levels, a site with its buildings and floors, lots. A new rule kind refuses a cycle, and a depth cap holds | The store refuses a write that makes a cycle. A tree of depth 10 reads in one query. R8 | HIGH | AGENT-SAFE |
+| **C19** | **Lookup tables** (task 2350). Wave 2 (D202). A keyed object for a rate card, a price list or a material master, with an optional valid-from date. A formula (C7a) reads one row by its key | A freight quote reads the rate of its lane and weight on the quote date. A missing key gives a clear error, never zero. R8 | HIGH | AGENT-SAFE. After C7a |
+| **C20** | **App upgrades that keep the data** (task 2351). Wave 2 (D202). Rename a field, or change its type, on an object that holds records. The publish runs the change in batches, and a failed batch leaves the old version live | A rename on 10,000 records keeps every value. A type change that cannot convert a value lists the record and changes nothing. R8 | HIGH | AGENT-SAFE. After A4 |
+| **C21** | **Suggest and confirm** (task 2352). Wave 1 (D202). Mira proposes values with a reason. A person accepts or rejects each one, and the record keeps who accepted it and when. It is the one path for an AI fill: B9, B11, coded values (C23) and the scribe (B17) | No AI value reaches a record until a person accepts it. The record shows who accepted each value. The fence of §19.10 rule 11 passes | HIGH | AGENT-SAFE |
+| **C22** | **Field library** (task 2353). Wave 2 (task 2327). Shared questions for the whole org, each with its type, units, answers and code mappings. Many forms reuse each question, and a form names the version that it uses. The concept dictionary of OpenMRS is the model | Two packages use one library question. A change of it is a new version, and neither form takes it by itself. A package with no access to the library reads nothing of it (C12) | HIGH | AGENT-SAFE. After C12 |
+| **C23** | **Coded value** (task 2354). Wave 2 (task 2327). A field that picks from a code list, with a search, the favourites of each member, and more than one mapping for each code: HSN codes, part numbers, hazard codes, ICD-10 | A search of a list of 50,000 codes answers in less than 300 ms on the dev stack. A favourite shows first for its member only. A list under a licence names it at load | STD | AGENT-SAFE. The lists (D202.8): ICD-10 after a check of the WHO terms, and LOINC, first. SNOMED CT after the NRCeS affiliate licence. No CPT |
+| **C24** | **Measurements with units and ranges** (task 2355). Wave 2 (task 2327). A value, its unit, a normal range and a critical range, with flags. It extends the quantity with unit of C14. A critical value raises a need in the bell (H2) | A value outside the normal range shows its flag. A critical value raises one need. A value in another unit converts before the check | STD | AGENT-SAFE. After C14 |
+| **C25** | **Retention lock and legal hold** (task 2356). Wave 2 (task 2327). It extends C10. No record goes before its minimum period. An erasure request waits while a legal hold applies, and says why | The C10 sweep deletes no record under a hold or inside its minimum period. An erasure under a hold gives a plain sentence. R8 | HIGH | AGENT-SAFE. After C10 |
+| **C26** | **Save rules on core records** (task 2357). Wave 2 (D202.7). A package adds a rule to a core app: "A deal cannot move to Won without a PO number." One save-rule seam in each core app reads the closed rule grammar of `studio_rules.py`. A rule can only refuse a save, and never writes | A rule refuses a test save with its sentence, and allows a good one. A rule cannot write. With the flag off, no rule runs. R8 | HIGH | AGENT-SAFE (D202.7, question D). It ships dark behind a flag |
 
 ### Group D — Blocks and the renderer
 
@@ -675,6 +897,24 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D11b** | 🔨 **BUILT, preview only (2026-11-03).** The page layout component and the URL wiring (task 1497). `components/studio/StudioPage.tsx` lays out cells in a grid under `AppTopBar`, with `Tabs` (underline) and a side column (`w-[380px]` at `lg`, 1024 px, and up, a `Modal` sheet below). The owner was asked about the 1024 px step, because the 260 px shell rail leaves too little room at `md`. The grid columns follow the width of the scroller through container queries, not the window. It takes a `renderView` prop. `lib/studio/usePageState.ts` reads and writes `pageState` through `useSearchParams` (`push` for a tab or a pick, a debounced `replace` for a filter). Preview on `/studio/page-preview`: a fake door, "Sample data", `lib/studio/samplePage.json`, in no nav pane. **Phone:** the grid is one column in a scroller under 36 rem (`@xl`). The Board is placed and not changed (D3 stacks its lanes). **Non-goals:** a view-to-node mapper, a Board change, a new GenUI node, any block not built (it shows a "not built yet" card), live data, a sidebar entry. Needs D3 merged. The page reader of D11a assumes a validated manifest, and it drops each part that A2 refuses | `usePageState.test.ts` shows a tab, a filter and a pick survive a reload through the URL, back restores the earlier tab, a filter edit adds no history entry, and a hostile URL gives a safe state. `StudioPage.test.ts` holds the grid, tabs, side and not-built cards, and no Cmd-K, bell or palette. The lockstep, `nav`, `seams`, `conformance` and `AppTopBar` tests pass with no edit. `next build` passes. Visual review of the preview in light mode, at compact density, under a changed accent and at 1440, 1024, 768 and 390 px, with four captures and a `Visual review:` line. Owner preview (D145) before merge | STD | AGENT-SAFE, with the UI gate. After D11a and D3 |
 | **D12** | The manifest conformance fence. A2 refuses no CSS class name in a title today (for example `bg-red-500` passes), and D12 adds that check | A manifest with a colour, a pixel size or an unknown block fails to publish | LOW | AGENT-SAFE |
 | **D13** | **Documents.** A template block with fields from a record, a `document.render` first-party action over `render_pdf`, images in `render_pdf`, and the result stored in `attachments` | One record gives one PDF with a logo and a table of lines. A `file` field opens it for a viewer with access. A restricted value stays out of each log | STD | AGENT-SAFE |
+| **D14** | **The guided step player** (task 2358). Wave 1 (D202). One step on each screen, with media, checks, timers and a sign-off, phone first. It plays a run of C16, and saves after each step | On a 390 px phone, a run of 10 steps shows the media and the check of each step. A step with a required check does not pass without it. Each sign-off names the member and the time. A reload opens the same step. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After C16. D145 preview, because it is a new screen |
+| **D15** | **The editable diagram canvas** (task 2359). Wave 3 (D202). Flowcharts, swimlanes and a small set of symbols for process charts, on `@xyflow/react`. Each shape links to a record or a document. A layer shows the live state of each step (D8) | A shape saves its link, and a click opens the record. The canvas saves through the door. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After D8 |
+| **D16** | **Image annotation** (task 2360). Wave 2 (D202). Pins on a floor plan, a photo or a body outline (the body map of task 2327). Each pin is a record with a label and an optional photo | A pin keeps its place at each zoom and each width. A pin opens its record. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After D24 |
+| **D17** | **The editable grid** (task 2361). Wave 2 (D202). A grid that works like a sheet, over line items (C13). Each column is a field, and a computed column is a formula of C7a. No cell holds a free formula | A formulation sheet with a "sums to 100 %" rule refuses a save that breaks it. A paste of 20 rows saves as one batch. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After C13 |
+| **D18** | **The tree block** (task 2362). Wave 2 (D202). A BOM explorer or a site tree over a hierarchy (C18), with lazy load | A tree of 2,000 nodes opens its first level in one read. A drag to a new parent calls the update action. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After C18 |
+| **D19** | **The gallery block** (task 2363). Wave 1 (D202). Cards with a cover image, for a set of photos or a list of products | A gallery of 200 photos loads each thumbnail when it comes into view. A card opens its record. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After D24 |
+| **D20** | **The matrix block** (task 2364). Wave 2 (D202). Rows by columns, with a value in each cell: a 5 by 5 risk matrix, a training matrix | A cell shows the records that fall in it, and a click opens them. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After C2b |
+| **D21** | **The compare block** (task 2365). Wave 2 (D202). Two or more records or runs side by side. For photos: before and after, with an overlay that lines up the next photo | Two runs show their differences first. A before photo shows as an overlay on the camera view of D24. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After D24 |
+| **D22** | **The activity feed and the run timeline** (task 2366). Wave 1 (D202). One line of time on a record: comments, changes (C4) and messages (O19). The same block shows the past runs of one person or one thing, such as the visit timeline of task 2327 | A change, a comment and a message show in time order. A viewer sees no entry for a field that C8 hides. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After C4 |
+| **D23** | **The floor mode for members** (task 2367). Wave 2 (D202). A paired tablet on a shop floor shows one screen, full size, with no shell. A badge scan or a PIN opens a short session for one member, and each act names that member. O3 serves guests, and D23 serves members | An act with no member named writes nothing. A session ends after one act or after 60 s with no input. The audit names the member and the device. Visual review at tablet width | HIGH | AGENT-SAFE. After O3. D145 preview |
+| **D24** | **Photo, video and signature capture** (task 2368). Wave 1 (D202). Three file fields and their inputs, in a form and in a step. A capture goes straight into the record, never into the gallery of the phone. The upload removes the location data (EXIF) of a photo | A photo from a phone lands in the `attachments` of the right org, with no location in its EXIF. The app refuses a video over the cap before the upload. A signature saves as an image with the member and the time. R8 for the file rows | HIGH | AGENT-SAFE. D145 preview |
+| **D25** | **Scan and GPS check-in** (task 2369). Wave 1 (D202). A QR or barcode scan fills a field or opens a record. A GPS check-in stores a `geo` value with its accuracy and its time | A scan of a test QR opens its record. A check-in stores the place, the accuracy and the time. A denied camera or location gives a plain sentence and a manual path | STD | AGENT-SAFE, with the UI gate |
+| **D26** | **Offline capture** (task 2370). Wave 2 (D202.5). Forms and guided steps only. A member fills them with no signal, and the phone sends them later. A conflict names the record and the field | A form that a member filled offline saves once when the signal comes back, never twice. A conflict shows both values. A stale session asks the member to sign in before it sends. After a sign-out, no record stays on the phone | HIGH | AGENT-SAFE. After D14 and D24. D145 preview |
+| **D27** | **The 3D model viewer** (task 2371). Wave 2 (D202). three.js with react-three-fiber, both under MIT. It is a first-party block, so it is reviewed repo code and needs no sandbox. It opens a GLB file, with orbit, zoom, hotspots that link to records, and an exploded view for each step | A test GLB opens at 390 px and 1440 px. A hotspot opens its record. Only a page that uses the block loads three.js. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After D24 |
+| **D28** | **The 3D layout scene** (task 2372). Wave 3 (D202). A plant floor, the racks of a store or a site, with live records placed on it | A record moves in the scene when its place field changes. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After D27 |
+| **D29** | **The live explainer figure** (task 2373). Wave 3 (D202). A working drawing of a machine or a process. Each number and each moving part reads from the records of the app (§11.2) | A changed record changes the figure on the next read. The figure has a light form and a dark form, and it obeys reduced motion. Visual review in four contexts | STD | AGENT-SAFE, with the UI gate. After D27 |
+| **D30** | **The queue board** (task 2374). Wave 2 (task 2327). Tokens by counter or by doctor, on a TV and on the phone. A token is an auto-number for each day and each counter (C15) | Two desks that call at once call two tokens. The TV view shows the token only, never a name. Visual review at TV width and at 390 px | STD | AGENT-SAFE, with the UI gate. After C15 |
+| **D31** | **The DICOM viewer** (task 2375). Wave 2, health only (D202.8). OHIF, under MIT, embedded over an outside DICOMweb archive: the system of the imaging centre. The archive is a connection, so its credential stays in `integration_connections` | A test study opens from a test archive. No image file goes into the storage of Metorite. The viewer reads with the connection of its own org only | HIGH | AGENT-SAFE (D202.8). Real patient data waits on WS-37 and a lawyer (D174.6). No AI reads an image for a diagnosis |
 
 ### Group E — Workflows in Studio
 
@@ -687,6 +927,10 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **E5** | Catalog nodes: any B1 action is a node | A class B node pauses for approval, as the approval node does | HIGH | AGENT-SAFE |
 | **E6** | The workflow template gallery (`workflows_app.md` §8.3a) | §8.3a's acceptance | LOW | AGENT-SAFE |
 | **E8** | **The batch run.** One approval for one run, then chunks of 50 through `apply_writes`, a key for each item, a status for each item, and a resume after a stop | A run of 300 items stopped at item 120 resumes and repeats none. The card shows the exact list (D131.2) | HIGH | AGENT-SAFE. After C1b and E2. STU-Q14 |
+| **E9** | **SLA timers and escalation** (task 2376). Wave 1 (D202). "Due in 4 h" on a record. A breach starts a workflow step, such as a note to the owner or a move to a manager. Working hours may pause the timer | A record that breaches starts one step, not two. A paused timer does not breach. The bell shows a timer that is near its end | STD | AGENT-SAFE. After E3. A breach with no viewer waits on H-328 |
+| **E10** | **Approval chains** (task 2377). Wave 2 (D202). Approval steps by amount, role or stage. Each step is a card with one named approver (D197), and a chain is a list of human steps (E4) | A buy request of ₹200,000 goes to the manager and then to the director. A rejection ends the chain and names who rejected it. Nobody approves their own request | HIGH | AGENT-SAFE. After E4 and B2c-2a |
+| **E11** | **The AI step in a workflow** (task 2378). Wave 2 (D202). A node that sorts, sums up or decides, on the `decide` seam (D93, D100). Its output is data for the next node, never a write by itself | On a fixed set of 20 items, the PR records the measured match rate. A write after the step still runs by the class rules of §3.2. Each call writes one `usage_event` row | HIGH | AGENT-SAFE. After E5 |
+| **E12** | **Events from every core app** (task 2379). Wave 2 (D202.7). `calendar.*`, `email.*`, `whatsapp.*` and `people.*` events on the one bus (`ingestion/event_hooks.py`), so a workflow can start on them. CRM-M14 owns the `crm.*` events, and E12 adds no second list | A test lists each event of each core app. One change emits one event, and the event carries its org. A workflow starts on a Calendar event in the right org only | HIGH | AGENT-SAFE. A run with no viewer waits on H-328 |
 
 ### Group F — Skills
 
@@ -706,6 +950,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **F8** | `SKILL.md` export and import, and skills over the MCP | An exported skill loads in a stock Agent Skills client. An import keeps only catalog actions | STD | AGENT-SAFE |
 | **F9** | Retire the Agent Workshop and `AddAgentWizard` | The route and the wizard are gone. No test imports them | LOW | AGENT-SAFE |
 | **F10** | **Each published action is a chat tool.** A package gets a pack with no hand-written skill. Tool text comes from the manifest. A record value carries the untrusted mark | A view button with no tool fails a fence. A class B action asks on a card in chat. A member of a package sees its tools, and another member does not | HIGH | AGENT-SAFE. After B1c, B2b and F3 |
+| **F11** | **Mira inside each app** (task 2380). Wave 1 (D202). The app page binds the dock of the shell to THIS app with assistant facts, as the IDE does (D193). Mira runs each action of the app through its tools (F10), and a write still asks (B2c-2). She explains a record, finds what looks wrong and drafts the next step | On an app page, "close this visit" runs the close action of that app on a card. The page mounts no second chat (`seams.test.ts`). A member who cannot open the app gets no facts of it | STD | AGENT-SAFE. After F10 and PKG-8 |
 
 ### Group G — The builder
 
@@ -723,7 +968,27 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **G4** | Preview on sample data, with a preview store and simulated sends | A preview write never reaches `app_data` of the live package. A send in preview leaves no message | HIGH | AGENT-SAFE |
 | **G5** | Edit by diff, with one-step undo. It lives in the Studio IDE (G3a): the diff shows in the dock, and Undo and Publish sit in the top bar of the IDE | Each change shows its diff before it applies | STD | AGENT-SAFE. After G3a |
 | **G6** | The build eval: 30 prompts from §2.1. The regression cases replay recorded builder turns on the WEB-12 harness, with no model and no network (§11.1). The live run is the quality gate only | The replay cases run in the unit suite at no cost. The eval reports the pass rate per shape. The owner sets the run cost before the live run | STD | **OWNER-GATE** for a live run over USD 0.50. The replay half waits on WEB-12 |
-| **G7** | The builder on the CA-14 harness profile `app_builder`, for the code block | Needs CA-14 (#1042) | HIGH | AGENT-SAFE. After CA-14 |
+| **G7** | The builder on the CA-14 harness profile `app_builder`, for server code (B5). D202 moves the files of a screen to G16, so a screen needs no harness | Needs CA-14 (#1042) | HIGH | AGENT-SAFE. After CA-14 |
+| **G8** | **The Files branch and the code editor** (task 2381). Wave 3 (D202.1). The Explorer gets Files beside Data, Views and Rules. Each file is TypeScript or TSX, in the Monaco editor of the Workshop, with type hints for the UI kit (L4) and the door client. The draft keeps its files in the one package store (`packages_store.py`). A version holds them in `app_versions.files` (`agent_sandbox.md` §7.2) | A member with the code right (J7) adds a file, and the type hints show. A member without it sees the files read only. A version holds the files of its draft. The store refuses a version over the limits of §19.10 | HIGH | AGENT-SAFE. After L3 passes, L4 and J7. **One store:** if SBX-5 has not added `app_versions.files`, G8 adds it in the shape of §7.2, and SBX-5 reuses it. The audit of G8 picks the store of the draft files and says why |
+| **G9** | **Preview on save, and the console** (task 2382). Wave 3 (D202.1). A save compiles the screen in the member's browser (L1) and reloads the preview frame. The console shows the logs and the errors of the frame, with the file and the line | A save with an error shows it in the console and in Problems, and the last good preview stays. A `console.log` in a screen shows in the console | STD | AGENT-SAFE, with the UI gate. After G8 and L1 |
+| **G10** | **The test panel** (task 2383). Wave 3 (D202.1). One panel runs the tests of the package: skill tests (F4), workflow dry runs, and a render test of each screen on sample data in the frame | A failed test names its file and its line. A run writes nothing outside the preview store (G4) | STD | AGENT-SAFE. After G8, G4 and F4 |
+| **G11** | **The package panel** (task 2384). Wave 3 (D202.1). It shows what a module may import. A screen gets the standard set only (§5.4). Server code shows its package list (B8), with the review state, the size and the licence of each package | A screen file with an import outside the standard set gets an error with a path. A server module that adds a package shows "waits for review" | STD | AGENT-SAFE. After G8. The server half after B8 |
+| **G12** | **Version history in the IDE** (task 2385). Wave 3 (D202.1). The list of versions (A4), a diff of the manifest and the files between two versions, and a rollback | A diff of two versions shows each changed field and each changed line. A rollback makes a new version (A4) | STD | AGENT-SAFE, with the UI gate. After G8. The manifest half may ship first |
+| **G13** | **Mira checks her own screens** (task 2386). Wave 3 (D202). After a change, the member's browser takes captures of each custom screen at desktop and 390 px, in light and dark. Mira reads each capture and fixes what she sees (§11.2). The capture runs in the browser, never on our servers (D127.2) | Mira fixes a test screen whose text runs out of its box at 390 px. No server process draws member code | STD | AGENT-SAFE. After G9. The credit cap of the build (J3) binds |
+| **G14** | **Clone, export and import an app** (task 2387). Wave 2 (D202). Copy an app inside one org. Export a package version as one file. Import it into another org as a new private draft | An import carries no record, no secret and no connection id. An import runs the A2 validator and the catalog check. A clone names its source | HIGH | AGENT-SAFE. After A5 |
+| **G15** | **Two people on one app** (task 2388). Wave 3, later (D202). Live co-editing of one draft. Today the store refuses a stale save, and the edit stays in the editor | Two members edit two parts of one draft, and both changes land. Two edits of one field show a conflict | STD | AGENT-SAFE. After G8. Opus builder, because it is a concurrency slice |
+| **G16** | **Mira writes code files** (task 2389). Wave 3 (D202.1). Builder tools add and patch the files of a draft, with `based_on`. Mira uses blocks first, and the plan card names the gap that each file fills | The store refuses a file save with a stale `based_on`. The plan card of a test build with a file names its gap. A member without the code right gets no file tool | STD | AGENT-SAFE. After G8 and J7 |
+| **G17** | **Save history** (task 2390). Wave 2 (D202.9). Each save of a draft is a revision, with its author (a member or Mira), a message and a diff. A member reverts to any revision, and a publish tags a version (A4). Today G5 keeps one undo step, so a revision store comes first | A test draft with 5 saves lists 5 revisions with their authors. A revert makes a new revision and loses none. A publish names its revision. Two saves at once give two revisions in order. R8 | HIGH | AGENT-SAFE. A migration at the next free number at build time (R1). After G5 |
+| **G18** | **Named drafts as branches** (task 2391). Wave 3 (D202.9). A member tries a change in a named draft, and the main draft stays as it is. A merge shows a diff and resolves each conflict | A change in a named draft leaves the main draft unchanged. A merge with no conflict lands in one step. Two edits of one field show a conflict that the member resolves before the merge. R8 | HIGH | AGENT-SAFE. After G17 |
+| **G19** | **Two-way sync with GitHub** (task 2392). Wave 3 (D202.9). An optional sync with a folder in the GitHub repository of the org, through the GitHub connection of WS-54 (built and off, task 1872). The manifest and the code files export as the folder of §6.5. A push imports as a new draft revision, and never publishes by itself. A publish still needs the review of `studio:publish`. It serves MCP-P5 (task 869), Studio for outside coding agents | A push to a test folder makes one new draft revision and no version. An export writes the manifest and each file. The token stays in `integration_connections`, and no sandbox sees it. `tests/unit/test_no_host_git_on_sandbox_dir.py` passes unchanged | HIGH | AGENT-SAFE build. After G17 and task 1872. The sync with a live repository of an org is an act of its admin |
+| **G20** | **The Studio API contract version** (task 2393). Wave 3 (D202.10). `metorite.json` pins a contract version. The server refuses an unknown or a retired version with the code `contract_unsupported`. The SDK and the server publish a support window, and `check` warns before a version retires | A push with a retired version gets `contract_unsupported` and writes nothing. A golden-file test locks the manifest schema, so a server change that breaks the kit fails CI. `check` warns 30 days before a version retires | STD | AGENT-SAFE. After G1b |
+| **G21** | **The scaffold** (task 2394). Wave 3 (D202.10). `npx @metorite/create-studio-app`, or `metorite studio init`, makes the folder of §6.5. The sync joins the files into one manifest and splits it again | A new folder passes `check` with no edit. A split and a join of a test manifest give an equal manifest. The `AGENTS.md` and `CLAUDE.md` of the folder name the guardrails of §19.10 | STD | AGENT-SAFE. After G20 |
+| **G22** | **The SDK** (task 2395). Wave 3 (D202.10). `@metorite/studio-sdk`: types made from the live schema of `studio_describe` (G1b), a `json.schemas` mapping for VS Code, a typed door client made from the manifest of the app, and a mock door with the sample rows. It takes the UI kit from L4, and copies no part of it | A test fails when the types and the live schema differ. A screen test runs on the mock door with no network. The door client refuses an action that the manifest does not declare | STD | AGENT-SAFE. After G20 and L4 |
+| **G23** | **The CLI login** (task 2396). Wave 3 (D202.10). `metorite login` with a device code. It reuses the WS-55 connection for outside agents and its scopes (D136), so no second token type exists | A login gives a token of the WS-55 kind, with the Studio scopes only. A revoke in Metorite stops the CLI at its next call. A token of org A cannot push to org B. R8 | HIGH | AGENT-SAFE. After G20 |
+| **G24** | **The CLI commands** (task 2397). Wave 3 (D202.10). `check` runs the validator of the server, with errors at file and line. `test` runs the rule tests and the dry runs on the server (F4), and vitest on the mock door. `dev` pushes to a dev draft, and the preview of the IDE reloads (G4). `push` makes a draft revision (G17), and `diff` and `pull` read the draft. The CLI has no `publish` | A test folder with one bad field gets one error at its file and line. A push makes one revision and no version. No command publishes. A test fails when the CLI holds a copy of the validator or of the rule evaluator | STD | AGENT-SAFE. After G17, G21, G22 and G23 |
+| **G25** | **Build from source only** (task 2398). Wave 3 (D202.10). Metorite accepts source, and never a bundle that a laptop built. Server code builds in a throwaway sandbox (L7), and a screen compiles from the approved source in the browser (L1). The local build serves only the preview and the tests | The server refuses a push that holds a compiled bundle, with a fixed code. A version holds source only (§19.10 rule 15). A published server module comes from a build in the sandbox, with its hash in the version | HIGH | AGENT-SAFE. With L1. The server half after L7 |
+| **G26** | **The AI harness** (task 2399). Wave 3 (D202.10). A Claude Code skill or plugin, `metorite-studio`. It teaches the manifest, the blocks, the door and the guardrails. It runs `check` after each edit, and takes the visual captures of each custom screen (§11.2). The same tools work over the Metorite MCP (MCP-P5, task 869) | In a test session, the harness builds a small app from a brief, and `check` passes. A break of a rule of §19.10 gives a `check` error, and no push. Claude Code builds the same app over the MCP with no CLI | STD | AGENT-SAFE. After G24. The MCP half after MCP-P5 |
+| **G27** | **A VS Code extension** (task 2400). Later (D202.10). The schema, a preview pane and the state of the sync, in VS Code | The extension shows the problems of `check` in the editor, and the preview of a dev draft in a pane | STD | AGENT-SAFE. After G24 |
 
 ### Group H — The shell
 
@@ -734,6 +999,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **H1** | **Carried by WS-PKG PKG-8** (`package_host.md`, D147). Installed apps in the sidebar, per org, through the one run-time registry. Studio builds no list of its own. **PKG-8a is built dark (2026-11-07):** a publish keeps a private sidebar entry of the owner at `/apps/<package id>` (`package_host.md` §5.5). PKG-8b adds the org and group scopes | An installed app shows for a member who may open it, and for no one else. `nav.test.ts` still counts only the built-in live panes | STD | AGENT-SAFE |
 | **H2** | **Carried by WS-PKG PKG-8** (`package_host.md`, D147). App jobs, needs, Home cards and search from the manifest into the shell seams | A job of an installed app shows in ⌘K "Do". A need shows in the bell | STD | AGENT-SAFE |
 | **H3** | Phone and WhatsApp: a skill's cards over WhatsApp | A skill's write on WhatsApp still asks once | STD | AGENT-SAFE |
+| **H4** | **The org's own words** (task 2401). Wave 2 (D202.7). Display labels for record kinds and stages, in an overlay (`package_host.md` §8.4): "Deal" becomes "Case", and "Contact" becomes "Patient". Mira understands both names. The data and the APIs keep one name. This H4 is not the H4 of WS-29 that §3.3 names | A label shows in the sidebar, on the record page and in chat, for the scope of the overlay only. A search by either name finds the record. No API name changes | STD | AGENT-SAFE (D202.7, question B). After PKG-16 |
 
 ### Group I — Connectors
 
@@ -743,6 +1009,9 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **I2** | Generate an app from a connection or an MCP server (§8.2) | A test MCP server with two reads and one write gives two lists, two details and one form with an approval | STD | AGENT-SAFE |
 | **I3** | **Mail merge.** An `email.merge_send` action: one template, one attachment for each person, one approval, a throttle, a status for each person. It copies the pattern of `whatsapp.broadcast` | A run of 300 stops at the provider limit and resumes. A resend sends none twice. A send to a person outside the scope asks | HIGH | AGENT-SAFE. After E8. STU-Q13 |
 | **I4** | **Doors for the rest.** Ask WS-MCP to plan the doors of attachments, documents and notes, and a write op for `people_absences` | Each built-in app that §19.6 names has a row in `external_agent_access.md` | LOW | AGENT-SAFE |
+| **I5** | **The Knowledge link** (task 2402). Wave 1 (D202). A field or a step cites a section of a Knowledge page: a manual, an SOP, a safety data sheet. The app shows the section in place, and reads it through the Knowledge door as the viewer | A step shows its manual section. A viewer who cannot open the page sees its title and no text | STD | AGENT-SAFE |
+| **I6** | **FHIR export and the ABDM link** (task 2403). Wave 2, health only (D202.8). Each clinical field maps to FHIR resources from now. The app captures and checks an ABHA, and shares records through the consent manager | A test visit exports a valid FHIR bundle. With no consent, nothing leaves | HIGH | AGENT-SAFE for the FHIR map (D202.8). The ABDM link comes when the first clinic asks. **OWNER-GATE:** Hathi Labs registers as an ABDM partner and passes its sandbox |
+| **I7** | **Biometric device connectors** (task 2404). Later (owner, 2026-11-09), when HR is built (D202.7). The ZKTeco and eSSL ADMS push, to an endpoint for each org with an opaque token in its path. The cloud APIs of eSSL, ZKBioTime and Matrix COSEC go through the OpenAPI import (O12). ADMS carries no signature, so the endpoint takes a push only from a device serial on the list of the org. A serial is no secret, and the row records that risk. It stores punches only, never a biometric template (§19.7) | A push from a listed serial writes its punches once. A push from an unknown serial writes nothing and logs the serial. A second delivery of one punch writes no second row (C11). No field type can hold a biometric template | HIGH | AGENT-SAFE. After C11. The cloud APIs after O12 |
 
 ### Group J — Governance
 
@@ -753,18 +1022,32 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **J3** | The kill switch, the credit caps and a `usage_event` row for each model call | A paused package runs no new action within 10 seconds. A build stops at its cap | HIGH | AGENT-SAFE |
 | **J4** | The admin view: every package, owner, version, runs, last error and use. It joins AUTO-4 (task #817) | An admin sees every package of the org. A member sees only their own | STD | AGENT-SAFE |
 | **J6** | **The install consent screen.** What the app reads, writes and sends, who sees it, its runtime kind, its sensitive fields and its `run_as` | The screen draws from the manifest, with no hand-written list. A new version that widens any of these asks again | STD | AGENT-SAFE. After PKG-8 |
+| **J7** | **The code right for a group, and the code switch of the org** (task 2405). Wave 3, the first code row after L3 (D202.3). Writing code is off by default. An admin turns it on for a group in Studio settings, as a list of D12 grants (`group:<slug>` or an email). It is no permission, so D180.4 and D180.5 hold. One admin switch stops all code of the org | A member outside the list gets no file tool and cannot save a file. That member still builds with blocks. The switch stops each screen within 10 s, and each server run before it starts | HIGH | AGENT-SAFE. An agent never writes the list of a live org |
+| **J8** | **E-signatures** (task 2406). Wave 2 (D202.5). A signature for regulated work: the member signs in again at the act, the record states what the signature means, and the record locks (C17) | A signed revision cannot change. The signature names the member, the time and its meaning. A failed second sign-in writes nothing | HIGH | AGENT-SAFE. After C17 |
+| **J9** | **Emergency access** (task 2407). Wave 2 (task 2327). A member states a reason, and opens a record that a row rule (C8) hides, for a short time. The admin sees each use | The app refuses an open with no reason. The access ends at its time limit. Each use writes one audit row, and the admin view lists it | HIGH | AGENT-SAFE. After C8 |
+| **J10** | **Data residency for each org** (task 2408). Wave 2 (D202.8). A flag for each org records that its health data stays in India. An org that turns on a health app gets the flag. Each store and each vendor path of a health app reads it | A test lists each outbound path of a health app with its region, and refuses a path with no region. With the flag on, no record of a health app goes to a store or a vendor outside India. An org without the flag sees no change | HIGH | AGENT-SAFE for the flag and its checks. Where a store or a vendor runs is infrastructure, and a move of it is an OWNER-GATE |
 
 ### Groups K, L and M — Templates, code, pinned answers
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **K1** | App templates in `app_templates`: U7, U8, U15, U16, U19 and U9 first | Each template installs in one step and passes D12 | LOW | AGENT-SAFE |
+| **K1** | App templates in `app_templates`: U7, U8, U15, U16, U19 and U9 first. D202.5 puts K6, K7 and K8 before them | Each template installs in one step and passes D12 | LOW | AGENT-SAFE |
 | **K2** | A template update to an installed app that a member changed | The update keeps each local change, or names the conflict | HIGH | AGENT-SAFE |
 | **K3** | **First-party template: inventory and procurement** (D146.6, §3.7 example). Items with product lines and units, locations, the stock ledger, vendors, purchase requests and purchase orders with an approval chain by amount, and goods receipt with a QC step. It posts to Tally or Zoho Books through a connector | It installs in one step and passes D12. A receipt writes stock moves that keep stock on hand right. A purchase order above the limit waits for a director | STD | AGENT-SAFE |
 | **K4** | **First-party template: MRP-lite and the production schedule** (D146.6). BOMs, work orders, machines, the nightly MRP run (a B4 module) and a production timeline by machine | On a fixed test set, the MRP run proposes the expected planned orders. Each planned order waits for approval. The timeline shows each work order on its machine | HIGH | AGENT-SAFE |
 | **K5** | **First-party template: HR and payroll.** The objects, rules, workflows and views of §19.8, at kind `none`, with sample data | An HR team installs it and runs one month on sample data: punches, leave, a pay run, slips, mail. No sandbox runs. Real data waits on STU-Q11 | STD | AGENT-SAFE. After the slices of §19.9 |
-| **L1** | The code block (§5.4) | Code runs with the `--cc-*` tokens only, and every bridge call goes through B2 | HIGH | AGENT-SAFE. After SBX-9 and CA-14 |
+| **K6** | **Template: the assembly guide** (task 2409). Wave 1, first (D202.5). For Fracktal, customer zero. Steps with photos, video, torque values and checks, and a sign-off for each step, on C16, D14, D24 and I5 | It installs in one step and passes D12. An operator runs a guide of 10 steps on a phone and signs each step. Sample data only | STD | AGENT-SAFE. After C16, D14 and D24 |
+| **K7** | **Template: the shipment tracker** (task 2410). Wave 1 (D202.5). Stages from booked to delivered, an SLA timer, an event timeline, a delivery photo and a signature | It installs in one step and passes D12. A late shipment starts its escalation. The tracking link for the customer waits on O4 | STD | AGENT-SAFE. After E9, D22 and D24 |
+| **K8** | **Template: the field site survey** (task 2411). Wave 1 (D202.5). GPS, photos from set angles, measurements, a checklist and a gallery | It installs in one step and passes D12. A survey on a phone stores each photo with its angle label and its place. Offline capture joins in wave 2 (D26) | STD | AGENT-SAFE. After D19, D24 and D25 |
+| **K9** | **Template: the clinic** (task 2412). Wave 2, health only (D202.8). The patient flow of task 2327: book, register, triage, consult, code, order, prescribe, bill and follow up. It builds no inbox, calendar or payment system of its own (§20.1). Each clinic keeps its own drug list in a lookup table (C19), with no interaction check. Prepay is a setting for each service (O10) | It installs in one step and passes D12. It runs on sample data only. No AI output writes a clinical field by itself (§19.10 rule 11) | STD | AGENT-SAFE (D202.8). After the wave 1 blocks. Sample data until WS-37 and a lawyer clear real patients (D174.6, STU-Q11, STU-Q21) |
+| **K10** | **The India statutory pack** (task 2413). Later (owner, 2026-11-09), when HR is built (D202.7). PF, ESI, professional tax by state, and TDS, as template data with dates, for K5. Metorite calculates what HR sets, and does not certify compliance. The template says so | A pay run of a test month uses the rates of its dates. A new rate with a later date leaves a closed month as it was. Money stays in whole paise (C7) | HIGH | AGENT-SAFE. With K5. Each rate names its source, and a person checks it before a real pay run |
+| **L1** | **Custom screens** (§5.4, D202.4). The code block becomes a screen built from the UI kit (L4). The viewer's browser compiles the approved source, and runs it in a locked frame with no network. The server stores source only | Code runs with the `--cc-*` tokens only, and every bridge call goes through B2 as the viewer. A version stores source and no bundle that a browser sent. A screen that fails to compile shows its error state, and the page still works | HIGH | AGENT-SAFE. After L3 passes, L4, G8 and J7. If L3 fails, after SBX-9 and CA-14 (D202.4) |
 | **L2** | Move existing App Workshop apps into packages with `format = code` | Each existing app opens and runs from Studio | STD | AGENT-SAFE |
+| **L3** | **The browser compile spike** (task 2414). The first row of wave 3, and the condition of D202.4. Prove that the TS and TSX compile of a custom screen runs in the member's browser, in a worker, with no server call. Today chat artifacts compile on the server (`lib/compileArtifact.ts`), and member code may not (D127.2) | A note in this row records the compiler, its licence, its download size, and the cold and warm compile times of a screen of 10 files on the dev PC. The proposed bar: a warm compile under 2 s, and a compiler under 5 MiB compressed. The note says pass or fail | LOW | AGENT-SAFE. **If it fails, every code row waits for SBX-9 (D202.4)** |
+| **L4** | **The Metorite UI kit** (task 2415). Wave 3 (D202.2). The Board, Table, List, Tabs, Form, Detail and chart components go into the code frame. They come from the same source files, with the same tokens and with TypeScript types. L4 grows the one kit that exists, `@cc/ui` (`lib/artifactUi.tsx`), and adds no second kit. Data moves only through the door client | A test holds that each export of the kit comes from the file that the app uses, and that the kit copies no component. The types load in the editor (G8). A screen from the kit passes the conformance suite. A test holds one React version for the kit and the frame | STD | AGENT-SAFE. After L3 passes |
+| **L5** | **three.js in the standard set** (task 2416). Wave 3 (D202.4). three.js joins the standard set of the code frame, and WebGL works in the locked frame. The frame gets a model file through the door | A screen draws a GLB model in the frame with no network. A screen that does not import three.js does not load it | STD | AGENT-SAFE. After L1 |
+| **L6** | **Limits for each version, and the fixed error codes** (task 2417). Wave 3 (D202). The limits table of §19.10, enforced where the code runs. One closed set of error codes, each with one sentence that says what happened and what to do next | A golden test pins each code and its sentence, in Python and in TypeScript. Each limit of §19.10 has a refusal test | STD | AGENT-SAFE. With L1 |
+| **L7** | **Warm runtimes for server code** (task 2418). Wave 3 (D202). Build once in a throwaway sandbox. Then serve each version from warm runtimes with limits, kept for each org and each version. No runtime serves two orgs. The live pointer moves only after the build and its smoke test pass | A failed build leaves the old version live. A runtime of org A never runs a call of org B. A second call of one version starts no new build. An idle runtime stops after its time | HIGH | AGENT-SAFE. After SBX-9 and B5 |
 | **M1** | **Grown into WS-PKG PKG-12** (`package_host.md`, D147): Mira makes a private package from chat, with an end date. Pin a chat card or an artifact as a draft package page, with a 30-day expiry | A pinned page opens by link after the chat ends. It expires on its date, and its owner can restore it | STD | AGENT-SAFE |
 
 ### Group O — Apps for the outside world, and apps over any system (§20)
@@ -785,6 +1068,13 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **O12** | **Apps over any outside system.** An OpenAPI import grows `custom_api_definitions` into a connection with actions (GET A, other verbs B, DELETE C, an admin may raise a class). Calls go through `outbound_guard.py` with the credentials of `connections/store.py`, a size cap and the untrusted mark (#1444). A remote object (`source: {connection, list, get, create?, update?}`). A mirror into the store, with a cursor and a cap | An imported test API gives a list, a detail and a form. A remote object reads through the door as the viewer. A mirror run is idempotent. No call reaches a private address | HIGH | AGENT-SAFE. After I1, I2 and B1b |
 | **O13** | **Inbound events for each connection.** `/workflows/hooks` grows into one inbound route for each connection, which binds the tenant and checks the provider's signature | A signed Razorpay or Odoo event starts one run in the right org. A replay starts none | HIGH | AGENT-SAFE. After H-328 |
 | **O14** | **Insights over app data.** A scheduled insight run for each package (B6) reads aggregates (C2b) and searches (C5), and writes a Home card or a bell item through the WS-PKG points `cards` and `needs`. No restricted field (C9). A credit cap (J3) | A weekly run writes one card with its numbers and their source. A restricted field never reaches the model. A run over its cap stops and says so | STD | AGENT-SAFE. After C5, C2b, B6 and J3 |
+| **O15** | **Person match and merge** (task 2419). Wave 2 (task 2327). It extends O5. Metorite finds duplicate people by phone, name and birth date, and merges two of them after a person reviews the pair. Each relation moves to the kept record | A merge keeps every relation and every consent row. Each merge needs the approval of a person. The audit names both ids. R8 | HIGH | AGENT-SAFE. After O5 |
+| **O16** | **Consent records for each purpose** (task 2420). Wave 2 (task 2327). It extends the one consent record of CRM-M11, and adds no second store. Consent for each purpose: treatment, photos, AI help, messages. Each row holds the version of the notice, a signature and a withdrawal | A withdrawn purpose stops its sends and its AI help at once. A row names its notice version. One store holds every consent | HIGH | AGENT-SAFE. With CRM-M11. The wording waits on a lawyer (OPEN-3) |
+| **O17** | **Email as a channel** (task 2421). Wave 2 of §20.8. An inbound mail to an org mailbox or a shared mailbox emits the same `channel.message` as WhatsApp (O7), with the contact found by email (O5). A reply carries signed slot links (O2, O4), or asks "reply 1, 2 or 3" | A mail to a test shared mailbox starts one conversation run. A second mail in the thread continues it. A mail from another address starts no run for that contact | HIGH | AGENT-SAFE. After task 733 (the shared mailbox, SM-3 to SM-9), O7 and O9 (STU-Q20) |
+| **O18** | **Automatic replies to outside people** (task 2422). Wave 2 of §20.8 (D202.8). A level of the trust ladder (D131), with four rules. Rule 1: Mira sends at once only an answer that the approved Knowledge of the org grounds, on a topic that an admin turned on. The reply says that it is automatic, and always offers a person. Rule 2: an answer about the sender's own records needs a sender check, and goes only as a signed link (O4). Rule 3: Mira never answers a clinical question, and staff get a draft. Rule 4: an emergency word gets a fixed safety reply and an alert to the org, with no AI text | Each rule has its fence in `tests/unit/test_auto_reply_policy.py`, new with O18: `test_an_auto_reply_needs_a_grounded_answer_on_an_open_topic`, `test_an_own_record_answer_needs_a_sender_check_and_a_link`, `test_a_clinical_question_gets_a_staff_draft_and_no_reply` and `test_an_emergency_word_gets_the_fixed_reply_and_an_alert` | HIGH | AGENT-SAFE (D202.8, question 7). After O7, O8 and O9 |
+| **O19** | **Conversation threads on the record timeline** (task 2423). Wave 2 (task 2327). The activity feed (D22) of a record reads the WhatsApp and Email threads of its linked contact through the doors of those apps, as the viewer. It never copies a message | A test patient shows a WhatsApp thread and a mail thread in time order. No Studio table holds the text of a message. A viewer who cannot open a thread in its app sees no line of it | STD | AGENT-SAFE. After D22, O5 and the Email and WhatsApp doors (§19.6) |
+| **O20** | **One team inbox** (task 2424). Wave 2 (D202.7). The threads of the org's WhatsApp number (O6) and of its shared mailboxes (task 733) in one queue. A thread gets an assignee and a linked record. It builds on the ticket queue of E21 (task 2202) and the shared mailbox, and adds no second inbox seam | A WhatsApp thread and a mail thread show in one queue. An assignment tells one member. A member sees only the threads of the mailboxes and the numbers that they may open | HIGH | AGENT-SAFE. After task 733, O6 and E21 (task 2202). The audit of O20 names the one seam that it extends |
+| **O21** | **A sender for an org with no channel** (task 2425). Wave 2 of §20.8 (D202.7). A sender subdomain that Metorite gives, for notices only, as a fallback. Metorite gives no shared WhatsApp number | An org with no domain sends a booking notice from the subdomain. The send path refuses a marketing send from it. Each org keeps its own suppression list (CRM-M11) | HIGH | AGENT-SAFE build (D202.7, question C). A live send is an OWNER-GATE (CLAUDE.md §3a rule 3) |
 
 ---
 
@@ -797,6 +1087,16 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **3 · Automations and rich blocks** | B1b, B4, B6, B7, C3, C4, C5, C9, C10, C11, D5 to D9, D13, E2 to E6, E8, F4, F6, F7, H2, I1, I2, I3, I4, J3, J4, J6, K4, K5 | S1 and S3 in full, connector apps, calendar, timeline, mind map, playbooks, first-party logic and the MRP-lite template | H-328 for unattended runs. WS-67 for F3 |
 | **4 · Code, outside agents, scale** | B3, B5, B8, C12, D10, F8, F9, G6, G7, H3, K2, L1, L2, M1 | Member logic modules, the code block, MCP access, pinned answers | MCP-P1b, SBX-9, CA-14 (#1042), MCP-P5 (#869) |
 | **5 · Outside world** | O1 to O14, with CRM-M8 and CRM-M11 | Public forms and kiosks, WhatsApp flows, payments and bookings, apps over any outside system, and insights (§20) | Stage 2 apps live. STU-Q16 to STU-Q23. H-328 and B6 for unattended runs |
+
+**The three waves of D202.** The use-case brainstorm of task 2326 ordered the new rows in three waves, and the owner answered "looks good" (D202.5). The waves map onto the stages as this table shows. Each row of §14 names its wave.
+
+| Wave | What a member gets | Stage | New rows | Starts after |
+|---|---|---|---|---|
+| **1 · Trackers, registers and procedures, with no code** | Line items, template and run, the guided step player, photo, signature and scan fields, auto-number, SLA timers, the Knowledge link, record history and the version lock, Mira inside each app, and AI fills that a person confirms | Stage 3, first | C13, C14, C15, C16, C17 (with C4), C21, D14, D19, D22, D24, D25, E9, F11, I5, B9, B10, B11, then the templates K6, K7 and K8 | Stage 2 delivers its first apps (A5, B2c-1, D2b, D11b, PKG-8, F10). D4 to D11 finish first |
+| **2 · Documents and reach** | Print layouts (D13), versioned documents with e-signatures, offline capture, translation, video to steps, the 3D viewer, generated images, the channel rows, git save history, and the blocks and the template of the clinic study | Stage 3, second. O15 to O21 join Stage 5 | C18, C19, C20, C22, C23, C24, C25, C26, D16, D17, D18, D20, D21, D23, D26, D27, D30, E10, E11, E12, G14, G17, H4, B12, B13, B14, B15, J8, J9, J10, O15 to O21, and the clinic rows B17, D31, I6 and K9 (D202.8) | Wave 1. Group O keeps its own order (§20.8) |
+| **3 · Code and extension** | The full code IDE with the UI kit and custom screens, the diagram canvas, 3D scenes, then server code after SBX-9 | Stage 4 | L3 first, then J7, L4, G8, G16, L1, L5, L6, G9, G10, G11, G12, G13, G15, G18, G19, G20 to G26, D15, D28, D29. After SBX-9: B5, B8, L7, B16, G7 | L3 passes. If L3 fails, every code row waits for SBX-9 (D202.4) |
+
+**Rows outside the waves.** B18, I7 and K10 serve HR, and the owner put them later on 2026-11-09 (D202.7). G27, the VS Code extension, comes later too (D202.10). `package_host.md` PKG-14c is the slot row of D202.7, in Phase P3 of that spec.
 
 **The first dispatchable slice is B1.** It waits on no owner question, writes nothing, and every later group reads it.
 
@@ -841,6 +1141,16 @@ Each path was read on `82157e5fd`. A3 and C1 added their paths after that commit
 - `app/api/workflows/[[...path]]/route.ts` (the proxy that F2b copied), `app/api/projects/[...path]/route.ts` (the PATCH precedent), `lib/gatewayPath.ts` and `lib/gatewayPath.test.ts` (the sweep of every catch-all proxy)
 - `app/studio/page.tsx`, `app/studio/components/WorkflowsGallery.tsx` (the model of `SkillsGallery`), `components/AppTopBar.tsx`
 - F2b added: `app/api/studio/[[...path]]/route.ts`, `app/studio/components/SkillsGallery.tsx`, `SkillForm.tsx` and `SkillStateBadge.tsx`, the pages `app/studio/skills/new/page.tsx` and `app/studio/skills/[id]/page.tsx`, and `lib/studio/skillStarter.ts`, `skillErrors.ts`, `skillForm.ts` and `skillsApi.ts`
+
+**Read for D202, on `9cbfea6a2`**
+
+- `workbench/control_plane/src/lib/compileArtifact.ts` and `app/api/artifacts/compile/route.ts` — chat artifacts compile on the server with esbuild, and alias React to `preact/compat`. Member code does not use this route (§5.4)
+- `workbench/control_plane/src/lib/artifactUi.tsx` — the kit `@cc/ui`, which L4 grows
+- `workbench/control_plane/src/components/studio/` — `StudioBoard.tsx`, `StudioTable.tsx`, `StudioForm.tsx`, `StudioDetail.tsx` and `StudioPage.tsx`, the blocks that the kit exports
+- `workbench/control_plane/src/components/Tabs.tsx`, `components/VoiceInputButton.tsx`, `components/AccessTree.tsx` and `components/MarkdownImage.tsx`
+- `workbench/control_plane/src/app/studio/build/page.tsx` — the IDE of G3a
+- `apps/services/gateway/gateway/package_host/field_values.py` — `HOST_RECORD_KINDS`, which PKG-14c grows
+- `workbench/control_plane/package.json` — React 19.2.4, `@xyflow/react`, `@monaco-editor/react` and `lucide-react`. No three.js
 
 **Tooling**
 
@@ -918,6 +1228,7 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A chat save with an id needs the `based_on` of the stored draft, and no result holds stored manifest text | New with G1c: `test_a_save_with_an_id_needs_the_based_on_of_the_stored_draft` and `test_no_result_holds_the_text_of_a_stored_manifest_of_100_kib` in `tests/unit/test_studio_package_tools.py` |
 | A refused publish gives the names inside « » and a fix line that the tool owns, never the text of the server | New with G1c: `test_the_problems_are_framed_with_one_fix_line_for_each_kind` in `tests/unit/test_studio_package_tools.py` |
 | Only `delete_package` deletes a package from `apps`, and the versions go by the cascade | New with A5c-1: `test_only_delete_package_deletes_a_package` and `test_the_versions_go_by_the_cascade_and_no_statement_names_them` in `tests/unit/test_studio_package_delete.py` |
+| The sandbox rules for each org, each person and each version (D202) | §19.10 names one fence for each rule |
 | A delete locks the `apps` row and then the org lock, holds no lock between two steps, and writes its audit row in the transaction of the delete | New with A5c-1: `tests/unit/test_studio_package_delete_r8.py` (R8), and `test_the_lock_order_is_in_the_source` in `tests/unit/test_studio_package_delete.py` |
 
 ---
@@ -1140,11 +1451,72 @@ Kind `none` for the whole app. K5 ships it as a first-party template, so the HR 
 | 9 | Ingest, batch, documents and mail merge | **C11**, **E8**, **D13**, **I3** (new) | HR, finance, operations |
 | 10 | Doors for People and Calendar, and a plan for the rest | MCP-P4, **I4** (new) | Reach into built-in apps |
 | 11 | Retention, caps, consent and search | **C10**, **J6** (new), C5 | Scale and trust |
-| 12 | Code: the runtime key, the sandbox, its meter, layers | **B7** (new), SBX-9, B5, L1, **B8** (new) | Member code only |
+| 12 | Code: the runtime key and custom screens in the browser, then the sandbox, its meter, layers and warm runtimes | **B7**, L3, J7, L4, L1, then SBX-9, B5, **B8**, L7 (D202) | Member code only |
 | 13 | Data shared between packages | **C12** (new) | App suites |
 | 14 | The template that proves all of it | **K5** (new) | The owner's example |
 
 **Fences for this section.** Each slice names its own when it lands. The first four are: a UI action with no chat tool fails (F10), a member reads no record of another member past a row rule (C8), a restricted value reaches no model (C9), and the validator refuses a `hosts` key in `runtime` (B7).
+
+### 19.10 The sandbox, per organization and per person (D202.3)
+
+The owner accepted choice 3 of task 2326 on 2026-11-08. Before it, the rules sat in §19.3, §19.5, §19.7, D130, D187 and `agent_sandbox.md`. This table holds them in one place, and the owning text of each rule stays where the table names it. Each rule names its fence (R7). "New with X" means that slice X builds the fence, so the rule is advisory until X lands.
+
+| # | Rule | Owner | Fence |
+|---|---|---|---|
+| | **Each organization** | | |
+| 1 | No org shares a run with another org. A warm runtime, a build and a container each serve one org | L7, `agent_sandbox.md` §4.6 | New with L7: `test_a_runtime_of_one_org_never_runs_a_call_of_another` |
+| 2 | Metorite stores a package layer once only when the hash is the same. The layer counts against the cap of each org that uses it | §19.5 | New with B8: `test_a_shared_layer_counts_for_each_org` |
+| 3 | Each org owns its secrets, connectors, credits and caps | D4, `connections/store.py`, D19.3 | `tests/unit/test_tenant_coverage.py` for each table. The rest is advisory |
+| 4 | One admin switch stops all code of the org: each screen within 10 s, and each server run before it starts | J7 | New with J7: `test_the_org_code_switch_stops_each_code_path` |
+| | **Each person** | | |
+| 5 | Writing code is off by default. An admin turns it on for a group (`group:<slug>`, D12) in Studio settings. The code right is no permission, so D180.4 and D180.5 hold | J7 | New with J7: `test_the_code_right_is_off_by_default` |
+| 6 | Every Studio member still builds with blocks | D180.1 | `tests/unit/test_studio_route_gate.py`. New with J7: a member without the code right saves a manifest |
+| 7 | A holder of `studio:publish` approves each version with code, and each package list, before it reaches anybody but its author | D180.3, D187.2, B8 | New with SBX-6 and B8 |
+| 8 | Code reads and writes with the rights of the viewer, never of the author | §9 item 2, D187.2 | `tests/unit/test_studio_action_door_r8.py` for the door. New with L1: `test_a_screen_call_runs_as_the_viewer` |
+| 9 | A restricted field never enters a sandbox, unless the logic names it and a reviewer approves that name | §19.3, C9 | New with C9 and B5: `test_a_restricted_field_never_enters_a_sandbox` |
+| 10 | A run with no viewer runs as one named member, cut down to the `uses` of the package | B6, §19.2 | New with B6 |
+| 11 | **AI output on a restricted field is always a suggestion that a person accepts (C21).** It never writes to a record by itself, and it never prescribes. The AI reads such a field only after an admin opened it to the AI (D174.6) | C21, C9, task 2327 | New with C21: `test_ai_output_on_a_restricted_field_is_a_suggestion`. New with K9: `test_no_delegated_write_reaches_a_prescription` |
+| | **Each version** (Dynamic Apps, §11.2) | | |
+| 12 | Build once in a throwaway sandbox. Serve the version from warm runtimes with limits, kept for each org and each version. A call never starts a build | L7 | New with L7: `test_a_second_call_of_one_version_starts_no_build` |
+| 13 | **An atomic switch.** The live pointer moves only after a complete build and a smoke test that passes. A failed build never replaces the live version | A4, L7 | `test_r8_a_failure_after_a_write_rolls_back_the_version_and_the_audit` (A4). New with L7: `test_a_failed_build_never_moves_the_live_version` |
+| 14 | **Host functions are the only way out.** A screen calls the `window.cc` bridge, and server code calls the door client (SBX-13). No token, key or database link enters the code | §19.3, SBX-2, SBX-13 | New with L1: `customScreenFrame.test.ts`, the policy of the frame. The `SANDBOX_ROUTES` fence of SBX-2. B7 refuses a `hosts` key |
+| 15 | The server stores the source of a screen, and never a bundle that a browser sent. Each viewer compiles the approved source | L1, §5.4 | New with L1: `test_a_version_stores_source_and_no_bundle` |
+| 16 | Each version obeys the limits table below | L6 | New with L6: one refusal test for each limit |
+| 17 | Each failure gives one code from a fixed set, with one sentence | L6 | New with L6: `tests/unit/test_studio_code_error_codes.py` and `src/lib/studio/codeErrors.test.ts`, both golden |
+| 18 | No member code runs on our servers. A capture of a screen (G13) and a compile (L1, L3) run in the member's browser | D127.2, D202.4 | Advisory. The review of each code slice checks it |
+
+**The limits for each version (proposed).** Dynamic Apps sets 64 MB of heap, a 30 s run, a 1 MiB request, a 4 MiB response, 4 MiB of source, 2,000 files and 256 dependencies. The numbers below stay inside the ceilings that the spec already holds. They stay proposals until L6 measures them.
+
+| Limit | Screen (kind `browser`) | Server code (kinds `sandbox` and `packages`) | Ceiling today |
+|---|---|---|---|
+| Source of one version | 256 KiB in at most 100 files | 256 KiB in at most 100 files | `app_versions.files` holds 262,144 bytes (`agent_sandbox.md` §7.2) |
+| Compile or build time | 10 s in the browser | 180 s for a build | 180 s for an install (§19.5) |
+| Memory | The limit of the browser | 256 MiB for each runtime | 1 GiB (§19.3) |
+| One call | No limit of its own. Each door call keeps the limits of the door | 30 s | 300 s (§19.3) |
+| Input of one call | 1 MiB for each door call | 1 MiB | 5 MiB (§19.3) |
+| Output of one call | 4 MiB for each door answer | 4 MiB | 5 MiB (§19.3) |
+| Proposed writes of one call | The class rules of the door (§3.2) | 5,000 | 5,000 (§19.3) |
+| Queue | 20 door calls a second for each frame | 16 calls for each runtime | None yet |
+| Warm runtimes | None | 1 for each org, and an idle runtime stops after 10 minutes | 1 container of this target for each org (`agent_sandbox.md` §5.6) |
+| Packages | The standard set only (§5.4) | 20 direct and 150 in all | §19.5 |
+
+**The error codes (proposed).** L6 fixes the set. Each code has one sentence that says what happened and what to do next.
+
+| Code | When |
+|---|---|
+| `compile_failed` | A screen does not compile. The console names the file and the line |
+| `build_failed` | A server build fails. The live version stays |
+| `limit_exceeded` | A version or a call passes a limit of the table above |
+| `timeout` | A call runs past its time |
+| `door_refused` | The door refuses a call, for the reason that the door gives |
+| `not_approved` | The version waits for a holder of `studio:publish` |
+| `code_off` | The member has no code right (J7) |
+| `code_paused` | An admin stopped the code of the org (J7) |
+| `runtime_busy` | The queue of a runtime is full. Try again in a few seconds |
+| `bad_output` | The output does not match the output schema |
+| `contract_unsupported` | A folder pins a version of the Studio API contract that the server does not serve (G20) |
+
+**Health data (task 2327).** D174.6 (STU-Q21) binds each clinical field. C9 restricts it by default, and real patient data waits on WS-37 and a lawyer (STU-Q11). Rule 11 applies to each clinical field. This section does not reopen D174.6.
 
 ---
 
@@ -1174,6 +1546,8 @@ The facts below came from a full read of the code on 2026-11-03.
 | **AI over data** | One search seam (`retrieval/sources.py`). A new source is one `Source` row. The knowledge graph of D128 | Studio records are not indexed (C5 is planned). No "ask my app data" path, and no scheduled insight |
 | **Identity** | Members, roles, groups and the grant grammar (`org`, `group:<slug>`, an email). The one entitlement intersect | No identity for a person outside the org. Outside people exist only as rows of each app: `crm_contacts`, `wa_contacts` and `email_contacts` |
 | **Outbound** | The Action Broker runs each outward write, with approval where needed | Mail leaves only from a member's own mailbox. No SMS provider. No workflow step sends to a person outside the org |
+
+**An app builds no inbox, calendar or payment system of its own (D202, task 2327).** The clinic study of 2026-11-09 confirms this rule. A clinic app uses the WhatsApp number of the org (O6), its shared mailbox (task 733), the Calendar door (O11) and its own Razorpay account (O10). The study found three gaps, and O17, O18 and O19 close them: email as a channel, a policy for automatic replies, and conversation threads on the record timeline. O20 adds one team inbox over the same seams.
 
 ### 20.2 How an app joins the rest of Metorite
 
