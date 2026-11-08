@@ -2750,6 +2750,18 @@ ALTER TABLE email_signature_images ADD CONSTRAINT email_signature_images_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS email_signature_images_org_idx ON email_signature_images (organization_id);
 
+-- pm_project_updates
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_project_updates WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_project_updates still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_project_updates ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_project_updates ADD CONSTRAINT pm_project_updates_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_project_updates_org_idx ON pm_project_updates (organization_id);
+
 -- email_signature_settings
 DO $$
 BEGIN
