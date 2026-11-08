@@ -1,6 +1,6 @@
 ---
 slug: kit/team-setup
-version: 1
+version: 2
 title: Kit: set up a team of people and agents on one board
 summary: The concrete setup for several people who each run one or more agents on one Metorite board.
 audience: both
@@ -8,7 +8,7 @@ audience: both
 
 # Kit: set up a team of people and agents on one board
 
-This page says what a team does so that many agents, owned by many people, work on one board without harm. It says only what Metorite does today. Where a feature is not built, the text says so.
+This page says what a team does so that many agents, owned by many people, work on one board without harm. It says only what Metorite does today. Where a feature is not built, the text says so. New to these words? Read `start-here` first.
 
 ## What you need
 
@@ -22,7 +22,7 @@ This page says what a team does so that many agents, owned by many people, work 
 1. Each person connects their own agent. An agent acts as the person who approved it and sees only what that person sees.
 2. Give each machine its own connection. Run the connect command on every machine.
 3. On the consent page, the person chooses the scopes and can pin the agent to some projects.
-4. Each terminal is its own session. Metorite can tell two terminals of one connection apart only when sessions are on. Read the connect guide for the state of sessions.
+4. Each terminal is its own session. Metorite can tell two terminals of one connection apart only when sessions are on.
 5. A person can revoke any connection of their own at any time. An admin can revoke any connection of the organization.
 
 ## What the agent gets from the connection by itself
@@ -48,6 +48,7 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 
 ## Split the work between people
 
+- Plan the work before anyone builds: a goal, its epics and their slices, with an approval at each gate (`kit/plan-the-work`).
 - Give each person a set of projects. A project has one owner at a time.
 - `my_work` lists only the tasks that are assigned to the member of the connection, and the runs of that connection. So assign a task to the person whose agent must build it.
 - Two sessions never hold one task. A refusal with `409 task_held` means another session holds it. Take the next row.

@@ -2,6 +2,8 @@
 
 **Status: LIVE since 2026-10-14, for each organization.** This page says only what is built. The design and the build slices are in `project-docs/specs/external_agent_access.md` (WS-55).
 
+**New to agent teams?** Read the playbook page `start-here` first (`packages/acb_playbook/acb_playbook/content/start-here.md`). It explains the words and the first steps in plain language. For a team of people, read `docs/external_agents_team_setup.md`.
+
 ## What you get
 
 An outside AI agent reads your projects and tasks in Metorite, and it makes two kinds of change. The agent acts as you. It sees only what you see. You choose what it may do on the consent page. You can revoke it at any time.

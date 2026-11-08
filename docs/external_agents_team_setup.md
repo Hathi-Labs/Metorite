@@ -2,6 +2,8 @@
 
 **Status: LIVE.** This page says only what is built. It is for people and for agents. It does not copy the playbook text. It points to the files.
 
+**New to agent teams?** Read the playbook page `start-here` first (`packages/acb_playbook/acb_playbook/content/start-here.md`). It explains the words, a week of work and the first steps in plain language. To plan a goal on the board, follow `kit/plan-the-work`.
+
 ## The two halves
 
 An outside agent needs two things to work well with other agents on one board.
