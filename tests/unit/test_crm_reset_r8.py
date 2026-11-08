@@ -243,6 +243,13 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
         c.execute(text(
             "INSERT INTO crm_pipeline_stages (organization_id, pipeline_id, status_id) "
             "VALUES (CAST(:o AS uuid), :p, :s)"), {**o, "p": pipe, "s": ds})
+        # CRM-M4a: a lead pipeline, from a time in Native mode, with its status.
+        lead_pipe = c.execute(text(
+            "INSERT INTO crm_pipelines (organization_id, name, kind) "
+            "VALUES (CAST(:o AS uuid), 'Trade show', 'lead') RETURNING id"), o).scalar()
+        c.execute(text(
+            "INSERT INTO crm_lead_pipeline_stages (organization_id, pipeline_id, status_id) "
+            "VALUES (CAST(:o AS uuid), :p, :s)"), {**o, "p": lead_pipe, "s": ls})
         company = c.execute(text(
             "INSERT INTO crm_companies (organization_id, name, ext_source, ext_id) "
             "VALUES (CAST(:o AS uuid), :n, 'zoho', :e) RETURNING id"),
