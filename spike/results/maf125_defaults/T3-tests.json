@@ -1,0 +1,22 @@
+{
+  "task": "T3-tests",
+  "kind": "test writing",
+  "status": "pass",
+  "err": "",
+  "wall_s": 37.7,
+  "in_tok": 56936,
+  "out_tok": 3361,
+  "model_calls": 7,
+  "cost_usd": 0.2212,
+  "tools": {
+    "run_command": 6,
+    "request_network_access": 1
+  },
+  "report_head": "I wrote `tests/test_slug.py`, but I couldn't run it under real pytest. pytest isn't installed in the sandbox, and my network request was refused, so I couldn't install it.\n\nAs a substitute, I ran the tests with a small runner and a stub `pytest` module that I wrote. That run gave **16 passed, 0 fail",
+  "flags": {
+    "disable_web_search": true,
+    "disable_file_memory": true,
+    "file_access_disable_readonly_tool_approval": true,
+    "file_access_disable_write_tool_approval": true
+  }
+}

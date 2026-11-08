@@ -1,0 +1,23 @@
+{
+  "task": "T5-script",
+  "kind": "data script",
+  "status": "fail",
+  "err": "",
+  "wall_s": 19.6,
+  "in_tok": 22592,
+  "out_tok": 1355,
+  "model_calls": 4,
+  "cost_usd": 0.0881,
+  "tools": {
+    "run_command": 3
+  },
+  "report_head": "I wrote `summarize.py` and ran it on `sales.csv`. It wrote the regional totals to `outputs/summary.json`.\n\n- **Script:** it is at `agent-data/scripts/summarize.py`. It reads the `region` and `amount` columns and sums `amount` for each region. It skips any bad row and prints a warning to stderr.\n- **",
+  "flags": {
+    "disable_todo": true,
+    "disable_mode": true,
+    "disable_web_search": true,
+    "disable_file_memory": true,
+    "file_access_disable_readonly_tool_approval": true,
+    "file_access_disable_write_tool_approval": true
+  }
+}

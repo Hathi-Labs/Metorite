@@ -1,0 +1,18 @@
+tests/unit/test_agent_config_runtime.py | 16 passed in 29.62s
+tests/unit/test_code_session_sandbox.py | 4 passed in 40.79s
+tests/unit/test_crm_answer_check_executor.py | 5 passed in 34.57s
+tests/unit/test_crm_pipelines_native.py | 48 skipped in 2.27s
+tests/unit/test_executor_telemetry_killswitch.py | 4 passed in 9.71s
+tests/unit/test_maf_code_session.py | 24 passed, 2 skipped, 1 deselected, 1 warning in 47.69s
+tests/unit/test_maf_harness_contract.py | 7 passed, 1 warning in 25.02s
+tests/unit/test_maf_mcp_budget.py | 1 failed in 16.18s
+tests/unit/test_maf_mcp_confirm.py | 1 failed, 40 passed in 24.94s
+tests/unit/test_maf_mcp_injection.py | 1 failed, 21 passed in 24.42s
+tests/unit/test_maf_mcp_lifecycle.py | 1 failed in 25.79s
+tests/unit/test_maf_mcp_org_scope_r8.py | 4 skipped in 20.15s
+tests/unit/test_native_maf_wire.py | 10 passed in 26.82s
+tests/unit/test_native_session_persistence.py | 58 passed, 19 skipped, 1 warning in 26.70s
+tests/unit/test_projects_sandbox_tools.py | 76 passed, 2 warnings in 43.45s
+tests/unit/test_router_accepts_agent_framework.py | 59 passed in 27.18s
+tests/unit/test_task_apis_native_maf.py | 14 passed in 21.56s
+DONE

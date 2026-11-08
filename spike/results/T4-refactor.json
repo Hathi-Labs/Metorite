@@ -1,0 +1,24 @@
+{
+  "task": "T4-refactor",
+  "kind": "refactor",
+  "status": "pass",
+  "err": "",
+  "wall_s": 19.2,
+  "in_tok": 23690,
+  "out_tok": 1033,
+  "model_calls": 4,
+  "cost_usd": 0.0866,
+  "tools": {
+    "file_access_read": 1,
+    "run_command": 3
+  },
+  "report_head": "I moved the line-total logic into one shared helper, and both existing tests pass. pytest isn't installed and I had no network to install it. I imported `tests/test_price.py` and called its two `test_` functions directly instead.\n\n- **New `price/common.py`:** it holds `line_total(item)`, which retur",
+  "flags": {
+    "disable_todo": true,
+    "disable_mode": true,
+    "disable_web_search": true,
+    "disable_file_memory": true,
+    "file_access_disable_readonly_tool_approval": true,
+    "file_access_disable_write_tool_approval": true
+  }
+}

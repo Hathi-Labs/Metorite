@@ -1,0 +1,25 @@
+{
+  "task": "T3-tests",
+  "kind": "test writing",
+  "status": "pass",
+  "err": "",
+  "wall_s": 35.0,
+  "in_tok": 53798,
+  "out_tok": 2986,
+  "model_calls": 8,
+  "cost_usd": 0.2062,
+  "tools": {
+    "file_access_read": 1,
+    "run_command": 6,
+    "request_network_access": 1
+  },
+  "report_head": "I wrote `tests/test_slug.py` with 21 test cases, and all of them pass. I couldn't run them with real pytest, though, because it isn't installed in the sandbox and network access is off.\n\nInstead I ran them with a small stand-in runner I wrote, `outputs/mini_runner.py`. It fakes `pytest.mark.parametr",
+  "flags": {
+    "disable_todo": true,
+    "disable_mode": true,
+    "disable_web_search": true,
+    "disable_file_memory": true,
+    "file_access_disable_readonly_tool_approval": true,
+    "file_access_disable_write_tool_approval": true
+  }
+}

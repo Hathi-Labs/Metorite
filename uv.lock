@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
@@ -222,7 +222,7 @@ dependencies = [
 requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-llm", editable = "packages/acb_llm" },
-    { name = "agent-framework-core", specifier = ">=1.19.0" },
+    { name = "agent-framework-core", specifier = ">=1.25.0" },
     { name = "ddgs", specifier = ">=9.16" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "markitdown", extras = ["pdf", "docx", "pptx", "xlsx"], specifier = "==0.1.9" },
@@ -313,8 +313,8 @@ dependencies = [
 requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-llm", editable = "packages/acb_llm" },
-    { name = "agent-framework-core", specifier = ">=1.19.0" },
-    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+    { name = "agent-framework-core", specifier = ">=1.25.0" },
+    { name = "agent-framework-openai", specifier = ">=1.18.1" },
     { name = "httpx", specifier = ">=0.27" },
 ]
 
@@ -344,8 +344,8 @@ dependencies = [
 requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-skills", editable = "packages/acb_skills" },
-    { name = "agent-framework-core", specifier = ">=1.19.0" },
-    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+    { name = "agent-framework-core", specifier = ">=1.25.0" },
+    { name = "agent-framework-openai", specifier = ">=1.18.1" },
 ]
 
 [[package]]
@@ -384,13 +384,13 @@ dependencies = [
 requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-skills", editable = "packages/acb_skills" },
-    { name = "agent-framework-core", specifier = ">=1.19.0" },
-    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+    { name = "agent-framework-core", specifier = ">=1.25.0" },
+    { name = "agent-framework-openai", specifier = ">=1.18.1" },
 ]
 
 [[package]]
 name = "agent-framework-ag-ui"
-version = "1.4.0"
+version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ag-ui-protocol" },
@@ -400,14 +400,14 @@ dependencies = [
     { name = "sse-starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5d/f9/618caed77e53fdd3e493d3e79b9fd65dca953ed8dd9b31ce19b05172f1a4/agent_framework_ag_ui-1.4.0.tar.gz", hash = "sha256:bb8ac4a58f31be7f5a286a9d52d3819a75cd35219082e3d07e8a45c3c8105fb9", size = 428538, upload-time = "2026-09-18T10:59:56.983Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/3b/40f8cc2036cb7682fbd5134ecc9946e7c25330909491b3c87f950a1310ab/agent_framework_ag_ui-1.8.0.tar.gz", hash = "sha256:3f3b2b9401d6ba66e802bc73e1580491fe41d9439cee83fde5bfcc5a24d13c07", size = 519171, upload-time = "2026-11-07T15:41:28.112Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/77/226ba66e82ae06600b8e8d804d8c508b62e0c7748ad70f3673662c971f5b/agent_framework_ag_ui-1.4.0-py3-none-any.whl", hash = "sha256:432eaf114130d91d103a9bb79ebe49a66f78b7fdc5045a382ba791869fb925ee", size = 208658, upload-time = "2026-09-18T10:57:32.432Z" },
+    { url = "https://files.pythonhosted.org/packages/de/f5/20379bc76789744c2427207e9019c4d6b754ed4e207c898256e7bbd48fda/agent_framework_ag_ui-1.8.0-py3-none-any.whl", hash = "sha256:43e3997e65a13b29820de46000b7e9b834cc278a3bd4a6113db1fd57b15476b4", size = 232851, upload-time = "2026-11-07T15:42:26.291Z" },
 ]
 
 [[package]]
 name = "agent-framework-core"
-version = "1.19.0"
+version = "1.25.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgspec" },
@@ -415,11 +415,12 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "regex" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/4a/7aa2feee4c17864e49d83b368b4740940e00551a035ba12d3bc2678d4c87/agent_framework_core-1.19.0.tar.gz", hash = "sha256:b483482551f56ff465d2633cadbe344791390f03c5f715ec0939e55b865bc86f", size = 703611, upload-time = "2026-09-18T11:00:03.137Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/12/17f89cfc22d0ff19da99c4276295c6661ee7c9a522fb558c2cad992a18da/agent_framework_core-1.25.0.tar.gz", hash = "sha256:99c4fead7d89fbea30c69a5f53417e44062390cd58cf2a7592da0a4928d363f4", size = 810707, upload-time = "2026-11-07T15:41:42.368Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/af/6ed9435277f39373eee1b88f1aff42ea7809d0b520f1932ff59dbf49fd5b/agent_framework_core-1.19.0-py3-none-any.whl", hash = "sha256:c887e6d5380b5ab21731b981f4c3e6b342f211bda20526ab82fa20c34a9bddbd", size = 764283, upload-time = "2026-09-18T10:57:40.824Z" },
+    { url = "https://files.pythonhosted.org/packages/27/b3/f5fc9f6c455e693e0bfc98c62ef4038e918995fb7d10dedec61d84dcd012/agent_framework_core-1.25.0-py3-none-any.whl", hash = "sha256:0e46bab6f2575ab9c59007218ad1f7bfb0320422a09eaf1d6c7638cbb2880b7c", size = 872003, upload-time = "2026-11-07T15:42:40.233Z" },
 ]
 
 [[package]]
@@ -437,15 +438,15 @@ wheels = [
 
 [[package]]
 name = "agent-framework-openai"
-version = "1.14.4"
+version = "1.18.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "openai" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/76/ac/beca64311d266d356098db8f61c9d1fc424f0be75c51ab4f45c073a409b3/agent_framework_openai-1.14.4.tar.gz", hash = "sha256:b7aebfba75eb1a8bab9b82044eabd404d4fb34c512cb49c7c7d24f213d413fe2", size = 70447, upload-time = "2026-09-18T11:00:15.176Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/87/7737f934a04ed89187b7cfbc0651cf326245a4cee709e77fbdc427a31300/agent_framework_openai-1.18.1.tar.gz", hash = "sha256:f8c380d68895c95161bdbf50202fcdd09d23109ebf9166de326a630b83bb8426", size = 79692, upload-time = "2026-11-07T15:42:10.412Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d2/d8/5d8956a57c3a08f56fc1401cb49de0ce3d289c264eb1033b6f5a9547ac20/agent_framework_openai-1.14.4-py3-none-any.whl", hash = "sha256:a5ee2c0e8c8342bd48a5e99cb92f3133f4472f24adaf896ac0ca9942a16f65f6", size = 75218, upload-time = "2026-09-18T10:57:55.315Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/7e/2da93904bf41e329861f63fd8ebd26b0208cb26bea8bbfdeaf578259d255/agent_framework_openai-1.18.1-py3-none-any.whl", hash = "sha256:e69cd8a51bc312af13d955f5c022ca62b570a14a9c4aa3cd6a41450a4ce89445", size = 84605, upload-time = "2026-11-07T15:43:07.642Z" },
 ]
 
 [[package]]
@@ -484,8 +485,8 @@ dependencies = [
 requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-skills", editable = "packages/acb_skills" },
-    { name = "agent-framework-core", specifier = ">=1.19.0" },
-    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+    { name = "agent-framework-core", specifier = ">=1.25.0" },
+    { name = "agent-framework-openai", specifier = ">=1.18.1" },
     { name = "skill-projects", editable = "apps/skills/skill-projects" },
 ]
 
@@ -504,8 +505,8 @@ dependencies = [
 requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-skills", editable = "packages/acb_skills" },
-    { name = "agent-framework-core", specifier = ">=1.19.0" },
-    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+    { name = "agent-framework-core", specifier = ">=1.25.0" },
+    { name = "agent-framework-openai", specifier = ">=1.18.1" },
 ]
 
 [[package]]
@@ -547,8 +548,8 @@ dependencies = [
 requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-skills", editable = "packages/acb_skills" },
-    { name = "agent-framework-core", specifier = ">=1.19.0" },
-    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+    { name = "agent-framework-core", specifier = ">=1.25.0" },
+    { name = "agent-framework-openai", specifier = ">=1.18.1" },
 ]
 
 [[package]]
@@ -568,8 +569,8 @@ requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-llm", editable = "packages/acb_llm" },
     { name = "acb-skills", editable = "packages/acb_skills" },
-    { name = "agent-framework-core", specifier = ">=1.19.0" },
-    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+    { name = "agent-framework-core", specifier = ">=1.25.0" },
+    { name = "agent-framework-openai", specifier = ">=1.18.1" },
 ]
 
 [[package]]
@@ -1521,7 +1522,7 @@ requires-dist = [
     { name = "acb-llm", editable = "packages/acb_llm" },
     { name = "acb-stt", editable = "packages/acb_stt" },
     { name = "action-broker", editable = "apps/services/action_broker" },
-    { name = "agent-framework-ag-ui", specifier = ">=1.4.0" },
+    { name = "agent-framework-ag-ui", specifier = ">=1.8.0" },
     { name = "apscheduler", specifier = ">=3.10,<4" },
     { name = "authlib", specifier = ">=1.8" },
     { name = "email-ingestion", editable = "apps/services/email_ingestion" },
@@ -1721,8 +1722,8 @@ name = "httpcore2"
 version = "2.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11" },
-    { name = "truststore" },
+    { name = "h11", marker = "sys_platform != 'emscripten'" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cb/f3/1db7aa2bc2524062192bb0e0323969492d1883152a232fe36eea65f4e35c/httpcore2-2.13.1.tar.gz", hash = "sha256:e0aa977abe17e69a3b820a24542a6fa88702676d83880b8d194dcd18408e5103", size = 68071, upload-time = "2026-09-23T07:47:22.372Z" }
 wheels = [
@@ -2766,10 +2767,10 @@ requires-dist = [
     { name = "acb-llm", editable = "packages/acb_llm" },
     { name = "acb-memory", editable = "packages/acb_memory" },
     { name = "acb-skills", editable = "packages/acb_skills" },
-    { name = "agent-framework-ag-ui", specifier = ">=1.4.0" },
-    { name = "agent-framework-core", specifier = ">=1.19.0" },
+    { name = "agent-framework-ag-ui", specifier = ">=1.8.0" },
+    { name = "agent-framework-core", specifier = ">=1.25.0" },
     { name = "agent-framework-github-copilot", specifier = ">=2.0.0" },
-    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+    { name = "agent-framework-openai", specifier = ">=1.18.1" },
     { name = "agent-framework-redis" },
     { name = "github-copilot-sdk", specifier = ">=1.0.11" },
     { name = "graphiti-core", specifier = ">=0.30.2" },
@@ -2868,7 +2869,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess" },
+    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [

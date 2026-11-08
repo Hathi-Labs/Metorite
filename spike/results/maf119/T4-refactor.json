@@ -1,0 +1,24 @@
+{
+  "task": "T4-refactor",
+  "kind": "refactor",
+  "status": "pass",
+  "err": "",
+  "wall_s": 20.1,
+  "in_tok": 30002,
+  "out_tok": 1439,
+  "model_calls": 5,
+  "cost_usd": 0.1116,
+  "tools": {
+    "run_command": 4,
+    "file_access_read": 1
+  },
+  "report_head": "I moved the line-total logic into a new `line_total(item)` in `price/common.py`, and `total_a` and `total_b` now both call it. Both tests pass, but I couldn't run them with pytest because it isn't installed in the sandbox and I didn't request a network install. I imported `tests/test_price.py` and c",
+  "flags": {
+    "disable_todo": true,
+    "disable_mode": true,
+    "disable_web_search": true,
+    "disable_file_memory": true,
+    "file_access_disable_readonly_tool_approval": true,
+    "file_access_disable_write_tool_approval": true
+  }
+}

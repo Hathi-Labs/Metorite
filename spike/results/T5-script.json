@@ -1,0 +1,24 @@
+{
+  "task": "T5-script",
+  "kind": "data script",
+  "status": "pass",
+  "err": "",
+  "wall_s": 20.4,
+  "in_tok": 23754,
+  "out_tok": 1389,
+  "model_calls": 4,
+  "cost_usd": 0.0921,
+  "tools": {
+    "file_access_read": 1,
+    "run_command": 3
+  },
+  "report_head": "I wrote `summarize.py` and ran it on `sales.csv`. It wrote `summary.json` with these totals:\n\n```json\n{\"north\": 150, \"south\": 275, \"east\": 75}\n```\n\n- **Rows:** `sales.csv` has 5 data rows. The script skips any row with a missing or non-numeric amount and prints a warning, but none were skipped here.",
+  "flags": {
+    "disable_todo": true,
+    "disable_mode": true,
+    "disable_web_search": true,
+    "disable_file_memory": true,
+    "file_access_disable_readonly_tool_approval": true,
+    "file_access_disable_write_tool_approval": true
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "task": "T1-fix",
+  "kind": "small fix",
+  "status": "pass",
+  "err": "",
+  "wall_s": 21.5,
+  "in_tok": 43819,
+  "out_tok": 1437,
+  "model_calls": 7,
+  "cost_usd": 0.153,
+  "tools": {
+    "file_access_read": 1,
+    "run_command": 4,
+    "file_access_replace": 1,
+    "request_network_access": 1,
+    "file_access_write": 1
+  },
+  "report_head": "I fixed the bug in `calc/stats.py`, but I couldn't confirm it with pytest. pytest isn't installed, and my network request was refused, so I couldn't install it.\n\n**Bug:** `mean` divided by `len(xs) - 1`, which is the sample-variance denominator. `mean([1,2,3,4])` therefore gave 3.33 instead of 2.5. ",
+  "flags": {
+    "disable_todo": true,
+    "disable_mode": true,
+    "disable_web_search": true,
+    "disable_file_memory": true,
+    "file_access_disable_readonly_tool_approval": true,
+    "file_access_disable_write_tool_approval": true
+  }
+}

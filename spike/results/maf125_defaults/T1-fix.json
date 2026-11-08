@@ -1,0 +1,23 @@
+{
+  "task": "T1-fix",
+  "kind": "small fix",
+  "status": "pass",
+  "err": "",
+  "wall_s": 20.5,
+  "in_tok": 44358,
+  "out_tok": 1126,
+  "model_calls": 6,
+  "cost_usd": 0.15,
+  "tools": {
+    "file_access_read": 1,
+    "run_command": 4,
+    "request_network_access": 1
+  },
+  "report_head": "I fixed the bug in `calc/stats.py`, but I couldn't confirm it with pytest because pytest isn't installed in the sandbox. The network is off, so the install request was refused.\n\n**The bug:** `mean` divided by `len(xs) - 1`, which is the sample-variance denominator, instead of `len(xs)`. So `mean([1,",
+  "flags": {
+    "disable_web_search": true,
+    "disable_file_memory": true,
+    "file_access_disable_readonly_tool_approval": true,
+    "file_access_disable_write_tool_approval": true
+  }
+}

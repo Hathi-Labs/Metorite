@@ -7,8 +7,8 @@ dependencies = [
     "acb-common",
     "acb-llm",
     "acb-skills",
-    "agent-framework-core>=1.19.0",
-    "agent-framework-openai>=1.14.4",
+    "agent-framework-core>=1.25.0",
+    "agent-framework-openai>=1.18.1",
 ]
 
 [build-system]
