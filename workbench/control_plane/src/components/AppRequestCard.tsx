@@ -69,6 +69,18 @@ export interface AppRequestCardProps {
   busy?: AppRequestDecision | null;
   /** Why the last decision did not land. Approve and Decline try again. */
   error?: string | null;
+  /**
+   * One line beside the state of a decided request, such as what became of
+   * the answer that the chat card sends (STU-B2c-2c). Server text never
+   * goes here.
+   */
+  note?: string | null;
+  /**
+   * One control beside the state of a decided request (STU-B2c-2c fix round
+   * 1): "Tell the assistant" on an approval that never ran. The caller owns
+   * its guard.
+   */
+  act?: { label: string; icon: string; onClick: () => void } | null;
   /** The clock of the expiry, for a test. */
   now?: number;
 }
@@ -79,6 +91,8 @@ export function AppRequestCardView({
   onDecide,
   busy = null,
   error = null,
+  note = null,
+  act = null,
   now = Date.now(),
   armed,
 }: AppRequestCardProps & { armed: boolean }) {
@@ -170,6 +184,16 @@ export function AppRequestCardView({
               <Badge tone={Object.hasOwn(STATE_TONE, request.state) ? STATE_TONE[request.state] : "neutral"} size="xs">
                 {request.state === "awaiting" ? stateWords("expired") : stateWords(request.state)}
               </Badge>
+              {act && (
+                <Button variant="secondary" size="sm" icon={act.icon} onClick={act.onClick} data-app-request-act="">
+                  {act.label}
+                </Button>
+              )}
+              {note && (
+                <span role="status" className="min-w-0 break-words text-[10px] text-muted-foreground" data-app-request-note="">
+                  {note}
+                </span>
+              )}
             </div>
           )}
         </RollupBody>
