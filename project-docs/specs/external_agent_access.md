@@ -798,6 +798,7 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 - **The class.** Both tools are class C and have `destructiveHint: true`, so a client can ask the person first. The chat manifest keeps its rows: the PATCH is class B (`edit_comment`) and the DELETE is class C (`delete_comment`). `CLASS_C_WRITES` of `test_mcp_edge_coverage.py` names the DELETE.
 - **A person does not change.** Without `UserContext.agent`, both routes run the author rule of `_load_own_comment` as before, and write no audit row. The chat sends `X-Actor-Via: chat:projects-assistant` with no signature, so it is a person here.
 - **The flag and the cap.** Both tools show only while `agent_access_writes_enabled` is on, and branch 0 refuses a signed write while it is off. Each call counts against the cap of 120 writes in 10 minutes.
+- **Not the delete switch.** The member's switch "Let my AI agents delete tasks" (EA3-51) governs `delete_task` only. `delete_comment` shows while that switch is off, and its entry names no task delete. `test_mcp_edge_delete.py` (`test_h1_with_the_switch_off_no_text_names_a_delete`) holds that every other text of the edge still names no delete while the switch is off.
 
 **Rules of `claim_task` (EA-6b, EA3-34).**
 
