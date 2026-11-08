@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
-# The daily release, started from the home box (CIV-13, D178).
+# The release slots, started from the home box (CIV-13 D178, CIV-21 D194).
 #
 # GitHub started the `30 21 * * *` cron of deploy.yml 3.5 to 5.5 h late,
 # night after night (run 41949347780 started at 01:33 UTC). The release
-# window of deploy.yml is 21:00 to 02:00 UTC, so a late run often found it
+# window of deploy.yml was 21:00 to 02:00 UTC, so a late run often found it
 # closed and production did not move. The owner decided on 2026-11-05: the
-# box starts the release at 21:30 UTC.
+# box starts the release. On 2026-11-07 the owner moved to three slots a
+# day: 05:30, 13:30 and 21:30 UTC (11:00, 19:00 and 03:00 IST).
 #
 # A user timer on the box (metorite-nightly-release.timer) runs this script
-# at 21:30 UTC. It dispatches deploy.yml on main with nightly=true. A
+# at each slot. It dispatches deploy.yml on main with nightly=true. A
 # nightly dispatch is a nightly run: RELEASE_HOLD and the window hold it, it
 # cannot skip the tests, and it does not publish when another nightly run
-# shipped that night. The cron stays in deploy.yml as the backup.
+# shipped in that slot. The crons stay in deploy.yml as the backup. The
+# names keep "nightly" from the time of one slot.
 #
 #   nightly_release.sh run       dispatch, then log the URL of the new run
 #   nightly_release.sh install   install the timer for this user (dev)
 #
-# `run` refuses outside 21:00 to 01:00 UTC. The tests take about 40 min,
-# and the window closes at 02:00. A late start of the timer (Persistent=true
-# after the box was down) must not ship a release in working hours.
+# `run` refuses outside 21:00 to 01:00, 05:00 to 09:00 and 13:00 to 17:00
+# UTC. The tests take about 40 min, and the windows of deploy.yml close at
+# 02:00, 10:00 and 18:00. A late start of the timer (Persistent=true after
+# the box was down) must not ship a release outside its slot.
 #
 # ⚠️ `install` copies this file to ~/.local/lib/metorite. After a change to
 # this file, run `install` again, or the timer runs the old copy.
@@ -43,10 +46,14 @@ clock_guard() {
   local hm h
   hm="$(date -u +%H%M)"
   h=$(( 10#${hm:0:2} ))
+  # One range for each slot (CIV-21): 21 to 01, 05 to 09 and 13 to 17.
   if [ "$h" -ge 21 ] || [ "$h" -lt 1 ]; then
     return 0
   fi
-  die "it is ${hm} UTC. The nightly release starts only from 21:00 to 01:00 UTC, so it did not dispatch. To release now, dispatch deploy.yml without nightly." 3
+  if { [ "$h" -ge 5 ] && [ "$h" -lt 9 ]; } || { [ "$h" -ge 13 ] && [ "$h" -lt 17 ]; }; then
+    return 0
+  fi
+  die "it is ${hm} UTC. The slot release starts only from 21:00 to 01:00, 05:00 to 09:00 or 13:00 to 17:00 UTC, so it did not dispatch. The next slot dispatches. To release now, dispatch deploy.yml without nightly." 3
 }
 
 auth_guard() {
@@ -86,7 +93,7 @@ run_release() {
   since="$(date -u -d "@$(( $(date -u +%s) - CLOCK_SLACK ))" +%Y-%m-%dT%H:%M:%SZ)"
   log "dispatch deploy.yml on main with nightly=true"
   gh workflow run deploy.yml -R "$REPO" --ref main -f nightly=true -f reason="nightly release (home box)" \
-    || die "gh workflow run failed. Production does not move tonight unless GitHub's cron runs in the window." 5
+    || die "gh workflow run failed. Production does not move in this slot unless GitHub's cron runs in the window." 5
   deadline=$(( SECONDS + POLL_SECONDS ))
   while :; do
     url="$(find_run "$since" || true)"

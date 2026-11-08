@@ -163,8 +163,17 @@ MANIFEST: tuple[Route, ...] = (
     # one card, and the route refuses an agent connection.
     Route("GET", "/projects/decisions", "my_decisions", "A"),
     Route("POST", "/projects/decisions/{decision_id}/answer", "answer_decision", "C"),
+    # WS-AP AP-8a (waiting_on_me.md §7.2): a member asks a member. Dark behind
+    # WAITING_ORGS and DECISIONS_ORGS. The route refuses an agent connection
+    # and a run with no person present. AP-10 builds the tool `ask_person`.
+    Route("POST", "/projects/tasks/{task_id}/asks", "ask_person", "C"),
+    # The asker withdraws an ask on its card (AP-9). A member does it by a
+    # click, so D-OP-9 gives it a chat tool: AP-10 builds `withdraw_ask`.
+    Route("POST", "/projects/asks/{ask_id}/withdraw", "withdraw_ask", "C"),
     # ── tasks.py ─────────────────────────────────────────────────────────
     Route("GET", "/projects/tasks", "list_tasks", "A"),
+    # MCP-G19a (task 1957): the count read. The chat tool is task 2223.
+    Route("GET", "/projects/tasks/stats", "board_stats", "A"),
     Route("GET", "/projects/tasks/{task_id}", "task_detail", "A"),
     # D-OP-10 (OP-7): the subtasks a delete card offers, hidden ones counted.
     Route("GET", "/projects/tasks/{task_id}/subtree", "delete_task", "C"),
@@ -542,6 +551,8 @@ MANIFEST: tuple[Route, ...] = (
 #: builds each. The coverage fence holds this against ``__all__``: a tool is
 #: exported OR it is here, never both and never neither.
 PLANNED: dict[str, str] = {
+    # MCP-G19a: the route is built. The chat tool waits on Metorite task 2223.
+    "board_stats": "Metorite task 2223, chat parity for the board count",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
@@ -561,6 +572,9 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-14a. A person releases a run from the card. The chat gets the
     # tool with the other run tools in EA-12e.
     "release_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # WS-AP AP-8a built the person ask route. AP-10 builds its chat tool.
+    "ask_person": "WS-AP AP-10, the chat tools of Waiting",
+    "withdraw_ask": "WS-AP AP-10, the chat tools of Waiting",
     # WS-55 SW-11a. A person resumes a stalled run from Needs attention. The
     # chat gets the tool with the other run tools in EA-12e.
     "resume_agent_run": "WS-55 EA-12e, in-product chat parity",
@@ -1207,6 +1221,16 @@ _MAPPING_CARD_REASON = (
     "The answer on the app's mapping card. Without it the server's own rule maps "
     "each row, and the preview the chat card shows already counts that rule."
 )
+#: MCP-G19a (task 1957). The audit filters of the agent door. The chat
+#: gets them with its count tool, Metorite task 2223.
+_AUDIT_FILTER_REASON = (
+    "An audit filter of the agent door (MCP-G19a). The chat gets it with "
+    "the board count tool, Metorite task 2223."
+)
+_STATS_ROUTE_REASON = (
+    "A field of the board count route of the agent door (MCP-G19a). Its "
+    "chat tool is Metorite task 2223."
+)
 _READ_FILTER_REASON = (
     "A filter of the app's list. The chat narrows tasks through list_tasks, "
     "which prints the facts this filter reads."
@@ -1254,6 +1278,27 @@ _STATUS_PLACE_REASON = (
 
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/projects/tasks/stats"): {
+        "assigned": _STATS_ROUTE_REASON,
+        "assignee": _STATS_ROUTE_REASON,
+        "created_after": _STATS_ROUTE_REASON,
+        "due_before": _STATS_ROUTE_REASON,
+        "group_by": _STATS_ROUTE_REASON,
+        "has_parent": _STATS_ROUTE_REASON,
+        "include_archived": _STATS_ROUTE_REASON,
+        "include_subtree": _STATS_ROUTE_REASON,
+        "is_epic": _STATS_ROUTE_REASON,
+        "parent_task_id": _STATS_ROUTE_REASON,
+        "project_id": _STATS_ROUTE_REASON,
+        "q": _STATS_ROUTE_REASON,
+        "status_category": _STATS_ROUTE_REASON,
+        "status_id": _STATS_ROUTE_REASON,
+        "tags": _STATS_ROUTE_REASON,
+        "title_prefix": _STATS_ROUTE_REASON,
+        "unheld": _STATS_ROUTE_REASON,
+        "updated_after": _STATS_ROUTE_REASON,
+        "updated_before": _STATS_ROUTE_REASON,
+    },
     # WS-42 PST-4: the place of a lane. The tools send them when the model
     # passes a place, and this fence's witnesses pass none.
     ("POST", "/projects/nodes/{project_id}/statuses"): {
@@ -1272,6 +1317,14 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "reason": "The chat answer carries no reason. The card shows the option only."
     },
     ("GET", "/projects/tasks"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
+        "compact": "A row shape of the agent door (MCP-G19a), not a filter. The chat prints its own rows.",
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. list_tasks filters by status_category, and render_board "
@@ -1298,6 +1351,13 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     },
     # WS-64 OP-6c: the export takes the same subset as list_tasks.
     ("GET", "/projects/export/tasks.csv"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. export_tasks filters by status_category, as list_tasks does."
@@ -1493,11 +1553,17 @@ FIELD_GAPS: dict[str, str] = {
     "G23": "EA-12e",
     # G24 (the reminder routes of WS-66 RM-1) closed in RM-3 (2026-10-25).
     # Its rows are in SENDS.
+    # WS-AP AP-8a: the person ask. The chat gets `ask_person` in AP-10.
+    "G25": "AP-10",
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
+    # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
+    ("POST", "/projects/tasks/{task_id}/asks"): {
+        "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",
+    },
     # G23 (WS-55 EA-12a, EA12-9): the agent-run routes. The chat gets them in
     # EA-12e. Today an outside agent reaches them over MCP.
     # `status` and `limit` are sent by `waiting_agent_requests` (OP-6e, SENDS).
