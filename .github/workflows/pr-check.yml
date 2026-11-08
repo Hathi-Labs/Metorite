@@ -138,7 +138,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # CIV-23 (D201). Eight box runners share one home, and a job's `uv cache
+      # CIV-23 (D201). The box runners share one home, and a job's `uv cache
       # prune` deleted an archive that another job was installing ("Failed to
       # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
       - name: Keep uv's cache private to this runner
@@ -370,7 +370,7 @@ jobs:
       # CIV-23 (D201). The ports in these two DSNs are PLACEHOLDERS that match
       # deploy.yml's `r8-suite` (fixed ports, the fence compares them). The
       # first step overrides both DSNs through GITHUB_ENV with the host port
-      # that Docker picked, because four box runners share ONE Docker daemon.
+      # that Docker picked, because the box runners share ONE Docker daemon.
       CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
       # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
       # A full run of this job covers the WHOLE tests/unit/ directory, and a
@@ -398,7 +398,7 @@ jobs:
           echo "CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:${CC_PORT}/cc_platform" >> "$GITHUB_ENV"
           echo "TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:${TENANT_PORT}/acb_tenant" >> "$GITHUB_ENV"
 
-      # CIV-23 (D201). Eight box runners share one home, and a job's `uv cache
+      # CIV-23 (D201). The box runners share one home, and a job's `uv cache
       # prune` deleted an archive that another job was installing ("Failed to
       # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
       - name: Keep uv's cache private to this runner
@@ -508,7 +508,7 @@ jobs:
             --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
             -o faulthandler_timeout=900 \
-            --basetemp="$RUNNER_TEMP/pytest" \
+            --basetemp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/pytest" \
             -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml || rc=$?
           if [ "$rc" -eq 5 ] && [ "$SHARD_MODE" = "selection" ]; then
             echo "this shard drew no test from the selection"
