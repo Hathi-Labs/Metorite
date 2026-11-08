@@ -652,6 +652,24 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "oauth",
         "The consent screen of an outside agent (MCP OAuth). The member answers it in the browser.",
     ),
+    # EA-19d (D-EA-5, spec §10.9): the box token routes. The page shows the token once, so a
+    # secret never goes through the chat. The routes are person-only: an agent cannot mint.
+    "POST /api/agent-access/box-tokens": (
+        "secret",
+        "Makes a box token and shows it once. A secret never goes through the chat, and an agent may not mint.",
+    ),
+    "POST /api/agent-access/box-tokens/check": (
+        "secret",
+        "Asks for the one-time ticket of a box token. The token is a secret, and the route is person-only.",
+    ),
+    "POST /api/agent-access/box-tokens/revoke-all": (
+        "secret",
+        "Revokes every box token of the organization. An admin acts on a box token only in the page.",
+    ),
+    "POST /api/agent-access/box-tokens/{}/rotate": (
+        "secret",
+        "Gives a box a new token and shows it once. A secret never goes through the chat.",
+    ),
     "POST /api/integrations/configure": (
         "secret",
         "Saves the keys of an integration. A secret never goes through the chat.",
