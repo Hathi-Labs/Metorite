@@ -1,5 +1,5 @@
 -- ============================================================================
--- 352_pm_decisions_person_ask.sql — a member asks a member (WS-AP AP-8a,
+-- 359_pm_decisions_person_ask.sql — a member asks a member (WS-AP AP-8a,
 -- Metorite task 1858).
 --
 -- What: four changes to `pm_decisions` (332).
