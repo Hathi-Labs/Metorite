@@ -745,6 +745,31 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-AP AP-10a: the two tools that ask a member about a task. The pack has
+    # its own slug, because the reminders pack is at its budget in its measured
+    # turns. It follows `projects` (tool_packs.FOLLOWS).
+    "projects-waiting": {
+        "label": "Projects waiting asks",
+        "summary": (
+            "Ask a member a question about a task, and withdraw the ask."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools to ask one "
+            "member a question about one task, and to withdraw an open ask, "
+            "for the main assistant to load when a turn says to wait for "
+            "someone or to ask a person. Each change asks the member first. "
+            "A run loads a pack only where tool packs are on, so until then "
+            "this switch has no effect."
+        ),
+        "tools": (
+            "ask_person",
+            "withdraw_ask",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # CAL-1a (task 1675): the day planner, for the main chat. The eight tools are
     # the My Tasks planner tools (skill_my_tasks.core). The Projects assistant
     # builds them in `_agent_tools()` only, so the specialist's own tool list and

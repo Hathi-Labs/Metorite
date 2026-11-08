@@ -568,9 +568,6 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-14a. A person releases a run from the card. The chat gets the
     # tool with the other run tools in EA-12e.
     "release_agent_run": "WS-55 EA-12e, in-product chat parity",
-    # WS-AP AP-8a built the person ask route. AP-10 builds its chat tool.
-    "ask_person": "WS-AP AP-10, the chat tools of Waiting",
-    "withdraw_ask": "WS-AP AP-10, the chat tools of Waiting",
     # WS-55 SW-11a. A person resumes a stalled run from Needs attention. The
     # chat gets the tool with the other run tools in EA-12e.
     "resume_agent_run": "WS-55 EA-12e, in-product chat parity",
@@ -1025,6 +1022,13 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     # WS-ALN ALN-2a: the one field of an answer.
     ("POST", "/projects/decisions/{decision_id}/answer"): {
         "answer_key": "answer_decision.answer_key"
+    },
+    # WS-AP AP-10a: the person ask. The body holds no author (R5).
+    ("POST", "/projects/tasks/{task_id}/asks"): {
+        "addressee": "ask_person.addressee",
+        "question": "ask_person.question",
+        "choices": "ask_person.choices",
+        "due_at": "ask_person.due_at",
     },
     # WS-64 OP-6d: one address, and the on/off of the schedule.
     ("POST", "/projects/reports/{report_id}/recipients"): {
@@ -1503,17 +1507,13 @@ FIELD_GAPS: dict[str, str] = {
     "G23": "EA-12e",
     # G24 (the reminder routes of WS-66 RM-1) closed in RM-3 (2026-10-25).
     # Its rows are in SENDS.
-    # WS-AP AP-8a: the person ask. The chat gets `ask_person` in AP-10.
-    "G25": "AP-10",
+    # G25 (the person ask of WS-AP AP-8a) closed in AP-10a (2026-11-08).
+    # Its rows are in SENDS.
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
-    # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
-    ("POST", "/projects/tasks/{task_id}/asks"): {
-        "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",
-    },
     # G23 (WS-55 EA-12a, EA12-9): the agent-run routes. The chat gets them in
     # EA-12e. Today an outside agent reaches them over MCP.
     # `status` and `limit` are sent by `waiting_agent_requests` (OP-6e, SENDS).
@@ -1691,7 +1691,7 @@ UI_ACTIONS: dict[str, str] = {
     "decisionsApi.answer": "answer_decision",
     # WS-AP AP-9a: the task card asks and withdraws. The route is class C with
     # the planned tools, so the fence wants UI_ACTIONS (UI_PLANNED takes class
-    # X routes only). AP-10 builds both tools and closes gap G25.
+    # X routes only). AP-10a built both tools and closed gap G25.
     "decisionsApi.askPerson": "ask_person",
     "decisionsApi.withdrawAsk": "withdraw_ask",
     # EA-6g: the run's member approves or declines an archive request. It is in

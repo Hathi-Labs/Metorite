@@ -57,7 +57,8 @@ CRM_AGENT = REPO / "apps" / "agents" / "agent-crm" / "agents.py"
 PA = "projects-assistant"
 CRM = "crm-assistant"
 PROJECT_PACKS = ("projects", "projects-plan", "projects-structure", "projects-bulk",
-                 "projects-reminders", "projects-reports", "projects-authority")
+                 "projects-reminders", "projects-reports", "projects-authority",
+                 "projects-waiting")
 
 # ── 1. The table ────────────────────────────────────────────────────────────
 
@@ -97,6 +98,8 @@ OFF_PROJECTS = frozenset({
     "set_status_set", "unarchive_project",
     # WS-ALN ALN-4, off in a held chat as every class C tool but promote_reminder.
     "pin_authority", "unpin_authority",
+    # WS-AP AP-10a: an ask reaches a person, so a held chat does not hold it.
+    "ask_person", "withdraw_ask",
 })
 
 #: The class A Projects tools that write a file of the chat. They stay.

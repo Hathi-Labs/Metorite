@@ -8,11 +8,13 @@
 
 **AP-9a BUILT, dark, not merged** (task 1859, branch `pro-ap9`): the form, the chip and the read of §7.2. AP-9b (task 2225) is NO-GO until the spec answers §8 B7 to B9.
 
+**AP-10a BUILT, dark, not merged** (task 1860, branch `pro-ap10`, cut from `pro-ap9`): the chat tools `ask_person` and `withdraw_ask`. AP-10b (task 2227: `my_waits` and `answer_wait`) is not built.
+
 AP-BUG-2 is built (task 1896). The other slices are not built.
 
 On 2026-11-06 the owner accepted the recommended answers to AP-Q1 to AP-Q8 (§13). AP-Q9 has a working default. The owner answered AP-Q10, so AP-16 is open to build after AP-15.
 
-**Verified against code on 2026-11-06 at `97da742ae`.** Each path in §2 and §9 was read on that commit. The open branch `l6s-waiting-list` (task 1750) was read at its head on the same day.
+**Verified against code on 2026-11-06 at `97da742ae`, and for AP-10a on 2026-11-08 at `b58a31af2`.** Each path in §2 and §9 was read on the first commit. The tool files of AP-10a were read on the second. The open branch `l6s-waiting-list` (task 1750) was read at its head on the same day.
 
 **Board:** WS-AP in `work_plan.md` §2.1. **Decisions that bind it:** D12, D52 to D54, D87, D89, D99, D103, D124, D145, D171, and ALN-Q5 of `project_alignment.md` §14.
 
@@ -388,7 +390,7 @@ Task card (side panel)                     Board card
 
 ### 5.6 The chat
 
-Every act on the page works in the chat (chat-first parity). AP-10 holds the tools.
+Every act on the page works in the chat (chat-first parity). AP-10a holds the tools to ask and to withdraw. AP-10b holds the tools to read the page and to answer.
 
 ```text
 You:   what's waiting on me?
@@ -487,7 +489,7 @@ Most asks start as a comment today: "@Priya can you confirm supplier X?" AP-11 a
 
 ### 6.7 The chat
 
-`ask_person`, `my_waits` and `answer_wait` (AP-10). The ask shows a card before it sends. A reply to a nudge, such as "tell her yes", answers the ask at its source (AP-6).
+`ask_person` and `withdraw_ask` are built (AP-10a). `my_waits` and `answer_wait` are planned (AP-10b). The ask shows a card before it sends. The card says that each reader of the task reads the question (AP-Q5), because the ask is also a comment. A reply to a nudge, such as "tell her yes", answers the ask at its source (AP-6).
 
 ---
 
@@ -590,7 +592,8 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-8b** | 1994 | The bell of the asker on an answer, the nudge route (once in 24 h), and the close with the task (`task_closed`) | R8 tests: the nudge once in 24 h, the close with the task, the bell of the asker. **NO-GO until the spec answers B4 to B6 below** | HIGH (identity) |
 | **AP-9a** | 1859 | "Wait on someone" on the task card (the form, the refusals of §6.5, "Withdraw", the key `W` and the menu entry), the chip "Needs you" or "Waiting for Priya", and the extended read of §7.2 | The chip reads right for the addressee ("Needs you"), for another reader ("Waiting for Priya") and for two asks ("Waiting for 2"). The wire never holds the question for a person who is not a party. Each refusal of §6.5 shows its text. A send writes one ask. A withdraw removes the chip. With either flag off, the form and the chip draw nothing. R8 tests of the read. UI gate. **Built, dark, not merged** | MEDIUM |
 | **AP-9b** | 2225 | The board chip, the filter "Waiting on me" with person asks (`agent_focus_clause`), and the section "Asks with no answer" of the panel | Each needs a decision first: whether the count of the agent strip holds person asks, which field per row feeds the board chip, and the scope rule of the panel. The filter lists a person ask. UI gate. **NO-GO until the spec answers B7 to B9 below** | MEDIUM |
-| **AP-10** | 1860 | The chat tools `ask_person`, `withdraw_ask`, `my_waits` and `answer_wait` | Each tool calls the AP-8 or AP-1 route. `ask_person` raises a card. The new-chat-tool fence set passes | STANDARD |
+| **AP-10a** | 1860 | The chat tools `ask_person` and `withdraw_ask` | `ask_person(task_id, addressee, question, choices?, due_at?)` refuses a run with no person present before any read and before the card. It raises one card that shows the addressee, the question and the task, and says that each reader of the task reads the question. A cancel writes nothing. A confirm posts one ask, and the body holds no author. Each refusal of §7.2 guards 2 to 5 gives one sentence and no number. `withdraw_ask(task_id, ask_id?)` reads the asks of the task. With no `ask_id` it takes the only open ask, or it lists them. It shows a card with the task and the addressee, and removes an open ask of the caller. Another member's ask or a closed ask gives a refusal and no change. With either flag off, both tools say that waits are off and write nothing. Both tools sit in the new pack `projects-waiting`, which follows `projects`, because the reminders pack was at its budget. A held chat does not hold them. The new-chat-tool fence set passes, and the projects ceiling reads 8. AGENT-SAFE. **Built, dark, not merged** | STANDARD |
+| **AP-10b** | 2227 | The chat tools `my_waits` and `answer_wait` | **Not built.** `GET /shell/waiting` has no `person_ask` kind, and AP-1c is not built. `answer_wait` would duplicate `answer_decision`, which already answers a person ask. Check first that `my_decisions` lists a person ask with its `not_me` and `reply` options | STANDARD |
 | **AP-11** | 1861 | "Wait for Priya's reply" in the comment box | One Send writes the comment and the ask. A reply from Priya in the thread answers it | STANDARD |
 | **AP-12** | 1862 | The Team lens of §4.3 | R8 tests hold V7 and V6. The lens has no answer control. A reader without the right gets 403 | HIGH (visibility) |
 | **AP-13** | 1863 | A hand-off to a member can also send an ask "Tell me when it is done" | The delegate form shows the choice and the line "Priya will see that you wait". The ask closes when the task closes | STANDARD |
@@ -685,7 +688,7 @@ A run that SKIPS the R8 suites proves nothing (843 tests skip with no database).
 | Search provider | None. ⌘K finds the task |
 | Needs | The kinds of §3.2 that fill "For you". They feed the one needs registry (§7.3) |
 | Home cards | My Day "Needs you", altitude `me` |
-| Agent | Mira, through the AP-10 tools |
+| Agent | Mira, through the AP-10a tools (ask and withdraw). The AP-10b tools are not built |
 
 No palette, bell, assistant rail or ⌘K listener of its own.
 
@@ -723,3 +726,4 @@ Each open question has a recommended answer. The build uses it as a working defa
 - 2026-11-07 — AP-8a built on branch `pro-ap8` (task 1858), dark behind `WAITING_ORGS` and `DECISIONS_ORGS`. Migration 359 widens the source CHECK and adds `due_at`, `closed_at` and `closed_reason`. §7.2 names both flags and the rule of guard 5. §8 splits AP-8 into AP-8a and AP-8b, and AP-8b holds B4 to B6. AP-1a merged as `bf0ece44b`.
 - 2026-11-08 — AP-9a built on branch `pro-ap9` (task 1859), dark behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8a merged as `f9b7969e2`. §8 splits AP-9 into AP-9a and AP-9b (task 2225). §7.2 holds the wire shape of the extended read. The anchor of `agent_focus_clause` is `filters.py:1487`.
 - 2026-11-08 — Fix round of AP-9a. The chip and the form draw only when `asks` is a list. A host with no form wiring (My Tasks) offers no form. Withdraw asks first. The flag probe reads the first loaded task once per page load, and stays advisory. B7 to B9 added for AP-9b.
+- 2026-11-08 — AP-10a built on branch `pro-ap10` (task 1860), dark behind `WAITING_ORGS` and `DECISIONS_ORGS`. The tools `ask_person` and `withdraw_ask` close gap G25. §8 splits AP-10 into AP-10a and AP-10b (task 2227).

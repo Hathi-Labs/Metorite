@@ -336,7 +336,7 @@ def test_the_pack_flag_turns_on_every_pack_of_each_owner() -> None:
     assert {"crm-records", "projects", "projects-plan", "projects-structure",
             "projects-bulk", "projects-reminders", "projects-reports",
             "projects-authority"} <= slugs
-    assert len(tool_packs.owner_packs(PROJECTS)) == 8  # PJP-2 + ALN-4: was 5, CAL-1a: calendar-day
+    assert len(tool_packs.owner_packs(PROJECTS)) == 9  # PJP-2 + ALN-4: was 5, CAL-1a: calendar-day, AP-10a: projects-waiting
     # The email chats keep the email owner alone, as in OA-7h.
     assert set(run.pack_flag()["tool_packs"].split(",")) == set(tool_packs.owner_packs(EA))
     assert run.owners_of(scenario("read_invoice")) == (EA,)
