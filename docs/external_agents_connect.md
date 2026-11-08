@@ -127,13 +127,14 @@ Twelve tools read:
 | `list_tags` | The tag names of one project tree, or of every tree you see. Tags belong to the top project of a tree. A name shows once, in alphabetical order. Read it before you make a tag, so you reuse a name |
 | `list_tasks` | The tasks you see, at most 100 in one call. It filters by project, status, tag, assignee and text. It also filters by `status_category` (a list of backlog, todo, in_progress, done and cancelled), `updated_before`, `updated_after`, `created_after` and `due_before` (ISO dates), `has_parent` (false gives top-level tasks), `is_epic`, `assigned` (false gives tasks with no assignee) and `title_prefix` (not case sensitive, such as a plan id). With `compact` true, each row is small and one call gives up to 500 rows |
 | `board_stats` | The number of tasks you see, with no rows. It takes the filters of `list_tasks`. `group_by` takes one or two of `project`, `status_category`, `is_epic`, `assignee`, `holder` and `updated_age` (bands `<1d`, `1-3d`, `3-7d`, `7-30d`, `>30d`). Its `total` equals the rows that `list_tasks` gives for the same filters. A task with two assignees counts once for each under `assignee` |
+| `get_plan` | The order of work under one goal, epic or project: `root_task_id`. It returns the `ready` slices, the `waves`, the `critical_path` with `slack` in minutes, one `finish` date, the `next_slice`, the slices `held` by an open blocker outside the tree (`outside_blockers`), a `cycle` if the links loop, and `hidden`, the count of slices you cannot see. It names no hidden slice. `labels` gives the number and title of the tasks it names. It gives one finish date and no range. A read-only connection can call it |
 | `get_task` | One task, with its references |
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |
 | `get_task_context` | One task, with its parent tasks, its project, the tasks that block it and the newest 20 comments. A parent task that you cannot see shows as hidden, with no title |
 | `my_work` | The next work of this agent, at most 25 rows. "How the agent finds its next work" above tells the order |
 
-Nine tools make or change a task:
+Eleven tools make or change a task or its comments:
 
 | Tool | What it does |
 |---|---|
@@ -146,6 +147,8 @@ Nine tools make or change a task:
 | `add_task_link` | It says that one task blocks another. `task_id` blocks `target_task_id`, so `my_work` does not offer the second task until the first is done. A claim of the second task is not refused. You must see both tasks. The same link twice keeps one link. Metorite refuses a link that makes a loop, and a link from a task to itself |
 | `remove_task_link` | It removes one `blocks` link. Send the `link_id` that `get_task` shows for the link. The agent must be able to see both tasks. A person removes other kinds of link in the app |
 | `add_comment` | It writes a comment on a task, such as a short progress note while it works. You are the author of the comment. It can reply to a top-level comment. A comment holds at most 20,000 characters. With the same `idempotency_key`, a second call gives back the first comment and adds no second comment |
+| `update_comment` | It replaces the text of a comment that this agent app wrote, such as a note with no end after a stop. Metorite keeps no copy of the old text. The agent cannot change a comment that you typed in Metorite, a comment of another person, or a comment of another agent app. It also cannot change its own comment when a person edited it, it belongs to an agent run, or someone else wrote on the task after it. Metorite refuses it, and nothing changes. The task history gets one line, "Edited a comment", with the name of the agent app |
+| `delete_comment` | It deletes a comment that this agent app wrote. You cannot undo a delete. The same rule as `update_comment` holds. The task history gets one line, "Deleted a comment", with the name of the agent app and no words of the comment |
 
 Each change shows in the task history, with the agent as `mcp:<host>`. A status change of the agent can start a workflow of your organization that runs on a status change, as your own change does. A move to done is a status change too.
 

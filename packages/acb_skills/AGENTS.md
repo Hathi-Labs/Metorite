@@ -40,6 +40,7 @@ not write a second copy of that seam. A bare test file name is under
    - WEB-7: `web_render_client.py` is the ONE client of the web worker (`POST /render`, bearer `WEB_WORKER_TOKEN`). The walk runs first, and the org comes from `_run_org` only. Fence: `test_web_render.py`.
 4a. child_confine.py -- the ONE confinement of a child process that parses hostile input (WS-WEB WEB-2b). Landlock, the seccomp filter, `close_inherited_fds` and `close_limits`. It is stdlib only.
    - A worker loads it BY PATH with `importlib`, never with `import acb_skills`, because the package `__init__` loads the whole tool set. It writes no bytecode on that load. Do not write a second copy of Landlock or of the filter. WEB-3 and each later parser use this module.
+   - A worker outside this dir gets the path from its parent. The gateway's signature image child (`gateway/signature_image_worker.py`, WS-17 SG-1) is the first: `gateway/signature_image.py` puts the file of `acb_skills.child_confine` in the spec. A move or a rename of this file breaks that child too.
    - `confine(min_abi)` fails closed on Linux with `Refused("unavailable")`. The OCR child asks ABI 4, and the web child asks ABI 1 (the file system), because seccomp already refuses `socket`.
    - `SECCOMP_DENIED` holds `truncate` and the `chmod`, `chown`, `utime` and `xattr` calls, so a file of the gateway user is safe at every ABI. Both workers call `close_inherited_fds()` first.
    - Fences: `test_attachment_ocr.py` (`TestTheConfinement`) and `test_web_reader_confine.py`.

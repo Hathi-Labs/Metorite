@@ -50,6 +50,7 @@ import pytest
 from acb_skills import studio_tools as st
 from acb_skills.untrusted import MARKER_LINE_RE
 from gateway import app_requests
+from gateway.routes import agent_requests
 from gateway.routes.studio import actions, invoke
 
 from tests.unit.test_studio_builder_tools import MEMBER
@@ -117,6 +118,24 @@ def _body(verb: str) -> dict[str, Any]:
             "delete": {"id": REC}}[verb]
 
 
+def _stored(verb: str, **over: Any) -> dict[str, Any]:
+    """The member's read of a Studio request of *verb*, in the shape of
+    ``app_requests._request_out``."""
+    out: dict[str, Any] = {
+        "request_id": RID, "run_id": str(uuid.uuid4()), "state": "approved",
+        "decision": "approve", "source": "studio", "app": "studio", "subject": PID,
+        "op": ACTION_OF[verb], "class": "C" if verb == "delete" else "B",
+        "client_via": "studio:door", "card": {"client": "Studio"},
+        "call": {"method": "POST", "template": invoke.DOOR_TEMPLATE,
+                 "path": f"/studio/apps/{PID}/actions/{ACTION_OF[verb]}",
+                 "query": [["uses", f"object:visit.{verb}"]], "body": _body(verb),
+                 "if_match": None},
+        "expires_at": EXPIRES, "created_at": None, "decided_at": None,
+    }
+    out.update(over)
+    return out
+
+
 def _saved_answer(verb: str) -> dict[str, Any]:
     if verb == "delete":
         return {"deleted": True, "id": REC}
@@ -138,10 +157,13 @@ class Gateway:
         self.error: Exception | None = None
         #: The method that the fault hits.
         self.error_on = "POST"
+        #: The member's read of a request (B2c-2c fix round 1), or None for a
+        #: Studio request of a create.
+        self.stored: tuple[int, Any] | None = None
 
     @staticmethod
     def route(method: str, path: str) -> None:
-        for r in actions.router.routes:
+        for r in (*actions.router.routes, *agent_requests.router.routes):
             if method in getattr(r, "methods", ()) and r.path_regex.match(path):  # type: ignore[attr-defined]
                 return
         raise AssertionError(f"no route serves {method} {path}")
@@ -156,6 +178,9 @@ class Gateway:
         if self.error and method == self.error_on:
             raise self.error
         parts = path.strip("/").split("/")
+        if method == "GET" and parts[:2] == ["agent-access", "requests"] and len(parts) == 3:
+            assert parts[2] == RID and body is None, path
+            return self._r(*(self.stored or (200, _stored("create"))))
         if method == "GET" and parts[:2] == ["studio", "packages"] and len(parts) == 3:
             if self.package_status != 200:
                 return self._r(self.package_status, {"detail": "Not found"})
@@ -252,7 +277,7 @@ def test_no_write_tool_asks_with_a_card_of_the_chat_or_names_the_decision() -> N
     call ``_must_ask`` or ``request_confirmation`` in ``_record_write`` -> red."""
     src = "".join(inspect.getsource(fn) for fn in (
         *TOOLS.values(), st._record_write, st._asked, st._resent, st._write_fail,
-        st._write_body, st._not_saved))
+        st._write_body, st._not_saved, st._resend_by_request, st._resend_target))
     for name in ("request_confirmation", "ask_tools", "_must_ask", "_decide(", "decision"):
         assert name not in src, name
 
@@ -308,6 +333,134 @@ async def test_a_resend_names_the_request_and_sends_no_body(gw, verb) -> None:
     assert post["query"] == {"request_id": [RID]} and post["body"] is None
     assert out["ok"] is True and out["saved"] is True, out
     assert out["record_id"] == REC and out["request_id"] == RID
+    # With all the arguments, the tool reads the package, never the request.
+    assert not [c for c in gw.calls if c["path"].startswith("/agent-access/")]
+
+
+# -- 3b. The resend by the request_id alone (B2c-2c fix round 1) -------------------
+#
+# The next turn of the chat may hold only the text of the turns before it, so
+# Mira may not know the package id and the object name. The tool reads the
+# request as the member, and takes the package and the action of the stored
+# call. Mutations (2026-11-08): skip the lookup (send to the package of the
+# call) -> "goes to the stored action" red. Drop the verb check -> "the verb of
+# another tool" red.
+
+
+@pytest.mark.parametrize("verb", st.WRITE_VERBS)
+async def test_a_resend_with_only_the_request_id_reads_it_and_goes_to_the_stored_action(
+        gw, verb) -> None:
+    gw.stored = (200, _stored(verb))
+    out = await TOOLS[verb](request_id=RID.upper())
+    assert [(c["method"], c["path"]) for c in gw.calls] == [
+        ("GET", f"/agent-access/requests/{RID}"),
+        ("POST", f"/studio/apps/{PID}/actions/{ACTION_OF[verb]}")]
+    (post,) = gw.posts()
+    assert post["query"] == {"request_id": [RID]} and post["body"] is None
+    assert gw.calls[0]["headers"]["X-User-Email"] == MEMBER
+    assert out["ok"] is True and out["saved"] is True and out["request_id"] == RID, out
+
+
+async def test_a_resend_with_the_request_id_and_a_matching_package_goes_too(gw) -> None:
+    gw.stored = (200, _stored("update"))
+    out = await st.studio_record_update(package_id=PID, request_id=RID)
+    assert out["saved"] is True and gw.posts()[0]["path"].endswith("/actions/change")
+    out = await st.studio_record_update(object="visit", request_id=RID)
+    assert out["saved"] is True
+
+
+OTHER = str(uuid.uuid4())
+
+
+@pytest.mark.parametrize("stored,said", [
+    (_stored("create", source="mcp"), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", source=None), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", subject=OTHER), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", subject="not-a-uuid"), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", request_id=OTHER), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", call={"method": "POST", "path": f"/studio/apps/{OTHER}/actions/add",
+                             "query": [["uses", "object:visit.create"]]}), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", call={"method": "POST", "path": f"/knowledge/pages/{PID}",
+                             "query": [["uses", "object:visit.create"]]}), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", call={"method": "POST", "path": f"/studio/apps/{PID}/actions/add/x",
+                             "query": [["uses", "object:visit.create"]]}), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", call={"method": "DELETE", "path": f"/studio/apps/{PID}/actions/add",
+                             "query": [["uses", "object:visit.create"]]}), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", call={"method": "POST", "path": f"/studio/apps/{PID}/actions/add",
+                             "query": []}), st._NOT_A_RECORD_REQUEST),
+    (_stored("create", call={"method": "POST", "path": f"/studio/apps/{PID}/actions/add",
+                             "query": [["uses", "workflow:x"]]}), st._NOT_A_RECORD_REQUEST),
+    (_stored("update"), st._OTHER_VERB.format(found="update", verb="create")),
+    (_stored("delete"), st._OTHER_VERB.format(found="delete", verb="create")),
+])
+async def test_a_resend_by_id_that_does_not_match_this_tool_sends_nothing(gw, stored, said) -> None:
+    """Another source, a path that is not the door of the request's own
+    package, and the verb of another tool each refuse with no request sent."""
+    gw.stored = (200, stored)
+    out = await st.studio_record_create(request_id=RID)
+    assert out["ok"] is False and out["saved"] is False
+    assert _message(out) == said
+    assert gw.posts() == [] and [c["method"] for c in gw.calls] == ["GET"]
+    assert len(said) <= st.MAX_ERROR_MESSAGE_CHARS
+
+
+@pytest.mark.parametrize("args", [{"package_id": OTHER}, {"object": "ticket"}])
+async def test_a_resend_by_id_with_other_values_sends_nothing(gw, args) -> None:
+    out = await st.studio_record_create(request_id=RID, **args)
+    assert out["saved"] is False and _message(out) == st._NOT_THIS_CHANGE
+    assert gw.posts() == []
+
+
+@pytest.mark.parametrize("args,said", [
+    ({"package_id": "x"}, st._NO_PACKAGE_ID), ({"object": "Visit"}, st._NO_OBJECT_NAME)])
+async def test_a_resend_by_id_with_a_bad_value_reads_nothing(gw, args, said) -> None:
+    out = await st.studio_record_create(request_id=RID, **args)
+    assert out["saved"] is False and _message(out) == said and gw.calls == []
+
+
+async def test_a_resend_of_a_request_that_is_not_the_members_is_request_not_found(gw) -> None:
+    """404: another member, another org, or no such request. Nothing is sent."""
+    gw.stored = (404, {"detail": "Request not found"})
+    out = await st.studio_record_delete(request_id=RID)
+    assert (out["saved"], out["code"], out["status"]) == (False, "request_not_found", 404)
+    assert _message(out) == st.WRITE_REFUSALS["request_not_found"]
+    assert gw.posts() == []
+
+
+@pytest.mark.parametrize("stored", [(500, None), (200, None), (200, ["x"])])
+async def test_a_resend_whose_request_does_not_read_sends_nothing(gw, stored) -> None:
+    gw.stored = stored
+    out = await st.studio_record_create(request_id=RID)
+    assert out["saved"] is False and _message(out) == st._REQUEST_UNREAD
+    assert gw.posts() == []
+
+
+async def test_a_network_fault_on_the_read_of_the_request_sends_nothing(gw) -> None:
+    gw.error, gw.error_on = httpx.ConnectError("down"), "GET"
+    out = await st.studio_record_create(request_id=RID)
+    assert out["saved"] is False and _message(out) == st._REQUEST_UNREAD
+    assert gw.posts() == []
+
+
+async def test_a_refusal_of_the_door_after_the_lookup_keeps_its_sentence(gw) -> None:
+    """The door checks the state again: a declined request writes nothing."""
+    gw.stored = (200, _stored("create", state="declined", decision="decline"))
+    gw.door = (403, {"detail": {"code": "request_declined", "message": "x"}})
+    out = await st.studio_record_create(request_id=RID)
+    assert (out["saved"], out["code"]) == (False, "request_declined")
+    assert _message(out) == st.WRITE_REFUSALS["request_declined"]
+
+
+def test_the_words_name_the_card_of_the_chat_and_the_resend_by_id() -> None:
+    """Fix round 1 (P2): the card of the web chat first, the list of
+    Integrations in a channel with no card, and the resend with only the id."""
+    for text in (st._ASKED_NOTE, st.WRITE_REFUSALS["request_awaiting"]):
+        assert "approval card" in text and st.APPROVE_WHERE in text, text
+        assert "only the request_id" in text, text
+    assert "only the request_id" in st._ASKED_APPROVED_NOTE
+    for fn in TOOLS.values():
+        doc = " ".join((fn.__doc__ or "").split())
+        assert "approval card in the web chat" in doc and "only the request_id" in doc
 
 
 @pytest.mark.parametrize("verb,values", [

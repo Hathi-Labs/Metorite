@@ -47,8 +47,17 @@ import { bareToolName } from "@/lib/toolSteps";
 export type Placement = "ask" | "evidence" | "write" | "answer";
 
 /** Tools whose result the member must answer. The chat draws them itself
- *  (`AgentChat`'s confirmation queue and question cards). */
-const ASK: readonly string[] = ["request_confirmation", "ask_questions", "ask_user"];
+ *  (`AgentChat`'s confirmation queue and question cards). The record writes
+ *  of AI Studio first ask, and their result is a request that waits: its
+ *  card is `components/studio/StudioToolCards.tsx` (STU-B2c-2c). */
+const ASK: readonly string[] = [
+  "request_confirmation",
+  "ask_questions",
+  "ask_user",
+  "studio_record_create",
+  "studio_record_update",
+  "studio_record_delete",
+];
 
 /**
  * Tools that draw a card the model chose. `emit_generative_ui` is here, and
@@ -100,6 +109,7 @@ const EVIDENCE: readonly string[] = [
   "fit_for_task",
   "rebalance",
   "find_conflicts",
+  "get_plan",
   "analytics_stuck",
   "analytics_load",
   "analytics_throughput",

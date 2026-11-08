@@ -40,7 +40,8 @@ reseller. Add an instance.
 
 🔴 **A second task since VOX-2** (``projects_ai_chat.md`` §31, 2026-11-08).
 ``native_sarvam`` serves ``transcribe``, because litellm 1.103.0 has no Sarvam
-transcription. Its wire lives in ``stt_sarvam.py``. A ``transcribe`` call
+transcription. Its wire lives in ``stt_sarvam.py``. ``native_assemblyai``
+(VOX-6, ``stt_assemblyai.py``) is the second. A ``transcribe`` call
 carries a :class:`TranscribePayload` (the clip, its name and the key), and
 it answers a :class:`TranscriptResult` that the door reads with
 ``_transcript_of`` and ``router.duration_seconds``. Each handler names the
@@ -58,6 +59,7 @@ from typing import Any, Protocol
 import httpx
 
 from customer_console.router import ExtractedUsage, reported_cost_usd
+from customer_console.stt_assemblyai import AssemblyAIHandler
 from customer_console.stt_sarvam import TRANSCRIBE_TASK, SarvamHandler
 
 __all__ = [
@@ -66,6 +68,7 @@ __all__ = [
     "QUESTION_TYPES",
     "TRANSCRIBE_TASK",
     "AimlApiHandler",
+    "AssemblyAIHandler",
     "DecidePayload",
     "NativeHandler",
     "NativePayload",
@@ -667,6 +670,8 @@ NATIVE_HANDLERS: dict[str, NativeHandler] = {
     "native_aimlapi": AimlApiHandler(),
     # VOX-2 (2026-11-08): Sarvam speech to text, on the `transcribe` task.
     "native_sarvam": SarvamHandler(),
+    # VOX-6 (2026-11-08): AssemblyAI Sync speech to text, on `transcribe`.
+    "native_assemblyai": AssemblyAIHandler(),
 }
 
 

@@ -1820,7 +1820,7 @@ until its PR merges.
 | WS-43l | Self-mutation on a MAF harness agent in the mutation container | WS-43k, H-218 | AGENT-SAFE. Dark behind `mutation:*`. ⏸ Parked by D86 |
 | WS-43m | The root `metorite` agent on MAF | WS-43h, WS-43l | AGENT-SAFE. Dark behind `metorite:*`. ⏸ Parked by D86 |
 | WS-43n | Agents from a repo default to MAF | Nothing | AGENT-SAFE. The external repo change is WS43-G11. ⏸ Parked by D86 |
-| WS-43o | The model list from the Router | Nothing | AGENT-SAFE. ⏸ Parked by D86 |
+| WS-43o | The model list from the Router | Nothing | AGENT-SAFE. ✅ Built 2026-11-08 (S4b, task 2282) |
 | WS-43p | Retire the Copilot mutation runner | WS-43i, WS-43l, 14 days on production | **OWNER-GATE** to merge (WS43-G9). ⏸ Parked by D86 |
 | WS-43q | Remove the Copilot runtime from the executor, the gateway and the settings | WS-43j, WS-43m, WS-43n, WS-43o, WS-43p, PR #585, WS-8i, and `MAF_NATIVE_SESSIONS` soaked ON in production (WS43-G13) | **OWNER-GATE** to merge (WS43-G9). ⏸ Parked by D86 |
 | WS-43r | Remove the packages and the CLI prefetch | WS-43q | **OWNER-GATE** to merge (WS43-G9, WS43-G12). ⏸ Parked by D86 |
@@ -2953,7 +2953,7 @@ uv run pytest tests/unit/test_agent_runtime_default.py -q -rs
 
 **Gate.** AGENT-SAFE. The external repo change is WS43-G11.
 
-### WS-43o — The model list from the Router 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
+### WS-43o — The model list from the Router ✅ **Built 2026-11-08** ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** `gateway/main.py` (the warm-up at `:113-140`, `/health/runtime`
 at `:1650`, `/copilot/models` at `:1791`), `gateway/routes/settings.py`
@@ -2971,6 +2971,20 @@ Plane's `src/app/api/models/all/route.ts`, and fence WS43-F19.
    wired (WS-43c built and `MAF_CODING_SCOPE` set).
 4. The Control Plane shows no "GitHub Copilot SDK" model group when
    `routing_is_on()` is true.
+
+**Built (S4b, task 2282, 2026-11-08).** D84 and D92 removed the `routing_is_on()`
+condition, so the change is unconditional. `/api/models/all` has no "GitHub
+Copilot SDK" group and never calls `/copilot/models`. Gateway start does not
+warm the Copilot list.
+
+`/health/runtime` has a `router` check and no
+`copilot_sdk` check. `/copilot/models` stays as a retired route. It answers the
+Router tier slate with `source: "router"`.
+
+`/settings/llm/provider-models` for `github` no longer reads it. `gateway/main.py` left the WS43-F15
+allowlist. The `copilot_chat_model` setting, `/settings/llm/copilot-model` and
+the executor Copilot path stay for WS-43q. The test is
+`tests/unit/test_router_model_list.py`.
 
 **Verification.**
 

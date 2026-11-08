@@ -1590,40 +1590,7 @@ async def list_provider_models(
     Checks the on-disk cache first.  If the cache entry is stale or missing,
     falls back to the static list so the UI is never empty.  Use the refresh
     endpoint to populate / update the cache.
-
-    GitHub is special-cased to the LIVE Copilot SDK list (the same source the
-    chat model dropdown uses via ``/copilot/models``).  Without this the Models
-    page showed a stale static ``github/...`` list whose IDs never matched the
-    dropdown's live IDs (e.g. ``claude-sonnet-4.5``), so enabling a Copilot
-    model here had no effect on the picker.  Serving the same live IDs makes the
-    Models page the real source of truth for the picker's allow-list filter.
     """
-    if provider == "github":
-        try:
-            # Lazy import to avoid a circular import at module load (main.py
-            # imports this router).  Reuses main.py's 5-min cache + SDK fetch.
-            from gateway.main import copilot_models
-            data = await copilot_models()
-            raw_models = data.get("models", []) if isinstance(data, dict) else []
-            live = [
-                ModelInfo(
-                    id=str(m.get("id")),
-                    label=str(m.get("label") or m.get("id") or ""),
-                    provider="github",
-                    reasoning=bool(m.get("reasoning", False)),
-                    context_window=int(m.get("context_window") or 0),
-                    desc="Via your GitHub Copilot subscription",
-                )
-                # Drop the "auto" picker convenience — it's not a real
-                # toggleable model on the Models page.
-                for m in raw_models
-                if m.get("id") and str(m.get("id")) != "auto"
-            ]
-            if live:
-                return live
-        except Exception as exc:  # fall back to cache/static
-            _log.warning("settings.github_live_models_failed", error=str(exc)[:160])
-
     cache = _load_models_cache()
     entry = cache.get(provider, {})
     if entry and _cache_entry_fresh(entry):

@@ -59,6 +59,7 @@ Shared settings, logging, the activity and cost feed, and utilities.
 - **`app_manifests/` holds the ONE route manifest of each app** (MCP-P1a, D136, `external_agent_access.md` §19.3). Mira's chat client and the MCP door both read it. It is pure data and imports the standard library only, so `acb_auth`, the edge and the gateway can import it.
 - `base.py` holds the types and the readers. `build_call` is the one builder of a door call. `knowledge.py` holds the Knowledge rows, and `acb_skills/knowledge_manifest.py` re-exports them. Each A, B or C row names a door `op` or an `off_door` reason (AD-2), and an `App` with neither fails at import.
 - Fences: `tests/unit/test_app_door_coverage.py`, `tests/unit/test_knowledge_chat_coverage.py`.
+- `crm.py` holds the CRM rows: one for each route of `gateway.routes.crm`, all `off_door` until MCP-P2a sets the door ops (CRM-M2a, D136.1). `acb_skills/chat_parity.py` decides each `/api/crm` action from these rows. Fence: `tests/unit/test_crm_ui_actions.py`. A new CRM route needs a row, and the count of `planned` rows only goes down.
 
 Each module below holds ONE rule. Do not copy its rule into a caller.
 - `today.py`: today's date of a chat run. Fence: `tests/unit/test_crm_answer_consistency.py`.
@@ -68,6 +69,7 @@ Each module below holds ONE rule. Do not copy its rule into a caller.
 - `card_body.py`: the body of a confirmation card (RX-1, D169). Each short field shows, and only long text may be cut. The Projects tools and the CRM tools read it. Fence: `tests/unit/test_card_body.py`.
 - `mentions.py`: the parser of an @mention. The gateway and the Projects cards read it, so a card and its write agree. Fence: `tests/unit/test_held_card_promises.py`.
 - `_log.py` (`attributed_agent`, `automation_agent_scope`, `chat_agent_label`, `attributed_openai`): the agent name of a model call. Do not read `ctx["agent"]` for a report in a third place. Fence: `tests/unit/test_usage_attribution.py`.
+- `_log.py` (`BOX_TOKEN_RE`, `redact_box_tokens`, `BoxTokenMaskingRenderer`, `BoxTokenRedactFilter`): the ONE mask of a box token in a log (EA-19e). `configure_logging` puts the processor before the renderer, wraps the renderer so the rendered line is masked too, and puts the filter on each root handler. Its regex equals the `metorite-box-token` rule of `.gitleaks.toml`. Fence: `tests/unit/test_box_token_secret_rules.py`.
 - `pg_text.storable(value)`: it changes each NUL and each lone surrogate to U+FFFD, at any depth. A writer of model, tool or client text calls it before `json.dumps` and before the bind. Fence: `tests/unit/test_chat_nul_persist.py`.
 - `number_check.py`: the ONE number check of a text that a model wrote (`find_figures`, `Sources`, `check`, `format_figure`). `settings.crm_answer_check_mode` is the one reader of `CRM_ANSWER_CHECK`. Fences: `tests/unit/test_number_check.py`, `tests/unit/test_number_check_invented.py`.
 - `assistant_profile.py`: the ONE parser of `user_settings.assistant_profile`. It opens no connection. Fences: `tests/unit/test_assistant_profile.py`, `tests/unit/test_executor_profile_block.py`.

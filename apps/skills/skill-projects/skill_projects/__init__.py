@@ -80,6 +80,7 @@ from skill_projects.reads import (
     find_conflicts,
     find_tasks,
     fit_for_task,
+    get_plan,
     list_reminders,
     list_tasks,
     my_task,
@@ -202,6 +203,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "fit_for_task",
     "rebalance",
     "find_conflicts",
+    "get_plan",
     "task_dataset",
     # Class A — WS-66 RM-3 (D114), the member's own reminders
     "list_reminders",
