@@ -22,7 +22,7 @@ This page says what a team does so that many agents, owned by many people, work 
 1. Each person connects their own agent. An agent acts as the person who approved it and sees only what that person sees.
 2. Give each machine its own connection. Run the connect command on every machine.
 3. On the consent page, the person chooses the scopes and can pin the agent to some projects.
-4. Each terminal is its own session. Metorite can tell two terminals of one connection apart only when sessions are on. Read the connect guide for the state of sessions.
+4. Each terminal is its own session. Metorite can tell two terminals of one connection apart only when sessions are on.
 5. A person can revoke any connection of their own at any time. An admin can revoke any connection of the organization.
 
 ## What the agent gets from the connection by itself

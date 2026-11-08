@@ -67,16 +67,16 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 7. After the approval, make each slice with `create_task`. Send `parent_task_id` (its epic), the backlog `status_id`, `estimate_mins`, an `idempotency_key`, and as assignee the person who answers for it.
 8. Ask the person to add each "Starts after" line as a `blocks` link in the app. On the task, the person chooses "blocks" and gives the other task. On the Timeline, the person can draw the link.
 
-**Until the link tool ships:** an agent can read a `blocks` link (`get_task` shows `links`), but cannot set one.
+**Until the link tool ships:** an agent can read a `blocks` link (`get_task` shows `links`), but cannot set one. Each link matters today: `my_work` skips a task that an open task blocks.
 
 ## The first week, until cycles ship
 
 1. **Pick the work.** Take wave 1, then the next waves, until the review load fills the hours that each reviewer has this week. Agents rarely limit a week. People's review time does.
 2. **Mark the week.** Set the due date of each chosen slice to the last day of the week (`update_task`). Move it to the to-do status (`set_task_status`).
-3. **Assign the builder.** `my_work` lists the tasks that are assigned to the member of the connection. Assign each slice to the person whose agent builds it.
+3. **Assign the builder.** `my_work` lists the tasks that are assigned to the member of the connection. It skips a task that another session holds, and a task that an open task blocks. Assign each slice to the person whose agent builds it.
 4. **Build.** Each agent follows the session loop of `kit/team-setup`: claim, brief, build, verify, review, merge.
 5. **Close the week.** Comment on each epic: what merged, what is left, and what got stuck. For each unfinished slice, the person chooses next week or the backlog. Change the due date to match.
-6. **Look back.** Name the cause of each stall from `failures`. Propose one rule change. The person approves it before you apply it.
+6. **Look back.** Name the cause of each stall from the `failures` page. Propose one rule change. The person approves it before you apply it.
 
 ## What changes when the plan model ships
 

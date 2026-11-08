@@ -51,12 +51,12 @@ The solid lines show what belongs to what. The dotted line says that one job mus
 | Word | What it means | It is like | Today |
 |---|---|---|---|
 | 🏆 **Goal** | The result that all the work is for. One sentence, and a way to know that you got there. | The cup at the end of the season. | Coming. Until then, write the goal in the description of each epic. |
-| 📦 **Epic** | One big part of the goal. A person can accept it as a whole. | One chapter of a book. | Built. An agent can make an epic. The app cannot set the type yet. |
+| 📦 **Epic** | One big part of the goal. A person can accept it as a whole. | One chapter of a book. | Built. An agent can make an epic. No control in the app sets the type yet. |
 | 🧩 **Slice** | One small job. One agent finishes it in one go, and a person checks it in 15 to 30 minutes. | One bag of bricks with its own instructions. | Built, as a subtask of the epic. |
 | 🗒️ **Task** | Any card on the board. A slice is a task. | A sticky note on the fridge. | Built. |
 | 🧾 **Brief** | The instructions in a slice: what to make, what not to touch, and how to check it. | A recipe card. | Built, as the text of the task. |
 | ⛓️ **Blocks** | A link that says: this job must be done before that job can start. | You bake the cake before you put the icing on. | Built. A person sets it in the app. An agent can read it, but cannot set it yet. |
-| ✅ **Ready** | A slice is ready when every job that blocks it is done. | The cake is out of the oven, so the icing can start. | Coming. Today a person checks by hand. |
+| ✅ **Ready** | A slice is ready when every job that blocks it is done. | The cake is out of the oven, so the icing can start. | Partly built. `my_work` skips a job that an open job blocks. A list of every ready job, in order, is coming. |
 | 🎯 **Critical path** | The longest chain of jobs that must happen one after another. It sets the earliest finish. | The longest line of dominoes. | Coming. Today you work it out by hand. |
 
 ### Words about the team
@@ -166,7 +166,7 @@ flowchart LR
 
 ## How to start today, in three steps
 
-1. **Connect your agent.** Open the Integrations app, then **AI agents**. Follow the steps for your agent client. You approve the connection on a consent page. The agent acts as you, and sees only what you can see. Read the connect guide for the details.
+1. **Connect your agent.** Open the Integrations app, then **AI agents**. The view shows the address and the steps for each agent client. You approve the connection on a consent page. The agent acts as you, and sees only what you can see.
 2. **Give your agent the setup text.** The connection does not tell your agent everything. Copy the setup text (`kit/paste-in`) into the rules file of your agent. For Claude Code, that file is `CLAUDE.md`.
 3. **Plan, then build.** Tell your agent: "Plan this goal on the Metorite board, and ask me at each gate." The agent follows `kit/plan-the-work`. After you approve the plan, the agent calls `my_work` and takes the first task.
 
@@ -191,7 +191,7 @@ flowchart LR
 | The board | Tasks, subtasks, statuses, assignees, due dates, estimates, comments | — |
 | Epics | An Epic type. An agent can make an epic. Each epic counts its direct subtasks. | A type control in the app. An epic contract: the outcome and the checks. A count over every level. An epic page. |
 | Goals | — | A Goal above the epics |
-| The order of work | "Blocks" links, set by a person in the app | A link tool for agents. Metorite works out what is ready, the waves and the critical path. |
+| The order of work | "Blocks" links, set by a person in the app. `my_work` skips a blocked task | A link tool for agents. Metorite works out what is ready, the waves and the critical path. |
 | Planning | An agent plans with you and asks at each gate | The same three gates in the Metorite chat |
 | Cycles | Due dates, and a review that you run each week | A cycle with its capacity, a close and a look back |
 | Agents at work | Connection, claim, heartbeat, questions, runs, the setup text | Agents take the ready jobs in critical-path order, inside the limits |
