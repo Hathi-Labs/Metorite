@@ -87,13 +87,13 @@ not write a second copy of that seam. A bare test file name is under
 5c. permission_policy.py -- the B6 risk-aware handler and the D85 guard `guard_shared_agent_shell`.
    - The guard refuses a shell request unless the artifact context says `host_shell_refused=False`. Fence: `test_shared_agent_shell_tools.py`.
    - `decide()` refuses a read of a BINARY workspace file (`read_binary_file`). ⚠️ It never refuses a name in `_CLI_IMAGE_SUFFIXES`, and a CLI upgrade must check that list again. Fence: `test_chat_nul_persist.py`.
-5d. safe_open.py -- the ONE safe opener (spec `maf_coding_engine.md` §7.5 rule B). Every host reader and writer of a dir that a sandbox container mounts opens its paths here.
+5d. safe_open.py -- the ONE safe opener (spec `maf_coding_engine.md` §7.5 rule B). Every host reader and writer of a dir that a sandbox container mounts opens its paths here. The Custom Apps routes do too (WS-43h). `remove_links` removes each link that an `app_builder` command made.
    - A link at any depth fails the call. Do not open a mounted dir any other way. Fence: `test_sandbox_safe_open.py`.
 5e. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (D86, spec §7.4 and §16.3).
    - Only `attach_for_run` hands them out, to ONE run, when `sandbox_broker.covers()` is true for the run's own tenant. They are never injected.
    - Two harness agents take their own parts. The `code_task` session takes `code_task_session_parts`. The app-builder factory takes `app_builder_session_parts` under `app_builder:<org>` (WS-43h). Each of those tools reads the run binding and the scope on every call.
    - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`, and app-builder's harness agent holds neither (`host_tool_guard`). Do not write that no data leaves the platform, because a called agent runs outside the sandbox.
-   - `TenantFileStore` takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. `AppWorkspaceFileStore` maps each path of the app dir as it is, refuses each name that starts with a dot, and mirrors nothing to the blob store. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
+   - `TenantFileStore` takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. `AppWorkspaceFileStore` maps each path of the app dir as it is, refuses each name that starts with a dot, and mirrors nothing to the blob store. The app-builder tools refuse a tenant dir `o:<org>`. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
    - Fences: `test_run_command_tool.py`, `test_maf_code_session.py` (R8), `test_projects_sandbox_tools.py`, `test_generated_addendum.py`, `test_app_builder_engine.py`.
 5f. attachment_text.py + attachment_tools.py -- `read_attachment` (spec `projects_ai_chat.md` §22).
    - `attachment_text` parses bytes only, with no subprocess and no code. Every cap is a module constant there. No regex may run over a whole line of HTML.

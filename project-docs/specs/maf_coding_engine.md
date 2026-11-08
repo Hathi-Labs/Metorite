@@ -2603,6 +2603,8 @@ the firewall install are WS43-G1 and WS43-G4.
    builds the `GitHubCopilotAgent`, unchanged.
 2. The run takes the MAF path while the registry label still reads
    `"github-copilot"`, because the executor decides by the object.
+   ⚠️ **Proposed change, needs the owner's OK** (WS-43h fix round): the
+   build set the label to `"maf"` instead. The block below gives the reason.
 3. WS43-E8 passes on the MAF path: `index.html` is valid, and
    `node build/build_t2.mjs` runs in the container with the vendor cache.
 4. The broker mounts a `build/` copy with no `.git`, and refuses any other
@@ -2654,48 +2656,89 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   safe opener, the dir lock and the quota, and it writes nothing to the blob
   store. The agent does not hold the host floor file tools or the host web
   tools (`sandbox_tools.host_tool_guard`), as in a covered `projects` run.
-- **The registry label (done-when 2 changed).** WS-43h set the label of
-  app-builder in `_AGENT_REGISTRY` to `"maf"`. It removed the WS43-F31 entry,
-  which named WS-43h. So each executor site decides by the object. The MAF
-  agent takes the native path, and the Copilot agent keeps the Copilot path
-  through its `_default_options`. No label site of the executor changed.
-  `loader.COPILOT_SPECIALIST_ALLOWED` keeps app-builder until WS-43j,
-  because every other org still gets the Copilot agent.
+- **The registry label: a proposed change of done-when 2, which needs the
+  owner's OK.** The build set the label of app-builder in `_AGENT_REGISTRY`
+  to `"maf"`, and removed the WS43-F31 entry, which named WS-43h. No owner
+  or auditor decided this. The reason: each executor site reads "the label
+  OR the object", so a `"github-copilot"` label sends even the MAF agent
+  down the Copilot path. That path needs `_default_options`, so the run
+  ends in RUN_ERROR and its model gets no request
+  (`test_a_github_copilot_label_sends_the_maf_agent_down_the_copilot_path`).
+  The other way keeps the label and changes every label site of the
+  executor to read the object only. That changes the routing of every
+  agent, so the build did not take it. With `"maf"`, the Copilot agent of
+  an org outside the target keeps the Copilot path through its
+  `_default_options`. `loader.COPILOT_SPECIALIST_ALLOWED` keeps app-builder
+  until WS-43j. The roster (`observability._effective_runtime`) and the
+  runtime lines of the executor name the runtime of the built object, not
+  the label (fix round, review P3).
 - **A tenant dir.** A delegated run of app-builder works in its tenant dir
-  `o:<org>`, not in an app dir. The file tools of the run can read and write
-  there, as the file tools of the Copilot CLI can. Its `run_command` refuses there, for the reason of
-  WS-43e: the container mounts its dir whole and read-write. A command runs
-  only in an app's own dir under the Custom Apps root.
+  `o:<org>`, not in an app dir. That dir holds the uploads of every thread
+  and member (H-227). So the file tools and `run_command` both refuse there
+  (fix round, review P2). The Copilot CLI's file tools could read that dir.
+  The MAF engine works only in an app's own dir under the Custom Apps root.
 - **The session.** The agent holds `native_session_store.SessionHistoryProvider`
   as its one provider of history. With `MAF_NATIVE_SESSIONS` on, the store
   loads and saves its session, so a confirm turn sees the tool output of the
   turn before. `_native_session_skip` does not skip for that provider, and
   `agent_for_run` adds no second one.
-- **The mounts (done-when 4).** The broker copies `build_t2.mjs` and
-  `install_t2_deps.mjs` into its state dir, under a name from a digest of
-  the content. It mounts the copy read-only at `/opt/app-builder/build`. It
-  mounts `t2_vendor_dir()` read-only at `/opt/t2-vendor`, with
-  `CUSTOM_APPS_T2_VENDOR_DIR=/opt/t2-vendor`. `mount_list` refuses a source
-  that holds `.git`, and the app's own `.git` gets the empty read-only cover.
+- **The mounts (done-when 4).** The broker copies `build_t2.mjs`,
+  `install_t2_deps.mjs` and `artifactUi.tsx` (`@cc/ui`) into its state dir,
+  under a name from a digest of the content. It mounts the copy read-only at
+  `/opt/app-builder/build`. It mounts `t2_vendor_dir()` read-only at
+  `/opt/t2-vendor`. The container env sets
+  `CUSTOM_APPS_T2_VENDOR_DIR=/opt/t2-vendor` and
+  `CUSTOM_APPS_T2_UI_SOURCE=/opt/app-builder/build/artifactUi.tsx`.
+  `build_t2.mjs` reads that variable, and with it unset it uses the path in
+  the repo (fix round, review P1: with no repo around the copy, the build
+  refused `@cc/ui`). `mount_list` refuses a source that holds `.git`.
+- **The bundle marker.** `build_t2.mjs` put the bundle in the template with
+  a STRING replace, and `String.replace` reads `$&` in it as a pattern.
+  React's own code holds `"$&/"`, so every T2 bundle held the marker text
+  in place of that code. The docker test found it, and the build now
+  replaces with a function.
+- **The `.git` cover (§7.5 rule A, review P2).** `.git` gets the empty
+  read-only cover only when it exists at the start. So the broker runs
+  `git init` in an app dir with no `.git` before a container starts
+  (`sandbox_broker.ensure_app_git`). It refuses a `.git` that is a link or
+  a file, and it fails closed when the init fails.
 - **The checkpoints (§7.5 rule A).** `_git` of `apps/durability.py` runs
-  with `GIT_CONFIG_NOSYSTEM=1`, `-c core.fsmonitor=false` and
-  `-c core.hooksPath=/dev/null`. `/dev/null` names a dir that can hold no
-  hook.
+  with `GIT_CONFIG_NOSYSTEM=1`, `GIT_ATTR_NOSYSTEM=1`,
+  `GIT_CEILING_DIRECTORIES` at the parent of the app dir,
+  `-c core.fsmonitor=false`, `-c core.hooksPath=/dev/null`,
+  `-c core.attributesFile=/dev/null` and `-c commit.gpgSign=false`. Before
+  each command but `init`, it reads `.git/config` with
+  `git config --no-includes --list`, and it refuses the repo when a key is
+  not one that `git init` writes. A `filter.<x>.clean` that a container
+  planted then never runs on the host (review P2). `lifecycle._git_init`
+  uses the same `_git`.
+- **No host access through a link (§7.5 rule B, review P0).** Every reader
+  and writer of `gateway/routes/apps/` opens through `acb_skills.safe_open`:
+  the sync and the fork read, the rehydrate and the fork write, the file
+  routes, the manifest, the publish read and the delete. The safe opener
+  refuses a link at any depth, and the file list leaves each link out. After each command, the broker
+  removes each link that the command made in the app dir
+  (`safe_open.remove_links`). The host T2 build refuses a dir that a
+  container mounted, and a dir that holds a link.
 - **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
   Copilot path. A dir that a container mounted is on the broker's list, so
   the executor's host git skips it (WS43-F13).
-- **Open: done-when 3 (WS43-E8).** The eval runner has no WS43-E8.
-  `evals/coding_engine/run.py` takes `projects-assistant` and WS43-E10 to
-  WS43-E17 only, and `--tasks WS43-E8` exits with "unknown task". A model
-  run also needs a provider key. WS-43i, or an owner run, closes it.
+- **Done-when 3 (WS43-E8), scripted.** `evals/coding_engine/app_builder.py`
+  holds WS43-E8: change the heading of a seeded T2 app that imports
+  `@cc/ui`, then build it. Run it with
+  `python -m evals.coding_engine.run --agent app-builder --tasks WS43-E8`.
+  With `--scripted` it calls no model, and it passed 2 of 2 on 2026-11-09
+  on a real container. The model run is open: the owner runs it under the
+  cost cap.
 - **Open: installs.** `install_t2_deps.mjs` needs the network, and the
-  sandbox has none until WS-43g. A T2 app with its own packages does not
-  build on this engine yet.
+  sandbox has none until WS-43g. So an app with its own packages
+  (`node_modules`) does not build on the MAF engine until WS-43g.
 
-Fence: WS43-F12, `tests/unit/test_app_builder_engine.py`. Its
-`sandbox_docker` test is the token probe of done-when 5. It passed on the
-real image on 2026-11-08: Node 22 runs, the build copy and `.git` are
-read-only, and no GitHub token or LLM key is in the container.
+Fences: WS43-F12, `tests/unit/test_app_builder_engine.py`, and the Custom
+Apps half of WS43-F13, `tests/unit/test_app_workspace_links.py`. WS43-E8:
+`tests/unit/test_coding_eval_app_builder.py`. The `sandbox_docker` tests
+passed on the real image on 2026-11-09: the token probe of done-when 5,
+a real T2 build that imports `@cc/ui`, and the scripted WS43-E8.
 
 ### WS-43i — Parity eval through the broker 🔲
 
