@@ -117,17 +117,35 @@ describe("PKG-6 packageManifest", () => {
   it("PKG-8c: a Studio job (the payload claims_of writes) is a Do row that opens the app", () => {
     const id = "3f2b7c1e-0a4d-4e8b-9c6f-1d2e3f4a5b6c";
     const m = manifest({
-      jobs: [entry(`${id}:visits`, { label: "Log a visit", href: `/apps/${id}`, feature: "studio" })],
+      jobs: [entry(`${id}:visits`, { label: "Log a visit", href: `/apps/${id}`, feature: "studio", app: "Site visits" })],
     });
     const jobs = installJobs(m, ["studio"]);
     expect(jobs).toEqual([
-      { id: `${id}:visits`, label: "Log a visit", words: [], href: `/apps/${id}`, icon: "Zap" },
+      { id: `${id}:visits`, label: "Log a visit", words: [], href: `/apps/${id}`, icon: "Zap", app: "Site visits" },
     ]);
     const items = addInstallJobs(buildItems([], false, []), jobs);
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ key: `do:${id}:visits`, group: "do", label: "Log a visit", href: `/apps/${id}` });
+    expect(items[0]).toMatchObject({ key: `do:${id}:visits`, group: "do", label: "Log a visit", href: `/apps/${id}`, hint: "Start · Site visits" });
+    expect(items[0].words).toContain("Site visits");
     // A member without the feature of the app page sees no row.
     expect(installJobs(m, [])).toEqual([]);
+  });
+
+  it("PKG-8c: two apps with the same verb give two rows that name their app", () => {
+    const m = manifest({
+      jobs: [
+        entry("a1:v", { label: "Add a record", href: "/apps/a1", app: "Clients" }),
+        entry("b2:v", { label: "Add a record", href: "/apps/b2", app: "Orders" }),
+        entry("c3:v", { label: "Add a record", href: "/apps/c3" }),
+      ],
+    });
+    const items = addInstallJobs(buildItems([], false, []), installJobs(m));
+    expect(items.map((i) => i.hint)).toEqual([
+      "Start · Clients",
+      "Start · Orders",
+      "Start · Installed app",
+    ]);
+    expect(items[1].words).toContain("Orders");
   });
 
   it("needs_setup gives one row for each install", () => {

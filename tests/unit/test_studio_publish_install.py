@@ -65,7 +65,8 @@ def _jobs(*items: Any) -> dict[str, Any]:
 def test_a_job_claims_the_key_app_and_view_and_opens_the_app() -> None:
     claims = studio_app.claims_of(PID, _jobs({"verb": "Log a visit", "view": "visits"}))
     assert claims[1:] == [store.Contribution(point="jobs", key=f"{PID}:visits", payload={
-        "label": "Log a visit", "href": f"/apps/{PID}", "feature": "studio"})]
+        "label": "Log a visit", "href": f"/apps/{PID}", "feature": "studio", "app": "V"},
+        position=0)]
     assert claims[0].point == "nav"
 
 
@@ -99,6 +100,37 @@ def test_a_malformed_job_is_skipped() -> None:
         {"verb": "Go"}, {"view": "v"}, {"verb": 1, "view": "v"}, {"verb": "Go", "view": 2},
         {"verb": "Good", "view": "ok"}))
     assert [c.key for c in claims[1:]] == [f"{PID}:ok"]
+
+
+def test_the_jobs_keep_the_manifest_order_in_position() -> None:
+    claims = studio_app.claims_of(PID, _jobs(
+        {"verb": "A", "view": "a"}, {"verb": "", "view": "x"}, {"verb": "B", "view": "b"}))
+    assert [(c.key.split(":")[1], c.position) for c in claims[1:]] == [("a", 0), ("b", 1)]
+
+
+def test_the_verb_is_stripped_and_a_long_or_unsafe_verb_is_skipped() -> None:
+    limit = studio_app.MAX_LABEL_CHARS
+    claims = studio_app.claims_of(PID, _jobs(
+        {"verb": "  Go  ", "view": "a"},
+        {"verb": "x" * limit, "view": "edge"},
+        {"verb": "x" * (limit + 1), "view": "long"},
+        {"verb": "Del\u202eete", "view": "bidi"},
+        {"verb": "Del\u2066ete", "view": "bidi2"},
+        {"verb": "Del\x07ete", "view": "ctl"},
+        {"verb": "Del\nete", "view": "nl"}))
+    assert [c.key.split(":")[1] for c in claims[1:]] == ["a", "edge"]
+    assert claims[1].payload["label"] == "Go"
+
+
+def test_the_app_name_in_the_payload_is_clean_and_cut() -> None:
+    limit = studio_app.MAX_LABEL_CHARS
+    job = {"verb": "Go", "view": "v"}
+    name = "  Fi\u202eeld\x07" + "n" * 200
+    [_, got] = studio_app.claims_of(PID, {**_jobs(job), "name": name})
+    assert got.payload["app"] == "Field" + "n" * (limit - 5)
+    for bad in (None, "", "  ", "\u202e", 7):
+        [_, got] = studio_app.claims_of(PID, {**_jobs(job), "name": bad})
+        assert "app" not in got.payload, bad
 
 
 # ── 2. The sidebar keeps the href ──────────────────────────────────────────

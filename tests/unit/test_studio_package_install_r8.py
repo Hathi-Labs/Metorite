@@ -388,7 +388,7 @@ def test_r8_a_group_install_shows_to_the_members_of_the_group_only(world) -> Non
 _JOBS = [{"verb": "Log a visit", "view": "visits"}]
 
 
-def test_r8_the_jobs_of_an_org_install_show_to_each_member_of_the_org(world) -> None:
+def test_r8_the_jobs_of_an_org_install_show_to_each_member_of_the_org(world, monkeypatch) -> None:
     async def go() -> tuple[str, tuple[int, Any]]:
         y = await _live(world.a, OWEN, jobs=_JOBS)
         return y, await _install(world.a, OWEN, y, "org")
@@ -400,7 +400,10 @@ def test_r8_the_jobs_of_an_org_install_show_to_each_member_of_the_org(world) -> 
         entry = _view(world, who, world.a).jobs[f"{y}:visits"]
         assert (entry["label"], entry["href"], entry["source"], entry["install_id"]) == (
             "Log a visit", f"/apps/{y}", "org", org_install["id"]), who
-    assert _view(world, ZED, world.b).jobs == {}
+    # Org B has the host on too, so the read answers 200 and a leak would show.
+    monkeypatch.setattr(get_settings(), "package_host_orgs", f"{world.a},{world.b}")
+    other = _view(world, ZED, world.b)
+    assert other.status == 200 and other.jobs == {} and other.nav == {}
 
 
 def test_r8_the_jobs_of_a_group_install_show_to_the_members_of_the_group_only(world) -> None:
