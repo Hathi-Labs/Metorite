@@ -655,6 +655,7 @@ jobs:
               tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
               tests/unit/test_package_field_values_r8.py \
+              tests/unit/test_package_field_value_host_delete_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
