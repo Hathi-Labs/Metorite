@@ -8554,6 +8554,7 @@ seam, so there is no second copy. The NEXT rule (`step_overlay`) stays on
 the My Tasks door only.
 
 **The MCP door is not one of these doors (MCP-G20, 2026-11-08, task 2212).**
+
 An outside agent's `create_task` says "leave status_id out to use the default
 status", and the owner asked for that in gap 5 of task 2212. So
 `tasks.create_task` gives a signed agent's subtask
