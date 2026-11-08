@@ -899,6 +899,18 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_celebrations.py.
     celebrations_orgs: str = ""
 
+    # ── Forms of address (WS-63 PZ-40, personalization.md §16.4) ────────────
+    #
+    # ADDRESS_FORMS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default. On, the name question of the interview offers "just my name"
+    # first and then the forms that fit the member's language, and the profile
+    # block tells the chat to use `address.name` exactly as written. The
+    # profile switch must be on too. The one reader is
+    # `acb_common.assistant_profile.address_forms_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). It calls no model.
+    # Fences: tests/unit/test_honorifics.py.
+    address_forms_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
