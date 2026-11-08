@@ -1265,23 +1265,34 @@ def stt_tier(db, org_key):
 
     def _make(*models: str) -> str:
         tier = f"tier-stt-vox2-{uuid.uuid4().hex[:8]}"
+        # Noted FIRST, so the teardown removes a half-made tier too.
+        made.append(tier)
         with db.begin() as c:
+            # `tier_rate_card.tier` names a `tier_catalog` row. Hidden, as
+            # migration 021 hides `tier-stt`.
+            c.execute(text(
+                "INSERT INTO tier_catalog (slug, label, task, customer_visible) "
+                "VALUES (:t, 'VOX-2 fence', 'transcribe', FALSE)"), {"t": tier})
             for rank, model in enumerate(models, start=1):
                 c.execute(text(
                     "INSERT INTO tier_binding (tier, model, task, rank, effective_from) "
                     "VALUES (:t, :m, 'transcribe', :r, '2026-01-01T00:00:00Z')"),
                     {"t": tier, "m": model, "r": rank})
+            # ⚠️ An UPSERT, never DO NOTHING. Migration 010 replays at the
+            # top of each suite and declares `atranscription` for every model
+            # in force on a `transcribe` tier. A tier row left by a broken run
+            # would then win, and the door would skip the Sarvam step.
             c.execute(text(
                 "INSERT INTO model_capability (model, task, invocation, streams) "
                 "VALUES (:m, 'transcribe', 'native_sarvam', FALSE) "
-                "ON CONFLICT (model, task) DO NOTHING"), {"m": SARVAM_MODEL})
+                "ON CONFLICT (model, task) DO UPDATE "
+                "SET invocation = EXCLUDED.invocation"), {"m": SARVAM_MODEL})
             c.execute(text(
                 "INSERT INTO provider_credential (provider, secret_enc, label) "
                 "VALUES ('sarvam', :s, :l) ON CONFLICT DO NOTHING"),
                 {"s": router_mod.encrypt_secret(SARVAM_KEY), "l": _SARVAM_LABEL})
         _price(db, tier=tier, task="transcribe", unit="minutes",
                per_unit=CREDITS_PER_MINUTE)
-        made.append(tier)
         return tier
 
     yield _make
@@ -1289,6 +1300,7 @@ def stt_tier(db, org_key):
         for tier in made:
             c.execute(text("DELETE FROM tier_binding WHERE tier = :t"), {"t": tier})
             c.execute(text("DELETE FROM tier_rate_card WHERE tier = :t"), {"t": tier})
+            c.execute(text("DELETE FROM tier_catalog WHERE slug = :t"), {"t": tier})
         c.execute(text(
             "DELETE FROM model_capability WHERE model = :m AND task = 'transcribe'"),
             {"m": SARVAM_MODEL})
