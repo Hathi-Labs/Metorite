@@ -605,6 +605,39 @@ gate, the full-suite rule and a plain dispatch behave as before.
 after the merge. Until then the box fires at 21:30 UTC only.
 HIGH tier.
 
+### CIV-22: the box's local CI can be green (task 2288)
+
+**Status: BUILT 2026-11-08** (slices 1 to 3; the one-day measure of slice 4 is open). STANDARD tier.
+Every box run from 2026-11-07 ended red on one or two tests of thousands that fail
+only on the box, so no box run could be a gate, and the box ran 10 checks in 12.5
+hours with its CPU about 78% idle.
+
+**The list.** `scripts/ci_pc/box_known_env.txt` names the unit tests that fail on
+the box for a reason of the box. Each entry has the test id, a reason a reviewer
+can check, an open task, and a piece of the failure message of the box fault. The
+same test with another message is a real failure. Keep the list short (10 at
+most), and do not list a flaky test or a bug. When a unit shard of a local run
+fails with pytest exit code 1, and every failed test of its report is in the list
+with its message, the shard counts as "expected". The test still runs, and the log
+still shows it. GitHub's pr-check never reads the list.
+
+**The verdict.** `run_suite.sh` prints one line, and writes it to `$RUN/verdict`:
+`GREEN|RED <full commit id> <selection|full> expected=<n> [unexpected=<jobs>]`.
+Only a failure outside the list makes the run RED.
+
+**The hand-over.** `lane_handover.sh` refuses a PR until the LAST verdict line of the
+head commit is GREEN (a selection run counts, as it does for the CIV-6 default).
+Off the box it refuses. Lane rule 14 must name this step. Use
+`bash scripts/ci_local.sh`; the slots of CIV-6 let several runs go at once.
+
+**Open.** Measure the GitHub red-run rate and the BACK rate one day after the
+change. A box status that replaces a GitHub check, and branch protection, need the
+owner (task 1907).
+
+**Files:** `scripts/ci_pc/box_known_env.txt`, `scripts/ci_pc/box_verdict.py`,
+`scripts/ci_pc/run_suite.sh`, `scripts/home_server/lane_handover.sh`.
+**Fence:** `tests/unit/test_box_verdict.py`, `tests/unit/test_lane_handover.py`.
+
 ### CIV-20: fewer PRs sent back (task 2207)
 
 **Status: slices 1 and 3 BUILT 2026-11-07. Slice 2 is CIV-8** (PR 1872, merged).
@@ -755,4 +788,5 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-10 | 1643 | CIV-4c | 1736 |
 | CIV-21 | 2210 | | |
 | CIV-20 | 2207 | | |
+| CIV-22 | 2288 | | |
 | CIV-19 | 2206 | | |

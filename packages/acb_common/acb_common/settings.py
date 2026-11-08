@@ -1037,6 +1037,17 @@ class Settings(BaseSettings):
     # value. Fence: tests/unit/test_project_rules.py.
     project_rules_orgs: str = ""
 
+    # ── The cycles of Projects (WS-39 SP-1, D195) ───────────────────────────
+    #
+    # The flag `PROJECTS_SPRINTS` of the board, as a per-org list
+    # (project_management_app.md §13.2a). A comma list of organization ids,
+    # or `*` for each one. Empty means off, the default. Off, each cycle route
+    # of `/projects` answers 404 and no cycle row is written. The one reader
+    # is `gateway.routes.projects.cycles.sprints_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_sprint_store_r8.py.
+    projects_sprints_orgs: str = ""
+
     # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1079,6 +1090,19 @@ class Settings(BaseSettings):
     # syscall trace of a real OCR read on the box. Fence:
     # tests/unit/test_attachment_ocr.py.
     attachment_ocr: bool = False
+
+    # ── Image analysis in the chat (WS-VOX VOX-3, projects_ai_chat.md §31) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On for an org, the chat tool `analyze_image` sends an image
+    # that a member attached to the model of `tier-vision` through the Console,
+    # and each call draws AI credits. Off, the tool answers one sentence and
+    # calls no model. The one reader is
+    # `acb_common.assistant_profile.image_analysis_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). ⚠️ The flip on production spends
+    # credits, so it is an owner step (§31.6 Q4). Fence:
+    # tests/unit/test_attachment_analyze_image.py.
+    image_analysis_orgs: str = ""
 
     # ── The member's corrections and limits in a chat (WS-67 OA-4) ──────────
     #
@@ -1163,6 +1187,21 @@ class Settings(BaseSettings):
     # D4, slice WT-5). The flip also waits for WT-1b and WT-2 (§9.3 item 9).
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
+
+    # ── Voice input in the chat (projects_ai_chat.md §31, VOX-1) ────────────
+    #
+    # `chat_voice_orgs` lists the organization ids whose chat composer shows the
+    # mic, or `*` for each one. Empty means off, and `/chat/transcribe` answers
+    # 404 for each caller. The one reader is
+    # `acb_common.chat_voice_flag.voice_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`).
+    #
+    # Each clip draws AI credits through the Console's `tier-stt` door, so a
+    # value other than empty on a box is an `enforcement-flip`. A real clip and
+    # its usage row must be proven first (§31.5 VOX-1, Done when 4).
+    # Fence: tests/unit/test_chat_transcribe.py.
+    chat_voice_orgs: str = ""
 
     # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
     #
@@ -1266,6 +1305,21 @@ class Settings(BaseSettings):
     # billed to the org (`work_plan.md` §6). Fence:
     # tests/unit/test_crm_note_labels.py.
     crm_decide_orgs: str = ""
+
+    # ── The Projects `decide` org list (DEC-1) ──────────────────────────────
+    #
+    # `projects_decide_orgs` lists the organization ids that may run a
+    # `projects.*` feature (today `projects.align`) in a mode other than
+    # `off`, in the grammar of `decide_feature_orgs`. For a `projects.` feature
+    # `mode_for` reads it and NOT `decide_feature_orgs`, so a mode change never
+    # starts every Projects org at once. Default empty: no organization. A
+    # `*_ORGS` field, so it reloads with no restart (`docs/flag_reload.md`).
+    # The one reader is `gateway/decide_features.py`.
+    #
+    # 🔴 OWNER-GATE on a box: a value in the list starts real Router calls,
+    # billed to the org (`work_plan.md` §6). Fence:
+    # tests/unit/test_decide_seam.py.
+    projects_decide_orgs: str = ""
 
     # ── AI tier routing (WS-45, D90) ────────────────────────────────────────
     #
@@ -2229,6 +2283,20 @@ class Settings(BaseSettings):
     # `acb_auth.agent_oauth.is_first_party` is the one reader. Only the
     # gateway reads it. 🔴 A change on a box is gate `enforcement-flip`.
     agent_first_party_client_ids: str = ""
+    # MCP-G20 (external_agent_access.md §9.2, EA3-30): the write cap of one
+    # agent connection. A connection makes at most `agent_write_cap` writes
+    # in `agent_write_window_s` seconds, counted from its first write of the
+    # window. Each item of `update_tasks` is one write. The defaults are the
+    # EA-6a values, 120 in 600 s, so nothing changes until the owner sets
+    # them. A value below 1 reads as the default. The gateway counts
+    # (branch 0) and the edge names the numbers in each write tool, so both
+    # units need the same value. Neither key is a `*_ORGS` or `*_MODES` key,
+    # so a SIGHUP reload does not apply it: restart `acb-gateway` and
+    # `acb-agent-edge` (`docs/flag_reload.md`). `acb_auth.agent_oauth.write_cap`
+    # and `write_window_s` are the one readers. 🔴 A change on a box is gate
+    # `enforcement-flip`.
+    agent_write_cap: int = 120
+    agent_write_window_s: int = 600
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
     agent_code_ttl_s: int = 60

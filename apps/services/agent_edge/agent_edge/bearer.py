@@ -103,6 +103,18 @@ def effective_scopes(token_scope: str | None, connection_scopes: Iterable[str]) 
     return frozenset(token & _expand(connection_scopes))
 
 
+def read_only(caller: Caller) -> Caller:
+    """*caller* with its scopes narrowed to the read scopes (SW-34b).
+
+    The read-only door ``/mcp/readonly`` calls it once, right after
+    :func:`authenticate`. Each later check reads the narrowed scopes, so the
+    list, check 8, the prompt, the resources and the instructions follow
+    the door with no second scope rule. The rule is
+    ``agent_oauth.read_only``, and it only removes a scope.
+    """
+    return Caller(lookup=caller.lookup, scopes=agent_oauth.read_only(caller.scopes))
+
+
 def covers(scopes: frozenset[str], required: str | None) -> bool:
     """True when *scopes* hold *required*. ``None`` means any live token."""
     return required is None or required in scopes
@@ -165,5 +177,6 @@ __all__ = [
     "authenticate",
     "covers",
     "effective_scopes",
+    "read_only",
     "token_of",
 ]

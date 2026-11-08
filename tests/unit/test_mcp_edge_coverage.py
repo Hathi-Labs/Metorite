@@ -91,6 +91,11 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         " the same scope function. The Projects manifest has no chat tool for it"
         " yet (spec §9.1)."
     ),
+    # MCP-G21: `list_members` reads the members a task of a project can go to.
+    ("GET", "/projects/assignable-members"): (
+        "MCP-G21. `list_members` reads the members that `set_assignees` would"
+        " accept. The Projects manifest has no chat tool for it yet (task 2216)."
+    ),
     # MCP-P1a (spec §19.5, "The new pairs"): the two list routes of the app
     # door. They hold no data of an app.
     ("GET", "/agent-access/apps"): (
@@ -510,6 +515,11 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("list_projects", "text"),
     ("list_projects", "limit"),
     ("list_projects", "cursor"),
+    # MCP-G21. The gateway returns the whole list, and the edge pages it.
+    ("list_members", "limit"),
+    ("list_members", "cursor"),
+    ("list_tags", "limit"),
+    ("list_tags", "cursor"),
     # EA-6d. The edge keeps the key in its own slot (`agent_edge.idempotency`),
     # and the route takes no such field (spec §9.2 and §9.5 rule 4).
     ("create_task", "idempotency_key"),
@@ -531,6 +541,11 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("move_tasks", "preview_id"),
     # CIV-14c. The edge picks the page size and pages the timeline itself.
     ("get_task_context", "comments"),
+    # MCP-G20. The edge unpacks the list and sends each item as one call of
+    # `update_task`. No route takes a list. Each item is the input of
+    # `update_task`, so rule 4 holds for it through that record
+    # (`test_rule_4_each_item_of_update_tasks_is_an_update_task_input`).
+    ("update_tasks", "updates"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in
@@ -659,9 +674,29 @@ def test_rule_4_only_update_task_sends_a_write_in_place_of_its_own():
     """MCP-G2. A write in place of the tool's own widens rule 4 for that
     tool, so the spec names each one (§9.2): ``update_task`` sends the task
     move for ``parent_task_id``, because the PATCH refuses that field.
-    Mutation: give ``set_assignees`` an alt write, and this test fails."""
+    MCP-G20: ``update_tasks`` sends the same move for an item, because each
+    item is a call of ``update_task``. Mutation: give ``set_assignees`` an
+    alt write, and this test fails."""
     declared = {(tool.name, pair) for tool in _tools() for pair in tool.alt_writes}
-    assert declared == {("update_task", ("POST", "/projects/tasks/{task_id}/move"))}
+    assert declared == {("update_task", ("POST", "/projects/tasks/{task_id}/move")),
+                        ("update_tasks", ("POST", "/projects/tasks/{task_id}/move"))}
     params = _route_parameters()
     assert {"parent_task_id", "If-Match"} <= params[("POST", "/projects/tasks/{task_id}/move")]
     assert "If-Match" in params[("PUT", "/projects/tasks/{task_id}/assignees")]
+
+
+def test_rule_4_each_item_of_update_tasks_is_an_update_task_input():
+    """MCP-G20 (§9.2). ``update_tasks`` adds no write path and no input of
+    its own: its one input ``updates`` is a list of the input of
+    ``update_task``, and it writes through the routes of ``update_task``. So
+    rule 4 of ``update_task`` covers each item. Mutation: add a key to the
+    item schema, or give the tool another route, and this test fails."""
+    from agent_edge.tools import TOOLS
+
+    bulk, one = TOOLS["update_tasks"], TOOLS["update_task"]
+    assert bulk.input_schema["properties"]["updates"]["items"] is one.input_schema
+    assert set(bulk.input_schema["properties"]) == {"updates"}
+    assert (bulk.method, bulk.route) == (one.method, one.route)
+    assert bulk.routes == one.routes and bulk.alt_writes == one.alt_writes
+    assert bulk.params == {} and bulk.prior_writes == ()
+    assert bulk.required_scope == one.required_scope

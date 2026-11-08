@@ -23,6 +23,8 @@ const REASON = "The mail was moved or deleted before the rule ran.";
 const SUPPRESSED = "Suppressed: part of a conversation — the thread's status is the classification.";
 const neutral = accentForHue("gray").chip;
 const RED = "bg-red-500/15 text-red-400";
+// The Fix dialog chip uses the status tokens (PR 1974), not the raw palette.
+const DESTRUCTIVE = "bg-destructive/15 text-destructive";
 
 function pill(opts: { status: string; ruleId?: string; ruleName?: string | null; gone?: boolean; reason?: string }) {
   return renderToStaticMarkup(
@@ -101,7 +103,7 @@ describe("Fix dialog chip", () => {
     expect(currentMatchChip(false, "Newsletter", true)).toEqual({ label: GONE_MAIL_LABEL, cls: neutral });
   });
   it("stays red 'No match found' for a suppressed row", () => {
-    expect(currentMatchChip(false, "Newsletter", false)).toEqual({ label: "No match found", cls: RED });
+    expect(currentMatchChip(false, "Newsletter", false)).toEqual({ label: "No match found", cls: DESTRUCTIVE });
   });
   it("shows the rule name for a match", () => {
     expect(currentMatchChip(true, "Newsletter", false).label).toBe("Newsletter");

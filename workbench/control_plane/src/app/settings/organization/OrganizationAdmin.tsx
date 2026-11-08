@@ -166,6 +166,8 @@ const PURGE_LABELS: Record<string, string> = {
   knowledge_proposals: "proposed Knowledge edit",
   // WS-55 SW-10a: a nudge or a recovery record of the member's agent run, kept.
   agent_run_strands: "stranded agent run record",
+  // WS-39 SP-1: the member's review minutes in a started cycle's capacity snapshot, kept.
+  cycle_capacity: "cycle capacity record",
 };
 
 function purgeLabel(key: string, n: number): string {

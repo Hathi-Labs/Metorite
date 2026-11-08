@@ -118,9 +118,10 @@ def _uuid(n: int) -> str:
 #: (``test_mcp_edge_claim.py``), ``set_assignees`` of MCP-G2
 #: (``test_mcp_edge_assignees.py``), the two link tools of SW-16a
 #: (``test_task_links_mcp_r8.py``) and the four tools of MCP-G1
-#: (``test_mcp_edge_projects.py``).
+#: (``test_mcp_edge_projects.py``). ``update_tasks`` of MCP-G20 follows
+#: ``update_task`` (``test_mcp_edge_bulk_updates.py``).
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
-                    "add_comment", "claim_task", "set_assignees", "add_task_link",
+                    "update_tasks", "add_comment", "claim_task", "set_assignees", "add_task_link",
                     "remove_task_link", "create_project",
                     "update_project", "preview_move_tasks", "move_tasks")
 
@@ -529,8 +530,8 @@ class TestTheWriteToolsAtTheEdge:
         off = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
         assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
         # The seven reads of EA-3, the two reads of EA-15 (§12.4) and
-        # `get_attachment` of IMG-3, and `board_stats` of MCP-G19a.
-        assert len(off) == 11
+        # `get_attachment` of IMG-3, `board_stats` of MCP-G19a, the two of MCP-G21, and `get_plan` of SP-12.
+        assert len(off) == 14
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read projects:write", WRITE_SCOPES),
@@ -1276,7 +1277,7 @@ class TestOnARealRedis:
         counter = f"cc:{live.org}:{agent_oauth.WRITE_CAP_NAMESPACE}:{live.c['fresh']}"
         assert await real_redis.get(counter) == "1"
         assert 0 < await real_redis.ttl(counter) <= 600
-        monkeypatch.setattr(agent_oauth, "WRITE_CAP", 2)
+        monkeypatch.setattr(get_settings(), "agent_write_cap", 2)
         assert (await _patch(live, "fresh", task, live.s.review)).status_code == 200
         over = await _patch(live, "fresh", task, live.s.doing)
         assert over.status_code == 429, over.text
