@@ -671,7 +671,8 @@ def test_old_code_on_the_new_schema_gets_a_deal_pipeline(pns, app_engine) -> Non
     with pns.admin_engine.begin() as c:
         validated = {r.conname: r.convalidated for r in c.execute(text(
             "SELECT conname, convalidated FROM pg_constraint WHERE conrelid = "
-            "'crm_pipelines'::regclass AND conname LIKE 'crm_pipelines_%'"))}
+            "'crm_pipelines'::regclass AND contype = 'c' "
+            "AND conname IN ('crm_pipelines_kind', 'crm_pipelines_feeds_lead')"))}
         assert validated == {"crm_pipelines_kind": True, "crm_pipelines_feeds_lead": True}
         forced = c.execute(text(
             "SELECT relrowsecurity AND relforcerowsecurity FROM pg_class "
