@@ -9,6 +9,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,8 @@ export async function DELETE(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { name } = await params;
+  const refused = refuseUnsafePath([name]);
+  if (refused) return refused;
 
   if (!validateName(name)) {
     return NextResponse.json({ error: "Invalid agent name" }, { status: 400 });
@@ -53,6 +56,8 @@ export async function PATCH(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { name } = await params;
+  const refused = refuseUnsafePath([name]);
+  if (refused) return refused;
 
   if (!validateName(name)) {
     return NextResponse.json({ error: "Invalid agent name" }, { status: 400 });

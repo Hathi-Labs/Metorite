@@ -77,8 +77,11 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The four CRM record writes. Each says ``open_world=True`` and keeps saying it.
-KEPT_CRM = frozenset({"convert_lead", "create_lead", "log_activity", "update_deal_status"})
+#: The six CRM record writes. Each says ``open_world=True`` and keeps saying it.
+KEPT_CRM = frozenset({
+    "convert_lead", "create_lead", "log_activity", "update_deal_status",
+    "crm_update_record", "crm_update_task",
+})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
 #: ``promote_reminder``. A covered run still holds them. ``answer_decision``
@@ -124,8 +127,11 @@ def test_each_projects_tool_is_in_exactly_one_row() -> None:
 
 @pytest.fixture(scope="module")
 def projects_tools() -> dict[str, Any]:
-    """The owner's own tool objects: the ``_StrictTool`` that a pack builds on."""
-    return {_name(t): t for t in load_projects_module("rx1_projects")._agent_tools()}
+    """The owner's own tool objects: the ``_StrictTool`` that a pack builds on.
+
+    CAL-1a: ``_own_tools()`` is the specialist's list. ``_agent_tools()`` adds the
+    eight planner tools of the ``calendar-day`` pack, which this table does not name."""
+    return {_name(t): t for t in load_projects_module("rx1_projects")._own_tools()}
 
 
 @pytest.fixture(scope="module")
@@ -964,7 +970,10 @@ def test_off_the_note_and_the_answer_are_the_old_words(monkeypatch) -> None:
     monkeypatch.setattr(eg, "hold_is_for_mail", lambda *_a: True)
     assert eg.egress_hold_note(ctx) == eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES
     assert eg.egress_held_answer("x", ctx) == eg.EGRESS_HELD_PACK_ANSWER_NO_WRITES.format(name="x")
-    assert "new chat" in eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES, "the text of before the slice"
+    # WT-3: the plain form sends the member to no new chat
+    # (``test_no_new_chat_copy.py``), and it still names the app.
+    assert "new chat" not in eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES.lower()
+    assert "make the change in the app" in eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES
     _switch(monkeypatch, "*")
     assert eg.egress_hold_note(ctx) == eg.EGRESS_HOLD_NOTE_PACK_OTHER
 

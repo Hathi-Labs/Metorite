@@ -432,6 +432,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             # WS-CRM CRM-M1: the read of the Change history of the CRM set-up.
             "crm_change_history",
             "crm_search_notes",
+            "crm_update_record",
+            "crm_update_task",
             "get_pipeline",
             "get_record",
             "get_timeline",
@@ -743,6 +745,42 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # CAL-1a (task 1675): the day planner, for the main chat. The eight tools are
+    # the My Tasks planner tools (skill_my_tasks.core). The Projects assistant
+    # builds them in `_agent_tools()` only, so the specialist's own tool list and
+    # `skill_projects.__all__` stay as they were. The pack follows `projects`
+    # (tool_packs.FOLLOWS), so the flag list needs no new line.
+    "calendar-day": {
+        "label": "Calendar day planner",
+        "summary": (
+            "The member's day: rebuild it, plan what is left, roll over, "
+            "set the One Thing, and block or release time."
+        ),
+        "description": (
+            "A tool pack: the day planner, for the main assistant to load "
+            "when a turn says \"rebuild my day\", \"start my day\" or "
+            "\"I fell behind\". The pack holds the tools to propose and apply "
+            "a plan of the day, to fit what is left, to roll over unfinished "
+            "work, to read the digest of the day, to set the One Thing, and to "
+            "block, release and read the schedule. A plan is proposed first "
+            "and applied after the member agrees. A run loads a pack only "
+            "where tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_day_digest",
+            "my_tasks_list_schedule",
+            "my_tasks_plan_day",
+            "my_tasks_replan_day",
+            "my_tasks_rollover",
+            "my_tasks_schedule",
+            "my_tasks_set_one_thing",
+            "my_tasks_unschedule",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
     # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
@@ -762,7 +800,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "actions an app may use. It also holds the package tools: save "
             "an app as a draft and publish it. It also holds the skill tools: save, "
             "publish, pause and list the skills of a member. Two read tools list the "
-            "packages of a member and read the records of an object. The tools keep no "
+            "packages of a member and read the records of an object. Three write tools add, "
+            "change and delete a record, and each asks the member first. The tools keep no "
             "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
@@ -782,6 +821,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_publish",
             "studio_package_get",
             "studio_record_list",
+            "studio_record_create",
+            "studio_record_update",
+            "studio_record_delete",
         ),
         "owner": "studio-builder",
         "core": False,

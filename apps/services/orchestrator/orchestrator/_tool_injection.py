@@ -533,6 +533,16 @@ def _is_held_off(tool: Any, owner: str | None = None) -> bool:
     return is_held_off_write(tool, owner=owner)
 
 
+def _is_held_off_pack(tool: Any, slug: str) -> bool:
+    """True for a write of pack *slug* that a held chat holds off by pack slug
+    (CAL-1a): ``acb_skills.egress.is_held_off_pack_write``."""
+    try:
+        from acb_skills.egress import is_held_off_pack_write
+    except ImportError:
+        return False
+    return is_held_off_pack_write(tool, slug)
+
+
 def _covered_hold(agent_name: str | None) -> bool:
     """True when a covered run alone holds this run (H-236, RX-1).
 
@@ -1692,9 +1702,11 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
 
 #: The CRM record write tools that Mirror mode takes from a run (WS-53
 #: CRM-C7 item 4). Zoho owns the records there, so each would answer 409.
-#: ``log_activity`` stays: a Metorite-only note saves in Mirror mode (CRM-Z6).
+#: ``log_activity`` and ``crm_update_task`` stay: a Metorite-only note or
+#: task saves in Mirror mode (CRM-Z6), and the activity route has no Mirror gate.
 MIRROR_RECORD_WRITES: frozenset[str] = frozenset({
     "create_lead", "update_deal_status", "convert_lead",
+    "crm_update_record",
 })
 
 
@@ -3279,7 +3291,7 @@ async def _pack_tools(
         # ``func`` is one (the Projects ``_StrictTool``). Any other shape skips.
         if name in taken or not inspect.iscoroutinefunction(_pack_func(fn)):
             skipped.append(name)
-        elif held and (_is_egress(fn) or _is_held_off(fn)):
+        elif held and (_is_egress(fn) or _is_held_off(fn) or _is_held_off_pack(fn, slug)):
             dropped.append(name)
         else:
             tools.append(_pack_call(fn, owner, held, run_key, slug))
@@ -3393,10 +3405,57 @@ async def _drop_pack_unless_studio(
 ) -> tuple[list[Any], list[str]]:
     """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks,
     and for a member without ``feature:studio`` (STU-G1 and J1-1,
-    :func:`_studio_member_open`)."""
+    :func:`_studio_member_open`). For an open member, the second filter
+    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b)."""
     if await _studio_member_open():
-        return tools, dropped
+        return await _drop_studio_writes_unless_requests(tools, dropped, held=held)
     return [], [*dropped, *(_tool_name(t) for t in tools)]
+
+
+def _studio_requests_open() -> bool:
+    """True when ``APP_REQUESTS_ORGS`` holds the org of this run AND agent
+    access is on (STU-B2c-2b, fix round 1).
+
+    ``gateway.app_requests.requests_allowed`` is the reader that the door
+    reads before it opens a request. ``acb_auth.agent_oauth.enabled`` is the
+    second flag of the member's list, Integrations, AI agents, Waiting for
+    you (``routes.agent_requests._require_access`` needs both). Without it,
+    the member cannot see a request to approve it, so a write tool would only
+    ask in vain. The org is the run's own (:func:`_run_org_or_none`), never
+    an argument (R5). It fails closed: no org, no gateway or an error reads
+    as closed.
+    """
+    try:
+        from acb_auth import agent_oauth
+        from gateway.app_requests import requests_allowed
+        return bool(agent_oauth.enabled()) and bool(requests_allowed(_run_org_or_none()))
+    except Exception as exc:  # fail closed
+        _log.info("executor.studio_requests_unread", error=str(exc)[:200])
+        return False
+
+
+async def _drop_studio_writes_unless_requests(
+    tools: list[Any], dropped: list[str], *, held: bool = False,
+) -> tuple[list[Any], list[str]]:
+    """Take the three record write tools out of a ``studio`` pack while the
+    org has no approval store (STU-B2c-2b, :func:`_studio_requests_open`).
+
+    In a dark org, the door answers each write from chat 403
+    ``approval_required``, so a write tool there only fails. The read tools
+    stay. A pack with no write tool reads no flag. The names are
+    ``acb_skills.studio_tools.STUDIO_RECORD_WRITES``, the one list.
+    Fence: ``tests/unit/test_tool_packs_registry.py``.
+    """
+    from acb_skills.studio_tools import STUDIO_RECORD_WRITES
+
+    if not any(_tool_name(t) in STUDIO_RECORD_WRITES for t in tools):
+        return tools, dropped
+    if _studio_requests_open():
+        return tools, dropped
+    kept = [t for t in tools if _tool_name(t) not in STUDIO_RECORD_WRITES]
+    gone = [_tool_name(t) for t in tools if _tool_name(t) in STUDIO_RECORD_WRITES]
+    _log.info("executor.studio_writes_dropped", tools=sorted(gone), source="pack")
+    return kept, [*dropped, *gone]
 
 
 #: The one pre-filter slot of :func:`_pack_tools`, by owner. A filter takes the
@@ -3519,7 +3578,8 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
             _log.warning("executor.pack_call_refused", tool=name, owner=owner)
             return PACK_CALL_REFUSED.format(tool=name)
         held_now = held or read_untrusted_answer(ctx)
-        if held_now and not held and (_is_egress(fn) or _is_held_off(fn)):
+        if held_now and not held and (
+                _is_egress(fn) or _is_held_off(fn) or _is_held_off_pack(fn, slug)):
             return _held_in_turn(owner, name)
         twice = pack_write_refusal(owner, name, ctx)  # OA-8i, before any await
         if twice is not None:

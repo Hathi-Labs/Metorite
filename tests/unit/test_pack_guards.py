@@ -1028,10 +1028,15 @@ CRM_DIR = "apps/agents/agent-crm"
 #: because the base was at the 110-tool cap (test_projects_packs.py).
 CRM_TEN = frozenset({
     "convert_lead", "create_lead", "crm_change_history", "crm_search_notes",
+    "crm_update_record", "crm_update_task",
     "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
     "update_deal_status",
 })
-CRM_WRITES = frozenset({"create_lead", "update_deal_status", "log_activity", "convert_lead"})
+#: Twelve since WS-CRM CRM-M2b: the record edit and the task change joined.
+CRM_WRITES = frozenset({
+    "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    "crm_update_record", "crm_update_task",
+})
 
 
 def _crm_module() -> Any:
@@ -1057,7 +1062,7 @@ async def test_the_built_crm_pack_holds_exactly_the_ten_tools(monkeypatch) -> No
     _mode(monkeypatch, "live")
     with _run():
         build = await _build("crm-records", _crm_module())
-    assert {t.__name__ for t in build.tools} == CRM_TEN and len(build.tools) == 10
+    assert {t.__name__ for t in build.tools} == CRM_TEN and len(build.tools) == 12
     assert build.owner == CRM and build.held is False and build.skipped == ()
 
 
@@ -1095,7 +1100,7 @@ async def test_the_mirror_drop_reuses_the_executor_set(monkeypatch) -> None:
     with _run():
         build = await _build("crm-records", _crm_module())
     assert build.dropped == ("create_lead",)
-    assert len(build.tools) == 9  # 10 less create_lead
+    assert len(build.tools) == 11  # 12 less create_lead
 
 
 @pytest.mark.parametrize("mode", ["live", None])
@@ -1140,7 +1145,7 @@ async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
         assert (await _build("crm-records", module)).dropped == ("get_record",)
         monkeypatch.setattr(ti, "_is_egress", lambda t: False)
         open_build = await _build("crm-records", module)
-    assert open_build.dropped == () and len(open_build.tools) == 10
+    assert open_build.dropped == () and len(open_build.tools) == 12
 
 
 async def test_a_marked_mail_chat_holds_the_crm_pack_with_its_writes(monkeypatch) -> None:
