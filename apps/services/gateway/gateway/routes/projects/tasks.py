@@ -558,13 +558,10 @@ DESCENDANTS_CTE = """WITH RECURSIVE walk AS (
 #: MCP-G19a. The page cap of a compact read. A plain read keeps
 #: ``MAX_PAGE_SIZE``.
 COMPACT_MAX_PAGE_SIZE = 500
-#: The columns a compact read selects. The edge keeps nine keys, and the
-#: model needs ``id``, ``project_id``, ``root_project_id``, ``status_id`` and
-#: ``title``. The description and the other wide columns stay in the table.
-COMPACT_COLUMNS = (
-    "t.id, t.project_id, t.root_project_id, t.task_number, t.parent_task_id,"
-    " t.status_id, t.title, t.updated_at, t.due_at"
-)
+#: A compact read still selects ``t.*``: ``row_to_model`` builds a full
+#: ``TaskModel``, and a narrow SELECT leaves required fields (``source``) as
+#: None, which is a 500. The edge trims the row to the compact keys.
+#: A narrow read needs its own row model. hardening_backlog.md holds it.
 
 
 class CompactPage(Page):
@@ -857,7 +854,7 @@ async def list_tasks(
             params["view_id"] = view_id
         rows = (await db.execute(
             text(
-                f"{walk_cte}SELECT {COMPACT_COLUMNS if compact else 't.*'}"
+                f"{walk_cte}SELECT t.*"
                 f"{', vp.position AS view_position' if view_id else ''}"
                 f"{', sub.depth AS depth' if walk_join else ''}"
                 f"  FROM pm_tasks t{walk_join}{join}{where} "
