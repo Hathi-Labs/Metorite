@@ -22466,7 +22466,7 @@ changes the egress pin in `acb_skills/egress.py`, and each change adds a fence.
 ## 23. Email signatures: a good signature in one minute (2026-11-07)
 
 **Status: SPECIFIED. SG-1 is BUILT on the branch `mt-fd373072-signature-images` (task 2177,
-migration 357), in review. SG-2 to SG-9 are not built.** Task 1959. Owner request in chat,
+migration 360), in review. SG-2 to SG-9 are not built.** Task 1959. Owner request in chat,
 2026-11-07: "design and
 create good signatures for our email." The orchestrator checked the anchors at `origin/main`
 `f7904d365` on 2026-11-07. A spec-auditor checked them again on the same day, and round 2 of

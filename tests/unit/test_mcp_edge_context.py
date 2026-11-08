@@ -1094,6 +1094,53 @@ class TestTheAttachments:
     async def test_g17_no_agent_text_names_a_removal(self):
         assert "delet" not in tools.GET_TASK_CONTEXT.description.lower()
 
+    # ── IMG-3: the count of images (projects_ai_chat.md §30.4 item 9) ────────
+
+    async def test_img3_images_counts_the_four_image_types_only(self, board):
+        """A PNG, a JPEG, a GIF and a WebP count. An SVG (the gateway calls it
+        ``kind: image``), a PDF and a text file do not. Mutation: count
+        ``kind == "image"``, and the SVG makes it 5."""
+        board.attachments = [
+            _file(1, name="a.png", mime="image/png"),
+            _file(2, name="b.jpg", mime="image/jpeg"),
+            _file(3, name="c.gif", mime="image/gif"),
+            _file(4, name="d.webp", mime="image/webp"),
+            _file(5, name="e.svg", mime="image/svg+xml"),
+            _file(6),
+            _file(7, name="f.txt", mime="text/plain"),
+        ]
+        body = await _context()
+        assert body["images"] == 4
+        assert [r["kind"] for r in body["attachments"]].count("image") == 5
+
+    async def test_img3_a_task_with_one_screenshot_says_images_1(self, board):
+        board.attachments = [_file(1, name="shot.png", mime="image/png")]
+        body = await _context()
+        assert body["images"] == 1
+        assert tuple(body)[:len(tools.CONTEXT_KEYS)] == tools.CONTEXT_KEYS
+
+    async def test_img3_no_files_and_a_refused_list_say_images_0(self, board):
+        assert (await _context())["images"] == 0
+        board.attachments = [_file(1, name="a.png", mime="image/png")]
+        board.answers[("GET", f"/projects/tasks/{TASK}/attachments")] = (404, {})
+        assert (await _context())["images"] == 0
+
+    async def test_img3_the_count_reads_only_the_kept_100_rows(self, board):
+        """Each counted image has an id in ``attachments``."""
+        board.attachments = ([_file(n, name=f"f{n}.txt", mime="text/plain")
+                              for n in range(100)]
+                             + [_file(200, name="late.png", mime="image/png")])
+        body = await _context()
+        assert body["images"] == 0 and body["attachments_truncated"] is True
+
+    async def test_img3_the_count_makes_no_call_and_the_ceiling_stays_14(self, board):
+        _chain(board, 7, project=OTHER_PROJECT)
+        board.attachments = [_file(1, name="a.png", mime="image/png")]
+        body = await _context()
+        assert body["images"] == 1
+        assert tools.CONTEXT_CALL_CEILING == 14
+        assert len(board.requests) == tools.CONTEXT_CALL_CEILING
+        assert not [p for p in board.paths() if p.startswith("/projects/attachments/")]
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SW-56: the protocol block of my_work (and of claim_task, see test_mcp_edge_claim.py)

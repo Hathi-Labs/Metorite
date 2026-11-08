@@ -178,6 +178,12 @@ def _instantiate_provider(provider_name: str, creds: dict[str, Any]):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _scope_provider(provider: Any, account_id: str) -> None:
+    """Name the mailbox on a provider that keeps a shared folder-id cache."""
+    if hasattr(provider, "folder_cache_scope"):
+        provider.folder_cache_scope = account_id
+
+
 def _decrypt_credentials(blob: str) -> tuple[dict, Any]:
     """Decrypt a stored credential blob. Returns the credentials and the store.
 
@@ -216,6 +222,7 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
         raise HTTPException(status_code=404, detail="Message not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(row.account_id))
     return provider, row.provider_message_id, str(row.account_id), store
 
 
@@ -239,6 +246,7 @@ async def _provider_for_account(db: Any, account_id: str, user_email: str):
         raise HTTPException(status_code=404, detail="Account not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(account_id))
     return provider, store, row.email_address
 
 
@@ -260,6 +268,7 @@ async def _provider_for_account_any(db: Any, account_id: str):
         raise HTTPException(status_code=404, detail="Account not found")
     creds, store = _decrypt_credentials(row.credentials_encrypted)
     provider = _instantiate_provider(row.provider, creds)
+    _scope_provider(provider, str(account_id))
     return provider, store, row.email_address
 
 

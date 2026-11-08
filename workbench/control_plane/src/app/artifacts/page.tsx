@@ -26,6 +26,7 @@ import { useSearchParams } from "next/navigation";
 import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
 import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import { AppTopBar } from "@/components/AppTopBar";
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useChatScope } from "@/hooks/useChatSessions";
 import { openAssistant } from "@/lib/shell/assistant";
@@ -57,6 +58,19 @@ function ArtifactsInner() {
   const [tab, setTab] = useState<ArtifactsTab>(() => artifactsTab(params.get("tab")));
   const asked = params.get("session");
   const askedFile = params.get("file");
+  // On a phone the bottom bar holds the two tabs (MOB-12), so the top bar
+  // drops its own.
+  const { isMobile } = useViewMode();
+  usePhoneBar({ active: tab === "chats" ? "artifacts-chats" : "artifacts-workspaces" });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const t = (e as CustomEvent<string>).detail;
+      if (t === "artifacts-chats") setTab("chats");
+      else if (t === "artifacts-workspaces") setTab("agents");
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
 
   const tabs = (
     <div role="tablist" aria-label="What to show" className="flex items-center gap-1">
@@ -83,7 +97,7 @@ function ArtifactsInner() {
 
   return (
     <div className="flex h-full flex-col">
-      <AppTopBar title="Artifacts" subtitle="The files your chats made" actions={tabs} />
+      <AppTopBar title="Artifacts" subtitle="The files your chats made" actions={isMobile ? undefined : tabs} />
       <div className="min-h-0 flex-1">
         {tab === "chats" ? <ChatFiles asked={asked} askedFile={askedFile} /> : <AgentWorkspaces />}
       </div>

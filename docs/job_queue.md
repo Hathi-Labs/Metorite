@@ -12,6 +12,10 @@ seam, and the first two detached kinds: `brief.plan` and `brief.run`
 AUTO-2 (Metorite #814) adds the ledger of unattended runs in section 9. It is
 BUILT and dark, and its switch `UNATTENDED_LEDGER` is OFF.
 
+AUTO-8a (task 1392) adds the detached kind `auto.turn` in section 10, the
+capped headless turn. It is BUILT and dark. It registers only with
+`JOB_QUEUE` on, and no code enqueues it.
+
 The first producer is the brief. The seed hook of section 5c enqueues
 `brief.plan`, and `brief.plan` enqueues `brief.run`. The switch `JOB_QUEUE`
 is OFF. The rest of BR-1b moves the reminder loop, send-later and the
@@ -547,3 +551,43 @@ function does nothing. Reach behaves as before. The one reader is
 - A UI, a retry of a send, a new queue, and a change to `reach_outbox`.
 - The workflows scheduler (after H4), My Day and the BR-2a brief wiring.
 - A production deploy and the flip of `UNATTENDED_LEDGER`.
+
+## 10. The headless turn (AUTO-8a)
+
+One job of kind `auto.turn` runs one capped turn of the assistant for one
+goal, with no person present. `proactive_agent.md` §4.4 holds the design.
+
+| Part | Path |
+|---|---|
+| The handler | `apps/services/gateway/gateway/jobs/headless_turn.py` |
+| The goal and the cap rule | `packages/acb_common/acb_common/goal_store.py` |
+| The switch | `HEADLESS_TURN_ORGS`, default empty. The one reader is `headless_turn.headless_allowed` |
+| The fences | `tests/unit/test_headless_turn.py`, and `tests/unit/test_headless_turn_r8.py` (R8) |
+
+- **The kind.** `auto.turn` uses the detached mode, and it is not
+  idempotent. So the worker gives each job one try. `register_jobs` registers it only when `JOB_QUEUE`
+  is on. No production code enqueues it.
+- **The payload** is `{goal_id, candidate}`, with no other key. Another key
+  gives up with `BadPayload`. The member comes from the goal row, never from
+  the payload.
+- **The ledger.** The turn runs inside `unattended.once`, and the slot is
+  the job id. At the cap the ledger row ends `ok`, because `cap_reached`
+  lives on the goal row.
+- **The time limit.** A turn has 120 seconds, and 180 seconds at most. The
+  clock starts in `run()`, before `unattended.recover`. That bound and a
+  settle margin of 60 seconds stay at or below `HANDLER_TIMEOUT`. The meter
+  and the record of a round each get a third of the margin.
+  `test_the_caps_are_bounded` fences the order.
+- **No cost reader, no call.** The default meter raises before the first
+  call. The job then gives up with `NoCostReader`, and
+  `headless_turn.no_cost_reader` logs at error.
+
+| Event | Level | When |
+|---|---|---|
+| `headless_turn.skipped` | info | The job made no model call: the switch is off, the goal takes no round, the member left, or no candidate exists. The line names the reason |
+| `headless_turn.ended` | info | A turn ended, with its outcome and its count of rounds |
+| `headless_turn.cap_reached` | info | A round moved the goal to its cap. One line for each goal |
+| `headless_turn.no_cost_reader` | error | No meter can read the cost of a run, so the turn made no model call |
+| `headless_turn.cost_unknown` | error | The meter failed or timed out (`MeterTimeout`) after a call, so the round counts as the rest of the budget |
+| `headless_turn.round_unrecorded` | warning | The turn did not record a round, because the goal changed twice or is not active now |
+| `headless_turn.round_unrecorded` | error | The record of a round timed out (`RecordTimeout`). The cost of that round does not reach the goal, and the job gives up with `TurnFailed` |

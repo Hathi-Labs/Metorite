@@ -723,7 +723,7 @@ _PROFILE_AGENT = "orchestrator"
 #: too, so a member with no profile costs one read a minute. A write in this
 #: process moves the count, so the next turn reads again.
 #: The last field says whether the stored profile holds something (PZ-20b).
-_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any, bool]] = {}
+_PROFILE_CACHE: dict[tuple[str, str], tuple[float, int, str, str, str, Any, bool, str]] = {}
 _PROFILE_TTL_SECONDS = 60.0
 _PROFILE_CACHE_MAX = 4096
 #: PZ-43: by ``(org, member)``, whether the stored ``celebrations`` key sets
@@ -803,9 +803,10 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
     gen = assistant_profile.generation(member)
     hit = _PROFILE_CACHE.get(key)
     if hit and now - hit[0] < _PROFILE_TTL_SECONDS and hit[1] == gen:
-        return (_with_interview_line(hit[2], hit[5], key), hit[3], hit[4])
+        return (_with_interview_line(hit[2], hit[5], key, hit[7]), hit[3], hit[4])
     block, zone, greeting, interview = "", "", "", None
     has_stored = False
+    forms_line = ""
     try:
         read = _read_member_profile(str(org), member)
         if read is not None:
@@ -816,19 +817,26 @@ def _member_profile_entry(agent_name: str) -> tuple[str, str, str]:
             while len(_CELEBRATIONS_SET) > _PROFILE_CACHE_MAX:
                 _CELEBRATIONS_SET.pop(next(iter(_CELEBRATIONS_SET)))
             has_stored = assistant_profile.has_stored_content(raw)
-            block = assistant_profile.member_block(raw, preferred, display)
+            block = assistant_profile.member_block(raw, preferred, display, str(org))
+            if block and assistant_profile.address_forms_for(str(org)):
+                # PZ-40: the offer for the name question. The language is the
+                # stored one, never a guess.
+                from acb_common import honorifics
+
+                forms_line = honorifics.offer_line(stored["style"].get("language"))
             greeting = assistant_profile.effective_greeting(raw) if block else ""
             if stored["learning"] is True:
                 interview = stored.get("interview")
     except Exception:
         block, zone, greeting, interview, has_stored = "", "", "", None, False
+        forms_line = ""
     if not block:
-        zone, greeting, interview, has_stored = "", "", None, False
+        zone, greeting, interview, has_stored, forms_line = "", "", None, False, ""
     _PROFILE_CACHE.pop(key, None)
-    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview, has_stored)
+    _PROFILE_CACHE[key] = (now, gen, block, zone, greeting, interview, has_stored, forms_line)
     while len(_PROFILE_CACHE) > _PROFILE_CACHE_MAX:
         _PROFILE_CACHE.pop(next(iter(_PROFILE_CACHE)))
-    return (_with_interview_line(block, interview, key), zone, greeting)
+    return (_with_interview_line(block, interview, key, forms_line), zone, greeting)
 
 
 def _interview_now() -> Any:
@@ -864,7 +872,8 @@ def _interview_peek() -> Iterator[None]:
         _INTERVIEW_PEEK.reset(token)
 
 
-def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None = None) -> str:
+def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None = None,
+                         forms_line: str = "") -> str:
     """*block* with the due line of the interview (PZ-26, §14.4), or *block*.
 
     *interview* is the stored value of a member whose ``learning`` is on,
@@ -888,7 +897,7 @@ def _with_interview_line(block: str, interview: Any, key: tuple[str, str] | None
         shown = _INTERVIEW_SHOWN.get(key) if key is not None else None
         if shown is not None and now - shown <= timedelta(hours=assistant_profile.DUE_HOURS):
             return block
-        line = assistant_profile.interview_due_line(interview, now)
+        line = assistant_profile.interview_due_line(interview, now, forms_line)
         if not line or len(block) + 1 + len(line) > assistant_profile.RENDER_MAX:
             return block
         if key is not None and not _INTERVIEW_PEEK.get():
@@ -4740,6 +4749,8 @@ def _audit_agent_push(
                 "branch": str(details.get("branch") or ""),
                 "shas": [str(x)[:40] for x in details.get("shas") or []],
                 "reviewed_by": "chat:autopush",
+                # BR-7b (core_brief.md §8.2): the policy that allowed it.
+                "policy": "chat:autopush",
             },
             organization_id=org,
         ))

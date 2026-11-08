@@ -106,7 +106,7 @@ Nothing today shows a question with named options to a named person, and records
 | `expires_at` | Default 7 days after the ask |
 | `payload` | JSONB. It serves SW-18 and Studio B2c |
 | `answered_by`, `answer_key`, `answer_reason` | Nullable until the answer. The reason is optional |
-| `source` | `align` or `auto` |
+| `source` | `align`, `auto` or `person`. A `person` row is a person ask of WS-AP: `waiting_on_me.md` §7.1 adds it, with `due_at`, `closed_at` and `closed_reason` |
 
 A unique guard allows one answer for each decision. ALN-2a records four facts for the next slices. First, `REACH_CLASS["decision"]` reaches nobody until a signal kind `decision` exists. ALN-2b must add `decision` to `ASKING_NOTIFICATIONS`, the bell verb in `notifications.ts` and the needs provider before `DECISIONS_ORGS` goes on. Second, the answer writes a `comment` activity with the question of the asker, and it emits `pm.task.comment_added`. So a workflow triggered by a comment reads that text, and ALN-7 must know it. Third, only the decider reads a decision, including its answer. Other members read the comment on the task. Fourth, the chat reaches the decision by the tools `my_decisions` and `answer_decision`, and `answer_decision` refuses a run with no person present before it raises a card. The table is tenant-scoped with FORCE RLS (R5). It widens `pm_notifications_kind_check` with the kind `decision`.
 
@@ -215,14 +215,35 @@ The unique index of migration 340 keys on (org, project, `kind`, `rule_key`, `ve
 - **No score for a person** (ALN-Q5). No column, index or statement groups by `written_by` or `proposed_by`. A static fence scans for it.
 - **The flag.** `PROJECT_RULES_ORGS` is a list of org ids or `*`, and it is empty by default. While the org is not in it, each route answers 404. Only the owner writes the value, and a SIGHUP reload applies it.
 - **Chat parity.** ALN-5a gives these routes no chat tool, so a member cannot yet write a rule from the chat. A follow-up slice adds the chat tools, in a pack of their own, as ALN-4 did. The flag stays empty until that slice lands.
-- **Residual risk: the sentence shows to every reader of the project.** That is by design (§7.2 point 2). The quote hides by the right of the reader to the page and to its version. The sentence does not hide. So a lead must not copy words of a page that some members cannot read into the sentence. A create does not run the audience check of ALN-4, because §4.1 asks for that check at the pin only. A rule may also quote a page that is not pinned to the project. ALN-5b must decide whether the proposer runs the audience check, or reads only pinned pages.
-- **A note for ALN-5b.** A quote of 1 character passes the check of ALN-5a. A quote that short proves nothing, so the proposer needs a minimum length for a quote.
+- **Residual risk: the sentence shows to every reader of the project.** That is by design (§7.2 point 2). The quote hides by the right of the reader to the page and to its version. The sentence does not hide. So a lead must not copy words of a page that some members cannot read into the sentence. A create does not run the audience check of ALN-4, because §4.1 asks for that check at the pin only. A rule may also quote a page that is not pinned to the project. ALN-5b decided this for the proposer: it reads only pinned pages, and it runs the audience check of ALN-4 again at each ask.
+- **The shortest quote.** A quote of 1 character passes the check of ALN-5a. A quote that short proves nothing. So ALN-5b refuses a quote of fewer than 20 characters (`MIN_QUOTE`).
 
 **Verify ALN-5a.** R8 needs a private database:
 
 ```bash
 export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/<private db>
 uv run pytest tests/unit/test_project_rules.py tests/unit/test_project_rules_static.py tests/unit/test_agent_guidance_r8.py tests/unit/test_agent_guidance.py -q -rfEs
+```
+
+**As built (ALN-5b, code `routes/project_rules_propose.py`, no migration).**
+
+- **The trigger.** A lead calls `POST /project-rules/projects/{id}/propose` with `{"page_id": ...}`. There is no job and no event. The page signal is ALN-11.
+- **Non-goals.** No chat tool (ALN-5c), no UI, no job, no auto-accept and no score for a person.
+- **Who may ask.** The rule of ALN-5a: a lead of the project or of an ancestor, or a holder of `projects:settings:write`. An agent connection gets 403, a personal tree 403, and an archived project 409. While `PROJECT_RULES_ORGS` does not hold the org, the route answers 404.
+- **The source.** The proposer reads only a page that is pinned to the project (`pm_project_authorities`, state `active`). A page that is not pinned gets 422. The caller must read the page (404), and the page must be published and not in a `me` space (409). Each holder of the project must read the page too. A move of the page writes a version with the same text, so the pin stays current. So the proposer runs the audience check of ALN-4 (`authorities._refuse_if_narrower`) before the call and again under the lock. A narrower page gets 409 and no call. The proposer reads the newest version of the page, and each proposal names that version.
+- **The call.** One model call on `tier-fast`, with no tools, in JSON mode and with no reasoning. It runs as the caller, so the AI allowance of the org pays (ALN-Q4). The page reaches the model in one block of the untrusted frame. No session is open during the call. With the Router off, the route answers 503 and makes no call. A 402 of the Router gives 402 and says that the org has no credits.
+- **The checks.** A sentence holds 1 to 300 characters, and a quote holds 20 (`MIN_QUOTE`) to 400 characters, each after a strip. The quote must be an exact substring of the page version (`quote_occurs`). The server drops each answer that fails, and never repairs it. A sentence that equals an active or proposed rule of the project is a duplicate. So is a retired rule that Mira proposed from the same page, so a retired proposal does not come back. A page over 60,000 characters gets 422 and no call.
+- **The cap of 12.** The server cuts the answer to 12 items first. It counts each rule that Mira proposed from the same page version, in each state. So an accept or a retire makes no room. A page version that holds 12 already gets 409 and no call. Under the advisory lock of the project, the route counts again and writes at most 12 less that count.
+- **The write.** Each row goes through `project_rules._insert` with `state = 'proposed'` and `proposed_by = 'mira'`. `written_by` is the caller. Under the lock, the route checks the page again: still pinned, published, readable by the caller and not narrower. Then it reads the text of the version that Mira read, and checks each quote against it. An edit during the call keeps the answer that the org paid for, and each row names the version that Mira read. A page that left the pin, was unpublished, got narrower or became unreadable gives a refusal and no row. Only the accept route of ALN-5a makes a proposal `active` (D104).
+- **The answer.** `{"proposed": [...], "dropped": {...}}`. The reasons are `no_sentence`, `no_quote`, `too_short`, `too_long`, `duplicate` and `over_cap`. Each count is for a reason, never for a person (ALN-Q5).
+- **Residual risk.** The proposer runs the audience check at each ask, so it writes no proposal from a page that is narrower than the project. A proposal written before a later move stays, and its sentence shows to each reader of the project (§7.2 point 2). A lead reads each proposal before the accept, so no rule goes live without a person.
+
+**Verify ALN-5b.** R8 needs a private database:
+
+```bash
+export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/<private db>
+uv run pytest tests/unit/test_project_rules_propose.py tests/unit/test_project_rules_static.py tests/unit/test_drafting_voice.py -q -rfEs -o timeout_method=thread
+uv run python -m evals.project_rules_proposer.run --scripted
 ```
 
 ### 4.3 The finding (ALN-7)
@@ -386,7 +407,7 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 | **ALN-4** (1378) | The pin (§4.1). Needs ALN-0 | R8: a lead pins a page. A member with no authority gets 403. Org B sees none of it. A page of another org cannot be pinned. A page with narrower grants is refused. An archived page shows the pin as `stale` | HIGH | AGENT-SAFE. ✅ **Built 2026-11-02** (table and routes, no UI). Fence: `tests/unit/test_project_authorities_r8.py` |
 | **ALN-4b** | The overview UI of the pins: list, pin, remove and a stale badge. The routes of ALN-4 are inert without it. Needs ALN-4 | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
 | **ALN-5a** (1379) | The rule store (§4.2): rule rows on `pm_agent_guidance`, the rule that a lead writes, the quote check, accept, edit, retire and the level, with history. Needs ALN-4 | R8: only a lead makes a rule active. Org B reads none. The server refuses a proposal with an invented quote. A quote that is not a substring of the page version gets 422. The server stores a rule with no quote. An edit or a retire adds a version row, and the history lists both. The command is in §4.2 | HIGH | AGENT-SAFE. ✅ **Built 2026-11-04** (migration 343, routes, no UI, no chat tool). Fences: `tests/unit/test_project_rules.py` (R8), `tests/unit/test_project_rules_static.py` |
-| **ALN-5b** (1379) | The proposer (§4.2 rules 2, 4 and 5): one model call with no tools, and the cap of 12 for each page. Needs ALN-5a | Each quote that the model returns passes the check of ALN-5a. An injection fixture makes no tool call. On a real architecture document, a lead accepts at least half of the proposals, and the report names the number | HIGH | AGENT-SAFE. **OWNER-GATE** for an eval run over USD 0.50 |
+| **ALN-5b** (1379) | The proposer (§4.2 rules 2, 4 and 5): one model call with no tools, and the cap of 12 for each page. Trigger: a lead-called route. No job. The page signal is ALN-11. No chat tool (ALN-5c), no UI, no auto-accept and no score for a person. Needs ALN-5a | **CI:** each quote that the model returns passes the check of ALN-5a. An injection fixture makes no tool call. The cap of 12 holds, also for two runs at once. The scripted eval passes. **Owner-gated measure:** a live run on a real architecture document, with a budget of USD 0.50, gives the share of proposals that a lead accepts. The bar is one half. The share is a report, not a test | HIGH | AGENT-SAFE. **OWNER-GATE** for an eval run over USD 0.50. ✅ **Built 2026-11-07, dark** (route, no UI, no chat tool, no migration). The live measure is not run. Fences: `tests/unit/test_project_rules_propose.py` (R8), `tests/unit/test_project_rules_static.py`. Eval: `evals/project_rules_proposer/` |
 | **ALN-6** (1380) | Follow the rules first. Needs ALN-5 | An agent that claims a task in a project with 3 rules gets all 3 in `get_task_context`. A project with no rules and a rule on a parent project both pass a test. New chat tools have a `skill_projects/manifest.py` row, and new edge routes are in `MCP_WRITE_ROUTES` | STD | AGENT-SAFE |
 
 ### Phase 3 — The silent check
@@ -464,6 +485,9 @@ Each path was read on `ce29836ea`.
 - `apps/services/gateway/gateway/routes/projects/authorities.py` (ALN-4, the one writer of the pins)
 - `infra/postgres/340_pm_agent_guidance.sql` (SW-31a) and `343_pm_agent_guidance_rules.sql` (ALN-5a, the rule CHECKs and the guard)
 - `apps/services/gateway/gateway/routes/project_rules.py` (ALN-5a, the one writer of a rule row) and `routes/knowledge/core.py` (`page_version_text`, `quote_occurs`)
+- `apps/services/gateway/gateway/routes/project_rules_propose.py` (ALN-5b, the proposer: the one model call, the checks and the cap of 12)
+- `evals/project_rules_proposer/` (ALN-5b, the scripted eval and the runner of the live measure)
+- `tests/unit/test_project_rules_propose.py` (ALN-5b, R8)
 - `project-docs/specs/agent_coordination.md` (SW-31), `workflows_app.md` (G5), `knowledge_graph.md` §3.2 (KG-4), `proactive_reach.md`
 - `tests/unit/test_pm_task_insert_sites.py` (the D80 fence)
 
