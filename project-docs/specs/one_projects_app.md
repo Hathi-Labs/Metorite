@@ -1327,7 +1327,9 @@ is dark until a UI slice calls it.
    `projects_reports.md` refuses a subject on the outlook.
 8. **Needs attention.** `/needs-attention?mine=true` works with no project and
    does not change. Its "mine" is the assignee of a blocked task, so its
-   rows are a part of the list with `scope=mine`.
+   rows are a part of the list with `scope=mine`. AP-Q11 (owner, 2026-11-08)
+   folds the lens tab into one "Needs you" control (`waiting_on_me.md` §5.8,
+   AP-18). The route stays.
 9. **The MCP edge.** `list_tasks` takes `include_subtree`, and its default
    is true when the call names a project. `list_projects` rows and the
    `get_project` project carry `kind` and `level`. The gateway derives the
