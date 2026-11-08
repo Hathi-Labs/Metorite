@@ -2,7 +2,7 @@
 
 **Product:** Metorite · **Feature:** one list of what waits on a member, and of what the member waits on · **Updated:** 2026-11-06 · **Owner:** vjvarada
 
-**Status:** 🟡 **SPEC, ACCEPTED. AP-1a MERGED, dark** (task 1616, `bf0ece44b`, PR 1797): the read seam of §7.3 with four kinds, behind `WAITING_ORGS` (empty by default). **AP-8a BUILT, dark, not merged** (task 1858, branch `pro-ap8`, migration 359): the person ask of §7.1 and §7.2, behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8b is NO-GO until the spec answers §8 B4 to B6. AP-BUG-2 is built (task 1896, the admin gate of `/actions`). The other slices are not built, except the parts that §2 names.
+**Status:** 🟡 **SPEC, ACCEPTED. AP-1a MERGED, dark** (task 1616, `bf0ece44b`, PR 1797): the read seam of §7.3 with four kinds, behind `WAITING_ORGS` (empty by default). **AP-8a MERGED, dark** (task 1858, `f9b7969e2`, PR 1829, migration 359): the person ask of §7.1 and §7.2, behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8b is NO-GO until the spec answers §8 B4 to B6. **AP-9a BUILT, dark, not merged** (task 1859, branch `pro-ap9`): the form, the chip and the read of §7.2. AP-9b (task 2225) needs three decisions. AP-BUG-2 is built (task 1896). The other slices are not built.
 
 On 2026-11-06 the owner accepted the recommended answers to AP-Q1 to AP-Q8 (§13). AP-Q9 has a working default. The owner answered AP-Q10, so AP-16 is open to build after AP-15.
 
@@ -96,7 +96,7 @@ Each fact was read on `97da742ae`.
 1. **No list crosses projects for agent questions.** `GET /projects/agent-runs` is scoped to `member_email = :me`, newest first (`agent_runs.py:1835-1891`). The project panel lists one scope at a time (`analytics_waiting.py:341-349`).
 2. **Task 1750 (PR 1741) merged as `c4c17132f`.** It adds `order=oldest` and `with_task=true` to that route. It draws "Waiting for you (N)" above the held writes on `/approvals`. Each question answers in place with `ElicitationCard`. It lists the caller's own runs only.
 2a. **EA-18a merged as `4dfbe3b13`** (WS-55, D-EA-14, dark behind `AGENT_QUESTIONS_ORGS`). `routes/projects/agent_questions.py` serves `GET /projects/agent-questions`, a second list of agent questions. ⚠️ **It conflicts with AP-Q2.** D-EA-14 point 1 lists a question for the task creator, the assignees and the run's member. AP-Q2 lists it for the run's member only. The owner must choose one rule before AP-1b builds the `agent_question` kind (§8).
-3. **The Projects filter "Waiting on me"** keeps a task when a run is `awaiting`. The caller must be the run's member or an assignee (`filters.py:1478-1503`). It covers agent runs only.
+3. **The Projects filter "Waiting on me"** keeps a task when a run is `awaiting`. The caller must be the run's member or an assignee (`filters.py:1487`). It covers agent runs only.
 4. **A person cannot mark "waiting on X" and keep the task.** Delegate replaces every assignee (`lens.ts:941-944`, `tasks.py:2221-2227`). The overlay route takes `waiting_on` alone (`personal.py:175-189`), but the read side names the current assignees minus me (D77, `personal.py:1180-1208`).
 5. **The nudge** writes one bell row of kind `nudge` (`personal.py:3147-3276`). It has no rate limit, because nothing reads `last_nudged_at` before a send.
 6. **BUILT (task 1857, AP-BUG-1).** Before the fix, the Projects bell drew every `nudge` as "{A} has gone quiet on {task}. Resume or release it." (`notifications.ts:79,97`). That text belongs to the stranded-run nudge of `agent_run_sweep.py:100-102`. So a person's nudge read wrong. `describe()` now tells the two apart by the actor. The sweep stamps an `mcp:` or `agent:` client. A person stamps their address. No producer changed.
@@ -518,6 +518,13 @@ The author comes from the session, never from the body. The bell row goes throug
 
 Three more routes: `POST /asks/{id}/withdraw` (the asker), `POST /asks/{id}/nudge` (the asker or the Team lens, once in 24 hours), and the answer, which stays `answer_decision`. AP-8a builds the withdraw. AP-8b builds the nudge. The manifest lists the withdraw as class C with the planned tool `withdraw_ask`, which AP-10 builds. It is not class X (D-OP-9).
 
+**The read (AP-9a).** `GET /projects/decisions?task_id=` stays the one read. It gains no new route. A reader who cannot open the task gets 404. The body holds `decisions` (unchanged: the caller as decider), and `waiting_on` and `asks`:
+
+- `waiting_on[]`: `{decider, expires_at, source}` for each open ask of another decider. It never holds the question, the options or the answer (ALN-2b). With `WAITING_ORGS` off for the org, `source` is absent.
+- `asks[]`: `{id, decider, due_at, created_at}` for each open person ask that the caller made. The asker needs the id to withdraw. The key `asks` is present only when both flags hold the org, and the client draws the form from that key.
+
+The client chip reads `decisions` and `waiting_on`. It shows "Needs you" for an open row of `decisions`. It shows "Waiting for Priya" or "Waiting for 2" from `waiting_on`. It shows no chip for none, and no count for a person (V6).
+
 **Why this route is safe now.** `decisions.py:16-19` refused an HTTP ask because a member's agent could put cards on bells. Guard 1 refuses every agent connection. A member can already @mention any reader of a task, and the mention reaches the bell. The ask adds one tracked state to that same act.
 
 ### 7.3 The read seam (AP-1)
@@ -573,9 +580,10 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-5** | 1624 | Reach for waits (= BUD-7). An agent question and a person ask that is due today or overdue are interrupts. Other person asks are brief | The class table of `reach/classes.py` holds `waiting_on_you`. The 3-a-day budget holds | HIGH |
 | **AP-6** | 1625 | Answer in the chat: "approve the first two" answers at the source | Each answer goes through the source's own route. No new write path | STANDARD |
 | **AP-7** | 1626 | Later: an approver on each held write | Unchanged | — |
-| **AP-8a** | 1858 | The person ask: the migration of §7.1 (359), the ask route and the withdraw of §7.2, and the closed state on the answer and the reads | R8 tests (`test_person_asks_r8.py`): guards 1 to 5, one answer, two concurrent answers, withdraw, no answer after a withdraw, the trigger in SQL, each flag off, org isolation, V4 and V5. `test_decisions.py` still passes. **Built, dark, not merged** | HIGH (migration, identity) |
+| **AP-8a** | 1858 | The person ask: the migration of §7.1 (359), the ask route and the withdraw of §7.2, and the closed state on the answer and the reads | R8 tests (`test_person_asks_r8.py`): guards 1 to 5, one answer, two concurrent answers, withdraw, no answer after a withdraw, the trigger in SQL, each flag off, org isolation, V4 and V5. `test_decisions.py` still passes. **Merged, dark** (PR 1829) | HIGH (migration, identity) |
 | **AP-8b** | 1994 | The bell of the asker on an answer, the nudge route (once in 24 h), and the close with the task (`task_closed`) | R8 tests: the nudge once in 24 h, the close with the task, the bell of the asker. **NO-GO until the spec answers B4 to B6 below** | HIGH (identity) |
-| **AP-9** | 1859 | "Wait on someone" on the task card, the chip, the board chip, the filter "Waiting on me" and the panel section | The chip reads right for the addressee and for another reader. The filter lists a person ask. UI gate | MEDIUM |
+| **AP-9a** | 1859 | "Wait on someone" on the task card (the form, the refusals of §6.5, "Withdraw", the key `W` and the menu entry), the chip "Needs you" or "Waiting for Priya", and the extended read of §7.2 | The chip reads right for the addressee ("Needs you"), for another reader ("Waiting for Priya") and for two asks ("Waiting for 2"). The wire never holds the question for a person who is not a party. Each refusal of §6.5 shows its text. A send writes one ask. A withdraw removes the chip. With either flag off, the form and the chip draw nothing. R8 tests of the read. UI gate. **Built, dark, not merged** | MEDIUM |
+| **AP-9b** | 2225 | The board chip, the filter "Waiting on me" with person asks (`agent_focus_clause`), and the section "Asks with no answer" of the panel | Each needs a decision first: whether the count of the agent strip holds person asks, which field per row feeds the board chip, and the scope rule of the panel. The filter lists a person ask. UI gate. **NO-GO until §8 answers the three** | MEDIUM |
 | **AP-10** | 1860 | The chat tools `ask_person`, `withdraw_ask`, `my_waits` and `answer_wait` | Each tool calls the AP-8 or AP-1 route. `ask_person` raises a card. The new-chat-tool fence set passes | STANDARD |
 | **AP-11** | 1861 | "Wait for Priya's reply" in the comment box | One Send writes the comment and the ask. A reply from Priya in the thread answers it | STANDARD |
 | **AP-12** | 1862 | The Team lens of §4.3 | R8 tests hold V7 and V6. The lens has no answer control. A reader without the right gets 403 | HIGH (visibility) |
@@ -617,7 +625,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | App requests | `apps/services/gateway/gateway/routes/agent_requests.py`, `workbench/control_plane/src/app/integrations/components/WaitingRequests.tsx` |
 | Chat cards | `infra/postgres/237_chat_pending_ask.sql`, `orchestrator/pending_ask.py` |
 | The overlay wait and the nudge | `apps/services/gateway/gateway/routes/projects/personal.py` (`set_personal` `:1009`, `nudge_task` `:3154`), `infra/postgres/188_projects_personal_overlay_fields.sql` |
-| The filter and the panel | `routes/projects/filters.py:1478`, `routes/projects/analytics_waiting.py`, `workbench/control_plane/src/app/projects/lib/waiting.ts` |
+| The filter and the panel | `routes/projects/filters.py:1487`, `routes/projects/analytics_waiting.py`, `workbench/control_plane/src/app/projects/lib/waiting.ts` |
 | The bell | `routes/projects/notifications.py` (`NOTIFICATION_KINDS` `:75`, `notify`, `deliverable`), `workbench/control_plane/src/app/projects/lib/notifications.ts:79` |
 | The sidebar | `workbench/control_plane/src/lib/nav.ts`, `nav.test.ts`, `src/lib/shell/Sidebar.tsx` (`MyDayRow` `:1322`, `paneBadge` `:1053`) |
 | The chat tools | `apps/skills/skill-projects/skill_projects/reads.py:1834`, `writes.py`, `guarded.py`, `manifest.py` |
@@ -701,3 +709,4 @@ Each open question has a recommended answer. The build uses it as a working defa
 - 2026-11-06 — The owner accepted AP-Q1 to AP-Q8 on task 1855. The owner then asked, in chat, that a wait on a task with no assignee reach the right people. Added §4.5 (the ladder, the circle and the open wait), V9 to V11, AP-15 (task 1875), AP-16 (task 1876), AP-Q9 and AP-Q10.
 - 2026-11-06 — AP-1a built on branch `pro-ap1` (task 1616), dark behind `WAITING_ORGS`. Four kinds: `held_write`, `chat_ask`, `app_request` and `decision`. §7.3 now says that the providers stay in `waiting.py` and holds the wire shape. §8 splits AP-1 into AP-1a, AP-1b and AP-1c. §5.2 shows no question text for `chat_ask`. §2.2 records that PR 1741 and EA-18a merged, and the conflict of D-EA-14 with AP-Q2.
 - 2026-11-07 — AP-8a built on branch `pro-ap8` (task 1858), dark behind `WAITING_ORGS` and `DECISIONS_ORGS`. Migration 359 widens the source CHECK and adds `due_at`, `closed_at` and `closed_reason`. §7.2 names both flags and the rule of guard 5. §8 splits AP-8 into AP-8a and AP-8b, and AP-8b holds B4 to B6. AP-1a merged as `bf0ece44b`.
+- 2026-11-08 — AP-9a built on branch `pro-ap9` (task 1859), dark behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8a merged as `f9b7969e2`. §8 splits AP-9 into AP-9a and AP-9b (task 2225). §7.2 holds the wire shape of the extended read. The anchor of `agent_focus_clause` is `filters.py:1487`.
