@@ -180,6 +180,8 @@ AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
 AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
     "status_id", "title", "description", "tags", "due_at", "custom_fields",
     "importance", "leveraged", "estimate_mins", "start_date",
+    # SP-6: `update_task` sets the type, and null clears it.
+    "type_id",
 })
 #: WS-55 MCP-G2. The one body key of a signed agent MOVE. A move to another
 #: project stays a person's step in the app, so `project_id`,
@@ -1338,6 +1340,9 @@ async def patch_task(
 
         after = before
         if values:
+            # SP-6: a signed agent sets only a type of this project.
+            await _refuse_agent_type(
+                db, user, values.get("type_id"), str(before.root_project_id))
             await assert_epic_has_no_parent(
                 db, values.get("type_id"), getattr(before, "parent_task_id", None),
             )
