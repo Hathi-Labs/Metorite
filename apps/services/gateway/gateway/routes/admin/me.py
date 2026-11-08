@@ -278,7 +278,9 @@ SHELL_CARDS: frozenset[str] = frozenset(_VOCABULARY.cards)
 SHELL_PANES: frozenset[str] = frozenset(_VOCABULARY.panes)
 
 #: Caps on each list. There are 21 panes, 5 cards and 23 jobs today.
-MAX_PINS = 24
+#: ``pins`` and ``known`` also hold install panes while ``PACKAGE_HOST_ORGS``
+#: holds the org (WS-PKG PKG-6c-1), so their cap is 64 (PKG-Q24).
+MAX_PINS = 64
 MAX_CARDS = 8
 MAX_JOBS = 16
 
@@ -393,8 +395,21 @@ class ShellPrefs(BaseModel):
 
     @field_validator("pins", "known")
     @classmethod
-    def _pins(cls, v: list[str] | None) -> list[str] | None:
-        return None if v is None else _known(v, SHELL_PANES, "pane")
+    def _pins(cls, v: list[str] | None, info: ValidationInfo) -> list[str] | None:
+        """A system pane, always. An install href too, when the context says
+        ``install_hrefs`` (WS-PKG PKG-6c-1). That is the check of the syntax
+        only: ``put_my_shell`` then keeps the hrefs that the viewer's own
+        resolve holds. With no context, the check is the system list only."""
+        if v is None:
+            return None
+        if not (info.context or {}).get("install_hrefs"):
+            return _known(v, SHELL_PANES, "pane")
+        from gateway.package_host.shell_pins import safe_href
+
+        unsafe = sorted({x for x in v if x not in SHELL_PANES and safe_href(x) is None})
+        if unsafe:
+            raise ValueError(f"unknown pane: {', '.join(unsafe)[:200]}")
+        return _unique(v)
 
     @field_validator("card_order")
     @classmethod
@@ -486,13 +501,19 @@ def _server_stamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def stored_shell(raw: Any) -> dict[str, Any]:
+def stored_shell(raw: Any, installs: bool = False) -> dict[str, Any]:
     """A stored value, as the route answers it. Lenient on purpose.
 
     A pane leaves `nav.ts`, or a job is renamed, after a member saved it. A
     read must still answer, so this drops what it does not know rather than
     refuse the whole layout. The write is the strict half (`ShellPrefs`).
+
+    *installs* is true while ``PACKAGE_HOST_ORGS`` holds the session's org
+    (WS-PKG PKG-6c-1). Then ``pins`` and ``known`` also keep a stored install
+    href that is safe and that no system pane owns. The write checked it
+    against the resolve. With the flag off, the read drops it.
     """
+    from gateway.package_host.shell_pins import install_href
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -501,19 +522,20 @@ def stored_shell(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return dict(EMPTY_SHELL)
 
-    def _list(key: str, vocabulary: frozenset[str], cap: int) -> list[str] | None:
+    def _list(key: str, vocabulary: frozenset[str], cap: int, *, hrefs: bool = False) -> list[str] | None:
         v = raw.get(key)
         if not isinstance(v, list):
             return None
-        return _unique([x for x in v if isinstance(x, str) and x in vocabulary])[:cap]
+        return _unique([x for x in v if isinstance(x, str) and (
+            x in vocabulary or (hrefs and install_href(x) is not None))])[:cap]
 
     preset = raw.get("preset")
     answered = raw.get("answered")
     return {
         "preset": preset if preset in SHELL_PRESETS else None,
         "answered": answered if answered in ("answered", "skipped") else None,
-        "pins": _list("pins", SHELL_PANES, MAX_PINS),
-        "known": _list("known", SHELL_PANES, MAX_PINS),
+        "pins": _list("pins", SHELL_PANES, MAX_PINS, hrefs=installs),
+        "known": _list("known", SHELL_PANES, MAX_PINS, hrefs=installs),
         "cardOrder": _list("cardOrder", SHELL_CARDS, MAX_CARDS),
         "newOrder": _list("newOrder", _job_ids(), MAX_JOBS),
         "chat_first_message_at": _stamp(raw.get("chat_first_message_at")),
@@ -607,16 +629,19 @@ async def get_my_shell(user: UserContext = Depends(get_current_user)) -> dict[st
     first sign-in question", and a database fault must not ask it again.
     The answer also carries ``guide`` (``_answer``, WS-OB GD-5a).
     """
+    from gateway.package_host.flags import package_host_allowed
+
     uid = _member(user)
     if not uid:
         return _answer(dict(EMPTY_SHELL), user)
+    installs = package_host_allowed(getattr(user, "organization_id", None))
     try:
         async with _tenant_session() as db:
             row = await _read_shell(db, uid)
     except Exception as exc:
         _log.warning("auth.shell.read_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return _answer(stored_shell(row[0]) if row is not None else dict(EMPTY_SHELL), user)
+    return _answer(stored_shell(row[0], installs) if row is not None else dict(EMPTY_SHELL), user)
 
 
 @me_router.put("/me/shell", summary="Save or reset the caller's shell layout (NS-7)")
@@ -627,10 +652,26 @@ async def put_my_shell(
     """Save the layout. A body of ``null`` resets the member to the preset.
 
     It needs a signed-in member and no feature, so a guest can pin an app.
+
+    **An install pane (WS-PKG PKG-6c-1).** While ``PACKAGE_HOST_ORGS`` holds
+    the session's org, ``pins`` and ``known`` may name a safe href outside
+    ``SHELL_PANES``. In the session of the write, and before it,
+    ``resolve.resolve_for`` reads the viewer's own manifest. The org is the
+    bound session and the viewer is ``user.email``, never request input (R5).
+    A href that the resolve does not hold drops in silence, so no answer
+    tells an install that exists from one that does not (PKG-Q20). A fault
+    in the resolve answers 503 and writes nothing. With the flag off, the
+    href answers 422 and runs no SQL, as before.
     """
+    from gateway.package_host import resolve as _resolve
+    from gateway.package_host import shell_pins
+    from gateway.package_host.flags import package_host_allowed
+
     uid = _member(user)
     if not uid:
         raise HTTPException(status_code=403, detail="Sign in to save a layout")
+    installs = package_host_allowed(getattr(user, "organization_id", None))
+    extra = False
     prefs: dict[str, Any] | None = None
     mode = "layout"
     keep: tuple[str, ...] = ()
@@ -645,7 +686,7 @@ async def put_my_shell(
                 # The mark was all the body held: write nothing, answer the read.
                 return await get_my_shell(user)
         try:
-            model = ShellPrefs.model_validate(body)
+            model = ShellPrefs.model_validate(body, context={"install_hrefs": installs})
         except ValidationError as exc:
             raise HTTPException(
                 status_code=422,
@@ -678,13 +719,23 @@ async def put_my_shell(
         # The first time stays: a stored time wins over this one.
         if stamped and mode == "stamp":
             mode = "stamp-first"
+        # PKG-6c-1: an href outside the system list needs the resolve.
+        extra = installs and any(
+            v not in SHELL_PANES for k in ("pins", "known") for v in (prefs.get(k) or ()))
     try:
         async with _tenant_session() as db:
+            if extra and prefs is not None:
+                manifest = await _resolve.resolve_for(
+                    db, viewer=user.email, can_use=user.can_use_feature)
+                held = shell_pins.install_nav_hrefs(manifest)
+                for k in ("pins", "known"):
+                    if k in prefs:
+                        prefs[k] = shell_pins.keep_held(prefs[k], held)
             stored = await _write_shell(db, uid, prefs, mode, keep)
     except Exception as exc:
         _log.warning("auth.shell.write_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return _answer(stored_shell(stored) if stored is not None else dict(EMPTY_SHELL), user)
+    return _answer(stored_shell(stored, installs) if stored is not None else dict(EMPTY_SHELL), user)
 
 
 # ── /auth/me/zone — the member's time zone (RX-7) ──────────────────────────

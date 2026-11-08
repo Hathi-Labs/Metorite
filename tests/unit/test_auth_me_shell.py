@@ -105,11 +105,11 @@ class TestValidation:
         {"newOrder": ["launch-rocket"]},
         {"answered": "maybe"},
         {"answered": "answered"},
-        {"pins": ["/tasks"] * 30},
+        {"pins": ["/tasks"] * (me.MAX_PINS + 1)},
         # `known` takes the same names and the same cap as `pins`.
         {"known": ["/nowhere"]},
         {"known": ["/"]},
-        {"known": ["/tasks"] * 30},
+        {"known": ["/tasks"] * (me.MAX_PINS + 1)},
         {"known": "/tasks"},
         # The body never names the member or the tenant (R5, R11).
         {"pins": [], "user_id": "someone@else.example"},
@@ -169,6 +169,17 @@ class TestValidation:
         assert res.json()["answered"] == "skipped"
         [(_, params)] = _writes(fake)
         assert json.loads(params["shell_prefs"])["answered"] == "skipped"
+
+
+    def test_the_cap_of_pins_and_known_is_64(self, fake: _FakeDB) -> None:
+        """PKG-Q24: install panes join the list, so the cap went from 24 to 64."""
+        assert me.MAX_PINS == 64
+        for key in ("pins", "known"):
+            fake.sql.clear()
+            res = _client(_user()).put("/auth/me/shell", json={key: ["/tasks"] * 64})
+            assert res.status_code == 200, res.text
+            res = _client(_user()).put("/auth/me/shell", json={key: ["/tasks"] * 65})
+            assert res.status_code == 422, res.text
 
 
 # ── The nudge mark (WS-62 CF-2, `chat_first_surface.md` §4.7, D-CF-7) ──────
@@ -402,6 +413,232 @@ class TestTheGuideFlag:
         assert res.json()["guide"] is True
         [(_, params)] = _writes(fake)
         assert "guide" not in json.loads(params["shell_prefs"])
+
+
+# ── An install pane (WS-PKG PKG-6c-1, `package_host.md` §10) ─────────────
+
+
+APP = "/apps/0f8a3c1e-field-visits"
+OTHER = "/apps/77aa-not-mine"
+
+
+def _host_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "package_host_orgs", raw)
+
+
+def _nav(href: str, *, install_id: str | None = "i-1", source: str = "org") -> dict[str, Any]:
+    return {"key": href, "source": source, "install_id": install_id,
+            "needs_setup": False, "href": href, "label": "Field visits"}
+
+
+class _Resolve:
+    """A stand-in for ``resolve.resolve_for``. It records each call."""
+
+    def __init__(self, nav: list[dict[str, Any]] | None = None, fail: bool = False) -> None:
+        self.nav = nav if nav is not None else [_nav(APP)]
+        self.fail = fail
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, db: Any, *, viewer: str, can_use: Any) -> dict[str, Any]:
+        self.calls.append({"db": db, "viewer": viewer, "can_use": can_use})
+        if self.fail:
+            raise RuntimeError("resolve away")
+        return {"version": "v", "contributions": {"nav": self.nav}}
+
+
+@pytest.fixture
+def resolver(monkeypatch: pytest.MonkeyPatch) -> _Resolve:
+    from gateway.package_host import resolve
+
+    r = _Resolve()
+    monkeypatch.setattr(resolve, "resolve_for", r)
+    return r
+
+
+ORG = "11111111-1111-1111-1111-111111111111"
+
+
+class TestAnInstallPane:
+    def test_flag_off_an_install_href_is_422_and_runs_no_sql(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, "")
+        for key in ("pins", "known"):
+            res = _client(_in_org(ORG)).put("/auth/me/shell", json={key: ["/tasks", APP]})
+            assert res.status_code == 422, res.text
+            # The answer is the one of the system list, as before PKG-6c-1.
+            [err] = res.json()["detail"]
+            assert err["loc"] == [key] and err["msg"] == f"Value error, unknown pane: {APP}"
+        assert fake.sql == [] and resolver.calls == []
+
+    def test_flag_on_for_another_org_only_is_still_422(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, "22222222-2222-2222-2222-222222222222")
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json={"pins": [APP]})
+        assert res.status_code == 422, res.text
+        assert fake.sql == [] and resolver.calls == []
+
+    @pytest.mark.parametrize("bad", [
+        "apps/x", "//evil.example/x", "/apps//x", "/apps\\x", "/\\evil",
+        "/apps/x\n", "/apps/\x00x", "/apps/\x7f", "/" + "a" * 200, "", "https://evil.example",
+    ])
+    @pytest.mark.parametrize("raw", ["", "*"])
+    def test_an_unsafe_href_is_422_in_each_mode(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+        bad: str, raw: str,
+    ) -> None:
+        _host_orgs(monkeypatch, raw)
+        for key in ("pins", "known"):
+            res = _client(_in_org(ORG)).put("/auth/me/shell", json={key: [bad]})
+            assert res.status_code == 422, (key, bad, res.text)
+        assert fake.sql == [] and resolver.calls == []
+
+    def test_flag_on_a_held_install_href_is_stored_and_reads_back(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, ORG)
+        body = {"pins": ["/tasks", APP, APP], "known": ["/tasks", APP]}
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["pins"] == ["/tasks", APP]
+        assert res.json()["known"] == ["/tasks", APP]
+        [(_, params)] = _writes(fake)
+        stored = json.loads(params["shell_prefs"])
+        assert stored["pins"] == ["/tasks", APP] and stored["known"] == ["/tasks", APP]
+        fake.stored = params["shell_prefs"]
+        got = _client(_in_org(ORG)).get("/auth/me/shell").json()
+        assert got["pins"] == ["/tasks", APP] and got["known"] == ["/tasks", APP]
+
+    def test_the_resolve_reads_the_session_s_viewer_and_tenant(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """R5: the request names no org and no viewer. The resolve runs in
+        the session of the write, with ``user.email`` and its entitlements."""
+        _host_orgs(monkeypatch, ORG)
+        user = _in_org(ORG)
+        res = _client(user).put(
+            "/auth/me/shell?organization_id=other&viewer=x@evil.example",
+            json={"pins": [APP]},
+            headers={"X-Organization-Id": "other", "X-User-Email": "x@evil.example"})
+        assert res.status_code == 200, res.text
+        [call] = resolver.calls
+        assert call["viewer"] == "ana@alpha.example"
+        assert call["db"] is fake
+        assert call["can_use"] == user.can_use_feature
+        # The body cannot name them either.
+        for extra in ({"viewer": "x@evil.example"}, {"organization_id": "other"}):
+            res = _client(user).put("/auth/me/shell", json={"pins": [APP], **extra})
+            assert res.status_code == 422, res.text
+
+    def test_a_href_the_resolve_does_not_hold_drops_in_silence(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, "*")
+        body = {"preset": "engineer", "answered": "answered",
+                "pins": [OTHER, "/tasks", APP], "known": [OTHER, "/projects"]}
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        stored = json.loads(params["shell_prefs"])
+        assert stored["pins"] == ["/tasks", APP]
+        assert stored["known"] == ["/projects"]
+        # The rest of the save lands.
+        assert stored["preset"] == "engineer"
+
+    @pytest.mark.parametrize(("entry", "pinned"), [
+        (_nav(OTHER, install_id=None), OTHER),
+        (_nav(OTHER, source="system"), OTHER),
+        # A system pane owns a child path, so no install takes it.
+        (_nav("/tasks/field-visits"), "/tasks/field-visits"),
+        (_nav("/apps//x"), OTHER),
+        ({"key": OTHER, "source": "org", "install_id": "i-2"}, OTHER),
+    ])
+    def test_only_a_nav_entry_of_an_install_counts(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        entry: dict[str, Any], pinned: str,
+    ) -> None:
+        from gateway.package_host import resolve
+
+        _host_orgs(monkeypatch, "*")
+        monkeypatch.setattr(resolve, "resolve_for", _Resolve(nav=[entry]))
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json={"pins": [pinned]})
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["shell_prefs"])["pins"] == []
+
+    def test_a_fault_in_the_resolve_is_503_and_writes_nothing(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from gateway.package_host import resolve
+
+        _host_orgs(monkeypatch, "*")
+        monkeypatch.setattr(resolve, "resolve_for", _Resolve(fail=True))
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json={"pins": ["/tasks", APP]})
+        assert res.status_code == 503, res.text
+        assert _writes(fake) == []
+
+    def test_a_save_of_system_panes_only_needs_no_resolve(
+        self, fake: _FakeDB, resolver: _Resolve, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _host_orgs(monkeypatch, "*")
+        res = _client(_in_org(ORG)).put("/auth/me/shell", json={"pins": ["/tasks"]})
+        assert res.status_code == 200, res.text
+        assert resolver.calls == []
+
+    def test_the_read_keeps_an_install_href_only_while_the_flag_is_on(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake.stored = json.dumps({"pins": ["/tasks", APP, "/tasks/sub", "//x", 7],
+                                  "known": [APP, "/projects"]})
+        _host_orgs(monkeypatch, ORG)
+        on = _client(_in_org(ORG)).get("/auth/me/shell").json()
+        assert on["pins"] == ["/tasks", APP] and on["known"] == [APP, "/projects"]
+        _host_orgs(monkeypatch, "")
+        off = _client(_in_org(ORG)).get("/auth/me/shell").json()
+        assert off["pins"] == ["/tasks"] and off["known"] == ["/projects"]
+        # With no flag named, the pure read is the system list only.
+        assert me.stored_shell(fake.stored)["pins"] == ["/tasks"]
+
+    def test_with_no_context_the_model_takes_system_panes_only(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            me.ShellPrefs.model_validate({"pins": [APP]})
+        got = me.ShellPrefs.model_validate({"pins": [APP, APP]}, context={"install_hrefs": True})
+        assert got.pins == [APP]
+
+
+class TestTheHrefRules:
+    """The pure part, ``gateway/package_host/shell_pins.py``."""
+
+    def test_safe_href_mirrors_the_client(self) -> None:
+        from gateway.package_host.shell_pins import MAX_HREF, safe_href
+
+        assert safe_href(APP) == APP
+        assert safe_href("/" + "a" * (MAX_HREF - 1)) is not None
+        for bad in (None, 7, "", "x", "//x", "/a//b", "/\\x", "/a\\b", "/a\tb", "/a\x7f",
+                    "/" + "a" * MAX_HREF):
+            assert safe_href(bad) is None, bad
+
+    def test_system_owns_a_pane_and_its_child_paths(self) -> None:
+        from gateway.package_host.shell_pins import system_owns
+
+        assert system_owns("/tasks") and system_owns("/tasks/x") and system_owns("/tasks?a=1")
+        assert system_owns("/people/me/x")
+        assert not system_owns("/tasksx") and not system_owns(APP) and not system_owns("/")
+
+    def test_install_nav_hrefs_reads_a_bad_shape_as_none(self) -> None:
+        from gateway.package_host.shell_pins import install_nav_hrefs
+
+        for body in (None, [], {}, {"contributions": []}, {"contributions": {"nav": {}}},
+                     {"contributions": {"nav": [None, "x"]}}):
+            assert install_nav_hrefs(body) == frozenset()
+        body = {"contributions": {"nav": [_nav(APP), _nav(OTHER, install_id=None)],
+                                  "jobs": [_nav("/apps/job")]}}
+        assert install_nav_hrefs(body) == frozenset({APP})
 
 
 # ── The write ──────────────────────────────────────────────────────────────
