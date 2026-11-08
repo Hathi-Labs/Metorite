@@ -24,6 +24,13 @@ it does not change who may flip it. The flip stays OWNER-GATE
 `gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The
 flip stays OWNER-GATE (`enforcement-flip`).
 
+`PACKAGE_HOST_ORGS` opens `GET /shell/manifest` (`package_host.md` §10). It
+also selects the orgs where the daily expiry tick may delete installs
+(PKG-10b). A reload that widens it to `*` widens the delete to every org at
+the next tick. The owner must treat a change of this list as part of the
+expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
+changes it.
+
 `GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
 (`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
 reload does not apply the master. With the master on, an empty list turns
