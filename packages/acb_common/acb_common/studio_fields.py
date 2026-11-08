@@ -113,6 +113,17 @@ MAX_QR_CHARS = 2_000
 #: A btree entry has a size limit, so the side table never holds a long text.
 HOT_TEXT_CHARS = 256
 
+#: C14. One sentence for each new type: what a caller sends. ``studio_describe fields``
+#: serves them, so a model sends basis points for a percent and not a fraction.
+VALUE_SHAPES: dict[str, str] = {
+    "richText": "markdown text, at most 20000 characters, with no HTML tag",
+    "rating": "a whole number from the field's min to its max (1 to 5 when it has none)",
+    "duration": "whole seconds, as 5400 for 1h 30m",
+    "quantity": "{'value': '12.5', 'unit': one of the units of the field}, the value as decimal text",
+    "percent": "basis points as a whole number: 15% is 1500 and 0.5% is 50",
+    "barcode": "text in the field's format: ean13 (13 digits, check digit last), code128 or qr",
+}
+
 _SPEC_KEYS = frozenset({
     "key", "type", "label", "required", "many", "options", "to", "hot",
     "min", "max", "units", "format",
@@ -637,7 +648,8 @@ def _quantity(f: FieldSpec, v: Any) -> dict[str, str]:
             f.key, f'Field `{f.key}` takes {{"value": "<decimal text>", "unit": "<unit>"}}, '
             "with up to 6 decimals and no exponent.")
     if not isinstance(v["unit"], str) or v["unit"] not in (f.units or ()):
-        raise FieldError(f.key, f"Field `{f.key}` takes one of its listed units.")
+        shown = ", ".join((f.units or ())[:10])
+        raise FieldError(f.key, f"Field `{f.key}` takes one of its units: {shown}.")
     return {"value": v["value"], "unit": v["unit"]}
 
 

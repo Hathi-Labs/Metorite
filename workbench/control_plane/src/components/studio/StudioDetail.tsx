@@ -50,7 +50,12 @@ function Value({ field, value }: { field: FieldSpec; value: unknown }) {
       return <span className="whitespace-pre-wrap break-words">{text}</span>;
     case "richText":
       // The one markdown seam. It makes no element of raw HTML, and the check refuses a tag.
-      return <div className="min-w-0 break-words"><MarkdownBody content={String(value)} /></div>;
+      // A heading in the text stays at the size of the sheet, so it never outranks its label.
+      return (
+        <div className="flex min-w-0 flex-col gap-1 break-words [&_h1]:!mt-2 [&_h1]:!text-xs [&_h2]:!mt-2 [&_h2]:!text-xs [&_h3]:!mt-2 [&_h3]:!text-xs [&_h4]:!mt-2 [&_h4]:!text-xs [&_h5]:!mt-2 [&_h5]:!text-xs [&_h6]:!mt-2 [&_h6]:!text-xs">
+          {items.map((v, i) => <MarkdownBody key={i} content={String(v)} />)}
+        </div>
+      );
     case "barcode":
       return <span className="break-all font-mono">{text}</span>;
     default:

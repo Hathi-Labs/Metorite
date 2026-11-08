@@ -31,6 +31,9 @@ import { StudioDataContext } from "./dataContext";
 import { type Row, type StudioDataDoor, sourceKey } from "./dataDoor";
 import { type FieldSpec, checkValue, ean13Valid } from "./fieldCheck";
 import { checkForm, initialDrafts } from "./formModel";
+import { TYPE_LABELS } from "./draftEdit";
+import { fieldSpecs } from "./packagePreview";
+import type { ObjectRow } from "./realDoor";
 
 beforeEach(() => clearAll());
 
@@ -197,5 +200,69 @@ describe("Detail and Table draw the new types", () => {
       expect(table, w).toContain(w);
     }
     expect(table).not.toContain("**");
+  });
+});
+
+describe("the installed-app path (fix round)", () => {
+  const row: ObjectRow = {
+    id: "o1", name: "visit", label: "Visit", rules: [],
+    fields: [
+      { key: "load", type: "quantity", label: "Load", required: true, many: false, options: null, to: null, hot: false,
+        units: ["kg", "t"] },
+      { key: "score", type: "rating", label: "Score", required: false, many: false, options: null, to: null, hot: false,
+        min: 0, max: 10 },
+      { key: "serial", type: "barcode", label: "Serial", required: false, many: false, options: null, to: null, hot: false,
+        format: "ean13" },
+    ],
+  };
+  it("fieldSpecs keeps the units, the bounds and the format of the gateway row", () => {
+    const [load, score, serial] = fieldSpecs(row);
+    expect(load.units).toEqual(["kg", "t"]);
+    expect([score.min, score.max]).toEqual([0, 10]);
+    expect(serial.format).toBe("ean13");
+  });
+  it("a required quantity saves, and a rating of 7 passes, on those fields", () => {
+    const fields = fieldSpecs(row);
+    const drafts = initialDrafts(fields);
+    drafts.load = { value: "12.5", unit: "kg" };
+    drafts.score = "7";
+    expect(checkForm(fields, drafts).ok).toBe(true);
+    const html = renderToStaticMarkup(createElement(FormView, {
+      fields, drafts: initialDrafts(fields), errors: {}, formId: "p1", onDraft: noop, onBlur: noop, onSubmit: noop,
+    }));
+    expect(html).toContain("13 digits, the last one a check digit");
+    expect(html).toContain("A whole number from 0 to 10");
+  });
+});
+
+describe("messages in the units of the input (fix round)", () => {
+  it("a percent message speaks percent, and a duration message speaks hours and minutes", () => {
+    const percent = checkValue({ key: "d", type: "percent" }, 1.5);
+    const duration = checkValue({ key: "t", type: "duration" }, -1);
+    expect(percent.ok || percent.message).toBe("Enter a percent with up to 2 decimals, as 12.5.");
+    expect(duration.ok || duration.message).toContain("1h 30m");
+    expect(percent.ok || percent.message).not.toContain("basis");
+  });
+});
+
+describe("the Data tab and the Detail (fix round)", () => {
+  it("labels each new type", () => {
+    for (const t of ["richText", "rating", "duration", "quantity", "percent", "barcode"]) {
+      expect(TYPE_LABELS[t], t).toBeTruthy();
+      expect(TYPE_LABELS[t]).not.toBe(t);
+    }
+  });
+  it("draws a rich text of many values one by one", () => {
+    const html = renderToStaticMarkup(createElement(StudioDetail, {
+      fields: [{ key: "r", type: "richText", many: true }], record: { r: ["**a**", "**b**"] },
+    }));
+    expect(html).toMatch(/<strong[^>]*>a<\/strong>/);
+    expect(html).toMatch(/<strong[^>]*>b<\/strong>/);
+  });
+  it("caps a heading in a rich text at the size of the sheet", () => {
+    const html = renderToStaticMarkup(createElement(StudioDetail, {
+      fields: [{ key: "r", type: "richText" }], record: { r: "## Findings" },
+    }));
+    expect(html).toContain("[&amp;_h2]:!text-xs");
   });
 });

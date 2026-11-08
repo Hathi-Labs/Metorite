@@ -47,7 +47,7 @@ def test_the_default_part_is_the_manifest() -> None:
 
 def test_fields_part_equals_the_field_module() -> None:
     f = run("fields")["fields"]
-    assert f["types"] == list(sfl.FIELD_TYPES) and len(f["types"]) == 16
+    assert f["types"] == list(sfl.FIELD_TYPES) and len(f["types"]) == len(sfl.FIELD_TYPES)
     assert f["hot_types"] == list(sfl.HOT_TYPES)
     assert f["name_pattern"] == sfl.NAME_PATTERN
     assert f["limits"] == {
@@ -178,3 +178,39 @@ def test_the_object_description_marks_each_rollup_target_computed_too() -> None:
     ])
     obj = store.StudioObject("i", "p", "o", None, "a", None, None, fields, rules)  # type: ignore[arg-type]
     assert obj.computed == ("total", "count")
+
+
+def test_fields_part_gives_one_value_shape_for_each_new_type() -> None:
+    """STU-C14: a model that reads this sends basis points for a percent.
+
+    Mutation: drop the `percent` line of `VALUE_SHAPES`. This test turns red.
+    """
+    f = run("fields")["fields"]
+    new = ["richText", "rating", "duration", "quantity", "percent", "barcode"]
+    assert list(f["value_shapes"]) == new
+    assert "15% is 1500" in f["value_shapes"]["percent"]
+    assert "unit" in f["value_shapes"]["quantity"]
+    assert f["spec_parts"] == {"rating": ["min", "max"], "quantity": ["units"], "barcode": ["format"]}
+
+
+def test_a_package_read_keeps_the_parts_of_the_new_field_types() -> None:
+    objects = [{"name": "visit", "label": "Visit", "rules": [], "fields": [
+        {"key": "load", "type": "quantity", "units": ["kg", "t"]},
+        {"key": "score", "type": "rating", "min": 0, "max": 10},
+        {"key": "serial", "type": "barcode", "format": "ean13"},
+        {"key": "title", "type": "text"},
+    ]}]
+    got = {f["key"]: f for f in st._package_objects(objects)[0]["fields"]}
+    assert got["load"]["units"] == ["kg", "t"]
+    assert (got["score"]["min"], got["score"]["max"]) == (0, 10)
+    assert got["serial"]["format"] == "ean13"
+    assert "units" not in got["title"] and "format" not in got["title"]
+
+
+def test_the_quantity_refusal_names_the_units() -> None:
+    from acb_common import studio_fields as sf
+
+    field = sf.parse_field_spec({"key": "load", "type": "quantity", "units": ["kg", "t"]})
+    with pytest.raises(sf.FieldError) as refused:
+        sf.check_value(field, {"value": "1", "unit": "lb"})
+    assert "kg, t" in refused.value.message

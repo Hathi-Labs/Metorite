@@ -323,7 +323,7 @@ function rating(f: FieldSpec, v: unknown): CheckResult {
 function duration(v: unknown): CheckResult {
   return wholeNumber(v) && v >= 0 && v < MAX_DURATION_SECONDS
     ? pass(v)
-    : fail("Enter a length of time in whole seconds, 0 or more.");
+    : fail("Enter a length of time as 1h 30m, 45m or 1:30:00.");
 }
 
 const QUANTITY = /^-?[0-9]{1,15}(?:\.[0-9]{1,6})?$/;
@@ -341,7 +341,7 @@ function quantity(f: FieldSpec, v: unknown): CheckResult {
 function percent(v: unknown): CheckResult {
   return wholeNumber(v) && Math.abs(v) < MAX_PERCENT_BP
     ? pass(v)
-    : fail("Enter a percent as basis points, a whole number (1% is 100).");
+    : fail("Enter a percent with up to 2 decimals, as 12.5.");
 }
 
 /** True when `code` is 13 digits and the last one is the EAN-13 check digit. */

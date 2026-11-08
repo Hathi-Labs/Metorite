@@ -320,12 +320,35 @@ def test_get_values_decodes_each_row() -> None:
             if "FROM package_field_value AS v" in str(stmt):
                 self.calls.append((str(stmt), params))
                 return _Result(rows=[(INSTALL, "app-1", "k", "money",
-                                      '{"minor": 5, "currency": "INR"}')])
+                                      '{"minor": 5, "currency": "INR"}', '{"type": "money"}')])
             return await super().execute(stmt, params)
 
     got = _run(fv.get_values(_Db(), record_kind="task", record_id=RECORD))
     assert got == [fv.FieldValue(install_id=INSTALL, app_id="app-1", field_key="k",
                                  field_type="money", value={"minor": 5, "currency": "INR"})]
+
+
+def test_get_values_drops_a_value_that_the_declaration_now_refuses() -> None:
+    """STU-C14: a quantity in a unit that the declaration no longer lists, and a
+    rating above a new max, are stale. The stored type is the same."""
+    rows = [
+        (INSTALL, "app-1", "load", "quantity", '{"value": "5", "unit": "kg"}',
+         '{"type": "quantity", "units": ["t"]}'),
+        (INSTALL, "app-1", "load2", "quantity", '{"value": "5", "unit": "kg"}',
+         '{"type": "quantity", "units": ["kg", "t"]}'),
+        (INSTALL, "app-1", "score", "rating", "8", '{"type": "rating", "min": 1, "max": 5}'),
+        (INSTALL, "app-1", "score2", "rating", "8", '{"type": "rating", "min": 1, "max": 10}'),
+    ]
+
+    class _Db(_FakeDb):
+        async def execute(self, stmt: Any, params: Any = None) -> _Result:
+            if "FROM package_field_value AS v" in str(stmt):
+                self.calls.append((str(stmt), params))
+                return _Result(rows=rows)
+            return await super().execute(stmt, params)
+
+    got = _run(fv.get_values(_Db(), record_kind="task", record_id=RECORD))
+    assert [g.field_key for g in got] == ["load2", "score2"]
 
 
 # ── f. The one writer ──────────────────────────────────────────────────────

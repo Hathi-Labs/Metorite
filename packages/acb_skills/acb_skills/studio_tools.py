@@ -987,6 +987,10 @@ def _describe_fields() -> dict[str, Any]:
         "types": list(f.FIELD_TYPES),
         "hot_types": list(f.HOT_TYPES),
         "name_pattern": f.NAME_PATTERN,
+        "value_shapes": dict(f.VALUE_SHAPES),
+        "spec_parts": {
+            "rating": ["min", "max"], "quantity": ["units"], "barcode": ["format"],
+        },
         "limits": {
             "max_fields_per_object": f.MAX_FIELDS_PER_OBJECT,
             "max_options": f.MAX_OPTIONS,
@@ -2957,9 +2961,18 @@ def _package_objects(found: Any) -> list[dict[str, Any]]:
                 break
             key = _ident(f.get("key")) if isinstance(f, dict) else None
             if key is not None:
-                fields.append({"key": key, "type": _tag(f.get("type"), 20),
-                               "required": f.get("required") is True,
-                               "many": f.get("many") is True})
+                row: dict[str, Any] = {"key": key, "type": _tag(f.get("type"), 20),
+                                       "required": f.get("required") is True,
+                                       "many": f.get("many") is True}
+                # STU-C14: a rating's bounds, a quantity's units and a barcode's format.
+                for part in ("min", "max"):
+                    if type(f.get(part)) is int:
+                        row[part] = f[part]
+                if isinstance(f.get("units"), list):
+                    row["units"] = [u[:20] for u in f["units"][:30] if isinstance(u, str)]
+                if f.get("format") in studio_fields.BARCODE_FORMATS:
+                    row["format"] = f["format"]
+                fields.append(row)
         rules = obj.get("rules")
         out.append({"name": name, "label": _name(obj.get("label") or name, True),
                     "fields": fields, "rules": len(rules) if isinstance(rules, list) else 0})

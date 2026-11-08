@@ -472,6 +472,30 @@ def test_a_get_returns_the_manifest_and_the_object_rows(world):
     assert got["objects"][0]["rules"] == []
 
 
+def test_a_get_returns_the_parts_of_the_new_field_types(world):
+    """STU-C14 P0: `_object_out` dropped `min`, `max`, `units` and `format`, so an installed
+    app drew an empty unit picker and refused a rating above 5.
+
+    Mutation: drop the four keys from `_object_out`. This test turns red.
+    """
+    fields = [
+        {"key": "load", "type": "quantity", "units": ["kg", "t"]},
+        {"key": "score", "type": "rating", "min": 0, "max": 10},
+        {"key": "serial", "type": "barcode", "format": "ean13"},
+        {"key": "site", "type": "text"},
+    ]
+    manifest = _manifest()
+    manifest["objects"] = [{"name": "visit", "fields": fields}]
+    c = _client(world)
+    pid = _create(c, manifest)
+    assert c.post(f"/studio/packages/{pid}/versions", json={}).status_code == 201
+    out = {f["key"]: f for f in c.get(f"/studio/packages/{pid}").json()["objects"][0]["fields"]}
+    assert out["load"]["units"] == ["kg", "t"]
+    assert (out["score"]["min"], out["score"]["max"]) == (0, 10)
+    assert out["serial"]["format"] == "ean13"
+    assert out["site"]["units"] is None and out["site"]["format"] is None
+
+
 def test_a_get_gives_the_hash_of_the_draft_that_a_save_needs(world):
     """STU-G3a fix 1 (the IDE puts ``based_on`` in the page facts). The GET answer holds
     ``manifest_hash``: the one hash of the stored draft. A save changes it, and the list holds none.

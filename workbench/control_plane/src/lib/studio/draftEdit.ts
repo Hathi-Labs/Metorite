@@ -64,6 +64,8 @@ export const TYPE_LABELS: Record<string, string> = {
   text: "Text", longText: "Long text", number: "Number", money: "Money", date: "Date", datetime: "Date and time",
   checkbox: "Yes or no", select: "One choice", multiSelect: "Many choices", person: "Person", relation: "Link to object",
   file: "File", url: "Web link", email: "Email", phone: "Phone", geo: "Place",
+  richText: "Rich text", rating: "Rating", duration: "Time spent", quantity: "Quantity with unit", percent: "Percent",
+  barcode: "Barcode",
 };
 
 /** The blocks that the Views tab adds. */
