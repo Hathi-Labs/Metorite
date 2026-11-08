@@ -1007,6 +1007,23 @@ def _as_owner(monkeypatch, owner="owner@acme.com"):
 _MSG = [{"role": "user", "content": "hello"}]
 
 
+def _rule_match_on(monkeypatch, request):
+    """DEC-1: ``ask`` reads the mode, so a direct call needs the feature on."""
+    from acb_common.settings import get_settings
+    from gateway import decide_features as df
+
+    def _clear():
+        get_settings.cache_clear()
+        df._parse_modes.cache_clear()
+        df._parse_orgs.cache_clear()
+
+    monkeypatch.setenv("DECIDE_FEATURE_MODES", "email.rule_match=on")
+    monkeypatch.setenv("DECIDE_FEATURE_ORGS", _ORG)
+    _clear()
+    # The cached Settings must not outlive the test with the feature on.
+    request.addfinalizer(_clear)
+
+
 def _boolean_request():
     from acb_llm import BooleanQuestion
 
@@ -1055,13 +1072,14 @@ class TestTheBackgroundCallNamesItsFeature:
         asyncio.run(_job("acc-1"))
         assert [c["agent"] for c in router.calls] == ["email.automation"]
 
-    def test_the_DECIDE_request_names_the_feature(self, monkeypatch, router, decide_spy):
+    def test_the_DECIDE_request_names_the_feature(self, monkeypatch, router, decide_spy, request):
         """``decide_features.ask`` sends the Router the same names."""
         from acb_common.db import bind_tenant, release_tenant
         from gateway import decide_features
         from gateway.routes.email import scheduler_hooks
 
         _as_owner(monkeypatch)
+        _rule_match_on(monkeypatch, request)
 
         @scheduler_hooks.as_mailbox_owner
         async def _job(_aid):
@@ -1115,13 +1133,15 @@ class TestTheBackgroundCallNamesItsFeature:
         assert decide_spy.calls and decide_spy.calls[0]["agent"] == "email.cold_check"
 
     def test_a_CHAT_agent_keeps_its_name_through_an_email_helper(
-        self, monkeypatch, router, decide_spy,
+        self, monkeypatch, router, decide_spy, request,
     ):
         """🔴 An executor run of ``email-assistant`` calls helpers that name a
         feature. Both the Router and ``decide`` still read ``email-assistant``."""
         from acb_common.db import bind_tenant, release_tenant
         from gateway import decide_features
         from gateway.routes.email.core import _llm_json
+
+        _rule_match_on(monkeypatch, request)
 
         async def go():
             bind_run_context(agent="email-assistant", app="email",

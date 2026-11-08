@@ -258,7 +258,7 @@ def test_build_catalog_measures_marginal_addendum_plus_schemas():
     assert by_slug["apps"]["token_cost"] == 0
     # total: unscoped addendum + every static schema (the WS-12 baseline).
     # A tool pack is not injected, so it is not in the total (OA-7a).
-    n_non_core = len(sf.injected_tool_names()) - 22  # 22: decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11)
+    n_non_core = len(sf.injected_tool_names()) - 23  # 23: decide (CP-13d), read_attachment (2026-10-09), package_artifacts (2026-10-11), analyze_image (WS-VOX VOX-3)
     assert cat["total_injected_tokens"] == (
         100 + 40 * n_non_core + schemas(sf.injected_tool_names())
     )
