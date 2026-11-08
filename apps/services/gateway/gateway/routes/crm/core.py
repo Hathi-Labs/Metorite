@@ -2375,6 +2375,13 @@ STATUS_REFERENCES: dict[str, tuple[str, str]] = {
 }
 
 
+#: The pipeline membership table of each status table (CRM-Q2, CRM-M4a).
+_STAGE_TABLES: dict[str, str] = {
+    "crm_deal_statuses": "crm_pipeline_stages",
+    "crm_lead_statuses": "crm_lead_pipeline_stages",
+}
+
+
 async def merge_status_from_source(
     db: Any, table: str, keep_id: str, drop_id: str, name: str,
 ) -> None:
@@ -2395,8 +2402,8 @@ async def merge_status_from_source(
       names *drop_id* moves to *keep_id*. A pipeline that holds both rows
       keeps one membership, at the place of *keep_id*. These are the only
       references to a status id: the foreign keys of ``crm_deals``,
-      ``crm_leads`` and ``crm_pipeline_stages``, and the ``status`` filter of
-      a view.
+      ``crm_leads``, ``crm_pipeline_stages`` and ``crm_lead_pipeline_stages``
+      (CRM-M4a), and the ``status`` filter of a view.
     * ``crm_status_changes`` stores names, not ids, so it needs no change.
     * **The overlay rule** (task #1096). The kept row's overlay wins. A NULL
       overlay column of the kept row takes the value of the folded row, so a
@@ -2437,19 +2444,22 @@ async def merge_status_from_source(
         ),
         ids,
     )
-    if table == "crm_deal_statuses":
+    # CRM-M4a repair 1: a lead status sits in lead pipelines, so a merged
+    # lead status keeps its places there too, and the cascade takes none.
+    stages = _STAGE_TABLES.get(table)
+    if stages is not None:
         await db.execute(
             text(
-                "DELETE FROM crm_pipeline_stages ps "
+                f"DELETE FROM {stages} ps "
                 "WHERE ps.status_id = CAST(:drop AS uuid) AND EXISTS ("
-                "SELECT 1 FROM crm_pipeline_stages k WHERE k.pipeline_id = "
+                f"SELECT 1 FROM {stages} k WHERE k.pipeline_id = "
                 "ps.pipeline_id AND k.status_id = CAST(:keep AS uuid))"
             ),
             ids,
         )
         await db.execute(
             text(
-                "UPDATE crm_pipeline_stages SET status_id = CAST(:keep AS uuid) "
+                f"UPDATE {stages} SET status_id = CAST(:keep AS uuid) "
                 "WHERE status_id = CAST(:drop AS uuid)"
             ),
             ids,

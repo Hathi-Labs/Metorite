@@ -15,6 +15,8 @@ import { listLeadPipelines } from "../lib/api";
 import {
   blankRow,
   closingType,
+  defaultDealName,
+  defaultFeedWords,
   draftProblem,
   emptyDraft,
   pipelineBody,
@@ -79,14 +81,19 @@ function row(name: string, type: "open" | "won" | "lost" = "open") {
 }
 
 describe("the draft of a lead pipeline", () => {
-  it("feeds the default deal pipeline by name, and copies a lead pipeline", () => {
-    expect(emptyDraft(null, "lead", [AMC, SALES])).toMatchObject({
-      start: "empty",
-      copyFrom: null,
-      feeds: "Sales pipeline",
+  it("starts with no feed, which follows the default deal pipeline, and copies a lead pipeline", () => {
+    // Repair 1: no pick is NULL, as in the chat. It follows the org's default.
+    expect(emptyDraft(null, "lead")).toMatchObject({ start: "empty", copyFrom: null, feeds: null });
+    expect(emptyDraft([WEB], "lead")).toMatchObject({ start: "copy", copyFrom: WEB.id });
+    expect(pipelineBody(draft({ feeds: null, stages: [row("A")] }), new Map(), "lead")).toEqual({
+      name: "Trade show",
+      kind: "lead",
+      stages: [{ name: "A" }],
     });
-    expect(emptyDraft([WEB], "lead", [SALES])).toMatchObject({ start: "copy", copyFrom: WEB.id });
-    expect(emptyDraft(null, "lead", null).feeds).toBeNull();
+    expect(defaultFeedWords(defaultDealName([AMC, SALES]))).toBe(
+      "the default deal pipeline (now Sales pipeline)",
+    );
+    expect(defaultFeedWords(null)).toBe("the default deal pipeline");
     // A deal draft names no feed, as before.
     expect(emptyDraft([SALES])).not.toHaveProperty("feeds");
   });
@@ -142,9 +149,9 @@ describe("the preview in lead mode", () => {
     expect(out).toContain("3 statuses");
     expect(out).toContain("Feeds deals into AMC contracts.");
     expect(out).toContain("the CRM adds its own status, so that a lead can close");
-    expect(html({ state: "ready", plan: { ...LEAD_PLAN, feeds: null } })).toContain(
-      "Feeds deals into the default deal pipeline.",
-    );
+    expect(
+      html({ state: "ready", plan: { ...LEAD_PLAN, feeds: null, default_deal_pipeline: "Sales pipeline" } }),
+    ).toContain("Feeds deals into the default deal pipeline (now Sales pipeline).");
     expect(html({ state: "idle" }, "lead")).toContain(
       "The preview shows here when the lead pipeline has a name and a status.",
     );
@@ -199,7 +206,7 @@ describe("the Lead statuses card with lead pipelines", () => {
     expect(at.every((i) => i > 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     expect(out).toContain("Feeds deals into AMC contracts.");
-    expect(out).toContain("Feeds deals into the default deal pipeline.");
+    expect(out).toContain("Feeds deals into the default deal pipeline (now Sales pipeline).");
     expect(out).toContain("Form filled");
     // Read only: no control of a stage list.
     expect(out).not.toContain("<input");
@@ -230,6 +237,11 @@ describe("the wiring in lead mode", () => {
     expect(settings).toContain("kind={newPipelineKind}");
     expect(settings).toContain("dealPipelines={pipelines}");
     expect(dialog).toContain('label="Feeds deals into"');
+    // Repair 1: the first option is the default, and it sends no feed.
+    expect(dialog).toMatch(/\{ value: "", label: `\$\{defaultFeedWords\(defaultDealName\(dealPipelines\)\)/);
+    expect(dialog).toContain("const draft = stored ?? emptyDraft(pipelines, kind);");
+    // Repair 1: the lead sections say "Loading statuses…" while the list loads.
+    expect(settings).toContain('emptyLine={vocabularyState === "loading" ? "Loading statuses…" : "No statuses yet."}');
     expect(dialog).not.toMatch(/<(input|select|textarea)\b/);
   });
 });

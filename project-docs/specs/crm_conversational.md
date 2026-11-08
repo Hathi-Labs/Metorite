@@ -370,16 +370,19 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 
 **The order of the slices.** CRM-M4a (create) ships dark behind `CRM_PIPELINES_ORGS`, the flag of CRM-M3a. It closes done-when 1, 4 and 5. CRM-M4b (task 2045) adds the Leads board picker, a new lead that picks its pipeline, and a convert that reads the feed. It closes done-when 2, 3 and 6. Done-when 7 and 8 have no slice yet.
 
+CRM-M4b must give convert and the create one rule for the `won` status. Today convert takes the first `won` status in lane order, a hidden one too. The create adds the first visible one.
+
 #### Built as (CRM-M4a)
 
-- **The migration.** Migration 365 adds `crm_pipelines.kind` (`deal` or `lead`, default `deal`) and `crm_pipelines.feeds_pipeline_id`. It adds the table `crm_lead_pipeline_stages` and the nullable `crm_leads.pipeline_id`. Each CHECK goes in NOT VALID, and a guarded block validates it. Three triggers keep each link inside its org and of the right kind. It writes no row.
+- **The migration.** Migration 365 adds `crm_pipelines.kind` (`deal` or `lead`, default `deal`) and `crm_pipelines.feeds_pipeline_id`. It adds the table `crm_lead_pipeline_stages` and the nullable `crm_leads.pipeline_id`. Each CHECK goes in NOT VALID, and a guarded block validates it. Three triggers keep each link inside its org and of the right kind. A fourth trigger refuses each change of `kind` after the INSERT. It writes no row.
 - **One seam.** `POST /crm/pipelines` and its preview take `kind` and, for a lead pipeline, `feeds`. `feeds` is the name of a deal pipeline, and it resolves under row level security. A deal pipeline that names `feeds` gets 422. `PipelineKind` in `routes/crm/pipelines.py` holds the tables and the words of each kind.
-- **The same rules.** A lead pipeline reuses a lead status by its name, and it refuses a hidden or gone status. It checks the plan, logs one `pipeline` row with the kind in "after", and has an Undo. The Undo removes each lead status that the create made, while no lead holds it.
+- **The feed rule.** No pick stores NULL, and NULL follows the org's default deal pipeline of that moment. A pick stores the id of that deal pipeline. The Settings dialog, the read-only list and the chat card all say "the default deal pipeline (now <name>)" for NULL. The chat card sends the id of the feed that it showed, so a rename before Apply gives 409 `plan_changed`.
+- **The same rules.** A lead pipeline reuses a lead status by its name, and it refuses a hidden or gone status. It checks the plan, logs one `pipeline` row with the kind in "after", and has an Undo. The Undo removes each lead status that the create made, while no lead holds it. The Undo of one such status refuses with 409 `in_use`, and it names the pipeline to undo instead. This rule binds deal pipelines too.
 - **A name for each kind.** A deal pipeline and a lead pipeline may share a name, so "Trade show" leads can feed "Trade show" deals. Two pipelines of one kind may not.
 - **The deal readers.** Each reader that means a deal pipeline names `core.DEAL_PIPELINE_SQL`. That covers the deal list, the board, a new or moved deal, a convert, the default, the reports, the switch and the sync. The Undo of a deal pipeline that a lead pipeline feeds refuses, and names that lead pipeline.
 - **Chat.** `crm_create_pipeline` takes `kind` and `feeds`. Its card says "lead pipeline" or "deal pipeline", lists each status with its type, and names the deal pipeline that it feeds. `crm_list_pipelines` lists the lead pipelines too.
 - **Settings.** The Native Lead statuses card has "New pipeline" for an admin, behind the same flag. It opens the one dialog in lead mode, with "Feeds deals into". With a lead pipeline, the card lists the default list and each lead pipeline to read. The default list counts as the first lead pipeline, as the default deal pipeline does. Status editing for each pipeline is a later slice.
-- **A lead with no pipeline.** `pipeline_id` stays NULL, and nothing writes it in CRM-M4a. The lead reads, moves and converts as before. The Leads board still shows every lead status, the new ones too, until CRM-M4b.
+- **A lead with no pipeline.** `pipeline_id` stays NULL, and nothing writes it in CRM-M4a. The lead reads, moves and converts as before. The Leads board still shows every lead status, the new ones too, until CRM-M4b. A Mirror merge of two lead statuses keeps the place of the kept status in each lead pipeline.
 
 ### CRM-M5. Phases and All deals (#1433) — Wave 2
 

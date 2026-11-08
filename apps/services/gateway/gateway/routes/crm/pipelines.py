@@ -193,13 +193,18 @@ class PipelineCreateIn(BaseModel):
     copy_from: str | None = None
     stages: list[NewStageIn] | None = None
     #: CRM-M4a, a lead pipeline only: the NAME of the deal pipeline that it
-    #: feeds. It resolves under row level security. With none, a converted
-    #: lead's deal joins the default deal pipeline.
+    #: feeds. It resolves under row level security, and the row keeps its id.
+    #: With none, the row keeps NULL: a converted lead's deal joins the org's
+    #: default deal pipeline of that moment.
     feeds: str | None = None
     #: The stage ids of the plan that the member saw, in order, ``None`` for a
     #: stage that the create makes (the chat card sends it). When the plan of
     #: the create differs, the create refuses with 409 ``plan_changed``.
     planned: list[str | None] | None = None
+    #: CRM-M4a repair 1: the id of the deal pipeline that the card showed as
+    #: the feed. With ``planned``, a feed that resolves to another id now (a
+    #: rename between the card and Apply) refuses with 409 ``plan_changed``.
+    planned_feeds: str | None = None
 
 
 class PlannedStageModel(BaseModel):
@@ -227,6 +232,13 @@ class PipelinePlanModel(BaseModel):
     #: CRM-M4a: the name of the deal pipeline that a lead pipeline feeds, or
     #: ``None`` (the default deal pipeline). Always ``None`` for a deal one.
     feeds: str | None = None
+    #: CRM-M4a repair 1: the id of that deal pipeline, which the chat card
+    #: sends back as ``planned_feeds``.
+    feeds_id: str | None = None
+    #: CRM-M4a repair 1: the name of the org's default deal pipeline now, for a
+    #: lead pipeline with no feed. The card says "the default deal pipeline
+    #: (now <name>)". ``None`` for a deal pipeline.
+    default_deal_pipeline: str | None = None
 
 
 class ProfileModuleModel(BaseModel):
@@ -473,10 +485,20 @@ class _Plan:
     stages: list[_Planned]
     feeds_id: str | None = None
     feeds_name: str | None = None
+    #: The name of the default deal pipeline now, for a lead plan.
+    default_deal: str | None = None
 
 
 def _refuse(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
+def _plan_changed(kind: PipelineKind) -> HTTPException:
+    """The plan of the create differs from the card: a stage, or the feed."""
+    return _refuse(409, "plan_changed", (
+        f"The {kind.stage_nouns} changed after the card showed them, so nothing "
+        f"was made. Ask for the card again, and check the {kind.stage_nouns}."
+    ))
 
 
 def _kind_of(kind: str) -> PipelineKind:
@@ -508,9 +530,11 @@ async def _default_closing(db: Any, kind: PipelineKind, closing: str) -> _Planne
 
     A deal stage: the one that the default pipeline lists first
     (``core.default_pipeline_id``, the one seam), else the first one in lane
-    order. A lead status (CRM-M4a): the first one in lane order, because a lead
-    has no default pipeline. That is the ``won`` status to which
-    ``pipeline.convert_lead`` moves a converted lead."""
+    order. A lead status (CRM-M4a): the first visible one in lane order,
+    because a lead has no default pipeline. ``pipeline.convert_lead`` moves a
+    converted lead to the first ``won`` status with no visibility filter, so
+    the two can differ while the first ``won`` status is hidden. CRM-M4b puts
+    one rule in both places."""
     if kind.status_kind != "deal":
         row = (await db.execute(text(
             f"SELECT s.id, s.name, s.type FROM {kind.status_table} s "
@@ -531,12 +555,19 @@ async def _default_closing(db: Any, kind: PipelineKind, closing: str) -> _Planne
 
 async def _feeds_of(
     db: Any, kind: PipelineKind, raw: str | None, share: str,
+    pinned: str | None = None,
 ) -> tuple[str | None, str | None]:
     """The id and the name of the deal pipeline that a new lead pipeline feeds
     (CRM-M4a), or ``(None, None)``. It resolves the name under row level
-    security, so a deal pipeline of another org is unknown here."""
+    security, so a deal pipeline of another org is unknown here.
+
+    *pinned* is the id that the card showed (``planned_feeds``). When the
+    name now resolves to no pipeline or to another one, the create refuses
+    with 409 ``plan_changed``, as for a stage."""
     wanted = (raw or "").strip()
     if not wanted:
+        if pinned:
+            raise _plan_changed(kind)
         return None, None
     if kind.status_kind != "lead":
         raise HTTPException(status_code=422, detail=(
@@ -546,6 +577,8 @@ async def _feeds_of(
     rows = (await db.execute(
         text(_FEEDS_SQL + share), {"name": _fold(wanted)},
     )).fetchall()
+    if pinned is not None and (len(rows) != 1 or str(rows[0].id) != pinned.strip().lower()):
+        raise _plan_changed(kind)
     if not rows:
         raise _refuse(404, "no_pipeline", (
             f"There is no deal pipeline called {quoted(wanted)}. Pick one of the "
@@ -586,7 +619,8 @@ async def plan_pipeline(db: Any, payload: PipelineCreateIn, *, lock: bool = Fals
             "Give the new pipeline another name."
         ))
     share = " FOR SHARE" if lock else ""
-    feeds_id, feeds_name = await _feeds_of(db, kind, payload.feeds, share)
+    pinned = payload.planned_feeds if payload.planned is not None else None
+    feeds_id, feeds_name = await _feeds_of(db, kind, payload.feeds, share, pinned)
     copy_of: str | None = None
     planned: list[_Planned] = []
     if payload.copy_from is not None:
@@ -625,7 +659,14 @@ async def plan_pipeline(db: Any, payload: PipelineCreateIn, *, lock: bool = Fals
                 f"{kind.stage_noun} of the type {closing} to the list."
             ))
         planned.append(found)
-    return _Plan(kind, name, copy_of, planned, feeds_id, feeds_name)
+    default_deal: str | None = None
+    if kind.status_kind == "lead":
+        row = (await db.execute(
+            text("SELECT name FROM crm_pipelines WHERE id = CAST(:d AS uuid)"),
+            {"d": await default_pipeline_id(db)},
+        )).first()
+        default_deal = str(row.name) if row is not None else None
+    return _Plan(kind, name, copy_of, planned, feeds_id, feeds_name, default_deal)
 
 
 async def _named_stages(
@@ -701,7 +742,8 @@ def _plan_model(plan: _Plan) -> PipelinePlanModel:
         name=plan.name, kind=plan.kind.status_kind, copy_of=plan.copy_of,
         stages=[PlannedStageModel(id=p.id, name=p.name, type=p.type, source=p.source,
                                   hidden=p.hidden) for p in plan.stages],
-        feeds=plan.feeds_name,
+        feeds=plan.feeds_name, feeds_id=plan.feeds_id,
+        default_deal_pipeline=plan.default_deal,
     )
 
 
@@ -782,10 +824,7 @@ async def create_pipeline_in(
     if payload.planned is not None and [p.id for p in plan.stages] != [
         (str(i).strip().lower() if i else None) for i in payload.planned
     ]:
-        raise _refuse(409, "plan_changed", (
-            f"The {kind.stage_nouns} changed after the card showed them, so nothing "
-            f"was made. Ask for the card again, and check the {kind.stage_nouns}."
-        ))
+        raise _plan_changed(kind)
     position = int((await db.execute(text(
         "SELECT COALESCE(max(position), -1) + 1 FROM crm_pipelines WHERE kind = :kind"
     ), {"kind": kind.status_kind})).scalar() or 0)
@@ -1190,6 +1229,13 @@ async def _undo_pipeline(db: Any, user: Any, logged: Logged) -> None:
     stages = [s for s in after.get("stages") or [] if isinstance(s, dict)]
     creates = logged.action == change_log.CREATE
     kind = PIPELINE_KINDS.get(str(after.get("kind") or "deal"), DEAL) if creates else DEAL
+    if creates:
+        # CRM-M4a repair 1: the create lock of the org first, as a create takes
+        # it before it reads a copied pipeline and its stages. A copy and this
+        # Undo then never wait on each other in a cycle.
+        await db.execute(text(_CREATE_LOCK_SQL), {
+            "key": f"crm_pipeline_create:{current_tenant()}",
+        })
     new_rows = await _lock_new_stages(db, stages, kind) if creates else []
     row = await load_row(db, "crm_pipelines", str(logged.entity_id or ""), lock=True)
     if row is None:

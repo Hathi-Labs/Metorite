@@ -27,6 +27,8 @@ import Tabs, { type TabDef } from "@/components/Tabs";
 import { useId, useMemo, useState } from "react";
 import {
   blankRow,
+  defaultDealName,
+  defaultFeedWords,
   draftProblem,
   emptyDraft,
   foldName,
@@ -137,7 +139,7 @@ export function NewPipelineForm({
   // The draft lives in the store, so a new tree at the phone width keeps it.
   const stored = useCrmStore((state) => state.newPipeline.draft);
   const setNewPipeline = useCrmStore((state) => state.setNewPipeline);
-  const draft = stored ?? emptyDraft(pipelines, kind, dealPipelines);
+  const draft = stored ?? emptyDraft(pipelines, kind);
   const setDraft = (next: NewPipelineDraft) => setNewPipeline({ draft: next });
   // A field error shows after a Create that the draft could not send.
   const [tried, setTried] = useState(false);
@@ -168,7 +170,12 @@ export function NewPipelineForm({
   // A refused plan blocks Create. A failed read does not: Retry asks again,
   // and the create itself checks the plan.
   const blocked = preview.state === "refused" && !preview.retryable;
-  const fed = targets.find((p) => p.name === draft.feeds) ?? null;
+  // No pick follows the org's default deal pipeline, and sends no feed.
+  const fed = draft.feeds ? (targets.find((p) => p.name === draft.feeds) ?? null) : null;
+  const feedOptions: SelectOption[] = [
+    { value: "", label: `${defaultFeedWords(defaultDealName(dealPipelines)).replace(/^t/, "T")}` },
+    ...targets.map((p) => ({ value: p.id, label: p.name })),
+  ];
 
   return (
     <form
@@ -234,8 +241,8 @@ export function NewPipelineForm({
               label="Feeds deals into"
               prefix="Deals go to:"
               value={fed?.id ?? ""}
-              options={targets.map((p) => ({ value: p.id, label: p.name }))}
-              defaultValue={fed?.id ?? ""}
+              options={feedOptions}
+              defaultValue=""
               disabled={saving}
               onChange={(value) => change({ feeds: targets.find((p) => p.id === value)?.name ?? null })}
               widthClass="w-full sm:w-72"
@@ -453,7 +460,7 @@ export function PlanPreview({
             )}
             {shown === "lead" && (
               <p className="pt-1 text-[11px] text-muted-foreground">
-                {`Feeds deals into ${plan.feeds ?? "the default deal pipeline"}.`}
+                {`Feeds deals into ${plan.feeds ?? defaultFeedWords(plan.default_deal_pipeline)}.`}
               </p>
             )}
           </>

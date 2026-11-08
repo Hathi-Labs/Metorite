@@ -130,6 +130,7 @@ export function PipelineSections({
   title = "Deal stages",
   action,
   lineOf,
+  emptyLine = "No stages yet.",
 }: {
   pipelines: DealPipeline[] | null;
   /** The one implicit pipeline: the deal statuses, when there is no pipeline list. */
@@ -141,6 +142,8 @@ export function PipelineSections({
   action?: React.ReactNode;
   /** One line under the name of a section, or null (CRM-M4a: what a lead pipeline feeds). */
   lineOf?: (pipeline: DealPipeline) => string | null;
+  /** The words of a section with no stage yet (CRM-M4a: "Loading statuses…" while they load). */
+  emptyLine?: string;
 }) {
   const sections =
     pipelines && pipelines.length > 0
@@ -179,7 +182,7 @@ export function PipelineSections({
                 )}
                 <NameList
                   names={stagesOf(pipeline).map((stage) => stage.name)}
-                  empty="No stages yet."
+                  empty={emptyLine}
                 />
               </div>
             );

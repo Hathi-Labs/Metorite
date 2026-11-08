@@ -56,6 +56,10 @@ export type PipelinePlan = {
   stages: PlannedStage[];
   /** CRM-M4a: the deal pipeline that a lead pipeline feeds. Null: the default one. */
   feeds?: string | null;
+  /** CRM-M4a repair 1: the id of that deal pipeline. */
+  feeds_id?: string | null;
+  /** CRM-M4a repair 1: the default deal pipeline now, for a lead plan. */
+  default_deal_pipeline?: string | null;
 };
 
 /** The words of one kind of pipeline in the dialog and the preview (CRM-M4a). */
@@ -159,13 +163,13 @@ export function defaultSource(pipelines: readonly DealPipeline[] | null | undefi
 
 /**
  * The draft of a dialog that opens. With a pipeline of its kind, it starts as
- * a copy. A lead pipeline starts by feeding the default deal pipeline, by
- * name, so the member sees where its deals go (CRM-M4a).
+ * a copy. A lead pipeline starts with no feed (CRM-M4a repair 1): it follows
+ * the org's default deal pipeline, and the chat does the same. A pick of the
+ * member names one deal pipeline, and the row keeps its id.
  */
 export function emptyDraft(
   pipelines: readonly DealPipeline[] | null | undefined,
   kind: PipelineKind = "deal",
-  dealPipelines: readonly DealPipeline[] | null | undefined = null,
 ): NewPipelineDraft {
   const source = defaultSource(pipelines);
   const draft: NewPipelineDraft = {
@@ -174,11 +178,24 @@ export function emptyDraft(
     copyFrom: source,
     stages: [blankRow()],
   };
-  if (kind === "lead") {
-    const fed = defaultSource(dealPipelines);
-    draft.feeds = dealPipelines?.find((p) => p.id === fed)?.name ?? null;
-  }
+  if (kind === "lead") draft.feeds = null;
   return draft;
+}
+
+/**
+ * Where the deals of a lead pipeline with no feed go, in the one set of words
+ * of the dialog, the read-only list and the chat card (CRM-M4a repair 1).
+ */
+export function defaultFeedWords(defaultName: string | null | undefined): string {
+  return defaultName
+    ? `the default deal pipeline (now ${defaultName})`
+    : "the default deal pipeline";
+}
+
+/** The name of the default deal pipeline, or null with none. */
+export function defaultDealName(dealPipelines: readonly DealPipeline[] | null | undefined): string | null {
+  const id = defaultSource(dealPipelines);
+  return dealPipelines?.find((p) => p.id === id)?.name ?? null;
 }
 
 /**

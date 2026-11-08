@@ -1090,6 +1090,7 @@ _WEB_ID = str(uuid4())
 #: The plan of a lead pipeline, as the gateway answers it.
 _LEAD_PLAN = {
     "name": "Trade show", "kind": "lead", "copy_of": None, "feeds": "Sales pipeline",
+    "feeds_id": _PIPELINE_ID, "default_deal_pipeline": "Sales pipeline",
     "stages": [
         {"id": str(uuid4()), "name": "New", "type": "open", "source": "existing"},
         {"id": None, "name": "Booth visit", "type": "open", "source": "new"},
@@ -1106,8 +1107,10 @@ def _lead_responder(plan: dict[str, Any] = _LEAD_PLAN) -> Any:
             return [{"id": _WEB_ID, "name": "Web", "kind": "lead", "is_default": False,
                      "position": 0, "stages": []}]
         if path == "/crm/pipelines/preview":
+            fed = bool(params.get("feeds"))
             return dict(plan, name=params.get("name") or plan["name"],
-                        feeds=plan["feeds"] if params.get("feeds") else None)
+                        feeds=plan["feeds"] if fed else None,
+                        feeds_id=plan["feeds_id"] if fed else None)
         if path == "/crm/pipelines" and method == "POST":
             return {"id": str(uuid4()), "name": call["json"]["name"], "kind": "lead",
                     "is_default": False, "position": 1,
@@ -1139,7 +1142,9 @@ async def test_a_lead_pipeline_sends_its_kind_and_feed_and_its_card_names_both(
         "name": "Trade show", "kind": "lead", "feeds": "Sales pipeline",
         "stages": [{"name": "New"}, {"name": "Booth visit"},
                    {"name": "Converted", "type": "won"}],
-        "planned": [s["id"] for s in _LEAD_PLAN["stages"]]}
+        "planned": [s["id"] for s in _LEAD_PLAN["stages"]],
+        # Repair 1: the feed that the card showed, by id.
+        "planned_feeds": _PIPELINE_ID}
     (card,) = cards
     assert card["title"] == "Create the lead pipeline Trade show?"
     assert "lead pipeline" in card["detail"] and "4 statuses" in card["detail"]
@@ -1159,7 +1164,9 @@ async def test_a_lead_pipeline_with_no_feed_names_the_default_deal_pipeline(monk
     calls = _gateway(monkeypatch, _lead_responder())
     await _M.crm_create_pipeline("Trade show", stages=["New"], kind="LEAD")
     assert "feeds" not in calls[0]["params"] and "feeds" not in calls[1]["json"]
-    assert "feeds deals into: the default deal pipeline" in cards[0]["context"]
+    assert "planned_feeds" not in calls[1]["json"]
+    # Repair 1: one set of words with Settings: no feed follows the default.
+    assert "feeds deals into: the default deal pipeline (now Sales pipeline)" in cards[0]["context"]
 
 
 async def test_a_lead_copy_reads_the_lead_pipelines(monkeypatch) -> None:

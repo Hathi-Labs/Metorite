@@ -1055,13 +1055,17 @@ async def crm_create_pipeline(
     count = len(planned.get("stages") or [])
     card: dict[str, Any] = {"pipeline": title, "kind": words["pipeline"], "starts from": start}
     if which == "lead":
-        card["feeds deals into"] = planned.get("feeds") or "the default deal pipeline"
+        card["feeds deals into"] = planned.get("feeds") or _default_feed_words(planned)
     card.update(dict(_plan_lines(planned, which)))
     # The create plans again. With the ids that the card showed, it refuses
     # (409 `plan_changed`) when that plan differs, so Apply makes the card.
     body["planned"] = [
         stage.get("id") for stage in planned.get("stages") or [] if isinstance(stage, dict)
     ]
+    # CRM-M4a repair 1: the feed that the card showed, by id. A rename between
+    # the card and Apply then refuses (409 `plan_changed`).
+    if body.get("feeds") and planned.get("feeds_id"):
+        body["planned_feeds"] = str(planned["feeds_id"])
 
     from acb_skills.ask_tools import request_confirmation
     note = _LEAD_PIPELINE_NOTE if which == "lead" else _PIPELINE_NOTE
@@ -1078,6 +1082,13 @@ async def crm_create_pipeline(
     except GatewayRefusal as refused:
         return _off_or_raise(refused)
     return _pipeline_made(made if isinstance(made, dict) else {}, which, title, planned)
+
+
+def _default_feed_words(planned: dict[str, Any]) -> str:
+    """A lead pipeline with no feed follows the org's default deal pipeline.
+    The words of the Settings dialog and the read-only list, the same."""
+    now = planned.get("default_deal_pipeline")
+    return f"the default deal pipeline (now {now})" if now else "the default deal pipeline"
 
 
 async def _pipeline_request(
@@ -1131,7 +1142,7 @@ def _pipeline_made(row: dict[str, Any], which: str, title: str, planned: dict[st
     """The answer after the create: what was made, and where it shows."""
     names = [str(s.get("name")) for s in row.get("stages") or [] if isinstance(s, dict)]
     if which == "lead":
-        into = planned.get("feeds") or "the default deal pipeline"
+        into = planned.get("feeds") or _default_feed_words(planned)
         return (
             f"Created the lead pipeline {row.get('name') or title} (id={row.get('id')}) "
             f"with {len(names)} statuses: {', '.join(names)}. A converted lead's "

@@ -66,7 +66,7 @@ import {
 } from "../lib/board";
 import { TRY_AGAIN } from "../lib/api";
 import { colorOptions } from "../lib/colorOptions";
-import type { PipelineKind } from "../lib/newPipeline";
+import { defaultDealName, defaultFeedWords, type PipelineKind } from "../lib/newPipeline";
 import { orderedPipelines, placesOf, showPicker } from "../lib/pipelines";
 import {
   CLAMPED_PROBABILITY,
@@ -451,6 +451,7 @@ export default function PipelineSettings({
                   note={LEAD_PIPELINES_NOTE}
                   action={newLeadPipeline}
                   lineOf={(p) => feedsLine(p, pipelines)}
+                  emptyLine={vocabularyState === "loading" ? "Loading statuses…" : "No statuses yet."}
                 />
               ) : (
                 <StageList
@@ -577,7 +578,7 @@ export function feedsLine(
   const fed = pipeline.feeds_pipeline_id
     ? dealPipelines?.find((p) => p.id === pipeline.feeds_pipeline_id)?.name
     : null;
-  return `Feeds deals into ${fed ?? "the default deal pipeline"}.`;
+  return `Feeds deals into ${fed ?? defaultFeedWords(defaultDealName(dealPipelines))}.`;
 }
 
 /** The two choices of "Column order" (Mirror mode). */

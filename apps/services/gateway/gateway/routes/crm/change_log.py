@@ -385,6 +385,29 @@ async def open_change(db: Any, area: str, action: str, entity_id: str) -> str | 
     return str(row.id) if row is not None else None
 
 
+#: CRM-M4a repair 1: the newest pipeline create that no Undo reached and that
+#: made the stage (``source: new`` in "after"). Its Undo removes that stage.
+_PIPELINE_MADE_SQL = (
+    "SELECT after FROM crm_change_log WHERE organization_id = CAST(:organization_id AS uuid) "
+    "AND area = 'pipeline' AND action = 'create' AND undone_by IS NULL "
+    "AND undoes_id IS NULL AND after -> 'stages' @> CAST(:made AS jsonb) "
+    "ORDER BY at DESC, id DESC LIMIT 1"
+)
+
+
+async def pipeline_that_made(db: Any, stage_id: str) -> dict[str, Any] | None:
+    """The "after" of the open pipeline create that made *stage_id*, or None.
+
+    A stage or a lead status that a pipeline create made goes with the Undo
+    of that create. Its own Undo would take it out of the pipeline, and then
+    the Undo of the pipeline could never match its stages again."""
+    row = (await db.execute(text(_PIPELINE_MADE_SQL), {
+        "organization_id": _bound_org(),
+        "made": json.dumps([{"id": str(stage_id), "source": "new"}]),
+    })).first()
+    return from_jsonb(row.after) if row is not None else None
+
+
 # ── Refusals ────────────────────────────────────────────────────────────────
 
 
@@ -735,6 +758,7 @@ __all__ = [
     "log_change",
     "name_taken",
     "open_change",
+    "pipeline_that_made",
     "plain",
     "quoted",
     "same_values",

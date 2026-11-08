@@ -160,6 +160,46 @@ _KIND_OR_ID = re.compile(
 )
 
 
+#: A read of ``crm_pipelines``: ``FROM`` or ``JOIN``, with its alias, if any.
+_PIPELINES_READ = re.compile(
+    r"(?:FROM|JOIN)\s+crm_pipelines\b"
+    r"(?:\s+(?:AS\s+)?(?!(?:WHERE|ON|ORDER|JOIN|LEFT|INNER|GROUP|LIMIT)\b)(\w+))?",
+    re.IGNORECASE,
+)
+
+
+def _kind_misses(source: str) -> list[int]:
+    """The line of each read of ``crm_pipelines`` in *source* that names no
+    kind. A ``FROM`` read by id passes, and its caller checks the kind. A
+    ``JOIN`` passes only with a kind term, on its alias or bare."""
+    misses: list[int] = []
+    for match in _PIPELINES_READ.finditer(source):
+        # The statement: this line and the few lines after it.
+        window = source[match.start():match.start() + 260]
+        alias = match.group(1)
+        joined = match.group(0).upper().startswith("JOIN")
+        named = bool(re.search(r"kind = :kind|kind = 'deal'|kind = 'lead'|DEAL_PIPELINE_SQL",
+                               window))
+        if alias:
+            named = named or bool(re.search(rf"\b{re.escape(alias)}\.kind\s*=", window))
+        by_id = not joined and "WHERE id = CAST" in window
+        if not (named or by_id):
+            misses.append(source.count("\n", 0, match.start()) + 1)
+    return misses
+
+
+def test_the_reader_scan_finds_a_join_with_no_kind() -> None:
+    """Repair 1 (P3): the scan reads a ``JOIN`` with an alias too. Mutation:
+    a JOIN reader with no kind term is a miss."""
+    bare = "SELECT d.id FROM crm_deals d JOIN crm_pipelines p ON p.id = d.pipeline_id"
+    assert _kind_misses(bare) == [1]
+    assert _kind_misses(bare + " AND p.kind = 'deal'") == []
+    assert _kind_misses("SELECT 1 FROM crm_deals d LEFT JOIN crm_pipelines AS pl "
+                        "ON pl.id = d.pipeline_id WHERE pl.kind = :kind") == []
+    assert _kind_misses("SELECT name FROM crm_pipelines WHERE id = CAST(:p AS uuid)") == []
+    assert _kind_misses("SELECT name FROM crm_pipelines ORDER BY position") == [1]
+
+
 def test_each_read_of_crm_pipelines_names_the_kind_or_an_id() -> None:
     """Acceptance 2. A deal reader names ``kind = 'deal'``, so a lead pipeline
     never shows on a deal surface. A read by id names the id, and its caller
@@ -171,16 +211,27 @@ def test_each_read_of_crm_pipelines_names_the_kind_or_an_id() -> None:
     for path in sorted(_GATEWAY.rglob("*.py")):
         source = path.read_text(encoding="utf-8")
         where = str(path.relative_to(_GATEWAY)).replace("\\", "/")
-        for match in re.finditer(r"FROM crm_pipelines\b", source):
-            # The statement: this line and the few lines after it.
-            if not _KIND_OR_ID.search(source[match.start():match.start() + 260]):
-                misses.append(f"{where}:{source.count(chr(10), 0, match.start()) + 1}")
+        misses += [f"{where}:{line}" for line in _kind_misses(source)]
         by_id += [where] * len(re.findall(
             r"(?:require|load)_row\(\s*db,\s*\"crm_pipelines\"", source))
     assert misses == [], misses
     # The id reads: the one deal check of core, and the two Undos of this seam.
     assert sorted(by_id) == ["routes/crm/core.py", "routes/crm/pipelines.py",
                              "routes/crm/pipelines.py"], by_id
+
+
+def test_the_undo_of_a_pipeline_takes_the_create_lock_first() -> None:
+    """Repair 1 (P3): a copy create takes the create lock, then reads its
+    source ``FOR SHARE``. The Undo takes the create lock before it locks any
+    stage, so the two never wait on each other in a cycle."""
+    import inspect
+
+    from gateway.routes.crm import pipelines
+
+    source = inspect.getsource(pipelines._undo_pipeline)
+    assert source.index("_CREATE_LOCK_SQL") < source.index("_lock_new_stages(")
+    create = inspect.getsource(pipelines.create_pipeline_in)
+    assert create.index("_CREATE_LOCK_SQL") < create.index("plan_pipeline(")
 
 
 def test_this_suite_is_named_in_both_must_run_lists() -> None:
@@ -684,3 +735,152 @@ def test_old_code_on_the_new_schema_gets_a_deal_pipeline(pns, app_engine) -> Non
             cur.execute(sql)
     assert _one(pns, "SELECT count(*) FROM crm_pipelines WHERE organization_id = "
                      "CAST(:o AS uuid)", o=pns.org_a) == 1
+
+
+# ── Repair round 1 ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("kind", ["deal", "lead"])
+async def test_the_undo_of_a_status_that_a_pipeline_made_refuses_and_names_it(
+    pns, kind: str,  # noqa: F811
+) -> None:
+    """P1. The status Undo would take the status out of the pipeline, and then
+    the pipeline Undo answers 409 forever. It refuses, names the pipeline and
+    says to undo that one, for a deal pipeline and a lead pipeline. The
+    pipeline Undo then works."""
+    _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    body = (TRADE_SHOW if kind == "lead"
+            else {"name": "AMC contracts", "stages": [{"name": "Qualify"}, {"name": "Site visit"}]})
+    made = (await _call(pns, admin, "POST", "/crm/pipelines", body)).json()
+    new = made["stages"][1]["id"]
+    area = "lead_status" if kind == "lead" else "deal_stage"
+    rows = _rows(pns, pns.org_a)
+    (status_row,) = [x for x in rows if x.area == area and x.action == "create"
+                     and str(x.entity_id) == new]
+    (pipe_row,) = [x for x in rows if x.area == "pipeline"]
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{status_row.id}/undo")
+    assert undo.status_code == 409 and _code(undo) == "in_use", undo.text
+    words = _words(undo)
+    assert f'came with the {"lead pipeline" if kind == "lead" else "pipeline"} "{body["name"]}"' in words
+    assert "nothing was undone" in words and "Undo that" in words
+    assert new in [s["id"] for s in (await _call(
+        pns, admin, "GET", "/crm/pipelines",
+        params={"kind": kind})).json()[-1]["stages"]], "the status stays in the pipeline"
+    again = await _call(pns, admin, "POST", f"/crm/change-history/{pipe_row.id}/undo")
+    assert again.status_code == 200, again.text
+    # After the pipeline Undo, the status is gone with it.
+    gone = await _call(pns, admin, "POST", f"/crm/change-history/{status_row.id}/undo")
+    assert gone.status_code == 409, gone.text
+
+
+async def test_a_status_that_no_pipeline_made_still_undoes(pns) -> None:  # noqa: F811
+    """The refusal reads only a pipeline create that made the status. A lead
+    status that an admin added keeps its Undo."""
+    _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    added = await _call(pns, admin, "POST", "/crm/statuses/lead", {"name": "Walk-in"})
+    assert added.status_code == 201, added.text
+    (row,) = [x for x in _rows(pns, pns.org_a) if x.area == "lead_status"]
+    undo = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
+    assert undo.status_code == 200, undo.text
+
+
+async def test_a_feed_renamed_after_the_card_refuses_with_plan_changed(pns) -> None:  # noqa: F811
+    """P3. The card pins the feed by id. A rename between the card and Apply
+    makes the name find another deal pipeline, or none, and the create
+    refuses with 409 ``plan_changed``."""
+    deal = _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    body = {**WEB, "feeds": "Sales pipeline"}
+    plan = (await _call(pns, admin, "GET", "/crm/pipelines/preview", params={
+        "name": "Web", "kind": "lead", "feeds": "Sales pipeline",
+        "stages": json.dumps(WEB["stages"])})).json()
+    assert plan["feeds_id"] == deal["pipeline"]
+    assert plan["default_deal_pipeline"] == "Sales pipeline"
+    planned = {"planned": [s["id"] for s in plan["stages"]], "planned_feeds": plan["feeds_id"]}
+    # Another deal pipeline takes the name, and the old one is renamed.
+    other = await _call(pns, admin, "POST", "/crm/pipelines", {
+        "name": "Partner deals", "stages": [{"name": "Qualify"}]})
+    _one(pns, "UPDATE crm_pipelines SET name = 'Old sales' WHERE id = CAST(:pl AS uuid) "
+              "RETURNING id", pl=deal["pipeline"])
+    _one(pns, "UPDATE crm_pipelines SET name = 'Sales pipeline' WHERE id = CAST(:pl AS uuid) "
+              "RETURNING id", pl=other.json()["id"])
+    stale = await _call(pns, admin, "POST", "/crm/pipelines", {**body, **planned})
+    assert stale.status_code == 409 and _code(stale) == "plan_changed", stale.text
+    assert _lead_pipelines(pns, pns.org_a) == []
+    fresh = await _call(pns, admin, "POST", "/crm/pipelines",
+                        {**body, **planned, "planned_feeds": other.json()["id"]})
+    assert fresh.status_code == 201, fresh.text
+    assert fresh.json()["feeds_pipeline_id"] == other.json()["id"]
+
+
+async def test_the_kind_of_a_pipeline_cannot_change(pns, app_engine) -> None:  # noqa: F811
+    """P3. A fed deal pipeline never becomes a lead one, and a lead pipeline
+    never keeps its statuses as a deal one, for each role."""
+    _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    web = (await _call(pns, admin, "POST", "/crm/pipelines", {**WEB, "feeds": "Sales pipeline"})).json()
+    for target, kind in ((web["feeds_pipeline_id"], "lead"), (web["id"], "deal")):
+        with pytest.raises(Exception, match="the kind of a pipeline cannot change"), \
+                app_engine.begin() as c:
+            c.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": pns.org_a})
+            c.execute(text("UPDATE crm_pipelines SET kind = :k WHERE id = CAST(:p AS uuid)"),
+                      {"k": kind, "p": target})
+        with pytest.raises(Exception, match="the kind of a pipeline cannot change"), \
+                pns.admin_engine.begin() as c:
+            c.execute(text("UPDATE crm_pipelines SET kind = :k WHERE id = CAST(:p AS uuid)"),
+                      {"k": kind, "p": target})
+    # A rename leaves the kind alone, and passes.
+    with app_engine.begin() as c:
+        c.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": pns.org_a})
+        c.execute(text("UPDATE crm_pipelines SET name = 'Web 2' WHERE id = CAST(:p AS uuid)"),
+                  {"p": web["id"]})
+
+
+async def test_a_merge_of_two_lead_statuses_keeps_the_lead_pipeline_place(pns) -> None:  # noqa: F811
+    """P3. The Mirror merge folds a lead status into another. Each lead
+    pipeline keeps the kept status at the place of the folded one, and the
+    cascade takes none."""
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from gateway.routes.crm import core
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    _seed(pns, pns.org_a)
+    statuses = _leads(pns, pns.org_a)
+    trade = (await _call(pns, _admin(pns.org_a), "POST", "/crm/pipelines", TRADE_SHOW)).json()
+    booth = trade["stages"][1]["id"]
+    scope = clear_tenant()
+    try:
+        async with tenant_engine_scope(pns.app_url.render_as_string(hide_password=False)):
+            bind_tenant(pns.org_a)
+            async with core._tenant_session() as db:
+                await core.merge_status_from_source(
+                    db, "crm_lead_statuses", statuses["contacted"], booth, "Contacted")
+    finally:
+        release_tenant(scope)
+    assert _members(pns, trade["id"]) == ["New", "Contacted", "Demo booked", "Converted", "Junk"]
+
+
+async def test_a_deals_view_refuses_a_lead_pipeline(pns) -> None:  # noqa: F811
+    """P3. A deals view that names a lead pipeline would open a board that
+    answers 404. The save refuses it, on a create and on a change."""
+    deal = _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    trade = (await _call(pns, admin, "POST", "/crm/pipelines", TRADE_SHOW)).json()
+    bad = await _call(pns, admin, "POST", "/crm/views", {
+        "entity": "deals", "name": "Trade board", "layout": "board", "pipeline_id": trade["id"]})
+    assert bad.status_code == 404, bad.text
+    good = await _call(pns, admin, "POST", "/crm/views", {
+        "entity": "deals", "name": "Sales board", "layout": "board",
+        "pipeline_id": deal["pipeline"]})
+    assert good.status_code == 201, good.text
+    changed = await _call(pns, admin, "PATCH", f"/crm/views/{good.json()['id']}",
+                          {"pipeline_id": trade["id"]})
+    assert changed.status_code == 404, changed.text

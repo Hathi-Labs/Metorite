@@ -885,6 +885,17 @@ async def _undo_status(db: Any, user: Any, logged: Logged) -> None:
     if not change_log.same_values(_snapshot(row, STATUS_LOG_KEYS), logged.after):
         raise change_log.changed_since()
     if logged.action == change_log.CREATE:
+        # CRM-M4a repair 1: a stage that a pipeline create made goes with the
+        # Undo of that pipeline. Its own Undo would strand the pipeline.
+        made_by = await change_log.pipeline_that_made(db, str(row.id))
+        if made_by is not None:
+            pipeline_noun = "lead pipeline" if made_by.get("kind") == "lead" else "pipeline"
+            raise change_log.in_use(
+                f"The {_STATUS_NOUNS[kind]} {quoted(row.name)} came with the {pipeline_noun} "
+                f"{quoted(made_by.get('name') or '')}, so nothing was undone. Undo that "
+                f"{pipeline_noun} in Change history instead. It removes this "
+                f"{_STATUS_NOUNS[kind]} too."
+            )
         held = await status_in_use(db, kind, str(row.id))
         if held:
             raise change_log.in_use(

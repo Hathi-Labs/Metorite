@@ -15,7 +15,8 @@
 --       * `crm_leads.pipeline_id`: nullable, with an index. NULL means the
 --         default lead list, which is every lead today.
 --       * Three guard triggers. Each refuses a row that names a pipeline or a
---         status of another org, or a pipeline of the wrong kind.
+--         status of another org, or a pipeline of the wrong kind. A fourth
+--         trigger keeps `kind` fixed after the INSERT.
 -- Why:  WS-CRM CRM-M4 (project-docs/specs/crm_conversational.md §8). The
 --       deal pipeline seam of CRM-M3a (`routes/crm/pipelines.py`) takes a
 --       kind, so a lead pipeline needs no second table or route.
@@ -57,6 +58,11 @@
 --     the org, and the status is a lead status of the org.
 --   * `crm_leads_pipeline_guard`: a lead's pipeline is a lead pipeline of
 --     the org. A NULL pipeline returns at once, so each old write passes.
+-- The three check the row that holds the link. A fourth trigger,
+-- `crm_pipelines_kind_fixed`, refuses each change of `kind` after the
+-- INSERT, so a fed deal pipeline never becomes a lead one, and a lead
+-- pipeline never keeps lead statuses as a deal one. No sync, switch or seed
+-- path writes `kind` on an UPDATE.
 --
 -- The number is taken at build time (R1). It was 360 until 2026-11-08 15:30
 -- UTC, when a signature-images branch moved to 360 too. Branches and worktrees
@@ -147,6 +153,24 @@ CREATE TRIGGER crm_pipelines_feeds_guard
     BEFORE INSERT OR UPDATE OF organization_id, kind, feeds_pipeline_id
     ON crm_pipelines
     FOR EACH ROW EXECUTE FUNCTION crm_pipelines_feeds_guard();
+
+-- The kind of a pipeline is fixed at its INSERT, for each role. A change
+-- would leave the links of the other kind behind.
+CREATE OR REPLACE FUNCTION crm_pipelines_kind_fixed() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF NEW.kind IS DISTINCT FROM OLD.kind THEN
+        RAISE EXCEPTION 'crm_pipelines: the kind of a pipeline cannot change'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+
+DROP TRIGGER IF EXISTS crm_pipelines_kind_fixed ON crm_pipelines;
+CREATE TRIGGER crm_pipelines_kind_fixed
+    BEFORE UPDATE OF kind ON crm_pipelines
+    FOR EACH ROW EXECUTE FUNCTION crm_pipelines_kind_fixed();
 
 -- ── 2. The lead statuses of a lead pipeline ─────────────────────────────────
 
