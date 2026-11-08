@@ -9516,7 +9516,10 @@ def _transcribe_minutes(
     elif reported is None:
         seconds = measured
     else:
-        seconds = max(measured, reported)
+        # The reported figure has a bound: a buggy or hostile endpoint must
+        # not turn a short clip into hours. The door takes 600 s at most, so
+        # no honest figure is above that.
+        seconds = max(measured, min(reported, Decimal(_MAX_WAV_SECONDS)))
     if seconds is None:
         # ⚠️ BILL ZERO, LOUDLY (clause 3). The customer already holds the
         # transcript, so the only choice left is whether we also lose the

@@ -66,7 +66,14 @@ class WavClip:
 _MAX_CHANNELS = 8
 _MIN_RATE = 1_000
 _MAX_RATE = 384_000
-_PCM_TAGS = frozenset({1, 0xFFFE})
+#: Only plain PCM (tag 1). WAVE_FORMAT_EXTENSIBLE (0xFFFE) hides its real
+#: format in a GUID that this module does not read, so a float or compressed
+#: payload could pass as PCM. The VOX-1 browser writer uses tag 1.
+_PCM_TAG = 1
+
+#: The most chunks the walk visits. A hostile clip of empty chunks would
+#: otherwise cost CPU on every call.
+_MAX_CHUNKS = 64
 
 
 def _layout(audio: bytes) -> tuple[int, int, int, int] | None:
@@ -79,7 +86,9 @@ def _layout(audio: bytes) -> tuple[int, int, int, int] | None:
         return None
     pos = 12
     fmt: tuple[int, int, int] | None = None
-    while pos + 8 <= len(audio):
+    for _ in range(_MAX_CHUNKS):
+        if pos + 8 > len(audio):
+            return None
         chunk_id = audio[pos : pos + 4]
         size = struct.unpack_from("<I", audio, pos + 4)[0]
         body = pos + 8
@@ -87,7 +96,7 @@ def _layout(audio: bytes) -> tuple[int, int, int, int] | None:
             if size < 16 or body + 16 > len(audio):
                 return None
             tag, channels, rate, _, align, bits = struct.unpack_from("<HHIIHH", audio, body)
-            if tag not in _PCM_TAGS or bits <= 0 or bits % 8:
+            if tag != _PCM_TAG or bits <= 0 or bits % 8:
                 return None
             width = bits // 8
             if not 1 <= channels <= _MAX_CHANNELS or not 1 <= width <= 4:

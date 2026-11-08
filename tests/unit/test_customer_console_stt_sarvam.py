@@ -304,6 +304,20 @@ class TestTheHeaderCannotLieAboutTheBill:
         assert wav_seconds(bytes(audio)) is None
         assert read_wav(bytes(audio)) is None
 
+    def test_too_many_chunks_is_not_a_measurable_wav(self):
+        base = make_wav(1)
+        at = base.index(b"data")
+        empty = b"junk" + struct.pack("<I", 0)
+        assert wav_seconds(base[:at] + empty * 70 + base[at:]) is None
+        assert wav_seconds(base[:at] + empty * 10 + base[at:]) == Decimal(1)
+
+    def test_wave_format_extensible_is_not_a_measurable_wav(self):
+        audio = bytearray(make_wav(1))
+        at = audio.index(b"fmt ")
+        audio[at + 8: at + 10] = struct.pack("<H", 0xFFFE)
+        assert wav_seconds(bytes(audio)) is None
+        assert read_wav(bytes(audio)) is None
+
     def test_a_zero_block_align_is_not_a_measurable_wav(self):
         audio = bytearray(make_wav(1))
         at = audio.index(b"fmt ")
@@ -545,6 +559,14 @@ class TestTheDoorHelpers:
                                    request_id="r") == Decimal("2.0000")
         assert _transcribe_minutes(Decimal(3), {"text": "x"}, self.whisper, org_id="o",
                                    request_id="r") == Decimal("0.0500")
+
+    def test_a_reported_duration_is_bounded(self):
+        from customer_console.main import _transcribe_minutes
+
+        reply = {"text": "x", "usage": {"type": "duration", "seconds": 10**6}}
+        minutes = _transcribe_minutes(Decimal(3), reply, self.whisper, org_id="o",
+                                      request_id="r")
+        assert minutes == Decimal("10.0000")
 
     def test_another_format_keeps_the_vendors_figure(self):
         from customer_console.main import _transcribe_minutes
