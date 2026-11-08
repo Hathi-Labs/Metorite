@@ -8936,6 +8936,55 @@ clauses above. Each other clause holds as written.
    at 20 parts for each request, by the 600-second wall. The handler logs
    `stt_sarvam.partial_failure` with `parts_served` and `parts_total`.
 
+#### VOX-6 · AssemblyAI, beside Sarvam — BUILT 2026-11-09
+
+`native_assemblyai` is the second native verb for `transcribe`. It copies the
+`native_sarvam` pattern, and the clauses above apply to it with these changes.
+
+1. **The dispatch.** `native_assemblyai` is in `KNOWN_INVOCATIONS` and
+   `SERVING_INVOCATIONS`, and it serves `transcribe` only.
+   - `customer_console/stt_assemblyai.py` holds the handler.
+   - The credential provider is `assemblyai`.
+2. **The prefix ties the verb.** An `assemblyai/` model on `transcribe` takes
+   `native_assemblyai` only, because litellm cannot call the Sync API.
+3. **The id carries the languages.** The id is `assemblyai/universal-3-5-pro`
+   or `assemblyai/universal-3-5-pro/hi,en`.
+   - The declare route refuses an unknown model, an unknown code, a repeated
+     code and an empty part with a 400.
+   - The vendor takes 32 codes, listed in `stt_assemblyai.LANGUAGES`.
+   - An id with no codes sends no `config` part.
+4. **One request for each clip.** The Sync API takes 20 minutes, and the door
+   caps a WAV clip at 600 seconds. So the handler never cuts a clip.
+5. **The bill.** The door bills the seconds it measures from the WAV bytes.
+   The vendor field `audio_duration_ms` never sets a quantity.
+6. **The 415.** The handler takes PCM WAV only, so the door answers 415 for
+   any other clip when no step is left. The vendor takes more formats, but the
+   bill needs the measure.
+7. **Failover.** The handler passes the vendor status to the chain.
+   - A 5xx, a 504, a 429 and a network error fall to the next step.
+   - A 400 and a 413 stop the walk.
+   - A 401 says the key is bad. The walk strikes the vendor and takes the
+     next step (`router.CREDENTIAL_STATUSES`), as it does for a Sarvam 403.
+   - A 200 with no `text` is terminal.
+8. **The key stays private.** The handler sends the key in `Authorization`.
+   It logs the status only, and never the key, the audio or an error body.
+
+**The vendor facts for VOX-6**, read on 2026-11-08 at
+`https://www.assemblyai.com/docs/api-reference/sync-api/transcribe.md`:
+`POST https://sync.assemblyai.com/v1/transcribe`, the headers `Authorization`
+and `X-AAI-Model: universal-3-5-pro`, and the multipart parts `audio` and
+`config`. The 200 body holds `text`, `words`, `confidence`,
+`audio_duration_ms`, `session_id` and `request_time_ms`. The handler uses the
+global host only.
+
+| Rule | Fence |
+|---|---|
+| The request carries the URL, both headers, the `audio` part, and a `config` part only when the id names languages | `test_customer_console_stt_assemblyai.py::TestTheRequestShape` |
+| The declare route refuses an unknown language | `test_customer_console_stt_assemblyai.py::TestTheIdSplit` |
+| A WAV clip bills the measured minutes, and the door writes one `transcribe` row | `test_customer_console_stt_assemblyai.py::TestAssemblyAIOnTheTranscribeDoor` (R8) |
+| A 5xx or 504 fails over, and a 400 does not | `test_customer_console_stt_assemblyai.py::TestTheFailures` |
+| The key never reaches a log line or an error | `test_customer_console_stt_assemblyai.py::TestTheKeyStaysOutOfEveryRecord` |
+
 **The vendor facts**, read on 2026-11-08 at
 `https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe`:
 `POST https://api.sarvam.ai/speech-to-text`, the header
@@ -10246,7 +10295,7 @@ facts the table did not state:
   Without it, `(model, decide, acompletion)` would answer 502 on the first
   customer call.
   📌 **VOX-2 changed the first half on 2026-11-08.** From that date, each
-  `native_*` verb serves the ONE task of its handler. `native_sarvam` serves `transcribe`, and a
+  `native_*` verb serves the ONE task of its handler. `native_sarvam` and `native_assemblyai` serve `transcribe`, and a
   System One verb still serves `decide` only. `decide` still takes a native
   verb only (`catalog.NATIVE_ONLY_TASKS`). §6A.10a holds the transcribe half.
 - **A 200 that the handler cannot read STOPS the chain.** The vendor has
@@ -10394,6 +10443,9 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
   📌 VOX-2 (2026-11-08) added two more copies: `NATIVE_ONLY_TASKS`, and
   `NATIVE_TASK_OF`, the task of each native verb. The same test reads both.
   `/providers` gained a minimal `sarvam` card, and VOX-4 owns its full text.
+  📌 VOX-6 (2026-11-09) added `native_assemblyai` to the three mirrors and
+  to the `assemblyai` card. `test_operator_console_vendor_slugs.py` lets that
+  slug stay native while litellm lists it, because litellm cannot call it.
 - **The declare form follows the pairing rule.** `src/lib/invocation.ts`
   mirrors `check_invocation_for_task`, so `/models` offers only
   `native_typesafe` for `decide`, and never offers it for another job.

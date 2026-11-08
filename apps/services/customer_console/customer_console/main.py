@@ -2944,6 +2944,7 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
         # CP-13h: a native verb must call the vendor the model prefix names.
         # VOX-2: with the task, a `sarvam/` transcribe model takes
         # `native_sarvam` only, and a wrong Sarvam mode is refused here.
+        # VOX-6: `assemblyai/` takes `native_assemblyai`, and a wrong code is refused.
         catalog.check_model_for_invocation(req.model, invocation, task=req.task)
         streams = catalog.check_streams(req.task, req.streams)
     except catalog.CatalogRefused as exc:
