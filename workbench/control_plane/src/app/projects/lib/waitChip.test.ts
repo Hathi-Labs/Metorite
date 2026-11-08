@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { type DecisionRow, type TaskDecisions } from "./decisions";
+import { type DecisionRow, type TaskDecisions, readTaskDecisions } from "./decisions";
 import { shortName, waitChip } from "./waitChip";
 
 const NOW = Date.parse("2026-11-08T10:00:00Z");
@@ -117,5 +117,18 @@ describe("the key W", () => {
     const first = stepSequence([], "g", availableCommands(ctx));
     expect(first.pending).toEqual(["g"]);
     expect(stepSequence(["g"], "w", availableCommands(ctx)).command?.id).toBe("go.w");
+  });
+});
+
+import { readFileSync } from "node:fs";
+
+describe("the chip needs the person ask", () => {
+  it("DecisionPanel draws the chip only when asks is a list", () => {
+    const src = readFileSync(new URL("../components/DecisionPanel.tsx", import.meta.url), "utf8");
+    expect(src).toContain("data.asks !== null ? waitChip(");
+    expect(src).toContain("canOfferAsk(data.asks, waitRequest)");
+    // The read with the flag off: an open ALN card has asks null.
+    const flagOff = readTaskDecisions({ decisions: [], waiting_on: [{ decider: "a@x.test" }] });
+    expect(flagOff.asks).toBeNull();
   });
 });

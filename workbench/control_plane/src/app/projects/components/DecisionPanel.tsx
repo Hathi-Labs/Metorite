@@ -43,7 +43,9 @@ import {
   stateNow,
   waitingLine,
 } from "../lib/decisions";
-import { ASK_COPY, withdrawFailure } from "../lib/askPerson";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
+
+import { ASK_COPY, canOfferAsk, withdrawConfirm, withdrawFailure } from "../lib/askPerson";
 import { labelWith } from "../lib/grouping";
 import { waitChip } from "../lib/waitChip";
 import { WaitOnSomeone } from "./WaitOnSomeone";
@@ -73,13 +75,15 @@ export function DecisionPanel({
   onActivity,
   personalTask = false,
   onMoveToProject,
-  waitRequest = 0,
+  waitRequest,
 }: Props) {
   /** `null` until the first read, and when the routes are off. */
   const [data, setData] = useState<TaskDecisions | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const [withdrawing, setWithdrawing] = useState<string | null>(null);
+  /** The ask that waits for the member to confirm its withdraw. */
+  const [confirming, setConfirming] = useState<string | null>(null);
 
   const read = useCallback(async () => {
     try {
@@ -104,10 +108,10 @@ export function DecisionPanel({
   const [handled, setHandled] = useState(0);
   const askOn = data?.asks != null;
   useEffect(() => {
-    if (waitRequest > handled && askOn) {
+    if ((waitRequest ?? 0) > handled && askOn) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setAsking(true);
-      setHandled(waitRequest);
+      setHandled(waitRequest ?? 0);
     }
   }, [waitRequest, handled, askOn]);
 
@@ -121,7 +125,11 @@ export function DecisionPanel({
   if (!data || (!hasDecisionBlock(data, nowMs) && data.asks === null)) return null;
   const nameOf = labelWith(personLabels);
   const shown = rowsToShow(data.decisions, nowMs);
-  const chip = waitChip(data, nameOf, nowMs);
+  // AP-9a: the chip and the form belong to the person ask. Either flag off
+  // leaves `asks` null, and then neither draws (an ALN card stays as it was).
+  const chip = data.asks !== null ? waitChip(data, nameOf, nowMs) : null;
+  // A host that passes no `waitRequest` has no wiring for the form (My Tasks).
+  const canAsk = canOfferAsk(data.asks, waitRequest);
   const chipLook = agentStateVisual("awaiting");
   // An entry of `waiting_on` that is the member's own ask draws as a row with
   // "Withdraw". Each own ask takes one entry of its decider.
@@ -198,7 +206,7 @@ export function DecisionPanel({
             loading={withdrawing === a.id}
             disabled={withdrawing !== null}
             data-wait-withdraw=""
-            onClick={() => void withdraw(a.id)}
+            onClick={() => setConfirming(a.id)}
           >
             {ASK_COPY.withdraw}
           </Button>
@@ -219,7 +227,7 @@ export function DecisionPanel({
           {error}
         </p>
       ) : null}
-      {data.asks !== null && asking && personalTask ? (
+      {canAsk && asking && personalTask ? (
         <div className="space-y-2 text-sm text-muted-foreground" data-wait-personal="">
           <p>{ASK_COPY.personal}</p>
           <div className="flex gap-2">
@@ -234,7 +242,7 @@ export function DecisionPanel({
           </div>
         </div>
       ) : null}
-      {data.asks !== null && asking && !personalTask ? (
+      {canAsk && asking && !personalTask ? (
         <WaitOnSomeone
           taskId={task.id}
           onCancel={() => setAsking(false)}
@@ -245,7 +253,7 @@ export function DecisionPanel({
           }}
         />
       ) : null}
-      {data.asks !== null && !asking ? (
+      {canAsk && !asking ? (
         <div>
           <Button
             variant="ghost"
@@ -258,6 +266,20 @@ export function DecisionPanel({
           </Button>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={confirming !== null}
+        title={withdrawConfirm(nameOf(data.asks?.find((a) => a.id === confirming)?.decider ?? "")).title}
+        body={withdrawConfirm(nameOf(data.asks?.find((a) => a.id === confirming)?.decider ?? "")).body}
+        confirmLabel={ASK_COPY.withdraw}
+        confirmVariant="destructive"
+        busy={withdrawing !== null}
+        onConfirm={() => {
+          const id = confirming;
+          setConfirming(null);
+          if (id) void withdraw(id);
+        }}
+        onCancel={() => setConfirming(null)}
+      />
     </section>
   );
 }

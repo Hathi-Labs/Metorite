@@ -5,6 +5,8 @@ import {
   EMPTY_DRAFT,
   askBody,
   askFailure,
+  canOfferAsk,
+  withdrawConfirm,
   draftProblem,
   dueAt,
   refusalOf,
@@ -74,5 +76,20 @@ describe("each refusal shows its text", () => {
     expect(withdrawFailure(409, "ask_closed").reload).toBe(true);
     expect(withdrawFailure(404, null).text).toMatch(/not yours/);
     expect(withdrawFailure(500, null).reload).toBe(false);
+  });
+});
+
+describe("where the form draws", () => {
+  it("needs the flags (asks is a list) and a host that wired the form", () => {
+    expect(canOfferAsk([], 0)).toBe(true);
+    expect(canOfferAsk(null, 0)).toBe(false);
+    expect(canOfferAsk([], undefined)).toBe(false);
+  });
+
+  it("asks before a withdraw, and says it cannot be undone", () => {
+    const c = withdrawConfirm("Priya Nair");
+    expect(c.title).toMatch(/Withdraw/);
+    expect(c.body).toContain("Priya Nair");
+    expect(c.body).toContain("cannot be undone");
   });
 });

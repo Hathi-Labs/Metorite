@@ -2,7 +2,13 @@
 
 **Product:** Metorite · **Feature:** one list of what waits on a member, and of what the member waits on · **Updated:** 2026-11-06 · **Owner:** vjvarada
 
-**Status:** 🟡 **SPEC, ACCEPTED. AP-1a MERGED, dark** (task 1616, `bf0ece44b`, PR 1797): the read seam of §7.3 with four kinds, behind `WAITING_ORGS` (empty by default). **AP-8a MERGED, dark** (task 1858, `f9b7969e2`, PR 1829, migration 359): the person ask of §7.1 and §7.2, behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8b is NO-GO until the spec answers §8 B4 to B6. **AP-9a BUILT, dark, not merged** (task 1859, branch `pro-ap9`): the form, the chip and the read of §7.2. AP-9b (task 2225) needs three decisions. AP-BUG-2 is built (task 1896). The other slices are not built.
+**Status:** 🟡 **SPEC, ACCEPTED. AP-1a MERGED, dark** (task 1616, `bf0ece44b`, PR 1797): the read seam of §7.3 with four kinds, behind `WAITING_ORGS` (empty by default).
+
+**AP-8a MERGED, dark** (task 1858, `f9b7969e2`, PR 1829, migration 359): the person ask of §7.1 and §7.2, behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8b is NO-GO until the spec answers §8 B4 to B6.
+
+**AP-9a BUILT, dark, not merged** (task 1859, branch `pro-ap9`): the form, the chip and the read of §7.2. AP-9b (task 2225) is NO-GO until the spec answers §8 B7 to B9.
+
+AP-BUG-2 is built (task 1896). The other slices are not built.
 
 On 2026-11-06 the owner accepted the recommended answers to AP-Q1 to AP-Q8 (§13). AP-Q9 has a working default. The owner answered AP-Q10, so AP-16 is open to build after AP-15.
 
@@ -583,7 +589,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-8a** | 1858 | The person ask: the migration of §7.1 (359), the ask route and the withdraw of §7.2, and the closed state on the answer and the reads | R8 tests (`test_person_asks_r8.py`): guards 1 to 5, one answer, two concurrent answers, withdraw, no answer after a withdraw, the trigger in SQL, each flag off, org isolation, V4 and V5. `test_decisions.py` still passes. **Merged, dark** (PR 1829) | HIGH (migration, identity) |
 | **AP-8b** | 1994 | The bell of the asker on an answer, the nudge route (once in 24 h), and the close with the task (`task_closed`) | R8 tests: the nudge once in 24 h, the close with the task, the bell of the asker. **NO-GO until the spec answers B4 to B6 below** | HIGH (identity) |
 | **AP-9a** | 1859 | "Wait on someone" on the task card (the form, the refusals of §6.5, "Withdraw", the key `W` and the menu entry), the chip "Needs you" or "Waiting for Priya", and the extended read of §7.2 | The chip reads right for the addressee ("Needs you"), for another reader ("Waiting for Priya") and for two asks ("Waiting for 2"). The wire never holds the question for a person who is not a party. Each refusal of §6.5 shows its text. A send writes one ask. A withdraw removes the chip. With either flag off, the form and the chip draw nothing. R8 tests of the read. UI gate. **Built, dark, not merged** | MEDIUM |
-| **AP-9b** | 2225 | The board chip, the filter "Waiting on me" with person asks (`agent_focus_clause`), and the section "Asks with no answer" of the panel | Each needs a decision first: whether the count of the agent strip holds person asks, which field per row feeds the board chip, and the scope rule of the panel. The filter lists a person ask. UI gate. **NO-GO until §8 answers the three** | MEDIUM |
+| **AP-9b** | 2225 | The board chip, the filter "Waiting on me" with person asks (`agent_focus_clause`), and the section "Asks with no answer" of the panel | Each needs a decision first: whether the count of the agent strip holds person asks, which field per row feeds the board chip, and the scope rule of the panel. The filter lists a person ask. UI gate. **NO-GO until the spec answers B7 to B9 below** | MEDIUM |
 | **AP-10** | 1860 | The chat tools `ask_person`, `withdraw_ask`, `my_waits` and `answer_wait` | Each tool calls the AP-8 or AP-1 route. `ask_person` raises a card. The new-chat-tool fence set passes | STANDARD |
 | **AP-11** | 1861 | "Wait for Priya's reply" in the comment box | One Send writes the comment and the ask. A reply from Priya in the thread answers it | STANDARD |
 | **AP-12** | 1862 | The Team lens of §4.3 | R8 tests hold V7 and V6. The lens has no answer control. A reader without the right gets 403 | HIGH (visibility) |
@@ -599,6 +605,12 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 - **B4. The bell of the asker on an answer.** Option (a): a `comment` row, because the answer writes a comment. Option (b): a new kind `ask_answered`, named in each place that a bell kind must be.
 - **B5. Where the 24 h nudge state lives.** Option (a): `EXISTS` on `pm_notifications` of the kind `nudge` for the pair in the last 24 h. Option (b): a `nudged_at` column on `pm_decisions`. The bell text depends on AP-BUG-1 (PR 1812).
 - **B6. How an ask closes with its task.** Option (a): a sweep, as `agent_run_sweep` reads `closed_task_run_ids`. Option (b): a hook on each status write. `task_closed_sql` reads `alias.task_id`, and `pm_decisions` has `subject_id`.
+
+**AP-9b: the three open points.** Write each one before AP-9b starts.
+
+- **B7. The agent strip count.** Option (a): the count of "Waiting on me" holds person asks too. Option (b): the strip keeps counting agent runs only, and person asks show on the chip and the filter.
+- **B8. The field for the board chip.** Option (a): a per-row field in the board read, such as `waiting_on_count`. Option (b): one read of open asks for the visible tasks. Each option must keep the question out of the row (ALN-2b).
+- **B9. The scope of "Asks with no answer".** Option (a): the asks that the caller made. Option (b): every ask in the scope that the caller can open. Option (b) lists a person for a reader who is not a party, so it needs the rule of V6 first.
 
 **Build order.**
 
@@ -710,3 +722,4 @@ Each open question has a recommended answer. The build uses it as a working defa
 - 2026-11-06 — AP-1a built on branch `pro-ap1` (task 1616), dark behind `WAITING_ORGS`. Four kinds: `held_write`, `chat_ask`, `app_request` and `decision`. §7.3 now says that the providers stay in `waiting.py` and holds the wire shape. §8 splits AP-1 into AP-1a, AP-1b and AP-1c. §5.2 shows no question text for `chat_ask`. §2.2 records that PR 1741 and EA-18a merged, and the conflict of D-EA-14 with AP-Q2.
 - 2026-11-07 — AP-8a built on branch `pro-ap8` (task 1858), dark behind `WAITING_ORGS` and `DECISIONS_ORGS`. Migration 359 widens the source CHECK and adds `due_at`, `closed_at` and `closed_reason`. §7.2 names both flags and the rule of guard 5. §8 splits AP-8 into AP-8a and AP-8b, and AP-8b holds B4 to B6. AP-1a merged as `bf0ece44b`.
 - 2026-11-08 — AP-9a built on branch `pro-ap9` (task 1859), dark behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8a merged as `f9b7969e2`. §8 splits AP-9 into AP-9a and AP-9b (task 2225). §7.2 holds the wire shape of the extended read. The anchor of `agent_focus_clause` is `filters.py:1487`.
+- 2026-11-08 — Fix round of AP-9a. The chip and the form draw only when `asks` is a list. A host with no form wiring (My Tasks) offers no form. Withdraw asks first. The flag probe reads the first loaded task once per page load, and stays advisory. B7 to B9 added for AP-9b.

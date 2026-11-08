@@ -137,3 +137,22 @@ export function withdrawFailure(status: number | undefined, detail: unknown): { 
   void detail;
   return { text: "Could not withdraw the ask. Try again.", reload: false };
 }
+
+/**
+ * The form and its button draw only when the person ask is on for the org
+ * (`asks` is a list) AND the host wired the form (it passes `waitRequest`).
+ * My Tasks passes nothing, so a personal task there never offers a form whose
+ * refusal gives the wrong next step.
+ */
+export function canOfferAsk(asks: readonly unknown[] | null, waitRequest: number | undefined): boolean {
+  return asks !== null && waitRequest !== undefined;
+}
+
+/** A withdraw cannot be undone, so it asks first (DESIGN_SYSTEM M5). */
+export function withdrawConfirm(name: string): { title: string; body: string } {
+  const who = name || "this person";
+  return {
+    title: "Withdraw this ask?",
+    body: `${who} stops seeing it. This cannot be undone. Ask again if you still need an answer.`,
+  };
+}
