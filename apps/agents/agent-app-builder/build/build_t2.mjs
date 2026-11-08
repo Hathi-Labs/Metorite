@@ -55,7 +55,12 @@ const UI_PACKAGE = "@cc/ui";
 // apps/agents/agent-app-builder/build/build_t2.mjs -> repo root (5 levels up:
 // strip the filename, then build/ -> agent-app-builder/ -> agents/ -> apps/).
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "..", "..");
-const UI_SOURCE = join(REPO_ROOT, "workbench", "control_plane", "src", "lib", "artifactUi.tsx");
+// WS-43h: in the sandbox, the broker mounts a copy of these scripts with no
+// repo around them, and names the copy of artifactUi.tsx in
+// CUSTOM_APPS_T2_UI_SOURCE. With the variable unset, the path in the repo.
+const UI_SOURCE =
+  (process.env.CUSTOM_APPS_T2_UI_SOURCE || "").trim() ||
+  join(REPO_ROOT, "workbench", "control_plane", "src", "lib", "artifactUi.tsx");
 const uiAvailable = existsSync(UI_SOURCE);
 
 const ALLOWED_IMPORTS = new Set([

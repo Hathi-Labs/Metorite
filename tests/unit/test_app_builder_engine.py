@@ -47,9 +47,10 @@ pytest.importorskip("agent_framework_github_copilot", reason="the Copilot fallba
 from orchestrator import sandbox_broker as sb
 
 from tests.unit._maf_gateway_fakes import FakeGateway, gateway  # noqa: F401
-from tests.unit._native_maf_harness import (
+from tests.unit._native_maf_harness import (  # noqa: F401 — _a_tenant is a fixture
     REPO_ROOT,
     ScriptedModel,
+    _a_tenant,
     drive_native,
     load_agent_module,
     text_turn,
@@ -292,6 +293,32 @@ def test_run_command_refuses_the_tenant_dir(
     assert "only in an app's own workspace" in " ".join(gateway.tool_results(1))
 
 
+def test_the_file_tools_refuse_the_tenant_dir(
+    sandbox: Sandbox, app: Path, gateway: FakeGateway,  # noqa: F811
+) -> None:
+    """Review P2: the tenant dir ``o:<org>`` holds the uploads of every thread
+    and member (H-227). The flat map of an app dir would read another
+    member's upload, so the file tools refuse there, as ``run_command`` does."""
+    from acb_skills.agent_paths import ensure_state_dir
+
+    tenant = ensure_state_dir(AGENT, f"o:{ORG_A}")
+    other = tenant / "inputs" / "another-thread"
+    other.mkdir(parents=True)
+    (other / "upload.txt").write_text("ANOTHER MEMBER UPLOAD", encoding="utf-8")
+    gateway.say(
+        [("file_access_read", {"file_name": "inputs/another-thread/upload.txt"}),
+         ("file_access_ls", {"directory": "inputs"}),
+         ("file_access_write", {"file_name": "inputs/x.txt", "content": "x"})],
+        "ok",
+    )
+    agent = _built(ORG_A, app)
+    _run(tenant, ORG_A, lambda: agent.run("read the upload"), instance=f"o:{ORG_A}")
+    results = gateway.tool_results(1)
+    assert "ANOTHER MEMBER UPLOAD" not in " ".join(results)
+    assert all("works only in an app's own workspace" in r for r in results), results
+    assert not (tenant / "inputs" / "x.txt").exists()
+
+
 def test_a_flip_off_ends_the_tools_at_once(
     app: Path, gateway: FakeGateway, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
@@ -367,6 +394,41 @@ def test_the_registry_label_is_maf_and_the_object_decides(app: Path) -> None:
     assert _is_copilot_built(copilot, label) is True
 
 
+def test_the_roster_reports_the_runtime_that_a_run_takes(
+    app: Path, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    """Review P3: the label is "maf", and an org outside the target gets the
+    Copilot agent. The roster says what a run of that org takes."""
+    from gateway.routes.observability import _effective_runtime
+
+    entry = {"agent_runtime": "maf"}
+    assert _effective_runtime(AGENT, entry, ORG_A) == "maf"
+    assert _effective_runtime(AGENT, entry, ORG_B) == "github-copilot"
+    assert _effective_runtime(AGENT, entry, None) == "github-copilot"
+    assert _effective_runtime("email-assistant", entry, ORG_B) == "maf"
+
+
+@pytest.mark.usefixtures("_a_tenant")
+@pytest.mark.filterwarnings("ignore:coroutine .*run.* was never awaited:RuntimeWarning")
+def test_a_copilot_run_logs_its_own_runtime_and_not_the_label(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Review P3: a Copilot run of app-builder, under the label "maf", logs
+    "github-copilot" at each runtime line of the executor."""
+    from tests.unit.test_tier_policy import _tap
+    from tests.unit.test_tier_policy_agents import _stream_copilot
+
+    logs = _tap(monkeypatch)
+    _agent, _events = _stream_copilot(monkeypatch, tmp_path, AGENT, message="hi",
+                                     think_mode="thinking")
+    lines = [r for r in logs if r.get("event") in (
+        "executor.copilot_maf_byok_early", "executor.think_mode_applied",
+        "executor.maf_model_override",
+    )]
+    assert lines, [r.get("event") for r in logs][:40]
+    assert {r.get("runtime") for r in lines} == {"github-copilot"}, lines
+
+
 @pytest.fixture
 def stream_tenant(
     app: Path, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
@@ -424,6 +486,34 @@ def test_the_executor_runs_the_maf_agent_and_the_build_in_the_container(
     offered = {t["function"]["name"] for t in model.bodies[0].get("tools") or []}
     assert {"run_command", "file_access_write", "ask_questions"} <= offered, offered
     assert not offered & sb_withheld(), offered & sb_withheld()
+
+
+def test_a_github_copilot_label_sends_the_maf_agent_down_the_copilot_path(
+    app: Path, sandbox: Sandbox, stream_tenant: list[Any],  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Why WS-43h set the label to "maf" (done-when 2, review P2). Each
+    executor site reads "label OR object". With the old label, the MAF agent
+    takes the Copilot path, whose code needs ``_default_options``, so the run
+    fails and its model never gets a request."""
+    from gateway.routes.agent import _AGENT_REGISTRY
+    from orchestrator.executor import _is_copilot_built
+
+    assert _is_copilot_built(_built(ORG_A, app), "github-copilot") is True
+    entry = next(e for e in _AGENT_REGISTRY if e["name"] == AGENT)
+    monkeypatch.setitem(entry, "agent_runtime", "github-copilot")
+    model = ScriptedModel([
+        tool_turn("file_access_write", json.dumps({
+            "file_name": "index.html", "content": "<h1>New title</h1>\n", "overwrite": True,
+        }), "c1"),
+        text_turn("Done."),
+    ])
+    events, built = drive_native(AGENT, REL_DIR, monkeypatch, model,
+                                 message="Change the title.", thread_id=new_thread())
+    kinds = [e.get("type") for e in events]
+    assert built and "RUN_ERROR" in kinds and "RUN_FINISHED" not in kinds, kinds
+    assert model.bodies == [], "the MAF agent ran under the Copilot label"
+    assert (app / "index.html").read_text(encoding="utf-8") == "<h1>Old title</h1>\n"
 
 
 def sb_withheld() -> set[str]:
@@ -594,10 +684,17 @@ def test_the_checkpoint_git_runs_with_no_hook_and_no_file_monitor(
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(durability.subprocess, "run", capture)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("[core]\n\tbare = false\n", encoding="utf-8")
     durability._git(tmp_path, "status", "--porcelain")
-    argv, env = seen[0]
+    # The config check first, then the command (review P2).
+    check, command = seen
+    assert check[0][:3] == ["git", "config", "--file"] and "--no-includes" in check[0]
+    argv, env = command
     assert argv[:5] == ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]
-    assert env.get("GIT_CONFIG_NOSYSTEM") == "1"
+    assert "core.attributesFile=/dev/null" in argv and "commit.gpgSign=false" in argv
+    assert env.get("GIT_CONFIG_NOSYSTEM") == "1" and env.get("GIT_ATTR_NOSYSTEM") == "1"
+    assert env.get("GIT_CEILING_DIRECTORIES") == str(tmp_path.parent)
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")

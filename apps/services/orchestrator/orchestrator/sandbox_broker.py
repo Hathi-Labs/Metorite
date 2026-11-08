@@ -110,8 +110,17 @@ APP_BUILDER_BUILD_TARGET = "/opt/app-builder/build"
 T2_VENDOR_TARGET = "/opt/t2-vendor"
 #: The variable that ``build_t2.mjs`` reads for the vendor cache.
 T2_VENDOR_ENV = "CUSTOM_APPS_T2_VENDOR_DIR"
-#: The files of the agent's ``build/`` dir that the copy holds, and no other.
-APP_BUILDER_BUILD_FILES = ("build_t2.mjs", "install_t2_deps.mjs")
+#: The variable that ``build_t2.mjs`` reads for the source of ``@cc/ui``.
+T2_UI_ENV = "CUSTOM_APPS_T2_UI_SOURCE"
+#: Each file of the build copy, by its path in the repo, and no other file
+#: (§7.8). ``artifactUi.tsx`` is ``@cc/ui``: ``build_t2.mjs`` finds it from
+#: its own path in the repo, and the copy has no repo around it (review P1).
+APP_BUILDER_BUILD_SOURCES: dict[str, str] = {
+    "build_t2.mjs": "apps/agents/agent-app-builder/build/build_t2.mjs",
+    "install_t2_deps.mjs": "apps/agents/agent-app-builder/build/install_t2_deps.mjs",
+    "artifactUi.tsx": "workbench/control_plane/src/lib/artifactUi.tsx",
+}
+APP_BUILDER_BUILD_FILES = tuple(APP_BUILDER_BUILD_SOURCES)
 
 #: The system part of ``PATH``. The thread's ``.local/bin`` goes LAST, so a
 #: package one thread installs never shadows a system tool (§7.1 rule 6).
@@ -315,16 +324,54 @@ def _custom_apps_root() -> Path:
 
 
 def app_builder_build_source() -> Path | None:
-    """The agent's own ``build/`` dir in this checkout, or ``None`` (§7.8).
+    """The repo checkout that holds the agent's ``build/`` dir, or ``None`` (§7.8).
 
     It is found from this module's own path, never from input or a setting.
-    The broker copies only :data:`APP_BUILDER_BUILD_FILES` out of it.
+    The broker copies only :data:`APP_BUILDER_BUILD_SOURCES` out of it.
     """
     for parent in Path(__file__).resolve().parents:
         candidate = parent / "apps" / "agents" / "agent-app-builder" / "build"
         if candidate.is_dir() and not _is_link(candidate):
-            return candidate
+            return parent
     return None
+
+
+def ensure_app_git(workspace: Path) -> None:
+    """The app dir holds a real ``.git`` dir before a container starts (§7.5 rule A).
+
+    WS-43h (review P2). ``.git`` gets the empty read-only cover only when it
+    exists at the start. With no ``.git``, a container could write
+    ``.git/config`` and ``.gitattributes``, and the next host checkpoint
+    would run a planted filter on the host. So a missing ``.git`` is made
+    here with ``git init``, which reads no file of the work tree, and a
+    ``.git`` that is a link or a file is refused. It fails closed: no repo,
+    no container.
+    """
+    import subprocess
+
+    from acb_common.child_env import child_env
+
+    git_dir = workspace / ".git"
+    if _is_link(git_dir) or (git_dir.exists() and not git_dir.is_dir()):
+        raise SandboxRefused("The .git of the app dir is not a real dir, so no sandbox starts.")
+    if git_dir.is_dir():
+        return
+    try:
+        done = subprocess.run(
+            ["git", "-c", "core.hooksPath=/dev/null", "init", "-q", str(workspace)],
+            capture_output=True, text=True, timeout=_SMALL_TIMEOUT_SECONDS, check=False,
+            env=child_env(extra={
+                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CEILING_DIRECTORIES": str(workspace.parent),
+            }),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SandboxUnavailable(
+            "The app dir has no git repo, and git init did not run. No sandbox starts."
+        ) from exc
+    if done.returncode != 0 or _is_link(git_dir) or not git_dir.is_dir():
+        raise SandboxUnavailable(
+            "The app dir has no git repo, and git init failed. No sandbox starts."
+        )
 
 
 def _t2_vendor_source() -> Path | None:
@@ -800,8 +847,9 @@ def build_run_argv(
     if binding.target == APP_BUILDER_TARGET:
         # WS-43h (§7.8): `build_t2.mjs` reads the vendor cache here. The
         # value is the fixed container path of the read-only mount, never a
-        # host path, and it holds no secret.
+        # host path, and it holds no secret. `@cc/ui` is in the build copy.
         env[T2_VENDOR_ENV] = T2_VENDOR_TARGET
+        env[T2_UI_ENV] = f"{APP_BUILDER_BUILD_TARGET}/artifactUi.tsx"
     for key, value in env.items():
         argv += ["--env", f"{key}={value}"]
     return [*argv, image, *KEEPALIVE]
@@ -1786,6 +1834,8 @@ class SandboxBroker:
             prepare_projects_dirs(binding)
             cover = self.skill_cover(binding)
         if binding.target == APP_BUILDER_TARGET:
+            # Before the mounts: the .git cover needs a .git (review P2).
+            ensure_app_git(binding.workspace)
             readonly = self.app_builder_mounts()
         return mount_list(
             binding, self.git_cover(), readonly_mounts=readonly, skill_cover=cover,
@@ -1815,8 +1865,8 @@ class SandboxBroker:
     def app_builder_build_copy(self) -> Path | None:
         """A copy of the agent's build scripts, made for a start, or ``None``.
 
-        The copy holds only :data:`APP_BUILDER_BUILD_FILES`, so it holds no
-        ``.git`` and no other file of the agent dir. Its name is a digest of
+        The copy holds only :data:`APP_BUILDER_BUILD_SOURCES`, so it holds no
+        ``.git`` and no other file of the repo. Its name is a digest of
         the content, so a start never changes a copy that a running container
         mounts. Two starts that make the same copy at once each make a temp
         dir and rename it into place, as the skill cover does. A file-system
@@ -1836,8 +1886,8 @@ class SandboxBroker:
 
     def _build_app_builder_copy(self, source: Path) -> Path | None:
         files: dict[str, bytes] = {}
-        for name in APP_BUILDER_BUILD_FILES:
-            src = source / name
+        for name, rel in APP_BUILDER_BUILD_SOURCES.items():
+            src = source / rel
             if _is_link(src) or not src.is_file():
                 continue
             files[name] = src.read_bytes()

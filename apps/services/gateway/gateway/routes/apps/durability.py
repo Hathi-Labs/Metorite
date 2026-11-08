@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -22,6 +21,7 @@ from typing import Any
 
 from acb_auth import UserContext
 from acb_common.child_env import child_env
+from acb_skills import safe_open
 from fastapi import Depends, HTTPException
 from gateway.routes.apps._common import (
     MAX_SOURCE_FILE_BYTES,
@@ -33,6 +33,7 @@ from gateway.routes.apps._common import (
     _uid,
     app_workspace,
     get_app_or_404,
+    iter_app_files,
     manifest_entry_rel,
     parse_db_manifest,
     read_workspace_manifest,
@@ -47,11 +48,23 @@ from sqlalchemy import text
 # short-lived local ops so they get a tighter timeout than the scaffold.
 _GIT_IDENT = ("-c", "user.name=Metorite", "-c", "user.email=metorite@local")
 _GIT_TIMEOUT_S = 10
-#: Each checkpoint git runs with no file monitor and no hook (§7.5 rule A,
-#: WS-43h). A sandbox container writes the app workspace, and an empty
-#: read-only mount covers its ``.git``. These flags hold even if a ``.git``
-#: there was ever changed: host git then starts no program from it.
-_GIT_SAFE = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null")
+#: Each checkpoint git runs with no file monitor, no hook, no attributes file
+#: of the host and no signing program (§7.5 rule A, WS-43h). A sandbox
+#: container writes the app workspace, and an empty read-only mount covers
+#: its ``.git``. These flags hold even if a ``.git`` there was ever changed.
+_GIT_SAFE = (
+    "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+    "-c", "core.attributesFile=/dev/null", "-c", "commit.gpgSign=false",
+)
+#: The only keys that the ``.git/config`` of an app may hold. ``git init``
+#: writes these. Any other key, such as ``filter.<x>.clean``,
+#: ``diff.<x>.command``, ``include.path`` or ``gpg.program``, can start a
+#: program on the host, so host git refuses the repo (WS-43h, review P2).
+_TRUSTED_CONFIG_KEYS = frozenset({
+    "core.repositoryformatversion", "core.filemode", "core.bare",
+    "core.logallrefupdates", "core.symlinks", "core.ignorecase",
+    "core.precomposeunicode", "extensions.objectformat", "extensions.refstorage",
+})
 
 CHECKPOINT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
@@ -79,8 +92,21 @@ def list_workspace_text_files(
     else under that dir (a stray source map, a vendored ``node_modules``)
     stays excluded.
     """
-    out: list[Path] = []
-    if not workspace.is_dir():
+    return [workspace / rel for rel, _text in _eligible_text_files(workspace, manifest)]
+
+
+def _eligible_text_files(
+    workspace: Path, manifest: dict[str, Any] | None = None,
+) -> list[tuple[str, str]]:
+    """``[(rel, text)]`` of :func:`list_workspace_text_files`, read safely.
+
+    Every listing and every read goes through ``acb_skills.safe_open``
+    (§7.5 rule B, WS-43h review P0). A sandbox container writes the app dir,
+    so a link there must never reach a host file or another app's dir. A
+    link is never listed, and a path with a link at any depth is skipped.
+    """
+    out: list[tuple[str, str]] = []
+    if not workspace.is_dir() or workspace.is_symlink():
         return out
     entry_segments = tuple(
         s for s in manifest_entry_rel(
@@ -88,54 +114,43 @@ def list_workspace_text_files(
         ).split("/") if s
     )
     entry_dir_segments = entry_segments[:-1]
-    for dirpath, dirnames, filenames in os.walk(workspace):
-        rel_segments = tuple(
-            p for p in Path(dirpath).relative_to(workspace).parts if p != "."
-        )
-        dirnames[:] = sorted(
-            d for d in dirnames
-            if not d.startswith(".")
-            and (
-                d not in WORKSPACE_SKIP_DIRS
-                or (
-                    len(rel_segments) < len(entry_dir_segments)
-                    and rel_segments == entry_dir_segments[: len(rel_segments)]
-                    and d == entry_dir_segments[len(rel_segments)]
-                )
+
+    def keep_dir(parent: tuple[str, ...], d: str) -> bool:
+        return not d.startswith(".") and (
+            d not in WORKSPACE_SKIP_DIRS
+            or (
+                len(parent) < len(entry_dir_segments)
+                and parent == entry_dir_segments[: len(parent)]
+                and d == entry_dir_segments[len(parent)]
             )
         )
-        under_skip_dir = any(seg in WORKSPACE_SKIP_DIRS for seg in rel_segments)
-        for fname in sorted(filenames):
-            if fname.startswith("."):
+
+    for parts in iter_app_files(workspace, keep_dir):
+        if parts[-1].startswith("."):
+            continue
+        under_skip_dir = any(seg in WORKSPACE_SKIP_DIRS for seg in parts[:-1])
+        if under_skip_dir and parts != entry_segments:
+            continue
+        rel = "/".join(parts)
+        try:
+            raw = safe_open.read_bytes(workspace, rel, limit=MAX_SOURCE_FILE_BYTES)
+            if raw is None:
                 continue
-            if under_skip_dir and (*rel_segments, fname) != entry_segments:
-                continue
-            fpath = Path(dirpath) / fname
-            try:
-                if not fpath.is_file():
-                    continue
-                if fpath.stat().st_size > MAX_SOURCE_FILE_BYTES:
-                    continue
-                fpath.read_bytes().decode("utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            out.append(fpath)
-            if len(out) >= MAX_WORKSPACE_FILES:
-                return out
+            text_ = raw.decode("utf-8")
+        except (OSError, ValueError):  # a link, too large, or not UTF-8
+            continue
+        out.append((rel, text_))
+        if len(out) >= MAX_WORKSPACE_FILES:
+            return out
     return out
 
 
 def _read_workspace_files(workspace: Path) -> dict[str, tuple[str, str]]:
     """rel path → (content, sha256) for every eligible file (sync, executor)."""
-    out: dict[str, tuple[str, str]] = {}
-    for fpath in list_workspace_text_files(workspace):
-        try:
-            content = fpath.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        rel = str(fpath.relative_to(workspace)).replace("\\", "/")
-        out[rel] = (content, _sha256(content))
-    return out
+    return {
+        rel: (content, _sha256(content))
+        for rel, content in _eligible_text_files(workspace)
+    }
 
 
 def _sha256(content: str) -> str:
@@ -237,11 +252,10 @@ def rehydrate_workspace(row: Any, files: list[tuple[str, str]]) -> None:
             or any(s == ".." or s.startswith(".") for s in segments)
         ):
             continue
-        target = workspace.joinpath(*segments)
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-        except OSError as exc:
+            # The safe opener refuses a link at any depth (WS-43h review P0).
+            safe_open.write_bytes(workspace, "/".join(segments), content.encode("utf-8"))
+        except (OSError, ValueError) as exc:
             _log.warning(
                 "apps.rehydrate_write_failed", path=rel, error=str(exc)[:120],
             )
@@ -264,7 +278,7 @@ def _workspace_ready(row: Any, workspace: Path) -> bool:
         or parse_db_manifest(_field(row, "manifest"))
     )
     entry = str(manifest.get("entry") or "index.html")
-    return (workspace / entry).is_file()
+    return safe_open.is_file(workspace, entry)
 
 
 async def ensure_workspace(db: Any, row: Any) -> Path:
@@ -295,13 +309,58 @@ async def ensure_workspace(db: Any, row: Any) -> Path:
 
 # ── Git checkpoints (best-effort subprocess — None/[] on any failure) ────────
 
+def _git_repo_trusted(workspace: Path) -> bool:
+    """True when the app's ``.git`` is a real dir whose config host git may read.
+
+    §7.5 rule A (WS-43h, review P2). A container that wrote ``.git/config``
+    could name a filter, a diff driver or a signing program, and ``git add``
+    would run it on the host. The broker covers ``.git`` before a container
+    starts, and this check holds even if a ``.git`` was ever written: each
+    key of the config must be one that ``git init`` writes.
+    """
+    git_dir = workspace / ".git"
+    config = git_dir / "config"
+    if git_dir.is_symlink() or git_dir.is_junction() or not git_dir.is_dir():
+        return False
+    if config.is_symlink() or not config.is_file():
+        return False
+    try:
+        listed = subprocess.run(
+            ["git", "config", "--file", str(config), "--no-includes", "--list"],
+            cwd=str(workspace), capture_output=True, text=True,
+            timeout=_GIT_TIMEOUT_S, check=False,
+            env=child_env(extra={
+                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CEILING_DIRECTORIES": str(workspace.parent),
+            }),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if listed.returncode != 0:
+        return False
+    keys = {line.split("=", 1)[0].strip().lower() for line in listed.stdout.splitlines()}
+    foreign = sorted(k for k in keys if k and k not in _TRUSTED_CONFIG_KEYS)
+    if foreign:
+        _log.warning("apps.git_repo_refused", workspace=str(workspace), keys=foreign[:10])
+        return False
+    return True
+
+
 def _git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
-    # GIT_CONFIG_NOSYSTEM: no system config either (§7.5 rule A, WS-43h).
+    """Host git in an app dir, or ``None`` (§7.5 rule A, WS-43h).
+
+    Every command but ``init`` first asks :func:`_git_repo_trusted`. No
+    system config, no system attributes, and no search above the app dir.
+    """
+    if args[:1] != ("init",) and not _git_repo_trusted(workspace):
+        return None
     try:
         return subprocess.run(
             ["git", *_GIT_SAFE, *args], cwd=str(workspace), capture_output=True,
             text=True, timeout=_GIT_TIMEOUT_S, check=False,
-            env=child_env(extra={"GIT_CONFIG_NOSYSTEM": "1"}),
+            env=child_env(extra={
+                "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1",
+                "GIT_CEILING_DIRECTORIES": str(workspace.parent),
+            }),
         )
     except (OSError, subprocess.SubprocessError):
         return None

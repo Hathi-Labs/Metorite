@@ -718,16 +718,17 @@ def test_the_fence_accepts(name: str) -> None:
 
 
 _REAL = "apps/services/gateway/gateway/routes/apps/durability.py"
-#: The env of the checkpoint git (WS-43h added GIT_CONFIG_NOSYSTEM).
-_REAL_ENV = 'env=child_env(extra={"GIT_CONFIG_NOSYSTEM": "1"}),'
+#: The env of the checkpoint git. WS-43h gave it more names, over lines, so
+#: each mutation keeps the dict as a dummy argument and the file still parses.
+_REAL_ENV = "env=child_env(extra={"
 
 
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        (_REAL_ENV, "env=None,"),
-        (_REAL_ENV, "env=child_env(extra=dict(os.environ)),"),
-        (_REAL_ENV, ""),
+        (_REAL_ENV, "env=None, _x=({"),
+        (_REAL_ENV, "env=child_env(extra=dict(os.environ), _x={"),
+        (_REAL_ENV, "_x=({"),
     ],
     ids=["env-None", "extra-os-environ", "env-removed"],
 )

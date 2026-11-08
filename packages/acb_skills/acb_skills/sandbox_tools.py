@@ -1081,9 +1081,9 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
 #: The scope target of app-builder (§7.1, §7.8).
 APP_BUILDER_TARGET = "app_builder"
 
-#: The answer when a command would run in a dir that is not an app's own.
+#: The answer when a tool would work in a dir that is not an app's own.
 APP_ONLY_ANSWER = (
-    "{tool} refused: commands run in the sandbox only in an app's own "
+    "{tool} refused: the App Workshop builder works only in an app's own "
     "workspace. Open the app in the App Workshop, then ask again. Nothing ran."
 )
 
@@ -1108,9 +1108,24 @@ def _app_builder_binding(sb: Any, tool_name: str) -> tuple[Any, str | None]:
     return binding, None
 
 
-async def _no_sweep(binding: Any, *, since: float) -> list[str]:
-    """An app's files stay on disk only, as the Copilot CLI left them."""
-    del binding, since
+async def _sweep_app_links(binding: Any, *, since: float) -> list[str]:
+    """Remove each link that a command made in the app dir (WS-43h review P0).
+
+    The caller holds ``broker.host_files()``, so no process of the container
+    runs. A host reader that follows links (the host T2 build, git) then
+    never meets one. The app's files stay on disk only, as the Copilot CLI
+    left them, so nothing is mirrored and no card is shown.
+    """
+    import asyncio
+
+    from acb_skills import safe_open
+
+    del since
+    removed = await asyncio.to_thread(safe_open.remove_links, binding.workspace)
+    if removed:
+        _log.warning(
+            "sandbox_tools.app_links_removed", count=len(removed), paths=removed[:10],
+        )
     return []
 
 
@@ -1154,7 +1169,7 @@ async def app_builder_run_command(
         return APP_ONLY_ANSWER.format(tool=tool_name)
     return await _exec_and_sweep(
         sb, binding, command, timeout_s, tool_name=tool_name, label=tool_name,
-        sweep=_no_sweep,
+        sweep=_sweep_app_links,
     )
 
 
@@ -1172,6 +1187,11 @@ class RunAppFileStore(AgentFileStore):
     run's own dir, under the broker's dir lock. A call outside an
     ``app_builder`` run raises ``ValueError``, which the file tool shows to
     the model as its answer.
+
+    A run with a store key works in the tenant dir ``o:<org>``, which holds
+    the uploads of every thread and member (H-227). The flat map of an app
+    dir would read them all, so the file tools refuse there, as
+    ``run_command`` does (WS-43h review P2).
     """
 
     def _inner(self) -> Any:
@@ -1181,6 +1201,8 @@ class RunAppFileStore(AgentFileStore):
         binding, refusal = _app_builder_binding(sb, "file_access")
         if refusal is not None:
             raise ValueError(refusal)
+        if binding.instance:
+            raise ValueError(APP_ONLY_ANSWER.format(tool="file_access"))
         member = str(artifact_context().get("member") or "")
         guard = _WorkspaceGuard(sb.get_broker(), binding.workspace)
         return AppWorkspaceFileStore(workspace=binding.workspace, guard=guard, member=member)

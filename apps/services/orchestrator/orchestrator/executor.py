@@ -7251,6 +7251,11 @@ async def run_agent_stream(
             # turn) and the ask_user/working_directory wiring (audit
             # follow-up, 2026-07-22).
             _is_copilot_sdk = _is_copilot_built(agent, _agent_runtime)
+            # WS-43h (review P3): the runtime of THIS run, from the built
+            # object, for the log lines. The label can differ: app-builder
+            # is labelled "maf", and its factory builds a Copilot agent for
+            # an org outside `app_builder:<org>`.
+            _run_runtime = "github-copilot" if _is_copilot_sdk else "maf"
             # WS-43t2: the stored session of a native run. Tier 1 loads it,
             # and Tier 2 reuses it when Tier 1 fails before any output.
             _session_turn: Any = None
@@ -7406,7 +7411,7 @@ async def run_agent_stream(
                 _log.info(
                     "executor.copilot_maf_byok_early",
                     agent=agent_name,
-                    runtime=_agent_runtime,
+                    runtime=_run_runtime,
                     model=_byok_model_id_early,
                     base_url=_gw_base,
                 )
@@ -7424,7 +7429,7 @@ async def run_agent_stream(
                     _log.info(
                         "executor.maf_model_override",
                         agent=agent_name,
-                        runtime=_agent_runtime,
+                        runtime=_run_runtime,
                         model=_final_model_early,
                     )
                 except Exception:
@@ -7448,7 +7453,7 @@ async def run_agent_stream(
                             _log.info(
                                 "executor.think_mode_applied",
                                 agent=agent_name,
-                                runtime=_agent_runtime,
+                                runtime=_run_runtime,
                                 think_mode=think_mode,
                             )
                     except Exception:  # never break a run over a rendering hint

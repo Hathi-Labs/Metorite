@@ -554,6 +554,21 @@ def app_builder_engine_for_run() -> bool:
     return bool(org) and sb.maf_coding_scope_allows(APP_BUILDER_TARGET, str(org).strip())
 
 
+def app_builder_runtime_for(org: str | None) -> str:
+    """The runtime of an app-builder run in *org* (WS-43h review P3).
+
+    ``"maf"`` when ``MAF_CODING_SCOPE`` names ``app_builder`` for *org*, so
+    the factory builds the harness agent. Else ``"github-copilot"``: the
+    factory builds the Copilot agent, whatever the registry label says.
+    """
+    if not org:
+        return "github-copilot"
+    from orchestrator import sandbox_broker as sb
+
+    allowed = sb.maf_coding_scope_allows(APP_BUILDER_TARGET, str(org).strip())
+    return "maf" if allowed else "github-copilot"
+
+
 def build_app_builder_agent(*, instructions: str, model: str, description: str = "") -> Any:
     """app-builder's harness agent (§7.8), on the one factory of ``code_task``.
 

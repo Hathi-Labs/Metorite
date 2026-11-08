@@ -17,12 +17,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
 from acb_auth import UserContext, UserRole, get_current_user
 from acb_common import get_logger, get_settings
+from acb_skills import safe_open
 from fastapi import APIRouter, Depends, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
@@ -249,6 +250,68 @@ def resolve_app_file(app_workspace: Path, rel: str) -> Path:
     return resolved
 
 
+def clean_app_rel(rel: str) -> str:
+    """The clean relative path of an app file, or 400.
+
+    The rules of :func:`resolve_app_file`, with no ``resolve()``: no absolute
+    path, no ``..`` and no part that starts with a dot. The caller opens the
+    path through ``acb_skills.safe_open``, which refuses a link at any depth
+    (``maf_coding_engine.md`` §7.5 rule B). A sandbox container can write an
+    app dir (WS-43h), so a check that resolves and then opens is a race.
+    """
+    clean = (rel or "").replace("\\", "/").strip()
+    if not clean or clean.startswith("/") or Path(clean).is_absolute():
+        raise HTTPException(status_code=400, detail="Invalid path")
+    segments = [s for s in clean.split("/") if s]
+    if not segments or any(s == ".." or s.startswith(".") for s in segments):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    return "/".join(segments)
+
+
+def iter_app_files(
+    workspace: Path, keep_dir: Callable[[tuple[str, ...], str], bool],
+) -> Iterator[tuple[str, ...]]:
+    """The parts of each regular file below *workspace*, with no link followed.
+
+    The order of ``os.walk`` with sorted names: the files of a dir, then each
+    kept subdir. ``keep_dir(parent_parts, name)`` prunes a dir. A link, a
+    device, a socket and a FIFO are never listed (``safe_open.list_dir``).
+    """
+    def walk(parts: tuple[str, ...]) -> Iterator[tuple[str, ...]]:
+        try:
+            listed = safe_open.list_dir(workspace, "/".join(parts))
+        except (safe_open.UnsafePath, OSError):
+            return
+        for name, kind in listed or []:
+            if kind == "file":
+                yield (*parts, name)
+        for name, kind in listed or []:
+            if kind == "dir" and keep_dir(parts, name):
+                yield from walk((*parts, name))
+
+    yield from walk(())
+
+
+def workspace_links(workspace: Path) -> list[str]:
+    """Each symbolic link (or junction) below *workspace*, as a rel path.
+
+    It follows no link. A host process that follows links, such as the host
+    T2 build, refuses a dir that holds one.
+    """
+    import os
+
+    found: list[str] = []
+    if not workspace.is_dir() or workspace.is_symlink():
+        return found
+    for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
+        here = Path(dirpath)
+        for name in (*dirnames, *filenames):
+            entry = here / name
+            if entry.is_symlink() or entry.is_junction():
+                found.append(entry.relative_to(workspace).as_posix())
+    return sorted(found)
+
+
 # ── Visibility predicates (pure — the tests exercise the full matrix) ────────
 
 def _field(row: Any, name: str) -> Any:
@@ -348,10 +411,12 @@ def default_manifest(
 def read_workspace_manifest(workspace: Path) -> dict[str, Any] | None:
     """Parse ``{workspace}/app.json``; None when missing/unparseable."""
     try:
-        raw = (workspace / "app.json").read_text(encoding="utf-8")
-        data = json.loads(raw)
+        raw = safe_open.read_bytes(workspace, "app.json", limit=MAX_SOURCE_FILE_BYTES)
+        if raw is None:
+            return None
+        data = json.loads(raw.decode("utf-8"))
         return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
+    except (OSError, ValueError):  # UnsafePath is a ValueError: a link refuses
         return None
 
 
