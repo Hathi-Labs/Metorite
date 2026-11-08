@@ -105,7 +105,8 @@ AGENT_MAX_COMMENT_CHARS = 20_000
 #: when a signed agent edits or deletes a comment that its own client did not
 #: write. It names who may change the comment. The edge matches this text and
 #: sends its own copy (``agent_edge.tools.COMMENT_NOT_OWN_DETAIL``), and
-#: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal.
+#: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal. Rules 1 to 3 of
+#: ``_load_agent_comment`` (fix rounds 1 and 2) send the same detail.
 AGENT_COMMENT_NOT_OWN = "Only its author can change this comment in Metorite."
 
 #: MCP-G9 fix round 1, rule 1. The key in ``meta`` that a person's edit sets
@@ -377,11 +378,13 @@ async def _load_agent_comment(
     404. Only a comment on a task that the agent can already read reaches the
     403, and the timeline of that task already shows its author.
 
-    Fix round 1 adds two refusals after the 404 checks, with the same 403.
-    Rule 1: a comment that a person edited (``meta.person_edited``, set by
-    ``_mark_person_edit``), because its words are now the person's. Rule 2: a
-    comment of an agent run (``meta.agent_run_id``), because the run reads it
-    as the record of what the member was asked and what the agent answered.
+    Fix rounds 1 and 2 add three refusals after the 404 checks, with the same
+    403. Rule 1: a comment that a person edited (``meta.person_edited``, set
+    by ``_mark_person_edit``), because its words are now the person's. Rule 2:
+    a comment of an agent run (``meta.agent_run_id``), because the run reads
+    it as the record of what the agent asked and answered. Rule 3: a comment
+    with a reply that this client did not write (``_has_other_reply``),
+    because the reply answers the words that the comment holds now.
 
     ``FOR UPDATE`` holds the row until the change commits, so a delete that
     commits first makes this read find nothing (404), and the change never
@@ -418,7 +421,32 @@ async def _load_agent_comment(
     # or its answer.
     if RUN_COMMENT_KEY in meta:
         raise HTTPException(status_code=403, detail=AGENT_COMMENT_NOT_OWN)
+    # Rule 3: somebody else replied, so the comment is the question of a reply.
+    if await _has_other_reply(db, activity_id, actor(user).lower(), via):
+        raise HTTPException(status_code=403, detail=AGENT_COMMENT_NOT_OWN)
     return row
+
+
+async def _has_other_reply(db: Any, activity_id: str, who: str, via: str) -> bool:
+    """Rule 3 of MCP-G9 (fix round 2): True when a reply to the comment is
+    not the agent's own.
+
+    A reply is the agent's own only when *who* (the member) wrote it, its
+    ``meta.via`` is *via*, and no person edited it (rule 1). Any other reply
+    counts: one that the member typed in the app or the chat, one of another
+    member, and one of another agent client. A deleted reply counts too: the
+    check fails closed, and the soft delete keeps the row.
+    """
+    found = (await db.execute(
+        text(
+            "SELECT 1 FROM pm_activities WHERE parent_id = CAST(:aid AS uuid)"
+            " AND NOT (lower(created_by) = :who"
+            " AND COALESCE(meta ->> 'via', '') = :via"
+            " AND (meta ->> CAST(:mark AS text)) IS NULL) LIMIT 1"
+        ),
+        {"aid": activity_id, "who": who, "via": via, "mark": PERSON_EDITED_KEY},
+    )).fetchone()
+    return found is not None
 
 
 async def _mark_person_edit(db: Any, activity_id: str) -> None:

@@ -52,6 +52,13 @@ Fix round 1 adds rules 1 and 2 (spec §9.2) and three more mutations.
 * G7. ``G/activities.py``: ``_load_agent_comment`` drops the check of
   ``RUN_COMMENT_KEY``. ``test_q1_a_comment_of_an_agent_run_stays_as_written``
   turns red.
+
+Fix round 2 adds rule 3 (a reply of somebody else) and the tests of the
+order (O1 to O4, which are 404 by the checks that come first).
+
+* G8. ``G/activities.py``: ``_load_agent_comment`` drops the call of
+  ``_has_other_reply``. ``test_y1_a_reply_of_somebody_else_ends_the_agent_change``
+  and ``test_y2_an_edited_or_a_deleted_reply_counts`` turn red.
 """
 from __future__ import annotations
 
@@ -162,6 +169,7 @@ def world():
     # Fix round 1: an agent run asks on a task that is in progress.
     doing = a.status(team, "Doing", "in_progress", 1)
     elsewhere_todo = a.status(elsewhere, "To do", "todo", 0)
+    elsewhere_doing = a.status(elsewhere, "Doing", "in_progress", 1)
 
     # The second tenant: a task and a comment of MEMBER with the stamp of
     # `write`. Only the tenant differs from a comment that the agent may change.
@@ -180,6 +188,7 @@ def world():
         task=lambda title: a.task(team, todo, title),
         doing_task=lambda title: a.task(team, doing, title),
         elsewhere_task=lambda title: a.task(elsewhere, elsewhere_todo, title),
+        elsewhere_doing_task=lambda title: a.task(elsewhere, elsewhere_doing, title),
         foreign=foreign)
     world_.c["write"], world_.tok["write"] = a.connection(scopes=w.WRITE_SCOPES)
     world_.c["pinned"], world_.tok["pinned"] = a.connection(
@@ -691,13 +700,15 @@ class TestAPersonIsUnchanged:
 # ── Fix round 1: rules 1 and 2 ──────────────────────────────────────────────
 
 
-async def _refused_one(live, cid: str, tool: str, name: str = "write") -> None:
-    """*tool* gets the 403 text, and the comment and its timeline stay."""
+async def _refused_one(live, cid: str, tool: str, name: str = "write",
+                       expected: str = NOT_OWN) -> None:
+    """*tool* gets *expected* (the 403 text by default), and the comment and
+    its timeline stay."""
     before = _comment(live, cid)
     extra = {"body": "an agent's rewrite"} if tool == "update_comment" else {}
     said = await _tool(live, name, tool, comment_id=cid,
                        idempotency_key=_key(f"fr1-{tool[:3]}"), **extra)
-    assert w._text(said) == NOT_OWN, said
+    assert w._text(said) == expected, said
     after = _comment(live, cid)
     assert (after.body, after.deleted_at, after.updated_at, after.meta) == (
         before.body, before.deleted_at, before.updated_at, before.meta)
@@ -758,3 +769,125 @@ class TestFixRoundOne:
             for tool in ("update_comment", "delete_comment"):
                 await _refused_one(live, str(row.id), tool)
         assert "staging rows" in _comment(live, str(rows[0].id)).body
+
+
+# ── Fix round 2: rule 3 and the order ───────────────────────────────────────
+
+COMMENT_TOOLS = ["update_comment", "delete_comment"]
+
+
+async def _reply(live, root: str, task: str, who: str, words: str) -> str:
+    """A reply to *root*: ``member`` and ``chat`` through the person path,
+    ``peer`` as another member, ``other`` and ``own`` through ``add_comment``
+    of the connection ``other`` or ``write``."""
+    if who in ("member", "chat", "peer"):
+        r = await _person(live, PEER if who == "peer" else MEMBER, "POST",
+                          f"/projects/tasks/{task}/comments",
+                          {"body": words, "parent_id": root},
+                          via=CHAT_VIA if who == "chat" else None)
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+    said = await _tool(live, "write" if who == "own" else "other", "add_comment",
+                       task_id=task, body=words, parent_id=root,
+                       idempotency_key=_key(f"reply-{who}"))
+    assert said["isError"] is False, said
+    return said["structuredContent"]["id"]
+
+
+async def _run_question(live, task: str) -> str:
+    """The comment of a question that the run of ``write`` asks on *task*."""
+    asked = await _tool(live, "write", "ask_on_task", task_id=task,
+                        question="May I drop the staging rows?",
+                        idempotency_key=_key("ask"))
+    assert asked["isError"] is False, asked
+    run_id = asked["structuredContent"]["run"]["id"]
+    with live.admin.begin() as c:
+        [row] = list(c.execute(text(
+            "SELECT id FROM pm_activities WHERE type = 'comment'"
+            " AND meta->>'agent_run_id' = :r"), {"r": run_id}))
+    return str(row.id)
+
+
+class TestFixRoundTwo:
+    """Rule 3: a comment with a reply that this client did not write stays as
+    written. The order: a marked comment and a run comment answer 404, not
+    403, after a delete or outside the pin."""
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    @pytest.mark.parametrize("who", ["member", "chat", "peer", "other"])
+    async def test_y1_a_reply_of_somebody_else_ends_the_agent_change(
+            self, live, tool, who):
+        """The agent asks, somebody replies "Yes", and the agent may not
+        reword the question to "production rows"."""
+        task = live.task(f"y1 {who}")
+        root = await _agent_comment(live, task, "y1 May I drop the staging rows?")
+        await _reply(live, root, task, who, "Yes")
+        await _refused_one(live, root, tool)
+        assert _comment(live, root).body == "y1 May I drop the staging rows?"
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    @pytest.mark.parametrize("case", ["edited own reply", "deleted member reply"])
+    async def test_y2_an_edited_or_a_deleted_reply_counts(self, live, tool, case):
+        """An own reply that the member edited holds the member's words, and a
+        deleted reply keeps its row: the check fails closed."""
+        task = live.task("y2")
+        root = await _agent_comment(live, task, "y2 May I drop the staging rows?")
+        if case == "edited own reply":
+            reply = await _reply(live, root, task, "own", "y2 own note")
+            r = await _person(live, MEMBER, "PATCH", f"/projects/comments/{reply}",
+                              {"body": "Yes"})
+        else:
+            reply = await _reply(live, root, task, "member", "Yes")
+            r = await _person(live, MEMBER, "DELETE", f"/projects/comments/{reply}")
+        assert r.status_code == 200, r.text
+        await _refused_one(live, root, tool)
+
+    async def test_y3_a_comment_with_only_its_own_replies_stays_open(self, live):
+        """The control of Y1: the replies of this client do not refuse it."""
+        task = live.task("y3")
+        root = await _agent_comment(live, task, "y3 note")
+        await _reply(live, root, task, "own", "y3 more")
+        await _reply(live, root, task, "own", "y3 and more")
+        upd = await _tool(live, "write", "update_comment", comment_id=root,
+                          body="y3 fixed note", idempotency_key=_key("y3u"))
+        assert upd["isError"] is False, upd
+        assert _comment(live, root).body == "y3 fixed note"
+        gone = await _tool(live, "write", "delete_comment", comment_id=root,
+                           idempotency_key=_key("y3d"))
+        assert gone["structuredContent"] == {"id": root, "deleted": True}, gone
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    async def test_o1_a_marked_comment_outside_the_pin_is_not_found(self, live, tool):
+        task = live.elsewhere_task("o1")
+        cid = await _agent_comment(live, task, "o1 note")
+        r = await _person(live, MEMBER, "PATCH", f"/projects/comments/{cid}",
+                          {"body": "o1 the member's words"})
+        assert r.status_code == 200, r.text
+        assert "person_edited" in _comment(live, cid).meta
+        await _refused_one(live, cid, tool, name="pinned", expected=NOT_FOUND)
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    async def test_o2_a_marked_comment_after_a_delete_is_not_found(self, live, tool):
+        task = live.task("o2")
+        cid = await _agent_comment(live, task, "o2 note")
+        path = f"/projects/comments/{cid}"
+        assert (await _person(live, MEMBER, "PATCH", path,
+                              {"body": "o2 the member's words"})).status_code == 200
+        assert (await _person(live, MEMBER, "DELETE", path)).status_code == 200
+        await _refused_one(live, cid, tool, expected=NOT_FOUND)
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    async def test_o3_a_run_comment_outside_the_pin_is_not_found(
+            self, live, tool, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        cid = await _run_question(live, live.elsewhere_doing_task(f"o3 {tool}"))
+        await _refused_one(live, cid, tool, name="pinned", expected=NOT_FOUND)
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    async def test_o4_a_run_comment_after_a_delete_is_not_found(
+            self, live, tool, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        cid = await _run_question(live, live.doing_task(f"o4 {tool}"))
+        r = await _person(live, MEMBER, "DELETE", f"/projects/comments/{cid}")
+        assert r.status_code == 200, r.text
+        await _refused_one(live, cid, tool, expected=NOT_FOUND)

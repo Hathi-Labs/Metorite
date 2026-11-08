@@ -5795,9 +5795,13 @@ TEXT_COMMENT_NOT_FOUND = "Comment not found."
 #: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal. The edge matches
 #: the detail and sends its own text, never the detail.
 COMMENT_NOT_OWN_DETAIL = "Only its author can change this comment in Metorite."
+#: MCP-G9 fix round 2: the text names the three rules of fix rounds 1 and 2,
+#: because the gateway sends the one detail for each of them too.
 TEXT_COMMENT_NOT_OWN = (
     COMMENT_NOT_OWN_DETAIL + " An agent can change only a comment that its own"
-    " client wrote. Nothing changed.")
+    " client wrote. It cannot change a comment that a person edited, or a"
+    " question or an answer of an agent run. It cannot change a comment with a"
+    " reply that this client did not write. Nothing changed.")
 TEXT_COMMENT_CHANGE_KEY_REUSED = (
     "This idempotency_key was used for a different change. Send a new key.")
 TEXT_COMMENT_CHANGE_KEY_UNKNOWN = (
@@ -5943,7 +5947,8 @@ _COMMENT_RULE_TEXT = (
     " client. Metorite refuses a comment that the member typed or edited in"
     " Metorite, a comment of an agent run (a question or an answer), a"
     " comment of another member and a comment of another agent client, and"
-    " nothing changes. A comment that is gone, or on a task that this"
+    " nothing changes. It also refuses a comment with a reply that this client"
+    " did not write. A comment that is gone, or on a task that this"
     " connection cannot reach, answers Comment not found. The timeline of the"
     " task gets one row that says what changed and names your client. That"
     " row holds no text of the comment."
