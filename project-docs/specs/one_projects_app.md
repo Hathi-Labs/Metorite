@@ -305,6 +305,23 @@ more. Every other control opens in a bottom sheet.
 
 D-OP-7 holds this split.
 
+**View tabs (D-OP-17, proposed, built in OP-12, owner preview pending).** On
+the desktop and the tablet, the View popover no longer holds the canvas strip
+or the list of saved views. They are one tab row under the title bar:
+
+```
+Overview  Board  List  Table  Calendar  Timeline │ My open bugs  Sprint │ + View
+```
+
+`ViewTabs` draws the row with `ModeSwitch`, so the tab on screen wears the ON
+pair. `lib/viewTabs.ts` holds the fold rule. Below 1280 px of window, or when
+the labels do not fit, the canvas tabs show their icon alone, and the tooltip
+names the key (o, b, l, t, c, m). The tabs that still do not fit fold into a
+"More" menu, last first, and the tab on screen never folds. The row never
+scrolls sideways. A new canvas is one entry in `VIEW_MODES`. The phone keeps
+the View sheet of §5.2, with the canvases and the saved views as a vertical
+list. The popover keeps its other rows until OP-13.
+
 ### 5.4 The same layout in My work
 
 The My work views use the same tool row and sheets. The Filters sheet of My
@@ -395,7 +412,7 @@ list of pending routes is empty since OP-6d.
 | **D-OP-15** | A task in a member's personal space is shown to that member only. A member who may read every project (`data:org:read`) does not read it, in the app, the chat, search, reports or an outside agent. A Projects admin does not read it either. The owner's own reads do not change. A grant on a personal node shows it to nobody but the owner, so a stray `org`, `group:` or email grant written before OP-6b is inert. Three exceptions are accepted. (a) The assignee arm: a task that a member explicitly handed to another member (D63, H-304) shows to that assignee. `assert_assignable_here` refuses a new assignment into another member's personal tree. (b) `people/core.py compute_load` counts the open tasks assigned to a person, their own personal tasks too, as a number with no title. (c) `projects/vocabulary.py` counts the tasks that use each tag, field and type on the admin vocabulary page, org-wide and personal tasks too, as a number with no title | Owner, 2026-10-24, in chat ("go ahead with your recommendation"). The grant arm and the three exceptions: supervisor decision, OP-9 fix round 1, 2026-10-24 |
 | **D-OP-16** | A folder can become a project, and only in that direction. `POST /projects/nodes/{id}/convert` changes the kind in one transaction. The projects inside become subprojects, because the code derives a level from the kind and the place. The grammar decides through `assert_node_grammar`: a child project with subprojects of its own is too deep, and the 422 names it. The grant authority of D-OP-11 applies, and the owner of a personal tree may convert their own folder. The grants, the lead, the name, the place and `personal_owner` do not change | Owner, 2026-10-24, in chat ("please allow the conversion of a folder into a project"). The shape: supervisor decision, OP-10, 2026-10-24 |
 | **D-OP-8** | The phone tab bar of Projects is Menu, My work, Capture, Search, Ask | Accept |
-| **D-OP-17** | On desktop and tablet, the six canvases and the saved views are one tab row under the title bar. The View popover becomes Display, and it holds only the settings of the canvas on screen. It amends D-OP-7 for the View sheet. The phone keeps the sheet of §5.2, with a vertical list in place of the sideways strip (OP-12 to OP-14) | Proposed by the agent from the owner's report of 2026-10-27. The owner may overrule it |
+| **D-OP-17** | On desktop and tablet, the six canvases and the saved views are one tab row under the title bar. The View popover becomes Display, and it holds only the settings of the canvas on screen. It amends D-OP-7 for the View sheet. The phone keeps the sheet of §5.2, with a vertical list in place of the sideways strip (OP-12 to OP-14) | Proposed by the agent from the owner's report of 2026-10-27. **Proposed, built in OP-12 (2026-11-08), owner preview pending.** The owner's preview decides it, and the owner may overrule it |
 
 ---
 
@@ -1424,7 +1441,7 @@ not change a colour, a typeface or a control style (DESIGN_SYSTEM.md).
 
 ### OP-12 to OP-14 — view tabs and the Display popover · PLANNED · AGENT-SAFE
 
-**Status: PLANNED, 2026-10-27.** Owner report with a screenshot: the canvas
+**Status: OP-12 BUILT 2026-11-08 (task 839), branch `mt-ca3c2088-op12-view-tabs`, owner preview pending. OP-13 and OP-14 PLANNED.** Owner report with a screenshot: the canvas
 strip in the View popover scrolls sideways, and the popover mixes three jobs.
 D-OP-17 holds the design. It amends D-OP-7 for the View sheet only. The
 phone layout of §5.2 stays.

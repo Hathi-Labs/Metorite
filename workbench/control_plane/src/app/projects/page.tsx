@@ -84,6 +84,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
+import { ViewTabs } from "./components/ViewTabs";
 import { chromeKind, compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import {
   isMyTasksApp,
@@ -250,7 +251,7 @@ import { SkeletonBoard, SkeletonTree } from "@/components/ui/Skeleton";
 import { useUndoScope } from "@/components/UndoProvider";
 import UndoControls from "@/components/UndoControls";
 import { EXPORT_FILENAME, exportPath } from "./lib/export";
-import { DEFAULT_SHOWN } from "./lib/shownFields";
+import { DEFAULT_SHOWN, sameFieldSet } from "./lib/shownFields";
 import { toggleLane } from "./lib/swimlanes";
 import type { TableSort } from "./lib/table";
 import {
@@ -1905,6 +1906,14 @@ function ProjectsWorkspace() {
     setAttentionFor(null);
     setChosenMode(next);
   };
+  // OP-12: the saved views of the tab row. The project's order-bearing board
+  // is withheld, as the filter chrome withholds it (it is not a saved filter).
+  const tabViews = views.filter((v) => v.id !== orderBearingView(views)?.id);
+  const viewsUntouched =
+    !isFiltered(filters) &&
+    groupBy === "status" &&
+    lanes.subGroupBy === "none" &&
+    sameFieldSet(shownFields, DEFAULT_SHOWN);
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -5944,12 +5953,36 @@ function ProjectsWorkspace() {
               // an action row that cannot wrap paints its right half over the
               // chat column (measured at 1440, 2026-09-23).
               <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5">
-                <ModeSwitch
-                  modes={MODE_OPTIONS}
-                  mode={shownMode}
-                  layout="toolbar"
-                  onPick={pickMode}
-                />
+                {compactChrome ? (
+                  // WS-64 OP-12 (D-OP-17) — the canvases and the saved views
+                  // are one tab row. The View popover no longer holds them.
+                  <ViewTabs
+                    canvas={shownMode}
+                    onCanvas={pickMode}
+                    views={tabViews}
+                    activeViewId={activeViewId}
+                    onView={(view) => {
+                      // A saved view filters a list. From the Overview or the
+                      // lens, it opens on the canvas it was saved from.
+                      setAttentionFor(null);
+                      if (mode === "overview" || attentionLens) {
+                        setChosenMode(view.view_type === "board" ? "board" : "list");
+                      }
+                      applyView(view);
+                    }}
+                    onAddView={(name) => void saveView(name)}
+                    onDeleteView={(view) => void deleteView(view)}
+                    canAddView={Boolean(selected) && !viewsUntouched}
+                    addViewHint="Filter, regroup or change the fields first. An untouched view is the board."
+                  />
+                ) : (
+                  <ModeSwitch
+                    modes={MODE_OPTIONS}
+                    mode={shownMode}
+                    layout="toolbar"
+                    onPick={pickMode}
+                  />
+                )}
                 {/* WS-55 SW-11a — the lens beside the board's other lenses.
                     Pressed while the list is on screen. */}
                 {selected ? (
