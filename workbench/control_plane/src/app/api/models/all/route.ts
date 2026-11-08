@@ -233,6 +233,11 @@ export async function GET(): Promise<
   };
 
   const models: UnifiedModel[] = [
+    // ⓪ Auto: the agent's own engine picks the model. "copilot" is the name of the
+    //    agent-executor mode (the MAF tool path), not the SDK. It is the only way
+    //    back to the tool path after a tier pick. The name retires with WS-43q.
+    { id: "auto", label: "Auto (the assistant picks)", runtime: "copilot" as ModelRuntime, group: "Assistant" },
+
     // ① Tier routing aliases — always present
     ...tierModels.map((m) => ({
       id: m.id, label: m.label, runtime: "litellm" as ModelRuntime, group: m.group,

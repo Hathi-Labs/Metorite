@@ -2284,9 +2284,14 @@ def _runtime_checks() -> dict[str, dict]:
         from acb_llm.routed import router_wired
 
         wired = router_wired()
+        # With Router serving on, chat needs the wiring (D57.7), so an unwired
+        # Router is a failed check. With serving off, the tier slate still lists.
+        serving = bool(getattr(settings, "router_serving_enabled", False))
         checks["router"] = {
-            "ok": True,
-            "detail": "wired" if wired else "not wired (the tier slate still lists)",
+            "ok": bool(wired) or not serving,
+            "detail": "wired" if wired else (
+                "NOT wired, and Router serving is on: chat fails" if serving
+                else "not wired (the tier slate still lists)"),
         }
     except Exception as exc:
         checks["router"] = {"ok": False, "detail": f"router check failed: {exc}"}

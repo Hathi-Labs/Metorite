@@ -55,4 +55,33 @@ def test_models_all_route_has_no_copilot_group() -> None:
     )
     assert '"GitHub Copilot SDK"' not in text
     assert "/copilot/models" not in text
-    assert 'runtime: "copilot"' not in text and 'runtime: "copilot" as' not in text
+    # "copilot" is the name of the agent-executor mode (the MAF tool path). The ONE
+    # item on it is "Auto", the way back to the tool path after a tier pick.
+    assert text.count('runtime: "copilot"') == 1
+    assert '{ id: "auto", label: "Auto (the assistant picks)", runtime: "copilot"' in text
+
+
+def test_no_control_plane_surface_shows_the_copilot_sdk_group() -> None:
+    # Done-when 4 of WS-43o: the loading-state list of the chat holds no SDK group either.
+    for rel in ("workbench/control_plane/src/components/AgentChat.tsx",
+                "workbench/control_plane/src/app/api/models/all/route.ts"):
+        text = (_REPO / rel).read_text(encoding="utf-8")
+        assert '"GitHub Copilot SDK"' not in text, rel
+        assert "SDK picks" not in text, rel
+
+
+def test_the_router_check_fails_when_serving_is_on_and_nothing_is_wired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import acb_llm.routed as routed
+
+    gw = _gw()
+    monkeypatch.setattr(routed, "router_wired", lambda: False)
+
+    class _S:
+        router_serving_enabled = True
+
+    monkeypatch.setattr(gw, "get_settings", lambda: _S())
+    assert gw._runtime_checks()["router"]["ok"] is False
+    _S.router_serving_enabled = False
+    assert gw._runtime_checks()["router"]["ok"] is True
