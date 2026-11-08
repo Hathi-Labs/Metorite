@@ -1007,6 +1007,18 @@ def _as_owner(monkeypatch, owner="owner@acme.com"):
 _MSG = [{"role": "user", "content": "hello"}]
 
 
+def _rule_match_on(monkeypatch):
+    """DEC-1: ``ask`` reads the mode, so a direct call needs the feature on."""
+    from acb_common.settings import get_settings
+    from gateway import decide_features as df
+
+    monkeypatch.setenv("DECIDE_FEATURE_MODES", "email.rule_match=on")
+    monkeypatch.setenv("DECIDE_FEATURE_ORGS", _ORG)
+    get_settings.cache_clear()
+    df._parse_modes.cache_clear()
+    df._parse_orgs.cache_clear()
+
+
 def _boolean_request():
     from acb_llm import BooleanQuestion
 
@@ -1062,6 +1074,7 @@ class TestTheBackgroundCallNamesItsFeature:
         from gateway.routes.email import scheduler_hooks
 
         _as_owner(monkeypatch)
+        _rule_match_on(monkeypatch)
 
         @scheduler_hooks.as_mailbox_owner
         async def _job(_aid):
@@ -1122,6 +1135,8 @@ class TestTheBackgroundCallNamesItsFeature:
         from acb_common.db import bind_tenant, release_tenant
         from gateway import decide_features
         from gateway.routes.email.core import _llm_json
+
+        _rule_match_on(monkeypatch)
 
         async def go():
             bind_run_context(agent="email-assistant", app="email",

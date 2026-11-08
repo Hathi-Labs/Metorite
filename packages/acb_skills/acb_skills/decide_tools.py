@@ -109,6 +109,7 @@ import asyncio
 import json
 import math
 import re
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -628,6 +629,17 @@ def typed_choices_on() -> bool:
         return False
 
 
+def _typed_cooling() -> bool:
+    """Whether the bound org is in its cool-down. Any error reads as no."""
+    try:
+        from acb_common.db import current_tenant
+        from acb_llm import decide_policy
+
+        return decide_policy.cooling(current_tenant())
+    except Exception:  # a broken read must not stop a tool
+        return False
+
+
 async def ask_typed(context: str, items: list[Any], *, purpose: str) -> list[Any] | None:
     """The answers of *items*, from the ONE engine of the System-1 ``decide``.
 
@@ -639,23 +651,41 @@ async def ask_typed(context: str, items: list[Any], *, purpose: str) -> list[Any
     a fixed code for the logs, for example ``projects.name``. The caller
     reads each answer with :func:`sure_choice`. Nothing here logs the
     context, a question or an option.
+
+    DEC-1: the call joins the one seam of the ``decide`` tier. It honours the
+    org's cool-down after a 402 (``acb_llm.decide_policy``, the state that
+    ``gateway/decide_features.py`` reads too), and it writes the same
+    ``decide.decided`` and ``decide.unavailable`` lines, with the purpose as
+    ``decide_feature``. The gate stays ``AI_TIER_ROUTING``. These two choices
+    ran before the modes existed, and a mode default of ``off`` would turn
+    them off in production.
     """
     from acb_skills import system_one
 
     if not items or len(items) > system_one.MAX_ITEMS:
         return None
+    ids = {"decide_feature": purpose, "questions": len(items)}
+    if _typed_cooling():
+        # DEC-1: a 402 came back within the cool-down. No Router call, as
+        # `decide_features.ask` refuses. The tool keeps its refusal path.
+        _log.info("decide.unavailable", **ids, decide_reason="cooldown")
+        return None
+    started = time.monotonic()
     try:
         answers = await _answers_of(context or "", list(items), purpose)
     except system_one.SystemOneUnavailable as exc:
         _log.info("decide_tool.typed_choice", purpose=purpose, status=exc.reason,
                   items=len(items))
+        _log.warning("decide.unavailable", **ids, decide_reason=_reason_code(exc.reason))
         return None
     except Exception as exc:  # a tool must never break on its helper
         _log.warning("decide_tool.typed_choice_failed", purpose=purpose,
                      error_type=type(exc).__name__)
+        _log.warning("decide.unavailable", **ids, decide_reason=type(exc).__name__)
         return None
     _log.info("decide_tool.typed_choice", purpose=purpose, status="ok", items=len(items),
               confidences=[a.confidence for a in answers])
+    _log.info("decide.decided", **ids, latency_ms=int((time.monotonic() - started) * 1000))
     return list(answers)
 
 
@@ -811,11 +841,34 @@ async def _one_decide(
             FALLBACK_EVENT, reason=_reason_code(exc.reason), decide_status=exc.status,
             **where,
         )
+        _note_refusal(exc.status, where)
     except TimeoutError:
         _log.warning(FALLBACK_EVENT, reason="timeout", **where)
     except Exception as exc:  # never break the agent loop
         _log.warning(FALLBACK_EVENT, reason=type(exc).__name__, **where)
     return None
+
+
+def _note_refusal(status: Any, where: dict[str, Any]) -> None:
+    """Start the org's cool-down after a 402 (DEC-1), as ``decide_features`` does.
+
+    The state is ``acb_llm.decide_policy``, the one copy that the gateway seam
+    reads too. Only a 402 counts: a 403 can name one app's grant, and the
+    cool-down is the whole org's. Never raises, and logs no tenant text.
+    """
+    try:
+        from acb_common.db import current_tenant
+        from acb_llm import decide_policy
+
+        if decide_policy.starts_cooldown(status, only_402=True) and (
+            decide_policy.start_cooldown(current_tenant())
+        ):
+            _log.warning(
+                "decide.cooldown_started", decide_feature=where.get("decide_kind"),
+                decide_status=status, cooldown_s=int(decide_policy.REFUSAL_COOLDOWN_S),
+            )
+    except Exception:  # a broken note must not break the tool
+        pass
 
 
 async def _ask_on_decide(

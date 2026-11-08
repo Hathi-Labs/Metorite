@@ -1267,6 +1267,21 @@ class Settings(BaseSettings):
     # tests/unit/test_crm_note_labels.py.
     crm_decide_orgs: str = ""
 
+    # ── The Projects `decide` org list (DEC-1) ──────────────────────────────
+    #
+    # `projects_decide_orgs` lists the organization ids that may run a
+    # `projects.*` feature (today `projects.align`) in a mode other than
+    # `off`, in the grammar of `decide_feature_orgs`. For a `projects.` feature
+    # `mode_for` reads it and NOT `decide_feature_orgs`, so a mode change never
+    # starts every Projects org at once. Default empty: no organization. A
+    # `*_ORGS` field, so it reloads with no restart (`docs/flag_reload.md`).
+    # The one reader is `gateway/decide_features.py`.
+    #
+    # 🔴 OWNER-GATE on a box: a value in the list starts real Router calls,
+    # billed to the org (`work_plan.md` §6). Fence:
+    # tests/unit/test_decide_seam.py.
+    projects_decide_orgs: str = ""
+
     # ── AI tier routing (WS-45, D90) ────────────────────────────────────────
     #
     # The agents that the platform's tier policy covers. A comma list of agent

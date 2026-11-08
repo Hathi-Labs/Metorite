@@ -89,7 +89,30 @@ CRM's one feature, and copies no helper:
 - WS-53 CRM-Q31-3 (§18.13.4) adds ``crm.map_catalogue`` to the same three
   tuples. It starts ``off``, and a mode other than ``off`` is an owner flip.
 
-Fences: ``tests/unit/test_email_decide_shadow.py``,
+DEC-1 (Metorite task 2306, owner rule of 2026-11-01) fixes the seam for the
+apps that came after email:
+
+- **One table.** :data:`FEATURE_TABLE` holds every feature with its group, its
+  question type and whether ``on`` is legal. :data:`REGISTERED`,
+  :data:`ON_FEATURES` and the group tuples read it. A new feature is ONE entry.
+  :data:`PREFIXES` holds what a prefix decides: the org flag, the app that
+  the call bills and the cool-down rule.
+- **The ``projects.`` prefix.** A ``projects.`` feature reads
+  ``projects_decide_orgs`` (default empty, so no org), bills ``projects`` and
+  starts the cool-down on a 402 only. ``projects.align`` is the first
+  (``project_alignment.md`` §6).
+- **``ask`` reads the mode.** An ``off`` feature makes no call and returns
+  None, so the caller's fallback serves. Every caller already checked
+  :func:`mode_for`. ``shadow`` runs beside the old path in :func:`shadow`.
+- **A long list of questions.** :func:`chunk_requests` cuts it into requests
+  of :data:`QUESTION_LIMIT`. They run at the same time, each with the full
+  state, and the answers come back in order.
+- **The cool-down is shared.** ``acb_llm.decide_policy`` holds it, so the typed
+  choices of a skill (``acb_skills.decide_tools.ask_typed``) honour it. A
+  skill may not import this module.
+
+Fences: ``tests/unit/test_decide_seam.py``,
+``tests/unit/test_email_decide_shadow.py``,
 ``tests/unit/test_email_decide_questions.py`` and
 ``tests/unit/test_feed_decide.py``.
 """
@@ -106,6 +129,7 @@ from types import MappingProxyType
 from typing import Any
 
 from acb_common import automation_agent_scope, get_logger, get_settings
+from acb_llm import decide_policy as _policy
 
 from gateway.db import current_tenant
 
@@ -120,16 +144,23 @@ __all__ = [
     "DAY_PLAN_FEATURES",
     "DEFAULT_MODES",
     "FEATURES",
+    "FEATURE_TABLE",
     "MODES",
     "MY_DAY_FEATURES",
     "MY_DAY_PREFIX",
     "ON_BOUND_S",
     "ON_FEATURES",
+    "PREFIXES",
+    "PROJECTS_FEATURES",
+    "PROJECTS_PREFIX",
     "QUESTION_LIMIT",
     "REGISTERED",
     "SHADOW_BOUND_S",
     "Comparison",
+    "Feature",
+    "Prefix",
     "ask",
+    "chunk_requests",
     "clip",
     "clip_choice",
     "clip_fact",
@@ -141,6 +172,8 @@ __all__ = [
     "instructions",
     "last_no_answer",
     "mode_for",
+    "module_of",
+    "prefix_of",
     "score_level",
     "shadow",
     "top_margin",
@@ -148,107 +181,178 @@ __all__ = [
 
 _log = get_logger("gateway.decide_features")
 
-#: The four features, in the order of the spec (§10.4.4 item 9). EM-T5b-1
-#: renamed ``email.rule_pick`` to ``email.rule_match``, because it now covers
-#: the multi-rule mode too. The old name is unknown, so it resolves to ``off``
-#: and logs ``decide.mode_refused``.
+# ── The feature table (DEC-1) ───────────────────────────────────────────────
+#
+# ONE table holds every feature. A new feature is ONE entry here, and
+# ``REGISTERED``, ``ON_FEATURES`` and the group tuples below all read it. The
+# prefix of a name decides its org flag, its bill and its cool-down
+# (:data:`PREFIXES`).
+
+
+@dataclass(frozen=True)
+class Feature:
+    """One entry of the registry.
+
+    - ``name``: ``<prefix>.<step>``, for example ``email.rule_match``.
+    - ``group``: the tuple that the name joins (:data:`FEATURES`,
+      :data:`MY_DAY_FEATURES`, :data:`DAY_PLAN_FEATURES`,
+      :data:`CRM_FEATURES` or :data:`PROJECTS_FEATURES`). The groups exist
+      because suites pin some of them.
+    - ``qtype``: the question type the step asks: ``boolean``, ``choice``,
+      ``score`` or ``mixed``. It documents the step and names no limit.
+    - ``on``: whether ``on`` is legal. ``on`` for a feature that sets it to
+      False resolves to ``off`` and logs ``decide.mode_refused``.
+    """
+
+    name: str
+    group: str
+    qtype: str
+    on: bool = False
+
+
+@dataclass(frozen=True)
+class Prefix:
+    """What a feature prefix decides (:data:`PREFIXES`).
+
+    ``orgs_setting`` is the ``Settings`` field that lists the organizations.
+    ``module_slug`` is the app that :func:`ask` and :func:`shadow` bill when
+    the caller names none. ``only_402`` is True when a 403 must not pause the
+    other apps of the org: that 403 can name the app's own grant.
+    """
+
+    prefix: str
+    orgs_setting: str
+    module_slug: str | None
+    only_402: bool
+
+
+#: Every feature, email first. ⚠️ ``email.rule_pick`` is not here. EM-T5b-1
+#: renamed it ``email.rule_match``, and the old name is unknown, so it
+#: resolves to ``off`` and logs ``decide.mode_refused``.
 #:
 #: WS-17 EM-T14b-0 (§13.9.2) adds ``email.insights_screen``, stage 1 of
 #: Insights (D-EM-43). It is not a triage site. It asks in ``on`` only, and
 #: never in ``shadow`` (``routes/email/automation/insights_screen.py``).
-FEATURES: tuple[str, ...] = (
-    "email.cold_check",
-    "email.sender_pin",
-    "email.thread_status",
-    "email.rule_match",
-    "email.insights_screen",
+#: ⚠️ EM-T5b-3 takes the triage features out of the email group. It must keep
+#: the entry of ``email.insights_screen`` (§13.9.2 item 4), because the screen
+#: has no old path.
+#:
+#: The eight ``my_day.`` feed features (WS-58 MD-6a-1, ``my_day_feed.md``
+#: §10.3) are not ``on``-legal until MD-6b. ``my_day.day_plan`` (task 1338) is
+#: not in the feed group, because ``test_feed_decide.py`` pins that tuple. It
+#: is ``on``-legal, because the old LLM call answers whenever decide gives no
+#: answer. The ``crm.`` steps have no old path, so ``on`` is legal (WS-53
+#: CRM-Q26, Q20-1 and Q31-3). ``projects.align`` (DEC-1,
+#: ``project_alignment.md`` §6) has none either.
+FEATURE_TABLE: tuple[Feature, ...] = (
+    Feature("email.cold_check", "email", "boolean", on=True),
+    Feature("email.sender_pin", "email", "boolean", on=True),
+    Feature("email.thread_status", "email", "choice", on=True),
+    Feature("email.rule_match", "email", "mixed", on=True),
+    Feature("email.insights_screen", "email", "boolean", on=True),
+    Feature("my_day.triage", "my_day_feed", "choice"),
+    Feature("my_day.weight", "my_day_feed", "score"),
+    Feature("my_day.reason", "my_day_feed", "choice"),
+    Feature("my_day.next_act", "my_day_feed", "choice"),
+    Feature("my_day.slot", "my_day_feed", "choice"),
+    Feature("my_day.resurface", "my_day_feed", "boolean"),
+    Feature("my_day.compose", "my_day_feed", "boolean"),
+    Feature("my_day.nudge", "my_day_feed", "boolean"),
+    Feature("my_day.day_plan", "day_plan", "score", on=True),
+    Feature("crm.note_labels", "crm", "mixed", on=True),
+    Feature("crm.map_role", "crm", "choice", on=True),
+    Feature("crm.map_target", "crm", "choice", on=True),
+    Feature("crm.map_stage", "crm", "choice", on=True),
+    Feature("crm.map_catalogue", "crm", "choice", on=True),
+    Feature("projects.align", "projects", "choice", on=True),
 )
+
+
+def _group(name: str) -> tuple[str, ...]:
+    return tuple(f.name for f in FEATURE_TABLE if f.group == name)
+
+
+#: The email features, in the order of the spec (§10.4.4 item 9).
+FEATURES: tuple[str, ...] = _group("email")
 
 #: The three modes.
 MODES: tuple[str, ...] = ("off", "shadow", "on")
 
-#: The features that may run ``on``. The narrowed EM-T5b-2 held the rule
-#: match only (owner decision (c)). EM-T5b-2 in full opens the other three.
-#: ``on`` for any other feature resolves to ``off`` and logs
-#: ``decide.mode_refused``. EM-T5b-3 takes the triage features out of
-#: :data:`FEATURES`. ⚠️ It must keep the mode of ``email.insights_screen``,
-#: or hardcode it too (§13.9.2 item 4), because the screen has no old path.
-ON_FEATURES: frozenset[str] = frozenset({
-    "email.cold_check",
-    "email.sender_pin",
-    "email.thread_status",
-    "email.rule_match",
-    "email.insights_screen",
-    # WS-53 CRM-Q26: the note labels have no old path, so `on` is legal.
-    "crm.note_labels",
-    # WS-53 CRM-Q20-1: the mapping pipeline has no old path either.
-    "crm.map_role",
-    "crm.map_target",
-    "crm.map_stage",
-    # WS-53 CRM-Q31-3: the catalogue step of the mapping pipeline.
-    "crm.map_catalogue",
-    # Task 1338: the day plan keeps the LLM call as its fallback, so `on` is legal.
-    "my_day.day_plan",
-})
+#: The features that may run ``on``. ``on`` for any other feature resolves to
+#: ``off`` and logs ``decide.mode_refused``.
+ON_FEATURES: frozenset[str] = frozenset(f.name for f in FEATURE_TABLE if f.on)
 
 #: WS-58 MD-6a-1: the eight My Day features (``my_day_feed.md`` §10.3), in
-#: the order of that table. They are in THIS registry: the same parser, the
-#: same :func:`mode_for` and the same settings. They are not in
-#: :data:`FEATURES`, because that tuple is the email set. The startup check
-#: (:func:`configured_on`), the AI-call names and the email suites read it as
-#: such. Each is ``off`` by default. None is in :data:`ON_FEATURES`, so ``on``
-#: resolves to ``off`` and logs ``decide.mode_refused`` until MD-6b.
-MY_DAY_FEATURES: tuple[str, ...] = (
-    "my_day.triage",
-    "my_day.weight",
-    "my_day.reason",
-    "my_day.next_act",
-    "my_day.slot",
-    "my_day.resurface",
-    "my_day.compose",
-    "my_day.nudge",
-)
+#: the order of that table. They are not in :data:`FEATURES`, because that
+#: tuple is the email set. The startup check (:func:`configured_on`), the
+#: AI-call names and the email suites read it as such.
+MY_DAY_FEATURES: tuple[str, ...] = _group("my_day_feed")
+
+#: Task 1338: the day plan of "Rebuild my day" (``routes/tasks/
+#: calendar_decide.py``). It is a ``my_day.`` feature, so it reads
+#: ``my_day_decide_orgs``, but it is not in :data:`MY_DAY_FEATURES`.
+DAY_PLAN_FEATURES: tuple[str, ...] = _group("day_plan")
+
+#: WS-53 CRM-Q26: the CRM features (``crm_platform.md`` §18.11.2 item 1).
+#: They are not in :data:`FEATURES`, which is the email set: two email suites
+#: pin it, and the email start-up check :func:`configured_on` reads it.
+CRM_FEATURES: tuple[str, ...] = _group("crm")
+
+#: DEC-1: the Projects features. They read ``projects_decide_orgs`` and bill
+#: ``projects``.
+PROJECTS_FEATURES: tuple[str, ...] = _group("projects")
 
 #: A feature with this prefix takes its organization list from
 #: ``my_day_decide_orgs`` (``my_day_feed.md`` §10.9 item 5).
 MY_DAY_PREFIX = "my_day."
 
-#: Task 1338: the day plan of "Rebuild my day" (``routes/tasks/
-#: calendar_decide.py``). It is a ``my_day.`` feature, so it reads
-#: ``my_day_decide_orgs``, but it is not in :data:`MY_DAY_FEATURES`: that tuple
-#: is the eight cards of the feed, and ``test_feed_decide.py`` pins it. It is
-#: ``off`` by default. Unlike the feed features it may run ``on``, because
-#: the old LLM call answers whenever decide gives no answer.
-DAY_PLAN_FEATURES: tuple[str, ...] = ("my_day.day_plan",)
-
-#: WS-53 CRM-Q26: the CRM features (``crm_platform.md`` §18.11.2 item 1).
-#: They are not in :data:`FEATURES`, which is the email set: two email suites
-#: pin it, and the email start-up check :func:`configured_on` reads it. Each
-#: is ``off`` by default.
-#:
-#: WS-53 CRM-Q20-1 (§18.9.6) adds the three features of the mapping
-#: pipeline (``gateway/crm_sync/map_pipeline.py``): ``crm.map_role``,
-#: ``crm.map_target`` and ``crm.map_stage``. WS-53 CRM-Q31-3 (§18.13.4) adds
-#: ``crm.map_catalogue``, the catalogue step of the same pipeline.
-CRM_FEATURES: tuple[str, ...] = (
-    "crm.note_labels",
-    "crm.map_role",
-    "crm.map_target",
-    "crm.map_stage",
-    "crm.map_catalogue",
-)
-
 #: A feature with this prefix takes its organization list from
 #: ``crm_decide_orgs`` (``crm_platform.md`` §18.11.2 item 2).
 CRM_PREFIX = "crm."
 
-#: Every feature of the registry, email first.
-REGISTERED: tuple[str, ...] = FEATURES + MY_DAY_FEATURES + DAY_PLAN_FEATURES + CRM_FEATURES
+#: A feature with this prefix takes its organization list from
+#: ``projects_decide_orgs`` (DEC-1).
+PROJECTS_PREFIX = "projects."
+
+#: What each non-email prefix decides. A name with no prefix here is an email
+#: feature: it reads ``decide_feature_orgs`` and keeps the app of the run
+#: context, which is ``email``.
+PREFIXES: tuple[Prefix, ...] = (
+    Prefix(MY_DAY_PREFIX, "my_day_decide_orgs", "my_day", only_402=True),
+    Prefix(CRM_PREFIX, "crm_decide_orgs", "crm", only_402=True),
+    Prefix(PROJECTS_PREFIX, "projects_decide_orgs", "projects", only_402=True),
+)
+
+#: Every feature of the registry, in table order.
+REGISTERED: tuple[str, ...] = tuple(f.name for f in FEATURE_TABLE)
+
+#: The prefixes whose calls start the cool-down on a 402 only: My Day, the CRM
+#: and, since DEC-1, Projects.
+_402_ONLY_PREFIXES: tuple[str, ...] = tuple(p.prefix for p in PREFIXES if p.only_402)
+
+
+def prefix_of(feature: str) -> Prefix | None:
+    """The :class:`Prefix` of ``feature``, or None for an email feature."""
+    return next((p for p in PREFIXES if feature.startswith(p.prefix)), None)
+
+
+def module_of(feature: str, module_slug: str | None = None) -> str | None:
+    """The app that a call of ``feature`` bills.
+
+    The caller's ``module_slug`` wins. Else the prefix names the app
+    (``projects.align`` bills ``projects``). An email feature gives None, and
+    then the run context's app serves, as before (``email`` in the end).
+    """
+    if module_slug:
+        return module_slug
+    prefix = prefix_of(feature)
+    return prefix.module_slug if prefix else None
+
 
 #: The value of ``decide_feature_orgs`` that allows every organization.
 ALL_ORGS = "*"
 
-#: Every feature starts ``off``.
+#: Every email feature starts ``off``.
 DEFAULT_MODES: Mapping[str, str] = MappingProxyType({f: "off" for f in FEATURES})
 
 #: The default of every registered feature, the My Day features too.
@@ -269,26 +373,23 @@ ON_BOUND_S: float = 10.0
 #: no Router call for the organization for this long (fix round 2). Each
 #: email stays undecided with the reason ``cooldown``, and a later cycle asks
 #: again. Without it, an outage of credit costs one refused call for each
-#: email of each cycle. The gateway runs as ONE process, so an in-process map
-#: is the whole state.
-REFUSAL_COOLDOWN_S: float = 15 * 60
+#: email of each cycle. DEC-1: the state lives in ``acb_llm.decide_policy``,
+#: so the typed choices of a skill (``acb_skills.decide_tools.ask_typed``)
+#: honour the same cool-down. A skill may not import the gateway.
+REFUSAL_COOLDOWN_S: float = _policy.REFUSAL_COOLDOWN_S
 
 #: The verdicts that start a cool-down.
-_COOLDOWN_STATUSES = frozenset({402, 403})
+_COOLDOWN_STATUSES = _policy.COOLDOWN_STATUSES
 
-#: The verdicts that start the cool-down from a ``my_day.`` call (WS-58
-#: MD-6a-1 fix round 1). Only a 402: the org has no credit, and every app
-#: must wait. A 403 can refuse My Day alone, and the cool-down is the whole
-#: org's, so it must not pause email's ``on``.
-_MY_DAY_COOLDOWN_STATUSES = frozenset({402})
+#: The verdicts that start the cool-down from a call whose prefix is in
+#: :data:`_402_ONLY_PREFIXES` (WS-58 MD-6a-1 fix round 1). Only a 402: the org
+#: has no credit, and every app must wait. A 403 can refuse one app alone, and
+#: the cool-down is the whole org's, so it must not pause email's ``on``.
+_MY_DAY_COOLDOWN_STATUSES = _policy.ONLY_402
 
-#: The prefixes whose calls start the cool-down on a 402 only: My Day and,
-#: since WS-53 CRM-Q26, the CRM. A 403 there names that app's grant, so it
-#: must not pause email `on` for the org.
-_402_ONLY_PREFIXES: tuple[str, ...] = (MY_DAY_PREFIX, CRM_PREFIX)
-
-#: Organization id → the monotonic time at which its cool-down ends.
-_cooldown_until: dict[str, float] = {}
+#: Organization id → the monotonic time at which its cool-down ends. The same
+#: dict object as ``acb_llm.decide_policy.COOLDOWN_UNTIL``.
+_cooldown_until: dict[str, float] = _policy.COOLDOWN_UNTIL
 
 
 def _now() -> float:
@@ -297,7 +398,7 @@ def _now() -> float:
 
 
 def _cooling(org: Any) -> bool:
-    return bool(org) and _cooldown_until.get(str(org), 0.0) > _now()
+    return _policy.cooling(org, at=_now())
 
 
 def cooling() -> bool:
@@ -308,10 +409,8 @@ def cooling() -> bool:
 
 
 def _start_cooldown(ids: Mapping[str, Any], status: int | None) -> None:
-    org = current_tenant()
-    if not org:
+    if not _policy.start_cooldown(current_tenant(), at=_now()):
         return
-    _cooldown_until[str(org)] = _now() + REFUSAL_COOLDOWN_S
     _log.warning("decide.cooldown_started", **ids, decide_status=status,
                  cooldown_s=int(REFUSAL_COOLDOWN_S))
 
@@ -484,7 +583,9 @@ def mode_for(feature: str) -> str:
     A ``my_day.`` feature reads ``my_day_decide_orgs`` instead, so My Day
     starts for one organization with no change to email's list (WS-58
     MD-6a-1, ``my_day_feed.md`` §10.9 item 5). A ``crm.`` feature reads
-    ``crm_decide_orgs`` (WS-53 CRM-Q26, ``crm_platform.md`` §18.11.2).
+    ``crm_decide_orgs`` (WS-53 CRM-Q26, ``crm_platform.md`` §18.11.2). A
+    ``projects.`` feature reads ``projects_decide_orgs`` (DEC-1). The table
+    :data:`PREFIXES` holds the rule.
     """
     settings = get_settings()
     mode = _parse_modes(settings.decide_feature_modes or "").get(feature, "off")
@@ -493,12 +594,9 @@ def mode_for(feature: str) -> str:
     org = current_tenant()
     if not org:
         return "off"
-    if feature.startswith(MY_DAY_PREFIX):
-        raw_orgs = settings.my_day_decide_orgs
-    elif feature.startswith(CRM_PREFIX):
-        raw_orgs = settings.crm_decide_orgs
-    else:
-        raw_orgs = settings.decide_feature_orgs
+    prefix = prefix_of(feature)
+    raw_orgs = getattr(
+        settings, prefix.orgs_setting if prefix else "decide_feature_orgs", "")
     orgs = _parse_orgs(raw_orgs or "")
     if ALL_ORGS not in orgs and str(org) not in orgs:
         return "off"
@@ -666,6 +764,22 @@ Request = tuple[Any, Mapping[str, Any]]
 
 #: What a site hands over: one request, a list of requests, or None to skip.
 Build = Callable[[], "Request | list[Request] | None"]
+
+
+def chunk_requests(
+    state: Any, questions: Mapping[str, Any], size: int = QUESTION_LIMIT,
+) -> list[Request]:
+    """One state and many questions, as requests of at most ``size`` (16).
+
+    DEC-1. A ``build`` returns this list. :func:`ask` and :func:`shadow` run
+    the requests at the same time inside one bound, and merge the answers by
+    question id, in the order of ``questions``. EACH request holds the full
+    ``state``. So 40 questions give 3 requests: 16, 16 and 8. A call with no
+    question gives an empty list, which :func:`ask` reads as ``no_question``.
+    """
+    from acb_llm import split_questions
+
+    return [(state, part) for part in split_questions(dict(questions), size)]
 
 
 @dataclass(frozen=True)
@@ -920,9 +1034,15 @@ async def ask[R](
 ) -> R | None:
     """In ``on``: ask ``decide``, and return what ``read`` makes of the answer.
 
-    EM-T5b-2 (§10.4.8). The caller checks :func:`mode_for` first. No LLM
-    call is made here, and none is made when this returns None (D-EM-8):
-    the caller leaves the email undecided.
+    EM-T5b-2 (§10.4.8). No LLM call is made here, and none is made when this
+    returns None (D-EM-8): the caller leaves the email undecided.
+
+    DEC-1: ``ask`` reads :func:`mode_for` itself. An ``off`` feature returns
+    None at once, with no call (:func:`last_no_answer` gives ``mode_off``), so
+    the caller's fallback serves. ``shadow`` and ``on`` both ask. A caller that
+    runs a shadow beside an old path (:func:`shadow`) does not use ``ask``.
+    The callers still check :func:`mode_for` first, to skip the work of a
+    question. That check is now a saving and no longer the only guard.
 
     - ``build``: the request or requests, as for :func:`shadow`.
     - ``read``: turns the merged ``Decision`` into ``(result, log_fields)``.
@@ -937,7 +1057,9 @@ async def ask[R](
       keys and numbers only. ``account_id`` and ``message_id`` stay the email
       keywords (:func:`_log_ids`).
     - ``module_slug`` (WS-58 MD-6a-1): the app that the call bills, such as
-      ``my_day``. None keeps the run context's app, and then ``email``.
+      ``my_day``. None takes the app of the feature prefix (:func:`module_of`,
+      DEC-1: ``projects.align`` bills ``projects``). An email feature keeps
+      the run context's app, and then ``email``.
 
     Returns None with no Router call while the organization is in its
     cool-down (:data:`REFUSAL_COOLDOWN_S` after a 402 or 403 verdict).
@@ -949,6 +1071,11 @@ async def ask[R](
     """
     ids = _log_ids(feature, account_id, message_id, ids)
     _LAST_NO_ANSWER.set(None)
+    if mode_for(feature) == "off":
+        # DEC-1: an `off` feature makes no call, builds no question and logs
+        # nothing. The caller's fallback serves. `shadow` and `on` go on.
+        _LAST_NO_ANSWER.set("mode_off")
+        return None
     if _cooling(current_tenant()):
         # A 402 or 403 came back within REFUSAL_COOLDOWN_S. No Router call.
         _no_answer(ids, on=True, shadow_event="", reason="cooldown")
@@ -963,7 +1090,7 @@ async def ask[R](
         _no_answer(ids, on=True, shadow_event="", reason="no_question")
         return None
 
-    attribution = dict(_attribution(module_slug))
+    attribution = dict(_attribution(module_of(feature, module_slug)))
     if member and "@" in member:
         attribution["member"] = member
         attribution["member_proven"] = True
@@ -1059,7 +1186,7 @@ async def shadow[T](
         return await old()
 
     task = asyncio.create_task(
-        _ask_all(feature, ids, requests, _attribution(module_slug))
+        _ask_all(feature, ids, requests, _attribution(module_of(feature, module_slug)))
     )
     try:
         result = await old()
