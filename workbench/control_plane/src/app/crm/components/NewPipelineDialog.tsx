@@ -28,9 +28,11 @@ import { useId, useMemo, useState } from "react";
 import {
   blankRow,
   defaultDealName,
+  defaultFeedOption,
   defaultFeedWords,
   draftProblem,
   emptyDraft,
+  feedHelp,
   foldName,
   kindOf,
   MAX_NEW_STAGES,
@@ -172,8 +174,11 @@ export function NewPipelineForm({
   const blocked = preview.state === "refused" && !preview.retryable;
   // No pick follows the org's default deal pipeline, and sends no feed.
   const fed = draft.feeds ? (targets.find((p) => p.name === draft.feeds) ?? null) : null;
+  const defaultDeal = defaultDealName(dealPipelines);
+  // Repair 2: a short label reads whole on a phone. The name of the default
+  // deal pipeline now goes on the line under it.
   const feedOptions: SelectOption[] = [
-    { value: "", label: `${defaultFeedWords(defaultDealName(dealPipelines)).replace(/^t/, "T")}` },
+    defaultFeedOption(defaultDeal),
     ...targets.map((p) => ({ value: p.id, label: p.name })),
   ];
 
@@ -245,12 +250,9 @@ export function NewPipelineForm({
               defaultValue=""
               disabled={saving}
               onChange={(value) => change({ feeds: targets.find((p) => p.id === value)?.name ?? null })}
-              // The default option names the pipeline it follows, so it takes the row.
               widthClass="w-full"
             />
-            <p className="text-[11px] text-muted-foreground">
-              When a lead of this pipeline converts, its deal starts in this deal pipeline.
-            </p>
+            <p className="text-[11px] text-muted-foreground">{feedHelp(defaultDeal, fed !== null)}</p>
           </div>
         )}
 

@@ -192,6 +192,37 @@ export function defaultFeedWords(defaultName: string | null | undefined): string
     : "the default deal pipeline";
 }
 
+/** The words under the "Feeds deals into" picker (CRM-M4a repair 2). */
+export const FEED_HELP =
+  "When a lead of this pipeline converts, its deal starts in this deal pipeline.";
+
+/**
+ * The first option of the "Feeds deals into" picker: no pick, so the lead
+ * pipeline follows the default deal pipeline (CRM-M4a repair 2). The label is
+ * short, so the picker reads whole on a 390 px phone. The name of the default
+ * deal pipeline goes on the line under the option in the list, and on the line
+ * under the picker while the member keeps it.
+ */
+export function defaultFeedOption(defaultName: string | null | undefined): {
+  value: "";
+  label: string;
+  description?: string;
+} {
+  return defaultName
+    ? { value: "", label: "The default deal pipeline", description: `It is ${defaultName} now.` }
+    : { value: "", label: "The default deal pipeline" };
+}
+
+/**
+ * The line under the "Feeds deals into" picker. With no pick, it first names
+ * the default deal pipeline now, so the member sees where the deals go.
+ */
+export function feedHelp(defaultName: string | null | undefined, picked: boolean): string {
+  return !picked && defaultName
+    ? `The default deal pipeline is ${defaultName} now. ${FEED_HELP}`
+    : FEED_HELP;
+}
+
 /** The name of the default deal pipeline, or null with none. */
 export function defaultDealName(dealPipelines: readonly DealPipeline[] | null | undefined): string | null {
   const id = defaultSource(dealPipelines);

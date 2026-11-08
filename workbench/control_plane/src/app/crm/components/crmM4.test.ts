@@ -16,9 +16,12 @@ import {
   blankRow,
   closingType,
   defaultDealName,
+  defaultFeedOption,
   defaultFeedWords,
   draftProblem,
   emptyDraft,
+  FEED_HELP,
+  feedHelp,
   pipelineBody,
   renameRow,
   storedTypes,
@@ -94,6 +97,19 @@ describe("the draft of a lead pipeline", () => {
       "the default deal pipeline (now Sales pipeline)",
     );
     expect(defaultFeedWords(null)).toBe("the default deal pipeline");
+    // Repair 2: the picker's default option is short, so it reads whole at
+    // 390 px. The name of the default goes on the line under it.
+    expect(defaultFeedOption("Sales pipeline")).toEqual({
+      value: "",
+      label: "The default deal pipeline",
+      description: "It is Sales pipeline now.",
+    });
+    expect(defaultFeedOption(null)).toEqual({ value: "", label: "The default deal pipeline" });
+    expect(feedHelp("Sales pipeline", false)).toBe(
+      `The default deal pipeline is Sales pipeline now. ${FEED_HELP}`,
+    );
+    expect(feedHelp("Sales pipeline", true)).toBe(FEED_HELP);
+    expect(feedHelp(null, false)).toBe(FEED_HELP);
     // A deal draft names no feed, as before.
     expect(emptyDraft([SALES])).not.toHaveProperty("feeds");
   });
@@ -238,7 +254,8 @@ describe("the wiring in lead mode", () => {
     expect(settings).toContain("dealPipelines={pipelines}");
     expect(dialog).toContain('label="Feeds deals into"');
     // Repair 1: the first option is the default, and it sends no feed.
-    expect(dialog).toMatch(/\{ value: "", label: `\$\{defaultFeedWords\(defaultDealName\(dealPipelines\)\)/);
+    expect(dialog).toContain("defaultFeedOption(defaultDeal),");
+    expect(dialog).toContain("{feedHelp(defaultDeal, fed !== null)}");
     expect(dialog).toContain("const draft = stored ?? emptyDraft(pipelines, kind);");
     // Repair 1: the lead sections say "Loading statuses…" while the list loads.
     expect(settings).toContain('emptyLine={vocabularyState === "loading" ? "Loading statuses…" : "No statuses yet."}');
