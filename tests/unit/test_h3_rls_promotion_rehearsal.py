@@ -79,7 +79,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.pool import NullPool
 
-from tests.unit._tenant_ladder import apply_ladder, tenant_engine_scope
+from tests.unit._tenant_ladder import INIT_SCHEMA, apply_ladder, ladder, tenant_engine_scope
 
 _ROOT = Path(__file__).resolve().parents[2]
 _GENERATED = _ROOT / "infra" / "postgres" / "generated"
@@ -127,6 +127,87 @@ def _apply_generated_phase(conn, name: str) -> None:
         cur.execute((_GENERATED / name).read_text(encoding="utf-8"))
 
 
+_PHASES = ("01_add_columns.sql", "02_backfill.sql", "03_constraints.sql", "04_policies.sql")
+_TEMPLATE_LOCK = 8_426_117_001  # a pg_advisory_lock key, private to this helper
+_TEMPLATE_NAME: str | None = None
+
+
+def _template_name(admin_url) -> str:
+    """The name of the migrated template: it carries a hash of every file that
+    builds it, so a changed ladder or phase makes a new template."""
+    import hashlib
+
+    global _TEMPLATE_NAME
+    if _TEMPLATE_NAME is None:
+        h = hashlib.sha256()
+        for path in (*ladder(), INIT_SCHEMA, *(str(_GENERATED / n) for n in _PHASES)):
+            h.update(Path(path).name.encode())
+            h.update(Path(path).read_bytes())
+        _TEMPLATE_NAME = f"{admin_url.database}_h3tpl_{h.hexdigest()[:12]}"
+    return _TEMPLATE_NAME
+
+
+def _clone_promoted_database(admin_url, dedicated: str) -> None:
+    """CREATE the dedicated database as a copy of the migrated template.
+
+    CIV-9 (task 1637). Every R8 module used to replay the whole ladder (336
+    files) and the four phases into a fresh database: 13 to 20 s per module, in
+    about 300 modules. Now the first module of a server builds one template
+    (the same replay), and each module copies it (about 1 s). The template is
+    named by a hash of its inputs, built under another name and renamed when it
+    is whole, and a stale one is dropped. An advisory lock serialises the build
+    and each copy, because CREATE DATABASE ... TEMPLATE needs the template idle.
+    """
+    template = _template_name(admin_url)
+    maint = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with maint.connect() as c:
+            c.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _TEMPLATE_LOCK})
+            try:
+                ready = c.execute(
+                    text("SELECT 1 FROM pg_database WHERE datname = :d"), {"d": template}
+                ).first()
+                if not ready:
+                    _build_template(c, admin_url, template)
+                c.execute(text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :d AND pid <> pg_backend_pid()"), {"d": dedicated})
+                c.execute(text(f'DROP DATABASE IF EXISTS "{dedicated}"'))
+                c.execute(text(f'CREATE DATABASE "{dedicated}" TEMPLATE "{template}"'))
+            finally:
+                c.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _TEMPLATE_LOCK})
+    finally:
+        maint.dispose()
+
+
+def _build_template(c, admin_url, template: str) -> None:
+    family = f"{admin_url.database}_h3tpl_%"
+    building = f"{template}_b"
+    stale = [
+        row[0]
+        for row in c.execute(
+            text("SELECT datname FROM pg_database WHERE datname LIKE :p AND datname <> :n"),
+            {"p": family.replace("_", "\\_"), "n": template},
+        )
+    ]
+    for old in stale:
+        c.execute(text(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = :d AND pid <> pg_backend_pid()"), {"d": old})
+        c.execute(text(f'DROP DATABASE IF EXISTS "{old}"'))
+    c.execute(text(f'CREATE DATABASE "{building}"'))
+    eng = create_engine(admin_url.set(database=building), future=True)
+    try:
+        with eng.begin() as conn:
+            apply_ladder(conn)
+        for phase in _PHASES:
+            with eng.begin() as conn:
+                _apply_generated_phase(conn, phase)
+    finally:
+        eng.dispose()
+    c.execute(text(f'ALTER DATABASE "{building}" RENAME TO "{template}"'))
+
+
 @pytest.fixture(scope="module")
 def promoted():
     """A dedicated, fully phase-4-promoted scratch catalog + the acb_app role.
@@ -139,26 +220,11 @@ def promoted():
     admin_url = make_url(_URL)
     dedicated = f"{admin_url.database}_h3rls"
 
-    # ── DROP/CREATE the dedicated database (autocommit; DDL cannot be in a txn) ─
-    maint = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with maint.connect() as c:
-        c.execute(text(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-            "WHERE datname = :d AND pid <> pg_backend_pid()"), {"d": dedicated})
-        c.execute(text(f'DROP DATABASE IF EXISTS "{dedicated}"'))
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
-    maint.dispose()
+    # ── The dedicated database: a copy of the migrated template (CIV-9) ─────────
+    _clone_promoted_database(admin_url, dedicated)
 
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-
-    # ── Full ladder, then the four generated phases IN ORDER, by hand ──────────
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql",
-                  "03_constraints.sql", "04_policies.sql"):
-        with eng.begin() as conn:
-            _apply_generated_phase(conn, phase)
 
     # ── The non-privileged app role (handover §H3 pre-phase-1 SQL) ─────────────
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:

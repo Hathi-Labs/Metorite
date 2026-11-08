@@ -45,6 +45,7 @@ import { type AskRest, foldKey, readFolds, useAskRest, writeFold } from "./askBa
 import { AskSheet, useAskSheetHost } from "./AskSheet";
 import { ChatNudge } from "./ChatNudge";
 import { ResultList, resultOptionId, useBarResults } from "./CommandBar";
+import { useAskBarClearance } from "./askBarClearance";
 import { heldPanes } from "./registry";
 import { useShellPrefs } from "./shellPrefs";
 import {
@@ -198,6 +199,8 @@ function AskBarFoot() {
   const hold = !folded && (inside || hover || opened || sheet || nudge);
   const { rest, lift } = useAskRest(wrapRef, app, hold);
   const form: AskRest = folded ? "corner" : hold ? "full" : rest;
+  // Every pane under the bar scrolls its last line clear of it (task 2242).
+  useAskBarClearance(wrapRef, !folded);
 
   const fold = (on: boolean) => {
     writeFold(app, on);

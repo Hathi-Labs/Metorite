@@ -139,11 +139,15 @@ def test_the_stub_refuses_what_the_gateway_refuses(path: str, member: str, statu
 def test_the_real_tool_reads_the_stub_over_http(monkeypatch: pytest.MonkeyPatch) -> None:
     """``task_dataset`` itself, over the wire, says which columns the route hid."""
     import skill_projects.client as client
+    from acb_common import get_settings
     from acb_skills.memory_tools import _bind_memory_user_id, _unbind_memory_user_id
     from skill_projects.reads import task_dataset
 
     running = stub_api.serve(DS)
     monkeypatch.setattr(client, "gateway_url", lambda: running.url)
+    # WS-24b: the skill sends GATEWAY_INTERNAL_TOKEN as its bearer, with no
+    # fallback, so the test sets one as a deployment must.
+    monkeypatch.setattr(get_settings(), "gateway_internal_token", "eval-internal-token")
     binding = _bind_memory_user_id(T.MEMBER)
     try:
         text = asyncio.run(task_dataset(project_id=DS.project("Alpha").id,

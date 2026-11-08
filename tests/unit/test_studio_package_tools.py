@@ -1293,3 +1293,45 @@ async def test_every_result_stays_under_the_cap(gw) -> None:
     outs.append(await st.studio_publish(pid))
     for out in outs:
         assert len(json.dumps(out, ensure_ascii=False)) < st.MAX_MANIFEST_CHARS
+
+
+# -- 13. The Studio IDE binds the chat to one package (STU-G3a) ---------------------
+
+
+async def test_a_chat_bound_by_page_facts_saves_to_that_package_with_the_hash_of_the_facts(gw) -> None:
+    """STU-G3a fix 1, fence C. The IDE puts the package id, the draft and ``based_on`` (the
+    ``manifest_hash`` of the GET answer) in the page facts. The agent saves with that hash. The
+    save goes to package X by one PUT, and no POST makes a new package.
+
+    Mutation 1: make ``_save_draft`` POST a new package when it finds a package id. "no create" turns red.
+    Mutation 2: skip the based_on compare. The stale test below turns red.
+    """
+    x = await _save(_visit())
+    other = await _save(_visit("other-app"))
+    x_id = x["package_id"]
+    gw.calls.clear()
+    from_facts = st.manifest_hash(gw.packages[x_id]["manifest"])
+    changed = _visit(name="Renamed by Mira")
+    out = await st.studio_save(changed, x_id, from_facts)
+    assert out["ok"] and out["package_id"] == x_id
+    assert gw.packages[x_id]["manifest"] == changed
+    assert gw.packages[other["package_id"]]["manifest"] != changed
+    assert gw.writes() == [("PUT", "/studio/packages/{}/draft")]
+    assert not [1 for m, p, *_ in gw.calls if m == "POST"], "no create"
+
+
+async def test_a_stale_hash_from_the_page_facts_is_refused_and_writes_nothing(gw) -> None:
+    """STU-G3a fix 1. The page facts hold the hash of an older draft (Mira or the member changed
+    the draft since). The save fails closed, names the recovery, and writes nothing."""
+    x = await _save(_visit())
+    x_id = x["package_id"]
+    old_hash = st.manifest_hash(gw.packages[x_id]["manifest"])
+    newer = _visit(name="Newer")
+    assert (await st.studio_save(newer, x_id, old_hash))["ok"]
+    gw.calls.clear()
+    before = copy.deepcopy(gw.packages[x_id]["manifest"])
+    out = await st.studio_save(_visit(name="Late change"), x_id, old_hash)
+    assert out["ok"] is False and _msg(out) == st._PKG_STALE
+    assert "apply the change again" in st._PKG_STALE and "page facts" in st._PKG_STALE
+    assert gw.writes() == []
+    assert gw.packages[x_id]["manifest"] == before

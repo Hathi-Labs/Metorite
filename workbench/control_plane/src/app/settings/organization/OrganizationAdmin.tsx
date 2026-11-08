@@ -45,6 +45,8 @@ import Link from "next/link";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { ShellJob } from "@/lib/shell/doJob";
 import { rowActions } from "./lib/selfGuard";
 import { purgeConfirmed } from "./lib/confirmPurge";
@@ -242,6 +244,30 @@ export default function OrganizationAdmin() {
   const [tab, setTab] = useState("members");
   const [filter, setFilter] = useState("all");
   const [inviting, setInviting] = useState(false);
+  // The phone bar (MOB-12) holds Members, Requests and Invite. The page keeps
+  // the other tabs in its strip, and the top Invite tool leaves. Invite hides
+  // where the page hides it: above the branding, seats and email forms.
+  const { isMobile } = useViewMode();
+  const rosterTab = !(tab === "branding" || tab === "seats" || tab === "email");
+  // A member who is not an admin sees the admin-only card, so no tab shows.
+  const notAdmin = !access.is_admin && !loading;
+  usePhoneBar({
+    active: tab === "members" ? "org-members" : tab === "requests" ? "org-requests" : null,
+    hide: notAdmin
+      ? ["org-members", "org-requests", "org-invite"]
+      : rosterTab ? [] : ["org-invite"],
+    counts: { "org-requests": queueError ? 0 : requests.length },
+  });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const t = (e as CustomEvent<string>).detail;
+      if (t === "org-members") setTab("members");
+      else if (t === "org-requests") setTab("requests");
+      else if (t === "org-invite") setInviting(true);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
   /**
    * The person an off-boarding is being confirmed for. Removal drops every
    * role assignment and is not a toggle — Activate does not undo it — so it
@@ -497,7 +523,7 @@ export default function OrganizationAdmin() {
              no sense above the branding form, and an Invite button that is
              always there is one an admin eventually clicks on the wrong
              screen. */
-          tab === "branding" || tab === "seats" || tab === "email" ? null : (
+          !rosterTab ? null : (
             <>
               <Button
                 variant="ghost"
@@ -526,9 +552,11 @@ export default function OrganizationAdmin() {
               >
                 Agents
               </Link>
-              <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
-                Invite
-              </Button>
+              {!isMobile && (
+                <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
+                  Invite
+                </Button>
+              )}
             </>
           )
         }
@@ -574,7 +602,7 @@ export default function OrganizationAdmin() {
             icon: "Mail",
             note: "Approve Microsoft 365 for all members, and see how many connected a mailbox",
           },
-        ]}
+        ].filter((t) => !(isMobile && (t.id === "members" || t.id === "requests")))}
       />
 
       {tab === "members" && (

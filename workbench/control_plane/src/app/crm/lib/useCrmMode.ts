@@ -233,6 +233,16 @@ export function useCutoverDone(enabled: boolean): boolean {
   return useModeBody(enabled)?.cutover_done === true;
 }
 
+/**
+ * CRM-M3a: true when an admin of this Native CRM may create a pipeline
+ * (`pipeline_create` of `GET /crm/mode`, behind `CRM_PIPELINES_ORGS`). It is
+ * the same one read as the labels, so it costs no request. The route checks
+ * the flag again, so a stale true gets a 404 and never a pipeline.
+ */
+export function usePipelineCreate(enabled: boolean): boolean {
+  return useModeBody(enabled)?.pipeline_create === true;
+}
+
 export type CoreStatesState = {
   /** `null` with no `entities` block: the rail and `/crm` draw as before. */
   states: CoreStates | null;
@@ -338,6 +348,9 @@ export type PipelinesState = {
  * The deal pipelines (CRM-Q3). Every failure reads as "no pipelines": the CRM
  * then has one implicit pipeline, no picker, and no `pipeline_id` on a request.
  * A board that fails to open because the picker's list failed is worse.
+ *
+ * A create (`api.createPipeline`, CRM-M3a) wakes this read through
+ * `invalidate("crm:")`, so the board shows the switcher with no reload.
  */
 export function usePipelines(enabled: boolean): PipelinesState {
   const res = useCachedResource<DealPipeline[] | null>(

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { forgetThisDevice } from "@/lib/push";
-import { installNavPanes, mergeInstallNav, usePackageManifest } from "@/lib/shell/packageManifest";
+import { useInstallNav } from "@/lib/shell/packageManifest";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -148,13 +148,12 @@ export default function Sidebar() {
   const shellPending = useShellPending(shellNav && shell.loading);
   // PKG-6: the panes an install gives join "Apps" AFTER `visibleSections` and
   // the stars. With the package host off the list is empty and the SAME
-  // array comes back, so the rail is as it was.
-  const manifest = usePackageManifest();
-  const installPanes = installNavPanes(manifest, access.features);
+  // array comes back, so the rail is as it was. The phone drawer of `AppShell`
+  // calls the same hook (PKG-8a), so the two navs show the same installs.
   const railBase = shellNav
     ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
-  const railSections = mergeInstallNav(railBase, installPanes);
+  const railSections = useInstallNav(railBase, access.features);
   useEffect(() => {
     window.clearTimeout(peekTimer.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the peek ends when the fold or the page changes

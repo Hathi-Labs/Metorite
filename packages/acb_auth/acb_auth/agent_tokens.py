@@ -123,6 +123,19 @@ store that must work before a tenant is known.
     CHECK, so a wrong string can never roll back a reuse revoke. Fence:
     ``tests/unit/test_agent_revoke_reason.py`` (R8).
 
+12. ⚠️ **Box tokens (EA-19b, D-EA-5, spec §10.9).** A box connection has
+    ``credential`` ``box`` and ONE kind of token, ``access``, with no
+    refresh row. :func:`create_box_connection` makes the connection and its
+    token in one transaction, under the tenant the request bound.
+    :func:`rotate_box_token` locks the connection FIRST (rule 3), and a
+    connection holds at most two live tokens. **Use never moves the expiry.**
+    :data:`_SLIDE_SQL` skips a box, and only a rotation sets ``expires_at``.
+    :func:`touch_box_use` stamps ``last_used_at`` at most once a minute, and
+    marks a new address at most once an hour. ``agent_oauth.box_tokens_enabled``
+    is read in :func:`read_live_connection` and in the edge bearer check,
+    never in :func:`lookup_token` (rule 8). Fence:
+    ``tests/unit/test_agent_box_token_store.py`` (R8).
+
 Fence: ``tests/unit/test_agent_connection_tokens.py`` (R8, a phase-4-promoted
 catalog, as a NON-privileged role). D-EA-11:
 ``tests/unit/test_agent_first_party.py`` (R8). EA-17c-1:
@@ -148,6 +161,9 @@ _log = get_logger("acb_auth.agent_tokens")
 ACCESS = "access"
 REFRESH = "refresh"
 CODE = "code"
+
+#: EA-19b. The ``credential`` of a box connection (spec §10.9).
+BOX = agent_oauth.BOX_CREDENTIAL
 
 #: Bytes of randomness in each token. 32 bytes is 256 bits.
 _TOKEN_BYTES = 32
@@ -244,6 +260,13 @@ class TokenLookup:
     #: as branch 0 does with :attr:`LiveConnection.client_id`. ``client_id``
     #: above is the token's own copy, and no stamp reads it.
     connection_client_id: str = ""
+    #: The connection's ``credential``, ``oauth`` or ``box`` (EA-19b, spec
+    #: §10.9). The edge refuses a box token while the flag is off, and the
+    #: stamp of a box reads it.
+    credential: str = "oauth"
+    #: The connection's ``client_name``. For a box it is the box name, and
+    #: the box stamp reads it (EA-19b).
+    client_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -267,6 +290,10 @@ class LiveConnection:
     #: ``agent_connection.client_id`` (EA-13a). Branch 0 stamps
     #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` with it.
     client_id: str = ""
+    #: ``oauth`` or ``box`` (EA-19b). Branch 0 passes it, with
+    #: :attr:`client_name`, to ``agent_oauth.actor_via_for``.
+    credential: str = "oauth"
+    client_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -477,11 +504,14 @@ VALUES (CAST(:org AS UUID), CAST(:connection_id AS UUID), CAST(:kind AS TEXT),
 """
 
 #: Slide the idle window. Runs under the connection lock.
+#: ⚠️ EA-19b: never a box connection. A box has a fixed expiry, and only a
+#: rotation moves it (spec §10.9 question 4).
 _SLIDE_SQL = """
 UPDATE agent_connection
    SET last_used_at = now(),
        expires_at = now() + make_interval(secs => CAST(:idle_s AS DOUBLE PRECISION))
  WHERE id = CAST(:connection_id AS UUID)
+   AND credential <> 'box'
 """
 
 #: Find a live token by its hash. Runs UNBOUND: ``agent_token`` is exempt.
@@ -514,7 +544,8 @@ _CONNECTION_LIVE_SQL = """
 SELECT CAST(organization_id AS TEXT) AS organization_id,
        member_email, client_origin, client_id, scopes,
        CAST(pinned_projects AS TEXT[]) AS pinned_projects, include_personal,
-       CAST(left_out_projects AS TEXT[]) AS left_out_projects
+       CAST(left_out_projects AS TEXT[]) AS left_out_projects,
+       credential, client_name
   FROM agent_connection
  WHERE id = CAST(:connection_id AS UUID)
    AND organization_id = CAST(:org AS UUID)
@@ -1880,6 +1911,8 @@ async def lookup_token(raw: str, *, kind: str = ACCESS) -> TokenLookup | None:
         left_out_projects=tuple(str(p) for p in live.left_out_projects or ()),
         client_origin=live.client_origin or "",
         connection_client_id=live.client_id or "",
+        credential=live.credential or "oauth",
+        client_name=live.client_name or "",
     )
 
 
@@ -1934,6 +1967,10 @@ async def read_live_connection(
     # refuses the request as it refuses a dead connection.
     if not agent_oauth.org_allowed(row.organization_id):
         return None
+    # EA-19b: a box connection is live only while the box flag is on. It is
+    # read here and in the edge bearer check, never in :func:`lookup_token`.
+    if row.credential == BOX and not agent_oauth.box_tokens_enabled():
+        return None
     return LiveConnection(
         connection_id=connection,
         # The ROW's organization, never the argument: branch 0 compares them.
@@ -1945,4 +1982,489 @@ async def read_live_connection(
         include_personal=bool(row.include_personal),
         left_out_projects=tuple(str(p) for p in row.left_out_projects or ()),
         client_id=row.client_id or "",
+        credential=row.credential or "oauth",
+        client_name=row.client_name or "",
     )
+
+
+# ── Box tokens (EA-19b, D-EA-5, spec §10.9) ─────────────────────────────────
+#
+# A box token is the ONE access token of a connection of credential ``box``.
+# It has no refresh token, so nothing rotates in a race, and a stale session
+# cannot sign out the others (rule 5 stays as it is). It acts as the member
+# who made it. See rule 12 of the module docstring.
+
+#: The start of each box token, so a scanner and a log filter find it.
+BOX_TOKEN_PREFIX = "mbt_"
+#: The lifetime of a box token in days: the default, and the most.
+BOX_DAYS_DEFAULT = 90
+BOX_DAYS_MAX = 365
+#: The most live box connections of one member, and of one organization.
+BOX_MEMBER_CAP = 20
+BOX_ORG_CAP = 100
+#: The longest box name.
+BOX_NAME_MAX = 100
+#: A plain rotation keeps the old token this long, so a box can swap it.
+BOX_KEEP_OLD_S = 24 * 3600
+#: The longest client address that :func:`touch_box_use` stores.
+BOX_ADDR_MAX = 64
+#: The audit action of a new address of a box token.
+BOX_NEW_ADDRESS_ACTION = "box_token.new_address"
+
+#: Why a box act changed nothing. :data:`ORG_NOT_ALLOWED` serves too.
+#: ``box_tokens_off``: the flag is off. ``box_member_cap`` and
+#: ``box_org_cap``: a cap is full. ``not_found``: no live box connection of
+#: this member and this organization has the id.
+BOX_OFF = "box_tokens_off"
+BOX_MEMBER_FULL = "box_member_cap"
+BOX_ORG_FULL = "box_org_cap"
+BOX_NOT_FOUND = "not_found"
+
+
+@dataclass(frozen=True)
+class BoxToken:
+    """A new box token. The raw token lives only here, once.
+
+    Its ``repr`` hides the token, as :class:`IssuedTokens` does, so a log
+    line that prints the object does not leak it.
+    """
+
+    token: str = field(repr=False)
+    connection_id: str
+    organization_id: str
+    scope: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class BoxRefused:
+    """A box act that did not happen, and why. Nothing was written."""
+
+    reason: str
+
+
+def new_box_token() -> str:
+    """``mbt_`` and 43 URL-safe characters: 256 random bits."""
+    return BOX_TOKEN_PREFIX + secrets.token_urlsafe(_TOKEN_BYTES)
+
+
+def _box_days(days: int) -> int:
+    """*days* when it is a whole number from 1 to :data:`BOX_DAYS_MAX`."""
+    if isinstance(days, bool) or not isinstance(days, int):
+        raise ValueError("days must be a whole number")
+    if not 1 <= days <= BOX_DAYS_MAX:
+        raise ValueError(f"days must be from 1 to {BOX_DAYS_MAX}")
+    return days
+
+
+def _box_name(name: str) -> str:
+    """The box name, trimmed. Empty, too long or a control character raises."""
+    clean = (name or "").strip()
+    if not clean or len(clean) > BOX_NAME_MAX:
+        raise ValueError(f"a box name has 1 to {BOX_NAME_MAX} characters")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in clean):
+        raise ValueError("a box name holds a control character")
+    return clean
+
+
+def _box_scopes(scopes: Sequence[str]) -> tuple[str, ...]:
+    """The scopes of a box token, by the consent rule (spec §10.9 q. 2).
+
+    ``agent_oauth.parse_scope`` reads them, so an unknown scope drops out and
+    a malformed one raises. ``offline_access`` drops out, because a box has
+    no refresh token. No resource scope left raises.
+    """
+    parsed = agent_oauth.parse_scope(" ".join(str(s) for s in scopes))
+    kept = tuple(s for s in parsed if s != agent_oauth.OFFLINE_ACCESS)
+    if not kept:
+        raise ValueError("a box token needs one scope or more")
+    return kept
+
+
+def _edge_origin() -> str:
+    """The origin of ``agent_oauth.resource()``: the ``client_origin`` of a
+    box, so branch 0 does not refuse it for an empty origin."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(agent_oauth.resource())
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _box_gate(organization_id: object) -> BoxRefused | None:
+    """The flag, then the organization allowlist (rule 8)."""
+    if not agent_oauth.box_tokens_enabled():
+        return BoxRefused(BOX_OFF)
+    if not agent_oauth.org_allowed(organization_id):
+        return BoxRefused(ORG_NOT_ALLOWED)
+    return None
+
+
+#: ⚠️ One advisory lock for each key, held to the end of the transaction.
+#: A mint takes the member key and then the organization key, BEFORE it
+#: counts, so two mints at once cannot both pass a cap. The order is the
+#: same on every mint, so two mints cannot deadlock.
+_BOX_ADVISORY_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock(hashtextextended(CAST(:key AS TEXT), 0))")
+
+#: The live box connections of the organization, and of the member in it.
+_BOX_COUNT_SQL = """
+SELECT count(*) FILTER (WHERE member_email = CAST(:member AS TEXT)) AS mine,
+       count(*) AS total
+  FROM agent_connection
+ WHERE organization_id = CAST(:org AS UUID)
+   AND credential = 'box'
+   AND revoked_at IS NULL
+   AND expires_at > now()
+"""
+
+#: A box connection. ``expires_at`` is fixed: now plus the days of its
+#: token, in the same transaction, so the two are equal.
+_INSERT_BOX_CONNECTION_SQL = """
+INSERT INTO agent_connection
+       (organization_id, member_email, client_id, client_name, client_origin,
+        scopes, pinned_projects, include_personal, left_out_projects,
+        requested_scopes, credential, expires_at)
+VALUES (CAST(:org AS UUID),
+        CAST(:member AS TEXT),
+        CAST(:client_id AS TEXT),
+        CAST(:client_name AS TEXT),
+        CAST(:client_origin AS TEXT),
+        CAST(:scopes AS TEXT[]),
+        CAST(:pins AS UUID[]),
+        CAST(:personal AS BOOLEAN),
+        CAST(:left_out AS UUID[]),
+        NULL,
+        'box',
+        now() + make_interval(days => CAST(:days AS INTEGER)))
+RETURNING CAST(id AS TEXT) AS id
+"""
+
+#: The one access token of a box. No refresh row exists.
+_INSERT_BOX_TOKEN_SQL = """
+INSERT INTO agent_token
+       (organization_id, connection_id, kind, token_hash, expires_at,
+        client_id, resource, scope)
+VALUES (CAST(:org AS UUID), CAST(:connection_id AS UUID), 'access',
+        CAST(:hash AS TEXT),
+        now() + make_interval(days => CAST(:days AS INTEGER)),
+        CAST(:client_id AS TEXT), CAST(:resource AS TEXT), CAST(:scope AS TEXT))
+RETURNING expires_at
+"""
+
+#: ⚠️ Rule 3: lock the live box connection of this member FIRST, as an issue
+#: does. A revoke that holds the row makes the rotation wait, and then the
+#: rotation finds the row dead. The WHERE names the id, the organization,
+#: the member and the credential.
+_LOCK_BOX_SQL = """
+SELECT scopes
+  FROM agent_connection
+ WHERE id = CAST(:connection_id AS UUID)
+   AND organization_id = CAST(:org AS UUID)
+   AND member_email = CAST(:member AS TEXT)
+   AND credential = 'box'
+   AND revoked_at IS NULL
+   AND expires_at > now()
+   FOR NO KEY UPDATE
+"""
+
+#: A rotation first revokes every token of the connection except the newest
+#: live one. So with the new token, the connection holds two live tokens at
+#: most.
+_BOX_KEEP_NEWEST_SQL = """
+UPDATE agent_token
+   SET revoked_at = now()
+ WHERE connection_id = CAST(:connection_id AS UUID)
+   AND organization_id = CAST(:org AS UUID)
+   AND revoked_at IS NULL
+   AND id IS DISTINCT FROM (
+       SELECT t.id FROM agent_token t
+        WHERE t.connection_id = CAST(:connection_id AS UUID)
+          AND t.organization_id = CAST(:org AS UUID)
+          AND t.kind = 'access'
+          AND t.revoked_at IS NULL
+          AND t.expires_at > now()
+        ORDER BY t.created_at DESC, t.id DESC
+        LIMIT 1)
+"""
+
+#: "Rotate now": the old token dies at once.
+_BOX_OLD_NOW_SQL = """
+UPDATE agent_token
+   SET revoked_at = now()
+ WHERE connection_id = CAST(:connection_id AS UUID)
+   AND organization_id = CAST(:org AS UUID)
+   AND revoked_at IS NULL
+"""
+
+#: "Rotate": the old token lives 24 hours more at most.
+_BOX_OLD_KEEP_SQL = """
+UPDATE agent_token
+   SET expires_at = LEAST(
+           expires_at,
+           now() + make_interval(secs => CAST(:keep_s AS DOUBLE PRECISION)))
+ WHERE connection_id = CAST(:connection_id AS UUID)
+   AND organization_id = CAST(:org AS UUID)
+   AND revoked_at IS NULL
+"""
+
+#: A rotation is the ONE act that moves the expiry of a box connection. It
+#: runs under the lock of :data:`_LOCK_BOX_SQL`.
+_BOX_SET_EXPIRY_SQL = """
+UPDATE agent_connection
+   SET expires_at = now() + make_interval(days => CAST(:days AS INTEGER))
+ WHERE id = CAST(:connection_id AS UUID)
+   AND organization_id = CAST(:org AS UUID)
+   AND credential = 'box'
+"""
+
+#: ⚠️ The use stamp of a box (spec §10.9 question 5). At most once a minute:
+#: the NULL branch stamps a new connection, which has no stamp yet. Only a
+#: box: an OAuth connection keeps ``last_used_at`` as the last issue
+#: (EA3-7). The address always moves to the new one. A change marks
+#: ``addr_changed_at`` at most once an hour. A first address is no change.
+#: ``expires_at`` is not in the SET: use never extends a box.
+_TOUCH_BOX_SQL = """
+UPDATE agent_connection
+   SET last_used_at = now(),
+       last_seen_addr = COALESCE(CAST(:addr AS TEXT), last_seen_addr),
+       addr_changed_at = CASE
+           WHEN CAST(:addr AS TEXT) IS NOT NULL
+            AND last_seen_addr IS NOT NULL
+            AND last_seen_addr <> CAST(:addr AS TEXT)
+            AND (addr_changed_at IS NULL
+                 OR addr_changed_at < now() - interval '1 hour')
+           THEN now()
+           ELSE addr_changed_at
+       END
+ WHERE id = CAST(:connection_id AS UUID)
+   AND organization_id = CAST(:org AS UUID)
+   AND credential = 'box'
+   AND revoked_at IS NULL
+   AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')
+RETURNING addr_changed_at IS NOT DISTINCT FROM now() AS marked
+"""
+
+
+async def create_box_connection(
+    member_email: str,
+    name: str,
+    *,
+    scopes: Sequence[str] = (agent_oauth.PROJECTS_READ, agent_oauth.PROJECTS_WRITE),
+    days: int = BOX_DAYS_DEFAULT,
+    pinned_projects: Sequence[str] = (),
+    include_personal: bool = False,
+    left_out_projects: Sequence[str] = (),
+) -> BoxToken | BoxRefused:
+    """Make a box connection and its ONE token, in one transaction (EA-19b).
+
+    The organization is the tenant the request already bound, as in
+    :func:`create_connection`, so no caller can pass one (R11). With nothing
+    bound, ``tenant_session`` raises ``TenantUnbound``. The caller passes
+    the member of the session. The EA-19c route checks the ticket, the
+    origin and the reach fields first.
+
+    The token lives *days* days (1 to 365), and the connection expires with
+    it. The scopes follow the consent rule (:func:`_box_scopes`). The store
+    keeps only the hash, and the answer holds the raw token once.
+
+    Refused with nothing written: the flag is off (:data:`BOX_OFF`), the
+    organization is off the list (:data:`ORG_NOT_ALLOWED`), or a cap is
+    full (:data:`BOX_MEMBER_FULL`, :data:`BOX_ORG_FULL`). A bad input raises
+    ``ValueError`` before any SQL runs.
+    """
+    from acb_common.db import current_tenant
+    from sqlalchemy import text
+
+    member = _member_filter(member_email)
+    if member is None:
+        raise ValueError("a box token needs the member's email")
+    box_name = _box_name(name)
+    granted = _box_scopes(scopes)
+    life = _box_days(days)
+    if not agent_oauth.box_tokens_enabled():
+        return BoxRefused(BOX_OFF)
+    raw = new_box_token()
+    scope = agent_oauth.scope_string(granted)
+    async with _tenant_session() as db:
+        org = str(current_tenant())
+        if not agent_oauth.org_allowed(org):
+            return BoxRefused(ORG_NOT_ALLOWED)
+        for key in (f"agent_box_member:{org}:{member}", f"agent_box_org:{org}"):
+            await db.execute(text(_BOX_ADVISORY_LOCK_SQL), {"key": key})
+        counts = (
+            await db.execute(text(_BOX_COUNT_SQL), {"org": org, "member": member})
+        ).one()
+        if counts.mine >= BOX_MEMBER_CAP:
+            return BoxRefused(BOX_MEMBER_FULL)
+        if counts.total >= BOX_ORG_CAP:
+            return BoxRefused(BOX_ORG_FULL)
+        connection_id = (
+            await db.execute(
+                text(_INSERT_BOX_CONNECTION_SQL),
+                {
+                    "org": org,
+                    "member": member,
+                    "client_id": agent_oauth.BOX_CLIENT_ID,
+                    "client_name": box_name,
+                    "client_origin": _edge_origin(),
+                    "scopes": list(granted),
+                    "pins": [str(p) for p in pinned_projects],
+                    "personal": bool(include_personal),
+                    "left_out": [str(p) for p in left_out_projects],
+                    "days": life,
+                },
+            )
+        ).one().id
+        expires_at = (
+            await db.execute(
+                text(_INSERT_BOX_TOKEN_SQL),
+                {
+                    "org": org,
+                    "connection_id": connection_id,
+                    "hash": hash_token(raw),
+                    "days": life,
+                    "client_id": agent_oauth.BOX_CLIENT_ID,
+                    "resource": agent_oauth.resource(),
+                    "scope": scope,
+                },
+            )
+        ).one().expires_at
+    # Ids only. A token or its hash never goes into a log line (rule 7).
+    _log.info("agent_tokens.box_connection_created", connection_id=connection_id)
+    return BoxToken(
+        token=raw,
+        connection_id=connection_id,
+        organization_id=org,
+        scope=scope,
+        expires_at=expires_at,
+    )
+
+
+async def rotate_box_token(
+    organization_id: str,
+    connection_id: str,
+    *,
+    member_email: str,
+    now: bool = False,
+    days: int = BOX_DAYS_DEFAULT,
+) -> BoxToken | BoxRefused:
+    """Give a box connection a new token, and say which (EA-19b).
+
+    The caller passes the bound tenant and the member of the session, never
+    request input (R11). In ONE transaction the store:
+
+    1. locks the live box connection of this member FIRST (rule 3), else
+       :data:`BOX_NOT_FOUND`;
+    2. revokes every token of it except the newest live one;
+    3. with *now*, revokes that one too. Else it keeps it for 24 hours at
+       most (:data:`BOX_KEEP_OLD_S`);
+    4. inserts the new token, which lives *days* days (1 to 365);
+    5. sets ``expires_at`` of the connection to the expiry of the new token.
+
+    So a connection holds two live tokens at most. The connection stays, so
+    the stamp and the history stay. The flag and the allowlist refuse as in
+    :func:`create_box_connection`.
+    """
+    from sqlalchemy import text
+
+    member = _member_filter(member_email)
+    if member is None:
+        raise ValueError("a rotation needs the member's email")
+    life = _box_days(days)
+    org = _canonical_uuid(str(organization_id))
+    connection = _canonical_uuid(str(connection_id).lower())
+    if org is None or connection is None:
+        return BoxRefused(BOX_NOT_FOUND)
+    refused = _box_gate(org)
+    if refused is not None:
+        return refused
+    where = {"connection_id": connection, "org": org}
+    raw = new_box_token()
+    async with _tenant_session(org) as db:
+        locked = (
+            await db.execute(text(_LOCK_BOX_SQL), {**where, "member": member})
+        ).one_or_none()
+        if locked is None:
+            return BoxRefused(BOX_NOT_FOUND)
+        scope = agent_oauth.scope_string(locked.scopes or ())
+        await db.execute(text(_BOX_KEEP_NEWEST_SQL), where)
+        if now:
+            await db.execute(text(_BOX_OLD_NOW_SQL), where)
+        else:
+            await db.execute(
+                text(_BOX_OLD_KEEP_SQL), {**where, "keep_s": float(BOX_KEEP_OLD_S)})
+        expires_at = (
+            await db.execute(
+                text(_INSERT_BOX_TOKEN_SQL),
+                {
+                    **where,
+                    "hash": hash_token(raw),
+                    "days": life,
+                    "client_id": agent_oauth.BOX_CLIENT_ID,
+                    "resource": agent_oauth.resource(),
+                    "scope": scope,
+                },
+            )
+        ).one().expires_at
+        await db.execute(text(_BOX_SET_EXPIRY_SQL), {**where, "days": life})
+    _log.info("agent_tokens.box_token_rotated", connection_id=connection, now=now)
+    return BoxToken(
+        token=raw,
+        connection_id=connection,
+        organization_id=org,
+        scope=scope,
+        expires_at=expires_at,
+    )
+
+
+def _box_addr(addr: str | None) -> str | None:
+    """The client address to store, or ``None`` for no address."""
+    clean = (addr or "").strip()[:BOX_ADDR_MAX]
+    if not clean or any(ord(c) < 0x20 or ord(c) == 0x7F for c in clean):
+        return None
+    return clean
+
+
+async def touch_box_use(
+    connection_id: str, organization_id: str, addr: str | None
+) -> bool:
+    """Stamp the use of a box connection, at most once a minute (EA-19b).
+
+    The edge calls it after a successful bearer check of a box token, with
+    the organization of the token row and ``request.client.host``. Nothing
+    else calls it: ``/oauth/revoke`` and the refresh scope check do not.
+    Only a box connection is stamped (:data:`_TOUCH_BOX_SQL`), and the
+    expiry never moves.
+
+    A new address sets ``addr_changed_at`` at most once an hour, and then
+    this logs it. The audit row :data:`BOX_NEW_ADDRESS_ACTION` is written by
+    the gateway list route (EA-19c), not by the edge. True when the
+    row was stamped. The caller must not fail a request on an error here.
+    """
+    from sqlalchemy import text
+
+    org = _canonical_uuid(str(organization_id))
+    connection = _canonical_uuid(str(connection_id))
+    if org is None or connection is None:
+        return False
+    stored = _box_addr(addr)
+
+    async def _work(session: Any) -> Any:
+        await _bind(session, org)
+        return (
+            await session.execute(
+                text(_TOUCH_BOX_SQL),
+                {"connection_id": connection, "org": org, "addr": stored},
+            )
+        ).one_or_none()
+
+    row = await _run(_work)
+    if row is None:
+        return False
+    if row.marked and stored is not None:
+        # The edge writes NO audit row: the audit writer opens a sync engine
+        # and has no tenant here. The mark is the evidence. The gateway list
+        # route (EA-19c) reads a fresh mark and writes the row (review of
+        # 2026-11-07).
+        _log.warning("agent_tokens.box_new_address", connection_id=connection)
+    return True
