@@ -3389,7 +3389,7 @@ Why a new home: `acb_auth` and the edge cannot import `acb_skills`, because its 
 
 ### 19.4 The four tools
 
-The four tools are in `tools/list` while the door flag names at least one app (AD-15). `app_write` also needs the writes flag of EA3-29, and path 2 of §19.5 needs the runs flag of §12.1. Each record follows §9.5: a name, a title, the annotations, an `inputSchema` and an `outputSchema`.
+The four tools are in `tools/list` while the door flag names at least one app (AD-15). `app_write` also needs the writes flag of EA3-29, and path 2 of §19.5 needs the runs flag of §12.1. SW-34b: `app_write` also needs a write scope on the connection, so a read-only connection lists no write tool (`agent_coordination.md` SW-34b). Each record follows §9.5: a name, a title, the annotations, an `inputSchema` and an `outputSchema`.
 
 | Tool | Scope | Input | Gateway route | Returns |
 |---|---|---|---|---|

@@ -8717,7 +8717,14 @@ def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
     """True when *scopes* hold the tool's scope and the tool is offered.
     ``app_read`` and ``app_write`` show with no app scope, because their scope
     is the one of the app in each call (:func:`scope_of`), and check 8 asks
-    for it then (MCP-P1a, §19.4)."""
+    for it then (MCP-P1a, §19.4).
+
+    SW-34b: ``app_write`` shows only when *scopes* hold a write scope. So a
+    connection with the read scopes only, such as the read-only door
+    ``/mcp/readonly``, lists no write tool. Fence:
+    ``tests/unit/test_mcp_edge_readonly.py``."""
+    if tool.app_scope == "write" and not any(agent_oauth.covered_by(s) for s in scopes):
+        return False
     return (tool.required_scope is None or tool.required_scope in scopes) and offered(tool)
 
 
