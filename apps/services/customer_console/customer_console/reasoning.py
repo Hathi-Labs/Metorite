@@ -70,6 +70,7 @@ and a delta-level mirror would break that promise. H-180 carries it.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 _log = logging.getLogger("platform.router")
@@ -131,6 +132,36 @@ def reasoning_params_for(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
 #: The sampling values that a Claude 5.5 model refuses (task 2450).
 SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
 
+#: The major version of a Claude id: ``claude-sonnet-5-5`` gives 5,
+#: ``claude-3-5-sonnet-20241022`` gives 3.
+_CLAUDE_MAJOR = re.compile(r"claude-(?:[a-z]+-)?(\d+)")
+
+#: Claude families that never took sampling values.
+_NO_SAMPLING_FAMILIES = ("fable", "mythos")
+
+#: (model, dropped keys) pairs already logged by this process. The log line
+#: fires once per pair, so a busy chat on Claude 5.5 does not write one line
+#: per call (review of 2026-11-08). The cap bounds the memory.
+_LOGGED_DROPS: set[tuple[str, str]] = set()
+_LOGGED_DROPS_MAX = 256
+
+
+def _claude_takes_sampling(model: str) -> bool:
+    """The last wall: a Claude id at version 5 or later takes no sampling value.
+
+    litellm's rule and its model map cover the Claude ids they know. A Claude
+    id that is newer than the map (for example ``claude-sonnet-5-6``) would
+    keep ``temperature=0.2`` and answer 400. Claude 5 and later accept only
+    ``temperature=1``, so a drop is always safe for them.
+    """
+    low = model.lower()
+    if "claude" not in low:
+        return True
+    if any(family in low for family in _NO_SAMPLING_FAMILIES):
+        return False
+    match = _CLAUDE_MAJOR.search(low)
+    return not (match and int(match.group(1)) >= 5)
+
 
 def step_takes_sampling(model: str) -> bool:
     """Whether litellm sends sampling values to the step model *model*.
@@ -161,7 +192,7 @@ def step_takes_sampling(model: str) -> bool:
         entry = cost.get(key)
         if isinstance(entry, dict) and entry.get("supports_sampling_params") is False:
             return False
-    return True
+    return _claude_takes_sampling(name) and _claude_takes_sampling(model)
 
 
 def sampling_params_for(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
@@ -179,10 +210,14 @@ def sampling_params_for(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
     ]
     if not drop or step_takes_sampling(model):
         return kwargs
-    _log.info(
-        "router.sampling_params_dropped",
-        extra={"sp_model": model, "sp_dropped": ",".join(drop)},
-    )
+    seen = (model, ",".join(drop))
+    if seen not in _LOGGED_DROPS:
+        if len(_LOGGED_DROPS) < _LOGGED_DROPS_MAX:
+            _LOGGED_DROPS.add(seen)
+        _log.info(
+            "router.sampling_params_dropped",
+            extra={"sp_model": model, "sp_dropped": seen[1]},
+        )
     return {k: v for k, v in kwargs.items() if k not in drop}
 
 

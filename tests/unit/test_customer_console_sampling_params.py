@@ -40,6 +40,57 @@ TAKING = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _fresh_log_memory():
+    """The drop log fires once per (model, keys) per process. Each test starts clean."""
+    reasoning._LOGGED_DROPS.clear()
+    yield
+    reasoning._LOGGED_DROPS.clear()
+
+
+def test_litellm_still_has_the_rule_we_read():
+    """Fails LOUD when litellm renames its private sampling rule.
+
+    ``step_takes_sampling`` guards the import, so a rename alone would fall
+    back in silence to the model map and the version rule.
+    """
+    from litellm.llms.anthropic.common_utils import AnthropicModelInfo
+
+    assert callable(getattr(AnthropicModelInfo, "_supports_sampling_params", None))
+
+
+@pytest.mark.parametrize("model", [
+    "anthropic/claude-sonnet-5-6",
+    "anthropic/claude-opus-6",
+    "anthropic/claude-fable-5-1",
+    "anthropic/claude-mythos-5-1",
+    "openrouter/anthropic/claude-sonnet-5-5",
+])
+def test_a_claude_id_newer_than_the_map_still_drops(model):
+    """Review of 2026-11-08: a Claude 5+ id that the model map does not know."""
+    assert "temperature" not in sampling_params_for(dict(BODY), model)
+
+
+@pytest.mark.parametrize("model", [
+    "anthropic/claude-3-5-sonnet-20241022",
+    "anthropic/claude-haiku-4-5-20251001",
+    "anthropic/claude-sonnet-4-6",
+])
+def test_an_older_claude_id_keeps_its_values(model):
+    body = dict(BODY)
+    assert sampling_params_for(body, model) is body
+
+
+def test_the_drop_logs_once_per_model_and_keys(caplog):
+    with caplog.at_level(logging.INFO, logger="platform.router"):
+        sampling_params_for(dict(BODY), "anthropic/claude-haiku-5-5")
+        sampling_params_for(dict(BODY), "anthropic/claude-haiku-5-5")
+        sampling_params_for({"messages": [], "temperature": 0.2},
+                            "anthropic/claude-haiku-5-5")
+    recs = [r for r in caplog.records if r.getMessage() == "router.sampling_params_dropped"]
+    assert [r.sp_dropped for r in recs] == ["temperature,top_p,top_k", "temperature"]
+
+
 @pytest.mark.parametrize("model", REFUSING)
 def test_a_refusing_model_loses_the_sampling_values(model):
     out = sampling_params_for(dict(BODY), model)

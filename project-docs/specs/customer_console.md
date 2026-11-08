@@ -11249,8 +11249,11 @@ The Router runs litellm with no `drop_params`. A step whose model refuses a samp
 - `reasoning.sampling_params_for(kwargs, model)` drops `temperature`, `top_p` and `top_k` for a refusing step. It keeps `temperature` when the value is 1.
 - For an Anthropic model, it asks litellm's own rule, `AnthropicModelInfo._supports_sampling_params`. For any provider, it also honours `supports_sampling_params: false` in `litellm.model_cost`.
 - A model that litellm cannot place keeps its values. The function never sets `drop_params`.
+- The last wall is a version rule. A Claude id at version 5 or later, or a Fable or Mythos id, takes no sampling value. It covers a Claude id that is newer than the litellm map, for example `claude-sonnet-5-6`. Claude 5 and later accept only `temperature=1`, so the drop is always safe for them.
 - The chat `_kwargs_for` calls it for each step, beside `reasoning_params_for` (task 1128). A chain with Claude 5.5 first and Gemini second gives each step its own body. The stream path and the image path use the same `_kwargs_for`.
-- Each drop writes one INFO line, `router.sampling_params_dropped`, with the model and the dropped names. It never logs message content.
+- A drop writes one INFO line, `router.sampling_params_dropped`, with the model and the dropped names. It never logs message content.
+- The line fires once per pair of model and dropped names in each process, so a busy chat writes no line per call. A set of at most 256 pairs holds the memory.
+- A test fails when litellm renames `_supports_sampling_params`, because the import guard would hide the rename.
 - Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
 
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
