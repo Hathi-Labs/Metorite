@@ -472,14 +472,14 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
         <legend className="sr-only">What the agent may do</legend>
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-foreground">What it may do</h2>
-          {/* SW-34b: one click keeps the read permissions and turns each change off. */}
+          {/* SW-34b: one click keeps the read permissions and turns each change off. A second click gives back what the agent asked for. */}
           {offersReadOnly(view) && (
             <Button
               variant="secondary"
               size="sm"
               icon="Eye"
               selected={isReadOnly(chosen)}
-              onClick={() => setChosen(readOnlyChoice(view))}
+              onClick={() => setChosen(isReadOnly(chosen) ? initialChoice(view) : readOnlyChoice(view))}
               data-testid="consent-read-only"
             >
               Read only

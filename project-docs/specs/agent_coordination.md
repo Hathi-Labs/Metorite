@@ -1,6 +1,8 @@
 # Agent coordination — many agents and many people on one board
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open. SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+
+**SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
@@ -1024,7 +1026,8 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Risk.** HIGH (auth). **Gate.** AGENT-SAFE.
 - **Status.** BUILT, 2026-11-07, task 1051. It is not merged yet.
 - **As built (SW-34b).**
-  - The anchors moved. In `mcp.py`, check 8 is in `_serve` (about line 526), and `tools/list` is in `_dispatch` (about line 586). In `tools.py`, `listed` and `listed_for` are at about line 7285 and line 7310. `MCP_WRITE_ROUTES` is at `agent_oauth.py:789`, and `SCOPE_COPY` is at `consent.ts:133`.
+  - The anchors moved. In `mcp.py`, check 8 is in `_serve` (about line 540), and `tools/list` is in `_dispatch` (about line 594). In `tools.py`, `listed` and `listed_for` are at about line 8258 and line 8283. `MCP_WRITE_ROUTES` is at `agent_oauth.py:824`, and `SCOPE_COPY` is at `consent.ts:133`.
+  - The door is not a boundary against an agent that holds the token. The gateway reads the scopes of the connection row, so that agent can call `/mcp` itself. Only the "Read only" grant on the consent page limits such an agent.
   - The edge serves `POST /mcp/readonly` (`mcp.readonly_path`, `mcp.readonly_endpoint`). It runs the same checks in the same order as `/mcp`.
   - Right after the bearer check, `bearer.read_only` narrows the caller's scopes. The one rule is `agent_oauth.read_only` with `agent_oauth.READ_SCOPES`. It only removes a scope.
   - `tools/list`, check 8, the prompt, the resources and the instructions read the narrowed scopes. A write tool gets 403 `insufficient_scope`, and no request reaches the gateway.
