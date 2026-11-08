@@ -4937,6 +4937,8 @@ Owner directive, 2026-10-31, in chat. Metorite: task 1215. It supersedes the sta
 
 ### D145 — Preview, owner approval, local staging gate, merge, daily release (2026-10-31)
 
+**Amended by D200 (2026-11-08):** a small, low-risk change on an existing screen merges before the owner's approval, and the owner reviews it afterwards.
+
 Owner directive, 2026-10-31, in chat. Metorite: task 1224 (LD-7), under epic 1100. It supersedes D144 point 2. D144 points 1, 3, 5, 6 and 7 stand.
 
 ```text
@@ -5762,6 +5764,22 @@ Owner decision, 2026-11-08 at 15:02 UTC, on Metorite task 987 (LP-0). The owner 
 **Re-check this number at merge.** The first merge wins a D-number. D196 is held by branch `mt-e634d840-sh0-setup-health`. No branch or worktree held D197 when this record was written.
 
 Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of LP-7 and LP-8 in `specs/project_management_app.md` §14.2 bind their rules. Until those slices land, the rules are advisory (R7).
+
+### D200 — A small, low-risk screen change merges after the captures, and the owner reviews it afterwards (2026-11-08)
+
+Owner directive, 2026-11-08, in chat. Metorite: task 2310. It amends D145 for one class of slice. D145 stays the default.
+
+```text
+"let small, low-risk screen changes merge with only the screenshots, and review them afterwards."
+```
+
+1. **A slice qualifies when all of these hold.** The slice is tier LOW or STANDARD. It is a small change on an existing screen, such as one new field or control, one line of text or a count, or a layout fix. A larger change also qualifies when the whole visible change sits behind a flag that is off by default.
+2. **A slice does not qualify in these cases.** A HIGH slice. A new page, screen, tab, navigation entry or flow. A change to what every member sees by default, with no flag. Any change that touches money or identity, or that sends to a person. When in doubt, preview first (D145).
+3. **Everything else stays.** The slice still needs the four captures and the `Visual review:` line, the independent verifier, and the full gates. The only skipped step is the wait for the owner's approval before the merge.
+4. **After the merge,** the agent posts the captures on the task and calls `ask_on_task` with two options, "Looks right" and "Change it". A "Change it" becomes a follow-up task under the same epic. The task closes when the pull request merges. The question stays open on the run until the owner answers.
+5. **Who judges "small".** The coordinator and the verifier judge it. The pull request body states why the slice qualifies.
+
+Fence: `tests/unit/test_loop_local_first.py` pins D200 in `CLAUDE.md`, `next-ticket.md` and `engineering_practice.md` §1.3. The judgement of "small" is advisory (R7).
 
 ## 4. Single-owner registry (who owns duplicated work)
 
