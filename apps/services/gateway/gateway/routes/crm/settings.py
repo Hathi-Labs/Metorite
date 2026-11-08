@@ -122,7 +122,7 @@ from gateway.routes.crm.fill_rank import (
     entity_states,
     source_labels,
 )
-from gateway.routes.crm.flags import crm_mirror_allowed
+from gateway.routes.crm.flags import crm_mirror_allowed, pipelines_allowed
 from gateway.routes.crm.records import refuse_nul
 from gateway.routes.crm.seed import seed_native_pipeline
 from gateway.routes.projects.core import validate_grant_subject
@@ -396,6 +396,13 @@ class CrmModeModel(BaseModel):
     cutover_done: bool | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    #: CRM-M3a: ``true`` when ``CRM_PIPELINES_ORGS`` lets an admin of this
+    #: Native CRM create a pipeline. The settings card shows "New pipeline"
+    #: to an admin only then. Each other CRM leaves it OUT, so its body is as
+    #: before. The create route checks the flag again (404).
+    pipeline_create: bool | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 #: CRM-Z10b: a Native CRM that the switch made. Read in Native mode only.
@@ -438,6 +445,7 @@ async def get_crm_mode(
     return CrmModeModel(
         mode=mode, labels=labels, overlays=overlays or None, entities=entities,
         cutover_done=True if switched else None,
+        pipeline_create=True if mode == "native" and pipelines_allowed(org) else None,
     )
 
 

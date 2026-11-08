@@ -8,7 +8,10 @@ Spec: ``project-docs/specs/github_integration.md`` §7.1 to §7.5 and §13.
     PUT   /integrations/github/token          → {status, login}   (GH-7, §7.6)
 
 ⚠️ **Dark.** With ``github_app_enabled`` off each route answers 404, before
-any other check (:func:`require_github_app`, the first dependency).
+any other check (:func:`require_github_app`, the first dependency). With the
+master on, an org that ``GITHUB_APP_ORGS`` does not name gets the same 404 at
+start, callback and confirm (SW-53, :func:`_require_org_on`). The token route
+is not gated by either.
 
 **Who.** Each route needs ``feature:integrations`` and ``integrations:manage``,
 as every writer of IN-0. The org is the bound tenant and the member is the
@@ -117,6 +120,14 @@ _LOGIN_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 async def require_github_app() -> None:
     """404 unless ``github_app_enabled`` is on. It reads nothing else."""
     if not github_app.app_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _require_org_on(org: str) -> None:
+    """SW-53: 404 unless ``GITHUB_APP_ORGS`` names the bound org. The same
+    answer as the master off, so an org off the list cannot start, finish or
+    confirm a connect. The org is the session's, never the request's (R5)."""
+    if not github_app.github_app_org_allowed(org):
         raise HTTPException(status_code=404, detail="Not Found")
 
 
@@ -327,6 +338,7 @@ def _state_matches(state: str, pending: dict[str, Any], org: str, member: str) -
 async def start_github_app(user: UserContext = Depends(get_current_user)) -> StartOut:
     """The install URL of the App, with a signed state (§7.1)."""
     org = _organization(user)
+    _require_org_on(org)
     member = _member(user)
     try:
         github_app.slug()
@@ -362,6 +374,7 @@ async def github_app_callback(
 ) -> RedirectResponse:
     """Finish the install. See the module doc for the order of the checks."""
     org = _organization(user)
+    _require_org_on(org)
     member = _member(user)
     # 2. The pending connect, taken once. Nothing in the query names it.
     try:
@@ -416,6 +429,7 @@ async def confirm_github_app(user: UserContext = Depends(get_current_user)) -> C
     member opens cannot bind an installation without a click of that member.
     """
     org = _organization(user)
+    _require_org_on(org)
     member = _member(user)
     try:
         pending = await _take_pending(org, member)

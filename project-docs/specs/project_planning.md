@@ -2,7 +2,7 @@
 
 > **Product:** Metorite · **Feature:** planning in the Projects chat · **Updated:** 2026-11-04 · **Owner:** vjvarada
 
-> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) and PJP-1 (pills, swatches and six hues) merged on 2026-11-02 (`4bbe7c5b4`, `19d998d99`). PJP-4 (`update_tasks`, many task edits on one card) merged on 2026-11-03. Each reaches production at the next 21:30 UTC release. PJP-2 (no hand-off to `projects-assistant`) is BUILT and in review, not merged (fix round 4, 2026-11-04). It needs no flag change: `projects-reports` and `projects-authority` follow their parent packs (§3.3, "The flag line").
+> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) and PJP-1 (pills, swatches and six hues) merged on 2026-11-02 (`4bbe7c5b4`, `19d998d99`). PJP-4 (`update_tasks`, many task edits on one card) merged on 2026-11-03. Each reaches production at the next release slot (D194). PJP-2 (no hand-off to `projects-assistant`) is BUILT and in review, not merged (fix round 4, 2026-11-04). It needs no flag change: `projects-reports` and `projects-authority` follow their parent packs (§3.3, "The flag line").
 
 > **D173** (2026-11-03) changed the stack of cards that wait together to ONE card with tabs. `cardTabs.test.ts` is its fence.
 
@@ -244,6 +244,14 @@ Production's list names `projects-plan` and `projects`, so both following packs 
 3. Readiness (the Last Planner System) covers each task due in the next 6 weeks. A ready task has an owner, an estimate and no open blocker. The result lists the tasks that are not ready, with the reason.
 4. The finish: the critical path's end against the latest due date of the project.
 
+**PJP-6 is the one engine (D195 Q8, SP-11, task 2294).** This module is the only place that computes the order of work. SW-90 (task 1936) and WM-3 (task 982) read it and keep no maths of their own. The model never computes a path. Code computes, and the model judges.
+
+- **Inputs.** The slices of a goal, an epic or a project, and their `blocks` links. A link between two epics expands to links between their slices. The duration of a slice is its agent estimate plus the expected wait for its review. The wait comes from the measured answer time of the reviewer (SW-93). Until SW-93 lands, the wait is a named constant.
+- **Outputs.** The ready set is the open slices whose blockers are all done. The waves are the ready set in layers: wave 1 is ready now, and wave 2 is ready when wave 1 is done. The critical path is the longest chain to the goal, with the slack of every other slice. The forecast finish gives a 50% and an 85% date, from the path length plus a buffer (PJP-7 and PJP-10). The next slice is the ready slice on the critical path with the least slack, then by value.
+- **Trigger.** The engine runs again on each status change and each link change. A read returns the last result with its time.
+- **Readers.** `my_work` orders the ready slices of the active cycle by it (SW-68). The epic page and the cycle board draw it (`project_management_app.md` §13). SW-90 draws the Timeline overlay. WM-3 adds the baseline. The MCP tool `get_plan` (SP-12, task 2295) returns it to an outside planner.
+- **Fence.** The module tests of §10 bind the maths. The reads of SW-90 and WM-3 add a test that they call the module and not a function of their own.
+
 **PJP-7 the critical chain.**
 1. `plan_chain(project_id)`, a read: start from PJP-6. When one person owns two tasks that overlap, serialize them in chain order and run the passes again. That gives the critical chain. The project buffer is 50% of the chain's length, Goldratt's simple rule. A feeding buffer is 50% of each path that joins the chain. The target date is the chain's end plus the project buffer.
 2. `set_chain(project_id)` is a write on ONE card. It creates the "Project buffer" task and the "Finish" milestone (D168.3). It links the chain's last task to the buffer, and the buffer to the finish. It moves the dates that the chain changed. The buffer task has the tag `Buffer`. The finish task has the tag `Milestone`, an estimate of 0 and the target date as its due date. The tool finds them again by tag.
@@ -357,7 +365,7 @@ The buffer and the finish are ordinary tasks with the tags `Buffer` and `Milesto
 | PJP-3 | 1480 | §3.1: `change_statuses`, the row keys `hue` and `category`, and the rule text | One call with 8 rows draws ONE card with 8 tick boxes, each with its swatch and chip. Ticking 6 writes 6. Two writes in one step show as one card with 2 tabs (D173) | MEDIUM | AGENT-SAFE | PJP-1 |
 | PJP-4 | 1481 | §3.1: step 1 extracts `_plan_task_edit` from `update_task` (`writes.py:1430`). Step 2 adds `update_tasks` | `update_task` and each row call `_plan_task_edit`, and the existing `update_task` tests pass unchanged. One call with 12 rows draws ONE card. Each row shows before and after. Each ticked row writes through the same route as `update_task`. A failed row does not stop the next one, and the receipt names it | MEDIUM | AGENT-SAFE | — |
 | PJP-5 | 1482 | §3.6: `stage_sets.py` and `suggest_stages` | Each set passes the limits of §3.6 in a test. "Set up stages for a hardware project" in a live turn gives one `change_statuses` card | LOW | AGENT-SAFE | PJP-2, PJP-3 |
-| PJP-6 | 1483 | §3.4: `planning.py` passes and `analyze_plan` | The module tests of §10 pass for a chain, a diamond, a cycle, a task with no estimate and a graph with no links | LOW | AGENT-SAFE | PJP-2 |
+| PJP-6 | 1483 | §3.4: `planning.py` passes, `analyze_plan` and the one engine (ready set, waves, forecast, D195 SP-11) | The module tests of §10 pass for a chain, a diamond, a cycle, a task with no estimate and a graph with no links. SW-90 and WM-3 read the module | LOW | AGENT-SAFE | PJP-2 |
 | PJP-7 | 1484 | §3.4: `plan_chain`, `set_chain`, `buffer_status` | A fixed project with two people and 9 tasks gives the chain, the buffer and the target date in a test. `set_chain` makes the buffer and finish tasks on one card. A second call finds them and proposes no copy | MEDIUM | AGENT-SAFE | PJP-4, PJP-6 |
 | PJP-8 | 1485 | §3.4: `find_constraint` | A fixed team where one person owns 6 of 9 chain tasks names that person, with the evidence | LOW | AGENT-SAFE | PJP-6 |
 | PJP-9 | 1486 | §3.4: flow health in the existing analytics reads | Each extended read returns the new lines, and its old lines do not change | LOW | AGENT-SAFE | — |
@@ -371,7 +379,7 @@ The buffer and the finish are ordinary tasks with the tags `Buffer` and `Milesto
 3. **Then:** PJP-6, then PJP-7, PJP-8 and PJP-10 in parallel.
 4. **Last:** PJP-5 and PJP-11.
 
-Each slice that changes what a member sees follows D145. That is a preview on this PC, the owner's Approve, the local gate and the merge. Production follows at the 21:30 UTC release.
+Each slice that changes what a member sees follows D145. That is a preview on this PC, the owner's Approve, the local gate and the merge. Production follows at the next release slot (D194).
 
 ---
 

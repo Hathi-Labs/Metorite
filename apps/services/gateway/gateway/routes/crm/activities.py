@@ -588,6 +588,22 @@ async def log_organization_activity(
     return await _log_activity(ORGANIZATIONS, record_id, payload, user)
 
 
+# ── Reading and editing one activity ────────────────────────────────────────
+
+@router.get("/activities/{activity_id}")
+async def get_activity(
+    activity_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """One timeline entry, for the chat card that edits it (CRM-M2b).
+
+    Reads through the same tenant session as :func:`patch_activity`, so a row
+    of another organization answers 404 under RLS.
+    """
+    async with _tenant_session() as db:
+        row = await require_row(db, "crm_activities", activity_id, "Activity")
+        return row_to_dict(row, ActivityModel)
+
+
 # ── Editing one activity ────────────────────────────────────────────────────
 
 @router.patch("/activities/{activity_id}")
