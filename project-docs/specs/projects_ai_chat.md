@@ -7122,7 +7122,7 @@ into text, which I can put into the chat message box."
 **Voice (VOX-1).**
 
 ```text
-mic button → MediaRecorder (webm/opus, mono, max 120 s)
+mic button → Web Audio PCM → a 16 kHz mono WAV clip (max 120 s)
   → POST /api/agent/transcribe (Next route, same-origin, the session cookie)
   → gateway POST /chat/transcribe (member auth, flag, size and length caps)
   → acb_auth.console_resolve: POST {console}/v1/audio/transcriptions
@@ -7148,74 +7148,140 @@ member attaches an image (IMG-1 chip) and asks a question
 ### 31.5 Slices
 
 **VOX-1 (task 2261). Talk to the chat.** HIGH, because each clip draws AI
-credits.
+credits. Opus builder. The audit of 2026-11-08 gave GO-NARROWED, and this text
+holds its edits.
 
-- **Files:** `components/AgentChat.tsx` (the composer), a new
-  `components/VoiceInputButton.tsx`, a hook beside `useChatAttachments.ts`,
-  the Next route `src/app/api/agent/transcribe/route.ts`, the gateway route
-  (a new `routes/chat_transcribe.py`, or the chat router), and
-  `acb_auth.console_resolve.transcribe_on_console` beside
-  `chat_completion_on_console`. Reuse the Notes recorder where it fits.
+- **Files:**
+  - Frontend: `components/AgentChat.tsx` (the composer), a new
+    `components/VoiceInputButton.tsx`, a new `hooks/useVoiceDictation.ts`, a
+    new `lib/audioCapture.ts`, and the Next route
+    `src/app/api/agent/transcribe/route.ts`.
+  - Gateway: a new `routes/chat_transcribe.py`, and a new
+    `acb_common/chat_voice_flag.py` with the setting `chat_voice_orgs`.
+  - The Console client: `acb_auth/console_resolve.py`, a new
+    `transcribe_on_console` beside `chat_completion_on_console` (~2489).
 - **Do:**
-  1. A mic button beside the paperclip, a real `<button type="button">`
-     with an accessible name. A press starts the recording. A second press,
-     or Enter, stops it. Escape cancels it and keeps nothing.
-  2. While it records, the button shows a timer and a level meter. At 120 s
-     it stops by itself.
-  3. On stop, the clip goes to the gateway, and the box shows
-     "Transcribing…". The text then goes in at the caret, with a space
-     before it when the box holds words. The focus returns to the box.
-  4. The browser asks for the mic once. A refusal shows one sentence that
-     says how to allow it, never a red icon alone.
-  5. The gateway route checks the member, the flag `CHAT_VOICE_ORGS`, a cap
-     of 10 MB and 120 s, and an audio MIME. It forwards the clip and keeps
-     nothing on disk. Each Console answer maps to one sentence for the
-     member:
-     - `tier-stt` unbound: "No speech model is set up yet."
-     - Out of credits: the credits sentence of the chat.
-     - A provider failure: "The speech service did not answer. Try again."
-  6. The rate cap is 30 clips per member per hour, through the Redis prefix
-     wrapper.
+  1. **The recording is 16 kHz mono WAV.** `useVoiceDictation` captures PCM
+     with the Web Audio API and writes a WAV file. It does not use
+     MediaRecorder, because the Console measures a WAV clip with the Python
+     standard library (VOX-2). Two minutes of WAV are about 3.8 MB.
+     `lib/audioCapture.ts` holds `listMicrophones` and the level meter.
+     Notes re-exports `listMicrophones` from it, so one seam stays.
+  2. **The button.** A mic button beside the paperclip, a real
+     `<button type="button">` with an accessible name. A press starts the
+     recording. A second press, or Enter, stops it. Escape cancels it and
+     keeps nothing. While it records, it shows a timer and a level meter. At
+     120 s it stops by itself.
+  3. **The text.** On stop, the box shows "Transcribing…". The text then goes
+     in at the caret, with a space before it when the box holds words. The
+     focus returns to the box. The chat never sends a transcript by itself.
+  4. **The mic permission.** A refusal shows one sentence that says how to
+     allow the mic.
+  5. **The Next route** mirrors
+     `api/agent/workspace/[sessionId]/upload/route.ts`: `requireIdentity`,
+     `gatewayHeaders`, `gatewayFetch` with `FormData`. It checks the size
+     before the proxy.
+  6. **The gateway route** `POST /chat/transcribe`:
+     - It checks the member, `chat_voice_orgs` (the pattern of
+       `chat_continue_flag.py`) and `routing_is_on()`. With routing off it
+       refuses, because a call off the Console would not bill.
+     - It checks 10 MB, an audio MIME (wav, webm, mp4, ogg) and the file
+       name extension.
+     - It forwards the clip and writes nothing to disk.
+     - The cap is 30 clips per member per hour, with
+       `tenant_redis.get_tenant_redis()` and `incr` with an expiry, as
+       `routes/shell/feed_decide.py` does.
+  7. **`transcribe_on_console`** reuses `router_is_wired`,
+     `router_credential`, `_require_proven_member_on_deployment`,
+     `_attribution_headers` and `_new_http_client`. It has no retry and no
+     second credential picker.
+     - It sends the multipart field `file` (with the extension in the name)
+       and the form field `model=tier-stt`, and never `stream`.
+     - It passes `member` and `member_proven` explicitly, from
+       `member_proof.verify_member`, as `v1_compat.py` does, because a
+       gateway route is not an agent run.
+     - Its timeout is longer than `_ROUTER_TIMEOUT_SECONDS` (120 s), because
+       a 120 s clip and a failover can pass it.
+  8. **The answers.** `transcribe_on_console` reads the Console's status
+     itself. It does not use the outage mapping of the chat helper, which
+     turns every 5xx into "unavailable". Each answer maps to one member
+     sentence:
+     - 400 `no binding for tier 'tier-stt'`, or 503 `no provider credential`:
+       "No speech model is set up yet."
+     - 402 `insufficient_credits`: the credits sentence of the chat. The
+       Console sends it only while its spend gate is on.
+     - 413: "The clip is too long."
+     - 502, a timeout or no answer: "The speech service did not answer. Try
+       again."
 - **Done when:**
-  1. On the dev stack, with `tier-stt` bound to any litellm STT model, an
-     English clip and a Hinglish clip each land as text in the box, and
-     nothing is sent.
-  2. A `usage_event` row with the task `transcribe` and the minutes appears
-     for each clip, in the Console database.
-  3. The flag off hides the mic. Escape and the 120 s cap work.
-  4. The look passes in light, dark compact, a changed accent and 390 px.
-- **Fence (R7):** a gateway test of the caps, the flag and each refusal
-  sentence. A test that the route writes no file. An R8 or Console-side test
-  that one clip writes one `transcribe` usage row. A frontend reducer test
-  of the recorder states.
+  1. A test with a stubbed Console proves the request: `file` with its
+     extension, `model=tier-stt`, the proven member, and no `stream`. It also
+     proves each refusal sentence.
+  2. The flag off hides the mic, routing off refuses, and the caps hold.
+  3. The look passes in light, dark compact, a changed accent and 390 px.
+  4. The dev stack runs no Console (`scripts/dev_up.sh`). So a real clip and
+     its `usage_event` row are proven on a Console started by hand, or on
+     production behind `CHAT_VOICE_ORGS`, before the flag turns on.
+- **Fence (R7):** `tests/unit/test_chat_transcribe.py` (the route, the
+  flag, routing off, the caps, the status map, no file written).
+  `test_console_resolve_transcribe.py` (the request shape and the auth). A
+  frontend test of the recorder states and the WAV header.
+  `tests/unit/test_console_dependency_boundary.py` keeps passing.
+- **Verify:** `uv run pytest -o timeout_method=thread` on the named files,
+  `uv run ruff check`, and `npx tsc --noEmit && npx vitest run` on the
+  related files in `workbench/control_plane`.
 
 **VOX-2 (task 2262). Sarvam in the Console door.** HIGH, because it changes
-the metered door.
+the metered door. Opus builder. The audit of 2026-11-08 found that the native
+provider seam serves `decide` only. This text holds the wider change.
 
-- **Files:** the Console transcribe door (`customer_console/main.py`
-  `audio_transcriptions` and the router invocation), a new
-  `customer_console/stt_sarvam.py`, `providerGuides.ts` in the operator
-  console, and `customer_console.md` §6A.10a.
+- **Files:** `customer_console/catalog.py` (`KNOWN_INVOCATIONS`,
+  `NATIVE_TASKS`, `check_invocation_for_task`, `check_model_for_invocation`),
+  `customer_console/router.py` (`SERVING_INVOCATIONS`,
+  `_default_provider_call`), the native handlers (`handlers.call_native`,
+  `NATIVE_HANDLERS`), a new `customer_console/stt_sarvam.py`, the transcribe
+  door `main.py` `audio_transcriptions` (and `_kwargs_for`, `duration_seconds`),
+  `apps/AGENTS.md` (the invocation subset rule, ~75), and
+  `customer_console.md` §6A.10a and §6A.14.
 - **Do:**
-  1. A model of provider `sarvam` on `tier-stt` calls
+  1. **A native verb for speech.** `native_sarvam` joins `KNOWN_INVOCATIONS`
+     and `SERVING_INVOCATIONS`. `NATIVE_TASKS` gains `transcribe`. The check
+     works both ways: a native verb is allowed for `decide` and
+     `transcribe`, and `transcribe` takes a litellm verb or `native_sarvam`.
+     The model prefix `sarvam/` ties to `native_sarvam`, and the credential
+     provider is `sarvam`.
+  2. **A handler with a file shape.** The native seam takes the file bytes,
+     the file name and the key for a transcribe call. It keeps the
+     `DecidePayload` shape for `decide`. The Sarvam handler calls
      `POST https://api.sarvam.ai/speech-to-text` with the header
-     `api-subscription-key`, the file, the `model` (`saaras:v3` or the
-     current one), and `mode`.
-  2. The mode comes from the binding's model settings. The default is
-     `translit`, which is Hinglish as spoken in Roman script. `codemix`,
-     `transcribe` and `translate` are the other choices. The spec audit names
-     where a per-model setting lives (`model_profile`, or the capability
-     row). No new free-form field is added if one exists.
-  3. The minutes come from the clip's own length, measured by the Console,
-     and never from the provider's answer.
-  4. A Sarvam failure fails over to the next step of the chain, as the
-     litellm path does.
-- **Done when:** a Hinglish clip on a Sarvam binding returns Roman-script
-  text and bills its minutes. A key that does not work gives the operator a
-  clear error on the Tiers page.
-- **Fence (R7):** a Console test with a stubbed Sarvam transport (the
-  request shape, the mode, the failover, the metered minutes). An R8 test
-  that the usage row carries the clip's minutes.
+     `api-subscription-key`, the file, the model and the mode. It returns an
+     object that `_transcript_of` and `duration_seconds` read.
+  3. **The mode is in the model id.** No column holds a per-model setting
+     today, so the operator declares the mode in the id:
+     `sarvam/saaras:v3/translit` (as spoken, Roman script, the default),
+     `/codemix`, `/transcribe` or `/translate`. The handler splits the id.
+     This needs no migration.
+  4. **The minutes come from the clip.** The door measures a WAV clip with
+     the standard library `wave` module, for every provider, and bills that.
+     For another format it keeps today's rule: the provider's `verbose_json`
+     duration, else zero with the log `_unmeasured`. A `sarvam/` binding
+     takes WAV only. Any other format answers 415, before the call and with
+     no usage row. The chat sends WAV (VOX-1).
+  5. **Failover.** A Sarvam failure falls to the next step of the chain, as
+     a litellm step does.
+- **Done when:**
+  1. With a stubbed Sarvam transport, a WAV clip on a `sarvam/` binding sends
+     the right request (header, model, mode), bills the measured minutes,
+     and fails over on a 5xx.
+  2. A litellm binding with a WAV clip also bills the measured minutes.
+  3. A webm clip on a `sarvam/` binding answers 415 and writes no usage row.
+- **Fence (R7):** `tests/unit/test_customer_console_tasks.py` (or a new
+  `test_customer_console_stt_sarvam.py`): the request shape, the mode split,
+  the WAV minutes, the 415, the failover. The invocation fences that pin
+  `KNOWN_INVOCATIONS` and `SERVING_INVOCATIONS`. An R8 Console-DB test that
+  one clip writes one `transcribe` usage row with the measured minutes.
+- **Verify:** `uv run pytest -o timeout_method=thread` on the named files and
+  the Console invocation fences, and `uv run ruff check`.
 
 **VOX-3 (task 2263). `analyze_image`.** HIGH, because tenant images go to a
 model and each call draws credits.
@@ -7265,7 +7331,8 @@ STANDARD.
   1. Provider cards for Sarvam (speech-to-text, the four modes) and
      ElevenLabs Scribe (speech-to-text).
   2. A note on the vision models that read images.
-  3. On the Tiers page, a Try box for `tier-stt` (upload a clip, read the
+  3. A key that does not work shows the provider's error in the Try box.
+  4. On the Tiers page, a Try box for `tier-stt` (upload a clip, read the
      transcript and the minutes) and for `tier-vision` (upload an image and
      a question, read the answer). The Console meters each try to the
      operator's org.
