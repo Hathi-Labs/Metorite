@@ -59,6 +59,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_auth import UserContext, UserRole, build_access
 from acb_common import get_settings
+from acb_common.app_manifests.shell_manifest import SystemContribution
 from acb_common.db import bind_tenant, release_tenant, tenant_session
 from fastapi import HTTPException
 from gateway.package_host import store, studio_app
@@ -85,12 +86,17 @@ _COUNTER = iter(range(10_000))
 _ANSWER_KEYS = {"version", "objects", "sync"}
 
 
-def _manifest(mid: str, name: str = "Field visits") -> dict[str, Any]:
-    return {
+def _manifest(mid: str, name: str = "Field visits",
+              jobs: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {
         "studio": 1, "id": mid, "name": name, "purpose": "Track install visits.",
         "objects": [{"name": "visit", "fields": [{"key": "site", "type": "text"}]}],
         "actions": [{"id": "find", "uses": "object:visit.list"}],
     }
+    if jobs is not None:
+        out["views"] = [{"id": j["view"], "block": "markdown", "text": "x"} for j in jobs]
+        out["shell"] = {"jobs": jobs}
+    return out
 
 
 def _mid() -> str:
@@ -225,11 +231,13 @@ def _view(world: Any, who: str, org: str,
 
     resp = _run(world, go)
     if resp.status_code != 200:
-        return SimpleNamespace(status=resp.status_code, nav={})
+        return SimpleNamespace(status=resp.status_code, nav={}, jobs={})
     body = json.loads(resp.body)
     nav = {e["key"]: e for e in body["contributions"].get("nav", [])
            if e["install_id"] is not None}
-    return SimpleNamespace(status=200, nav=nav)
+    jobs = {e["key"]: e for e in body["contributions"].get("jobs", [])
+            if e["install_id"] is not None}
+    return SimpleNamespace(status=200, nav=nav, jobs=jobs)
 
 
 def _expected_payload(pid: str, label: str = "Field visits") -> dict[str, Any]:
@@ -425,3 +433,75 @@ def test_r8_the_delete_preview_counts_the_owners_active_entry_only(world) -> Non
                            "WHERE app_id = CAST(:p AS uuid)"), {"s": state, "p": pid})
         got = totals()
         assert (got["installs"], got["own_entries"]) == (1, 0), state
+
+
+# ── 6. The jobs of the manifest (PKG-8c) ───────────────────────────────────
+
+_JOBS = [{"verb": "Log a visit", "view": "visits"}, {"verb": "Plan a round", "view": "rounds"}]
+
+
+def test_r8_the_jobs_show_to_the_owner_only(world, monkeypatch) -> None:
+    async def go() -> str:
+        pid = await _new(world.a, ANA, _manifest(_mid(), jobs=_JOBS))
+        assert (await _publish(world.a, ANA, pid))[0] == 200
+        return pid
+
+    pid = _run(world, go)
+    [row] = _installs(world, pid)
+    claims = _claims(world, row["id"])
+    assert [(c[0], c[1]) for c in claims] == [
+        ("jobs", f"{pid}:rounds"), ("jobs", f"{pid}:visits"), ("nav", f"/apps/{pid}")]
+    mine = _view(world, ANA, world.a)
+    assert set(mine.jobs) == {f"{pid}:visits", f"{pid}:rounds"}
+    entry = mine.jobs[f"{pid}:visits"]
+    assert (entry["label"], entry["href"], entry["feature"], entry["source"]) == (
+        "Log a visit", f"/apps/{pid}", "studio", "private")
+    assert _view(world, BEN, world.a).jobs == {}
+    monkeypatch.setattr(get_settings(), "package_host_orgs", f"{world.a},{world.b}")
+    for who in (ZED, ANA):
+        assert _view(world, who, world.b).jobs == {}, who
+    assert _view(world, ANA, world.a, ("feature:projects",)).jobs == {}
+
+
+def test_r8_a_second_publish_that_drops_a_job_removes_its_claim(world) -> None:
+    mid = _mid()
+
+    async def go() -> str:
+        pid = await _new(world.a, ANA, _manifest(mid, jobs=_JOBS))
+        assert (await _publish(world.a, ANA, pid))[0] == 200
+        saved = await _call("save_draft", world.a, ANA, pid,
+                            payload=_manifest(mid, jobs=_JOBS[:1]))
+        assert saved[0] == 200, saved
+        assert (await _publish(world.a, ANA, pid))[0] == 200
+        return pid
+
+    pid = _run(world, go)
+    [row] = _installs(world, pid)
+    assert [(c[0], c[1]) for c in _claims(world, row["id"])] == [
+        ("jobs", f"{pid}:visits"), ("nav", f"/apps/{pid}")]
+
+
+def test_r8_a_job_that_a_system_job_holds_refuses_the_publish_and_writes_nothing(
+        world, monkeypatch) -> None:
+    mid = _mid()
+
+    async def first() -> str:
+        pid = await _new(world.a, ANA, _manifest(mid))
+        assert (await _publish(world.a, ANA, pid))[0] == 200
+        saved = await _call("save_draft", world.a, ANA, pid,
+                            payload=_manifest(mid, jobs=_JOBS[:1]))
+        assert saved[0] == 200, saved
+        return pid
+
+    pid = _run(world, first)
+    [before] = _installs(world, pid)
+    claims_before = _claims(world, before["id"])
+    held = SystemContribution(point="jobs", key=f"{pid}:visits", package="zz-system")
+    monkeypatch.setattr(store, "_system_keys", lambda: {("jobs", held.key): held})
+    status, got = _run(world, lambda: _publish(world.a, ANA, pid))
+    assert status == 409, got
+    assert got["code"] == "claim_taken" and (got["point"], got["key"]) == ("jobs", held.key)
+    assert got["holder"]["source"] == "system" and got["holder"]["package"] == "zz-system"
+    assert _versions(world, pid) == [1]
+    assert _installs(world, pid) == [before]
+    assert _claims(world, before["id"]) == claims_before

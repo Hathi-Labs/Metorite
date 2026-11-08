@@ -172,6 +172,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/asks/{ask_id}/withdraw", "withdraw_ask", "C"),
     # ── tasks.py ─────────────────────────────────────────────────────────
     Route("GET", "/projects/tasks", "list_tasks", "A"),
+    # MCP-G19a (task 1957): the count read. The chat tool is task 2223.
+    Route("GET", "/projects/tasks/stats", "board_stats", "A"),
+    # MCP-G21 (task 2216): the members a task can go to. The chat tool waits.
+    Route("GET", "/projects/assignable-members", "assignable_members", "A"),
     Route("GET", "/projects/tasks/{task_id}", "task_detail", "A"),
     # D-OP-10 (OP-7): the subtasks a delete card offers, hidden ones counted.
     Route("GET", "/projects/tasks/{task_id}/subtree", "delete_task", "C"),
@@ -422,6 +426,15 @@ MANIFEST: tuple[Route, ...] = (
     # S7d — the plan preview (plan_preview.py). It writes nothing, so it is
     # in READ_ONLY_POSTS. Its class is the tool's: propose_plan is class B.
     Route("POST", "/projects/plan/preview", "propose_plan", "B"),
+    # PJP-6a: the plan engine's read. Class X is the only form a route takes
+    # with no tool. PJP-6b adds the chat tool and moves this row to class A.
+    Route(
+        "GET",
+        "/projects/plan/analysis",
+        "",
+        "X",
+        "A read with no chat tool yet. PJP-6b adds analyze_plan and moves it to class A.",
+    ),
     Route("GET", "/projects/reports", "report_list", "A"),
     # WS-27bn R2 - the template gallery. It must sit ABOVE the
     # {report_id} row, because route_for takes the first match. R-final:
@@ -549,6 +562,10 @@ MANIFEST: tuple[Route, ...] = (
 #: builds each. The coverage fence holds this against ``__all__``: a tool is
 #: exported OR it is here, never both and never neither.
 PLANNED: dict[str, str] = {
+    # MCP-G21: the route is built. The chat reads people through `people_for`.
+    "assignable_members": "Metorite task 2216, chat parity for the assignable member list",
+    # MCP-G19a: the route is built. The chat tool waits on Metorite task 2223.
+    "board_stats": "Metorite task 2223, chat parity for the board count",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
@@ -1217,6 +1234,20 @@ _MAPPING_CARD_REASON = (
     "The answer on the app's mapping card. Without it the server's own rule maps "
     "each row, and the preview the chat card shows already counts that rule."
 )
+#: MCP-G19a (task 1957). The audit filters of the agent door. The chat
+#: gets them with its count tool, Metorite task 2223.
+_AUDIT_FILTER_REASON = (
+    "An audit filter of the agent door (MCP-G19a). The chat gets it with "
+    "the board count tool, Metorite task 2223."
+)
+_STATS_ROUTE_REASON = (
+    "A field of the board count route of the agent door (MCP-G19a). Its "
+    "chat tool is Metorite task 2223."
+)
+_MEMBERS_ROUTE_REASON = (
+    "The project filter of the assignable member route of the agent door "
+    "(MCP-G21). Its chat tool is Metorite task 2216."
+)
 _READ_FILTER_REASON = (
     "A filter of the app's list. The chat narrows tasks through list_tasks, "
     "which prints the facts this filter reads."
@@ -1264,6 +1295,28 @@ _STATUS_PLACE_REASON = (
 
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
+    ("GET", "/projects/tasks/stats"): {
+        "assigned": _STATS_ROUTE_REASON,
+        "assignee": _STATS_ROUTE_REASON,
+        "created_after": _STATS_ROUTE_REASON,
+        "due_before": _STATS_ROUTE_REASON,
+        "group_by": _STATS_ROUTE_REASON,
+        "has_parent": _STATS_ROUTE_REASON,
+        "include_archived": _STATS_ROUTE_REASON,
+        "include_subtree": _STATS_ROUTE_REASON,
+        "is_epic": _STATS_ROUTE_REASON,
+        "parent_task_id": _STATS_ROUTE_REASON,
+        "project_id": _STATS_ROUTE_REASON,
+        "q": _STATS_ROUTE_REASON,
+        "status_category": _STATS_ROUTE_REASON,
+        "status_id": _STATS_ROUTE_REASON,
+        "tags": _STATS_ROUTE_REASON,
+        "title_prefix": _STATS_ROUTE_REASON,
+        "unheld": _STATS_ROUTE_REASON,
+        "updated_after": _STATS_ROUTE_REASON,
+        "updated_before": _STATS_ROUTE_REASON,
+    },
     # WS-42 PST-4: the place of a lane. The tools send them when the model
     # passes a place, and this fence's witnesses pass none.
     ("POST", "/projects/nodes/{project_id}/statuses"): {
@@ -1282,6 +1335,14 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "reason": "The chat answer carries no reason. The card shows the option only."
     },
     ("GET", "/projects/tasks"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
+        "compact": "A row shape of the agent door (MCP-G19a), not a filter. The chat prints its own rows.",
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. list_tasks filters by status_category, and render_board "
@@ -1308,6 +1369,13 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     },
     # WS-64 OP-6c: the export takes the same subset as list_tasks.
     ("GET", "/projects/export/tasks.csv"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. export_tasks filters by status_category, as list_tasks does."

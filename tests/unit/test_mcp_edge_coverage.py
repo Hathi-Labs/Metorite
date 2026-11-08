@@ -84,6 +84,18 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "SW-31a. `my_work` reads the id and version of the nearest guidance block"
         " of each row. It is not a Projects route (agent_coordination.md SW-31)."
     ),
+    # MCP-G19a: `board_stats` counts over the scope of `list_tasks`. The chat
+    # tool for it is a follow-up, so the manifest holds no row yet.
+    ("GET", "/projects/tasks/stats"): (
+        "MCP-G19a. `board_stats` counts the tasks that `list_tasks` lists, with"
+        " the same scope function. The Projects manifest has no chat tool for it"
+        " yet (spec §9.1)."
+    ),
+    # MCP-G21: `list_members` reads the members a task of a project can go to.
+    ("GET", "/projects/assignable-members"): (
+        "MCP-G21. `list_members` reads the members that `set_assignees` would"
+        " accept. The Projects manifest has no chat tool for it yet (task 2216)."
+    ),
     # MCP-P1a (spec §19.5, "The new pairs"): the two list routes of the app
     # door. They hold no data of an app.
     ("GET", "/agent-access/apps"): (
@@ -138,13 +150,14 @@ def _gateway_routes() -> set[tuple[str, str]]:
 
 
 #: The methods a write pair may have (EA-6a, §9.5 rule 1). MCP-G2 adds
-#: ``PUT``, for the one PUT of the assignee set.
-WRITE_METHODS = frozenset({"PATCH", "POST", "PUT"})
+#: ``PUT``, for the one PUT of the assignee set. SW-16a adds ``DELETE``, for
+#: the one DELETE of a task link (``remove_task_link``).
+WRITE_METHODS = frozenset({"PATCH", "POST", "PUT", "DELETE"})
 
 
 def test_the_allowlist_is_not_empty_and_is_get_only_outside_the_write_pairs():
     """Rule 1, the method half. Every pair outside ``MCP_WRITE_ROUTES`` is a
-    GET. Every write pair is a PATCH, a POST or a PUT, and sits in
+    GET. Every write pair is a PATCH, a POST, a PUT or a DELETE, and sits in
     ``MCP_ROUTES``."""
     assert MCP_ROUTES, "an empty allowlist would make every rule below vacuous"
     assert MCP_WRITE_ROUTES <= MCP_ROUTES
@@ -162,7 +175,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     assignees and the task move (§9.2). MCP-G1 adds the node POST and PATCH,
     the move preview and the move (§9.2). MCP-G15 adds the outside decision
     (§12.1): an agent records a decision that its member made outside
-    Metorite, on its own awaiting run."""
+    Metorite, on its own awaiting run. SW-16a adds the link POST and the link
+    DELETE, the routes of ``add_task_link`` and ``remove_task_link``."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -182,6 +196,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
+        ("POST", "/projects/tasks/{task_id}/links"),
+        ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -499,6 +515,11 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("list_projects", "text"),
     ("list_projects", "limit"),
     ("list_projects", "cursor"),
+    # MCP-G21. The gateway returns the whole list, and the edge pages it.
+    ("list_members", "limit"),
+    ("list_members", "cursor"),
+    ("list_tags", "limit"),
+    ("list_tags", "cursor"),
     # EA-6d. The edge keeps the key in its own slot (`agent_edge.idempotency`),
     # and the route takes no such field (spec §9.2 and §9.5 rule 4).
     ("create_task", "idempotency_key"),

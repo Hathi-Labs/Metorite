@@ -353,7 +353,7 @@ authority: the route still checks the member's own access.
 `tests/unit/test_projects_chat_x_pin.py` pins the whole list. It names the 29
 routes that stay class X. OP-11 added `GET /projects/my/summary` to the
 plumbing group, because `my_work` and `list_tasks` read the same tasks. Its
-list of pending routes is empty since OP-6d.
+list of pending OP-6 routes is empty since OP-6d. A second list names a route whose chat tool a later slice builds: since PJP-6a (2026-11-08) it holds `GET /projects/plan/analysis`, the read route of the one plan engine. PJP-6b gives it a chat tool and moves it to class A.
 
 ---
 
@@ -1327,7 +1327,9 @@ is dark until a UI slice calls it.
    `projects_reports.md` refuses a subject on the outlook.
 8. **Needs attention.** `/needs-attention?mine=true` works with no project and
    does not change. Its "mine" is the assignee of a blocked task, so its
-   rows are a part of the list with `scope=mine`.
+   rows are a part of the list with `scope=mine`. AP-Q11 (owner, 2026-11-08)
+   folds the lens tab into one "Needs you" control (`waiting_on_me.md` §5.8,
+   AP-18). The route stays.
 9. **The MCP edge.** `list_tasks` takes `include_subtree`, and its default
    is true when the call names a project. `list_projects` rows and the
    `get_project` project carry `kind` and `level`. The gateway derives the

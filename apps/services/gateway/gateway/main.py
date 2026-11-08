@@ -552,6 +552,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.align_jobs_skipped", error=str(exc))
     try:
+        # The headless turn (WS-AUTO AUTO-8a, gateway/jobs/headless_turn.py)
+        # registers `auto.turn` at import, only with JOB_QUEUE on. Dark: no
+        # code enqueues it, and HEADLESS_TURN_ORGS ships empty.
+        from gateway.jobs import headless_turn as _headless_turn  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.headless_turn_jobs_skipped", error=str(exc))
+    try:
         # The graph sweep kind and its seed hook register at import (WS-KG
         # KG-4, gateway/kb_entities/graph.py). Dark: the seed needs
         # GRAPH_SWEEP_ORGS. Its own try, for the reason above.
@@ -1904,6 +1911,16 @@ try:
     from gateway.routes.chat_brief import router as _chat_brief_router
 
     app.include_router(_chat_brief_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # projects_ai_chat.md §31 VOX-1 — the chat's voice input, a clip to the
+    # Console's metered transcribe door. Shares /chat's prefix, in its own
+    # module, as the brief does. Dark behind CHAT_VOICE_ORGS.
+    from gateway.routes.chat_transcribe import router as _chat_transcribe_router
+
+    app.include_router(_chat_transcribe_router)
 except Exception:  # pragma: no cover
     pass
 

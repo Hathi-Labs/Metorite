@@ -178,7 +178,7 @@ TEXT_PARENT_OTHER_PROJECT = (
     "The parent task is in another project. Send the project_id of the parent task.")
 TEXT_UPDATE_EMPTY = (
     "Send one or more fields to change: title, description, tags, due_at,"
-    " custom_fields, importance, leveraged, estimate_mins, start_date or"
+    " custom_fields, importance, leveraged, estimate_mins, start_date, type_id or"
     " parent_task_id.")
 #: WS-55 MCP-G2. The texts of the planning fields, of the move inside a
 #: project (``parent_task_id`` of ``update_task``) and of ``set_assignees``.
@@ -191,6 +191,12 @@ TEXT_EPIC_PARENT = ("An Epic cannot have a parent. Leave out type_id or"
 #: The ``detail`` of that 422. ``test_mcp_edge_write_clarity.py`` pins it equal
 #: to the gateway's own text, so a changed detail fails the test.
 EPIC_PARENT_DETAIL = "An Epic cannot have a parent task; it is the top level."
+#: SP-6. ``update_task`` sets an Epic type on a task that has a parent. The
+#: same gateway rule as :data:`TEXT_EPIC_PARENT`, with the next step.
+TEXT_EPIC_TYPE_HAS_PARENT = (
+    "An Epic cannot have a parent task, and this task has one. Send"
+    " parent_task_id null in a call of its own to make it top level, then set"
+    " the type. Nothing changed.")
 TEXT_MOVE_ALONE = (
     "Send parent_task_id in a call of its own. Then change the other fields"
     " with the new version.")
@@ -384,6 +390,10 @@ DELETE_ANNOTATIONS: Mapping[str, bool] = {
     "idempotentHint": False,
     "openWorldHint": False,
 }
+
+#: The annotations of ``remove_task_link`` (SW-16a). It removes one link and
+#: nothing else, and a second call finds no link. Class B, as a chat unlink.
+DELETE_LINK_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "idempotentHint": True}
 
 #: The annotations of ``set_assignees`` (MCP-G2, fix round 1). It replaces
 #: the whole set, and an empty list removes every assignee, so
@@ -1235,6 +1245,48 @@ TEXT_DESCENDANTS_NEED_PARENT = "include_descendants needs parent_task_id."
 STATUSES_ROUTE = "/projects/nodes/{project_id}/statuses"
 LIST_LIMIT_MAX = 100
 LIST_LIMIT_DEFAULT = 50
+#: MCP-G19a. The page cap of ``list_tasks`` with ``compact`` true. The gateway
+#: holds the same number (``COMPACT_MAX_PAGE_SIZE``), and a pin test compares.
+LIST_COMPACT_LIMIT_MAX = 500
+STATS_ROUTE = "/projects/tasks/stats"
+#: The group axes of ``board_stats``, as the gateway names them.
+STATS_GROUP_BY: tuple[str, ...] = (
+    "project", "status_category", "is_epic", "assignee", "holder", "updated_age",
+)
+STATUS_CATEGORIES: tuple[str, ...] = (
+    "backlog", "todo", "in_progress", "done", "cancelled",
+)
+#: An ISO 8601 date or timestamp. The gateway parses it and refuses a bad one.
+_WHEN_PATTERN = (r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?"
+                 r"(Z|[+-]\d{2}:\d{2})?)?")
+#: The audit filters that ``list_tasks`` and ``board_stats`` share (MCP-G19a).
+_AUDIT_FILTER_PROPERTIES: dict[str, Any] = {
+    "status_category": {
+        "type": "array", "minItems": 1, "maxItems": len(STATUS_CATEGORIES),
+        "items": {"type": "string", "enum": list(STATUS_CATEGORIES)},
+        "description": "Only tasks whose status is in one of these stages."},
+    "updated_before": {"type": "string", "pattern": _WHEN_PATTERN,
+                       "description": "Only tasks last changed before this ISO date"
+                                      " or time. A date reads as 00:00 UTC."},
+    "updated_after": {"type": "string", "pattern": _WHEN_PATTERN,
+                      "description": "Only tasks last changed on or after this"
+                                     " ISO date or time."},
+    "created_after": {"type": "string", "pattern": _WHEN_PATTERN,
+                      "description": "Only tasks made on or after this ISO date"
+                                     " or time."},
+    "due_before": {"type": "string", "pattern": _WHEN_PATTERN,
+                   "description": "Only tasks due before this ISO date or time."},
+    "has_parent": {"type": "boolean",
+                   "description": "False: only top-level tasks. True: only subtasks."},
+    "is_epic": {"type": "boolean",
+                "description": "True: only tasks of an epic type. False: no epics."},
+    "assigned": {"type": "boolean",
+                 "description": "False: only tasks with no assignee. True: only"
+                                " tasks with one or more."},
+    "title_prefix": {"type": "string", "minLength": 1, "maxLength": 100,
+                     "description": "Only tasks whose title starts with this text,"
+                                    " not case sensitive. Use a plan id such as CRM-Z10a."},
+}
 
 _LIST_TASKS_INPUT: dict[str, Any] = {
     "type": "object",
@@ -1268,12 +1320,40 @@ _LIST_TASKS_INPUT: dict[str, Any] = {
                            " parent_task_id. Each row has a depth, and 1 is a"
                            " direct subtask. A subtask that this member cannot"
                            " see, and the tasks under it, are not in the list."},
-        "limit": {"type": "integer", "minimum": 1, "maximum": LIST_LIMIT_MAX,
+        **_AUDIT_FILTER_PROPERTIES,
+        "compact": {"type": "boolean",
+                    "description": "True: small rows (id, number, title, project, status"
+                                   " stage and name, parent, updated, due) and a page of"
+                                   " up to 500. Use it to audit a large board."},
+        "limit": {"type": "integer", "minimum": 1, "maximum": LIST_COMPACT_LIMIT_MAX,
                   "default": LIST_LIMIT_DEFAULT,
-                  "description": "Rows on one page. Ignored when a cursor is sent."},
+                  "description": "Rows on one page. At most 100, or 500 with compact."
+                                 " Ignored when a cursor is sent."},
         "cursor": {"type": "string", "minLength": 1, "maxLength": cursor_mod.MAX_CHARS,
                    "description": "The nextCursor of the page before."},
     },
+    "additionalProperties": False,
+}
+
+#: MCP-G19a. The keys of one ``compact`` row.
+COMPACT_TASK_KEYS: tuple[str, ...] = (
+    "id", "task_number", "title", "project_id", "status_category", "status_name",
+    "parent_task_id", "updated_at", "due_at",
+)
+_COMPACT_TASK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "task_number": _NULLABLE_INTEGER,
+        "title": _UNTRUSTED_SCHEMA,
+        "project_id": {"type": "string"},
+        "status_category": _NULLABLE_STRING,
+        "status_name": _UNTRUSTED_OR_NULL,
+        "parent_task_id": _NULLABLE_STRING,
+        "updated_at": _NULLABLE_STRING,
+        "due_at": _NULLABLE_STRING,
+    },
+    "required": list(COMPACT_TASK_KEYS),
     "additionalProperties": False,
 }
 
@@ -1282,7 +1362,7 @@ _LIST_TASKS_OUTPUT: dict[str, Any] = {
     "properties": {
         "tasks": {
             "type": "array",
-            "items": {
+            "items": {"anyOf": [{
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
@@ -1299,7 +1379,7 @@ _LIST_TASKS_OUTPUT: dict[str, Any] = {
                 },
                 "required": list(LIST_TASK_KEYS),
                 "additionalProperties": False,
-            },
+            }, _COMPACT_TASK_SCHEMA]},
         },
         "total": {"type": "integer"},
         "nextCursor": _NULLABLE_STRING,
@@ -1319,6 +1399,16 @@ _LIST_TASKS_PARAMS: dict[str, str] = {
     "unheld": "unheld",
     "parent_task_id": "parent_task_id",
     "include_descendants": "include_descendants",
+    "status_category": "status_category",
+    "updated_before": "updated_before",
+    "updated_after": "updated_after",
+    "created_after": "created_after",
+    "due_before": "due_before",
+    "has_parent": "has_parent",
+    "is_epic": "is_epic",
+    "assigned": "assigned",
+    "title_prefix": "title_prefix",
+    "compact": "compact",
     "limit": "page_size",
     "cursor": "page",
 }
@@ -1401,8 +1491,49 @@ def _list_task_row(
     }
 
 
+def _compact_row(
+    row: dict[str, Any], names_by_project: Mapping[str, Mapping[str, str]],
+) -> dict[str, Any]:
+    """One ``compact`` row (MCP-G19a): the keys of :data:`COMPACT_TASK_KEYS`."""
+    status_id = row.get("status_id")
+    names = names_by_project.get(str(row.get("project_id")), {})
+    category = row.get("status_category")
+    return {
+        "id": str(row.get("id")),
+        "task_number": row.get("task_number"),
+        "title": untrusted(row.get("title") or ""),
+        "project_id": str(row.get("project_id")),
+        "status_category": category if isinstance(category, str) else None,
+        "status_name": untrusted(names.get(str(status_id))) if status_id is not None else None,
+        "parent_task_id": (
+            str(row["parent_task_id"]) if row.get("parent_task_id") is not None else None),
+        "updated_at": row.get("updated_at"),
+        "due_at": row.get("due_at"),
+    }
+
+
+def _audit_query(args: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """The query pairs of the MCP-G19a filters, shared by ``list_tasks`` and
+    ``board_stats`` so that both send the same pair for the same input."""
+    query: list[tuple[str, str]] = []
+    if args.get("status_category"):
+        query.append(("status_category", ",".join(args["status_category"])))
+    for name in ("updated_before", "updated_after", "created_after", "due_before",
+                 "title_prefix"):
+        if name in args:
+            query.append((name, str(args[name])))
+    for name in ("has_parent", "is_epic", "assigned"):
+        if isinstance(args.get(name), bool):
+            query.append((name, "true" if args[name] else "false"))
+    return query
+
+
 async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    page, size = _page_of(ctx, "list_tasks", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+    compact = args.get("compact") is True
+    cap = LIST_COMPACT_LIMIT_MAX if compact else LIST_LIMIT_MAX
+    page, size = _page_of(ctx, "list_tasks", args, LIST_LIMIT_DEFAULT, cap)
+    if "cursor" not in args and size > cap:
+        raise ToolError(f"The input 'limit' must be at most {cap}.")
 
     query: list[tuple[str, str]] = []
     for name in ("project_id", "status_id", "tag", "assignee", "text", "parent_task_id"):
@@ -1420,6 +1551,9 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if "parent_task_id" not in args:
             raise ToolError(TEXT_DESCENDANTS_NEED_PARENT)
         query.append((_LIST_TASKS_PARAMS["include_descendants"], "true"))
+    query += _audit_query(args)
+    if compact:
+        query.append((_LIST_TASKS_PARAMS["compact"], "true"))
     query += [("page", str(page)), ("page_size", str(size))]
 
     # A 404 names the task in descendants mode, so an unseen root reads as
@@ -1434,8 +1568,9 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(TEXT_BUSY)
     rows = [r for r in rows if isinstance(r, dict)]
     names = await _status_names(ctx, _distinct_projects(rows))
+    make_row = _compact_row if compact else _list_task_row
     return {
-        "tasks": [_list_task_row(r, names) for r in rows],
+        "tasks": [make_row(r, names) for r in rows],
         "total": total,
         "nextCursor": _next_cursor(ctx, "list_tasks", args, page=page, size=size,
                                    total=total, shown=len(rows)),
@@ -1447,7 +1582,9 @@ LIST_TASKS = Tool(
     title="List tasks",
     description=(
         "List the tasks this member can see, newest first, one page at a time."
-        " Filter by project, status, tag, assignee or text. A project_id reads"
+        " Filter by project, status, status stage, tag, assignee, text, title"
+        " prefix, dates (updated, created, due), parent, epic type or assigned."
+        " Send compact true for small rows and a page of up to 500. A project_id reads"
         " the project and every project under it, unless include_subtree is"
         " false. Send unheld true to"
         " see only tasks that no AI session holds. Send parent_task_id to get"
@@ -1472,6 +1609,148 @@ LIST_TASKS = Tool(
     not_found=TEXT_PROJECT_NOT_FOUND,
     run=_list_tasks,
     routes=(LIST_TASKS_ROUTE, STATUSES_ROUTE),
+)
+
+
+# ── board_stats (MCP-G19a) ──────────────────────────────────────────────────
+
+_BOARD_STATS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "group_by": {
+            "type": "array", "minItems": 1, "maxItems": 2,
+            "items": {"type": "string", "enum": list(STATS_GROUP_BY)},
+            "description": "One or two axes to count by. updated_age bands are"
+                           " <1d, 1-3d, 3-7d, 7-30d and >30d. With assignee, a task"
+                           " with two assignees counts once under each."},
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "Only tasks of this project. An id from list_projects."},
+        "include_subtree": {"type": "boolean", "default": True,
+                            "description": "With project_id: true counts the project and"
+                                           " every project under it."},
+        "status_id": {"type": "string", "pattern": _UUID_PATTERN,
+                      "description": "Only tasks in this status."},
+        "tag": {"type": "string", "minLength": 1, "maxLength": 100,
+                "pattern": "^[^,]+$", "description": "Only tasks with this tag."},
+        "assignee": {"type": "string", "minLength": 3, "maxLength": 320,
+                     "description": "Only tasks assigned to this address."},
+        "text": {"type": "string", "minLength": 1, "maxLength": 200,
+                 "description": "Only tasks whose title or description holds every word."},
+        "unheld": {"type": "boolean",
+                   "description": "True: only tasks that no AI session holds now."},
+        "parent_task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                           "description": "Only the direct subtasks of this task."},
+        **_AUDIT_FILTER_PROPERTIES,
+    },
+    "additionalProperties": False,
+}
+
+_BOARD_STATS_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "total": {"type": "integer"},
+        "group_by": {"type": "array", "items": {"type": "string"}},
+        "groups": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "keys": {"type": "object"},
+                    "count": {"type": "integer"},
+                },
+                "required": ["keys", "count"],
+                "additionalProperties": False,
+            },
+        },
+        "truncated": {"type": "boolean"},
+    },
+    "required": ["total", "group_by", "groups", "truncated"],
+    "additionalProperties": False,
+}
+
+_BOARD_STATS_PARAMS: dict[str, str] = {
+    "group_by": "group_by",
+    "project_id": "project_id",
+    "include_subtree": "include_subtree",
+    "status_id": "status_id",
+    "tag": "tags",
+    "assignee": "assignee",
+    "text": "q",
+    "unheld": "unheld",
+    "parent_task_id": "parent_task_id",
+    "status_category": "status_category",
+    "updated_before": "updated_before",
+    "updated_after": "updated_after",
+    "created_after": "created_after",
+    "due_before": "due_before",
+    "has_parent": "has_parent",
+    "is_epic": "is_epic",
+    "assigned": "assigned",
+    "title_prefix": "title_prefix",
+}
+
+
+def _stats_key(axis: str, value: Any) -> Any:
+    """One group key. A member address is shaped (S). A project id and a stage
+    are plain. A bool and a null stay as they are."""
+    if value is None or isinstance(value, bool):
+        return value
+    if axis in ("assignee", "holder"):
+        return assignee(value)
+    return str(value)
+
+
+async def _board_stats(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    query: list[tuple[str, str]] = []
+    for name in ("project_id", "status_id", "tag", "assignee", "text", "parent_task_id"):
+        if name in args:
+            query.append((_BOARD_STATS_PARAMS[name], str(args[name])))
+    if "project_id" in args:
+        subtree = args.get("include_subtree", True) is not False
+        query.append(("include_subtree", "true" if subtree else "false"))
+    if args.get("unheld") is True:
+        query.append(("unheld", "true"))
+    if args.get("group_by"):
+        query.append(("group_by", ",".join(args["group_by"])))
+    query += _audit_query(args)
+    body = await _get(ctx, STATS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=query)
+    total = body.get("total") if isinstance(body, dict) else None
+    groups = body.get("groups") if isinstance(body, dict) else None
+    axes = body.get("group_by") if isinstance(body, dict) else None
+    if not isinstance(total, int) or not isinstance(groups, list) or not isinstance(axes, list):
+        raise ToolError(TEXT_BUSY)
+    out: list[dict[str, Any]] = []
+    for group in groups:
+        keys = group.get("keys") if isinstance(group, dict) else None
+        count = group.get("count") if isinstance(group, dict) else None
+        if not isinstance(keys, dict) or not isinstance(count, int):
+            continue
+        out.append({"keys": {a: _stats_key(a, keys.get(a)) for a in axes
+                             if isinstance(a, str) and a in STATS_GROUP_BY},
+                    "count": count})
+    return {"total": total, "group_by": [a for a in axes if a in STATS_GROUP_BY],
+            "groups": out, "truncated": body.get("truncated") is True}
+
+
+BOARD_STATS = Tool(
+    name="board_stats",
+    title="Count tasks",
+    description=(
+        "Count the tasks this member can see, with no rows. total is the number"
+        " of tasks that list_tasks returns for the same filters. Send group_by"
+        " with one or two of project, status_category, is_epic,"
+        " assignee, holder and updated_age to get a count for each group. A group key"
+        " is null when the task has no value. It takes the filters of list_tasks."
+        " Use it to audit a large board before you read rows." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_BOARD_STATS_INPUT,
+    output_schema=_BOARD_STATS_OUTPUT,
+    route=STATS_ROUTE,
+    params=_BOARD_STATS_PARAMS,
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_board_stats,
+    routes=(STATS_ROUTE,),
 )
 
 
@@ -1971,6 +2250,201 @@ GET_PROJECT = Tool(
 )
 
 
+# ── list_members and list_tags (MCP-G21) ────────────────────────────────────
+
+#: The keys of one ``list_members`` row.
+MEMBER_ROW_KEYS: tuple[str, ...] = ("address", "name")
+#: The keys of one ``list_tags`` row.
+TAG_ROW_KEYS: tuple[str, ...] = ("name",)
+
+MEMBERS_ROUTE = "/projects/assignable-members"
+
+#: ``list_tags`` with no project reads the tags of this many top projects at
+#: once, so it never sends a long burst to the gateway.
+TAG_READ_BATCH = 8
+
+_LIMIT_INPUT: dict[str, Any] = {
+    "type": "integer", "minimum": 1, "maximum": LIST_LIMIT_MAX,
+    "default": LIST_LIMIT_DEFAULT,
+    "description": "Rows on one page. Ignored when a cursor is sent.",
+}
+_CURSOR_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": cursor_mod.MAX_CHARS,
+    "description": "The nextCursor of the page before.",
+}
+
+_LIST_MEMBERS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "Only the members who open this project. An id from"
+                           " list_projects. Leave it out to list the members"
+                           " who open at least one project you see."},
+        "limit": _LIMIT_INPUT,
+        "cursor": _CURSOR_INPUT,
+    },
+    "additionalProperties": False,
+}
+
+_LIST_MEMBERS_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "members": {"type": "array", "items": _object({
+            "address": {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]},
+            "name": _UNTRUSTED_OR_NULL,
+        })},
+        "total": {"type": "integer"},
+        "nextCursor": _NULLABLE_STRING,
+    },
+    "required": ["members", "total", "nextCursor"],
+    "additionalProperties": False,
+}
+
+_LIST_TAGS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "Only the tags of this project. An id from"
+                           " list_projects. Leave it out to list the tags of"
+                           " every project you see."},
+        "limit": _LIMIT_INPUT,
+        "cursor": _CURSOR_INPUT,
+    },
+    "additionalProperties": False,
+}
+
+_LIST_TAGS_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "tags": {"type": "array", "items": _object({"name": _UNTRUSTED_SCHEMA})},
+        "total": {"type": "integer"},
+        "nextCursor": _NULLABLE_STRING,
+    },
+    "required": ["tags", "total", "nextCursor"],
+    "additionalProperties": False,
+}
+
+
+async def _list_members(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One read of the gateway's assignable members, then a page of it.
+
+    The gateway applies the rule of ``set_assignees`` (the grant arm), so this
+    list holds nobody that the assign call refuses. The edge adds the pages
+    and wraps each name as ``untrusted_text``.
+    """
+    page, size = _page_of(ctx, "list_members", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+    query = [("project_id", str(args["project_id"]))] if "project_id" in args else []
+    rows = _rows_of(await _get(ctx, MEMBERS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=query))
+    kept = [r for r in rows if isinstance(r.get("address"), str)]
+    shown = kept[(page - 1) * size: page * size]
+    return {
+        "members": [{"address": assignee(r["address"]),
+                     "name": untrusted(r.get("name") or None)} for r in shown],
+        "total": len(kept),
+        "nextCursor": _next_cursor(ctx, "list_members", args, page=page, size=size,
+                                   total=len(kept), shown=len(shown)),
+    }
+
+
+LIST_MEMBERS = Tool(
+    name="list_members",
+    title="List the members you can assign",
+    description=(
+        "List the members of the organization whom set_assignees accepts for a"
+        " task: each one already opens the project through a project grant or"
+        " an admin read right. Send project_id for the members of one project."
+        " Leave it out for the members who open at least one project you see."
+        " A task in a personal project takes only its owner. Each row has the"
+        " member address and the display name, and nothing more. Use the"
+        " address in set_assignees or create_task. An assignee can also be"
+        " agent:<name>, which this list does not hold. Send nextCursor back as"
+        " cursor to read the next page. The pages are offsets." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_MEMBERS_INPUT,
+    output_schema=_LIST_MEMBERS_OUTPUT,
+    route=MEMBERS_ROUTE,
+    params={"project_id": "project_id"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_list_members,
+    routes=(MEMBERS_ROUTE,),
+    edge_inputs=frozenset({"limit", "cursor"}),
+)
+
+
+async def _vocabulary_of(ctx: Context, project_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """The tag rows of the roots of *project_ids*, by tag id.
+
+    Two projects of one root give the same vocabulary rows, so the tag id
+    drops the repeat.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(project_ids), TAG_READ_BATCH):
+        batch = project_ids[start: start + TAG_READ_BATCH]
+        answers = await _together(*(
+            _get(ctx, TAGS_ROUTE, TEXT_PROJECT_NOT_FOUND, path_params={"project_id": pid})
+            for pid in batch))
+        for answer in answers:
+            for row in _rows_of(answer):
+                if isinstance(row.get("name"), str) and row["name"]:
+                    found.setdefault(str(row.get("id")), row)
+    return found
+
+
+async def _list_tags(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """The tag names of one project, or of the top projects of the tree read.
+
+    Both reads go through the gateway's visibility, so a pin narrows them.
+    The ``task_count`` of the route stays behind, as in ``get_project``: the
+    seam does not narrow it. The names join by case, and sort by case.
+    """
+    page, size = _page_of(ctx, "list_tags", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+    if "project_id" in args:
+        project_ids = [str(args["project_id"])]
+    else:
+        roots = _rows_of(await _get(ctx, TREE_ROUTE, TEXT_PROJECT_NOT_FOUND))
+        project_ids = [str(n.get("id")) for n in roots
+                       if n.get("archived_at") is None and n.get("id")]
+    names: dict[str, str] = {}
+    for row in (await _vocabulary_of(ctx, project_ids)).values():
+        names.setdefault(row["name"].casefold(), row["name"])
+    ordered = [names[k] for k in sorted(names)]
+    shown = ordered[(page - 1) * size: page * size]
+    return {
+        "tags": [{"name": untrusted(n)} for n in shown],
+        "total": len(ordered),
+        "nextCursor": _next_cursor(ctx, "list_tags", args, page=page, size=size,
+                                   total=len(ordered), shown=len(shown)),
+    }
+
+
+LIST_TAGS = Tool(
+    name="list_tags",
+    title="List the tags",
+    description=(
+        "List the tag names of one project tree, or of every tree you see when"
+        " project_id is left out. Tags belong to the top project of a tree, so"
+        " the list can hold a tag that a hidden project of that tree uses."
+        " A name shows once, in alphabetical order."
+        " Read this before you make a tag in create_task or update_task, so"
+        " you reuse a name that exists. Each row has the tag name only."
+        " Send nextCursor back as cursor to read the next page. The pages are"
+        " offsets." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_TAGS_INPUT,
+    output_schema=_LIST_TAGS_OUTPUT,
+    route=TAGS_ROUTE,
+    params={"project_id": "project_id"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_list_tags,
+    routes=(TAGS_ROUTE, TREE_ROUTE),
+    edge_inputs=frozenset({"limit", "cursor"}),
+)
+
+
 # ── Agent runs: the shapes (EA-12b, §12.1 and §9.4) ─────────────────────────
 
 TASK_RUNS_ROUTE = "/projects/tasks/{task_id}/agent-runs"
@@ -2297,7 +2771,7 @@ SUBTASK_KEYS: tuple[str, ...] = (
     "completed_at",
 )
 LINK_KEYS: tuple[str, ...] = (
-    "id", "link_type", "direction", "title", "task_number", "status_name", "category",
+    "id", "link_id", "link_type", "direction", "title", "task_number", "status_name", "category",
     "completed_at",
 )
 
@@ -2334,7 +2808,7 @@ _SUBTASK_SCHEMA = _object({
     "completed_at": _NULLABLE_STRING,
 })
 _LINK_SCHEMA = _object({
-    "id": {"type": "string"}, "link_type": _NULLABLE_STRING, "direction": _NULLABLE_STRING,
+    "id": {"type": "string"}, "link_id": _NULLABLE_STRING, "link_type": _NULLABLE_STRING, "direction": _NULLABLE_STRING,
     "title": _UNTRUSTED_SCHEMA, "task_number": _NULLABLE_INTEGER,
     "status_name": _UNTRUSTED_OR_NULL, "category": _NULLABLE_STRING,
     "completed_at": _NULLABLE_STRING,
@@ -2484,9 +2958,11 @@ def _subtask(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _link(row: Mapping[str, Any]) -> dict[str, Any]:
-    """``id`` is the OTHER task (``relations.py``, ``_row``). ``link_id`` stays."""
+    """``id`` is the OTHER task (``relations.py``, ``_row``). ``link_id`` is the
+    link row, the id that ``remove_task_link`` takes (SW-16a)."""
     return {
         "id": str(row.get("id")),
+        "link_id": _str_or_none(row.get("link_id")),
         "link_type": _str_or_none(row.get("link_type")),
         "direction": _str_or_none(row.get("direction")),
         "title": untrusted(row.get("title") or ""),
@@ -2612,7 +3088,13 @@ def _meta_assignment(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _meta_link(raw: Mapping[str, Any]) -> dict[str, Any]:
-    return {"target": _id(raw.get("target")), "type": _key(raw.get("type"))}
+    # SW-16a: `link_action` marks a removal row, so it does not read as an add,
+    # and `direction` is the side of this task on that row.
+    return {
+        "target": _id(raw.get("target")), "type": _key(raw.get("type")),
+        "link_action": _key(raw.get("link_action")),
+        "direction": _key(raw.get("direction")),
+    }
 
 
 def _meta_merge(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -4197,6 +4679,8 @@ UPDATE_BODY_KEYS: tuple[str, ...] = (
     "title", "description", "tags", "due_at", "custom_fields",
     # MCP-G2: the planning fields of the app.
     "importance", "leveraged", "estimate_mins", "start_date",
+    # SP-6: the type of the task. null clears it.
+    "type_id",
 )
 
 #: ``custom_fields`` of ``update_task``: at most this many keys, each one
@@ -4340,6 +4824,9 @@ _UPDATE_INPUT: dict[str, Any] = {
         "start_date": {**_START_DATE_INPUT, "type": ["string", "null"],
                        "description": _START_DATE_INPUT["description"]
                        + " null clears the start date."},
+        "type_id": {"type": ["string", "null"], "pattern": _UUID_PATTERN,
+                    "description": "A task type id from get_project. null clears the"
+                                   " type. An Epic cannot have a parent task."},
         "parent_task_id": {
             "type": ["string", "null"], "pattern": _UUID_PATTERN,
             "description": "Moves the task under this parent task, in the same"
@@ -4780,10 +5267,19 @@ async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(TEXT_UPDATE_EMPTY)
     if "custom_fields" in payload:
         payload["custom_fields"] = _custom_fields_input(payload["custom_fields"])
+    if payload.get("type_id") is not None:
+        # SP-6: the type must belong to the project of THIS task, as it does
+        # for create_task. A task the member cannot see is "Task not found."
+        row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND,
+                         path_params={"task_id": str(args["task_id"])})
+        if not isinstance(row, dict):
+            raise ToolError(TEXT_BUSY)
+        await _check_type(ctx, str(row.get("project_id")), str(payload["type_id"]))
     _, after = await _write(
         ctx, "PATCH", TASK_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])}, json_body=payload,
-        if_match=str(args["expected_version"]))
+        if_match=str(args["expected_version"]),
+        details={(422, EPIC_PARENT_DETAIL): TEXT_EPIC_TYPE_HAS_PARENT})
     return await _updated(ctx, after)
 
 
@@ -4792,7 +5288,7 @@ UPDATE_TASK = Tool(
     title="Update a task",
     description=(
         "Change the title, description, tags, due date, custom fields,"
-        " importance, leveraged flag, estimate or start date of one task this"
+        " importance, leveraged flag, estimate, start date or type of one task this"
         " member can see. Send only the fields to change. Send the version that"
         " get_task returned as expected_version. When the task changed after"
         " that read, the tool refuses, and you read the task again. tags"
@@ -4801,7 +5297,9 @@ UPDATE_TASK = Tool(
         " is 2 for Important or 0 for not Important. estimate_mins is whole"
         " minutes, 0 or more. start_date is a date such as 2026-10-31. Send null"
         " for due_at, start_date or estimate_mins to clear it. A field you leave"
-        " out stays as it is."
+        " out stays as it is. type_id is a task type id from get_project, and"
+        " null clears the type. An Epic type on a task that has a parent is"
+        " refused: move the task to the top level first."
         " parent_task_id moves the task under another task of the same project,"
         " and null moves it to the top level. An Epic cannot have a parent."
         " Send parent_task_id in a call of"
@@ -4820,7 +5318,7 @@ UPDATE_TASK = Tool(
             "parent_task_id": "parent_task_id"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_update_task,
-    routes=(TASK_ROUTE, STATUSES_ROUTE),
+    routes=(TASK_ROUTE, STATUSES_ROUTE, TYPES_ROUTE),
     method="PATCH",
     alt_writes=(("POST", MOVE_ROUTE),),
     annotations=dict(WRITE_ANNOTATIONS),
@@ -5225,6 +5723,207 @@ SET_ASSIGNEES = Tool(
     routes=(TASK_ROUTE,),
     method="PUT",
     annotations=dict(ASSIGN_ANNOTATIONS),
+)
+
+
+# ── add_task_link and remove_task_link (SW-16a) ─────────────────────────────
+
+LINKS_ROUTE = "/projects/tasks/{task_id}/links"
+LINK_ROUTE = "/projects/tasks/{task_id}/links/{link_id}"
+
+#: The link types that ``add_task_link`` makes. Only ``blocks`` for now: the
+#: critical path reads it. SW-25 widens the list.
+AGENT_LINK_TYPES: tuple[str, ...] = ("blocks",)
+
+#: The keys of the result of ``add_task_link`` and ``remove_task_link``.
+ADD_LINK_KEYS: tuple[str, ...] = (
+    "link_id", "task_id", "target_task_id", "link_type", "created")
+REMOVE_LINK_KEYS: tuple[str, ...] = ("link_id", "task_id", "removed")
+
+TEXT_LINK_SELF = "A task cannot be linked to itself. Send two different tasks."
+TEXT_LINK_CYCLE = (
+    "That link would make a loop: task_id already depends on target_task_id,"
+    " so neither could ever start. Nothing changed. Check the order with"
+    " get_task, and link the tasks the other way round or leave them.")
+TEXT_LINK_BAD_TYPE = "The input 'link_type' must be blocks."
+TEXT_LINK_TOO_LONG = (
+    "The chain of tasks that wait on each other is too long. Nothing changed.")
+TEXT_LINK_NOT_FOUND = "Task or link not found."
+TEXT_LINK_NOT_BLOCKS = (
+    "This tool removes blocks links only, and this link is another kind."
+    " Nothing changed. A person removes other kinds of link in the app.")
+#: The ``detail`` strings of the gateway's 422 (``relations.assert_no_block_cycle``
+#: and ``create_link``). ``tests/unit/test_task_links_mcp_r8.py``, in
+#: ``test_the_details_are_the_ones_of_the_gateway``, pins them equal to the
+#: gateway's own text, so a changed detail fails the test.
+LINK_SELF_DETAIL = "A task cannot be linked to itself."
+LINK_SELF_BLOCK_DETAIL = "A task cannot block itself."
+LINK_CYCLE_DETAIL = (
+    "That link would make a loop: this task already depends on the one you are"
+    " blocking, so neither could ever start.")
+LINK_CHAIN_DETAIL = "This dependency chain is longer than the supported maximum."
+_LINK_DETAILS: Mapping[tuple[int, str], str] = {
+    (422, LINK_SELF_DETAIL): TEXT_LINK_SELF,
+    (422, LINK_SELF_BLOCK_DETAIL): TEXT_LINK_SELF,
+    (422, LINK_CYCLE_DETAIL): TEXT_LINK_CYCLE,
+    (422, LINK_CHAIN_DETAIL): TEXT_LINK_TOO_LONG,
+}
+
+_ADD_LINK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task that blocks. An id from list_tasks or"
+                                   " get_task. It must be done before the target"
+                                   " task can start."},
+        "target_task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                           "description": "The task that waits. my_work does not"
+                                          " offer it until task_id is done."},
+        "link_type": {"type": "string", "enum": list(AGENT_LINK_TYPES),
+                      "description": "blocks: task_id blocks target_task_id."},
+    },
+    "required": ["task_id", "target_task_id", "link_type"],
+    "additionalProperties": False,
+}
+_ADD_LINK_OUTPUT: dict[str, Any] = _object({
+    "link_id": {"type": "string"}, "task_id": {"type": "string"},
+    "target_task_id": {"type": "string"}, "link_type": {"type": "string"},
+    "created": {"type": "boolean"},
+})
+
+
+async def _link_exists(ctx: Context, task_id: str, target: str) -> bool:
+    """True when *task_id* already blocks *target*. Best effort: a failed read
+    gives False, and the POST is idempotent either way."""
+    try:
+        body = await _get(ctx, RELATIONS_ROUTE, TEXT_TASK_NOT_FOUND,
+                          path_params={"task_id": task_id})
+    except ToolError:
+        return False
+    links = body.get("links") if isinstance(body, dict) else None
+    return any(
+        isinstance(r, dict) and r.get("link_type") == "blocks"
+        and r.get("direction") == "outgoing"
+        and str(r.get("id")).lower() == target.lower()
+        for r in links or ())
+
+
+async def _add_task_link(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST one ``blocks`` link (SW-16a). ``task_id`` blocks ``target_task_id``.
+
+    The gateway checks that the member sees BOTH tasks, and answers 404 for
+    either, so a hidden target reads as "Task not found." The same link twice
+    keeps one row (``ON CONFLICT``). The edge reads the links first, so
+    ``created`` is false for a link that was there. The ids go in lower case,
+    as ``move_tasks`` sends them.
+    """
+    task_id, target = str(args["task_id"]).lower(), str(args["target_task_id"]).lower()
+    if args["link_type"] not in AGENT_LINK_TYPES:
+        raise ToolError(TEXT_LINK_BAD_TYPE)
+    if task_id.lower() == target.lower():
+        raise ToolError(TEXT_LINK_SELF)
+    existed = await _link_exists(ctx, task_id, target)
+    _, row = await _write(
+        ctx, "POST", LINKS_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": task_id},
+        json_body={"target_task_id": target, "link_type": "blocks"},
+        details=_LINK_DETAILS)
+    if not isinstance(row, dict) or _id(row.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    return {"link_id": str(row["id"]), "task_id": task_id,
+            "target_task_id": target, "link_type": "blocks",
+            "created": not existed}
+
+
+ADD_TASK_LINK = Tool(
+    name="add_task_link",
+    title="Link two tasks: one blocks the other",
+    description=(
+        "Say that one task waits on another. task_id BLOCKS target_task_id:"
+        " my_work does not offer the target task until task_id is done. A"
+        " claim_task on the target task is not refused. To make A2 wait on"
+        " A1, call it with task_id A1 and target_task_id A2. Both tasks must be"
+        " ones this member can see. A task that is hidden or does not exist"
+        " answers Task not found. The same link twice keeps one row, and"
+        " created is false the second time. A link that would make a loop, and"
+        " a link from a task to itself, are refused. get_task shows each link"
+        " with its link_id and a direction: outgoing means this task blocks the"
+        " other one. To remove a link, call remove_task_link."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_ADD_LINK_INPUT,
+    output_schema=_ADD_LINK_OUTPUT,
+    route=LINKS_ROUTE,
+    params={"task_id": "task_id", "target_task_id": "target_task_id",
+            "link_type": "link_type"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_add_task_link,
+    routes=(RELATIONS_ROUTE,),
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+_REMOVE_LINK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "One end of the link: the task you read the link on."},
+        "link_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The link_id of a link in get_task."},
+    },
+    "required": ["task_id", "link_id"],
+    "additionalProperties": False,
+}
+_REMOVE_LINK_OUTPUT: dict[str, Any] = _object({
+    "link_id": {"type": "string"}, "task_id": {"type": "string"},
+    "removed": {"type": "boolean"},
+})
+
+
+async def _remove_task_link(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """DELETE one ``blocks`` link (SW-16a). The edge reads the link first, so a
+    ``relates_to`` or ``duplicates`` link stays: this tool could not put it
+    back. A link that the read does not show answers not found. The ids go in
+    lower case, as ``move_tasks`` sends them."""
+    task_id, link_id = str(args["task_id"]).lower(), str(args["link_id"]).lower()
+    body = await _get(ctx, RELATIONS_ROUTE, TEXT_LINK_NOT_FOUND,
+                      path_params={"task_id": task_id})
+    links = body.get("links") if isinstance(body, dict) else None
+    found = next((r for r in links or ()
+                  if isinstance(r, dict) and str(r.get("link_id")).lower() == link_id),
+                 None)
+    if found is None:
+        raise ToolError(TEXT_LINK_NOT_FOUND)
+    if found.get("link_type") != "blocks":
+        raise ToolError(TEXT_LINK_NOT_BLOCKS)
+    await _write(
+        ctx, "DELETE", LINK_ROUTE, TEXT_LINK_NOT_FOUND,
+        path_params={"task_id": task_id, "link_id": link_id}, json_body={})
+    return {"link_id": link_id, "task_id": task_id, "removed": True}
+
+
+REMOVE_TASK_LINK = Tool(
+    name="remove_task_link",
+    title="Remove a link between two tasks",
+    description=(
+        "Remove one blocks link from a task this member can see. Send the"
+        " link_id that get_task shows on that task. Either end of the link"
+        " works. A link that is already gone answers Task or link not found. A"
+        " link of another kind stays, and a person removes it in the app. After"
+        " a blocks link goes, my_work can offer the target task. To add a link,"
+        " call add_task_link."
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_REMOVE_LINK_INPUT,
+    output_schema=_REMOVE_LINK_OUTPUT,
+    route=LINK_ROUTE,
+    params={"task_id": "task_id", "link_id": "link_id"},
+    not_found=TEXT_LINK_NOT_FOUND,
+    run=_remove_task_link,
+    routes=(RELATIONS_ROUTE,),
+    method="DELETE",
+    annotations=dict(DELETE_LINK_ANNOTATIONS),
 )
 
 
@@ -7711,10 +8410,11 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
-    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, GET_TASK, GET_TASK_TIMELINE,
+    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
+    BOARD_STATS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
-    ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
+    ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
@@ -7821,8 +8521,10 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
 
 __all__ = [
     "ADD_COMMENT",
+    "ADD_LINK_KEYS",
     "ADD_REF_BODY_KEYS",
     "ADD_REF_KEYS",
+    "ADD_TASK_LINK",
     "ADD_TASK_REFERENCE",
     "AGENT_ACCESS_ROUTE",
     "AGENT_ACTIVITY_TYPES",
@@ -7831,6 +8533,7 @@ __all__ = [
     "AGENT_DELETE_STALE",
     "AGENT_DELETE_TITLE",
     "AGENT_DELETE_TITLE_MAX",
+    "AGENT_LINK_TYPES",
     "AGENT_MOVE_REFUSED",
     "AGENT_SPACE_PINNED",
     "ANCESTOR_DESCRIPTION_CHARS",
@@ -7856,6 +8559,7 @@ __all__ = [
     "AUDIENCE_WIDER",
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
+    "BOARD_STATS",
     "CLAIM_TASK",
     "CLAIM_TEXTS",
     "CLOSING_CATEGORIES",
@@ -7908,7 +8612,13 @@ __all__ = [
     "IMAGE_MAGIC",
     "IMAGE_MAX_BYTES",
     "IMPORTANCE_VALUES",
+    "LINKS_ROUTE",
+    "LINK_CHAIN_DETAIL",
+    "LINK_CYCLE_DETAIL",
     "LINK_KEYS",
+    "LINK_ROUTE",
+    "LINK_SELF_BLOCK_DETAIL",
+    "LINK_SELF_DETAIL",
     "LIST_AGENT_RUNS",
     "LIST_APPS",
     "LIST_PROJECTS",
@@ -7967,6 +8677,8 @@ __all__ = [
     "RECORD_OUTSIDE_DECISION",
     "REF_KEYS",
     "RELEASE_TASK",
+    "REMOVE_LINK_KEYS",
+    "REMOVE_TASK_LINK",
     "REQUEST_TASK_ARCHIVE",
     "RUN_ACTIVITY_KEYS",
     "RUN_KEYS",
@@ -8014,6 +8726,7 @@ __all__ = [
     "TEXT_DOOR_NOT_FOUND",
     "TEXT_DOOR_READ_CAP",
     "TEXT_EPIC_PARENT",
+    "TEXT_EPIC_TYPE_HAS_PARENT",
     "TEXT_EXTENSIONS",
     "TEXT_FORBIDDEN",
     "TEXT_GUESSED_TYPES",
@@ -8024,6 +8737,10 @@ __all__ = [
     "TEXT_LEVEL_FLOOR",
     "TEXT_LEVEL_MISMATCH",
     "TEXT_LEVEL_NEEDS_PARENT",
+    "TEXT_LINK_CYCLE",
+    "TEXT_LINK_NOT_FOUND",
+    "TEXT_LINK_SELF",
+    "TEXT_LINK_TOO_LONG",
     "TEXT_MAX_BYTES",
     "TEXT_MOVE_ALONE",
     "TEXT_MOVE_CHANGED",

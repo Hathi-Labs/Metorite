@@ -175,6 +175,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # a held chat in a fresh chat. It opens a way around a hold, so only the
     # owner writes it (work_plan.md §6 D4).
     "CHAT_CONTINUE_ORGS",
+    # projects_ai_chat.md §31 VOX-1: the orgs whose chat shows the mic. Each
+    # clip draws AI credits, so only the operator writes it.
+    "CHAT_VOICE_ORGS",
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
@@ -194,6 +197,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the chat greets on the day. It adds a line to each turn, so only the
     # operator writes it.
     "CELEBRATIONS_ORGS",
+    # WS-63 PZ-40: the orgs where the name question offers forms of address
+    # and the block keeps the chosen form as written. It adds a line to each
+    # turn, so only the operator writes it.
+    "ADDRESS_FORMS_ORGS",
     # H-328 part (b): the orgs whose unattended workflow runs may start. A run
     # can send mail or WhatsApp and spend credits with no person present, so
     # only the operator writes it. The `WORKFLOW_` prefix covers it too, and
@@ -206,6 +213,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # decision of the workflow's owner. It moves who settles a run, so only
     # the operator writes it.
     "AUTO_PARK_ORGS",
+    # WS-AUTO AUTO-8a: HEADLESS_TURN_ORGS opens the capped headless turn for an
+    # org. A turn spends the member's AI credits with no person present, so
+    # only the owner writes it.
+    "HEADLESS_TURN_ORGS",
     # WS-MCP SW-31a: AGENT_GUIDANCE_ORGS opens the org's written rules for
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
@@ -276,6 +287,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # daily ceiling. Each moves what an org pays, so only the operator writes
     # them (my_day_feed.md §10.9 items 5 and 6).
     "MY_DAY_DECIDE_ORGS", "MY_DAY_DECIDE_ORG_DAILY_CALLS",
+    # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
+    # moves what an org pays, so only the operator writes it.
+    "PROJECTS_DECIDE_ORGS",
     # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
     # Only its tests set it. A tenant that set it would break each verb.
     "DATA_ENGINE_FAULT",
@@ -409,6 +423,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-OB OB-8: the push prompt. PUSH_PROMPT_ORGS opens the chat sheet for an
     # org, so a tenant that set it could open the sheet for every org.
     "PUSH_PROMPT_",
+    # WS-VOX VOX-3: IMAGE_ANALYSIS_ORGS lets the chat send an image to a model
+    # for an org, and each call draws credits. A tenant that set it could
+    # open it for every org on the box.
+    "IMAGE_ANALYSIS_",
     # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
     # tenant that set it could send a push to the members of every org.
     "DUE_PUSH_",

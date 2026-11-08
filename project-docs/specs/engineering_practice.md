@@ -203,6 +203,13 @@ affect (tier 1 of `specs/ci_velocity.md` §4, D176). The full suite runs on
 A slice with nothing to see skips the preview. Docs, tests, a script and a
 refactor with no change in behaviour go straight to step 4.
 
+**Small screen change (D200).** A small, low-risk change on an existing screen
+skips the wait for approval. The slice is LOW or STANDARD, and it is one field,
+one control, one line of text or a layout fix, or its whole change sits behind
+a flag that is off. It still needs the captures, the verifier and the full
+gates. After the merge, ask the owner "Looks right" or "Change it" on the task.
+D200 lists the cases that do not qualify. When in doubt, preview first.
+
 **3. The owner answers.**
 
 - **Approve:** go to step 4.
