@@ -51,7 +51,16 @@ from skill_projects.client import (
     post_file,
     uuid_of,
 )
-from skill_projects.inbox import DECISIONS_OFF, _area_key, _clean_area_name, _my_area, subject_words
+from skill_projects.inbox import (
+    DECISIONS_OFF,
+    UPDATE_HEALTHS,
+    UPDATES_OFF,
+    UPDATES_PAGE_MAX,
+    _area_key,
+    _clean_area_name,
+    _my_area,
+    subject_words,
+)
 from skill_projects.priority import (
     Removed,
     card_view,
@@ -2387,6 +2396,89 @@ async def unpin_authority(project_id: str, pin_id: str) -> str:
     return f"Removed {name} as the authority page of {path}.\n  project_id: {pid}\n  pin_id: {pin}"
 
 
+# ── WS-39 LP-1a: delete a project update ─────────────────────────────────────
+
+#: The pages of updates that the delete reads to find the named one. Each
+#: page holds :data:`inbox.UPDATES_PAGE_MAX` updates.
+UPDATE_DELETE_PAGES = 10
+
+
+async def _find_update(pid: str, wanted: str) -> tuple[dict[str, Any] | None, str]:
+    """The live update *wanted* of a project, read page by page.
+
+    Returns ``(row, "")``, or ``(None, "")`` when no page holds it, or
+    ``(None, UPDATES_OFF)`` while the flag is off. Every call is a read.
+    """
+    pid = uuid_of(pid, "project_id")
+    before = ""
+    for _ in range(UPDATE_DELETE_PAGES):
+        params: dict[str, Any] = {"limit": UPDATES_PAGE_MAX}
+        if before:
+            params["before"] = before
+        try:
+            got = (await get(f"/projects/nodes/{pid}/updates", params)) or {}
+        except GatewayRefusal as exc:
+            if getattr(exc, "status", None) == 404:
+                return None, UPDATES_OFF
+            raise
+        for row in got.get("rows") or []:
+            if str(row.get("id") or "").lower() == wanted:
+                return row, ""
+        before = str(got.get("next_before") or "")
+        if not before:
+            break
+    return None, ""
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def delete_project_update(project_id: str, update_id: str) -> str:
+    """Delete one update of a project. update_id is an update_id from
+    list_project_updates. ONE update per call. The card names the project, the
+    health, the author and the text. The update leaves the project and its
+    list, and the app has no undo for it. The server decides if the member may
+    delete it, and a refusal comes back in one sentence."""
+    if _many(update_id) or _many(project_id):
+        return f"delete_project_update {ONE_ACT.replace('id', 'update_id')}"
+    pid, node = await _node(project_id)
+    uid = uuid_of(update_id, "update_id")
+    row, off = await _find_update(pid, uid)
+    if off:
+        return off
+    name = data(node.get("name"))
+    if row is None:
+        return (
+            f"{name} has no live update like that. list_project_updates lists its "
+            f"updates, each with an update_id.\n  project_id: {pid}"
+        )
+    health = UPDATE_HEALTHS.get(str(row.get("health")), str(row.get("health")))
+    refused = delete_refusal(row, "update of", name)
+    if refused:
+        return refused
+    impact = (
+        f"1 update ({health}) leaves {name} and its list of updates. The app has "
+        "no undo for it"
+    )
+    if not await _confirm(
+        title="Delete this project update?",
+        detail=f"{name} · {health}",
+        context=_guard_card(
+            impact,
+            {
+                "project": name,
+                "health": health,
+                "author": data(row.get("author")),
+                "body": str(row.get("body") or ""),
+            },
+        ),
+    ):
+        return CANCELLED
+    await delete(f"/projects/nodes/{pid}/updates/{uid}")
+    return (
+        f"Deleted the update ({health}) of {name}.\n  project_id: {pid}\n"
+        f"  update_id: {uid}"
+    )
+
+
 # ── One person decides (WS-ALN ALN-2a, D-OP-9) ──────────────────────────────
 
 #: What the member reads for a 403, a 404 or a 409 of the answer route.
@@ -2748,6 +2840,7 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "revoke_access",
     "pin_authority",
     "unpin_authority",
+    "delete_project_update",
     "answer_decision",
     "add_report_recipient",
     "remove_report_recipient",

@@ -123,7 +123,9 @@ ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_members", "list_tag
              "list_tasks", "board_stats",
              "get_plan", "get_task",
              "get_task_timeline", "search_tasks", "get_task_context", "my_work",
-             "get_attachment"]
+             "get_attachment",
+             # WS-39 LP-1a: the updates of a project, newest first.
+             "list_project_updates"]
 
 
 def _uuid(n: int) -> str:

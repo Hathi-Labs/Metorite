@@ -169,6 +169,8 @@ EXPECTED_SCOPED = {
     "agent_avatars",
     # WS-39 SP-1 (2026-11-08): the cycle store, keyed at CREATE time.
     "pm_cycles", "pm_cycle_tasks", "pm_cycle_committed", "pm_cycle_capacity",
+    # WS-39 LP-1a (2026-11-08): the updates of a project, keyed at CREATE time.
+    "pm_project_updates",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`

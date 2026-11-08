@@ -114,16 +114,21 @@ def _uuid(n: int) -> str:
 
 #: Every write tool, in the order of ``tools/list``: the two of EA-6a, then
 #: the two of EA-6d (``test_mcp_edge_task_writes.py``), then ``add_comment``
-#: of EA-6c (``test_mcp_edge_comments.py``), ``claim_task`` of EA-6b
+#: of EA-6c (``test_mcp_edge_comments.py``), ``update_comment`` and
+#: ``delete_comment`` of MCP-G9 (``test_mcp_edge_comment_edit_r8.py``),
+#: ``claim_task`` of EA-6b
 #: (``test_mcp_edge_claim.py``), ``set_assignees`` of MCP-G2
 #: (``test_mcp_edge_assignees.py``), the two link tools of SW-16a
 #: (``test_task_links_mcp_r8.py``) and the four tools of MCP-G1
 #: (``test_mcp_edge_projects.py``). ``update_tasks`` of MCP-G20 follows
 #: ``update_task`` (``test_mcp_edge_bulk_updates.py``).
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
-                    "update_tasks", "add_comment", "claim_task", "set_assignees", "add_task_link",
+                    "update_tasks", "add_comment", "update_comment", "delete_comment",
+                    "claim_task", "set_assignees", "add_task_link",
                     "remove_task_link", "create_project",
-                    "update_project", "preview_move_tasks", "move_tasks")
+                    "update_project", "preview_move_tasks", "move_tasks",
+                    # WS-39 LP-1a: one update of a project.
+                    "post_project_update")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -530,8 +535,9 @@ class TestTheWriteToolsAtTheEdge:
         off = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
         assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
         # The seven reads of EA-3, the two reads of EA-15 (§12.4) and
-        # `get_attachment` of IMG-3, `board_stats` of MCP-G19a, the two of MCP-G21, and `get_plan` of SP-12.
-        assert len(off) == 14
+        # `get_attachment` of IMG-3, `board_stats` of MCP-G19a, the two of MCP-G21,
+        # `get_plan` of SP-12 and `list_project_updates` of WS-39 LP-1a.
+        assert len(off) == 15
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read projects:write", WRITE_SCOPES),

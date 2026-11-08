@@ -1435,6 +1435,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "propose_plan": _pin("name tasks parent_project_id description risks"),
     "remove_task_ref": _pin("task_id url"),
     "report_save": _pin("name project_id sections weeks report_id"),
+    # WS-39 LP-1a: an update of a project with its health. The card shows
+    # the project, the health and the exact text, and the post writes the
+    # one row. It tells nobody and reaches no other system.
+    "post_project_update": _pin("project_id health body"),
     "set_recurrence": _pin(
         "task_id freq interval weekdays day_of_month month_of_year anchor until "
         "max_occurrences stop"),

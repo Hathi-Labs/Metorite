@@ -157,6 +157,17 @@ MANIFEST: tuple[Route, ...] = (
     Route(
         "DELETE", "/projects/nodes/{project_id}/authorities/{pin_id}", "unpin_authority", "C"
     ),
+    # WS-39 LP-1a (project_management_app.md §14.2a): the updates of a project.
+    # The post is class B: one card, and a newer update takes its place. An
+    # outside agent reaches both routes over MCP (MCP_ROUTES).
+    Route("GET", "/projects/nodes/{project_id}/updates", "list_project_updates", "A"),
+    Route("POST", "/projects/nodes/{project_id}/updates", "post_project_update", "B"),
+    # The soft delete: the author or a Projects admin. Class C, one card. It
+    # stays off the MCP in LP-1a (test_mcp_edge_coverage.NEVER_ON_THE_EDGE).
+    Route(
+        "DELETE", "/projects/nodes/{project_id}/updates/{update_id}",
+        "delete_project_update", "C",
+    ),
     # WS-ALN ALN-2a (D-OP-9): one person decides. The reader is the decider
     # only, and the route is dark behind DECISIONS_ORGS. The answer is the
     # person's word: the tool refuses a run with no person present, then raises
@@ -679,6 +690,11 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "watchers": frozenset({"task_detail", "project_summary"}),
     "project_access": frozenset({"project_summary"}),
     "project_authorities": frozenset({"project_summary"}),
+    # WS-39 LP-1a: both tools read the node to name the project. The post
+    # also reads the newest update first, so a dark flag shows no card.
+    "list_project_updates": frozenset({"project_summary"}),
+    "post_project_update": frozenset({"project_summary", "list_project_updates"}),
+    "delete_project_update": frozenset({"project_summary", "list_project_updates"}),
     "project_views": frozenset({"project_summary"}),
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
@@ -1058,6 +1074,15 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "include_removed": "project_authorities.include_removed"
     },
     ("POST", "/projects/nodes/{project_id}/authorities"): {"page_id": "pin_authority.page_id"},
+    # WS-39 LP-1a: the page of the updates, and the two fields of a post.
+    ("GET", "/projects/nodes/{project_id}/updates"): {
+        "limit": "list_project_updates.limit",
+        "before": "list_project_updates.before",
+    },
+    ("POST", "/projects/nodes/{project_id}/updates"): {
+        "health": "post_project_update.health",
+        "body": "post_project_update.body",
+    },
     # WS-ALN ALN-2a: the one field of an answer.
     ("POST", "/projects/decisions/{decision_id}/answer"): {
         "answer_key": "answer_decision.answer_key"

@@ -69,6 +69,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "archived": { label: "Archived", kind: "date" },
   "area": { label: "Area" },
   "assignees": { label: "Assignees", kind: "person", many: true },
+  // WS-39 LP-1a: who wrote a project update, on its delete card.
+  "author": { label: "Author", kind: "person" },
   "assignees_add": { label: "Assign", kind: "person", many: true },
   "assignees_remove": { label: "Unassign", kind: "person", many: true },
   "body": { label: "Text" },
@@ -124,6 +126,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "from": { label: "From", kind: "task" },
   "gives access to": { label: "Gives access to" },
   "group by": { label: "Group by", kind: "words" },
+  // WS-39 LP-1a: the health of a project update, in words ("At risk").
+  "health": { label: "Health", kind: "words" },
   "icon": { label: "Icon" },
   "icon_slot": { label: "Icon colour" },
   "impact": { label: "Impact" },

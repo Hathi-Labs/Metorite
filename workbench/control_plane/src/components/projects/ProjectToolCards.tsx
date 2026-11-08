@@ -96,6 +96,8 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   // S5 — the rest of the reads
   project_access: { icon: "Users", label: "Access" },
   project_authorities: { icon: "Users", label: "Authority pages" },
+  // WS-39 LP-1a: the updates of a project, newest first.
+  list_project_updates: { icon: "Megaphone", label: "Project updates" },
   my_decisions: { icon: "Users", label: "Decisions" },
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
@@ -144,6 +146,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   update_task: { icon: "PenLine", label: "Task updated" },
   assign: { icon: "UserPlus", label: "Assignees changed" },
   comment: { icon: "MessageSquare", label: "Comment posted" },
+  // WS-39 LP-1a: one update of a project, with its health.
+  post_project_update: { icon: "Megaphone", label: "Project update posted" },
   add_subtasks: { icon: "ListTree", label: "Subtasks added" },
   link_tasks: { icon: "Link", label: "Tasks linked" },
   unlink_tasks: { icon: "Unlink", label: "Link removed" },
@@ -203,6 +207,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   revoke_access: { icon: "UserMinus", label: "Access removed" },
   pin_authority: { icon: "UserPlus", label: "Authority page pinned" },
   unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
+  // WS-39 LP-1a: the delete of a project update.
+  delete_project_update: { icon: "Trash2", label: "Project update deleted" },
   answer_decision: { icon: "UserPlus", label: "Decision answered" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
@@ -320,6 +326,7 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "revoke_access",
   "pin_authority",
   "unpin_authority",
+  "delete_project_update",
   "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",
