@@ -1177,6 +1177,21 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
 
+    # ── Voice input in the chat (projects_ai_chat.md §31, VOX-1) ────────────
+    #
+    # `chat_voice_orgs` lists the organization ids whose chat composer shows the
+    # mic, or `*` for each one. Empty means off, and `/chat/transcribe` answers
+    # 404 for each caller. The one reader is
+    # `acb_common.chat_voice_flag.voice_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`).
+    #
+    # Each clip draws AI credits through the Console's `tier-stt` door, so a
+    # value other than empty on a box is an `enforcement-flip`. A real clip and
+    # its usage row must be proven first (§31.5 VOX-1, Done when 4).
+    # Fence: tests/unit/test_chat_transcribe.py.
+    chat_voice_orgs: str = ""
+
     # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
     #
     # `email_edit_card_orgs` lists the organization ids whose chat shows a new
