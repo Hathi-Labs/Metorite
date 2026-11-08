@@ -299,6 +299,11 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-ALN ALN-4: a pin is of one project. The page id is the witness.
     "project_authorities": {"project_id": UUID},
     "pin_authority": {"project_id": UUID},
+    # WS-39 LP-1a: the updates of one project. The page and the cursor are the
+    # witnesses of the read. The post sends the health and the text.
+    "list_project_updates": {"project_id": UUID},
+    "post_project_update": {"project_id": UUID, "health": "at_risk",
+                            "body": "The vendor slipped a week."},
     # WS-ALN ALN-2a: a decision of the member. The answer key is the witness.
     "answer_decision": {"decision_id": tw.DECISION_ID},
     # WS-64 OP-6d: the report is the one of the write fence.
@@ -368,6 +373,8 @@ _BASE: dict[str, dict[str, Any]] = {
 }
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
+    # WS-39 LP-1a: the cursor of the updates is the id of an update.
+    "before": OTHER,
     "page_id": UUID,
     "include_removed": True,
     "answer_key": "yes",

@@ -193,6 +193,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
         ("POST", "/projects/tasks/{task_id}/links"),
         ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+        # WS-39 LP-1a: `post_project_update` (project_management_app.md §14.2a).
+        ("POST", "/projects/nodes/{project_id}/updates"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -531,6 +533,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("move_tasks", "preview_id"),
     # CIV-14c. The edge picks the page size and pages the timeline itself.
     ("get_task_context", "comments"),
+    # WS-39 LP-1a. The slot of `add_comment`, keyed by the tool name. The
+    # update route takes no such field.
+    ("post_project_update", "idempotency_key"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in

@@ -93,6 +93,8 @@ const EVIDENCE: readonly string[] = [
   "watchers",
   "project_access",
   "project_authorities",
+  // WS-39 LP-1a: the updates of a project.
+  "list_project_updates",
   "my_decisions",
   "project_views",
   "recurrence",
@@ -174,6 +176,8 @@ const WRITE: readonly string[] = [
   "update_task",
   "assign",
   "comment",
+  // WS-39 LP-1a: one update of a project, with its health.
+  "post_project_update",
   "add_subtasks",
   "link_tasks",
   "unlink_tasks",

@@ -722,24 +722,29 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # WS-ALN ALN-4: the authority page of a project. It has its own pack, because
     # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
-    # measured turns.
+    # measured turns. WS-39 LP-1a adds the two tools of a project update here,
+    # for the same reason: the reports pack fills the room of a measured turn.
     "projects-authority": {
-        "label": "Projects authority page",
+        "label": "Projects authority page and updates",
         "summary": (
-            "The authority page of a project: read which pages are pinned "
-            "as the rules of the project, pin one, or remove a pin."
+            "The authority page and the updates of a project: read the pinned "
+            "pages, pin or unpin one, and read or post an update with its health."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
-            "authority page of a project, for the main assistant to load "
-            "when a turn names the authority page. The pack holds the tools "
-            "to read the pins of a project, to pin a page and to remove a "
-            "pin. Each change asks the member first. A run loads a pack "
-            "only where tool packs are on, so until then this switch has "
-            "no effect."
+            "authority page and the updates of a project, for the main "
+            "assistant to load when a turn names them. The pack holds the "
+            "tools to read the pins of a project, to pin a page and to "
+            "remove a pin. It also holds the tools to read the updates of a "
+            "project and to post one with the health that the member picks. "
+            "Each change asks the member first. A run loads a pack only "
+            "where tool packs are on, so until then this switch has no "
+            "effect."
         ),
         "tools": (
+            "list_project_updates",
             "pin_authority",
+            "post_project_update",
             "project_authorities",
             "unpin_authority",
         ),

@@ -5291,6 +5291,285 @@ ADD_COMMENT = Tool(
 )
 
 
+
+# ── list_project_updates and post_project_update (WS-39 LP-1a) ──────────────
+#
+# Spec: ``project_management_app.md`` §14.2a, ``external_agent_access.md``
+# §9.1 and §9.2. An update says how one project goes: a health that the member
+# picks (``on_track``, ``at_risk`` or ``off_track``) and a short text. The
+# gateway answers 404 with :data:`agent_oauth.PROJECT_UPDATES_OFF` while
+# ``PROJECTS_UPDATES_ORGS`` does not hold the org, and both tools then say
+# that the feature is off. A pinned connection reaches only the projects of
+# its pin, because the route loads the project through the agent's reach.
+
+UPDATES_ROUTE = "/projects/nodes/{project_id}/updates"
+
+#: The three values of the health. A copy of ``updates.HEALTHS`` of the
+#: gateway, which the edge may not import. ``test_pm_project_updates_r8.py``
+#: pins the two equal.
+UPDATE_HEALTHS: tuple[str, ...] = ("on_track", "at_risk", "off_track")
+
+#: The cap of the text of an update, in characters. A copy of
+#: ``updates.MAX_UPDATE_CHARS``, pinned equal by the same test.
+MAX_UPDATE_CHARS = 20_000
+
+#: The page of ``list_project_updates``, and the route's cap.
+UPDATES_PAGE_DEFAULT = 20
+UPDATES_PAGE_MAX = 50
+
+#: The text of both tools while the flag does not hold the org.
+TEXT_UPDATES_OFF = (
+    "Project updates are not on for this organization. Nothing was read or"
+    " posted.")
+TEXT_UPDATE_KEY_REUSED = (
+    "This idempotency_key was used for a different update. Send a new key.")
+TEXT_UPDATE_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it posted the update. Read the updates with list_project_updates before"
+    " you use a new key.")
+TEXT_UPDATE_BLANK = "The input 'body' holds no text."
+TEXT_UPDATE_NOT_A_PROJECT = (
+    "That is a space or a folder, and it has no project updates. Post the update"
+    " on a project inside it.")
+TEXT_UPDATE_REFUSED = (
+    "Metorite did not post the update. The project may be archived. Read it"
+    " with get_project.")
+TEXT_UPDATE_CURSOR = (
+    "The input 'before' is not an update of this project. Send the next_before"
+    " of the page before, or leave it out.")
+
+#: The gateway's 404 of the flag and its 422 of a space or a folder
+#: (``updates.NOT_A_PROJECT``), by status and detail. The 422 detail is a
+#: copy, because the edge may not import the gateway. The R8 test sends the
+#: refusal through the real route, so a changed detail fails it.
+_UPDATE_DETAILS: Mapping[tuple[int, str], str] = {
+    (404, agent_oauth.PROJECT_UPDATES_OFF): TEXT_UPDATES_OFF,
+    (422, "A space or a folder has no project updates. Post the update on a "
+          "project inside it."): TEXT_UPDATE_NOT_A_PROJECT,
+}
+
+#: The body keys of the POST, in a fixed order (edge rule 18).
+UPDATE_BODY_KEYS: tuple[str, ...] = ("health", "body")
+
+#: The keys of one update in a result (§9.1). ``body`` is (U).
+UPDATE_KEYS: tuple[str, ...] = (
+    "id", "project_id", "health", "body", "author", "posted_at", "drafted_by_ai", "via",
+)
+
+_UPDATE_KEY_TEXTS = _KeyTexts(reused=TEXT_UPDATE_KEY_REUSED,
+                              unknown=TEXT_UPDATE_KEY_UNKNOWN)
+
+_UPDATE_SCHEMA = _object({
+    "id": {"type": "string"}, "project_id": {"type": "string"},
+    "health": {"type": "string"},
+    "body": _UNTRUSTED_OR_NULL, "author": _SHAPED_OR_NULL,
+    "posted_at": _NULLABLE_STRING, "drafted_by_ai": {"type": "boolean"},
+    "via": _NULLABLE_STRING,
+})
+
+
+def project_update(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The pinned keys of one update (§9.1), and no other. The text is (U).
+    The author is the member's address from the session, so it leaves plain
+    only in the shape of an address. ``via`` leaves only in its pattern, and
+    the health only as one of the three values."""
+    via = row.get("via")
+    health = row.get("health")
+    return {
+        "id": str(row.get("id")),
+        "project_id": str(row.get("project_id")),
+        "health": health if health in UPDATE_HEALTHS else "",
+        "body": untrusted(row.get("body")),
+        "author": shaped(row.get("author"), _EMAIL_RE),
+        "posted_at": _str_or_none(row.get("posted_at")),
+        "drafted_by_ai": _bool(row.get("drafted_by_ai")),
+        "via": via if isinstance(via, str)
+        and agent_oauth.ACTOR_VIA_PATTERN.fullmatch(via) else None,
+    }
+
+
+async def _updates_get(ctx: Context, project_id: str,
+                       query: list[tuple[str, str]]) -> Any:
+    """One read of :data:`UPDATES_ROUTE`. A 404 of the flag says the feature
+    is off. Every other 404 is a missing or hidden project. A 422 is a cursor
+    that is not an update of this project."""
+    try:
+        answer = await gateway_get(
+            ctx.key, ctx.caller.lookup, UPDATES_ROUTE,
+            path_params={"project_id": project_id}, query=query, session=ctx.session)
+    except GatewayUnreachable:
+        raise ToolError(TEXT_BUSY) from None
+    except RouteRefused:
+        raise ToolError(TEXT_PROJECT_NOT_FOUND) from None
+    detail = answer.body.get("detail") if isinstance(answer.body, dict) else None
+    if answer.status == 404 and detail == agent_oauth.PROJECT_UPDATES_OFF:
+        raise ToolError(TEXT_UPDATES_OFF)
+    if answer.status == 422:
+        raise ToolError(TEXT_UPDATE_CURSOR)
+    return _body_of(answer, TEXT_PROJECT_NOT_FOUND)
+
+
+_LIST_UPDATES_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "The project. An id from list_projects."},
+        "limit": {"type": "integer", "minimum": 1, "maximum": UPDATES_PAGE_MAX,
+                  "default": UPDATES_PAGE_DEFAULT,
+                  "description": "Updates on one page, newest first."},
+        "before": {"type": "string", "pattern": _UUID_PATTERN,
+                   "description": "The next_before of the page before. Leave it out"
+                                  " for the newest updates."},
+    },
+    "required": ["project_id"],
+    "additionalProperties": False,
+}
+
+_LIST_UPDATES_OUTPUT: dict[str, Any] = _object({
+    "project_id": {"type": "string"},
+    "updates": {"type": "array", "items": _UPDATE_SCHEMA},
+    "next_before": _NULLABLE_STRING,
+})
+
+
+async def _list_project_updates(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    project_id = str(args["project_id"])
+    query = [("limit", str(int(args.get("limit", UPDATES_PAGE_DEFAULT))))]
+    if args.get("before") is not None:
+        query.append(("before", str(args["before"])))
+    body = await _updates_get(ctx, project_id, query)
+    rows = _rows_of(body)
+    nxt = body.get("next_before") if isinstance(body, dict) else None
+    return {
+        "project_id": project_id,
+        "updates": [project_update(r) for r in rows],
+        "next_before": _id(nxt),
+    }
+
+
+LIST_PROJECT_UPDATES = Tool(
+    name="list_project_updates",
+    title="List the updates of a project",
+    description=(
+        "Read the updates of one project this member can see, newest first. An"
+        " update says how the project goes: its health (on_track, at_risk or"
+        " off_track), a short text, the member who posted it and the time. The"
+        " first update is the newest one, and the project shows it. Send"
+        " next_before back as before to read older updates." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_UPDATES_INPUT,
+    output_schema=_LIST_UPDATES_OUTPUT,
+    route=UPDATES_ROUTE,
+    params={"project_id": "project_id", "limit": "limit", "before": "before"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_list_project_updates,
+    routes=(UPDATES_ROUTE,),
+)
+
+
+_POST_UPDATE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "The project. An id from list_projects. Not a"
+                                      " space and not a folder."},
+        "health": {"type": "string", "enum": list(UPDATE_HEALTHS),
+                   "description": "How the project goes, as the member says it:"
+                                  " on_track, at_risk or off_track."},
+        "body": {"type": "string", "minLength": 1, "maxLength": MAX_UPDATE_CHARS,
+                 "description": "The text of the update, in Markdown, at most 20000"
+                                " characters. Keep it short: what moved, what slipped"
+                                " and what comes next."},
+        "idempotency_key": {
+            "type": "string", "pattern": idempotency.KEY_PATTERN,
+            "description": "8 to 128 letters, digits and . _ : -. Use a new key for"
+                           " each update. The same key again gives back the first"
+                           " update and posts no second one. Metorite keeps a key"
+                           " for 24 hours."},
+    },
+    "required": ["project_id", "health", "body", "idempotency_key"],
+    "additionalProperties": False,
+}
+
+_POST_UPDATE_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "update": _UPDATE_SCHEMA,
+        "id": {"type": "string"}, "project_id": {"type": "string"},
+        "created": {"type": "boolean"},
+    },
+    "required": ["id", "project_id", "created"],
+    "additionalProperties": False,
+}
+
+
+async def _send_update(ctx: Context, project_id: str, args: Mapping[str, Any],
+                       sent: _Sent) -> dict[str, Any]:
+    """POST the update, and return the gateway's row. A hidden project is
+    ``Project not found.``, and the flag and a space have their own texts."""
+    payload = {name: str(args[name]) for name in UPDATE_BODY_KEYS if name in args}
+    sent.post = True
+    _, row = await _write(ctx, "POST", UPDATES_ROUTE, TEXT_PROJECT_NOT_FOUND,
+                          path_params={"project_id": project_id}, json_body=payload,
+                          details=_UPDATE_DETAILS, texts={422: TEXT_UPDATE_REFUSED})
+    if not isinstance(row, dict) or _id(row.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    return row
+
+
+async def _post_project_update(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``post_project_update``: one POST, and at most one update per key.
+
+    The edge checks the text before it claims the slot. A replay returns the
+    first update's id with no read, as ``add_comment`` does.
+    """
+    if not str(args["body"]).strip():
+        raise ToolError(TEXT_UPDATE_BLANK)
+    # Postgres refuses a NUL in text. Without this check the route answers
+    # 500, and the slot goes `unknown` for a write that never happened.
+    _refuse_nul(args, UPDATE_BODY_KEYS)
+    project_id = str(args["project_id"])
+    claim = await _claim_slot(ctx, "post_project_update", str(args["idempotency_key"]),
+                              args, _UPDATE_KEY_TEXTS)
+    if claim.earlier is not None:
+        return {"id": claim.earlier, "project_id": project_id, "created": False}
+    sent = _Sent()
+    row = await _keyed_write(claim, sent,
+                             lambda: _send_update(ctx, project_id, args, sent),
+                             lambda done: str(done["id"]))
+    shown = project_update(row)
+    return {"update": shown, "id": shown["id"], "project_id": shown["project_id"],
+            "created": True}
+
+
+POST_PROJECT_UPDATE = Tool(
+    name="post_project_update",
+    title="Post a project update",
+    description=(
+        "Post one update on a project this member can see: its health and a"
+        " short text. health is on_track, at_risk or off_track. The member picks"
+        " it, so ask the member when you do not know it. The update shows the"
+        " member as its author, and the project timeline names your client. The"
+        " newest update shows on the project, so a later update takes its place"
+        " there. A space or a folder has no updates. Send a new idempotency_key"
+        " for each update. The same key again returns the first update with"
+        " created false, and posts no second one." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_POST_UPDATE_INPUT,
+    output_schema=_POST_UPDATE_OUTPUT,
+    route=UPDATES_ROUTE,
+    params={"project_id": "project_id", "health": "health", "body": "body"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_post_project_update,
+    routes=(),
+    method="POST",
+    edge_inputs=frozenset({"idempotency_key"}),
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
 # ── claim_task (EA-6b, §9.2, EA3-34) ────────────────────────────────────────
 
 CLAIM_ROUTE = "/projects/tasks/{task_id}/claim"
@@ -8216,9 +8495,9 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, BOARD_STATS, GET_TASK, GET_TASK_TIMELINE,
-    SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT,
+    SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_PROJECT_UPDATES,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
-    ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,
+    ADD_COMMENT, POST_PROJECT_UPDATE, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,

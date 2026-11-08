@@ -164,6 +164,8 @@ EXPECTED_SCOPED = {
     # `agent_avatars.organization_id` on the numbered ladder, because the
     # per-tenant unique index needs it, as 223 did for `email_accounts`.
     "agent_avatars",
+    # WS-39 LP-1a (2026-11-08): the updates of a project, keyed at CREATE time.
+    "pm_project_updates",
 }
 
 #: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `people`

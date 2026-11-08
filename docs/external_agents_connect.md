@@ -145,6 +145,15 @@ Nine tools make or change a task:
 | `remove_task_link` | It removes one `blocks` link. Send the `link_id` that `get_task` shows for the link. The agent must be able to see both tasks. A person removes other kinds of link in the app |
 | `add_comment` | It writes a comment on a task, such as a short progress note while it works. You are the author of the comment. It can reply to a top-level comment. A comment holds at most 20,000 characters. With the same `idempotency_key`, a second call gives back the first comment and adds no second comment |
 
+Two tools reach the updates of a project, while your organization has project updates on:
+
+| Tool | What it does |
+|---|---|
+| `list_project_updates` | It reads the updates of one project, newest first. Each update holds a health (`on_track`, `at_risk` or `off_track`), a short text, the person who posted it and the time |
+| `post_project_update` | It posts an update on a project that you can see: a health that you pick and a short text of at most 20,000 characters. You are the author. The project shows the newest update. With the same `idempotency_key`, a second call gives back the first update and posts no second update |
+
+While project updates are off for your organization, both tools say so and change nothing. A space, a folder and an archived project take no update.
+
 Each change shows in the task history, with the agent as `mcp:<host>`. A status change of the agent can start a workflow of your organization that runs on a status change, as your own change does. A move to done is a status change too.
 
 A connection makes at most 120 changes in 10 minutes, counted from its first change. When a change is refused for that reason, the answer holds `retry_after`, the seconds to wait, and the reply carries a `Retry-After` header. A "Metorite is busy" answer holds `retry_after` in the same way when Metorite names a wait. Every write tool states the limit in its description.

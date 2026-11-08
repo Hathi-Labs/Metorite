@@ -2143,6 +2143,28 @@ export function refusedFields(err: unknown): FieldRow[] {
 }
 
 /**
+ * WS-39 LP-1a — one update of a project (`GET /projects/nodes/{id}/updates`).
+ * The author picks the health by hand. `body` is the text a person wrote.
+ */
+export type ProjectHealthValue = "on_track" | "at_risk" | "off_track";
+
+export type ProjectUpdate = {
+  id: string;
+  project_id: string;
+  author: string;
+  health: ProjectHealthValue;
+  body: string;
+  posted_at: string | null;
+  drafted_by_ai: boolean;
+  via: string | null;
+};
+
+export type ProjectUpdatesPage = {
+  rows: ProjectUpdate[];
+  next_before: string | null;
+};
+
+/**
  * The one request seam for `/api/projects/*`.
  *
  * Exported as `projectsCall` (WS-39 S3a-client) because the Tasks lens speaks
@@ -2295,6 +2317,15 @@ export const projectsApi = {
 
   /** The same shape one level up — every space the caller can see. */
   portfolio: () => call<NodeSummary>("summary"),
+
+  /**
+   * WS-39 LP-1a — the updates of one project, newest first. The Overview
+   * asks for one, the newest. A 404 means that `PROJECTS_UPDATES_ORGS` does
+   * not hold the org, or that the project is hidden, and the line then does
+   * not draw (`projectUpdateLine.ts`).
+   */
+  projectUpdates: (projectId: string, limit = 1) =>
+    call<ProjectUpdatesPage>(`nodes/${projectId}/updates?limit=${limit}`),
 
   /**
    * §9.12.7 analytics. `nodeId` omitted means the PORTFOLIO.

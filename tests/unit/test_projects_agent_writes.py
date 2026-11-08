@@ -849,6 +849,10 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             f'{{"task_id": "{OTHER}", "destination_project_id": "{SALES}"}}]',
         }
     ],
+    # WS-39 LP-1a — a project update with the health that the member picks.
+    "post_project_update": [
+        {"project_id": UUID, "health": "at risk", "body": "The vendor slipped a week."}
+    ],
     "propose_plan": [
         {
             "name": "Q4 launch",

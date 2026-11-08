@@ -281,6 +281,7 @@ import { ARCHIVED_FOLD_ID, splitArchived } from "./lib/archivedRoots";
 import { lanesAfter, planShowView } from "./lib/chatView";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
+import { ProjectUpdateLine } from "./components/ProjectUpdateLine";
 import SpaceSettings from "./components/SpaceSettings";
 import {
   chatEnabled,
@@ -5132,6 +5133,9 @@ function ProjectsWorkspace() {
                 onReport={(href) => router.push(href)}
                 personal={isPersonalRoot(selected)}
                 personalPlaces={personalPlacesOf(selected)}
+                // WS-39 LP-1a: the newest update of this project, one line.
+                // It draws nothing while PROJECTS_UPDATES_ORGS is off.
+                updateLine={<ProjectUpdateLine projectId={selected.id} />}
               />
             ) : (
               renderState("loading", "Counting the work below…")

@@ -399,8 +399,15 @@ export default function NodeDashboard({
   onReport,
   personal = false,
   personalPlaces,
+  updateLine,
 }: {
   summary: NodeSummary;
+  /**
+   * WS-39 LP-1a. The newest project update, drawn by the page
+   * (`ProjectUpdateLine`). It shows on a project and a subproject only, under
+   * the title row. This component reads no second endpoint for it.
+   */
+  updateLine?: React.ReactNode;
   /** OP-12b — the summary is the private space. Its empty state names a folder. */
   personal?: boolean;
   /** The live folders and projects under the personal root, from the tree the page holds. */
@@ -479,6 +486,8 @@ export default function NodeDashboard({
           </Button>
         ) : null}
       </div>
+
+      {level === "project" || level === "subproject" ? updateLine : null}
 
       {/* ⚠️ SIX tiles, and six is why the orphan is gone. Five divided by
           neither 2 nor 3, so the last tile used to sit alone on its own row

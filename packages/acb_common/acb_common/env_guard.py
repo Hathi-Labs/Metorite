@@ -226,6 +226,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # project for an org. A pin changes what a finding quotes, so only the
     # owner writes it.
     "AUTHORITY_PINS_ORGS",
+    # WS-39 LP-1a: PROJECTS_UPDATES_ORGS opens the project updates for an org.
+    # An update reaches each member who sees the project, so a tenant must not
+    # open it for another org.
+    "PROJECTS_UPDATES_ORGS",
     # WS-KG KG-4: GRAPH_SWEEP_ORGS opens the nightly sweep that writes graph
     # edges into kb_links for an org. A tenant must not open it for another
     # org, so only the operator writes it.
