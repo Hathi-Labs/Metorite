@@ -329,6 +329,35 @@ async def test_the_get_answers_the_effective_auto_run(provider, settings, expect
     assert body["auto_run"] is expected
 
 
+@pytest.mark.parametrize(("provider", "settings", "auto_run", "chosen"), [
+    ("gmail", None, False, False),                          # no row: Gmail still OFF
+    ("gmail", _settings_row(auto_run=False), False, True),  # stored OFF: chosen
+    ("gmail", _settings_row(auto_run=True), True, True),
+    ("microsoft", None, True, False),                       # Outlook unchanged
+    ("microsoft", _settings_row(auto_run=False), False, True),
+], ids=["gmail-no-row", "gmail-stored-off", "gmail-stored-on", "outlook-no-row", "outlook-stored-off"])
+async def test_the_get_tells_a_stored_choice_from_none(provider, settings, auto_run, chosen) -> None:
+    """Task 2267: ``auto_run_chosen`` is true when a settings row exists. It
+    does not change ``auto_run``, so a Gmail mailbox with no row still reads
+    OFF and makes no background write (EM-G11c2)."""
+    body = await _get(_db(settings=settings, provider=provider))
+    assert body["auto_run_chosen"] is chosen
+    assert body["auto_run"] is auto_run
+
+
+async def test_the_put_ignores_the_read_only_auto_run_chosen() -> None:
+    """The settings screen PUTs the GET body back. The field is read-only: the
+    model has no such field, and the PUT stores nothing for it."""
+    assert "auto_run_chosen" not in AssistantSettingsModel.model_fields
+    get_body = await _get(_db())
+    assert get_body["auto_run_chosen"] is False
+    db = _db()
+    res = await _put(db, get_body)
+    assert res["auto_run_chosen"] is True
+    (sql, _), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert "auto_run_chosen" not in sql
+
+
 @pytest.mark.parametrize(("provider", "expected"), [("gmail", False), ("microsoft", True)])
 async def test_a_new_row_from_the_style_keeps_the_effective_auto_run(provider, expected) -> None:
     db = _db(sent=["Thanks, will do."], provider=provider)

@@ -209,6 +209,7 @@ def _agent_tool(fn: Any) -> Any:
 # ``tests/unit/test_calendar_day_pack.py``.
 _CALENDAR_DAY_NAMES: tuple[str, ...] = (
     "my_tasks_day_digest",
+    "my_tasks_get_calendar_settings",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
@@ -216,6 +217,7 @@ _CALENDAR_DAY_NAMES: tuple[str, ...] = (
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_unschedule",
+    "my_tasks_update_calendar_settings",
 )
 _CALENDAR_DAY_TOOLS: list[Any] = []
 try:

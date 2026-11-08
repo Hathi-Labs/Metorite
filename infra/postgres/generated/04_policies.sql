@@ -1580,6 +1580,13 @@ CREATE POLICY crm_change_log_tenant_isolation ON crm_change_log
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE package_field_value ENABLE ROW LEVEL SECURITY;
+ALTER TABLE package_field_value FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS package_field_value_tenant_isolation ON package_field_value;
+CREATE POLICY package_field_value_tenant_isolation ON package_field_value
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE email_signature_images ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_signature_images FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS email_signature_images_tenant_isolation ON email_signature_images;

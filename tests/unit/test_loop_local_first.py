@@ -78,3 +78,12 @@ def test_the_spec_names_what_the_pc_cannot_test():
     section = PRACTICE[PRACTICE.index("#### 1.3.2"):PRACTICE.index("## 2. Release")]
     for item in ("OAuth", "model calls", "deploy/*.sh", "smoke"):
         assert item in section, item
+
+
+def test_a_small_screen_change_exception_is_pinned_everywhere():
+    """D200: a small, low-risk screen change merges before the owner's review."""
+    claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "D200" in claude
+    assert "D200" in PRACTICE
+    preview = NEXT_TICKET[NEXT_TICKET.index("**4b — Preview"):NEXT_TICKET.index("**5 — Verify.**")]
+    assert "D200" in preview and "Looks right" in preview

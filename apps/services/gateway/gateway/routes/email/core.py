@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from acb_auth import require_feature_router
@@ -131,6 +131,10 @@ class EmailMessageModel(BaseModel):
     snippet: str = ""
     has_attachments: bool = False
     attachments: list[AttachmentModel] = []
+    # "failed" only when the provider call for the files failed, so the
+    # reader can offer a retry. An empty list with "ok" is a mail whose parts
+    # are all inline pictures (Graph sets ``hasAttachments`` for those).
+    attachments_status: Literal["ok", "failed"] = "ok"
     is_read: bool = False
     is_starred: bool = False
     is_flagged: bool = False

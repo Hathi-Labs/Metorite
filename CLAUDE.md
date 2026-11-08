@@ -241,7 +241,9 @@ The owner retired staging (D144), and this PC does its job now.
    owner asks for, or when production is down.
    The home box starts each release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 
-A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
+A slice with nothing to see skips step 1. **D200 (2026-11-08):** a small, low-risk
+change on an existing screen skips the wait in step 1. It merges after the
+captures and the full gates, and the owner reviews it afterwards. Until LD-8 to LD-10 land, the gate is
 `scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
 owns the loop, and `next-ticket.md` steps 4b and 7 hold the commands.
 

@@ -36,6 +36,12 @@ export interface Email {
   snippet: string;
   hasAttachments: boolean;
   attachments?: Attachment[];
+  /**
+   * "failed" when the gateway could not get the files of this mail from the
+   * provider (an expired token, a rate limit). An empty list with "ok" or no
+   * value is a mail with inline pictures only. Never guess it from the list.
+   */
+  attachmentsStatus?: "ok" | "failed";
   isRead: boolean;
   isStarred: boolean;
   isFlagged: boolean;
@@ -721,6 +727,10 @@ export interface AssistantSettings {
    *  so the editor turns its upload button off (§23.3.9). */
   signature_image_upload?: boolean;
   auto_run: boolean;
+  /** Read-only: true when the mailbox has a stored settings row, so the member
+   *  chose (task 2267). False: no stored choice. The PUT ignores it. Absent on
+   *  an older server. */
+  auto_run_chosen?: boolean;
   cold_email_blocker: ColdBlockerMode;
   // No model or tier field: our code picks the tier of each email AI task
   // (D-EM-7, D-EM-61). The server answers none, and a fence keeps them out
