@@ -1,6 +1,6 @@
 ---
 slug: kit/plan-the-work
-version: 3
+version: 4
 title: "Kit: plan the work on the board"
 summary: How an agent turns a goal into epics and slices on a Metorite board, with the approval of a person at each gate, using the tools of today.
 audience: agent
@@ -15,7 +15,7 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 1. **The plan lives on the board.** A plan that lives only in a file is invisible to the people who decide. You may draft in a file, but the board holds the result.
 2. **A person approves each gate.** Make the records of a gate only after its approval.
 3. **One writer for each slice.** Cut the work so that two slices do not change the same files.
-4. **Do not guess dates or paths.** Write the order down, and show your sums. When Metorite computes the order, use its answer and not your own.
+4. **Do not guess dates or paths.** Read the order with `get_plan`, and use its answer and not your own. Where it cannot answer yet, write the order down and show your sums.
 5. **The person decides.** Ask with `ask_on_task`. Do not ask only in the terminal.
 
 ## Before you start
@@ -58,14 +58,21 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 2. Write a brief for each slice (`brief-contract`): the goal, the files, what not to touch, and the proof of done.
 3. Give each slice two sizes: the agent time (`estimate_mins`), and the review time of the person who checks it. Put the review time in the brief.
 4. Decide the order. For each slice, list the slices that must be done before it starts.
-5. Work out the order by hand:
+5. Draft the order for the question, because the slices do not exist yet:
    - **Wave 1** holds the slices with nothing before them.
    - **Wave 2** holds the slices whose blockers are all in wave 1, and so on.
    - **The critical path** is the longest chain. Count the review wait in each step, not only the build.
    - **The review load** is the sum of the review times for each person.
-6. Ask for the approval of the slices. Put the waves, the critical path and the review load for each person in the question.
+6. Ask for the approval of the slices. Put the waves, the critical path and the review load for each person in the question. Say that Metorite will check the order after the links exist.
 7. After the approval, make each slice with `create_task`. Send `parent_task_id` (its epic), the backlog `status_id`, `estimate_mins`, an `idempotency_key`, and as assignee the person who answers for it.
 8. Link the order. For each pair, call `add_task_link` with the blocking slice as `task_id` and the waiting slice as `target_task_id`. No person adds the links.
+9. Read the order that Metorite computes. Call `get_plan` with the epic as `root_task_id`. The answer holds these keys:
+   - **`ready`** and **`next_slice`**: the slices that can start now, and the one to start.
+   - **`waves`**: the slices in layers. It replaces your draft.
+   - **`critical_path`** and **`slack`**: the longest chain, and the minutes that each other slice can slip. The review wait is in it.
+   - **`finish`**: one date from that chain. It is not a forecast with a range.
+   - **`hidden`**: the slices that the person cannot see. Say the count, and do not guess what they are.
+   Comment the result on the epic. When it differs from your draft, say so and use the answer of Metorite.
 
 **A `blocks` link:** `task_id` blocks `target_task_id`. `my_work` does not offer the second task until the first is done. Metorite does not refuse a claim of the second task, so an agent that takes a task by its id must read its links first. `get_task` shows each link with its `link_id`, and `remove_task_link` removes one. Metorite refuses a link that makes a loop. Each link matters today: `my_work` skips a task that an open task blocks.
 
@@ -85,7 +92,7 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 | The goal is written in each epic | A Goal type, with its epics under it |
 | The contract is headings in the description | Contract fields on the epic |
 | An epic counts its direct subtasks | Roll-ups over every level: progress, spend and waits |
-| An agent sets `blocks` with `add_task_link`, and you work out the waves by hand | Metorite computes the ready set, the waves, the critical path and the forecast |
+| An agent sets `blocks` with `add_task_link` and reads the ready set, the waves, the critical path and one finish date with `get_plan` | A forecast with a range, from the history of finished tasks |
 | Due dates mark the week | A cycle, with its capacity in review hours and credits |
 | A person assigns each slice | `my_work` gives the ready slices of the cycle in critical-path order |
 

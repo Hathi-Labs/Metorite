@@ -424,15 +424,9 @@ MANIFEST: tuple[Route, ...] = (
     # S7d — the plan preview (plan_preview.py). It writes nothing, so it is
     # in READ_ONLY_POSTS. Its class is the tool's: propose_plan is class B.
     Route("POST", "/projects/plan/preview", "propose_plan", "B"),
-    # PJP-6a: the plan engine's read. Class X is the only form a route takes
-    # with no tool. PJP-6b adds the chat tool and moves this row to class A.
-    Route(
-        "GET",
-        "/projects/plan/analysis",
-        "",
-        "X",
-        "A read with no chat tool yet. PJP-6b adds analyze_plan and moves it to class A.",
-    ),
+    # PJP-6a: the plan engine's read. SP-12 gives it the chat tool `get_plan`
+    # (class A), the same read that the MCP tool `get_plan` makes.
+    Route("GET", "/projects/plan/analysis", "get_plan", "A"),
     Route("GET", "/projects/reports", "report_list", "A"),
     # WS-27bn R2 - the template gallery. It must sit ABOVE the
     # {report_id} row, because route_for takes the first match. R-final:
@@ -748,6 +742,8 @@ IDENTITY_HEADERS: frozenset[str] = frozenset(
 #: argument, for example ``create_tasks.tasks.due``. The fence checks each
 #: witness of the tuple on the wire.
 SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
+    # ── the plan engine (SP-12) ──────────────────────────────────────────
+    ("GET", "/projects/plan/analysis"): {"root_task_id": "get_plan"},
     # ── agent runs (WS-64 OP-6e) ─────────────────────────────────────────
     ("GET", "/projects/agent-runs"): {
         "status": "waiting_agent_requests",

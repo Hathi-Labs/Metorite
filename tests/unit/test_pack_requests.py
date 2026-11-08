@@ -141,6 +141,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "export_tasks": ("export the tasks to CSV",),
     "find_conflicts": ("are there scheduling conflicts in the project plan?",),
     "fit_for_task": ("who is the best fit for this task?",),
+    "get_plan": ("what can start now in this epic?",),
     "link_tasks": ("make this task block the other task",),
     "link_tasks_batch": ("link these tasks in order as dependencies",),
     "update_tasks": ("update these tasks, a different due date for each",),
