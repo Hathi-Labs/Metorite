@@ -51,7 +51,7 @@ The solid lines show what belongs to what. The dotted line says that one job mus
 | Word | What it means | It is like | Today |
 |---|---|---|---|
 | 🏆 **Goal** | The result that all the work is for. One sentence, and a way to know that you got there. | The cup at the end of the season. | Coming. Until then, write the goal in the description of each epic. |
-| 📦 **Epic** | One big part of the goal. A person can accept it as a whole. | One chapter of a book. | Built. An agent can make an epic. No control in the app sets the type yet. |
+| 📦 **Epic** | One big part of the goal. A person can accept it as a whole. | One chapter of a book. | Built. A person chooses the type on the task, or uses "Make it an epic". An agent can also set it. |
 | 🧩 **Slice** | One small job. One agent finishes it in one go, and a person checks it in 15 to 30 minutes. | One bag of bricks with its own instructions. | Built, as a subtask of the epic. |
 | 🗒️ **Task** | Any card on the board. A slice is a task. | A sticky note on the fridge. | Built. |
 | 🧾 **Brief** | The instructions in a slice: what to make, what not to touch, and how to check it. | A recipe card. | Built, as the text of the task. |
@@ -189,7 +189,7 @@ flowchart LR
 | Part | Built today | Coming |
 |---|---|---|
 | The board | Tasks, subtasks, statuses, assignees, due dates, estimates, comments | — |
-| Epics | An Epic type. An agent can make an epic. Each epic counts its direct subtasks. | A type control in the app. An epic contract: the outcome and the checks. A count over every level. An epic page. |
+| Epics | An Epic type. A person sets the type on the task or uses "Make it an epic". An agent can also set it. Each epic counts its direct subtasks. | An epic contract: the outcome and the checks. A count over every level. An epic page. |
 | Goals | — | A Goal above the epics |
 | The order of work | "Blocks" links, set by a person in the app or by an agent with `add_task_link`. `my_work` skips a blocked task | Metorite works out what is ready, the waves and the critical path. |
 | Planning | An agent plans with you and asks at each gate | The same three gates in the Metorite chat |
