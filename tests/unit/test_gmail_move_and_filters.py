@@ -90,6 +90,8 @@ class _Gmail:
         self.late: dict[str, str] = {}
         self.filters_status = 200
         self.filters_body: dict[str, Any] = {}
+        # Raw bytes for the filters answer, in place of ``filters_body``.
+        self.filters_raw: bytes | None = None
         self.n = 1
 
     def calls(self, method: str, path: str) -> int:
@@ -117,6 +119,8 @@ class _Gmail:
         if (method, path) == ("POST", "/labels"):
             return self._create_label(body)
         if (method, path) == ("GET", "/settings/filters"):
+            if self.filters_raw is not None:
+                return httpx.Response(self.filters_status, content=self.filters_raw)
             return httpx.Response(self.filters_status, json=self.filters_body)
         if (method, path) == ("GET", "/drafts"):
             return httpx.Response(200, json={"drafts": [], "resultSizeEstimate": 0})
@@ -753,4 +757,21 @@ async def test_list_filters_answers_empty_on_a_403(fake: _Gmail) -> None:
     fake.filters_status = 429
     fake.filters_body = {"error": {"code": 429}}
     with pytest.raises(GmailRateLimited):
+        await _provider().list_filters()
+
+
+async def test_list_filters_answers_empty_on_an_empty_body(fake: _Gmail) -> None:
+    """Task 2268. Google answered 200 with an EMPTY body for the owner's
+    mailbox on 2026-11-08, and ``resp.json()`` raised "Expecting value", so
+    the rules screen logged ``email.rule_policies_provider_failed`` and showed
+    no Gmail filter. An empty or blank body means no filter, as ``{}`` does.
+    A body that is not empty and not JSON still raises, so a real fault still
+    reaches the log."""
+    for raw in (b"", b"  \r\n"):
+        fake.filters_raw, fake.seen = raw, []
+        assert await _provider().list_filters() == []
+        assert fake.requests() == [("GET", "/settings/filters")]
+
+    fake.filters_raw = b"<html>Service Unavailable</html>"
+    with pytest.raises(ValueError):
         await _provider().list_filters()
