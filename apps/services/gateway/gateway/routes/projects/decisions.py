@@ -13,10 +13,17 @@ and *expire*. A decision expires by the clock: ``expires_at`` passes, and the
 answer path refuses it. Nothing is written at that moment, so no sweep is
 needed.
 
-**Who may ask.** Only server code. ALN-7 and AUTO-7 call :func:`ask_decision`
-with a session of their own. This module has NO ask route: an HTTP ask would
-let a member, or an agent that holds a member's connection, put a card on
-another member's bell. The answer route and two read routes are here.
+**Who may ask.** Server code, and a person (WS-AP AP-8a). ALN-7 and AUTO-7
+call :func:`ask_decision` with a session of their own. The one HTTP ask is
+the *person ask* (source ``person``, ``waiting_on_me.md`` §7.2):
+``POST /projects/tasks/{task_id}/asks``. Its guards hold that a member, and
+never an agent that holds a member's connection, puts the card on the bell.
+It refuses an agent connection and a run with no person present before any
+read, an addressee who cannot open the task, the caller as the addressee, a
+second open ask for one task and one pair, and the 31st ask of one caller in
+one day. The asker withdraws an ask with ``POST /projects/asks/{id}/withdraw``.
+The person ask routes need ``DECISIONS_ORGS`` AND ``WAITING_ORGS``. Either
+off, each answers 404.
 
 **Who may answer.** The named decider and nobody else. The decider is compared
 in lower case with the address of the session. The answer never takes its
@@ -24,8 +31,8 @@ author from the request. An agent connection is refused, because the answer
 is a person's word. A run that no person watches is refused as well
 (``acb_common.no_person``, AUTO-7a), before any read or write.
 
-**One answer.** ``UPDATE ... WHERE answered_at IS NULL AND expires_at > now()``
-decides the race. Two concurrent answers end as one answer and one refusal.
+**One answer.** ``UPDATE ... WHERE answered_at IS NULL AND closed_at IS NULL
+AND expires_at > now()`` decides the race. Two concurrent answers end as one answer and one refusal.
 The trigger ``pm_decisions_guard`` of the migration is the second wall.
 
 **Who hears.** The ask refuses a decider who cannot open the task, and writes
@@ -52,7 +59,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -85,7 +92,7 @@ LABEL_MAX = 80
 #: The optional reason of an answer. The CHECK holds it too.
 REASON_MAX = 500
 #: ``pm_decisions.source``.
-SOURCES: tuple[str, ...] = ("align", "auto")
+SOURCES: tuple[str, ...] = ("align", "auto", "person")
 #: ``pm_decisions.subject_kind``. Only a task is open in ALN-2a.
 SUBJECT_KINDS: tuple[str, ...] = ("task", "page")
 OPEN_SUBJECT_KINDS: tuple[str, ...] = ("task",)
@@ -95,6 +102,20 @@ MIN_LIFE = timedelta(minutes=1)
 MAX_LIFE = timedelta(days=30)
 #: The most rows a list returns.
 LIST_LIMIT = 50
+
+#: A person ask (WS-AP AP-8a, ``waiting_on_me.md`` §7.1 and §7.2).
+#: Its life: the due date plus a week, or two weeks with no date.
+ASK_AFTER_DUE = timedelta(days=7)
+ASK_NO_DUE_LIFE = timedelta(days=14)
+#: The most asks one caller opens in one day (guard 5). The guard reads the
+#: row at this offset and keeps no number (ALN-Q5, V6).
+ASK_DAY_LIMIT = 30
+#: The keys that the service adds to a person ask.
+REPLY_KEY, NOT_ME_KEY = "reply", "not_me"
+_REPLY = {"key": REPLY_KEY, "label": "Reply"}
+_NOT_ME = {"key": NOT_ME_KEY, "label": "Not me"}
+#: An ask with choices takes 2 or 3 of them. The service adds ``not_me``.
+CHOICES_MIN, CHOICES_MAX = 2, 3
 
 
 class DecisionRefused(Exception):
@@ -133,6 +154,21 @@ async def require_decisions(user: UserContext = Depends(get_current_user)) -> No
 _ENABLED = [Depends(require_decisions)]
 
 
+async def require_waiting(user: UserContext = Depends(get_current_user)) -> None:
+    """404 while ``WAITING_ORGS`` does not hold the caller's org. The person
+    ask is a part of "Waiting", so it reads that flag through its one reader
+    (``routes/shell/waiting.waiting_allowed``). The import is local, because
+    the shell package imports this module."""
+    from gateway.routes.shell.waiting import waiting_allowed
+
+    if not waiting_allowed(getattr(user, "organization_id", None)):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+#: The person ask routes need both flags (AP-8a). Either off answers 404.
+_ASK_ENABLED = [Depends(require_decisions), Depends(require_waiting)]
+
+
 # ── The checks ──────────────────────────────────────────────────────────────
 
 
@@ -163,10 +199,13 @@ def clean_options(options: Any) -> list[dict[str, str]]:
 
 
 def decision_state(row: Any) -> str:
-    """``answered``, ``expired`` or ``open``, from the row and the DB clock
-    that the SELECT carried in ``is_expired``."""
+    """``answered``, ``closed``, ``expired`` or ``open``, from the row and the
+    DB clock that the SELECT carried in ``is_expired``. A person ask is
+    ``closed`` when its asker withdrew it (AP-8a)."""
     if row.answered_at is not None:
         return "answered"
+    if getattr(row, "closed_at", None) is not None:
+        return "closed"
     return "expired" if row.is_expired else "open"
 
 
@@ -185,6 +224,7 @@ async def ask_decision(
     payload: dict[str, Any] | None = None,
     subject_kind: str = "task",
     expires_in: timedelta | None = None,
+    due_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Ask one named person to decide, on the caller's session. Server code only.
 
@@ -193,14 +233,15 @@ async def ask_decision(
     is a page, or the decider cannot open the task. Otherwise it inserts the
     row and writes the bell row of the decider, in the caller's transaction.
     It does not commit. It returns the decision as the wire shows it, with
-    ``heard``: whether a bell row was written.
+    ``heard``: whether a bell row was written. ``due_at`` is the date of a
+    person ask (AP-8a). The caller computes ``expires_in`` from it.
     """
     if not decisions_allowed(current_tenant()):
         raise DecisionRefused("off", "Decisions are off for this organization.")
     if subject_kind not in OPEN_SUBJECT_KINDS:
         raise DecisionRefused("subject_kind", "ALN-2a asks about a task only.")
     if source not in SOURCES:
-        raise DecisionRefused("source", "source is align or auto.")
+        raise DecisionRefused("source", "source is align, auto or person.")
     q = (question or "").strip()
     if not q or len(q) > QUESTION_MAX:
         raise DecisionRefused("bad_question", f"A question is 1 to {QUESTION_MAX} characters.")
@@ -232,16 +273,16 @@ async def ask_decision(
     made = (await db.execute(
         text(
             "INSERT INTO pm_decisions (subject_kind, subject_id, decider, options,"
-            " question, asked_by, source, payload, expires_at) "
+            " question, asked_by, source, payload, expires_at, due_at) "
             "VALUES ('task', CAST(:sid AS uuid), :decider, CAST(:options AS jsonb),"
             " :question, :by, :source, CAST(:payload AS jsonb),"
-            " now() + make_interval(secs => :secs)) "
+            " now() + make_interval(secs => :secs), :due) "
             "RETURNING *, (expires_at <= now()) AS is_expired"
         ),
         {
             "sid": tid, "decider": who, "options": json.dumps(opts), "question": q,
             "by": asker, "source": source, "payload": json.dumps(extra),
-            "secs": life.total_seconds(),
+            "secs": life.total_seconds(), "due": due_at,
         },
     )).fetchone()
     heard = await notify(
@@ -277,9 +318,10 @@ async def answer_decision(
     """Record the answer of the decider. Returns the decision and its task id.
 
     404 for a decision that the caller does not hold, for any reason: a
-    decision of another decider is never confirmed. 409 ``decision_answered``
-    or ``decision_expired`` only for the decider. 422 for a key that is not an
-    option. Does not commit and does not emit.
+    decision of another decider is never confirmed. 409 ``decision_answered``,
+    ``ask_closed`` or ``decision_expired`` only for the decider. 422 for a key
+    that is not an option, and for a ``reply`` to a person ask with no words.
+    Does not commit and does not emit.
     """
     _refuse_no_person()
     if getattr(user, "agent", None) is not None:
@@ -305,13 +347,16 @@ async def answer_decision(
     labels = {str(o["key"]): str(o["label"]) for o in row.options}
     if answer_key not in labels:
         raise HTTPException(status_code=422, detail="answer_key is not one of the options.")
+    # AP-8a: a reply to a person ask is words. The reason holds them.
+    if row.source == "person" and answer_key == REPLY_KEY and note is None:
+        raise HTTPException(status_code=422, detail="A reply needs the words of the reply.")
 
     won = (await db.execute(
         text(
             "UPDATE pm_decisions SET answered_by = :me, answer_key = :key,"
             " answer_reason = :reason, answered_at = now() "
             "WHERE id = CAST(:id AS uuid) AND lower(decider) = :me"
-            " AND answered_at IS NULL AND expires_at > now() "
+            " AND answered_at IS NULL AND closed_at IS NULL AND expires_at > now() "
             "RETURNING *, (expires_at <= now()) AS is_expired"
         ),
         {"id": did, "me": me, "key": answer_key, "reason": note},
@@ -323,6 +368,8 @@ async def answer_decision(
         )).fetchone()
         if again is not None and again.answered_at is not None:
             raise HTTPException(status_code=409, detail="decision_answered")
+        if again is not None and again.closed_at is not None:
+            raise HTTPException(status_code=409, detail="ask_closed")
         if again is not None and again.is_expired:
             raise HTTPException(status_code=409, detail="decision_expired")
         raise HTTPException(status_code=404, detail="Decision not found")
@@ -381,6 +428,10 @@ def _wire(row: Any) -> dict[str, Any]:
         "answer_key": row.answer_key,
         "answer_reason": row.answer_reason,
         "answered_at": _iso(row.answered_at),
+        # AP-8a: the date and the close of a person ask. NULL for the others.
+        "due_at": _iso(getattr(row, "due_at", None)),
+        "closed_at": _iso(getattr(row, "closed_at", None)),
+        "closed_reason": getattr(row, "closed_reason", None),
     }
     title = getattr(row, "task_title", None)
     if title is not None:
@@ -435,6 +486,7 @@ async def list_decisions(
                     "SELECT d.decider, d.expires_at FROM pm_decisions d"
                     " WHERE d.subject_kind = 'task' AND d.subject_id = CAST(:tid AS uuid)"
                     " AND lower(d.decider) <> :me AND d.answered_at IS NULL"
+                    " AND d.closed_at IS NULL"
                     " AND d.expires_at > now() ORDER BY d.expires_at, d.id LIMIT :lim"
                 ),
                 {"tid": tid, "me": actor(user).strip().lower(), "lim": LIST_LIMIT},
@@ -446,6 +498,7 @@ async def list_decisions(
                     " (SELECT t.title FROM pm_tasks t WHERE t.id = d.subject_id) AS task_title"
                     " FROM pm_decisions d"
                     " WHERE lower(d.decider) = :me AND d.answered_at IS NULL"
+                    " AND d.closed_at IS NULL"
                     " AND d.expires_at > now() AND d.subject_kind = 'task'"
                     " ORDER BY d.created_at DESC LIMIT :lim"
                 ),
@@ -490,4 +543,247 @@ async def answer(
     from gateway.routes.projects.personal import bump_my_day
 
     await bump_my_day(user.organization_id, actor(user).strip().lower())
+    return {"decision": out}
+
+
+# ── The person ask (WS-AP AP-8a, ``waiting_on_me.md`` §7.1 and §7.2) ─────────
+
+
+class ChoiceIn(BaseModel):
+    """One choice of a person ask: ``{key, label}``, as an option is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    label: str
+
+
+class AskIn(BaseModel):
+    """A person ask. Nobody who asks is named in the body: the session is the
+    asker (R5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    addressee: str = Field(min_length=3, max_length=320)
+    question: str = Field(min_length=1, max_length=QUESTION_MAX)
+    choices: list[ChoiceIn] | None = None
+    due_at: datetime | None = None
+
+
+def _refuse_an_agent(user: UserContext, what: str) -> None:
+    """An ask is the act of a person (AP-Q4). An agent connection is refused,
+    before any read."""
+    if getattr(user, "agent", None) is not None:
+        raise HTTPException(status_code=403, detail=what)
+
+
+def _refusal(status: int, error: str, message: str) -> HTTPException:
+    return HTTPException(status_code=status, detail={"error": error, "message": message})
+
+
+def ask_options(choices: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    """§7.1 item 4. No choices: Reply and Not me. Two or three choices: the
+    choices and Not me. Raises a 422 for any other shape."""
+    if choices is None:
+        return [dict(_REPLY), dict(_NOT_ME)]
+    if not (CHOICES_MIN <= len(choices) <= CHOICES_MAX):
+        raise _refusal(422, "bad_choices",
+                       f"An ask takes no choices, or {CHOICES_MIN} to {CHOICES_MAX}.")
+    if {c.get("key") for c in choices} & {REPLY_KEY, NOT_ME_KEY}:
+        raise _refusal(422, "bad_choices", "The keys reply and not_me are the service's own.")
+    try:
+        return clean_options([*choices, dict(_NOT_ME)])
+    except DecisionRefused as refused:
+        raise _refusal(422, refused.reason, refused.message) from refused
+
+
+def ask_life(due_at: datetime | None, now: datetime) -> timedelta:
+    """§7.1 item 5. The due date plus 7 days, or 14 days with no date. 422
+    for a date that has passed, has no zone, or puts the end past MAX_LIFE."""
+    if due_at is None:
+        return ASK_NO_DUE_LIFE
+    if due_at.tzinfo is None:
+        raise _refusal(422, "bad_due", "due_at needs a time zone.")
+    if due_at <= now:
+        raise _refusal(422, "bad_due", "due_at has passed.")
+    life = (due_at - now) + ASK_AFTER_DUE
+    if life > MAX_LIFE:
+        raise _refusal(422, "bad_due", "due_at is too far away.")
+    return life
+
+
+async def ask_person(
+    db: Any, user: UserContext, task_id: str, body: AskIn,
+) -> dict[str, Any]:
+    """Open one person ask, on the caller's session. Does not commit.
+
+    The guards of §7.2, in order. Each refusal writes no row and no bell:
+
+    1. No person present, or an agent connection: 403, before any read.
+    2. The addressee cannot open the task: 422 ``addressee_cannot_open``,
+       with the next step (V4).
+    3. The caller is the addressee: 422 ``self_ask``.
+    4. An open ask for the same task, caller and addressee: 409
+       ``ask_open``. A lock on the task row serializes two asks.
+    5. The 31st ask of the caller in one day: 429 ``ask_limit``.
+
+    The caller must open the task first, or the answer is 404.
+    """
+    _refuse_no_person()
+    _refuse_an_agent(user, "A person asks a person.")
+    me = actor(user).strip().lower()
+    who = (body.addressee or "").strip().lower()
+    try:
+        tid = str(uuid.UUID(str(task_id)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    options = ask_options(
+        [c.model_dump() for c in body.choices] if body.choices is not None else None,
+    )
+    life = ask_life(body.due_at, datetime.now(UTC))
+
+    # The caller opens the task, or learns nothing about it.
+    await load_visible_task(db, await resolve_visibility(db, user), tid)
+    # Guard 2 (V4): the addressee opens the task too. Else nothing is written.
+    if not who or "@" not in who or not await deliverable(db, [who], tid):
+        raise _refusal(
+            422, "addressee_cannot_open",
+            "This person cannot open the task. Share the project with them first.",
+        )
+    # Guard 3.
+    if who == me:
+        raise _refusal(422, "self_ask", "You cannot ask yourself.")
+    # Guard 4. The lock on the task row makes a second ask for the task wait,
+    # so it reads the first ask after the first commits.
+    await db.execute(
+        text("SELECT 1 FROM pm_tasks WHERE id = CAST(:tid AS uuid) FOR UPDATE"),
+        {"tid": tid},
+    )
+    open_ask = (await db.execute(
+        text(
+            "SELECT 1 FROM pm_decisions d"
+            " WHERE d.subject_kind = 'task' AND d.subject_id = CAST(:tid AS uuid)"
+            " AND d.source = 'person' AND lower(d.asked_by) = :me AND d.decider = :who"
+            " AND d.answered_at IS NULL AND d.closed_at IS NULL"
+            " AND d.expires_at > now() LIMIT 1"
+        ),
+        {"tid": tid, "me": me, "who": who},
+    )).fetchone()
+    if open_ask is not None:
+        raise _refusal(409, "ask_open", "You already wait on this person here. Nudge them?")
+    # Guard 5. The row at the offset of the limit exists only when the caller
+    # asked that many times in a day. Nothing is kept or shown (ALN-Q5, V6).
+    at_limit = (await db.execute(
+        text(
+            "SELECT 1 FROM pm_decisions d"
+            " WHERE d.source = 'person' AND lower(d.asked_by) = :me"
+            " AND d.created_at > now() - interval '1 day'"
+            " ORDER BY d.created_at OFFSET :skip LIMIT 1"
+        ),
+        {"me": me, "skip": ASK_DAY_LIMIT - 1},
+    )).fetchone()
+    if at_limit is not None:
+        raise _refusal(429, "ask_limit", "You asked enough people today. Try again tomorrow.")
+
+    try:
+        return await ask_decision(
+            db, task_id=tid, decider=who, question=body.question, options=options,
+            asked_by=me, source="person", expires_in=life, due_at=body.due_at,
+        )
+    except DecisionRefused as refused:
+        if refused.reason == "off":
+            raise HTTPException(status_code=404, detail="Not Found") from refused
+        if refused.reason == "decider_cannot_open":
+            raise _refusal(
+                422, "addressee_cannot_open",
+                "This person cannot open the task. Share the project with them first.",
+            ) from refused
+        if refused.reason == "self_decision":
+            raise _refusal(422, "self_ask", "You cannot ask yourself.") from refused
+        raise _refusal(422, refused.reason, refused.message) from refused
+
+
+async def withdraw_ask(db: Any, user: UserContext, ask_id: str) -> tuple[dict[str, Any], str]:
+    """The asker withdraws an open person ask. Returns the ask and its
+    addressee. Does not commit.
+
+    404 for an ask that the caller did not make, for any reason, and for a
+    decision that is not a person ask. 409 ``decision_answered``,
+    ``ask_closed`` or ``decision_expired`` for the asker only.
+    """
+    _refuse_no_person()
+    _refuse_an_agent(user, "A person withdraws an ask.")
+    me = actor(user).strip().lower()
+    try:
+        aid = str(uuid.UUID(str(ask_id)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Ask not found") from exc
+    row = (await db.execute(
+        text(f"{_SELECT} WHERE d.id = CAST(:id AS uuid)"), {"id": aid},
+    )).fetchone()
+    if (row is None or row.source != "person" or row.subject_kind != "task"
+            or str(row.asked_by).strip().lower() != me):
+        raise HTTPException(status_code=404, detail="Ask not found")
+    done = (await db.execute(
+        text(
+            "UPDATE pm_decisions SET closed_at = now(), closed_reason = 'withdrawn' "
+            "WHERE id = CAST(:id AS uuid) AND source = 'person'"
+            " AND lower(asked_by) = :me"
+            " AND answered_at IS NULL AND closed_at IS NULL AND expires_at > now() "
+            "RETURNING *, (expires_at <= now()) AS is_expired"
+        ),
+        {"id": aid, "me": me},
+    )).fetchone()
+    if done is None:
+        again = (await db.execute(
+            text(f"{_SELECT} WHERE d.id = CAST(:id AS uuid)"), {"id": aid},
+        )).fetchone()
+        if again is not None and again.answered_at is not None:
+            raise HTTPException(status_code=409, detail="decision_answered")
+        if again is not None and again.closed_at is not None:
+            raise HTTPException(status_code=409, detail="ask_closed")
+        if again is not None and again.is_expired:
+            raise HTTPException(status_code=409, detail="decision_expired")
+        raise HTTPException(status_code=404, detail="Ask not found")
+    # The bell row of the addressee closes, as the answer closes it: ONE row,
+    # picked by the question, which ``ask_decision`` gave ``notify`` whole.
+    await db.execute(
+        text(
+            "UPDATE pm_notifications SET read_at = now() "
+            "WHERE id = (SELECT n.id FROM pm_notifications n"
+            " WHERE n.recipient = :who AND n.kind = 'decision' AND n.read_at IS NULL"
+            " AND n.task_id = CAST(:tid AS uuid) AND n.excerpt IS NOT DISTINCT FROM :ex"
+            " AND lower(n.actor) = :me"
+            " ORDER BY n.created_at, n.id LIMIT 1)"
+        ),
+        {
+            "who": str(done.decider), "tid": str(done.subject_id),
+            "ex": done.question, "me": me,
+        },
+    )
+    return _wire(done), str(done.decider)
+
+
+@router.post("/tasks/{task_id}/asks", status_code=201, dependencies=_ASK_ENABLED)
+async def ask(
+    task_id: str, payload: AskIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """A member asks a member about one task (AP-8a). The asker is the
+    session. The bell of the addressee goes through ``notify``."""
+    async with _tenant_session() as db:
+        out = await ask_person(db, user, task_id, payload)
+    from gateway.routes.projects.personal import bump_my_day
+
+    await bump_my_day(user.organization_id, out["decider"])
+    return {"decision": out}
+
+
+@router.post("/asks/{ask_id}/withdraw", dependencies=_ASK_ENABLED)
+async def withdraw(ask_id: str, user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+    """The asker withdraws an open ask. 404 for anyone else."""
+    async with _tenant_session() as db:
+        out, addressee = await withdraw_ask(db, user, ask_id)
+    from gateway.routes.projects.personal import bump_my_day
+
+    await bump_my_day(user.organization_id, addressee)
     return {"decision": out}

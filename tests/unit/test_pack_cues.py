@@ -50,10 +50,15 @@ WHEN = {
         "Also my areas, task inbox and notifications."),
     "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
     "projects-authority": "Load for the authority page of a project: to read it, pin a page as the authority, or remove a pin.",
-    # STU-G1: the Studio builder pack.
+    # CAL-1a: the day planner pack.
+    "calendar-day": (
+        "Load to rebuild or replan the day, start my day, fit what is left, "
+        "block time for a task, set the One Thing or roll over."),
+    # STU-G1: the Studio builder pack. STU-B2c-2b adds the record write tools,
+    # so the line says "read and change".
     "studio": (
         "Load for AI Studio: build an app (manifest, actions), manage your skills, "
-        "or read the records of a package."),
+        "or read and change the records of a package."),
 }
 
 

@@ -6,9 +6,9 @@ against the code on 2026-10-29, at `origin/main` `0988e0de9`. The highest
 migration on main is 315.
 
 **Built.** KG-1 (`585046f02`), KG-2 (`ccdf3c109`, dark, backfill open) and
-KG-3a (`a373b0152`, migration 314) are merged. KG-4 is built dark on its
-branch (migration 355, 2026-11-05). KG-5 is built dark on its branch, with
-no migration (2026-11-07). KG-3b and KG-6 to KG-14 are not built. §9 holds
+KG-3a (`a373b0152`, migration 314), KG-3b (`d7cc083d4`) and KG-4 (`8d9e643ea`,
+migration 355) are merged. KG-5 is built dark on its branch, with no
+migration (2026-11-07). KG-6 to KG-14 are not built. §9 holds
 the state of each slice.
 
 **Read first.** `work_plan.md` D105, D106, D112, D128 and D132.

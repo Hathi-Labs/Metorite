@@ -61,10 +61,11 @@ export { gatewayFetch } from "@/lib/gatewayFetch";
 
 export const GATEWAY_URL = process.env.GATEWAY_BASE_URL ?? "http://127.0.0.1:8000";
 
-const INTERNAL_TOKEN =
-  process.env.GATEWAY_INTERNAL_TOKEN ??
-  process.env.LITELLM_MASTER_KEY ??
-  "sk-local-dev-change-me";
+// GATEWAY_INTERNAL_TOKEN only (WS-24b, 2026-11-06). The gateway does not
+// accept LITELLM_MASTER_KEY as service identity, so a fallback to it would
+// send a token that the gateway refuses. Unset sends an empty bearer, and the
+// gateway fails closed outside ACB_ENV=dev.
+const INTERNAL_TOKEN = process.env.GATEWAY_INTERNAL_TOKEN ?? "";
 
 /**
  * Bootstrap admin list. Retained because a deployment whose access tables have
