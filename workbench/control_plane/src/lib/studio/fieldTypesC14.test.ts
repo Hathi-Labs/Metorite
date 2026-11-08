@@ -7,8 +7,8 @@
  *
  * Mutation 1: in `parseDuration`, read "1h 30m" as 90 minutes of hours (drop `* 60`
  * of the minutes). "reads hours, minutes and seconds" turns red.
- * Mutation 2: in `ean13Valid`, weight the even places by 3 instead of the odd. "the
- * EAN-13 check digit" turns red here, and the golden file turns red in `fieldCheck.test.ts`.
+ * Mutation 2: in `studio_fields._barcode`, swap the EAN-13 weights (`1 if i % 2 else 3`).
+ * `test_each_type_takes_a_good_value[barcode]` and `test_the_barcode_formats` turn red.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
