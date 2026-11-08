@@ -12,8 +12,13 @@ timeline's reading of an unknown type.
 as the non-privileged role of the phase-4 rehearsal, on a database with the
 whole ladder and two organizations. It proves:
 
-* a task sits in one cycle at most: a second add gets 409, and a direct
-  double INSERT breaks the UNIQUE;
+* a task sits in one open cycle at most: a second add gets 409, and a direct
+  second open row breaks the partial unique index. A closed cycle is
+  history: it keeps its tasks, refuses a remove, and blocks no add. A task
+  can sit in any number of closed cycles, and the triggers keep
+  ``cycle_open`` equal to the state of the cycle;
+* an add waits for a move of its task, and checks the place that the move
+  left;
 * the 409 names the other cycle only when the caller can see its node;
 * a member of another organization reads no cycle, through the routes and
   through SQL under ``tenant_engine_scope``;
@@ -39,8 +44,8 @@ whole ladder and two organizations. It proves:
 
 **Mutations this suite catches.** Commit first, and restore from HEAD.
 
-* M1. The migration: drop ``CONSTRAINT pm_cycle_tasks_one_cycle UNIQUE
-  (task_id)`` -> ``test_a_task_sits_in_one_cycle_at_most``.
+* M1. The migration: drop the index ``uq_pm_cycle_tasks_one_open`` ->
+  ``test_a_task_sits_in_one_open_cycle_at_most``.
 * M2. The migration: drop the index ``uq_pm_cycles_one_active`` ->
   ``test_one_active_cycle_for_each_node``.
 * M3. ``require_sprints``: do nothing -> ``test_with_the_flag_off_every_route_answers_404``.
@@ -60,6 +65,16 @@ whole ladder and two organizations. It proves:
   ``test_two_closes_take_their_cycle_locks_in_one_order``.
 * M10. ``delete_cycle``: drop the hidden refusal, or ``start_cycle``: return
   the stored total -> ``test_a_reader_who_cannot_see_a_task_gets_the_visible_count_and_hidden``.
+* M11. The migration: make ``uq_pm_cycle_tasks_one_open`` cover each row (no
+  ``WHERE cycle_open``), the old rule -> the three closed-cycle tests.
+* M12. ``remove_cycle_task``: let an unfinished task leave a closed cycle ->
+  ``test_a_closed_cycle_keeps_its_tasks_and_a_reopened_one_joins_a_new_cycle``.
+* M13. ``add_cycle_task``: drop the ``FOR SHARE`` read of the task ->
+  ``test_an_add_waits_for_a_move_of_the_task_and_reads_its_new_place``.
+* M14. ``_other_cycle_refusal``: read closed rows too ->
+  ``test_a_task_sits_in_one_open_cycle_and_in_any_number_of_closed_ones``.
+* M15. The migration: drop the trigger ``pm_cycles_close_rows`` -> the three
+  closed-cycle tests.
 
 Run::
 
@@ -134,7 +149,15 @@ def test_the_migration_is_expand_only_and_forces_rls_on_each_table() -> None:
         assert re.search(
             r"organization_id\s+UUID NOT NULL\s+REFERENCES organization \(id\) ON DELETE "
             r"CASCADE\s+DEFAULT current_setting\('app.tenant_id', true\)::uuid", body), table
-    assert re.search(r"CONSTRAINT pm_cycle_tasks_one_cycle UNIQUE \(task_id\)", sql)
+    assert re.search(r"CONSTRAINT pm_cycle_tasks_once UNIQUE \(cycle_id, task_id\)", sql)
+    assert re.search(
+        r"CREATE UNIQUE INDEX IF NOT EXISTS uq_pm_cycle_tasks_one_open\s+ON pm_cycle_tasks "
+        r"\(task_id\)\s+WHERE cycle_open;", sql)
+    assert "UNIQUE (task_id)" not in sql
+    assert re.search(r"CREATE TRIGGER pm_cycle_tasks_open\s+BEFORE INSERT OR UPDATE OF "
+                     r"cycle_id, cycle_open\s+ON pm_cycle_tasks", sql)
+    assert re.search(r"CREATE TRIGGER pm_cycles_close_rows\s+AFTER UPDATE OF state ON "
+                     r"pm_cycles", sql)
     assert re.search(
         r"CREATE UNIQUE INDEX IF NOT EXISTS uq_pm_cycles_one_active\s+ON pm_cycles "
         r"\(project_id\)\s+WHERE state = 'active';", sql)
@@ -420,13 +443,15 @@ def _error(response: httpx.Response) -> str:
     return detail["error"] if isinstance(detail, dict) else str(detail)
 
 
-async def _until_lock_waits(p: Any, needle: str, n: int = 1) -> None:
+async def _until_lock_waits(p: Any, needle: str, n: int = 1, stop: Any = None) -> None:
     """Wait until *n* backends of this database wait on a lock, each in a
     statement that names *needle*. At most ``_WAIT`` seconds: broken code
-    goes red, and never hangs."""
+    goes red, and never hangs. When the request *stop* ends first, it did not
+    wait, and the test goes red at once."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _WAIT
     while True:
+        assert stop is None or not stop.done(), f"the request ended with no lock wait on {needle}"
         waiting = _count(
             p, "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
                " AND wait_event_type = 'Lock' AND query LIKE :q AND pid <> pg_backend_pid()",
@@ -577,9 +602,9 @@ class TestTheCycleStoreOnARealDatabase:
                 assert (await call(w.u_alice, "GET", f"/projects/cycles/{bad}")).status_code == 404
         assert _count(w.p, "SELECT count(*) FROM pm_cycles") == 1
 
-    # ── One cycle for each task ─────────────────────────────────────────
+    # ── One open cycle for each task ────────────────────────────────────
 
-    async def test_a_task_sits_in_one_cycle_at_most(self, w):
+    async def test_a_task_sits_in_one_open_cycle_at_most(self, w):
         task = _task(w.p, w.p.org_a, w.alice, w.proj)
         async with _session(w.p) as call:
             first = await _plan(call, w.u_alice, w.space["id"], name="First")
@@ -594,8 +619,8 @@ class TestTheCycleStoreOnARealDatabase:
             assert detail["error"] == "task_in_cycle"
             assert '"First"' in detail["message"] and "Remove it" in detail["message"]
         assert _members_of(w.p, first) == {task} and _members_of(w.p, second) == set()
-        # The UNIQUE holds under a direct write.
-        with pytest.raises(IntegrityError, match="pm_cycle_tasks_one_cycle"), w.p.admin_engine.begin() as c:
+        # The partial unique index holds under a direct write.
+        with pytest.raises(IntegrityError, match="uq_pm_cycle_tasks_one_open"), w.p.admin_engine.begin() as c:
             c.execute(text(
                 "INSERT INTO pm_cycle_tasks (organization_id, cycle_id, task_id, added_by) "
                 "VALUES (CAST(:o AS uuid), CAST(:c AS uuid), CAST(:t AS uuid), 'x@y.test')"),
@@ -896,7 +921,7 @@ class TestTheCycleStoreOnARealDatabase:
                           " WHERE cycle_id = CAST(:c AS uuid) ORDER BY task_id", c=cycle)
         assert after == before and len(after) == 3
 
-    async def test_a_closed_cycle_keeps_its_finished_tasks_and_lets_a_reopened_one_go(self, w):
+    async def test_a_closed_cycle_keeps_its_tasks_and_a_reopened_one_joins_a_new_cycle(self, w):
         finished = _task(w.p, w.p.org_a, w.alice, w.proj, category="done")
         async with _session(w.p) as call:
             cycle = await _plan(call, w.u_alice, w.space["id"], goal="Now")
@@ -914,14 +939,19 @@ class TestTheCycleStoreOnARealDatabase:
             ):
                 refused = await call(w.u_alice, method, path, body)
                 assert refused.status_code == 409, (method, path, refused.text)
-            # The task opens again: it may leave the closed cycle and join a new one.
+            # The task opens again. The closed cycle is history: it keeps the
+            # task, and the task joins an open cycle as it is.
             _set_status(w.p, finished, w.proj, "todo")
+            kept = await call(w.u_alice, "DELETE", f"/projects/cycles/{cycle}/tasks/{finished}")
+            assert kept.status_code == 409 and _error(kept) == "cycle_closed", kept.text
             nxt = await _plan(call, w.u_alice, w.space["id"], name="Again")
-            refused = await _add(call, w.u_alice, nxt, finished)
-            assert refused.status_code == 409 and "Remove it" in refused.text
-            out = await call(w.u_alice, "DELETE", f"/projects/cycles/{cycle}/tasks/{finished}")
-            assert out.status_code == 200, out.text
-            assert (await _add(call, w.u_alice, nxt, finished)).json()["added"] is True
+            added = await _add(call, w.u_alice, nxt, finished)
+            assert added.status_code == 200 and added.json()["added"] is True, added.text
+        assert _members_of(w.p, cycle) == {finished} and _members_of(w.p, nxt) == {finished}
+        flags = {str(r.cycle_id): r.cycle_open for r in _all(
+            w.p, "SELECT cycle_id, cycle_open FROM pm_cycle_tasks WHERE task_id = CAST(:t AS uuid)",
+            t=finished)}
+        assert flags == {cycle: False, nxt: True}
         with pytest.raises(DBAPIError, match="closed cycle does not change"), w.p.admin_engine.begin() as c:
             c.execute(text("UPDATE pm_cycles SET name = 'x' WHERE id = CAST(:c AS uuid)"),
                       {"c": cycle})
@@ -1221,3 +1251,98 @@ class TestTheCycleStoreOnARealDatabase:
         assert [str(r.task_id) for r in logged] == [carried]
         assert logged[0].meta["from_cycle"] == on_space
         assert logged[0].meta["cause"] == cycles.MOVED_CAUSE
+
+    # ── Fix round 3: a closed cycle is history, and an add waits for a move ─
+
+    async def test_a_task_sits_in_one_open_cycle_and_in_any_number_of_closed_ones(self, w):
+        task = _task(w.p, w.p.org_a, w.alice, w.proj, category="done")
+        closed: list[str] = []
+        async with _session(w.p) as call:
+            for name in ("C1", "C2"):
+                cycle = await _plan(call, w.u_alice, w.space["id"], name=name, goal=name)
+                added = await _add(call, w.u_alice, cycle, task)
+                assert added.status_code == 200 and added.json()["added"] is True, added.text
+                for step, body in (("start", {}), ("close", {"choices": []})):
+                    done = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/{step}", body)
+                    assert done.status_code == 200, done.text
+                closed.append(cycle)
+            # The task is done in two closed cycles. It opens again and joins
+            # an open one.
+            _set_status(w.p, task, w.proj, "todo")
+            c3 = await _plan(call, w.u_alice, w.space["id"], name="C3")
+            added = await _add(call, w.u_alice, c3, task)
+            assert added.status_code == 200 and added.json()["added"] is True, added.text
+            # The one open cycle blocks a second one, and the 409 names it.
+            c4 = await _plan(call, w.u_alice, w.proj["id"], name="C4")
+            refused = await _add(call, w.u_alice, c4, task)
+            assert refused.status_code == 409 and _error(refused) == "task_in_cycle"
+            message = refused.json()["detail"]["message"]
+            assert '"C3"' in message and '"C1"' not in message and '"C2"' not in message
+        flags = {str(r.cycle_id): r.cycle_open for r in _all(
+            w.p, "SELECT cycle_id, cycle_open FROM pm_cycle_tasks WHERE task_id = CAST(:t AS uuid)",
+            t=task)}
+        assert flags == {closed[0]: False, closed[1]: False, c3: True}
+        insert = ("INSERT INTO pm_cycle_tasks (organization_id, cycle_id, task_id, added_by) "
+                  "VALUES (CAST(:o AS uuid), CAST(:c AS uuid), CAST(:t AS uuid), 'x@y.test')")
+        # A second open row breaks the partial unique index under a direct write.
+        with pytest.raises(IntegrityError, match="uq_pm_cycle_tasks_one_open"), \
+                w.p.admin_engine.begin() as c:
+            c.execute(text(insert), {"o": w.p.org_a, "c": c4, "t": task})
+        # A task sits once in one cycle, a closed cycle too.
+        with pytest.raises(IntegrityError, match="pm_cycle_tasks_once"), \
+                w.p.admin_engine.begin() as c:
+            c.execute(text(insert), {"o": w.p.org_a, "c": closed[0], "t": task})
+        # No writer opens a closed row: the trigger reads the cycle.
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_cycle_tasks SET cycle_open = true"
+                           " WHERE cycle_id = CAST(:c AS uuid)"), {"c": closed[0]})
+        assert _one(w.p, "SELECT cycle_open FROM pm_cycle_tasks WHERE cycle_id = CAST(:c AS uuid)",
+                    c=closed[0]).cycle_open is False
+
+    async def test_a_task_in_a_closed_cycle_that_moves_away_joins_a_cycle_on_its_new_node(
+        self, w,
+    ):
+        proj2 = _node(w.p, w.p.org_a, w.alice, parent=w.space, grants=(w.alice,))
+        task = _task(w.p, w.p.org_a, w.alice, w.proj, category="done")
+        async with _session(w.p) as call:
+            old = await _plan(call, w.u_alice, w.proj["id"], name="Old", goal="Old")
+            assert (await _add(call, w.u_alice, old, task)).status_code == 200
+            for step, body in (("start", {}), ("close", {"choices": []})):
+                assert (await call(w.u_alice, "POST", f"/projects/cycles/{old}/{step}",
+                                   body)).status_code == 200
+            _set_status(w.p, task, w.proj, "todo")
+            moved = await call(w.u_alice, "POST", f"/projects/tasks/{task}/move",
+                               {"project_id": proj2["id"]})
+            assert moved.status_code == 200, moved.text
+            # The move frees open cycles only: the closed cycle keeps its record.
+            assert _members_of(w.p, old) == {task}
+            there = await _plan(call, w.u_alice, proj2["id"], name="There")
+            added = await _add(call, w.u_alice, there, task)
+            assert added.status_code == 200 and added.json()["added"] is True, added.text
+        assert _members_of(w.p, there) == {task}
+
+    async def test_an_add_waits_for_a_move_of_the_task_and_reads_its_new_place(self, w):
+        proj2 = _node(w.p, w.p.org_a, w.alice, parent=w.space, grants=(w.alice,))
+        task = _task(w.p, w.p.org_a, w.alice, w.proj)
+        async with _session(w.p) as call:
+            cycle = await _plan(call, w.u_alice, w.proj["id"], name="On P")
+            # A move of the task out of P holds its row, open, while the add runs.
+            holder = w.p.admin_engine.connect()
+            adding = None
+            try:
+                hold = holder.begin()
+                holder.execute(text("UPDATE pm_tasks SET project_id = CAST(:p AS uuid)"
+                                    " WHERE id = CAST(:t AS uuid)"),
+                               {"p": proj2["id"], "t": task})
+                adding = asyncio.ensure_future(_add(call, w.u_alice, cycle, task))
+                # Before the fix the add read the old place, found the task in
+                # P, and added it with no wait.
+                await _until_lock_waits(w.p, "FOR SHARE OF t", stop=adding)
+                hold.commit()
+                refused = await asyncio.wait_for(adding, _WAIT)
+            finally:
+                holder.close()
+                await _settle(adding)
+            assert refused.status_code == 422 and _error(refused) == "task_outside_node", (
+                refused.text)
+        assert _members_of(w.p, cycle) == set()

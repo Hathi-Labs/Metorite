@@ -8,7 +8,8 @@
 --         optional cooldown, a state (`planned`, `active` or `closed`), an
 --         optional credit budget, and the totals of the start.
 --       * `pm_cycle_tasks` holds the membership: one row for each task in a
---         cycle. UNIQUE (task_id) keeps a task in one cycle at most.
+--         cycle. A task sits in one open cycle at most, and in any number of
+--         closed cycles. A closed cycle is history.
 --       * `pm_cycle_committed` holds the start snapshot: one row for each
 --         task that the cycle held at its start, with its estimate then.
 --       * `pm_cycle_capacity` holds the capacity snapshot of the start: the
@@ -24,7 +25,7 @@
 --       pm_tasks, pm_activities) and 210 (the last CHECK of
 --       pm_activities.type).
 --
--- Expand only (R6): four new tables, their keys and indexes, four trigger
+-- Expand only (R6): four new tables, their keys and indexes, six trigger
 -- functions and their triggers, and one CHECK that accepts one more value.
 -- No rename, no drop of a table or a column, and no new column on an old
 -- table. Old code names no new object. Each type that old code writes still
@@ -59,7 +60,14 @@
 -- One active cycle for each node: the partial unique index
 -- `uq_pm_cycles_one_active`. The start route answers 409 first. The index
 -- holds under a race and under a direct INSERT.
--- One cycle for each task: UNIQUE (task_id) on `pm_cycle_tasks`.
+-- One open cycle for each task: the partial unique index
+-- `uq_pm_cycle_tasks_one_open ON pm_cycle_tasks (task_id) WHERE cycle_open`.
+-- A closed cycle keeps its rows as history, so a task can sit in any number
+-- of closed cycles. A partial index cannot read `pm_cycles`, so the column
+-- `cycle_open` mirrors the state of the cycle. The trigger
+-- `pm_cycle_tasks_open` sets it on each INSERT and each move of a row. The
+-- trigger `pm_cycles_close_rows` clears it at the close. Both hold for each
+-- role. UNIQUE (cycle_id, task_id) keeps a task once in one cycle.
 --
 -- ON DELETE.
 --   * `pm_cycles.project_id` CASCADE: a deleted node takes its cycles.
@@ -177,17 +185,32 @@ CREATE TABLE IF NOT EXISTS pm_cycle_tasks (
     added_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- The member who added the task, from the session.
     added_by         TEXT NOT NULL,
+    -- True while the cycle is planned or active, false once it is closed.
+    -- The two triggers below keep it. No writer sets it.
+    cycle_open       BOOLEAN NOT NULL DEFAULT true,
     PRIMARY KEY (id),
-    -- A task sits in one cycle at most (§13.2).
-    CONSTRAINT pm_cycle_tasks_one_cycle UNIQUE (task_id),
+    -- A task sits once in one cycle.
+    CONSTRAINT pm_cycle_tasks_once UNIQUE (cycle_id, task_id),
     CONSTRAINT pm_cycle_tasks_cycle_fk FOREIGN KEY (organization_id, cycle_id)
         REFERENCES pm_cycles (organization_id, id) ON DELETE CASCADE,
     CONSTRAINT pm_cycle_tasks_added_by CHECK (btrim(added_by) <> '')
 );
 
+-- A task sits in one open cycle at most (§13.2a). A closed cycle is history,
+-- so its rows do not count. It also serves the read of the open cycle of a
+-- task.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pm_cycle_tasks_one_open
+    ON pm_cycle_tasks (task_id)
+    WHERE cycle_open;
+
 -- The tasks of one cycle. It also serves the cascade of a cycle.
 CREATE INDEX IF NOT EXISTS idx_pm_cycle_tasks_cycle
     ON pm_cycle_tasks (organization_id, cycle_id);
+
+-- Each row of one task, in closed cycles too. It serves the cascade of a
+-- task delete.
+CREATE INDEX IF NOT EXISTS idx_pm_cycle_tasks_task
+    ON pm_cycle_tasks (task_id);
 
 -- ── The start snapshot ──────────────────────────────────────────────────────
 
@@ -273,6 +296,44 @@ CREATE TRIGGER pm_cycle_tasks_same_org
     BEFORE INSERT OR UPDATE OF organization_id, task_id
     ON pm_cycle_tasks
     FOR EACH ROW EXECUTE FUNCTION pm_cycle_tasks_same_org();
+
+-- ── One open cycle for each task: the mirror of the state ───────────────────
+-- For each role. Fence: tests/unit/test_sprint_store_r8.py.
+
+-- On each INSERT and each move of a row to another cycle, and on any write of
+-- the column: the cycle decides. A value that a writer sends does not count.
+CREATE OR REPLACE FUNCTION pm_cycle_tasks_open() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    NEW.cycle_open := NOT EXISTS (
+        SELECT 1 FROM pm_cycles WHERE id = NEW.cycle_id AND state = 'closed'
+    );
+    RETURN NEW;
+END
+$fn$;
+
+DROP TRIGGER IF EXISTS pm_cycle_tasks_open ON pm_cycle_tasks;
+CREATE TRIGGER pm_cycle_tasks_open
+    BEFORE INSERT OR UPDATE OF cycle_id, cycle_open
+    ON pm_cycle_tasks
+    FOR EACH ROW EXECUTE FUNCTION pm_cycle_tasks_open();
+
+-- At the close, each row that stays in the cycle becomes history.
+CREATE OR REPLACE FUNCTION pm_cycles_close_rows() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    UPDATE pm_cycle_tasks SET cycle_open = false
+     WHERE cycle_id = NEW.id AND cycle_open;
+    RETURN NULL;
+END
+$fn$;
+
+DROP TRIGGER IF EXISTS pm_cycles_close_rows ON pm_cycles;
+CREATE TRIGGER pm_cycles_close_rows
+    AFTER UPDATE OF state ON pm_cycles
+    FOR EACH ROW
+    WHEN (NEW.state = 'closed' AND OLD.state IS DISTINCT FROM 'closed')
+    EXECUTE FUNCTION pm_cycles_close_rows();
 
 -- ── The life of a cycle, and the snapshot ───────────────────────────────────
 -- For each role. Fence: tests/unit/test_sprint_store_r8.py.
@@ -412,7 +473,8 @@ COMMENT ON TABLE pm_cycles IS
     'Only gateway/routes/projects/cycles.py writes it. '
     'project-docs/specs/project_management_app.md §13.2a.';
 COMMENT ON TABLE pm_cycle_tasks IS
-    'The tasks of a cycle. A task sits in one cycle at most (UNIQUE task_id). SP-1.';
+    'The tasks of a cycle. A task sits in one open cycle at most (uq_pm_cycle_tasks_one_open), '
+    'and a closed cycle keeps its rows as history. SP-1.';
 COMMENT ON TABLE pm_cycle_committed IS
     'The start snapshot of a cycle: each task it held at the start. Never updated. SP-1.';
 COMMENT ON TABLE pm_cycle_capacity IS

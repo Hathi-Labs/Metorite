@@ -5,7 +5,10 @@ Spec: ``project-docs/specs/project_management_app.md`` §13.2 (the calls) and
 
 THE one writer of ``pm_cycles``, ``pm_cycle_tasks``, ``pm_cycle_committed``
 and ``pm_cycle_capacity``. A cycle (a sprint) is a time box over one project
-node: a space, a folder or a project. A task sits in one cycle at most.
+node: a space, a folder or a project. A task sits in one open (planned or
+active) cycle at most, and in any number of closed cycles: a closed cycle is
+history. The partial unique index ``uq_pm_cycle_tasks_one_open`` holds the
+rule over the column ``cycle_open``, which two triggers keep.
 
 * ``GET    /nodes/{project_id}/cycles``          the cycles of one node
 * ``POST   /nodes/{project_id}/cycles``          plan a cycle
@@ -598,13 +601,13 @@ async def delete_cycle(
 
 
 async def _other_cycle_refusal(db: Any, vis: Any, task_id: str) -> HTTPException:
-    """The 409 of a task that sits in another cycle. It names that cycle only
-    when the caller can see its node."""
+    """The 409 of a task that sits in another open cycle. It names that cycle
+    only when the caller can see its node. A closed cycle never blocks."""
     other = (await db.execute(
         text(
             "SELECT c.id, c.name, c.project_id FROM pm_cycle_tasks ct"
             "  JOIN pm_cycles c ON c.id = ct.cycle_id"
-            " WHERE ct.task_id = CAST(:t AS uuid)"
+            " WHERE ct.task_id = CAST(:t AS uuid) AND ct.cycle_open"
         ),
         {"t": task_id},
     )).fetchone()
@@ -621,8 +624,9 @@ async def add_cycle_task(
     cycle_id: str, payload: CycleTaskIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Add one task to a planned or an active cycle. The task must sit on the
-    cycle's node or below it. A task in another cycle is 409. A task that is
-    in this cycle already answers ``added: false``."""
+    cycle's node or below it. A task in another open cycle is 409. A closed
+    cycle that holds the task does not block it. A task that is in this cycle
+    already answers ``added: false``."""
     tid = str(payload.task_id)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -633,7 +637,19 @@ async def add_cycle_task(
             raise _refusal(409, "cycle_closed",
                            "This cycle is closed. Add the task to a planned or an active "
                            "cycle.")
-        task = await load_visible_task(db, vis, tid)
+        await load_visible_task(db, vis, tid)
+        # FOR SHARE: a move of this task waits for this add, or this add waits
+        # for the move and then reads the place that the move left. So the
+        # node check below holds at the commit (`detach_moved_tasks`).
+        task = (await db.execute(
+            text(
+                "SELECT t.id, t.project_id, t.archived_at FROM pm_tasks t"
+                " WHERE t.id = CAST(:t AS uuid) FOR SHARE OF t"
+            ),
+            {"t": tid},
+        )).fetchone()
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
         if task.archived_at is not None:
             raise _refusal(422, "task_archived",
                            "This task is archived. Unarchive it first.")
@@ -645,7 +661,8 @@ async def add_cycle_task(
             text(
                 "INSERT INTO pm_cycle_tasks (cycle_id, task_id, added_by) "
                 "VALUES (CAST(:cid AS uuid), CAST(:t AS uuid), :by) "
-                "ON CONFLICT (task_id) DO NOTHING RETURNING id"
+                # The arbiter is uq_pm_cycle_tasks_one_open: one open cycle.
+                "ON CONFLICT (task_id) WHERE cycle_open DO NOTHING RETURNING id"
             ),
             {"cid": str(cycle.id), "t": tid, "by": actor(user)},
         )).fetchone()
@@ -666,10 +683,11 @@ async def add_cycle_task(
 async def remove_cycle_task(
     cycle_id: str, task_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Take one task out of a cycle. The task goes back to the backlog.
+    """Take one task out of a planned or an active cycle. The task goes back
+    to the backlog.
 
-    A closed cycle keeps each finished task as its record (409). A task that
-    is open again may leave a closed cycle, so it can join a new one.
+    A closed cycle is history, so it keeps each of its tasks (409). A task in
+    a closed cycle can join an open cycle as it is.
     """
     tid = _uuid_or_404(task_id, "Task")
     async with _tenant_session() as db:
@@ -677,18 +695,9 @@ async def remove_cycle_task(
         cycle = await _load_cycle(db, vis, cycle_id, lock="FOR SHARE")
         await load_visible_task(db, vis, tid)
         if cycle.state == "closed":
-            category = (await db.execute(
-                text(
-                    "SELECT s.category FROM pm_tasks t"
-                    "  LEFT JOIN pm_task_statuses s ON s.id = t.status_id"
-                    " WHERE t.id = CAST(:t AS uuid)"
-                ),
-                {"t": tid},
-            )).scalar()
-            if category in CLOSING_CATEGORIES:
-                raise _refusal(409, "cycle_closed",
-                               "This task is finished in a closed cycle, so it stays there "
-                               "as the record of that cycle.")
+            raise _refusal(409, "cycle_closed",
+                           "This cycle is closed, so its tasks stay as its record. The "
+                           "task can join a planned or an active cycle as it is.")
         gone = (await db.execute(
             text(
                 "DELETE FROM pm_cycle_tasks WHERE cycle_id = CAST(:cid AS uuid)"
@@ -714,7 +723,8 @@ _OPEN_ROWS_OF_TASKS_SQL = (
     "  FROM pm_cycle_tasks ct"
     "  JOIN pm_cycles c ON c.id = ct.cycle_id"
     "  JOIN pm_tasks t ON t.id = ct.task_id"
-    " WHERE ct.task_id = ANY(CAST(:ids AS uuid[])) AND c.state <> 'closed'"
+    " WHERE ct.task_id = ANY(CAST(:ids AS uuid[])) AND ct.cycle_open"
+    "   AND c.state <> 'closed'"
     " ORDER BY ct.task_id"
 )
 
@@ -733,7 +743,7 @@ _OPEN_ROWS_LEFT_BY_NODE_SQL = _ancestor_chain_sql("id = CAST(:node AS uuid)") + 
     "  FROM pm_cycle_tasks ct"
     "  JOIN pm_cycles c ON c.id = ct.cycle_id"
     "  JOIN pm_tasks t ON t.id = ct.task_id"
-    " WHERE c.state <> 'closed'"
+    " WHERE ct.cycle_open AND c.state <> 'closed'"
     "   AND t.project_id IN (SELECT id FROM sub)"
     "   AND c.project_id NOT IN (SELECT id FROM sub)"
     "   AND c.project_id NOT IN (SELECT id FROM chain)"
