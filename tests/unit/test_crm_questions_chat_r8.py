@@ -370,15 +370,14 @@ async def _through_the_tool(p: Any, user: Any, monkeypatch: Any, calls: Any) -> 
     import httpx
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
-    from fastapi import FastAPI
-    from gateway.routes import crm as crm_package
 
     async def _caller() -> Any:
         bind_tenant(user.organization_id)
         return user
 
-    app = FastAPI()
-    app.include_router(crm_package.router)
+    from tests.unit._crm_app import crm_app
+
+    app = crm_app()
     app.dependency_overrides[get_current_user] = _caller
     monkeypatch.setattr(tools, "httpx", SimpleNamespace(AsyncClient=lambda **_kw: httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://crm.test")))

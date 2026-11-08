@@ -546,7 +546,7 @@ describe("a refused save keeps the form open (done-when 8)", () => {
     const page = source("page.tsx");
     const hunk = page.slice(page.indexOf("<QuickCreateModal"), page.indexOf("{converting && ("));
     expect(hunk).toContain("refusal={store.refusal}");
-    const save = hunk.indexOf("await store.createRecord(entity, body);");
+    const save = hunk.indexOf("await store.createRecord(");
     const guard = hunk.indexOf("if (!id) return;");
     expect(save).toBeGreaterThan(0);
     expect(guard).toBeGreaterThan(save);

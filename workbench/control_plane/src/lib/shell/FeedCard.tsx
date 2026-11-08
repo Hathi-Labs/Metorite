@@ -151,6 +151,8 @@ const NO_MENU: MenuOverlay = new Map();
 export interface Feed {
   answer: FeedAnswer | undefined;
   loading: boolean;
+  /** A newer answer is on its way over the one shown (`useCachedResource`). Absent reads as false. */
+  refreshing?: boolean;
   error: string | null;
   refresh: () => void;
   /** The needs rows that are off: the one store and the feed's overlay (`feedHiddenRows`). */
@@ -303,6 +305,7 @@ export function useFeed(enabled: boolean): Feed {
   return {
     answer: feed.data,
     loading: feed.loading,
+    refreshing: feed.refreshing,
     error: feed.error,
     refresh,
     marked,
@@ -582,9 +585,12 @@ export function FeedColumn({
   feed,
   now,
   ai = [],
+  onTakeNew,
   className = "",
 }: {
   feed: Feed;
+  /** The member took in the new cards. The Do first band starts a new hold on it (PKG-Q15). */
+  onTakeNew?: () => void;
   /** The page's clock, by the minute. A render reads no clock itself. */
   now: Date | null;
   /** The assistant runs that wait on the member (`useAiWaiting`), the first group. */
@@ -614,7 +620,10 @@ export function FeedColumn({
   // "adjust state while rendering" pattern does it.
   if (visit === null && view.visit !== null) setVisit(view.visit);
   const fresh = view.fresh;
-  const takeNew = () => setVisit(feed.answer ? startVisit(feed.answer.cards) : null);
+  const takeNew = () => {
+    setVisit(feed.answer ? startVisit(feed.answer.cards) : null);
+    onTakeNew?.();
+  };
   const { groups: allGroups, hidden } = view;
   const groups = allGroups.filter((g) => g.id !== "later");
   const later = allGroups.find((g) => g.id === "later");
