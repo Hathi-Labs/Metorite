@@ -1839,13 +1839,14 @@ def _salutation_name(recipient_name: str) -> str:
         lead.append((tokens[idx], h))
         idx += 1
     # A spoken suffix form (Sir, Madam, Sahab, Ji) before a name is no name. It
-    # is skipped like a title and not shown. A form that is also a given name
-    # stays. A name that is only the form stays too (see below).
+    # is skipped like a title and not shown. Only the forms in the catalogue set
+    # are skipped, as a kinship form can be a given name (Bhau, Dada). A name
+    # that is only the form stays too (see below).
     while idx < len(tokens) - 1:
         lead_suffix = honorifics.find_suffix(tokens[idx])
         if (
             lead_suffix is None
-            or lead_suffix.also_name
+            or lead_suffix.form not in honorifics.LEADING_SKIPPED_SUFFIX_FORMS
             or honorifics.find_suffix(tokens[idx + 1]) is not None
             or honorifics.find_prefix(tokens[idx + 1]) is not None
         ):

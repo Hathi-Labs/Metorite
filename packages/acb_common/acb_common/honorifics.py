@@ -151,7 +151,7 @@ HONORIFICS: tuple[Honorific, ...] = (
     _p("Miss", ("miss",), _S, "formal, unmarried", f"{_ANY}=K", gender=FEMALE, marital=UNMARRIED),
     _p("Dr.", ("dr", "डॉ"), _S, "formal", f"{_ANY}=K", kind=CREDENTIAL),
     # --- Hindi belt (Punjabi and Gujarati share ji)
-    _s("ji", ("ji", "jee"), "respectful, warm", "hi=K pa=K gu=K"),
+    _s("ji", ("ji", "jee", "जी"), "respectful, warm", "hi=K pa=K gu=K"),
     _p("Shri", ("shri", "sri", "shree", "sree", "shrii", "shiri", *_SHRI_NATIVE), _G, "formal, male",
        "hi=V bn=V gu=K mr=K or=K as=K te=K kn=K ml=K", gender=MALE),
     _p("Shrimati", ("shrimati", "smt", "srimati", "srimathi", "shrimathi",
@@ -293,6 +293,17 @@ _FOLD_INDEX: dict[str, str] = {}
 for _row_ in (*HONORIFICS, *NEVER_OFFERED, NAME_ONLY, INITIALS):
     for _spelling in _row_.spellings:
         _FOLD_INDEX.setdefault(normalize(_spelling), _row_.form)
+
+
+#: Canonical forms of a spoken suffix that a drafter skips when the form LEADS
+#: a name ("Sir Ramesh" gives "Ramesh"). These are polite or credential forms
+#: that are rarely a given name (spec 16.4.3, task 1894). A kinship form is not
+#: here, because Bhau, Baji, Dada and Didi are real given names. Sahiba and
+#: Begum are not here either. The key is the canonical form of the row.
+LEADING_SKIPPED_SUFFIX_FORMS: frozenset[str] = frozenset({
+    "sir", "madam", "Sahab", "ji", "garu", "Bhaisahab", "Moshai",
+    "avargal", "avare", "IAS", "IPS", "IFS",
+})
 
 
 def find_prefix(token: str) -> Honorific | None:

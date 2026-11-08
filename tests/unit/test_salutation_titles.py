@@ -112,6 +112,15 @@ def test_a_title_alone_is_not_a_name(h) -> None:
         ("😀 Ramesh", "Ramesh"),
         ("123 Ramesh", "Ramesh"),
         ("😀", "😀"),
+        # A kinship or other form that can be a given name stays the name.
+        ("Bhau Kadam", "Bhau"),
+        ("Baji Rao", "Baji"),
+        ("Sahiba Kaur", "Sahiba"),
+        ("Dada Okafor", "Dada"),
+        ("Didi Hamann", "Didi"),
+        # Devanagari ji: skipped when it leads, kept when it trails.
+        ("जी रमेश", "रमेश"),
+        ("Vijay जी", "Vijay जी"),
     ],
 )
 def test_salutation_name_table(name: str, expected: str) -> None:
