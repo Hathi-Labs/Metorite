@@ -377,6 +377,43 @@ def test_a_system_key_at_a_point_of_many_claims_is_no_conflict() -> None:
     assert got.id == "install-1"
 
 
+def test_a_fields_key_of_another_app_is_taken_and_of_the_same_app_is_not() -> None:
+    """PKG-14a-2 and PKG-Q29: a ``fields`` claim meets the conflict rule of
+    §4, as a ``nav`` or a ``jobs`` claim does. The refusal names the point,
+    the key and the holder, and it writes nothing."""
+    claim = [Contribution("fields", "task:warranty_end", {"type": "date", "many": False})]
+    other = str(uuid.uuid4())
+    db = _FakeDb(held=(("fields", "task:warranty_end", "install-0", other, "org", "org"),))
+    with pytest.raises(ClaimTaken) as exc:
+        _run(store.install(db, **_args(contributions=claim)))
+    err = exc.value
+    assert (err.point, err.key, err.status) == ("fields", "task:warranty_end", 409)
+    assert err.holder == store.Holder(source="org", package=other, install_id="install-0",
+                                      scope_subject="org")
+    assert not any(s.startswith("INSERT") for s, _ in db.calls)
+    same = _FakeDb(held=(("fields", "task:warranty_end", "install-0", APP, "org", "org"),))
+    assert _run(store.install(same, **_args(contributions=claim))).id == "install-1"
+    # The same field key on another record kind is another key.
+    free = _FakeDb(held=(("fields", "crm.deal:warranty_end", "install-0", other, "org", "org"),))
+    assert _run(store.install(free, **_args(contributions=claim))).id == "install-1"
+
+
+def test_a_fields_key_that_a_system_package_holds_stays_with_it(monkeypatch) -> None:
+    """No system file holds a ``fields`` key today. When one does, the store
+    refuses each install that claims it, also with no other holder."""
+    from acb_common.app_manifests.shell_manifest import SystemContribution
+
+    held = SystemContribution(point="fields", key="task:warranty_end", package="projects")
+    monkeypatch.setattr(store, "_system_keys", lambda: {("fields", held.key): held})
+    db = _FakeDb()
+    with pytest.raises(ClaimTaken) as exc:
+        _run(store.install(db, **_args(contributions=[
+            Contribution("fields", "task:warranty_end", {"type": "date"})])))
+    assert exc.value.holder == store.Holder(source="system", package="projects")
+    assert not any(s.startswith("INSERT") for s, _ in db.calls)
+    assert "fields" not in store.MANY_CLAIMS
+
+
 # ── d. The one writer ──────────────────────────────────────────────────────
 
 

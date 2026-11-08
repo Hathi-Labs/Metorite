@@ -1196,3 +1196,89 @@ def test_a_tab_title_is_not_empty_or_blank(title):
     tab = {"id": "plan", "title": title, "cells": [{"view": "board"}]}
     d = _with_pages({"id": "main", "tabs": [tab]})
     assert _at(d, "$.pages[0].tabs[0].title"), validate_manifest(d)
+
+
+# --- the extension fields of `contributes.fields` (PKG-14a-2) ----------------
+
+from acb_common.studio_manifest import HOST_RECORD_KINDS, MAX_HOST_FIELDS  # noqa: E402
+
+_WARRANTY = {"record": "task", "key": "warranty_end", "type": "date", "label": "Warranty end"}
+
+
+def _fields(*entries: dict) -> dict:
+    return doc(contributes={"fields": [copy.deepcopy(e) for e in entries]})
+
+
+def test_an_extension_field_on_each_host_record_kind_is_valid() -> None:
+    entries = [{**_WARRANTY, "record": kind} for kind in HOST_RECORD_KINDS]
+    entries.append({"record": "crm.deal", "key": "tier", "type": "select",
+                    "options": ["Gold", "Silver"], "many": False})
+    assert validate_manifest(_fields(*entries)) == []
+
+
+@pytest.mark.parametrize("record", ["crm.leads", "Task", "project", "", None, 3, ["task"]])
+def test_an_unknown_record_kind_is_refused(record) -> None:
+    one(_fields({**_WARRANTY, "record": record}), "$.contributes.fields[0].record",
+        contains="record kind")
+
+
+def test_an_entry_with_no_record_kind_is_refused() -> None:
+    entry = {k: v for k, v in _WARRANTY.items() if k != "record"}
+    one(_fields(entry), "$.contributes.fields[0].record", contains="record kind")
+
+
+@pytest.mark.parametrize("key", ["Warranty", "1st", "a-b", "x" * 49, "", None])
+def test_a_bad_field_key_is_refused(key) -> None:
+    one(_fields({**_WARRANTY, "key": key}), "$.contributes.fields[0].key", contains="field key")
+
+
+@pytest.mark.parametrize("kind", ["relation", "file"])
+def test_a_refused_type_is_refused(kind) -> None:
+    errs = validate_manifest(_fields({**_WARRANTY, "type": kind}))
+    assert any(e.path == "$.contributes.fields[0].type" and "cannot have the type" in e.message
+               for e in errs), errs
+
+
+def test_an_unknown_type_is_refused() -> None:
+    one(_fields({**_WARRANTY, "type": "warranty"}), "$.contributes.fields[0].type",
+        contains="unknown")
+
+
+@pytest.mark.parametrize("part", ["required", "hot", "to"])
+def test_a_refused_part_is_refused_also_when_false(part) -> None:
+    value = "visit" if part == "to" else False
+    errs = validate_manifest(_fields({**_WARRANTY, part: value}))
+    assert any(e.path == f"$.contributes.fields[0].{part}" and "cannot set" in e.message
+               for e in errs), errs
+
+
+def test_an_unknown_key_of_an_entry_is_refused() -> None:
+    one(_fields({**_WARRANTY, "feature": "studio"}), "$.contributes.fields[0].feature",
+        contains="not a key")
+
+
+def test_a_duplicate_in_one_manifest_is_refused_and_two_kinds_may_share_a_key() -> None:
+    one(_fields(_WARRANTY, _WARRANTY), "$.contributes.fields[1].key", contains="twice")
+    assert validate_manifest(_fields(_WARRANTY, {**_WARRANTY, "record": "crm.deal"})) == []
+
+
+def test_more_than_the_cap_is_refused() -> None:
+    entries = [{**_WARRANTY, "key": f"f{i}"} for i in range(MAX_HOST_FIELDS + 1)]
+    one(_fields(*entries), "$.contributes.fields", contains=str(MAX_HOST_FIELDS))
+    assert validate_manifest(_fields(*entries[:MAX_HOST_FIELDS])) == []
+
+
+def test_a_long_label_and_bad_options_are_refused() -> None:
+    one(_fields({**_WARRANTY, "label": "x" * 121}), "$.contributes.fields[0].label",
+        contains="label")
+    one(_fields({**_WARRANTY, "type": "select"}), "$.contributes.fields[0].options",
+        contains="option")
+
+
+def test_every_extension_field_error_is_one_short_sentence() -> None:
+    bad = {"record": "crm.x", "key": "Bad", "type": "relation", "hot": True, "x": 1}
+    errs = validate_manifest(_fields(bad, bad))
+    assert errs
+    for e in errs:
+        assert e.path.startswith("$.contributes.fields"), e
+        assert words(e.message) <= 25, e.message

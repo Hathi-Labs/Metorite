@@ -16,6 +16,13 @@ answers 409 ``already_installed``.
 **Jobs (PKG-8c).** Each ``shell.jobs`` item with a verb and a view adds a
 ``jobs`` claim, keyed ``<app id>:<view>``. See :func:`_job_claims`.
 
+**Fields (PKG-14a-2).** Each entry of ``contributes.fields`` adds a
+``fields`` claim, keyed ``<record kind>:<field key>``, with the declaration
+as the payload (``package_host.md`` §8.3). See :func:`_field_claims`. A bad
+entry raises :class:`store.ContributionRefused`, and the publish or the
+install writes nothing. The conflict rule of §4 is the rule of the store,
+so a taken key raises :class:`store.ClaimTaken` (409, PKG-Q29).
+
 **One nav claim.** The install claims one ``nav`` key: the href of the app,
 :func:`app_href`. The payload holds the href, the name of the manifest as
 the label, the icon of a package card in the Studio library, and the
@@ -43,14 +50,18 @@ one place that decides who may call this.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
 from acb_auth.permissions import normalize_grant_subject
+from acb_common.studio_fields import NAME_PATTERN, FieldError, FieldSpec
+from acb_common.studio_manifest import HOST_FIELD_KEYS, MAX_HOST_FIELDS
 
+from gateway.package_host import field_values as fv
 from gateway.package_host import store
-from gateway.package_host.store import Contribution, Install
+from gateway.package_host.store import Contribution, ContributionRefused, Install
 
 #: The path of an installed Studio app. The workbench route
 #: ``src/app/apps/[id]/page.tsx`` serves it.
@@ -65,6 +76,8 @@ UNTITLED = "Untitled app"
 MAX_JOBS = 20
 #: The longest verb or app name in a job payload, in characters.
 MAX_LABEL_CHARS = 120
+#: The shape of a field key, as ``studio_fields`` checks it.
+_FIELD_KEY_RE = re.compile(NAME_PATTERN, re.ASCII)
 #: The bidi controls (U+202A to U+202E and U+2066 to U+2069).
 _BIDI = frozenset(chr(c) for c in (*range(0x202A, 0x202F), *range(0x2066, 0x206A)))
 
@@ -129,18 +142,90 @@ def _job_claims(app_id: str, manifest: Mapping[str, Any]) -> list[Contribution]:
     return out
 
 
-def claims_of(app_id: str, manifest: Mapping[str, Any]) -> list[Contribution]:
-    """The claims of a published Studio app: one ``nav`` entry (PKG-8a) and
-    one ``jobs`` entry for each job of the manifest (PKG-8c).
+def _declaration(field: FieldSpec) -> dict[str, Any]:
+    """The payload of a ``fields`` claim: the field spec without its key
+    (§8.3). It holds only the parts that ``field_values.declared_field``
+    reads, so the store and the door parse it back to the same field."""
+    out: dict[str, Any] = {"type": field.type, "many": field.many}
+    if field.label is not None:
+        out["label"] = field.label
+    if field.options is not None:
+        out["options"] = list(field.options)
+    return out
 
-    PKG-8d adds the cards, the search and the needs.
+
+def _field_claims(manifest: Mapping[str, Any]) -> list[Contribution]:
+    """The ``fields`` claims of ``contributes.fields`` (PKG-14a-2, §8.3).
+
+    Each entry gives one claim, in the order of the manifest. The key is
+    ``<record>:<key>``, and the record is one of
+    ``field_values.HOST_RECORD_KINDS``. The payload is :func:`_declaration`
+    of ``field_values.declared_field``, the one parse of a declaration.
+    ``validate_manifest`` refuses a bad entry at the save and at the
+    publish. This function checks each entry again, because the install
+    route reads a stored manifest. Unlike a bad job, a bad entry is not
+    skipped: it raises :class:`ContributionRefused` (422), because a
+    skipped field would hide a value without a word.
+    """
+    contributes = manifest.get("contributes")
+    if not isinstance(contributes, Mapping):
+        return []
+    entries = contributes.get(fv.FIELDS_POINT)
+    if entries is None:
+        return []
+    if not isinstance(entries, list):
+        raise ContributionRefused("bad_fields", "The fields of `contributes` must be a list.")
+    if len(entries) > MAX_HOST_FIELDS:
+        raise ContributionRefused(
+            "too_many_fields", f"A package declares at most {MAX_HOST_FIELDS} extension fields.")
+    out: list[Contribution] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ContributionRefused("bad_field", "Each extension field must be a JSON object.")
+        record, key = entry.get("record"), entry.get("key")
+        if not isinstance(record, str) or record not in fv.HOST_RECORD_KINDS:
+            raise ContributionRefused(
+                "bad_record_kind",
+                f"The record kind must be one of {', '.join(fv.HOST_RECORD_KINDS)}.")
+        if not isinstance(key, str) or not _FIELD_KEY_RE.fullmatch(key):
+            raise ContributionRefused(
+                "bad_field_key",
+                "A field key is lower-case letters, digits and _, a letter first, at most 48.")
+        extra = sorted(str(k) for k in entry if k not in HOST_FIELD_KEYS)
+        if extra:
+            raise ContributionRefused(
+                "bad_field", f"Field `{key}` holds `{extra[0][:48]}`, and an extension field "
+                "cannot hold it.")
+        try:
+            field = fv.declared_field(
+                key, {k: v for k, v in entry.items() if k not in ("record", "key")})
+        except FieldError as exc:
+            raise ContributionRefused("bad_field", str(exc)) from None
+        claim = fv.claim_key(record, key)
+        if claim in seen:
+            raise ContributionRefused(
+                "duplicate_field", f"The manifest declares the field `{claim}` twice.")
+        seen.add(claim)
+        out.append(Contribution(
+            point=fv.FIELDS_POINT, key=claim, payload=_declaration(field), position=len(out)))
+    return out
+
+
+def claims_of(app_id: str, manifest: Mapping[str, Any]) -> list[Contribution]:
+    """The claims of a published Studio app: one ``nav`` entry (PKG-8a), one
+    ``jobs`` entry for each job of the manifest (PKG-8c), and one ``fields``
+    entry for each extension field (PKG-14a-2).
+
+    PKG-8d adds the cards, the search and the needs. A bad extension field
+    raises :class:`ContributionRefused`.
     """
     name = manifest.get("name")
     label = name.strip() if isinstance(name, str) and name.strip() else UNTITLED
     href = app_href(app_id)
     nav = Contribution(point="nav", key=href, payload={
         "href": href, "label": label, "icon": NAV_ICON, "feature": NAV_FEATURE})
-    return [nav, *_job_claims(app_id, manifest)]
+    return [nav, *_job_claims(app_id, manifest), *_field_claims(manifest)]
 
 
 async def keep_private_install(
