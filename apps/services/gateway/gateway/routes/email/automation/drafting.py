@@ -1824,6 +1824,12 @@ def _salutation_name(recipient_name: str) -> str:
     tokens = [t for t in tokens if t]
     if not tokens:
         return ""
+    # A first token with no letter (an emoji, a symbol, digits) is not a name.
+    # When no token has a letter, the tokens stay as they are.
+    for skip, token in enumerate(tokens):
+        if any(ch.isalpha() for ch in token):
+            tokens = tokens[skip:]
+            break
     lead: list[tuple[str, honorifics.Honorific]] = []
     idx = 0
     while idx < len(tokens) - 1:
@@ -1831,6 +1837,20 @@ def _salutation_name(recipient_name: str) -> str:
         if h is None:
             break
         lead.append((tokens[idx], h))
+        idx += 1
+    # A spoken suffix form (Sir, Madam, Sahab, Ji) before a name is no name. It
+    # is skipped like a title and not shown. Only the forms in the catalogue set
+    # are skipped, as a kinship form can be a given name (Bhau, Dada). A name
+    # that is only the form stays too (see below).
+    while idx < len(tokens) - 1:
+        lead_suffix = honorifics.find_suffix(tokens[idx])
+        if (
+            lead_suffix is None
+            or lead_suffix.form not in honorifics.LEADING_SKIPPED_SUFFIX_FORMS
+            or honorifics.find_suffix(tokens[idx + 1]) is not None
+            or honorifics.find_prefix(tokens[idx + 1]) is not None
+        ):
+            break
         idx += 1
     last_title = honorifics.find_prefix(tokens[idx])
     if last_title is not None:

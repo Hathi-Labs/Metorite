@@ -1,6 +1,6 @@
 ---
 slug: kit/team-setup
-version: 3
+version: 4
 title: Kit: set up a team of people and agents on one board
 summary: The concrete setup for several people who each run one or more agents on one Metorite board.
 audience: both
@@ -50,9 +50,10 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 
 - Plan the work before anyone builds: a goal, its epics and their slices, with an approval at each gate (`kit/plan-the-work`).
 - Give each person a set of projects. A project has one owner at a time.
-- `my_work` lists only the tasks that are assigned to the member of the connection, and the runs of that connection. So assign a task to the person whose agent must build it.
+- `my_work` lists only the tasks that are assigned to the member of the connection, and the runs of that connection. So assign a task to the person whose agent must build it. `list_members` gives the addresses that you may assign.
 - Two sessions never hold one task. A refusal with `409 task_held` means another session holds it. Take the next row.
-- An agent can assign only a person who can already open the task. Other assignments are made in Metorite by a person.
+- An agent can assign only a person who can already open the task. `list_members` lists exactly those people for a project. Other assignments are made in Metorite by a person.
+- Before you make a tag, read `list_tags`, and reuse a name that exists. Two agents then do not make near-duplicate tags.
 - Use one worktree for each session. Never run two sessions in one checkout.
 
 ## The session loop
