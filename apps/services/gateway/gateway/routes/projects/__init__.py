@@ -56,6 +56,7 @@ from gateway.routes.projects import bulk as _bulk  # noqa: F401
 from gateway.routes.projects import calendar as _calendar  # noqa: F401
 from gateway.routes.projects import candidates as _candidates  # noqa: F401
 from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F401
+from gateway.routes.projects import cycles as _cycles  # noqa: F401
 from gateway.routes.projects import decisions as _decisions  # noqa: F401
 from gateway.routes.projects import delta as _delta  # noqa: F401
 from gateway.routes.projects import epic_contract as _epic_contract  # noqa: F401

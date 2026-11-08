@@ -409,9 +409,13 @@ STARTED_CATEGORY = "in_progress"
 #: they monkeypatch ``record_activity`` and so never exercised the vocabulary
 #: it guards. A tuple that mirrors a migration by hand needs a test that reads
 #: the migration; anything else is a comment claiming to be an invariant.
+#:
+#: `cycle_transfer` (WS-39 SP-1, the cycle migration): the logged move of one
+#: unfinished task at the close of a cycle (`cycles.close_cycle`).
 ACTIVITY_TYPES: tuple[str, ...] = (
     "comment", "status_change", "field_change", "link", "assignment",
     "agent_run", "sync", "system", "attachment", "mention", "merge",
+    "cycle_transfer",
 )
 
 #: `pm_projects.source` / `pm_tasks.source`. Tasks carry two extra origins.

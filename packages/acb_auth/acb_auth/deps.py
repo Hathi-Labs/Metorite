@@ -567,15 +567,19 @@ async def _claim_write(
             )
             if not fresh:
                 return "replay"
+            # MCP-G20: the live cap and window, read at each write
+            # (`AGENT_WRITE_CAP`, `AGENT_WRITE_WINDOW_S`). Each signed write
+            # counts once, so each item of `update_tasks` counts once too.
+            cap, window = agent_oauth.write_cap(), agent_oauth.write_window_s()
             counter = tenant_redis.key(agent_oauth.WRITE_CAP_NAMESPACE, connection_id)
             count = int(await client.incr(counter))
             if count == 1:
-                await client.expire(counter, agent_oauth.WRITE_WINDOW_S)
-            if count > agent_oauth.WRITE_CAP:
+                await client.expire(counter, window)
+            if count > cap:
                 left = int(await client.ttl(counter))
                 if left < 0:
-                    await client.expire(counter, agent_oauth.WRITE_WINDOW_S)
-                    left = agent_oauth.WRITE_WINDOW_S
+                    await client.expire(counter, window)
+                    left = window
                 over = max(left, 1)
     except Exception as exc:
         # Every failure of the store fails closed as the 503: an outage

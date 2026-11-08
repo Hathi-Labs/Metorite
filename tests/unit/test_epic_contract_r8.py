@@ -883,3 +883,21 @@ class TestTheRepairs:
                          signed=None)
         assert ok.status_code == 200, ok.text
         assert float(_stored(live, epic).appetite_credits) == 40.0
+
+    async def test_an_item_of_update_tasks_takes_a_contract(self, live):
+        """MCP-G20 merged after SP-8a: each item of ``update_tasks`` is a call
+        of ``update_task``, so an item may hold ``epic_contract``. The item of
+        an epic lands, and the item of a plain task is refused alone."""
+        epic = _epic(live, "sp8 bulk epic")
+        plain = live.task(live.team, live.s.todo, "sp8 bulk plain")
+        result = await _mcp(live, "write", "update_tasks", {"updates": [
+            {"task_id": epic, "expected_version": await _version(live, epic),
+             "epic_contract": {"acceptance": _checks(3), "outcome": "Bulk."}},
+            {"task_id": plain, "expected_version": await _version(live, plain),
+             "epic_contract": {"acceptance": _checks(3)}},
+        ]})
+        assert result["isError"] is False, result
+        rows = result["structuredContent"]["results"]
+        assert [r["ok"] for r in rows] == [True, False]
+        assert rows[1]["error"] == tools.TEXT_NOT_EPIC
+        assert _stored(live, epic).outcome == "Bulk." and _stored(live, plain) is None
