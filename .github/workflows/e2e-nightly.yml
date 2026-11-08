@@ -26,10 +26,12 @@ jobs:
     name: "Nightly browser suite ${{ matrix.shard }}/3"
     # Main only: a dispatch from another branch gets a hosted runner.
     runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && github.repository == 'Hathi-Labs/Metorite' && github.ref == 'refs/heads/main') && 'metorite-box' || 'ubuntu-24.04' }}
-    if: "github.event_name != 'pull_request'"
     timeout-minutes: 40
     strategy:
       fail-fast: false
+      # One shard at a time: each shard starts `next dev -p 3101`, and the box
+      # runners share one host network, so parallel shards would collide.
+      max-parallel: 1
       matrix:
         shard: [1, 2, 3]
     defaults:
