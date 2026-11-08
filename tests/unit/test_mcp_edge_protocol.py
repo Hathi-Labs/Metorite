@@ -1608,7 +1608,7 @@ class TestGetTask:
         assert task["assignees"] == ["a@x.test"]
         flat = json.dumps(body)
         for dropped in ("clickup", "lead", "time_spent_mins", "view_position", "merged_",
-                        "source", "link_id", "progress", "blocked_by"):
+                        "source", "progress", "blocked_by"):
             assert dropped not in flat, dropped
 
     async def test_f1_the_task_has_a_url_and_a_short_id_for_the_pull_request(self, armed):
@@ -1646,9 +1646,11 @@ class TestGetTask:
         assert [(c.kind, c.value) for c in body] == [("uuid", form["example_task"])]
 
     async def test_a_link_id_is_the_other_task(self, armed):
+        """``id`` is the OTHER task. SW-16a adds ``link_id``, the link row, which
+        ``remove_task_link`` takes."""
         link = _structured(await _tool("get_task", {"task_id": T_ONE}))["links"][0]
         assert link["id"] == T_OTHER
-        assert _uuid(8888) not in json.dumps(link)
+        assert link["link_id"] == _uuid(8888)
 
     async def test_free_text_and_custom_fields_follow_the_rules(self, armed):
         body = _structured(await _tool("get_task", {"task_id": T_ONE}))

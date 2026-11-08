@@ -557,9 +557,11 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
 #: Ten since WS-CRM CRM-M1: ``crm_change_history`` is in the pack, and not in
 #: the orchestrator's base, because the base was at the 110-tool cap beside
 #: the email and Projects core packs (``test_projects_packs.py``).
+#: Eleven since WS-CRM CRM-M3a: ``crm_create_pipeline`` (admin, behind
+#: ``CRM_PIPELINES_ORGS``). The owner declares 23 tools.
 CRM_TOOLS = (
-    "convert_lead", "create_lead", "crm_change_history", "crm_search_notes",
-    "crm_update_record", "crm_update_task",
+    "convert_lead", "create_lead", "crm_change_history", "crm_create_pipeline",
+    "crm_search_notes", "crm_update_record", "crm_update_task",
     "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
     "update_deal_status",
 )
@@ -583,8 +585,9 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     orchestrator does not hold it. Mutation: add a tool the owner lacks, or
     drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
-    # 24, not 22, since WS-CRM CRM-M2b: crm_update_record and crm_update_task.
-    assert len(scope) == 24, "non-vacuity: the owner still declares 24 tools"
+    # 25: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
+    # and crm_create_pipeline of CRM-M3a.
+    assert len(scope) == 25, "non-vacuity: the owner declares 25 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
@@ -636,8 +639,9 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email_address", "owner_email", "as_user", "impersonate"}
     tools = tp.owner_tools("crm-records", _crm_module())
-    # 12 since WS-CRM CRM-M2b (10 since CRM-M1): the record edit and task change.
-    assert len(tools) == 12
+    # 13: 10 since CRM-M1, 2 of CRM-M2b (the record edit and the task
+    # change) and 1 of CRM-M3a (crm_create_pipeline).
+    assert len(tools) == 13
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

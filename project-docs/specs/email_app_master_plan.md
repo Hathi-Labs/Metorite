@@ -14217,7 +14217,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 | PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
 | PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). ✅ Merged #1030 (2026-10-15). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
-| PR-G4 | **EM-G11c2** — no background write without a member choice. 🔨 Built NARROWED, not merged (2026-10-15, branch `gmail-bg-writes`) | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
+| PR-G4 | **EM-G11c2** — no background write without a member choice. 🔨 Built NARROWED, not merged (2026-10-15, branch `gmail-bg-writes`). Owner decision 2026-11-08 (task 2267): ON by default in setup, and a notice for existing Gmail mailboxes, built on branch `mt-b9f7225f-gmail-autorun-default` | 3 | 🟢 AGENT-SAFE · R8 · live for Outlook | M, about 500 | §12.3.13.7 |
 | PR-G5 | **EM-G11d** — UMCC: one frame, fewer tools, an eval set. ✅ Merged NARROWED #1060 (2026-10-16) | 4 | 🟢 AGENT-SAFE · security review | L, about 600 | §12.3.13.8 |
 | PR-G6 | **EM-G11e** — UMCC: the detector, dark | 4 | 🟢 AGENT-SAFE build. 🔴 OWNER-GATE for the vendor and the API (Q-GM-9). 🔴 `enforcement-flip` for `EMAIL_INJECTION_SCAN` | M, about 450 | §12.3.13.8 |
 | PR-G7 | **EM-G11f1** — one mailbox teardown, with the revoke and the filters. ✅ Merged NARROWED #1006 (2026-10-14) | 6 | 🟢 AGENT-SAFE · security review · R8 | M, about 550 | §12.3.13.9 |
@@ -14989,6 +14989,24 @@ background path. Each line names the code of record.
 **Open after the build.** The History has no Approve button. `approveExecution` in `lib/api.ts`
 has no caller, so a member approves a proposal through the email agent tool only. Q-GM-12 stays
 open, and the Outlook live check runs after the merge.
+
+**Owner decision, 2026-11-08 (task 2267).** Auto-run is ON by default when a member sets up rules.
+Three points bind.
+
+1. **Setup.** In the rules step, "Run my rules on new mail" starts ON when the mailbox has no stored
+   choice. The step saves nothing when it loads. "Done" saves `auto_run = true`. A move of the switch
+   saves at once, so OFF before "Done" saves `false`. A stored choice shows as it is.
+2. **Existing Gmail mailboxes.** A Gmail mailbox with at least one enabled rule and no stored choice
+   shows a notice in the mail pane: "Your N rules are not sorting new mail in the address." "Turn
+   on" saves `auto_run = true` through the settings PUT. "Not now" is kept for each mailbox in
+   `localStorage`. A member who stored OFF sees no notice. Outlook and IMAP never see it, because a
+   missing row is ON for them. A failed save says that nothing changed and to press "Turn on" again.
+3. **Unchanged.** `rules.auto_run_on` and `AUTO_RUN_OFF_WITHOUT_ROW` stay. A Gmail mailbox with no
+   stored choice still makes no background write. That is the Google-review promise of this slice.
+
+`GET /email/assistant/settings` gives the new read-only field `auto_run_chosen`. It is true when a
+settings row exists. The PUT ignores it, and its answer gives true. Fences:
+`tests/unit/test_email_auto_draft_defaults.py` and `autoRunNotice.test.ts`.
 
 ##### 12.3.13.8 EM-G11d and EM-G11e — the Untrusted Mail Content Control (UMCC) (PR-G5, PR-G6)
 
