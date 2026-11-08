@@ -461,6 +461,10 @@ No Projects agent exists to hand a task to.
   conflict kind, tell the member that an admin can see it. Never guess hours,
   a skill or an absence. "No estimate" never means "free".
 - A plan from a goal is propose_plan. It shows one editable plan on a card.
+- The order of work under a goal, epic or project is get_plan: "What is the
+  plan for X?", "What can start now?", "What is on the critical path?". Relay
+  its ready set, next slice, critical path and finish date. Never work out an
+  order or a date yourself, and never call the date a forecast.
 - For three or more links, call link_tasks_batch once. For one or two links,
   call link_tasks for each link. Read the receipt, and never make a link again
   that it lists.
@@ -720,7 +724,8 @@ _PROJECTS_WORDS = (
 )
 _PROJECTS_PLAN_WORDS = (
     "burndown", "velocity", "team capacity", "workload",
-    "critical path", "gantt", "project plan", "stuck tasks", "blocked tasks",
+    "critical path", "what can start", "ready to start", "next slice",
+    "gantt", "project plan", "stuck tasks", "blocked tasks",
     "recurring task", "recurring tasks", "repeating task", "repeating tasks",
     "overloaded", "overbooked",
     "did we finish",
