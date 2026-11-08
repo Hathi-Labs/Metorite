@@ -94,8 +94,9 @@ class TestThePlanRoute:
                                   "date": "2026-11-03"}
         assert body["missing"]["no_owner"] == 4
         assert body["hidden"] == {"slices": 0, "outside_blockers": 0}
-        # Ids and numbers only: no title is in the answer.
-        assert "pjp6a tree" not in r.text
+        # SP-12: a title is only in `labels`, for a visible task that the answer names.
+        assert body["labels"][ids["a"]]["title"] == "pjp6a tree a"
+        assert "pjp6a tree" not in json.dumps({k: v for k, v in body.items() if k != "labels"})
 
     async def test_a_hidden_slice_is_counted_and_not_named(self, live):
         ids = _tree(live, "pjp6a hidden")
@@ -114,14 +115,9 @@ class TestThePlanRoute:
         assert secret not in r.text and "pjp6a secret" not in r.text
         assert body["critical_path"] == [ids["a"], ids["b"], ids["c"]]
 
-    async def test_a_pinned_agent_is_narrowed(self, live, monkeypatch):
-        # The route is not on the MCP edge allowlist yet (PJP-6b adds it with the
-        # tool). The test opens it for this one test, to prove the narrowing that
-        # the one visibility helper gives a signed agent.
-        from acb_auth import agent_oauth
-
-        monkeypatch.setattr(
-            agent_oauth, "MCP_ROUTES", agent_oauth.MCP_ROUTES | {("GET", PATH)})
+    async def test_a_pinned_agent_is_narrowed(self, live):
+        # The route is on the MCP edge allowlist (SP-12). This proves the
+        # narrowing that the one visibility helper gives a signed agent.
         _pinned(live)
         ids = _tree(live, "pjp6a pin")
         outside = live.task(live.other, live.s.other, "pjp6a pin outside")
@@ -178,10 +174,96 @@ class TestThePlanRoute:
         assert body["critical_path"] == [] and body["waves"] == []
 
 
-def test_the_route_is_in_the_manifest_without_a_tool():
+def test_the_route_is_in_the_manifest_with_the_chat_tool():
     from skill_projects import manifest
 
     rows: list[Any] = [r for r in manifest.MANIFEST
                        if (r.method, r.path) == ("GET", PATH)]
     assert len(rows) == 1
-    assert rows[0].cls == "X" and rows[0].tool == "" and "PJP-6b" in rows[0].reason
+    assert (rows[0].tool, rows[0].cls) == ("get_plan", "A")
+
+
+def _epic_of_six(live, label: str) -> dict[str, str]:
+    """An epic with 6 slices and 5 `blocks` links (SP-12): a -> b, a -> c,
+    b -> d, c -> d, d -> e. The slice f stands alone. b is the long way."""
+    epic = live.task(live.team, live.s.todo, f"{label} epic")
+    ids = {"epic": epic}
+    for key, mins in (("a", 60), ("b", 240), ("c", 30), ("d", 60), ("e", 60), ("f", 30)):
+        ids[key] = _under(live, epic, live.team, live.s.todo, f"{label} {key}", mins)
+    for src, dst in (("a", "b"), ("a", "c"), ("b", "d"), ("c", "d"), ("d", "e")):
+        _block(live, ids[src], ids[dst])
+    return ids
+
+
+async def _plan(live, name: str, root: str) -> dict[str, Any]:
+    return await t._mcp(live, name, "get_plan", {"root_task_id": root})
+
+
+class TestGetPlanThroughTheEdge:
+    """SP-12: the MCP tool ``get_plan`` over the real edge and the real gateway.
+
+    Mutations (R7). ``E`` is ``apps/services/agent_edge/agent_edge``.
+
+    * S1. ``E/tools.py`` ``_get_plan``: copies ``waves`` unsorted from a second
+      sort of its own. ``test_an_epic_of_six_slices_and_five_links``.
+    * S2. ``packages/acb_auth/acb_auth/agent_oauth.py``: the pair leaves
+      ``MCP_ROUTES``. Every test here fails with the not-found text.
+    * S3. ``E/tools.py`` ``_get_plan``: the title leaves as a bare string.
+      ``test_an_epic_of_six_slices_and_five_links``.
+    """
+
+    pytestmark = _DB_GATE
+
+    async def test_an_epic_of_six_slices_and_five_links(self, live):
+        ids = _epic_of_six(live, "sp12 six")
+        result = await _plan(live, "read", ids["epic"])
+        assert result["isError"] is False, result
+        body = result["structuredContent"]
+        assert body["root_task_id"] == ids["epic"] and body["slices"] == 6
+        assert sorted(body["ready"]) == sorted([ids["a"], ids["f"]])
+        assert [sorted(w) for w in body["waves"]] == [
+            sorted([ids["a"], ids["f"]]), sorted([ids["b"], ids["c"]]), [ids["d"]], [ids["e"]]]
+        assert body["critical_path"] == [ids["a"], ids["b"], ids["d"], ids["e"]]
+        assert body["slack"][ids["c"]] > 0 and body["slack"][ids["b"]] == 0
+        assert body["next_slice"] == ids["a"]
+        assert body["finish"]["mins"] == (60 + 240 + 60 + 60) + 4 * 60
+        assert body["finish"]["date"] is not None
+        assert body["hidden"] == {"slices": 0, "outside_blockers": 0}
+        # A title leaves as untrusted text, and only for a task the answer names.
+        assert body["labels"][ids["a"]]["title"] == {"untrusted_text": "sp12 six a"}
+        assert ids["c"] not in body["labels"]
+        # No 50% or 85% forecast key.
+        assert not {"p50", "p85", "forecast"} & set(body)
+
+    async def test_a_hidden_slice_is_counted_and_not_named(self, live):
+        ids = _epic_of_six(live, "sp12 hidden")
+        seeder = live.seeder
+        hidden_project = seeder.project("sp12 hidden project", in_space=True)
+        for node in (hidden_project, seeder.root(hidden_project)):
+            seeder.one("DELETE FROM pm_project_grants WHERE project_id = CAST(:p AS uuid)"
+                       " AND subject = :s RETURNING project_id", p=node, s=w.MEMBER)
+        status = seeder.status(hidden_project, "To do", "todo", 0)
+        secret = _under(live, ids["epic"], hidden_project, status, "sp12 secret slice", 10)
+        _block(live, ids["e"], secret)
+        result = await _plan(live, "read", ids["epic"])
+        assert result["isError"] is False, result
+        text_out = json.dumps(result)
+        assert result["structuredContent"]["hidden"]["slices"] == 1
+        assert secret not in text_out and "sp12 secret" not in text_out
+
+    async def test_a_pinned_agent_outside_its_pin_gets_the_not_found_text(self, live):
+        from agent_edge import tools
+
+        _pinned(live)
+        outside_epic = live.task(live.other, live.s.other, "sp12 pin outside epic")
+        result = await _plan(live, "pinned", outside_epic)
+        assert result["isError"] is True
+        assert result["content"][0]["text"] == tools.TEXT_TASK_NOT_FOUND
+        made_up = await _plan(live, "pinned", str(uuid.uuid4()))
+        assert made_up["content"] == result["content"]
+
+    async def test_a_read_only_connection_can_call_it(self, live):
+        ids = _epic_of_six(live, "sp12 readonly")
+        result = await _plan(live, "read", ids["epic"])
+        assert result["isError"] is False, result
+        assert result["structuredContent"]["critical_path"][0] == ids["a"]
