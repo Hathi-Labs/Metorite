@@ -99,6 +99,8 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/agent/chat", "chat"),
     ("/api/agent/cancel", "chat"),
     ("/api/agent/respond-input", "chat"),
+    # projects_ai_chat.md §31 VOX-1: the mic of the composer.
+    ("/api/agent/transcribe", "chat"),
     ("/api/agent/workspace", "chat"),
     ("/api/agent/artifacts", "chat"),
     ("/api/agent", "agents"),
@@ -556,6 +558,14 @@ EXEMPT: dict[str, tuple[str, str]] = {
     "POST /api/agent/chat": (
         "chat",
         "Sends a turn to the assistant. The member does it by typing in the chat.",
+    ),
+    "GET /api/agent/transcribe": (
+        "chat",
+        "Reads whether the message box shows the mic (VOX-1). It is part of the chat's own composer.",
+    ),
+    "POST /api/agent/transcribe": (
+        "chat",
+        "Turns the member's spoken words into text in the message box (VOX-1). The member then sends it as a turn.",
     ),
     "POST /api/agent/respond-input": (
         "chat",
