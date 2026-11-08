@@ -1272,6 +1272,7 @@ export function TaskBody({
                   <SelectButton
                     label="Type"
                     layer="top"
+                    align="end"
                     widthClass="w-full"
                     value={task.type_id ?? ""}
                     disabled={busy || typesFor !== task.project_id}

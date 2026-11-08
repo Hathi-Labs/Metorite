@@ -205,18 +205,10 @@ export function panelEscape(
     altKey?: boolean;
     shiftKey?: boolean;
   },
-  target?: {
-    tagName?: string;
-    value?: string;
-    isContentEditable?: boolean;
-    getAttribute?: (name: string) => string | null;
-  } | null,
+  target?: { tagName?: string; value?: string; isContentEditable?: boolean } | null,
 ): PanelEscape {
   if (event.key !== "Escape") return null;
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null;
-  // An open select keeps focus on its trigger and closes itself on Escape.
-  // The panel leaves that key alone, or one press would close both.
-  if (target?.getAttribute?.("aria-expanded") === "true") return null;
   const tag = (target?.tagName ?? "").toLowerCase();
   const editable =
     target?.isContentEditable === true || tag === "input" || tag === "textarea";
