@@ -605,6 +605,11 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
         "anchor": "completed",
     },
     ("POST", "/projects/notifications/read", "all"): {"all_unread": True},
+    # SP-8a: three checks, the least that a contract takes.
+    ("PUT", "/projects/tasks/{task_id}/epic-contract", "epic_contract"): {
+        "task_id": UUID,
+        "acceptance": "The page renders\nThe R8 suite passes\nThe owner approves",
+    },
     ("GET", "/projects/candidates", "title"): {"title": "Weld the frame"},
     ("GET", "/projects/tasks/{task_id}/timeline", "kind"): {"task_id": UUID, "kind": "comments"},
     ("POST", "/projects/nodes", "kind"): {"name": "Q4 launch", "kind": "folder"},

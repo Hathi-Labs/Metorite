@@ -722,25 +722,30 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # WS-ALN ALN-4: the authority page of a project. It has its own pack, because
     # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
-    # measured turns.
+    # measured turns. SP-8a: the contract of an epic joins it, for the same
+    # reason. The plan pack has one tool of room in the sticky-pack case of
+    # test_pack_room.py, and an epic contract is the rules of done of an epic.
     "projects-authority": {
         "label": "Projects authority page",
         "summary": (
-            "The authority page of a project: read which pages are pinned "
-            "as the rules of the project, pin one, or remove a pin."
+            "The rules of a project and of an epic: read which pages are "
+            "pinned as the rules of a project, pin one or remove a pin, and "
+            "set the contract of an epic."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
             "authority page of a project, for the main assistant to load "
             "when a turn names the authority page. The pack holds the tools "
             "to read the pins of a project, to pin a page and to remove a "
-            "pin. Each change asks the member first. A run loads a pack "
+            "pin, and the tool that sets the contract of an epic. Each "
+            "change asks the member first. A run loads a pack "
             "only where tool packs are on, so until then this switch has "
             "no effect."
         ),
         "tools": (
             "pin_authority",
             "project_authorities",
+            "set_epic_contract",
             "unpin_authority",
         ),
         "owner": "projects-assistant",

@@ -1476,6 +1476,11 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "reopen_reminder": _pin("reminder_id"),
     "reschedule_reminder": _pin("reminder_id at in_minutes snooze"),
     "promote_reminder": _pin("reminder_id"),
+    # SP-8a: the class B tool of projects-authority. Its card shows each part
+    # of the contract, and it changes no field of the task row.
+    "set_epic_contract": _pin(
+        "task_id acceptance outcome out_of_scope risk_tier appetite_credits "
+        "appetite_review_hours workstream spec_link"),
     # The CRM record writes.
     "create_lead": _pin("lead_name email phone organization_name description"),
     "update_deal_status": _pin("deal_id stage lost_reason"),

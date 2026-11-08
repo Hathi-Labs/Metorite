@@ -131,6 +131,7 @@ from skill_projects.writes import (
     report_save,
     reschedule_reminder,
     resolve_reminder,
+    set_epic_contract,
     set_my_overlay,
     set_recurrence,
     set_reminder,
@@ -252,6 +253,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "file_tasks",
     # Class B — several links between tasks, one card (2026-10-19)
     "link_tasks_batch",
+    # Class B — the contract of an epic, one card (SP-8a)
+    "set_epic_contract",
     # Class B — WS-64 OP-6a, a new area of the member's own
     "create_area",
     # Class B — the rest of the writes (S5)

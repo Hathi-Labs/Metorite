@@ -187,6 +187,8 @@ const WRITE: readonly string[] = [
   "link_tasks_batch",
   // Several edits, a different change for each task, one card with rows.
   "update_tasks",
+  // SP-8a: the contract of an epic, one card.
+  "set_epic_contract",
   "watch",
   "complete",
   "defer",

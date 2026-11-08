@@ -154,6 +154,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   file_tasks: { icon: "MoveRight", label: "Tasks filed" },
   link_tasks_batch: { icon: "Link", label: "Tasks linked" },
   update_tasks: { icon: "PenLine", label: "Tasks updated" },
+  // SP-8a: the contract of an epic, one card.
+  set_epic_contract: { icon: "ClipboardCheck", label: "Epic contract saved" },
   watch: { icon: "Eye", label: "Watching changed" },
   complete: { icon: "CheckCircle2", label: "Task done" },
   defer: { icon: "CalendarClock", label: "Deferred" },

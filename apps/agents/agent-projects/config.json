@@ -123,6 +123,7 @@
     "create_type",
     "edit_comment",
     "set_my_overlay",
+    "set_epic_contract",
     "set_recurrence",
     "update_field",
     "update_status",

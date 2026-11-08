@@ -787,7 +787,7 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: switch is on, and it checks the version and the exact title. ⚠️ The plain
 #: ``DELETE /projects/tasks/{task_id}`` stays OUT of both sets.
 #: WS-55 MCP-G2 adds two pairs. The ``PUT`` of the assignees is the route of
-#: ``set_assignees``, the one ``PUT`` of the set. The task move is the route
+#: ``set_assignees``, the first ``PUT`` of the set. The task move is the route
 #: of the ``parent_task_id`` of ``update_task``, and the route refuses a
 #: signed move to another project.
 #: WS-55 MCP-G1 adds four pairs. The node POST and PATCH are the routes of
@@ -803,6 +803,9 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: SW-16a adds the link pair: the POST and the DELETE of a task link, the
 #: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
 #: the member sees BOTH tasks. SW-16b owns the write fence for these routes.
+#: SP-8a adds the ``PUT`` of the epic contract, the route of the
+#: ``epic_contract`` block of ``update_task``. It replaces the whole contract,
+#: and the route refuses a task that is not an epic.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
@@ -816,6 +819,10 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # SW-16a: `add_task_link` and `remove_task_link`.
     ("POST", "/projects/tasks/{task_id}/links"),
     ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+    # SP-8a: the `epic_contract` block of `update_task`. It replaces the
+    # whole contract of an epic. The gateway refuses a task that is not an
+    # epic (422), and a pinned connection reaches only the epics of its pin.
+    ("PUT", "/projects/tasks/{task_id}/epic-contract"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),
     ("POST", "/projects/tasks/{task_id}/claim"),

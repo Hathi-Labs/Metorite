@@ -537,6 +537,40 @@ async def _timeline_block(task_id: str) -> list[str]:
     return out
 
 
+#: SP-8a. The parts of an epic contract that ``task_detail`` prints, in order.
+_EPIC_LINES: tuple[tuple[str, str], ...] = (
+    ("outcome", "outcome"), ("out_of_scope", "out of scope"),
+    ("risk_tier", "risk tier"), ("appetite_credits", "appetite (credits)"),
+    ("appetite_review_hours", "appetite (review hours)"),
+    ("workstream", "workstream"), ("spec_link", "spec link"),
+)
+
+
+def _epic_contract_block(contract: Any) -> list[str]:
+    """The contract of an epic (SP-8a), or nothing for a task that has none.
+
+    Each part prints, so a model that changes one part can send the rest
+    back: ``set_epic_contract`` replaces the whole contract."""
+    if not isinstance(contract, dict):
+        return []
+    out = ["Epic contract:"]
+    for key, label in _EPIC_LINES:
+        value = contract.get(key)
+        if value in (None, ""):
+            out.append(f"  {label}: (none)")
+        else:
+            out.append(f"  {label}: {data(value) if isinstance(value, str) else value}")
+    for check in contract.get("acceptance") or ():
+        if not isinstance(check, dict):
+            continue
+        mark = "[x]" if check.get("done") else "[ ]"
+        line = f"  check {mark} {data(check.get('text') or '')}"
+        if check.get("evidence"):
+            line += f" (evidence: {data(check['evidence'])})"
+        out.append(line)
+    return out
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_detail(task_id: str) -> str:
     """Everything about one task: fields, assignees, subtasks, links and
@@ -590,6 +624,8 @@ async def task_detail(task_id: str) -> str:
     else:
         if rule:
             out.append(f"  Repeats: {_rule_text(rule)}")
+    # SP-8a: the contract of an epic rides on the task row, so no read more.
+    out.extend(_epic_contract_block(task.get("epic_contract")))
 
     out.extend(await _relations_block(tid))
     out.extend(await _refs_block(tid))

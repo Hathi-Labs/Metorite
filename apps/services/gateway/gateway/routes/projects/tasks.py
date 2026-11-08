@@ -73,6 +73,7 @@ from gateway.routes.projects.core import (
     assert_move_keeps_privacy,
     assert_no_task_cycle,
     assert_not_archived,
+    assert_task_is_epic,
     clean_payload,
     count_where,
     diff_changes,
@@ -113,6 +114,12 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.custom_fields import (
     apply_values,
     load_definitions,
+)
+from gateway.routes.projects.epic_contract import (
+    EpicContractIn,
+    clean_contract,
+    epic_contract_of,
+    save_contract,
 )
 from gateway.routes.projects.filters import (
     UPDATED_AGE_SQL,
@@ -176,6 +183,8 @@ AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
     "project_id", "title", "description", "parent_task_id", "type_id",
     "status_id", "tags", "due_at",
     "importance", "leveraged", "estimate_mins", "start_date", "assignees",
+    # SP-8a: the contract of a new epic, in the create's own transaction.
+    "epic_contract",
 })
 #: The PATCH set is the union of `set_task_status` (`status_id`) and
 #: `update_task` (the other fields). MCP-G2 adds the four planning fields.
@@ -487,6 +496,11 @@ class TaskCreateIn(TaskIn):
     """
 
     assignees: list[str] | None = None
+    #: SP-8a (``project_management_app.md`` §13.3). The contract of a new
+    #: task of an epic type, saved in the create's own transaction through
+    #: the one writer (``epic_contract.save_contract``). A type that is not
+    #: an epic answers 422 and no task is made. ``None`` saves no contract.
+    epic_contract: EpicContractIn | None = None
 
 
 class LinkIn(BaseModel):
@@ -1092,6 +1106,8 @@ async def get_task(
         await attach_agent_state(db, [result])
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="task")
+        # SP-8a — the contract of an epic, or null (§13.3).
+        result["epic_contract"] = await epic_contract_of(db, row)
         return result
 
 
@@ -1141,6 +1157,13 @@ async def create_task(
     _refuse_agent_values(user, values)
     # MCP-G2. Not a column: the assignees land after the insert, below.
     first_assignees = _clean_assignees(values.pop("assignees", None) or ())
+    # SP-8a. Not a column either: the contract lands after the insert. Its
+    # rules run here, before any read, so a refused contract makes no task.
+    raw_contract = values.pop("epic_contract", None)
+    contract = (
+        clean_contract(EpicContractIn.model_validate(raw_contract))
+        if raw_contract is not None else None
+    )
     title = str(values.get("title") or "").strip()
     if not title:
         raise HTTPException(status_code=422, detail="A task needs a title.")
@@ -1200,6 +1223,9 @@ async def create_task(
         _refuse_agent_parent(user, parent, str(project_id))
         await _refuse_agent_type(db, user, values.get("type_id"), str(root))
         await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
+        if contract is not None:
+            # SP-8a: a contract only on a task of an epic type (422).
+            await assert_task_is_epic(db, values.get("type_id"))
 
         # A stated status always wins. A new step with no stated status takes
         # its parent's lane through the ONE seam (D-PM-38, D79), so the
@@ -1236,6 +1262,9 @@ async def create_task(
         # WS-27j author-hears-about-comments behaviour once the audience is
         # watchers ∪ assignees (migration 165 seeds the same for older tasks).
         await ensure_watchers(db, task_id, [actor(user)], by=actor(user))
+        # SP-8a. The contract, in THIS transaction and through its one writer.
+        if contract is not None:
+            await save_contract(db, user, row, contract)
         # WS-55 MCP-G2. The first assignees, in THIS transaction and through
         # the writer of `set_assignees`, so a refused assignee leaves no task.
         assigned = (

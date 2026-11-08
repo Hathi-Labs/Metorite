@@ -3364,6 +3364,38 @@ async def assert_epic_has_no_parent(
         )
 
 
+#: SP-8a (``project_management_app.md`` §13.3). The 422 of an epic contract
+#: on a task that is not an epic. It says what happened and the next step.
+#: ``agent_edge.tools.NOT_EPIC_DETAIL`` is the edge's pinned copy.
+NOT_EPIC_DETAIL = (
+    "This task is not an epic, so it takes no epic contract. Nothing changed. "
+    "Make it an epic first: set its type to Epic, then save the contract."
+)
+
+
+async def task_is_epic(db: Any, type_id: Any) -> bool:
+    """Does a task of type *type_id* carry an epic contract (SP-8a)?
+
+    The same predicate as the Epic-root rule (:func:`is_epic_type`), so the
+    two rules never disagree about a type. No type is not an epic.
+    """
+    if not type_id:
+        return False
+    row = await load_row(db, "pm_task_types", str(type_id))
+    return row is not None and is_epic_type(row)
+
+
+async def assert_task_is_epic(db: Any, type_id: Any) -> None:
+    """Refuse an epic contract on a task that is not an epic, with 422.
+
+    The twin of :func:`assert_epic_has_no_parent`. A READ of a task that is
+    not an epic gives ``epic_contract: null`` and never this refusal. A task
+    whose type stops being an epic keeps its row, and the reads ignore it.
+    """
+    if not await task_is_epic(db, type_id):
+        raise HTTPException(status_code=422, detail=NOT_EPIC_DETAIL)
+
+
 async def next_task_number(db: Any, root_id: str) -> int:
     """Allocate the next human-readable number for a root project.
 

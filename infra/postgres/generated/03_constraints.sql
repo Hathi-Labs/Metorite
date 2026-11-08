@@ -2677,3 +2677,15 @@ ALTER TABLE crm_change_log ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE crm_change_log ADD CONSTRAINT crm_change_log_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS crm_change_log_org_idx ON crm_change_log (organization_id);
+
+-- pm_epic_contracts
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_epic_contracts WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_epic_contracts still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_epic_contracts ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_epic_contracts ADD CONSTRAINT pm_epic_contracts_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_epic_contracts_org_idx ON pm_epic_contracts (organization_id);

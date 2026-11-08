@@ -65,6 +65,9 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "after": { label: "After" },
   "amount": { label: "Amount" },
   "answer": { label: "Your answer" },
+  // SP-8a: the appetite of an epic contract.
+  "appetite credits": { label: "Appetite (credits)" },
+  "appetite review hours": { label: "Appetite (review hours)" },
   "archive_after_months": { label: "Archive after (months)" },
   "archived": { label: "Archived", kind: "date" },
   "area": { label: "Area" },
@@ -79,6 +82,9 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "cannot change N": { label: "Cannot change", plural: "Cannot change" },
   "capacity": { label: "Capacity" },
   "category": { label: "Category", kind: "category" },
+  // SP-8a: each acceptance check of an epic contract, and their count.
+  "check N": { label: "Check", plural: "Checks" },
+  "checks": { label: "Number of checks" },
   "close_after_months": { label: "Close after (months)" },
   "color": { label: "Colour", kind: "color" },
   "comment": { label: "Comment" },
@@ -159,6 +165,9 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "order": { label: "Order" },
   "organization": { label: "Organisation" },
   "organization_name": { label: "Organisation" },
+  // SP-8a: the parts of an epic contract.
+  "out of scope": { label: "Out of scope" },
+  "outcome": { label: "Outcome" },
   "owner_email": { label: "Owner", kind: "person" },
   "parent": { label: "Parent task", kind: "task" },
   "parent_id": { label: "Parent" },
@@ -180,6 +189,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "recipient": { label: "Recipient" },
   "report": { label: "Report" },
   "required": { label: "Required", kind: "flag" },
+  // SP-8a: the review depth of an epic, which the lead sets.
+  "risk tier": { label: "Risk tier", kind: "words" },
   "rule": { label: "Rule" },
   "schedule": { label: "Schedule" },
   "scheduled_end": { label: "Ends", kind: "date" },
@@ -192,6 +203,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "source": { label: "Source", kind: "words" },
   "source N": { label: "Source", kind: "task" },
   "source_ref": { label: "Reference" },
+  // SP-8a: a Knowledge page or a repository file.
+  "spec link": { label: "Spec link" },
   "stage": { label: "Stage" },
   // WS-CRM CRM-M3a: each stage of a new pipeline, in order.
   "stage N": { label: "Stage", plural: "Stages" },
@@ -237,6 +250,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "when": { label: "When" },
   // `file_tasks`: a subtask that moves with its parent's row, not on its own.
   "with parent N": { label: "With parent", plural: "With parent" },
+  // SP-8a: the track that owns an epic.
+  "workstream": { label: "Workstream" },
 };
 
 /**

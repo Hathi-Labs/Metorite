@@ -82,6 +82,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import math
 import re
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
@@ -178,8 +179,8 @@ TEXT_PARENT_OTHER_PROJECT = (
     "The parent task is in another project. Send the project_id of the parent task.")
 TEXT_UPDATE_EMPTY = (
     "Send one or more fields to change: title, description, tags, due_at,"
-    " custom_fields, importance, leveraged, estimate_mins, start_date, type_id or"
-    " parent_task_id.")
+    " custom_fields, importance, leveraged, estimate_mins, start_date, type_id,"
+    " parent_task_id or epic_contract.")
 #: WS-55 MCP-G2. The texts of the planning fields, of the move inside a
 #: project (``parent_task_id`` of ``update_task``) and of ``set_assignees``.
 TEXT_START_DATE = "The input 'start_date' is not a real date. Send a date such as 2026-10-31."
@@ -867,6 +868,11 @@ def _type_ok(value: Any, kind: str | list[str]) -> bool:
         return isinstance(value, str)
     if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "number":
+        # SP-8a: the appetite of an epic contract. A bool is not a number, and
+        # neither is an infinity or a NaN, which JSON cannot carry back.
+        return (isinstance(value, int | float) and not isinstance(value, bool)
+                and math.isfinite(value))
     if kind == "boolean":
         return isinstance(value, bool)
     if kind == "object":
@@ -2678,12 +2684,194 @@ def reference(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── The epic contract (SP-8a, project_management_app.md §13.3) ─────────────
+
+#: The route of the ``epic_contract`` block of ``update_task``. It replaces the
+#: whole contract, and its body is ``{"epic_contract": {...}}``.
+EPIC_CONTRACT_ROUTE = "/projects/tasks/{task_id}/epic-contract"
+#: The keys of the contract that ``get_task`` and ``get_task_context`` return,
+#: and of one acceptance check (§9.1).
+EPIC_CONTRACT_KEYS: tuple[str, ...] = (
+    "outcome", "acceptance", "out_of_scope", "risk_tier", "appetite_credits",
+    "appetite_review_hours", "workstream", "spec_link", "updated_by", "updated_at",
+)
+EPIC_CHECK_KEYS: tuple[str, ...] = ("id", "text", "done", "evidence")
+#: The rules of a contract. Each is a copy of ``epic_contract.py`` of the
+#: gateway, and ``test_epic_contract_r8.py`` pins each pair equal.
+EPIC_RISK_TIERS: tuple[str, ...] = ("LOW", "STANDARD", "HIGH")
+EPIC_MIN_CHECKS = 3
+EPIC_MAX_CHECKS = 7
+EPIC_MAX_CHECK_CHARS = 300
+EPIC_MAX_EVIDENCE_CHARS = 1000
+EPIC_MAX_OUTCOME_CHARS = 500
+EPIC_MAX_OUT_OF_SCOPE_CHARS = 2000
+EPIC_MAX_WORKSTREAM_CHARS = 120
+EPIC_MAX_SPEC_LINK_CHARS = 500
+EPIC_MAX_APPETITE_CREDITS = 1_000_000_000
+EPIC_MAX_APPETITE_REVIEW_HOURS = 100_000
+#: The shape of a check id. A stored id of another shape leaves as untrusted text.
+_EPIC_CHECK_ID_PATTERN = "^[A-Za-z0-9_-]{1,40}$"
+_EPIC_CHECK_ID_RE = re.compile(_EPIC_CHECK_ID_PATTERN[1:-1])
+
+#: The ``detail`` of each 422 of the contract route. Copies of the gateway's
+#: texts (``core.NOT_EPIC_DETAIL`` and ``epic_contract.py``), pinned equal.
+NOT_EPIC_DETAIL = (
+    "This task is not an epic, so it takes no epic contract. Nothing changed. "
+    "Make it an epic first: set its type to Epic, then save the contract."
+)
+EPIC_CHECK_COUNT_DETAIL = (
+    f"An epic contract needs {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} acceptance checks. "
+    f"Nothing changed. Send from {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} checks."
+)
+EPIC_DUPLICATE_CHECK_DETAIL = (
+    "Two acceptance checks have the same id or the same text. Nothing changed. "
+    "Give each check its own text."
+)
+#: The fixed texts of the edge, in the pattern of :data:`TEXT_EPIC_TYPE_HAS_PARENT`.
+TEXT_NOT_EPIC = (
+    "This task is not an epic, so it takes no epic contract. Nothing changed."
+    " Make it an epic first: send type_id of the Epic type with update_task,"
+    " then send epic_contract in a call of its own.")
+TEXT_EPIC_CHECK_COUNT = (
+    f"An epic contract needs {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} acceptance"
+    f" checks. Nothing changed. Send from {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS}"
+    " checks in acceptance.")
+TEXT_EPIC_DUPLICATE_CHECK = (
+    "Two acceptance checks have the same id or the same text. Nothing changed."
+    " Give each check its own text.")
+TEXT_EPIC_CONTRACT_ALONE = (
+    "Send epic_contract in a call of its own. Then change the other fields"
+    " with the new version.")
+_EPIC_DETAILS: Mapping[tuple[int, str], str] = {
+    (422, NOT_EPIC_DETAIL): TEXT_NOT_EPIC,
+    (422, EPIC_CHECK_COUNT_DETAIL): TEXT_EPIC_CHECK_COUNT,
+    (422, EPIC_DUPLICATE_CHECK_DETAIL): TEXT_EPIC_DUPLICATE_CHECK,
+}
+
+
+def _epic_number(value: Any) -> float | int | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _epic_check(item: Mapping[str, Any]) -> dict[str, Any]:
+    """One acceptance check. The id is plain only in its shape. The text and
+    the evidence are text that people wrote, so both are untrusted (§9.4)."""
+    evidence = item.get("evidence")
+    return {
+        "id": shaped(item.get("id"), _EPIC_CHECK_ID_RE),
+        "text": untrusted(item.get("text") or ""),
+        "done": _bool(item.get("done")),
+        "evidence": untrusted(evidence) if isinstance(evidence, str) else None,
+    }
+
+
+def epic_contract(value: Any) -> dict[str, Any] | None:
+    """The contract of an epic (SP-8a), or ``None``. The pinned keys, and no
+    other. Each free text leaves as ``untrusted_text``. ``risk_tier`` is one
+    of :data:`EPIC_RISK_TIERS`, or ``None``. The gateway gives ``None`` for a
+    task that is not an epic."""
+    if not isinstance(value, Mapping):
+        return None
+    checks = value.get("acceptance")
+    tier = value.get("risk_tier")
+
+    def text_of(name: str) -> dict[str, str] | None:
+        found = value.get(name)
+        return untrusted(found) if isinstance(found, str) else None
+
+    return {
+        "outcome": text_of("outcome"),
+        "acceptance": [_epic_check(c) for c in checks if isinstance(c, Mapping)]
+        [:EPIC_MAX_CHECKS] if isinstance(checks, list) else [],
+        "out_of_scope": text_of("out_of_scope"),
+        "risk_tier": tier if tier in EPIC_RISK_TIERS else None,
+        "appetite_credits": _epic_number(value.get("appetite_credits")),
+        "appetite_review_hours": _epic_number(value.get("appetite_review_hours")),
+        "workstream": text_of("workstream"),
+        "spec_link": text_of("spec_link"),
+        "updated_by": _str_or_none(value.get("updated_by")),
+        "updated_at": _str_or_none(value.get("updated_at")),
+    }
+
+
+_NULLABLE_NUMBER: dict[str, Any] = {"type": ["number", "null"]}
+_EPIC_CHECK_SCHEMA = _object({
+    "id": _SHAPED_OR_NULL, "text": _UNTRUSTED_SCHEMA, "done": {"type": "boolean"},
+    "evidence": _UNTRUSTED_OR_NULL,
+})
+_EPIC_CONTRACT_SCHEMA: dict[str, Any] = {"anyOf": [_object({
+    "outcome": _UNTRUSTED_OR_NULL,
+    "acceptance": {"type": "array", "items": _EPIC_CHECK_SCHEMA},
+    "out_of_scope": _UNTRUSTED_OR_NULL,
+    "risk_tier": {"type": ["string", "null"], "enum": [*EPIC_RISK_TIERS, None]},
+    "appetite_credits": _NULLABLE_NUMBER, "appetite_review_hours": _NULLABLE_NUMBER,
+    "workstream": _UNTRUSTED_OR_NULL, "spec_link": _UNTRUSTED_OR_NULL,
+    "updated_by": _NULLABLE_STRING, "updated_at": _NULLABLE_STRING,
+}), {"type": "null"}]}
+
+#: The ``epic_contract`` input of ``update_task`` and ``create_task``.
+_EPIC_CHECK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "pattern": _EPIC_CHECK_ID_PATTERN,
+               "description": "The id of a check from get_task. Leave it out for a"
+                              " new check, and Metorite makes one."},
+        "text": {"type": "string", "minLength": 1, "maxLength": EPIC_MAX_CHECK_CHARS,
+                 "description": "What a reviewer checks, in one sentence."},
+        "done": {"type": "boolean", "description": "true when the check passed."},
+        "evidence": {"type": "string", "maxLength": EPIC_MAX_EVIDENCE_CHARS,
+                     "description": "What shows that the check passed, such as a"
+                                    " link to a pull request."},
+    },
+    "required": ["text"],
+    "additionalProperties": False,
+}
+_EPIC_CONTRACT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "The contract of an epic. It replaces the whole contract: a part that"
+        " you leave out is cleared, so send each part that you keep. Only a"
+        " task of the Epic type takes it."),
+    "properties": {
+        "outcome": {"type": "string", "maxLength": EPIC_MAX_OUTCOME_CHARS,
+                    "description": "One sentence: what is true when the epic is done."},
+        "acceptance": {
+            "type": "array", "minItems": EPIC_MIN_CHECKS, "maxItems": EPIC_MAX_CHECKS,
+            "items": _EPIC_CHECK_INPUT,
+            "description": f"{EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} checks that a"
+                           " reviewer can tick."},
+        "out_of_scope": {"type": "string", "maxLength": EPIC_MAX_OUT_OF_SCOPE_CHARS,
+                         "description": "What this epic does not do."},
+        "risk_tier": {"type": "string", "enum": list(EPIC_RISK_TIERS),
+                      "description": "The review depth that the lead set."},
+        "appetite_credits": {"type": "number", "minimum": 0,
+                             "maximum": EPIC_MAX_APPETITE_CREDITS,
+                             "description": "The credits that the epic may spend."},
+        "appetite_review_hours": {"type": "number", "minimum": 0,
+                                  "maximum": EPIC_MAX_APPETITE_REVIEW_HOURS,
+                                  "description": "The review hours that the epic may"
+                                                 " spend."},
+        "workstream": {"type": "string", "maxLength": EPIC_MAX_WORKSTREAM_CHARS,
+                       "description": "The track that owns the epic: a project id"
+                                      " or a name."},
+        "spec_link": {"type": "string", "maxLength": EPIC_MAX_SPEC_LINK_CHARS,
+                      "description": "A Knowledge page or a repository file."},
+    },
+    "required": ["acceptance"],
+    "additionalProperties": False,
+}
+
+
 _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "task": _TASK_SCHEMA,
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "links": {"type": "array", "items": _LINK_SCHEMA},
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
+    # SP-8a: the contract of an epic, or null.
+    "epic_contract": _EPIC_CONTRACT_SCHEMA,
 })
 
 
@@ -2808,6 +2996,8 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if isinstance(links, list) else [],
         "refs": [reference(r) for r in _rows_of(refs)],
         "agent_runs": runs,
+        # SP-8a: from the task row itself, so no request more.
+        "epic_contract": epic_contract(row.get("epic_contract")),
     }
 
 
@@ -2827,7 +3017,10 @@ GET_TASK = Tool(
         " work. url is the address of the task in Metorite, and short_id is the"
         " short form for a branch name. Put url in the description of each pull"
         " request, and short_id in the branch name, so that the pull request"
-        " links itself to the task." + _UNTRUSTED_NOTE
+        " links itself to the task. epic_contract is the contract of an epic:"
+        " the outcome, 3 to 7 acceptance checks, what is out of scope, the risk"
+        " tier, the appetite in credits and review hours, the workstream and the"
+        " spec link. It is null for a task that is not an epic." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
     input_schema=_TASK_ID_INPUT,
@@ -3072,6 +3265,8 @@ ANCESTOR_KEYS: tuple[str, ...] = ("id", "task_number", "title", "status", "descr
 CONTEXT_KEYS: tuple[str, ...] = (
     "task", "ancestors", "project", "blocked_by", "blocks", "subtasks", "agent_runs",
     "held_by", "refs", "recent_comments", "attachments", "images",
+    # SP-8a: the contract of an epic, or null.
+    "epic_contract",
 )
 
 #: The most attachments that ``get_task_context`` returns (MCP-G18). The
@@ -3368,6 +3563,8 @@ _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "attachments": {"type": "array", "items": _ATTACHMENT_SCHEMA},
     # IMG-3: the PNG, JPEG, GIF and WebP files of `attachments`.
     "images": {"type": "integer", "minimum": 0},
+    # SP-8a: the contract of an epic, or null.
+    "epic_contract": _EPIC_CONTRACT_SCHEMA,
 }), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, COMMENTS_TRUNCATED_KEY, {"type": "boolean"})
 _CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, ATTACHMENTS_TRUNCATED_KEY, {"type": "boolean"})
@@ -3640,6 +3837,8 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         "recent_comments": comments,
         "attachments": files[0],
         "images": files[2],
+        # SP-8a: from the task row, so the call ceiling does not move.
+        "epic_contract": epic_contract(row.get("epic_contract")),
     }
     if files[1]:
         result[ATTACHMENTS_TRUNCATED_KEY] = True
@@ -3668,6 +3867,8 @@ GET_TASK_CONTEXT = Tool(
         " content. The list keeps the"
         " oldest 100, and attachments_truncated is true when more exist."
         " images counts the PNG, JPEG, GIF and WebP files of attachments."
+        " epic_contract is the contract of an epic, as get_task gives it, or"
+        " null. Its acceptance checks say when the work is done."
         " " + prompts.IMAGE_RULE +
         " A parent that this member cannot"
         " see shows as {\"hidden\": true}, and the parents above it do not"
@@ -4479,6 +4680,8 @@ CREATE_BODY_KEYS: tuple[str, ...] = (
     "description", "tags", "due_at",
     # MCP-G2: the planning fields of the app, and the first assignees.
     "importance", "leveraged", "estimate_mins", "start_date", "assignees",
+    # SP-8a: the contract of a new epic.
+    "epic_contract",
 )
 UPDATE_BODY_KEYS: tuple[str, ...] = (
     "title", "description", "tags", "due_at", "custom_fields",
@@ -4487,6 +4690,10 @@ UPDATE_BODY_KEYS: tuple[str, ...] = (
     # SP-6: the type of the task. null clears it.
     "type_id",
 )
+#: SP-8a. The one body key of the PUT of the epic contract, the write that
+#: ``update_task`` sends IN PLACE of its PATCH for ``epic_contract``. The
+#: create sends the same key in its POST body (:data:`CREATE_BODY_KEYS`).
+EPIC_CONTRACT_BODY_KEYS: tuple[str, ...] = ("epic_contract",)
 
 #: ``custom_fields`` of ``update_task``: at most this many keys, each one
 #: key-shaped (``field_key``).
@@ -4588,6 +4795,10 @@ _CREATE_INPUT: dict[str, Any] = {
                            " project grant or an admin read right. Each one gets"
                            " one notification"
                            " that names this agent."},
+        # SP-8a: the contract of a new epic, with type_id of the Epic type.
+        "epic_contract": {**_EPIC_CONTRACT_INPUT,
+                          "description": _EPIC_CONTRACT_INPUT["description"]
+                          + " Send it with type_id of the Epic type."},
         "idempotency_key": {
             "type": "string", "pattern": idempotency.KEY_PATTERN,
             "description": "8 to 128 letters, digits and . _ : -. The same key"
@@ -4637,15 +4848,19 @@ _UPDATE_INPUT: dict[str, Any] = {
             "description": "Moves the task under this parent task, in the same"
                            " project. null moves it to the top level. Send it in a"
                            " call of its own."},
+        # SP-8a: the contract of an epic. A call of its own.
+        "epic_contract": {**_EPIC_CONTRACT_INPUT,
+                          "description": _EPIC_CONTRACT_INPUT["description"]
+                          + " Send it in a call of its own."},
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
 }
 
-_UPDATE_OUTPUT: dict[str, Any] = _object({
+_UPDATE_OUTPUT: dict[str, Any] = _optional(_object({
     "task": _object({k: v for k, v in _TASK_SCHEMA["properties"].items()
                      if k != "assignees"}),
-})
+}), "epic_contract", _EPIC_CONTRACT_SCHEMA)
 
 
 async def _project_statuses(ctx: Context, project: str) -> dict[str, dict[str, Any]]:
@@ -4721,10 +4936,12 @@ async def _create(ctx: Context, args: dict[str, Any],
     payload = {name: args[name] for name in CREATE_BODY_KEYS if name in args}
     sent.post = True
     # MCP-G2: the gateway assigns in the create's own transaction, so a
-    # refused assignee leaves no task, and the key goes free.
+    # refused assignee leaves no task, and the key goes free. SP-8a: the
+    # contract lands in that transaction too, so a refused one makes no task.
     _, row = await _write(ctx, "POST", CREATE_ROUTE, TEXT_PROJECT_NOT_FOUND,
                           json_body=payload,
-                          details={(422, EPIC_PARENT_DETAIL): TEXT_EPIC_PARENT},
+                          details={(422, EPIC_PARENT_DETAIL): TEXT_EPIC_PARENT,
+                                   **_EPIC_DETAILS},
                           coded=_assignee_codes(args.get("assignees") or ()))
     if not isinstance(row, dict) or _id(row.get("id")) is None:
         raise ToolError(TEXT_BUSY)
@@ -4962,7 +5179,10 @@ CREATE_TASK = Tool(
         " one notification that names this agent. When one person is refused,"
         " no task is made. A person assigns anybody else in the app. Send"
         " an idempotency_key when you may retry: the same key gives back the"
-        " first task with created false, and makes no second task. Returns the"
+        " first task with created false, and makes no second task. With"
+        " type_id of the Epic type, epic_contract sets the contract of the new"
+        " epic: 3 to 7 acceptance checks and the other parts. A contract on"
+        " another type is refused, and no task is made. Returns the"
         " task with its version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
@@ -5049,6 +5269,28 @@ async def _move_in_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
     return await _updated(ctx, after)
 
 
+async def _put_epic_contract(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """Replace the contract of an epic (SP-8a): one PUT of
+    :data:`EPIC_CONTRACT_ROUTE` with ``If-Match``, the version of the task.
+
+    The body is ``{"epic_contract": {...}}`` and holds only the parts that
+    the input names. The gateway refuses a task that is not an epic, and each
+    refusal maps to a text of :data:`_EPIC_DETAILS`. A pinned connection
+    reaches only the epics of its pin: any other task is "Task not found."
+    The result is the task as it is now, and the saved contract.
+    """
+    _, answer = await _write(
+        ctx, "PUT", EPIC_CONTRACT_ROUTE, TEXT_TASK_NOT_FOUND,
+        path_params={"task_id": str(args["task_id"])},
+        json_body={"epic_contract": dict(args["epic_contract"])},
+        if_match=str(args["expected_version"]), details=_EPIC_DETAILS)
+    if not isinstance(answer, dict) or not isinstance(answer.get("task"), dict):
+        raise ToolError(TEXT_BUSY)
+    result = await _updated(ctx, answer["task"])
+    result["epic_contract"] = epic_contract(answer.get("epic_contract"))
+    return result
+
+
 async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """PATCH the named fields only, with ``If-Match`` (§9.2).
 
@@ -5061,9 +5303,14 @@ async def _update_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     (:func:`_move_in_project`), never a PATCH. It goes in a call of its own,
     so one call is one write and one transaction.
     """
-    _refuse_nul(args, UPDATE_BODY_KEYS)
+    _refuse_nul(args, UPDATE_BODY_KEYS + EPIC_CONTRACT_BODY_KEYS)
     _refuse_bad_start_date(args)
     payload = {name: args[name] for name in UPDATE_BODY_KEYS if name in args}
+    if "epic_contract" in args:
+        # SP-8a: a write of its own, so one call is one transaction.
+        if payload or "parent_task_id" in args:
+            raise ToolError(TEXT_EPIC_CONTRACT_ALONE)
+        return await _put_epic_contract(ctx, args)
     if "parent_task_id" in args:
         if payload:
             raise ToolError(TEXT_MOVE_ALONE)
@@ -5109,7 +5356,12 @@ UPDATE_TASK = Tool(
         " and null moves it to the top level. An Epic cannot have a parent."
         " Send parent_task_id in a call of"
         " its own. To move a task to another project, call preview_move_tasks"
-        " and then move_tasks."
+        " and then move_tasks. epic_contract sets the contract of an epic: the"
+        " outcome, 3 to 7 acceptance checks, out_of_scope, risk_tier,"
+        " appetite_credits, appetite_review_hours, workstream and spec_link. It"
+        " replaces the whole contract, so read it with get_task and send each"
+        " part that you keep. Only a task of the Epic type takes it. Send it in"
+        " a call of its own."
         " This tool cannot change the status (use set_task_status), the project"
         " or the assignees (use set_assignees). Returns the task with its new"
         " version." + _UNTRUSTED_NOTE
@@ -5120,12 +5372,13 @@ UPDATE_TASK = Tool(
     route=TASK_ROUTE,
     params={"task_id": "task_id", "expected_version": "If-Match",
             **{name: name for name in UPDATE_BODY_KEYS},
-            "parent_task_id": "parent_task_id"},
+            "parent_task_id": "parent_task_id",
+            **{name: name for name in EPIC_CONTRACT_BODY_KEYS}},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_update_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, TYPES_ROUTE),
     method="PATCH",
-    alt_writes=(("POST", MOVE_ROUTE),),
+    alt_writes=(("POST", MOVE_ROUTE), ("PUT", EPIC_CONTRACT_ROUTE)),
     annotations=dict(WRITE_ANNOTATIONS),
 )
 
@@ -8395,6 +8648,23 @@ __all__ = [
     "DOOR_PAGE_MAX",
     "DOOR_RESULT_MAX_BYTES",
     "DOOR_SCHEMA_MAX_BYTES",
+    "EPIC_CHECK_COUNT_DETAIL",
+    "EPIC_CHECK_KEYS",
+    "EPIC_CONTRACT_BODY_KEYS",
+    "EPIC_CONTRACT_KEYS",
+    "EPIC_CONTRACT_ROUTE",
+    "EPIC_DUPLICATE_CHECK_DETAIL",
+    "EPIC_MAX_APPETITE_CREDITS",
+    "EPIC_MAX_APPETITE_REVIEW_HOURS",
+    "EPIC_MAX_CHECKS",
+    "EPIC_MAX_CHECK_CHARS",
+    "EPIC_MAX_EVIDENCE_CHARS",
+    "EPIC_MAX_OUTCOME_CHARS",
+    "EPIC_MAX_OUT_OF_SCOPE_CHARS",
+    "EPIC_MAX_SPEC_LINK_CHARS",
+    "EPIC_MAX_WORKSTREAM_CHARS",
+    "EPIC_MIN_CHECKS",
+    "EPIC_RISK_TIERS",
     "FIELD_KEYS",
     "FINISH_AGENT_RUN",
     "GET_AGENT_RUN",
@@ -8460,6 +8730,7 @@ __all__ = [
     "NOTE_OTHER_TYPE",
     "NOTE_TEXT",
     "NOTE_TOO_LARGE",
+    "NOT_EPIC_DETAIL",
     "OPEN_RUN_STATUSES",
     "OUTSIDE_BODY_KEYS",
     "OUTSIDE_DECISION_ROUTE",
@@ -8529,6 +8800,9 @@ __all__ = [
     "TEXT_DOOR_LIMIT",
     "TEXT_DOOR_NOT_FOUND",
     "TEXT_DOOR_READ_CAP",
+    "TEXT_EPIC_CHECK_COUNT",
+    "TEXT_EPIC_CONTRACT_ALONE",
+    "TEXT_EPIC_DUPLICATE_CHECK",
     "TEXT_EPIC_PARENT",
     "TEXT_EPIC_TYPE_HAS_PARENT",
     "TEXT_EXTENSIONS",
@@ -8565,6 +8839,7 @@ __all__ = [
     "TEXT_NAME_BLANK",
     "TEXT_NEEDS_APPROVAL",
     "TEXT_NOT_APPROVED",
+    "TEXT_NOT_EPIC",
     "TEXT_NO_APP",
     "TEXT_NO_OP",
     "TEXT_NO_PAGES",
@@ -8639,6 +8914,7 @@ __all__ = [
     "door_limit",
     "door_rows",
     "door_value",
+    "epic_contract",
     "field_value",
     "image_bytes_match",
     "image_result",

@@ -39,6 +39,7 @@ import asyncio
 import calendar
 import functools
 import json
+import math
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
@@ -2092,6 +2093,211 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
         return CANCELLED
     await delete(f"/projects/tasks/{tid}/links/{lid}")
     return f"Removed the link: {label}.\n  full_id: {tid}"
+
+
+# ── SP-8a — the contract of an epic (project_management_app.md §13.3) ──────
+#
+# One class B tool. The route replaces the whole contract, and the card shows
+# each part before anything is saved. The draft lives on the card: the store
+# keeps no contract with fewer than 3 checks.
+
+#: The count of acceptance checks, and the risk tiers. Copies of the
+#: gateway's ``epic_contract.MIN_CHECKS``, ``MAX_CHECKS`` and ``RISK_TIERS``.
+EPIC_MIN_CHECKS = 3
+EPIC_MAX_CHECKS = 7
+EPIC_RISK_TIERS: tuple[str, ...] = ("LOW", "STANDARD", "HIGH")
+#: A list mark at the start of a line of checks: "- ", "* ", "1. " or "2) ".
+_CHECK_BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d{1,2}[.)])\s+")
+#: A done mark at the start of a check: "[x] " or "[ ] ". The word "check"
+#: before it is the line of task_detail, so a copied line reads right.
+_CHECK_DONE = re.compile(r"^(?:check\s+)?\[([xX ])\]\s*", re.IGNORECASE)
+#: The parts of a contract that the card names, in the order of the card.
+_EPIC_PARTS: tuple[tuple[str, str], ...] = (
+    ("outcome", "outcome"), ("out_of_scope", "out of scope"),
+    ("risk_tier", "risk tier"), ("appetite_credits", "appetite credits"),
+    ("appetite_review_hours", "appetite review hours"),
+    ("workstream", "workstream"), ("spec_link", "spec link"),
+)
+
+
+def _epic_items(acceptance: str) -> list[dict[str, Any]] | str:
+    """The checks that the member gave: a JSON list, or one check on each
+    line. A line that starts with ``[x]`` is done. A refusal is a string."""
+    raw = str(acceptance or "").strip()
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            items: list[dict[str, Any]] = []
+            for entry in parsed:
+                if isinstance(entry, str):
+                    items.append({"text": entry.strip()})
+                elif isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                    item: dict[str, Any] = {"text": entry["text"].strip()}
+                    if isinstance(entry.get("done"), bool):
+                        item["done"] = entry["done"]
+                    if isinstance(entry.get("evidence"), str):
+                        item["evidence"] = entry["evidence"].strip()
+                    items.append(item)
+                else:
+                    return ("Each item of acceptance is a text, or an object with a "
+                            "text. Nothing was changed.")
+            return [i for i in items if i["text"]]
+    lines: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        text_ = _CHECK_BULLET.sub("", line, count=1).strip()
+        mark = _CHECK_DONE.match(text_)
+        item = {}
+        if mark:
+            item["done"] = mark.group(1).lower() == "x"
+            text_ = text_[mark.end():].strip()
+        if text_:
+            lines.append({"text": text_, **item})
+    return lines
+
+
+def _epic_checks(acceptance: str, stored: list[dict[str, Any]]) -> list[dict[str, Any]] | str:
+    """The checks to save, or a refusal. A check with the text of a saved
+    check keeps its id, and its done mark and its evidence unless the member
+    set them again. So a new outcome never loses the evidence of a check."""
+    items = _epic_items(acceptance)
+    if isinstance(items, str):
+        return items
+    if not EPIC_MIN_CHECKS <= len(items) <= EPIC_MAX_CHECKS:
+        return (
+            f"An epic contract needs {EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} acceptance "
+            f"checks, and this one has {len(items)}. Nothing was changed. Send "
+            f"{EPIC_MIN_CHECKS} to {EPIC_MAX_CHECKS} checks, one on each line."
+        )
+    saved = {str(c.get("text") or "").casefold(): c for c in stored if isinstance(c, dict)}
+    out: list[dict[str, Any]] = []
+    for item in items:
+        old = saved.get(item["text"].casefold()) or {}
+        check: dict[str, Any] = {
+            "text": item["text"],
+            "done": item["done"] if "done" in item else bool(old.get("done")),
+        }
+        if old.get("id"):
+            check["id"] = str(old["id"])
+        evidence = item["evidence"] if "evidence" in item else old.get("evidence")
+        if isinstance(evidence, str) and evidence.strip():
+            check["evidence"] = evidence.strip()
+        out.append(check)
+    return out
+
+
+def _appetite(value: Any, name: str) -> float | str | None:
+    """A number of 0 or more, ``None`` for blank, or a refusal string."""
+    raw = str(value if value is not None else "").strip().replace(",", "")
+    if not raw:
+        return None
+    try:
+        number = float(raw)
+    except ValueError:
+        number = -1.0
+    if not math.isfinite(number) or number < 0:
+        return f"{name} is a number, 0 or more, such as 40. Nothing was changed."
+    return number
+
+
+def _blank(value: Any) -> str | None:
+    text_ = str(value or "").strip()
+    return text_ or None
+
+
+def _epic_card(contract: dict[str, Any] | None) -> dict[str, Any]:
+    """The card rows of a contract: each part, then each check."""
+    found = contract or {}
+    rows: dict[str, Any] = {}
+    for part, label in _EPIC_PARTS:
+        value = found.get(part)
+        rows[label] = "(none)" if value is None or value == "" else value
+    checks = [c for c in found.get("acceptance") or () if isinstance(c, dict)]
+    rows["checks"] = len(checks)
+    for number, check in enumerate(checks, start=1):
+        mark = "[x]" if check.get("done") else "[ ]"
+        line = f"{mark} {check.get('text') or ''}"
+        if check.get("evidence"):
+            line += f" (evidence: {check['evidence']})"
+        rows[f"check {number}"] = line
+    return rows
+
+
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
+async def set_epic_contract(
+    task_id: str,
+    acceptance: str,
+    outcome: str = "",
+    out_of_scope: str = "",
+    risk_tier: str = "",
+    appetite_credits: str = "",
+    appetite_review_hours: str = "",
+    workstream: str = "",
+    spec_link: str = "",
+) -> str:
+    """Set the contract of an epic: the outcome in one sentence, 3 to 7
+    acceptance checks that a reviewer can tick, what is out of scope, the
+    risk tier (LOW, STANDARD or HIGH, which the lead sets), the appetite in
+    credits and in review hours, the workstream and a spec link (a Knowledge
+    page or a repository file). acceptance holds one check on each line, and
+    a line that starts with [x] is done. The contract replaces the saved one,
+    and a part left empty is cleared. So read task_detail first and send each
+    part to keep. A check with the text of a saved check keeps its id, its
+    done mark and its evidence. Only a task of the Epic type takes a
+    contract. Draft the outcome and the checks for the member: the card shows
+    each part, and nothing is saved before the member approves."""
+    tid, task = await _task(task_id)
+    current = (await get(f"/projects/tasks/{tid}/epic-contract")) or {}
+    if not current.get("is_epic"):
+        return (
+            f"{_ref(task)} is not an epic, so it takes no epic contract. Nothing was "
+            "changed. Make it an epic first: set its type to Epic with update_task, "
+            f"then set the contract.\n  full_id: {tid}"
+        )
+    before = current.get("epic_contract") if isinstance(current.get("epic_contract"), dict) else None
+    checks = _epic_checks(acceptance, list((before or {}).get("acceptance") or ()))
+    if isinstance(checks, str):
+        return checks
+    tier = str(risk_tier or "").strip().upper()
+    if tier and tier not in EPIC_RISK_TIERS:
+        return "risk_tier is LOW, STANDARD or HIGH. Nothing was changed."
+    credits = _appetite(appetite_credits, "appetite_credits")
+    if isinstance(credits, str):
+        return credits
+    hours = _appetite(appetite_review_hours, "appetite_review_hours")
+    if isinstance(hours, str):
+        return hours
+    contract: dict[str, Any] = {
+        "outcome": _blank(outcome),
+        "acceptance": checks,
+        "out_of_scope": _blank(out_of_scope),
+        "risk_tier": tier or None,
+        "appetite_credits": credits,
+        "appetite_review_hours": hours,
+        "workstream": _blank(workstream),
+        "spec_link": _blank(spec_link),
+    }
+    after_rows = _epic_card(contract)
+    before_rows = _epic_card(before) if before is not None else None
+    if before_rows is not None and before_rows == after_rows:
+        return f"The epic contract of {_ref(task)} already says that. Nothing was changed."
+    lead = (
+        "This replaces the whole contract. A part shown as (none) is cleared."
+        if before is not None else "This is the first contract of this epic."
+    )
+    if not await _confirm(
+        title="Save this epic contract?" if before is None else "Change this epic contract?",
+        detail=_ref(task),
+        context=_fields_block(after_rows, before=before_rows, lead=lead),
+    ):
+        return _not_confirmed()
+    saved = (await put(f"/projects/tasks/{tid}/epic-contract", {"epic_contract": contract})) or {}
+    changed = [str(c).removeprefix("epic_").replace("_", " ")
+               for c in saved.get("changed") or () if isinstance(c, str)]
+    said = f" Changed: {', '.join(changed)}." if changed else ""
+    return f"Saved the epic contract of {_ref(task)}.{said}\n  full_id: {tid}"
 
 
 # ── WS-57 TR-3 — a task's URL references ────────────────────────────────────

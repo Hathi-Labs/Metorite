@@ -171,7 +171,9 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     the move preview and the move (§9.2). MCP-G15 adds the outside decision
     (§12.1): an agent records a decision that its member made outside
     Metorite, on its own awaiting run. SW-16a adds the link POST and the link
-    DELETE, the routes of ``add_task_link`` and ``remove_task_link``."""
+    DELETE, the routes of ``add_task_link`` and ``remove_task_link``. SP-8a
+    adds the PUT of the epic contract, the route of the ``epic_contract``
+    block of ``update_task``."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -193,6 +195,7 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
         ("POST", "/projects/tasks/{task_id}/links"),
         ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+        ("PUT", "/projects/tasks/{task_id}/epic-contract"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -658,10 +661,14 @@ def test_rule_4_only_ask_on_task_sends_a_prior_write():
 def test_rule_4_only_update_task_sends_a_write_in_place_of_its_own():
     """MCP-G2. A write in place of the tool's own widens rule 4 for that
     tool, so the spec names each one (§9.2): ``update_task`` sends the task
-    move for ``parent_task_id``, because the PATCH refuses that field.
+    move for ``parent_task_id``, because the PATCH refuses that field. SP-8a:
+    it sends the PUT of the epic contract for ``epic_contract``.
     Mutation: give ``set_assignees`` an alt write, and this test fails."""
     declared = {(tool.name, pair) for tool in _tools() for pair in tool.alt_writes}
-    assert declared == {("update_task", ("POST", "/projects/tasks/{task_id}/move"))}
+    assert declared == {("update_task", ("POST", "/projects/tasks/{task_id}/move")),
+                        ("update_task", ("PUT", "/projects/tasks/{task_id}/epic-contract"))}
     params = _route_parameters()
     assert {"parent_task_id", "If-Match"} <= params[("POST", "/projects/tasks/{task_id}/move")]
+    assert {"epic_contract", "If-Match"} <= (
+        params[("PUT", "/projects/tasks/{task_id}/epic-contract")])
     assert "If-Match" in params[("PUT", "/projects/tasks/{task_id}/assignees")]
