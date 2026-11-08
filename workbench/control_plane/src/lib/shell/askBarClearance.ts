@@ -59,6 +59,8 @@ export interface ScrollerFacts {
   /** Computed `flex-direction`. */
   flexDirection: string;
   clientHeight: number;
+  /** Its content is taller than the box, with no mark on the page. */
+  overflows: boolean;
   /** The element scrolls sideways and cannot scroll down: a table or tab strip. */
   horizontalOnly: boolean;
   /** Its own padding-bottom, without any extra this seam added. */
@@ -108,10 +110,11 @@ export function declaredSideways(className: string): boolean {
  * The extra padding, in pixels, for each scroller that needs room. A scroller
  * counts when it is a pane, overlaps the bar sideways and ends below the bar's
  * top. A nested pane counts only when it reaches the foot of each pane that
- * holds it: a list or a code block in the middle of a page is content, and the
- * page takes the room. Then only the deepest counts: a pane that holds another
- * counted pane gets nothing. The extra is the room the bar needs, less the
- * padding the pane has.
+ * holds it and none of them scrolls: a list or a code block in a page that
+ * scrolls is content, even at the page's very end, and the page takes the
+ * room. Then only the deepest counts: a pane that holds another counted pane
+ * gets nothing. The extra is the room the bar needs, less the padding the pane
+ * has.
  */
 export function planClearance(
   bar: Box | null,
@@ -124,15 +127,20 @@ export function planClearance(
     (s) => isPane(s) && s.rect.right > bar.left && s.rect.left < bar.right && s.rect.bottom > bar.top,
   );
   const byId = new Map(counted.map((s) => [s.id, s]));
+  const around = (s: ScrollerFacts) => s.ancestors.flatMap((id) => byId.get(id) ?? []);
   const atFoot = counted.filter((s) =>
-    s.ancestors.every((id) => {
-      const holder = byId.get(id);
-      return !holder || s.rect.bottom >= holder.rect.bottom - holder.paddingBottom - CLEARANCE_FOOT_SLACK;
-    }),
+    around(s).every((h) => !h.overflows && s.rect.bottom >= h.rect.bottom - h.paddingBottom - CLEARANCE_FOOT_SLACK),
   );
   const holders = new Set(atFoot.flatMap((s) => s.ancestors));
-  for (const s of atFoot) {
-    if (holders.has(s.id)) continue;
+  // A pane above the foot leaves the room to its holder. When a sibling at the
+  // foot has already made the holder give that room up, nobody would take it,
+  // so the pane takes its own (a board lane with a "Show more" footer).
+  const stranded = counted.filter(
+    (s) => !atFoot.includes(s) && around(s).length > 0 && around(s).every((h) => holders.has(h.id)),
+  );
+  const inner = new Set(stranded.flatMap((s) => s.ancestors));
+  for (const s of [...atFoot, ...stranded]) {
+    if (holders.has(s.id) || inner.has(s.id)) continue;
     const needed = s.rect.bottom - bar.top + gap;
     const extra = Math.max(0, Math.ceil(needed - s.paddingBottom));
     if (extra > 0) plan.set(s.id, extra);
@@ -197,6 +205,7 @@ export function scanClearance(column: HTMLElement, area: Box) {
       display: cs.display,
       flexDirection: cs.flexDirection,
       clientHeight: el.clientHeight,
+      overflows: el.scrollHeight > el.clientHeight + 1,
       horizontalOnly:
         declaredSideways(el.getAttribute("class") ?? "") ||
         (el.scrollWidth > el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1),

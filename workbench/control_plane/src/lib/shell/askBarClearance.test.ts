@@ -18,6 +18,7 @@ function pane(over: Partial<ScrollerFacts> & { id: number }): ScrollerFacts {
     display: "block",
     flexDirection: "row",
     clientHeight: 700,
+    overflows: false,
     horizontalOnly: false,
     paddingBottom: 0,
     clipBottom: 800,
@@ -131,6 +132,26 @@ describe("planClearance", () => {
     const plan = planClearance(BAR, [main, lane]);
     expect(plan.get(2)).toBe(62);
     expect(plan.has(1)).toBe(false);
+  });
+
+  it("leaves no lane without room when a sibling at the foot takes the holder (CRM)", () => {
+    const main = pane({ id: 1 });
+    const plain = pane({ id: 2, ancestors: [1], rect: { left: 320, top: 100, right: 600, bottom: 788 }, clientHeight: 688 });
+    const showMore = pane({ id: 3, ancestors: [1], rect: { left: 600, top: 100, right: 880, bottom: 756 }, clientHeight: 656 });
+    const plan = planClearance(BAR, [main, plain, showMore]);
+    expect(plan.has(1)).toBe(false);
+    expect(plan.get(2)).toBe(70);
+    expect(plan.get(3)).toBe(38);
+  });
+
+  it("gives the room to a page that scrolls, even when a capped box ends it (a transcript)", () => {
+    const main = pane({ id: 1 });
+    const page = pane({ id: 2, ancestors: [1], overflows: true });
+    const box = pane({ id: 3, ancestors: [1, 2], rect: { left: 0, top: 500, right: 1200, bottom: 790 }, clientHeight: 290, overflows: true });
+    const plan = planClearance(BAR, [main, page, box]);
+    expect(plan.get(2)).toBe(82);
+    expect(plan.has(1)).toBe(false);
+    expect(plan.has(3)).toBe(false);
   });
 
   it("measures the foot inside the holder's own padding", () => {

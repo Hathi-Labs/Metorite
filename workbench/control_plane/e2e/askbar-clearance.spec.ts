@@ -217,6 +217,39 @@ test("a page parked at its end stays put through a re-scan, and rests with no sc
   expectClear(await endsUnderBar(page), "People, after the re-scans");
 });
 
+test("a scan puts back a holder that only its nested pane makes scroll", async ({ page }) => {
+  // Review round 2: lifting the mark shrinks the nested pane, so its unmarked
+  // holder clamps. Only a restore of EVERY scroller puts the holder back.
+  test.setTimeout(120_000);
+  await open(page, "/people", { "people/facets": { departments: [], statuses: [] }, people: people(3) });
+  await expect(page.locator("[data-ask-bar] [data-ask-form]")).toBeVisible({ timeout: 60_000 });
+  await page.evaluate(() => {
+    const holder = document.createElement("div");
+    holder.id = "fx-holder";
+    holder.className = "overflow-y-auto";
+    holder.style.cssText = "position:fixed;left:30%;right:30%;top:500px;bottom:16px;z-index:5;background:gray";
+    const nested = document.createElement("div");
+    nested.id = "fx-nested";
+    nested.className = "overflow-y-auto";
+    holder.appendChild(nested);
+    document.querySelector("main")!.appendChild(holder);
+    const body = document.createElement("div");
+    body.style.height = `${holder.clientHeight}px`;
+    nested.appendChild(body);
+  });
+  await expect(page.locator("#fx-nested[data-askbar-clear]")).toBeAttached({ timeout: 10_000 });
+  await page.waitForTimeout(500);
+  const end = await page.locator("#fx-holder").evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+    return el.scrollTop;
+  });
+  expect(end, "the nested pane's room does not make the holder scroll").toBeGreaterThan(0);
+  await page.waitForTimeout(700);
+  await page.evaluate(() => document.querySelector("main")!.appendChild(document.createElement("span")));
+  await page.waitForTimeout(700);
+  expect(await page.locator("#fx-holder").evaluate((el) => el.scrollTop), "the scan left the holder clamped").toBe(end);
+});
+
 test("a settings page scrolls its last line above the bar", async ({ page }) => {
   test.setTimeout(120_000);
   await open(page, "/settings/appearance", {});

@@ -1285,6 +1285,24 @@ on to the sub-run.
   `ask_user` parks through `_make_user_input_handler(<parent thread>)`, and
   no test runs that path through `orchestrator`.
 
+**The last line of a page scrolls clear of the Ask bar** (owner, 2026-11-07,
+ASK-1, task 2242). The owner asked for "extra scroll down so that all the
+elements appear above the chat box across all of the apps". The bar floats over
+the page column and reserves no space, so `lib/shell/askBarClearance.ts` adds
+the room:
+
+- The bar measures the vertical scrollers that it overlaps. The innermost one
+  that reaches the foot of its holder gets the room. A list in the middle of a
+  page is content, so the page gets the room. A box that scrolls only sideways
+  never gets it.
+- The room is what the bar needs, less the padding that the scroller has.
+- The scan runs after the page changes, on a resize, and after a scroll stops.
+  It puts every scroll position back.
+- The scan adds no room on a phone, or while the bar is folded.
+
+A new app needs no code for this. Fences: `askBarClearance.test.ts` and
+`e2e/askbar-clearance.spec.ts`.
+
 ### 7.1.1 Email through the one assistant (built 2026-10-23, branch `one-assistant-email`)
 
 **Status: BUILT on the branch `one-assistant-email`, not merged.** No flag,
