@@ -27,9 +27,10 @@
  * after every inline script in the document.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import SandboxedHtml from "@/components/SandboxedHtml";
+import { compileDelay } from "@/lib/compileDebounce";
 
 interface SandboxedReactProps {
   /** Agent-authored React source. Must default-export a component. */
@@ -122,22 +123,32 @@ export default function SandboxedReact({
     setState(initial(code));
   }
 
+  // Whether this frame has sent a compile yet. The first source compiles at
+  // once. A later one waits for a pause in the typing (task 2432): the route
+  // counts each compile against the member's rate limit.
+  const compiledOnce = useRef(false);
+
   useEffect(() => {
     // Cached sources were resolved during render; nothing async to do.
     if (compileCache.has(code)) return;
     // `cancelled` also guards against a slow compile for older source landing
     // after a newer one: React runs this cleanup before re-running the effect.
+    // The same cleanup drops a compile that still waits for its pause.
     let cancelled = false;
-    void compile(code).then((result) => {
-      if (cancelled) return;
-      setState(
-        result.ok
-          ? { status: "ready", js: result.js }
-          : { status: "error", error: result.error },
-      );
-    });
+    const timer = setTimeout(() => {
+      compiledOnce.current = true;
+      void compile(code).then((result) => {
+        if (cancelled) return;
+        setState(
+          result.ok
+            ? { status: "ready", js: result.js }
+            : { status: "error", error: result.error },
+        );
+      });
+    }, compileDelay(!compiledOnce.current));
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [code]);
 

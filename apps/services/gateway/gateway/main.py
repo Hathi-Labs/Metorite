@@ -1902,6 +1902,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # Task 2432 (F1 of STU-L0) — the rate limit of the React artifact compile.
+    # The workbench takes one slot here before it starts esbuild. The counter
+    # lives in the tenant Redis wrapper.
+    from gateway.routes.artifact_compile import router as _artifact_compile_router
+
+    app.include_router(_artifact_compile_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
     # message that code built (`calendar_events_reminders.md` §5.7). Shares
     # /chat's prefix, in its own module, as the brief does.
