@@ -174,6 +174,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/tasks", "list_tasks", "A"),
     # MCP-G19a (task 1957): the count read. The chat tool is task 2223.
     Route("GET", "/projects/tasks/stats", "board_stats", "A"),
+    # MCP-G21 (task 2216): the members a task can go to. The chat tool waits.
+    Route("GET", "/projects/assignable-members", "assignable_members", "A"),
     Route("GET", "/projects/tasks/{task_id}", "task_detail", "A"),
     # D-OP-10 (OP-7): the subtasks a delete card offers, hidden ones counted.
     Route("GET", "/projects/tasks/{task_id}/subtree", "delete_task", "C"),
@@ -430,6 +432,9 @@ MANIFEST: tuple[Route, ...] = (
     # S7d — the plan preview (plan_preview.py). It writes nothing, so it is
     # in READ_ONLY_POSTS. Its class is the tool's: propose_plan is class B.
     Route("POST", "/projects/plan/preview", "propose_plan", "B"),
+    # PJP-6a: the plan engine's read. SP-12 gives it the chat tool `get_plan`
+    # (class A), the same read that the MCP tool `get_plan` makes.
+    Route("GET", "/projects/plan/analysis", "get_plan", "A"),
     Route("GET", "/projects/reports", "report_list", "A"),
     # WS-27bn R2 - the template gallery. It must sit ABOVE the
     # {report_id} row, because route_for takes the first match. R-final:
@@ -557,6 +562,8 @@ MANIFEST: tuple[Route, ...] = (
 #: builds each. The coverage fence holds this against ``__all__``: a tool is
 #: exported OR it is here, never both and never neither.
 PLANNED: dict[str, str] = {
+    # MCP-G21: the route is built. The chat reads people through `people_for`.
+    "assignable_members": "Metorite task 2216, chat parity for the assignable member list",
     # MCP-G19a: the route is built. The chat tool waits on Metorite task 2223.
     "board_stats": "Metorite task 2223, chat parity for the board count",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
@@ -745,6 +752,8 @@ IDENTITY_HEADERS: frozenset[str] = frozenset(
 #: argument, for example ``create_tasks.tasks.due``. The fence checks each
 #: witness of the tuple on the wire.
 SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
+    # ── the plan engine (SP-12) ──────────────────────────────────────────
+    ("GET", "/projects/plan/analysis"): {"root_task_id": "get_plan"},
     # ── agent runs (WS-64 OP-6e) ─────────────────────────────────────────
     ("GET", "/projects/agent-runs"): {
         "status": "waiting_agent_requests",
@@ -1241,6 +1250,10 @@ _STATS_ROUTE_REASON = (
     "A field of the board count route of the agent door (MCP-G19a). Its "
     "chat tool is Metorite task 2223."
 )
+_MEMBERS_ROUTE_REASON = (
+    "The project filter of the assignable member route of the agent door "
+    "(MCP-G21). Its chat tool is Metorite task 2216."
+)
 _READ_FILTER_REASON = (
     "A filter of the app's list. The chat narrows tasks through list_tasks, "
     "which prints the facts this filter reads."
@@ -1288,6 +1301,12 @@ _STATUS_PLACE_REASON = (
 
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
+    # SP-12: `get_plan` and the MCP tool plan from today. A first working day
+    # is a web planner override, and the chat has no use for it.
+    ("GET", "/projects/plan/analysis"): {
+        "start": "A web planner override of the first working day. The chat and the MCP plan from today (SP-12).",
+    },
     ("GET", "/projects/tasks/stats"): {
         "assigned": _STATS_ROUTE_REASON,
         "assignee": _STATS_ROUTE_REASON,

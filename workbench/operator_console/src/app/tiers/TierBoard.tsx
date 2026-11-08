@@ -50,7 +50,10 @@ import { describeTierRate } from "@/lib/catalog";
 import { capableModelsFor } from "@/lib/readiness";
 import { chipClass, pricingTone } from "@/lib/tone";
 import { DECIDE_TIER } from "@/lib/decide";
+import { STT_TIER, VISION_TIER } from "@/lib/voiceTry";
 import TryDecision from "./TryDecision";
+import TrySpeech from "./TrySpeech";
+import TryVision from "./TryVision";
 
 function Provider({ model }: { model: string }) {
   const p = model.includes("/") ? model.slice(0, model.indexOf("/")) : model;
@@ -641,6 +644,9 @@ export default function TierBoard({
                       {/* CP-13b: prove the decide binding before an app
                           depends on it. The one tier with a Try panel. */}
                       {t.slug === DECIDE_TIER && <TryDecision />}
+                      {/* VOX-4: the same proof for speech and for images. */}
+                      {t.slug === STT_TIER && <TrySpeech />}
+                      {t.slug === VISION_TIER && <TryVision />}
                     </section>
                   );
                 })}

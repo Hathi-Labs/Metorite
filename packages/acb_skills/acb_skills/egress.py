@@ -1585,12 +1585,14 @@ def is_held_card_write(item: Any) -> bool:
 
 
 #: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
-#: slug. The pack is the ``calendar-day`` pack, and its eight tools are the My
-#: Tasks planner tools, which the Tasks assistant holds too. **The choice.** In a
-#: held chat the pack holds off its six writes. They have no card: a plan is
+#: slug. The pack is the ``calendar-day`` pack, and its sixteen tools are the
+#: My Tasks planner tools, the two calendar settings tools and the four day rule
+#: tools, which the Tasks assistant holds too. **The choice.** In a held chat the
+#: pack holds off its twelve writes. They have no card: a plan is
 #: proposed in text and applied by a second call, so mail that the chat read
-#: could steer the apply. The pack keeps its two reads (``my_tasks_day_digest``
-#: and ``my_tasks_list_schedule``, ``read_only=True``). **Why a pack-slug table
+#: could steer the apply. The pack keeps its four reads (``my_tasks_day_digest``,
+#: ``my_tasks_get_calendar_settings``, ``my_tasks_list_day_rules`` and
+#: ``my_tasks_list_schedule``, ``read_only=True``). **Why a pack-slug table
 #: and not a bare name.** :func:`is_held_off_write` matches on the bare name
 #: before the owner, so naming these tools through the pack family would also
 #: strip them from the Tasks assistant, whose held-chat tool list on main keeps
@@ -1601,6 +1603,14 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
     "calendar-day": frozenset({
         "my_tasks_plan_day", "my_tasks_replan_day", "my_tasks_rollover",
         "my_tasks_schedule", "my_tasks_set_one_thing", "my_tasks_unschedule",
+        "my_tasks_update_calendar_settings",
+        # CAL-3 (task 1677): the three writes of the day rules. The read
+        # (``my_tasks_list_day_rules``) stays.
+        "my_tasks_add_day_rule", "my_tasks_delete_day_rule", "my_tasks_edit_day_rule",
+        # CAL-4 (task 1678): the two day flows. They write no calendar, but
+        # their propose calls store a pending plan on the server, which a later
+        # apply replays. Mail that a held chat read could steer that apply.
+        "my_tasks_close_my_day", "my_tasks_start_my_day",
     }),
 }
 

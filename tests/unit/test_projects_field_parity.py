@@ -282,6 +282,7 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-57 TR-3: a URL on the task.
     "add_task_ref": {"task_id": UUID, "url": "https://github.com/acme/widgets/pull/12"},
     "analytics_finished": {},
+    "get_plan": {"root_task_id": UUID},
     "analytics_load": {},
     "analytics_outlook": {},
     "analytics_stuck": {},

@@ -116,15 +116,18 @@ For a team of people who each run agents on one board, read `docs/external_agent
 
 ## What the agent can do
 
-Ten tools read:
+Twelve tools read:
 
 | Tool | What it reads |
 |---|---|
 | `whoami` | The member and the organization of the connection, its scopes and its pins |
 | `list_projects` | The projects you see |
 | `get_project` | One project |
+| `list_members` | The members that `set_assignees` accepts, with the address and the name only. Send `project_id` for one project. Without it, you get the members who open at least one project you see. A task in a personal project takes only its owner. `agent:<name>` is not in the list |
+| `list_tags` | The tag names of one project tree, or of every tree you see. Tags belong to the top project of a tree. A name shows once, in alphabetical order. Read it before you make a tag, so you reuse a name |
 | `list_tasks` | The tasks you see, at most 100 in one call. It filters by project, status, tag, assignee and text. It also filters by `status_category` (a list of backlog, todo, in_progress, done and cancelled), `updated_before`, `updated_after`, `created_after` and `due_before` (ISO dates), `has_parent` (false gives top-level tasks), `is_epic`, `assigned` (false gives tasks with no assignee) and `title_prefix` (not case sensitive, such as a plan id). With `compact` true, each row is small and one call gives up to 500 rows |
 | `board_stats` | The number of tasks you see, with no rows. It takes the filters of `list_tasks`. `group_by` takes one or two of `project`, `status_category`, `is_epic`, `assignee`, `holder` and `updated_age` (bands `<1d`, `1-3d`, `3-7d`, `7-30d`, `>30d`). Its `total` equals the rows that `list_tasks` gives for the same filters. A task with two assignees counts once for each under `assignee` |
+| `get_plan` | The order of work under one goal, epic or project: `root_task_id`. It returns the `ready` slices, the `waves`, the `critical_path` with `slack` in minutes, one `finish` date, the `next_slice`, the slices `held` by an open blocker outside the tree (`outside_blockers`), a `cycle` if the links loop, and `hidden`, the count of slices you cannot see. It names no hidden slice. `labels` gives the number and title of the tasks it names. It gives one finish date and no range. A read-only connection can call it |
 | `get_task` | One task, with its references. For an epic, `epic_contract` holds its contract: the outcome, 3 to 7 acceptance checks, what is out of scope, the risk tier, the appetite, the workstream and the spec link. For any other task it is `null` |
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |

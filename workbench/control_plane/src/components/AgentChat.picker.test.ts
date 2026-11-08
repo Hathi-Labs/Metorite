@@ -97,7 +97,7 @@ const hasEffort = (html: string) => html.includes('title="Let the model decide"'
 const hasAgentSwitch = (html: string) => /rounded-full bg-success shrink-0"><\/span><span class="truncate max-w-\[72px\]/.test(html);
 
 /** The picker trigger's label for each model the tests use. */
-const PICKER_LABELS = ["auto (SDK picks)", "Tier 3 (powerful)"];
+const PICKER_LABELS = ["Auto (the assistant picks)", "Tier 3 (powerful)"];
 const hasPicker = (html: string) => PICKER_LABELS.some((l) => html.includes(l));
 
 const read = (rel: string) => readFileSync(join(__dirname, rel), "utf-8");
