@@ -208,6 +208,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "rebalance": [{"project_id": UUID, "horizon_days": 21}, {}],
     # S7c — conflicts
     "find_conflicts": [{"project_id": UUID, "horizon_days": 21}, {}],
+    # SP-12 — the order of work under one task
+    "get_plan": [{"root_task_id": UUID}],
     # S7e — on-the-fly analysis: the table, and the server's groups.
     "task_dataset": [
         {"project_id": UUID, "state": "closed", "tags": "bug"},

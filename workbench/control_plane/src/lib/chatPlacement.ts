@@ -102,6 +102,7 @@ const EVIDENCE: readonly string[] = [
   "fit_for_task",
   "rebalance",
   "find_conflicts",
+  "get_plan",
   "analytics_stuck",
   "analytics_load",
   "analytics_throughput",
