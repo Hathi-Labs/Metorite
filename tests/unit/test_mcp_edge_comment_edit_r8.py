@@ -54,11 +54,21 @@ Fix round 1 adds rules 1 and 2 (spec §9.2) and three more mutations.
   turns red.
 
 Fix round 2 adds rule 3 (a reply of somebody else) and the tests of the
-order (O1 to O4, which are 404 by the checks that come first).
+order (O1 to O4, which are 404 by the checks that come first). Fix round 3
+makes rule 3 the last word: any later comment on the task that is not this
+client's own (L1 to L6).
 
 * G8. ``G/activities.py``: ``_load_agent_comment`` drops the call of
-  ``_has_other_reply``. ``test_y1_a_reply_of_somebody_else_ends_the_agent_change``
-  and ``test_y2_an_edited_or_a_deleted_reply_counts`` turn red.
+  ``_has_later_comment``. ``test_y1_a_reply_of_somebody_else_ends_the_agent_change``,
+  ``test_y2_an_edited_or_a_deleted_reply_counts`` and L1, L2, L4 and L5 turn
+  red.
+* G9. ``G/activities.py``: ``_load_agent_comment`` drops ``lock_task``.
+  ``test_l6_the_task_lock_comes_before_the_last_word_check`` turns red.
+* G10. ``G/activities.py``: the rule of fix round 2 (direct replies only).
+  ``test_l1_a_reply_beside_the_agent_reply_refuses``,
+  ``test_l2_a_new_comment_of_a_peer_refuses``,
+  ``test_l4_a_later_comment_of_the_member_in_the_app_refuses`` and
+  ``test_l5_a_later_comment_that_the_peer_deleted_refuses`` turn red.
 """
 from __future__ import annotations
 
@@ -891,3 +901,81 @@ class TestFixRoundTwo:
         r = await _person(live, MEMBER, "DELETE", f"/projects/comments/{cid}")
         assert r.status_code == 200, r.text
         await _refused_one(live, cid, tool, expected=NOT_FOUND)
+
+
+# ── Fix round 3: the last word ──────────────────────────────────────────────
+
+
+class TestFixRoundThree:
+    """Rule 3 is the last word: the agent changes its own comment only while
+    nobody else has written a comment on the same task after it."""
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    async def test_l1_a_reply_beside_the_agent_reply_refuses(self, live, tool):
+        """The agent asks in a REPLY, and a peer answers beside it. The thread
+        is one level deep, so the answer is no child of the question."""
+        task = live.task("l1")
+        root = await _person_comment(live, MEMBER, task, "l1 the plan for the rows")
+        ask = await _reply(live, root, task, "own", "l1 May I drop the staging rows?")
+        await _reply(live, root, task, "peer", "Yes")
+        await _refused_one(live, ask, tool)
+        assert _comment(live, ask).body == "l1 May I drop the staging rows?"
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    async def test_l2_a_new_comment_of_a_peer_refuses(self, live, tool):
+        """The agent asks at the top level, and a peer answers with a new
+        top-level comment."""
+        task = live.task("l2")
+        ask = await _agent_comment(live, task, "l2 May I drop the staging rows?")
+        await _person_comment(live, PEER, task, "Yes")
+        await _refused_one(live, ask, tool)
+        assert _comment(live, ask).body == "l2 May I drop the staging rows?"
+
+    async def test_l3_only_its_own_later_comments_keep_it_open(self, live):
+        """The control. A peer wrote BEFORE the comment, and only this client
+        wrote after it, at the top level and in a reply."""
+        task = live.task("l3")
+        await _person_comment(live, PEER, task, "l3 an earlier word of a peer")
+        note = await _agent_comment(live, task, "l3 note")
+        await _agent_comment(live, task, "l3 a later note")
+        await _reply(live, note, task, "own", "l3 a later reply")
+        upd = await _tool(live, "write", "update_comment", comment_id=note,
+                          body="l3 fixed note", idempotency_key=_key("l3u"))
+        assert upd["isError"] is False, upd
+        assert _comment(live, note).body == "l3 fixed note"
+        gone = await _tool(live, "write", "delete_comment", comment_id=note,
+                           idempotency_key=_key("l3d"))
+        assert gone["structuredContent"] == {"id": note, "deleted": True}, gone
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    async def test_l4_a_later_comment_of_the_member_in_the_app_refuses(self, live, tool):
+        """The same member, typed in the app with no stamp, is somebody else."""
+        task = live.task("l4")
+        note = await _agent_comment(live, task, "l4 note")
+        await _person_comment(live, MEMBER, task, "l4 typed by the member")
+        await _refused_one(live, note, tool)
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    async def test_l5_a_later_comment_that_the_peer_deleted_refuses(self, live, tool):
+        """A soft-deleted row keeps its place: the check fails closed."""
+        task = live.task("l5")
+        note = await _agent_comment(live, task, "l5 note")
+        theirs = await _person_comment(live, PEER, task, "Yes")
+        r = await _person(live, PEER, "DELETE", f"/projects/comments/{theirs}")
+        assert r.status_code == 200, r.text
+        await _refused_one(live, note, tool)
+
+    def test_l6_the_task_lock_comes_before_the_last_word_check(self):
+        """No new comment on the task commits between the check and the
+        change. ``record_activity`` bumps the task row before it inserts a
+        comment, so the lock must come first, and the comment lock is NO KEY
+        so that a reply's foreign key check never waits on it."""
+        import inspect
+
+        from gateway.routes.projects import activities, core
+
+        src = inspect.getsource(activities._load_agent_comment)
+        assert "FOR NO KEY UPDATE" in src
+        assert src.index("lock_task(") < src.index("_has_later_comment(")
+        spine = inspect.getsource(core.record_activity)
+        assert spine.index("touch_task(") < spine.index("insert_row(")

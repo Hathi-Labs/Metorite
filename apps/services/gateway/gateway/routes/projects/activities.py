@@ -30,6 +30,7 @@ from gateway.routes.projects.core import (
     emit,
     from_jsonb,
     load_visible_task,
+    lock_task,
     now,
     record_activity,
     record_field_change,
@@ -106,7 +107,7 @@ AGENT_MAX_COMMENT_CHARS = 20_000
 #: write. It names who may change the comment. The edge matches this text and
 #: sends its own copy (``agent_edge.tools.COMMENT_NOT_OWN_DETAIL``), and
 #: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal. Rules 1 to 3 of
-#: ``_load_agent_comment`` (fix rounds 1 and 2) send the same detail.
+#: ``_load_agent_comment`` (fix rounds 1 to 3) send the same detail.
 AGENT_COMMENT_NOT_OWN = "Only its author can change this comment in Metorite."
 
 #: MCP-G9 fix round 1, rule 1. The key in ``meta`` that a person's edit sets
@@ -378,23 +379,28 @@ async def _load_agent_comment(
     404. Only a comment on a task that the agent can already read reaches the
     403, and the timeline of that task already shows its author.
 
-    Fix rounds 1 and 2 add three refusals after the 404 checks, with the same
+    Fix rounds 1 to 3 add three refusals after the 404 checks, with the same
     403. Rule 1: a comment that a person edited (``meta.person_edited``, set
     by ``_mark_person_edit``), because its words are now the person's. Rule 2:
     a comment of an agent run (``meta.agent_run_id``), because the run reads
-    it as the record of what the agent asked and answered. Rule 3: a comment
-    with a reply that this client did not write (``_has_other_reply``),
-    because the reply answers the words that the comment holds now.
+    it as the record of what the agent asked and answered. Rule 3, the last
+    word (fix round 3): a comment after which somebody else wrote a comment on
+    the same task (``_has_later_comment``), because that comment may answer
+    the words that this comment holds now.
 
-    ``FOR UPDATE`` holds the row until the change commits, so a delete that
-    commits first makes this read find nothing (404), and the change never
-    writes words into a deleted comment. A person's edit that commits first
-    makes this read find the mark of rule 1.
+    ``FOR NO KEY UPDATE`` holds the row until the change commits, so a delete
+    that commits first makes this read find nothing (404), and the change
+    never writes words into a deleted comment. A person's edit that commits
+    first makes this read find the mark of rule 1. The lock is NO KEY, as the
+    UPDATE of a person takes: it does not block the foreign key check of a
+    reply. So a reply that already holds the task row (``record_activity``
+    bumps the task before it inserts) never waits on this row, and the two
+    cannot deadlock on ``lock_task`` below.
     """
     row = (await db.execute(
         text(
             "SELECT * FROM pm_activities WHERE id = CAST(:aid AS uuid) "
-            "AND type = 'comment' AND deleted_at IS NULL FOR UPDATE"
+            "AND type = 'comment' AND deleted_at IS NULL FOR NO KEY UPDATE"
         ),
         {"aid": activity_id},
     )).fetchone()
@@ -421,29 +427,50 @@ async def _load_agent_comment(
     # or its answer.
     if RUN_COMMENT_KEY in meta:
         raise HTTPException(status_code=403, detail=AGENT_COMMENT_NOT_OWN)
-    # Rule 3: somebody else replied, so the comment is the question of a reply.
-    if await _has_other_reply(db, activity_id, actor(user).lower(), via):
+    # Rule 3, the last word. Without a lock a new comment CAN slip in: its
+    # insert is invisible to this read until it commits, and it can commit
+    # before the change does. `record_activity` bumps the task row BEFORE it
+    # inserts any comment, so the task lock makes each new comment on the task
+    # wait. A comment that bumped first commits first, and this read sees it.
+    try:
+        await lock_task(db, str(row.task_id))
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        raise HTTPException(status_code=404, detail="Comment not found") from None
+    if await _has_later_comment(db, activity_id, actor(user).lower(), via):
         raise HTTPException(status_code=403, detail=AGENT_COMMENT_NOT_OWN)
     return row
 
 
-async def _has_other_reply(db: Any, activity_id: str, who: str, via: str) -> bool:
-    """Rule 3 of MCP-G9 (fix round 2): True when a reply to the comment is
-    not the agent's own.
+#: Rule 3 of MCP-G9 (fix round 3), the last word. A comment row on the task
+#: of *aid* that is later than it, by ``created_at`` and then by ``id``, and
+#: that is not the agent's own. The agent's own means that *who* (the member)
+#: wrote it, its ``meta.via`` is *via*, and no person edited it (rule 1). A
+#: soft-deleted row counts too, so the check fails closed. A reply is on the
+#: same task and always later, so the rule covers a direct reply.
+_LATER_COMMENT_SQL = (
+    "SELECT 1 FROM pm_activities o"
+    " JOIN pm_activities me ON me.id = CAST(:aid AS uuid)"
+    " WHERE o.task_id = me.task_id AND o.type = 'comment'"
+    " AND (o.created_at, o.id) > (me.created_at, me.id)"
+    " AND NOT (lower(o.created_by) = :who"
+    " AND COALESCE(o.meta ->> 'via', '') = :via"
+    " AND (o.meta ->> CAST(:mark AS text)) IS NULL) LIMIT 1"
+)
 
-    A reply is the agent's own only when *who* (the member) wrote it, its
-    ``meta.via`` is *via*, and no person edited it (rule 1). Any other reply
-    counts: one that the member typed in the app or the chat, one of another
-    member, and one of another agent client. A deleted reply counts too: the
-    check fails closed, and the soft delete keeps the row.
+
+async def _has_later_comment(db: Any, activity_id: str, who: str, via: str) -> bool:
+    """Rule 3 of MCP-G9, the last word: True when somebody else wrote a
+    comment on the task after this comment (``_LATER_COMMENT_SQL``).
+
+    Somebody else is any author but this client: the member in the app or the
+    chat, another member, another agent client, and the client's own comment
+    after a person edited it. The caller holds the task lock, so no new
+    comment on the task commits between this read and the change.
     """
     found = (await db.execute(
-        text(
-            "SELECT 1 FROM pm_activities WHERE parent_id = CAST(:aid AS uuid)"
-            " AND NOT (lower(created_by) = :who"
-            " AND COALESCE(meta ->> 'via', '') = :via"
-            " AND (meta ->> CAST(:mark AS text)) IS NULL) LIMIT 1"
-        ),
+        text(_LATER_COMMENT_SQL),
         {"aid": activity_id, "who": who, "via": via, "mark": PERSON_EDITED_KEY},
     )).fetchone()
     return found is not None

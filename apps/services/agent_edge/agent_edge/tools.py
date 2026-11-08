@@ -5795,13 +5795,14 @@ TEXT_COMMENT_NOT_FOUND = "Comment not found."
 #: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal. The edge matches
 #: the detail and sends its own text, never the detail.
 COMMENT_NOT_OWN_DETAIL = "Only its author can change this comment in Metorite."
-#: MCP-G9 fix round 2: the text names the three rules of fix rounds 1 and 2,
-#: because the gateway sends the one detail for each of them too.
+#: MCP-G9 fix rounds 2 and 3: the text names the three rules of the fix
+#: rounds in one sentence, because the gateway sends the one detail for each
+#: of them too.
 TEXT_COMMENT_NOT_OWN = (
     COMMENT_NOT_OWN_DETAIL + " An agent can change only a comment that its own"
-    " client wrote. It cannot change a comment that a person edited, or a"
-    " question or an answer of an agent run. It cannot change a comment with a"
-    " reply that this client did not write. Nothing changed.")
+    " client wrote. It cannot change a comment when a person edited it, it"
+    " belongs to an agent run, or someone else wrote on the task after it."
+    " Nothing changed.")
 TEXT_COMMENT_CHANGE_KEY_REUSED = (
     "This idempotency_key was used for a different change. Send a new key.")
 TEXT_COMMENT_CHANGE_KEY_UNKNOWN = (
@@ -5944,11 +5945,11 @@ async def _delete_comment(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 _COMMENT_RULE_TEXT = (
     " You may change only a comment that this client wrote: the member is its"
     " author, and its meta.via in get_task_timeline is the stamp of this"
-    " client. Metorite refuses a comment that the member typed or edited in"
-    " Metorite, a comment of an agent run (a question or an answer), a"
-    " comment of another member and a comment of another agent client, and"
-    " nothing changes. It also refuses a comment with a reply that this client"
-    " did not write. A comment that is gone, or on a task that this"
+    " client. Metorite refuses a comment that the member typed in Metorite, a"
+    " comment of another member and a comment of another agent client. It also"
+    " refuses your comment when a person edited it, it belongs to an agent run,"
+    " or someone else wrote on the task after it. Nothing changes then. A"
+    " comment that is gone, or on a task that this"
     " connection cannot reach, answers Comment not found. The timeline of the"
     " task gets one row that says what changed and names your client. That"
     " row holds no text of the comment."

@@ -3706,6 +3706,8 @@ async def lock_task(db: Any, task_id: str) -> Any:
     that load."""
     # WS-55 EA-6h: `tasks.agent_delete_task` calls it too, after its own
     # visibility load, so the version and title checks hold until the delete.
+    # WS-55 MCP-G9 (fix round 3): `activities._load_agent_comment` calls it
+    # too, so no new comment on the task commits during the last-word check.
     row = (await db.execute(text(_LOCK_TASK_SQL), {"tid": str(task_id)})).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found")
