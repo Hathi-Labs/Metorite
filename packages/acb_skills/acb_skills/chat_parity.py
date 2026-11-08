@@ -99,6 +99,8 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/agent/chat", "chat"),
     ("/api/agent/cancel", "chat"),
     ("/api/agent/respond-input", "chat"),
+    # projects_ai_chat.md §31 VOX-1: the mic of the composer.
+    ("/api/agent/transcribe", "chat"),
     ("/api/agent/workspace", "chat"),
     ("/api/agent/artifacts", "chat"),
     ("/api/agent", "agents"),
@@ -204,6 +206,15 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # tests/unit/test_calendar_day_pack.py.
     "POST /api/tasks/calendar/{}": "my_tasks_plan_day",
     "PUT /api/tasks/calendar/day-state": "my_tasks_set_one_thing",
+    # CAL-2 (task 1676): the CALENDAR fields of the settings (the standing instruction,
+    # the working hours, capacity, buffer, focus run, break, lunch, energy windows,
+    # auto rollover, time zone). The model choices, the sync flags and capture_dedup
+    # are not here: the tool has no parameter for them. The day rules
+    # (day_templates) are written by the four day rule tools of CAL-3 (task 1677),
+    # through the same route with an If-Match token. Fence:
+    # tests/unit/test_calendar_settings_tools.py and tests/unit/test_day_rules_tools.py.
+    "GET /api/tasks/settings": "my_tasks_get_calendar_settings",
+    "PUT /api/tasks/settings": "my_tasks_update_calendar_settings",
     # ── Email ──
     "DELETE /api/email/accounts/{}": "update_account",
     "DELETE /api/email/knowledge/{}": "delete_knowledge",
@@ -562,6 +573,14 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "chat",
         "Sends a turn to the assistant. The member does it by typing in the chat.",
     ),
+    "GET /api/agent/transcribe": (
+        "chat",
+        "Reads whether the message box shows the mic (VOX-1). It is part of the chat's own composer.",
+    ),
+    "POST /api/agent/transcribe": (
+        "chat",
+        "Turns the member's spoken words into text in the message box (VOX-1). The member then sends it as a turn.",
+    ),
     "POST /api/agent/respond-input": (
         "chat",
         "Answers a card that the chat asked. It is the chat's own transport.",
@@ -663,7 +682,6 @@ DEBT: dict[str, str] = {
     "DELETE /api/studio/packages/{}": "P-9",
     "GET /api/studio/packages/{}/delete-preview": "P-9",
     # ── Tasks ──
-    "GET /api/tasks/settings": "P-1",
     "POST /api/tasks/ai/backfill-context": "P-1",
     "POST /api/tasks/capture/from-email": "P-1",
     "POST /api/tasks/capture/from-email/create": "P-1",
@@ -673,7 +691,6 @@ DEBT: dict[str, str] = {
     "POST /api/tasks/capture/from-reply/detect": "P-1",
     "POST /api/tasks/items/{}/enrich": "P-1",
     "POST /api/tasks/items/{}/suggest-title": "P-1",
-    "PUT /api/tasks/settings": "P-1",
     # ── Calendar ──
     "GET /api/tasks/calendar/day-state": "P-1",
     # ── Email ──
@@ -1081,7 +1098,7 @@ DEBT: dict[str, str] = {
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
     "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
-    "tasks": 11,
+    "tasks": 9,
     "calendar": 1,
     "email": 13,
     "crm": 73,

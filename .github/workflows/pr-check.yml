@@ -293,7 +293,7 @@ jobs:
   # reaches pytest as an empty list, because pytest then collects everything.
   test:
     name: "Unit tests (shard ${{ matrix.shard }})"
-    # CIV-23 (D201). ONLY this job may reach the box runners. The variable is
+    # CIV-23 (D201). Every job but e2e and backup-restore may reach the box runners. The variable is
     # the switch, and the same-repo test keeps a fork PR off the box. A fork
     # PR always gets `ubuntu-24.04`. Fence: tests/unit/test_box_runner_routing.py.
     runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
@@ -712,7 +712,7 @@ jobs:
   backup-restore:
     name: "Backup/restore rehearsal"
     runs-on: ubuntu-24.04
-    # CIV-23 (D198). Stays hosted. The verify container count and the EXIT trap
+    # CIV-23 (D201). Stays hosted. The verify container count and the EXIT trap
     # of scripts/rehearse_verify_scratch.sh work on the WHOLE Docker daemon, so two
     # runs on the box daemon would kill each other (CIV-6).
     # Its scripts live under scripts/, and the schema under infra/. A PR

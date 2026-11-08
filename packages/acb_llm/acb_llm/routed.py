@@ -44,6 +44,7 @@ from typing import Any
 from acb_common import get_logger
 
 __all__ = [
+    "OUT_OF_CREDITS",
     "RoutedRefusal",
     "completion_on_router",
     "router_wired",
@@ -52,6 +53,14 @@ __all__ = [
 ]
 
 _log = get_logger("acb_llm.routed")
+
+#: The ONE sentence for a member when the Router answers 402 (no credits).
+#: The WhatsApp bot (``bot_run.REPLY_CREDITS``) and ``analyze_image``
+#: (WS-VOX VOX-3) send it as it is. Fence: ``tests/unit/test_wac_bot_run.py``.
+OUT_OF_CREDITS = (
+    "Your organization is out of AI credits. An admin can add credits in "
+    "Settings, Billing."
+)
 
 #: The OPTIONAL fields `customer_console.main.CompletionRequest` accepts.
 #:

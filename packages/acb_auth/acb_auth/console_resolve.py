@@ -172,6 +172,7 @@ __all__ = [
     "BILLING_READ_DOORS",
     "CAPABILITY_REFUSAL_PREFIX",
     "CONSOLE_UNAVAILABLE",
+    "TRANSCRIBE_TIER",
     "WORKSPACE_CHOOSER_REQUIRED",
     "ConsoleBillingUnavailable",
     "ConsoleMemberWriteUnavailable",
@@ -199,6 +200,7 @@ __all__ = [
     "resolve_for_signin",
     "router_is_wired",
     "seat_overview_on_console",
+    "transcribe_on_console",
 ]
 
 #: Auth.js v5's vocabulary is FIXED — returning `false` from the `signIn`
@@ -2728,6 +2730,103 @@ async def embeddings_on_console(
     if not isinstance(body, dict):
         body = {}
     return status, body
+
+
+#: The ONE tier the chat's voice input names (`projects_ai_chat.md` §31,
+#: VOX-1). The Console's `016_tier_task.sql` binds it to `transcribe`, so the
+#: door declares the task and the operator's binding picks the model.
+TRANSCRIBE_TIER = "tier-stt"
+
+#: A clip is not a chat turn. The Console gives each step of the chain 120 s
+#: (`main.py::audio_transcriptions`), and a 120 s clip that fails over to a
+#: second step passes `_ROUTER_TIMEOUT_SECONDS`. This bound is longer, so the
+#: gateway does not drop an answer that the Console has already billed. It is
+#: still finite, so a wedged Console cannot hold a gateway worker for ever.
+_TRANSCRIBE_TIMEOUT_SECONDS = 180.0
+
+
+async def transcribe_on_console(
+    audio: bytes,
+    *,
+    filename: str,
+    content_type: str,
+    member: str | None = None,
+    #: Whether the gateway VERIFIED that member (H-73). A cap may key on it.
+    member_proven: bool = False,
+    agent: str | None = None,
+    module_slug: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Ask the Console's ``POST /v1/audio/transcriptions`` door for one transcript.
+
+    WS-31 §6A.10a is the door, and ``projects_ai_chat.md`` §31 VOX-1 is its
+    first tenant caller: the chat's mic. The body is multipart. It holds the
+    field ``file``, whose name carries the extension (an OpenAI-family
+    provider reads the format from it), and the form field
+    ``model=tier-stt``. It never sends ``stream``: the door answers 400 to a
+    truthy one. No ``run_id`` travels, because a gateway route is not a run.
+
+    Returns the Console's ``(status_code, body)`` for EVERY answer, a 5xx
+    included. ⚠️ **This is the one difference from the chat client.** The
+    caller maps each status to one sentence for the member, and a 503 that
+    says "no provider credential" is a setup fault, not an outage. The chat
+    client's rule, which turns each 5xx into "unavailable", would hide that.
+    It raises :class:`ConsoleRouterUnavailable` only when no answer came: the
+    box is unwired, the member is not proven on a deployment key, or the
+    network failed or timed out.
+
+    🔴 **The credential path is the chat client's, exactly.** The same
+    :func:`router_is_wired` gate, the same :func:`router_credential` pick, the
+    same :func:`_require_proven_member_on_deployment` refusal and the same
+    :func:`_attribution_headers`. A second credential picker here would be the
+    second Console client this module forbids.
+
+    ⚠️ **THERE IS NO RETRY**, for the chat client's reason. The Console meters
+    and CHARGES a transcript per minute on the way through.
+
+    ⚠️ **The audio is held in memory only.** httpx builds the multipart body
+    from ``audio``, and nothing here writes it to disk.
+    """
+    if not router_is_wired():
+        raise ConsoleRouterUnavailable("unwired")
+
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    # 🔴 **The credential is CHOSEN, never assumed to be the org key** (H-152).
+    chosen = router_credential()
+    if chosen is None:  # pragma: no cover - `router_is_wired` guards above
+        raise ConsoleRouterUnavailable("unwired")
+    kind, key = chosen
+
+    # The same local refusal the chat, decide and embed clients make.
+    _require_proven_member_on_deployment(kind, member, member_proven)
+
+    headers = {"Authorization": f"Bearer {key}"}
+    headers.update(
+        _attribution_headers(
+            member=member, agent=agent, module_slug=module_slug, run_id=None,
+            member_proven=member_proven,
+        )
+    )
+
+    try:
+        client = _new_http_client(_TRANSCRIBE_TIMEOUT_SECONDS)
+        async with client:
+            response = await client.post(
+                f"{base}/v1/audio/transcriptions",
+                headers=headers,
+                data={"model": TRANSCRIBE_TIER},
+                files={"file": (filename, audio, content_type)},
+            )
+    except Exception as exc:
+        raise ConsoleRouterUnavailable(str(exc)[:200]) from exc
+
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return response.status_code, body
 
 
 class ConsoleRouterVerdict(Exception):
