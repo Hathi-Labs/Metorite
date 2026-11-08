@@ -545,7 +545,7 @@ list on 2026-11-07 from every writer in `apps/` and `packages/`.
 | `agent_door_call` | `acb_auth/deps.py:691` | Has `organization_id` and `payload.member`. An external agent called a door for a member |
 | `agent_push_by_reviewer` | `orchestrator/executor.py:4438` | Has the org and `payload.member`. Its `reviewed_by` is `chat:autopush` |
 | `mutation_commit_auto_pushed` | `orchestrator/mutation.py:527` | No org and no member on the row. It gives no row for a tenant until a finding of BR-7b-3 is fixed |
-| `execute:<action>` | `action_broker/broker.py` (`_audit`) | Has the org since task 2189 (`broker._audit` stamps the bound tenant). No `payload.member`: `execute()` has no member, so the row is not listed until a later slice passes `reviewed_by` |
+| `execute:<action>` | `action_broker/broker.py` (`_audit`) | Has the org since task 2189 (`broker._audit` stamps the bound tenant). Since task 2220, `approve` passes `reviewed_by` from the session, and the row has `payload.member`. An auto-applied act (`submit`) has no member, so it is not listed. With no bound tenant and the bind on, `execute` refuses and runs no handler |
 
 The reader excludes these rows by name, and every action not in the table
 is out by default. `llm_completion` (`acb_llm/client.py:699`) is a usage
