@@ -145,13 +145,14 @@ def _gateway_routes() -> set[tuple[str, str]]:
 
 
 #: The methods a write pair may have (EA-6a, §9.5 rule 1). MCP-G2 adds
-#: ``PUT``, for the one PUT of the assignee set.
-WRITE_METHODS = frozenset({"PATCH", "POST", "PUT"})
+#: ``PUT``, for the one PUT of the assignee set. SW-16a adds ``DELETE``, for
+#: the one DELETE of a task link (``remove_task_link``).
+WRITE_METHODS = frozenset({"PATCH", "POST", "PUT", "DELETE"})
 
 
 def test_the_allowlist_is_not_empty_and_is_get_only_outside_the_write_pairs():
     """Rule 1, the method half. Every pair outside ``MCP_WRITE_ROUTES`` is a
-    GET. Every write pair is a PATCH, a POST or a PUT, and sits in
+    GET. Every write pair is a PATCH, a POST, a PUT or a DELETE, and sits in
     ``MCP_ROUTES``."""
     assert MCP_ROUTES, "an empty allowlist would make every rule below vacuous"
     assert MCP_WRITE_ROUTES <= MCP_ROUTES
@@ -169,7 +170,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     assignees and the task move (§9.2). MCP-G1 adds the node POST and PATCH,
     the move preview and the move (§9.2). MCP-G15 adds the outside decision
     (§12.1): an agent records a decision that its member made outside
-    Metorite, on its own awaiting run."""
+    Metorite, on its own awaiting run. SW-16a adds the link POST and the link
+    DELETE, the routes of ``add_task_link`` and ``remove_task_link``."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -189,6 +191,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
+        ("POST", "/projects/tasks/{task_id}/links"),
+        ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
