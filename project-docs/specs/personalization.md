@@ -34,7 +34,7 @@ other private chats, and at most 3 of their due tasks. The block shows only
 with `ASSISTANT_BRIEFING_ORGS` on for the org. See §15.4 "As built, PZ-34",
 §15.9 and D-PZ-38 in §15.11.
 
-**§18 ACCEPTED 2026-11-08 (D196), except Q8, which is open. No slice is built.** It adds the epic "Setup health" (Metorite task 940, slice SH-0 task 945). Each live app lists its setup items. The chat raises one missing item at a time, on the seam of the interview, inside the limits of D-PZ-13.
+**§18 ACCEPTED 2026-11-08 (D196). No slice is built.** It adds the epic "Setup health" (Metorite task 940, slice SH-0 task 945). Each live app lists its setup items. The chat raises one missing item at a time, on the seam of the interview, inside the limits of D-PZ-13.
 
 A later phase adds measures and a score. Questions: §18.12.
 
@@ -1138,7 +1138,7 @@ setup item and its state: done, missing or stale. The first items:
 - **On WhatsApp:** only through Reach (WS-59, D103), and only when the owner
   turns that on.
 
-**Setup health (§18, PROPOSED).** Each item gains a measure, a scope, a fix and a weight. The chat nudge and the budget are in §18.6.
+**Setup health (§18, ACCEPTED, D196).** Each item gains a measure, a scope, a fix and a weight. The chat nudge and the budget are in §18.6.
 
 **Limits.** At most one setup question a day. A dismissed item waits 14 days.
 "Don't ask again" stops that item for good. The member sees every item in
@@ -1159,7 +1159,7 @@ preference is a defect. A later fence test fails on an app that reads
 `user_settings.assistant_profile` or `email_voice_profiles` outside those two
 modules.
 
-§18.5 lists the fields of a check, and the `setup` field holds the check ids of a pane (PROPOSED).
+§18.5 lists the fields of a check, and the `setup` field holds the check ids of a pane (ACCEPTED, D196).
 
 This is how the system stays true as the app grows. A new app declares what
 it reads and what it needs set up. The coach then asks for it, and the
@@ -3611,8 +3611,8 @@ so every CORE rule still binds the answer itself. Plain keeps every rule.
 ## 18. Setup health: a nudge in the chat, then a score (ACCEPTED 2026-11-08)
 
 **Status: ACCEPTED 2026-11-08 (D196).** The owner answered Q1 to Q7 on
-task 945 at 15:02 UTC: "Approve all 7 recommended defaults". **Q8 is open.**
-The owner has not answered it, and D196 does not cover it.
+task 945 at 15:02 UTC: "Approve all 7 recommended defaults". The owner
+answered Q8 at 15:07 UTC: the nudge state lives in `my_day_prefs`.
 
 Nothing in this section is built. It adds the epic SH (Metorite task 940) and
 its first slice, SH-0 (task 945). The decision record is **D196**
@@ -4046,8 +4046,8 @@ planned, and its rule is advisory until the slice builds.
 
 Each question has a default. The default stands until the owner answers.
 **Q1 to Q7 are decided** (D196, owner, 2026-11-08 15:02 UTC, "Approve all 7
-recommended defaults"). **Q8 is open.** The owner has not answered Q8, and its
-default stands until a person answers.
+recommended defaults"). **Q8 is decided** (owner, 2026-11-08 15:07 UTC, "Keep
+it in the Get started settings (my_day_prefs), no new table").
 
 | # | Question | Recommended default |
 |---|---|---|
@@ -4120,5 +4120,5 @@ merge confirms the number (R1).
 | **D-SH-4** | Who gets an admin nudge? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Admins only (Q4) |
 | **D-SH-5** | "Not for us"? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Yes, for both kinds, with Undo (Q5) |
 | **D-SH-6** | Where does the nudge show? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** The chat first (Q6) |
-| **D-SH-8** | Where does the nudge state live? | **Open. The owner has not answered Q8, and D196 does not cover it.** The proposed default: the `setup` key of `my_day_prefs`, beside the item state (Q8) |
+| **D-SH-8** | Where does the nudge state live? | **Decided: owner, 2026-11-08 15:07 UTC, on task 945 ("Keep it in the Get started settings (my_day_prefs), no new table"), recorded in D196.** The `setup` key of `my_day_prefs`, beside the item state. No new table (Q8) |
 | **D-SH-7** | A band or a streak? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** No (Q7) |
