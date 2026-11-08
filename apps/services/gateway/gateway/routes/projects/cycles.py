@@ -57,6 +57,11 @@ writes one ``cycle_transfer`` activity with the meta
 is off too. The start snapshot does not change, and a closed cycle keeps its
 rows.
 
+**A race.** A deadlock, a serialization failure or a lock timeout
+(``core.TRANSIENT_SQLSTATES``) in a route that writes answers 409
+``cycle_changed``, never 500 (:func:`_cycle_race_as_409`). Postgres rolled the
+transaction back, so nothing was written, and the caller may send it again.
+
 The tenant and the actor come from the session. ``organization_id`` is the
 column DEFAULT, the bound tenant, and each ``*_by`` is the caller's email. The
 wire models forbid an extra key.
@@ -66,8 +71,9 @@ Fence: ``tests/unit/test_sprint_store_r8.py`` (R8).
 
 from __future__ import annotations
 
+import functools
 import uuid
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
 from datetime import date
 from decimal import Decimal
@@ -83,6 +89,7 @@ from gateway.routes.projects.core import (
     actor,
     assert_not_archived,
     clean_payload,
+    is_transient,
     load_visible_project,
     load_visible_task,
     record_activity,
@@ -154,6 +161,40 @@ _ENABLED = [Depends(require_sprints)]
 def _refusal(status: int, error: str, message: str) -> HTTPException:
     """A refusal that says what happened and what to do next."""
     return HTTPException(status_code=status, detail={"error": error, "message": message})
+
+
+#: The words of the 409 of a race (:func:`_cycle_race_as_409`).
+RACE_MESSAGE = (
+    "The cycle changed while this ran, so nothing was saved. Try again."
+)
+
+
+def _cycle_race_as_409(
+    route: Callable[..., Awaitable[Any]],
+) -> Callable[..., Awaitable[Any]]:
+    """Answer a transient SQLSTATE in *route* with a 409, not a 500.
+
+    The set is ``core.TRANSIENT_SQLSTATES``, read by ``core.is_transient``:
+    the one set that the import writer retries on and that the tree routes
+    answer the same way (``tree._tree_race_as_409``). A close locks its tasks
+    in id order, and a bulk move or a node move locks them in its own order,
+    so the two can deadlock. Postgres then rolls one back, and nothing of it
+    stays. ``functools.wraps`` keeps the signature that FastAPI reads.
+    """
+
+    @functools.wraps(route)
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await route(*args, **kwargs)
+        except HTTPException:
+            raise
+        except Exception as err:
+            if is_transient(err):
+                raise _refusal(409, "cycle_changed", RACE_MESSAGE) from err
+            raise
+
+    guarded.cycle_race_guard = True  # type: ignore[attr-defined]
+    return guarded
 
 
 def _uuid_or_404(value: Any, what: str) -> str:
@@ -489,6 +530,7 @@ async def get_cycle(
 
 
 @router.post("/nodes/{project_id}/cycles", status_code=201, dependencies=_ENABLED)
+@_cycle_race_as_409
 async def create_cycle(
     project_id: str, payload: CycleIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -522,6 +564,7 @@ _EDITABLE = ("name", "goal", "starts_on", "ends_on", "cooldown_days", "credit_bu
 
 
 @router.patch("/cycles/{cycle_id}", dependencies=_ENABLED)
+@_cycle_race_as_409
 async def update_cycle(
     cycle_id: str, payload: CyclePatchIn,
     user: UserContext = Depends(get_current_user),
@@ -565,6 +608,7 @@ async def update_cycle(
 
 
 @router.delete("/cycles/{cycle_id}", dependencies=_ENABLED)
+@_cycle_race_as_409
 async def delete_cycle(
     cycle_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -620,6 +664,7 @@ async def _other_cycle_refusal(db: Any, vis: Any, task_id: str) -> HTTPException
 
 
 @router.post("/cycles/{cycle_id}/tasks", dependencies=_ENABLED)
+@_cycle_race_as_409
 async def add_cycle_task(
     cycle_id: str, payload: CycleTaskIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -680,6 +725,7 @@ async def add_cycle_task(
 
 
 @router.delete("/cycles/{cycle_id}/tasks/{task_id}", dependencies=_ENABLED)
+@_cycle_race_as_409
 async def remove_cycle_task(
     cycle_id: str, task_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -856,6 +902,7 @@ async def _check_capacity(
 
 
 @router.post("/cycles/{cycle_id}/start", dependencies=_ENABLED)
+@_cycle_race_as_409
 async def start_cycle(
     cycle_id: str, payload: StartIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -1011,6 +1058,7 @@ async def _check_targets(
 
 
 @router.post("/cycles/{cycle_id}/close", dependencies=_ENABLED)
+@_cycle_race_as_409
 async def close_cycle(
     cycle_id: str, payload: CloseIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -1042,9 +1090,14 @@ async def close_cycle(
                            "This cycle has not started. Start it, or delete it.")
         if cycle.state == "closed":
             raise _refusal(409, "cycle_closed", "This cycle is already closed.")
-        # FOR SHARE OF t, in id order: a delete or a move of a member task
-        # waits for this close, or this close waits for it and then reads
-        # what it left. A task deleted first is not here.
+        # FOR NO KEY UPDATE OF t, in id order, before any write to
+        # `pm_cycle_tasks`. It is the lock of the UPDATE that `record_activity`
+        # makes later (`touch_task`), taken up front. So an add that holds a
+        # task FOR SHARE finishes first, or waits for the whole close: the
+        # two cannot each wait for the other. A delete or a move of a member
+        # task also waits for this close, or this close waits for it and then
+        # reads what it left. A task deleted first is not here. The lock does
+        # not block a foreign key check, so a comment on a task still goes in.
         members = (await db.execute(
             text(
                 "SELECT t.id, t.project_id, t.archived_at, s.category,"
@@ -1053,7 +1106,7 @@ async def close_cycle(
                 "  JOIN pm_tasks t ON t.id = ct.task_id"
                 "  LEFT JOIN pm_task_statuses s ON s.id = t.status_id"
                 " WHERE ct.cycle_id = CAST(:cid AS uuid)"
-                " ORDER BY t.id FOR SHARE OF t"
+                " ORDER BY t.id FOR NO KEY UPDATE OF t"
             ),
             {"cid": cid, **vis.params},
         )).fetchall()

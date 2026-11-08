@@ -1,5 +1,5 @@
 -- ============================================================================
--- 364_pm_cycles.sql — the cycle store of Projects (WS-39 SP-1, Metorite task
+-- 372_pm_cycles.sql — the cycle store of Projects (WS-39 SP-1, Metorite task
 -- 960, D195).
 --
 -- What: four new tables and one wider CHECK.
@@ -66,8 +66,12 @@
 -- of closed cycles. A partial index cannot read `pm_cycles`, so the column
 -- `cycle_open` mirrors the state of the cycle. The trigger
 -- `pm_cycle_tasks_open` sets it on each INSERT and each move of a row. The
--- trigger `pm_cycles_close_rows` clears it at the close. Both hold for each
--- role. UNIQUE (cycle_id, task_id) keeps a task once in one cycle.
+-- trigger `pm_cycles_close_rows` clears it at the close. Each trigger holds
+-- for each role inside one statement. Under concurrency the locks of the
+-- routes keep the mirror true: an add holds its cycle FOR SHARE, and a close
+-- holds it FOR UPDATE, so the two never interleave. A direct write that
+-- takes no lock can race a close. UNIQUE (cycle_id, task_id) keeps a task
+-- once in one cycle.
 --
 -- ON DELETE.
 --   * `pm_cycles.project_id` CASCADE: a deleted node takes its cycles.
@@ -93,9 +97,10 @@
 -- No score for any person: no column or index ranks a member.
 -- Retention: no pruning. This file deletes nothing.
 --
--- The number is taken at build time (R1). It was 361 at build. On 2026-11-08
--- origin/main held 359, and branches held 360 to 363, 366 and 367, so it
--- became 364. Check it again at merge.
+-- The number is taken at build time (R1). It was 361 at build, then 364. On
+-- 2026-11-09 origin/main held 366, and other branches held 367 to 371
+-- (370_email_signature_images and 371_pm_agent_policies among them), so it
+-- became 372. Check it again at merge.
 -- Pinned by tests/unit/test_sprint_store_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
@@ -124,7 +129,8 @@ CREATE TABLE IF NOT EXISTS pm_cycles (
     credit_budget            NUMERIC(14, 4) NULL,
     -- The totals of the start snapshot. NULL while planned.
     committed_task_count     INTEGER NULL,
-    committed_estimate_mins  INTEGER NULL,
+    -- BIGINT: a sum of INTEGER estimates can pass the INTEGER range.
+    committed_estimate_mins  BIGINT NULL,
     started_at               TIMESTAMPTZ NULL,
     started_by               TEXT NULL,
     closed_at                TIMESTAMPTZ NULL,

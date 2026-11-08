@@ -75,6 +75,15 @@ whole ladder and two organizations. It proves:
   ``test_a_task_sits_in_one_open_cycle_and_in_any_number_of_closed_ones``.
 * M15. The migration: drop the trigger ``pm_cycles_close_rows`` -> the three
   closed-cycle tests.
+* M16. ``close_cycle``: lock the member tasks ``FOR SHARE`` again ->
+  ``test_an_add_that_holds_the_task_makes_the_close_wait_and_both_finish``.
+* M17. ``close_cycle``: drop ``@_cycle_race_as_409`` ->
+  ``test_a_close_that_deadlocks_with_a_move_answers_409_and_writes_nothing`` and
+  ``test_each_route_that_writes_answers_a_race_with_409``.
+* M18. The migration: ``committed_estimate_mins INTEGER`` ->
+  ``test_a_start_total_above_the_integer_range_is_stored``.
+* M19. ``move_node``: call ``detach_moved_tasks`` only while the flag is on ->
+  ``test_a_project_move_with_the_flag_off_frees_the_rows``.
 
 Run::
 
@@ -158,6 +167,8 @@ def test_the_migration_is_expand_only_and_forces_rls_on_each_table() -> None:
                      r"cycle_id, cycle_open\s+ON pm_cycle_tasks", sql)
     assert re.search(r"CREATE TRIGGER pm_cycles_close_rows\s+AFTER UPDATE OF state ON "
                      r"pm_cycles", sql)
+    # A sum of INTEGER estimates can pass the INTEGER range (fix round 4).
+    assert re.search(r"committed_estimate_mins\s+BIGINT NULL", sql)
     assert re.search(
         r"CREATE UNIQUE INDEX IF NOT EXISTS uq_pm_cycles_one_active\s+ON pm_cycles "
         r"\(project_id\)\s+WHERE state = 'active';", sql)
@@ -219,6 +230,47 @@ ROUTES = {
     ("POST", "/projects/cycles/{cycle_id}/start"),
     ("POST", "/projects/cycles/{cycle_id}/close"),
 }
+
+
+def test_each_route_that_writes_answers_a_race_with_409() -> None:
+    from gateway.routes.projects import router
+
+    seen = 0
+    for route in router.routes:
+        if "/cycles" not in getattr(route, "path", ""):
+            continue
+        writes = bool(set(getattr(route, "methods", set())) & {"POST", "PATCH", "DELETE"})
+        assert getattr(route.endpoint, "cycle_race_guard", False) is writes, (
+            route.path, route.methods)
+        seen += writes
+    assert seen == 7
+
+
+async def test_the_race_guard_answers_each_transient_sqlstate_with_409() -> None:
+    from fastapi import HTTPException
+    from gateway.routes.projects.core import TRANSIENT_SQLSTATES
+
+    class DriverError(Exception):
+        def __init__(self, code: str) -> None:
+            super().__init__(code)
+            self.sqlstate = code
+
+    assert {"40P01", "40001"} <= TRANSIENT_SQLSTATES
+    for code in sorted(TRANSIENT_SQLSTATES):
+        async def race(code: str = code) -> None:
+            raise DriverError(code)
+
+        with pytest.raises(HTTPException) as caught:
+            await cycles._cycle_race_as_409(race)()
+        assert caught.value.status_code == 409, code
+        assert caught.value.detail == {"error": "cycle_changed",
+                                       "message": cycles.RACE_MESSAGE}
+
+    async def other() -> None:
+        raise DriverError("23505")
+
+    with pytest.raises(DriverError):
+        await cycles._cycle_race_as_409(other)()
 
 
 def test_each_route_is_mounted_and_reads_the_flag() -> None:
@@ -1346,3 +1398,134 @@ class TestTheCycleStoreOnARealDatabase:
             assert refused.status_code == 422 and _error(refused) == "task_outside_node", (
                 refused.text)
         assert _members_of(w.p, cycle) == set()
+
+    # ── Fix round 4: lock order, the race answer and the overflow ───────
+
+    async def test_an_add_that_holds_the_task_makes_the_close_wait_and_both_finish(self, w):
+        # Before the fix the close took the task FOR SHARE, moved the row, and
+        # then waited on the add to touch the task. The add's INSERT waited on
+        # the moved row: a deadlock, and a 500.
+        task = _task(w.p, w.p.org_a, w.alice, w.proj)
+        async with _session(w.p) as call:
+            cycle = await _plan(call, w.u_alice, w.space["id"], name="Now", goal="Now")
+            nxt = await _plan(call, w.u_alice, w.space["id"], name="Next")
+            elsewhere = await _plan(call, w.u_alice, w.proj["id"], name="Elsewhere")
+            assert (await _add(call, w.u_alice, cycle, task)).status_code == 200
+            assert (await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start",
+                               {})).status_code == 200
+            holder = w.p.admin_engine.connect()
+            closing = None
+            try:
+                hold = holder.begin()
+                # The add holds the task FOR SHARE, as `add_cycle_task` does.
+                holder.execute(text("SELECT 1 FROM pm_tasks WHERE id = CAST(:t AS uuid)"
+                                    " FOR SHARE"), {"t": task})
+                closing = asyncio.ensure_future(call(
+                    w.u_alice, "POST", f"/projects/cycles/{cycle}/close",
+                    {"choices": [{"task_id": task, "choice": "next", "cycle_id": nxt}]}))
+                await _until_lock_waits(w.p, "pm_", stop=closing)
+                # The add inserts while the close waits. The task sits in an
+                # open cycle, so the insert does nothing, and it must not wait.
+                made = await asyncio.wait_for(asyncio.to_thread(
+                    holder.execute,
+                    text("INSERT INTO pm_cycle_tasks (organization_id, cycle_id, task_id,"
+                         " added_by) VALUES (CAST(:o AS uuid), CAST(:c AS uuid),"
+                         " CAST(:t AS uuid), 'add@x.test')"
+                         " ON CONFLICT (task_id) WHERE cycle_open DO NOTHING RETURNING id"),
+                    {"o": w.p.org_a, "c": elsewhere, "t": task}), _WAIT)
+                assert made.fetchone() is None
+                hold.commit()
+                closed = await asyncio.wait_for(closing, _WAIT)
+            finally:
+                holder.close()
+                await _settle(closing)
+            assert closed.status_code == 200, closed.text
+            assert closed.json()["moved"] == {"next": 1, "backlog": 0}
+        assert _members_of(w.p, nxt) == {task} and _members_of(w.p, elsewhere) == set()
+
+    async def test_a_close_that_deadlocks_with_a_move_answers_409_and_writes_nothing(self, w):
+        # A move locks its tasks in its own order: here the higher id first.
+        # The close locks them in id order. Postgres stops one of the two.
+        low, high = sorted(_task(w.p, w.p.org_a, w.alice, w.proj) for _ in range(2))
+        choices = [{"task_id": low, "choice": "backlog"},
+                   {"task_id": high, "choice": "backlog"}]
+        async with _session(w.p) as call:
+            cycle = await _plan(call, w.u_alice, w.space["id"], goal="Now")
+            for task in (low, high):
+                assert (await _add(call, w.u_alice, cycle, task)).status_code == 200
+            assert (await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start",
+                               {})).status_code == 200
+            holder = w.p.admin_engine.connect()
+            closing = None
+            try:
+                hold = holder.begin()
+                # The close finds the deadlock first: this probe waits 30 s.
+                holder.execute(text("SET LOCAL deadlock_timeout = '30s'"))
+                holder.execute(text("UPDATE pm_tasks SET updated_at = now()"
+                                    " WHERE id = CAST(:t AS uuid)"), {"t": high})
+                closing = asyncio.ensure_future(call(
+                    w.u_alice, "POST", f"/projects/cycles/{cycle}/close", {"choices": choices}))
+                # The close holds `low` and waits for `high`.
+                await _until_lock_waits(w.p, "pm_cycle_tasks", stop=closing)
+                await asyncio.wait_for(asyncio.to_thread(
+                    holder.execute,
+                    text("UPDATE pm_tasks SET updated_at = now() WHERE id = CAST(:t AS uuid)"),
+                    {"t": low}), _WAIT)
+                hold.commit()
+                refused = await asyncio.wait_for(closing, _WAIT)
+            finally:
+                holder.close()
+                await _settle(closing)
+            assert refused.status_code == 409 and _error(refused) == "cycle_changed", (
+                refused.text)
+            assert refused.json()["detail"]["message"] == cycles.RACE_MESSAGE
+            # Postgres rolled the close back: nothing moved and nothing logged.
+            assert _members_of(w.p, cycle) == {low, high}
+            assert _one(w.p, "SELECT state FROM pm_cycles WHERE id = CAST(:c AS uuid)",
+                        c=cycle).state == "active"
+            assert _count(w.p, "SELECT count(*) FROM pm_activities"
+                               " WHERE type = 'cycle_transfer'") == 0
+            # The same close, sent again, goes through.
+            closed = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/close",
+                                {"choices": choices})
+            assert closed.status_code == 200, closed.text
+            assert closed.json()["moved"] == {"next": 0, "backlog": 2}
+
+    async def test_a_start_total_above_the_integer_range_is_stored(self, w):
+        big = [_task(w.p, w.p.org_a, w.alice, w.proj, estimate=1_500_000_000) for _ in range(2)]
+        async with _session(w.p) as call:
+            cycle = await _plan(call, w.u_alice, w.space["id"], goal="Big")
+            for task in big:
+                assert (await _add(call, w.u_alice, cycle, task)).status_code == 200
+            started = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start", {})
+            assert started.status_code == 200, started.text
+            read = (await call(w.u_alice, "GET", f"/projects/cycles/{cycle}")).json()
+            assert read["committed"] == {"tasks": 2, "hidden": 0,
+                                         "estimate_mins": 3_000_000_000}
+        row = _one(w.p, "SELECT committed_task_count, committed_estimate_mins FROM pm_cycles"
+                        " WHERE id = CAST(:c AS uuid)", c=cycle)
+        assert (row.committed_task_count, row.committed_estimate_mins) == (2, 3_000_000_000)
+
+    async def test_a_project_move_with_the_flag_off_frees_the_rows(self, w, monkeypatch):
+        from acb_common import get_settings
+
+        leaving = _node(w.p, w.p.org_a, w.alice, parent=w.space, grants=(w.alice,))
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE pm_projects SET lead = :e WHERE id = CAST(:p AS uuid)"),
+                      {"e": w.alice, "p": leaving["id"]})
+        task = _task(w.p, w.p.org_a, w.alice, leaving)
+        async with _session(w.p) as call:
+            cycle = await _plan(call, w.u_alice, w.space["id"], goal="S")
+            assert (await _add(call, w.u_alice, cycle, task)).status_code == 200
+            assert (await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start",
+                               {})).status_code == 200
+            # The flag holds org B only. The rule of a move reads no flag.
+            monkeypatch.setattr(get_settings(), "projects_sprints_orgs", w.p.org_b)
+            moved = await call(w.u_alice, "POST", f"/projects/nodes/{leaving['id']}/move",
+                               {"parent_project_id": w.other["id"]})
+            assert moved.status_code == 200, moved.text
+        assert _members_of(w.p, cycle) == set()
+        logged = _all(w.p, "SELECT task_id, meta FROM pm_activities"
+                           " WHERE type = 'cycle_transfer'")
+        assert [str(r.task_id) for r in logged] == [task]
+        assert logged[0].meta["cause"] == cycles.MOVED_CAUSE
