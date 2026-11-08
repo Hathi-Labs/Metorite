@@ -553,6 +553,33 @@ def _run_member() -> str:
         return ""
 
 
+def _member_part(member: str) -> str:
+    """The hash of the member that the cap key holds, never the address."""
+    return hashlib.blake2b(member.encode("utf-8"), digest_size=12).hexdigest()
+
+
+async def _give_back_image_slot(org: str, member: str) -> None:
+    """Give one slot back, best effort, when the model call did not run.
+
+    A refusal of the Router (402, 400) or a fault in the call spends no
+    analysis, so the member keeps the slot. If the key expired between the
+    take and now, ``decrby`` would make a negative count with no expiry, and
+    the next hour would allow more than the cap. So a result below zero
+    deletes the key. A Redis fault here is logged and dropped.
+    """
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+
+        with organization_scope(org):
+            redis = get_tenant_redis()
+            k = key(IMAGE_CAP_NAMESPACE, _member_part(member))
+            left = int(await asyncio.wait_for(redis.decrby(k, 1), IMAGE_CAP_TIMEOUT_S))
+            if left < 0:
+                await asyncio.wait_for(redis.delete(k), IMAGE_CAP_TIMEOUT_S)
+    except Exception as exc:
+        _log.warning("attachment.image_cap_giveback_failed", error=type(exc).__name__)
+
+
 async def _take_image_slot(org: str, member: str) -> str | None:
     """``None`` when *member* may start one more analysis, else the refusal.
 
@@ -562,7 +589,7 @@ async def _take_image_slot(org: str, member: str) -> str | None:
     hold the member out for good. A Redis fault refuses, so the cap fails
     closed and no credit is spent.
     """
-    part = hashlib.blake2b(member.encode("utf-8"), digest_size=12).hexdigest()
+    part = _member_part(member)
     try:
         from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 
@@ -678,9 +705,11 @@ async def analyze_image(file_name: str, question: str) -> str:
             feature=IMAGE_FEATURE, job="writing", task=IMAGE_TASK,
         )
     except RoutedRefusal as exc:
+        await _give_back_image_slot(org, member)
         _log.info("attachment.image_refused", status=exc.status)
         return _refusal_sentence(exc.status, str(exc.detail or ""))
     except Exception as exc:  # an outage is one sentence, never a crash
+        await _give_back_image_slot(org, member)
         _log.warning("attachment.image_failed", error=type(exc).__name__)
         return IMAGE_FAILED
     text = _answer_text(resp)

@@ -77,6 +77,7 @@ class _FakeRedis:
         self.ttls: dict[str, int] = {}
         self.calls: list[tuple[str, str]] = []
         self.fail = fail
+        self.expire_before_decrby = False
 
     async def incr(self, k: str, amount: int = 1) -> int:
         self.calls.append(("incr", k))
@@ -92,8 +93,14 @@ class _FakeRedis:
 
     async def decrby(self, k: str, amount: int = 1) -> int:
         self.calls.append(("decrby", k))
+        if self.expire_before_decrby:
+            self.counts.pop(k, None)
         self.counts[k] = self.counts.get(k, 0) - amount
         return self.counts[k]
+
+    async def delete(self, *keys: str) -> int:
+        self.calls.append(("delete", ",".join(keys)))
+        return sum(self.counts.pop(k, None) is not None for k in keys)
 
     async def ttl(self, k: str) -> int:
         self.calls.append(("ttl", k))
@@ -491,9 +498,6 @@ def test_a_dark_org_run_holds_no_tool_and_a_lit_org_run_holds_it(monkeypatch) ->
     assert ti._image_withheld() == frozenset({"analyze_image"})
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: ORG)
     assert ti._image_withheld() == frozenset()
-    src = (REPO / "apps/services/orchestrator/orchestrator/_tool_injection.py").read_text(
-        encoding="utf-8")
-    assert src.count("| _image_withheld()") == 2  # both unions
 
 
 def test_a_refused_call_gives_the_slot_back(on, ws, redis, model) -> None:
@@ -510,6 +514,18 @@ def test_a_refused_call_gives_the_slot_back(on, ws, redis, model) -> None:
     model.error = None
     assert "Wrong password" in _analyze(ws, "a.png")
     assert redis.counts[k] == 1
+
+
+def test_a_give_back_on_an_expired_key_leaves_no_negative_count(on, ws, redis, model) -> None:
+    """The key expired between the take and the give-back: no -1 stays."""
+    digest = hashlib.blake2b(MEMBER.lower().encode(), digest_size=12).hexdigest()
+    k = f"cc:{ORG}:image-analysis:{digest}"
+    _attach(ws, "a.png", PNG)
+    redis.expire_before_decrby = True
+    model.error = RoutedRefusal(402, "no credit")
+    assert _analyze(ws, "a.png") == OUT_OF_CREDITS
+    assert k not in redis.counts
+    assert ("delete", k) in redis.calls
 
 
 def test_the_core_projects_rules_do_not_name_it() -> None:

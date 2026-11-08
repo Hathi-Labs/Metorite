@@ -127,11 +127,6 @@ EXTERNAL_AGENTS: frozenset[str] = frozenset()
 
 @pytest.fixture(autouse=True)
 def _no_database(monkeypatch):
-    # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
-    # of a lit org (the dark case is in test_attachment_analyze_image.py).
-    import orchestrator._tool_injection as _ti_vox
-
-    monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
     """The registry block and the skill toggles read the database. Stub both,
     as the D85 suite does, so a run here opens no connection.
 
@@ -143,6 +138,11 @@ def _no_database(monkeypatch):
     """
     import acb_auth.access as auth_access
     import gateway.routes.agent as routes_agent
+    import orchestrator._tool_injection as _ti_vox
+
+    # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
+    # of a lit org (the dark case is in test_attachment_analyze_image.py).
+    monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
 
     monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])

@@ -1488,8 +1488,13 @@ def _build_injected_tools_addendum(
     effective_scope: frozenset[str] | None = None,
     own_risk: frozenset[tuple[str, bool, bool, bool]] = frozenset(),
     agent_name: str | None = None,
+    image_org_on: bool = False,
 ) -> str:
     """Return a system-prompt addendum describing the Metorite-injected tools.
+
+    ``image_org_on`` is a CACHE KEY only (WS-VOX VOX-3 fix round). The renderer
+    reads the run's org itself (``addendum._dark_tools``), so an unscoped
+    agent of a dark org and one of a lit org need two cache entries.
 
     Appended to every GitHub Copilot agent's system message at run time so the
     LLM knows the injected tools exist, when to use them, and what valid agent
@@ -2714,6 +2719,7 @@ def _inject_agent_tools(
                         own_risk=_own_risk(list(agent._tools)),
                         # The registry block leaves out the agent itself.
                         agent_name=agent_name,
+                        image_org_on=not _image_withheld(),
                     )
                     opts = getattr(agent, "_default_options", None)
                     if isinstance(opts, dict):

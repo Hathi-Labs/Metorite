@@ -119,6 +119,9 @@ class _FakeCopilotAgent:
         self._default_options: dict[str, Any] = {}
 
 
+_REAL_IMAGE_WITHHELD = ti._image_withheld
+
+
 @pytest.fixture()
 def _injection_env(monkeypatch):
     # WS-VOX VOX-3: analyze_image is per org. These runs pin the surface of a
@@ -335,6 +338,40 @@ def test_the_sandbox_section_owns_the_document_files() -> None:
         assert phrase in text, phrase
     for library in ("reportlab", "python-docx", "python-pptx", "openpyxl"):
         assert library in ad.SANDBOX_LIBRARIES, library
+
+
+@pytest.mark.parametrize(("flag", "held"), [
+    ("", False),
+    ("0f9e8d7c-aaaa-4aaa-8aaa-000000000000", False),
+    ("6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f", True),
+    ("*", True),
+])
+def test_analyze_image_is_injected_only_for_an_org_on_the_flag(
+    monkeypatch, _injection_env, flag, held,
+) -> None:
+    """WS-VOX VOX-3 fix round: the real injection, per org, tool and addendum."""
+    from acb_common import get_settings
+    from acb_common.db import bind_tenant, release_tenant
+
+    org = "6b1f0c1e-3c55-4a07-9c3e-0a1b2c3d4e5f"
+    monkeypatch.setattr(ti, "_image_withheld", _REAL_IMAGE_WITHHELD)
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: org)
+    monkeypatch.setattr(get_settings(), "image_analysis_orgs", flag, raising=False)
+    monkeypatch.setattr(
+        ti, "_load_disabled_skill_families", lambda name: frozenset())
+    agent = _FakeCopilotAgent()
+    ti._build_injected_tools_addendum.cache_clear()
+    token = bind_tenant(org)
+    try:
+        ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-copilot",
+                               agent_config=_PERSONAL)
+        text = _addendum_of(agent)
+    finally:
+        release_tenant(token)
+        ti._build_injected_tools_addendum.cache_clear()
+    injected = {getattr(getattr(t, "func", t), "__name__", "") for t in agent._tools}
+    assert ("analyze_image" in injected) is held
+    assert ("### Images in the chat" in text) is held
 
 
 def test_fail_closed_on_injection_narrows_unscoped_agent(
