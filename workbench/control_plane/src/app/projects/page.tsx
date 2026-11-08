@@ -277,7 +277,12 @@ import {
   taskWhere,
 } from "./lib/tree";
 import { forgetFold, markHidden, openFolds, resumeFold, toggleFold, useFoldOpen } from "./lib/treeFold";
-import { ARCHIVED_FOLD_ID, splitArchived } from "./lib/archivedRoots";
+import {
+  ARCHIVED_FOLD_ID,
+  type ArchivedEntry,
+  groupByPath,
+  splitArchived,
+} from "./lib/archivedRoots";
 import { lanesAfter, planShowView } from "./lib/chatView";
 import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
@@ -417,6 +422,54 @@ function renderState(
   if (kind === "loading" && shape === "board") return <SkeletonBoard columns={4} />;
   if (kind === "loading" && shape === "tree") return <SkeletonTree />;
   return <p className="p-6 text-sm text-muted-foreground">{message}</p>;
+}
+
+/**
+ * The rows of an Archived section, under the path each one came from
+ * (ARC-BUG-1). A filed project leaves its parent, so without the path a
+ * member cannot tell which "Phase 2" this is. Filed siblings share one label.
+ * A filed space has no parent, so it has no label.
+ */
+function ArchivedTree({
+  entries,
+  selectedId,
+  onSelect,
+  actions,
+  rootParentGen,
+}: {
+  entries: readonly ArchivedEntry[];
+  selectedId: string | null;
+  onSelect: (project: ProjectRow) => void;
+  actions?: ProjectMenuHandlers;
+  rootParentGen: (node: ProjectRow) => number;
+}) {
+  return (
+    <>
+      {groupByPath(entries).map((group) => {
+        const where = group.path.join(" › ");
+        return (
+          <div key={group.entries[0].node.id}>
+            {where ? (
+              <p
+                className="truncate px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground"
+                title={`From ${where}`}
+                data-testid="archived-path"
+              >
+                {where}
+              </p>
+            ) : null}
+            <ProjectTree
+              roots={group.entries.map((entry) => entry.node)}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              actions={actions}
+              rootParentGen={rootParentGen}
+            />
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
 /**
@@ -767,8 +820,8 @@ function ProjectNav({
               </button>
               {personalArchivedOpen ? (
                 <div id="projects-personal-archived-list" className="opacity-75">
-                  <ProjectTree
-                    roots={personalSplit.archived.map((entry) => entry.node)}
+                  <ArchivedTree
+                    entries={personalSplit.archived}
                     selectedId={app ? null : selectedId}
                     onSelect={(project) => {
                       onSelect(project);
@@ -881,8 +934,8 @@ function ProjectNav({
           </button>
           {archivedOpen ? (
             <div id="projects-archived-list" className="opacity-75">
-              <ProjectTree
-                roots={split.archived.map((entry) => entry.node)}
+              <ArchivedTree
+                entries={split.archived}
                 selectedId={app ? null : selectedId}
                 onSelect={(project) => {
                   onSelect(project);
