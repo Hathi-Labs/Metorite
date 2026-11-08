@@ -1615,6 +1615,13 @@ CREATE POLICY pm_cycle_capacity_tenant_isolation ON pm_cycle_capacity
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE email_signature_images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_signature_images FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_signature_images_tenant_isolation ON email_signature_images;
+CREATE POLICY email_signature_images_tenant_isolation ON email_signature_images
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_epic_contracts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_epic_contracts FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_epic_contracts_tenant_isolation ON pm_epic_contracts;

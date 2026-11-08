@@ -823,7 +823,13 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: SP-8a adds the ``PUT`` of the epic contract, the route of the
 #: ``epic_contract`` block of ``update_task``. It replaces the whole contract,
 #: and the route refuses a task that is not an epic.
-#: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
+#: WS-55 MCP-G9 adds the PATCH and the DELETE of one comment, the routes of
+#: ``update_comment`` and ``delete_comment``. For a signed agent the route
+#: changes only a comment that the member wrote AND whose ``meta.via`` is the
+#: stamp of this client, on a task in the reach of the connection. Any other
+#: comment gets 403 or 404 (``activities._load_agent_comment``).
+#: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2) and
+#: ``tests/unit/test_mcp_edge_comment_edit_r8.py``.
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
     ("PATCH", "/projects/nodes/{project_id}"),
@@ -842,6 +848,9 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PUT", "/projects/tasks/{task_id}/epic-contract"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),
+    # MCP-G9: `update_comment` and `delete_comment`, own client only.
+    ("PATCH", "/projects/comments/{activity_id}"),
+    ("DELETE", "/projects/comments/{activity_id}"),
     ("POST", "/projects/tasks/{task_id}/claim"),
     ("POST", "/projects/tasks/{task_id}/agent-runs"),
     ("POST", "/projects/agent-runs/{run_id}/activities"),

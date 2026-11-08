@@ -411,6 +411,30 @@ def test_r8_the_owner_succeeds_on_each_route(world) -> None:
     assert [v["version"] for v in got[5][1]["versions"]] == [1]
 
 
+def test_r8_one_version_reads_with_its_manifest_and_only_for_its_owner(world) -> None:
+    """STU-G5: the owner reads v1 with its manifest and hash. Another member,
+    another org, a missing version and a bad version answer without it."""
+    mid = _mid()
+
+    async def go() -> list[tuple[int, Any]]:
+        pid = await _new(world.a, ANA, _manifest(mid))
+        assert (await _publish(world.a, ANA, pid, "first"))[0] == 200
+        return [
+            await _call("get_version", world.a, ANA, pid, version="1"),
+            await _call("get_version", world.a, BEN, pid, version="1"),
+            await _call("get_version", world.b, ANA, pid, version="1"),
+            await _call("get_version", world.a, ANA, pid, version="2"),
+            await _call("get_version", world.a, ANA, pid, version="0"),
+        ]
+
+    got = _run(world, go)
+    assert [s for s, _ in got] == [200, 404, 404, 404, 422]
+    v = got[0][1]["version"]
+    assert v["version"] == 1 and v["notes"] == "first" and v["manifest"]["id"] == mid
+    assert got[0][1]["manifest_hash"] == manifest_hash(v["manifest"])
+    assert got[1][1] == got[2][1] == got[3][1] == "Not found"
+
+
 def test_r8_another_member_of_the_org_gets_404_on_each_route(world) -> None:
     pid = _run(world, lambda: _new(world.a, ANA, _manifest(_mid())))
     before = _snapshot(world, pid)
