@@ -76,6 +76,43 @@ describe("panelBox / panelStyle", () => {
     expect(panelStyle(box, "start", 256)).not.toHaveProperty("bottom");
   });
 
+  // MOB-9 (task 2002): the phone's bottom bar paints above every panel. The
+  // room below an anchor ends at the bar's top edge, not at the window's foot.
+  describe("with the phone's bottom bar", () => {
+    const phone = { width: 390, height: 844 };
+    const barTop = 844 - 56;
+
+    it("measures the room below against the bar's top edge", () => {
+      const anchor = { ...rect, top: 600, bottom: 630 };
+      const bare = panelBox(anchor, phone, 480);
+      const clear = panelBox(anchor, { ...phone, floor: barTop }, 480);
+      // Without the bar: 844 - 630 - 10 = 204 below, and 600 above. It flips.
+      // With the bar: 788 - 630 - 10 = 148 below, and it flips the same way.
+      expect(bare.bottom).not.toBeNull();
+      expect(clear.bottom).not.toBeNull();
+      const roomy = { ...rect, top: 100, bottom: 130 };
+      const down = panelBox(roomy, { ...phone, floor: barTop }, 900);
+      expect(down.bottom).toBeNull();
+      expect(down.top + down.height).toBeLessThanOrEqual(barTop - 8);
+      const noBar = panelBox(roomy, phone, 900);
+      expect(noBar.height).toBe(844 - 130 - 10);
+      expect(down.height).toBe(barTop - 130 - 10);
+    });
+
+    it("hangs a flipped panel from the window's real bottom", () => {
+      const anchor = { ...rect, top: 700, bottom: 730 };
+      const box = panelBox(anchor, { ...phone, floor: barTop }, 480);
+      expect(box.bottom).toBe(844 - 700 + 2);
+    });
+
+    it("reads the bar only while the phone layout sets the attribute", () => {
+      const src = readFileSync(resolve(__dirname, "AnchoredPanel.tsx"), "utf-8");
+      expect(src).toMatch(/hasAttribute\("data-phone-nav"\)/);
+      expect(src).toMatch(/querySelector\("\[data-phone-nav-bar\]"\)/);
+      expect(src).toMatch(/floor: phoneBarTop\(\) \?\? undefined/);
+    });
+  });
+
   it("the component's own default is start", () => {
     const src = readFileSync(resolve(__dirname, "AnchoredPanel.tsx"), "utf-8");
     expect(src).toMatch(/align = "start",/);

@@ -11,7 +11,8 @@ TypeScript source. It holds each one to exactly one decision:
 
 * :data:`COVERED` names the chat tool that sends the same request to the
   gateway. The fence reads the tool's own source and checks that it names
-  that gateway route.
+  that gateway route. :data:`ALSO` names the other tools of a covered
+  request that more than one tool sends, and the fence checks each one too.
 * :data:`EXEMPT` names a kind from :data:`EXEMPT_KINDS` and a reason. It is
   only for a request that is not a member's act in any sense.
 * :data:`DEBT` names the wave that will give the chat a tool. The count of
@@ -36,6 +37,7 @@ This module is data. It imports nothing, so any reader can load it.
 from __future__ import annotations
 
 __all__ = [
+    "ALSO",
     "APPS",
     "APP_OF",
     "COVERED",
@@ -305,6 +307,9 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/crm/owners": "crm_list_owners",
     "GET /api/crm/pipeline": "get_pipeline",
     "GET /api/crm/pipelines": "crm_list_pipelines",
+    # WS-CRM CRM-M3a: the preview of the New pipeline dialog. The chat tool
+    # reads the same plan before its card.
+    "GET /api/crm/pipelines/preview": "crm_create_pipeline",
     "GET /api/crm/reports/funnel": "crm_report",
     "GET /api/crm/reports/owners": "crm_report",
     "GET /api/crm/reports/pipeline": "crm_report",
@@ -313,8 +318,11 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/crm/{}": "search_crm",
     "GET /api/crm/{}/{}": "get_record",
     "GET /api/crm/{}/{}/timeline": "get_timeline",
-    "PATCH /api/crm/{}/{}": "update_deal_status",
+    "PATCH /api/crm/activities/{}": "crm_update_task",
+    "PATCH /api/crm/{}/{}": "crm_update_record",
     "POST /api/crm/leads/{}/convert": "convert_lead",
+    # WS-CRM CRM-M3a: the New pipeline dialog of CRM settings.
+    "POST /api/crm/pipelines": "crm_create_pipeline",
     "POST /api/crm/{}": "create_lead",
     "POST /api/crm/{}/{}/activities": "log_activity",
     # ── WhatsApp ──
@@ -361,10 +369,9 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/auth/me/assistant-profile": ("profile_set", "PUT /auth/me/assistant-profile"),
     # ── AI Studio (STU-F2d) ──
     "GET /api/studio/actions": "studio_list_actions",
-    # STU-D2b: the READ side of a package page. The door POST is a list from chat. A create,
-    # an update and a delete from chat wait for B2c-2 (no chat call carries a direct proof,
-    # so the door answers 403 approval_required). The fence reads only the route, so it
-    # cannot see that gap. chat_parity.md section 4 names it.
+    # STU-D2b: the READ side of a package page. The door POST of a package page is a list,
+    # a create, an update or a delete, by its action id. The list is the row here, and
+    # ALSO names the three write tools of B2c-2b, which send the same route.
     "GET /api/studio/packages": "studio_package_get",
     "GET /api/studio/packages/{}": "studio_package_get",
     # STU-G3a: "Build it" in the Studio IDE makes a draft package first
@@ -377,6 +384,20 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PATCH /api/studio/skills/{}/state": "studio_skill_state",
     "POST /api/studio/skills": "studio_skill_save",
     "POST /api/studio/skills/{}/versions": "studio_skill_save",
+}
+
+#: A covered action that more than one chat tool sends -> the other tools.
+#: The first tool is the row of :data:`COVERED`. The fence checks each tool
+#: here as it checks that row: a registered tool whose source names the
+#: gateway route of the action. A key must be a key of :data:`COVERED`.
+ALSO: dict[str, tuple[str, ...]] = {
+    # STU-B2c-2b: one door route, an action id for each verb. A write from chat asks the
+    # member first (ask=1), and the resend after the approval runs the stored call.
+    "POST /api/studio/apps/{}/actions/{}": (
+        "studio_record_create",
+        "studio_record_update",
+        "studio_record_delete",
+    ),
 }
 
 #: An action -> (kind, reason). The kind is a key of :data:`EXEMPT_KINDS`.
@@ -707,7 +728,6 @@ DEBT: dict[str, str] = {
     "GET /api/crm/sync/health": "P-3",
     "GET /api/crm/sync/status": "P-3",
     "GET /api/crm/views": "P-3",
-    "PATCH /api/crm/activities/{}": "P-3",
     "PATCH /api/crm/field-rules/{}": "P-3",
     "PATCH /api/crm/field-sections": "P-3",
     "PATCH /api/crm/fields": "P-3",
@@ -1069,7 +1089,7 @@ DEBT_CEILING: dict[str, int] = {
     "tasks": 11,
     "calendar": 1,
     "email": 13,
-    "crm": 74,
+    "crm": 73,
     "notes": 51,
     "whatsapp": 25,
     "people": 19,
@@ -1083,7 +1103,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
     "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
-    "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2.
+    "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2. B2c-2b adds no debt: its writes are ALSO rows of the door route.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

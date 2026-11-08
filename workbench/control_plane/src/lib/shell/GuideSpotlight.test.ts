@@ -311,7 +311,7 @@ describe("rule 8: reduced motion", () => {
       for (const hole of c.matchAll(/\$\{([^}]*)\}/g)) expect(hole[1]).toMatch(/^PANEL_(SURFACES|LAYERS)\.\w+$/);
     }
     // The ring takes no pointer. Both parts sit on the design system's top layer, and write no z value.
-    expect(CODE).toMatch(/data-guide-ring=""[\s\S]*?className=\{`pointer-events-none fixed \$\{PANEL_LAYERS\.top\} [^`$]*`\}/);
+    expect(CODE).toMatch(/data-guide-ring=""[\s\S]*?className=\{`pointer-events-none fixed \$\{PANEL_LAYERS\.guide\} [^`$]*`\}/);
     expect(CODE).not.toMatch(/z-\[|z-\d/);
   });
 
@@ -630,7 +630,7 @@ describe("rule 11: the dim layer (owner request 2026-11-03)", () => {
     // DESIGN_SYSTEM.md section 4a: the fill is `bg-background/80` on a box, `fill-background/80` on a mask rect.
     expect(CODE).toMatch(/className="fill-background\/80"/);
     expect(CODE).not.toMatch(/bg-black|fill-black|bg-\[|#[0-9a-f]{3,6}/i);
-    expect(CODE).toMatch(/data-guide-dim=""[\s\S]*?className=\{`pointer-events-none fixed inset-0 \$\{PANEL_LAYERS\.top\}/);
+    expect(CODE).toMatch(/data-guide-dim=""[\s\S]*?className=\{`pointer-events-none fixed inset-0 \$\{PANEL_LAYERS\.guide\}/);
     expect(CODE).toMatch(/<mask[\s\S]*<rect[^>]*fill="white"[\s\S]*data-guide-hole/);
   });
 
@@ -647,7 +647,7 @@ describe("rule 11: the dim layer (owner request 2026-11-03)", () => {
   });
 
   it("draws the card on the top layer with the accent edge and the panel surface", () => {
-    expect(CODE).toMatch(/data-guide-card=""[\s\S]*?\$\{PANEL_LAYERS\.top\} p-3 outline outline-2 outline-primary \$\{PANEL_SURFACES\.panel\}/);
+    expect(CODE).toMatch(/data-guide-card=""[\s\S]*?\$\{PANEL_LAYERS\.guide\} p-3 outline outline-2 outline-primary \$\{PANEL_SURFACES\.panel\}/);
   });
 
   it("the chat and the dock draw nothing for the tour", () => {

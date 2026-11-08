@@ -32,8 +32,9 @@
  *   `sortEstimateView` decide.
  * - "Run my rules on new mail" is the member's Auto-run choice (WS-17
  *   EM-G11c2, G2). It shows the STORED value, and moving it saves `auto_run`
- *   and nothing else, so the settings row holds the member's choice. A new
- *   Gmail mailbox reads OFF.
+ *   and nothing else, so the settings row holds the member's choice. With no
+ *   stored choice it starts ON (task 2267), and loading the step saves
+ *   nothing. "Done" saves that ON. A move before "Done" saves at once.
  * - "Draft replies for me" shows only with an enabled reply rule, because a
  *   draft is an action on that rule. It shows the STORED value, read when the
  *   step is ready, and stays disabled until the read returns or when it fails
@@ -80,6 +81,7 @@ import {
   processPastFrom,
   readAutoRunSwitch,
   readDraftSwitch,
+  saveAutoRunDefault,
   readSortState,
   rulesStepPhase,
   setAutoRun,
@@ -87,6 +89,7 @@ import {
   settingsSaver,
   sortEstimateView,
   sortPollDelay,
+  type AutoRunSwitch,
   type DraftSwitch,
   type RulesStepApi,
   type RulesStepPhase,
@@ -126,7 +129,7 @@ export interface RulesStepViewProps {
   /** A save of either switch runs. Both switches wait (EM-G11c2 fix round 1). */
   settingsBusy: boolean;
   /** The stored Auto-run choice (WS-17 EM-G11c2, G2). Absent: no switch. */
-  autoRun?: DraftSwitch;
+  autoRun?: AutoRunSwitch;
   onAutoRunChange?: (on: boolean) => void;
   /** The start of the import range, or null when nothing was imported. */
   pastFrom: string | null;
@@ -364,7 +367,7 @@ export function OnboardingRulesStep({
   // The stored value, read once the step is ready. Disabled until then.
   const [draft, setDraft] = useState<DraftSwitch>({ state: "loading" });
   // G2 (EM-G11c2): the stored Auto-run choice, read once the step is ready.
-  const [autoRun, setAutoRunState] = useState<DraftSwitch>({ state: "loading" });
+  const [autoRun, setAutoRunState] = useState<AutoRunSwitch>({ state: "loading" });
   // One save at a time for both switches (fix round 1). Each save is a GET
   // and a PUT of the whole body, so two at once could undo each other.
   const [saver] = useState(() => settingsSaver());
@@ -424,7 +427,7 @@ export function OnboardingRulesStep({
   }, [phase, account.id]);
 
   // The Auto-run switch shows what is stored, on every mount, as the
-  // drafting switch does. A new Gmail mailbox reads OFF (G2).
+  // drafting switch does. With no stored choice it starts ON, unsaved.
   useEffect(() => {
     if (phase !== "ready") return;
     let live = true;
@@ -455,10 +458,20 @@ export function OnboardingRulesStep({
     }
   };
 
-  const finish = async () => {
+  // `saveDefault` is true for "Done" only: it saves the ON default of the
+  // Auto-run switch first. A failed save keeps the step open (task 2267).
+  const finish = async (saveDefault = false) => {
     setBusy("finish");
     setError(null);
     try {
+      if (saveDefault) {
+        // One save at a time: a switch save in flight refuses this one, and
+        // the step stays open so the member presses Done again.
+        const ran = await saver.run(async () => {
+          await saveAutoRunDefault(RULES_API, account.id, autoRun);
+        });
+        if (!ran) throw new Error("a save is running");
+      }
       const updated = await RULES_API.finishOnboarding(account.id);
       setFinished(true);
       onFinished(updated);
@@ -542,7 +555,7 @@ export function OnboardingRulesStep({
       onProcessPast={() => onOpenAutomation("ai-settings", pastFrom)}
       onDraftChange={(on) => void changeDraft(on)}
       onInsights={() => onOpenAutomation("analytics")}
-      onDone={() => void finish()}
+      onDone={() => void finish(true)}
       mailbox={rulesStepMailbox(mailboxes, account.id)}
       copyFrom={rulesStepCopyChoices(mailboxes, account.id).filter((c) => !copier.copied(c.id, account.id))}
       copyingFrom={copyingFrom}
