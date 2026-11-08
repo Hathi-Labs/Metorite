@@ -58,7 +58,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from acb_common.paging import page_line, paged
+from acb_common.paging import page_line, paged, prefix_limit, prefix_page
 from acb_common.priority import (
     CELL_FLAGS,
     IMPORTANT_AT,
@@ -2273,6 +2273,77 @@ def _fmt_digest(d: dict[str, Any]) -> str:
         lines.append(
             f"Heads up: tasks run ~{op:+d}% vs estimate — plans are padded.")
     return "\n".join(lines)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_get_day_state(date: str = "") -> str:
+    """Read what the member saved for one day: the ★ One Thing and the tasks
+    that were seeded for it (the tasks carried over from the day before). Use
+    it for "what is my One Thing?" or "my day state" (read-only).
+
+    Args:
+        date: LOCAL day YYYY-MM-DD; empty = today.
+    """
+    day = date.strip() or datetime.now(UTC).astimezone().strftime("%Y-%m-%d")
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        return f"{date!r} is not a day. Use YYYY-MM-DD."
+    d = await _request("GET", "/tasks/calendar/day-state", params={"day": day})
+    d = d or {}
+    lines = [f"Day state for {d.get('day') or day}:"]
+    one = str(d.get("one_thing_id") or "")
+    if one:
+        title = ""
+        try:
+            title = str((await _my_task(one) or {}).get("title") or "")
+        except Exception:  # the title is a courtesy: the id stays
+            title = ""
+        lines.append(f"★ One Thing: {_data(title) if title else 'a task that is not readable now'} · id={one}")
+    else:
+        lines.append("★ One Thing: not set.")
+    seeds = [str(x) for x in (d.get("seed_ids") or []) if x]
+    if not seeds:
+        lines.append("Seeded tasks: none.")
+        return "\n".join(lines)
+    page = paged(seeds, 0, _DIGEST_BLOCKS, default=_DIGEST_BLOCKS, noun="seeded tasks")
+    lines.append(f"Seeded tasks ({len(seeds)}):")
+    lines.extend(f"• id={sid}" for sid in page.items)
+    if page.line:
+        lines.append(f"{len(seeds) - len(page.items)} more seeded task(s) exist.")
+    return "\n".join(lines)
+
+
+_ROLLOVER_LOG_CAP = 100  # the route's own largest LIMIT
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_rollover_log(offset: int = 0, limit: int = 20) -> str:
+    """Read the roll-over log: which tasks the automatic roll-over moved from
+    one day to another, newest first, and when. Use it for "what did I roll
+    over?" (read-only).
+
+    Args:
+        offset: Where the page starts. 0 is the newest entry.
+        limit: Entries per page, 20 by default and 100 at most.
+    """
+    start, size, ask = prefix_limit(offset, limit, default=20, cap=_ROLLOVER_LOG_CAP)
+    rows = await _request("GET", "/tasks/calendar/rollover/log", params={"limit": ask})
+    rows = list(rows or [])
+    if not rows:
+        return "The roll-over log is empty. Nothing was rolled over."
+    page = prefix_page(rows, start, size, cap=_ROLLOVER_LOG_CAP, asked=ask,
+                       noun="roll-over entries")
+    if not page.items:
+        return page.line or "Nothing at that place in the roll-over log."
+    out = ["Roll-over log, newest first:"]
+    for r in page.items:
+        when = str(r.get("at") or "")[:16].replace("T", " ")
+        out.append(f"• {_data(r.get('title') or '?')}: {r.get('rolled_from') or '?'} "
+                   f"→ {r.get('rolled_to') or '?'}" + (f" (at {when})" if when else ""))
+    if page.line:
+        out.append(page.line)
+    return "\n".join(out)
 
 
 @_annotate_risk(idempotent=True, open_world=False)

@@ -17,6 +17,7 @@ from skill_my_tasks.core import (
     my_tasks_edit_day_rule,
     my_tasks_estimate_stats,
     my_tasks_get_calendar_settings,
+    my_tasks_get_day_state,
     my_tasks_inbox_insights,
     my_tasks_list,
     my_tasks_list_day_rules,
@@ -29,6 +30,7 @@ from skill_my_tasks.core import (
     my_tasks_plan_project,
     my_tasks_replan_day,
     my_tasks_rollover,
+    my_tasks_rollover_log,
     my_tasks_schedule,
     my_tasks_set_one_thing,
     my_tasks_set_stage,
@@ -54,6 +56,8 @@ PACK_ONLY_TOOLS = (
     "my_tasks_delete_day_rule",
     "my_tasks_start_my_day",
     "my_tasks_close_my_day",
+    "my_tasks_get_day_state",
+    "my_tasks_rollover_log",
 )
 
 __all__ = [
@@ -73,6 +77,7 @@ __all__ = [
     "my_tasks_edit_day_rule",
     "my_tasks_estimate_stats",
     "my_tasks_get_calendar_settings",
+    "my_tasks_get_day_state",
     "my_tasks_inbox_insights",
     "my_tasks_list",
     "my_tasks_list_day_rules",
@@ -85,6 +90,7 @@ __all__ = [
     "my_tasks_plan_project",
     "my_tasks_replan_day",
     "my_tasks_rollover",
+    "my_tasks_rollover_log",
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
     "my_tasks_set_stage",

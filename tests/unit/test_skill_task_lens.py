@@ -259,6 +259,8 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_get_calendar_settings", {}, [("GET", "/tasks/settings")]),
     ("my_tasks_update_calendar_settings", {"day_start_hour": 8, "confirmed": True},
      [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_get_day_state", {"date": "2026-11-08"}, [("GET", "/tasks/calendar/day-state")]),
+    ("my_tasks_rollover_log", {}, [("GET", "/tasks/calendar/rollover/log")]),
     ("my_tasks_list_day_rules", {}, [("GET", "/tasks/settings")]),
     ("my_tasks_add_day_rule",
      {"days": [0, 1], "start_hour": 8, "end_hour": 11, "confirmed": True,
@@ -418,6 +420,7 @@ def test_every_path_the_skill_calls_is_served_with_that_method():
 #: it reads and why that table survives the retirement.
 STORE_NEUTRAL: dict[str, str] = {
     "/tasks/calendar/day-state": "calendar_day_state — the member's day, not a task (D53.6)",
+    "/tasks/calendar/rollover/log": "calendar_rollover_log — the member's roll-over history, no task store (CAL-6a, task 1680)",
     "/tasks/people": "people — slice 1 of the rename (2026-09-21)",
     "/tasks/settings": "user_settings — the calendar fields of the member, no task (CAL-2, task 1676)",
 }
