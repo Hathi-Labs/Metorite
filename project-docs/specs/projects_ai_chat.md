@@ -7042,6 +7042,8 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 **Status.** SPECIFIED 2026-11-08. Epic: Metorite task 2240. The owner decided
 the four calls of §31.6 on 2026-11-08. No migration.
+VOX-4 (the operator console tries) was built 2026-11-08, and it waits for
+review. It is stacked on VOX-2. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
 
 ### 31.1 The request
@@ -7380,23 +7382,40 @@ edits.
   - `uv run python scripts/affected_tests.py --run`.
 
 **VOX-4 (task 2264). Set up and try the models in the operator console.**
-STANDARD.
+STANDARD, and treated as HIGH, because it spends the platform key at a vendor.
 
 - **Files:** `workbench/operator_console/src/lib/providerGuides.ts`, the Tiers
-  page (`tiers/TierBoard`, `TryDecision`), and an operator API route that
-  calls the two doors with the operator's own org.
+  page (`tiers/TierBoard`, `TrySpeech`, `TryVision`), two BFF routes under
+  `api/operator/catalog/`, and two Console routes in `customer_console/main.py`.
 - **Do:**
   1. Provider cards for Sarvam (speech-to-text, the four modes) and
-     ElevenLabs Scribe (speech-to-text).
-  2. A note on the vision models that read images.
-  3. A key that does not work shows the provider's error in the Try box.
+     ElevenLabs Scribe (speech-to-text). VOX-2 wrote the Sarvam card. The
+     ElevenLabs card declares `elevenlabs/scribe_v2` with the verb
+     `atranscription`.
+  2. A note on the vision models that read images. It names
+     `gemini/gemini-3.1-flash-lite` and `anthropic/claude-haiku-5-5`.
+  3. A key that does not work shows the provider's error in the Try box. The
+     Console removes the key from that text and cuts it to 300 characters.
   4. On the Tiers page, a Try box for `tier-stt` (upload a clip, read the
-     transcript and the minutes) and for `tier-vision` (upload an image and
-     a question, read the answer). The Console meters each try to the
-     operator's org.
+     transcript and the seconds) and for `tier-vision` (upload an image and
+     a question, read the answer).
+- **How the tries are metered (the CP-13b rule, `customer_console.md`
+  §6A.14).** No platform organization exists, and `usage_event.organization_id`
+  is NOT NULL. So a try never calls the customer door and writes no
+  `usage_event` row. The route resolves the chain itself. It reads the platform
+  credential only (`organization_id IS NULL`), so a key that belongs to an org
+  is never spent. It calls the provider through `router.call_chain`. It writes
+  one `control_audit` row for each call that reached the vendor, served or
+  failed. The two routes are `POST /catalog/transcribe/try` and
+  `POST /catalog/vision/try`. Both need the `admin` role.
+- **Limits of a try.** A clip takes 10 MB and 60 seconds. An image takes 4 MB
+  (png, jpeg, gif or webp, read from the first bytes). A question takes 500
+  characters.
 - **Done when:** an operator binds Sarvam to `tier-stt` and a vision model to
   `tier-vision`, and tries both from the Tiers page.
-- **Fence (R7):** operator console unit tests of the cards and the Try box.
+- **Fence (R7):** `tests/unit/test_customer_console_try_voice.py` (R8, the
+  routes), `workbench/operator_console/src/lib/voiceTry.test.ts` and
+  `providerGuides.test.ts`.
 
 **VOX-5 (task 2265). Prove "only when needed".** STANDARD.
 
