@@ -105,6 +105,14 @@ def test_the_sync_and_fork_read_never_follows_a_link(apps: dict[str, Path]) -> N
     assert listed == {"app.json", "index.html"}
 
 
+def test_the_app_tree_never_lists_a_link(apps: dict[str, Path]) -> None:
+    """The one walk of the app routes lists no link, and enters no linked dir."""
+    from gateway.routes.apps._common import iter_app_files
+
+    listed = {"/".join(p) for p in iter_app_files(apps["mine"], lambda _p, _d: True)}
+    assert listed == {"app.json", "index.html"}, listed
+
+
 def test_a_fork_copies_no_linked_file(apps: dict[str, Path]) -> None:
     from gateway.routes.apps.durability import _read_workspace_files
     from gateway.routes.apps.lifecycle import _fork_workspace
