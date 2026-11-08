@@ -51,6 +51,8 @@ _EXTRA: dict[str, dict[str, Any]] = {
     "select": {"options": ["planned", "on site", "done"]},
     "multiSelect": {"options": ["red", "green", "blue"]},
     "relation": {"to": "crm.account"},
+    "quantity": {"units": ["kg", "m"]},
+    "barcode": {"format": "ean13"},
 }
 
 #: One good value of each type, and the value the store keeps.
@@ -71,6 +73,12 @@ _GOOD: dict[str, tuple[Any, Any]] = {
     "email": ("Ana@Fracktal.TEST", "ana@fracktal.test"),
     "phone": ("+919876543210", "+919876543210"),
     "geo": ({"lat": 12.97, "lng": 77.59}, {"lat": 12.97, "lng": 77.59}),
+    "richText": ("# Notes\n\nA **bold** step.", "# Notes\n\nA **bold** step."),
+    "rating": (4, 4),
+    "duration": (5400, 5400),
+    "quantity": ({"value": "12.5", "unit": "kg"}, {"value": "12.5", "unit": "kg"}),
+    "percent": (2550, 2550),
+    "barcode": ("4006381333931", "4006381333931"),
 }
 
 #: Bad values of each type, by a name for the test id.
@@ -139,6 +147,39 @@ _BAD: list[tuple[str, str, Any]] = [
     ("geo", "missing", {"lat": 1.5}),
     ("geo", "exponent", {"lat": 1e-05, "lng": 0}),
     ("geo", "list", [12.97, 77.59]),
+    ("richText", "number", 5),
+    ("richText", "tag", "<b>bold</b>"),
+    ("richText", "script", "Hello <script>alert(1)</script>"),
+    ("richText", "comment", "x <!-- hidden --> y"),
+    ("richText", "too-long", "x" * (sf.MAX_RICH_TEXT_CHARS + 1)),
+    ("richText", "nul", "a\x00b"),
+    ("rating", "zero", 0),
+    ("rating", "over", 6),
+    ("rating", "float", 3.5),
+    ("rating", "bool", True),
+    ("rating", "text", "3"),
+    ("duration", "negative", -1),
+    ("duration", "float", 1.5),
+    ("duration", "bool", True),
+    ("duration", "over", sf.MAX_DURATION_SECONDS),
+    ("duration", "text", "1h"),
+    ("quantity", "float-value", {"value": 12.5, "unit": "kg"}),
+    ("quantity", "exponent", {"value": "1e3", "unit": "kg"}),
+    ("quantity", "seven-decimals", {"value": "1.1234567", "unit": "kg"}),
+    ("quantity", "empty-value", {"value": "", "unit": "kg"}),
+    ("quantity", "other-unit", {"value": "1", "unit": "lb"}),
+    ("quantity", "no-unit", {"value": "1"}),
+    ("quantity", "extra-key", {"value": "1", "unit": "kg", "scale": 2}),
+    ("quantity", "text", "5 kg"),
+    ("percent", "float", 12.5),
+    ("percent", "bool", True),
+    ("percent", "over", sf.MAX_PERCENT_BP),
+    ("percent", "text", "5%"),
+    ("barcode", "bad-check-digit", "4006381333932"),
+    ("barcode", "short", "400638133393"),
+    ("barcode", "long", "40063813339311"),
+    ("barcode", "letter", "400638133393a"),
+    ("barcode", "number", 4006381333931),
 ]
 
 
@@ -153,8 +194,8 @@ def _words(message: str) -> int:
 # ── a. Each type takes a good value and refuses a bad one ────────────────────
 
 
-def test_the_sixteen_types_are_the_spec_list() -> None:
-    assert len(sf.FIELD_TYPES) == 16
+def test_the_types_are_the_spec_list() -> None:
+    assert len(sf.FIELD_TYPES) == 22
     assert set(_GOOD) == set(sf.FIELD_TYPES)
     assert {kind for kind, _, _ in _BAD} == set(sf.FIELD_TYPES)
     assert set(sf.HOT_TYPES) <= set(sf.FIELD_TYPES)
@@ -180,6 +221,76 @@ def test_each_type_refuses_a_bad_value(kind: str, value: Any) -> None:
     assert _words(err.message) <= 25, err.message
     if isinstance(value, str) and len(value) > 3:
         assert value not in err.message
+
+
+# ── C14. The six more types ────────────────────────────────────────────────
+
+
+def test_a_rating_keeps_its_own_bounds() -> None:
+    plain = _field("rating")
+    assert [sf.check_value(plain, v) for v in (1, 5)] == [1, 5]
+    ten = _field("rating", min=0, max=10)
+    assert [sf.check_value(ten, v) for v in (0, 10)] == [0, 10]
+    for bad in (-1, 11):
+        with pytest.raises(FieldError):
+            sf.check_value(ten, bad)
+
+
+@pytest.mark.parametrize(("spec", "word"), [
+    ({"type": "rating", "min": 5, "max": 5}, "max"),
+    ({"type": "rating", "min": -1}, "min"),
+    ({"type": "rating", "max": 101}, "max"),
+    ({"type": "rating", "min": True}, "min"),
+    ({"type": "quantity"}, "units"),
+    ({"type": "quantity", "units": []}, "units"),
+    ({"type": "quantity", "units": ["kg", "kg"]}, "units[1]"),
+    ({"type": "quantity", "units": [" kg"]}, "units[0]"),
+    ({"type": "quantity", "units": ["x" * (sf.MAX_UNIT_CHARS + 1)]}, "units[0]"),
+    ({"type": "quantity", "units": [f"u{i}" for i in range(sf.MAX_UNITS + 1)]}, "units"),
+    ({"type": "barcode"}, "format"),
+    ({"type": "barcode", "format": "upc"}, "format"),
+    ({"type": "text", "min": 1}, "min"),
+    ({"type": "text", "units": ["kg"]}, "units"),
+    ({"type": "number", "format": "qr"}, "format"),
+])
+def test_the_spec_rules_of_the_new_types(spec: dict[str, Any], word: str) -> None:
+    problems = sf.validate_field_spec({"key": "f_key", **spec})
+    assert [p.path for p in problems] == [word]
+
+
+@pytest.mark.parametrize("kind", ["richText", "rating", "duration", "quantity", "percent", "barcode"])
+def test_a_new_type_cannot_be_hot(kind: str) -> None:
+    assert kind not in sf.HOT_TYPES
+    problems = sf.validate_field_spec({"key": "f_key", "type": kind, **_EXTRA.get(kind, {}), "hot": True})
+    assert [p.path for p in problems] == ["hot"]
+
+
+def test_the_extras_survive_the_stored_spec() -> None:
+    for kind, extra in (("rating", {"min": 0, "max": 10}), ("quantity", {"units": ["kg", "m"]}),
+                        ("barcode", {"format": "code128"})):
+        field = sf.parse_field_spec({"key": "f_key", "type": kind, **extra})
+        back = sf.stored_field("f_key", kind, field.stored_spec(), False)
+        assert back == field
+
+
+def test_the_barcode_formats() -> None:
+    code128 = _field("barcode", format="code128")
+    assert sf.check_value(code128, "AB-12 x") == "AB-12 x"
+    for bad in ("", "a" * (sf.MAX_CODE_CHARS + 1), "café", "a\tb"):
+        with pytest.raises(FieldError):
+            sf.check_value(code128, bad)
+    qr = _field("barcode", format="qr")
+    assert sf.check_value(qr, "https://example.com/a?b=1") == "https://example.com/a?b=1"
+    for bad in ("", "a" * (sf.MAX_QR_CHARS + 1), "a\nb"):
+        with pytest.raises(FieldError):
+            sf.check_value(qr, bad)
+    assert sf.ean13_valid("4006381333931") and not sf.ean13_valid("4006381333930")
+
+
+def test_a_rich_text_with_a_lone_angle_bracket_is_markdown() -> None:
+    rich = _field("richText")
+    for good in ("a < b", "1 <2", "x > y", "<3 hearts", "<https://example.com>"[1:]):
+        assert sf.check_value(rich, good) == good
 
 
 def test_numbers_at_the_edge() -> None:

@@ -103,6 +103,18 @@
     "FieldDef": {
       "additionalProperties": false,
       "properties": {
+        "format": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Format"
+        },
         "hot": {
           "default": false,
           "title": "Hot",
@@ -129,6 +141,30 @@
           "default": false,
           "title": "Many",
           "type": "boolean"
+        },
+        "max": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max"
+        },
+        "min": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min"
         },
         "options": {
           "anyOf": [
@@ -179,10 +215,31 @@
             "url",
             "email",
             "phone",
-            "geo"
+            "geo",
+            "richText",
+            "rating",
+            "duration",
+            "quantity",
+            "percent",
+            "barcode"
           ],
           "title": "Type",
           "type": "string"
+        },
+        "units": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Units"
         }
       },
       "required": [

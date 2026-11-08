@@ -378,7 +378,13 @@ def test_host_record_kinds_agree_with_the_check_and_the_spec() -> None:
 def test_the_key_and_the_type_checks_agree_with_studio_fields() -> None:
     code = _code(_MIGRATION.read_text(encoding="utf-8"))
     assert f"field_key ~ '^{studio_fields.NAME_PATTERN}$'" in code
-    check = code.split("CONSTRAINT package_field_value_field_type CHECK (field_type IN (", 1)[1]
+    # C14 widened this CHECK (migration 380): read the LATEST file that defines it.
+    latest = max(
+        (p for p in _MIGRATION.parent.glob("*.sql")
+         if "CONSTRAINT package_field_value_field_type CHECK" in p.read_text(encoding="utf-8")),
+        key=lambda p: int(p.name.split("_", 1)[0]))
+    check = _code(latest.read_text(encoding="utf-8")).split(
+        "CONSTRAINT package_field_value_field_type CHECK (field_type IN (", 1)[1]
     types = re.findall(r"'([A-Za-z]+)'", check.split("))", 1)[0])
     assert tuple(types) == studio_fields.FIELD_TYPES
 

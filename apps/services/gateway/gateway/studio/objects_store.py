@@ -1094,7 +1094,8 @@ FIELD_REFUSED = "field_refused"
 STORE_REFUSED = "store_refused"
 
 #: The parts of a field that a sync cannot change. ``hot`` is not one of them.
-_FIELD_ATTRS = ("type", "many", "options", "to", "required", "label")
+_FIELD_ATTRS = (
+    "type", "many", "options", "to", "required", "label", "min", "max", "units", "format")
 
 
 @dataclass(frozen=True)

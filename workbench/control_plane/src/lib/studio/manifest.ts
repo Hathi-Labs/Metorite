@@ -22,7 +22,13 @@ export type FieldType =
   | "url"
   | "email"
   | "phone"
-  | "geo";
+  | "geo"
+  | "richText"
+  | "rating"
+  | "duration"
+  | "quantity"
+  | "percent"
+  | "barcode";
 
 export type BlockName =
   | "table"
@@ -49,6 +55,11 @@ export interface FieldDef {
   to?: string | null;
   // The field gets a row in the index side table of C1 (studio_record_hot).
   hot?: boolean;
+  // C14. The bounds of a rating, the units of a quantity and the format of a barcode.
+  min?: number | null;
+  max?: number | null;
+  units?: string[] | null;
+  format?: string | null;
 }
 
 export interface ObjectDef {

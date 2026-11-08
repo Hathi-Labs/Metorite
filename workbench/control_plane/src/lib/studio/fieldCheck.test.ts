@@ -57,7 +57,7 @@ describe("the golden file", () => {
   it("holds at least 48 value cases and every field type three times", () => {
     expect(golden.values.length).toBeGreaterThanOrEqual(48);
     const types = new Set(golden.values.map((c) => c.field.type));
-    expect(types.size).toBe(16);
+    expect(types.size).toBe(22);
     for (const t of types) {
       const mine = golden.values.filter((c) => c.field.type === t && !c.field.many);
       expect(mine.length, t).toBeGreaterThanOrEqual(3);

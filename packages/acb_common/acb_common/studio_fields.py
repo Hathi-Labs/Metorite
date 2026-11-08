@@ -47,11 +47,12 @@ from urllib.parse import urlsplit
 
 from acb_common.app_manifests.base import APP_ID_PATTERN
 
-#: The sixteen field types of §3.1, in camelCase as the genUI node types are.
+#: The field types of §3.1 and of C14, in camelCase as the genUI node types are.
+#: The first sixteen are C1. The last six are C14, and none of them may be hot.
 FIELD_TYPES: tuple[str, ...] = (
     "text", "longText", "number", "money", "date", "datetime", "checkbox",
     "select", "multiSelect", "person", "relation", "file", "url", "email",
-    "phone", "geo",
+    "phone", "geo", "richText", "rating", "duration", "quantity", "percent", "barcode",
 )  # fmt: skip
 
 #: The types that a hot field may have. Each maps to one value column of
@@ -91,11 +92,31 @@ MAX_HOT_PER_OBJECT = 8
 MAX_HOT_PER_ORG = 24
 #: A field turns hot on an object of at most this many records (the C2 size).
 MAX_HOT_BACKFILL = 50_000
+#: C14. A rich text is markdown of at most the long-text size.
+MAX_RICH_TEXT_CHARS = MAX_LONG_TEXT_CHARS
+#: C14. A rating without ``min`` and ``max`` runs from 1 to 5. A bound is 0 to 100.
+DEFAULT_RATING_MIN = 1
+DEFAULT_RATING_MAX = 5
+MAX_RATING_BOUND = 100
+#: C14. A duration is whole seconds, below this (about 317 years).
+MAX_DURATION_SECONDS = 10**10
+#: C14. A percent is basis points (1% is 100), below this in size.
+MAX_PERCENT_BP = 10**9
+#: C14. A quantity takes a declared list of units.
+MAX_UNITS = 30
+MAX_UNIT_CHARS = 20
+#: C14. The barcode formats. EAN-13 has a check digit. Code 128 is printable ASCII.
+BARCODE_FORMATS: tuple[str, ...] = ("ean13", "code128", "qr")
+MAX_CODE_CHARS = 80
+MAX_QR_CHARS = 2_000
 #: The text that ``studio_record_hot.v_text`` holds: the first 256 characters.
 #: A btree entry has a size limit, so the side table never holds a long text.
 HOT_TEXT_CHARS = 256
 
-_SPEC_KEYS = frozenset({"key", "type", "label", "required", "many", "options", "to", "hot"})
+_SPEC_KEYS = frozenset({
+    "key", "type", "label", "required", "many", "options", "to", "hot",
+    "min", "max", "units", "format",
+})
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
 _RELATION_TO_RE = re.compile(RELATION_TO_PATTERN, re.ASCII)
@@ -109,6 +130,11 @@ _DATETIME_RE = re.compile(
 _CURRENCY_RE = re.compile(r"[A-Z]{3}", re.ASCII)
 _UUID_FORM_RE = re.compile(
     r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}", re.ASCII)
+# C14. A quantity value is a decimal string: no exponent, so no float is stored.
+_QUANTITY_RE = re.compile(r"-?[0-9]{1,15}(?:\.[0-9]{1,6})?", re.ASCII)
+_EAN13_RE = re.compile(r"[0-9]{13}", re.ASCII)
+# A tag or a comment in a rich text. The text is markdown, and never HTML.
+_RAW_HTML_RE = re.compile(r"<[A-Za-z/!?]")
 _PHONE_RE = re.compile(r"\+[1-9][0-9]{7,14}", re.ASCII)
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", re.ASCII)
 #: A simple address check, in the shape of the WHATWG form check, with a dot
@@ -160,6 +186,13 @@ class FieldSpec:
     options: tuple[str, ...] | None = None
     to: str | None = None
     hot: bool = False
+    #: C14. The bounds of a rating.
+    min: int | None = None
+    max: int | None = None
+    #: C14. The units of a quantity.
+    units: tuple[str, ...] | None = None
+    #: C14. The format of a barcode.
+    format: str | None = None
 
     def stored_spec(self) -> dict[str, Any]:
         """The ``spec`` column: every part but the key, the type and ``hot``,
@@ -171,6 +204,14 @@ class FieldSpec:
             out["options"] = list(self.options)
         if self.to is not None:
             out["to"] = self.to
+        if self.min is not None:
+            out["min"] = self.min
+        if self.max is not None:
+            out["max"] = self.max
+        if self.units is not None:
+            out["units"] = list(self.units)
+        if self.format is not None:
+            out["format"] = self.format
         return out
 
 
@@ -252,6 +293,49 @@ def _check_to(kind: str, to: Any, objects: Collection[str] | None,
         out.append(SpecProblem("to", "Not a declared object or an <app>.<object> target.", to))
 
 
+def _int(v: Any) -> bool:
+    return type(v) is int
+
+
+def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """C14: ``min`` and ``max`` of a rating, ``units`` of a quantity and ``format``
+    of a barcode. Each belongs to one type. A quantity and a barcode need theirs."""
+    for part, owner in (("min", "rating"), ("max", "rating"), ("units", "quantity"),
+                        ("format", "barcode")):
+        if kind != owner and spec.get(part) is not None:
+            out.append(SpecProblem(part, f"Only a {owner} field takes `{part}`."))
+    if kind == "rating":
+        lo, hi = spec.get("min"), spec.get("max")
+        for name, v in (("min", lo), ("max", hi)):
+            if v is not None and not (_int(v) and 0 <= v <= MAX_RATING_BOUND):
+                out.append(SpecProblem(name, f"`{name}` is a whole number from 0 to {MAX_RATING_BOUND}."))
+        lo = DEFAULT_RATING_MIN if lo is None else lo
+        hi = DEFAULT_RATING_MAX if hi is None else hi
+        if _int(lo) and _int(hi) and lo >= hi:
+            out.append(SpecProblem("max", "`max` must be more than `min`."))
+    elif kind == "quantity":
+        units = spec.get("units")
+        if not isinstance(units, list) or not units:
+            out.append(SpecProblem("units", "A quantity field needs a list of `units`."))
+        elif len(units) > MAX_UNITS:
+            out.append(SpecProblem("units", f"A quantity field holds at most {MAX_UNITS} units."))
+        else:
+            seen: set[str] = set()
+            for i, u in enumerate(units):
+                if (not isinstance(u, str) or not u.strip() or u != u.strip()
+                        or len(u) > MAX_UNIT_CHARS or not storable_text(u)):
+                    out.append(SpecProblem(
+                        f"units[{i}]", f"Each unit is text of 1 to {MAX_UNIT_CHARS} characters, "
+                        "with no space at either end."))
+                elif u in seen:
+                    out.append(SpecProblem(f"units[{i}]", "This unit is listed twice."))
+                else:
+                    seen.add(u)
+    elif kind == "barcode" and spec.get("format") not in BARCODE_FORMATS:
+        out.append(SpecProblem(
+            "format", f"A barcode field needs a `format`: {', '.join(BARCODE_FORMATS)}."))
+
+
 def _check_flags(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
     for flag in ("required", "many", "hot"):
         value = spec.get(flag, False)
@@ -310,6 +394,7 @@ def validate_field_spec(spec: Mapping[str, Any], *,
         out.append(SpecProblem("label", f"A label is text of at most {MAX_LABEL_CHARS} characters."))
     _check_options(kind, spec.get("options"), out)
     _check_to(kind, spec.get("to"), objects, out)
+    _check_extras(kind, spec, out)
     _check_flags(kind, spec, out)
     return out
 
@@ -334,7 +419,10 @@ def parse_field_spec(spec: Mapping[str, Any], *,
         key=spec["key"], type=spec["type"], label=spec.get("label"),
         required=spec.get("required") is True, many=spec.get("many") is True,
         options=None if _no_options(spec["type"], options) else tuple(options),
-        to=spec.get("to"), hot=spec.get("hot") is True)
+        to=spec.get("to"), hot=spec.get("hot") is True,
+        min=spec.get("min"), max=spec.get("max"),
+        units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
+        format=spec.get("format"))
 
 
 def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> FieldSpec:
@@ -352,7 +440,11 @@ def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> Fie
         required=spec.get("required") is True, many=spec.get("many") is True,
         options=tuple(options) if isinstance(options, list) else None,
         to=spec.get("to") if isinstance(spec.get("to"), str) else None,
-        hot=hot is True)
+        hot=hot is True,
+        min=spec["min"] if _int(spec.get("min")) else None,
+        max=spec["max"] if _int(spec.get("max")) else None,
+        units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
+        format=spec["format"] if isinstance(spec.get("format"), str) else None)
 
 
 # --- the values -------------------------------------------------------------
@@ -512,6 +604,77 @@ def _geo(f: FieldSpec, v: Any) -> dict[str, int | float]:
         f.key, f'Field `{f.key}` takes {{"lat": <-90 to 90>, "lng": <-180 to 180>}}, with no exponent.')
 
 
+def _rich_text(f: FieldSpec, v: Any) -> str:
+    """Markdown, never HTML. The display draws it through the one markdown seam,
+    which makes no element of raw HTML. A tag is refused here, so no other
+    reader of the record meets one."""
+    text = _text(f, v, MAX_RICH_TEXT_CHARS)
+    if _RAW_HTML_RE.search(text):
+        raise FieldError(
+            f.key, f"Field `{f.key}` takes markdown. Remove the HTML tag, as `<b>`.")
+    return text
+
+
+def _rating(f: FieldSpec, v: Any) -> int:
+    lo = DEFAULT_RATING_MIN if f.min is None else f.min
+    hi = DEFAULT_RATING_MAX if f.max is None else f.max
+    if not _int(v) or not lo <= v <= hi:
+        raise FieldError(f.key, f"Field `{f.key}` takes a whole number from {lo} to {hi}.")
+    return v
+
+
+def _duration(f: FieldSpec, v: Any) -> int:
+    if not _int(v) or not 0 <= v < MAX_DURATION_SECONDS:
+        raise FieldError(
+            f.key, f"Field `{f.key}` takes whole seconds, 0 or more and below {MAX_DURATION_SECONDS}.")
+    return v
+
+
+def _quantity(f: FieldSpec, v: Any) -> dict[str, str]:
+    if (not isinstance(v, Mapping) or set(v) != {"value", "unit"}
+            or not isinstance(v["value"], str) or not _QUANTITY_RE.fullmatch(v["value"])):
+        raise FieldError(
+            f.key, f'Field `{f.key}` takes {{"value": "<decimal text>", "unit": "<unit>"}}, '
+            "with up to 6 decimals and no exponent.")
+    if not isinstance(v["unit"], str) or v["unit"] not in (f.units or ()):
+        raise FieldError(f.key, f"Field `{f.key}` takes one of its listed units.")
+    return {"value": v["value"], "unit": v["unit"]}
+
+
+def _percent(f: FieldSpec, v: Any) -> int:
+    if not _int(v) or abs(v) >= MAX_PERCENT_BP:
+        raise FieldError(
+            f.key, f"Field `{f.key}` takes basis points as a whole number (1% is 100).")
+    return v
+
+
+def ean13_valid(code: str) -> bool:
+    """True when *code* is 13 digits and the last one is the EAN-13 check digit."""
+    if _EAN13_RE.fullmatch(code) is None:
+        return False
+    total = sum(int(c) * (3 if i % 2 else 1) for i, c in enumerate(code[:12]))
+    return (10 - total % 10) % 10 == int(code[12])
+
+
+def _barcode(f: FieldSpec, v: Any) -> str:
+    fmt = f.format or "qr"
+    if fmt == "ean13":
+        if not isinstance(v, str) or not ean13_valid(v):
+            raise FieldError(
+                f.key, f"Field `{f.key}` takes an EAN-13: 13 digits with a correct check digit.")
+    elif fmt == "code128":
+        if (not isinstance(v, str) or not 1 <= len(v) <= MAX_CODE_CHARS
+                or any(not 32 <= ord(c) <= 126 for c in v)):
+            raise FieldError(
+                f.key, f"Field `{f.key}` takes 1 to {MAX_CODE_CHARS} printable ASCII characters.")
+    elif (not isinstance(v, str) or not 1 <= len(v) <= MAX_QR_CHARS or not storable_text(v)
+            or any(ord(c) < 0x20 or ord(c) == 0x7F for c in v)):
+        raise FieldError(
+            f.key, f"Field `{f.key}` takes text of 1 to {MAX_QR_CHARS} characters, "
+            "with no control character.")
+    return v
+
+
 _CHECKS: dict[str, Any] = {
     "text": lambda f, v: _text(f, v, MAX_TEXT_CHARS),
     "longText": lambda f, v: _text(f, v, MAX_LONG_TEXT_CHARS),
@@ -529,6 +692,12 @@ _CHECKS: dict[str, Any] = {
     "email": _email,
     "phone": _phone,
     "geo": _geo,
+    "richText": _rich_text,
+    "rating": _rating,
+    "duration": _duration,
+    "quantity": _quantity,
+    "percent": _percent,
+    "barcode": _barcode,
 }
 assert tuple(_CHECKS) == FIELD_TYPES, "each field type has one check"
 
