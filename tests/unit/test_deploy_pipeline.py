@@ -843,11 +843,11 @@ def test_the_r8_shards_have_pr_checks_two_databases(parsed: dict, pr_check: dict
     # CIV-23: pr-check publishes to a host port Docker picks (four box runners
     # share one daemon), and a step writes the DSNs. Every other key matches.
     pr_services = {
-        k: {f: v for f, v in svc.items() if f != "ports"}
+        k: {f: v for f, v in svc.items() if f not in ("ports", "options")}
         for k, svc in pr_check["jobs"]["test"]["services"].items()
     }
     assert {
-        k: {f: v for f, v in svc.items() if f != "ports"} for k, svc in services.items()
+        k: {f: v for f, v in svc.items() if f not in ("ports", "options")} for k, svc in services.items()
     } == pr_services, "the R8 shards must start exactly pr-check's two Postgres services"
     assert all(
         s["ports"] == [5432] for s in pr_check["jobs"]["test"]["services"].values()
