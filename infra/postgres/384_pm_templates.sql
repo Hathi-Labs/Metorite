@@ -1,5 +1,5 @@
 -- ============================================================================
--- 379_pm_templates.sql — the template store of Projects (WS-39 TPL-1a,
+-- 384_pm_templates.sql — the template store of Projects (WS-39 TPL-1a,
 -- Metorite task 18, Linear parity P7).
 --
 -- What: two new tables.
@@ -68,8 +68,9 @@
 -- The number is taken at build time (R1). It was 368 at build on 2026-11-08.
 -- On 2026-11-09 origin/main held 366, and open branches held 367 and 369 to
 -- 373, so it became 374. On 2026-11-09 SG-1 merged 378 to main, and open
--- branches held 375, 380, 382 and 383, so it became 379. Check it again
--- at merge.
+-- branches held 375, 380, 382 and 383, so it became 379. LP-1a (383)
+-- merges first, so on the same day it became 384, above every open
+-- branch. Check it again at merge.
 -- Pinned by tests/unit/test_pm_templates_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
