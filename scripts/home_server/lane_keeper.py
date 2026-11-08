@@ -255,8 +255,6 @@ def run_pass(
         if a.get("sessionId")
     }
     lanes = lane_names()
-    if os.environ.get("KEEPER_LANES"):
-        log("KEEPER_LANES is not read any more: name the lanes in keeper-lanes.txt")
     if not lanes:
         log("no lane named in keeper-lanes.txt, so no wake")
     busy = busy_lanes(agents, lanes, projects)
