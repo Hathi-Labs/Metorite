@@ -102,6 +102,7 @@
       "tests/unit/test_clarify_eval.py",
       "tests/unit/test_crm_field_type_change_parity.py",
       "tests/unit/test_crm_stage_discipline_parity.py",
+      "tests/unit/test_crm_ui_actions.py",
       "tests/unit/test_decision_ids.py",
       "tests/unit/test_drafting_voice.py",
       "tests/unit/test_email_compose_latency.py",

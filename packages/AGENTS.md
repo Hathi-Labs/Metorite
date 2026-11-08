@@ -59,6 +59,7 @@ Shared settings, logging, the activity and cost feed, and utilities.
 - **`app_manifests/` holds the ONE route manifest of each app** (MCP-P1a, D136, `external_agent_access.md` §19.3). Mira's chat client and the MCP door both read it. It is pure data and imports the standard library only, so `acb_auth`, the edge and the gateway can import it.
 - `base.py` holds the types and the readers. `build_call` is the one builder of a door call. `knowledge.py` holds the Knowledge rows, and `acb_skills/knowledge_manifest.py` re-exports them. Each A, B or C row names a door `op` or an `off_door` reason (AD-2), and an `App` with neither fails at import.
 - Fences: `tests/unit/test_app_door_coverage.py`, `tests/unit/test_knowledge_chat_coverage.py`.
+- `crm.py` holds the CRM rows: one for each route of `gateway.routes.crm`, all `off_door` until MCP-P2a sets the door ops (CRM-M2a, D136.1). `acb_skills/chat_parity.py` decides each `/api/crm` action from these rows. Fence: `tests/unit/test_crm_ui_actions.py`. A new CRM route needs a row, and the count of `planned` rows only goes down.
 
 Each module below holds ONE rule. Do not copy its rule into a caller.
 - `today.py`: today's date of a chat run. Fence: `tests/unit/test_crm_answer_consistency.py`.
