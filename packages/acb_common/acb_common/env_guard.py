@@ -241,6 +241,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # org. A rule reaches each agent and each check of the project, so a
     # tenant must not open it for another org.
     "PROJECT_RULES_ORGS",
+    # WS-39 SP-1: PROJECTS_SPRINTS_ORGS opens the cycle store of Projects for
+    # an org. A tenant must not open it for another org, so only the owner
+    # writes it.
+    "PROJECTS_SPRINTS_ORGS",
     # WS-MCP MCP-P1b-1: APP_REQUESTS_ORGS opens the approval store of the app
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.

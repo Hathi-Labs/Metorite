@@ -508,6 +508,23 @@ def test_the_goal_record_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE goal_records FORCE  ROW LEVEL SECURITY" in policies
 
 
+@pytest.mark.parametrize(
+    "table", ["pm_cycles", "pm_cycle_tasks", "pm_cycle_committed", "pm_cycle_capacity"],
+)
+def test_the_cycle_tables_are_tenant_scoped(table: str) -> None:
+    """WS-39 SP-1 (``project_management_app.md`` §13.2a). A cycle, its tasks
+    and its two snapshots hold the plan of one organization. The tables may
+    not be exempt, and the committed policy phase must carry each (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_project_update_table_is_tenant_scoped() -> None:
     """WS-39 LP-1a (``project_management_app.md`` §14.2a). An update tells
     how one project of one organization goes. The table may not be exempt,

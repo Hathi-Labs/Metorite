@@ -1046,6 +1046,17 @@ class Settings(BaseSettings):
     # value. Fence: tests/unit/test_project_rules.py.
     project_rules_orgs: str = ""
 
+    # ── The cycles of Projects (WS-39 SP-1, D195) ───────────────────────────
+    #
+    # The flag `PROJECTS_SPRINTS` of the board, as a per-org list
+    # (project_management_app.md §13.2a). A comma list of organization ids,
+    # or `*` for each one. Empty means off, the default. Off, each cycle route
+    # of `/projects` answers 404 and no cycle row is written. The one reader
+    # is `gateway.routes.projects.cycles.sprints_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_sprint_store_r8.py.
+    projects_sprints_orgs: str = ""
+
     # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

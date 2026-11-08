@@ -114,6 +114,7 @@ from gateway.routes.projects.custom_fields import (
     apply_values,
     load_definitions,
 )
+from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.filters import (
     UPDATED_AGE_SQL,
     agent_filter_clauses,
@@ -1092,6 +1093,14 @@ async def get_task(
         await attach_agent_state(db, [result])
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="task")
+        # SP-9 — an epic rolls up EVERY descendant the reader can see. The key
+        # is absent for any other task. `subtasks` (direct children) is not
+        # touched. The one home of the rule is `rollup.py`.
+        from gateway.routes.projects.rollup import epic_rollup
+
+        rollup = await epic_rollup(db, vis, row)
+        if rollup is not None:
+            result["rollup"] = rollup
         return result
 
 
@@ -1636,6 +1645,9 @@ async def move_task_in(
                   "from_number": getattr(task, "task_number", None)},
         )
         await record_drops(db, task_id=task_id, dropped=dropped, by=by)
+    if "project_id" in values:
+        # WS-39 SP-1. A task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, [task_id], by=by)
 
     # ── Promote-and-assign, in the SAME transaction ─────────────────────
     #

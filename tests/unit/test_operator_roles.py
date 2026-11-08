@@ -147,6 +147,10 @@ _PROBES: dict[tuple[str, str], dict] = {
     # CP-13b. No questions, so an admin meets clause 13's 400 before the
     # chain resolves. No vendor is ever called from this probe.
     ("POST", "/catalog/decide/try"): {"json": {"state": "x", "questions": {}}},
+    # VOX-4. A body that is no clip and no image, so an admin meets the
+    # route's own refusal before any vendor is called.
+    ("POST", "/catalog/transcribe/try"): {"files": {"file": ("x.wav", b"x")}},
+    ("POST", "/catalog/vision/try"): {"files": {"file": ("x.png", b"x")}},
 }
 
 _CELLS = [
