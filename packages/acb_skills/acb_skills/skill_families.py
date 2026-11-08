@@ -748,8 +748,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
-    # CAL-1a (task 1675): the day planner, for the main chat. The eight tools are
-    # the My Tasks planner tools (skill_my_tasks.core). The Projects assistant
+    # CAL-1a (task 1675): the day planner, for the main chat. The ten tools are
+    # the My Tasks planner and calendar settings tools (skill_my_tasks.core). The Projects assistant
     # builds them in `_agent_tools()` only, so the specialist's own tool list and
     # `skill_projects.__all__` stay as they were. The pack follows `projects`
     # (tool_packs.FOLLOWS), so the flag list needs no new line.
@@ -757,7 +757,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Calendar day planner",
         "summary": (
             "The member's day: rebuild it, plan what is left, roll over, "
-            "set the One Thing, and block or release time."
+            "set the One Thing, block or release time, and read or change the calendar settings."
         ),
         "description": (
             "A tool pack: the day planner, for the main assistant to load "
@@ -765,12 +765,13 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "\"I fell behind\". The pack holds the tools to propose and apply "
             "a plan of the day, to fit what is left, to roll over unfinished "
             "work, to read the digest of the day, to set the One Thing, and to "
-            "block, release and read the schedule. A plan is proposed first "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. A plan is proposed first "
             "and applied after the member agrees. A run loads a pack only "
             "where tool packs are on, so until then this switch has no effect."
         ),
         "tools": (
             "my_tasks_day_digest",
+            "my_tasks_get_calendar_settings",
             "my_tasks_list_schedule",
             "my_tasks_plan_day",
             "my_tasks_replan_day",
@@ -778,6 +779,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_schedule",
             "my_tasks_set_one_thing",
             "my_tasks_unschedule",
+            "my_tasks_update_calendar_settings",
         ),
         "owner": "projects-assistant",
         "core": False,
