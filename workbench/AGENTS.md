@@ -51,6 +51,7 @@ entry says ONE or THE, a second copy is a defect.
   - ⚠️ `app/email/components/automation/ui.tsx` holds a second `Modal`. Do not add a consumer to it.
 - `lib/outsideClick.ts`: THE outside-click walker for a popover not built on the substrate. A new popover uses it, never a hand-rolled `contains()`. Fence: `lib/outsideClick.test.ts`.
 - `components/AgentChat.tsx`: the main chat. `lib/tierRouting.ts` holds every rule of the model picker. Fences: `AgentChat.picker.test.ts`, `lib/tierRouting.test.ts`.
+- `components/VoiceInputButton.tsx`: the mic of the chat composer (VOX-1). `lib/voiceDictation.ts` holds its rules, and `hooks/useVoiceDictation.ts` runs them. `lib/audioCapture.ts` is the one browser seam for the microphone, and Notes re-exports `listMicrophones` from it. The clip is 16 kHz mono WAV from the Web Audio API, never MediaRecorder. The transcript goes in the box, and the chat never sends it by itself. Fences: `lib/voiceDictation.test.ts`, `lib/audioCapture.test.ts`, `lib/chatAttachments.test.ts`.
 - `components/ui/EntityPill.tsx`: a chat pill links only on exactly one match.
 - `components/genUITemplates.tsx` `ReportView`: THE report renderer, in the chat card, the side panel, the file viewer and `/artifacts`. A report adds no second chart, table or board. Fences: `lib/report.test.ts`, `components/reportView.test.ts`.
 - `lib/chatMemorySave.ts`: `AgentChat` saves on unmount only the default agent's turns, by each turn's own author stamp. `isDefaultAgent` holds the one alias list. Fence: `lib/chatMemorySave.test.ts`.

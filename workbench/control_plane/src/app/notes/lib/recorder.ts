@@ -30,28 +30,10 @@ export interface RecorderCallbacks {
   onVisibility?: (hidden: boolean) => void;
 }
 
-export interface MicDevice {
-  deviceId: string;
-  label: string;
-}
-
-/** Enumerate the browser's audio-input devices (Google-Meet-style mic picker).
- *  Device labels are only populated once the user has granted mic permission at
- *  least once this session; before that they come back blank (we show a generic
- *  name and reveal real labels after the first getUserMedia). */
-export async function listMicrophones(): Promise<MicDevice[]> {
-  if (typeof navigator === "undefined" || !navigator.mediaDevices?.enumerateDevices) {
-    return [];
-  }
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    return devices
-      .filter((d) => d.kind === "audioinput")
-      .map((d) => ({ deviceId: d.deviceId, label: d.label }));
-  } catch {
-    return [];
-  }
-}
+// The mic list lives in the one audio seam (`lib/audioCapture.ts`, VOX-1), so
+// Notes and the chat's voice input read one copy. Re-exported, so the Notes
+// imports do not change.
+export { listMicrophones, type MicDevice } from "@/lib/audioCapture";
 
 /** Pick the best MediaRecorder mime the browser supports (Chromium/FF → webm,
  *  Safari → mp4). */

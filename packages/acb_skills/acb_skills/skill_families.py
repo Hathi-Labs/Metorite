@@ -87,11 +87,13 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "tool_scope: web access, file writing & generative UI, task "
             "tracking, HITL questions, diagnostics, working notes, the "
             "coding skill, inter-agent delegation, fast typed "
-            "decisions (decide, WS-31 CP-13d), and the text of a chat "
-            "attachment (read_attachment, H-229). Not toggleable "
+            "decisions (decide, WS-31 CP-13d), the text of a chat "
+            "attachment (read_attachment, H-229), and a look at an "
+            "attached image (analyze_image, WS-VOX VOX-3). Not toggleable "
             "(skills_registry.md rule 2)."
         ),
         "tools": (
+            "analyze_image",
             "ask_questions",
             "call_agent",
             "call_agent_background",
