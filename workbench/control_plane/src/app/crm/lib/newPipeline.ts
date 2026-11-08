@@ -1,7 +1,9 @@
-// ── A new deal pipeline (WS-CRM CRM-M3a) ──────────────────────────────────
+// ── A new deal or lead pipeline (WS-CRM CRM-M3a, CRM-M4a) ─────────────────
 //
 // The rules of the "New pipeline" dialog of CRM settings, pure, so they have
-// tests without a browser (`components/crmM3.test.ts`).
+// tests without a browser (`components/crmM3.test.ts`, `crmM4.test.ts`). One
+// dialog serves both kinds. A lead pipeline's stages are lead statuses, and it
+// names the deal pipeline that it feeds (`feeds`).
 //
 // ⚠️ The gateway plans the pipeline, and this file holds no copy of the plan.
 // `GET /crm/pipelines/preview` reuses a stage by its name, adds the org's won
@@ -13,6 +15,9 @@ import type { DealPipeline } from "./types";
 
 /** The types that a stage of a new pipeline can take in the dialog. */
 export type NewStageType = "open" | "won" | "lost";
+
+/** The two kinds of pipeline (CRM-M4a). The gateway names them the same. */
+export type PipelineKind = "deal" | "lead";
 
 /** One row of the stage list. `key` keeps a row when the rows move. */
 export type NewStageRow = { key: string; name: string; type: NewStageType };
@@ -26,6 +31,11 @@ export type NewPipelineDraft = {
   /** The id of the pipeline to copy, when `start` is `copy`. */
   copyFrom: string | null;
   stages: NewStageRow[];
+  /**
+   * CRM-M4a, a lead pipeline only: the NAME of the deal pipeline that it
+   * feeds, as the gateway takes it. Null or absent: the default deal pipeline.
+   */
+  feeds?: string | null;
 };
 
 /** One stage of the gateway's plan. `id` is null for a stage that the create makes. */
@@ -44,7 +54,55 @@ export type PipelinePlan = {
   kind: string;
   copy_of: string | null;
   stages: PlannedStage[];
+  /** CRM-M4a: the deal pipeline that a lead pipeline feeds. Null: the default one. */
+  feeds?: string | null;
 };
+
+/** The words of one kind of pipeline in the dialog and the preview (CRM-M4a). */
+export type PipelineWords = {
+  title: string;
+  description: string;
+  /** The name of a pipeline, as an example. */
+  example: string;
+  /** "pipeline" or "lead pipeline", in a sentence. */
+  pipeline: string;
+  stage: string;
+  stages: string;
+  /** The noun of one stage at the start of a label. */
+  Stage: string;
+  record: string;
+  create: string;
+};
+
+export const PIPELINE_WORDS: Record<PipelineKind, PipelineWords> = {
+  deal: {
+    title: "New pipeline",
+    description: "The stages that one kind of deal moves through, in order.",
+    example: "AMC contracts",
+    pipeline: "pipeline",
+    stage: "stage",
+    stages: "stages",
+    Stage: "Stage",
+    record: "deal",
+    create: "Create pipeline",
+  },
+  lead: {
+    title: "New lead pipeline",
+    description: "The statuses that one kind of lead moves through before it converts, in order.",
+    example: "Trade show",
+    pipeline: "lead pipeline",
+    stage: "status",
+    stages: "statuses",
+    Stage: "Status",
+    record: "lead",
+    create: "Create lead pipeline",
+  },
+};
+
+/** The kind of a plan, as the gateway names it. Any other word reads as a deal. */
+export function kindOf(plan: { kind?: string } | null | undefined): PipelineKind {
+  return plan?.kind === "lead" ? "lead" : "deal";
+}
 
 /** The longest name, as the gateway counts it (`pipelines.MAX_NAME`). */
 export const PIPELINE_NAME_MAX = 120;
@@ -73,6 +131,17 @@ export const PLAN_SOURCE_HELP: Record<PlannedStage["source"], string> = {
   added: "The CRM adds its own stage, so that a deal in this pipeline can close.",
 };
 
+/** The help line of each source in the words of one kind (CRM-M4a). */
+export function planSourceHelp(source: PlannedStage["source"], kind: PipelineKind): string {
+  if (kind === "deal") return PLAN_SOURCE_HELP[source];
+  const w = PIPELINE_WORDS[kind];
+  return {
+    existing: `A ${w.stage} the CRM has. The pipelines share it.`,
+    new: `The create makes this ${w.stage}.`,
+    added: `The CRM adds its own ${w.stage}, so that a ${w.record} in this pipeline can close.`,
+  }[source];
+}
+
 let rowCounter = 0;
 
 /** A blank row with a new key. */
@@ -88,15 +157,28 @@ export function defaultSource(pipelines: readonly DealPipeline[] | null | undefi
   return (pipelines.find((p) => p.is_default) ?? sorted[0]).id;
 }
 
-/** The draft of a dialog that opens. With a pipeline, it starts as a copy. */
-export function emptyDraft(pipelines: readonly DealPipeline[] | null | undefined): NewPipelineDraft {
+/**
+ * The draft of a dialog that opens. With a pipeline of its kind, it starts as
+ * a copy. A lead pipeline starts by feeding the default deal pipeline, by
+ * name, so the member sees where its deals go (CRM-M4a).
+ */
+export function emptyDraft(
+  pipelines: readonly DealPipeline[] | null | undefined,
+  kind: PipelineKind = "deal",
+  dealPipelines: readonly DealPipeline[] | null | undefined = null,
+): NewPipelineDraft {
   const source = defaultSource(pipelines);
-  return {
+  const draft: NewPipelineDraft = {
     name: "",
     start: source ? "copy" : "empty",
     copyFrom: source,
     stages: [blankRow()],
   };
+  if (kind === "lead") {
+    const fed = defaultSource(dealPipelines);
+    draft.feeds = dealPipelines?.find((p) => p.id === fed)?.name ?? null;
+  }
+  return draft;
 }
 
 /**
@@ -106,24 +188,30 @@ export function emptyDraft(pipelines: readonly DealPipeline[] | null | undefined
  * are a choice, so they go. A closing word that the member set to Open sends
  * "open", because the route reads a bare closing word as closed.
  */
-function stageBody(row: NewStageRow, stored: ReadonlyMap<string, string>): Record<string, string> {
+function stageBody(
+  row: NewStageRow,
+  stored: ReadonlyMap<string, string>,
+  kind: PipelineKind,
+): Record<string, string> {
   const name = row.name.trim();
   if (stored.has(foldName(name))) return { name };
   if (row.type !== "open") return { name, type: row.type };
-  return closingType(name) ? { name, type: "open" } : { name };
+  return closingType(name, kind) ? { name, type: "open" } : { name };
 }
 
-/** The closing words of the route. A new stage with one and no type closes. */
-const CLOSING_WORDS: Record<string, NewStageType> = {
-  won: "won",
-  "closed won": "won",
-  lost: "lost",
-  "closed lost": "lost",
+/**
+ * The closing words of the route, for each kind (`PipelineKind.closing_words`
+ * of `routes/crm/pipelines.py`). A new stage with one and no type closes. For
+ * a lead, won is "converted" and lost is "lost" or "junk".
+ */
+const CLOSING_WORDS: Record<PipelineKind, Record<string, NewStageType>> = {
+  deal: { won: "won", "closed won": "won", lost: "lost", "closed lost": "lost" },
+  lead: { won: "won", converted: "won", lost: "lost", junk: "lost" },
 };
 
 /** The type that the route gives a closing name, or null for any other name. */
-export function closingType(name: string): NewStageType | null {
-  return CLOSING_WORDS[foldName(name)] ?? null;
+export function closingType(name: string, kind: PipelineKind = "deal"): NewStageType | null {
+  return CLOSING_WORDS[kind][foldName(name)] ?? null;
 }
 
 /**
@@ -131,9 +219,9 @@ export function closingType(name: string): NewStageType | null {
  * so the row shows the type that the create makes. A name that stops being a
  * closing word takes back Open, if the type came from the old name.
  */
-export function renameRow(row: NewStageRow, name: string): NewStageRow {
-  const before = closingType(row.name);
-  const after = closingType(name);
+export function renameRow(row: NewStageRow, name: string, kind: PipelineKind = "deal"): NewStageRow {
+  const before = closingType(row.name, kind);
+  const after = closingType(name, kind);
   // The type came from the old name, so the new name may change it.
   const inferred = before !== null && row.type === before;
   if (after && (inferred || (row.type === "open" && before === null))) {
@@ -152,39 +240,52 @@ export function namedRows(rows: readonly NewStageRow[]): NewStageRow[] {
  * The body of the create and of the preview, or null while the draft has
  * nothing to plan: no name, no pipeline to copy, or no named stage. `stored`
  * holds the stages that the CRM has (:func:`storedTypes`). Their rows send no
- * type.
+ * type. A deal body names no kind, as before CRM-M4a. A lead body names
+ * `kind` and, when the draft holds one, `feeds`.
  */
 export function pipelineBody(
   draft: NewPipelineDraft,
   stored: ReadonlyMap<string, string> = new Map(),
+  kind: PipelineKind = "deal",
 ): Record<string, unknown> | null {
   const name = draft.name.trim();
   if (!name) return null;
+  const head: Record<string, unknown> = { name };
+  if (kind === "lead") {
+    head.kind = "lead";
+    const feeds = (draft.feeds ?? "").trim();
+    if (feeds) head.feeds = feeds;
+  }
   if (draft.start === "copy") {
-    return draft.copyFrom ? { name, copy_from: draft.copyFrom } : null;
+    return draft.copyFrom ? { ...head, copy_from: draft.copyFrom } : null;
   }
   const rows = namedRows(draft.stages);
-  return rows.length > 0 ? { name, stages: rows.map((row) => stageBody(row, stored)) } : null;
+  return rows.length > 0
+    ? { ...head, stages: rows.map((row) => stageBody(row, stored, kind)) }
+    : null;
 }
 
 /** A field error of the draft, in words, or null. The gateway checks the rest. */
-export function draftProblem(draft: NewPipelineDraft): string | null {
+export function draftProblem(draft: NewPipelineDraft, kind: PipelineKind = "deal"): string | null {
+  const w = PIPELINE_WORDS[kind];
   const name = draft.name.trim();
-  if (!name) return "Give the pipeline a name.";
+  if (!name) return `Give the ${w.pipeline} a name.`;
   if (name.length > PIPELINE_NAME_MAX) {
-    return `A pipeline name has at most ${PIPELINE_NAME_MAX} characters.`;
+    return `A ${w.pipeline} name has at most ${PIPELINE_NAME_MAX} characters.`;
   }
   if (draft.start === "copy") {
-    return draft.copyFrom ? null : "Pick the pipeline to copy.";
+    return draft.copyFrom ? null : `Pick the ${w.pipeline} to copy.`;
   }
   const rows = namedRows(draft.stages);
-  if (rows.length === 0) return "Add at least one stage.";
-  if (rows.length > MAX_NEW_STAGES) return `A pipeline holds at most ${MAX_NEW_STAGES} stages.`;
+  if (rows.length === 0) return `Add at least one ${w.stage}.`;
+  if (rows.length > MAX_NEW_STAGES) {
+    return `A ${w.pipeline} holds at most ${MAX_NEW_STAGES} ${w.stages}.`;
+  }
   const seen = new Set<string>();
   for (const row of rows) {
     const name = row.name.trim();
     if (name.length > PIPELINE_NAME_MAX) {
-      return `The stage “${name.slice(0, 40)}…” has more than ${PIPELINE_NAME_MAX} characters.`;
+      return `The ${w.stage} “${name.slice(0, 40)}…” has more than ${PIPELINE_NAME_MAX} characters.`;
     }
     const key = foldName(name);
     if (seen.has(key)) return `The list names “${name}” twice. Keep it once.`;
@@ -211,7 +312,7 @@ export function removeRow(rows: readonly NewStageRow[], key: string): NewStageRo
 }
 
 /**
- * The type of each deal stage that the CRM has, by its folded name. A row
+ * The type of each stage (or lead status) that the CRM has, by its folded name. A row
  * with such a name shows that type and sends none (:func:`pipelineBody`), so
  * the row and the body agree. It reads the stages of the store, so it holds
  * before a plan loads, after a read fails, and in the phone tree.

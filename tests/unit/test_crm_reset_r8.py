@@ -88,6 +88,8 @@ EMPTIED = (
     "crm_field_fill",
     # CRM-Q18-1: the versions of the plan name the old field rules.
     "crm_mapping_plans",
+    # CRM-M4a: the lead statuses of each lead pipeline.
+    "crm_lead_pipeline_stages",
 )
 #: What the start over keeps. The same set as ``core.RESET_KEEPS``.
 KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors",

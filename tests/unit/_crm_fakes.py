@@ -456,6 +456,8 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "crm_lost_reasons": {"position": 0},
     "crm_deal_contacts": {"is_primary": False},
+    # Migration 360 (CRM-M4a): a pipeline that names no kind is a deal one.
+    "crm_pipelines": {"kind": "deal", "feeds_pipeline_id": None},
     # Migration 145's retry trio on the activity queue.
     "crm_activities": {
         "zoho_push_attempts": 0, "zoho_push_error": None,

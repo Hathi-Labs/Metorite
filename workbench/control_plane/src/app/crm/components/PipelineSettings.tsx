@@ -66,6 +66,7 @@ import {
 } from "../lib/board";
 import { TRY_AGAIN } from "../lib/api";
 import { colorOptions } from "../lib/colorOptions";
+import type { PipelineKind } from "../lib/newPipeline";
 import { orderedPipelines, placesOf, showPicker } from "../lib/pipelines";
 import {
   CLAMPED_PROBABILITY,
@@ -199,6 +200,7 @@ export default function PipelineSettings({
   setup,
   access,
   pipelines = null,
+  leadPipelines = null,
   pipelineId = null,
   showAdminCards = false,
   readOnly = false,
@@ -243,6 +245,12 @@ export default function PipelineSettings({
   access?: React.ReactNode;
   /** The deal pipelines (CRM-Q2). `null` while the gateway has no such route. */
   pipelines?: DealPipeline[] | null;
+  /**
+   * WS-CRM CRM-M4a: the lead pipelines (`GET /crm/pipelines?kind=lead`). With
+   * one or more, the Native Lead statuses card lists them to read, beside the
+   * default lead list.
+   */
+  leadPipelines?: DealPipeline[] | null;
   /** The pipeline the Deals board shows (CRM-U11). The stage list opens on it. */
   pipelineId?: string | null;
   /** The Fields and Sync health cards are for an admin. */
@@ -273,21 +281,28 @@ export default function PipelineSettings({
   const several = showPicker(pipelines);
   // In the store, so the dialog stays open when the page mounts its phone tree.
   const newPipelineOpen = useCrmStore((state) => state.newPipeline.open);
+  const newPipelineKind: PipelineKind = useCrmStore((state) => state.newPipeline.kind) ?? "deal";
   const setNewPipeline = useCrmStore((state) => state.setNewPipeline);
   const createPipeline = useCrmStore((state) => state.createPipeline);
+  // One dialog makes both kinds (CRM-M4a). A button of the other kind starts
+  // a fresh draft, so a deal draft never becomes a lead pipeline.
+  const openNew = (kind: PipelineKind) =>
+    setNewPipeline(kind === newPipelineKind ? { open: true, kind } : { open: true, kind, draft: null });
   // CRM-M3a: "New pipeline", on the Native Deal stages card, for an admin.
   const newPipeline =
     pipelineCreate && !readOnly ? (
-      <Button
-        variant="secondary"
-        size="sm"
-        icon="Plus"
-        disabled={saving}
-        onClick={() => setNewPipeline({ open: true })}
-      >
+      <Button variant="secondary" size="sm" icon="Plus" disabled={saving} onClick={() => openNew("deal")}>
         New pipeline
       </Button>
     ) : undefined;
+  // CRM-M4a: the same, on the Native Lead statuses card. It opens the dialog
+  // in lead mode.
+  const newLeadPipeline = newPipeline ? (
+    <Button variant="secondary" size="sm" icon="Plus" disabled={saving} onClick={() => openNew("lead")}>
+      New pipeline
+    </Button>
+  ) : undefined;
+  const leadSections = leadPipelines && leadPipelines.length > 0 ? leadPipelines : null;
   const orderStatuses = useCrmStore((state) => state.orderStatuses);
   const resetStatusOrder = useCrmStore((state) => state.resetStatusOrder);
   const addStage = useCrmStore((state) => state.addStageBeforeClosed);
@@ -408,7 +423,9 @@ export default function PipelineSettings({
           {newPipeline && (
             <NewPipelineDialog
               open={newPipelineOpen}
-              pipelines={pipelines}
+              kind={newPipelineKind}
+              pipelines={newPipelineKind === "lead" ? leadPipelines : pipelines}
+              dealPipelines={pipelines}
               saving={saving}
               onClose={() => setNewPipeline({ open: false, draft: null })}
               onCreate={async (body) => {
@@ -423,16 +440,31 @@ export default function PipelineSettings({
             held(
               "Lead statuses",
               leadStatuses.length,
-              <StageList
-                kind="lead"
-                mode="native"
-                statuses={leadStatuses}
-                saving={saving}
-                onSave={onSaveStatus}
-                onOrder={orderStatuses}
-                onRemove={onRemoveStatus}
-                onAdd={addStage}
-              />
+              leadSections ? (
+                // CRM-M4a: with a lead pipeline, the default list counts as the
+                // first one, as the default deal pipeline does. The card reads
+                // only until the status editor of each pipeline.
+                <PipelineSections
+                  title="Lead statuses"
+                  pipelines={[defaultLeadList(leadStatuses), ...leadSections]}
+                  fallback={leadStatuses}
+                  note={LEAD_PIPELINES_NOTE}
+                  action={newLeadPipeline}
+                  lineOf={(p) => feedsLine(p, pipelines)}
+                />
+              ) : (
+                <StageList
+                  kind="lead"
+                  mode="native"
+                  statuses={leadStatuses}
+                  saving={saving}
+                  onSave={onSaveStatus}
+                  onOrder={orderStatuses}
+                  onRemove={onRemoveStatus}
+                  onAdd={addStage}
+                  action={newLeadPipeline}
+                />
+              )
             )}
 
           {show("lost-reasons") &&
@@ -508,6 +540,45 @@ const LIST_WORDS: Record<
 export const SEVERAL_PIPELINES_NOTE =
   "Each pipeline lists its stages here to read. Stage editing for each pipeline comes in a " +
   "later release. Until then, the stages stay as they are.";
+
+/**
+ * The Native Lead statuses card with a lead pipeline (CRM-M4a). It reads only
+ * until the status editor of each lead pipeline, a later slice.
+ */
+export const LEAD_PIPELINES_NOTE =
+  "The default list holds each lead with no pipeline, and every lead status. Each lead " +
+  "pipeline lists its statuses here to read. Status editing for each pipeline comes in a " +
+  "later release. Until then, the statuses stay as they are.";
+
+/** The id of the default lead list on the read-only card. It is no pipeline. */
+export const DEFAULT_LEAD_LIST_ID = "default-lead-list";
+
+/**
+ * The default lead list as one more section: each lead status in lane order.
+ * A lead with no pipeline sits on it, so it comes first.
+ */
+export function defaultLeadList(statuses: readonly Status[]): DealPipeline {
+  return {
+    id: DEFAULT_LEAD_LIST_ID,
+    name: "Default list",
+    is_default: false,
+    position: Number.MIN_SAFE_INTEGER,
+    kind: "lead",
+    stages: statuses.map((s) => ({ id: s.id, name: s.name, position: s.position, type: s.type })),
+  };
+}
+
+/** Where the deals of one lead pipeline go, in words. None for the default list. */
+export function feedsLine(
+  pipeline: DealPipeline,
+  dealPipelines: readonly DealPipeline[] | null | undefined,
+): string | null {
+  if (pipeline.id === DEFAULT_LEAD_LIST_ID) return null;
+  const fed = pipeline.feeds_pipeline_id
+    ? dealPipelines?.find((p) => p.id === pipeline.feeds_pipeline_id)?.name
+    : null;
+  return `Feeds deals into ${fed ?? "the default deal pipeline"}.`;
+}
 
 /** The two choices of "Column order" (Mirror mode). */
 const ORDER_TABS: TabDef[] = [

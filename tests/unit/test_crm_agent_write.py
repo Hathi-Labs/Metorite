@@ -1084,6 +1084,114 @@ async def test_each_call_of_the_agent_carries_its_chat_stamp(monkeypatch) -> Non
     assert calls and all(c["headers"]["X-Actor-Via"] == "chat:crm-assistant" for c in calls)
 
 
+# ── WS-CRM CRM-M4a: a lead pipeline, on the same tool ───────────────────────
+
+_WEB_ID = str(uuid4())
+#: The plan of a lead pipeline, as the gateway answers it.
+_LEAD_PLAN = {
+    "name": "Trade show", "kind": "lead", "copy_of": None, "feeds": "Sales pipeline",
+    "stages": [
+        {"id": str(uuid4()), "name": "New", "type": "open", "source": "existing"},
+        {"id": None, "name": "Booth visit", "type": "open", "source": "new"},
+        {"id": None, "name": "Converted", "type": "won", "source": "new"},
+        {"id": str(uuid4()), "name": "Lost", "type": "lost", "source": "added"},
+    ],
+}
+
+
+def _lead_responder(plan: dict[str, Any] = _LEAD_PLAN) -> Any:
+    def respond(call: dict) -> Any:
+        path, method, params = call["path"], call["method"], call["params"] or {}
+        if path == "/crm/pipelines" and method == "GET" and params.get("kind") == "lead":
+            return [{"id": _WEB_ID, "name": "Web", "kind": "lead", "is_default": False,
+                     "position": 0, "stages": []}]
+        if path == "/crm/pipelines/preview":
+            return dict(plan, name=params.get("name") or plan["name"],
+                        feeds=plan["feeds"] if params.get("feeds") else None)
+        if path == "/crm/pipelines" and method == "POST":
+            return {"id": str(uuid4()), "name": call["json"]["name"], "kind": "lead",
+                    "is_default": False, "position": 1,
+                    "stages": [{"id": s["id"] or str(uuid4()), "name": s["name"],
+                                "type": s["type"]} for s in plan["stages"]]}
+        return _responder(call)
+    return respond
+
+
+async def test_a_lead_pipeline_sends_its_kind_and_feed_and_its_card_names_both(
+    monkeypatch,
+) -> None:
+    """Acceptance 4. ``kind="lead"`` goes to the preview and the create, the
+    name of the fed deal pipeline is the one that the CRM holds, and the card
+    says "lead pipeline", each status with its type, and the deal pipeline it
+    feeds. The read of the deal pipelines sends no query, as before."""
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch, _lead_responder())
+    out = await _M.crm_create_pipeline(
+        "Trade show", stages=["New", "Booth visit", "Converted (won)"], kind="lead",
+        feeds="sales PIPELINE")
+    assert [(c["method"], c["path"]) for c in calls] == [
+        ("GET", "/crm/pipelines"), ("GET", "/crm/pipelines/preview"), ("POST", "/crm/pipelines")]
+    assert not calls[0]["params"], "the deal list is read as before"
+    assert calls[1]["params"]["kind"] == "lead"
+    assert calls[1]["params"]["feeds"] == "Sales pipeline"
+    sent = calls[2]["json"]
+    assert sent == {
+        "name": "Trade show", "kind": "lead", "feeds": "Sales pipeline",
+        "stages": [{"name": "New"}, {"name": "Booth visit"},
+                   {"name": "Converted", "type": "won"}],
+        "planned": [s["id"] for s in _LEAD_PLAN["stages"]]}
+    (card,) = cards
+    assert card["title"] == "Create the lead pipeline Trade show?"
+    assert "lead pipeline" in card["detail"] and "4 statuses" in card["detail"]
+    context = card["context"]
+    assert "kind: lead pipeline" in context
+    assert "feeds deals into: Sales pipeline" in context
+    assert "status 2: Booth visit · open · new" in context
+    assert "status 1: New · open · a status the CRM has" in context
+    assert "status 4: Lost · lost · added, so that a lead can close" in context
+    assert _M._LEAD_PIPELINE_NOTE in context and _M._ZOHO_NOTE not in context
+    assert "Created the lead pipeline Trade show" in out
+    assert "A converted lead's deal goes to Sales pipeline" in out
+
+
+async def test_a_lead_pipeline_with_no_feed_names_the_default_deal_pipeline(monkeypatch) -> None:
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch, _lead_responder())
+    await _M.crm_create_pipeline("Trade show", stages=["New"], kind="LEAD")
+    assert "feeds" not in calls[0]["params"] and "feeds" not in calls[1]["json"]
+    assert "feeds deals into: the default deal pipeline" in cards[0]["context"]
+
+
+async def test_a_lead_copy_reads_the_lead_pipelines(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch, _lead_responder())
+    await _M.crm_create_pipeline("Web retarget", copy_from="web", kind="lead")
+    assert calls[0]["path"] == "/crm/pipelines" and calls[0]["params"] == {"kind": "lead"}
+    assert calls[1]["params"] == {"name": "Web retarget", "kind": "lead", "copy_from": _WEB_ID}
+
+
+@pytest.mark.parametrize(("kwargs", "words"), [
+    ({"kind": "deal", "feeds": "Sales pipeline"}, "Only a lead pipeline feeds a deal pipeline"),
+    ({"kind": "contact"}, "is not a kind of pipeline"),
+    ({"kind": "lead", "feeds": "Partner deals"}, "There is no deal pipeline called 'Partner deals'"),
+    ({"kind": "lead", "copy_from": "Events"}, "There is no lead pipeline called 'Events'"),
+])
+async def test_a_bad_kind_or_feed_is_refused_before_any_card(monkeypatch, kwargs, words) -> None:
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch, _lead_responder())
+    stages = None if "copy_from" in kwargs else ["New"]
+    out = await _M.crm_create_pipeline("Trade show", stages=stages, **kwargs)
+    assert words in out and "nothing was changed" in out.lower(), out
+    assert cards == [] and writes(calls) == []
+    assert all(c["path"] != "/crm/pipelines/preview" for c in calls)
+
+
+def test_the_tool_docstring_says_when_to_send_a_lead_kind() -> None:
+    """The model picks the kind from the docstring, so it names the cue."""
+    doc = _M.crm_create_pipeline.__doc__ or ""
+    assert 'kind="lead"' in doc and "LEAD pipeline" in doc and "feeds" in doc
+
+
 # ── 7. CRM-M2b: the record edit and the task change ─────────────────────────
 
 _EDIT_ARGS = ("deals", _DEAL_ID, {"amount": 300000, "expected_close_date": "2026-12-31"})
