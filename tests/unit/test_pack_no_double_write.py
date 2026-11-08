@@ -57,7 +57,7 @@ CRM = "crm-assistant"
 #: turns the reports family off. ``packs_on`` adds the reports pack wherever
 #: ``projects-plan`` is on (``tool_packs.FOLLOWS``).
 PROJ = frozenset(("projects", "projects-plan", "projects-structure", "projects-bulk",
-                  "projects-reminders", "projects-authority"))
+                  "projects-reminders", "projects-authority", "projects-waiting"))
 UUID = "0b0b0b0b-0000-4000-8000-0000000000b1"
 #: The turn of OA-8e run 4 on the Tasks page. The surface loads the core
 #: pack, and the plan and structure packs cannot join it, so the specialist
@@ -574,7 +574,7 @@ def test_the_write_kinds_cover_each_projects_write() -> None:
     # applied by the server, and `HELD_OFF_PACK_WRITES` classifies them.
     owner = {slug for slug in sf.pack_slugs()
              if sf.SKILL_FAMILIES[slug].get("owner") == PA and slug != "calendar-day"}
-    assert owner == PROJ | {"projects-reports"}, "non-vacuity"  # PJP-2 + ALN-4: 7 packs
+    assert owner == PROJ | {"projects-reports"}, "non-vacuity"  # PJP-2 + ALN-4 + AP-10a: 8 packs
     writes = {name for slug in owner for name in sf.SKILL_FAMILIES[slug]["tools"]
               if not annotated_read_only(name) and name not in tp.CHAT_FILE_TOOLS}
     assert set(tp.WRITE_KINDS) == writes

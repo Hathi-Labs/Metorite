@@ -157,6 +157,8 @@
     "delete_view",
     "add_report_recipient",
     "answer_decision",
+    "ask_person",
+    "withdraw_ask",
     "grant_access",
     "pin_authority",
     "merge_tags",

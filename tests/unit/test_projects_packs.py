@@ -67,12 +67,13 @@ REPO = Path(__file__).resolve().parents[2]
 PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
 SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders",
-         "projects-reports", "projects-authority")
+         "projects-reports", "projects-authority", "projects-waiting")
 #: After PJP-2 (project_planning.md section 3.3): the 11 report tools left plan, the 10 inbox,
 #: area and notification tools left structure for reminders. PJP-4 added update_tasks to
 #: bulk, ALN-2a added the two decision tools to reminders, and ALN-4 added the authority pack.
 SIZES = {"projects": 23, "projects-plan": 24, "projects-structure": 24, "projects-bulk": 22,
-         "projects-reminders": 19, "projects-reports": 11, "projects-authority": 3}
+         "projects-reminders": 19, "projects-reports": 11, "projects-authority": 3,
+         "projects-waiting": 2}  # AP-10a: ask_person and withdraw_ask
 #: CAL-1a: the owner also holds the ``calendar-day`` pack. It is no Projects family
 #: (its eight tools are not in ``skill_projects.__all__``), so ``SLUGS`` stays the seven.
 OWNER_SLUGS = (*SLUGS, "calendar-day")
@@ -128,7 +129,7 @@ def test_the_four_families_equal_the_owners_tools() -> None:
     tool is in two packs. Mutation: drop a tool from a family, add a name the
     owner lacks, or copy one tool into two families -> red."""
     union = [name for slug in SLUGS for name in _family(slug)]
-    assert len(union) == 126 == len(set(union)), "no tool is in two packs"
+    assert len(union) == 128 == len(set(union)), "no tool is in two packs"
     assert set(union) == set(skill_projects.__all__) == _own_tool_scope()
     for slug in SLUGS:
         assert sf.SKILL_FAMILIES[slug]["owner"] == PA and sf.is_pack(slug)
@@ -687,7 +688,7 @@ async def test_no_projects_tool_takes_an_organization_or_a_member_argument(store
             declared = set(tool.input_model.model_fields)
             assert not declared & identity, (_name(tool), sorted(declared & identity))
             seen += 1
-    assert seen == 126
+    assert seen == 128
 
 
 async def test_a_pack_call_outside_its_run_refuses(store) -> None:
@@ -1420,8 +1421,9 @@ def test_a_pack_too_small_for_work_does_not_reach_the_owner() -> None:
     that fits, the owner is reached as before. Mutation: drop the
     ``REACH_MIN_TOOLS`` filter from ``plan_loader`` -> the owner is reached
     while no work pack fits, and a bulk load refuses with LOAD_NO_PATH -> red."""
-    assert len(_family("projects-authority")) < tp.REACH_MIN_TOOLS
-    work = min(len(_family(slug)) for slug in SLUGS if slug != "projects-authority")
+    small = ("projects-authority", "projects-waiting")  # AP-10a: the waiting pack holds 2
+    assert all(len(_family(slug)) < tp.REACH_MIN_TOOLS for slug in small)
+    work = min(len(_family(slug)) for slug in SLUGS if slug not in small)
     assert work >= tp.REACH_MIN_TOOLS
     held = ("projects", "projects-plan")
     current = _BASE + sum(len(_family(slug)) for slug in held)

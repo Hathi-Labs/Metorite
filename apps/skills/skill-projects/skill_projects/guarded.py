@@ -2468,6 +2468,157 @@ async def answer_decision(decision_id: str, answer_key: str) -> str:
     return f"Answered {data(row.get('question'))} with {data(label)}.{chr(10)}  decision_id: {did}"
 
 
+# ── One person asks one person (WS-AP AP-10a, waiting_on_me.md §7.2) ─────────
+
+#: What the member reads when either wait flag is off (the routes answer 404).
+WAITS_OFF = "Waiting asks are not on for this organization."
+
+
+def _ask_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a refused ask or withdraw. It holds no number
+    (V6, ALN-Q5). The tool reads the status and the route's words, because
+    the client keeps the message and not the error code."""
+    status = getattr(exc, "status", None)
+    said = str(getattr(exc, "detail", "") or "").lower()
+    if status == 404 and said.strip() == "not found":
+        return WAITS_OFF
+    if status == 403:
+        return f"{REFUSED} A person must ask. Nothing was changed."
+    if status == 404 and "ask" in said:
+        return f"{REFUSED} The ask is not yours, or it is already gone. Nothing was changed."
+    if status == 404:
+        return f"{REFUSED} The task was not found, or you cannot open it. Nothing was changed."
+    if status == 422 and "cannot open" in said:
+        return (
+            f"{REFUSED} This person cannot open the task. Share the project with "
+            "them first. Nothing was changed."
+        )
+    if status == 422 and "yourself" in said:
+        return f"{REFUSED} You cannot ask yourself. Nothing was changed."
+    if status == 409 and "already wait" in said:
+        return f"{REFUSED} You already wait on this person here. Nothing was changed."
+    if status == 409:
+        return f"{REFUSED} The ask is already closed. Nothing was changed."
+    if status == 429:
+        return f"{REFUSED} You asked enough people today. Try again tomorrow. Nothing was changed."
+    if status == 422:
+        return f"{REFUSED} The server did not accept the ask: {data(said)}. Nothing was changed."
+    raise exc
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+async def ask_person(
+    task_id: str,
+    addressee: str,
+    question: str,
+    choices: list[dict[str, str]] | None = None,
+    due_at: str | None = None,
+) -> str:
+    """Ask one member a question about one task. ONE task per call. The
+    addressee is an email. The question is plain words. choices is nothing,
+    or two to three {key, label} rows. due_at is an ISO time with a zone. A run
+    that no person watches cannot ask, and the tool refuses it before any card.
+    The card shows the addressee, the question and the task. The ask is also a
+    comment, so each reader of the task reads the question. The server takes
+    the asker from the session, and it refuses a person who cannot open the task."""
+    if no_person_present():
+        return f"{REFUSED} {NO_PERSON_TEXT} Nothing was changed."
+    if _many(task_id):
+        return f"ask_person {ONE_ACT.replace('id', 'task_id')}"
+    task = uuid_of(task_id, "task_id")
+    who = str(addressee or "").strip()
+    words = str(question or "").strip()
+    if not who or not words:
+        return "ask_person needs an addressee and a question. Nothing was done."
+    try:
+        title = data(((await get(f"/projects/tasks/{task}")) or {}).get("title"))
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return f"{REFUSED} The task was not found, or you cannot open it. Nothing was changed."
+        raise
+    impact = (
+        "your question goes on the task as a comment, so every reader of the task "
+        "reads it. The person gets 1 bell row and can answer or say it is not them"
+    )
+    if not await _confirm(
+        title="Ask this person?",
+        detail=f"{data(who)} · {title}",
+        context=_guard_card(
+            impact,
+            {"person": data(who), "question": data(words), "task": title},
+        ),
+    ):
+        return CANCELLED
+    body: dict[str, Any] = {"addressee": who, "question": words}
+    if choices:
+        body["choices"] = choices
+    if due_at:
+        body["due_at"] = str(due_at)
+    try:
+        await post(f"/projects/tasks/{task}/asks", body)
+    except GatewayRefusal as exc:
+        return _ask_refusal(exc)
+    return f"Asked {data(who)} about {title}.{chr(10)}  task_id: {task}"
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def withdraw_ask(task_id: str, ask_id: str | None = None) -> str:
+    """Withdraw one open ask of the member on ONE task. The tool reads the
+    asks of the member on the task. With no ask_id and one open ask, it takes
+    that ask. With several, it lists them, and the member says which, so call
+    it again with an ask_id. A run that no person watches cannot withdraw, and
+    the tool refuses it before any card. The card shows the task and the
+    addressee. The server refuses an ask that is not yours or that is closed."""
+    if no_person_present():
+        return f"{REFUSED} {NO_PERSON_TEXT} Nothing was changed."
+    if _many(task_id) or (ask_id and _many(ask_id)):
+        return f"withdraw_ask {ONE_ACT.replace('id', 'task_id and ask_id')}"
+    task = uuid_of(task_id, "task_id")
+    aid = uuid_of(ask_id, "ask_id") if ask_id else ""
+    try:
+        got = (await get("/projects/decisions", params={"task_id": task})) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return WAITS_OFF
+        raise
+    if "asks" not in got:
+        return WAITS_OFF
+    asks = got.get("asks") or []
+    if not aid:
+        if not asks:
+            return "You have no open ask on this task. Nothing was changed."
+        if len(asks) > 1:
+            rows = chr(10).join(
+                f"  ask_id: {a.get('id')} · {data(a.get('decider'))}" for a in asks
+            )
+            return f"You have {len(asks)} open asks on this task. Call again with one ask_id:{chr(10)}{rows}"
+        aid = str(asks[0].get("id") or "").lower()
+    row = next((a for a in asks if str(a.get("id") or "").lower() == aid), None)
+    if row is None:
+        return f"{REFUSED} The ask is not yours, or it is already gone. Nothing was changed."
+    try:
+        title = data(((await get(f"/projects/tasks/{task}")) or {}).get("title"))
+    except GatewayRefusal:
+        title = f"task {task}"
+    aid = uuid_of(row.get("id"), "ask_id")
+    person = data(row.get("decider"))
+    if not await _confirm(
+        title="Withdraw this ask?",
+        detail=f"{person} · {title}",
+        context=_guard_card(
+            "1 open ask closes. The person no longer waits on you for it, and their bell row closes. "
+            "The comment on the task stays",
+            {"person": person, "task": title},
+        ),
+    ):
+        return CANCELLED
+    try:
+        await post(f"/projects/asks/{aid}/withdraw")
+    except GatewayRefusal as exc:
+        return _ask_refusal(exc)
+    return f"Withdrew the ask.{chr(10)}  ask_id: {aid}"
+
+
 # ── Who gets a report, and when (WS-64 OP-6d, D-OP-9) ───────────────────────
 
 
@@ -2749,6 +2900,8 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "pin_authority",
     "unpin_authority",
     "answer_decision",
+    "ask_person",
+    "withdraw_ask",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",

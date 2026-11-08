@@ -1218,6 +1218,8 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
         "intake_queue", "list_reminders", "my_areas", "my_contexts", "my_decisions",
         "notifications"}),
     "projects-authority": frozenset({"project_authorities"}),
+    # WS-AP AP-10a: both tools write, so a child holds none of them.
+    "projects-waiting": frozenset(),
     # STU-G1: STUDIO_ORGS holds no org here, so the pack builds no tool.
     "studio": frozenset(),
 }

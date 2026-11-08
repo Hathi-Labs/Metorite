@@ -22,6 +22,7 @@ from skill_projects.guarded import (
     answer_decision,
     archive_project,
     archive_task,
+    ask_person,
     attach_to_task,
     bulk_update,
     convert_folder_to_project,
@@ -51,6 +52,7 @@ from skill_projects.guarded import (
     set_status_set,
     unarchive_project,
     unpin_authority,
+    withdraw_ask,
 )
 from skill_projects.inbox import (
     calendar,
@@ -285,6 +287,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "grant_access",
     "pin_authority",
     "answer_decision",
+    "ask_person",
+    "withdraw_ask",
     "merge_tags",
     "merge_tasks",
     "move_project",

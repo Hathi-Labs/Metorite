@@ -50,6 +50,7 @@ WHEN = {
         "Also my areas, task inbox and notifications."),
     "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
     "projects-authority": "Load for the authority page of a project: to read it, pin a page as the authority, or remove a pin.",
+    "projects-waiting": "Load to ask a member a question about a task, to wait on someone, or to withdraw an ask.",
     # CAL-1a: the day planner pack.
     "calendar-day": (
         "Load to rebuild or replan the day, start my day, fit what is left, "

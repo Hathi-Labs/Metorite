@@ -454,11 +454,23 @@ DECISION = {"id": DECISION_ID, "subject_kind": "task", "subject_id": LIVE,
             "options": [{"key": "yes", "label": "Yes"}, {"key": "no", "label": "No"}]}
 
 
+#: WS-AP AP-10a. One open ask of the member, on the task LIVE.
+ASK_ID = "a2f8fad5-d9cb-469f-a165-70867728950e"
+ASK = {"id": ASK_ID, "decider": "priya@x.io", "due_at": None,
+       "created_at": "2026-11-08T09:00:00+00:00"}
+
+
 def _aln2a_answers(call: dict) -> Any:
     """WS-ALN ALN-2a: the member's open decisions, and the answer."""
     path, method = call["path"], call["method"]
     if path == "/projects/decisions" and method == "GET":
+        if call["params"].get("task_id"):
+            return {"decisions": [], "waiting_on": [], "asks": [ASK]}
         return {"decisions": [DECISION]}
+    if path == f"/projects/tasks/{LIVE}/asks" and method == "POST":
+        return {"decision": {**DECISION, "source": "person", "decider": call["json"]["addressee"]}}
+    if path == f"/projects/asks/{ASK_ID}/withdraw" and method == "POST":
+        return {"decision": {**DECISION, "state": "withdrawn"}}
     if path == f"/projects/decisions/{DECISION_ID}/answer" and method == "POST":
         return {"decision": {**DECISION, "state": "answered", "answer_key": "yes"}}
     return None
@@ -786,6 +798,14 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
     # WS-ALN ALN-2a: one answer per card
     "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
+    # WS-AP AP-10a: one ask per card, and one withdraw per card
+    "ask_person": [
+        {"task_id": LIVE, "addressee": "priya@x.io", "question": "Is the drawing final?"},
+        {"task_id": LIVE, "addressee": "priya@x.io", "question": "Which one?",
+         "choices": [{"key": "a", "label": "A"}, {"key": "b", "label": "B"}],
+         "due_at": "2030-01-01T10:00:00+00:00"},
+    ],
+    "withdraw_ask": [{"ask_id": ASK_ID, "task_id": LIVE}, {"task_id": LIVE}],
     "revoke_access": [
         {"project_id": UUID, "grant": GRANT_ID},
         {"project_id": UUID, "grant": "group:Design"},
@@ -890,6 +910,8 @@ _ONE_ID: dict[str, str] = {
     "pin_authority": "page_id",
     "unpin_authority": "pin_id",
     "answer_decision": "decision_id",
+    "ask_person": "task_id",
+    "withdraw_ask": "ask_id",
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",
@@ -3726,3 +3748,145 @@ async def test_a_caller_header_never_replaces_the_identity(monkeypatch) -> None:
     sent = calls[0]["headers"]
     assert sent["X-User-Email"] == "pm@fracktal.in"
     assert sent["If-Match"] == "t"
+
+
+# ── WS-AP AP-10a: ask_person and withdraw_ask ───────────────────────────────
+
+
+def _ask_gateway(monkeypatch, *, refuse=None, waits_off=False):
+    """The fake gateway of the ask tools. ``refuse`` answers the write with a
+    status and a sentence. ``waits_off`` drops the ``asks`` key of the read."""
+    from tests.unit._projects_agent_fakes import FakeResponse
+
+    def answer(call: dict) -> Any:
+        if call["method"] == "POST" and refuse is not None:
+            return FakeResponse({"detail": refuse[1]}, refuse[0])
+        if waits_off and call["method"] == "GET" and call["path"] == "/projects/decisions":
+            return {"decisions": [], "waiting_on": []}
+        return responder(call)
+
+    return fake_gateway(monkeypatch, answer)
+
+
+async def test_ask_person_raises_one_card_and_posts_no_author(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _ask_gateway(monkeypatch)
+    out = await skill_projects.ask_person(LIVE, "priya@x.io", "Is the drawing final?")
+    assert "Asked" in out and len(asked) == 1
+    ctx = asked[0]["context"]
+    assert "priya@x.io" in ctx and "Is the drawing final?" in ctx and "every reader" in ctx
+    posted = writes(calls)
+    assert [(c["method"], c["path"]) for c in posted] == [("POST", f"/projects/tasks/{LIVE}/asks")]
+    assert posted[0]["json"] == {"addressee": "priya@x.io", "question": "Is the drawing final?"}
+
+
+async def test_ask_person_cancel_writes_nothing(monkeypatch) -> None:
+    asked = deny(monkeypatch)
+    calls = _ask_gateway(monkeypatch)
+    out = await skill_projects.ask_person(LIVE, "priya@x.io", "Is it final?")
+    assert "Cancelled" in out and len(asked) == 1 and writes(calls) == []
+
+
+@pytest.mark.parametrize("call", [
+    lambda: skill_projects.ask_person(LIVE, "priya@x.io", "Is it final?"),
+    lambda: skill_projects.withdraw_ask(LIVE, ASK_ID),
+])
+async def test_the_ask_tools_refuse_no_person_before_any_read(monkeypatch, call) -> None:
+    from acb_common.no_person import NO_PERSON_TEXT, no_person_scope
+
+    asked = approve(monkeypatch)
+    calls = _ask_gateway(monkeypatch)
+    with no_person_scope():
+        out = await call()
+    assert NO_PERSON_TEXT in out and asked == [] and calls == []
+
+
+@pytest.mark.parametrize("status,said,words", [
+    (422, "This person cannot open the task. Share the project with them first.",
+     "cannot open the task"),
+    (422, "You cannot ask yourself.", "cannot ask yourself"),
+    (409, "You already wait on this person here. Nudge them?", "already wait"),
+    (429, "You asked enough people today. Try again tomorrow.", "enough people"),
+    (403, "A person asks a person.", "person must ask"),
+])
+async def test_a_refused_ask_is_one_sentence_with_no_number(monkeypatch, status, said, words) -> None:
+    approve(monkeypatch)
+    _ask_gateway(monkeypatch, refuse=(status, said))
+    out = await skill_projects.ask_person(LIVE, "priya@x.io", "Is it final?")
+    assert words in out and "Nothing was changed" in out
+    assert not any(ch.isdigit() for ch in out)
+
+
+async def test_the_ask_tools_say_waits_are_off_and_write_nothing(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _ask_gateway(monkeypatch, refuse=(404, "Not Found"))
+    out = await skill_projects.ask_person(LIVE, "priya@x.io", "Is it final?")
+    assert out == skill_projects.guarded.WAITS_OFF
+    out = await skill_projects.withdraw_ask(LIVE, ASK_ID)
+    assert out == skill_projects.guarded.WAITS_OFF
+    # Each POST is refused by the route (404), so nothing is written. The card
+    # came first, because only the route knows the flags (R5).
+    assert len(asked) == 2 and [c["method"] for c in writes(calls)] == ["POST", "POST"]
+    asked.clear()
+    calls = _ask_gateway(monkeypatch, waits_off=True)
+    assert await skill_projects.withdraw_ask(LIVE, ASK_ID) == skill_projects.guarded.WAITS_OFF
+    assert asked == [] and writes(calls) == []
+
+
+async def test_withdraw_ask_card_shows_the_task_and_the_addressee(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _ask_gateway(monkeypatch)
+    out = await skill_projects.withdraw_ask(LIVE, ASK_ID)
+    assert "Withdrew" in out and len(asked) == 1
+    assert "priya@x.io" in asked[0]["context"] and TASK["title"] in asked[0]["context"]
+    assert [(c["method"], c["path"]) for c in writes(calls)] == [
+        ("POST", f"/projects/asks/{ASK_ID}/withdraw")]
+
+
+async def test_withdraw_ask_of_another_or_a_closed_ask_changes_nothing(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _ask_gateway(monkeypatch)
+    # An id that is not in the caller's asks: refused before the card.
+    out = await skill_projects.withdraw_ask(LIVE, OTHER)
+    assert "not yours" in out and asked == [] and writes(calls) == []
+    # The server refuses a closed ask.
+    _ask_gateway(monkeypatch, refuse=(404, "Ask not found"))
+    assert "not yours" in await skill_projects.withdraw_ask(LIVE, ASK_ID)
+    _ask_gateway(monkeypatch, refuse=(409, "ask_closed"))
+    assert "already closed" in await skill_projects.withdraw_ask(LIVE, ASK_ID)
+
+
+async def test_the_body_of_ask_person_is_what_the_gateway_model_takes(monkeypatch) -> None:
+    """The tool body parses with ``AskIn`` (``extra="forbid"``), so a field
+    that the route does not take, such as an author, fails here."""
+    decisions = pytest.importorskip("gateway.routes.projects.decisions")
+    approve(monkeypatch)
+    calls = _ask_gateway(monkeypatch)
+    await skill_projects.ask_person(
+        LIVE, "priya@x.io", "Which one?",
+        choices=[{"key": "a", "label": "A"}, {"key": "b", "label": "B"}],
+        due_at="2030-01-01T10:00:00+00:00",
+    )
+    body = writes(calls)[0]["json"]
+    parsed = decisions.AskIn(**body)
+    assert parsed.addressee == "priya@x.io" and len(parsed.choices or []) == 2
+    assert set(body) <= set(decisions.AskIn.model_fields)
+
+
+async def test_withdraw_ask_with_no_id_takes_the_only_ask_or_lists_them(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _ask_gateway(monkeypatch)
+    out = await skill_projects.withdraw_ask(LIVE)
+    assert "Withdrew" in out and len(asked) == 1
+    assert [c["path"] for c in writes(calls)] == [f"/projects/asks/{ASK_ID}/withdraw"]
+    asked.clear()
+
+    def two(call: dict) -> Any:
+        got = responder(call)
+        if call["path"] == "/projects/decisions" and call["params"].get("task_id"):
+            return {**got, "asks": [ASK, {**ASK, "id": OTHER}]}
+        return got
+
+    calls = fake_gateway(monkeypatch, two)
+    out = await skill_projects.withdraw_ask(LIVE)
+    assert ASK_ID in out and OTHER in out and asked == [] and writes(calls) == []

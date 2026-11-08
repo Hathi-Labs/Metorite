@@ -101,6 +101,8 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "pin_authority", "unpin_authority",
         # WS-ALN ALN-2a: a decision answer is class C, so a held run gets no card.
         "answer_decision",
+        # WS-AP AP-10a: an ask reaches a person, so a held run gets no card.
+        "ask_person", "withdraw_ask",
     }),
     "whatsapp-assistant": frozenset({
         "web_search", "fetch_page", "code_task", "run_script", "run_workflow",
