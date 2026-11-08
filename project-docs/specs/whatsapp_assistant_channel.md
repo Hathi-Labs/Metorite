@@ -2234,9 +2234,9 @@ Each slice ships dark behind `TEAM_CHANNELS_ORGS`, off by default. The name of t
 | **CH-TEAM-1** | 2442 | The team channel and the audience check | HIGH | AGENT-SAFE. No overlap with `wa_chats`, the member links or the O6 point `channels` (see the row) | Nothing | `tests/unit/test_team_channel_audience.py` (planned) |
 | **CH-TEAM-2** | 2443 | Post to a team channel: the step `channel.post` | HIGH | AGENT-SAFE build. **OWNER-GATE** for the first live send of each adapter to real people (CLAUDE.md §3a rule 3) | CH-TEAM-1. The email adapter needs a sending mailbox (task 733 for a shared one) | `tests/unit/test_workflow_channel_post.py` (planned) |
 | **CH-TEAM-3** | 2444 | The daily standup and other group digests | STANDARD | AGENT-SAFE. **Blocked on Q-CHT-5** | CH-TEAM-2, the team pulse T1 (built), Q-CHT-5 | `tests/unit/test_team_digest.py` (planned) |
-| **CH-TEAM-4** | 2445 | Mira in a WhatsApp group | HIGH | Half A: AGENT-SAFE after Q-CHT-2. Half B: AGENT-SAFE build after Q-CHT-1 and Q-CHT-2. **OWNER-GATE** for the OBA, the live number (WAC-0) and a live group | CH-TEAM-1, WAC-8. Half B: CH-TEAM-2 | `tests/unit/test_wac_group_tag.py` (planned) |
-| **CH-TEAM-5** | 2446 | Metorite's own number and Mira's email address | HIGH | AGENT-SAFE build. **Do not dispatch before PR 1999 merges.** **OWNER-GATE** for the OBA and a live address | CH-TEAM-1, task 733 (SM-3 to SM-9), `ai_studio.md` O17 (task 2421), Q-CHT-4 | `tests/unit/test_mira_inbound_address.py` (planned) |
-| **CH-TEAM-6** | 2447 | Slack, later | HIGH | AGENT-SAFE build. **OWNER-GATE** for the Slack app and its secrets | CH-TEAM-1, CH-TEAM-2, Q-CHT-6 | `tests/unit/test_slack_connector.py` (planned) |
+| **CH-TEAM-4** | 2445 | Mira in a WhatsApp group | HIGH | **Blocked on Q-CHT-2** (both halves) **and Q-CHT-1** (half B). Then AGENT-SAFE to build. **OWNER-GATE** for the OBA, the live number (WAC-0) and a live group | CH-TEAM-1, WAC-8. Half B: CH-TEAM-2 | `tests/unit/test_wac_group_tag.py` (planned) |
+| **CH-TEAM-5** | 2446 | Metorite's own number and Mira's email address | HIGH | **Blocked on Q-CHT-4.** AGENT-SAFE build. **Do not dispatch before PR 1999 merges.** **OWNER-GATE** for the OBA and a live address | CH-TEAM-1, task 733 (SM-3 to SM-9), `ai_studio.md` O17 (task 2421), Q-CHT-4 | `tests/unit/test_mira_inbound_address.py` (planned) |
+| **CH-TEAM-6** | 2447 | Slack, later | HIGH | **Blocked on Q-CHT-6.** AGENT-SAFE build. **OWNER-GATE** for the Slack app and its secrets | CH-TEAM-1, CH-TEAM-2, Q-CHT-6 | `tests/unit/test_slack_connector.py` (planned) |
 
 #### CH-TEAM-1. The team channel and the audience check (task 2442)
 
@@ -2354,7 +2354,7 @@ A participant maps to a member through the link table (a phone or a `from_user_i
 
 #### CH-TEAM-4. Mira in a WhatsApp group (task 2445)
 
-**Gate.** **HIGH tier.** Half A is AGENT-SAFE after Q-CHT-2. Half B is AGENT-SAFE to build after Q-CHT-1 and Q-CHT-2. **OWNER-GATE:** the OBA application, the live number (WAC-0, H-251) and any live group with real people.
+**Gate.** **HIGH tier.** **Blocked on Q-CHT-2** for both halves, and **on Q-CHT-1** for half B. After the answers, each half is AGENT-SAFE to build. **OWNER-GATE:** the OBA application, the live number (WAC-0, H-251) and any live group with real people.
 
 **Half A: the forward path.** It needs no group API.
 
@@ -2393,7 +2393,7 @@ A participant maps to a member through the link table (a phone or a `from_user_i
 
 #### CH-TEAM-5. Metorite's own number and Mira's email address (task 2446)
 
-**Gate.** AGENT-SAFE build. **HIGH tier**, because an email address is easy to forge. **Do not dispatch before PR 1999 merges**, because O17 and O20 live there. **OWNER-GATE** for the OBA and a live address.
+**Gate.** **Blocked on Q-CHT-4**, where Mira's address lives. AGENT-SAFE build. **HIGH tier**, because an email address is easy to forge. **Do not dispatch before PR 1999 merges**, because O17 and O20 live there. **OWNER-GATE** for the OBA and a live address.
 
 **The number.** Metorite's own WhatsApp number is the bot number of this spec (§5.1, D-WAC-1). This slice adds no number. An org that wants its own number uses O6 (`ai_studio.md` §20), and that number answers people outside the org. A group needs the OBA (§19.2), and the owner applies for it.
 
@@ -2419,7 +2419,7 @@ A participant maps to a member through the link table (a phone or a `from_user_i
 
 #### CH-TEAM-6. Slack, later (task 2447)
 
-**Gate.** AGENT-SAFE build. **HIGH tier**: a new connection, OAuth and identity. **OWNER-GATE** for the registration of the Slack app and its secrets. It comes after CH-TEAM-3.
+**Gate.** **Blocked on Q-CHT-6**, when Slack comes. AGENT-SAFE build. **HIGH tier**: a new connection, OAuth and identity. **OWNER-GATE** for the registration of the Slack app and its secrets. It comes after CH-TEAM-3.
 
 **Build.**
 
