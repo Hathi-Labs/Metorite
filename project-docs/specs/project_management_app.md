@@ -12,7 +12,7 @@
 > only task store, and `routes/projects/personal.py` is the lens Tasks renders.
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
-> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-08**
+> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-09**
 > 🟢 **WS-39 SP-1 BUILT 2026-11-08, not merged** (§13.2a, migration 372, task 960). The cycle
 > store: four tables and nine routes, dark behind `PROJECTS_SPRINTS_ORGS`. No UI and no chat tool.
 > Fix round 2 (2026-11-08): a task that leaves the node of its open cycle also leaves the cycle.
@@ -9041,7 +9041,9 @@ A **cycle** and a **sprint** are one record. Copy for a Scrum team says "sprint"
 
 **The task locks of a close.** The close then locks its member tasks `FOR NO KEY UPDATE`, in id order, before it writes any membership row. That is the lock of the later UPDATE of each task (`touch_task`). So an add that holds a task `FOR SHARE` finishes first, or waits for the whole close. A delete or a move of a member task waits for the close, or the close waits for that write. A membership row that left the cycle during the close gets no activity row.
 
-**A race answers 409.** A bulk move and a node move lock their tasks in their own order, so a close can still deadlock with a move. Each cycle route that writes answers a deadlock, a serialization failure or a lock timeout (`core.TRANSIENT_SQLSTATES`) with 409 `cycle_changed`. Postgres rolled the transaction back, so the route wrote nothing, and the caller may send it again. The move routes keep their own handling.
+**A race answers 409.** A bulk move, a node move, a bulk edit, a merge and an import discard lock their tasks in their own order. So a close can still deadlock with one of them. Each cycle route that writes answers a deadlock, a serialization failure or a lock timeout (`core.TRANSIENT_SQLSTATES`) with 409 `cycle_changed`. Postgres rolled the transaction back, so the route wrote nothing, and the caller may send it again.
+
+**The other side of a race.** When Postgres stops the other write, the node move answers 409 through its own guard (`tree._tree_race_as_409`). The bulk move, the bulk edit, the merge and the import discard still answer 500. Task 2427 holds that work.
 
 **Capacity.** The start takes `capacity`, a list of members with their review minutes. Each member must be an active member of the org. SP-1 writes the rows at the start only. SP-3 decides where a planned cycle keeps its planned capacity.
 
