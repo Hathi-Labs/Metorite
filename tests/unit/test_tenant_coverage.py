@@ -369,6 +369,21 @@ def test_the_signature_image_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE email_signature_images FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_signature_settings_table_is_tenant_scoped() -> None:
+    """WS-17 SG-2 (``email_app_master_plan.md`` §23.4). The row says which
+    signature each send of a mailbox carries, so a row of one organization
+    must never reach another. The table may not be exempt, and the committed
+    policy phase must carry it."""
+    gen = _generator()
+    assert "email_signature_settings" in gen.discover_tables()
+    assert "email_signature_settings" not in gen.EXEMPT
+    assert "email_signature_settings" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE email_signature_settings FORCE  ROW LEVEL SECURITY" in policies
+
+
 @pytest.mark.parametrize("table", ["reminders", "reminder_events"])
 def test_the_reminder_tables_are_tenant_scoped(table: str) -> None:
     """WS-66 RM-1 (``calendar_events_reminders.md`` §5.2, D114). A reminder

@@ -1228,6 +1228,19 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_outlook_all_mail_webhook.py.
     outlook_all_mail_webhook_orgs: str = ""
 
+    # ── Email signature layouts (WS-17 SG-2, email_app_master_plan.md §23.5) ─
+    #
+    # `email_signature_templates_orgs` lists the organization ids whose
+    # mailboxes may use a layout signature, or `*` for each one. Empty means
+    # off, the default: the resolver gives the `custom` signature, which is
+    # the behaviour of before, and `POST /email/signature/preview` answers
+    # 404. The one reader is `gateway.routes.email.signature.templates_on`,
+    # and it fails closed. The name ends in `_orgs`, so a SIGHUP applies a
+    # change with no restart. A value on a box is an `enforcement-flip`: name
+    # the flag and the box in the same message.
+    # Fence: tests/unit/test_email_signature_resolver.py.
+    email_signature_templates_orgs: str = ""
+
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #
     # `web_research_orgs` lists the organization ids whose `fetch_page` reads

@@ -1621,3 +1621,10 @@ DROP POLICY IF EXISTS email_signature_images_tenant_isolation ON email_signature
 CREATE POLICY email_signature_images_tenant_isolation ON email_signature_images
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE email_signature_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_signature_settings FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_signature_settings_tenant_isolation ON email_signature_settings;
+CREATE POLICY email_signature_settings_tenant_isolation ON email_signature_settings
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
