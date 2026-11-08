@@ -215,6 +215,9 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # tests/unit/test_calendar_settings_tools.py and tests/unit/test_day_rules_tools.py.
     "GET /api/tasks/settings": "my_tasks_get_calendar_settings",
     "PUT /api/tasks/settings": "my_tasks_update_calendar_settings",
+    # CAL-6a (task 1680): the saved day state. The roll-over log is read by
+    # my_tasks_rollover_log, and no screen sends that request, so it has no row.
+    "GET /api/tasks/calendar/day-state": "my_tasks_get_day_state",
     # ── Email ──
     "DELETE /api/email/accounts/{}": "update_account",
     "DELETE /api/email/knowledge/{}": "delete_knowledge",
@@ -692,7 +695,6 @@ DEBT: dict[str, str] = {
     "POST /api/tasks/items/{}/enrich": "P-1",
     "POST /api/tasks/items/{}/suggest-title": "P-1",
     # ── Calendar ──
-    "GET /api/tasks/calendar/day-state": "P-1",
     # ── Email ──
     "DELETE /api/email/messages/{}": "P-2",
     "GET /api/email/accounts/{}/folders": "P-2",
@@ -1099,7 +1101,7 @@ DEBT: dict[str, str] = {
 DEBT_CEILING: dict[str, int] = {
     "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
     "tasks": 9,
-    "calendar": 1,
+    "calendar": 0,
     "email": 13,
     "crm": 73,
     "notes": 51,
