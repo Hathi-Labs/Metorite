@@ -36,6 +36,10 @@
 -- main file, open PR, branch or worktree held 385 to 388, so this file took
 -- 388, with room for merges during the CI round. Check it again at merge
 -- (premerge.sh).
+-- A re-check at 23:30 UTC the same day: origin/main held 383
+-- (383_pm_project_updates.sql). Open PRs held 382 (task 2305, which moves to
+-- 390) and 384, and a worktree held 385. No other file held 386 to 389, so
+-- 388 stays.
 -- Pinned by tests/unit/test_email_signature_settings_r8.py, which finds this
 -- file by CONTENT, never by number (R1).
 -- ============================================================================
