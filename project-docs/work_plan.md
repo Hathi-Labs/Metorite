@@ -5890,10 +5890,10 @@ AI Studio."                                               (chat, 2026-11-09)
 
 **How D202 reads earlier decisions.**
 
-- **D146.1** keeps its four layers. Its line "the code block runs only on the off-box sandbox" now reads: no member code runs on our servers. A custom screen compiles and runs in the browser (item 4). A member logic module still waits for SBX-9.
-- **D193** keeps the route, the layout and the one dock. The Explorer gains Files, and the centre gains the code tools of item 1 and the git parts of item 9.
-- **D180** holds. A group carries no permission (D180.4), and Studio adds no new permission (D180.5). So the code right of item 3 is a Studio setting: a list of D12 grants that J7 stores and the Studio routes read. This is agent design.
-- **D174.6** holds. Each clinical field stays restricted, and the AI reads one only after an admin opened it.
+- **The layers of D146.1** stay. Its line "the code block runs only on the off-box sandbox" now reads: no member code runs on our servers. A custom screen compiles and runs in the browser (item 4). A member logic module still waits for SBX-9.
+- **The IDE of D193** keeps its route, its layout and the one dock. The Explorer gains Files, and the centre gains the code tools of item 1 and the git parts of item 9.
+- **The access model of D180** holds. A group carries no permission (D180.4), and Studio adds no new permission (D180.5). So the code right of item 3 is a Studio setting: a list of D12 grants that J7 stores and the Studio routes read. This is agent design.
+- **The health rule of D174.6** holds. Each clinical field stays restricted, and the AI reads one only after an admin opened it.
 
 **Re-check this number at merge.** The first merge wins a D-number. On 2026-11-09, main held D200, and the branch `civ23-box-runners` held D201.
 
