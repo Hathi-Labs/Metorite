@@ -322,6 +322,15 @@ async def export_tasks_csv(
     watching: bool = False,
     # D-PM-38. A view with subtasks hidden exports what it shows.
     top_level: bool = False,
+    # MCP-G19a. Parity with the list: an export of an audit set holds the
+    # same rows the audit read counted.
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
     # Task #986. Parity with the list: the board's agent filters. "waiting" is
     # the session's member (R11).
     agent_focus: str | None = None,
@@ -401,6 +410,9 @@ async def export_tasks_csv(
             archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
             top_level=top_level,
+            has_parent=has_parent, is_epic=is_epic, assigned=assigned,
+            updated_before=updated_before, updated_after=updated_after,
+            created_after=created_after, title_prefix=title_prefix,
         )
         clauses.extend(extra_clauses)
         params.update(extra_params)

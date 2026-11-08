@@ -54,6 +54,7 @@ from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
     DIRECTIONS,
+    MAX_PAGE_SIZE,
     STARTED_CATEGORY,
     TASK_SORTS,
     TRIAGE_CATEGORY,
@@ -114,12 +115,14 @@ from gateway.routes.projects.custom_fields import (
     load_definitions,
 )
 from gateway.routes.projects.filters import (
+    UPDATED_AGE_SQL,
     agent_filter_clauses,
     attach_agent_state,
     attach_assignees,
     attach_parent_context,
     attach_relation_counts,
     build_task_filters,
+    holder_sql,
     task_closed_sql,
     unheld_clause,
 )
@@ -140,6 +143,8 @@ from gateway.routes.projects.notifications import (
 from gateway.routes.projects.relations import (
     DIRECTED_TYPES,
     assert_no_block_cycle,
+    canonical_task_id,
+    delete_task_link,
     insert_task_link,
 )
 from gateway.routes.projects.tags import apply_task_tags
@@ -177,6 +182,8 @@ AGENT_CREATE_FIELDS: frozenset[str] = frozenset({
 AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
     "status_id", "title", "description", "tags", "due_at", "custom_fields",
     "importance", "leveraged", "estimate_mins", "start_date",
+    # SP-6: `update_task` sets the type, and null clears it.
+    "type_id",
 })
 #: WS-55 MCP-G2. The one body key of a signed agent MOVE. A move to another
 #: project stays a person's step in the app, so `project_id`,
@@ -552,6 +559,27 @@ DESCENDANTS_CTE = """WITH RECURSIVE walk AS (
 ), sub AS (SELECT id, min(depth) AS depth FROM walk GROUP BY id) """
 
 
+#: MCP-G19a. The page cap of a compact read. A plain read keeps
+#: ``MAX_PAGE_SIZE``.
+COMPACT_MAX_PAGE_SIZE = 500
+#: A compact read still selects ``t.*``: ``row_to_model`` builds a full
+#: ``TaskModel``, and a narrow SELECT leaves required fields (``source``) as
+#: None, which is a 500. The edge trims the row to the compact keys.
+#: A narrow read needs its own row model. hardening_backlog.md holds it.
+
+
+class CompactPage(Page):
+    """``Page`` with the larger ceiling that a compact read may use. The
+    handler refuses a page over ``MAX_PAGE_SIZE`` unless ``compact`` is on."""
+
+    def __init__(
+        self,
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=1, le=COMPACT_MAX_PAGE_SIZE),
+    ) -> None:
+        super().__init__(page=page, page_size=page_size)
+
+
 class TaskListResponse(ListResponse):
     """``ListResponse`` plus the opt-in lane sizes (#918).
 
@@ -566,6 +594,87 @@ class TaskListResponse(ListResponse):
     status_categories: dict[str, str | None] | None = None
 
 
+async def _task_scope(
+    db: Any, user: UserContext, vis: Any, *, project_id: str | None,
+    include_subtree: bool, parent_task_id: str | None, include_descendants: bool,
+    mine: bool, include_triage: bool, unheld: bool,
+    agent_clauses: list[str], agent_params: dict[str, Any],
+    filters: dict[str, Any],
+) -> tuple[str, str, str, dict[str, Any]]:
+    """``(walk_cte, walk_join, where, params)`` of one task read.
+
+    MCP-G19a. The ONE place that joins the visibility clause (private, Center,
+    org, group grants, connection pins) to the project scope and the filters.
+    ``GET /projects/tasks`` and ``GET /projects/tasks/stats`` both call it, so
+    a count and a list read the same set. The fence is
+    ``tests/unit/test_board_stats_r8.py``.
+    """
+    clauses: list[str] = [task_visibility_clause(vis)]
+    params: dict[str, Any] = dict(vis.params)
+    if mine:
+        # ANDed beside the visibility clause, so "mine" narrows the
+        # board and never widens it (WS-64 OP-11).
+        mine_sql, mine_params = await mine_scope(db, vis)
+        clauses.append(mine_sql)
+        params.update(mine_params)
+    walk_cte = ""
+    walk_join = ""
+    if include_descendants:
+        # MCP-G5. The walk needs a visible root. Without this check the
+        # first arm would list the visible children of a hidden root. Direct
+        # mode (`parent_task_id` alone) keeps its old answer: an unseen
+        # parent gives an empty list, as a parent with no children does.
+        await load_visible_task(db, vis, parent_task_id)
+        walk_cte = DESCENDANTS_CTE.format(visible=task_visibility_clause(vis, "c"))
+        walk_join = " JOIN sub ON sub.id = t.id"
+        params["parent"] = parent_task_id
+        params["max_depth"] = DESCENDANTS_MAX_DEPTH
+        # The walk already holds the parent filter, so the builder gets none.
+        parent_task_id = None
+
+    if project_id:
+        # Seeing the project is required to filter by it, so an unreadable
+        # id answers 404 rather than an empty list — an empty list would
+        # tell the caller the project exists and is simply empty.
+        await load_visible_project(db, vis, project_id)
+        if include_subtree:
+            clauses.append(
+                "t.project_id IN ("
+                "  WITH RECURSIVE sub AS ("
+                "    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+                "    UNION ALL"
+                "    SELECT p.id FROM pm_projects p JOIN sub s"
+                "      ON p.parent_project_id = s.id"
+                "  ) SELECT id FROM sub)"
+            )
+        else:
+            clauses.append("t.project_id = CAST(:pid AS uuid)")
+        params["pid"] = project_id
+    # Every filter but the project scoping above comes from ONE pure
+    # builder, shared with saved views — two implementations would let a
+    # saved view show a different set of tasks than the same filters typed
+    # by hand, which is the one thing a saved view may not do.
+    watching = bool(filters.get("watching"))
+    extra_clauses, extra_params = build_task_filters(
+        parent_task_id=parent_task_id,
+        day_start=(await reader_day_start(db, actor(user).lower())
+                   if filters.get("overdue") else None),
+        viewer=actor(user) if watching else None,
+        **filters,
+    )
+    clauses.extend(extra_clauses)
+    params.update(extra_params)
+    if not include_triage:
+        clauses.append(triage_exclusion_clause())
+    if unheld:
+        clauses.append(unheld_clause())
+    clauses.extend(agent_clauses)
+    params.update(agent_params)
+
+    where = " WHERE " + " AND ".join(clauses)
+    return walk_cte, walk_join, where, params
+
+
 @router.get("/tasks")
 async def list_tasks(
     user: UserContext = Depends(get_current_user),
@@ -577,7 +686,7 @@ async def list_tasks(
     q: str | None = None,
     sort: str | None = None,
     direction: str = "desc",
-    page: Page = Depends(),
+    page: CompactPage = Depends(),
     include_archived: bool = False,
     #: The archive AS A PLACE. `include_archived` shows everything; this shows
     #: only what somebody filed, which is the view you open to get one back.
@@ -642,6 +751,18 @@ async def list_tasks(
     agent_focus: str | None = None,
     # Task #986. Only tasks that an agent has worked (`agent_worked.py`).
     agent_worked: bool = False,
+    # MCP-G19a. The audit filters. All optional. `build_task_filters` holds
+    # them, and `board_stats` reads the same builder.
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
+    # MCP-G19a. Small rows and a page of up to COMPACT_MAX_PAGE_SIZE: the row
+    # query, the stage of each status, and nothing else. The agent door reads it.
+    compact: bool = False,
 ) -> TaskListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -686,75 +807,36 @@ async def list_tasks(
     )
 
     mine = check_scope(scope)
+    if compact and page.page_size > COMPACT_MAX_PAGE_SIZE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"page_size is at most {COMPACT_MAX_PAGE_SIZE} with compact.",
+        )
+    if not compact and page.page_size > MAX_PAGE_SIZE:
+        raise HTTPException(
+            status_code=422, detail=f"page_size is at most {MAX_PAGE_SIZE}.",
+        )
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        clauses: list[str] = [task_visibility_clause(vis)]
-        params: dict[str, Any] = dict(vis.params)
-        if mine:
-            # ANDed beside the visibility clause, so "mine" narrows the
-            # board and never widens it (WS-64 OP-11).
-            mine_sql, mine_params = await mine_scope(db, vis)
-            clauses.append(mine_sql)
-            params.update(mine_params)
-        walk_cte = ""
-        walk_join = ""
-        if include_descendants:
-            # MCP-G5. The walk needs a visible root. Without this check the
-            # first arm would list the visible children of a hidden root. Direct
-            # mode (`parent_task_id` alone) keeps its old answer: an unseen
-            # parent gives an empty list, as a parent with no children does.
-            await load_visible_task(db, vis, parent_task_id)
-            walk_cte = DESCENDANTS_CTE.format(visible=task_visibility_clause(vis, "c"))
-            walk_join = " JOIN sub ON sub.id = t.id"
-            params["parent"] = parent_task_id
-            params["max_depth"] = DESCENDANTS_MAX_DEPTH
-            # The walk already holds the parent filter, so the builder gets none.
-            parent_task_id = None
-
-        if project_id:
-            # Seeing the project is required to filter by it, so an unreadable
-            # id answers 404 rather than an empty list — an empty list would
-            # tell the caller the project exists and is simply empty.
-            await load_visible_project(db, vis, project_id)
-            if include_subtree:
-                clauses.append(
-                    "t.project_id IN ("
-                    "  WITH RECURSIVE sub AS ("
-                    "    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
-                    "    UNION ALL"
-                    "    SELECT p.id FROM pm_projects p JOIN sub s"
-                    "      ON p.parent_project_id = s.id"
-                    "  ) SELECT id FROM sub)"
-                )
-            else:
-                clauses.append("t.project_id = CAST(:pid AS uuid)")
-            params["pid"] = project_id
-        # Every filter but the project scoping above comes from ONE pure
-        # builder, shared with saved views — two implementations would let a
-        # saved view show a different set of tasks than the same filters typed
-        # by hand, which is the one thing a saved view may not do.
-        extra_clauses, extra_params = build_task_filters(
-            parent_task_id=parent_task_id, status_id=status_id,
-            status_category=status_category, assignee=assignee,
-            assignees=assignees, unassigned=unassigned, overdue=overdue,
-            day_start=await reader_day_start(db, actor(user).lower()) if overdue else None,
-            due_before=due_before, importance_gte=importance_gte, q=q,
-            tags=tags, tags_all=tags_all, include_archived=include_archived,
-            archived_only=archived_only,
-            watching=watching, viewer=actor(user) if watching else None,
-            top_level=top_level,
+        walk_cte, walk_join, where, params = await _task_scope(
+            db, user, vis,
+            project_id=project_id, include_subtree=include_subtree,
+            parent_task_id=parent_task_id, include_descendants=include_descendants,
+            mine=mine, include_triage=include_triage, unheld=unheld,
+            agent_clauses=agent_clauses, agent_params=agent_params,
+            filters=dict(
+                status_id=status_id, status_category=status_category,
+                assignee=assignee, assignees=assignees, unassigned=unassigned,
+                overdue=overdue, due_before=due_before,
+                importance_gte=importance_gte, q=q, tags=tags, tags_all=tags_all,
+                include_archived=include_archived, archived_only=archived_only,
+                watching=watching, top_level=top_level, has_parent=has_parent,
+                is_epic=is_epic, assigned=assigned, updated_before=updated_before,
+                updated_after=updated_after, created_after=created_after,
+                title_prefix=title_prefix,
+            ),
         )
-        clauses.extend(extra_clauses)
-        params.update(extra_params)
-        if not include_triage:
-            clauses.append(triage_exclusion_clause())
-        if unheld:
-            clauses.append(unheld_clause())
-        clauses.extend(agent_clauses)
-        params.update(agent_params)
-
-        where = " WHERE " + " AND ".join(clauses)
         total = (await db.execute(
             text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
             params,
@@ -776,7 +858,8 @@ async def list_tasks(
             params["view_id"] = view_id
         rows = (await db.execute(
             text(
-                f"{walk_cte}SELECT t.*{', vp.position AS view_position' if view_id else ''}"
+                f"{walk_cte}SELECT t.*"
+                f"{', vp.position AS view_position' if view_id else ''}"
                 f"{', sub.depth AS depth' if walk_join else ''}"
                 f"  FROM pm_tasks t{walk_join}{join}{where} "
                 f"ORDER BY {'sub.depth, ' if walk_join else ''}{column.format(dir=order)} "
@@ -789,14 +872,15 @@ async def list_tasks(
         # progress count or a blocked flag — and fetching any of the three per
         # card is N+1 across an imported workspace of hundreds.
         page_rows = [row_to_dict(r, TaskModel) for r in rows]
-        await attach_assignees(db, page_rows)
-        # WS-55 EA-12a — the agent pill, in one query for the page.
-        await attach_agent_state(db, page_rows)
-        await attach_relation_counts(db, page_rows, vis)
-        # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
-        await attach_parent_context(db, vis, page_rows)
-        # WS-64 OP-8 — the app hides Delete where this is false.
-        await attach_can_delete(db, user, page_rows, kind="task")
+        if not compact:
+            await attach_assignees(db, page_rows)
+            # WS-55 EA-12a — the agent pill, in one query for the page.
+            await attach_agent_state(db, page_rows)
+            await attach_relation_counts(db, page_rows, vis)
+            # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
+            await attach_parent_context(db, vis, page_rows)
+            # WS-64 OP-8 — the app hides Delete where this is false.
+            await attach_can_delete(db, user, page_rows, kind="task")
         # #834 — the stage of each row's status. A subproject may keep its own
         # lanes (migration 196), and the parent board knows only its own, so
         # it files a task by this stage instead of losing it.
@@ -826,6 +910,129 @@ async def list_tasks(
             rows=page_rows, total=int(total),
             status_counts=counts, status_categories=categories,
         )
+
+
+#: MCP-G19a. The group axes of ``GET /projects/tasks/stats``: the SQL
+#: expression of each, over the task alias ``t``, plus the join it needs.
+#: ``assignee`` is the one axis that repeats a task: a task with two
+#: assignees counts once under each, and a task with none counts under null.
+STATS_GROUP_BY: tuple[str, ...] = (
+    "project", "status_category", "is_epic", "assignee", "holder", "updated_age",
+)
+STATS_MAX_GROUPS = 2000
+
+_STATS_JOINS: dict[str, str] = {
+    "status_category": " LEFT JOIN pm_task_statuses gs ON gs.id = t.status_id",
+    "is_epic": " LEFT JOIN pm_task_types gty ON gty.id = t.type_id",
+    "assignee": " LEFT JOIN pm_task_assignees ga ON ga.task_id = t.id",
+}
+
+
+def _stats_expr(axis: str) -> str:
+    if axis == "project":
+        return "CAST(t.project_id AS text)"
+    if axis == "status_category":
+        return "gs.category"
+    if axis == "is_epic":
+        return ("(coalesce(gty.is_epic, false)"
+                " OR (coalesce(gty.is_system, false) AND gty.name = 'Epic'))")
+    if axis == "assignee":
+        return "lower(ga.assignee)"
+    if axis == "holder":
+        return holder_sql()
+    return UPDATED_AGE_SQL
+
+
+@router.get("/tasks/stats")
+async def task_stats(
+    user: UserContext = Depends(get_current_user),
+    group_by: str | None = None,
+    project_id: str | None = None,
+    include_subtree: bool = False,
+    parent_task_id: str | None = None,
+    status_id: str | None = None,
+    assignee: str | None = None,
+    q: str | None = None,
+    status_category: str | None = None,
+    tags: str | None = None,
+    include_archived: bool = False,
+    unheld: bool = False,
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    due_before: str | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
+) -> dict:
+    """Counts of the tasks this caller can see (MCP-G19a).
+
+    ``total`` is the number of tasks that ``GET /projects/tasks`` returns for
+    the same caller and filters. Each group count is a count of tasks, except
+    under ``assignee``, where a task counts once for each assignee. The scope
+    comes from :func:`_task_scope`, the one path the list also reads.
+    """
+    axes = [a.strip() for a in (group_by or "").split(",") if a.strip()]
+    if len(axes) > 2 or len(set(axes)) != len(axes) or any(
+            a not in STATS_GROUP_BY for a in axes):
+        raise HTTPException(
+            status_code=422,
+            detail=f"group_by takes one or two of: {list(STATS_GROUP_BY)}.",
+        )
+    if parent_task_id:
+        try:
+            parent_task_id = str(uuid.UUID(parent_task_id))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="parent_task_id is not a valid id.",
+            ) from None
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        walk_cte, walk_join, where, params = await _task_scope(
+            db, user, vis,
+            project_id=project_id, include_subtree=include_subtree,
+            parent_task_id=parent_task_id, include_descendants=False,
+            mine=False, include_triage=False, unheld=unheld,
+            agent_clauses=[], agent_params={},
+            filters=dict(
+                status_id=status_id, status_category=status_category,
+                assignee=assignee, due_before=due_before, q=q, tags=tags,
+                include_archived=include_archived, has_parent=has_parent,
+                is_epic=is_epic, assigned=assigned, updated_before=updated_before,
+                updated_after=updated_after, created_after=created_after,
+                title_prefix=title_prefix,
+            ),
+        )
+        total = (await db.execute(
+            text(f"{walk_cte}SELECT count(*) FROM pm_tasks t{walk_join}{where}"),
+            params,
+        )).scalar() or 0
+        groups: list[dict[str, Any]] = []
+        truncated = False
+        if axes:
+            joins = "".join(_STATS_JOINS[a] for a in axes if a in _STATS_JOINS)
+            exprs = [_stats_expr(a) for a in axes]
+            select = ", ".join(f"{e} AS g{i}" for i, e in enumerate(exprs))
+            keys = ", ".join(f"g{i}" for i in range(len(exprs)))
+            found = (await db.execute(
+                text(
+                    f"{walk_cte}SELECT {select}, count(*) AS n"
+                    f" FROM pm_tasks t{walk_join}{joins}{where}"
+                    f" GROUP BY {keys} ORDER BY n DESC, {keys}"
+                    f" LIMIT {STATS_MAX_GROUPS + 1}"
+                ),
+                params,
+            )).fetchall()
+            truncated = len(found) > STATS_MAX_GROUPS
+            for row in found[:STATS_MAX_GROUPS]:
+                groups.append({
+                    "keys": {a: (row[i] if row[i] is None or isinstance(row[i], bool)
+                                 else str(row[i])) for i, a in enumerate(axes)},
+                    "count": int(row[len(axes)]),
+                })
+        return {"total": int(total), "group_by": axes, "groups": groups,
+                "truncated": truncated}
 
 
 #: The stage of each status on one page, in one read. The tenant is on the
@@ -1135,6 +1342,9 @@ async def patch_task(
 
         after = before
         if values:
+            # SP-6: a signed agent sets only a type of this project.
+            await _refuse_agent_type(
+                db, user, values.get("type_id"), str(before.root_project_id))
             await assert_epic_has_no_parent(
                 db, values.get("type_id"), getattr(before, "parent_task_id", None),
             )
@@ -2594,7 +2804,7 @@ async def create_link(
             detail=f"Unknown link type '{payload.link_type}'. "
                    f"One of: {list(_LINK_TYPES)}.",
         )
-    if str(payload.target_task_id) == str(task_id):
+    if canonical_task_id(payload.target_task_id) == canonical_task_id(task_id):
         raise HTTPException(
             status_code=422, detail="A task cannot be linked to itself.",
         )
@@ -2631,24 +2841,13 @@ async def delete_link(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
-        row = (await db.execute(
-            text(
-                "DELETE FROM pm_task_links WHERE id = CAST(:lid AS uuid) "
-                "AND (source_task_id = CAST(:tid AS uuid) "
-                "     OR target_task_id = CAST(:tid AS uuid)) "
-                "RETURNING id, source_task_id, target_task_id"
-            ),
-            {"lid": link_id, "tid": task_id},
-        )).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Link not found")
-        # WS-27ae / P-27 — unlinking records NO activity (deliberately: WS-27p
-        # kept the timeline for the link, not the unlink), so this is the one
-        # place the bump cannot ride the spine. BOTH ends, read off the deleted
-        # row rather than assumed from the path, because the caller may be
-        # either end of it.
-        await touch_task(
-            db, getattr(row, "source_task_id", None),
-            getattr(row, "target_task_id", None),
+        # SW-16a: a signed agent must see BOTH ends, as `create_link` requires.
+        # A link that leaves its pin reads as a link that does not exist. A
+        # person keeps the rule of this route: the end they see is enough.
+        removed = await delete_task_link(
+            db, task_id, link_id, by=actor(user),
+            far_end_vis=vis if getattr(user, "agent", None) is not None else None,
         )
+        if not removed:
+            raise HTTPException(status_code=404, detail="Link not found")
         return {"deleted": link_id}

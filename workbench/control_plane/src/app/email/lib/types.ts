@@ -644,6 +644,8 @@ export interface ExecutedRule {
   conditions?: RuleConditions | null;
   /** Matched rule's full action specs (label/to/subject…), for the popover. */
   rule_actions?: RuleAction[];
+  /** The server says the mail was moved or deleted before the rule ran. */
+  mail_gone?: boolean;
 }
 
 /** One event in a single message's audit timeline (GET /messages/{id}/timeline).
@@ -659,6 +661,8 @@ export interface MessageTimelineEvent {
   /** rule/skipped: */
   rule_id?: string | null;
   rule_name?: string | null;
+  /** The server says the mail was moved or deleted before the rule ran. */
+  mail_gone?: boolean;
   /** APPLIED | SKIPPED | FAILED | UNDONE | REJECTED … */
   status?: string;
   automated?: boolean;
