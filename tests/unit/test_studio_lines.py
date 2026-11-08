@@ -311,6 +311,16 @@ def test_each_lines_statement_names_the_org_and_the_package() -> None:
     assert "package_id = CAST(:pid AS uuid)" in parents and store._IN_PACKAGE in parents
 
 
+def test_the_package_read_names_the_lines_relation() -> None:
+    """A reader of the package (the chat tools, the IDE) sees which field holds
+    lines, and the line object that it names."""
+    from gateway.routes.studio import packages as routes
+
+    fields = {f["key"]: f for f in routes._object_out(_order())["fields"]}
+    assert (fields["lines"]["to"], fields["lines"]["lines"]) == ("order_line", "order")
+    assert fields["title"]["lines"] is None
+
+
 def test_the_door_saves_a_record_and_its_lines_in_one_batch() -> None:
     """One `apply_writes` call in the door, and the lines follow the record."""
     funcs = _functions(_DOOR)
