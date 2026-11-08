@@ -407,6 +407,15 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "takes no member and no org from the request "
             "(`test_company_search_sources.py::TestTheRouteTakesNoTenant`)."
         ),
+        "/search/entity": (
+            "WS-KG KG-7. 404 unless `GRAPH_SEARCH_ORGS` names the org, and 404 "
+            "unless the Knowledge router would admit the member "
+            "(`feature:knowledge` and its kill switch). Each entity reads under "
+            "the owner rule of its app (`kb_entities.registry`). Its own record "
+            "and each neighbour open through `Source.open`, which checks "
+            "`feature:<app>` first. The route takes no member and no org from "
+            "the request (`test_get_entity_tool.py`)."
+        ),
     },
 }
 

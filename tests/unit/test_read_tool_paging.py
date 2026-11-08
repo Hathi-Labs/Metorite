@@ -100,6 +100,8 @@ TOOL_MODULES: tuple[str, ...] = (
 #: ``"<path>::<function>::<slice source>"`` → why the cut is not a lost row.
 #: This list only shrinks. Fix the tool with ``paged`` and delete the line.
 ALLOWED: dict[str, str] = {
+    "packages/acb_skills/acb_skills/company_search_tools.py::entity_line::[_line(a) for a in entity.get('aliases') or [] if _line(a)][:ALIASES_SHOWN]":
+        'The alias names on one entity line of the get_entity card (KG-7). They label the entity and are not result rows. At most 10 show, and no read depends on the rest.',
     'apps/agents/agent-email-assistant/agents.py::_reply_form::notices[:4]':
         "No notice is lost: the card shows four (clean_reply_form refuses more), "
         "and _reply_form puts notices[4:] into the card's note. Removing the cut "
@@ -311,7 +313,9 @@ ALLOWED: dict[str, str] = {
 #: and says 'and N more', and two cuts keep a made action id in 48 characters (84).
 #: STU-B2c-2b added two: a refusal names at most two field keys, and it writes
 #: nothing, so the next call names the rest (86).
-ALLOWED_CEILING = 86
+#: KG-7 added one: the get_entity card shows ten alias names at most, as labels of
+#: the entity and not as result rows (87).
+ALLOWED_CEILING = 87
 
 
 def _stringy(node: ast.AST) -> bool:

@@ -667,6 +667,50 @@ async def search_records(
     return found[:limit]
 
 
+#: The most ids one read by id takes (WS-KG KG-6).
+MAX_OPEN = 50
+
+
+async def open_records(
+    user: UserContext, kind: str, ids: list[str],
+) -> list[dict[str, Any]]:
+    """The records of one *kind* among *ids*, as the search reads them.
+
+    The read by id of company retrieval (WS-KG KG-6, ``knowledge_graph.md``
+    §6). Like :func:`search_records`, it runs only after the CRM router's
+    gates: the caller applies the kill switch and ``require_crm_access``
+    first. It reads with the list contract of the entity, with the
+    converted-lead rule of the search, so it never answers a record that the
+    search would hide. *user* is the member of the session, for the record.
+    A kind outside ``SEARCH_KINDS`` and a bad id give nothing.
+    """
+    del user  # the gates ran before this read, and RLS binds the tenant
+    entity = next((e for e, k in SEARCH_KINDS if k == kind), None)
+    if entity is None:
+        return []
+    from uuid import UUID
+
+    wanted: list[str] = []
+    for raw in ids or []:
+        try:
+            wanted.append(str(UUID(str(raw))))
+        except (ValueError, TypeError):
+            continue
+    wanted = list(dict.fromkeys(wanted))[:MAX_OPEN]
+    if not wanted:
+        return []
+    by_id = "id = ANY(CAST(:open_ids AS uuid[]))"
+    query = list_contract(
+        entity, sort="last_activity_at", direction="desc", page=1,
+        page_size=len(wanted),
+        extra_where=(OPEN_LEAD_SQL, by_id) if entity.hides_converted else (by_id,),
+        extra_params={"open_ids": wanted},
+    )
+    async with _tenant_session() as db:
+        answer = await run_list(db, entity, query, rows_only=True)
+    return list(answer.rows)
+
+
 def _activity_instant(row: dict[str, Any]) -> datetime:
     """The row's ``last_activity_at`` as an instant, or the earliest one."""
     value = row.get("last_activity_at")

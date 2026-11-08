@@ -164,3 +164,42 @@ async def search_pages(
         "query": words, "terms": query_terms(words),
         "hits": answer["hits"], "degraded": answer["degraded"],
     }
+
+
+#: The most ids one read by id takes (WS-KG KG-6).
+MAX_OPEN = 50
+
+
+async def open_pages(
+    user: UserContext, ids: list[str], *, verified_only: bool = False,
+) -> list[dict[str, Any]]:
+    """The published pages of *ids* that the member can see (WS-KG KG-6).
+
+    The read by id of company retrieval (``knowledge_graph.md`` §6). It puts
+    in ``visible_pages_clause``, the one rule of who sees a page, and keeps
+    published pages only, as the search does. The caller applies the kill
+    switch of the router first. A bad id and a hidden page are left out.
+    *verified_only* adds ``core.VERIFIED_SQL``, the test of the search's own
+    ``verified_only`` (KB-AI-4).
+    """
+    from sqlalchemy import text
+
+    wanted = [p for p in (core.parse_id(i) for i in ids or []) if p]
+    wanted = list(dict.fromkeys(wanted))[:MAX_OPEN]
+    if not wanted:
+        return []
+    vis, params = core.visible_pages_clause(user, "p")
+    verified = f" AND {core.VERIFIED_SQL('p')}" if verified_only else ""
+    async with core._tenant_session() as db:
+        rows = (await db.execute(
+            text("SELECT p.id, p.title, p.updated_at, s.name AS space_name "
+                 "FROM kb_pages p JOIN kb_spaces s ON s.id = p.space_id "
+                 "WHERE p.id = ANY(CAST(:pids AS uuid[])) AND p.state = 'published' "
+                 f"AND {vis}{verified}"),
+            {**params, "pids": wanted},
+        )).fetchall()
+    return [
+        {"page_id": str(r.id), "title": r.title, "space_name": r.space_name,
+         "updated_at": r.updated_at.isoformat() if r.updated_at else None}
+        for r in rows
+    ]

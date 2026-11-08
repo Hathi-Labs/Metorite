@@ -190,6 +190,40 @@ async def list_directory(
                              self_person_id=mine)
 
 
+#: The most ids one read by id takes (WS-KG KG-6).
+MAX_OPEN = 50
+
+
+async def open_people(user: UserContext, ids: list[str]) -> list[dict[str, Any]]:
+    """The ACTIVE people of *ids*, with the projection of the directory.
+
+    The read by id of company retrieval (WS-KG KG-6, ``knowledge_graph.md``
+    §6). The caller checks ``feature:people`` first, as the router does. The
+    rows come from the tenant session, so row level security keeps them in
+    the member's org. The HR half follows the caller's grant, as on the list.
+    A person who is not ``active``, and a bad id, are left out.
+    """
+    import uuid
+
+    wanted: list[str] = []
+    for raw in ids or []:
+        try:
+            wanted.append(str(uuid.UUID(str(raw))))
+        except (ValueError, TypeError):
+            continue
+    wanted = list(dict.fromkeys(wanted))[:MAX_OPEN]
+    if not wanted:
+        return []
+    hr = can_read_hr_fields(user)
+    async with _tenant_session() as db:
+        rows = (await db.execute(
+            text("SELECT * FROM people WHERE status = 'active' "
+                 "AND id = ANY(CAST(:ids AS uuid[]))"),
+            {"ids": wanted},
+        )).fetchall()
+    return [_row_to_person(r, include_hr=hr).model_dump() for r in rows]
+
+
 @router.get("/facets")
 async def list_facets(user: UserContext = Depends(get_current_user)) -> dict:
     """The filter vocabulary, derived from the rows rather than configured.

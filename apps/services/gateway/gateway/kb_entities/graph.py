@@ -35,6 +35,12 @@ record, in both directions, as ids only. The caller opens each end through
 its app as the member (§6, KG-6). :func:`remove_edge` sets ``removed_at`` on
 a graph row for a holder of ``knowledge:manage``.
 
+**The neighbour read of search (KG-6, §5).** :func:`neighbour_edges` reads
+the edges of the first hits of ``GET /search/company`` in one statement, in
+its own tenant session, so ``gateway/retrieval/`` stays free of SQL. It drops
+the edges that §4.2 and §4.4 keep out of search, and it answers ids only.
+:func:`search_allowed` asks the one reader of ``GRAPH_SEARCH_ORGS``.
+
 **The tenant comes from the session (R5, R11).** The sweep runs in the
 tenant session of the job, and each statement also names the org. A read
 and a removal take the org from ``user.organization_id`` beside row level
@@ -406,8 +412,134 @@ async def remove_edge(db: Any, user: UserContext, edge_id: str) -> bool:
     return row is not None
 
 
+# ── The neighbour read of search (KG-6, §5) ─────────────────────────────────
+
+
+def search_allowed(organization_id: str | None) -> bool:
+    """True when ``GRAPH_SEARCH_ORGS`` holds the org, or holds ``*``. Default
+    OFF. It reads the setting on each call, so a reload takes effect with no
+    restart. Off, ``GET /search/company`` reads no edge and its answer does
+    not change, and ``GET /search/entity`` answers 404 (KG-7).
+
+    The one reader is ``acb_skills.company_search_tools.graph_search_enabled``,
+    so the gateway and the orchestrator's tool list read one flag."""
+    from acb_skills.company_search_tools import graph_search_enabled
+
+    return graph_search_enabled(organization_id)
+
+
+#: The least confidence of an INFERRED edge that search uses (§4.2).
+INFERRED_FLOOR = 0.5
+#: The most edges that the neighbour read answers for one hit. The step keeps
+#: 3 of them, after each app drops the ones that the member cannot open.
+NEIGHBOUR_EDGES_PER_HIT = 30
+#: The most hits that one neighbour read takes.
+MAX_NEIGHBOUR_NODES = 10
+
+
+@dataclass(frozen=True)
+class Neighbour:
+    """One edge of a hit, from the side of the hit, as ids only.
+
+    ``hit_kind`` and ``hit_id`` name the hit. ``kind`` and ``id`` name the
+    other end. ``order`` is the place of the edge in the read: EXTRACTED
+    first, then INFERRED by confidence, then the newer edge.
+    """
+
+    hit_kind: str
+    hit_id: str
+    kind: str
+    id: str
+    relation: str
+    provenance: str
+    confidence: float
+    order: int
+
+
+# Three arms, one shape. A graph row read from its source, a row of either
+# form read from its target, and a page row read from its page. A page row
+# reads as `links_to`, EXTRACTED, until the tightening half sets its columns
+# (§3.2). The filter of §4.2 and §4.4 runs on the shaped row: no AMBIGUOUS
+# edge, no removed edge, and no INFERRED edge below the floor. A provenance
+# that is not EXTRACTED or INFERRED gives nothing (fail closed). Only an edge
+# to a kind in `:open_kinds` counts, BEFORE the cap of each hit, so many edges
+# to a kind that no app opens (a meeting, a URL) cannot push out the others.
+_NEIGHBOURS_SQL = (
+    "WITH n AS (SELECT k.kind, k.rid FROM unnest(CAST(:kinds AS text[]), "
+    "CAST(:rids AS text[])) AS k(kind, rid)), "
+    "e AS ("
+    "SELECT n.kind AS hit_kind, n.rid AS hit_id, l.target_kind AS kind, "
+    "l.target_id AS rid, l.relation, l.provenance, l.confidence, l.created_at, "
+    "l.removed_at, l.id "
+    "FROM kb_links l JOIN n ON l.source_kind = n.kind AND l.source_id = n.rid "
+    "WHERE l.organization_id = CAST(:org AS uuid) AND l.page_id IS NULL "
+    "UNION ALL "
+    "SELECT n.kind, n.rid, COALESCE(l.source_kind, 'page'), "
+    "COALESCE(l.source_id, l.page_id::text), COALESCE(l.relation, 'links_to'), "
+    "COALESCE(l.provenance, 'EXTRACTED'), COALESCE(l.confidence, 1.0), "
+    "l.created_at, l.removed_at, l.id "
+    "FROM kb_links l JOIN n ON l.target_kind = n.kind AND l.target_id = n.rid "
+    "WHERE l.organization_id = CAST(:org AS uuid) "
+    "UNION ALL "
+    "SELECT n.kind, n.rid, l.target_kind, l.target_id, "
+    "COALESCE(l.relation, 'links_to'), COALESCE(l.provenance, 'EXTRACTED'), "
+    "COALESCE(l.confidence, 1.0), l.created_at, l.removed_at, l.id "
+    "FROM kb_links l JOIN n ON n.kind = 'page' AND l.page_id::text = n.rid "
+    "WHERE l.organization_id = CAST(:org AS uuid) AND l.page_id IS NOT NULL"
+    "), "
+    "kept AS ("
+    "SELECT e.*, row_number() OVER (PARTITION BY e.hit_kind, e.hit_id ORDER BY "
+    "(e.provenance = 'EXTRACTED') DESC, e.confidence DESC, e.created_at DESC, e.id) AS k "
+    "FROM e WHERE e.removed_at IS NULL "
+    "AND e.kind = ANY(CAST(:open_kinds AS text[])) "
+    "AND e.provenance IN ('EXTRACTED', 'INFERRED') "
+    "AND (e.provenance = 'EXTRACTED' OR e.confidence >= :floor) "
+    "AND NOT (e.kind = e.hit_kind AND e.rid = e.hit_id)"
+    ") "
+    "SELECT hit_kind, hit_id, kind, rid, relation, provenance, confidence, k "
+    "FROM kept WHERE k <= :per ORDER BY hit_kind, hit_id, k"
+)
+
+
+async def neighbour_edges(
+    user: UserContext, nodes: list[tuple[str, str]], *, kinds: tuple[str, ...] | list[str],
+    per_hit: int = NEIGHBOUR_EDGES_PER_HIT,
+) -> list[Neighbour]:
+    """The usable edges of each node of *nodes*, in both directions, one hop.
+
+    *nodes* holds ``(kind, id)`` pairs, the first hits of a search. The read
+    opens its own tenant session, so ``gateway/retrieval/`` holds no SQL.
+    Row level security binds the tenant of the request, and the statement
+    also names ``user.organization_id``. The org never comes from input.
+
+    It drops each AMBIGUOUS edge, each removed edge and each INFERRED edge
+    below :data:`INFERRED_FLOOR` (§4.2, §4.4). It answers ids only and checks
+    no visibility. The caller opens each other end through its app, as the
+    member (§6). An end that the member cannot open is the same as no edge.
+
+    *kinds* names the kinds of the other end that the caller can open. The
+    caller derives it from the kinds of its sources, so the list cannot
+    drift. An edge to any other kind is left out before the cap of each hit.
+    """
+    pairs = [(str(k), str(i)) for k, i in nodes if k in NODE_KINDS and str(i or "")]
+    pairs = list(dict.fromkeys(pairs))[:MAX_NEIGHBOUR_NODES]
+    open_kinds = sorted({str(k) for k in kinds or () if k in NODE_KINDS})
+    if not pairs or not open_kinds:
+        return []
+    org = core.org_of(user)
+    async with tenant_session() as db:
+        rows = (await db.execute(text(_NEIGHBOURS_SQL), {
+            "org": org, "kinds": [k for k, _ in pairs], "rids": [i for _, i in pairs],
+            "floor": INFERRED_FLOOR, "per": max(1, int(per_hit)), "open_kinds": open_kinds,
+        })).fetchall()
+    return [Neighbour(hit_kind=r.hit_kind, hit_id=r.hit_id, kind=r.kind, id=str(r.rid),
+                      relation=r.relation, provenance=r.provenance,
+                      confidence=float(r.confidence), order=int(r.k)) for r in rows]
+
+
 __all__ = [
     "APP_KINDS",
+    "INFERRED_FLOOR",
     "MAX_EDGES",
     "NODE_KINDS",
     "PROVENANCES",
@@ -416,11 +548,14 @@ __all__ = [
     "SWEEP_KIND",
     "Edge",
     "EdgeForm",
+    "Neighbour",
     "Relation",
     "SweepResult",
     "check_form",
+    "neighbour_edges",
     "read_edges",
     "remove_edge",
+    "search_allowed",
     "seed",
     "sweep_allowed",
     "sweep_job",

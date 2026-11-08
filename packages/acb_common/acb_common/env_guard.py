@@ -230,6 +230,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # edges into kb_links for an org. A tenant must not open it for another
     # org, so only the operator writes it.
     "GRAPH_SWEEP_ORGS",
+    # WS-KG KG-6: GRAPH_SEARCH_ORGS opens the neighbours of company search for
+    # an org. A tenant must not open it for another org, so only the operator
+    # writes it.
+    "GRAPH_SEARCH_ORGS",
     # WS-ALN ALN-5a: PROJECT_RULES_ORGS opens the rules of a project for an
     # org. A rule reaches each agent and each check of the project, so a
     # tenant must not open it for another org.
