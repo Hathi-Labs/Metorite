@@ -134,7 +134,7 @@ Twelve tools read:
 | `get_task_context` | One task, with its parent tasks, its project, the tasks that block it and the newest 20 comments. A parent task that you cannot see shows as hidden, with no title |
 | `my_work` | The next work of this agent, at most 25 rows. "How the agent finds its next work" above tells the order |
 
-Nine tools make or change a task:
+Eleven tools make or change a task or its comments:
 
 | Tool | What it does |
 |---|---|
@@ -147,6 +147,8 @@ Nine tools make or change a task:
 | `add_task_link` | It says that one task blocks another. `task_id` blocks `target_task_id`, so `my_work` does not offer the second task until the first is done. A claim of the second task is not refused. You must see both tasks. The same link twice keeps one link. Metorite refuses a link that makes a loop, and a link from a task to itself |
 | `remove_task_link` | It removes one `blocks` link. Send the `link_id` that `get_task` shows for the link. The agent must be able to see both tasks. A person removes other kinds of link in the app |
 | `add_comment` | It writes a comment on a task, such as a short progress note while it works. You are the author of the comment. It can reply to a top-level comment. A comment holds at most 20,000 characters. With the same `idempotency_key`, a second call gives back the first comment and adds no second comment |
+| `update_comment` | It replaces the text of a comment that this agent app wrote, such as a note with no end after a stop. Metorite keeps no copy of the old text. The agent cannot change a comment that you typed in Metorite, a comment of another person, or a comment of another agent app. It also cannot change its own comment when a person edited it, it belongs to an agent run, or someone else wrote on the task after it. Metorite refuses it, and nothing changes. The task history gets one line, "Edited a comment", with the name of the agent app |
+| `delete_comment` | It deletes a comment that this agent app wrote. You cannot undo a delete. The same rule as `update_comment` holds. The task history gets one line, "Deleted a comment", with the name of the agent app and no words of the comment |
 
 Two tools reach the updates of a project, while your organization has project updates on:
 

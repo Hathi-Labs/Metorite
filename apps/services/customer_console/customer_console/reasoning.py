@@ -69,14 +69,21 @@ and a delta-level mirror would break that promise. H-180 carries it.
 """
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
+
+_log = logging.getLogger("platform.router")
 
 __all__ = [
     "REASONING_PARAMS",
+    "SAMPLING_PARAMS",
     "publish_reasoning_alias",
     "reasoning_for_vendor",
     "reasoning_params_for",
+    "sampling_params_for",
     "step_takes",
+    "step_takes_sampling",
 ]
 
 #: The request parameters that control a model's thinking (task 1128).
@@ -121,6 +128,98 @@ def reasoning_params_for(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
     if not drop:
         return kwargs
     return {k: v for k, v in kwargs.items() if k not in drop}
+
+#: The sampling values that a Claude 5.5 model refuses (task 2450).
+SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
+
+#: The major version of a Claude id: ``claude-sonnet-5-5`` gives 5,
+#: ``claude-3-5-sonnet-20241022`` gives 3.
+_CLAUDE_MAJOR = re.compile(r"claude-(?:[a-z]+-)?(\d+)")
+
+#: Claude families that never took sampling values.
+_NO_SAMPLING_FAMILIES = ("fable", "mythos")
+
+#: (model, dropped keys) pairs already logged by this process. The log line
+#: fires once per pair, so a busy chat on Claude 5.5 does not write one line
+#: per call (review of 2026-11-08). The cap bounds the memory.
+_LOGGED_DROPS: set[tuple[str, str]] = set()
+_LOGGED_DROPS_MAX = 256
+
+
+def _claude_takes_sampling(model: str) -> bool:
+    """The last wall: a Claude id at version 5 or later takes no sampling value.
+
+    litellm's rule and its model map cover the Claude ids they know. A Claude
+    id that is newer than the map (for example ``claude-sonnet-5-6``) would
+    keep ``temperature=0.2`` and answer 400. Claude 5 and later accept only
+    ``temperature=1``, so a drop is always safe for them.
+    """
+    low = model.lower()
+    if "claude" not in low:
+        return True
+    if any(family in low for family in _NO_SAMPLING_FAMILIES):
+        return False
+    match = _CLAUDE_MAJOR.search(low)
+    return not (match and int(match.group(1)) >= 5)
+
+
+def step_takes_sampling(model: str) -> bool:
+    """Whether litellm sends sampling values to the step model *model*.
+
+    Measured on litellm 1.103.0: ``claude-haiku-5-5``, ``claude-sonnet-5-5``,
+    ``claude-opus-5-5`` and ``claude-opus-4-8`` raise ``UnsupportedParamsError``
+    for ``temperature=0.2``. Only ``temperature=1`` passes. Anthropic models
+    use litellm's own rule (``AnthropicModelInfo._supports_sampling_params``).
+    Any provider also honours ``supports_sampling_params: False`` in
+    ``litellm.model_cost``. A model that litellm cannot place keeps its values.
+    """
+    try:
+        import litellm
+
+        name, provider, _key, _base = litellm.get_llm_provider(model)
+    except Exception:  # a model that litellm cannot place keeps its params
+        return True
+    if provider == "anthropic":
+        try:
+            from litellm.llms.anthropic.common_utils import AnthropicModelInfo
+
+            if not AnthropicModelInfo._supports_sampling_params(name):
+                return False
+        except Exception:  # litellm moved the rule: fall to the model map
+            pass
+    cost = getattr(litellm, "model_cost", None) or {}
+    for key in (f"{provider}/{name}", name, model):
+        entry = cost.get(key)
+        if isinstance(entry, dict) and entry.get("supports_sampling_params") is False:
+            return False
+    return _claude_takes_sampling(name) and _claude_takes_sampling(model)
+
+
+def sampling_params_for(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
+    """*kwargs* with no sampling value that the step *model* refuses.
+
+    Task 2450. litellm runs here with no ``drop_params``, so ``temperature=0.2``
+    on a Claude 5.5 step answers 400. This drops ``temperature``, ``top_p`` and
+    ``top_k`` for THAT step only. A ``temperature`` of 1 stays, because litellm
+    accepts it. Returns *kwargs* itself when nothing is dropped. The log line
+    names the model and the dropped keys, and never the message content.
+    """
+    drop = [
+        k for k in SAMPLING_PARAMS
+        if k in kwargs and not (k == "temperature" and kwargs[k] == 1)
+    ]
+    if not drop or step_takes_sampling(model):
+        return kwargs
+    seen = (model, ",".join(drop))
+    if seen not in _LOGGED_DROPS:
+        if len(_LOGGED_DROPS) < _LOGGED_DROPS_MAX:
+            _LOGGED_DROPS.add(seen)
+        _log.info(
+            "router.sampling_params_dropped",
+            extra={"sp_model": model, "sp_dropped": seen[1]},
+        )
+    return {k: v for k, v in kwargs.items() if k not in drop}
+
 
 #: What DeepSeek calls it, and what it wants back.
 VENDOR_KEY = "reasoning_content"

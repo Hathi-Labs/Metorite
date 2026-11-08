@@ -18,6 +18,7 @@ import { EMAIL_AGENT, delegatedSteps, withEmailSteps } from "@/lib/delegatedStep
 import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
 import ProfileToolCards from "@/components/profile/ProfileToolCards";
+import StudioToolCards from "@/components/studio/StudioToolCards";
 import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { genUiFlow, genUiPlacement, genUiTitle, type FlowBlock } from "@/lib/chatPlacement";
@@ -842,6 +843,9 @@ function MessageBubble({
           calls, so this renders in both the chat app and the Projects app's
           AI chat (WS-27bm). */}
       <ProjectToolCards toolEvents={dedupedToolEvents} mine={ranByViewer(message, viewerEmail)} />
+      {/* The approval card of a Studio record change (STU-B2c-2c). Inert
+          unless the message holds an ask of a studio_record_* write tool. */}
+      <StudioToolCards toolEvents={dedupedToolEvents} sessionId={sessionId} />
       {/* The receipts of the assistant profile writes, each with Undo (WS-63
           PZ-6a). Inert unless the message holds a profile_* tool call. */}
       <ProfileToolCards toolEvents={dedupedToolEvents} />

@@ -242,12 +242,19 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
     label: "AssemblyAI",
     description:
       "Speech to text that names the speakers, and handles Hindi and English " +
-      "in one recording. The cheapest per hour of the transcription options.",
+      "in one recording. The cheapest per hour of the transcription options. " +
+      "Notes still uses its own AssemblyAI client until task 2449.",
     setupUrl: "https://www.assemblyai.com/dashboard/signup",
     docsUrl: "https://www.assemblyai.com/docs/speech-to-text/pre-recorded-audio",
+    // VOX-6 (2026-11-08). litellm 1.103.0 cannot call the AssemblyAI Sync API,
+    // so the Console calls it with its own handler (`stt_assemblyai.py`,
+    // `native_assemblyai`). The vendor-slug fence exempts this slug from the
+    // "litellm must not know it" half, because litellm lists the id.
     steps: [
       "Create an account at assemblyai.com. It includes free credit.",
-      "Copy the key from the dashboard home.",
+      "Copy the key from the dashboard home, and install it here with the provider id assemblyai.",
+      "On Models, declare assemblyai/universal-3-5-pro/hi,en for Speech to text, with the verb native_assemblyai and no streaming. The last part is the language codes, such as hi,en. Leave it off to let the vendor choose.",
+      "Bind tier-stt to it on Tiers. The Console takes WAV clips only for this model.",
     ],
     serves: ["transcribe"],
   },
