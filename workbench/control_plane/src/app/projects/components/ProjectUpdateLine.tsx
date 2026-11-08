@@ -18,6 +18,10 @@
  * and again closes it. `aria-expanded` and
  * `aria-controls` tell a screen reader what it opens.
  *
+ * The opened text is Markdown. It draws with `MarkdownBody` and the props of a
+ * task comment (`TaskBody.tsx`), so it has the same renderer and the same
+ * sanitizing. The renderer has no `rehype-raw`, so HTML stays text.
+ *
  * ⚠️ The hue comes from `projectHealthChip` in `src/lib/statusAccent.ts`, the
  * one status vocabulary. This file names no colour. The chip carries its words
  * and a glyph, so the health never depends on colour alone.
@@ -26,11 +30,13 @@
 import { useId, useState } from "react";
 
 import Icon from "@/components/Icon";
+import { MarkdownBody } from "@/components/MarkdownMessage";
 import { PersonName } from "@/components/PersonName";
 import { BADGE_SHAPE } from "@/components/ui/Badge";
 import { projectHealthChip } from "@/lib/statusAccent";
 
 import type { ProjectUpdate } from "../lib/api";
+import { keepLineBreaks } from "../lib/inlineUploads";
 import { projectUpdateLine } from "../lib/projectUpdateLine";
 
 export function ProjectUpdateLine({
@@ -84,9 +90,14 @@ export function ProjectUpdateLine({
       {open ? (
         <div
           id={panelId}
-          className="mt-2 whitespace-pre-wrap break-words border-t border-border pt-2 text-xs text-foreground"
+          className="mt-2 min-w-0 break-words border-t border-border pt-2 text-xs text-foreground"
         >
-          {line.full}
+          <MarkdownBody
+            content={keepLineBreaks(line.full)}
+            plainEmails
+            taskRefs
+            projectPills
+          />
         </div>
       ) : null}
     </div>

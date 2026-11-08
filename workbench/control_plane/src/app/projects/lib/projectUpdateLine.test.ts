@@ -135,4 +135,31 @@ describe("the line opens the whole update in place", () => {
     expect(html).toContain(`aria-controls="${panel?.[1]}"`);
     expect(html).toContain("Hide the whole update");
   });
+
+  // Coordinator review: the open text showed "## Week 45" and "- The counter
+  // top…" as marks. It draws with the renderer of a task comment now.
+  // Mutation: draw `line.full` as plain text -> red.
+  it("draws a heading and a list as elements, not as Markdown marks", () => {
+    const body = [
+      "## Week 45",
+      "The tiles slipped a week.",
+      "",
+      "- The counter top is in.",
+      "- The lights arrive on Wednesday.",
+      "",
+      "<script>alert(1)</script>",
+    ].join("\n");
+    const html = renderToStaticMarkup(
+      createElement(ProjectUpdateLine, { update: update({ body }), defaultOpen: true })
+    );
+    const at = html.indexOf('id="');
+    const panel = html.slice(at);
+    expect(panel).toMatch(/<h2[^>]*>Week 45<\/h2>/);
+    expect(panel).toMatch(/<ul[^>]*>[\s\S]*<li[^>]*>The counter top is in\.<\/li>/);
+    expect(panel).toMatch(/<li[^>]*>The lights arrive on Wednesday\.<\/li>/);
+    expect(panel).not.toContain("## Week 45");
+    expect(panel).not.toContain("- The counter top");
+    // The same sanitizing as a comment: HTML in the text never becomes an element.
+    expect(panel).not.toContain("<script");
+  });
 });
