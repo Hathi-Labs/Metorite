@@ -12,6 +12,8 @@
  * `lib/tree.filterByCenter`'s own test says so).
  */
 
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { useBarTap } from "@/lib/phoneBarTap";
 import Icon, { themedIcon } from "@/components/Icon";
 import { ContextMenu } from "@/components/ContextMenu";
 import RailRow from "@/components/ui/RailRow";
@@ -92,7 +94,7 @@ import {
   myWorkNavCounts,
   projectsUndoScope,
 } from "./lib/myWork";
-import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, phoneMyTasksTap, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
+import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
 import MyTasksSpace, {
   DEFAULT_MY_TASKS_VIEW,
   MyTasksActionRow,
@@ -930,7 +932,7 @@ function ProjectsWorkspace() {
   // the shell's `pb-nav` scroller. Every other app in the tree decides its
   // layout here.
   const { isMobile, mounted: viewMounted } = useViewMode();
-  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen } = useMobileDrawer();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
   // NS-6: with the shell's one bell on, this app mounts no bell of its own.
   // Read once, as the shell reads its flags: the dev override is in
   // `localStorage`, which the server render cannot see.
@@ -1507,25 +1509,33 @@ function ProjectsWorkspace() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
 
-  // WS-27ag — the phone's bottom bar (AppShell's `isProjectsPage` branch) talks
-  // to this page over the same `cc-mobile-nav` channel Tasks, Notes and the App
-  // Workshop use. Tapping the tab that is already showing closes its sheet.
+  // WS-27ag — the phone's bottom bar (the registry, `lib/shell/phoneBar.ts`)
+  // talks to this page over the same `cc-mobile-nav` channel Tasks, Notes and
+  // the App Workshop use. Tapping the tab that is already showing closes its
+  // sheet. The Projects tab is a place: it shows selected while its sheet
+  // is open (MOB-12).
+  usePhoneBar({ active: sheet === "tree" ? "projects-tree" : null });
+  // A second tap on Search closes it. The bar tap closes the overlay before
+  // the tab's event arrives, so read whether Search was open AT the tap, from
+  // the committed state, and let the event close and not reopen (MOB-9 fix).
+  const searchingRef = useRef(false);
+  useEffect(() => {
+    searchingRef.current = searching;
+  });
+  const searchTapClosed = useRef(false);
+  useBarTap((tab) => {
+    searchTapClosed.current = tab === "projects-search" && searchingRef.current;
+  });
   useEffect(() => {
     const handler = (event: Event) => {
       const tab = (event as CustomEvent<string>).detail;
-      if (tab === "projects-tree") setSheet((s) => (s === "tree" ? null : "tree"));
-      else if (tab === "projects-views") setSheet((s) => (s === "views" ? null : "views"));
-      else if (tab === "projects-mywork") {
-        // WS-64 OP-11 — the phone's "My tasks" tab opens My tasks on its
-        // List. A second tap there opens the Projects sheet (`ProjectNav`:
-        // My work, Personal, Spaces). The shell's "Menu" keeps the drawer.
-        if (phoneMyTasksTap(appRef.current) === "sheet") {
-          setSheet((s) => (s === "tree" ? null : "tree"));
-        } else {
-          setSheet(null);
-          setApp("my-tasks");
-          setMyTasks((v) => ({ ...v, mode: "list", attention: false }), true);
-        }
+      // MOB-10: each tab closes the page's other overlays first, so two never
+      // stack. The shell has closed its own drawer and the assistant's sheet.
+      if (tab === "projects-tree" || tab === "projects-views") {
+        setSearching(false);
+        useTaskStore.getState().closeQuickCapture();
+        const which = tab === "projects-tree" ? "tree" : "views";
+        setSheet((s) => (s === which ? null : which));
       } else if (tab === "projects-capture") {
         // WS-64 OP-4 — Capture must work with no My work view open. The quick
         // capture lives in the task store and `MyWorkHost` mounts it, so open
@@ -1533,13 +1543,20 @@ function ProjectsWorkspace() {
         // the host mounts. OP-11: My tasks mounts no capture host, so it
         // opens the inbox too. The smallest change: no second capture host.
         setSheet(null);
+        setSearching(false);
         setApp("my-inbox");
         useTaskStore.getState().openQuickCapture("single");
       }
       else if (tab === "projects-search") {
         // ⌘K has no phone equivalent, so the palette needs a control. It is a
         // full-screen overlay of its own — the drawer would be a second one.
+        if (searchTapClosed.current) {
+          searchTapClosed.current = false;
+          setSearching(false);
+          return;
+        }
         setSheet(null);
+        useTaskStore.getState().closeQuickCapture();
         setSearching(true);
       }
     };
@@ -2081,11 +2098,15 @@ function ProjectsWorkspace() {
   // and this is the subscribe half. The alternatives all reintroduce the bug
   // (a re-tap after a backdrop dismissal sets the same value, so React bails
   // out and the drawer never reopens).
+  //
+  // MOB-9: the Menu tab can also take the drawer over while a sheet shows. The
+  // sheet is gone then, and the drawer is not this page's to close.
   useEffect(() => {
-    if (!drawerOpen) ownsDrawer.current = false;
+    const gone = !drawerOpen || drawerShows === "menu";
+    if (gone) ownsDrawer.current = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!drawerOpen) setSheet(null);
-  }, [drawerOpen]);
+    if (gone) setSheet(null);
+  }, [drawerOpen, drawerShows]);
 
   // True once the page's own mount effects have run. ⚠️ The command bar's
   // "New space" waits for it. A child's effect runs BEFORE its parent's, so

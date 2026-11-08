@@ -31,6 +31,15 @@ the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
 
+`GITHUB_APP_ORGS` turns the Metorite GitHub App on for each named org
+(`agent_coordination.md` SW-53). `GITHUB_APP_ENABLED` stays the master, and a
+reload does not apply the master. With the master on, an empty list turns
+every org off. Its one reader is
+`gateway.connections.github_app.github_app_org_allowed`. The webhook, the
+connect routes, the poll and `github.installation_of` ask it, so the lazy
+readers follow the list too. A reload applies a change, and the flip stays
+OWNER-GATE (`enforcement-flip`).
+
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:
 
