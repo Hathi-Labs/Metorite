@@ -30,6 +30,7 @@ The fence is `tests/unit/test_skill_task_lens.py`.
 | `my_tasks_accounts()` / `my_tasks_sync()` | No call. They answer that no tool is connected |
 | `my_tasks_inbox_insights`, `my_tasks_people`, `my_tasks_plan_project` | `/tasks/insights`, `/tasks/people`, `/tasks/plan*` |
 | `my_tasks_plan_day`, `my_tasks_replan_day`, `my_tasks_rollover`, `my_tasks_day_digest`, `my_tasks_estimate_stats`, `my_tasks_set_one_thing` | `/tasks/calendar/*` |
+| `my_tasks_get_calendar_settings`, `my_tasks_update_calendar_settings` | `/tasks/settings` (calendar fields only) |
 
 The tools apply these five rules.
 
