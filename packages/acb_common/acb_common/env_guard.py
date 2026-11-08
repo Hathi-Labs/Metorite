@@ -197,6 +197,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the chat greets on the day. It adds a line to each turn, so only the
     # operator writes it.
     "CELEBRATIONS_ORGS",
+    # WS-63 PZ-40: the orgs where the name question offers forms of address
+    # and the block keeps the chosen form as written. It adds a line to each
+    # turn, so only the operator writes it.
+    "ADDRESS_FORMS_ORGS",
     # H-328 part (b): the orgs whose unattended workflow runs may start. A run
     # can send mail or WhatsApp and spend credits with no person present, so
     # only the operator writes it. The `WORKFLOW_` prefix covers it too, and

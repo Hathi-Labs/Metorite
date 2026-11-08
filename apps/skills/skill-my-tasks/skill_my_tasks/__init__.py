@@ -12,6 +12,7 @@ from skill_my_tasks.core import (
     my_tasks_delegate,
     my_tasks_detail,
     my_tasks_estimate_stats,
+    my_tasks_get_calendar_settings,
     my_tasks_inbox_insights,
     my_tasks_list,
     my_tasks_list_projects,
@@ -30,6 +31,17 @@ from skill_my_tasks.core import (
     my_tasks_sync,
     my_tasks_unschedule,
     my_tasks_update,
+    my_tasks_update_calendar_settings,
+)
+
+#: Tools that only the main chat's `calendar-day` pack holds (CAL-2, task 1676).
+#: They are in ``__all__`` so the pack builder, the card routing and the parity
+#: fences see them. A declarative agent (``orchestrator.declarative``) skips them,
+#: so the Tasks assistant keeps the tools that it has on main. Fence:
+#: ``tests/unit/test_declarative_builder.py``.
+PACK_ONLY_TOOLS = (
+    "my_tasks_get_calendar_settings",
+    "my_tasks_update_calendar_settings",
 )
 
 __all__ = [
@@ -44,6 +56,7 @@ __all__ = [
     "my_tasks_delegate",
     "my_tasks_detail",
     "my_tasks_estimate_stats",
+    "my_tasks_get_calendar_settings",
     "my_tasks_inbox_insights",
     "my_tasks_list",
     "my_tasks_list_projects",
@@ -62,4 +75,5 @@ __all__ = [
     "my_tasks_sync",
     "my_tasks_unschedule",
     "my_tasks_update",
+    "my_tasks_update_calendar_settings",
 ]

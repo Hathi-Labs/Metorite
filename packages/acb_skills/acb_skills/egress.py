@@ -1481,6 +1481,9 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_deal_status": _pin("deal_id stage lost_reason"),
     "log_activity": _pin("entity record_id activity_type subject body due_at"),
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
+    # WS-CRM CRM-M3a: a new deal pipeline. Its card shows each stage. It says
+    # open_world=True as each CRM write does, so a covered run holds it off.
+    "crm_create_pipeline": _pin("name stages copy_from"),
     "crm_update_record": _pin("entity record_id fields"),
     "crm_update_task": _pin("activity_id completed due_at"),
 }
@@ -1577,9 +1580,9 @@ def is_held_card_write(item: Any) -> bool:
 
 
 #: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
-#: slug. The pack is the ``calendar-day`` pack, and its eight tools are the My
-#: Tasks planner tools, which the Tasks assistant holds too. **The choice.** In a
-#: held chat the pack holds off its six writes. They have no card: a plan is
+#: slug. The pack is the ``calendar-day`` pack, and its ten tools are the My
+#: Tasks planner tools and the two calendar settings tools, which the Tasks assistant holds too. **The choice.** In a
+#: held chat the pack holds off its seven writes. They have no card: a plan is
 #: proposed in text and applied by a second call, so mail that the chat read
 #: could steer the apply. The pack keeps its two reads (``my_tasks_day_digest``
 #: and ``my_tasks_list_schedule``, ``read_only=True``). **Why a pack-slug table
@@ -1593,6 +1596,7 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
     "calendar-day": frozenset({
         "my_tasks_plan_day", "my_tasks_replan_day", "my_tasks_rollover",
         "my_tasks_schedule", "my_tasks_set_one_thing", "my_tasks_unschedule",
+        "my_tasks_update_calendar_settings",
     }),
 }
 
