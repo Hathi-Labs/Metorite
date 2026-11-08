@@ -36,7 +36,8 @@ export function waitChip(
   nameOf: (email: string) => string,
   nowMs: number,
 ): WaitChip | null {
-  if (!data) return null;
+  // asks is null when WAITING_ORGS is off for the org: no chip, the card stays as it was.
+  if (!data || data.asks === null) return null;
   if (data.decisions.some((row) => stateNow(row, nowMs) === "open")) {
     return { kind: "needs_you", text: "Needs you" };
   }

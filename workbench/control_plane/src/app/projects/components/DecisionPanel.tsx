@@ -127,7 +127,7 @@ export function DecisionPanel({
   const shown = rowsToShow(data.decisions, nowMs);
   // AP-9a: the chip and the form belong to the person ask. Either flag off
   // leaves `asks` null, and then neither draws (an ALN card stays as it was).
-  const chip = data.asks !== null ? waitChip(data, nameOf, nowMs) : null;
+  const chip = waitChip(data, nameOf, nowMs);
   // A host that passes no `waitRequest` has no wiring for the form (My Tasks).
   const canAsk = canOfferAsk(data.asks, waitRequest);
   const chipLook = agentStateVisual("awaiting");

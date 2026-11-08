@@ -31,7 +31,7 @@ const wait = (decider: string) => ({ decider, expires_at: null, source: "person"
 const data = (over: Partial<TaskDecisions>): TaskDecisions => ({
   decisions: [],
   waiting_on: [],
-  asks: null,
+  asks: [],
   ...over,
 });
 
@@ -123,12 +123,12 @@ describe("the key W", () => {
 import { readFileSync } from "node:fs";
 
 describe("the chip needs the person ask", () => {
-  it("DecisionPanel draws the chip only when asks is a list", () => {
-    const src = readFileSync(new URL("../components/DecisionPanel.tsx", import.meta.url), "utf8");
-    expect(src).toContain("data.asks !== null ? waitChip(");
-    expect(src).toContain("canOfferAsk(data.asks, waitRequest)");
-    // The read with the flag off: an open ALN card has asks null.
-    const flagOff = readTaskDecisions({ decisions: [], waiting_on: [{ decider: "a@x.test" }] });
+  it("draws no chip when the read has no asks key (WAITING_ORGS off)", () => {
+    const open = { id: "d1", state: "open", expires_at: null } as unknown as TaskDecisions["decisions"][number];
+    const flagOff = readTaskDecisions({ decisions: [open], waiting_on: [{ decider: "a@x.test" }] });
     expect(flagOff.asks).toBeNull();
+    expect(waitChip(flagOff, (e) => e, 0)).toBeNull();
+    const flagOffOthers = readTaskDecisions({ decisions: [], waiting_on: [{ decider: "a@x.test" }] });
+    expect(waitChip(flagOffOthers, (e) => e, 0)).toBeNull();
   });
 });
