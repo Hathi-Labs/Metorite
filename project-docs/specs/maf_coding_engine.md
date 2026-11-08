@@ -1013,6 +1013,10 @@ WS-43f.
 
 ### 7.8 app-builder on the MAF harness
 
+**Built 2026-11-08, dark (WS-43h).** The block of WS-43h in §11 lists where
+the build differs from this text. The main change: the registry label is now
+`"maf"`, so each executor site decides by the object.
+
 When `MAF_CODING_SCOPE` holds `app_builder` for the run's organization,
 `agent-app-builder/agents.py` builds a MAF harness agent in place of the
 `GitHubCopilotAgent`. The factory reads the scope and the run's tenant
@@ -2582,7 +2586,7 @@ uv run pytest tests/unit/test_sandbox_egress_proxy.py \
 **Gate.** AGENT-SAFE. It ships dark. The flip, the production allowlist and
 the firewall install are WS43-G1 and WS43-G4.
 
-### WS-43h — app-builder on the MAF harness 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
+### WS-43h — app-builder on the MAF harness ✅ **Built 2026-11-08, dark (task 2280)** · ⏸ Parked by D86, 2026-10-03 · ▶ Restarted by D92, 2026-10-07 (§17)
 
 **Scope.**
 
@@ -2619,6 +2623,74 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 ```
 
 **Gate.** AGENT-SAFE. It ships dark.
+
+**Built 2026-11-08, dark, on branch `ws43-s1-app-builder-maf-mt-3d248be7`
+(task 2280).** These facts change or add to the text above.
+
+- **The factory (done-when 1).** `agent-app-builder/agents.py` asks
+  `code_session.app_builder_engine_for_run()` on each run. With
+  `app_builder:<org>` for the run's org, it builds
+  `code_session.build_app_builder_agent`. Every other run, and a run with no
+  org, gets the `GitHubCopilotAgent`, unchanged.
+- **One factory (CA-14).** `code_session.coding_harness_agent` is the one call
+  of `create_harness_agent`. `build_code_task_agent` and
+  `build_app_builder_agent` both use it. app-builder takes the `code_task`
+  flags and `disable_tool_auto_approval=True`. MAF's
+  `ToolApprovalMiddleware` needs an `AgentSession` on each run, and the
+  executor passes one only with `MAF_NATIVE_SESSIONS` on. No tool of this
+  agent asks MAF for an approval.
+- **The instructions.** The text of `instructions.md` does not change. The
+  MAF engine puts the sandbox paths of the two scripts
+  (`/opt/app-builder/build/`) in place of the placeholders. It adds a short
+  section that names its tools.
+- **The tools.** MAF's eight file tools over `sandbox_tools.RunAppFileStore`,
+  and `run_command` (`sandbox_tools.app_builder_run_command`). Each call
+  reads the run binding and the scope, so a flip off ends the tools at once.
+  The store is `tenant_file_store.AppWorkspaceFileStore`. It maps the app
+  dir as it is, and it refuses each name that starts with a dot. It uses the
+  safe opener, the dir lock and the quota, and it writes nothing to the blob
+  store. The agent does not hold the host floor file tools or the host web
+  tools (`sandbox_tools.host_tool_guard`), as in a covered `projects` run.
+- **The registry label (done-when 2 changed).** WS-43h set the label of
+  app-builder in `_AGENT_REGISTRY` to `"maf"`. It removed the WS43-F31 entry,
+  which named WS-43h. So each executor site decides by the object. The MAF
+  agent takes the native path, and the Copilot agent keeps the Copilot path
+  through its `_default_options`. No label site of the executor changed.
+  `loader.COPILOT_SPECIALIST_ALLOWED` keeps app-builder until WS-43j,
+  because every other org still gets the Copilot agent.
+- **A tenant dir.** A delegated run of app-builder works in its tenant dir
+  `o:<org>`, not in an app dir. The file tools of the run can read and write
+  there, as the file tools of the Copilot CLI can. Its `run_command` refuses there, for the reason of
+  WS-43e: the container mounts its dir whole and read-write. A command runs
+  only in an app's own dir under the Custom Apps root.
+- **The session.** The agent holds `native_session_store.SessionHistoryProvider`
+  as its one provider of history. With `MAF_NATIVE_SESSIONS` on, the store
+  loads and saves its session, so a confirm turn sees the tool output of the
+  turn before. `_native_session_skip` does not skip for that provider, and
+  `agent_for_run` adds no second one.
+- **The mounts (done-when 4).** The broker copies `build_t2.mjs` and
+  `install_t2_deps.mjs` into its state dir, under a name from a digest of
+  the content. It mounts the copy read-only at `/opt/app-builder/build`. It
+  mounts `t2_vendor_dir()` read-only at `/opt/t2-vendor`, with
+  `CUSTOM_APPS_T2_VENDOR_DIR=/opt/t2-vendor`. `mount_list` refuses a source
+  that holds `.git`, and the app's own `.git` gets the empty read-only cover.
+- **The checkpoints (§7.5 rule A).** `_git` of `apps/durability.py` runs
+  with `GIT_CONFIG_NOSYSTEM=1`, `-c core.fsmonitor=false` and
+  `-c core.hooksPath=/dev/null`. `/dev/null` names a dir that can hold no
+  hook.
+- **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
+  Copilot path. A dir that a container mounted is on the broker's list, so
+  the executor's host git skips it (WS43-F13).
+- **Open: done-when 3 (WS43-E8).** The eval runner has no WS43-E8.
+  `evals/coding_engine/run.py` takes `projects-assistant` and WS43-E10 to
+  WS43-E17 only, and `--tasks WS43-E8` exits with "unknown task". A model
+  run also needs a provider key. WS-43i, or an owner run, closes it.
+- **Open: installs.** `install_t2_deps.mjs` needs the network, and the
+  sandbox has none until WS-43g. A T2 app with its own packages does not
+  build on this engine yet.
+
+Fence: WS43-F12, `tests/unit/test_app_builder_engine.py`. Its
+`sandbox_docker` test is the token probe of done-when 5.
 
 ### WS-43i — Parity eval through the broker 🔲
 

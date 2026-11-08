@@ -576,7 +576,7 @@ async def test_docker_the_app_container_runs_node_and_holds_no_secret(
     monkeypatch.setattr(sb, "_BROKER", real["broker"])
     monkeypatch.setattr(real["settings"], "maf_coding_scope", f"app_builder:{DOCKER_ORG}")
     monkeypatch.setenv("GITHUB_TOKEN", CANARY_GH)
-    monkeypatch.setattr(real["settings"], "llm_api_key", CANARY_LLM, raising=False)
+    monkeypatch.setattr(real["settings"], "litellm_master_key", CANARY_LLM)
     vendor = real["tmp"] / "vendor-t2"
     vendor.mkdir()
     (vendor / "VENDOR").write_text("v\n", encoding="utf-8")
