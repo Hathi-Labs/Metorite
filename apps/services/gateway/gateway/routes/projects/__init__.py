@@ -67,6 +67,7 @@ from gateway.routes.projects import mine as _mine  # noqa: F401
 from gateway.routes.projects import move as _move  # noqa: F401
 from gateway.routes.projects import needs_attention as _needs_attention  # noqa: F401
 from gateway.routes.projects import notifications as _notifications  # noqa: F401
+from gateway.routes.projects import package_fields as _package_fields  # noqa: F401
 from gateway.routes.projects import personal as _personal  # noqa: F401
 from gateway.routes.projects import plan_analysis as _plan_analysis  # noqa: F401
 from gateway.routes.projects import plan_preview as _plan_preview  # noqa: F401

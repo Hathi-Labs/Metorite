@@ -167,6 +167,7 @@ from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
 from gateway.routes.crm import mapping_plans as _mapping_plans  # noqa: F401
 from gateway.routes.crm import modules as _modules  # noqa: F401
 from gateway.routes.crm import note_search as _note_search  # noqa: F401
+from gateway.routes.crm import package_fields as _package_fields  # noqa: F401
 from gateway.routes.crm import pipeline as _pipeline  # noqa: F401
 from gateway.routes.crm import pipelines as _pipelines  # noqa: F401
 from gateway.routes.crm import questions as _questions  # noqa: F401

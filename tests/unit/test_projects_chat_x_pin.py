@@ -99,6 +99,9 @@ PENDING_OP6: dict[str, str] = {}
 PENDING_TOOL: dict[str, str] = {
     # PJP-6a (task 1483) built the one plan engine and its read route.
     "GET /projects/plan/analysis": "PJP-6b",
+    # PKG-14a (task 1252) built the dark door of the extension values.
+    "GET /projects/tasks/{task_id}/package-fields": "PKG-14b",
+    "PUT /projects/tasks/{task_id}/package-fields/{install_id}/{field_key}": "PKG-14b",
 }
 
 #: The slices that may own a pending route. OP-6e (agent runs) owns no route.
@@ -135,10 +138,12 @@ def test_the_counts_the_spec_states() -> None:
     """39 routes were class X on 2026-10-23. OP-6a took 3, OP-6c took 3, OP-6b
     took 2 and OP-6d took 4. The 27 that remain all stay. OP-6e moved the
     archive approval INTO class X (D-OP-13), so 28 stay. WS-64 OP-11 added
-    the Overview of My tasks, a second door to a read the chat has: 29."""
+    the Overview of My tasks, a second door to a read the chat has: 29.
+    PJP-6a and PKG-14a add three routes that wait for a chat tool: 32."""
     assert len(STAYS_X) == 29
     assert len(PENDING_OP6) == 0
-    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 30
+    assert len(PENDING_TOOL) == 3
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 32
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:

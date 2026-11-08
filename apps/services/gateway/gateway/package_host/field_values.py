@@ -10,9 +10,19 @@ with no database and the fence of the one writer.
 **The one writer.** This module holds the only INSERT, UPDATE and DELETE of
 ``package_field_value`` in ``apps/`` and ``packages/``. The FK cascade of a
 removal (``store.remove_install``) deletes values too, and that stays legal.
-No route calls this module yet. PKG-14 adds the host door, and the door
+The host door of PKG-14a (``host_door.py``) is its one caller. The door
 checks that the host record exists and that the viewer may see it. This
 module checks neither.
+
+**The viewer filter (PKG-14a).** :func:`get_values` and :func:`set_value`
+take a required ``install_ids``: the installs that the viewer sees, from
+``host_door.visible_fields``. An empty set reads nothing and runs no
+statement. A write to an install outside the set raises
+:class:`~gateway.package_host.store.InstallNotFound` before the first
+statement, so a hidden install and a missing install look the same. Each
+read of an install also needs :data:`LIVE_INSTALL` and :data:`LIVE_APP`, the
+predicates of ``resolve.INSTALLS_SQL``. An install past its ``ends_at`` or an
+install of an archived app is then not found, also under the row lock.
 
 **The declaration.** A field is a claim of the install at the point
 ``fields``, with the key ``<record kind>:<field key>`` (§4). Its payload is
@@ -58,7 +68,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,13 +107,27 @@ REFUSED_SPEC_KEYS: tuple[str, ...] = ("required", "hot", "to")
 
 _FIELD_KEY_RE = re.compile(NAME_PATTERN, re.ASCII)
 
+#: An install that has not ended. The text of ``resolve.INSTALLS_SQL``, with
+#: the alias ``i`` in place of ``package_install`` (§5.2 step 2).
+LIVE_INSTALL = "(i.ends_at IS NULL OR i.ends_at > now())"
+#: The app of the install is a Studio package that is not archived. The text
+#: of ``resolve.INSTALLS_SQL``. ``test_package_field_values.py`` holds both.
+LIVE_APP = "a.format = 'manifest' AND a.status <> 'archived'"
+
+_JOIN_APP = (
+    " JOIN apps AS a ON a.organization_id = i.organization_id AND a.id = i.app_id"
+)
+
 #: The install row with the key share lock, and its declaration of the field.
+#: An install that has ended, or whose app is archived, gives no row.
 _INSTALL_SQL = (
     "SELECT i.state, CAST(c.payload AS text) FROM package_install AS i"
+    + _JOIN_APP +
     " LEFT JOIN package_contribution AS c"
     " ON c.organization_id = i.organization_id AND c.install_id = i.id"
     f" AND c.point = '{FIELDS_POINT}' AND c.key = :claim"
     f" WHERE i.organization_id = {_BOUND_ORG} AND i.id = CAST(:install AS uuid)"
+    f" AND {LIVE_INSTALL} AND {LIVE_APP}"
     " FOR KEY SHARE OF i"
 )
 
@@ -129,20 +153,25 @@ _DELETE_RECORD_SQL = (
     "AND record_kind = :kind AND record_id = CAST(:record AS uuid)"
 )
 
-#: The values of one host record: active installs only, and only a value
-#: whose stored type is the type of the current declaration.
+#: The values of one host record: the installs of the set only, each active,
+#: not ended and of an app that is not archived, and only a value whose
+#: stored type is the type of the current declaration.
 _GET_SQL = (
     "SELECT CAST(v.install_id AS text), CAST(i.app_id AS text), v.field_key,"
     " v.field_type, CAST(v.value AS text)"
     " FROM package_field_value AS v"
     " JOIN package_install AS i"
     " ON i.organization_id = v.organization_id AND i.id = v.install_id"
+    + _JOIN_APP +
     " JOIN package_contribution AS c"
     " ON c.organization_id = v.organization_id AND c.install_id = v.install_id"
     f" AND c.point = '{FIELDS_POINT}' AND c.key = v.record_kind || ':' || v.field_key"
     f" WHERE v.organization_id = {_BOUND_ORG}"
+    " AND v.install_id = ANY(CAST(:ids AS uuid[]))"
     " AND v.record_kind = :kind AND v.record_id = CAST(:record AS uuid)"
-    " AND i.state = 'active' AND c.payload ->> 'type' = v.field_type"
+    " AND i.state = 'active'"
+    f" AND {LIVE_INSTALL} AND {LIVE_APP}"
+    " AND c.payload ->> 'type' = v.field_type"
     " ORDER BY v.field_key, v.install_id"
 )
 
@@ -192,6 +221,31 @@ def _field_key(field_key: object) -> str:
             "bad_field_key",
             "A field key is lower-case letters, digits and _, a letter first, at most 48.")
     return field_key
+
+
+def check_field_key(field_key: object) -> str:
+    """The field key, or :class:`InstallError` ``bad_field_key`` (422)."""
+    return _field_key(field_key)
+
+
+def install_id_of(install_id: object) -> str:
+    """The install id in canonical form, or ``bad_install_id`` (422)."""
+    return _install_id(install_id)
+
+
+def install_set(install_ids: object) -> frozenset[str]:
+    """The ids of *install_ids* in canonical form. A text value is refused,
+    because a text is a collection of its characters. An id that is not a
+    UUID names no install, so it is left out."""
+    if isinstance(install_ids, (str, bytes)) or not isinstance(install_ids, Collection):
+        raise TypeError("install_ids must be a collection of install ids, not one text")
+    out: set[str] = set()
+    for one in install_ids:
+        try:
+            out.add(str(uuid.UUID(str(one))))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return frozenset(out)
 
 
 def claim_key(record_kind: str, field_key: str) -> str:
@@ -261,18 +315,24 @@ async def set_value(
     record_id: str,
     field_key: str,
     value: Any,
+    install_ids: Collection[str],
 ) -> Any:
     """Write the value of one extension field on one host record.
 
     *db* is a session that the caller opened with ``tenant_session(org)``.
-    The install must be ``active`` and must declare the field. *value* None
-    deletes the row. Answers the value as the store keeps it, or None.
-    Each refusal writes nothing. The caller's transaction commits the row.
+    *install_ids* are the installs that the viewer sees. An install outside
+    them raises :class:`InstallNotFound` before the first statement. The
+    install must be ``active``, not ended, of an app that is not archived,
+    and must declare the field. *value* None deletes the row. Answers the
+    value as the store keeps it, or None. Each refusal writes nothing. The
+    caller's transaction commits the row.
     """
     kind = _record_kind(record_kind)
     record = _record_id(record_id)
     key = _field_key(field_key)
     install = _install_id(install_id)
+    if install not in install_set(install_ids):
+        raise InstallNotFound("install_not_found", "No install has this id.")
     await _bound(db, "a field value", read_committed=True)
     row = (await db.execute(text(_INSTALL_SQL), {
         "install": install, "claim": claim_key(kind, key)})).first()
@@ -293,17 +353,25 @@ async def set_value(
     return checked
 
 
-async def get_values(db: Any, *, record_kind: str, record_id: str) -> list[FieldValue]:
-    """The extension values of one host record, of active installs only.
+async def get_values(
+    db: Any, *, record_kind: str, record_id: str, install_ids: Collection[str],
+) -> list[FieldValue]:
+    """The extension values of one host record, of the installs of
+    *install_ids* only, and of active installs only.
 
-    A value whose stored type differs from the current declaration is left
-    out. The store does not check that the viewer may see the record or the
-    install. The host door of PKG-14 owns that check.
+    *install_ids* are the installs that the viewer sees. An empty set answers
+    ``[]`` and runs no statement. A value whose stored type differs from the
+    current declaration is left out. The store does not check that the viewer
+    may see the record. The host door of PKG-14a owns that check.
     """
     kind = _record_kind(record_kind)
     record = _record_id(record_id)
+    ids = install_set(install_ids)
+    if not ids:
+        return []
     await _bound(db, "a read of field values")
-    rows = (await db.execute(text(_GET_SQL), {"kind": kind, "record": record})).all()
+    rows = (await db.execute(text(_GET_SQL), {
+        "kind": kind, "record": record, "ids": sorted(ids)})).all()
     return [FieldValue(install_id=str(r[0]), app_id=str(r[1]), field_key=str(r[2]),
                        field_type=str(r[3]), value=json.loads(r[4])) for r in rows]
 
@@ -311,7 +379,7 @@ async def get_values(db: Any, *, record_kind: str, record_id: str) -> list[Field
 async def delete_values(db: Any, *, record_kind: str, record_id: str) -> int:
     """Delete each extension value of one host record, of each install.
 
-    The delete paths of the host records call this (PKG-14). Answers the
+    The delete paths of the host records call this (PKG-14a-3). Answers the
     number of rows that it deleted.
     """
     kind = _record_kind(record_kind)

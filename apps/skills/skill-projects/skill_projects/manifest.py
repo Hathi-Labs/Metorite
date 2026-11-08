@@ -433,6 +433,23 @@ MANIFEST: tuple[Route, ...] = (
         "X",
         "A read with no chat tool yet. PJP-6b adds analyze_plan and moves it to class A.",
     ),
+    # WS-PKG PKG-14a: the extension values of a package on a task
+    # (package_fields.py, package_host.md §8.3). Dark behind PACKAGE_HOST_ORGS.
+    # PKG-14b adds the panel and the chat tool, and moves both rows.
+    Route(
+        "GET",
+        "/projects/tasks/{task_id}/package-fields",
+        "",
+        "X",
+        "A dark read with no chat tool yet. PKG-14b adds the tool with the task panel.",
+    ),
+    Route(
+        "PUT",
+        "/projects/tasks/{task_id}/package-fields/{install_id}/{field_key}",
+        "",
+        "X",
+        "A dark write with no chat tool yet. PKG-14b adds the tool with the task panel.",
+    ),
     Route("GET", "/projects/reports", "report_list", "A"),
     # WS-27bn R2 - the template gallery. It must sit ABOVE the
     # {report_id} row, because route_for takes the first match. R-final:

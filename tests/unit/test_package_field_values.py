@@ -23,6 +23,10 @@ g. ``HOST_RECORD_KINDS``, the field key pattern and the types agree with the
    CHECKs of the migration. The suite finds the migration by its content,
    never by its number (R1).
 h. The R8 twin is in the ``--must-run`` lists of pr-check and deploy.
+i. The viewer filter (PKG-14a). ``get_values`` of an empty set runs no
+   statement. ``set_value`` of an install outside the set raises
+   ``InstallNotFound`` before the first statement. Each read of an install
+   joins ``apps`` and holds the predicates of ``resolve.INSTALLS_SQL``.
 """
 
 from __future__ import annotations
@@ -103,7 +107,8 @@ def _run(coro: Any) -> Any:
 
 def _args(**kw: Any) -> dict[str, Any]:
     return {"install_id": INSTALL, "record_kind": "crm.deal", "record_id": RECORD,
-            "field_key": "warranty_end", "value": "2027-01-31", **kw}
+            "field_key": "warranty_end", "value": "2027-01-31",
+            "install_ids": [INSTALL], **kw}
 
 
 def _set(db: _FakeDb, **kw: Any) -> Any:
@@ -132,7 +137,8 @@ def test_a_bad_argument_is_refused_before_the_database(kw: dict[str, Any], code:
     assert db.calls == [], "a refusal of an argument must run no statement"
 
 
-@pytest.mark.parametrize("fn", [fv.get_values, fv.delete_values])
+@pytest.mark.parametrize("fn", [
+    lambda db, **kw: fv.get_values(db, install_ids=[INSTALL], **kw), fv.delete_values])
 def test_the_read_and_the_delete_refuse_a_bad_kind_before_the_database(fn: Any) -> None:
     db = _FakeDb()
     with pytest.raises(InstallError) as exc:
@@ -279,7 +285,8 @@ def test_the_order_of_the_statements() -> None:
 def test_an_unbound_session_raises_and_writes_nothing() -> None:
     for call in (
         lambda db: fv.set_value(db, **_args()),
-        lambda db: fv.get_values(db, record_kind="task", record_id=RECORD),
+        lambda db: fv.get_values(db, record_kind="task", record_id=RECORD,
+                                 install_ids=[INSTALL]),
         lambda db: fv.delete_values(db, record_kind="task", record_id=RECORD),
     ):
         db = _FakeDb(org=None, payload={"type": "date"})
@@ -323,7 +330,10 @@ def test_get_values_decodes_each_row() -> None:
                                       '{"minor": 5, "currency": "INR"}')])
             return await super().execute(stmt, params)
 
-    got = _run(fv.get_values(_Db(), record_kind="task", record_id=RECORD))
+    db = _Db()
+    got = _run(fv.get_values(db, record_kind="task", record_id=RECORD,
+                             install_ids=[INSTALL.upper()]))
+    assert db.calls[-1][1]["ids"] == [INSTALL]
     assert got == [fv.FieldValue(install_id=INSTALL, app_id="app-1", field_key="k",
                                  field_type="money", value={"minor": 5, "currency": "INR"})]
 
@@ -423,3 +433,62 @@ def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
     """Without the entry, the R8 twin skips in CI with no database and the
     job stays green."""
     assert "tests/unit/test_package_field_values_r8.py" in _must_run(workflow)
+
+
+# ── i. The viewer filter (PKG-14a) ─────────────────────────────────────────
+
+
+def test_a_read_of_an_empty_set_runs_no_statement() -> None:
+    for ids in ([], set(), frozenset(), ("not-a-uuid",)):
+        db = _FakeDb()
+        assert _run(fv.get_values(db, record_kind="task", record_id=RECORD,
+                                  install_ids=ids)) == []
+        assert db.calls == [], ids
+
+
+def test_a_write_to_an_install_outside_the_set_is_not_found_before_the_database() -> None:
+    other = str(uuid.uuid4())
+    for ids in ([], [other], {other, str(uuid.uuid4())}):
+        for value in ("2027-01-31", None):
+            db = _FakeDb(payload={"type": "date"})
+            with pytest.raises(InstallNotFound) as exc:
+                _set(db, install_ids=ids, value=value)
+            assert (exc.value.code, exc.value.status) == ("install_not_found", 404)
+            assert db.calls == [], (ids, value)
+
+
+def test_the_set_is_canonical_and_a_text_is_refused() -> None:
+    db = _FakeDb(payload={"type": "date"})
+    assert _set(db, install_ids=[INSTALL.upper()]) == "2027-01-31"
+    for bad in (INSTALL, INSTALL.encode(), None, 7):
+        db = _FakeDb(payload={"type": "date"})
+        with pytest.raises(TypeError):
+            _set(db, install_ids=bad)
+        assert db.calls == []
+
+
+def test_the_set_is_a_required_keyword() -> None:
+    import inspect
+
+    for fn in (fv.get_values, fv.set_value):
+        param = inspect.signature(fn).parameters["install_ids"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+        assert param.default is inspect.Parameter.empty, fn.__name__
+
+
+def test_each_read_of_an_install_holds_the_predicates_of_the_resolve() -> None:
+    """Known gap 2 of §8.3: an install past ``ends_at`` and an install of an
+    archived app are not live. The text is the text of the resolve."""
+    from gateway.package_host.resolve import INSTALLS_SQL
+
+    assert fv.LIVE_INSTALL.replace("i.", "package_install.") in INSTALLS_SQL
+    assert fv.LIVE_APP in INSTALLS_SQL
+    for sql in (fv._INSTALL_SQL, fv._GET_SQL):
+        assert "JOIN apps AS a ON a.organization_id = i.organization_id AND a.id = i.app_id" in sql
+        assert f"AND {fv.LIVE_INSTALL} AND {fv.LIVE_APP}" in sql
+    # The predicates sit in WHERE, so the locked read finds no row for a dead
+    # install, and the lock stays on the install row only.
+    where = fv._INSTALL_SQL.split(" WHERE ", 1)[1]
+    assert fv.LIVE_INSTALL in where and fv.LIVE_APP in where
+    assert fv._INSTALL_SQL.endswith("FOR KEY SHARE OF i")
+    assert "v.install_id = ANY(CAST(:ids AS uuid[]))" in fv._GET_SQL
