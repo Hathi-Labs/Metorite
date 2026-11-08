@@ -2711,7 +2711,8 @@ async def _save_draft(pid: str, doc: dict[str, Any], based_on: str) -> dict[str,
             return _refusal(_PKG_MOVED.format(act="saved"), decision=decision)
     # The store compares the hash that this save read, under its row lock. A
     # save that lands after the read gives 409, and nothing is lost.
-    reply = await _send("PUT", f"{PACKAGES_PATH}/{pid}/draft?based_on={digest}", doc, "save",
+    # The path starts with a literal, so the chat-parity reader can read the route (STU-G3c).
+    reply = await _send("PUT", f"/studio/packages/{pid}/draft?based_on={digest}", doc, "save",
                         _PKG_MAYBE_SAVED)
     if reply.status == 409 and _code(reply) == _DRAFT_CHANGED:
         return _refusal(_PKG_RACED_SAVE, status=409, code=_DRAFT_CHANGED, package_id=pid)
@@ -3123,11 +3124,15 @@ async def studio_record_list(
 # * The ask. A call with no request_id sends the body with the ask marker
 #   ``ask=1``. The door opens ONE request that waits for the member, and it
 #   writes nothing. The result says that the change is NOT saved, and where
-#   the member answers: Integrations, AI agents, Waiting for you, until
-#   B2c-2c draws the card in the chat.
+#   the member answers: Integrations, AI agents, Waiting for you. In the web
+#   chat, B2c-2c also draws the card of the request under the result
+#   (``components/studio/StudioToolCards.tsx``), and its answer comes back
+#   as the member's next message.
 # * The resend. A call with the request_id names it in the query and sends NO
 #   body. The door reads no byte of a resend body, and it runs the STORED call
-#   of an approved request once.
+#   of an approved request once. The request_id alone is enough (fix round 1
+#   of B2c-2c): the tool reads the request as the member, and takes the
+#   package and the action of the stored call when they match this tool.
 #
 # ⚠️ Only a 200 of a resend is a saved change. No other answer gives ``ok``
 # or ``saved`` True. No tool here names the route that decides a request, so
@@ -3143,17 +3148,25 @@ _ASK_MARKER = ("ask", "1")
 #: The verbs of the write tools, in the order of the tools.
 WRITE_VERBS = ("create", "update", "delete")
 
-#: Where the member answers a request until B2c-2c draws the card in the chat.
+#: Where the member answers a request in every channel. The web chat also
+#: draws its card (B2c-2c), and a channel with no card has only this list.
 APPROVE_WHERE = "Integrations, AI agents, Waiting for you"
 
-#: The note of an ask: the change waits, and how the model goes on.
+#: Where the member answers in the web chat: the card of B2c-2c, under the reply.
+APPROVE_IN_CHAT = ("In the web chat, the approval card shows under your reply, so ask the "
+                   "member to answer it there.")
+
+#: The note of an ask: the change waits, and how the model goes on (fix round 1 of
+#: B2c-2c: the card of the chat first, and the resend with only the request_id).
 _ASKED_NOTE = (
-    f"This change is not saved. It waits for the member to approve it in {APPROVE_WHERE}. "
-    "Tell the member so. When the member says that they approved it, call this tool again "
-    "with this request_id. Until a call says saved, never say that the change is saved.")
+    f"This change is not saved. It waits for the member's approval. {APPROVE_IN_CHAT} "
+    f"In a channel with no card, the member answers in {APPROVE_WHERE}. When the member "
+    "says that they answered, call the same tool again with only the request_id. Until a "
+    "call says saved, never say that the change is saved.")
 _ASKED_APPROVED_NOTE = (
-    "The member approved this change, and it is not saved yet. Call this tool again with "
-    "this request_id to save it. Until a call says saved, never say that the change is saved.")
+    "The member approved this change, and it is not saved yet. Call the same tool again with "
+    "only the request_id to save it. Until a call says saved, never say that the change is "
+    "saved.")
 _SAVED_NOTE = {
     "create": "The approved record is saved. record_id names the new record.",
     "update": "The approved change is saved.",
@@ -3181,8 +3194,18 @@ _MISSING_FIELD = ("A new {object} record needs a value for {keys}, so nothing wa
 #: A resend that carries values (fix round 1, P3). The resend runs the stored call.
 _RESEND_HAS_VALUES = (
     "A call with a request_id sends no values: the approved request saves the approved values. "
-    "Nothing was sent. Call again with only the package id, the object name and the request_id. "
-    "To change the values, call with no request_id, and the member approves the new change.")
+    "Nothing was sent. Call again with only the request_id. To change the values, call with "
+    "no request_id, and the member approves the new change.")
+#: The refusals of a resend by the request_id alone (fix round 1 of B2c-2c). The
+#: tool reads the request as the member, and sends nothing when it does not match.
+_REQUEST_UNREAD = ("The request could not be read, so nothing was sent. Call again with "
+                   "the same request_id in a moment.")
+_NOT_A_RECORD_REQUEST = ("This request_id is not a change of a Studio record, so nothing was "
+                         "sent. Use the request_id that this tool gave.")
+_OTHER_VERB = ("This request_id names a change of kind {found}, and this tool makes a change of "
+               "kind {verb}. Nothing was sent. Call studio_record_{found} with only the request_id.")
+_NOT_THIS_CHANGE = ("This request_id is for another package or object than the values of this "
+                    "call. Nothing was sent. Call again with only the request_id.")
 #: The sentences of a network fault. A repeat of an ask gives the same open
 #: request, and a repeat of a resend of a saved change answers request_spent.
 _ASK_MAYBE = ("The ask may have reached the app. Nothing is saved until the member approves. "
@@ -3217,8 +3240,9 @@ WRITE_REFUSALS: dict[str, str] = {
                          "member that nothing changed. Ask again only when the member asks "
                          "for the change now."),
     "request_awaiting": ("The member has not approved this change yet, so nothing was saved. "
-                         f"The member approves it in {APPROVE_WHERE}. Call again with this "
-                         "request_id after the member says so."),
+                         "In the web chat, the member answers on the approval card. Else the "
+                         f"member answers in {APPROVE_WHERE}. After the member answers, call "
+                         "again with only the request_id."),
     "request_spent": ("This approval ran once already, so an earlier call saved the change. "
                       "Nothing more was written. Read the records to check it. For a new "
                       "change, call this tool with no request_id."),
@@ -3398,17 +3422,79 @@ def _fields_problem(package: _Reply, name: str, verb: str,
     return None
 
 
+#: The door path of a stored Studio call: the package and the action id. A
+#: plain string, as each pattern of this module is (``_IDENT``, ``_USES``).
+_RESEND_PATH = r"^/studio/apps/([0-9a-f-]{36})/actions/([a-z][a-z0-9_]{0,47})$"
+#: The ``uses`` of an object write: the object and the verb. Not
+#: :data:`_OBJECT_USES`, which also takes a read.
+_WRITE_USES = r"^object:([a-z][a-z0-9_]{0,47})\.(create|update|delete)$"
+
+
+def _resend_target(reply: _Reply, verb: str, rid: str, pid: str | None,
+                   name: str | None) -> tuple[str, str] | str:
+    """The package id and the action id of a resend, from the member's own read of
+    the request (fix round 1 of B2c-2c), or the sentence of a refusal.
+
+    The request must be a Studio request whose stored call is a door path of its
+    own package, and whose ``uses`` names the verb of THIS tool. A package id or
+    an object name that the call gives must match it. The door still checks the
+    binding, the member and the digest of the stored call, so a wrong id fails
+    closed there too."""
+    if reply.status == 404:
+        return WRITE_REFUSALS["request_not_found"]
+    data = reply.data if isinstance(reply.data, dict) else None
+    if not reply.ok or data is None:
+        return _REQUEST_UNREAD
+    subject = data.get("subject")
+    call = data.get("call") if isinstance(data.get("call"), dict) else {}
+    if (data.get("source") != "studio" or data.get("request_id") != rid
+            or not isinstance(subject, str) or _skill_path(subject) != subject):
+        return _NOT_A_RECORD_REQUEST
+    path = call.get("path")
+    door = re.match(_RESEND_PATH, path) if isinstance(path, str) else None
+    if door is None or door.group(1) != subject or call.get("method") != "POST":
+        return _NOT_A_RECORD_REQUEST
+    query = call.get("query") if isinstance(call.get("query"), list) else []
+    uses = [p[1] for p in query if isinstance(p, list) and len(p) == 2 and p[0] == "uses"]
+    found = re.match(_WRITE_USES, uses[0]) if len(uses) == 1 and isinstance(uses[0], str) else None
+    if found is None:
+        return _NOT_A_RECORD_REQUEST
+    if found.group(2) != verb:
+        return _OTHER_VERB.format(found=found.group(2), verb=verb)
+    if (pid is not None and pid != subject) or (name is not None and name != found.group(1)):
+        return _NOT_THIS_CHANGE
+    return subject, door.group(2)
+
+
+async def _resend_by_request(verb: str, rid: str, package_id: Any,
+                             object: Any) -> dict[str, Any]:
+    """The resend of a call that names the request_id and not both the package id
+    and the object name. It reads the request as the member, then sends the
+    action of the stored call with ``?request_id=`` and no body, as the resend
+    with all the arguments does."""
+    pid = _skill_path(package_id) if str(package_id or "").strip() else None
+    if str(package_id or "").strip() and pid is None:
+        return _not_saved(_NO_PACKAGE_ID)
+    name = _ident(str(object or "").strip()) if str(object or "").strip() else None
+    if str(object or "").strip() and name is None:
+        return _not_saved(_NO_OBJECT_NAME)
+    try:
+        reply = await _send("GET", f"/agent-access/requests/{rid}", None, miss=_REQUEST_UNREAD)
+        target = _resend_target(reply, verb, rid, pid, name)
+        if isinstance(target, str):
+            return _not_saved(target, reply, "request_not_found" if reply.status == 404 else "")
+        subject, action = target
+        sent = await _send("POST", f"/studio/apps/{subject}/actions/{action}?request_id={rid}",
+                           None, miss=_RESEND_MAYBE)
+    except _Refused as exc:
+        return _not_saved(str(exc))
+    return _resent(sent, verb, rid)
+
+
 async def _record_write(verb: str, package_id: Any, object: Any, request_id: Any,
                         record_id: Any = "", data: Any = None) -> dict[str, Any]:
     """The ask or the resend of one write of *verb*. See the section above."""
-    pid = _skill_path(package_id) if str(package_id or "").strip() else None
-    if pid is None:
-        return _not_saved(_NO_PACKAGE_ID)
-    name = _ident(str(object or "").strip())
-    if name is None:
-        return _not_saved(_NO_OBJECT_NAME)
     rid: str | None = None
-    body: dict[str, Any] | str = {}
     if str(request_id or "").strip():
         rid = _skill_path(request_id)
         if rid is None:
@@ -3416,7 +3502,18 @@ async def _record_write(verb: str, package_id: Any, object: Any, request_id: Any
         carried = _resend_problem(record_id, data)
         if carried is not None:
             return _not_saved(carried)
-    else:
+        # Fix round 1 of B2c-2c: the next turn may not hold the package id and
+        # the object name, so the request_id alone is enough.
+        if not (str(package_id or "").strip() and str(object or "").strip()):
+            return await _resend_by_request(verb, rid, package_id, object)
+    pid = _skill_path(package_id) if str(package_id or "").strip() else None
+    if pid is None:
+        return _not_saved(_NO_PACKAGE_ID)
+    name = _ident(str(object or "").strip())
+    if name is None:
+        return _not_saved(_NO_OBJECT_NAME)
+    body: dict[str, Any] | str = {}
+    if rid is None:
         body = _write_body(verb, record_id, data)
         if isinstance(body, str):
             return _not_saved(body)
@@ -3446,48 +3543,49 @@ async def _record_write(verb: str, package_id: Any, object: Any, request_id: Any
 
 @annotate(read_only=False, idempotent=False, open_world=False)
 async def studio_record_create(
-    package_id: str, object: str, data: dict[str, Any] | None = None, request_id: str = "",
+    package_id: str = "", object: str = "", data: dict[str, Any] | None = None,
+    request_id: str = "",
 ) -> dict[str, Any]:
     """Add a record to an object of your Studio package, after the member approves it.
 
     Give the package id and the object name from studio_package_get, and data:
     a JSON object of field keys and values. The first call saves nothing. It
-    asks the member and gives a request_id. The member approves it in
-    Integrations, AI agents, Waiting for you. After the member says so, call
-    again with the package id, the object name and the request_id. That call
-    saves the approved record once. Only a result with saved true is saved.
+    asks the member and gives a request_id. The member answers on the approval
+    card in the web chat, or in Integrations, AI agents, Waiting for you. After
+    the member says so, call again with only the request_id. That call saves
+    the approved record once. Only a result with saved true is saved.
     """
     return await _record_write("create", package_id, object, request_id, data=data)
 
 
 @annotate(read_only=False, idempotent=False, open_world=False)
 async def studio_record_update(
-    package_id: str, object: str, record_id: str = "", data: dict[str, Any] | None = None,
-    request_id: str = "",
+    package_id: str = "", object: str = "", record_id: str = "",
+    data: dict[str, Any] | None = None, request_id: str = "",
 ) -> dict[str, Any]:
     """Change a record of an object of your Studio package, after the member approves it.
 
     Give the package id, the object name, the record_id from studio_record_list,
     and data: the field keys and the new values. The first call saves nothing.
-    It asks the member and gives a request_id. The member approves it in
-    Integrations, AI agents, Waiting for you. After the member says so, call
-    again with the package id, the object name and the request_id. That call
-    saves the approved change once. Only a result with saved true is saved.
+    It asks the member and gives a request_id. The member answers on the
+    approval card in the web chat, or in Integrations, AI agents, Waiting for
+    you. After the member says so, call again with only the request_id. That
+    call saves the approved change once. Only a result with saved true is saved.
     """
     return await _record_write("update", package_id, object, request_id, record_id, data)
 
 
 @annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def studio_record_delete(
-    package_id: str, object: str, record_id: str = "", request_id: str = "",
+    package_id: str = "", object: str = "", record_id: str = "", request_id: str = "",
 ) -> dict[str, Any]:
     """Delete a record of an object of your Studio package, after the member approves it.
 
     Give the package id, the object name and the record_id from
     studio_record_list. The first call deletes nothing. It asks the member and
-    gives a request_id. The member approves it in Integrations, AI agents,
-    Waiting for you. After the member says so, call again with the package
-    id, the object name and the request_id. That call deletes the record once.
+    gives a request_id. The member answers on the approval card in the web
+    chat, or in Integrations, AI agents, Waiting for you. After the member says
+    so, call again with only the request_id. That call deletes the record once.
     Only a result with saved true deleted it.
     """
     return await _record_write("delete", package_id, object, request_id, record_id)
