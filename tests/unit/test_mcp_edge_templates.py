@@ -90,7 +90,7 @@ class TestTheRecord:
         """Each copy of a gateway constant has a pin test (agent edge rule)."""
         from gateway.routes.projects import templates as gateway_templates
 
-        assert tools.TEMPLATE_COUNT_KEYS == tuple(gateway_templates.Counts.model_fields)
+        assert tuple(gateway_templates.Counts.model_fields) == tools.TEMPLATE_COUNT_KEYS
 
 
 class TestTheList:

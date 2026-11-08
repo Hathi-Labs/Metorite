@@ -170,6 +170,20 @@ MANIFEST: tuple[Route, ...] = (
     # The asker withdraws an ask on its card (AP-9). A member does it by a
     # click, so D-OP-9 gives it a chat tool: AP-10 builds `withdraw_ask`.
     Route("POST", "/projects/asks/{ask_id}/withdraw", "withdraw_ask", "C"),
+    # ── cycles.py — the cycle store (WS-39 SP-1, D195) ───────────────────
+    # Dark behind PROJECTS_SPRINTS_ORGS. SP-5 (Metorite task 964) builds each
+    # tool. A delete of a planned cycle, a start and a close are hard to undo,
+    # so they are class C. A plan and an edit change rows that the app can
+    # change back, so they are class B.
+    Route("GET", "/projects/nodes/{project_id}/cycles", "list_cycles", "A"),
+    Route("POST", "/projects/nodes/{project_id}/cycles", "create_cycle", "B"),
+    Route("GET", "/projects/cycles/{cycle_id}", "cycle_detail", "A"),
+    Route("PATCH", "/projects/cycles/{cycle_id}", "update_cycle", "B"),
+    Route("DELETE", "/projects/cycles/{cycle_id}", "delete_cycle", "C"),
+    Route("POST", "/projects/cycles/{cycle_id}/tasks", "plan_cycle", "B"),
+    Route("DELETE", "/projects/cycles/{cycle_id}/tasks/{task_id}", "plan_cycle", "B"),
+    Route("POST", "/projects/cycles/{cycle_id}/start", "start_cycle", "C"),
+    Route("POST", "/projects/cycles/{cycle_id}/close", "close_cycle", "C"),
     # ── tasks.py ─────────────────────────────────────────────────────────
     Route("GET", "/projects/tasks", "list_tasks", "A"),
     # MCP-G19a (task 1957): the count read. The chat tool is task 2223.
@@ -586,6 +600,15 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-14a. A person releases a run from the card. The chat gets the
     # tool with the other run tools in EA-12e.
     "release_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # WS-39 SP-1 built the cycle routes. SP-5 builds their tools.
+    "list_cycles": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "cycle_detail": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "create_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "update_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "delete_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "plan_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "start_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
+    "close_cycle": "Metorite task 964, SP-5 cycles in the chat and over the MCP",
     # WS-AP AP-8a built the person ask route. AP-10 builds its chat tool.
     "ask_person": "WS-AP AP-10, the chat tools of Waiting",
     "withdraw_ask": "WS-AP AP-10, the chat tools of Waiting",
@@ -1605,11 +1628,26 @@ FIELD_GAPS: dict[str, str] = {
     # Its rows are in SENDS.
     # WS-AP AP-8a: the person ask. The chat gets `ask_person` in AP-10.
     "G25": "AP-10",
+    # WS-39 SP-1: the cycle routes. The chat and the MCP get them in SP-5.
+    "G26": "SP-5",
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
+    # G26 (WS-39 SP-1): the cycle routes. SP-5 (Metorite task 964) sends each
+    # field.
+    ("POST", "/projects/nodes/{project_id}/cycles"): {
+        "name": "G26", "goal": "G26", "starts_on": "G26", "ends_on": "G26",
+        "cooldown_days": "G26", "credit_budget": "G26",
+    },
+    ("PATCH", "/projects/cycles/{cycle_id}"): {
+        "name": "G26", "goal": "G26", "starts_on": "G26", "ends_on": "G26",
+        "cooldown_days": "G26", "credit_budget": "G26", "If-Match": "G26",
+    },
+    ("POST", "/projects/cycles/{cycle_id}/tasks"): {"task_id": "G26"},
+    ("POST", "/projects/cycles/{cycle_id}/start"): {"goal": "G26", "capacity": "G26"},
+    ("POST", "/projects/cycles/{cycle_id}/close"): {"choices": "G26"},
     # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
     ("POST", "/projects/tasks/{task_id}/asks"): {
         "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",

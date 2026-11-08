@@ -237,6 +237,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # org. A rule reaches each agent and each check of the project, so a
     # tenant must not open it for another org.
     "PROJECT_RULES_ORGS",
+    # WS-39 SP-1: PROJECTS_SPRINTS_ORGS opens the cycle store of Projects for
+    # an org. A tenant must not open it for another org, so only the owner
+    # writes it.
+    "PROJECTS_SPRINTS_ORGS",
     # WS-39 TPL-1a: PROJECTS_TEMPLATES_ORGS opens the templates of Projects
     # for an org. A tenant must not open it for another org, so only the
     # owner writes it.

@@ -93,8 +93,9 @@ from gateway.routes.projects.core import (
     validate_icon_slot,
     validate_lifecycle_settings,
 )
-from gateway.routes.projects.notifications import project_audience
+from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.due_day import overdue_sql
+from gateway.routes.projects.notifications import project_audience
 from gateway.routes.projects.tasks import _narrow_agent_body
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -1522,6 +1523,9 @@ async def move_node(
             project_id=project_id,
             owner_id=await status_owner_id(db, project_id),
         )
+        # WS-39 SP-1. After the re-stamp above, which locks each task of the
+        # subtree: a task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, node_id=project_id, by=actor(user))
 
         await record_activity(
             db, activity_type="system", created_by=actor(user),
