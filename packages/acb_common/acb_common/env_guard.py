@@ -287,6 +287,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # daily ceiling. Each moves what an org pays, so only the operator writes
     # them (my_day_feed.md §10.9 items 5 and 6).
     "MY_DAY_DECIDE_ORGS", "MY_DAY_DECIDE_ORG_DAILY_CALLS",
+    # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
+    # moves what an org pays, so only the operator writes it.
+    "PROJECTS_DECIDE_ORGS",
     # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
     # Only its tests set it. A tenant that set it would break each verb.
     "DATA_ENGINE_FAULT",
