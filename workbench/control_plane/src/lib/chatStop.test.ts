@@ -135,7 +135,7 @@ describe("chat-stop-ui", () => {
 
   it("the composer shows Stopping, the reason and Retry; Esc uses the same handler", () => {
     const chat = read("../components/AgentChat.tsx");
-    expect(chat).toContain("loading={primary === \"stop\" && stopping}");
+    expect(chat).toContain("loading={primary === \"stop\" ? stopping : uploadingFiles}");
     expect(chat).toContain("data-chat-stop-error");
     expect(chat).toMatch(/onClick=\{handleStop\}[^>]*>\s*Retry/);
     expect(chat).toMatch(/e\.key === "Escape"[\s\S]{0,200}handleStop\(\)/);

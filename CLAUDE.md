@@ -219,7 +219,7 @@ delivery makes a silent failed deploy more likely, not less.
 > the local stack up (`scripts/dev_up.sh`) → **preview** it to the owner and
 > wait for **approval** → **verify** independently and **review** by risk tier,
 > beside the **local staging gate** (`scripts/stage_local.sh`). Then **merge
-> it**. Production takes it at the 21:30 UTC release.
+> it**. Production takes it at the next release slot (05:30, 13:30 or 21:30 UTC).
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
 never the implementer. A small slice (LOW, or STANDARD in build) skips the
@@ -236,12 +236,14 @@ The owner retired staging (D144), and this PC does its job now.
    merge with today's `main`. It runs the full suite and the production build.
    It rehearses the migrations on production's reduced copy, and runs smoke.
    A pass posts `local-staging` on the head commit, and `premerge.sh` needs it.
-3. **Production moves once a day, at 21:30 UTC.** Do not dispatch `deploy.yml`
-   after a merge. Dispatch only for a hotfix the owner asks for, or when
-   production is down.
-   The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
+3. **Production moves three times a day, at 05:30, 13:30 and 21:30 UTC (D194).**
+   Do not dispatch `deploy.yml` after a merge. Dispatch only for a hotfix the
+   owner asks for, or when production is down.
+   The home box starts each release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 
-A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
+A slice with nothing to see skips step 1. **D200 (2026-11-08):** a small, low-risk
+change on an existing screen skips the wait in step 1. It merges after the
+captures and the full gates, and the owner reviews it afterwards. Until LD-8 to LD-10 land, the gate is
 `scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
 owns the loop, and `next-ticket.md` steps 4b and 7 hold the commands.
 
@@ -302,6 +304,16 @@ Rules that make it work:
   verify. One `harden` PR per feature runs the full review and makes them
   block. A HIGH-tier slice keeps the full loop. Contract:
   `engineering_practice.md` §7a. Lists: `tests/fences.json`.
+- **⚠️ CLEAN UP AFTER YOURSELF** *(owner directive, 2026-11-06, CIV-16)*. Other
+  sessions share the box. Give every wait a deadline, and run each test command
+  under `timeout`. Stop each background job, tunnel, tmux session, preview server
+  and container that you started, when you no longer need it. Remove your
+  worktree after the merge with `bash scripts/worktree.sh remove <slug>`. Before
+  the final message of a turn, list your background jobs. Then stop each one
+  that the next step does not need. Name the ones that stay, and say why. The Stop
+  hook `.claude/hooks/stop-children.mjs` lists your old children. The reaper
+  `scripts/reaper.py` catches what is left. Fence:
+  `tests/unit/test_task_routine.py`.
 - **The reviewer hunts for the case where this is wrong.** An agent asked "is
   this correct?" says yes.
 - **Re-verify every anchor at dispatch** (file paths, line numbers, migration
@@ -391,7 +403,7 @@ Rules that make it work:
   diff can affect, and it prints the `vitest related` command for frontend
   files. pr-check runs the tests that the diff can affect, and the full suite
   when the diff is FULL. The R8 suites run on `main` only after CIV-4b ("main's
-  batch and the 21:30 release gate run the R8 suites"). The four tiers are in
+  batch and the release-slot gate run the R8 suites"). The four tiers are in
   `specs/ci_velocity.md` §4 (D176).
 - **R8 needs a database. Without one, 843 tests SKIP while the run reads
   green.** Run `bash scripts/dev_db.sh` first, then

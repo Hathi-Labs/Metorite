@@ -480,6 +480,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.reach_loop_skipped", error=str(exc))
 
+    # KG-9 (task 786): the memory layer refuses to start while two or more
+    # organizations exist, because the Mem0 and Graphiti stores have no org
+    # scope. The gateway still starts. Only Mem0 and Graphiti stay down, and
+    # each call asks the guard again. With MEM0_ENABLED and GRAPHITI_ENABLED
+    # off this reads two settings and opens no session.
+    # Fence: tests/unit/test_memory_tenant_guard.py.
+    try:
+        from acb_memory.tenant_guard import MemoryTenancyRefused, check_memory_tenancy
+        try:
+            await check_memory_tenancy()
+        except MemoryTenancyRefused as exc:
+            _log.error("gateway.memory_refused", error=str(exc)[:300])
+    except Exception as exc:
+        _log.warning("gateway.memory_tenancy_check_skipped", error=str(exc)[:200])
+
     # Start the mailbox purge loop (routes/email/memory_purge.py; spec
     # email_app_master_plan.md §12.3.13.9, WS-17 EM-G11f2). It finishes each
     # Mem0 purge that a disconnect owes. No flag: with Mem0 off a tick ends
@@ -536,6 +551,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from gateway.align import check as _align_check  # noqa: F401
     except Exception as exc:
         _log.warning("gateway.align_jobs_skipped", error=str(exc))
+    try:
+        # The headless turn (WS-AUTO AUTO-8a, gateway/jobs/headless_turn.py)
+        # registers `auto.turn` at import, only with JOB_QUEUE on. Dark: no
+        # code enqueues it, and HEADLESS_TURN_ORGS ships empty.
+        from gateway.jobs import headless_turn as _headless_turn  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.headless_turn_jobs_skipped", error=str(exc))
+    try:
+        # The graph sweep kind and its seed hook register at import (WS-KG
+        # KG-4, gateway/kb_entities/graph.py). Dark: the seed needs
+        # GRAPH_SWEEP_ORGS. Its own try, for the reason above.
+        from gateway.kb_entities import graph as _kg_graph  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.graph_jobs_skipped", error=str(exc))
     try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
@@ -1453,7 +1482,8 @@ if _HAS_MAF:
                                 name=f"chat:{user_id[:20]}",
                                 content=_mem_last_user[:500],
                                 source_description="copilot_chat",
-                                group_id=user_id,
+                                # KG-9: the episode's group is its org.
+                                organization_id=_organization_id,
                             )
                     except ImportError:
                         pass
@@ -2190,6 +2220,17 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-ALN ALN-5b — Mira proposes the rules of one pinned page
+    # (project_alignment.md §4.2): one model call with no tools, each quote
+    # checked, at most 12 proposals for each page version. Ships dark behind
+    # the same `PROJECT_RULES_ORGS` (404 while the org is not listed).
+    from gateway.routes.project_rules_propose import router as _project_rules_propose_router
+
+    app.include_router(_project_rules_propose_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):
@@ -2596,7 +2637,17 @@ async def pull(req: PullRequest, _user: UserContext = Depends(get_current_user))
     from acb_llm.guardrails import CITATION_RE  # local import to avoid cold-start cost
 
     trace_id = uuid.uuid4().hex
-    user_id: str = req.user_email or getattr(_user, "email", "") or "anonymous"
+    # H-438 (task 1127): the session names the member, never the body. The
+    # member keys the Mem0 read below. The run doors' own helper drops a
+    # signed-in member's claim of another person, and keeps an own claim in
+    # any case as the session's address. A service caller keeps its claim.
+    # Lazy import, as the router mount does. Fence:
+    # tests/unit/test_chat_payload_identity_claims.py.
+    from gateway.routes.agent import _drop_identity_claims
+
+    claims: dict[str, str | None] = {"user_email": req.user_email} if req.user_email else {}
+    _drop_identity_claims(claims, _user, keep_own=True)
+    user_id: str = claims.get("user_email") or getattr(_user, "email", "") or "anonymous"
     _log.info("pull.received", query=req.query, user=user_id, trace_id=trace_id)
     try:
         from orchestrator.agents import build_orchestrator_agent, enrich_instructions_with_memory

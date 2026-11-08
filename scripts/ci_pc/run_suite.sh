@@ -182,7 +182,8 @@ pg "ci-backup-$TAG" postgres:16 5432 postgres rehearsal postgres || exit 1
 # (CIV-3) a FULL result: every shard runs tests/unit, and the guard checks
 # every --must-run file. Fence: tests/unit/test_ci_pc.py.
 FULL_RUN=(--ctx needs.changes.result=success --ctx needs.changes.outputs.full=true --ctx needs.changes.outputs.files=
-          --ctx steps.pick.outputs.mode=full --ctx steps.pick.outputs.paths=)
+          --ctx steps.pick.outputs.mode=full --ctx steps.pick.outputs.paths= --ctx steps.pick.outputs.splits=6
+          --ctx "needs.changes.outputs.shards=[1,2,3,4,5,6]")
 rm -rf junit
 # A selected run (CIV-6) gives the shard jobs a selection result in place of a
 # FULL one: pr-check's own pick step then runs the listed files, and pytest-split
@@ -193,8 +194,9 @@ SHARD_CTX=("${FULL_RUN[@]}")
 if [ -n "$SELECT_FILE" ]; then
   SHARD_CTX=(--ctx needs.changes.result=success --ctx needs.changes.outputs.full=false
              --ctx "needs.changes.outputs.files=$(tr '\n' ' ' < "$SELECT_FILE")"
-             --ctx steps.pick.outputs.mode=selection
-             --ctx "steps.pick.outputs.paths=$(tr '\n' ' ' < "$SELECT_FILE")")
+             --ctx steps.pick.outputs.mode=selection --ctx steps.pick.outputs.splits=6
+             --ctx "steps.pick.outputs.paths=$(tr '\n' ' ' < "$SELECT_FILE")"
+             --ctx "needs.changes.outputs.shards=[1,2,3,4,5,6]")
 fi
 for i in $(seq 1 "$SHARDS"); do
   job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "${SHARD_CTX[@]}" "--replace=--splits 6=>--splits $SHARDS"

@@ -144,19 +144,29 @@ def gw(monkeypatch):
 # -- the shape of the tools ------------------------------------------------------
 
 
+#: The two read tools: the first two record tools. The three write tools of
+#: STU-B2c-2b follow them, and ``test_studio_record_writes.py`` fences those.
+READS = st.STUDIO_RECORD_TOOLS[:2]
+
+
 def test_no_record_tool_takes_an_identity() -> None:
     identity = {"organization_id", "org_id", "organization", "org", "tenant", "tenant_id",
                 "member", "member_email", "user", "user_email", "email", "actor", "as_user",
                 "owner", "owner_email", "visibility", "confirm", "confirmed", "action",
-                "action_id", "data", "record"}
-    assert len(st.STUDIO_RECORD_TOOLS) == 2
+                "action_id", "record"}
+    assert len(st.STUDIO_RECORD_TOOLS) == 5
     for fn in st.STUDIO_RECORD_TOOLS:
         assert not set(inspect.signature(fn).parameters) & identity, fn.__name__
         assert inspect.iscoroutinefunction(fn)
+    # A read takes no body of a write.
+    assert [fn.__name__ for fn in READS] == ["studio_package_get", "studio_record_list"]
+    for fn in READS:
+        assert not set(inspect.signature(fn).parameters) & {
+            "data", "record_id", "request_id"}, fn.__name__
 
 
 def test_both_record_tools_are_read_only_and_closed_world() -> None:
-    for fn in st.STUDIO_RECORD_TOOLS:
+    for fn in READS:
         hints = fn.__tool_risk__
         assert hints["read_only"] is True and hints["open_world"] is False, fn.__name__
 

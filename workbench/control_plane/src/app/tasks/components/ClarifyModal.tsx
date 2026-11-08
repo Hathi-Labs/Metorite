@@ -1,5 +1,6 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect } from "react";
@@ -23,6 +24,8 @@ export function ClarifyModal() {
   // alone closed the modal on its first render (audit 2026-09-24).
   const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
   const done = useTaskStore((s) => s.clarifiedThisSession);
+  // A tap on a tab of the phone's bar closes it, and the tab then acts.
+  useCloseOnBarTap(close, open);
   const selectItem = useTaskStore((s) => s.selectItem);
   // S6g — a promote decided here waits to be sent. The app's toast sits
   // under this overlay, so the modal carries the same line and its Undo.

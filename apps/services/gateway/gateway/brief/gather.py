@@ -14,6 +14,18 @@ Every claim is built by code from one card of the My Day feed:
   the one check, ``orchestrator.in_app_path.is_in_app_path``.
 * ``fingerprint`` is the card's, when it has one.
 
+**The close-out** (BR-2b-1, ``core_brief.md`` §4.3) builds the sections
+``done`` and ``moved`` with :func:`closeout_claims`. ``done`` is one claim
+for each ``Closed`` row of Handled, and ``moved`` is one for each shown open
+card. The brief's :func:`claim_of` still refuses a section outside
+``plan.BRIEF_GROUPS``: the close-out passes its own section as an argument.
+
+**The acts** (BR-7b-2, ``core_brief.md`` §8) make the section ``acted``
+with :func:`acted_claims`: one claim for each allow-listed ``audit_event``
+act (``audit:<id>``) and each sent ``reach_outbox`` row (``reach:<id>``).
+Each line names its policy, or says :data:`NO_POLICY`. The link rule is
+§8.2 item 4: :func:`audit_href` and :func:`reach_href`.
+
 A card with no in-app href, or a prefix that no provider writes, gets no
 claim. The gather logs ``brief.claim_skipped`` with the kind only, and the
 other cards keep their claims. The gather invents no link.
@@ -26,6 +38,7 @@ grammar: the CHECK ``brief_claims_source_id_shape`` holds the shape.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -37,9 +50,16 @@ from gateway.reach import plan
 
 _log = get_logger("brief.gather")
 
-#: The prefixes of ``signal_id`` that the feed's providers write.
+#: The prefix of an act from ``audit_event`` (BR-7b-2): ``audit:<id>``.
+AUDIT = "audit"
+#: The prefix of an act from ``reach_outbox`` (BR-7b-2): ``reach:<id>``.
+REACH = "reach"
+
+#: The prefixes of ``signal_id`` that the feed's providers write, and the
+#: two prefixes of an act (``core_brief.md`` §8.2 item 3).
 SOURCE_APPS: frozenset[str] = frozenset({
-    "tasks", "email", "approvals", "crm", "calendar", "chat", "knowledge", "reminders"})
+    "tasks", "email", "approvals", "crm", "calendar", "chat", "knowledge", "reminders",
+    AUDIT, REACH})
 
 
 def source_app(signal_id: Any) -> str | None:
@@ -61,14 +81,21 @@ def in_app_href(value: Any) -> str | None:
     return value if isinstance(value, str) and is_in_app_path(value) else None
 
 
-def claim_of(card: dict[str, Any], position: int, now: datetime) -> store.ClaimIn | None:
+def claim_of(card: dict[str, Any], position: int, now: datetime, *,
+             section: str | None = None) -> store.ClaimIn | None:
     """One claim of *card* at *position*, or None when the card cannot make
-    one. The section is the card's group, which must be a brief group."""
+    one. The section is the card's group, which must be a brief group. The
+    close-out passes *section* (``moved``), and then the group is not
+    checked: the caller chose the cards."""
     app = source_app(card.get("signal_id"))
     href = in_app_href(card.get("href"))
-    section = str(card.get("group") or "")
+    if section is None:
+        section = str(card.get("group") or "")
+        in_section = section in plan.BRIEF_GROUPS
+    else:
+        in_section = section in store.SECTIONS
     kind = str(card.get("kind") or "")
-    if app is None or href is None or section not in plan.BRIEF_GROUPS or not kind:
+    if app is None or href is None or not in_section or not kind:
         _log.info("brief.claim_skipped", kind=kind or None,
                   reason="no_source" if app is None else "no_href" if href is None else "shape")
         return None
@@ -99,3 +126,295 @@ def claims(cards: list[dict[str, Any]], now: datetime) -> list[store.ClaimIn]:
         if claim is not None:
             out.append(claim)
     return out
+
+
+#: The ``source_kind`` of a ``done`` claim: the row came from Handled.
+HANDLED_KIND = "handled"
+
+
+def done_claim(closed: Any, position: int) -> store.ClaimIn | None:
+    """One ``done`` claim of a Handled row (``needs.Closed``), or None when
+    the row cannot make one: no known source prefix in its key, no in-app
+    href, or no title. ``source_id`` is the key of the row."""
+    app = source_app(closed.key)
+    href = in_app_href(closed.href)
+    text = str(closed.title or "").strip()
+    if app is None or href is None or not text:
+        _log.info("brief.claim_skipped", kind=HANDLED_KIND,
+                  reason="no_source" if app is None else "no_href" if href is None
+                  else "no_text")
+        return None
+    return store.ClaimIn(
+        position=position, section="done", text=text, source_app=str(closed.app or app),
+        source_kind=HANDLED_KIND, source_id=str(closed.key), href=href)
+
+
+def closeout_claims(closed: list[Any], cards: list[dict[str, Any]],
+                    now: datetime) -> list[store.ClaimIn]:
+    """The claims of the close-out: ``done`` for each Handled row, then
+    ``moved`` for each shown open card (:func:`shown`), each cut to
+    ``plan.BRIEF_LINES``. The positions are continuous from 0, ``done``
+    first, so a retry with the same reads gives the same positions."""
+    out: list[store.ClaimIn] = []
+    for row in closed[:plan.BRIEF_LINES]:
+        claim = done_claim(row, len(out))
+        if claim is not None:
+            out.append(claim)
+    for card in shown(cards):
+        claim = claim_of(card, len(out), now, section="moved")
+        if claim is not None:
+            out.append(claim)
+    return out
+
+
+def closeout_lead(local_date: Any, claims: list[store.ClaimIn],
+                  acted: Acted | None = None) -> str | None:
+    """The template lead of the close-out, from the counts of the claims:
+    ``Your close-out, Thu 15 Oct. 2 done and 1 moved to tomorrow.`` With
+    acts (BR-7b-2) it names the TRUE total of the day from *acted*, and the
+    number that the lines show after a cut: ``2 done, 1 moved to tomorrow
+    and 25 acts for you, 7 shown.`` With no *acted* it counts the ``acted``
+    claims. A section with no claim names no act, so no number of the lead
+    lacks a source. A count of 0 is left out. None with no claim."""
+    done = sum(1 for c in claims if c.section == "done")
+    moved = sum(1 for c in claims if c.section == "moved")
+    lines = sum(1 for c in claims if c.section == ACTED)
+    total = (acted.total if acted is not None else lines) if lines else 0
+    shown = acted.shown if acted is not None else lines
+    acts = ""
+    if total:
+        acts = f"{total} act{'' if total == 1 else 's'} for you"
+        acts += f", {shown} shown" if shown < total else ""
+    parts = (([f"{done} done"] if done else [])
+             + ([f"{moved} moved to tomorrow"] if moved else [])
+             + ([acts] if acts else []))
+    if not parts:
+        return None
+    words = parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
+    return f"Your close-out, {plan._date_words(local_date)}. {words}."
+
+
+# ── The acts of the day (BR-7b-2, ``core_brief.md`` §8) ─────────────────────
+
+#: The section of an act.
+ACTED = "acted"
+#: The ``source_kind`` of a Reach row. An audit act takes its action.
+OUTBOX_KIND = "outbox"
+#: The words of an act whose writer stored no policy (§8.2 item 2).
+NO_POLICY = "no policy recorded"
+#: The policy of a Reach row of the kind ``brief`` (§8.2 item 2). Another
+#: kind takes ``reach_signal_log.rule_id`` once BR-5 slice 2b-1 stores it.
+#: Until then it has no policy.
+REACH_BRIEF_POLICY = "brief"
+#: The My Day path (``app/page.tsx``): the Handled view lives there. An act
+#: whose target has no in-app page links here (§8.2 item 4).
+MY_DAY_PATH = "/"
+#: The longest part of a line that comes from a row.
+_PART_MAX = 60
+
+_REACH_WORDS: dict[str, str] = {
+    "brief": "Sent your brief",
+    "interrupt": "Sent you an alert",
+    "request": "Sent you a request",
+    "reminder_due": "Sent you a reminder",
+    "reminder_check": "Sent you a reminder check",
+    "reminder_unconfirmed": "Sent you a reminder that waits for you",
+    "due_summary": "Sent you the summary of what is due",
+}
+_CHANNEL_WORDS: dict[str, str] = {"whatsapp": "on WhatsApp", "web_push": "as a push"}
+
+
+def _part(value: Any) -> str:
+    """A short, plain part of a line from a row value: one line, cut."""
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= _PART_MAX else text[:_PART_MAX - 1] + "…"
+
+
+def _with_policy(what: str, policy: str | None) -> str:
+    """The line of an act: what ran, and the policy that allowed it."""
+    return f"{what} ({NO_POLICY})" if not policy else f"{what} (policy: {_part(policy)})"
+
+
+def audit_href(target: Any) -> str:
+    """The link of an audit act (§8.2 item 4). A door call's target is
+    ``app:<app id>.<op>``, and its page is ``/<app id>`` when that is a live
+    pane (``orchestrator.in_app_path.pane_of``). Every other target has no
+    in-app page, so it takes :data:`MY_DAY_PATH`."""
+    from orchestrator.in_app_path import pane_of
+
+    if isinstance(target, str) and target.startswith("app:"):
+        path = "/" + target[len("app:"):].split(".", 1)[0]
+        pane = pane_of(path)
+        if pane is not None and pane.href == path and in_app_href(path):
+            return path
+    return MY_DAY_PATH
+
+
+def reach_href(signal_ids: Any, cards: list[dict[str, Any]], closed: list[Any]) -> str:
+    """The link of a Reach act (§8.2 item 4): the href of the card of its
+    first signal. The card is an open card of the snapshot, or a Handled row
+    with that key, because a card that was closed today is not open now. A
+    row with no signal, or whose card is in neither list, takes
+    :data:`MY_DAY_PATH`."""
+    first = next(iter(signal_ids or ()), None)
+    if first:
+        for card in cards:
+            if card.get("signal_id") == first and (href := in_app_href(card.get("href"))):
+                return href
+        for row in closed:
+            if getattr(row, "key", None) == first and (href := in_app_href(row.href)):
+                return href
+    return MY_DAY_PATH
+
+
+def act_line(act: Any) -> str:
+    """The line of an audit act (``acb_audit.read.Act``), built by code from
+    the action, the target and the policy. It holds no body and no
+    argument value."""
+    action, payload = str(act.action), act.payload if isinstance(act.payload, dict) else {}
+    agent = _part(str(act.target).removeprefix("agent:"))
+    if action == "agent_door_call":
+        what = f"An outside agent used {_part(payload.get('app'))}: {_part(payload.get('op'))}"
+    elif action == "agent_push_by_reviewer":
+        what = f"Mira pushed the reviewed changes of the agent {agent}"
+    elif action == "mutation_commit_auto_pushed":
+        what = f"Mira pushed a repair of the agent {agent}"
+    elif action.startswith("execute:"):
+        what = f"The Action Broker ran {_part(action.removeprefix('execute:'))}"
+    else:
+        what = f"Mira ran {_part(action)}"
+    return _with_policy(what, act.policy)
+
+
+def sent_line(row: Any) -> str:
+    """The line of a Reach row (``outbox.SentRow``). The body is not read."""
+    what = _REACH_WORDS.get(str(row.kind), "Sent you a message")
+    channel = _CHANNEL_WORDS.get(str(row.channel))
+    what = f"{what} {channel}" if channel else what
+    return _with_policy(what, REACH_BRIEF_POLICY if row.kind == "brief" else None)
+
+
+#: The rank of an act before the cut (§8): a change and a sent row first,
+#: then any other act, then the door reads. A lower rank goes first.
+_RANK_CHANGE, _RANK_OTHER, _RANK_READ = 0, 1, 2
+#: The actions that change something: each keeps its own line.
+_CHANGE_ACTIONS = frozenset({"agent_push_by_reviewer", "mutation_commit_auto_pushed"})
+
+
+def _is_door_read(act: Any) -> bool:
+    """True for a door call whose policy is not a write scope. A row from
+    before BR-7b-1 has no policy, and it counts as a read."""
+    return str(act.action) == "agent_door_call" and not str(act.policy or "").endswith(":write")
+
+
+def _rank(act: Any) -> int:
+    action = str(act.action)
+    if action in _CHANGE_ACTIONS or action.startswith("execute:"):
+        return _RANK_CHANGE
+    if action == "agent_door_call":
+        return _RANK_READ if _is_door_read(act) else _RANK_CHANGE
+    return _RANK_OTHER
+
+
+@dataclass(frozen=True)
+class _Item:
+    rank: int
+    at: Any
+    app: str
+    source_id: str
+    kind: str
+    text: str
+    href: str
+    #: How many acts the line holds: more than 1 for the door reads of one app.
+    count: int = 1
+
+
+def _cut_key(item: _Item) -> tuple[float, str]:
+    """The order of the cut inside a rank: the NEWEST first for rank 0, the
+    oldest first for the other ranks."""
+    at = item.at.timestamp() if isinstance(item.at, datetime) else 0.0
+    return (-at if item.rank == _RANK_CHANGE else at, item.source_id)
+
+
+@dataclass(frozen=True)
+class Acted:
+    """The ``acted`` section: the claims, and the counts that the lead names."""
+
+    claims: list[store.ClaimIn]
+    #: Every act that the reads gave: audit rows and sent Reach rows.
+    total: int
+    #: The acts that the kept lines hold. Less than :attr:`total` after a cut.
+    shown: int
+
+
+def _door_reads_line(app: str, count: int, policy: str | None) -> str:
+    return _with_policy(f"An outside agent used {_part(app)}: {count} reads", policy)
+
+
+def acted_claims(acts: list[Any], sent: list[Any], cards: list[dict[str, Any]],
+                 closed: list[Any], start: int) -> Acted:
+    """The ``acted`` section of the close-out (BR-7b-2).
+
+    1. Each sent Reach row and each audit act makes one line. The door
+       reads of one app and one policy make ONE line with a count
+       (``An outside agent used projects: 12 reads``), so one busy client
+       cannot fill the section. Its ``source_id`` is the oldest row of the
+       group, and its href is the href of that row.
+    2. The lines go in rank order (:func:`_rank`): the changes and the sent
+       rows first, then the other acts, then the door reads. Inside a rank
+       the oldest shows first.
+    3. A line with no valid href is skipped before the cut. The cut keeps
+       ``plan.BRIEF_LINES`` lines: the newest of rank 0, and the oldest of
+       the other ranks (:func:`_cut_key`). :class:`Acted` carries the
+       true total and the number that the kept lines hold, and
+       :func:`closeout_lead` names both.
+
+    The positions start at *start*, after ``done`` and ``moved``. A line
+    with no valid href is skipped (``brief.claim_skipped``). A line with no
+    policy says :data:`NO_POLICY`."""
+    items: list[_Item] = []
+    reads: dict[tuple[str, str | None], list[Any]] = {}
+    for act in acts:
+        if _is_door_read(act):
+            payload = act.payload if isinstance(act.payload, dict) else {}
+            reads.setdefault((str(payload.get("app") or ""), act.policy), []).append(act)
+            continue
+        items.append(_Item(_rank(act), act.at, AUDIT, f"{AUDIT}:{act.id}", str(act.action),
+                           act_line(act), audit_href(act.target)))
+    for (app, policy), group in reads.items():
+        group.sort(key=lambda a: (a.at, a.id))
+        first = group[0]
+        text = act_line(first) if len(group) == 1 else _door_reads_line(app, len(group), policy)
+        items.append(_Item(_RANK_READ, first.at, AUDIT, f"{AUDIT}:{first.id}", str(first.action),
+                           text, audit_href(first.target), len(group)))
+    for row in sent:
+        items.append(_Item(_RANK_CHANGE, row.sent_at, REACH, f"{REACH}:{row.id}", OUTBOX_KIND,
+                           sent_line(row), reach_href(row.signal_ids, cards, closed)))
+    # A line with no valid href is skipped BEFORE the cut, so it uses no slot.
+    valid: list[_Item] = []
+    for item in items:
+        if in_app_href(item.href) is None:
+            _log.info("brief.claim_skipped", kind=item.kind, reason="no_href")
+            continue
+        valid.append(item)
+    # The cut keeps the newest changes and sent rows of rank 0, so a run of
+    # old pushes cannot push out a later sent row. The other ranks keep the
+    # oldest first. The lines then show in rank order, the oldest first.
+    ranked = sorted(valid, key=lambda i: (i.rank, _cut_key(i)))
+    kept = sorted(ranked[:plan.BRIEF_LINES], key=lambda i: (i.rank, i.at, i.source_id))
+    out: list[store.ClaimIn] = []
+    shown = 0
+    for item in kept:
+        out.append(store.ClaimIn(position=start + len(out), section=ACTED, text=item.text,
+                                 source_app=item.app, source_kind=item.kind,
+                                 source_id=item.source_id, href=item.href))
+        shown += item.count
+    total = len(acts) + len(sent)
+    if len(valid) > plan.BRIEF_LINES:
+        _log.info("brief.acted_cut", left_out=len(valid) - plan.BRIEF_LINES, total=total)
+    return Acted(claims=out, total=total if out else 0, shown=shown)
+
+
+def no_policy_count(claims: list[store.ClaimIn]) -> int:
+    """How many ``acted`` claims say :data:`NO_POLICY`. The run logs it."""
+    return sum(1 for c in claims if c.section == ACTED and c.text.endswith(f"({NO_POLICY})"))

@@ -33,8 +33,6 @@ who may write a grant (D-OP-11). What is deliberately NOT here: a bulk
 from __future__ import annotations
 
 import json
-import mimetypes
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -42,6 +40,7 @@ from acb_common.card_body import CardWontFit
 from acb_common.no_person import NO_PERSON_TEXT, no_person_present
 
 from skill_projects import client as _client
+from skill_projects import task_files
 from skill_projects.client import (
     GatewayRefusal,
     data,
@@ -107,6 +106,7 @@ from skill_projects.writes import (
     _vocab,
     agent_assignee_refusal_as_text,
     ask_about_subtasks,
+    shared_set_line,
     status_edit_refusal,
 )
 
@@ -1430,12 +1430,16 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
 
 
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
-async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
+async def delete_status(
+    project_id: str, status: str, move_to: str = "", change_whole_set: bool = False,
+) -> str:
     """Delete a lane, moving the tasks in it to move_to (a status NAME in
     the same set) first. The card leads with how many tasks move: the count
     the statuses read returns per lane, which is the count the route acts
     on. The last lane, the last Done lane (D79) and the last lane that
-    closes a task cannot be deleted, and the tool says so before any card."""
+    closes a task cannot be deleted, and the tool says so before any card.
+    Pass change_whole_set=true only when the member asks to change a set that
+    other projects share."""
     if _many(status):
         return f"delete_status {ONE_ACT.replace('id', 'name')}"
     pid, node = await _node(project_id)
@@ -1466,7 +1470,9 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
             "or Cancelled lane first."
         )
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    refused = status_edit_refusal(owner, node.get("name"))
+    refused = status_edit_refusal(
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
+    )
     if refused:
         return refused
     in_use = int(counts.get(sid) or 0)
@@ -1482,9 +1488,13 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
         )
     where = data(target.get("name")) if target else "(none needed; the lane is empty)"
     impact = f"1 lane deleted · {_plural(in_use, 'task')} moved to {where}"
+    shared = shared_set_line(owner)
     if not await _confirm(
         title="Delete this status?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))} · {impact}",
+        detail=(
+            f"{data(row.get('name'))} in {data(node.get('name'))} · {impact}"
+            + (f" · {shared}" if shared else "")
+        ),
         context=_guard_card(
             impact,
             {"status": data(row.get("name")), "category": row.get("category"), "move to": where},
@@ -1857,17 +1867,12 @@ async def delete_area(area: str) -> str:
 
 # ── Nudge and attach (WS-64 OP-6c, D-OP-9) ───────────────────────────────────
 
-#: What one task may hold in files, and the types the upload refuses. The
-#: route owns both (``attachments.py`` ``_TASK_ATTACHMENT_BUDGET``,
-#: ``tasks/attachments.py`` ``_BLOCKED_EXT``). The tool says them BEFORE the
-#: card, so a member never approves an upload that the route will refuse.
-#: ``test_projects_nudge_attach_tools.py`` pins each value to the route's.
-TASK_FILE_BUDGET = 10 * 1024 * 1024
-BLOCKED_FILE_TYPES = frozenset({".exe", ".dll", ".so", ".bat", ".cmd", ".sh", ".ps1", ".msi"})
-
-
-def _mb(size: int) -> str:
-    return f"{size / (1024 * 1024):.1f} MB"
+#: The budget, the blocked types and the checks of a task file are in
+#: ``task_files.py``, which ``create_task`` calls too (IMG-2). The names stay
+#: here for the tests and the callers that import them.
+TASK_FILE_BUDGET = task_files.TASK_FILE_BUDGET
+BLOCKED_FILE_TYPES = task_files.BLOCKED_FILE_TYPES
+_mb = task_files.mb
 
 
 def _nudge_refusal(task: dict[str, Any], mine: dict[str, Any]) -> str:
@@ -1952,29 +1957,16 @@ async def attach_to_task(task_id: str, file_name: str) -> str:
     if _many(task_id):
         return f"attach_to_task {ONE_ACT}"
     tid, task = await _task(task_id)
-    from acb_skills import attachment_tools
-
-    got = await attachment_tools.read_attachment_bytes(file_name)
+    got = await task_files.read_checked([file_name])
     if isinstance(got, str):
         return got
-    name, content = got
+    [(name, content)] = got
     size = len(content)
-    if not size:
-        return f"{data(name)} is empty, so there is nothing to attach."
-    if Path(name).suffix.lower() in BLOCKED_FILE_TYPES:
-        return f"File type not allowed: {data(name)}. Ask the member for another file."
-    if size > TASK_FILE_BUDGET:
-        return (
-            f"{data(name)} is {_mb(size)} and one task may hold {_mb(TASK_FILE_BUDGET)} "
-            "in total. Attach a smaller file."
-        )
     held = ((await get(f"/projects/tasks/{tid}/attachments")) or {}).get("rows") or []
     used = sum(int(f.get("size") or 0) for f in held)
-    if used + size > TASK_FILE_BUDGET:
-        return (
-            f"{_ref(task)} would hold {_mb(used + size)} with {data(name)}, and the limit is "
-            f"{_mb(TASK_FILE_BUDGET)}. It holds {_mb(used)} now. Detach a file first."
-        )
+    over = task_files.budget_refusal(got, used, _ref(task))
+    if over:
+        return over
     impact = (
         f"1 file of {_mb(size)} attached to {_ref(task)} · everyone who can open "
         "the task can open the file"
@@ -1989,8 +1981,11 @@ async def attach_to_task(task_id: str, file_name: str) -> str:
         ),
     ):
         return CANCELLED
-    mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
-    row = (await post_file(f"/projects/tasks/{tid}/attachments", "file", name, content, mime)) or {}
+    row = (
+        await post_file(
+            f"/projects/tasks/{tid}/attachments", "file", name, content, task_files.mime_of(name)
+        )
+    ) or {}
     return (
         f"Attached {data(row.get('name') or name)} to {_ref(task)}."
         f"\n  full_id: {tid}\n  attachment_id: {row.get('attachment_id')}"

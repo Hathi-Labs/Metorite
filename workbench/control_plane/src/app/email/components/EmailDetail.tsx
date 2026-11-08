@@ -10,6 +10,7 @@ import {
   fromWarning, mailboxOf, ownAddresses, replyRecipients, sendBlocked, swapSignature,
 } from "../lib/mailbox";
 import { getSentFrom } from "../lib/api";
+import { withFailedFiles } from "../lib/attachmentRow";
 import { FromRow } from "./FromRow";
 import { MailboxChip, mailboxLabel } from "./MailboxChip";
 import {
@@ -427,7 +428,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
         }
       })
       .catch(() => {
-        if (!cancelled) setDetail(email); // fall back to list row
+        // Fall back to the list row. The fetch threw, so its files did not load.
+        if (!cancelled) setDetail(withFailedFiles(email));
       })
       .finally(() => {
         // Each fetch clears its own id, also after a switch to another mail.
@@ -1571,6 +1573,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
         {view.hasAttachments && (
           <AttachmentList
             attachments={view.attachments}
+            status={view.attachmentsStatus}
+            onRetry={async () => {
+              // One message only: the thread and the pane stay as they are.
+              const full = await getEmail(email.id);
+              setDetail((cur) => (cur?.id === full.id || cur === null ? full : cur));
+              hydrateEmail(full);
+            }}
             pending={detail?.id !== email.id}
             className="mb-4"
           />

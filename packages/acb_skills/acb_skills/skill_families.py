@@ -413,8 +413,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "Work the CRM records: find a lead, deal or contact, read the "
             "pipeline and a record, read its timeline, create a lead, move "
-            "a deal, log an activity, convert a lead and read who changed "
-            "the CRM set-up."
+            "a deal, log an activity, convert a lead, read who changed "
+            "the CRM set-up and create a deal pipeline."
         ),
         "description": (
             "A tool pack: the CRM Assistant's own tools for daily record "
@@ -422,7 +422,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "the tools to search, read the pipeline, open a record and its "
             "timeline, search notes, create a lead, move a deal, log an "
             "activity and convert a lead. It also reads the Change history "
-            "of the CRM set-up. Each write asks the member first. "
+            "of the CRM set-up, and an admin can create a deal pipeline. "
+            "Each write asks the member first. "
             "A run loads a pack only where tool packs are on, so until then "
             "this switch has no effect."
         ),
@@ -431,7 +432,11 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "create_lead",
             # WS-CRM CRM-M1: the read of the Change history of the CRM set-up.
             "crm_change_history",
+            # WS-CRM CRM-M3a: a new deal pipeline, on one card (admin only).
+            "crm_create_pipeline",
             "crm_search_notes",
+            "crm_update_record",
+            "crm_update_task",
             "get_pipeline",
             "get_record",
             "get_timeline",
@@ -804,7 +809,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "actions an app may use. It also holds the package tools: save "
             "an app as a draft and publish it. It also holds the skill tools: save, "
             "publish, pause and list the skills of a member. Two read tools list the "
-            "packages of a member and read the records of an object. The tools keep no "
+            "packages of a member and read the records of an object. Three write tools add, "
+            "change and delete a record, and each asks the member first. The tools keep no "
             "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
@@ -824,6 +830,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_publish",
             "studio_package_get",
             "studio_record_list",
+            "studio_record_create",
+            "studio_record_update",
+            "studio_record_delete",
         ),
         "owner": "studio-builder",
         "core": False,

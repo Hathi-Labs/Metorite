@@ -147,6 +147,11 @@ behaviour.
 - **No answer in this session:** leave the draft PR and the open question,
   and end the cycle with `AWAITING-OWNER`. The next session finds the answer in
   `my_work`.
+- **Small screen change (D200).** A LOW or STANDARD slice that is a small change
+  on an existing screen does not wait for **Approve**. Run steps 5 to 7 with the
+  captures and the `Visual review:` line. After the merge, post the captures and
+  call `ask_on_task` with "Looks right" and "Change it". The PR body states why
+  the slice qualifies. D200 lists the cases that do not. When in doubt, wait.
 - `engineering_practice.md` §1.3 owns this step.
 
 **5 — Verify.** Dispatch `ws-verifier`. It checks each behaviour criterion on
@@ -193,18 +198,19 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
   push, and run the gate and `pr-check` again. Then find the batch that holds
   your merge, as the steps below say.
-- **Production moves at 21:30 UTC (D145).** Do not dispatch `deploy.yml` after
-  a merge. Dispatch only for a hotfix that the owner asks for in this session,
+- **Production moves three times a day, at 05:30, 13:30 and 21:30 UTC (D194).**
+  Do not dispatch `deploy.yml` after a merge. Dispatch only for a hotfix
+  that the owner asks for in this session,
   or when production is down. Then follow D144 point 3: the unit-test job on
   the tip of `main` passes first, you name every merge in
   `git log <prod applied_sha>..origin/main`, and you confirm the pre-migration
   backup for a migration.
-  The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
-- Report "merged at `<sha>`, reaches production at tonight's release". After
+  The home box starts each release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
+- Report "merged at `<sha>`, reaches production at the next release slot". After
   the release, confirm `/version` `applied_sha`. Do not call it live before you
   see that SHA.
-- `RELEASE_HOLD` stops the daily release only. Set it to `1` to hold that
-  night's run. `specs/staging_and_daily_release.md` owns the design.
+- `RELEASE_HOLD` stops the slot releases only. Set it to `1` to hold the
+  release of each slot until you clear it. `specs/staging_and_daily_release.md` owns the design.
 - Watch the job `Unit tests (a signal on a push, a gate on a release)` in that
   same `deploy` run to its end. On a push it does not gate, so two PRs that
   pass alone and fail together can land on `main`. A red `main` also blocks
@@ -237,6 +243,15 @@ organization's membership or credit balance.
 A guard hook enforces all of this independently. If it blocks you, that block is
 correct — do not work around it, and do not ask a subagent to do what you were
 blocked from doing. Report the exact gate id the owner must grant.
+
+## Clean up after yourself
+
+Root `CLAUDE.md` §4 holds the rule (CIV-16). At the end of a cycle, do these steps:
+
+1. Run each test command under `timeout`, and give every wait a deadline.
+2. After the merge, remove your worktree with `bash scripts/worktree.sh remove <slug>`.
+3. Stop each background job, tunnel, tmux session, preview server and container that you started.
+4. Before your final message, list your background jobs. Name the ones that stay, and say why.
 
 ## Final report
 

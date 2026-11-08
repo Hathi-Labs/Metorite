@@ -8670,6 +8670,11 @@ customer to shape it, and guessing produces the wrong ceiling.
 
 ### 6A.10a The transcribe endpoint (H-46) — BUILT, 2026-08-31
 
+**Caller and Sarvam (2026-11-08).** The chat's voice input (`projects_ai_chat.md`
+§31 VOX-1, task 2261) is the first tenant caller of this door. VOX-2 (task 2262)
+adds a native Sarvam call beside the litellm path, because litellm 1.103.0 has
+no Sarvam transcription. §31 owns both slices.
+
 ✅ **BUILT on 2026-08-31, on branch `ws-31-h46-transcribe`.** The route is
 `main.py::audio_transcriptions`, and all ten clauses below hold.
 `tests/unit/test_customer_console_tasks.py` carries the seven fences.
@@ -10508,7 +10513,8 @@ not an agent.**
     body claim (`_drop_identity_claims` in `routes/agent.py`). The two sync
     doors keep a claim of the member's own address, set to the session's
     address. A service caller keeps its claim. `POST /agent/webhook/{source}` spreads the signed
-    sender's payload.
+    sender's payload. Since H-438 (2026-11-07, task 1127), `POST /pull`
+    calls the same helper before its Mem0 read.
   - The Control Plane chat proxy builds its own payload with no member, so a
     browser cannot choose one. Since H-337 the three `/agent/run*` doors take
     a signed-in member from the session (`session_user`), not from the body.

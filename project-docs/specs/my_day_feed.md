@@ -1022,8 +1022,8 @@ does (`digest.py:238`). Each one raises on an error.
   `_digest_commitments` moves into a core that raises, with
   `commitment=True`. `_digest_commitments` keeps its best-effort wrapper for
   the digest.
-- The mailboxes come from `feed_mailboxes` (`accounts.py:361`), which reads
-  only the mailboxes of the member. The provider skips a mailbox with
+- The mailboxes come from `feed_mailboxes` (`transport/accounts.py`), which reads
+  only the mailboxes of the member in the bound tenant. The provider skips a mailbox with
   `in_all_inboxes` false. Each mailbox gets `MAILBOX_TIMEOUT_S`. A failed
   mailbox costs only its own rows, as in `_email`.
 

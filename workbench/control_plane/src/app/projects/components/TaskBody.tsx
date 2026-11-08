@@ -54,6 +54,7 @@ import SelectButton from "@/components/ui/SelectButton";
 import { Input, Textarea } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
+import RecordTabBar from "@/components/RecordTabBar";
 import { TaskLinks } from "./TaskLinks";
 import { AgentRunPanel } from "./AgentRunPanel";
 import { DecisionPanel } from "./DecisionPanel";
@@ -71,6 +72,7 @@ import {
   type StatusRow,
   type TagRow,
   type TaskRow,
+  type TaskTypeRow,
   attachmentsApi,
   projectsApi,
   watchersApi,
@@ -102,6 +104,8 @@ import { RelationsBlock } from "./RelationsBlock";
 import { AttachmentViewer } from "./AttachmentViewer";
 import { RemindMeModal } from "@/components/RemindMeModal";
 import { useTaskUndo } from "./useTaskUndo";
+import { useTaskTab } from "./useTaskTab";
+import { TASK_TABS, TASK_TAB_LABEL, type TaskTab, tabCount } from "../lib/taskTabs";
 import { useSubtaskComplete } from "./useSubtaskComplete";
 import { durationLabel } from "@/lib/taskCard";
 import {
@@ -110,6 +114,7 @@ import {
   rollUp,
   threadComments,
 } from "../lib/activityStream";
+import { typeRefusal, typeSelectOptions } from "../lib/taskEpic";
 import { parseAssignees, withAssignee, withoutAssignee } from "../lib/assignees";
 import { insertMention, notDeliveredNotice } from "../lib/notifications";
 
@@ -410,12 +415,36 @@ export function TaskBody({
   const subtaskBox = useRef<HTMLInputElement | null>(null);
   const linkBox = useRef<HTMLInputElement | null>(null);
 
+  // ORC-3 — the open tab, mirrored in `?ttab=`.
+  const [tab, setTab] = useTaskTab();
+  const scrollRegion = useRef<HTMLDivElement | null>(null);
+  const tabsTop = useRef<HTMLDivElement | null>(null);
+
   /**
-   * Open a section and put the cursor in its field. A folded section mounts
-   * its content after React commits the open, so the focus waits two frames:
-   * one for the commit, one for the panel to lay out.
+   * Open a tab at its top. The bar sticks while the card scrolls, so with the
+   * card scrolled past the blocks above the bar, a new tab would open part way
+   * down its own content. Scroll back to where the bar sits.
    */
-  function reach(section: FoldableSection, field: { current: HTMLInputElement | null }) {
+  function showTab(next: TaskTab) {
+    setTab(next);
+    const region = scrollRegion.current;
+    const top = tabsTop.current;
+    if (!region || !top) return;
+    const at = region.scrollTop + top.getBoundingClientRect().top - region.getBoundingClientRect().top;
+    if (region.scrollTop > at) region.scrollTop = at;
+  }
+
+  /**
+   * Open the tab and the section of a field, and put the cursor in it. A
+   * folded section mounts its content after React commits the open, so the
+   * focus waits two frames: one for the commit, one for the panel to lay out.
+   */
+  function reach(
+    next: TaskTab,
+    section: FoldableSection,
+    field: { current: HTMLInputElement | null },
+  ) {
+    showTab(next);
     setSectionOpen(section, true);
     window.requestAnimationFrame(() =>
       window.requestAnimationFrame(() => {
@@ -459,6 +488,8 @@ export function TaskBody({
   const [files, setFiles] = useState<AttachmentRow[]>([]);
   // The Links section's row count, for its header (WS-57 TR-2).
   const [linkCount, setLinkCount] = useState(0);
+  // ORC-3 — the subtasks and linked tasks, for the Related tab.
+  const [relationCount, setRelationCount] = useState(0);
   // The names of the files currently going up (S5) — what is IN FLIGHT.
   const [uploading, setUploading] = useState<string[]>([]);
   const filePicker = useRef<HTMLInputElement | null>(null);
@@ -478,6 +509,32 @@ export function TaskBody({
   // D77 — every member's timed work on the task, summed by the gateway
   // (`GET /projects/tasks/{id}` → `time_spent_mins`). Null until read.
   const [spent, setSpent] = useState<number | null>(null);
+  // SP-6 — the types of THIS task's project, read here so the host (the
+  // Projects panel or My Tasks' detail) need not pass them. A failed read
+  // leaves the list empty: the control then offers "No type" only.
+  // `typesFor` names the project the list belongs to, so the control stays
+  // disabled until the types of THIS task's project have loaded.
+  const [taskTypes, setTaskTypes] = useState<TaskTypeRow[]>([]);
+  const [typesFor, setTypesFor] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTaskTypes([]);
+    setTypesFor(null);
+    projectsApi
+      .types(task.project_id)
+      .then((res) => {
+        if (!live) return;
+        setTaskTypes(res.rows);
+        setTypesFor(task.project_id);
+      })
+      .catch(() => {
+        if (live) setError("Couldn't load the task types. Close this task and open it again.");
+      });
+    return () => {
+      live = false;
+    };
+  }, [task.project_id]);
   const assignees = task.assignees ?? [];
   // Agents are excluded: an agent cannot receive a notification (migration
   // 152's CHECK), so offering to mention one would promise nothing.
@@ -793,9 +850,28 @@ export function TaskBody({
     }
   }
 
+  /** SP-6 — set the type through the same save path as the other fields. */
+  async function changeType(next: string) {
+    const type = taskTypes.find((t) => t.id === next);
+    const refusal = typeRefusal(task, type);
+    if (refusal) {
+      setError(refusal);
+      return;
+    }
+    await patch(
+      { type_id: next === "" ? null : next },
+      "Couldn't change the type.",
+      "Check the task and try again.",
+    );
+  }
+
   /** One shared fact of the task — due date, priority, tags — patched and
    *  merged back. The board's cell editors write the same payloads. */
-  async function patch(payload: Record<string, unknown>) {
+  async function patch(
+    payload: Record<string, unknown>,
+    failure?: string,
+    nextStep?: string,
+  ) {
     setBusy(true);
     setError(null);
     try {
@@ -808,7 +884,8 @@ export function TaskBody({
         after: reload,
       });
     } catch (err) {
-      setError(String((err as Error).message));
+      const detail = String((err as Error).message);
+      setError(failure ? `${failure} ${detail} ${nextStep ?? ""}`.trim() : detail);
     } finally {
       setBusy(false);
     }
@@ -904,6 +981,14 @@ export function TaskBody({
     });
   }
 
+  // ORC-3 — what each tab holds. `tabCount` draws nothing for none.
+  const tabCounts: Record<TaskTab, number> = {
+    overview: 0,
+    related: relationCount + linkCount,
+    files: files.length,
+    discussion: comments.total,
+  };
+
   return (
     <>
       {error ? (
@@ -913,21 +998,56 @@ export function TaskBody({
       ) : null}
 
       {/* ONE scroll region: only the host's header and the composer are
-          pinned. The host's strip (`above`) scrolls with the blocks. */}
+          pinned, and the tab bar sticks to its top (ORC-3). The host's
+          strip (`above`) scrolls with the blocks. */}
       {/* TR-4 — a file dropped anywhere on the card attaches and inserts
           nothing. Without the handlers the browser opens the file in the
-          tab and the task is gone. */}
+          tab and the task is gone. ORC-3 — it lands in Files on any tab,
+          and Files opens, so the member sees it go up. A drop on a field
+          stops at the field, so this never sees it. A pasted file does the
+          same, unless the description or the composer took it inline. */}
+      {/* M4 — `scroll-pt-12` keeps a focused field clear of the sticky tab
+          bar (about 2.5rem tall), when Tab or Shift+Tab moves through it.
+          `scroll-pb-2` leaves room under a focused field at the bottom edge,
+          so its whole focus ring shows (2px outline after a 2px offset).
+          Fence: e2e/projects-focus-ring.spec.ts. */}
       <div
-        className="min-h-0 flex-1 overflow-y-auto"
+        ref={scrollRegion}
+        className="min-h-0 flex-1 scroll-pt-12 scroll-pb-2 overflow-y-auto"
         onDragOver={inline.allowDrop}
-        onDrop={(e) => inline.dropInto(e)}
+        onDrop={(e) => {
+          const dropped = (e.dataTransfer?.files?.length ?? 0) > 0;
+          inline.dropInto(e);
+          if (dropped) showTab("files");
+        }}
+        onPaste={(e) => {
+          if (inline.pasteOnCard(e)) showTab("files");
+        }}
       >
         {above}
 
-        <div className={SECTION_COLUMN}>
+        {/* ORC-3 — above the tabs, on each tab: what waits on the member,
+            then the Add row. Nothing that waits on the member hides behind
+            a tab (D181, `specs/one_record_card.md` §3.3). */}
+        <div className="px-3 py-3">
+          {/* WS-55 EA-12c — the open agent run. ORC-3 moved it from the
+              discussion. It draws nothing while the routes are off. */}
+          <AgentRunPanel
+            task={task}
+            personLabels={personLabels}
+            onTaskChanged={onChanged}
+            onActivity={() => void reloadStreams()}
+          />
+          {/* WS-ALN ALN-2b — the decisions of the task. It draws nothing
+              while DECISIONS_ORGS does not hold the org. */}
+          <DecisionPanel
+            task={task}
+            personLabels={personLabels}
+            onActivity={() => void reloadStreams()}
+          />
           {/* The ADD row (owner, 2026-10-19: "all the main, commonly used
-              features easily accessible"). Each button reaches a section
-              further down: it opens the section when it is folded, and puts
+              features easily accessible"). Each button opens the tab of what
+              it adds (ORC-3), opens its section when it is folded, and puts
               the cursor in its field. Watch sits here too, because it is an
               act on the task and not a fact about it. */}
           <div
@@ -940,7 +1060,7 @@ export function TaskBody({
               size="sm"
               icon="ListPlus"
               disabled={busy}
-              onClick={() => reach("links", subtaskBox)}
+              onClick={() => reach("related", "links", subtaskBox)}
             >
               Subtask
             </Button>
@@ -948,7 +1068,7 @@ export function TaskBody({
               variant="secondary"
               size="sm"
               icon="Link"
-              onClick={() => reach("refs", linkBox)}
+              onClick={() => reach("related", "refs", linkBox)}
             >
               Link
             </Button>
@@ -959,7 +1079,7 @@ export function TaskBody({
               loading={uploading.length > 0}
               disabled={busy}
               onClick={() => {
-                setSectionOpen("files", true);
+                showTab("files");
                 filePicker.current?.click();
               }}
             >
@@ -997,316 +1117,358 @@ export function TaskBody({
               </Button>
             ) : null}
           </div>
-
-          <CollapsibleSection
-            label="Details"
-            icon="SlidersHorizontal"
-            {...fold("details")}
-          >
-            {/* The most used facts first: Status, Priority, Assignees, Due
-                and Tags. No responsive variant on purpose: the HOST's width
-                stop decides, never the viewport - see the width note in
-                this file's header. */}
-            <div className={PAIRED_FIELDS(twoColumn)}>
-              {/* No accent dot: the header's status chip carries the colour
-                  a hand's width above this row. */}
-              <FieldCell label="Status" icon="CircleDot">
-                <SelectButton
-                  label="Status"
-                  // Above My Tasks' TaskFocusModal (`z-[15]`), which draws
-                  // this body. At the default layer the list opened under it.
-                  layer="top"
-                  widthClass="w-full"
-                  value={task.status_id}
-                  disabled={busy}
-                  onChange={(next) => void changeStatus(next)}
-                  options={statuses.map((s) => ({ value: s.id, label: s.name }))}
-                />
-              </FieldCell>
-
-              {/* D78 (owner decision 2026-09-24): ONE priority system in
-                  both apps, the matrix. Important and Leveraged are one
-                  shared answer on the task, and Urgent derives from the due
-                  date. This body is drawn by Projects AND My Tasks, so the
-                  control is in the same place in both. The level is computed
-                  and never stored. */}
-              {/* The level badge rides at the end of the toggles' own row.
-                  As a trailing slot it took a third of the row's width, and
-                  each toggle wrapped onto its own line. */}
-              <FieldCell label="Priority" icon="Flag">
-                <WeightToggles
-                  item={matrixOf(task)}
-                  urgentWindowHours={urgentWindowHours}
-                  size="sm"
-                  showDeepWork={false}
-                  after={
-                    <PriorityBadge
-                      item={matrixOf(task)}
-                      urgentWindowHours={urgentWindowHours}
-                    />
-                  }
-                  onChange={(flags) => {
-                    const payload: Record<string, unknown> = {};
-                    if (flags.important !== undefined) {
-                      payload.importance = importanceFor(flags.important);
-                    }
-                    if (flags.leveraged !== undefined) {
-                      payload.leveraged = flags.leveraged;
-                    }
-                    if (Object.keys(payload).length) void patch(payload);
-                  }}
-                />
-              </FieldCell>
-
-              <FieldCell label="Assignees" icon="Users">
-                <AssigneeChips
-                  assignees={assignees}
-                  disabled={busy}
-                  personLabels={personLabels}
-                  onRemove={(who) => void saveAssignees(withoutAssignee(assignees, who))}
-                />
-                {/* WS-28e: directory-backed suggestions. Free text still
-                    commits: the server accepts any non-empty string, and the
-                    picker must not invent a rule the API does not enforce. */}
-                {/* WS-27bm S7b: `taskId` turns on "Suggested", ranked for
-                    THIS task. Only this panel passes it. */}
-                <AssigneePicker
-                  value={assignee}
-                  // Reads like the Tags row below it: an "Add …" field.
-                  placeholder="Add a person or agent…"
-                  disabled={busy}
-                  due={task.due_at ?? null}
-                  taskId={task.id}
-                  assigned={assignees}
-                  onChange={setAssignee}
-                  onCommitText={() => void addAssignees()}
-                  onPick={(who) => {
-                    setAssignee("");
-                    const next = withAssignee(assignees, who);
-                    if (next !== assignees) void saveAssignees(next);
-                  }}
-                />
-              </FieldCell>
-
-              {/* One deadline, shared by everyone — on the task, never on
-                  the overlay (`PersonalIn`'s docstring). Noon local, the
-                  calendar quick-add's rule, so the day survives every
-                  viewer's timezone. */}
-              <FieldCell label="Due" icon="CalendarClock">
-                <Input
-                  type="date"
-                  inputSize="sm"
-                  aria-label="Due date"
-                  value={task.due_at ? dueDayOf(task.due_at) : ""}
-                  disabled={busy}
-                  onChange={(e) =>
-                    void patch({
-                      due_at: e.target.value ? dueInstantForDay(e.target.value) : null,
-                    })
-                  }
-                />
-              </FieldCell>
-
-              {/* Owner, 2026-10-19: Tags sat in a "Properties" section below
-                  the description, folded by many, and the owner could not
-                  find it. It is a Details row now, beside the other facts
-                  a member sets most. */}
-              <FieldCell label="Tags" icon="Tag">
-                <TagPicker
-                  compact
-                  value={task.tags ?? []}
-                  registry={tags}
-                  disabled={busy}
-                  onCreate={(name, color) =>
-                    projectsApi.createTag(task.project_id, { name, color })
-                  }
-                  onChange={(next) => void patch({ tags: next })}
-                />
-              </FieldCell>
-
-              {/* D77 — when the work starts, shared. A DATE, so the value is
-                  the day itself, never routed through `new Date()` (the
-                  `start_date` note on `TaskRow`). My Tasks hides the task
-                  until this day. */}
-              <FieldCell label="Start" icon="CalendarDays">
-                <Input
-                  type="date"
-                  inputSize="sm"
-                  aria-label="Start date"
-                  value={task.start_date ? task.start_date.slice(0, 10) : ""}
-                  disabled={busy}
-                  onChange={(e) => void patch({ start_date: e.target.value || null })}
-                />
-              </FieldCell>
-
-              {/* D77 — the ONE estimate: the number People capacity and the
-                  analytics read, and the one My Tasks plans a day with. */}
-              <FieldCell label="Estimate" icon="Timer">
-                <SelectButton
-                  label="Estimate"
-                  widthClass="w-full"
-                  value={task.estimate_mins == null ? "" : String(task.estimate_mins)}
-                  disabled={busy}
-                  onChange={(next) =>
-                    void patch({ estimate_mins: next === "" ? null : Number(next) })
-                  }
-                  options={estimateOptions(task.estimate_mins)}
-                />
-              </FieldCell>
-
-              {/* D77 — read-only: every member's timed blocks, summed. One
-                  member's actuals are theirs; the total is the work's. */}
-              <FieldCell label="Time spent" icon="Hourglass">
-                <span
-                  className={
-                    spent ? "text-sm text-foreground" : "text-sm text-muted-foreground"
-                  }
-                >
-                  {spent === null ? "…" : spent > 0 ? durationLabel(spent) : "None yet"}
-                </span>
-              </FieldCell>
-
-              <FieldCell label="Repeats" icon="Repeat">
-                <RepeatEditor taskId={task.id} bare />
-              </FieldCell>
-            </div>
-          </CollapsibleSection>
-
-          {/* D77 — the description is EDITED here, in both apps. It was
-              read-only in Projects, and My Tasks' Notes was the only writer.
-              Prose gets the whole width at every stop (#408 stacked the
-              sections, so there is no grid to escape). */}
-          <CollapsibleSection
-            label="Description"
-            icon="AlignLeft"
-            {...fold("description")}
-          >
-            {/* WS-57 TR-4 — the saved text draws as Markdown, with images.
-                The plain field stays the editor (a rich editor is
-                WS-27ao's). An empty description shows the field, as it
-                always did. A pasted or dropped image uploads and lands at
-                the caret as `![name](url)`. */}
-            {showDescriptionField ? (
-              <Textarea
-                ref={descriptionBox}
-                value={description}
-                disabled={busy}
-                rows={4}
-                placeholder="What this task is about — notes, links, context…"
-                aria-label="Description"
-                onChange={(e) => writeDescription(e.target.value)}
-                onFocus={() => editDescription(true)}
-                onBlur={() => {
-                  editDescription(false);
-                  saveDescription();
-                }}
-                onPaste={(e) => inline.pasteInto(e, descriptionTarget)}
-                onDragOver={inline.allowDrop}
-                onDrop={(e) => inline.dropInto(e, descriptionTarget)}
-              />
-            ) : (
-              // A row, not an absolute button: `.cc-control` sets
-              // `position: relative`, which beats a utility class.
-              <div className="flex items-start gap-1">
-                <div
-                  data-testid="description-view"
-                  className="min-w-0 flex-1 cursor-text break-words rounded-lg px-1 py-1 text-sm text-foreground hover:bg-muted/40"
-                  onClick={(e) => {
-                    if (clickEdits(e)) editDescription(true);
-                  }}
-                >
-                  <MarkdownBody content={keepLineBreaks(forView(description))} plainEmails taskRefs
-                    taskRefResolver={refResolver} projectPills />
-                </div>
-                <Button
-                  className="shrink-0"
-                  variant="ghost"
-                  size="icon-xs"
-                  icon="Pencil"
-                  aria-label="Edit description"
-                  title="Edit description"
-                  disabled={busy}
-                  onClick={() => editDescription(true)}
-                />
-              </div>
-            )}
-          </CollapsibleSection>
-
-          {/* Tags and Repeats were a "Properties" section here until
-              2026-10-19. They are Details rows now, and the fold id is gone
-              from `sectionFold.ts`, so a member who folded it loses nothing. */}
         </div>
 
-        {/* Custom fields bring their own section chrome, so they sit OUTSIDE
-            the padded column. Renders nothing when the project defined no
-            fields. */}
-        <CustomFieldValues task={task} fields={fields} onChanged={onChanged} />
+        {/* Where the bar sits before it sticks, so a new tab opens at its
+            top (`showTab`). */}
+        <div ref={tabsTop} aria-hidden />
+        <RecordTabBar
+          pinned
+          tabs={TASK_TABS.map((id) => ({
+            id,
+            label: TASK_TAB_LABEL[id],
+            count: tabCount(tabCounts[id]),
+          }))}
+          active={tab}
+          onTab={showTab}
+        />
 
-        <div className={SECTION_COLUMN}>
-          {/* Other tasks: subtasks, and the blocks / relates / duplicates
-              links of WS-27p. Named "Links & subtasks" until 2026-10-13,
-              when the Links section below took that word for URLs. The fold
-              id stays "links" so a member's folded state survives. */}
-          <CollapsibleSection
-            label="Subtasks & related"
-            icon="GitBranch"
-            className={twoColumn ? "min-w-0" : undefined}
-            {...fold("links")}
-          >
-            <div className="space-y-2">
-              {onOpenTask ? (
-                <RelationsBlock
-                  taskId={task.id}
-                  task={task}
-                  refreshKey={relationsKey}
-                  onOpenTask={onOpenTask}
+        {/* ⚠️ Each tab stays MOUNTED, and only `hidden` changes. The Related
+            and Files counts come from their lists, a half-typed subtask or
+            link survives a look at another tab, and the Add row's fields
+            exist to take the cursor. No display class on the panel: `hidden`
+            must win. */}
+        <div role="tabpanel" aria-label={TASK_TAB_LABEL.overview} hidden={tab !== "overview"}>
+          <div className={SECTION_COLUMN}>
+            <CollapsibleSection
+              label="Details"
+              icon="SlidersHorizontal"
+              {...fold("details")}
+            >
+              {/* The most used facts first: Status, Priority, Assignees, Due
+                  and Tags. No responsive variant on purpose: the HOST's width
+                  stop decides, never the viewport - see the width note in
+                  this file's header. */}
+              <div className={PAIRED_FIELDS(twoColumn)}>
+                {/* No accent dot: the header's status chip carries the colour
+                    a hand's width above this row. */}
+                <FieldCell label="Status" icon="CircleDot">
+                  <SelectButton
+                    label="Status"
+                    // Above My Tasks' TaskFocusModal (`z-[15]`), which draws
+                    // this body. At the default layer the list opened under it.
+                    layer="top"
+                    widthClass="w-full"
+                    value={task.status_id}
+                    disabled={busy}
+                    onChange={(next) => void changeStatus(next)}
+                    options={statuses.map((s) => ({ value: s.id, label: s.name }))}
+                  />
+                </FieldCell>
+
+                {/* D78 (owner decision 2026-09-24): ONE priority system in
+                    both apps, the matrix. Important and Leveraged are one
+                    shared answer on the task, and Urgent derives from the due
+                    date. This body is drawn by Projects AND My Tasks, so the
+                    control is in the same place in both. The level is computed
+                    and never stored. */}
+                {/* The level badge rides at the end of the toggles' own row.
+                    As a trailing slot it took a third of the row's width, and
+                    each toggle wrapped onto its own line. */}
+                <FieldCell label="Priority" icon="Flag">
+                  <WeightToggles
+                    item={matrixOf(task)}
+                    urgentWindowHours={urgentWindowHours}
+                    size="sm"
+                    showDeepWork={false}
+                    after={
+                      <PriorityBadge
+                        item={matrixOf(task)}
+                        urgentWindowHours={urgentWindowHours}
+                      />
+                    }
+                    onChange={(flags) => {
+                      const payload: Record<string, unknown> = {};
+                      if (flags.important !== undefined) {
+                        payload.importance = importanceFor(flags.important);
+                      }
+                      if (flags.leveraged !== undefined) {
+                        payload.leveraged = flags.leveraged;
+                      }
+                      if (Object.keys(payload).length) void patch(payload);
+                    }}
+                  />
+                </FieldCell>
+
+                <FieldCell label="Assignees" icon="Users">
+                  <AssigneeChips
+                    assignees={assignees}
+                    disabled={busy}
+                    personLabels={personLabels}
+                    onRemove={(who) => void saveAssignees(withoutAssignee(assignees, who))}
+                  />
+                  {/* WS-28e: directory-backed suggestions. Free text still
+                      commits: the server accepts any non-empty string, and the
+                      picker must not invent a rule the API does not enforce. */}
+                  {/* WS-27bm S7b: `taskId` turns on "Suggested", ranked for
+                      THIS task. Only this panel passes it. */}
+                  <AssigneePicker
+                    value={assignee}
+                    // Reads like the Tags row below it: an "Add …" field.
+                    placeholder="Add a person or agent…"
+                    disabled={busy}
+                    due={task.due_at ?? null}
+                    taskId={task.id}
+                    assigned={assignees}
+                    onChange={setAssignee}
+                    onCommitText={() => void addAssignees()}
+                    onPick={(who) => {
+                      setAssignee("");
+                      const next = withAssignee(assignees, who);
+                      if (next !== assignees) void saveAssignees(next);
+                    }}
+                  />
+                </FieldCell>
+
+                {/* One deadline, shared by everyone — on the task, never on
+                    the overlay (`PersonalIn`'s docstring). Noon local, the
+                    calendar quick-add's rule, so the day survives every
+                    viewer's timezone. */}
+                <FieldCell label="Due" icon="CalendarClock">
+                  <Input
+                    type="date"
+                    inputSize="sm"
+                    aria-label="Due date"
+                    value={task.due_at ? dueDayOf(task.due_at) : ""}
+                    disabled={busy}
+                    onChange={(e) =>
+                      void patch({
+                        due_at: e.target.value ? dueInstantForDay(e.target.value) : null,
+                      })
+                    }
+                  />
+                </FieldCell>
+
+                {/* Owner, 2026-10-19: Tags sat in a "Properties" section below
+                    the description, folded by many, and the owner could not
+                    find it. It is a Details row now, beside the other facts
+                    a member sets most. */}
+                <FieldCell label="Tags" icon="Tag">
+                  <TagPicker
+                    compact
+                    value={task.tags ?? []}
+                    registry={tags}
+                    disabled={busy}
+                    onCreate={(name, color) =>
+                      projectsApi.createTag(task.project_id, { name, color })
+                    }
+                    onChange={(next) => void patch({ tags: next })}
+                  />
+                </FieldCell>
+
+                {/* SP-6 — the type. Epic is a type that only a top-level task
+                    may wear, so the epic option is disabled on a subtask. */}
+                <FieldCell label="Type" icon="Layers">
+                  <SelectButton
+                    label="Type"
+                    layer="top"
+                    align="end"
+                    widthClass="w-full"
+                    value={task.type_id ?? ""}
+                    disabled={busy || typesFor !== task.project_id}
+                    onChange={(next) => void changeType(next)}
+                    options={typeSelectOptions(taskTypes, task)}
+                  />
+                </FieldCell>
+
+                {/* D77 — when the work starts, shared. A DATE, so the value is
+                    the day itself, never routed through `new Date()` (the
+                    `start_date` note on `TaskRow`). My Tasks hides the task
+                    until this day. */}
+                <FieldCell label="Start" icon="CalendarDays">
+                  <Input
+                    type="date"
+                    inputSize="sm"
+                    aria-label="Start date"
+                    value={task.start_date ? task.start_date.slice(0, 10) : ""}
+                    disabled={busy}
+                    onChange={(e) => void patch({ start_date: e.target.value || null })}
+                  />
+                </FieldCell>
+
+                {/* D77 — the ONE estimate: the number People capacity and the
+                    analytics read, and the one My Tasks plans a day with. */}
+                <FieldCell label="Estimate" icon="Timer">
+                  <SelectButton
+                    label="Estimate"
+                    widthClass="w-full"
+                    value={task.estimate_mins == null ? "" : String(task.estimate_mins)}
+                    disabled={busy}
+                    onChange={(next) =>
+                      void patch({ estimate_mins: next === "" ? null : Number(next) })
+                    }
+                    options={estimateOptions(task.estimate_mins)}
+                  />
+                </FieldCell>
+
+                {/* D77 — read-only: every member's timed blocks, summed. One
+                    member's actuals are theirs; the total is the work's. */}
+                <FieldCell label="Time spent" icon="Hourglass">
+                  <span
+                    className={
+                      spent ? "text-sm text-foreground" : "text-sm text-muted-foreground"
+                    }
+                  >
+                    {spent === null ? "…" : spent > 0 ? durationLabel(spent) : "None yet"}
+                  </span>
+                </FieldCell>
+
+                <FieldCell label="Repeats" icon="Repeat">
+                  <RepeatEditor taskId={task.id} bare />
+                </FieldCell>
+              </div>
+            </CollapsibleSection>
+
+            {/* D77 — the description is EDITED here, in both apps. It was
+                read-only in Projects, and My Tasks' Notes was the only writer.
+                Prose gets the whole width at every stop (#408 stacked the
+                sections, so there is no grid to escape). */}
+            <CollapsibleSection
+              label="Description"
+              icon="AlignLeft"
+              {...fold("description")}
+            >
+              {/* WS-57 TR-4 — the saved text draws as Markdown, with images.
+                  The plain field stays the editor (a rich editor is
+                  WS-27ao's). An empty description shows the field, as it
+                  always did. A pasted or dropped image uploads and lands at
+                  the caret as `![name](url)`. */}
+              {showDescriptionField ? (
+                <Textarea
+                  ref={descriptionBox}
+                  value={description}
+                  disabled={busy}
+                  rows={4}
+                  placeholder="What this task is about — notes, links, context…"
+                  aria-label="Description"
+                  onChange={(e) => writeDescription(e.target.value)}
+                  onFocus={() => editDescription(true)}
+                  onBlur={() => {
+                    editDescription(false);
+                    saveDescription();
+                  }}
+                  onPaste={(e) => inline.pasteInto(e, descriptionTarget)}
+                  onDragOver={inline.allowDrop}
+                  onDrop={(e) => inline.dropInto(e, descriptionTarget)}
                 />
-              ) : null}
-              <Input
-                ref={subtaskBox}
-                icon="Plus"
-                value={subtask}
-                disabled={busy}
-                onChange={(e) => setSubtask(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void addSubtask();
-                  }
-                }}
-                placeholder="Break this down…"
-                aria-label="Add a subtask"
+              ) : (
+                // A row, not an absolute button: `.cc-control` sets
+                // `position: relative`, which beats a utility class.
+                <div className="flex items-start gap-1">
+                  <div
+                    data-testid="description-view"
+                    className="min-w-0 flex-1 cursor-text break-words rounded-lg px-1 py-1 text-sm text-foreground hover:bg-muted/40"
+                    onClick={(e) => {
+                      if (clickEdits(e)) editDescription(true);
+                    }}
+                  >
+                    <MarkdownBody content={keepLineBreaks(forView(description))} plainEmails taskRefs
+                      taskRefResolver={refResolver} projectPills />
+                  </div>
+                  <Button
+                    className="shrink-0"
+                    variant="ghost"
+                    size="icon-xs"
+                    icon="Pencil"
+                    aria-label="Edit description"
+                    title="Edit description"
+                    disabled={busy}
+                    onClick={() => editDescription(true)}
+                  />
+                </div>
+              )}
+            </CollapsibleSection>
+
+            {/* Tags and Repeats were a "Properties" section here until
+                2026-10-19. They are Details rows now, and the fold id is gone
+                from `sectionFold.ts`, so a member who folded it loses nothing. */}
+          </div>
+
+          {/* Custom fields bring their own section chrome, so they sit OUTSIDE
+              the padded column. Renders nothing when the project defined no
+              fields. */}
+          <CustomFieldValues task={task} fields={fields} onChanged={onChanged} />
+        </div>
+
+        <div role="tabpanel" aria-label={TASK_TAB_LABEL.related} hidden={tab !== "related"}>
+          <div className={SECTION_COLUMN}>
+            {/* Other tasks: subtasks, and the blocks / relates / duplicates
+                links of WS-27p. Named "Links & subtasks" until 2026-10-13,
+                when the Links section below took that word for URLs. The fold
+                id stays "links" so a member's folded state survives. */}
+            <CollapsibleSection
+              label="Subtasks & related"
+              icon="GitBranch"
+              count={relationCount}
+              className={twoColumn ? "min-w-0" : undefined}
+              // Mounted while folded, as Links is: the block reports the
+              // Related tab's count (ORC-3).
+              keepMounted
+              {...fold("links")}
+            >
+              <div className="space-y-2">
+                {onOpenTask ? (
+                  <RelationsBlock
+                    taskId={task.id}
+                    task={task}
+                    refreshKey={relationsKey}
+                    onOpenTask={onOpenTask}
+                    onCount={setRelationCount}
+                  />
+                ) : null}
+                <Input
+                  ref={subtaskBox}
+                  icon="Plus"
+                  value={subtask}
+                  disabled={busy}
+                  onChange={(e) => setSubtask(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void addSubtask();
+                    }
+                  }}
+                  placeholder="Break this down…"
+                  aria-label="Add a subtask"
+                />
+              </div>
+            </CollapsibleSection>
+
+            {/* WS-57 TR-2: pull requests, issues, commits, docs and URLs. */}
+            <CollapsibleSection
+              label="Links"
+              icon="Link"
+              count={linkCount}
+              className={twoColumn ? "min-w-0" : undefined}
+              // Mounted while folded: the list reports the header's count, and
+              // a folded, unmounted list left the last task's count behind
+              // (review of WS-57 TR-2).
+              keepMounted
+              {...fold("refs")}
+            >
+              <TaskLinks
+                key={task.id}
+                taskId={task.id}
+                onCount={setLinkCount}
+                inputRef={linkBox}
               />
-            </div>
-          </CollapsibleSection>
+            </CollapsibleSection>
+          </div>
+        </div>
 
-          {/* WS-57 TR-2: pull requests, issues, commits, docs and URLs. */}
-          <CollapsibleSection
-            label="Links"
-            icon="Link"
-            count={linkCount}
-            className={twoColumn ? "min-w-0" : undefined}
-            // Mounted while folded: the list reports the header's count, and
-            // a folded, unmounted list left the last task's count behind
-            // (review of WS-57 TR-2).
-            keepMounted
-            {...fold("refs")}
-          >
-            <TaskLinks
-              key={task.id}
-              taskId={task.id}
-              onCount={setLinkCount}
-              inputRef={linkBox}
-            />
-          </CollapsibleSection>
-
-          <CollapsibleSection
-            label="Files"
-            icon="Paperclip"
-            count={files.length}
-            className={twoColumn ? "min-w-0" : undefined}
-            {...fold("files")}
-          >
+        {/* The tab is the heading, so Files draws no section of its own. */}
+        <div role="tabpanel" aria-label={TASK_TAB_LABEL.files} hidden={tab !== "files"}>
+          <div className="px-3 py-3">
             <div className="space-y-1">
               {files.map((f) => {
                 const kind = previewKind(f.mime);
@@ -1393,38 +1555,15 @@ export function TaskBody({
             >
               {uploading.length > 0 ? "Uploading…" : "Attach files"}
             </Button>
-          </CollapsibleSection>
+          </div>
+        </div>
 
-          {/* ⚠️ TWO lists, not one stream with a filter drawn over it. `Tabs`
-              is the shared bar (§5). The section SPANS in two-column mode:
-              both lists are lists of sentences. */}
-          <CollapsibleSection
-            label="Discussion"
-            icon="MessageSquare"
-            count={comments.total}
-            // ⚠️ `min-w-0` only. `col-span-2` was left over from when the
-            // SECTIONS were the grid cells. The parent is a flex column now
-            // and a column span means nothing there — a dead class that reads
-            // like live layout. `min-w-0` still earns its place: it is what
-            // stops a long unbroken comment forcing the panel wider.
-            className={twoColumn ? "min-w-0" : undefined}
-            {...fold("activity")}
-          >
-            {/* WS-55 EA-12c — the open agent run, at the top of the
-                discussion. It draws nothing while the routes are off. */}
-            <AgentRunPanel
-              task={task}
-              personLabels={personLabels}
-              onTaskChanged={onChanged}
-              onActivity={() => void reloadStreams()}
-            />
-            {/* WS-ALN ALN-2b — the decisions of the task. It draws nothing
-                while DECISIONS_ORGS does not hold the org. */}
-            <DecisionPanel
-              task={task}
-              personLabels={personLabels}
-              onActivity={() => void reloadStreams()}
-            />
+        {/* ⚠️ TWO lists, not one stream with a filter drawn over it. `Tabs`
+            is the shared bar (§5). Comments come first (D172.7). The tab is
+            the heading. `min-w-0` stops a long unbroken comment forcing the
+            panel wider. */}
+        <div role="tabpanel" aria-label={TASK_TAB_LABEL.discussion} hidden={tab !== "discussion"}>
+          <div className="min-w-0 px-3 py-3">
             <Tabs
               chrome="inline"
               className="mb-3"
@@ -1540,11 +1679,12 @@ export function TaskBody({
                 ) : null}
               </>
             )}
-          </CollapsibleSection>
+          </div>
         </div>
       </div>
 
-      {/* ⚠️ The composer belongs to the COMMENTS list, and is hidden with it. */}
+      {/* ⚠️ The composer belongs to the COMMENTS list, and is hidden with it:
+          on another tab, and on Activity (ORC-3). */}
       <div
         className="shrink-0 border-t border-border bg-card p-3"
         // ⚠️ On the CONTAINER, not the field. Tab from the field to a
@@ -1554,7 +1694,7 @@ export function TaskBody({
         onBlur={(e) => {
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setComposing(false);
         }}
-        hidden={stream !== "comments"}
+        hidden={tab !== "discussion" || stream !== "comments"}
         onDragOver={inline.allowDrop}
         onDrop={(e) => inline.dropInto(e)}
       >
