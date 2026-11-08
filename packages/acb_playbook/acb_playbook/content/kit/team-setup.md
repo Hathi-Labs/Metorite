@@ -91,7 +91,8 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 - A connection makes at most 120 writes in 10 minutes. The 121st write is refused, and the refusal holds retry_after: the seconds to wait. Every terminal and sub-agent on one machine shares that connection, so they share the 120.
 - Parallel calls can answer "Metorite is busy". Call the tools one at a time and retry once.
 - Send a `status_id` with every `create_task`. Send an `idempotency_key` too, so a retry makes no second task.
-- A read returns at most 100 tasks (`list_tasks`), 50 hits (`search_tasks`) and 25 rows (`my_work`).
+- A read returns at most 100 tasks (`list_tasks`), 500 with `compact: true`, 50 hits (`search_tasks`) and 25 rows (`my_work`).
+- To audit a large board, count first with `board_stats`, then read only the rows you need with the `list_tasks` filters (`status_category`, the date filters, `has_parent`, `assigned`, `title_prefix`).
 - A tool cannot cancel a task or move it to another project. It cannot delete a task while the delete switch is off.
 
 ## End of session
