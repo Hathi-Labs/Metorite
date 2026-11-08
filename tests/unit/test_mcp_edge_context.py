@@ -1093,3 +1093,149 @@ class TestTheAttachments:
 
     async def test_g17_no_agent_text_names_a_removal(self):
         assert "delet" not in tools.GET_TASK_CONTEXT.description.lower()
+
+    # ── IMG-3: the count of images (projects_ai_chat.md §30.4 item 9) ────────
+
+    async def test_img3_images_counts_the_four_image_types_only(self, board):
+        """A PNG, a JPEG, a GIF and a WebP count. An SVG (the gateway calls it
+        ``kind: image``), a PDF and a text file do not. Mutation: count
+        ``kind == "image"``, and the SVG makes it 5."""
+        board.attachments = [
+            _file(1, name="a.png", mime="image/png"),
+            _file(2, name="b.jpg", mime="image/jpeg"),
+            _file(3, name="c.gif", mime="image/gif"),
+            _file(4, name="d.webp", mime="image/webp"),
+            _file(5, name="e.svg", mime="image/svg+xml"),
+            _file(6),
+            _file(7, name="f.txt", mime="text/plain"),
+        ]
+        body = await _context()
+        assert body["images"] == 4
+        assert [r["kind"] for r in body["attachments"]].count("image") == 5
+
+    async def test_img3_a_task_with_one_screenshot_says_images_1(self, board):
+        board.attachments = [_file(1, name="shot.png", mime="image/png")]
+        body = await _context()
+        assert body["images"] == 1
+        assert tuple(body)[:len(tools.CONTEXT_KEYS)] == tools.CONTEXT_KEYS
+
+    async def test_img3_no_files_and_a_refused_list_say_images_0(self, board):
+        assert (await _context())["images"] == 0
+        board.attachments = [_file(1, name="a.png", mime="image/png")]
+        board.answers[("GET", f"/projects/tasks/{TASK}/attachments")] = (404, {})
+        assert (await _context())["images"] == 0
+
+    async def test_img3_the_count_reads_only_the_kept_100_rows(self, board):
+        """Each counted image has an id in ``attachments``."""
+        board.attachments = ([_file(n, name=f"f{n}.txt", mime="text/plain")
+                              for n in range(100)]
+                             + [_file(200, name="late.png", mime="image/png")])
+        body = await _context()
+        assert body["images"] == 0 and body["attachments_truncated"] is True
+
+    async def test_img3_the_count_makes_no_call_and_the_ceiling_stays_14(self, board):
+        _chain(board, 7, project=OTHER_PROJECT)
+        board.attachments = [_file(1, name="a.png", mime="image/png")]
+        body = await _context()
+        assert body["images"] == 1
+        assert tools.CONTEXT_CALL_CEILING == 14
+        assert len(board.requests) == tools.CONTEXT_CALL_CEILING
+        assert not [p for p in board.paths() if p.startswith("/projects/attachments/")]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SW-56: the protocol block of my_work (and of claim_task, see test_mcp_edge_claim.py)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTheProtocolBlock:
+    """``protocol: {version, lines}`` in the ``my_work`` result.
+
+    Fixed server text, at most six lines of 120 characters. It shows only while
+    the runs flag is on and the organization of the token row is on
+    ``agent_protocol_orgs``.
+
+    Mutations (R7), each turned the named test red:
+
+    * S56-M1. ``tools._protocol`` drops the ``protocol_allowed`` check.
+      ``test_the_block_is_dark_while_agent_protocol_orgs_is_empty``.
+    * S56-M2. ``tools._protocol`` drops the ``runs_enabled`` check.
+      ``test_the_block_is_dark_with_the_runs_flag_off``.
+    * S56-M3. a seventh line, or a line of 121 characters.
+      ``test_the_text_is_fixed_and_within_its_limits``.
+    * S56-M4. ``_my_work`` does not add the key.
+      ``test_the_block_shows_in_my_work_when_on``.
+    * S56-M5. a line drops ``ask_on_task``.
+      ``test_the_lines_carry_the_rules_of_the_spec``.
+    """
+
+    @pytest.fixture
+    def on(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        return board
+
+    async def _result(self) -> dict[str, Any]:
+        return _structured(await _tool("my_work", {}))
+
+    async def test_the_block_is_dark_while_agent_protocol_orgs_is_empty(self, board):
+        assert "protocol" not in await self._result()
+
+    async def test_the_block_stays_dark_for_an_organization_off_the_list(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs",
+                            "00000000-0000-4000-8000-000000000001")
+        assert "protocol" not in await self._result()
+
+    async def test_the_block_is_dark_with_the_runs_flag_off(self, on, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+        assert "protocol" not in await self._result()
+
+    async def test_the_block_shows_in_my_work_when_on(self, on):
+        result = await self._result()
+        assert result["protocol"] == {"version": 1, "lines": list(tools.PROTOCOL_LINES)}
+        assert "rows" in result
+
+    async def test_the_block_shows_with_no_row(self, on):
+        result = await self._result()
+        assert result["rows"] == [] and result["protocol"]["lines"]
+
+    def test_the_text_is_fixed_and_within_its_limits(self):
+        lines = tools.PROTOCOL_LINES
+        assert 1 <= len(lines) <= tools.PROTOCOL_LINES_MAX == 6
+        assert all(isinstance(line, str) and 0 < len(line) <= tools.PROTOCOL_LINE_MAX == 120
+                   for line in lines)
+        assert len(set(lines)) == len(lines)
+
+    def test_the_lines_carry_the_rules_of_the_spec(self):
+        text = " ".join(tools.PROTOCOL_LINES)
+        for needle in ("slice, not the epic", "post_agent_activity", "ask_on_task",
+                       "Never ask only in the terminal", "one result", "release_task",
+                       "Hand off with evidence"):
+            assert needle in text, needle
+
+    def test_each_tool_named_in_a_line_exists_and_is_a_run_tool(self):
+        import re
+        named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", " ".join(tools.PROTOCOL_LINES)))
+        assert named <= set(tools.TOOLS), named - set(tools.TOOLS)
+        assert all(tools.TOOLS[n].runs for n in named)
+
+    def test_the_lines_hold_no_organization_rule(self):
+        text = " ".join(tools.PROTOCOL_LINES)
+        for term in ("HathiLabs", "STE", "OWNER-GATE", "AGENT-SAFE", "21:30", "premerge"):
+            assert term not in text, term
+
+    def test_the_schema_pins_the_block_and_leaves_it_optional(self):
+        schema = tools.MY_WORK.output_schema
+        assert "protocol" in schema["properties"] and "protocol" not in schema["required"]
+        block = schema["properties"]["protocol"]
+        assert block["properties"]["lines"]["maxItems"] == 6
+        assert block["properties"]["lines"]["items"]["maxLength"] == 120
+        assert block["additionalProperties"] is False
+        claim = tools.CLAIM_TASK.output_schema
+        assert "protocol" in claim["properties"] and "protocol" not in claim["required"]
+
+    async def test_the_block_adds_no_gateway_request(self, board, monkeypatch):
+        await self._result()
+        before = list(board.paths())
+        board.requests.clear()
+        monkeypatch.setattr(get_settings(), "agent_protocol_orgs", "*")
+        await self._result()
+        assert board.paths() == before

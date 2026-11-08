@@ -39,6 +39,8 @@ write pairs, and :func:`writes_enabled` is the one reader of the writes flag. :f
 ``mcp:<host>:<slug>`` stamp of a connection (EA-13a). :data:`ACTOR_VIA_PATTERN`
 is the one shape of that stamp, and the Projects routes import it from here.
 :data:`CLIENT_LABELS` and :func:`client_label` give the name of a stamp.
+EA-19b adds the box stamp ``mcp:box:<slug>-<8 hex>`` (spec §10.9), and
+:func:`box_tokens_enabled` is the one reader of the box-token flag.
 
 **The app door (MCP-P1a, spec §19).** The app scopes come from
 ``acb_common.app_manifests`` (:data:`APP_SCOPES`), and :func:`covered_scopes`
@@ -250,6 +252,19 @@ def mcp_sessions_enabled() -> bool:
     return bool(get_settings().agent_mcp_sessions_enabled)
 
 
+def box_tokens_enabled() -> bool:
+    """True when ``agent_box_tokens_enabled`` is on (EA-19b, spec §10.9).
+
+    The ONE reader of the box-token flag, for both units. The edge bearer
+    check and ``agent_tokens.read_live_connection`` (branch 0) refuse a
+    connection of credential ``box`` while it is false, next to
+    :func:`org_allowed`. ``agent_tokens.lookup_token`` does not read it,
+    because ``/oauth/revoke`` must still find a box token (rule 8). It is a
+    pause, not a kill.
+    """
+    return bool(get_settings().agent_box_tokens_enabled)
+
+
 #: The ``detail`` of the 403 that branch 0 answers to a SIGNED write while the
 #: writes flag is off (EA-6a fix round 1). The edge maps it to a tool error,
 #: never to the MCP 401, so a client keeps its token and its reads.
@@ -294,6 +309,23 @@ def _parse_orgs(raw: str) -> frozenset[str]:
 def allowed_orgs() -> frozenset[str]:
     """The parsed ``agent_access_orgs``. Empty means no organization."""
     return _parse_orgs(str(get_settings().agent_access_orgs or ""))
+
+
+def protocol_allowed(organization_id: object) -> bool:
+    """True when ``agent_protocol_orgs`` allows *organization_id*.
+
+    SW-56. The ONE reader of the flag. It keeps the ``protocol`` block of the
+    ``claim_task`` and ``my_work`` results dark: an organization that it
+    refuses gets results with no such key. The list has the shape of
+    ``agent_access_orgs`` and the same parser, and the default is empty. It
+    reads the settings at each call. The caller passes the organization of
+    the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().agent_protocol_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
 
 
 def org_allowed(organization_id: object) -> bool:
@@ -785,6 +817,9 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: ``record_outside_decision``. An agent records a decision that its member
 #: made outside Metorite, on its OWN awaiting run. It writes an agent
 #: ``response`` and never a ``prompt``, and it refuses a typed request.
+#: SW-16a adds the link pair: the POST and the DELETE of a task link, the
+#: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
+#: the member sees BOTH tasks. SW-16b owns the write fence for these routes.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
@@ -795,6 +830,9 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PUT", "/projects/tasks/{task_id}/assignees"),
     ("POST", "/projects/tasks/{task_id}/move"),
     ("POST", "/projects/tasks/{task_id}/refs"),
+    # SW-16a: `add_task_link` and `remove_task_link`.
+    ("POST", "/projects/tasks/{task_id}/links"),
+    ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),
     ("POST", "/projects/tasks/{task_id}/claim"),
@@ -828,6 +866,8 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/nodes/{project_id}/fields"),
     ("GET", "/projects/nodes/{project_id}/tags"),
     ("GET", "/projects/tasks"),
+    # MCP-G19a: the counts of `board_stats`, over the same scope as the list.
+    ("GET", "/projects/tasks/stats"),
     ("GET", "/projects/tasks/{task_id}"),
     ("GET", "/projects/tasks/{task_id}/relations"),
     ("GET", "/projects/tasks/{task_id}/timeline"),
@@ -835,6 +875,11 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # MCP-G18: the metadata of the files on a task, for `get_task_context`.
     # The row also holds a cookie URL, which the edge never returns.
     ("GET", "/projects/tasks/{task_id}/attachments"),
+    # IMG-3 (projects_ai_chat.md §30.4, owner answer 2026-11-07): the bytes
+    # of one file, for `get_attachment`. The route checks only that the file
+    # hangs off SOME task that the member can see. So the tool first finds
+    # the id in the list of THIS task, and sends no bytes call otherwise.
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"),
     ("GET", "/projects/search"),
     ("GET", "/projects/tasks/{task_id}/agent-runs"),
     ("GET", "/projects/agent-runs"),
@@ -852,11 +897,20 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     *MCP_WRITE_ROUTES,
 })
 
+#: IMG-3. The file name in the path of the bytes route. The route ignores
+#: it (the stored name wins), so the shape only keeps the path plain: the
+#: characters of the upload rule (``_safe_name``), 1 to 120 of them, no
+#: ``/``, no ``\\``, no ``..``, no control character, and no dot or space
+#: first. The edge sends a stand-in name for a stored name of another shape.
+ATTACHMENT_FILENAME_PATTERN = r"(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9._ -]{0,119}"
+
 #: The path parameters of a pair of :data:`MCP_ROUTES` that are not ids, each
 #: with its pattern (MCP-P1a). The edge client refuses every other value.
 MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType({
     ("GET", "/agent-access/apps/{app}"): MappingProxyType(
         {"app": app_manifests.APP_ID_PATTERN}),
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"): MappingProxyType(
+        {"filename": ATTACHMENT_FILENAME_PATTERN}),
 })
 
 # ── The app door (MCP-P1a, spec §19.3 to §19.7) ─────────────────────────────
@@ -958,8 +1012,66 @@ def client_slug(client_id: str | None) -> str:
     return segment[:CLIENT_SLUG_MAX].rstrip("-")
 
 
-def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
+#: EA-19b (spec §10.9 question 6). The ``credential`` of a box connection,
+#: its ``client_id``, and the longest ``<slug>`` of its stamp.
+BOX_CREDENTIAL = "box"
+BOX_CLIENT_ID = "urn:metorite:box"
+BOX_SLUG_MAX = 40
+#: The start of each box stamp. It keeps ``mcp:``, so a header from a person
+#: that names a box stamp starts branch 0 and fails the HMAC (§10.9 q. 1).
+BOX_STAMP_PREFIX = "mcp:box:"
+_BOX_LABEL = re.compile(r"(?P<slug>.+)-[0-9a-f]{8}")
+_BOX_HEX = re.compile(r"[0-9a-f]{8}")
+
+
+def box_slug(name: str | None) -> str:
+    """The ``<slug>`` of a box name (EA-19b, spec §10.9 question 1).
+
+    The name in lower case. Each run of characters other than ``[a-z0-9-]``
+    becomes one ``-``, a ``-`` at either end goes, and the slug keeps at most
+    :data:`BOX_SLUG_MAX` characters. A name with no such character gives
+    ``""``.
+    """
+    slug = _SLUG_JUNK.sub("-", (name or "").lower()).strip("-")
+    return slug[:BOX_SLUG_MAX].rstrip("-")
+
+
+def _box_stamp(connection_id: str | None, client_name: str | None) -> str:
+    """``mcp:box:<slug>-<8 hex>``, else ``mcp:box:<8 hex>``, else ``""``.
+
+    ``<8 hex>`` is the start of the canonical connection id, so two boxes of
+    one name stay apart. A stamp that does not fully match
+    :data:`ACTOR_VIA_PATTERN` falls back to the short form. A connection id
+    that is not a UUID gives ``""``, which branch 0 refuses.
+    """
+    try:
+        short = str(uuid.UUID(str(connection_id or "")))[:8]
+    except ValueError:
+        return ""
+    slug = box_slug(client_name)
+    if slug:
+        stamp = f"{BOX_STAMP_PREFIX}{slug}-{short}"
+        if ACTOR_VIA_PATTERN.fullmatch(stamp):
+            return stamp
+    return f"{BOX_STAMP_PREFIX}{short}"
+
+
+def actor_via_for(
+    client_origin: str | None,
+    *,
+    client_id: str | None,
+    credential: str | None = None,
+    connection_id: str | None = None,
+    client_name: str | None = None,
+) -> str:
     """The ``X-Actor-Via`` stamp of a connection (spec §10.1, §12.2 item 1).
+
+    EA-19b (spec §10.9 question 1). For *credential* ``box`` the stamp is
+    ``mcp:box:<slug>-<8 hex>`` (:func:`_box_stamp`), from *client_name* (the
+    box name) and *connection_id*. The origin and the client id do not
+    count then. Every other credential, and the defaults, give the stamp
+    below, as before. An OAuth connection whose origin host is ``box`` gets
+    the hash stamp, so it can never read as a box.
 
     EA-13a (EA3-47): ``mcp:<host>:<slug>``, where ``<host>`` is the
     lower-case ASCII host of *client_origin* and ``<slug>`` is
@@ -982,6 +1094,8 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
     both accept it. The label of an old row reads it, through
     :data:`CLIENT_LABELS`.
     """
+    if credential == BOX_CREDENTIAL:
+        return _box_stamp(connection_id, client_name)
     origin = (client_origin or "").strip()
     if not origin:
         return ""
@@ -989,7 +1103,8 @@ def actor_via_for(client_origin: str | None, *, client_id: str | None) -> str:
         host = (urlsplit(origin).hostname or "").lower()
     except ValueError:
         host = ""
-    host_ok = bool(host) and host.isascii()
+    # EA-19b: the host `box` is the namespace of the box stamps.
+    host_ok = bool(host) and host.isascii() and host != "box"
     # An IPv6 host has colons of its own, so a slug after it could not be
     # read back. Such a host keeps the host stamp (EA-13a fix round 1).
     slug = client_slug(client_id) if host_ok and ":" not in host else ""
@@ -1027,8 +1142,17 @@ def client_label(via: str | None) -> str:
 
     A body with more than one colon is an IPv6 host stamp, because
     :func:`actor_via_for` adds no slug to an IPv6 host. It reads whole.
+
+    EA-19b: a box stamp ``mcp:box:<slug>-<8 hex>`` reads ``Box <slug>``. The
+    short form ``mcp:box:<8 hex>`` reads ``Box``.
     """
     raw = (via or "").strip().lower()
+    if raw.startswith(BOX_STAMP_PREFIX):
+        tail = raw.removeprefix(BOX_STAMP_PREFIX)
+        named = _BOX_LABEL.fullmatch(tail)
+        if named is not None:
+            return f"Box {named.group('slug')}"
+        return "Box" if not tail or _BOX_HEX.fullmatch(tail) else f"Box {tail}"
     body = raw.removeprefix("mcp:")
     host = body if body.count(":") > 1 else body.split(":", 1)[0]
     return CLIENT_LABELS.get(body) or CLIENT_LABELS.get(host) or host or "Agent"
@@ -1040,7 +1164,7 @@ def client_host(via: str | None) -> str:
     value gives ``""``. An IPv6 host stamp reads whole, as in
     :func:`client_label`. The host is the part that the gateway verified when
     the member connected the client, so it is the part that no client names for
-    itself.
+    itself. A box stamp (EA-19b) gives ``box``.
     """
     body = (via or "").strip().lower().removeprefix("mcp:")
     return body if body.count(":") > 1 else body.split(":", 1)[0]
@@ -1065,6 +1189,11 @@ __all__ = [
     "APPROVAL_REQUIRED_CODE",
     "APP_OFF_CODE",
     "APP_SCOPES",
+    "ATTACHMENT_FILENAME_PATTERN",
+    "BOX_CLIENT_ID",
+    "BOX_CREDENTIAL",
+    "BOX_SLUG_MAX",
+    "BOX_STAMP_PREFIX",
     "CLIENT_LABELS",
     "CLIENT_SLUG_MAX",
     "CONTEXT_READ",
@@ -1095,6 +1224,8 @@ __all__ = [
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
+    "box_slug",
+    "box_tokens_enabled",
     "client_host",
     "client_label",
     "client_origin",
@@ -1117,6 +1248,7 @@ __all__ = [
     "path_shapes",
     "pkce_matches",
     "playbook_allowed",
+    "protocol_allowed",
     "redirect_display",
     "redirect_host",
     "redirect_uri_matches",

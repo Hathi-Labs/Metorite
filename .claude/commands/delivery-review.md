@@ -23,7 +23,7 @@ Change it here and nowhere else.
 | `pr_check.p90_min` | over 30 | A PR must finish inside one coffee break. CIV-3 aims at 15 min. |
 | `pr_check.red_rate` | over 0.20 | One red PR run in five wastes a rerun and a context switch. |
 | `queue_wait.p90_min` | over 20 | A job that waits for a runner is idle time, not test time. |
-| `batch_main.median_min` | over 60 | The full suite must fit inside the 21:30 release window. |
+| `batch_main.median_min` | over 60 | The full suite must fit inside a release window (D194). |
 | `selection_misses.batch_red_after_pr_green` | over 0 | A miss means the PR selection skipped a test it needed. |
 | `slowest_tests[].seconds` | over 180 for any file | One slow file sets the floor of the batch time. |
 | Owner queue, oldest item | over 3 days | The owner wait is the biggest delay that CI cannot fix. |

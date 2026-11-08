@@ -691,24 +691,35 @@ def _emit_usage(
     if os.environ.get("LLM_USAGE_AUDIT", "0") != "1":
         return
     try:
-        from acb_audit import AuditEvent, record
+        from acb_audit import AuditEvent, record, refuse_tenantless
+        from acb_common.db import current_tenant
 
         _actor_agent = agent or _run_ctx.get("agent")
+        # Task 2189: the row belongs to the tenant of the run. Read it HERE, on
+        # the calling frame: ``run_in_executor`` below does not copy
+        # contextvars. Never from the request or the run context fields (R5).
+        _org = current_tenant()
+        event = AuditEvent(
+            actor=f"agent:{_actor_agent}" if _actor_agent
+            else "system:acb_llm",
+            action="llm_completion",
+            target=f"model:{model}",
+            # _stamp last: an explicitly-passed attribution outranks the
+            # ambient run context (they agree for an in-run call, and only
+            # an out-of-run caller passes anything at all).
+            payload={
+                "tier": tier, "cost_usd": cost,
+                **stats, **_run_ctx, **_stamp,
+            },
+            organization_id=str(_org) if _org else None,
+        )
+        # No tenant with the bind on (the master-key ``/v1`` route, H4): skip
+        # the row, never the operator org. The usage log line above stays.
+        if refuse_tenantless(event):
+            return
 
         def _persist() -> None:
-            record(AuditEvent(
-                actor=f"agent:{_actor_agent}" if _actor_agent
-                else "system:acb_llm",
-                action="llm_completion",
-                target=f"model:{model}",
-                # _stamp last: an explicitly-passed attribution outranks the
-                # ambient run context (they agree for an in-run call, and only
-                # an out-of-run caller passes anything at all).
-                payload={
-                    "tier": tier, "cost_usd": cost,
-                    **stats, **_run_ctx, **_stamp,
-                },
-            ))
+            record(event)
 
         try:
             loop = asyncio.get_running_loop()

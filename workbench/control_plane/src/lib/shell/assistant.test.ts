@@ -698,7 +698,7 @@ describe("the source keeps the flag's two sides apart", () => {
     const shell = read("components/AppShell.tsx");
     expect(shell).toMatch(/\{chatOn && \(\s*<button[\s\S]{0,400}?openAssistant\(\{ mode: "full" \}\)/);
     expect(shell).toMatch(/data-ask-tab=""[\s\S]{0,600}?<NavBadge count=\{tabBadge\.count\}/);
-    expect(shell).toContain("{!isChatPage && !chatOn && tabBadge && (");
+    expect(shell).toContain("{!chatsTab && !chatOn && tabBadge && (");
   });
 
   it("a file card in the assistant opens the chat's own viewer, never a side panel nothing draws", () => {

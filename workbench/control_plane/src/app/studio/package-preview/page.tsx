@@ -40,6 +40,7 @@ import { computedKeys } from "@/lib/studio/inlineEdit";
 import {
   fieldSpecs, formFields, missingObjectNote, noBoardReason, objectBoardBlock, pickObject, previewHref, recordTitle, tableFields,
 } from "@/lib/studio/packagePreview";
+import { buildHref } from "@/lib/studio/packageDraft";
 import { STUDIO_OFF, createDoorKeeper, getPackage, listPackages, verbMap } from "@/lib/studio/realDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
 
@@ -99,6 +100,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   const [deleted, setDeleted] = useState(false);
   const onDeleted = () => { setDeleted(true); router.push("/studio"); };
   const [editing, setEditing] = useState(false);
+  const ideLink = <Button variant="secondary" size="sm" icon="Code" href={buildHref(pkg)}>Open in Studio IDE</Button>;
 
   if (deleted) return <Shell><EmptyState icon="PackageOpen" message="This app was deleted." /></Shell>;
   // A 404 over cached data is a package that is gone: never draw the old rows (BETA-1).
@@ -113,7 +115,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   }
   if (!object) {
     return (
-      <Shell title={detail.data.name} actions={<DeletePackageButton id={pkg} onDeleted={onDeleted} />}>
+      <Shell title={detail.data.name} actions={<>{ideLink}<DeletePackageButton id={pkg} onDeleted={onDeleted} /></>}>
         <EmptyState icon="PackageOpen" message="This app has no object yet. Ask Mira to add one, then publish it." />
       </Shell>
     );
@@ -124,7 +126,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   const note = missingObjectNote(detail.data.objects, objectName);
   const objectPicks = detail.data.objects.map((o) => ({ value: o.name, label: o.label ?? o.name }));
   const title = detail.data.name;
-  const deleteApp = <DeletePackageButton id={pkg} onDeleted={onDeleted} />;
+  const deleteApp = <>{ideLink}<DeletePackageButton id={pkg} onDeleted={onDeleted} /></>;
 
   return (
     <Shell title={title} actions={deleteApp} note={
