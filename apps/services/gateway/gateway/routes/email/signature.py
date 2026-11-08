@@ -351,8 +351,9 @@ async def signature_forms(
       stored bytes, unchanged (rule 7). With the flag off, the one query is
       :data:`STORED_SIGNATURE_SQL`, as on main.
     * ``template`` renders the member's layout and fields with
-      ``signature_render.render``. A row that does not render gives the
-      stored bytes, so a send never fails on a bad row.
+      ``signature_render.render``. A row that does not render, or that has
+      no field to show, gives the stored bytes, so a send never fails or
+      loses its signature on a bad row.
     * ``company`` is SG-4. It needs the ``email_signature_brand`` key of
       ``org_settings``, and ``load_org_setting`` is sync, so SG-4 reads it
       with ``asyncio.to_thread`` under ``contextvars.copy_context().run``.
@@ -379,6 +380,9 @@ async def signature_forms(
         short = signature_render.render(signature_render.SHORT_LAYOUT, fields)[0]
     except signature_render.UnknownLayout:
         _log.warning("email.signature_layout_unknown")
+        return replace(custom, reply_mode=reply_mode)
+    if not full:
+        # No field to show: the mailbox keeps its stored signature.
         return replace(custom, reply_mode=reply_mode)
     return SignatureForms(stored=stored, full=full, short=short, reply_mode=reply_mode)
 
