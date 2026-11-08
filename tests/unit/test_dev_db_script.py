@@ -87,3 +87,14 @@ class TestItSaysWhatItDoesNotDo:
         """
         assert "DATABASE_URL" in BODY
         assert "tenant RLS" in BODY
+
+
+class TestTheScratchDataLivesOnTmpfs:
+    def test_both_containers_get_tmpfs_pgdata_unless_opted_out(self):
+        """Task 2304: a commit on the WSL disk costs ~2.5 ms, on tmpfs ~0.05 ms.
+
+        Fence: dropping the flag makes every box R8 run slow again.
+        """
+        assert "--tmpfs /var/lib/postgresql/data" in BODY
+        assert "METORITE_SCRATCH_TMPFS" in BODY
+        assert '"${tmpfs[@]}"' in BODY
