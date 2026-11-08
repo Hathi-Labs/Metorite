@@ -1579,3 +1579,10 @@ DROP POLICY IF EXISTS crm_change_log_tenant_isolation ON crm_change_log;
 CREATE POLICY crm_change_log_tenant_isolation ON crm_change_log
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_lead_pipeline_stages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_lead_pipeline_stages FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_lead_pipeline_stages_tenant_isolation ON crm_lead_pipeline_stages;
+CREATE POLICY crm_lead_pipeline_stages_tenant_isolation ON crm_lead_pipeline_stages
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

@@ -902,3 +902,7 @@ ALTER TABLE pm_agent_guidance
 ALTER TABLE crm_change_log
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_lead_pipeline_stages
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;

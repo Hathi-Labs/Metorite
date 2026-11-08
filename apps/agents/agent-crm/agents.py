@@ -855,17 +855,27 @@ async def create_lead(
     )
 
 
-# ── A new pipeline (WS-CRM CRM-M3a) ──────────────────────────────────────────
+# ── A new pipeline (WS-CRM CRM-M3a, CRM-M4a) ─────────────────────────────────
 
 #: A new stage with its type: "Contract signed (won)". A name with no type is
 #: a stage that the CRM holds, or a new open stage.
 _TYPED_STAGE = re.compile(r"^(?P<name>.*?)\s*\((?P<type>open|won|lost)\)\s*$", re.IGNORECASE)
 
-#: What each stage of the plan is, in the words of the card.
+#: The words of each kind of pipeline on the card (CRM-M4a). A lead pipeline's
+#: stages are lead statuses, and a record in it is a lead.
+_PIPELINE_WORDS: dict[str, dict[str, str]] = {
+    "deal": {"pipeline": "deal pipeline", "stage": "stage", "stages": "stages",
+             "record": "deal"},
+    "lead": {"pipeline": "lead pipeline", "stage": "status", "stages": "statuses",
+             "record": "lead"},
+}
+
+#: What each stage of the plan is, in the words of the card. ``{stage}`` and
+#: ``{record}`` take the words of the kind.
 _STAGE_SOURCE_WORDS: dict[str, str] = {
-    "existing": "a stage the CRM has",
+    "existing": "a {stage} the CRM has",
     "new": "new",
-    "added": "added, so that a deal can close",
+    "added": "added, so that a {record} can close",
 }
 
 #: The first line of the card of a new pipeline. A pipeline is the set-up of
@@ -873,6 +883,12 @@ _STAGE_SOURCE_WORDS: dict[str, str] = {
 _PIPELINE_NOTE = (
     "A new pipeline changes the set-up of the whole CRM. Change history keeps "
     "it, and its Undo removes the pipeline while no deal is in it."
+)
+
+#: The same note for a lead pipeline (CRM-M4a).
+_LEAD_PIPELINE_NOTE = (
+    "A new lead pipeline changes the set-up of the whole CRM. Change history "
+    "keeps it, and its Undo removes the pipeline while no lead is in it."
 )
 
 _PIPELINES_OFF = (
@@ -912,21 +928,23 @@ _PLAN_CHANGED = (
 )
 
 
-def _plan_lines(plan: dict[str, Any]) -> list[tuple[str, str]]:
+def _plan_lines(plan: dict[str, Any], kind: str = "deal") -> list[tuple[str, str]]:
     """One card line for each stage of the plan, in order: the name, the type
-    of the stage, new or reused, and where it comes from."""
+    of the stage, new or reused, and where it comes from. A lead pipeline's
+    lines name a status (CRM-M4a)."""
+    words = _PIPELINE_WORDS[kind]
     lines: list[tuple[str, str]] = []
     for index, stage in enumerate(plan.get("stages") or [], start=1):
         if not isinstance(stage, dict):
             continue
-        kind = str(stage.get("type") or "")
-        parts = [str(stage.get("name")), _STAGE_TYPE_WORDS.get(kind, kind)]
+        typed = str(stage.get("type") or "")
+        parts = [str(stage.get("name")), _STAGE_TYPE_WORDS.get(typed, typed)]
         where = _STAGE_SOURCE_WORDS.get(str(stage.get("source") or ""), "")
         if where:
-            parts.append(where)
+            parts.append(where.format(stage=words["stage"], record=words["record"]))
         if stage.get("hidden"):
             parts.append("hidden")
-        lines.append((f"stage {index}", " · ".join(parts)))
+        lines.append((f"{words['stage']} {index}", " · ".join(parts)))
     return lines
 
 
@@ -943,6 +961,31 @@ def _off_or_raise(refused: GatewayRefusal) -> str:
     raise refused
 
 
+async def _one_pipeline(
+    wanted: str, kind: str, noun: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The one pipeline of *kind* called *wanted*, or the words of a refusal.
+
+    A lead pipeline is read with ``kind=lead`` (CRM-M4a). The read of the deal
+    pipelines sends no query, as before. *noun* names the pipeline in the
+    refusal."""
+    pipelines = await (_get("/crm/pipelines", {"kind": kind}) if kind == "lead"
+                       else _get("/crm/pipelines"))
+    found = _matches_by_name(pipelines, "name", wanted)
+    if not found:
+        return None, (
+            f"There is no {noun} called '{wanted}', so nothing was changed. "
+            f"The {noun}s are: {_name_list(pipelines, 'name')}."
+        )
+    if len(found) > 1:
+        return None, (
+            f"'{wanted}' matches more than one {noun} — "
+            f"{_quoted_names(found, 'name')} — so nothing was changed. Ask "
+            "which one is meant."
+        )
+    return found[0], None
+
+
 # `open_world=True`, as each CRM write says: a pipeline never queues for Zoho,
 # but the claim is what makes a covered run hold the write off (H-236), and a
 # held chat keep it only through its card (`egress.HELD_CARD_WRITE_TOOLS`).
@@ -951,54 +994,49 @@ async def crm_create_pipeline(
     name: str,
     stages: list[str] | None = None,
     copy_from: str | None = None,
+    kind: str = "deal",
+    feeds: str | None = None,
 ) -> str:
-    """Create a new deal pipeline: a name, and its stages in order. Only a CRM
-    admin can, and the person you act for approves it on a card first.
+    """Create a new deal pipeline or lead pipeline: a name, and its stages in
+    order. Only a CRM admin can, and the person you act for approves it on a
+    card first.
+
+    ``kind`` is "deal" (the default) or "lead". Send kind="lead" when the
+    person asks for a LEAD pipeline: the statuses that leads of one source or
+    campaign move through before they convert, such as "Trade show", "Web" or
+    "Outbound". Its stages are lead statuses, such as "New", "Contacted" and
+    "Converted (won)". A pipeline of deals, of products or of contracts is
+    kind="deal".
 
     Give EITHER ``stages`` OR ``copy_from``, never both. ``stages`` is the
     stage names in order, as a person says them. A name that the CRM has
     already is that same stage, so two pipelines can share "Proposal". A new
     name becomes a new open stage. Add "(won)" or "(lost)" after a new name
-    to make a closing stage, such as "Contract signed (won)". ``copy_from``
-    is the NAME of a pipeline whose stages the new one takes, in order.
+    to make a closing stage, such as "Contract signed (won)". For a lead, won
+    means the lead converted. ``copy_from`` is the NAME of a pipeline of the
+    same kind whose stages the new one takes, in order.
+
+    ``feeds`` is for a lead pipeline only: the NAME of the deal pipeline where
+    the deal of a converted lead goes. Leave it out for the default deal
+    pipeline, and never send it for a deal pipeline.
 
     When the list has no won stage or no lost stage, the CRM adds its own, so
-    that a deal in the new pipeline can close. The card shows each stage
-    before anything is made. Use crm_list_pipelines to read the pipelines
-    and get_pipeline to read the stages."""
+    that a deal or a lead in the new pipeline can close. The card shows each
+    stage before anything is made. Use crm_list_pipelines to read the
+    pipelines and get_pipeline to read the stages."""
     wanted = str(name or "").strip()
     if not wanted:
         return "A pipeline needs a name. Ask what to call it. Nothing was changed."
-    has_stages = any(str(s or "").strip() for s in stages or [])
-    source = str(copy_from or "").strip()
-    if has_stages and source:
+    which = str(kind or "deal").strip().lower()
+    if which not in _PIPELINE_WORDS:
         return (
-            "Give the stages of the new pipeline, or the pipeline to copy, and "
-            "not both. Ask which one is meant. Nothing was changed."
+            f"'{kind}' is not a kind of pipeline. Use kind='deal' or kind='lead'. "
+            "Nothing was changed."
         )
-    body: dict[str, Any] = {"name": wanted}
-    if source:
-        pipelines = await _get("/crm/pipelines")
-        found = _matches_by_name(pipelines, "name", source)
-        if not found:
-            return (
-                f"There is no pipeline called '{source}', so nothing was changed. "
-                f"The pipelines are: {_name_list(pipelines, 'name')}."
-            )
-        if len(found) > 1:
-            return (
-                f"'{source}' matches more than one pipeline — "
-                f"{_quoted_names(found, 'name')} — so nothing was changed. Ask "
-                "which one is meant."
-            )
-        body["copy_from"] = str(found[0].get("id") or "")
-    elif has_stages:
-        body["stages"] = _stage_items(stages or [])
-    else:
-        return (
-            "Which stages should the new pipeline have? Name them in order, or "
-            "name a pipeline to copy. Nothing was changed."
-        )
+    words = _PIPELINE_WORDS[which]
+    body, refusal = await _pipeline_request(wanted, which, stages, copy_from, feeds)
+    if body is None:
+        return str(refusal)
     # Read before asking: the gateway plans the pipeline with every check of
     # the create, and reads only. So the card shows what Apply makes.
     query = {k: v for k, v in body.items() if k != "stages"}
@@ -1015,7 +1053,10 @@ async def crm_create_pipeline(
     copy_of = planned.get("copy_of")
     start = f"a copy of {copy_of}" if copy_of else "new"
     count = len(planned.get("stages") or [])
-    card = {"pipeline": title, "starts from": start, **dict(_plan_lines(planned))}
+    card: dict[str, Any] = {"pipeline": title, "kind": words["pipeline"], "starts from": start}
+    if which == "lead":
+        card["feeds deals into"] = planned.get("feeds") or "the default deal pipeline"
+    card.update(dict(_plan_lines(planned, which)))
     # The create plans again. With the ids that the card showed, it refuses
     # (409 `plan_changed`) when that plan differs, so Apply makes the card.
     body["planned"] = [
@@ -1023,10 +1064,11 @@ async def crm_create_pipeline(
     ]
 
     from acb_skills.ask_tools import request_confirmation
+    note = _LEAD_PIPELINE_NOTE if which == "lead" else _PIPELINE_NOTE
     if not await request_confirmation(
-        title=f"Create the pipeline {title}?",
-        detail=f"{title} · {start} · {count} stages",
-        context=await _held_fields_block(card, note=_PIPELINE_NOTE),
+        title=f"Create the {words['pipeline']} {title}?",
+        detail=f"{title} · {words['pipeline']} · {start} · {count} {words['stages']}",
+        context=await _held_fields_block(card, note=note),
     ):
         return f"Cancelled — no pipeline was created. {title} does not exist."
     try:
@@ -1035,8 +1077,67 @@ async def crm_create_pipeline(
         return f"Nothing was changed. {blocked} {_PIPELINE_MIRROR}"
     except GatewayRefusal as refused:
         return _off_or_raise(refused)
-    row = made if isinstance(made, dict) else {}
+    return _pipeline_made(made if isinstance(made, dict) else {}, which, title, planned)
+
+
+async def _pipeline_request(
+    wanted: str, which: str, stages: list[str] | None, copy_from: str | None,
+    feeds: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The body of the create, or the words of a refusal before any card.
+
+    The body of a deal pipeline names no kind, as before CRM-M4a. A lead
+    pipeline names ``kind`` and, when the member names one, ``feeds``: the
+    name of the deal pipeline as the CRM holds it."""
+    words = _PIPELINE_WORDS[which]
+    fed = str(feeds or "").strip()
+    if fed and which != "lead":
+        return None, (
+            "Only a lead pipeline feeds a deal pipeline. Leave out feeds for a "
+            "deal pipeline, or use kind='lead'. Nothing was changed."
+        )
+    has_stages = any(str(s or "").strip() for s in stages or [])
+    source = str(copy_from or "").strip()
+    if has_stages and source:
+        return None, (
+            f"Give the {words['stages']} of the new pipeline, or the pipeline to "
+            "copy, and not both. Ask which one is meant. Nothing was changed."
+        )
+    if not has_stages and not source:
+        return None, (
+            f"Which {words['stages']} should the new pipeline have? Name them in "
+            "order, or name a pipeline to copy. Nothing was changed."
+        )
+    body: dict[str, Any] = {"name": wanted}
+    if which == "lead":
+        body["kind"] = "lead"
+    if source:
+        noun = "lead pipeline" if which == "lead" else "pipeline"
+        found, refusal = await _one_pipeline(source, which, noun)
+        if found is None:
+            return None, refusal
+        body["copy_from"] = str(found.get("id") or "")
+    else:
+        body["stages"] = _stage_items(stages or [])
+    if fed:
+        target, refusal = await _one_pipeline(fed, "deal", "deal pipeline")
+        if target is None:
+            return None, refusal
+        body["feeds"] = str(target.get("name") or fed)
+    return body, None
+
+
+def _pipeline_made(row: dict[str, Any], which: str, title: str, planned: dict[str, Any]) -> str:
+    """The answer after the create: what was made, and where it shows."""
     names = [str(s.get("name")) for s in row.get("stages") or [] if isinstance(s, dict)]
+    if which == "lead":
+        into = planned.get("feeds") or "the default deal pipeline"
+        return (
+            f"Created the lead pipeline {row.get('name') or title} (id={row.get('id')}) "
+            f"with {len(names)} statuses: {', '.join(names)}. A converted lead's "
+            f"deal goes to {into}. CRM settings lists it under Lead statuses. "
+            "Change history keeps the change, with Undo."
+        )
     return (
         f"Created the pipeline {row.get('name') or title} (id={row.get('id')}) "
         f"with {len(names)} stages: {', '.join(names)}. The Deals board shows it "

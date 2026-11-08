@@ -1621,7 +1621,7 @@ async def pipeline_takes_unset(db: Any, pipeline_id: str | None) -> bool:
     if not pipeline_id:
         return False
     row = (await db.execute(
-        text("SELECT count(*) AS total FROM crm_pipelines"), {},
+        text(f"SELECT count(*) AS total FROM crm_pipelines WHERE {DEAL_PIPELINE_SQL}"), {},
     )).first()
     if row is None or int(row.total or 0) < 2:
         return False
@@ -1629,19 +1629,41 @@ async def pipeline_takes_unset(db: Any, pipeline_id: str | None) -> bool:
     return default is not None and str(default).lower() == str(pipeline_id).strip().lower()
 
 
+#: CRM-M4a (migration 360): ``crm_pipelines`` holds the deal pipelines AND the
+#: lead pipelines, told apart by ``kind``. Each reader that means a deal
+#: pipeline names this term: the list, the board, a deal's own pipeline, the
+#: default, the reports, the switch and the sync. A lead pipeline never
+#: reaches a deal surface. ``tests/unit/test_crm_lead_pipelines.py`` holds it.
+DEAL_PIPELINE_SQL = "kind = 'deal'"
+
+
 async def default_pipeline_id(db: Any) -> str | None:
     """The id of the organization's default deal pipeline, or ``None``.
 
     A deal with no stated pipeline joins it (native create and lead convert).
+    A lead pipeline is never the default (CRM-M4a).
     """
     row = (await db.execute(
         text(
-            "SELECT id FROM crm_pipelines "
+            f"SELECT id FROM crm_pipelines WHERE {DEAL_PIPELINE_SQL} "
             "ORDER BY is_default DESC, position, created_at LIMIT 1"
         ),
         {},
     )).first()
     return str(row.id) if row is not None else None
+
+
+async def require_deal_pipeline(db: Any, pipeline_id: str) -> Any:
+    """The row of one deal pipeline, else 404 (CRM-M4a).
+
+    A deal names a deal pipeline only, so the id of a lead pipeline reads as
+    an unknown pipeline: the board, a new deal, a moved deal and a convert
+    all call this. The row of a lead pipeline has ``kind = 'lead'``.
+    """
+    row = await require_row(db, "crm_pipelines", pipeline_id, "Pipeline")
+    if str(getattr(row, "kind", "deal") or "deal") != "deal":
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return row
 
 
 # ── SQL helpers ─────────────────────────────────────────────────────────────
@@ -1874,6 +1896,9 @@ MIRROR_RECORD_TABLES: frozenset[str] = frozenset({
 MIRROR_SETTINGS_TABLES: frozenset[str] = frozenset({
     "crm_deal_statuses", "crm_lead_statuses", "crm_lost_reasons",
     "crm_pipelines", "crm_pipeline_stages",
+    # CRM-M4a: the lead statuses of each lead pipeline. A Mirror org creates
+    # no pipeline, so each write gives 409.
+    "crm_lead_pipeline_stages",
     # CRM-C4a (§20.7 item 10): the field studio. In Mirror mode Zoho owns the
     # fields until CRM-C5, so each studio route gives 409. The sync writes
     # `crm_field_defs` with raw SQL and never calls the guard.
@@ -2810,6 +2835,9 @@ RESET_TABLES: tuple[str, ...] = (
     "crm_activities", "crm_deal_contacts", "crm_deals", "crm_leads",
     "crm_contacts", "crm_companies", "crm_module_records",
     "crm_status_changes", "crm_field_defs", "crm_pipeline_stages",
+    # CRM-M4a: the lead statuses of each lead pipeline. The cascade from the
+    # two tables below takes them too, and naming them keeps the list whole.
+    "crm_lead_pipeline_stages",
     "crm_pipelines", "crm_deal_statuses", "crm_lead_statuses",
     "crm_lost_reasons",
     # The sync state of the old account. A cursor with ``initial_done_at``
