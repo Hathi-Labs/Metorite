@@ -2250,6 +2250,201 @@ GET_PROJECT = Tool(
 )
 
 
+# ── list_members and list_tags (MCP-G21) ────────────────────────────────────
+
+#: The keys of one ``list_members`` row.
+MEMBER_ROW_KEYS: tuple[str, ...] = ("address", "name")
+#: The keys of one ``list_tags`` row.
+TAG_ROW_KEYS: tuple[str, ...] = ("name",)
+
+MEMBERS_ROUTE = "/projects/assignable-members"
+
+#: ``list_tags`` with no project reads the tags of this many top projects at
+#: once, so it never sends a long burst to the gateway.
+TAG_READ_BATCH = 8
+
+_LIMIT_INPUT: dict[str, Any] = {
+    "type": "integer", "minimum": 1, "maximum": LIST_LIMIT_MAX,
+    "default": LIST_LIMIT_DEFAULT,
+    "description": "Rows on one page. Ignored when a cursor is sent.",
+}
+_CURSOR_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": cursor_mod.MAX_CHARS,
+    "description": "The nextCursor of the page before.",
+}
+
+_LIST_MEMBERS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "Only the members who open this project. An id from"
+                           " list_projects. Leave it out to list the members"
+                           " who open at least one project you see."},
+        "limit": _LIMIT_INPUT,
+        "cursor": _CURSOR_INPUT,
+    },
+    "additionalProperties": False,
+}
+
+_LIST_MEMBERS_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "members": {"type": "array", "items": _object({
+            "address": {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]},
+            "name": _UNTRUSTED_OR_NULL,
+        })},
+        "total": {"type": "integer"},
+        "nextCursor": _NULLABLE_STRING,
+    },
+    "required": ["members", "total", "nextCursor"],
+    "additionalProperties": False,
+}
+
+_LIST_TAGS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "Only the tags of this project. An id from"
+                           " list_projects. Leave it out to list the tags of"
+                           " every project you see."},
+        "limit": _LIMIT_INPUT,
+        "cursor": _CURSOR_INPUT,
+    },
+    "additionalProperties": False,
+}
+
+_LIST_TAGS_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "tags": {"type": "array", "items": _object({"name": _UNTRUSTED_SCHEMA})},
+        "total": {"type": "integer"},
+        "nextCursor": _NULLABLE_STRING,
+    },
+    "required": ["tags", "total", "nextCursor"],
+    "additionalProperties": False,
+}
+
+
+async def _list_members(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One read of the gateway's assignable members, then a page of it.
+
+    The gateway applies the rule of ``set_assignees`` (the grant arm), so this
+    list holds nobody that the assign call refuses. The edge adds the pages
+    and wraps each name as ``untrusted_text``.
+    """
+    page, size = _page_of(ctx, "list_members", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+    query = [("project_id", str(args["project_id"]))] if "project_id" in args else []
+    rows = _rows_of(await _get(ctx, MEMBERS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=query))
+    kept = [r for r in rows if isinstance(r.get("address"), str)]
+    shown = kept[(page - 1) * size: page * size]
+    return {
+        "members": [{"address": assignee(r["address"]),
+                     "name": untrusted(r.get("name") or None)} for r in shown],
+        "total": len(kept),
+        "nextCursor": _next_cursor(ctx, "list_members", args, page=page, size=size,
+                                   total=len(kept), shown=len(shown)),
+    }
+
+
+LIST_MEMBERS = Tool(
+    name="list_members",
+    title="List the members you can assign",
+    description=(
+        "List the members of the organization whom set_assignees accepts for a"
+        " task: each one already opens the project through a project grant or"
+        " an admin read right. Send project_id for the members of one project."
+        " Leave it out for the members who open at least one project you see."
+        " A task in a personal project takes only its owner. Each row has the"
+        " member address and the display name, and nothing more. Use the"
+        " address in set_assignees or create_task. An assignee can also be"
+        " agent:<name>, which this list does not hold. Send nextCursor back as"
+        " cursor to read the next page. The pages are offsets." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_MEMBERS_INPUT,
+    output_schema=_LIST_MEMBERS_OUTPUT,
+    route=MEMBERS_ROUTE,
+    params={"project_id": "project_id"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_list_members,
+    routes=(MEMBERS_ROUTE,),
+    edge_inputs=frozenset({"limit", "cursor"}),
+)
+
+
+async def _vocabulary_of(ctx: Context, project_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """The tag rows of the roots of *project_ids*, by tag id.
+
+    Two projects of one root give the same vocabulary rows, so the tag id
+    drops the repeat.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(project_ids), TAG_READ_BATCH):
+        batch = project_ids[start: start + TAG_READ_BATCH]
+        answers = await _together(*(
+            _get(ctx, TAGS_ROUTE, TEXT_PROJECT_NOT_FOUND, path_params={"project_id": pid})
+            for pid in batch))
+        for answer in answers:
+            for row in _rows_of(answer):
+                if isinstance(row.get("name"), str) and row["name"]:
+                    found.setdefault(str(row.get("id")), row)
+    return found
+
+
+async def _list_tags(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """The tag names of one project, or of the top projects of the tree read.
+
+    Both reads go through the gateway's visibility, so a pin narrows them.
+    The ``task_count`` of the route stays behind, as in ``get_project``: the
+    seam does not narrow it. The names join by case, and sort by case.
+    """
+    page, size = _page_of(ctx, "list_tags", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+    if "project_id" in args:
+        project_ids = [str(args["project_id"])]
+    else:
+        roots = _rows_of(await _get(ctx, TREE_ROUTE, TEXT_PROJECT_NOT_FOUND))
+        project_ids = [str(n.get("id")) for n in roots
+                       if n.get("archived_at") is None and n.get("id")]
+    names: dict[str, str] = {}
+    for row in (await _vocabulary_of(ctx, project_ids)).values():
+        names.setdefault(row["name"].casefold(), row["name"])
+    ordered = [names[k] for k in sorted(names)]
+    shown = ordered[(page - 1) * size: page * size]
+    return {
+        "tags": [{"name": untrusted(n)} for n in shown],
+        "total": len(ordered),
+        "nextCursor": _next_cursor(ctx, "list_tags", args, page=page, size=size,
+                                   total=len(ordered), shown=len(shown)),
+    }
+
+
+LIST_TAGS = Tool(
+    name="list_tags",
+    title="List the tags",
+    description=(
+        "List the tag names of one project tree, or of every tree you see when"
+        " project_id is left out. Tags belong to the top project of a tree, so"
+        " the list can hold a tag that a hidden project of that tree uses."
+        " A name shows once, in alphabetical order."
+        " Read this before you make a tag in create_task or update_task, so"
+        " you reuse a name that exists. Each row has the tag name only."
+        " Send nextCursor back as cursor to read the next page. The pages are"
+        " offsets." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_TAGS_INPUT,
+    output_schema=_LIST_TAGS_OUTPUT,
+    route=TAGS_ROUTE,
+    params={"project_id": "project_id"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_list_tags,
+    routes=(TAGS_ROUTE, TREE_ROUTE),
+    edge_inputs=frozenset({"limit", "cursor"}),
+)
+
+
 # ── Agent runs: the shapes (EA-12b, §12.1 and §9.4) ─────────────────────────
 
 TASK_RUNS_ROUTE = "/projects/tasks/{task_id}/agent-runs"
@@ -8294,7 +8489,8 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
-    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, BOARD_STATS, GET_TASK, GET_TASK_TIMELINE,
+    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
+    BOARD_STATS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,

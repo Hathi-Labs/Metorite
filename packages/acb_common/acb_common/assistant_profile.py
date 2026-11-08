@@ -576,7 +576,7 @@ def _parse_orgs(raw: str, star: bool = False) -> frozenset[str]:
 
     *star* is True only for a reader that reads ``*`` as each org
     (:func:`card_writes_for`, :func:`chat_summary_for`,
-    :func:`briefing_for`). For any other
+    :func:`briefing_for`, :func:`image_analysis_for`). For any other
     reader ``*`` matches no org, so
     it warns as any entry that is not a uuid does. :func:`enabled_for` reads
     an empty list as each org, and ``*`` there turns the profile off.
@@ -642,6 +642,34 @@ def card_writes_for(org_id: str | None) -> bool:
         from acb_common import get_settings
 
         raw = str(getattr(get_settings(), "assistant_profile_card_writes_orgs", "") or "")
+        orgs = _parse_orgs(raw, star=True)
+        return "*" in orgs or org in orgs
+    except Exception:
+        return False
+
+
+def image_analysis_for(org_id: str | None) -> bool:
+    """True when ``analyze_image`` may call a model for *org_id*. Fails closed.
+
+    ``IMAGE_ANALYSIS_ORGS`` (``image_analysis_orgs``, WS-VOX VOX-3,
+    ``projects_ai_chat.md`` §31) is a comma list of organization ids, or
+    ``*`` for each one. Empty means off, which is the default. It is the one
+    reader of the flag. Each call that the flag lets through draws AI credits
+    on ``tier-vision``. It does not need the profile switch.
+
+    The caller passes the bound tenant of the run
+    (``acb_common.db.current_tenant``), never an id from request input (R5).
+    It reads ``get_settings()`` on each call, so a flag reload
+    (``gateway/flag_reload.py``) applies a change with no restart. Fence:
+    ``tests/unit/test_attachment_analyze_image.py``.
+    """
+    try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "image_analysis_orgs", "") or "")
         orgs = _parse_orgs(raw, star=True)
         return "*" in orgs or org in orgs
     except Exception:

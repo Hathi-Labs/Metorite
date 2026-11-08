@@ -22,7 +22,7 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 
 1. Search for an existing plan with `search_tasks` and the words of the goal. Do not make a second plan.
 2. Find or make a planning task in the project, and claim it (`claim_task`). Its run holds your questions and your progress lines.
-3. Call `get_project` for the project. Keep three things: the status ids, the type whose `is_epic` is true, and the tags.
+3. Call `get_project` for the project. Keep three things: the status ids, the type whose `is_epic` is true, and the tags. Call `list_tags` for the tags of every project, and reuse a name that exists. Call `list_members` for the people you may assign.
 4. Check that your connection can write. `whoami` shows the scopes.
 
 ## Gate 1: what
@@ -64,7 +64,7 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
    - **The critical path** is the longest chain. Count the review wait in each step, not only the build.
    - **The review load** is the sum of the review times for each person.
 6. Ask for the approval of the slices. Put the waves, the critical path and the review load for each person in the question.
-7. After the approval, make each slice with `create_task`. Send `parent_task_id` (its epic), the backlog `status_id`, `estimate_mins`, an `idempotency_key`, and as assignee the person who answers for it.
+7. After the approval, make each slice with `create_task`. Send `parent_task_id` (its epic), the backlog `status_id`, `estimate_mins`, an `idempotency_key`, and as assignee the person who answers for it. Take the address from `list_members`. Do not guess it.
 8. Link the order. For each pair, call `add_task_link` with the blocking slice as `task_id` and the waiting slice as `target_task_id`. No person adds the links.
 
 **A `blocks` link:** `task_id` blocks `target_task_id`. `my_work` does not offer the second task until the first is done. Metorite does not refuse a claim of the second task, so an agent that takes a task by its id must read its links first. `get_task` shows each link with its `link_id`, and `remove_task_link` removes one. Metorite refuses a link that makes a loop. Each link matters today: `my_work` skips a task that an open task blocks.
@@ -73,7 +73,7 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 
 1. **Pick the work.** Take wave 1, then the next waves, until the review load fills the hours that each reviewer has this week. Agents rarely limit a week. People's review time does.
 2. **Mark the week.** Set the due date of each chosen slice to the last day of the week (`update_task`). Move it to the to-do status (`set_task_status`).
-3. **Assign the builder.** `my_work` lists the tasks that are assigned to the member of the connection. It skips a task that another session holds, and a task that an open task blocks. Assign each slice to the person whose agent builds it.
+3. **Assign the builder.** `my_work` lists the tasks that are assigned to the member of the connection. It skips a task that another session holds, and a task that an open task blocks. Assign each slice to the person whose agent builds it. Take the address from `list_members`.
 4. **Build.** Each agent follows the session loop of `kit/team-setup`: claim, brief, build, verify, review, merge.
 5. **Close the week.** Comment on each epic: what merged, what is left, and what got stuck. For each unfinished slice, the person chooses next week or the backlog. Change the due date to match.
 6. **Look back.** Name the cause of each stall from the `failures` page. Propose one rule change. The person approves it before you apply it.
