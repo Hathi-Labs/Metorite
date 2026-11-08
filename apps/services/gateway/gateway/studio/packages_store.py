@@ -75,6 +75,11 @@ contributions, the grants, the files, the pins and the data. So the store
 still holds no statement that updates or deletes a version row.
 ``app_audit`` has no foreign key, so its rows stay.
 
+**The lock of an install (PKG-8b).** :func:`lock_for_install` holds the
+package row ``FOR KEY SHARE`` and reads ``live_version``. The install route
+of WS-PKG calls it before the install store, so its lock order is the order
+of a publish: the ``apps`` row, then the org lock of the install store.
+
 **Not here.** No UI. Install is WS-PKG. The routes are
 ``routes/studio/packages.py`` (A5 and A5c-1), which runs no SQL of its own.
 The admin path of a delete and its chat tool are A5c-2.
@@ -271,7 +276,10 @@ _TOKEN_HEX = frozenset("0123456789abcdef")
 #: private install of the owner reaches another member only when the owner
 #: shared it: ``sharing.OTHERS_SEE_THE_INSTALL``, the one rule, which the
 #: member purge and the resolve read too. That rule names ``package_install``
-#: with no alias, so the third count does too.
+#: with no alias, so the third count does too. The fourth count (PKG-8a fix
+#: round 2) is the sidebar entry of the owner: a private install of the owner
+#: that the resolve shows, so active and not expired. Only the delete dialog
+#: reads it, so it is not in the token.
 _DELETE_COUNTS_SQL = (
     "SELECT (SELECT count(*) FROM app_versions v WHERE v.app_id = a.id), "
     "(SELECT count(*) FROM package_install i "
@@ -281,7 +289,12 @@ _DELETE_COUNTS_SQL = (
     "AND package_install.app_id = a.id AND package_install.state <> 'archived' "
     "AND NOT (package_install.scope_kind = 'private' "
     "AND package_install.scope_subject = a.owner_email "
-    f"AND NOT {OTHERS_SEE_THE_INSTALL})) "
+    f"AND NOT {OTHERS_SEE_THE_INSTALL})), "
+    "(SELECT count(*) FROM package_install o "
+    "WHERE o.organization_id = a.organization_id AND o.app_id = a.id "
+    "AND o.state = 'active' AND o.scope_kind = 'private' "
+    "AND o.scope_subject = a.owner_email "
+    "AND (o.ends_at IS NULL OR o.ends_at > now())) "
     f"FROM apps a WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
     "AND a.owner_email = :m AND a.id = CAST(:id AS uuid)"
 )
@@ -816,6 +829,52 @@ async def get_version(db: Any, member: str, package_id: str,
     return None if row is None else _version(row)
 
 
+# --- the lock of an install (WS-PKG PKG-8b) ---------------------------------
+
+#: The row of a package that the install route holds, ``FOR KEY SHARE``. A
+#: publish takes ``FOR UPDATE`` on the same row, so the two wait for each
+#: other here, before either takes the org lock of the install store.
+_INSTALL_LOCK_SQL = (
+    "SELECT live_version FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid) AND status <> 'archived' "
+    "FOR KEY SHARE"
+)
+
+
+@dataclass(frozen=True)
+class InstallTarget:
+    """The package row that an install route holds (PKG-8b).
+
+    ``live_version`` is ``apps.live_version``: the version that an org or a
+    group install runs. None means that the package has no published version.
+    """
+
+    package_id: str
+    live_version: int | None
+
+
+async def lock_for_install(db: Any, member: str, package_id: str) -> InstallTarget | None:
+    """Lock the package *package_id* of *member* ``FOR KEY SHARE``, and read
+    its live version (``package_host.md`` §5.5, PKG-8b).
+
+    The install route calls this BEFORE ``package_host/store.set_version``
+    or ``store.install``. A publish holds the row ``FOR UPDATE``, then the
+    org lock of the install store. So the route takes the row first, as the
+    publish does. Else the FK check of the install INSERT waits for the row
+    while the route holds the org lock, and the publish waits for that lock.
+
+    The lock ends with the caller's transaction. Answers None for a package
+    of another member or org, an App Workshop app and an archived package.
+    The read writes nothing.
+    """
+    pid = _package_id(package_id)
+    row = (await db.execute(text(_INSTALL_LOCK_SQL), {"m": _member(member), "id": pid})).first()
+    if row is None:
+        return None
+    return InstallTarget(package_id=pid, live_version=None if row[0] is None else int(row[0]))
+
+
 # --- the delete of a package (A5c-1) ----------------------------------------
 
 
@@ -836,6 +895,9 @@ class DeletePreview:
     installs: int
     other_member_installs: int
     confirm: str
+    #: The sidebar entry of the owner: an active private install of the owner
+    #: (PKG-8a fix round 2). The dialog alone reads it, and the token does not.
+    own_entries: int = 0
 
     @property
     def fields(self) -> int:
@@ -931,12 +993,12 @@ async def _preview(db: Any, m: str, current: Package) -> DeletePreview | None:
     row = (await db.execute(text(_DELETE_COUNTS_SQL), {"m": m, "id": current.id})).first()
     if row is None:
         return None
-    versions, installs, other = (int(v) for v in row)
+    versions, installs, other, own = (int(v) for v in row)
     found = tuple(objects)
     return DeletePreview(
         id=current.id, name=current.name, slug=current.slug, objects=found,
         versions=versions, installs=installs, other_member_installs=other,
-        confirm=confirm_token(current.id, found, versions, installs, other))
+        confirm=confirm_token(current.id, found, versions, installs, other), own_entries=own)
 
 
 async def delete_preview(db: Any, member: str, package_id: str) -> DeletePreview | None:

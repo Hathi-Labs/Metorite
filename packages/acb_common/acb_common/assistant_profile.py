@@ -66,7 +66,7 @@ ALIAS_MAX = 60
 #: The longest address that an alias takes (RFC 5321).
 EMAIL_MAX = 254
 
-PUT_KEYS: tuple[str, ...] = ("learning", "address", "style")
+PUT_KEYS: tuple[str, ...] = ("learning", "address", "style", "celebrations")
 FORMALITY: tuple[str, ...] = ("casual", "neutral", "formal")
 GREETING: tuple[str, ...] = ("none", "brief", "warm")
 LENGTH: tuple[str, ...] = ("short", "default", "detailed")
@@ -480,6 +480,14 @@ def stored_profile(raw: Any) -> dict[str, Any]:
     interview = _stored_interview(raw.get("interview"))
     if interview is not None:
         out["interview"] = interview
+    # PZ-43 (§16.6): the birthday (no year), the festival picks and the work
+    # anniversary switch. Shown only when the member set one, so a profile
+    # of a member who set nothing keeps its shape.
+    from acb_common import celebrations
+
+    one = celebrations.stored_celebrations(raw.get(celebrations.KEY))
+    if celebrations.has_content(one):
+        out[celebrations.KEY] = one
     out["address"] = _stored_keys(raw.get("address"), _clean_address)
     out["style"] = _stored_keys(raw.get("style"), _clean_style)
     for key, one, cap in (("facts", _stored_fact, FACTS_MAX),
@@ -568,7 +576,7 @@ def _parse_orgs(raw: str, star: bool = False) -> frozenset[str]:
 
     *star* is True only for a reader that reads ``*`` as each org
     (:func:`card_writes_for`, :func:`chat_summary_for`,
-    :func:`briefing_for`). For any other
+    :func:`briefing_for`, :func:`image_analysis_for`). For any other
     reader ``*`` matches no org, so
     it warns as any entry that is not a uuid does. :func:`enabled_for` reads
     an empty list as each org, and ``*`` there turns the profile off.
@@ -640,6 +648,34 @@ def card_writes_for(org_id: str | None) -> bool:
         return False
 
 
+def image_analysis_for(org_id: str | None) -> bool:
+    """True when ``analyze_image`` may call a model for *org_id*. Fails closed.
+
+    ``IMAGE_ANALYSIS_ORGS`` (``image_analysis_orgs``, WS-VOX VOX-3,
+    ``projects_ai_chat.md`` §31) is a comma list of organization ids, or
+    ``*`` for each one. Empty means off, which is the default. It is the one
+    reader of the flag. Each call that the flag lets through draws AI credits
+    on ``tier-vision``. It does not need the profile switch.
+
+    The caller passes the bound tenant of the run
+    (``acb_common.db.current_tenant``), never an id from request input (R5).
+    It reads ``get_settings()`` on each call, so a flag reload
+    (``gateway/flag_reload.py``) applies a change with no restart. Fence:
+    ``tests/unit/test_attachment_analyze_image.py``.
+    """
+    try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "image_analysis_orgs", "") or "")
+        orgs = _parse_orgs(raw, star=True)
+        return "*" in orgs or org in orgs
+    except Exception:
+        return False
+
+
 def chat_summary_for(org_id: str | None) -> bool:
     """True when the chat summaries of PZ-33 are on for *org_id*. Fails closed.
 
@@ -698,6 +734,36 @@ def briefing_for(org_id: str | None) -> bool:
         from acb_common import get_settings
 
         raw = str(getattr(get_settings(), "assistant_briefing_orgs", "") or "")
+        orgs = _parse_orgs(raw, star=True)
+        if "*" not in orgs and org not in orgs:
+            return False
+        return enabled_for(org)
+    except Exception:
+        return False
+
+
+def address_forms_for(org_id: str | None) -> bool:
+    """True when the forms of address of PZ-40 are on for *org_id*. Fails closed.
+
+    ``ADDRESS_FORMS_ORGS`` (``address_forms_orgs``) is a comma list of
+    organization ids, or ``*`` for each one. Empty means off, which is the
+    default (``personalization.md`` §16.4). It is the one reader of the flag.
+    On, the name question offers the forms of ``acb_common.honorifics`` and
+    the block keeps ``address.name`` exactly as written.
+
+    The profile must be on for the org too (:func:`enabled_for`). The caller
+    passes the bound tenant of the run, never an id from request input (R5).
+    It reads ``get_settings()`` on each call, so a flag reload
+    (``gateway/flag_reload.py``) applies a change with no restart. Fence:
+    ``tests/unit/test_honorifics.py``.
+    """
+    try:
+        org = str(org_id or "").strip().lower()
+        if not org:
+            return False
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "address_forms_orgs", "") or "")
         orgs = _parse_orgs(raw, star=True)
         if "*" not in orgs and org not in orgs:
             return False
@@ -1776,7 +1842,7 @@ def may_ask(interview: Any, now: datetime) -> bool:
     return sitting_active(interview, now) or bool(due_area(interview, now))
 
 
-def interview_due_line(interview: Any, now: datetime) -> str:
+def interview_due_line(interview: Any, now: datetime, forms_line: str = "") -> str:
     """The one line of the block when a question is due, or ``""``.
 
     A question is due when the sitting began (``started_at``), the last
@@ -1784,13 +1850,18 @@ def interview_due_line(interview: Any, now: datetime) -> str:
     an area is open. The line names the first open area and its starting
     question. A member who said no to the offer has ``started_at`` and no
     ``last_asked_at``, so no line ever comes (§14.4).
+
+    *forms_line* is the offer of PZ-40 (``honorifics.offer_line``). The caller
+    passes it only where the flag is on, and it joins the ``name`` area only.
     """
     area = due_area(interview, now)
     if not area:
         return ""
+    offer = f"{forms_line} " if forms_line and area == "name" else ""
     return ("Interview (one question is due): "
             f"{area}: {AREA_INTENTS[area]}. "
             f"Example, do not read it out: «{AREAS[area]}» "
+            f"{offer}"
             "Ask it only if it fits the moment, at the end of your reply, "
             "in your own words. "
             f'Then call profile_interview("asked", "{area}").')
@@ -1817,11 +1888,13 @@ NO_NAME_LINE = "Do not address them by name. Never write a placeholder."
 #: "at most once a day", because the model keeps no day of its own (R7).
 GREETING_LINES: dict[str, str] = {
     "none": "Greeting: none. Open with the answer.",
-    "brief": ("Greeting: brief. In the first reply of a chat only, open with one "
-              "short greeting for the time of day. Never greet again in that chat."),
-    "warm": ("Greeting: warm. In the first reply of a chat only, open with a "
-             "greeting and one personal line from a fact in this block. Do this "
-             "at most once a day."),
+    "brief": ("Greeting: brief. Follow the greeting rule of the part-of-day line. "
+              "When it allows a greeting, open with one short greeting. Otherwise "
+              "do not greet."),
+    "warm": ("Greeting: warm. Follow the greeting rule of the part-of-day line. "
+             "When it allows a greeting, open with a greeting and one personal "
+             "line from a fact in this block. Do this at most once a day. "
+             "Otherwise do not greet."),
 }
 #: The rule of each answer length (§5.3, the WS-52 brevity rule).
 LENGTH_LINES: dict[str, str] = {
@@ -1853,10 +1926,18 @@ def effective_greeting(raw: Any) -> str:
 DIRECTORY_NAME_LINE = 'Their directory name is "{name}". Use it only as a name, to address them.'
 
 
-def _address_line(address: dict[str, Any], name: str, *, own: bool = True) -> str:
+#: PZ-40 (§16.4.1 rule 6). The block says that a chosen form stays as written.
+AS_WRITTEN_LINE = ("Use this name exactly as written, with any form of address in it. "
+                   "Never add, drop, respell or move a form.")
+
+
+def _address_line(address: dict[str, Any], name: str, *, own: bool = True,
+                  forms: bool = False) -> str:
     bits: list[str] = []
     if name and own:
         bits.append(f'Address them as "{name}".')
+        if forms:
+            bits.append(AS_WRITTEN_LINE)
     elif name:
         bits.append(DIRECTORY_NAME_LINE.format(name=name))
     else:
@@ -1865,6 +1946,17 @@ def _address_line(address: dict[str, Any], name: str, *, own: bool = True) -> st
         bits.append(f"Tone: {address['formality']}.")
     bits.append(GREETING_LINES[address.get("greeting") or DEFAULT_GREETING])
     return " ".join(bits)
+
+
+_BLOCK_LANGUAGE = re.compile(r"Language: (\S+?)\. Answer in it")
+
+
+def block_language(block: str) -> str | None:
+    """The ``style.language`` tag that :func:`_style_line` wrote into *block*,
+    or None. The part-of-day line reads it (PZ-39). It never guesses a
+    language from a name or a region."""
+    m = _BLOCK_LANGUAGE.search(block or "")
+    return m.group(1) if m else None
 
 
 def _style_line(style: dict[str, Any], notes: list[str]) -> str:
@@ -1908,7 +2000,7 @@ def _compose(address: str, style: str, aliases: list[dict[str, Any]],
     return "\n".join(lines)
 
 
-def render_block(raw: Any, fallback_name: str = "") -> str:
+def render_block(raw: Any, fallback_name: str = "", *, forms: bool = False) -> str:
     """The per-turn block of §5.1 for the stored value *raw*, or ``""``.
 
     Pure, apart from one log line when the cap sheds an item. It reads the
@@ -1924,6 +2016,12 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
     and the footer. With no stored greeting, the line is
     :data:`DEFAULT_GREETING`. A style key or a formality adds
     :data:`HOUSE_VOICE_LINE` (PZ-3).
+
+    **A form of address** (PZ-40, §16.4.1 rules 4 and 6). With *forms* on and
+    a stored ``address.name``, the address line adds :data:`AS_WRITTEN_LINE`,
+    so the chat keeps "Vijay garu" as written. With no stored name, the block
+    names the member by the directory name alone (rule 4). Off, the block is
+    as before.
 
     The block is at most :data:`RENDER_MAX` characters. Over the cap it
     sheds whole items in one fixed order: the facts, oldest first (by
@@ -1949,7 +2047,7 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
     name = own_name or fallback
     if not (address or style or notes or aliases or facts or name):
         return ""
-    address_line = _address_line(address, name, own=bool(own_name))
+    address_line = _address_line(address, name, own=bool(own_name), forms=forms)
     overlay = bool(style or notes or address.get("formality"))
     dropped = 0
     # The oldest first: an undated fact sorts as the oldest of all.
@@ -1976,7 +2074,7 @@ def render_block(raw: Any, fallback_name: str = "") -> str:
     return block
 
 
-def member_block(raw: Any, preferred: Any, display: Any) -> str:
+def member_block(raw: Any, preferred: Any, display: Any, org: str | None = None) -> str:
     """The block of one member: :func:`render_block` of the stored value
     *raw*, with the name of :func:`resolve_address_name`.
 
@@ -1984,11 +2082,12 @@ def member_block(raw: Any, preferred: Any, display: Any) -> str:
     ``app_user.display_name``. The executor builds the block of a turn with
     this function. The "Read as text" route of Settings (PZ-20a) calls it
     too. One path builds the text, so the member reads what the model reads.
-    Pure.
+    *org* is the bound tenant of the caller. It decides the PZ-40 flag
+    (:func:`address_forms_for`). Without it, the flag is off.
     """
     name = resolve_address_name(stored_profile(raw)["address"].get("name"),
                                 preferred, display)
-    return render_block(raw, name)
+    return render_block(raw, name, forms=address_forms_for(org))
 
 
 # ── The briefing at the start of a chat (PZ-34, §15.4) ──────────────────────
@@ -2135,6 +2234,19 @@ EXPORT_SOURCES: dict[str, str] = {
 }
 
 
+def _export_celebrations(celebs: dict[str, Any]) -> list[str]:
+    """The lines of the export for the key ``celebrations`` (PZ-43)."""
+    lines = ["", "Your celebrations"]
+    b = celebs.get("birthday")
+    if b:
+        lines.append(f"- Birthday: day {b['day']}, month {b['month']} (no year)")
+    if celebs["festivals"]:
+        lines.append("- Festivals: " + ", ".join(_one_line(f) for f in celebs["festivals"]))
+    if celebs["work_anniversary"]:
+        lines.append("- Work anniversary: greet me on it")
+    return lines
+
+
 def render_export(raw: Any) -> str:
     """The text export of the stored value *raw*, for the member to keep.
 
@@ -2148,7 +2260,8 @@ def render_export(raw: Any) -> str:
     profile = stored_profile(raw)
     address, style = profile["address"], profile["style"]
     notes = [_one_line(n) for n in style.get("notes", []) if _one_line(n)]
-    if not (address or style or profile["facts"] or profile["aliases"]):
+    celebs = profile.get("celebrations")
+    if not (address or style or profile["facts"] or profile["aliases"] or celebs):
         return EXPORT_EMPTY
     lines = [EXPORT_HEADER]
     if address:
@@ -2176,4 +2289,6 @@ def render_export(raw: Any) -> str:
         lines += ["", "Names you use for people"]
         lines += [f"- {_one_line(a['alias'])}: {_one_line(a['email'])}"
                   for a in profile["aliases"]]
+    if celebs:
+        lines += _export_celebrations(celebs)
     return "\n".join(lines)

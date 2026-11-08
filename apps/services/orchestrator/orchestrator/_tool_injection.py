@@ -89,6 +89,12 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # and no shell tool, so D85 and the egress rule both keep it.
     # Fence: ``tests/unit/test_chat_upload_every_agent.py``.
     "read_attachment",
+    # An attached image to the model of `tier-vision` (WS-VOX VOX-3,
+    # projects_ai_chat.md §31). Each call draws credits, so it is dark behind
+    # IMAGE_ANALYSIS_ORGS, and it is NOT in `_FLOOR_KEEP`: the email assistant
+    # and the worker agent opt out. Fence:
+    # ``tests/unit/test_attachment_analyze_image.py``.
+    "analyze_image",
 })
 
 
@@ -1482,8 +1488,13 @@ def _build_injected_tools_addendum(
     effective_scope: frozenset[str] | None = None,
     own_risk: frozenset[tuple[str, bool, bool, bool]] = frozenset(),
     agent_name: str | None = None,
+    image_org_on: bool = False,
 ) -> str:
     """Return a system-prompt addendum describing the Metorite-injected tools.
+
+    ``image_org_on`` is a CACHE KEY only (WS-VOX VOX-3 fix round). The renderer
+    reads the run's org itself (``addendum._dark_tools``), so an unscoped
+    agent of a dark org and one of a lit org need two cache entries.
 
     Appended to every GitHub Copilot agent's system message at run time so the
     LLM knows the injected tools exist, when to use them, and what valid agent
@@ -1536,6 +1547,8 @@ def _build_injected_tools_addendum(
         effective_scope=effective_scope,
         registry_block=_registry_block_for(agent_name),
         risk_block=risk_summary_block(own=own_risk),
+        # The text depends on the cache key alone, never on a tenant read.
+        image_on=image_org_on,
     )
 
 
@@ -1702,10 +1715,34 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
 
 #: The CRM record write tools that Mirror mode takes from a run (WS-53
 #: CRM-C7 item 4). Zoho owns the records there, so each would answer 409.
-#: ``log_activity`` stays: a Metorite-only note saves in Mirror mode (CRM-Z6).
+#: ``log_activity`` and ``crm_update_task`` stay: a Metorite-only note or
+#: task saves in Mirror mode (CRM-Z6), and the activity route has no Mirror gate.
 MIRROR_RECORD_WRITES: frozenset[str] = frozenset({
     "create_lead", "update_deal_status", "convert_lead",
+    "crm_update_record",
 })
+
+#: The CRM write that ``CRM_PIPELINES_ORGS`` keeps out of a run (WS-CRM
+#: CRM-M3a). An org off the list gets 404 from the route, so the tool leaves
+#: the run, and the model never offers it.
+PIPELINE_WRITES: frozenset[str] = frozenset({"crm_create_pipeline"})
+
+
+def _crm_pipelines_open() -> bool:
+    """True when ``CRM_PIPELINES_ORGS`` holds the org of this run (CRM-M3a).
+
+    The reader is ``gateway.routes.crm.flags.pipelines_allowed``, the one that
+    the create route reads. The org is the run's own (:func:`_run_org_or_none`),
+    never an argument (R5). It reads the settings only, and it fails closed:
+    no org, no gateway or an error reads as closed. Each build of a run asks
+    it (:func:`_drop_mirror_record_writes`, :func:`_drop_pack_mirror_writes`).
+    """
+    try:
+        from gateway.routes.crm.flags import pipelines_allowed
+        return bool(pipelines_allowed(_run_org_or_none()))
+    except Exception as exc:  # fail closed
+        _log.info("executor.crm_pipelines_flag_unread", error=str(exc)[:200])
+        return False
 
 
 async def _drop_mirror_record_writes(agents: list[Any]) -> None:
@@ -1724,15 +1761,23 @@ async def _drop_mirror_record_writes(agents: list[Any]) -> None:
     egress control drops the writes there (``egress.covered_chain``), and a
     covered run sends no request that it does not need (H-236). With the org off
     (``egress.held_card_writes_on``), a held run reads nothing too, as before.
+
+    CRM-M3a: first, an org that ``CRM_PIPELINES_ORGS`` leaves out loses
+    :data:`PIPELINE_WRITES`, in every run (:func:`_crm_pipelines_open`).
     """
     from acb_skills.egress import covered_chain, held_card_writes_on, no_egress_for_this_run
 
-    if covered_chain() or (no_egress_for_this_run() and not held_card_writes_on()):
-        return
     held = {
         _tool_name(t)
         for agent in agents for _attr, pool in _own_tool_pools(agent) for t in pool
     }
+    # CRM-M3a: the flag of the org first. It reads the settings only, so it
+    # runs in every run, a covered one too.
+    if held & PIPELINE_WRITES and not _crm_pipelines_open():
+        _drop_own_tools(agents, PIPELINE_WRITES)
+        _log.info("executor.crm_pipeline_writes_dropped", tools=sorted(PIPELINE_WRITES))
+    if covered_chain() or (no_egress_for_this_run() and not held_card_writes_on()):
+        return
     if not held & MIRROR_RECORD_WRITES:
         return
     try:
@@ -1936,6 +1981,26 @@ def _facts_withheld() -> frozenset[str]:
         # card and has no human to pick, so it never holds the reply tool.
         off.update(fn.__name__ for fn in (*CRM_QUESTION_TOOLS, *CRM_RULE_TOOLS))
     return frozenset(off)
+
+
+def _image_withheld() -> frozenset[str]:
+    """``analyze_image`` when the run's org is not on ``IMAGE_ANALYSIS_ORGS``.
+
+    WS-VOX VOX-3 fix round. The tool costs about 250 schema tokens, and its
+    addendum section more, in each chat. A dark org pays nothing: the name
+    leaves the SCOPE and the final list, like :func:`_facts_withheld`. The
+    org is the run's own (:func:`_run_org_or_none`), never request input. The
+    answer is per org and not per thread, so the tool list stays the same from
+    turn to turn and the prompt cache holds. No org withholds it too.
+    Fence: ``tests/unit/test_attachment_analyze_image.py``.
+    """
+    try:
+        from acb_common.assistant_profile import image_analysis_for
+    except ImportError:
+        return frozenset({"analyze_image"})
+    if image_analysis_for(_run_org_or_none()):
+        return frozenset()
+    return frozenset({"analyze_image"})
 
 
 def _whatsapp_withheld() -> frozenset[str]:
@@ -2180,9 +2245,11 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     # Chat attachments (H-229) — the text of a file the member attached in
     # THIS chat, by pure parsing: no subprocess, no code. It is no shell
     # tool, so D85 does not withhold it (`_withheld_shell_tools`).
+    # `analyze_image` (WS-VOX VOX-3) sends an attached image to `tier-vision`
+    # through the Console, and decodes no pixel here.
     try:
-        from acb_skills.attachment_tools import read_attachment
-        _all_tools = [*_all_tools, read_attachment]
+        from acb_skills.attachment_tools import analyze_image, read_attachment
+        _all_tools = [*_all_tools, read_attachment, analyze_image]
     except ImportError:
         pass
 
@@ -2479,7 +2546,7 @@ def _inject_agent_tools(
     # WS-53 CRM-Q32 follow-up: `org_facts` (and, since CRM-Q32-8,
     # `crm_answer_question`) only for a run of an org on CRM_QUESTIONS_ORGS,
     # so no prompt names them for another org.
-    _facts_off = _facts_withheld()
+    _facts_off = _facts_withheld() | _image_withheld()
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
         withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld | _facts_off,
@@ -2684,6 +2751,7 @@ def _inject_agent_tools(
                         own_risk=_own_risk(list(agent._tools)),
                         # The registry block leaves out the agent itself.
                         agent_name=agent_name,
+                        image_org_on=not _image_withheld(),
                     )
                     opts = getattr(agent, "_default_options", None)
                     if isinstance(opts, dict):
@@ -3305,7 +3373,9 @@ async def _pack_tools(
 async def _drop_pack_mirror_writes(
     tools: list[Any], dropped: list[str], *, held: bool = False,
 ) -> tuple[list[Any], list[str]]:
-    """Take the CRM record writes from a pack build in Mirror mode (OA-8a).
+    """Take the CRM record writes from a pack build in Mirror mode (OA-8a),
+    and ``crm_create_pipeline`` from the build of an org that
+    ``CRM_PIPELINES_ORGS`` leaves out (CRM-M3a, :func:`_crm_pipelines_open`).
 
     The drop is part of the builder, so each layer gets it: layer (a) runs
     :func:`_drop_mirror_record_writes` later in the executor, but a pack that
@@ -3320,6 +3390,12 @@ async def _drop_pack_mirror_writes(
     """
     from acb_skills.egress import held_card_writes_on
 
+    # CRM-M3a: an org off `CRM_PIPELINES_ORGS` builds no `crm_create_pipeline`.
+    if any(_tool_name(t) in PIPELINE_WRITES for t in tools) and not _crm_pipelines_open():
+        gone = [_tool_name(t) for t in tools if _tool_name(t) in PIPELINE_WRITES]
+        tools = [t for t in tools if _tool_name(t) not in PIPELINE_WRITES]
+        dropped = [*dropped, *gone]
+        _log.info("executor.crm_pipeline_writes_dropped", tools=gone, source="pack")
     if ((held and not held_card_writes_on())
             or not any(_tool_name(t) in MIRROR_RECORD_WRITES for t in tools)):
         return tools, dropped
@@ -3403,10 +3479,57 @@ async def _drop_pack_unless_studio(
 ) -> tuple[list[Any], list[str]]:
     """Build an empty ``studio`` pack for an org that ``STUDIO_ORGS`` lacks,
     and for a member without ``feature:studio`` (STU-G1 and J1-1,
-    :func:`_studio_member_open`)."""
+    :func:`_studio_member_open`). For an open member, the second filter
+    :func:`_drop_studio_writes_unless_requests` runs next (STU-B2c-2b)."""
     if await _studio_member_open():
-        return tools, dropped
+        return await _drop_studio_writes_unless_requests(tools, dropped, held=held)
     return [], [*dropped, *(_tool_name(t) for t in tools)]
+
+
+def _studio_requests_open() -> bool:
+    """True when ``APP_REQUESTS_ORGS`` holds the org of this run AND agent
+    access is on (STU-B2c-2b, fix round 1).
+
+    ``gateway.app_requests.requests_allowed`` is the reader that the door
+    reads before it opens a request. ``acb_auth.agent_oauth.enabled`` is the
+    second flag of the member's list, Integrations, AI agents, Waiting for
+    you (``routes.agent_requests._require_access`` needs both). Without it,
+    the member cannot see a request to approve it, so a write tool would only
+    ask in vain. The org is the run's own (:func:`_run_org_or_none`), never
+    an argument (R5). It fails closed: no org, no gateway or an error reads
+    as closed.
+    """
+    try:
+        from acb_auth import agent_oauth
+        from gateway.app_requests import requests_allowed
+        return bool(agent_oauth.enabled()) and bool(requests_allowed(_run_org_or_none()))
+    except Exception as exc:  # fail closed
+        _log.info("executor.studio_requests_unread", error=str(exc)[:200])
+        return False
+
+
+async def _drop_studio_writes_unless_requests(
+    tools: list[Any], dropped: list[str], *, held: bool = False,
+) -> tuple[list[Any], list[str]]:
+    """Take the three record write tools out of a ``studio`` pack while the
+    org has no approval store (STU-B2c-2b, :func:`_studio_requests_open`).
+
+    In a dark org, the door answers each write from chat 403
+    ``approval_required``, so a write tool there only fails. The read tools
+    stay. A pack with no write tool reads no flag. The names are
+    ``acb_skills.studio_tools.STUDIO_RECORD_WRITES``, the one list.
+    Fence: ``tests/unit/test_tool_packs_registry.py``.
+    """
+    from acb_skills.studio_tools import STUDIO_RECORD_WRITES
+
+    if not any(_tool_name(t) in STUDIO_RECORD_WRITES for t in tools):
+        return tools, dropped
+    if _studio_requests_open():
+        return tools, dropped
+    kept = [t for t in tools if _tool_name(t) not in STUDIO_RECORD_WRITES]
+    gone = [_tool_name(t) for t in tools if _tool_name(t) in STUDIO_RECORD_WRITES]
+    _log.info("executor.studio_writes_dropped", tools=sorted(gone), source="pack")
+    return kept, [*dropped, *gone]
 
 
 #: The one pre-filter slot of :func:`_pack_tools`, by owner. A filter takes the
@@ -3748,7 +3871,7 @@ def _pack_base_count(
     names -= gone  # `_add_crm_facts_block` drops an agent's own copy too
     withheld = (_withheld_shell_tools(agent_name, agent_config)
                 | _floor_opt_out(agent_name, agent_config)
-                | _whatsapp_withheld() | gone)
+                | _whatsapp_withheld() | _image_withheld() | gone)
     scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
     chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
     injected = set(chain) if scope is None else {name for name in chain if name in scope}

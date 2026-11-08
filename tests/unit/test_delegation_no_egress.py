@@ -110,6 +110,10 @@ EXPECTED_OPEN_WORLD = frozenset({
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    # crm-assistant, WS-CRM CRM-M3a: a new pipeline. It never queues for Zoho,
+    # but it says open_world as each CRM write does, so a covered run holds it off.
+    "crm_create_pipeline",
+    "crm_update_record", "crm_update_task",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })
@@ -137,6 +141,11 @@ def _no_database(monkeypatch):
     """
     import acb_auth.access as auth_access
     import gateway.routes.agent as routes_agent
+    import orchestrator._tool_injection as _ti_vox
+
+    # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
+    # of a lit org (the dark case is in test_attachment_analyze_image.py).
+    monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
 
     monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
@@ -818,7 +827,11 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: card, and says open_world=False. None sends anything outside Metorite.
 #: 2026-11-02 (WS-PJP PJP-4, D168.1): update_tasks joined. Each ticked row is one
 #: update_task patch through the gateway, behind one card, and says open_world=False.
+#: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
+#: floor. It sends an attached image only to the metered tier-vision model of the
+#: Console, writes nothing, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
+    "analyze_image",
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
     "ask_questions", "assign", "bulk_update", "calendar", "call_agent",
@@ -2477,7 +2490,7 @@ def _task_manager_block() -> str:
 #: and the risky tools of task-manager, whatever else this process imported.
 TASK_MANAGER_RISK_BLOCK = (
     "### Tool risk annotations\n"
-    "- Read-only (call freely): ask_questions, ask_user, decide, fetch_page, get_errors, "
+    "- Read-only (call freely): analyze_image, ask_questions, ask_user, decide, fetch_page, get_errors, "
     "get_workflow_run, github_repo_search, github_search, list_integrations, "
     "list_workflows, load_design_system, my_tasks_accounts, my_tasks_clarify, "
     "my_tasks_day_digest, my_tasks_detail, my_tasks_inbox_insights, my_tasks_list, "

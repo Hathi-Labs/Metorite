@@ -36,6 +36,12 @@ export interface Email {
   snippet: string;
   hasAttachments: boolean;
   attachments?: Attachment[];
+  /**
+   * "failed" when the gateway could not get the files of this mail from the
+   * provider (an expired token, a rate limit). An empty list with "ok" or no
+   * value is a mail with inline pictures only. Never guess it from the list.
+   */
+  attachmentsStatus?: "ok" | "failed";
   isRead: boolean;
   isStarred: boolean;
   isFlagged: boolean;
@@ -644,6 +650,8 @@ export interface ExecutedRule {
   conditions?: RuleConditions | null;
   /** Matched rule's full action specs (label/to/subject…), for the popover. */
   rule_actions?: RuleAction[];
+  /** The server says the mail was moved or deleted before the rule ran. */
+  mail_gone?: boolean;
 }
 
 /** One event in a single message's audit timeline (GET /messages/{id}/timeline).
@@ -659,6 +667,8 @@ export interface MessageTimelineEvent {
   /** rule/skipped: */
   rule_id?: string | null;
   rule_name?: string | null;
+  /** The server says the mail was moved or deleted before the rule ran. */
+  mail_gone?: boolean;
   /** APPLIED | SKIPPED | FAILED | UNDONE | REJECTED … */
   status?: string;
   automated?: boolean;
@@ -704,6 +714,10 @@ export interface AssistantSettings {
    *  get double-signed). */
   signature_text?: string;
   auto_run: boolean;
+  /** Read-only: true when the mailbox has a stored settings row, so the member
+   *  chose (task 2267). False: no stored choice. The PUT ignores it. Absent on
+   *  an older server. */
+  auto_run_chosen?: boolean;
   cold_email_blocker: ColdBlockerMode;
   // No model or tier field: our code picks the tier of each email AI task
   // (D-EM-7, D-EM-61). The server answers none, and a fence keeps them out

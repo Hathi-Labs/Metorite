@@ -380,9 +380,10 @@ async def test_a_model_load_at_the_tool_cap_moves_a_sticky_pack_out(store, monke
     check only the pack count in ``_room_for`` -> red."""
     _stub_owners(monkeypatch)
     await _seed_sticky("email", "crm-records")
-    # extra=69, not 70, since WS-CRM CRM-M1: crm-records holds 10 tools, not 9
-    # (crm_change_history), and the list must still be exactly 110.
-    run, live, key = await _full_run(("email", "crm-records"), extra=69)
+    # extra=66: crm-records holds 13 tools (10 since CRM-M1, 2 more of
+    # CRM-M2b and crm_create_pipeline of CRM-M3a), and the list must still
+    # be exactly 110.
+    run, live, key = await _full_run(("email", "crm-records"), extra=66)
     assert len(live) == 110
     with _frame(run, key):
         answer, _ = await _call(_loader(run, key), REMINDERS, live)
@@ -731,3 +732,19 @@ def _held_card_writes_on(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+
+
+# ── Task 1573: the open app is a hint, and it leaves first at the cap ───────
+
+
+def test_a_pack_from_the_open_app_alone_leaves_before_a_pack_the_words_asked_for() -> None:
+    """The member has Projects open and asks for work of three other packs.
+    The Projects pack came in by the surface alone, so it leaves at the cap and
+    every pack the words asked for stays. Mutation: evict ``order[-1]`` with no
+    regard to the layer -> red (the last word pack leaves instead)."""
+    words = f"{REMIND} and send an email to Ravi and log it in the crm"
+    choice = tp.choose(_turn(words, surface="projects"), allowed=EVERY, base_tools=0)
+    assert set(choice.slugs) == {"email", "crm-records", REMINDERS}, choice
+    assert choice.skipped == ("projects",), choice
+    assert len(choice.slugs) <= tp.MAX_PACKS
+    assert _total(choice, 0) <= tp.MAX_REQUEST_TOOLS

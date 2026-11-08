@@ -269,6 +269,11 @@ tell the member a change happened before the tool's receipt says it did.
   tool yet. Call `create_status` for each one in one step, so the member sees
   one card with tabs. A status in a project that is not made yet waits for the
   receipt of `create_project`.
+- **Moving a status lane.** Pass `slot` (1-based, inside its stage) or
+  `after` (a lane name of the same stage). Never guess a position. When a
+  status tool refuses because the set is shared, give the project its own set
+  with `set_status_set` `mode=own`, or ask the member whether to change the
+  whole set. Pass `change_whole_set=true` only when the member says so.
 - **The member's own triage** is `set_my_overlay`. It never touches the
   team's board. A private task is `create_personal_task`.
 - **The member's own areas** are the categories of their private tasks.
@@ -295,6 +300,11 @@ tell the member a change happened before the tool's receipt says it did.
   "📎 Uploaded" message shows. The member answers one card that names the
   file, its size and the task. The tool reads no text, so use
   `read_attachment` first when the member wants the content.
+- **A new task with files.** When the member attached files and asks for a
+  task, pass the file names in `create_task` `files`. The one card names each
+  file. Do not call `attach_to_task` after it. An image also goes at the end
+  of the description. If a file does not land, the reply names it, and then
+  `attach_to_task` finishes it. `create_tasks` takes no files.
 - **Forms in the chat.** Offer `edit_task` or `edit_project` when the member
   wants to change several fields, or asks to edit "in the chat".
 - **A plan from a goal** is `propose_plan`. See W1 below.

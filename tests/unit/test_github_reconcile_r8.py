@@ -26,6 +26,8 @@ R7, the mutations. Each one turns a test here red (run 2026-10-18):
 * K-M8 ``LIMIT :limit`` dropped -> ``test_k4_at_most_fifty_*``.
 * K-M9 the rate limit is not raised -> ``test_k4_a_rate_limit_*``.
 * K-M10 the poll skips ``on_merged`` -> ``test_k5_*``.
+* SW53-M2 drop the ``github_app_org_allowed`` check of ``run_org`` ->
+  ``test_sw53_the_poll_skips_an_org_off_the_list_and_reads_one_on_it``.
 
 Fix round 1, item 6 (an unreadable reference), each one red when run:
 
@@ -364,6 +366,38 @@ async def test_a_fresh_reference_is_not_read(world) -> None:
     async with tenant_engine_scope(g.app_dsn(w.p)):
         result = await github_reconcile_loop.run_org(w.p.org_a, "tick-fresh")
     assert result.claimed and result.pr_reads == 0 and w.gh.requests == []
+
+
+async def test_sw53_the_poll_skips_an_org_off_the_list_and_reads_one_on_it(
+    world, monkeypatch,
+) -> None:
+    """SW-53: the poll never reads an org that GITHUB_APP_ORGS does not name.
+    It reads no installation, takes no tick guard and calls no GitHub."""
+    from acb_common import get_settings
+    from gateway import github_reconcile_loop, github_sync
+
+    w = world
+    ref = _ref(w, _task(w), 5)
+    w.gh.pulls[5] = _pull(5)
+    asked: list[str] = []
+    real = github_sync.installation_of_org
+
+    async def _recorded(org: str) -> Any:
+        asked.append(org)
+        return await real(org)
+
+    monkeypatch.setattr(github_sync, "installation_of_org", _recorded)
+    monkeypatch.setattr(get_settings(), "github_app_orgs", w.p.org_b)
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        off = await github_reconcile_loop.run_org(w.p.org_a, "tick-sw53")
+    assert not off.claimed and off.pr_reads == 0
+    assert asked == [] and w.gh.requests == [] and w.opened["n"] == 0
+    assert g.scalar(w.p, "SELECT fetched_at > now() - interval '1 minute' FROM pm_task_refs "
+                         "WHERE id = CAST(:i AS uuid)", i=ref) is False
+    monkeypatch.setattr(get_settings(), "github_app_orgs", f"{w.p.org_b}, {w.p.org_a.upper()}")
+    async with tenant_engine_scope(g.app_dsn(w.p)):
+        on = await github_reconcile_loop.run_org(w.p.org_a, "tick-sw53")
+    assert on.claimed and on.pr_reads == 1 and asked == [w.p.org_a]
 
 
 # ── K5: a merge that the poll finds ─────────────────────────────────────────

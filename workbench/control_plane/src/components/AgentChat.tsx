@@ -23,7 +23,21 @@ import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import { subscribe as subscribeSidePanel, getOpenDocsForSession, openGenUI } from "@/lib/sidePanelStore";
 import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
-import { uploadNote } from "@/lib/chatUpload";
+import VoiceInputButton, { type VoiceControls } from "@/components/VoiceInputButton";
+import { useVoiceAvailability } from "@/hooks/useVoiceDictation";
+import { insertAtCaret, type VoicePhase } from "@/lib/voiceDictation";
+import { wordsOfMessage } from "@/lib/chatUpload";
+import { PendingChips, workspaceFileUrl } from "@/components/ChatAttachmentChips";
+import { useChatAttachments } from "@/hooks/useChatAttachments";
+import {
+  canSend as canSendMessage,
+  composeMessage,
+  editStart,
+  hasFailed,
+  hasFiles,
+  isUploading,
+  readyFiles,
+} from "@/lib/chatAttachments";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills, { type SuggestionItem } from "@/components/SuggestionPills";
 import InterviewOffer from "@/components/profile/InterviewOffer";
@@ -52,6 +66,8 @@ import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
 import { withEmailSteps } from "@/lib/delegatedSteps";
 import { mailboxMarksOf } from "@/lib/mailboxMark";
 import MailboxMark from "@/components/MailboxMark";
+import ContinueOffer from "@/components/ContinueOffer";
+import { newestOfferId, type ContinueOpened } from "@/lib/chatContinue";
 import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/stickToBottom";
@@ -373,6 +389,13 @@ interface AgentChatProps {
    * on purpose omits it, and its refusal shows as an error.
    */
   onSessionRefused?: (pendingText: string) => boolean;
+  /**
+   * The shell opens the fresh chat that the pill "Continue in a fresh chat"
+   * made (`lib/chatContinue.ts`, `one_assistant_context.md` §9 WT-2). Pass it
+   * only from the shell's dock. A host that omits it draws no pill. The new
+   * chat gets `text` in its composer, and nothing is sent.
+   */
+  onContinueHeld?: (opened: ContinueOpened) => void;
 }
 
 /** The `answer` of a resolved card that closed with no answer. */
@@ -414,6 +437,7 @@ export default function AgentChat({
   onAutoSendConsumed,
   assistantName,
   onSessionRefused,
+  onContinueHeld,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
   const [currentAgentName, setCurrentAgentName] = useState(agentName);
@@ -890,6 +914,34 @@ export default function AgentChat({
   const runView = useSteadyRunView(run);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // VOX-1 (projects_ai_chat §31): the mic beside Attach. The flag decides
+  // whether it shows. The transcript goes in at the caret, and the member
+  // sends it. Enter and Escape in the box stop or cancel a recording.
+  const voiceAvailability = useVoiceAvailability();
+  const voiceRef = useRef<VoiceControls>(null);
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
+  const putDictation = useCallback((text: string) => {
+    const el = inputRef.current;
+    const prev = el?.value ?? "";
+    const next = insertAtCaret(prev, el?.selectionStart ?? prev.length, el?.selectionEnd ?? prev.length, text);
+    // D-PZ-37: the member spoke these words and did not type them. A program
+    // put them in the box, so a send of the box carries no typed mark.
+    boxMarkRef.current = filled(boxMarkRef.current, false);
+    setInput(next.value);
+    setComposerNotice(null);
+    requestAnimationFrame(() => {
+      const box = inputRef.current;
+      if (!box) return;
+      box.focus();
+      box.setSelectionRange(next.caret, next.caret);
+    });
+  }, [setInput, setComposerNotice]);
+  // IMG-1 (projects_ai_chat §30.4): a file is a chip until the member sends.
+  const att = useChatAttachments(sessionId);
+  const attRef = useRef(att);
+  attRef.current = att;
+  const [dragOver, setDragOver] = useState(false);
+  const hasReadyFiles = readyFiles(att.items).length > 0;
 
   // ── The composer's height (owner request, 2026-10-09) ─────────────────────
   // It grows with the message up to a cap, and goes back to one line when the
@@ -937,7 +989,10 @@ export default function AgentChat({
   useEffect(() => {
     restoreCappedRef.current = (text: string, typed: boolean) => {
       boxMarkRef.current = filled(boxMarkRef.current, typed);
-      setInput((prev) => mergeCappedText(prev, text));
+      // The words go in the box and the files come back as chips, never the note.
+      const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
+      setInput((prev) => mergeCappedText(prev, back.words));
+      if (back.items.length) attRef.current.restore(back.items);
       inputRef.current?.focus();
     };
   }, []);
@@ -1604,7 +1659,7 @@ export default function AgentChat({
     ).length;
     if (counted === 0) return;
     onActivityRef.current({
-      firstUserMessage: firstUser?.content,
+      firstUserMessage: firstUser ? wordsOfMessage(firstUser.content) : undefined,
       lastPreview: lastAssistant?.content,
       messageCount: counted,
     });
@@ -1796,12 +1851,16 @@ export default function AgentChat({
     () => (messages.length > renderLimit ? messages.slice(-renderLimit) : messages),
     [messages, renderLimit],
   );
+  // WT-2: the newest settled turn that the server marked as held.
+  const continueOfferId = useMemo(() => newestOfferId(visibleMessages), [visibleMessages]);
 
   // A steer the server refused gives its words back, and says why. Text the
   // member typed since then keeps its place (`mergeCappedText`).
   const giveBack = useCallback((text: string, notice: string, typed: boolean) => {
     boxMarkRef.current = filled(boxMarkRef.current, typed);
-    setInput((prev) => mergeCappedText(prev, text));
+    const back = editStart(text, (p) => workspaceFileUrl(sessionIdRef.current, p));
+    setInput((prev) => mergeCappedText(prev, back.words));
+    if (back.items.length) attRef.current.restore(back.items);
     setComposerNotice(notice);
     inputRef.current?.focus();
   }, []);
@@ -1884,13 +1943,22 @@ export default function AgentChat({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || loadingHistory) return;
+    if (loadingHistory || !canSendMessage(input, att.items)) return;
     // `answerTyped` is defined below, where the question state is read. A
     // submit runs after the render, so it is in scope.
     // WS-63 D-PZ-37: the ONE send that sets the typed mark, unless words
     // that the member did not type sit in the box (`boxMarkRef`).
     const typed = composerTyped(boxMarkRef.current);
-    if (answerTyped(input) || submitText(input, typed ? { typed: true } : undefined)) setInput("");
+    // A message with files is the member's words, then the note that names the
+    // files (`composeMessage`). It never answers a question card.
+    const withFiles = att.items.length > 0;
+    const sent =
+      (!withFiles && answerTyped(input)) ||
+      submitText(withFiles ? composeMessage(input, att.items) : input, typed ? { typed: true } : undefined);
+    if (sent) {
+      setInput("");
+      att.clear();
+    }
     inputRef.current?.focus();
   };
 
@@ -1908,6 +1976,18 @@ export default function AgentChat({
   }, [input]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // VOX-1: while the mic records, Enter stops it and Escape cancels it.
+    // Neither sends: the transcript goes in the box first.
+    if (voicePhase === "recording" && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      voiceRef.current?.stop();
+      return;
+    }
+    if ((voicePhase === "recording" || voicePhase === "asking") && e.key === "Escape") {
+      e.preventDefault();
+      voiceRef.current?.cancel();
+      return;
+    }
     // Enter sends and Shift+Enter is a new line (owner, 2026-10-31). On a
     // touch keyboard Enter stays a new line (`enterSends`, lib/chatSteer.ts).
     if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
@@ -1917,7 +1997,7 @@ export default function AgentChat({
     }
     // Esc stops a live run, only from an empty box: with text, Esc keeps its
     // usual meaning and the words stay (owner, 2026-10-12).
-    if (e.key === "Escape" && primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() }) === "stop") {
+    if (e.key === "Escape" && primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() || hasReadyFiles }) === "stop") {
       e.preventDefault();
       handleStop();
     }
@@ -2402,7 +2482,9 @@ export default function AgentChat({
   // instead of failing the send with a 403 after they have typed a paragraph.
   const canSend = room ? room.you.canSend : true;
   // Stop while a run is live and the box is empty, else Send (lib/chatSteer.ts).
-  const primary = primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() });
+  const primary = primaryAction({ runActive: isRunActive && !loadingHistory, hasText: !!input.trim() || hasReadyFiles });
+  const uploadingFiles = isUploading(att.items);
+  const failedFiles = hasFailed(att.items);
   // The box's bar always holds Attach and the one primary control. These
   // controls join it only when the agent has them (owner, 2026-10-12).
   const hasComposerControls =
@@ -2627,6 +2709,11 @@ export default function AgentChat({
                   receipts={confirmations.receipts.filter((r) => r.afterId === msg.id)}
                   onUndo={undoReject}
                 />
+                {/* WT-2: the server marked this held turn, and the shell can open
+                    the fresh chat. Under the newest marked turn only. */}
+                {onContinueHeld && msg.id === continueOfferId && (
+                  <ContinueOffer sessionId={sessionId} onOpened={onContinueHeld} />
+                )}
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
               </div>
@@ -2838,13 +2925,32 @@ export default function AgentChat({
           <div aria-hidden data-testid="working-glow" data-glow={glowState} data-glow-focus={composerFocused ? "true" : "false"} className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-[24px]">
             <div className="glass:glass-glow-ring" />
           </div>
-          <div data-guide="chat.message-field" data-chat-composer onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
-            "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
+          <div data-guide="chat.message-field" data-chat-composer data-drop={dragOver ? "over" : undefined}
+            onDragOver={(e) => { if (canSend && hasFiles(e.dataTransfer?.types)) { e.preventDefault(); setDragOver(true); } }}
+            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false); }}
+            onDrop={(e) => {
+              setDragOver(false);
+              if (!canSend || !hasFiles(e.dataTransfer?.types)) return;
+              e.preventDefault();
+              att.add(Array.from(e.dataTransfer.files));
+              inputRef.current?.focus();
+            }}
+            onFocus={() => setComposerFocused(true)} onBlur={() => setComposerFocused(false)} className={[
+            dragOver ? "rounded-2xl border border-primary bg-primary/10 tech-transition glass:ring-2 glass:ring-primary glass:bg-primary/10" : "rounded-2xl border border-border bg-secondary/50 focus-within:border-primary/40 tech-transition",
             "glass:relative glass:z-10 glass:rounded-[20px] glass:border-transparent glass:focus-within:border-transparent glass:glass-chrome glass:glass-spectrum-edge",
             canSend ? "" : "pointer-events-none opacity-40",
           ].join(" ")}>
+            <PendingChips items={att.items} onRemove={(id) => { att.remove(id); inputRef.current?.focus(); }} onRetry={att.retry} />
             <textarea ref={inputRef} value={input}
               onChange={(e) => { setInput(e.target.value); if (composerNotice) setComposerNotice(null); }}
+              onPaste={(e) => {
+                // A pasted image goes the same way as an attach. Pasted text
+                // stays text: a copy from a page can carry a picture as well.
+                const cd = e.clipboardData;
+                if (!cd || !hasFiles(cd.types) || cd.getData("text/plain")) return;
+                e.preventDefault();
+                att.add(Array.from(cd.files), { pasted: true });
+              }}
               onKeyDown={handleKeyDown} rows={1}
               disabled={loadingHistory}
               aria-label={`Message ${currentAgentLabel}`}
@@ -2867,15 +2973,13 @@ export default function AgentChat({
                 into a staircase (visual review, 2026-10-12, 390 px). */}
             <div className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
               <FileUploadButton sessionId={sessionId}
-                onUploadComplete={(files) => {
-                  // The note names read_attachment, the one reader of an
-                  // upload (lib/chatUpload.ts). It named a read_file tool
-                  // that does not exist until 2026-10-09.
-                  const ctx = uploadNote(files);
-                  setInput((prev) => prev.trim() ? `${prev}\n\n${ctx}` : ctx);
-                  inputRef.current?.focus();
-                }}
+                onPick={(files) => { att.add(files); inputRef.current?.focus(); }}
                 className={`shrink-0 flex ${tap} items-center justify-center`} />
+              {voiceAvailability.shown && (
+                <VoiceInputButton ref={voiceRef} availability={voiceAvailability}
+                  onText={putDictation} onNotice={setComposerNotice} onPhase={setVoicePhase}
+                  className={`shrink-0 flex ${tap} items-center justify-center`} />
+              )}
             {hasComposerControls && !phoneChrome && (
             <div data-chat-pickers="" className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
             <>
@@ -3107,10 +3211,18 @@ export default function AgentChat({
                 action={primary}
                 onClick={primary === "stop" ? handleStop : undefined}
                 // A Stop waits for the server's answer (UXD-4).
-                loading={primary === "stop" && stopping}
-                label={primary === "stop" && stopping ? "Stopping the reply" : undefined}
-                title={primary === "stop" && stopping ? "Stopping…" : undefined}
-                disabled={primary === "send" ? !input.trim() || loadingHistory : stopping}
+                loading={primary === "stop" ? stopping : uploadingFiles}
+                label={primary === "stop" ? (stopping ? "Stopping the reply" : undefined) : uploadingFiles ? "Uploading…" : undefined}
+                title={
+                  primary === "stop"
+                    ? stopping ? "Stopping…" : undefined
+                    : uploadingFiles
+                      ? "Uploading…"
+                      : failedFiles
+                        ? "Retry or remove the file that failed, then send."
+                        : undefined
+                }
+                disabled={primary === "send" ? !canSendMessage(input, att.items) || loadingHistory : stopping}
                 large={phoneChrome}
               />
             </div>

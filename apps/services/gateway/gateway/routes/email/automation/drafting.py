@@ -13,6 +13,7 @@ from typing import Any, NamedTuple
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from acb_common import honorifics
 from acb_llm.context import StreamTimeout
 from acb_llm.voice import voice_prompt
 from acb_skills.untrusted import UntrustedFrame
@@ -1801,17 +1802,21 @@ def _clean_draft_body(body: str) -> str:
 _GREETING_START_RE = re.compile(
     r"^(dear|hi|hello|hey|greetings|respected|"
     r"good\s+(morning|afternoon|evening|day)|"
-    r"namaste|hola|bonjour|salut|hallo|ciao)\b",
+    r"namaste|namaskar|namaskaram|namaskara|vanakkam|"
+    r"hola|bonjour|salut|hallo|ciao)\b",
     re.IGNORECASE,
 )
 
-_HONORIFIC_RE = re.compile(r"^(mr|mrs|ms|mx|dr|prof|er)\.?$", re.IGNORECASE)
-
 
 def _salutation_name(recipient_name: str) -> str:
-    """The name to greet with: the first name normally, '<honorific> <surname>'
-    (e.g. 'Dr. Rao') when the display name leads with an honorific, '' when
-    there is no usable name (empty, or a bare email address)."""
+    """The name to greet with: the first name normally. A leading title from
+    the one catalogue (acb_common.honorifics) gives '<title> <first name>' for
+    a form that takes a given name ('Shri Ramesh'), '<title> <surname>' for Dr,
+    Prof and ranks, and the first name alone for a regulated title ('Adv.',
+    'CA'). A suffix the name already carries ('Ramesh Garu', 'Vijay ji') stays
+    as written. The drafter only recognises a title: it never adds one.
+    '' when no usable name exists: empty, a bare email address, or only a
+    title."""
     name = (recipient_name or "").strip().strip('"').strip("'")
     if not name or "@" in name:
         return ""
@@ -1819,9 +1824,60 @@ def _salutation_name(recipient_name: str) -> str:
     tokens = [t for t in tokens if t]
     if not tokens:
         return ""
-    if len(tokens) >= 2 and _HONORIFIC_RE.match(tokens[0]):
-        return f"{tokens[0]} {tokens[-1]}"
-    return tokens[0]
+    # A first token with no letter (an emoji, a symbol, digits) is not a name.
+    # When no token has a letter, the tokens stay as they are.
+    for skip, token in enumerate(tokens):
+        if any(ch.isalpha() for ch in token):
+            tokens = tokens[skip:]
+            break
+    lead: list[tuple[str, honorifics.Honorific]] = []
+    idx = 0
+    while idx < len(tokens) - 1:
+        h = honorifics.find_prefix(tokens[idx])
+        if h is None:
+            break
+        lead.append((tokens[idx], h))
+        idx += 1
+    # A spoken suffix form (Sir, Madam, Sahab, Ji) before a name is no name. It
+    # is skipped like a title and not shown. Only the forms in the catalogue set
+    # are skipped, as a kinship form can be a given name (Bhau, Dada). A name
+    # that is only the form stays too (see below).
+    while idx < len(tokens) - 1:
+        lead_suffix = honorifics.find_suffix(tokens[idx])
+        if (
+            lead_suffix is None
+            or lead_suffix.form not in honorifics.LEADING_SKIPPED_SUFFIX_FORMS
+            or honorifics.find_suffix(tokens[idx + 1]) is not None
+            or honorifics.find_prefix(tokens[idx + 1]) is not None
+        ):
+            break
+        idx += 1
+    last_title = honorifics.find_prefix(tokens[idx])
+    if last_title is not None:
+        # Only a title is left. A form that is also a given name (Kumari,
+        # Selvi) stands as the name when it stands alone. Any other title
+        # is not a name, so the greeting has none.
+        return tokens[idx] if (last_title.also_name and not lead) else ""
+    for shown_text, h in lead:
+        if h.follows == honorifics.SURNAME:
+            # The surname is the last token that is not a spoken suffix
+            # (garu, ji) or a generational mark (Jr, III).
+            end = len(tokens)
+            while end > idx and (
+                honorifics.find_suffix(tokens[end - 1]) is not None
+                or tokens[end - 1].rstrip(".").casefold() in {"jr", "sr", "ii", "iii"}
+            ):
+                end -= 1
+            return f"{shown_text} {tokens[end - 1]}" if end > idx else ""
+    first = tokens[idx]
+    if idx + 1 < len(tokens):
+        s = honorifics.find_suffix(tokens[idx + 1])
+        # A credential (IAS, IPS) is not a spoken suffix: the greeting drops it.
+        # A polite or kinship suffix (ji, garu, bhai) stays, as in PZ-41.
+        if s is not None and not s.also_name and s.kind != honorifics.CREDENTIAL:
+            first = f"{first} {tokens[idx + 1]}"
+    shown = [word for word, h in lead if h.greet_title]
+    return " ".join([*shown, first])
 
 
 def _ensure_salutation(body: str, recipient_name: str = "") -> str:

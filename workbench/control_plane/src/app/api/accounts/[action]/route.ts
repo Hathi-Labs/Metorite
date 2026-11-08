@@ -30,6 +30,7 @@ import {
 } from "@/lib/accountsServer";
 import { SLOT_COUNT, stashIndex } from "@/lib/accountSlots";
 import { GATEWAY_URL, currentIdentity, gatewayFetch, headersActingAs } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -69,6 +70,8 @@ export async function POST(
   { params }: { params: Promise<{ action: string }> },
 ): Promise<NextResponse> {
   const { action } = await params;
+  const refused = refuseUnsafePath([action]);
+  if (refused) return refused;
   const s = await loadState(req, { write: true });
   if (s instanceof NextResponse) return s;
 

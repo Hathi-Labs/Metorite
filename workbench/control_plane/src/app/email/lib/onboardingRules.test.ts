@@ -37,6 +37,7 @@ import {
   processPastFrom,
   readAutoRunSwitch,
   readDraftSwitch,
+  saveAutoRunDefault,
   PROCESS_PAST_MAX_SPAN_DAYS,
   SORT_POLL_MS,
   readSortEstimate,
@@ -333,6 +334,64 @@ describe("the Auto-run switch (WS-17 EM-G11c2, G2)", () => {
   });
 });
 
+describe("the Auto-run switch starts ON with no stored choice (task 2267)", () => {
+  const NO_CHOICE = { ...SETTINGS, auto_run: false, auto_run_chosen: false } as AssistantSettings;
+
+  it("no stored choice: the switch starts ON, and loading saves nothing", async () => {
+    const { api, calls } = fakeApi(NO_CHOICE);
+    expect(await readAutoRunSwitch(api, "acc-1")).toEqual({ state: "ready", on: true, unsaved: true });
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings"]);
+  });
+
+  it("Done saves auto_run: true through the existing save", async () => {
+    const { api, calls } = fakeApi(NO_CHOICE);
+    const sw = await readAutoRunSwitch(api, "acc-1");
+    expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(true);
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings", "getAssistantSettings", "saveAssistantSettings"]);
+    expect((calls[2][1] as AssistantSettings).auto_run).toBe(true);
+  });
+
+  it("OFF before Done: the move saves false, and Done then saves nothing new", async () => {
+    const { api, calls } = fakeApi(NO_CHOICE);
+    await setAutoRun(api, "acc-1", false);
+    expect((calls[1][1] as AssistantSettings).auto_run).toBe(false);
+    // The step now holds { ready, on: false } with no `unsaved` mark.
+    const before = calls.length;
+    expect(await saveAutoRunDefault(api, "acc-1", { state: "ready", on: false })).toBe(false);
+    expect(calls).toHaveLength(before);
+  });
+
+  it("a stored false shows OFF, and Done saves nothing new", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: false, auto_run_chosen: true } as AssistantSettings);
+    const sw = await readAutoRunSwitch(api, "acc-1");
+    expect(sw).toEqual({ state: "ready", on: false });
+    expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(false);
+    expect(calls.map((c) => c[0])).toEqual(["getAssistantSettings"]);
+  });
+
+  it("a stored true shows ON and Done saves nothing", async () => {
+    const { api, calls } = fakeApi({ ...SETTINGS, auto_run: true, auto_run_chosen: true } as AssistantSettings);
+    const sw = await readAutoRunSwitch(api, "acc-1");
+    expect(sw).toEqual({ state: "ready", on: true });
+    expect(await saveAutoRunDefault(api, "acc-1", sw)).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("only Done saves the default: Skip does not, and a failed save keeps the step open", () => {
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src.match(/saveAutoRunDefault\(/g)).toHaveLength(1);
+    expect(src).toContain("onSkip={() => void finish()}");
+    expect(src).toMatch(/if \(saveDefault\) \{[\s\S]*?await saveAutoRunDefault\(RULES_API, account\.id, autoRun\);[\s\S]*?\}\s*const updated/);
+  });
+
+  it("the ON title and body read right for the default", () => {
+    const out = view({ phase: "ready", autoRun: { state: "ready", on: true, unsaved: true } });
+    expect(out).toContain(">Your AI rules are on<");
+    expect(out).toMatch(/role="switch"[^>]*aria-checked="true"[\s\S]*Run my rules on new mail/);
+    expect(RULES_STEP_COPY.autoRunOffBody).toMatch(/sort no new mail/);
+  });
+});
+
 describe("Done (item 11)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -357,7 +416,7 @@ describe("Done (item 11)", () => {
     const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
     expect(src).toContain("finishOnboarding: (accountId) => updateEmailAccount(accountId, { onboardingDone: true }),");
     expect(src).toContain("onSkip={() => void finish()}");
-    expect(src).toContain("onDone={() => void finish()}");
+    expect(src).toContain("onDone={() => void finish(true)}");
     expect(src).toMatch(
       /const updated = await RULES_API\.finishOnboarding\(account\.id\);\s*setFinished\(true\);\s*onFinished\(updated\);/,
     );

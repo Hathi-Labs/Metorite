@@ -58,9 +58,10 @@ enforces it, or be labelled advisory. "We should always…" is not a rule.
    `staging` ref, and that ref takes every merge. A nightly rebuild from an
    anonymised dump of production keeps it production-shaped, so it cannot
    drift.
-4. **Production** runs on its own box. It applies the `release` ref. A daily run
-   moves that ref at 21:30 UTC. A manual dispatch moves it for a hotfix.
-   The home box's timer starts the daily run with a nightly dispatch (D178).
+4. **Production** runs on its own box. It applies the `release` ref. A slot run
+   moves that ref three times a day, at 05:30, 13:30 and 21:30 UTC (D194). A
+   manual dispatch moves it for a hotfix. The home box's timer starts each
+   slot run with a nightly dispatch (D178).
 
 `specs/staging_and_daily_release.md` owns staging and the daily release. Root
 `CLAUDE.md` §4 says what to do after a merge. Test on staging before
@@ -172,10 +173,11 @@ Windows PC: `apply_migrations.sh` from Git Bash took 515 s for 310 files and
 
 **Owner directive, 2026-10-31 (Metorite task LD-7).** Show the owner a change
 the moment it works. Run the full gates after the owner approves it. Move
-production once a day.
+production three times a day, at 05:30, 13:30 and 21:30 UTC (D194 supersedes
+"once a day").
 
 ```text
-build ──▶ preview ──▶ owner approves ──▶ local staging gate ──▶ merge ──▶ 21:30 UTC release
+build ──▶ preview ──▶ owner approves ──▶ local staging gate ──▶ merge ──▶ next release slot
             ▲               │
             └── change it ◀─┘
 ```
@@ -200,6 +202,13 @@ affect (tier 1 of `specs/ci_velocity.md` §4, D176). The full suite runs on
 
 A slice with nothing to see skips the preview. Docs, tests, a script and a
 refactor with no change in behaviour go straight to step 4.
+
+**Small screen change (D200).** A small, low-risk change on an existing screen
+skips the wait for approval. The slice is LOW or STANDARD, and it is one field,
+one control, one line of text or a layout fix, or its whole change sits behind
+a flag that is off. It still needs the captures, the verifier and the full
+gates. After the merge, ask the owner "Looks right" or "Change it" on the task.
+D200 lists the cases that do not qualify. When in doubt, preview first.
 
 **3. The owner answers.**
 
@@ -232,12 +241,13 @@ step. Fence: `tests/unit/test_stage_local.py` (LD-9).
 `local-staging` pass. A new commit on the branch needs a new pass. LD-10 names
 its fence.
 
-**6. Production, once a day.** The release at 21:30 UTC ships the tip of
-`main` (§2 and `specs/staging_and_daily_release.md` §4). An agent dispatches
-`deploy.yml` only for a hotfix that the owner asks for, or when production is
-down. Report a merge as "reaches production at tonight's release". After the
-release, confirm `/version` `applied_sha`. The home box's timer starts the
-release (D178). An agent never sets `nightly=true` by hand.
+**6. Production, three times a day (D194).** Each release slot, at 05:30,
+13:30 and 21:30 UTC, ships the tip of `main` (§2 and
+`specs/staging_and_daily_release.md` §4). An agent dispatches `deploy.yml`
+only for a hotfix that the owner asks for, or when production is down. Report
+a merge as "reaches production at the next release slot". After the release,
+confirm `/version` `applied_sha`. The home box's timer starts each release
+(D178). An agent never sets `nightly=true` by hand.
 
 **Until LD-8 to LD-10 land.** The preview runs on the demo seed. The gate is
 `bash scripts/ci_local.sh`, and then `premerge.sh`. Name the steps that ran in
@@ -361,8 +371,9 @@ A flag that needs a live check still waits for the owner (D144 point 6).
 behaviour. Keep them separate, because that separation is what makes a bad merge
 a non-event.
 
-- **A merge deploys to staging, and production takes one release a day**
-  (WS-38, `specs/staging_and_daily_release.md`).
+- **A merge deploys to staging, and production takes three releases a day**,
+  at 05:30, 13:30 and 21:30 UTC (WS-38, D194,
+  `specs/staging_and_daily_release.md`).
 - **Ship dark.** Every feature lands behind a flag, defaulting OFF, and the flip
   is a deliberate act — for anything outward-facing or spend-bearing, an
   **owner-gated** one (`work_plan.md` §6). This is already our habit and it is
@@ -387,8 +398,8 @@ a non-event.
   pooled cutover a ring is a per-org feature flag, which **D25.2** already fixed
   as the only version-skew mechanism we support (one codebase, one schema, always
   latest).
-- **The ring order matters more than the clock.** The clock is 21:30 UTC each
-  day, and the home box's timer starts it (D178). The order is "us first, then one, then all".
+- **The ring order matters more than the clock.** The clock is 05:30, 13:30
+  and 21:30 UTC each day (D194), and the home box's timer starts it (D178). The order is "us first, then one, then all".
 
 ## 3. Migrations — the sharpest edge we have
 
