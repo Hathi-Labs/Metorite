@@ -774,19 +774,14 @@ def _exists(p: Any, table: str, row_id: str) -> bool:
     return _one(p, f"SELECT count(*) FROM {table} WHERE id = CAST(:i AS uuid)", i=row_id) == 1
 
 
-def _held(kind: str, pipeline: str, status: str, *, undo: bool = True,
-          made: bool = True) -> str:
-    """The whole refusal, with the name of the pipeline now. With *made*, an
-    open create of the pipeline lists the status, so its Undo is the step."""
+def _held(kind: str, pipeline: str, status: str, *, undo: bool = True) -> str:
+    """The whole refusal, with the name of the pipeline now (repair 4)."""
     noun = "lead pipeline" if kind == "lead" else "deal pipeline"
     status_noun = "lead status" if kind == "lead" else "deal stage"
-    if not made:
-        return (f'The {noun} "{pipeline}" uses the {status_noun} "{status}", so the '
-                f"{status_noun} stays.")
     outcome = "nothing was undone" if undo else "it was not deleted"
     then = "undo this" if undo else f"delete the {status_noun}"
     return (f'The {noun} "{pipeline}" uses the {status_noun} "{status}", so {outcome}. '
-            f'Undo the creation of the {noun} "{pipeline}" first, and then {then}.')
+            f'Undo the changes to the {noun} "{pipeline}", newest first, and then {then}.')
 
 
 def _no_orphan(p: Any, kind: str) -> None:
@@ -991,8 +986,8 @@ async def test_the_refusal_names_each_pipeline_that_holds_the_status(pns) -> Non
     assert refused.status_code == 409, refused.text
     assert _words(refused) == (
         'The lead pipelines "Expo" and "Fair" use the lead status "Walk-in", so nothing '
-        'was undone. Undo the creation of the lead pipelines "Expo" and "Fair" first, '
-        "and then undo this.")
+        'was undone. Undo the changes to the lead pipelines "Expo" and "Fair", newest '
+        "first, and then undo this.")
 
 
 async def test_a_pipeline_that_is_the_default_holds_the_stages_it_made(pns) -> None:  # noqa: F811
@@ -1044,14 +1039,25 @@ async def test_an_undo_of_a_status_waits_for_a_create_that_reuses_it(pns) -> Non
             "INSERT INTO crm_lead_pipeline_stages (organization_id, pipeline_id, status_id, "
             "position) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), CAST(:s AS uuid), 0)"),
             {"o": pns.org_a, "p": str(pipe), "s": added["id"]})
+        # Repair 4: a pipeline holds S through an open change, so the create
+        # writes its row in the same transaction, as log_change does.
+        c.execute(text(
+            "INSERT INTO crm_change_log (organization_id, actor_email, via, ladder_level, "
+            "area, action, entity_id, summary, after, mode, reversible) VALUES ("
+            "CAST(:o AS uuid), 'race@example.test', 'ui', 'company', 'pipeline', 'create', "
+            ":p, 'Created the lead pipeline \"Late fair\"', CAST(:after AS jsonb), "
+            "'native', true)"),
+            {"o": pns.org_a, "p": str(pipe), "after": json.dumps({
+                "name": "Late fair", "kind": "lead",
+                "stages": [{"id": added["id"], "name": "Walk-in", "type": "open",
+                            "source": "existing"}]})})
         undo = asyncio.ensure_future(_undo(pns, admin, s_row))
         await asyncio.sleep(1.5)
         assert not undo.done(), "the Undo waits for the create lock"
         tx.commit()
     refused = await undo
     assert refused.status_code == 409 and _code(refused) == "in_use", refused.text
-    # The pipeline has no create row, so the words name no step (repair 3).
-    assert _words(refused) == _held("lead", "Late fair", "Walk-in", made=False), _words(refused)
+    assert _words(refused) == _held("lead", "Late fair", "Walk-in"), _words(refused)
     assert _exists(pns, "crm_lead_statuses", added["id"])
 
 
@@ -1162,29 +1168,65 @@ async def test_the_undo_of_a_pipeline_leaves_a_stage_that_another_create_lists(
 
 
 @pytest.mark.parametrize("kind", ["deal", "lead"])
-async def test_a_holder_with_no_open_create_names_no_step(
+async def test_a_pipeline_with_no_open_change_holds_nothing(
     pns, kind: str,  # noqa: F811
 ) -> None:
-    """Repair 3 (P1 words). A pipeline with no create row (imported, or made
-    before the Change history) holds S. The refusal says that it uses S, so
-    S stays, and names no Undo that does not exist. Same on the delete."""
+    """Repair 4 (P2), as on main. A pipeline with no change row (a Zoho
+    pipeline that stays after the switch) holds a stage. The Settings delete
+    of that stage answers 200, and so does the Undo of a status create."""
     _seed(pns, pns.org_a)
     _leads(pns, pns.org_a)
     admin = _admin(pns.org_a)
+    table = _status_table(kind)
+    zoho = str(_one(
+        pns, f"INSERT INTO {table} (organization_id, name, type, position) "
+             "VALUES (CAST(:o AS uuid), 'Zoho only', 'open', 90) RETURNING id", o=pns.org_a))
     added = (await _call(pns, admin, "POST", f"/crm/statuses/{kind}", {"name": "Walk-in"})).json()
     imported = str(_one(
         pns, "INSERT INTO crm_pipelines (organization_id, name, position, is_default, kind) "
              "VALUES (CAST(:o AS uuid), 'Imported', 7, false, :k) RETURNING id",
         o=pns.org_a, k=kind))
     stages = "crm_lead_pipeline_stages" if kind == "lead" else "crm_pipeline_stages"
-    _one(pns, f"INSERT INTO {stages} (organization_id, pipeline_id, status_id, position) "
-              "VALUES (CAST(:o AS uuid), CAST(:pl AS uuid), CAST(:s AS uuid), 0) RETURNING position",
-         o=pns.org_a, pl=imported, s=added["id"])
-    refused = await _undo(pns, admin, _created(pns, kind, added["id"]))
+    for place, sid in enumerate((zoho, added["id"])):
+        _one(pns, f"INSERT INTO {stages} (organization_id, pipeline_id, status_id, position) "
+                  "VALUES (CAST(:o AS uuid), CAST(:pl AS uuid), CAST(:s AS uuid), :pos) "
+                  "RETURNING position", o=pns.org_a, pl=imported, s=sid, pos=place)
+    gone = await _call(pns, admin, "DELETE", f"/crm/statuses/{kind}/{zoho}")
+    assert gone.status_code == 200, gone.text
+    undone = await _undo(pns, admin, _created(pns, kind, added["id"]))
+    assert undone.status_code == 200, undone.text
+    assert not _exists(pns, table, zoho) and not _exists(pns, table, added["id"])
+    assert _exists(pns, "crm_pipelines", imported)
+
+
+async def test_a_stage_add_to_a_pipeline_with_no_create_names_its_undo(pns) -> None:  # noqa: F811
+    """Repair 4. An admin adds S, then puts S in a pipeline that has no
+    create row through the stage route, a logged change. The Undo of S and
+    the delete of S refuse, and name the step that works: the Undo of the
+    changes to that pipeline. Then the Undo of the add and the Undo of S
+    answer 200."""
+    _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    added = (await _call(pns, admin, "POST", "/crm/statuses/deal", {"name": "Walk-in"})).json()
+    imported = str(_one(
+        pns, "INSERT INTO crm_pipelines (organization_id, name, position, is_default) "
+             "VALUES (CAST(:o AS uuid), 'Imported', 7, false) RETURNING id", o=pns.org_a))
+    put = await _call(pns, admin, "POST", f"/crm/pipelines/{imported}/stages",
+                      {"status_id": added["id"]})
+    assert put.status_code == 201, put.text
+    s_row = _created(pns, "deal", added["id"])
+    refused = await _undo(pns, admin, s_row)
     assert refused.status_code == 409 and _code(refused) == "in_use", refused.text
-    assert _words(refused) == _held(kind, "Imported", "Walk-in", made=False), _words(refused)
-    gone = await _call(pns, admin, "DELETE", f"/crm/statuses/{kind}/{added['id']}")
-    assert _words(gone) == _held(kind, "Imported", "Walk-in", made=False), _words(gone)
+    assert _words(refused) == _held("deal", "Imported", "Walk-in"), _words(refused)
+    gone = await _call(pns, admin, "DELETE", f"/crm/statuses/deal/{added['id']}")
+    assert _words(gone) == _held("deal", "Imported", "Walk-in", undo=False), _words(gone)
+    (add_row,) = [x for x in _rows(pns, pns.org_a) if x.area == "pipeline_stage"
+                  and x.action == "create" and str(x.entity_id) == imported]
+    for row in (add_row, s_row):
+        done = await _undo(pns, admin, row)
+        assert done.status_code == 200, (row.summary, done.text)
+    assert not _exists(pns, "crm_deal_statuses", added["id"])
 
 
 async def test_an_upper_case_id_reads_as_the_same_status(pns) -> None:  # noqa: F811

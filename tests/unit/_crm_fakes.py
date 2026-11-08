@@ -199,11 +199,11 @@ _NEXT_ACTIVITY_RE = re.compile(
 #: ``core.PIPELINE_CREATE_LOCK_SQL`` (CRM-M4a repair 2). One request runs at a
 #: time here, so the lock takes nothing.
 _ADVISORY_LOCK_RE = re.compile(r"^SELECT pg_advisory_xact_lock\(", re.I)
-#: ``core._HOLDERS_SQL`` (CRM-M4a repairs 2 and 3): the pipelines of one kind
-#: that hold a status. The membership table is read off the statement.
+#: ``core._HOLDERS_SQL`` (CRM-M4a repairs 2 to 4): the pipelines of one kind
+#: with an open change that names a status.
 _HOLDERS_RE = re.compile(
-    r"^SELECT h\.id, h\.name, h\.made FROM \(SELECT p\.id.*?"
-    r"SELECT 1 FROM (\w+) ps WHERE ps\.pipeline_id = p\.id", re.I,
+    r"^SELECT p\.id, p\.name FROM crm_pipelines p WHERE p\.kind = :kind AND EXISTS "
+    r"\(SELECT 1 FROM crm_change_log c\b", re.I,
 )
 
 # ── WS-26d-email: the shapes the CRM timeline's email source emits ──────────
@@ -629,7 +629,7 @@ class FakeCrmDB:
             return _Result([])
         holders = _HOLDERS_RE.match(statement)
         if holders:
-            return self._holders(holders.group(1), args)
+            return self._holders(args)
         head = statement.split(None, 1)[0].upper()
         table = _table(statement)
         if head == "INSERT":
@@ -943,20 +943,33 @@ class FakeCrmDB:
             out.append(merged)
         return out
 
-    def _holders(self, stages: str, args: dict) -> _Result:
-        """``core._HOLDERS_SQL``: the pipelines of ``:kind`` that hold ``:s``,
-        less the default deal pipeline ``:dp``. The fake reads no change log,
-        so ``made`` is always false here. The R8 suite proves that clause."""
+    def _holders(self, args: dict) -> _Result:
+        """``core._HOLDERS_SQL``: the pipelines of ``:kind`` with an open change
+        (not undone, not an Undo) that names ``:s``: a create that lists it, a
+        stage add or a take-out. It reads the change log of this fake."""
+        wanted = str(args.get("s"))
+
+        def obj(value: Any) -> dict:
+            return json.loads(value) if isinstance(value, str) else dict(value or {})
+
+        def names(row: dict) -> bool:
+            area, action = row.get("area"), row.get("action")
+            if area == "pipeline" and action == "create":
+                return any(str(s.get("id")) == wanted for s in obj(row.get("after")).get("stages") or [])
+            if area == "pipeline_stage":
+                side = obj(row.get("after") if action == "create" else row.get("before"))
+                return str(side.get("status_id")) == wanted
+            return False
+
         held = {
-            str(m.get("pipeline_id")) for m in self.rows(stages)
-            if str(m.get("status_id")) == str(args.get("s"))
+            str(r.get("entity_id")) for r in self.rows("crm_change_log")
+            if r.get("undone_by") is None and r.get("undoes_id") is None and names(r)
         }
         return _Result([
-            SimpleNamespace(id=p.get("id"), name=p.get("name"), made=False)
+            SimpleNamespace(id=p.get("id"), name=p.get("name"))
             for p in sorted(self.rows("crm_pipelines"),
                             key=lambda r: (r.get("position") or 0, str(r.get("name"))))
             if str(p.get("id")) in held and p.get("kind", "deal") == args.get("kind")
-            and (args.get("dp") is None or str(p.get("id")) != str(args.get("dp")))
         ])
 
     def _my_groups(self, args: dict) -> _Result:

@@ -999,8 +999,8 @@ async def _new_stages_to_remove(
 
     A new stage that holds a record refuses the Undo with the name of the
     stage and the count. A stage that another pipeline holds now stays. So
-    does a stage that another pipeline needs for the Undo of its own create
-    (CRM-M4a repair 3, ``core.pipelines_holding``): it stays, and its own
+    does a stage that another pipeline needs for the Undo of an open change
+    (CRM-M4a repairs 3 and 4, ``core.pipelines_holding``): it stays, and its own
     create row stays open."""
     doomed: list[Any] = []
     noun = kind.stage_noun

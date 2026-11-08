@@ -703,29 +703,25 @@ def _names(names: list[str]) -> str:
 def _held_by_pipelines(
     kind: str, name: Any, holders: list[Holder], *, undo: bool,
 ) -> HTTPException:
-    """409 ``in_use``: pipelines hold the status, so it stays (CRM-M4a repair 3).
+    """409 ``in_use``: pipelines hold the status, so it stays (CRM-M4a repair 4).
 
     The words name each pipeline by its name now and say what did not happen.
-    They name a next step only when it exists: the Undo of the creation of
-    each pipeline, when an open create of each one lists the status. A
-    pipeline with no such create (the default pipeline, an imported one) only
-    uses the status, so the words say that the status stays."""
+    Each holder has an open change that names the status
+    (``core.pipelines_holding``), so the step is always true: undo the
+    changes to that pipeline, newest first. A take-out is newer than the
+    create, so its Undo comes first."""
     names = [h.name for h in holders]
     many = len(names) > 1
     noun = _STATUS_NOUNS[kind]
     pipeline = ("lead pipeline" if kind == "lead" else "deal pipeline") + ("s" if many else "")
     which = f"the {pipeline} {_names(names)}"
-    undoable = all(h.made for h in holders)
-    if not undoable:
-        outcome = f"the {noun} stays"
-    else:
-        outcome = "nothing was undone" if undo else "it was not deleted"
-    words = (f"{which[0].upper()}{which[1:]} {'use' if many else 'uses'} the {noun} "
-             f"{quoted(name)}, so {outcome}.")
-    if undoable:
-        then = "undo this" if undo else f"delete the {noun}"
-        words += f" Undo the creation of {which} first, and then {then}."
-    return change_log.in_use(words)
+    outcome = "nothing was undone" if undo else "it was not deleted"
+    then = "undo this" if undo else f"delete the {noun}"
+    return change_log.in_use(
+        f"{which[0].upper()}{which[1:]} {'use' if many else 'uses'} the {noun} "
+        f"{quoted(name)}, so {outcome}. Undo the changes to {which}, newest first, "
+        f"and then {then}."
+    )
 
 
 async def delete_status_in(db: Any, kind: str, status_id: str, *, undo: bool = False) -> Any:

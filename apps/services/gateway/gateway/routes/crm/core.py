@@ -1694,56 +1694,48 @@ class Holder(NamedTuple):
 
     id: str
     name: str
-    #: An open create of this pipeline lists the status, so the Undo of that
-    #: create is the step that frees the status.
-    made: bool
 
 
-#: CRM-M4a repair 3: the pipelines of one kind that hold a status, by their
-#: names now. A pipeline holds the status when one of two is true.
+#: CRM-M4a repair 4: the pipelines of one kind that hold a status, by their
+#: names now. A pipeline holds the status when it still exists AND an open
+#: change of that pipeline (not undone, and not itself an Undo) names it:
 #:
-#: * ``made``: the pipeline still exists, and its open create (not undone)
-#:   lists the status, new or reused. The Undo of that create needs the status,
-#:   even after a take-out of the stage.
-#: * ``member``: the status sits in the pipeline now. The default deal pipeline
-#:   (``:dp``) does not count here, because a new deal stage joins it with no
-#:   row of its own (:func:`add_stage_to_default_pipeline`).
+#: * its create lists the status, new or reused (``after.stages``);
+#: * a stage add put the status in it (``after.status_id``);
+#: * a take-out took the status out of it (``before.status_id``).
 #:
-#: The ids in ``:listed`` are canonical (:class:`uuid.UUID`), as the create
-#: writes them, because JSONB ``@>`` compares text.
+#: The Undo of each of these needs the status. A pipeline that only holds the
+#: status, with no open change, holds nothing here, as on main: an imported
+#: pipeline, or the default deal pipeline that a new stage joins with no row
+#: (:func:`add_stage_to_default_pipeline`). The ids are canonical
+#: (:func:`checked_uuid` and :class:`uuid.UUID`), because JSONB compares text.
 _HOLDERS_SQL = (
-    "SELECT h.id, h.name, h.made FROM (SELECT p.id, p.name, p.position, EXISTS ("
+    "SELECT p.id, p.name FROM crm_pipelines p WHERE p.kind = :kind AND EXISTS ("
     "SELECT 1 FROM crm_change_log c WHERE c.organization_id = p.organization_id "
-    "AND c.area = 'pipeline' AND c.action = 'create' AND c.entity_id = p.id::text "
-    "AND c.undone_by IS NULL AND c.undoes_id IS NULL "
-    "AND c.after -> 'stages' @> CAST(:listed AS jsonb)) AS made, EXISTS ("
-    "SELECT 1 FROM {stages} ps WHERE ps.pipeline_id = p.id "
-    "AND ps.status_id = CAST(:s AS uuid)) AS member "
-    "FROM crm_pipelines p WHERE p.kind = :kind) h "
-    "WHERE h.made OR (h.member AND (CAST(:dp AS uuid) IS NULL OR h.id <> CAST(:dp AS uuid))) "
-    "ORDER BY h.position, h.name, h.id"
+    "AND c.entity_id = p.id::text AND c.undone_by IS NULL AND c.undoes_id IS NULL AND ("
+    "(c.area = 'pipeline' AND c.action = 'create' "
+    "AND c.after -> 'stages' @> CAST(:listed AS jsonb)) "
+    "OR (c.area = 'pipeline_stage' AND c.action = 'create' AND c.after ->> 'status_id' = :s) "
+    "OR (c.area = 'pipeline_stage' AND c.action = 'delete' AND c.before ->> 'status_id' = :s))) "
+    "ORDER BY p.position, p.name, p.id"
 )
 
 
 async def pipelines_holding(db: Any, table: str, status_id: str) -> list[Holder]:
     """The pipelines that hold one status of *table*, in order.
 
-    A status that a pipeline holds cannot go (CRM-M4a repairs 2 and 3). The
-    cascade would take it out of that pipeline with no row, and then the Undo
-    of the pipeline never matches its stages again. A lead pipeline has no
-    route that removes a status, so it could never go. It reads the tables
-    under the tenant session. *status_id* may come from a path in any case,
-    so it is made canonical first. The default deal pipeline is the exception
-    of :data:`_HOLDERS_SQL`."""
+    A status that a pipeline holds cannot go (CRM-M4a repairs 2 to 4). The
+    cascade would take it out of that pipeline with no row, and then an Undo
+    of that pipeline never matches again. A lead pipeline has no route that
+    removes a status, so it could never go. It reads the tables under the
+    tenant session. *status_id* may come from a path in any case, so it is
+    made canonical first."""
     canonical = str(UUID(str(status_id)))
-    stages = _STAGE_TABLES[table]
     kind = "lead" if table == "crm_lead_statuses" else "deal"
-    default = await default_pipeline_id(db) if kind == "deal" else None
-    rows = (await db.execute(text(_HOLDERS_SQL.format(stages=stages)), {
-        "s": canonical, "kind": kind, "dp": default,
-        "listed": json.dumps([{"id": canonical}]),
+    rows = (await db.execute(text(_HOLDERS_SQL), {
+        "s": canonical, "kind": kind, "listed": json.dumps([{"id": canonical}]),
     })).fetchall()
-    return [Holder(str(r.id), str(r.name), bool(r.made)) for r in rows]
+    return [Holder(str(r.id), str(r.name)) for r in rows]
 
 
 # ── SQL helpers ─────────────────────────────────────────────────────────────
