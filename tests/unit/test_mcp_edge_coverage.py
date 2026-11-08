@@ -26,7 +26,9 @@ MCP-G1 adds four pairs: the node POST and PATCH (``create_project`` and
 (``preview_move_tasks`` and ``move_tasks``). The preview is a POST that
 writes nothing, so its tool keeps the hints of a read (``READ_ONLY_POST_TOOLS``).
 ``move_tasks`` sends the preview before its move (a prior write), and it has
-``destructiveHint: true``. The grant routes stay OFF the edge.
+``destructiveHint: true``. The grant routes stay OFF the edge. IMG-3 adds
+one class X read, the bytes of a file (:data:`CLASS_X_READS`). Its tool,
+``get_attachment``, names that route in ``param_routes``, and rule 4 reads it.
 
 1. Each pair in ``MCP_ROUTES`` is a route the gateway serves. Its method is
    ``GET``, or ``PATCH``, ``POST`` or ``PUT`` for a pair of
@@ -82,6 +84,18 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "SW-31a. `my_work` reads the id and version of the nearest guidance block"
         " of each row. It is not a Projects route (agent_coordination.md SW-31)."
     ),
+    # MCP-G19a: `board_stats` counts over the scope of `list_tasks`. The chat
+    # tool for it is a follow-up, so the manifest holds no row yet.
+    ("GET", "/projects/tasks/stats"): (
+        "MCP-G19a. `board_stats` counts the tasks that `list_tasks` lists, with"
+        " the same scope function. The Projects manifest has no chat tool for it"
+        " yet (spec §9.1)."
+    ),
+    # MCP-G21: `list_members` reads the members a task of a project can go to.
+    ("GET", "/projects/assignable-members"): (
+        "MCP-G21. `list_members` reads the members that `set_assignees` would"
+        " accept. The Projects manifest has no chat tool for it yet (task 2216)."
+    ),
     # MCP-P1a (spec §19.5, "The new pairs"): the two list routes of the app
     # door. They hold no data of an app.
     ("GET", "/agent-access/apps"): (
@@ -113,6 +127,18 @@ CLASS_X_WRITES: dict[tuple[str, str], str] = {
 }
 
 
+#: The GET pairs of ``MCP_ROUTES`` that are class X in the manifest, each with
+#: its reason. The chat never reaches them. A new entry needs a spec
+#: amendment (§9.5).
+CLASS_X_READS: dict[tuple[str, str], str] = {
+    ("GET", "/projects/attachments/{attachment_id}/{filename}"): (
+        "IMG-3 (projects_ai_chat.md §30.4, owner answer 2026-11-07). The MCP door"
+        " only: get_attachment reads the bytes of an image or a text file, after"
+        " it finds the id in the list of the task. A chat answer carries text."
+    ),
+}
+
+
 def _gateway_routes() -> set[tuple[str, str]]:
     from gateway import main
 
@@ -124,13 +150,14 @@ def _gateway_routes() -> set[tuple[str, str]]:
 
 
 #: The methods a write pair may have (EA-6a, §9.5 rule 1). MCP-G2 adds
-#: ``PUT``, for the one PUT of the assignee set.
-WRITE_METHODS = frozenset({"PATCH", "POST", "PUT"})
+#: ``PUT``, for the one PUT of the assignee set. SW-16a adds ``DELETE``, for
+#: the one DELETE of a task link (``remove_task_link``).
+WRITE_METHODS = frozenset({"PATCH", "POST", "PUT", "DELETE"})
 
 
 def test_the_allowlist_is_not_empty_and_is_get_only_outside_the_write_pairs():
     """Rule 1, the method half. Every pair outside ``MCP_WRITE_ROUTES`` is a
-    GET. Every write pair is a PATCH, a POST or a PUT, and sits in
+    GET. Every write pair is a PATCH, a POST, a PUT or a DELETE, and sits in
     ``MCP_ROUTES``."""
     assert MCP_ROUTES, "an empty allowlist would make every rule below vacuous"
     assert MCP_WRITE_ROUTES <= MCP_ROUTES
@@ -148,7 +175,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     assignees and the task move (§9.2). MCP-G1 adds the node POST and PATCH,
     the move preview and the move (§9.2). MCP-G15 adds the outside decision
     (§12.1): an agent records a decision that its member made outside
-    Metorite, on its own awaiting run."""
+    Metorite, on its own awaiting run. SW-16a adds the link POST and the link
+    DELETE, the routes of ``add_task_link`` and ``remove_task_link``."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -168,6 +196,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
+        ("POST", "/projects/tasks/{task_id}/links"),
+        ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -288,7 +318,7 @@ def test_rule_2_each_pair_is_class_a_or_a_named_exception():
             continue
         cls = classes.get(pair)
         allowed = {"A", "B"} if pair in MCP_WRITE_ROUTES else {"A"}
-        if pair in CLASS_X_WRITES:
+        if pair in CLASS_X_WRITES or pair in CLASS_X_READS:
             allowed = {"X"}
         if cls not in allowed:
             wrong.append(f"{pair[0]} {pair[1]} (class {cls or 'none'})")
@@ -303,6 +333,23 @@ def test_every_named_exception_is_still_in_the_allowlist():
     stale = sorted(set(NAMED_EXCEPTIONS) - set(MCP_ROUTES))
     assert not stale, stale
     assert set(CLASS_X_WRITES) <= set(MCP_WRITE_ROUTES)
+    assert set(CLASS_X_READS) <= set(MCP_ROUTES) - set(MCP_WRITE_ROUTES)
+
+
+def test_the_bytes_read_is_the_one_class_x_read_and_only_get_attachment_reaches_it():
+    """IMG-3. The bytes route is a GET of ``MCP_ROUTES`` and not a write
+    pair, class X in the manifest, and one tool reaches it. Mutation: add the
+    pair to the ``routes`` of ``get_task``, and this test fails."""
+    from agent_edge.tools import TOOLS
+
+    classes = {(r.method, r.path): r.cls for r in m.MANIFEST}
+    assert set(CLASS_X_READS) == {("GET", "/projects/attachments/{attachment_id}/{filename}")}
+    for pair in CLASS_X_READS:
+        assert pair in MCP_ROUTES and pair not in MCP_WRITE_ROUTES, pair
+        assert classes[pair] == "X", pair
+        reaching = {t.name for t in TOOLS.values()
+                    if pair in {(t.method, r) for r in (t.route, *t.routes)}}
+        assert reaching == {"get_attachment"}, reaching
 
 
 # ── Rules 3 and 4: the edge's tool records (EA-3b-1) ────────────────────────
@@ -468,6 +515,11 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("list_projects", "text"),
     ("list_projects", "limit"),
     ("list_projects", "cursor"),
+    # MCP-G21. The gateway returns the whole list, and the edge pages it.
+    ("list_members", "limit"),
+    ("list_members", "cursor"),
+    ("list_tags", "limit"),
+    ("list_tags", "cursor"),
     # EA-6d. The edge keeps the key in its own slot (`agent_edge.idempotency`),
     # and the route takes no such field (spec §9.2 and §9.5 rule 4).
     ("create_task", "idempotency_key"),
@@ -546,6 +598,14 @@ def test_rule_4_each_input_maps_to_a_parameter_of_its_route():
             more = params.get(pair)
             if more is None:
                 wrong.append(f"{tool.name}: {pair[0]} {pair[1]} is not a gateway route")
+                continue
+            served |= more
+        # IMG-3: an input may fill a path parameter of another GET that the
+        # tool reads (``param_routes``). Only ``get_attachment`` has one.
+        for route in tool.param_routes:
+            more = params.get(("GET", route))
+            if more is None or route not in tool.routes:
+                wrong.append(f"{tool.name}: GET {route} is not a route it reads")
                 continue
             served |= more
         for name, parameter in sorted(tool.params.items()):

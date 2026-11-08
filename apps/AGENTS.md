@@ -33,6 +33,8 @@ under `project-docs/specs/`.
   - ⚠️ `raise_on_error=True` is a no-op against the only sink in production (`workflows.triggers.dispatch_event`). Do not build on a strict emit that can fail in production until BO-20b slice 2 lands.
 - action_broker/ -- Approval-gated source-of-truth write executor: authority-tier disposition and a fail-closed handler registry.
   - ⚠️ **The queue binds the tenant.** Each `pending_actions` read and write opens `acb_graph.tenant_session(org)`, and `org` is `current_tenant()`, never a proposal field. Do not add a `get_session()` here. Fences: `test_action_broker_tenancy_r8.py` (R8), `test_action_broker.py`.
+  - ⚠️ **Each audit row binds the tenant too** (task 2189). Every broker event goes through `broker._audit`, which stamps `organization_id` from `current_tenant()`, never from the payload. With no bound tenant and `ACB_GRAPH_TENANT_BIND` on, `refuse_tenantless` skips the row, so it never goes under the operator org. Do not call `record` here directly. Fence: `test_action_broker_audit_org_r8.py` (R8).
+  - ⚠️ **No tenant, no outward write** (task 2220). With `ACB_GRAPH_TENANT_BIND` on and no bound tenant, `execute` runs no handler. It answers `status: refused` and `reason: tenant_unbound`, and the pending row stays `pending`. Only `bind_tenant` sets `current_tenant()`. A `tenant_session(org)` alone is no binding here. `approve` passes `reviewed_by` from the session, so the `execute:<action>` row carries `payload.member`. Fence: `test_action_broker_execute_tenant_r8.py` (R8).
   - `ACTION_BROKER_ENFORCE` ships OFF in every environment, so the posture is audit-and-chokepoint. Flipping it is OWNER-GATE, and it stays blocked on BO-1d (`work_plan.md` WS-1).
   - ⚠️ **A run with no person present settles nothing** (AUTO-7a). `approve` and `reject` answer `no_person_present` first, with no read and no write, and the audit records the refusal. Fences: `test_no_person_present.py`, `test_no_person_present_r8.py` (R8).
   - The task connector registry stays empty. Fence: `test_no_task_provider_connectors.py`.
@@ -73,7 +75,10 @@ under `project-docs/specs/`.
     - 🔴 The per-unit cost reads `task_catalog.natural_unit` through `_PER_UNIT_COLUMNS`. `SERVING_INVOCATIONS` stays a subset of `catalog.KNOWN_INVOCATIONS`.
     - A speak call never streams. `ImageRequest` carries NO `size` field until **H-87** lands. Fences: `test_customer_console_tasks.py` (R8), `test_customer_console_payments.py`.
     - `/v1/decide` uses the native handler seam (`customer_console/handlers.py`). One wire class, `handlers.SystemOneHandler`, serves each vendor. The native dispatch lives INSIDE `router._default_provider_call`.
-    - 🔴 The model prefix and the native verb must name the SAME vendor. `catalog.check_invocation_for_task` pairs verb and task. Fence: `test_customer_console_decide.py` (R8).
+    - 🔴 The model prefix and the native verb must name the SAME vendor. `catalog.check_invocation_for_task` pairs verb and task. Each native verb serves the ONE task its handler names (`task`). Fence: `test_customer_console_decide.py` (R8).
+    - The transcribe door uses the same seam for `native_sarvam` (VOX-2, `customer_console/stt_sarvam.py`). A `sarvam/` transcribe model takes `native_sarvam` only, because litellm has no Sarvam transcription.
+    - 🔴 A WAV clip bills the length the door measures with the standard library (`customer_console/wav.py`), for every provider. Another format keeps the `verbose_json` duration.
+    - A clip that is not WAV skips a WAV-only step. With no step left, the door answers 415 before any provider call, and it writes no usage row. Fences: `test_customer_console_stt_sarvam.py`, `test_customer_console_tasks.py` (R8).
   - ⚠️ `gateway/routes/signin.py` (`POST /signin/resolve`) is the ONE holder of `CUSTOMER_CONSOLE_DEPLOYMENT_KEY` and the one caller of `acb_auth.console_resolve`. It answers 200 always, and it refuses when the gateway's Console env is missing.
     - Never add it to `PUBLIC_ROUTES`. Never hang the resolve off `_with_resolved_access` or `resolve_access`, because it allocates a seat. Fence: `test_signin_resolve_route.py`.
   - ⚠️ `gateway/routes/email_otp.py` is the server half of the email-OTP adapter, and it decides NOTHING. It calls `acb_auth.email_otp`.
@@ -105,6 +110,7 @@ They run *inside* the orchestrator or gateway process, with no server of their o
   - `_ALLOWED_METHODS` is `{"GET", "POST", "PATCH"}`, checked in the single `_request` helper. Do not add `DELETE` or `PUT`.
   - **Any new tool must route its path segments through `_record_uuid` and `_entity_slug`** and bind the results to `slug` and `record`. Fence: `test_crm_agent.py::test_the_path_guard_is_structural_not_a_docstring`.
   - It imports the read tools of `acb_skills.crm_tools` and keeps no copy. A Mirror run drops the record writes (orchestrator contract 19). Fence: `test_crm_mirror_run_tools.py`.
+  - Each call sends `X-Actor-Via: chat:crm-assistant`, so the Change history row says `chat`. `crm_create_pipeline` leaves the run of an org off `CRM_PIPELINES_ORGS`. Fence: `test_crm_pipelines_native.py`.
 - agent-projects/ -- Projects assistant (`projects-assistant`, spec `projects_ai_chat.md`). ⚠️ **The directory is `agent-projects`, the agent is `projects-assistant`.** Its tools live in `apps/skills/skill-projects`, and `agents.py` holds identity only.
   - Every tool calls `/projects/*` as the acting member, so the route's rule is the one authority.
   - **The route manifest is the allowlist.** `skill_projects.manifest.MANIFEST` maps every `/projects` route to a tool and a class: A (read), B (reversible write), C (hard-to-undo write) or X (excluded). The client refuses a route that the manifest does not carry.

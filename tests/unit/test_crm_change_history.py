@@ -72,6 +72,9 @@ LOGGED: dict[str, str] = {
     "POST /crm/lost-reasons": "a new lost reason (team); Undo removes it",
     "PATCH /crm/lost-reasons/{reason_id}": "a lost reason edit (team)",
     "PATCH /crm/pipelines/{pipeline_id}": "a pipeline rename (company)",
+    # WS-CRM CRM-M3a: a new pipeline (company). Undo deletes it, and refuses
+    # while a deal names it. Each new stage logs its own deal_stage row.
+    "POST /crm/pipelines": "a new pipeline (company); Undo deletes it",
     "POST /crm/pipelines/{pipeline_id}/stages": "a stage into a pipeline (team)",
     "DELETE /crm/pipelines/{pipeline_id}/stages/{status_id}":
         "a stage out of a pipeline (team); Undo puts it back",
@@ -1219,7 +1222,7 @@ async def test_the_undo_of_a_pipeline_rename_refuses_a_newer_rename(
 ) -> None:
     """P3d (fix round 1). Rename a pipeline twice, then undo the first
     rename: 409 ``changed_since``, and the newer name stays. Mutation: drop
-    the check of ``pipelines._undo_rename`` → the old name comes back → red."""
+    the check of ``pipelines._undo_pipeline`` → the old name comes back → red."""
     _settings(ns, ns.org_a, "native")
     pipeline = _pipeline(ns, ns.org_a, "Sales")
     admin = _admin(ns.org_a)

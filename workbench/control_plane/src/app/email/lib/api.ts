@@ -146,7 +146,7 @@ function optionalCount(v: unknown): number | null | undefined {
 }
 
 /** Map a backend Email message (snake_case) to frontend Email (camelCase). */
-function mapEmail(raw: Record<string, unknown>): Email {
+export function mapEmail(raw: Record<string, unknown>): Email {
   const fromRaw = (raw.from_address ?? raw.from ?? {}) as Record<string, unknown>;
   return {
     id: String(raw.id ?? ""),
@@ -185,6 +185,7 @@ function mapEmail(raw: Record<string, unknown>): Email {
         downloadUrl: (a.download_url as string) ?? (a.downloadUrl as string) ?? undefined,
       })
     ),
+    attachmentsStatus: raw.attachments_status === "failed" ? "failed" : "ok",
     isRead: Boolean(raw.is_read ?? raw.isRead ?? false),
     isStarred: Boolean(raw.is_starred ?? raw.isStarred ?? false),
     isFlagged: Boolean(raw.is_flagged ?? raw.isFlagged ?? false),

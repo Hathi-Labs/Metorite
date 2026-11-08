@@ -8,7 +8,7 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
-**PZ-39 BUILT 2026-11-06, in the working tree, not merged** (task 1823). One
+**PZ-39 MERGED 2026-11-08** (task 1823, 5ba0e3147, no flag). One
 greeting table (`acb_common.today.GREETING_TABLE`) is mirrored in `myDay.ts`.
 Fence: `tests/unit/test_greeting_table.py`. The part-of-day line uses the zone
 of the "now" line. The late hours say "Hello", never "Good night".
@@ -34,11 +34,23 @@ other private chats, and at most 3 of their due tasks. The block shows only
 with `ASSISTANT_BRIEFING_ORGS` on for the org. See §15.4 "As built, PZ-34",
 §15.9 and D-PZ-38 in §15.11.
 
-**§16 ACCEPTED 2026-11-06 (D184). PZ-39 is built, and PZ-40 to PZ-43 are
-not built.** It adds the epic "Salutations" (Metorite task 1820). PZ-39 gives
-one greeting table for the time of day and a new greeting after 4 quiet
-hours. PZ-40 adds a sourced catalogue of Indian forms of address. PZ-41
-fixes the email drafter, so a title is not a name.
+**§18 ACCEPTED 2026-11-08 (D196). No slice is built.** It adds the epic "Setup health" (Metorite task 940, slice SH-0 task 945). Each live app lists its setup items. The chat raises one missing item at a time, on the seam of the interview, inside the limits of D-PZ-13.
+
+A later phase adds measures and a score. Questions: §18.12.
+
+**§17 ACCEPTED 2026-11-06 (D189). No slice is built.** It adds the epic
+"Tone of voice" (Metorite task 1469). A member can choose a persona. The
+persona changes how the assistant sounds in four places. It never goes into
+a draft to another person, a fact or a card (D-PZ-43 to D-PZ-46).
+
+**§16 ACCEPTED 2026-11-06 (D184). Main holds PZ-39, PZ-40, PZ-41 and PZ-43,
+and PZ-42 is not built. `ADDRESS_FORMS_ORGS` keeps PZ-40 dark, and
+`CELEBRATIONS_ORGS` keeps PZ-43 dark.** It adds the epic "Salutations"
+(Metorite task 1820).
+
+PZ-39 gives one greeting table for the time of day and a new greeting
+after 4 quiet hours. PZ-40 adds a sourced catalogue of Indian forms of
+address. PZ-41 fixes the email drafter, so a title is not a name.
 
 PZ-42 learns what other people call the member from received mail, and asks
 first. PZ-43 adds the birthday and the festivals that the member picks (§16).
@@ -467,8 +479,9 @@ the language of the answer, and the chat still follows a member who writes
 in another language. On WhatsApp, the channel limits of WS-47 win over
 `detailed`.
 
-The persona of the assistant does not change. It is still "Metorite". This
+The identity of the assistant does not change. It is Mira (D125). This
 spec personalizes what the assistant knows and how it talks, not who it is.
+§17 lets a member choose how it sounds in the places of §17.4.
 
 **As built (PZ-3, 2026-10-24).** Each length and the language have one line
 in the block, in `LENGTH_LINES` and `_style_line`. A style key or a
@@ -1127,6 +1140,8 @@ setup item and its state: done, missing or stale. The first items:
 - **On WhatsApp:** only through Reach (WS-59, D103), and only when the owner
   turns that on.
 
+**Setup health (§18, ACCEPTED, D196).** Each item gains a measure, a scope, a fix and a weight. The chat nudge and the budget are in §18.6.
+
 **Limits.** At most one setup question a day. A dismissed item waits 14 days.
 "Don't ask again" stops that item for good. The member sees every item in
 Settings → Assistant settings.
@@ -1146,6 +1161,8 @@ preference is a defect. A later fence test fails on an app that reads
 `user_settings.assistant_profile` or `email_voice_profiles` outside those two
 modules.
 
+§18.5 lists the fields of a check, and the `setup` field holds the check ids of a pane (ACCEPTED, D196).
+
 This is how the system stays true as the app grows. A new app declares what
 it reads and what it needs set up. The coach then asks for it, and the
 profile serves it.
@@ -1158,7 +1175,7 @@ profile serves it.
 | **PZ-13** | The audience rule from sent mail, by recipient domain | A test with fixed mail derives "formal with X" and stores no body | AGENT-SAFE · HIGH (reads mail) |
 | **PZ-14** | Voice features from the member's own WhatsApp messages and chat turns | A test shows that a message from another person never counts | **OWNER-GATE:** the sources · HIGH |
 | **PZ-15** | Proposals: a derived item asks, and an accepted one writes with Undo | A test shows that no derived item writes without a yes | AGENT-SAFE · MEDIUM |
-| **PZ-16** | `setup_status` and the items of §12.5 | A test for each item's "done when" | AGENT-SAFE · LOW |
+| **PZ-16** | The profile items of §12.5, added to the `setup_status` registry. OB-1a (task 1341) builds `setup_status` first (§18.13) | A test for each item's "done when" | AGENT-SAFE · LOW |
 | **PZ-17** | The coach in the chat and on My Day, with its limits | A test for one question a day, the 14-day wait and "don't ask again" | AGENT-SAFE · MEDIUM |
 | **PZ-18** | `preferences` and `setup` in the shell manifest, and the fence of §12.6 | The fence fails on a direct read outside the two modules | AGENT-SAFE · LOW |
 | **PZ-19** | The coach on WhatsApp through Reach | Reach sends a setup question only with its switch on | **OWNER-GATE:** WhatsApp sends · MEDIUM |
@@ -2797,8 +2814,8 @@ answers.
 
 `work_plan.md` §3 records this section as **D184**. The epic is "Salutations"
 (Metorite task 1820). It adds five slices, PZ-39 to PZ-43. The owner answered
-all four questions of §16.8 on 2026-11-06 at 05:41 UTC. PZ-39 is built. The
-other four slices are not built.
+all four questions of §16.8 on 2026-11-06 at 05:41 UTC. Main holds PZ-39,
+PZ-40, PZ-41 and PZ-43. PZ-42 is not built.
 
 ### 16.1 The owner's ask
 
@@ -2840,10 +2857,11 @@ Measured on `main` at 182334889, five defects:
 | D4 | The email drafter greets an Indian title as a name. `_salutation_name` knows Mr, Mrs, Ms, Mx, Dr, Prof and Er. For "Shri Ramesh Kumar" it writes "Dear Shri,". Sri, Smt., Kum., Thiru and Tmt. fail the same way | PZ-41 |
 | D5 | The chat greeted once in each chat. A member who returns to the same chat the next morning got no greeting | PZ-39 |
 
-### 16.3 The time of day (PZ-39, built)
+### 16.3 The time of day (PZ-39, merged)
 
-PZ-39 (task 1823) is built. The owner approved the preview on 2026-11-06 at
-09:43 UTC. The pull request is https://github.com/Hathi-Labs/Metorite/pull/1775.
+PZ-39 (task 1823) merged on 2026-11-08 as 5ba0e3147, with no flag. The owner
+approved the preview on 2026-11-06 at 09:43 UTC. The pull request is
+https://github.com/Hathi-Labs/Metorite/pull/1775.
 
 **One table.** `acb_common.today.GREETING_TABLE` is the rule. `myDay.ts`
 holds a copy of the same table. The server and My Day read the same hours:
@@ -3217,11 +3235,11 @@ that does not exist yet is advisory until its slice builds (R7).
 | Slice | What | Done when | Fence (R7) | Gate · tier |
 |---|---|---|---|---|
 | **PZ-SAL-0** · task 1822 | This section, D184 and the INDEX sentence | The section, D184 and the INDEX sentence are in `main`. `test_decision_ids.py`, `test_index_completeness.py` and `test_doc_names_resolve.py` stay green | Advisory. Docs only | AGENT-SAFE · LOW |
-| **PZ-39** · task 1823 · **BUILT 2026-11-06** | The time-of-day table, the zone, the 4-hour gap, the late hello, the language hello and the buddy hello (§16.3) | At 02:00 My Day and the chat both say "Hello". At 17:30 both say "Good evening". The chat greets in the first reply after 4 hours or more of quiet, and never in the middle of a conversation. A regenerate, a retry and a fault give no greeting. No reply says "Good night" | `tests/unit/test_greeting_table.py` fails when `myDay.ts` and `GREETING_TABLE` differ. `test_executor_greet_due.py` and `test_executor_greet_due_r8.py` hold the gap rule, the second on a real database. `test_buddy_hello_r8.py` holds the hello zone and text on a real database | AGENT-SAFE · STANDARD |
-| **PZ-40** · task 1824 | `acb_common.honorifics`, the one catalogue (§16.4.2). The name question offers "just my name" first, then the forms for the member's language. The block uses the chosen form as written | A unit test: the catalogue holds the forms of §16.4.2 with their tags. A `[U]` row has no entry in the shipped choices. With no choice, the block holds the name only. A chosen form shows as written. No code reads the name, the region or the language to pick a form | Planned `tests/unit/test_honorifics.py`, advisory until PZ-40 builds. It also fails on a second list of forms outside the module | AGENT-SAFE · STANDARD |
-| **PZ-41** · task 1821 | The drafter strips an Indian title before it takes the first name (§16.4.3) | A unit test: "Shri Ramesh Kumar", "Smt. Priya Rao", "Thiru Kumar Raja", "Kum. Anita", "Pandit Mohan Lal" and "Er. Sunil Singh" each give the right first name and never a title. A name that is only "Shri" stays. Surname tokens never count as titles | Planned `tests/unit/test_salutation_titles.py`, advisory until PZ-41 builds | AGENT-SAFE · STANDARD |
+| **PZ-39** · task 1823 · **MERGED 2026-11-08** (5ba0e3147) | The time-of-day table, the zone, the 4-hour gap, the late hello, the language hello and the buddy hello (§16.3) | At 02:00 My Day and the chat both say "Hello". At 17:30 both say "Good evening". The chat greets in the first reply after 4 hours or more of quiet, and never in the middle of a conversation. A regenerate, a retry and a fault give no greeting. No reply says "Good night" | `tests/unit/test_greeting_table.py` fails when `myDay.ts` and `GREETING_TABLE` differ. `test_executor_greet_due.py` and `test_executor_greet_due_r8.py` hold the gap rule, the second on a real database. `test_buddy_hello_r8.py` holds the hello zone and text on a real database | AGENT-SAFE · STANDARD |
+| **PZ-40** · task 1824 · **MERGED 2026-11-08, dark** (9c2121068, `ADDRESS_FORMS_ORGS`). Task 1894 (47c7d7811) added the native-script spellings | `acb_common.honorifics`, the one catalogue (§16.4.2). The name question offers "just my name" first, then the forms for the member's language. The block uses the chosen form as written | A unit test: the catalogue holds the forms of §16.4.2 with their tags. A `[U]` row has no entry in the shipped choices. With no choice, the block holds the name only. A chosen form shows as written. No code reads the name, the region or the language to pick a form | Planned `tests/unit/test_honorifics.py`, advisory until PZ-40 builds. It also fails on a second list of forms outside the module | AGENT-SAFE · STANDARD |
+| **PZ-41** · task 1821 · **MERGED 2026-11-07** (86b80433e) | The drafter strips an Indian title before it takes the first name (§16.4.3) | A unit test: "Shri Ramesh Kumar", "Smt. Priya Rao", "Thiru Kumar Raja", "Kum. Anita", "Pandit Mohan Lal" and "Er. Sunil Singh" each give the right first name and never a title. A name that is only "Shri" stays. Surname tokens never count as titles | `tests/unit/test_salutation_titles.py` | AGENT-SAFE · STANDARD |
 | **PZ-42** · task 1825 | The first-line reader of received mail, the counts, the suggestion card (§16.5) | An R8 test: counts form per member and per org, and a mail of another member never counts. The slice stores no mail text, subject or address. A quoted line and a signature do not count. A generic salutation does not count. Nothing changes in the profile without a yes on the card, and a no stops the question. A message from another person adds no voice sample (§12.3) | Planned `tests/unit/test_address_form_learner.py` and an R8 file, advisory until PZ-42 builds. It extends the §12.3 fence that keeps another person's message out of the voice | Q2 approved · **HIGH** (reads mail, writes the profile) |
-| **PZ-43** · task 1826 | The birthday (day and month), the festival picks, the all-India list, and one greeting on the day (§16.6) | A test: the birthday that the profile keeps holds no year. The chat greets once on the day, and not a second time that day. A member with no pick gets no festival greeting. No code reads the name, the region or mail to pick a festival. Forget and export cover the new fields | Planned `tests/unit/test_celebrations.py`, advisory until PZ-43 builds | Q3 approved · STANDARD |
+| **PZ-43** · task 1826 · **MERGED 2026-11-07, dark** (f21694924, `CELEBRATIONS_ORGS`) | The birthday (day and month), the festival picks, the all-India list, and one greeting on the day (§16.6) | A test: the birthday that the profile keeps holds no year. The chat greets once on the day, and not a second time that day. A member with no pick gets no festival greeting. No code reads the name, the region or mail to pick a festival. Forget and export cover the new fields | `tests/unit/test_celebrations.py`, and `tests/unit/test_celebrations_r8.py` on a real database. The interview question is task 2193 | Q3 approved · STANDARD |
 
 Verification commands. Run from the repository root. Each slice creates the
 test files that it names:
@@ -3277,3 +3295,833 @@ person answers.
    first-line rules on real first lines from a consenting member. Default:
    PZ-42 tests on made-up lines first, and a consenting member's mail comes
    after the owner agrees.
+
+## 17. Tone of voice (ACCEPTED, 2026-11-06)
+
+`work_plan.md` §3 records this section as **D189**. The epic is "Tone of
+voice" (Metorite task 1469). It adds the slices PZ-44 to PZ-50. The owner
+answered all four questions of §17.8 on 2026-11-06 at 18:28 UTC. This slice
+(PZ-44) is the spec only. No other slice is built.
+
+### 17.1 The ask
+
+The owner wrote this on task 1469 on 2026-11-02:
+
+```text
+"personalization.md gains §17, with the owner decisions recorded as D-series entries. It must say where a persona voice applies (drafting, nudges, reminders, interview questions) and where it never applies (facts, figures, safety and sensitive cards, tool output, quoted text). Covers the ambiguity rule: when a quote and a task conflict, the task is stated plainly and the persona only colours the encouragement."
+```
+
+The ask has three parts:
+
+1. **A voice the member picks**, for example a Yoda-like nudge that comes
+   with a quote.
+2. **A list of places** where the voice applies, and a list where it never
+   applies.
+3. **The ambiguity rule.** The task stays plain. The persona colours only
+   the added line.
+
+### 17.2 What exists
+
+The code on `main` has no persona. Each fact below was read on `origin/main`
+on 2026-11-06.
+
+- **The profile has no persona key.** `formality` (`casual`, `neutral`,
+  `formal`) renders as "Tone: <formality>." (`_address_line`, in
+  `packages/acb_common/acb_common/assistant_profile.py`). `style.notes` holds
+  at most 5 notes of 200 characters (`NOTES_MAX`, `NOTE_MAX`). The whole
+  profile is at most `PROFILE_MAX` = 6,000 characters. The rendered block is
+  at most `RENDER_MAX` = 6,000.
+- **The house voice is `acb_llm.voice`.** `CORE` holds 12 rules, and
+  `voice_prompt(...)` adds one overlay (`chat`, `email`, `message`,
+  `summary` and others). Rule 12 says the rules cover the assistant's own
+  words, never quoted text, code or data.
+- **Drafts to other people use the member's voice.** The email drafter adds
+  `voice_prompt("email")` and the member's own writing voice (WS-52 S3,
+  `voice_profile.py`). The WhatsApp drafters add `voice_prompt("message")`.
+- **No model writes an interrupt.** `proactive_reach.md` says the words of a
+  reminder or a nudge are the card's own templates. `chat_first_surface.md`
+  says "No model in the nudge or the brief".
+- **One bounded model site.** `brief/phrase.py` writes the lead sentence of a
+  brief, behind the claim fence.
+- **A WhatsApp template message has fixed text.** Meta approves that text.
+- **The interview has 12 areas and no area for tone** (`AREAS`, §14).
+- **The evaluation set of PZ-10 does not exist yet.**
+
+### 17.3 Identity and tone
+
+Mira is the name of the assistant (D125). A persona never changes the name, what
+it knows, or what it may do.
+
+A persona changes how the assistant sounds in the places of §17.4, and
+nowhere else.
+
+The older line in §5.3 said the persona stays "Metorite". This change amends
+that line. The client constant `ASSISTANT_NAME` in
+`workbench/control_plane/src/lib/shell/assistant.ts` still says "Metorite".
+It is older than D125. It is a finding for the board and not part of this
+spec (§17.10).
+
+### 17.4 Where a persona applies, and where it never does
+
+The owner decided this as Q1 (D-PZ-43). A member has ONE persona and one
+tick list of places. There is no separate persona for each app. This
+settles PZ-50.
+
+| Place | Default when a persona is on |
+|---|---|
+| Reminders | On |
+| Nudges | On |
+| The hello and the encouragement in the chat | On |
+| Interview questions | On |
+| Chat answers | Off. The member turns on "chat answers too" |
+
+**Never,** in any setting:
+
+- A draft to another person: email, WhatsApp, or any outbound message. These
+  use the member's own voice (Q1).
+- A fact, a number or a date (Q1).
+- A name or a decision. The text of task 1474 says "Voice never changes a
+  number, a date, a name or a decision".
+- A card: confirm, sensitive or profile (Q1).
+- A tool result (Q1).
+- Quoted text (Q1). Code and data come from rule 12 of `acb_llm.voice` CORE,
+  which says the rules never cover them.
+- A summary that other people read. It falls under "a draft to another
+  person" in Q1.
+
+**The ambiguity rule.** When a persona line and a task conflict, the
+assistant states the task in plain words. The persona colours only the one
+added line. The persona never rewrites the task text.
+
+**Where each persona line comes from.** This table is the reading of this
+spec. The owner confirms it at the PZ-48 preview (§17.10).
+
+| Place | Where the line comes from | Counts toward the cap of 3 a day |
+|---|---|---|
+| Reminders and nudges (messages that arrive without a request) | One line from the bank, after the fixed fact text. No model writes at send time | Yes |
+| The hello and the encouragement line in the chat | The model writes them inside its chat reply. The persona line in the profile block colours them. They do not come from the bank. The hello keeps the pace of the PZ-39 greeting rule: the first reply of a chat, and after 4 quiet hours. A reply holds at most one encouragement line, after the answer | No |
+| Interview questions | The model asks them in the chat. The persona line in the profile block colours them. The question and its reason stay plain (the PZ-30 rules) | No |
+| Chat answers, with "chat answers too" on | The persona colours the register of the answer. The fact rules still bind | No |
+
+The cap of 3 counts the bank lines on reminders and nudges only. Inside a
+chat that the member started, the pace rules of the chat apply.
+
+**This section amends two older rules.**
+
+- Today a nudge is a fixed string (`chat_first_surface.md`, "No model in the
+  nudge or the brief").
+- Also "No model writes an interrupt" (`proactive_reach.md`).
+
+The fact text stays the fixed template. One bank line may follow it. No model
+writes at send time, so both rules still hold in substance. PZ-48 updates
+those two specs in its own PR.
+
+### 17.5 Presets and the free-text line
+
+The owner decided this as Q2 (D-PZ-44). The presets are original styles. No
+preset holds a character name.
+
+| Preset | Sample line for "send the GST invoice to Fracktal, due 5 pm" |
+|---|---|
+| Plain (default) | (no line) |
+| Coach | One clear push and this one is done. |
+| Sage | A river reaches the sea one bend at a time. Today, this bend. |
+| Dry wit | The invoice will not send itself. I checked. |
+| Cheerful friend | Quick one before chai, then you are free! |
+
+- **Plain means no added line.** It is the default.
+- **Sage is the Yoda-like preset.** It has no character name.
+- **A free-text style** is one line of at most 140 characters.
+- **A save-time check** refuses a named film, book, TV or game character and
+  a real person. It offers the nearest preset. The owner said "film
+  character". This spec extends it to book, TV and game characters for the
+  same copyright reason. The PZ-47 preview confirms the extension.
+- **No character name** appears in any preset, prompt or line.
+
+The reasons come from news and law-firm reports. No court document was read.
+Reports say Disney sent Character.AI a legal notice in September 2025 that
+named Yoda. Reports also say the Delhi High Court protects the voice and the
+catchphrases of actors against AI imitation. The cases are Anil Kapoor in 2023
+and Jackie Shroff in 2024.
+
+**A lawyer must confirm these points before launch.**
+
+### 17.6 The line bank
+
+The owner decided this as Q3 (D-PZ-45).
+
+- **Presets.** We write and check about 30 original lines for each preset.
+  PZ-48 keeps them in the repository in one data module. One fence test reads
+  that module.
+- **A free-text style.** The model writes 20 lines once, when the member saves
+  the style. The member sees the lines first. Only the lines the member
+  accepts go live.
+- **Each message picks one line.** No line repeats within 14 days.
+- **No model writes at send time.** The rule "no model writes an interrupt"
+  holds (§17.2).
+- **No line comes from a film or a book.** Those are copyright.
+- **Later option.** A bank of public-domain quotes (Thiruvalluvar, Kabir,
+  Tagore, Vivekananda), each with a checked source (§17.10).
+
+### 17.7 Limits and the fallback
+
+The owner decided this as Q4 (D-PZ-46).
+
+1. **At most 3 persona lines a day** for each member.
+2. **Never on a serious message:** a failed payment, a security alert, a
+   sensitive card or an error.
+3. **Never on a WhatsApp template message.** Meta approves its fixed text.
+4. **Checks on each line before it goes live:**
+   - It is at most 120 characters, in one or two sentences. This is a
+     default. The PZ-49 preview confirms it.
+   - It holds no number, date, name or claim. This is how the build meets
+     the owner's "a changed fact". A line with no fact in it cannot change
+     one.
+   - It holds no flattery.
+   - It does not claim to be a character or a person.
+5. **A failed check means the message goes out plain.**
+6. **An admin can turn personas off** for the whole organization.
+7. **Forget and offboarding (PZ-9) delete** the persona and its lines.
+8. **Data law.** We treat a persona as an ordinary preference. This point is
+   unverified. The research file holds it from memory. The lawyer's check
+   covers it (§17.10).
+
+The evidence: no study shows that a quote or a playful tone gets more tasks
+done. This is a preference and not a promise of more output. A flattery test
+runs before launch, because a persona can make an assistant agree too easily.
+Reports of the GPT-4o update of April 2025 describe that fault.
+
+### 17.8 The decisions of the owner, and the data they need
+
+The owner answered this question on task 1469 (run 292432fe, question 2672,
+answer 2688) on 2026-11-06 at 18:28 UTC with "Approve all four
+recommendations". The question, word for word:
+
+```text
+The assistant stays Mira (D125). A persona changes how it sounds in some places, never who it is or what it knows.
+
+Reminder: send the GST invoice to Fracktal, due 5 pm.
+| Plain (default) | (no line) | Coach | One clear push and this one is done. | Sage | A river reaches the sea one bend at a time. Today, this bend. | Dry wit | The invoice will not send itself. I checked. | Cheerful friend | Quick one before chai, then you are free! |
+
+Q1. Where does the persona apply? Recommended: only to what the assistant says *to you*: reminders, nudges, the chat's hello and encouragement, and the interview questions. Chat answers stay plain, unless you turn on "chat answers too". It never goes into a draft to another person (email or WhatsApp), because those use *your* voice. It never touches a fact, a number, a date, a card, a tool result or quoted text. You get one persona and a tick list of these places, so no separate persona for each app (this answers task 1475).
+
+Q2. Characters such as Yoda? Recommended: original styles only. "Sage" is the Yoda-like preset, with no character name. You can also describe your own style in one line (140 characters). When that line names a film character or a real person, the assistant offers the nearest style. The reason: in September 2025 Disney sent Character.AI a legal notice that named Yoda. Also, the Delhi High Court protects the voice and catchphrases of actors (Anil Kapoor, Jackie Shroff) against AI imitation.
+
+Q3. Where does the quote come from? Recommended: original lines, never lines from films or books (those are copyright). We write and check about 30 lines for each preset. For your own style, the model writes 20 lines once when you save it, and you see them before they go live. Each reminder picks one line, and no line repeats within 14 days. No model writes at send time, so the rule "no model writes an interrupt" holds. Also possible later: a bank of public-domain quotes (Thiruvalluvar, Kabir, Tagore, Vivekananda), each with a checked source.
+
+Q4. How often, and where never? Recommended: at most 3 persona lines a day. None on a serious message: a failed payment, a security alert, a sensitive card or an error. None on a WhatsApp template message, because Meta approves its fixed text. When a line fails a check (too long, flattery, a changed fact), the message goes out plain. An admin can turn personas off for the whole organization.
+
+Note: no study shows that a quote or a playful tone gets more tasks done. This is a preference, not a promise of more output. A flattery test runs before launch, because a persona can make an assistant agree too easily. The legal points come from news and law-firm reports. A lawyer must confirm them before launch.
+```
+
+**The data and the seams** (design for the slices):
+
+- **The persona record** lives on the profile, inside `PROFILE_MAX`. It holds
+  the preset id, the free-text line, the tick list and an on/off switch.
+- **Only one short line enters the profile block,** and only when a chat
+  surface is on. The line reads "Persona: <preset label>. <the style line, at
+  most 140 characters>. Use it for: <the chat surfaces that are on>." It is at
+  most 200 characters. Over `RENDER_MAX` it drops together with the style
+  notes, and the drop order does not change otherwise.
+- **Who can set a free-text style.** Only words that the member typed, with
+  the typed mark (D-PZ-37), can set it. A card answer can set a preset only.
+- **The line bank does not go in the profile block.** It would break the
+  `RENDER_MAX` cap and the cached prefix. It is a tenant-scoped table (R5).
+  PZ-45 builds it with expand-only migration rules (R6). The builder takes
+  the migration number at build time (R1).
+- **The send path reads the bank and never a model.**
+- **Extend the existing seams:** `assistant_profile`, the reminder text
+  builders and `acb_llm.voice`. Add no parallel voice module.
+
+### 17.9 The slices
+
+Each slice is one PR. The tier follows `next-ticket.md` step 1b. The feature
+ships dark behind the flag `ASSISTANT_PERSONA_ORGS`, default off. A fence that
+does not exist yet is advisory until its slice builds (R7).
+
+| Slice | What | Done when | Fence (R7) | Gate · tier |
+|---|---|---|---|---|
+| **PZ-44** · task 1469 | This section, D189 and the INDEX sentence | The section, D189 and the INDEX sentence are in `main`. The four doc tests still pass | Advisory. Docs only | AGENT-SAFE · LOW |
+| **PZ-45** · task 1470 | The persona record on the profile, and the tenant-scoped line-bank table (§17.8) | A persona holds a label, a preset or one line, a tick list and an off switch. A row of one tenant never shows to another tenant. Forget deletes the persona and its lines | Planned `tests/unit/test_persona_store.py` and an R8 file, advisory until PZ-45 builds | AGENT-SAFE · **HIGH** (a migration) |
+| **PZ-46** · task 1471 | An interview area for tone. It saves the answer as a persona proposal | The question reuses the one-question-a-day shape. A yes on the card saves the proposal. Nothing saves without a yes. Only typed words (D-PZ-37) can set a free-text style, and a card answer sets a preset only | Planned `tests/unit/test_persona_interview.py`, advisory until PZ-46 builds | AGENT-SAFE · STANDARD |
+| **PZ-47** · task 1472 | The picker in Settings, Assistant settings, with the presets, the free line, a preview and one switch. The chat path covers WhatsApp too | The preview shows a nudge in the chosen voice before the save. The switch turns the persona off. The save-time check of §17.5 refuses a character or a person | Planned `tests/unit/test_persona_picker.py` and a vitest file, advisory until PZ-47 builds | AGENT-SAFE · STANDARD |
+| **PZ-48** · task 1473 | The line on reminders and nudges, from the bank, with the 14-day rotation | Each message picks one line. No line repeats within 14 days. No model runs at send time. Over 3 lines a day, the member gets the plain message | Planned `tests/unit/test_persona_lines.py`, advisory until PZ-48 builds. It also fails when a send path imports a model client | AGENT-SAFE · STANDARD |
+| **PZ-49** · task 1474 | The guards of §17.7 and a flattery test | Each guard has a test. A failed check gives a plain message. The evaluation set of PZ-10 covers each guard | Planned `tests/unit/test_persona_guards.py`, advisory until PZ-49 builds | AGENT-SAFE · STANDARD |
+| **PZ-50** · task 1475 | None. D-PZ-43 decided it: one persona and one tick list | The rows of §17.4 hold | No build | Decided |
+
+Verification commands for the spec slice. Run from the repository root:
+
+```bash
+uv run pytest tests/unit/test_decision_ids.py tests/unit/test_index_completeness.py tests/unit/test_doc_names_resolve.py tests/unit/test_board_index.py -q
+```
+
+Each later slice creates the test files that it names:
+
+```bash
+# PZ-45 to PZ-49
+uv run pytest tests/unit/test_persona_store.py tests/unit/test_persona_interview.py tests/unit/test_persona_picker.py tests/unit/test_persona_lines.py tests/unit/test_persona_guards.py -q
+```
+
+### 17.10 Decisions and open questions
+
+`work_plan.md` §3 records these as **D189**. The D-PZ-n ids and the PZ-n slice
+numbers are two separate sequences. D-PZ-43 is not the decision of PZ-43.
+A check of `origin/main` at merge confirms the numbers (R1).
+
+| # | Question | Decision |
+|---|---|---|
+| **D-PZ-43** | Where does the persona apply? (Q1) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** "Approve all four recommendations". Reminders, nudges, the chat's hello and encouragement, and the interview questions. Chat answers stay plain unless "chat answers too" is on. Never in a draft to another person, a fact, a card, a tool result or quoted text. One persona and one tick list. This settles PZ-50 |
+| **D-PZ-44** | Characters such as Yoda? (Q2) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** Original styles only. "Sage" is the Yoda-like preset. A free line of 140 characters. A named character or a real person gets the nearest style |
+| **D-PZ-45** | Where does the quote come from? (Q3) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** Original lines, about 30 for each preset. 20 model lines for a free style, written once and accepted by the member. One line for each message, no repeat within 14 days. No model at send time |
+| **D-PZ-46** | How often, and where never? (Q4) | **Decided: owner, 2026-11-06 18:28 UTC, accepted as D189.** At most 3 persona lines a day. None on a serious message or a WhatsApp template. A failed check means a plain message. An admin can turn personas off for the organization |
+
+**Open questions.** Each has a default, and the default stands until a person
+answers.
+
+1. **The lawyer's check.** A lawyer must confirm the legal points of §17.5
+   before launch. Default: PZ-47 ships with the flag off until the check is
+   done.
+2. **The public-domain quote bank.** Default: not built. It comes after PZ-48,
+   if the owner asks.
+3. **Languages other than English.** Default: the preset banks start in
+   English. A member whose profile language is not English gets lines in
+   that language. The lines come through the same save-time flow, with a
+   preview.
+4. **The `ASSISTANT_NAME` constant.** It still says "Metorite" and D125 says
+   Mira. Default: a finding for the board. This spec does not change it.
+5. **The reading of Q4.** The cap of 3 counts the bank lines on reminders and
+   nudges only (§17.4). This is the reading of this spec. The owner confirms
+   it at the PZ-48 preview.
+
+**The exception to the house voice.** `acb_llm.voice` CORE
+(`packages/acb_llm/acb_llm/voice.py`, owned by `agent_writing_voice.md`,
+WS-52) conflicts with the presets. Rule 9 bans enthusiasm that the writer
+puts on. Rule 2 says "plain words". Rule 4 says "do not build up to a
+reveal".
+
+The line "Quick one before chai, then you are free!" and the Sage riddle break
+these rules. The owner approved those lines, and they need the exception.
+
+Rules 2, 4 and 9 give way to the chosen style in two places only. These are
+the persona line and the hello and encouragement line of the chat. Rules 7
+(no em dashes), 10 (never invent a name, number, date or quote) and 12 (the
+reader's language) always bind. "Chat answers too" changes the register only,
+so every CORE rule still binds the answer itself. Plain keeps every rule.
+
+
+---
+
+## 18. Setup health: a nudge in the chat, then a score (ACCEPTED 2026-11-08)
+
+**Status: ACCEPTED 2026-11-08 (D196).** The owner answered Q1 to Q7 on
+task 945 at 15:02 UTC: "Approve all 7 recommended defaults". The owner
+answered Q8 at 15:07 UTC: the nudge state lives in `my_day_prefs`.
+
+Nothing in this section is built. It adds the epic SH (Metorite task 940) and
+its first slice, SH-0 (task 945). The decision record is **D196**
+(`work_plan.md` §3).
+
+**Why a new section and not §12.9.** §12 is ACCEPTED (D110). This section
+is not. It extends §12.5 and §12.6 and changes none of their text. A reader
+who looks for the setup coach finds the pointers added to §12.5 and §12.6,
+and they lead here.
+
+### 18.1 The answer in one screen
+
+1. **Phase A: setup items and one chat nudge.** Each live app lists its setup
+   items as done, missing or stale. The chat raises one missing item at a
+   time. It names the app and the item, says why it matters, and offers the
+   fix. This is the 2026-11-08 ask.
+2. **Phase B: measures and a score.** An item gets a measure, a target and a
+   weight. A nightly job scores each app. A Setup health page shows the
+   score and the next step.
+3. **One seam.** The chat nudge rides the personalization interview (§14.4).
+   The items ride `setup_status` (§12.5) and the shell manifest (§12.6). No
+   second registry, no second budget.
+4. **One budget.** All unprompted setup questions share the limits of
+   D-PZ-13 with the interview. The limits count across all apps together.
+5. **Most data exists. Some does not.** §18.4 marks each item. An item with
+   no data waits. This section invents no column.
+
+### 18.2 The owner's ask
+
+> **2026-10-29 (epic 940).** "Depending on the different kinds of setups of
+> the apps that they have (the knowledge base, CRM, etc.), we should
+> proactively keep nudging the user to set things up properly... measure the
+> health of the systems, so that we can work like a copilot along with the
+> user and set up the systems proactively."
+> 
+> **2026-11-08 (chat).** "Also, I want to ensure that across all the
+> applications, whenever a user hasn't set things up, we need to nudge the user
+> to set up different settings via the chat proactively. Similar to how we are
+> setting up for personalization, we should notify the user that XYZ needs to
+> be set up to use this particular XYZ app properly."
+
+Four rules follow. They cover all live apps (`launch_surface.md` §2). The
+nudge goes through the chat. It names the app and the missing setup, for
+example "Email needs a mailbox connected so that I can sort your mail". The
+model is the personalization interview.
+
+### 18.3 What exists (measured 2026-11-08, on `main`)
+
+| Part | State | Where |
+|---|---|---|
+| `setup_status(org, member)` | **Not in the code.** A search of `apps`, `packages` and `workbench/control_plane/src` finds no definition. OB-1a (task 1341) builds it first, with the steps of `onboarding.md` §7. PZ-16 (task 310) adds the profile items | `onboarding.md` §7.1 |
+| The manifest fields `preferences` and `setup` | **Not in `NavPane`.** PZ-18 (task 312) adds them | `workbench/control_plane/src/lib/nav.ts:110` |
+| `needs_setup` and `setup_href` | Built, for installed packages only. They make a "Finish setting up" row. They are not a setup item of a live app | `workbench/control_plane/src/lib/shell/NeedsYouCard.tsx:314` |
+| The interview and its due line | Built (PZ-26, PZ-32). One open area, one line in the block, 24 hours apart, 14 days after a skip | `packages/acb_common/acb_common/assistant_profile.py:1817` |
+| The context seam | Built. The line joins the block in a solo room with writes open, once for each 24 hours in a process | `apps/services/orchestrator/orchestrator/executor.py:875` |
+| The Get started card | Spec only (OB-1b, task 1342). It is the first-week view of `setup_status` | `onboarding.md` §6 |
+| The score, the history, the Setup health page | None | |
+
+### 18.4 Map: what answers "is it set up", for each live app
+
+**The columns.** *Scope* is member or org. *Data today* names the table, the
+column or the route that answers the item now, with `file:line` on `main`.
+*Phase* is A (a binary item with a fix) or B (a measure). An item with the
+words "No data" waits, and nothing builds it until a column exists.
+
+Paths in *Data today* are under `infra/postgres/` unless they start with
+`apps/` or `workbench/`.
+
+| App | Item id | Scope | Done when | Data today | Fix | Phase |
+|---|---|---|---|---|---|---|
+| My Email | `email.mailbox` | member | The member has an `email_accounts` row with `sync_enabled` on and no `sync_error`. It is stale when `last_synced_at` is older than 24 hours | `17_email_accounts.sql:14`. The org key came with `223_email_accounts_unique_per_tenant.sql:55` | A link to the connect flow. The chat cannot grant mail access | A |
+| My Email | `email.rules` | member | One enabled `email_rules` row, or the member chose "Not for us" | `19_email_automation.sql:25`. **"Not now" has no store.** A dismiss of §18.5 holds it | The tool `suggest_email_rules`, then the proposal cards (task 42) | A |
+| My Email | `email.voice` | member | `email_voice_profiles.status` is `READY` for an account | `94_email_voice_profile.sql:8` | The consent card of PZ-12, then the build | A |
+| My Email | `email.signature` | member | A signature is set | **No data.** No signature column exists. Task 1959 designs signatures. This item waits for it | The signature design of task 1959 | waits |
+| My Email | `email.organized_share` | member | 80% or more of last week's mail got a rule | `email_executed_rules` at `19_email_automation.sql:70` and `email_messages` at `17_email_accounts.sql:39`. Counts only | `suggest_email_rules` | B |
+| My Email | `email.reply_rules` | member | An enabled rule with `system_type` `REPLY_ZERO` | `19_email_automation.sql:25` (column `system_type`) | The rule proposal card | B |
+| My WhatsApp | `wa.account` | member | A `wa_accounts` row with `sync_status` `live` and `initial_sync_done` true | `102_whatsapp.sql:22` | A link to the WhatsApp page. Meta sign-up is a browser flow | A |
+| My WhatsApp | `wa.mira_link` | member | A `whatsapp_member_links` row with `status` `active` and `is_current` true | `235_whatsapp_member_links.sql:46` | The link flow in Settings. The code step needs the member's phone | A |
+| Shell | `push.allowed` | member | One `push_subscriptions` row for the member that has not ended | `306_push_subscriptions.sql:37`. **A denied prompt leaves no server row**, so "denied" and "never asked" look the same | The prompt of OB-8, from the browser | A |
+| Calendar | `calendar.connected` | member | An external calendar is connected | **No data.** `apps/services/gateway/gateway/routes/tasks/calendar.py:56` says the list is empty until a `calendar_accounts` table exists. No such table exists | None until the sync is built | waits |
+| Calendar | `calendar.working_hours` | member | `people.working_hours` is not null for the member's row | `172_people_profile.sql:49`. The Calendar settings edit it (`workbench/control_plane/src/app/calendar/components/CalendarSettings.tsx:178`). A member with no `people` row cannot answer | The chat tool for working hours, or a link to Calendar settings | A |
+| My Profile | `profile.address`, `profile.style`, `profile.voice`, `profile.aliases` | member | The rows of §12.5 | `294_user_settings_assistant_profile.sql:35`, read only through `acb_common.assistant_profile` | The interview (§14). These items are PZ-16 | A |
+| Projects | `projects.first_project` | org | One `pm_projects` row that is not archived | `146_projects.sql:50` (column `archived_at`) | The chat tool that makes a project | A |
+| Projects | `projects.lead` | org | Each root project that is not archived has a `lead` | `146_projects.sql:64` | The chat tool that sets the lead | B |
+| Projects | `projects.assignee` | org | Few open tasks have no assignee | `pm_task_assignees` at `146_projects.sql:262` | A suggestion card on the tasks | B |
+| Projects | `projects.stale` | org | No task in progress has gone 14 days with no change | `pm_tasks.updated_at` at `146_projects.sql:231`, with `pm_task_statuses` | The reminder of the task owner | B |
+| CRM | `crm.pipeline` | org | A default `crm_pipelines` row with one `crm_pipeline_stages` row or more | `247_crm_source_profiles_pipelines.sql:70` and `:90` | The pipeline setup in CRM | A |
+| CRM | `crm.deal_owner`, `crm.next_step` | org | Few deals have no `owner_email` or no `next_step` | `crm_deals` at `144_crm.sql:303` (columns at `:324` and `:328`) | A suggestion card on the deals | B |
+| CRM | `crm.duplicates` | org | Few possible duplicate contacts | **No data found in this scan.** SH-4 (task 949) finds or builds the finder | | waits |
+| CRM | `crm.sync_errors` | org | The CRM source has no sync error | `crm_source_profiles` at `247_crm_source_profiles_pipelines.sql:52`. **Not verified here** whether it holds an error field. SH-4 checks | The connection page | waits |
+| Knowledge | `knowledge.first_content` | org | One published `kb_pages` row | `272_knowledge_pages.sql:106` | The chat tool that writes a page | A |
+| Knowledge | `knowledge.sources` | org | One `kb_sources` row on a connected `integration_connections` row | `300_kb_sources.sql:94` and `245_integration_connections.sql:40` | A link to the connect flow | A |
+| Knowledge | `knowledge.owners` | org | Each `team` or `agent` space has an `owner_email`. The `company` space has none by design (`272_knowledge_pages.sql:51`), so it is out | `272_knowledge_pages.sql:51` | The owner picker | B |
+| Knowledge | `knowledge.reviews` | org | Few published pages are past `review_at` | `303_kb_page_verification.sql` (index on `review_at`) | The verify act on the page | B |
+| Knowledge | `knowledge.gaps` | org | Few open `kb_gaps` | `293_kb_gaps.sql:44` | The gap proposal | B |
+| Knowledge | `knowledge.empty_searches` | org | Few searches find nothing | **No data.** No store of searches with no result was found. SH-3 (task 948) adds one | | waits |
+| People | `people.profile_complete` | member | The member's `people` row passes the quality rules | `49_gtd_people.sql:67`. The quality rules are in `apps/services/gateway/gateway/routes/people/quality.py`. **Not read in this scan.** SH-5 (task 950) reads it | The profile editor | B |
+| Organisation | `org.profile` | org, admin | The org has a name, a GST number and an address | `organization.display_name` at `130_org_access_control.sql:37` is always set. **GST and address have no column.** Handoff H-15 holds the build. The item waits for H-15 | The Organization tab | waits |
+| Organisation | `org.members` | org, admin | The org has 2 members or more, active or invited | `app_user` at `09_app_user.sql:13` (column `status` from `130_org_access_control.sql`) | The invite act | A |
+| Organisation | `org.roles` | org, admin | Each member has a role | `user_role` at `130_org_access_control.sql:108` | The role act. It stays an admin write | B |
+| Organisation | `org.member_mailboxes` | org, admin | A count of members with a mailbox. **Counts only** | `email_accounts` (above) | A reminder card to the member | B |
+| Integrations | none | | An integration the deployment does not offer is **never** an item. A connected one counts under the app it serves | `integration_connections` at `245_integration_connections.sql:40` | | |
+| Approvals, Artifacts, Studio, Chat, Appearance | none | | These apps have nothing the member must set up before use. Approvals has no org rule table, and its approver question is open (`work_plan.md` §4, per-Center approvals) | | | |
+
+### 18.5 One check, and the states
+
+A check is a row in the one registry (`onboarding.md` §7.1). It never
+becomes a second table of settings. These are its fields.
+
+| Field | Meaning | Example |
+|---|---|---|
+| `id` | App, a dot, the item | `email.mailbox` |
+| `app` | The `NavPane` href that owns it | `/email` |
+| `scope` | `member` or `org`. A member check reads the member's own rows. An org check reads the org's rows | member |
+| `measure` | What is read. A flag (Phase A) or a count and a ratio (Phase B). It reads counts and settings, never content | `sync_status`, `last_synced_at` |
+| `target` | What counts as met | no error, synced in 24 hours |
+| `why` | One sentence that states the effect on the member | "Without a mailbox I cannot read or sort your mail." |
+| `fix` | A tool of the chat, or a link. Names the card kind when a card fixes it | a link to the connect flow |
+| `weight` | A whole number from 1 to 5. Used in Phase B only | 5 |
+| `flag` | The feature flag that must be on for the app. A check for an app that is off in the org does not run | `feature:email` |
+
+**The states.** `done`, `missing`, `stale`, `cannot_run` and `skipped`.
+
+- `cannot_run` means no data can answer the check (the "waits" rows), or
+  the app or integration is off for this org. It shows nowhere and counts
+  nowhere. The member never reads "needs sign-in" for something the
+  deployment does not offer.
+- `skipped` means the member said "Not for us" (§18.9). It is permanent.
+  The check leaves the nudges and the score, and an Undo brings it back. It
+  is the same state as "Skip" in the Get started card (`onboarding.md` §6).
+- "Not now" is a **dismiss**, not a state. The item stays `missing` and
+  waits 14 days (D-PZ-13). "Don't ask again" stops the nudge only. The
+  check stays in the score.
+
+**The names of the states in three places.** §12.5 says done, missing and
+stale. `onboarding.md` §7.1 says done, open and skipped. §18.5 says done,
+missing, stale, cannot_run and skipped. `open` is `missing` or `stale`.
+`skipped` is the same word in both.
+
+`cannot_run` is new here, and no card shows it.
+
+**The manifest.** The `setup` field of §12.6 lists a pane's check ids. The
+`NavPane` is the only place an app names its checks. The registry holds the
+rows. A fence (§18.11) fails when a live pane has a check whose app is not
+its own.
+
+### 18.6 Phase A: how the chat nudges
+
+**The seam.** The nudge is a second kind of due line in the same place as the
+interview line. The code that builds the block (`_with_interview_line`) asks
+one function for the line. The function picks between a setup item and an
+interview area. It returns at most one line.
+
+**The rule: the nudge does not depend on `learning` or on the interview.**
+The interview line needs `learning` on and a started interview
+(`assistant_profile.py:1694`). A setup nudge needs neither. It needs three
+things: the setup flag for the org, the member's own solo chat, and a due
+item. A member who switched learning off, or who never started the
+interview, still gets told that Email needs a mailbox. Without this rule the
+nudge would miss the members who need it most.
+
+**What the line says.** Example, for a member with no mailbox who opens the
+chat:
+
+> Setup (one item is due): email.mailbox. Email needs a mailbox so that you
+> can read and sort mail here. Ask only if it fits the moment, at the end of
+> your reply, in your own words. Say which app, what is missing, and what it
+> unlocks. Offer the link.
+
+Then the model calls `setup_nudge("asked", "email.mailbox")`. This is the
+twin of `profile_interview("asked", area)`.
+
+**What the member reads.** One question, never a list. It names the app and
+the item, says what it unlocks, and offers one fix.
+
+- "Email needs a mailbox connected so that I can sort your mail. Want me to
+  open the connect page?"
+- "CRM has no pipeline stages yet, so deals cannot move. Shall I set up the
+  usual five stages? You can change them after."
+
+**Which fix.**
+
+- A **yes card** when the chat has a write tool for it. The card shows the
+  change. Nothing writes without the yes (D-PZ-2).
+- A **link** (`show_in_app`, `chat_first_surface.md` §4.4) when the fix is a
+  sign-in, a consent or a flow in the browser. The chat never asks for a
+  password or a code in the message.
+- The fix is **never** an outbound message to another person.
+
+**One budget for every unprompted setup question (decision D-SH-3).**
+
+- The nudge state does **not** live in the profile column. Rule 3 of §7 says
+  that learning "Off" stops every write to the profile. So the state of the
+  nudge (asked, dismissed, "Not for us") lives in the store that
+  `onboarding.md` §7.2 already defines for the setup items. That store is the
+  key `setup` in `user_settings.my_day_prefs`. It holds `hidden_at`,
+  `done_seen_at` and `skipped` for each item now. It is a pref of the
+  member's own screen, so learning does not close it.
+- PZ-17 adds three fields to that key: `last_asked_at`, a `dismissed`
+  time for each item, and `never` for each item. The route is the existing
+  whitelisted `PUT /shell/feed/prefs`, and the chat tool `setup_nudge` writes
+  the same key. So Phase A needs **no new table and no migration**.
+- The clock is `setup.last_asked_at` in that key. The interview keeps its own
+  `last_asked_at` in the profile. The one function that builds the line reads
+  both and takes the later time. A setup nudge sets only its own clock. An
+  interview question sets only its own. So the next unprompted question of
+  either kind waits 24 hours after the later one.
+- With learning off, the interview clock never moves. The setup clock
+  still does. So at most one unprompted setup question comes each day, across
+  all apps. With learning on, the interview and the setup items share the
+  day.
+- D-PZ-13 holds as written: one a day, 14 days after a dismiss, and
+  "Do not ask again".
+
+**Which item goes first.** One rule, in this order.
+
+1. An item whose event just happened (the next paragraph).
+2. An item of an app that the member opened in the last 7 days. This
+   needs a data source. If none exists, skip this step.
+3. The item with the highest weight. In Phase A all weights equal 1, so the
+   registry order decides.
+4. Then the interview area.
+
+**Event first, when the data allows it.** The best moment is just after the
+member meets the gap. An event raises the item in the next chat. It never
+sends a message by itself. Without an event, the item comes at the start of
+a chat.
+
+Events that the data allows today:
+
+- The third mail moved by hand, with no rule (`email_rules` and the move log).
+- A deal made with no stage (`crm_deals`).
+- A Knowledge search with no hit. No store exists today, so this one waits.
+
+**Where it never shows.** The places are the same as for the interview
+(§14.4). It never shows in a shared room, on WhatsApp (the sender is Reach,
+PZ-19), or with the setup flag off for the org. A nudge that cannot fit in the
+block is left out.
+
+**Writes closed.** The nudge still shows. It offers a link and no yes card.
+
+**Persona.** §17.4 treats a setup question as an interview question. The persona colours it. The question and its reason stay plain. It
+takes no line from the bank, so it adds nothing to the cap of 3.
+
+**Copy rules** (the owner's product rules).
+
+1. Every question states why and what it does.
+2. The name "Jev" never shows. The assistant is Mira.
+3. A failure says what happened and the next step.
+4. A setup screen shows the result of the change.
+5. An integration that is off is never named as "needs sign-in".
+
+### 18.7 Phase B: the measure, the target, the score
+
+**A measure** is a number with a target. Example: `email.organized_share`,
+the share of last week's mail that a rule caught, target 80% or more. The
+reader counts rows and reads settings. It does not read the subject, the body
+or a field of a record.
+
+**The score.**
+
+- A check **meets its target** or it does not. A check in the state
+  `cannot_run` or `skipped` is out. It is in neither the top nor the bottom
+  of the sum.
+- The score of an app is 100 times the weights of the met checks. Divide that
+  by the weights of the checks that ran.
+- The overall score is the same sum over all apps. It is not the mean of the
+  app scores.
+- An app with no check that ran has no score. It shows "Not measured yet".
+  It does not show 0 or 100.
+- No bands in the first version. The bands of other products are not
+  verified (§18.10).
+
+**Weights.** A whole number from 1 to 5. The owner reviews the first table
+at the SH-2 preview. The weight is the point value of the check, as in
+Microsoft Secure Score. The page sorts by the score gain.
+
+**The run.** A nightly job runs the checks for each org. It keeps one row for
+each check for each night, so a trend exists.
+
+**After a fix.** A fix runs its own check again
+at once, so the page can say "Email: 62 to 81" without a 24-hour wait
+(SH-7). The job runs under the tenant seam (R5). The tables are new, tenant
+scoped, with force row level security, and the migration is expand only
+(R6). SH-1 (task 946) designs them.
+
+**Quiet by default.** The chat never lists the gaps. It raises one (§18.6).
+The page may list all.
+
+**Measure the nudges.** Each nudge logs `shown`, `accepted`, `dismissed` and
+`fixed`. The log holds the check id and the time. It holds no text. A check
+that the members often dismiss gets asked less. SH-7 sets the rule.
+
+### 18.8 Who sees what
+
+| Viewer | Sees |
+|---|---|
+| A member | The member checks of their own, their own score, and the org checks only as "Your admin handles this" with no detail |
+| An admin | Also the org checks, the org score and the **adoption counts**: how many members have a mailbox, a role, or a rule |
+| Nobody | The content of a member's mail, messages, tasks or records. Nobody sees which member has which setting, except the admin's count of who is not yet set up (SH-8) |
+
+- **The admin list of members.** The admin sees which members still have an
+  open item (task 1348, OB-7, joins SH-8). The list holds names and item ids
+  only. It never holds content.
+- **Admin items nudge only admins** (default of question 4, §18.12). A member
+  never gets a chat nudge for an org item.
+- Every read goes through the session and the tenant seam. No check takes a
+  member or an org from request input (R5).
+
+### 18.9 The limits
+
+D-PZ-13 stays as it is. One unprompted setup question a day, 14 days of wait
+after a dismiss, and "Don't ask again" for good. §18.6 makes the limit
+common to the interview and the setup items. The Get started card asks
+nothing, so these limits do not bind it (`onboarding.md` §6). A step that the
+chat offers as a question obeys them.
+
+**"Not for us".** Decided (Q5): both kinds of check can carry it. A member marks
+a member check. An admin marks an org check for the whole org.
+
+The check goes to `skipped`. It leaves the nudges and the score. The page
+shows it muted with an Undo. The admin's adoption count shows how many are
+marked, as a number.
+
+This differs from a dismiss, which waits 14 days. The Salesforce guides say
+not to chase a full score, since some settings stay off on purpose. This is
+the owner's call (§18.12, question 5).
+
+### 18.10 What other apps do
+
+**Research, 2026-10-29.** The web searches ran on 2026-10-29. Each item
+names its source type. Check the vendor's current page before you copy a
+detail.
+
+**HubSpot, Data Quality command center** (vendor knowledge base)
+
+- One page holds the data health of the CRM.
+- The summary shows the duplicate issues and the formatting issues as a change
+  in percent over a date range. Each issue links to its own fix tab.
+- "Recommended actions" lists what the AI found, for example duplicates.
+- A chart shows how many properties have issues over time. The member can
+  highlight Duplicates, No data or Unused.
+- **We take:** the CRM checks of SH-4 (duplicates, empty fields, unused
+  fields). We also take a trend over time and a link from each issue to its
+  fix (SH-6).
+
+**Microsoft Secure Score** (Microsoft Learn)
+
+- The score counts the recommended actions that the org took. Each action has
+  a fixed point value.
+- By default, the list sorts the actions by how much each one raises the
+  score. Filters group them by product, status and category.
+- Each action shows its effect on users and how hard it is.
+- A change can take up to 24 hours to show in the score. An action that a
+  third-party tool did also counts.
+- **We take:** The weight of a check works as its points. The page sorts by the
+  score gain (SH-6), and each fix shows its effort. A nightly job alone is too
+  slow for "Email: 62 to 81". SH-7 runs the one changed check again just after
+  a fix.
+
+**Salesforce, Security Health Check and Optimizer** (third-party guides)
+
+- Health Check gives a score out of 100 against the recommended settings, or
+  against a baseline that the org sets.
+- The bands: 90 and up Excellent, 80 to 89 Very Good, 70 to 79 Good, 55 to 69
+  Poor, 54 and below Very Poor.
+- The guides say: do not chase 100. Some settings stay off on purpose, for
+  example login-as-user, which helps support.
+- Optimizer reads only metadata and limits, never customer data.
+- **We take:** A member or an admin can mark a check "Not for us". The check
+  then leaves the score (§18.9). A check reads counts and settings, never the
+  content of mail or records (§18.8).
+
+**Intercom Fin, content gaps** (vendor help)
+
+- Fin finds gaps from failed AI answers compared with good human replies. It
+  also finds duplicate content and content that contradicts itself.
+- Each suggestion shows the conversations that caused it, and a create or edit
+  action.
+- The Unresolved questions report shows which sources Fin used.
+- **We take:** the Knowledge checks of SH-3 (searches with no result, chat
+  answers with no source, duplicate pages and pages that contradict each
+  other). Each gap shows the questions that caused it.
+
+**Zendesk** (a competitor's blog, so treat it with care)
+
+- It says Zendesk retired Content Cues in May 2025. Its gap tools now report
+  the top searches that found nothing.
+
+**What we do not take, and why.** A list of 20 gaps at once. Mira raises one
+gap at a time (SH-7) inside the D-PZ-13 limits.
+
+**Not verified.** Microsoft Adoption Score (the search found nothing). The
+Zendesk retirement. The Salesforce bands come from third-party guides.
+
+**Sources.**
+
+- https://knowledge.hubspot.com/reports/data-quality-command-center
+- https://learn.microsoft.com/en-us/training/modules/examine-microsoft-secure-score/4-improve-secure-score
+- https://www.salesforceben.com/secure-your-org-with-salesforce-health-check/
+- https://salesforceben.com/secret-weapon-salesforce-optimizer-report/
+- https://fin.ai/help/en/articles/13975989-use-ai-powered-content-recommendations-to-improve-fin
+- https://www.intercom.com/changes/en/44975-easily-surface-related-content-within-fin-s-unresolved-questions-report
+- https://www.enterpret.com/guides/the-6-best-tools-to-find-help-center-content-gaps-from-support-data-in-2026
+
+**Two lessons added on 2026-11-08.** Stripe and Linear (`onboarding.md` §12.8)
+tick a checklist from server state and keep import an admin act. We do the
+same: every item ticks from a row, never from the browser.
+
+### 18.11 The fences (R7)
+
+A rule with no test is labelled advisory. A test that does not exist yet is
+planned, and its rule is advisory until the slice builds.
+
+| Rule | Fence |
+|---|---|
+| There is one `setup_status` and one registry. A second "onboarding status" is a defect | Planned `tests/unit/test_setup_registry.py`. Advisory until OB-1a builds |
+| A live pane lists only check ids whose `app` is its own | Planned vitest `nav.test.ts` case, with PZ-18. Advisory until then |
+| A check reads counts and settings and never content | Planned `tests/unit/test_setup_checks_no_content.py`: no check imports a body or subject column. Advisory until SH-1 builds |
+| The nudge and the interview share one clock. Never two lines in one block | Planned `tests/unit/test_setup_nudge_budget.py`. Advisory until PZ-17 builds |
+| One unprompted setup question a day, 14 days after a dismiss, "Don't ask again" | The same file, with the cases of D-PZ-13. Advisory until PZ-17 builds |
+| `cannot_run` and `skipped` are out of the score | Planned `tests/unit/test_setup_score.py`. Advisory until SH-1 builds |
+| A check for an app that is off in the org does not run and does not show | Same file as the score. Advisory until SH-1 builds |
+| No tenant or member from request input (R5) | The existing tenancy ratchet (`tests/unit/test_tenancy_boundary.py`) once the tables exist. Planned R8 file for the nightly job. Advisory until SH-1 builds |
+| A member never sees an org check detail | Planned `tests/unit/test_setup_health_visibility_r8.py`. Advisory until SH-8 builds |
+| The persona never changes a setup question's reason | Falls under `test_persona_guards.py` of §17.9. Advisory until PZ-49 builds |
+| The copy rules of §18.6 (why and effect, no "Jev", no "needs sign-in") | Advisory. A review check on the PR. A string test may follow |
+| The decision record and this section are in the index | `tests/unit/test_decision_ids.py` and `tests/unit/test_index_completeness.py` (they pass for SH-0) |
+
+### 18.12 Open questions for the owner
+
+Each question has a default. The default stands until the owner answers.
+**Q1 to Q7 are decided** (D196, owner, 2026-11-08 15:02 UTC, "Approve all 7
+recommended defaults"). **Q8 is decided** (owner, 2026-11-08 15:07 UTC, "Keep
+it in the Get started settings (my_day_prefs), no new table").
+
+| # | Question | Recommended default |
+|---|---|---|
+| **Q1** | Do we build Phase A (items and the chat nudge) before Phase B (the score)? | **Yes.** Phase A is the 2026-11-08 ask and needs no new table (Q8). Phase B follows with SH-1 |
+| **Q2** | Which apps come first? | **Email, WhatsApp, push, Calendar working hours, Projects, CRM pipeline, Knowledge sources, and the Organisation items.** These have data today. Items marked "waits" in §18.4 come when their data exists |
+| **Q3** | Do all setup questions share the one budget with the interview? | **Yes.** One a day in total, across all apps. Not one a day for each app |
+| **Q4** | Do admin items nudge only admins? | **Yes.** A member never gets a chat nudge for an org item. The admin sees the counts |
+| **Q5** | May a member, or an admin, mark a check "Not for us"? | **Yes.** A member marks member checks. An admin marks org checks. The check leaves nudges and score, and shows muted with Undo |
+| **Q6** | Does the nudge go only through the chat, or also through the My Day card and the bell? | **Chat first.** The Get started card on My Day (OB-1b) reads the same items and asks nothing. The bell stays out until Phase B. No message to WhatsApp (PZ-19 stays owner-gated) |
+| **Q8** | Where does the nudge state live? | **In the `setup` key of `user_settings.my_day_prefs`** (`onboarding.md` §7.2), beside the item state. It is not in the profile, so `learning` off does not stop it. No new table. If the owner wants a per-member table, a migration is needed, the slice becomes HIGH, and the table is tenant-scoped (R5) and expand-only (R6) |
+| **Q7** | Does the score show a band or a streak? | **No.** OB-19 says no score and no streak on Get started. The score lives only on the Setup health page, as a number |
+
+### 18.13 The slices
+
+Each slice is one PR. It ships dark behind the flag `SETUP_HEALTH_ORGS`,
+default off. A slice that is built before the flag exists uses the flag of
+its parent (`ASSISTANT_PROFILE_ORGS`). The tier follows `next-ticket.md`
+step 1b. A slice that changes what a member sees needs the D145 preview.
+
+**Reconcile with the older tasks, so no work is done twice.**
+
+- OB-1a (task 1341) builds `setup_status`, `GET /shell/setup`, the registry
+  and the onboarding items. It is the base of everything here.
+- PZ-16 (task 310) adds the profile items to that registry.
+- PZ-18 (task 312) adds the `setup` and `preferences` manifest fields.
+- PZ-17 (task 311) builds the chat nudge and the shared budget. It is the
+  deliverable of Phase A.
+- The SH slices below add the items of the other apps, the measures and the
+  score. They build none of the three seams.
+
+| Slice | What | Done when | Fence (R7) | Gate · tier |
+|---|---|---|---|---|
+| **SH-0** · task 945 | This section, D196 and the INDEX sentence | They are in `main`. The four doc tests pass | Advisory. Docs only | AGENT-SAFE · LOW |
+| **Phase A** | | | | |
+| **OB-1a** · task 1341 | `setup_status` and the registry (existing task) | A test for each item's "done when" | `test_setup_registry.py` | AGENT-SAFE · MEDIUM |
+| **PZ-16** · task 310 | The profile items, added to the registry of OB-1a (existing) | As §12.7 | As §12.7 | AGENT-SAFE · LOW |
+| **PZ-18** · task 312 | The `setup` manifest field (existing) | A live pane lists only its own check ids | the vitest case of §18.11 | AGENT-SAFE · LOW |
+| **PZ-17** · task 311 | The chat nudge, its clock in the `setup` key, and `setup_nudge` (existing, grows by this section) | One question a day across interview and setup, 14 days after a dismiss, "Do not ask again". The nudge shows with `learning` off and with no interview | `test_setup_nudge_budget.py` | AGENT-SAFE · MEDIUM |
+| **SH-9** · task 2317 | The Phase A items of Email, WhatsApp, push, Calendar working hours, Projects, CRM pipeline, Knowledge and Organisation (the A rows of §18.4) | A test for each item's "done when". Each fix is a card or a link | `test_setup_items_<app>.py`, one file per app, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-10** · task 2318 | Event triggers for the first items (third mail moved by hand, a deal with no stage) | An event raises the item in the next chat and sends nothing by itself | Planned `test_setup_events.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **Phase B** | | | | |
+| **SH-1** · task 946 | The nightly run, the history, the score, answers in chat and over MCP | The score ignores `cannot_run` and `skipped`. The history keeps one row for each check each night | `test_setup_score.py`, an R8 file | AGENT-SAFE · **HIGH** (a migration) |
+| **SH-2** · task 947 | Email measures | The B rows of Email | `test_setup_checks_email.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-3** · task 948 | Knowledge measures and the empty-search store | The B rows of Knowledge, and the store of searches with no hit | `test_setup_checks_knowledge.py`, advisory until built | AGENT-SAFE · **HIGH** (a migration) |
+| **SH-4** · task 949 | CRM measures | The B rows of CRM, and the duplicate finder is found or built | `test_setup_checks_crm.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-5** · task 950 | Projects, Calendar, People and Organisation measures | The B rows of those apps | `test_setup_checks_other.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-6** · task 951 | The Setup health page and the My Day card | A score for each app, the next step, the trend | vitest and an e2e spec, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-7** · task 952 | The copilot: it re-runs one check after a fix and says the change in score | "Email: 62 to 81" shows after the fix, not the next day | `test_setup_copilot.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-8** · task 953 | The admin view: org checks, adoption counts, and an in-app nudge to members | An admin sees counts and names with no content | `test_setup_health_visibility_r8.py` | AGENT-SAFE · **HIGH** (a visibility rule) |
+
+Verification commands for SH-0. Run from the repository root:
+
+```bash
+uv run pytest tests/unit/test_decision_ids.py tests/unit/test_index_completeness.py tests/unit/test_doc_names_resolve.py tests/unit/test_board_index.py -q
+```
+
+Each later slice creates the test files that it names.
+
+### 18.14 Decisions
+
+`work_plan.md` §3 records Q1 to Q7 as **D196**. The D-SH-n ids and the
+SH-n slice numbers are two separate sequences. A check of `origin/main` at
+merge confirms the number (R1).
+
+| # | Question | Decision |
+|---|---|---|
+| **D-SH-1** | Build in two phases? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Phase A first (Q1) |
+| **D-SH-2** | Which apps first? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** The apps with data today (Q2) |
+| **D-SH-3** | One shared budget? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Yes, with the interview (Q3) |
+| **D-SH-4** | Who gets an admin nudge? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Admins only (Q4) |
+| **D-SH-5** | "Not for us"? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Yes, for both kinds, with Undo (Q5) |
+| **D-SH-6** | Where does the nudge show? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** The chat first (Q6) |
+| **D-SH-8** | Where does the nudge state live? | **Decided: owner, 2026-11-08 15:07 UTC, on task 945 ("Keep it in the Get started settings (my_day_prefs), no new table"), recorded in D196.** The `setup` key of `my_day_prefs`, beside the item state. No new table (Q8) |
+| **D-SH-7** | A band or a streak? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** No (Q7) |

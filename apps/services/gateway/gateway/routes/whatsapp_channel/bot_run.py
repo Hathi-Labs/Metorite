@@ -119,6 +119,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from acb_common import get_logger
+from acb_llm.routed import OUT_OF_CREDITS
 from gateway.db import bind_tenant, release_tenant, tenant_session
 from gateway.routes.whatsapp_channel import flags
 from sqlalchemy import text
@@ -138,10 +139,8 @@ THREAD_TITLE = "WhatsApp"
 REPLY_NO_WORKSPACE = (
     "Metorite cannot open this workspace from WhatsApp yet. Use the web app."
 )
-REPLY_CREDITS = (
-    "Your organization is out of AI credits. An admin can add credits in "
-    "Settings, Billing."
-)
+#: The one sentence of a 402, shared with ``analyze_image`` (WS-VOX VOX-3).
+REPLY_CREDITS = OUT_OF_CREDITS
 REPLY_FAILED = "Metorite could not answer just now. Try again in a few minutes."
 #: WAC-13 (§16.4): Metorite itself did not answer (a restart, an outage). The
 #: message waits, and the sweep answers it when the AI path is back.

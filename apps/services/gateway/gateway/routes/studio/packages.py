@@ -1,6 +1,6 @@
 """The package routes of AI Studio (STU-A5, ``ai_studio.md`` §14 A5 and A5c-1).
 
-Eight routes over the package store (A3 and A4, ``studio/packages_store.py``)
+Nine routes over the package store (A3 and A4, ``studio/packages_store.py``)
 and the object store (C1, ``studio/objects_store.py``). They register on the
 router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``main.py`` mounts no second router. The gate ``require_feature_router
@@ -15,6 +15,7 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``GET /packages/{id}/versions``          a page of 100 versions, no manifest
 ``GET /packages/{id}/delete-preview``    what a delete removes, and its token
 ``DELETE /packages/{id}``                delete the package (200 or 202)
+``POST /packages/{id}/install``          an org or group install (201 or 200)
 =======================================  ======================================
 
 **The switch.** The first line of each handler reads ``STUDIO_ORGS``. An org
@@ -56,6 +57,34 @@ rows.**
 caller. Fences: ``test_define_object_has_one_caller`` and
 ``test_each_publish_or_rollback_is_followed_by_a_sync``. A5b adds ``rollback``
 here and must call ``sync_objects`` after it.
+
+**The install (WS-PKG PKG-8a).** While ``PACKAGE_HOST_ORGS`` holds the org, a
+publish keeps one private install of the owner at the new version, after the
+sync and in the same session (``package_host/studio_app.py``). The org lock of
+the install store comes after the two locks above. A refusal of the install
+store is 409 or 422 with its ``detail_for`` of the member, and it rolls the
+publish back. With the switch off, a publish writes no install.
+
+**The org and group install (WS-PKG PKG-8b, ``package_host.md`` §6.1).**
+``POST /packages/{id}/install`` with the body ``{"scope": "org"}`` or
+``{"scope": "group:<slug>"}``. The scope comes from the body, and the member
+and the org come from the session. The order: the two switches
+(``STUDIO_ORGS``, then ``PACKAGE_HOST_ORGS``, each 404 with no session), the
+id, the raw body (at most :data:`MAX_INSTALL_BODY_BYTES`), the owner read
+(404), the scope and the optional ``version`` (422), then the right (403).
+Each scope needs ``studio:publish`` (D180.3: the verb gates the share to
+others), and the check fails closed. A group install also needs a group of
+that name in the bound org (``host_store.group_exists``, else 403
+``unknown_group``). The caller need not be a member of the group. Then one
+session locks the ``apps`` row ``FOR KEY SHARE`` (``store.lock_for_install``,
+404 when it is gone) and reads the live version: 409 ``not_published`` when
+there is none, and 409 ``version_changed`` when the body names another
+version. It keeps the install at that version and writes one ``app_audit``
+row (kind ``action``, op ``package.install``) in the same transaction. The
+answer is 201 for a new install and 200 for a move. A store refusal is its
+``detail_for`` of the member. A later publish does not move an org or group
+install, so the holder approves a new version with a new call. Only the
+owner reaches the route until J2.
 
 **The answers.** 422 holds ``{message, errors: [{path, message}]}`` with at
 most :data:`MAX_PROBLEMS` errors. 409 holds ``{code, message, ...}``:
@@ -143,7 +172,10 @@ from acb_common.studio_manifest import manifest_hash
 from acb_skills.studio_tools import complete_record_actions
 from fastapi import Depends, HTTPException, Request, Response
 from gateway.db import tenant_session as _tenant_session
-from gateway.routes.apps._common import record_app_audit_bound
+from gateway.package_host import store as host_store
+from gateway.package_host import studio_app
+from gateway.package_host.flags import package_host_allowed
+from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store
@@ -177,6 +209,13 @@ MAX_DELETE_BODY_BYTES = 4 * 1024
 #: (``acb_skills.studio_tools._send``). Fence:
 #: ``test_the_worst_call_ends_before_the_chat_tool_gives_up``.
 DELETE_BUDGET_SECONDS = 8.0
+#: The most bytes of the body of an install (4 KiB). It holds the scope only.
+MAX_INSTALL_BODY_BYTES = 4 * 1024
+#: The right of an org or a group install: the share verb (D180.3,
+#: ``package_host.md`` §6.1). It is the one read of the verb in
+#: ``routes/studio``. Fence:
+#: ``test_studio_route_gate.py::test_the_share_verb_is_read_by_the_install_only``.
+SHARE_RIGHT = "studio:publish"
 _DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
 _HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
@@ -188,6 +227,10 @@ STORE_BUSY = "store_busy"
 BODY_TOO_LARGE = "body_too_large"
 DRAFT_CHANGED = "draft_changed"
 COUNTS_CHANGED = "counts_changed"
+NOT_PUBLISHED = "not_published"
+VERSION_CHANGED = "version_changed"
+FORBIDDEN = "forbidden"
+UNKNOWN_GROUP = "unknown_group"
 
 CATALOG_DOWN = "The action catalog is not available now, so try the publish again later."
 BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
@@ -198,6 +241,16 @@ BAD_HASH = ("based_on is the hash of the draft that you read: 64 hexadecimal dig
             "or leave it out.")
 BAD_CONFIRM = ("confirm is the token of the delete preview: 64 hexadecimal digits. Read the "
                "preview, then send its token.")
+NO_SHARE_RIGHT = ("Only a holder of studio:publish installs an app for the organization or "
+                  "for a group. Ask the owner of your organization for that right.")
+NO_SUCH_GROUP = ("Your organization has no group with this name, so nothing was installed. "
+                 "Check the name of the group, then install again.")
+BAD_VERSION = ("version is the live version that you approve: a whole number from 1. Send it, "
+               "or leave it out.")
+LIVE_MOVED = ("The live version of this app changed after your read, so nothing was "
+              "installed. Read the live version, then install it again.")
+NOT_LIVE = ("This app has no published version, so nothing can be installed. Publish it "
+            "first, then install it again.")
 
 
 def _not_found() -> HTTPException:
@@ -386,6 +439,22 @@ def _sync_out(result: objects_store.SyncResult) -> dict[str, Any]:
     }
 
 
+async def _keep_install(db: Any, user: UserContext, pid: str,
+                        version: store.PackageVersion) -> None:
+    """PKG-8a: the private install of the owner follows the publish, in its
+    session. With ``PACKAGE_HOST_ORGS`` off for the org, it writes nothing.
+    A refusal of the install store is its ``detail_for`` of the member and
+    nothing else, and the raise rolls the publish back."""
+    if not package_host_allowed(user.organization_id) or version.manifest is None:
+        return
+    try:
+        await studio_app.keep_private_install(
+            db, app_id=pid, version=version.version, owner=user.email,
+            manifest=version.manifest)
+    except host_store.InstallError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail_for(user.email)) from None
+
+
 def _sync_audit(version: int, result: objects_store.SyncResult) -> dict[str, Any]:
     """The audit detail of a sync that changed rows: names and counts, no value."""
     return {
@@ -522,6 +591,7 @@ async def publish(
                 db, user.email, package_id=pid, objects=version.manifest.get("objects") or [])
             if result is None:
                 raise _not_found()
+            await _keep_install(db, user, pid, version)
             rows = await objects_store.list_objects(db, pid)
     if result.changed:
         await record_app_audit_bound(
@@ -577,7 +647,8 @@ def _preview_out(found: store.DeletePreview) -> dict[str, Any]:
         "totals": {"objects": len(found.objects), "fields": found.fields,
                    "records": found.records, "records_capped": found.capped,
                    "versions": found.versions, "installs": found.installs,
-                   "other_member_installs": found.other_member_installs},
+                   "other_member_installs": found.other_member_installs,
+                   "own_entries": found.own_entries},
         "confirm": found.confirm,
     }
 
@@ -675,3 +746,102 @@ async def delete_package(
         return {"deleted": False, "package_id": pid, "remaining": step.left.records,
                 "remaining_capped": step.left.capped, "records_removed": removed,
                 "confirm": step.left.confirm}
+
+
+# ── The org and group install (WS-PKG PKG-8b) ──────────────────────────────
+
+
+def _install_out(found: host_store.Install) -> dict[str, Any]:
+    """The install as the answer holds it. It names no member: the scope of
+    an org or a group install is ``org`` or ``group:<slug>``."""
+    return {"id": found.id, "app_id": found.app_id, "version": found.version,
+            "scope_kind": found.scope_kind, "scope_subject": found.scope_subject}
+
+
+def _forbidden(message: str) -> HTTPException:
+    return HTTPException(status_code=403, detail={"code": FORBIDDEN, "message": message})
+
+
+def _refused(user: UserContext, exc: host_store.InstallError) -> HTTPException:
+    """A refusal of the install store: its ``detail_for`` of the member, and
+    nothing else. It never names the private install of another member."""
+    return HTTPException(status_code=exc.status, detail=exc.detail_for(user.email or ""))
+
+
+def _approved(raw: object) -> int | None:
+    """The version that the caller approves, or None when the body names
+    none. Any other value than a whole number from 1 is 422. It says nothing
+    about the package."""
+    if raw is None:
+        return None
+    if isinstance(raw, int) and not isinstance(raw, bool) and 1 <= raw <= store.MAX_VERSION:
+        return raw
+    raise _unprocessable(BAD_VERSION, [{"path": "$.version", "message": BAD_VERSION}])
+
+
+@router.post("/packages/{package_id}/install", status_code=201)
+async def install_package(
+    package_id: str,
+    request: Request,
+    response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Install the live version of a package of the caller for the whole org
+    or for one group (``package_host.md`` §6.1, PKG-8b).
+
+    The body is ``{"scope": "org"}`` or ``{"scope": "group:<slug>"}``, with an
+    optional ``version``. Each scope needs ``studio:publish`` (D180.3), and a
+    group must exist in the org. 201 for a new install, 200 when the call
+    moved the install at that scope to the live version."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not package_host_allowed(user.organization_id):
+        raise _not_found()
+    pid = _package_id(package_id)
+    raw = await _raw_body(request, MAX_INSTALL_BODY_BYTES)
+    await _require_owned(user.email, pid)
+    body = _parse_json(raw)
+    try:
+        kind, subject = studio_app.install_scope(body.get("scope"))
+    except host_store.InstallError as exc:
+        raise _refused(user, exc) from None
+    approved = _approved(body.get("version"))
+    # D180.3: the share verb gates each install for other people. Fail closed.
+    if not user.has_permission(SHARE_RIGHT):
+        raise _forbidden(NO_SHARE_RIGHT)
+    async with _tenant_session() as db:
+        if kind == "group" and not await host_store.group_exists(db, group=subject):
+            raise HTTPException(status_code=403, detail={
+                "code": UNKNOWN_GROUP, "message": NO_SUCH_GROUP})
+        with _store_errors():
+            # The apps row first, then the org lock of the install store: the
+            # lock order of a publish (``package_host.md`` §5.5).
+            target = await store.lock_for_install(db, user.email, pid)
+            if target is None:
+                raise _not_found()
+            if target.live_version is None:
+                raise HTTPException(status_code=409, detail={
+                    "code": NOT_PUBLISHED, "message": NOT_LIVE})
+            if approved is not None and approved != target.live_version:
+                raise HTTPException(status_code=409, detail={
+                    "code": VERSION_CHANGED, "message": LIVE_MOVED,
+                    "live_version": target.live_version})
+            version = await store.get_version(db, user.email, pid, target.live_version)
+            if version is None or version.manifest is None:
+                raise _not_found()
+        try:
+            kept, made = await studio_app.keep_scope_install(
+                db, app_id=pid, version=version.version, scope_kind=kind,
+                scope_subject=subject, member=user.email, manifest=version.manifest)
+        except host_store.InstallError as exc:
+            raise _refused(user, exc) from None
+        # The audit row commits with the install, or neither does.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action", app_version=kept.version,
+            detail={"op": "package.install", "scope_kind": kind, "scope": subject,
+                    "version": kept.version, "created": made})
+    if not made:
+        response.status_code = 200
+    _log.info("studio.packages.installed", package_id=pid, scope_kind=kind,
+              version=kept.version, created=made)
+    return {"install": _install_out(kept), "created": made}

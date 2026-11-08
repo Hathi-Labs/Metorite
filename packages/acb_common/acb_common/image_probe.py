@@ -31,13 +31,47 @@ anything at all; `image/png` on a file that is really an SVG is exactly how a
 script gets into a page that believed it was serving a raster. The MIME type
 this module returns is derived from the magic bytes and is the only one that is
 allowed downstream.
+
+**The one sniff of a chat image** (WS-VOX VOX-3, ``projects_ai_chat.md`` §31).
+:func:`sniff_image_mime` gives the type of a PNG, JPEG, GIF or WebP file from
+its first bytes, and it reads nothing more. ``probe_image`` uses the same
+sniff, and it still refuses a GIF logo. ``acb_skills.attachment_tools`` uses
+it for ``analyze_image``. The module moved here from ``gateway/`` for that
+caller, because ``acb_skills`` cannot import the gateway. It imports the
+standard library only, so it decodes no pixel in any process.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["ImageInfo", "UnsupportedImage", "probe_image"]
+__all__ = ["ImageInfo", "UnsupportedImage", "probe_image", "sniff_image_mime"]
+
+#: The first bytes of each image type that :func:`sniff_image_mime` names.
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8"
+_GIF_MAGICS = (b"GIF87a", b"GIF89a")
+
+
+def sniff_image_mime(data: bytes) -> str | None:
+    """The type of *data* by its first bytes, or ``None``.
+
+    It names ``image/png``, ``image/jpeg``, ``image/gif`` or ``image/webp``.
+    A WebP file is ``RIFF``, four size bytes, then ``WEBP``, because WAV and
+    AVI files also start with ``RIFF``. It never trusts a declared type or a
+    file name, and it decodes no pixel. An SVG is text that can hold a
+    script, so it is never an image here.
+    """
+    head = bytes(data[:16])
+    if head.startswith(_PNG_MAGIC):
+        return "image/png"
+    if head.startswith(_JPEG_MAGIC):
+        return "image/jpeg"
+    if head[:6] in _GIF_MAGICS:
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 class UnsupportedImage(ValueError):
@@ -66,11 +100,13 @@ def probe_image(data: bytes) -> ImageInfo:
     if len(data) < 16:
         raise UnsupportedImage("That file is too small to be an image.")
 
-    if data[:8] == b"\x89PNG\r\n\x1a\n":
+    # The one sniff. A GIF falls through to the refusal, as before VOX-3.
+    mime = sniff_image_mime(data)
+    if mime == "image/png":
         return _probe_png(data)
-    if data[:2] == b"\xff\xd8":
+    if mime == "image/jpeg":
         return _probe_jpeg(data)
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+    if mime == "image/webp":
         return _probe_webp(data)
 
     raise UnsupportedImage(_reject_reason(data))
