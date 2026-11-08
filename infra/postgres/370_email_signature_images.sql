@@ -1,5 +1,5 @@
 -- ============================================================================
--- 360_email_signature_images.sql — the hosted images of email signatures
+-- 370_email_signature_images.sql — the hosted images of email signatures
 -- (WS-17 SG-1, Metorite task 2177).
 --
 -- What: one new table, `email_signature_images`. Each row is one logo or one
@@ -47,6 +47,8 @@
 -- 357, so this file took 357. Check it again at merge (premerge.sh).
 -- 2026-11-08, at merge: main held 359 (359_pm_decisions_person_ask.sql) and
 -- open PRs held 351, 356 and 358, so the file moved from 357 to 360.
+-- At 16:17 UTC main held 366 and open PRs held 361 and 367, so the file
+-- moved to 370, with room for merges during the next CI round.
 -- Pinned by tests/unit/test_email_signature_images_r8.py, which finds this file
 -- by CONTENT, never by number (R1).
 -- ============================================================================
