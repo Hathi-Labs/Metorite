@@ -1355,11 +1355,10 @@ class TestSarvamOnTheTranscribeDoor:
         assert len(sarvam_vendor.requests) == 1
         assert provider["calls"][-1]["model"] == WHISPER
 
-        # The step that ANSWERED bills the larger of the clip (3 s) and the
-        # vendor's figure (90 s).
+        # The step that ANSWERED bills the clip's own length.
         [row] = _rows(db, org_id)
         assert row.model == WHISPER
-        assert row.quantity == MINUTES
+        assert row.quantity == WAV_3S_MINUTES
 
     def test_a_webm_clip_on_a_sarvam_binding_answers_415_and_writes_no_row(
             self, client, db, org_key, org_id, provider, sarvam_vendor, stt_tier):
@@ -1482,12 +1481,9 @@ class TestSarvamOnTheTranscribeDoor:
 
 
 class TestALitellmStepBillsTheMeasuredWav:
-    """VOX-2 Done-when 2. The vendor says 90 seconds, and the clip holds 3.
+    """VOX-2 Done-when 2. The vendor says 90 seconds, and the clip holds 3."""
 
-    The step bills the LARGER figure, because the vendor charges us for what
-    it decoded and the header of a clip can lie."""
-
-    def test_a_wav_clip_on_whisper_bills_the_larger_of_clip_and_vendor(
+    def test_a_wav_clip_on_whisper_bills_the_clip_not_the_vendor(
             self, client, db, org_key, org_id, priced_stt, provider):
         _, key = org_key
         assert _transcribe(client, key, audio=WAV_3S).status_code == 200
@@ -1495,15 +1491,8 @@ class TestALitellmStepBillsTheMeasuredWav:
         assert provider["calls"][-1]["response_format"] == "verbose_json"
         [row] = _rows(db, org_id)
         assert row.model == WHISPER
-        assert row.quantity == MINUTES
-        assert row.billed_credits == CALL_COST
-
-    def test_a_long_wav_clip_bills_the_clip_when_it_exceeds_the_vendor(
-            self, client, db, org_key, org_id, priced_stt, provider):
-        _, key = org_key
-        assert _transcribe(client, key, audio=_wav(120, rate=8_000)).status_code == 200
-        [row] = _rows(db, org_id)
-        assert row.quantity == Decimal("2.0000")
+        assert row.quantity == WAV_3S_MINUTES
+        assert row.billed_credits == WAV_3S_MINUTES * CREDITS_PER_MINUTE
 
 
 # ══ §6A.10c — the image endpoint and the speak endpoint ═════════════════════

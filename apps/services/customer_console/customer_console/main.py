@@ -9508,18 +9508,10 @@ def _transcribe_minutes(
     vendor reports is not. Another format keeps clause 3: the provider's
     ``verbose_json`` duration, else ZERO with ``router.unmeasured_quantity``.
     """
-    reported = router_mod.duration_seconds(response)
-    # P1: for a WAV clip bill the larger of the bytes we sent and the figure
-    # the provider reports. The header can lie, the provider's charge does not.
-    if measured is None:
-        seconds = reported
-    elif reported is None:
-        seconds = measured
-    else:
-        # The reported figure has a bound: a buggy or hostile endpoint must
-        # not turn a short clip into hours. The door takes 600 s at most, so
-        # no honest figure is above that.
-        seconds = max(measured, min(reported, Decimal(_MAX_WAV_SECONDS)))
+    # 🔴 A measurable WAV clip bills the seconds the door measured, and the
+    # vendor's figure never sets the quantity (§6A.10a). Another format keeps
+    # the vendor's `verbose_json` duration, as before.
+    seconds = measured if measured is not None else router_mod.duration_seconds(response)
     if seconds is None:
         # ⚠️ BILL ZERO, LOUDLY (clause 3). The customer already holds the
         # transcript, so the only choice left is whether we also lose the

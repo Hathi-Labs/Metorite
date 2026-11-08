@@ -546,27 +546,22 @@ class TestTheDoorHelpers:
         assert kwargs["invocation"] == "atranscription"
         assert "payload" not in kwargs
 
-    def test_the_larger_of_the_clip_and_the_vendors_figure_bills(self):
-        """The vendor says 90 s. The WAV holds 3 s. The vendor decoded and
-        charged for 90 s, so 90 s bills. The clip wins when it is larger."""
+    def test_the_measured_length_wins_over_the_vendors_figure(self):
+        """The vendor says 90 s. The WAV holds 3 s, and 3 s bills. The vendor
+        figure never sets the quantity of a measurable WAV clip."""
         from customer_console.main import _transcribe_minutes
 
         reply = {"text": "x", "usage": {"type": "duration", "seconds": 90}}
         minutes = _transcribe_minutes(Decimal(3), reply, self.whisper, org_id="o",
                                       request_id="r")
-        assert minutes == Decimal("1.5000")
-        assert _transcribe_minutes(Decimal(120), reply, self.whisper, org_id="o",
-                                   request_id="r") == Decimal("2.0000")
-        assert _transcribe_minutes(Decimal(3), {"text": "x"}, self.whisper, org_id="o",
-                                   request_id="r") == Decimal("0.0500")
+        assert minutes == Decimal("0.0500")
 
-    def test_a_reported_duration_is_bounded(self):
+    def test_a_huge_reported_figure_does_not_change_a_wav_bill(self):
         from customer_console.main import _transcribe_minutes
 
         reply = {"text": "x", "usage": {"type": "duration", "seconds": 10**6}}
-        minutes = _transcribe_minutes(Decimal(3), reply, self.whisper, org_id="o",
-                                      request_id="r")
-        assert minutes == Decimal("10.0000")
+        assert _transcribe_minutes(Decimal(3), reply, self.whisper, org_id="o",
+                                   request_id="r") == Decimal("0.0500")
 
     def test_another_format_keeps_the_vendors_figure(self):
         from customer_console.main import _transcribe_minutes

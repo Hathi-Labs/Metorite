@@ -8893,8 +8893,9 @@ clauses above. Each other clause holds as written.
      bytes. The door bills the bytes it sends.
    - A `fmt ` chunk with a zero block align, or a sample rate outside
      1 000 to 384 000 Hz, is not a measurable WAV.
-   - A litellm step bills the larger of the measured length and the
-     `verbose_json` duration. The provider charges for what it decoded.
+   - The vendor figure never sets the quantity of a measurable WAV clip. A
+     litellm step bills the measured length too, whatever `verbose_json`
+     reports.
    - A clip that is not a measurable WAV keeps the old rule: the
      `verbose_json` duration, else zero with the log line
      `router.unmeasured_quantity`.
