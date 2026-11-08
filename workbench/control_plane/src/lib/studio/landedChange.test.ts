@@ -87,6 +87,13 @@ describe("the tracker", () => {
     t = observe(t, at("b", "h4"));
     expect(t.landed).toBeNull();
   });
+  it("clears landed when a poll brings a save and a publish together", () => {
+    let t = observe(NEW_TRACKER, at(m("x"), "h1"));
+    t = observe(t, at(m("x", "y"), "h2"));
+    expect(t.landed).not.toBeNull();
+    t = observe(t, at(m("x", "y", "z"), "h3", 1));
+    expect(t.landed).toBeNull();
+  });
   it("keeps landed when only the name moves, and clears it when a version goes live", () => {
     let t = observe(NEW_TRACKER, at(m("x"), "h1"));
     t = observe(t, at(m("x", "y"), "h2"));
@@ -118,14 +125,27 @@ describe("the tracker", () => {
 });
 
 describe("undoDropsLive", () => {
-  const live = [{ name: "units", fields: [{ key: "site" }] }];
-  it("is off when Undo would drop a live record type or field", () => {
-    expect(undoDropsLive(m(), live)).toMatch(/Undo is off\. This object is live/);
-    expect(undoDropsLive({ objects: [{ name: "units", fields: [] }] }, live)).toMatch(/This field is live/);
+  const live = [{ name: "units", fields: [{ key: "site" }, { key: "phone" }] }];
+  const man = (fields: string[]) => ({ objects: [{ name: "units", label: "Units", fields: fields.map((key) => ({ key, label: key === "phone" ? "Phone" : key })) }] });
+  it("blocks when Undo would remove a live record type or field that the draft holds", () => {
+    expect(undoDropsLive({ objects: [] }, man(["site", "phone"]), live)).toBe(
+      "Undo is off: it would remove the record type «Units», which is live. A published record type or field cannot be removed yet.");
+    expect(undoDropsLive(man(["site"]), man(["site", "phone"]), live)).toBe(
+      "Undo is off: it would remove «Phone» from «Units», which is live. A published record type or field cannot be removed yet.");
+  });
+  it("does not block the rename of a view after a live field was deleted (the reviewer's scenario)", () => {
+    // v1 is live with units.phone. The member deleted Phone, saved, then renamed a view and saved.
+    const before = { ...man(["site"]), views: [{ id: "v", title: "A" }] };
+    const current = { ...man(["site"]), views: [{ id: "v", title: "B" }] };
+    expect(undoDropsLive(before, current, live)).toBeNull();
+  });
+  it("does not block for a live record type that the draft already lacks", () => {
+    expect(undoDropsLive({ objects: [] }, { objects: [] }, live)).toBeNull();
+    expect(undoDropsLive(m("other"), m("another"), live)).toBeNull();
   });
   it("is on when the earlier manifest keeps every live part, or nothing is live", () => {
-    expect(undoDropsLive({ objects: [{ name: "units", fields: [{ key: "site" }, { key: "x" }] }] }, live)).toBeNull();
-    expect(undoDropsLive(m(), [])).toBeNull();
+    expect(undoDropsLive(man(["site", "phone", "x"]), man(["site", "phone"]), live)).toBeNull();
+    expect(undoDropsLive(m(), m("x"), [])).toBeNull();
   });
   it("turns the Undo button off with that reason", () => {
     const ok = { dirty: false, saving: false, fault: false, working: false };
