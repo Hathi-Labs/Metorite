@@ -40,6 +40,18 @@ The gate is ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass. Run::
 * G4. ``G/activities.py``: the edit and the delete skip
   ``_record_agent_change``. ``test_c1_an_edit_of_its_own_comment_writes_one_row``
   and ``test_c2_a_delete_of_its_own_comment_writes_one_row`` turn red.
+
+Fix round 1 adds rules 1 and 2 (spec §9.2) and three more mutations.
+
+* G5. ``G/activities.py``: ``edit_comment`` skips ``_mark_person_edit``.
+  ``test_e1_a_person_edit_ends_the_agent_change`` (both tools) and
+  ``test_e2_a_person_edit_of_a_person_comment_keeps_its_keys`` turn red.
+* G6. ``G/activities.py``: ``_load_agent_comment`` drops the check of
+  ``PERSON_EDITED_KEY``. ``test_e1_a_person_edit_ends_the_agent_change``
+  turns red.
+* G7. ``G/activities.py``: ``_load_agent_comment`` drops the check of
+  ``RUN_COMMENT_KEY``. ``test_q1_a_comment_of_an_agent_run_stays_as_written``
+  turns red.
 """
 from __future__ import annotations
 
@@ -147,6 +159,8 @@ def world():
           p=team, s=PEER, a=OWNER, o=org)
     elsewhere = a.project("Elsewhere", in_space=True)
     todo = a.status(team, "To do", "todo", 0)
+    # Fix round 1: an agent run asks on a task that is in progress.
+    doing = a.status(team, "Doing", "in_progress", 1)
     elsewhere_todo = a.status(elsewhere, "To do", "todo", 0)
 
     # The second tenant: a task and a comment of MEMBER with the stamp of
@@ -164,6 +178,7 @@ def world():
     world_ = SimpleNamespace(
         admin=eng, org=org, seeder=a, team=team, elsewhere=elsewhere, c={}, tok={},
         task=lambda title: a.task(team, todo, title),
+        doing_task=lambda title: a.task(team, doing, title),
         elsewhere_task=lambda title: a.task(elsewhere, elsewhere_todo, title),
         foreign=foreign)
     world_.c["write"], world_.tok["write"] = a.connection(scopes=w.WRITE_SCOPES)
@@ -656,3 +671,90 @@ class TestAPersonIsUnchanged:
             r = await _person(live, MEMBER, method, f"/projects/comments/{cid}", body)
             assert r.status_code == 404, r.text
         assert _comment(live, cid).body == "h3 peer"
+
+    @pytest.mark.parametrize("via", [None, CHAT_VIA])
+    async def test_e2_a_person_edit_of_a_person_comment_keeps_its_keys(self, live, via):
+        """Rule 1 changes nothing else for a person. The edit works, again and
+        again, and the jsonb merge keeps the chat's ``via``."""
+        task = live.task("e2")
+        cid = await _person_comment(live, MEMBER, task, "e2 typed", via=via)
+        path = f"/projects/comments/{cid}"
+        for words in ("e2 retyped", "e2 retyped again"):
+            r = await _person(live, MEMBER, "PATCH", path, {"body": words}, via=via)
+            assert r.status_code == 200, r.text
+            assert _comment(live, cid).body == words
+        kept = {"via": via} if via is not None else {}
+        assert _comment(live, cid).meta == {**kept, "person_edited": True}
+        assert _change_rows(live, cid) == []
+
+
+# ── Fix round 1: rules 1 and 2 ──────────────────────────────────────────────
+
+
+async def _refused_one(live, cid: str, tool: str, name: str = "write") -> None:
+    """*tool* gets the 403 text, and the comment and its timeline stay."""
+    before = _comment(live, cid)
+    extra = {"body": "an agent's rewrite"} if tool == "update_comment" else {}
+    said = await _tool(live, name, tool, comment_id=cid,
+                       idempotency_key=_key(f"fr1-{tool[:3]}"), **extra)
+    assert w._text(said) == NOT_OWN, said
+    after = _comment(live, cid)
+    assert (after.body, after.deleted_at, after.updated_at, after.meta) == (
+        before.body, before.deleted_at, before.updated_at, before.meta)
+    assert _change_rows(live, cid) == []
+    assert not [k for k in live.redis.slots() if f":{tool}:" in k]
+
+
+class TestFixRoundOne:
+    """Rule 1: a person's edit ends the agent's rights over the comment.
+    Rule 2: a comment of an agent run stays as written."""
+
+    @pytest.mark.parametrize("tool", ["update_comment", "delete_comment"])
+    @pytest.mark.parametrize("via", [None, CHAT_VIA])
+    async def test_e1_a_person_edit_ends_the_agent_change(self, live, tool, via):
+        """The agent writes, the member edits in the app (or the chat card
+        ``edit_comment``), and a later agent call gets the 403."""
+        task = live.task("e1")
+        cid = await _agent_comment(live, task, "e1 cut off by a st")
+        r = await _person(live, MEMBER, "PATCH", f"/projects/comments/{cid}",
+                          {"body": "e1 the member's own words"}, via=via)
+        assert r.status_code == 200, r.text
+        row = _comment(live, cid)
+        # The stamp of the agent stays. Only the mark refuses the agent.
+        assert (row.created_by, row.meta) == (
+            MEMBER, {"via": R8_VIA, "person_edited": True})
+        await _refused_one(live, cid, tool)
+        assert _comment(live, cid).body == "e1 the member's own words"
+        signed = await _signed(live, "write",
+                               "PATCH" if tool == "update_comment" else "DELETE",
+                               f"/projects/comments/{cid}",
+                               {"body": "x"} if tool == "update_comment" else None)
+        assert signed.status_code == 403, signed.text
+        assert signed.json()["detail"] == tools.COMMENT_NOT_OWN_DETAIL
+
+    async def test_q1_a_comment_of_an_agent_run_stays_as_written(self, live, monkeypatch):
+        """The agent asks, the member's answer is recorded, and the agent may
+        not reword the question or the answer. Both carry the agent's own
+        stamp, so only rule 2 refuses them."""
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        task = live.doing_task("q1")
+        asked = await _tool(live, "write", "ask_on_task", task_id=task,
+                            question="May I drop the staging rows?",
+                            idempotency_key=_key("q1-ask"))
+        assert asked["isError"] is False, asked
+        run_id = asked["structuredContent"]["run"]["id"]
+        decided = await _tool(live, "write", "record_outside_decision", run_id=run_id,
+                              decision="Yes, drop the staging rows.",
+                              where="Claude Code chat", idempotency_key=_key("q1-yes"))
+        assert decided["isError"] is False, decided
+        with live.admin.begin() as c:
+            rows = list(c.execute(text(
+                "SELECT id, body, meta, created_by FROM pm_activities"
+                " WHERE type = 'comment' AND meta->>'agent_run_id' = :r"
+                " ORDER BY created_at"), {"r": run_id}))
+        assert [r.meta["agent_kind"] for r in rows] == ["elicitation", "response"]
+        for row in rows:
+            assert (row.created_by, row.meta["via"]) == (MEMBER, R8_VIA)
+            for tool in ("update_comment", "delete_comment"):
+                await _refused_one(live, str(row.id), tool)
+        assert "staging rows" in _comment(live, str(rows[0].id)).body

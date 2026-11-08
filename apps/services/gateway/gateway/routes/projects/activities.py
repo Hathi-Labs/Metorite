@@ -17,6 +17,7 @@ any type would let a client forge a ``status_change`` nobody performed.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -106,6 +107,20 @@ AGENT_MAX_COMMENT_CHARS = 20_000
 #: sends its own copy (``agent_edge.tools.COMMENT_NOT_OWN_DETAIL``), and
 #: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal.
 AGENT_COMMENT_NOT_OWN = "Only its author can change this comment in Metorite."
+
+#: MCP-G9 fix round 1, rule 1. The key in ``meta`` that a person's edit sets
+#: on a comment (``_mark_person_edit``). After a person edits a comment, the
+#: words are the person's, so ``_load_agent_comment`` refuses it to an agent
+#: with the 403, also when an agent of the member's own client wrote it first.
+PERSON_EDITED_KEY = "person_edited"
+
+#: MCP-G9 fix round 1, rule 2. The key in ``meta`` of the comment that an
+#: agent run writes for each activity that is not ephemeral
+#: (``agent_runs._comment``): a question, an answer, an error, and the answer
+#: that ``record_outside_decision`` records. The run reads that comment as the
+#: record of what the member was asked, so ``_load_agent_comment`` refuses it
+#: to an agent with the 403.
+RUN_COMMENT_KEY = "agent_run_id"
 
 #: MCP-G9. The body of the timeline row that an agent's edit or delete of a
 #: comment writes. An existing type (``system``), so no migration. The web
@@ -362,9 +377,16 @@ async def _load_agent_comment(
     404. Only a comment on a task that the agent can already read reaches the
     403, and the timeline of that task already shows its author.
 
+    Fix round 1 adds two refusals after the 404 checks, with the same 403.
+    Rule 1: a comment that a person edited (``meta.person_edited``, set by
+    ``_mark_person_edit``), because its words are now the person's. Rule 2: a
+    comment of an agent run (``meta.agent_run_id``), because the run reads it
+    as the record of what the member was asked and what the agent answered.
+
     ``FOR UPDATE`` holds the row until the change commits, so a delete that
     commits first makes this read find nothing (404), and the change never
-    writes words into a deleted comment.
+    writes words into a deleted comment. A person's edit that commits first
+    makes this read find the mark of rule 1.
     """
     row = (await db.execute(
         text(
@@ -383,11 +405,38 @@ async def _load_agent_comment(
             raise
         raise HTTPException(status_code=404, detail="Comment not found") from None
     meta = from_jsonb(row.meta)
-    stamp = meta.get("via") if isinstance(meta, dict) else None
+    if not isinstance(meta, dict):
+        meta = {}
+    stamp = meta.get("via")
     author = str(row.created_by or "").strip().lower()
     if author != actor(user).lower() or not via or stamp != via:
         raise HTTPException(status_code=403, detail=AGENT_COMMENT_NOT_OWN)
+    # Rule 1: a person edited the comment, so the words are the person's.
+    if PERSON_EDITED_KEY in meta:
+        raise HTTPException(status_code=403, detail=AGENT_COMMENT_NOT_OWN)
+    # Rule 2: an agent run wrote the comment, as the record of its question
+    # or its answer.
+    if RUN_COMMENT_KEY in meta:
+        raise HTTPException(status_code=403, detail=AGENT_COMMENT_NOT_OWN)
     return row
+
+
+async def _mark_person_edit(db: Any, activity_id: str) -> None:
+    """Rule 1 of MCP-G9 fix round 1: set ``meta.person_edited`` on a comment
+    that a person edits.
+
+    The jsonb ``||`` merge keeps ``via`` and every other key. The mark stays
+    for the life of the comment, so no later agent session can change the
+    person's words (``_load_agent_comment``). The web app and the chat card
+    ``edit_comment`` both reach this path.
+    """
+    await db.execute(
+        text(
+            "UPDATE pm_activities SET meta = COALESCE(meta, CAST('{}' AS jsonb))"
+            " || CAST(:mark AS jsonb) WHERE id = CAST(:aid AS uuid)"
+        ),
+        {"aid": activity_id, "mark": json.dumps({PERSON_EDITED_KEY: True})},
+    )
 
 
 async def _record_agent_change(
@@ -418,7 +467,8 @@ async def edit_comment(
     if not body:
         raise HTTPException(status_code=422, detail="A comment needs a body.")
     # WS-55 MCP-G9: a signed agent has the cap of `add_comment`, and a rule of
-    # its own (`_load_agent_comment`). A person keeps the path below as it was.
+    # its own (`_load_agent_comment`). A person keeps the path below as it was,
+    # and the edit also sets the mark of rule 1 (`_mark_person_edit`).
     agent = getattr(user, "agent", None)
     if agent is not None and len(body) > AGENT_MAX_COMMENT_CHARS:
         raise HTTPException(
@@ -433,6 +483,9 @@ async def edit_comment(
             # keeps authorship of what they wrote but not access to it.
             vis = await resolve_visibility(db, user)
             await load_visible_task(db, vis, str(comment.task_id))
+            # MCP-G9 fix round 1, rule 1: the words are now the person's, so
+            # no agent may change this comment after this edit.
+            await _mark_person_edit(db, activity_id)
         else:
             comment = await _load_agent_comment(
                 db, activity_id, user, agent.actor_via)

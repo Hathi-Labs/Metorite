@@ -5468,7 +5468,8 @@ async def _delete_comment(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
 _COMMENT_RULE_TEXT = (
     " You may change only a comment that this client wrote: the member is its"
     " author, and its meta.via in get_task_timeline is the stamp of this"
-    " client. Metorite refuses a comment that the member typed in Metorite, a"
+    " client. Metorite refuses a comment that the member typed or edited in"
+    " Metorite, a comment of an agent run (a question or an answer), a"
     " comment of another member and a comment of another agent client, and"
     " nothing changes. A comment that is gone, or on a task that this"
     " connection cannot reach, answers Comment not found. The timeline of the"
