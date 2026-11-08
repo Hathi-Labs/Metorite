@@ -159,3 +159,31 @@ def test_github_ci_never_reads_the_list():
     for name in ("affected_tests.py", "ci_unit_guard.py", "fences.py", "premerge.sh"):
         text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         assert "box_known_env" not in text, name
+
+
+OCR_CASE = (
+    "tests/unit/test_attachment_ocr.py",
+    "tests.unit.test_attachment_ocr.TestTheConfinement",
+    "test_each_attack_works_unconfined",
+)
+
+
+def _body_report(tmp_path: Path, case: tuple[str, str, str], body: str) -> Path:
+    f, c, n = case
+    p = tmp_path / "shard-1.xml"
+    p.write_text(
+        f'<?xml version="1.0"?><testsuites><testsuite name="pytest">'
+        f'<testcase classname="{c}" name="{n}" file="{f}"><failure message="AssertionError">{body}</failure></testcase>'
+        f"</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    return p
+
+
+def test_the_ocr_entry_excuses_the_io_uring_assertion_and_no_other_refused_one(tmp_path):
+    box = "assert got[\"io_uring_setup\"] == \"allowed\"\nE assert 'refused:EPERM' == 'allowed'"
+    assert _shard(tmp_path, _body_report(tmp_path, OCR_CASE, box)).returncode == 0
+    # A real regression: another probe is refused. The same words, another assertion.
+    other = "assert got[\"tcp_connect\"] == \"allowed\"\nE assert 'refused:EPERM' == 'allowed'"
+    r = _shard(tmp_path, _body_report(tmp_path, OCR_CASE, other))
+    assert r.returncode == 1 and "test_each_attack_works_unconfined" in r.stdout
