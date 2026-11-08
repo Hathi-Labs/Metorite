@@ -3555,6 +3555,10 @@ The router is `gateway.routes.crm`, with 136 method and path pairs on 2026-10-29
 | Saved views | `views.py` | X | "A saved view is the member's own screen." |
 | Connection, sync, import, cutover, reset and export | `connection.py`, `sync.py`, `import_zoho.py`, `stage_metadata.py`, `cutover.py`, `POST /crm/reset` and `export.py` | X | §19.11 |
 
+**CRM-M2a, 2026-11-08.** `app_manifests/crm.py` gives class B or C to the writes of Setup, the questions, the AI runs and the saved views. This table gives class X to them. The chat-parity ratchet then counts each one as chat debt, because each UI action must also work from chat. Each of those rows stays `off_door`, with the reason that this table gives. MCP-P2a keeps them off the door, unless the owner opens one.
+
+On 2026-11-08 the CRM router had 144 method and path pairs.
+
 ### 19.10 Email: the classes (MCP-P2)
 
 The router is `gateway.routes.email`, with 136 method and path pairs from 135 decorators on 2026-10-29. Every send is class C and asks for each act, so a send to an outside person always asks (D124.2, D131.7). The door sends a stored draft only, so the card can seal its text. Labels take the classes of the app.
