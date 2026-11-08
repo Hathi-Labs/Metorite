@@ -44,6 +44,7 @@ SKIP_STEPS = (
     "Install gitleaks",
     "Cache the browser",
     "Keep ",  # artifact uploads
+    "Point the tests at the service containers",  # CIV-23: the lane sets the DSNs with --set
 )
 
 _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")

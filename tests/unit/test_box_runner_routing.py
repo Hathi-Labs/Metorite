@@ -12,7 +12,14 @@ from pathlib import Path
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[2]
-_WORKFLOWS = sorted((_ROOT / ".github" / "workflows").glob("*.yml"))
+_WORKFLOWS = sorted(
+    p for p in (_ROOT / ".github" / "workflows").iterdir() if p.suffix in (".yml", ".yaml")
+)
+_RUNS_ON = (
+    "${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || "
+    "github.event.pull_request.head.repo.full_name == github.repository)) "
+    "&& 'metorite-box' || 'ubuntu-24.04' }}"
+)
 _BOX = "metorite-box"
 
 
@@ -32,12 +39,14 @@ def test_a_box_job_has_the_switch_and_the_same_repo_check() -> None:
     box = [(w, j, r) for w, j, r in _jobs() if _BOX in r]
     assert box, "no job routes to the box: remove this fence or restore CIV-23"
     for w, j, r in box:
-        assert "vars.USE_BOX_RUNNERS == '1'" in r, f"{w}:{j} lacks the switch"
-        assert "github.event.pull_request.head.repo.full_name == github.repository" in r, (
-            f"{w}:{j} lacks the same-repo check"
-        )
-        assert "github.event_name != 'pull_request'" in r, f"{w}:{j} lacks the event check"
-        assert r.rstrip().endswith("|| 'ubuntu-24.04' }}"), f"{w}:{j} default is not ubuntu-24.04"
+        assert r == _RUNS_ON, f"{w}:{j} runs-on is not the one reviewed expression"
+
+
+def test_a_runs_on_that_is_not_a_literal_cannot_hide_the_box() -> None:
+    """`runs-on: ${{ matrix.runner }}` would reach the box with no label text."""
+    for w, j, r in _jobs():
+        if r != _RUNS_ON:
+            assert "${{" not in r, f"{w}:{j} has a computed runs-on that is not reviewed"
 
 
 def test_only_the_unit_shard_job_of_pr_check_reaches_the_box() -> None:
@@ -54,4 +63,4 @@ def test_a_sudo_step_in_a_box_job_runs_only_on_github_hosted() -> None:
             for step in job.get("steps", []):
                 run = str(step.get("run", ""))
                 if "sudo" in run or "apt-get" in run:
-                    assert "github-hosted" in str(step.get("if", "")), (wf.name, name, step)
+                    assert "runner.environment == 'github-hosted'" in str(step.get("if", "")), (wf.name, name, step)

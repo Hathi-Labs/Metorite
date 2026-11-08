@@ -355,9 +355,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # CIV-23. The two DSNs are written by the step "Point the tests at the
-      # service containers", from the host port that Docker picks. Four box
-      # runners share ONE Docker daemon, so a fixed host port would collide.
+      # CIV-23 (D198). The ports in these two DSNs are PLACEHOLDERS that match
+      # deploy.yml's `r8-suite` (fixed ports, the fence compares them). The
+      # first step overrides both DSNs through GITHUB_ENV with the host port
+      # that Docker picked, because four box runners share ONE Docker daemon.
+      CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
       # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
       # A full run of this job covers the WHOLE tests/unit/ directory, and a
       # selection run covers part of it. Setting DATABASE_URL
@@ -372,7 +374,7 @@ jobs:
       # Both are WS-29 MT-1b/MT-1c's gates, not CP-2b's. They skip here today
       # and must keep skipping exactly as today. Hence a separate name that
       # nothing else in the tree reads. See customer_console.md §6(i)(2).
-      # (TENANT_LADDER_DATABASE_URL is set by the same step.)
+      TENANT_LADDER_DATABASE_URL: postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant
     steps:
       - uses: actions/checkout@v5
 
