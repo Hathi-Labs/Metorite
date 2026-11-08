@@ -336,6 +336,11 @@ async def get_assistant_settings(
             # could differ by whitespace and get double-signed).
             "signature_text": signature_text((row.signature if row else "") or ""),
             "auto_run": auto_run,
+            # Read-only (task 2267): true when a settings row exists, so the
+            # client can tell "the member chose" from "no stored choice". The
+            # PUT model has no such field, and it ignores the one the screen
+            # sends back. ``auto_run`` above is unchanged.
+            "auto_run_chosen": row is not None,
             "cold_email_blocker": (row.cold_email_blocker if row else "OFF") or "OFF",
             "digest_frequency": (row.digest_frequency if row else "OFF") or "OFF",
             "personal_instructions": (
@@ -517,6 +522,8 @@ async def put_assistant_settings(
             "signature": req.signature or "",
             "signature_text": signature_text(req.signature or ""),
             "auto_run": auto_run,
+            # The upsert above wrote the row, so the choice is stored now.
+            "auto_run_chosen": True,
             "cold_email_blocker": req.cold_email_blocker or "OFF",
             "digest_frequency": req.digest_frequency or "OFF",
             "personal_instructions": req.personal_instructions or "",

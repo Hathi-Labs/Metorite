@@ -800,6 +800,9 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: ``record_outside_decision``. An agent records a decision that its member
 #: made outside Metorite, on its OWN awaiting run. It writes an agent
 #: ``response`` and never a ``prompt``, and it refuses a typed request.
+#: SW-16a adds the link pair: the POST and the DELETE of a task link, the
+#: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
+#: the member sees BOTH tasks. SW-16b owns the write fence for these routes.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
@@ -810,6 +813,9 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("PUT", "/projects/tasks/{task_id}/assignees"),
     ("POST", "/projects/tasks/{task_id}/move"),
     ("POST", "/projects/tasks/{task_id}/refs"),
+    # SW-16a: `add_task_link` and `remove_task_link`.
+    ("POST", "/projects/tasks/{task_id}/links"),
+    ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
     ("POST", "/projects/tasks"),
     ("POST", "/projects/tasks/{task_id}/comments"),
     ("POST", "/projects/tasks/{task_id}/claim"),
@@ -845,6 +851,8 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks"),
     # MCP-G19a: the counts of `board_stats`, over the same scope as the list.
     ("GET", "/projects/tasks/stats"),
+    # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
+    ("GET", "/projects/assignable-members"),
     ("GET", "/projects/tasks/{task_id}"),
     ("GET", "/projects/tasks/{task_id}/relations"),
     ("GET", "/projects/tasks/{task_id}/timeline"),

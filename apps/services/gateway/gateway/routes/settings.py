@@ -2381,7 +2381,7 @@ def _accept_logo(raw: str) -> OrgLogo:
     import base64  # noqa: PLC0415
     import binascii  # noqa: PLC0415
 
-    from gateway.image_probe import UnsupportedImage, probe_image  # noqa: PLC0415
+    from acb_common.image_probe import UnsupportedImage, probe_image  # noqa: PLC0415
 
     payload = raw.strip()
     # Accept a data URI prefix so a caller that pasted one is not stuck, but

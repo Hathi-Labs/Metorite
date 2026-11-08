@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date.** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration).** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
 Every anchor below was re-read at `930839f2e`. §13 lists the few that moved.
 
@@ -35,7 +35,7 @@ This spec joins the parts in six steps. The steps are a Change history, chat par
 **Non-goals.**
 
 - **No email sequence engine.** The non-goal at `crm_platform.md:195` stays. Apollo runs sequences. Adding a person to one asks on a card (CRM-M9).
-- **No Mirror-mode creation.** A Mirror org cannot create a pipeline, a campaign or a form until it switches to Native. Phases, scopes and stuck-deal cards work in Mirror too. A Mirror org already refuses a new lead (409 `mirror_mode_create`, `routes/crm/core.py:1933`). The switch stays the owner's call for each org (D133).
+- **No Mirror-mode creation.** A Mirror org cannot create a pipeline, a campaign or a form until it switches to Native. Phases, scopes and stuck-deal cards work in Mirror too. A Mirror org already refuses a new lead (409 `mirror_mode_create`, `routes/crm/core.py:2013`). The switch stays the owner's call for each org (D133).
 - **No multi-touch attribution.** A deal keeps one source campaign.
 - **No per-object permission matrix** on day one.
 - **No second team list, no role tree and no third visibility mechanism** (D12).
@@ -297,6 +297,7 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 **Build.**
 
 1. **Create a pipeline.** A name, and its stages in order. It starts from a copy of an existing pipeline or from an empty list. An admin or a named sales lead creates it, on one card with a preview (company level, D164).
+   - **Working default, not an owner decision.** A new pipeline holds at least one open stage (type `open` or `ongoing`). When its list holds no won stage or no lost stage, the create adds the org's own. So a deal in the new pipeline can close, because the stage menu shows only the stages of its pipeline. The owner may change this rule.
 2. **Delete a pipeline.** Move its deals to another pipeline first. Refuse while it holds deals. A delete always asks.
 3. **Win chance and warn limit move onto the membership.** The stage name is one shared row. `probability` and `max_dwell_days` sit on the pipeline-stage row (D166). The clamp of D-CRM-10 (won 100, lost 0) moves with them (`_validate_status`, `routes/crm/admin.py`).
 4. **Settings.** CRM settings, Stages, lists each pipeline with its own column order.
@@ -316,7 +317,22 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 7. A migration test copies a Zoho-shaped org (stages with probabilities) and the board reads the same after (R8).
 8. A stage has a membership check. A deal cannot start outside its pipeline.
 
-**Fence.** `tests/unit/test_crm_pipelines_native.py` (planned). R8 applies.
+**Fence.** `tests/unit/test_crm_pipelines_native.py` (R8) and `workbench/control_plane/src/app/crm/components/crmM3.test.ts`.
+
+**The order of the slices.** CRM-M3a (create) ships dark behind `CRM_PIPELINES_ORGS`. D166 (CRM-M3b, win chance and warn limit on the membership) lands before the stage editor of each pipeline (CRM-M3c). The flag flips for an org only after CRM-M3b AND CRM-M3c land. With two or more pipelines, the Native Deal stages card reads only, the default pipeline too, until CRM-M3c. The card says so: stage editing for each pipeline comes in a later release, and until then the stages stay as they are.
+
+#### Built as (CRM-M3a)
+
+- **The route.** `POST /crm/pipelines` in `routes/crm/pipelines.py` takes a name and one start: `copy_from` (a pipeline id) or `stages` (an ordered list of `{name, type}`). An admin only. It answers 201 with the pipeline.
+- **One stage row for one name** (D166 item 2). A name that matches one deal stage reuses it. Two matches give 409 `stage_ambiguous`. A new name makes its stage through `admin.create_status_in`, the helper of `POST /crm/statuses/{kind}`. That stage joins the new pipeline only.
+- **The preview.** `GET /crm/pipelines/preview` runs the same plan with each refusal, and it reads only. The settings dialog and the chat card show it.
+- **The refusals.** An org off the flag gets 404, before the admin floor (403). Mirror mode gives 409 `mirror_mode_settings`, and a name that a pipeline holds gives 409 `name_taken`. A list with no open stage gives 422. Each refusal says what to do next.
+- **Change history.** One `pipeline` row at the `company` level, with the name and the ordered stages in "after". Each new stage logs its own `deal_stage` row. The Undo deletes the pipeline, and refuses with the count while a deal names it. It also deletes each stage that the create made, through `admin.delete_status_in`, and logs one row for each stage. A stage that another pipeline holds stays. A new stage that holds a record refuses the Undo, and the refusal names the stage and the count.
+- **The stages of a plan.** A list that names a hidden stage, or a stage that Zoho no longer lists, gets a plain refusal (409 `stage_hidden` or `stage_gone`). A copy keeps such a stage of its source, and the plan marks it hidden. Only a visible stage counts as the open, won or lost stage. A new stage with no type is `won` or `lost` when its whole name is "Won", "Closed Won", "Lost" or "Closed Lost". The dialog row takes that type as the member types the name. A member who sets it back to Open sends `open`. A row with the name of a CRM stage shows the type of that stage. It sends no type, because that stage keeps its own. The dialog and the chat card show the type of each stage.
+- **The plan that the member saw.** The chat card sends the planned stage ids with the create. When the plan of the create differs, the create refuses with 409 `plan_changed`, and nothing is made.
+- **Through what.** The row says `chat` only when the request carries `X-Actor-Via: chat:crm-assistant` beside the internal bearer (`change_log.via_of`). The BFF forwards no header of the browser, so a browser cannot claim `chat`. A CRM-M2 tool reuses this helper.
+- **The chat tool.** `crm_create_pipeline(name, stages, copy_from)` takes names, reads the preview, and asks on one card before the create. The `crm-records` pack holds it. A run of an org off the flag drops it (`_tool_injection.PIPELINE_WRITES`).
+- **Settings.** "New pipeline" on the Native Deal stages card, for an admin, while `GET /crm/mode` says `pipeline_create`.
 
 ### CRM-M4. Lead pipelines (#1098) — Wave 2
 
