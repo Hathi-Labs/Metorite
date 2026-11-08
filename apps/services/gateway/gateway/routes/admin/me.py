@@ -644,6 +644,27 @@ async def get_my_shell(user: UserContext = Depends(get_current_user)) -> dict[st
     return _answer(stored_shell(row[0], installs) if row is not None else dict(EMPTY_SHELL), user)
 
 
+def _has_install_href(prefs: dict[str, Any] | None) -> bool:
+    """True when ``pins`` or ``known`` names an href outside ``SHELL_PANES``."""
+    return prefs is not None and any(
+        v not in SHELL_PANES for k in ("pins", "known") for v in (prefs.get(k) or ()))
+
+
+async def _keep_install_hrefs(db: Any, user: UserContext, prefs: dict[str, Any]) -> None:
+    """Drop from *prefs* each install href that the viewer's resolve does not
+    hold (WS-PKG PKG-6c-1). *db* is the session of the write, bound to the
+    session's org. The viewer is ``user.email``, never request input (R5).
+    A fault in the resolve raises, and the caller answers 503."""
+    from gateway.package_host import resolve as _resolve
+    from gateway.package_host import shell_pins
+
+    manifest = await _resolve.resolve_for(db, viewer=user.email, can_use=user.can_use_feature)
+    held = shell_pins.install_nav_hrefs(manifest)
+    for k in ("pins", "known"):
+        if k in prefs:
+            prefs[k] = shell_pins.keep_held(prefs[k], held)
+
+
 @me_router.put("/me/shell", summary="Save or reset the caller's shell layout (NS-7)")
 async def put_my_shell(
     body: dict[str, Any] | None = Body(default=None),
@@ -663,15 +684,12 @@ async def put_my_shell(
     in the resolve answers 503 and writes nothing. With the flag off, the
     href answers 422 and runs no SQL, as before.
     """
-    from gateway.package_host import resolve as _resolve
-    from gateway.package_host import shell_pins
     from gateway.package_host.flags import package_host_allowed
 
     uid = _member(user)
     if not uid:
         raise HTTPException(status_code=403, detail="Sign in to save a layout")
     installs = package_host_allowed(getattr(user, "organization_id", None))
-    extra = False
     prefs: dict[str, Any] | None = None
     mode = "layout"
     keep: tuple[str, ...] = ()
@@ -719,18 +737,12 @@ async def put_my_shell(
         # The first time stays: a stored time wins over this one.
         if stamped and mode == "stamp":
             mode = "stamp-first"
-        # PKG-6c-1: an href outside the system list needs the resolve.
-        extra = installs and any(
-            v not in SHELL_PANES for k in ("pins", "known") for v in (prefs.get(k) or ()))
+    # PKG-6c-1: an href outside the system list needs the resolve.
+    extra = installs and _has_install_href(prefs)
     try:
         async with _tenant_session() as db:
             if extra and prefs is not None:
-                manifest = await _resolve.resolve_for(
-                    db, viewer=user.email, can_use=user.can_use_feature)
-                held = shell_pins.install_nav_hrefs(manifest)
-                for k in ("pins", "known"):
-                    if k in prefs:
-                        prefs[k] = shell_pins.keep_held(prefs[k], held)
+                await _keep_install_hrefs(db, user, prefs)
             stored = await _write_shell(db, uid, prefs, mode, keep)
     except Exception as exc:
         _log.warning("auth.shell.write_failed", error=str(exc)[:160])
