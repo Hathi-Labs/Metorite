@@ -164,7 +164,8 @@ describe("the source fences", () => {
   const page = read("../page.tsx");
 
   it("AppShell draws the CRM tabs, and only from what the page emits", () => {
-    expect(shell).toContain('startsWith("/crm")');
+    // MOB-12: the registry names the CRM bar as `dynamic`, and the shell draws it.
+    expect(read("../../../lib/shell/phoneBar.ts")).toContain('{ dynamic: "cc-crm-nav" }');
     expect(shell).toContain("cc-crm-nav");
     expect(shell).toContain("navDetail(");
   });

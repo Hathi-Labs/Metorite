@@ -391,6 +391,7 @@ FROZEN_HREF_FEATURES = {
     "/apis": "integrations",
     "/build/agents": "build.agents",
     "/build/apps": "build.apps",
+    "/apps": "studio",  # PKG-8a added this pair: the sidebar path of an installed Studio app
 }
 #: ALWAYS_ALLOWED as it stood at acc5188d9, FROZEN. EXACT match. A wrong entry widens access.
 FROZEN_ALWAYS_ALLOWED = {
@@ -401,7 +402,7 @@ FROZEN_ALWAYS_ALLOWED = {
 
 def test_href_features_equal_the_pre_slice_pairs():
     gates = load_gates()
-    assert len(gates.href_features) == 24
+    assert len(gates.href_features) == 25
     assert dict(gates.href_features) == FROZEN_HREF_FEATURES
     assert set(gates.href_features) == set(FROZEN_HREF_FEATURES.items())
 

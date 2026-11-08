@@ -294,15 +294,6 @@ export function withoutMyTasks(search: string): string {
   return qs ? `/projects?${qs}` : "/projects";
 }
 
-/**
- * What the phone's "My tasks" tab does (`phoneTabs.ts`). Away from My tasks
- * it opens My tasks. On My tasks it opens the Projects sheet, so the tree
- * stays one tap away.
- */
-export function phoneMyTasksTap(app: string | null | undefined): "open" | "sheet" {
-  return app === "my-tasks" ? "sheet" : "open";
-}
-
 // ── The board ───────────────────────────────────────────────────────────────
 
 /** The columns the board always draws, as `one_projects_app.md` names them. */

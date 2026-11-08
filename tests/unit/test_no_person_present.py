@@ -473,7 +473,7 @@ def _a_pending_row(monkeypatch) -> list[tuple[str, str | None]]:
     marks: list[tuple[str, str | None]] = []
     proposal = broker.propose("agent:x", "x.write", "t", {}, authority=broker.AuthorityTier.SUGGEST)
 
-    async def _execute(_p: Any) -> dict[str, Any]:
+    async def _execute(_p: Any, **_kw: Any) -> dict[str, Any]:
         return {"ok": True, "result": "written"}
 
     def _mark(_action_id: str, status: str, **kw: Any) -> int:

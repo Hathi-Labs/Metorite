@@ -908,7 +908,7 @@ function AddAgentModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-t-xl sm:rounded-xl border-t sm:border border-border bg-card shadow-2xl max-h-[92vh] overflow-y-auto mb-14 sm:mb-0 pb-safe"
+        className="w-full max-w-lg rounded-t-xl sm:rounded-xl border-t sm:border border-border bg-card shadow-2xl max-h-[92vh] overflow-y-auto pb-safe"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -1522,7 +1522,7 @@ function AgentAvatarPicker({ agentName }: { agentName: string }) {
           onClick={() => setOpen(false)}
         >
           <div
-            className="mb-14 flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-t-2xl border-t border-border bg-card shadow-2xl pb-safe sm:mb-0 sm:rounded-2xl sm:border"
+            className="flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-t-2xl border-t border-border bg-card shadow-2xl pb-safe sm:rounded-2xl sm:border"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
@@ -2264,7 +2264,7 @@ export default function AgentsPage() {
             {/* Mobile: compact slide-up panel (60% height) — grid stays visible below */}
             <div className="sm:hidden fixed inset-0 z-[60] pointer-events-none">
               <div className="absolute inset-0 bg-black/50 pointer-events-auto" onClick={() => setSelected(null)} />
-              <aside className="absolute inset-x-0 bottom-14 pointer-events-auto flex max-h-[60%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in">
+              <aside className="absolute inset-x-0 bottom-0 pointer-events-auto flex max-h-[60%] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl chat-fade-in">
                 <div className="flex items-center justify-between px-4 py-2 border-b border-border shrink-0">
                   <div className="flex items-center gap-2 min-w-0">
                     {(() => {
