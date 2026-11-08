@@ -72,7 +72,7 @@ jobs:
   # Fence: tests/unit/test_fence_lists.py.
   changes:
     name: "Changed areas"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     outputs:
       frontend: ${{ steps.diff.outputs.frontend }}
       operator: ${{ steps.diff.outputs.operator }}
@@ -130,7 +130,7 @@ jobs:
 
   lint:
     name: "Lint"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
     permissions:
       contents: read
@@ -528,7 +528,7 @@ jobs:
   # Fence: tests/unit/test_ci_unit_guard.py.
   unit-tests:
     name: "Unit tests"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     needs: [test, changes]
     # `always()`, so a failed shard turns THIS check red instead of skipping
     # it. A skipped required check counts as satisfied (#1077).
@@ -709,7 +709,7 @@ jobs:
   # against an empty database.
   backup-restore:
     name: "Backup/restore rehearsal"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # Its scripts live under scripts/, and the schema under infra/. A PR
     # that touches neither cannot change the result (2026-10-19).
     needs: changes
@@ -719,7 +719,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: rehearsal
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -728,10 +728,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # CIV-23. Box runners share ONE Docker daemon, so the service publishes to
+      # a host port that Docker picks. psql and the scripts read PGPORT.
+      - name: Point psql at the service container
+        run: echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+
       # The runner's client must not be OLDER than the server: pg_dump refuses
       # to dump a newer server, which would fail the job for a reason that has
       # nothing to do with our scripts.
       - name: Install the postgresql-16 client
+        if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
@@ -742,7 +748,6 @@ jobs:
       - name: Rehearse
         env:
           PGHOST: localhost
-          PGPORT: "5432"
           PGUSER: postgres
           PGPASSWORD: rehearsal
         run: bash scripts/rehearse_restore.sh
@@ -759,7 +764,6 @@ jobs:
       - name: Rehearse the scratch-database drop and sweep
         env:
           PGHOST: localhost
-          PGPORT: "5432"
           PGUSER: postgres
           PGPASSWORD: rehearsal
         run: bash scripts/rehearse_verify_scratch.sh
@@ -775,7 +779,7 @@ jobs:
   # about 152 files nobody had checked together; now it is a build step.
   migrations:
     name: "Migration ladder replay"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # The ladder is infra/, and its appliers are under scripts/. The R1
     # number guard runs in the shards and in push-check on every PR anyway.
     needs: changes
@@ -785,7 +789,7 @@ jobs:
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_PASSWORD: ladder
-        ports: ["5432:5432"]
+        ports: ["5432"]
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -793,7 +797,6 @@ jobs:
           --health-retries 10
     env:
       PGHOST: localhost
-      PGPORT: "5432"
       PGUSER: postgres
       PGPASSWORD: ladder
       PG_MODE: local
@@ -803,7 +806,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # CIV-23. Box runners share ONE Docker daemon, so the service publishes to
+      # a host port that Docker picks. psql and the scripts read PGPORT.
+      - name: Point psql at the service container
+        run: echo "PGPORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+
       - name: Install the postgresql-16 client
+        if: runner.environment == 'github-hosted'
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
@@ -849,7 +858,7 @@ jobs:
         run: |
           set -euo pipefail
           createdb console
-          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:5432/console"
+          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:${PGPORT}/console"
           for i in 1 2 3; do
             echo "--- console ladder run $i ---"
             bash scripts/apply_customer_console_migrations.sh | tail -1
@@ -875,7 +884,7 @@ jobs:
   # build` — that stays a deploy-time step.
   frontend:
     name: "Frontend (typecheck + unit tests)"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # ⚠️ NOT filtered by path. Its unit tests read files across the whole
     # repo (apps/, tests/fixtures/, project-docs/), so no path is safe to skip.
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
@@ -976,7 +985,7 @@ jobs:
   # authority check first), which is the only fence on that ordering.
   frontend-operator:
     name: "Operator console (typecheck + unit tests)"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     needs: changes
     if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
     permissions:
@@ -1131,7 +1140,7 @@ jobs:
 
   caddy:
     name: "Caddy config (validate)"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     needs: changes
     if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
@@ -1155,7 +1164,7 @@ jobs:
 
   secret-scan:
     name: "Secret scan"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
     # Report-only initially (ratchet, like mypy/ruff-full above): surfaces any
     # credential in a PR's NEW commits without blocking on an install/config
     # hiccup. Graduate to blocking once proven on a few PRs. Scans only the PR's
@@ -1168,6 +1177,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install gitleaks
+        if: runner.environment == 'github-hosted'
         # `go install github.com/gitleaks/gitleaks/v8` broke: that tag's go.mod
         # still declares the module path as github.com/zricethezav/gitleaks/v8,
         # so `go install` errors on the path mismatch and the scan never ran.

@@ -49,9 +49,17 @@ def test_a_runs_on_that_is_not_a_literal_cannot_hide_the_box() -> None:
             assert "${{" not in r, f"{w}:{j} has a computed runs-on that is not reviewed"
 
 
-def test_only_the_unit_shard_job_of_pr_check_reaches_the_box() -> None:
-    box = {(w, j) for w, j, r in _jobs() if _BOX in r}
-    assert box == {("pr-check.yml", "test")}, box
+def test_every_pr_check_job_but_e2e_may_reach_the_box_and_e2e_never_does() -> None:
+    pr = {j: r for w, j, r in _jobs() if w == "pr-check.yml"}
+    assert "e2e" in pr and _BOX not in pr["e2e"], "e2e stays on ubuntu-24.04"
+    assert pr["e2e"] == "ubuntu-24.04"
+    for j, r in pr.items():
+        if j != "e2e":
+            assert r == _RUNS_ON, f"pr-check.yml:{j} is not routed by the reviewed expression"
+
+
+def test_no_other_workflow_reaches_the_box() -> None:
+    assert {w for w, _j, r in _jobs() if _BOX in r} == {"pr-check.yml"}
 
 
 def test_a_sudo_step_in_a_box_job_runs_only_on_github_hosted() -> None:
