@@ -512,16 +512,24 @@ export function TaskBody({
   // SP-6 — the types of THIS task's project, read here so the host (the
   // Projects panel or My Tasks' detail) need not pass them. A failed read
   // leaves the list empty: the control then offers "No type" only.
+  // `typesFor` names the project the list belongs to, so the control stays
+  // disabled until the types of THIS task's project have loaded.
   const [taskTypes, setTaskTypes] = useState<TaskTypeRow[]>([]);
+  const [typesFor, setTypesFor] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTaskTypes([]);
+    setTypesFor(null);
     projectsApi
       .types(task.project_id)
       .then((res) => {
-        if (live) setTaskTypes(res.rows);
+        if (!live) return;
+        setTaskTypes(res.rows);
+        setTypesFor(task.project_id);
       })
       .catch(() => {
-        if (live) setTaskTypes([]);
+        if (live) setError("Couldn't load the task types. Close this task and open it again.");
       });
     return () => {
       live = false;
@@ -850,12 +858,20 @@ export function TaskBody({
       setError(refusal);
       return;
     }
-    await patch({ type_id: next === "" ? null : next });
+    await patch(
+      { type_id: next === "" ? null : next },
+      "Couldn't change the type.",
+      "Check the task and try again.",
+    );
   }
 
   /** One shared fact of the task — due date, priority, tags — patched and
    *  merged back. The board's cell editors write the same payloads. */
-  async function patch(payload: Record<string, unknown>) {
+  async function patch(
+    payload: Record<string, unknown>,
+    failure?: string,
+    nextStep?: string,
+  ) {
     setBusy(true);
     setError(null);
     try {
@@ -868,7 +884,8 @@ export function TaskBody({
         after: reload,
       });
     } catch (err) {
-      setError(String((err as Error).message));
+      const detail = String((err as Error).message);
+      setError(failure ? `${failure} ${detail} ${nextStep ?? ""}`.trim() : detail);
     } finally {
       setBusy(false);
     }
@@ -1257,7 +1274,7 @@ export function TaskBody({
                     layer="top"
                     widthClass="w-full"
                     value={task.type_id ?? ""}
-                    disabled={busy}
+                    disabled={busy || typesFor !== task.project_id}
                     onChange={(next) => void changeType(next)}
                     options={typeSelectOptions(taskTypes, task)}
                   />

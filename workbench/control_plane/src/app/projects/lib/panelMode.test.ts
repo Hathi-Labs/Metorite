@@ -143,6 +143,15 @@ describe("Escape", () => {
     ).toBe("blur");
   });
 
+  it("leaves Escape to an open select, and closes from a collapsed one", () => {
+    const trigger = (expanded: string) => ({
+      tagName: "BUTTON",
+      getAttribute: (name: string) => (name === "aria-expanded" ? expanded : null),
+    });
+    expect(panelEscape({ key: "Escape" }, trigger("true"))).toBeNull();
+    expect(panelEscape({ key: "Escape" }, trigger("false"))).toBe("close");
+  });
+
   it("closes from an empty or whitespace-only field", () => {
     expect(panelEscape({ key: "Escape" }, { tagName: "TEXTAREA", value: "" })).toBe("close");
     expect(panelEscape({ key: "Escape" }, { tagName: "TEXTAREA", value: "   " })).toBe(
