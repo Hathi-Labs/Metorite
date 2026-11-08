@@ -7040,7 +7040,8 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 ## 31. Voice input and image analysis in the chat (VOX, 2026-11-08)
 
-**Status.** VOX-1 to VOX-4 BUILT 2026-11-08, dark (§31.9). VOX-5 is not built.
+**Status.** VOX-1 to VOX-5 BUILT 2026-11-08, dark (§31.9). VOX-5 waits for its
+first live run (task 2265).
 Epic: Metorite task 2240. The owner decided the four calls of §31.6 on
 2026-11-08. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
@@ -7469,10 +7470,17 @@ its tier and its flag turns on.
 | VOX-1 | https://github.com/Hathi-Labs/Metorite/pull/1965 | 2ffe78dc3 | `CHAT_VOICE_ORGS` |
 | VOX-2 | https://github.com/Hathi-Labs/Metorite/pull/1967 | 1d82796cd | A `sarvam/` binding on `tier-stt` |
 | VOX-3 | https://github.com/Hathi-Labs/Metorite/pull/1970 | e6bf9be1e | `IMAGE_ANALYSIS_ORGS` |
+| VOX-4 | https://github.com/Hathi-Labs/Metorite/pull/1994 | 4439b200f | None. ADMIN staff only |
+| VOX-5 | https://github.com/Hathi-Labs/Metorite/pull/1993 | fa5643fb5 | None. An eval |
 
 VOX-4 adds the two operator tries, `POST /catalog/transcribe/try` and
 `POST /catalog/vision/try`. They follow CP-13b: the platform key only, one
 audit row, and no usage row (§31.5 VOX-4, `customer_console.md` §6A.14).
+
+VOX-5 adds `evals/image_need/`. Its 12 cases go through the real one-assistant
+run. `--scripted` runs in CI, and `--live` is a manual run with a budget of
+USD 0.50. The one assistant gets no addendum section for `analyze_image`. So
+it reads the rule of the tool from the tool description only.
 
 The code is the fact. The build differs from §31.5 in these places.
 
@@ -7523,4 +7531,5 @@ The code is the fact. The build differs from §31.5 in these places.
   Scribe v2 rank 2) and `tier-vision` in the operator console.
 - Before either flag turns on, one live clip and one live image analysis on
   production, each with its `usage_event` row.
-- VOX-5 (task 2265).
+- The first live run of VOX-5 (task 2265). It costs about USD 0.25.
+- Two small fixes to the vendor text of the VOX-4 tries (task 2428).
