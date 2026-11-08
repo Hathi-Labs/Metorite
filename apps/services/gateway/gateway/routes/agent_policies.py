@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/agent_coordination.md`` §3.11.5 ("One policy store")
 and the slice SW-94 of §5.11 (D186.8).
 
-A policy is a row of ``pm_agent_policies`` (migration 367). It holds a scope
+A policy is a row of ``pm_agent_policies`` (migration 371). It holds a scope
 (``organization``, ``project``, ``lane``, ``member`` or ``box``), a risk tier or
 ``any``, a key from :data:`REGISTRY`, a value, the author and a version. Each
 save adds a row, as guidance does (SW-31). The trigger
@@ -37,8 +37,10 @@ listed), then ``feature:projects``, as the guidance router does:
 
 * ``admin:settings:manage`` (``core.ORG_VOCABULARY_WRITE``) writes any key at
   any scope. Each key on the auth path needs it, except as the next two say.
-* A member writes ``agents_paused`` at the scope kind ``member`` for self only.
-  Another member gets 403.
+* A member writes ``agents_paused`` at the scope kind ``member`` for self only,
+  and only the value true. Another member gets 403. A resume (false) and a
+  clear by a member get 403, so a member cannot lift a pause that an admin
+  holds.
 * A project lead writes a key that is not on the auth path, for the lead's own
   project. The floor is :func:`authority.guidance_write_refusal`, the write
   floor of guidance and of a grant. ``required_checks`` stays admin only
@@ -105,6 +107,13 @@ AUTH_PATH_REFUSED = (
     "This agent policy is on the sign-in path, so only an organization admin can change it."
 )
 SELF_ONLY_REFUSED = "You can pause your own agents only."
+RESUME_REFUSED = "Only an organization admin can resume paused agents."
+GONE_REFUSED = "The project of this policy was not found."
+SHAPE_REFUSED = "The store cannot hold this policy. Check the scope and the value."
+
+#: The unique index of one version of a (scope, tier, key). A save retries
+#: only on a unique violation of this index (migration 371).
+VERSION_INDEX = "pm_agent_policies_version"
 LEAD_REFUSED = "Only the project lead or an organization admin can change the agent policies of this project."
 AGENT_WRITE_REFUSED = "An agent connection cannot change a policy. A member does it in Settings."
 ARCHIVED_REFUSED = "This project is archived, so its agent policies cannot change."
@@ -247,6 +256,18 @@ _CHECKS = {
     "mode": _check_mode, "choice": _check_mode, "text_list": _check_text_list,
     "time_or_null": _check_time,
 }
+
+
+#: The master flags that a key names and that are not ``Settings`` fields yet.
+#: Each reads as off until its slice adds the field: SW-46
+#: (``agent_claim_scope_modes``), SW-67 (``agent_lane_modes``), SW-95
+#: (``agent_budget_modes``) and SW-75 (``agent_auto_answer_orgs``). The slice
+#: that adds the field removes its name here. Fence:
+#: ``test_agent_policies_r8.py::test_each_flag_is_a_setting_or_not_yet``.
+FLAGS_NOT_YET = frozenset({
+    "agent_claim_scope_modes", "agent_lane_modes", "agent_budget_modes",
+    "agent_auto_answer_orgs",
+})
 
 
 def check_value(spec: PolicyKey, value: Any) -> Any:
@@ -554,13 +575,17 @@ RETURNING id, scope_kind, project_id, scope_ref, tier, key, value,
 
 async def _assert_may_write(
     db: Any, user: Any, spec: PolicyKey, kind: str, ref: str | None, *, me: str, admin: bool,
+    pause: bool,
 ) -> None:
     """The writer rules of SW-94: 404, 409 or 403, or return.
 
     A project must be visible (404) and not archived (409), also for an admin.
     An admin writes any key at any scope. A lead writes a key that is not on
     the auth path for the lead's own project. A member writes ``agents_paused``
-    at the scope kind ``member`` for self only.
+    at the scope kind ``member`` for self only, and only the value true. So a
+    member never resumes, also not a pause that the member wrote. A pause that
+    an admin holds stays until an admin lifts it (*pause* is False for a
+    value of false and for a clear).
     """
     if kind == "project":
         vis = await resolve_visibility(db, user)
@@ -581,6 +606,45 @@ async def _assert_may_write(
             status_code=403, detail=AUTH_PATH_REFUSED if spec.auth_path else ADMIN_REFUSED)
     if not me or ref != me:
         raise HTTPException(status_code=403, detail=SELF_ONLY_REFUSED)
+    if not pause:
+        raise HTTPException(status_code=403, detail=RESUME_REFUSED)
+
+
+def _pg_error(exc: BaseException) -> tuple[set[str], set[str]]:
+    """The SQLSTATE codes and the constraint names along the exception chain.
+
+    It reads the driver's own fields (asyncpg and psycopg), never the message
+    text, because that text also holds the SQL and the bound values."""
+    codes: set[str] = set()
+    names: set[str] = set()
+    seen: BaseException | None = exc
+    for _depth in range(8):
+        if seen is None:
+            break
+        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
+        if isinstance(code, str):
+            codes.add(code)
+        name = getattr(seen, "constraint_name", None) or getattr(
+            getattr(seen, "diag", None), "constraint_name", None,
+        )
+        if isinstance(name, str):
+            names.add(name)
+        seen = getattr(seen, "orig", None) or seen.__cause__
+    return codes, names
+
+
+def retry_or_raise(exc: BaseException) -> None:
+    """Return when *exc* is a unique violation of :data:`VERSION_INDEX`: two
+    saves read the same newest version, the index kept one, and the next
+    attempt reads the newest version again. Else raise: 404 for a foreign key
+    (the project went between the visibility read and the insert), and 422
+    for each other violation."""
+    codes, names = _pg_error(exc)
+    if "23505" in codes and VERSION_INDEX in names:
+        return
+    if "23503" in codes:
+        raise HTTPException(status_code=404, detail=GONE_REFUSED) from None
+    raise _unprocessable(SHAPE_REFUSED) from None
 
 
 @router.post("", status_code=201)
@@ -621,7 +685,8 @@ async def save_policy(
     for _attempt in range(SAVE_ATTEMPTS):
         try:
             async with _tenant_session() as db:
-                await _assert_may_write(db, user, spec, kind, ref, me=me, admin=admin)
+                await _assert_may_write(db, user, spec, kind, ref, me=me, admin=admin,
+                                        pause=value is True)
                 # One save of a (scope, tier, key) at a time: the lock lasts to
                 # the end of this transaction. The unique index and the retry
                 # stay as the backstop.
@@ -636,7 +701,8 @@ async def save_policy(
                     "tier": tier, "key": spec.name, "value": stored, "me": me,
                 })).fetchone()
                 return _out(row)
-        except IntegrityError:
+        except IntegrityError as exc:
+            retry_or_raise(exc)
             _log.info("agent_policies.save_retry")
             continue
     raise HTTPException(status_code=409, detail=SAVE_BUSY)

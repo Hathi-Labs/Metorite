@@ -34,10 +34,24 @@ Mutations (R7), each turns the named test red. ``P`` is
 * P5. ``P`` ``save_policy``: drop the self check of ``agents_paused``.
   ``test_a_member_pauses_own_agents_only``.
 * P6. Migration: drop the trigger. ``test_a_saved_policy_cannot_change``.
+* P7. ``P`` ``_assert_may_write``: drop the ``pause`` check, so a member resumes.
+  ``test_a_member_cannot_resume_or_clear_a_pause``.
+* P8 (F3). ``P`` ``may_write_any_policy``: check ``projects:settings:write``.
+  ``test_a_manager_writes_plain_project_keys_only``.
+* P9 (F4). ``P`` ``save_policy``: drop the ``pg_advisory_xact_lock`` statement.
+  ``test_two_concurrent_saves_get_versions_one_and_two``.
+* P10 (F5). ``P`` ``policy_for_actor``: drop the lower-casing of ``member``.
+  ``test_a_member_pauses_own_agents_only``. ``P`` ``save_policy``: drop the
+  lower-casing of the session email (``me``): the same test.
+* P11 (F6). ``P`` ``retry_or_raise``: return for each violation.
+  ``test_only_a_version_clash_is_retried``. Read the message text in
+  ``_pg_error`` instead of the driver fields: ``test_the_driver_names_the_version_index``.
+* P12 (F7). Drop a name from ``FLAGS_NOT_YET``. ``test_each_flag_is_a_setting_or_not_yet``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import inspect
 import re
@@ -154,6 +168,55 @@ def test_the_flag_name_is_owner_only() -> None:
     from acb_common import env_guard
 
     assert env_guard.is_platform_env("AGENT_POLICY_ORGS")
+
+
+def test_each_flag_is_a_setting_or_not_yet() -> None:
+    """Each master flag that a key names is a ``Settings`` field, or it is on
+    the named list ``FLAGS_NOT_YET``. A name on that list is not a field yet,
+    so the slice that adds the field must take the name off the list."""
+    from acb_common.settings import Settings
+
+    fields = set(Settings.model_fields)
+    named = {n for s in agent_policies.REGISTRY.values() for n in (s.flag, s.gate) if n}
+    assert named, "no key names a master flag"
+    missing = sorted(n for n in named if n not in fields and n not in agent_policies.FLAGS_NOT_YET)
+    assert missing == [], f"flags that are neither a setting nor on FLAGS_NOT_YET: {missing}"
+    stale = sorted(n for n in agent_policies.FLAGS_NOT_YET if n in fields or n not in named)
+    assert stale == [], f"FLAGS_NOT_YET names that are a setting now, or that no key names: {stale}"
+    assert "agent_policy_orgs" in fields
+
+
+class _Driver(Exception):
+    """A driver error with the fields of asyncpg."""
+
+    def __init__(self, sqlstate: str, constraint_name: str | None) -> None:
+        super().__init__("duplicate key value violates unique constraint")
+        self.sqlstate, self.constraint_name = sqlstate, constraint_name
+
+
+def _integrity(sqlstate: str, name: str | None) -> Exception:
+    from sqlalchemy.exc import IntegrityError
+
+    return IntegrityError("INSERT ...", {}, _Driver(sqlstate, name))
+
+
+def test_only_a_version_clash_is_retried() -> None:
+    from fastapi import HTTPException
+
+    assert agent_policies.retry_or_raise(
+        _integrity("23505", agent_policies.VERSION_INDEX)) is None
+    with pytest.raises(HTTPException) as other_index:
+        agent_policies.retry_or_raise(_integrity("23505", "another_index"))
+    with pytest.raises(HTTPException) as foreign_key:
+        agent_policies.retry_or_raise(_integrity("23503", "pm_agent_policies_project_id_fkey"))
+    with pytest.raises(HTTPException) as check:
+        agent_policies.retry_or_raise(_integrity("23514", "pm_agent_policies_scope_shape"))
+    with pytest.raises(HTTPException) as text_only:
+        agent_policies.retry_or_raise(_integrity("23505", None))
+    assert other_index.value.status_code == 422
+    assert foreign_key.value.status_code == 404
+    assert check.value.status_code == 422
+    assert text_only.value.status_code == 422
 
 
 def test_flag_mode_reads_a_map_from_org_to_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -324,8 +387,9 @@ def world(promoted):  # noqa: F811 — a fixture
     ns.lead_s, ns.lead_o = "lead-s@policies.test", "lead-o@policies.test"
     ns.member, ns.other_member = "member@policies.test", "other@policies.test"
     ns.admin, ns.b_admin = "admin@policies.test", "admin-b@policies.test"
+    ns.manager = "manager@policies.test"
     with promoted.admin_engine.begin() as c:
-        for email in (ns.lead_s, ns.lead_o, ns.member, ns.other_member, ns.admin):
+        for email in (ns.lead_s, ns.lead_o, ns.member, ns.other_member, ns.admin, ns.manager):
             _user(c, a, email)
         _user(c, b, ns.b_admin)
         ns.space = _project(c, a, "Space S", lead=ns.lead_s)
@@ -352,6 +416,10 @@ def world(promoted):  # noqa: F811 — a fixture
     ns.lead_s_u = _principal(ns.lead_s, a, perms=SEE_ALL)
     ns.lead_o_u = _principal(ns.lead_o, a, perms=SEE_ALL)
     ns.member_u = _principal(ns.member, a, perms=SEE_ALL)
+    # F5: the session email of the same member in mixed case.
+    ns.member_mixed_u = _principal("Member@Policies.TEST", a, perms=SEE_ALL)
+    # F3: a Projects settings admin who is not an org admin.
+    ns.manager_u = _principal(ns.manager, a, perms=(*SEE_ALL, "projects:settings:write"))
     ns.agent_u = _principal(ns.admin, a, perms=ADMIN, agent=True)
     ns.b_admin_u = _principal(ns.b_admin, b, perms=ADMIN)
     return ns
@@ -553,16 +621,129 @@ async def test_a_member_pauses_own_agents_only(world, flags) -> None:
     w = world
     _reset(w)
     async with _session(w.p) as call:
-        mine = await call(w.member_u, _body("agents_paused", "member", w.member.upper(), True))
+        # F5: a mixed-case session email and a lower-case scope id are one member.
+        mine = await call(w.member_mixed_u, _body("agents_paused", "member", w.member, True))
         theirs = await call(w.member_u, _body("agents_paused", "member", w.other_member, True))
         org = await call(w.member_u, _body("agents_paused", "organization", None, True))
         budget = await call(w.member_u, _body("budget_mode", "lane", str(uuid.uuid4()), "off"))
-        paused = await call.actor(w.a, w.a, "agents_paused", member=w.member)
+        # F5: the reader gets the member's email in another case.
+        paused = await call.actor(w.a, w.a, "agents_paused", member=w.member.upper())
         other = await call.actor(w.a, w.a, "agents_paused", member=w.other_member)
-    assert mine.status_code == 201 and mine.json()["scope_ref"] == w.member
+    assert mine.status_code == 201, mine.text
+    assert mine.json()["scope_ref"] == w.member and mine.json()["written_by"] == w.member
     assert theirs.status_code == 403 and "own agents" in theirs.text
     assert org.status_code == 403 and budget.status_code == 403
     assert paused.value is True and other.value is False
+
+
+@_DB_GATE
+async def test_a_member_cannot_resume_or_clear_a_pause(world, flags) -> None:
+    """F1. A member writes only a pause (true) of own agents. A resume (false)
+    and a clear get 403, also on the member's own scope, so a member cannot
+    lift a pause that an admin holds. The admin may do both."""
+    w = world
+    _reset(w)
+    async with _session(w.p) as call:
+        held = await call(w.admin_u, _body("agents_paused", "member", w.member, True))
+        resume = await call(w.member_u, _body("agents_paused", "member", w.member, False))
+        clear = await call(w.member_u, _body("agents_paused", "member", w.member, None, clear=True))
+        still = await call.actor(w.a, w.a, "agents_paused", member=w.member)
+        admin_resume = await call(w.admin_u, _body("agents_paused", "member", w.member, False))
+        resumed = await call.actor(w.a, w.a, "agents_paused", member=w.member)
+        admin_clear = await call(
+            w.admin_u, _body("agents_paused", "member", w.member, None, clear=True))
+    assert held.status_code == 201
+    assert resume.status_code == 403 and "resume" in resume.text
+    assert clear.status_code == 403 and "resume" in clear.text
+    assert still.value is True
+    assert admin_resume.status_code == 201 and resumed.value is False
+    assert admin_clear.status_code == 201 and admin_clear.json()["cleared"] is True
+    assert len(_rows(w.p, "SELECT 1 FROM pm_agent_policies")) == 3
+
+
+@_DB_GATE
+async def test_a_manager_writes_plain_project_keys_only(world, flags) -> None:
+    """F3. A ``manager`` holds ``projects:settings:write`` and not
+    ``admin:settings:manage``. It passes the lead floor of a project, so it
+    writes a plain key there. It gets 403 on an auth-path key at project and
+    at org scope, and on a plain key at org scope."""
+    w = world
+    _reset(w)
+    async with _session(w.p) as call:
+        plain = await call(w.manager_u, _body("review_cap", "project", w.p1, 4))
+        auth_project = await call(w.manager_u, _body("claim_scope_mode", "project", w.p1, "warn"))
+        auth_org = await call(w.manager_u, _body("claim_scope_mode", "organization", None, "warn"))
+        paused_org = await call(w.manager_u, _body("agents_paused", "organization", None, True))
+        plain_org = await call(w.manager_u, _body("review_cap", "organization", None, 4))
+    assert plain.status_code == 201, plain.text
+    for r in (auth_project, auth_org, paused_org, plain_org):
+        assert r.status_code == 403, r.text
+    assert len(_rows(w.p, "SELECT 1 FROM pm_agent_policies")) == 1
+
+
+#: The saves of one round of the race, and the rounds.
+RACE_PARTIES, RACE_ROUNDS = 2, 3
+
+
+@_DB_GATE
+async def test_two_concurrent_saves_get_versions_one_and_two(
+    world, flags, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F4. Two saves of one scope at the same time get versions 1 and 2, with
+    no duplicate and no 409. The saves wait at a barrier after the write
+    check, just before the lock, so each sends its next statement before any
+    commits. The retry has one attempt here, so only the advisory lock can
+    keep both saves at 201."""
+    w = world
+    _reset(w)
+    monkeypatch.setattr(agent_policies, "SAVE_ATTEMPTS", 1)
+    real = agent_policies._assert_may_write
+    gate: list[asyncio.Barrier] = []
+
+    async def _check_then_wait(*args: Any, **kwargs: Any) -> None:
+        await real(*args, **kwargs)
+        await asyncio.wait_for(gate[0].wait(), timeout=20)
+
+    monkeypatch.setattr(agent_policies, "_assert_may_write", _check_then_wait)
+    async with _session(w.p) as call:
+        for n in range(RACE_ROUNDS):
+            _reset(w)
+            gate[:] = [asyncio.Barrier(RACE_PARTIES)]
+            rs = await asyncio.wait_for(asyncio.gather(
+                *(call(w.lead_s_u, _body("review_cap", "project", w.p1, k + 1))
+                  for k in range(RACE_PARTIES))), timeout=60)
+            assert [r.status_code for r in rs] == [201] * RACE_PARTIES, (n, [r.text for r in rs])
+            assert sorted(r.json()["version"] for r in rs) == [1, 2]
+            rows = _rows(w.p, "SELECT version FROM pm_agent_policies ORDER BY version")
+            assert [r.version for r in rows] == [1, 2]
+
+
+@_DB_GATE
+async def test_the_driver_names_the_version_index(world, flags) -> None:
+    """F6. A real clash on the version index, through the gateway driver,
+    reads as a retry. ``_pg_error`` reads the driver fields, not the text."""
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.db import tenant_session
+    from sqlalchemy.exc import IntegrityError
+
+    w = world
+    _reset(w)
+    sql = text("INSERT INTO pm_agent_policies (scope_kind, key, value, version, written_by) "
+               "VALUES ('organization', 'review_cap', '3'::jsonb, 1, 'a@policies.test')")
+    caught: list[BaseException] = []
+    async with _session(w.p):
+        token = bind_tenant(w.a)
+        try:
+            with pytest.raises(IntegrityError) as clash:
+                async with tenant_session() as db:
+                    await db.execute(sql)
+                    await db.execute(sql)
+            caught.append(clash.value)
+        finally:
+            release_tenant(token)
+    codes, names = agent_policies._pg_error(caught[0])
+    assert "23505" in codes and agent_policies.VERSION_INDEX in names
+    assert agent_policies.retry_or_raise(caught[0]) is None
 
 
 # ── R8: the actor order ─────────────────────────────────────────────────────
@@ -570,6 +751,7 @@ async def test_a_member_pauses_own_agents_only(world, flags) -> None:
 
 @_DB_GATE
 async def test_the_actor_order_is_box_member_lane_org(world, flags) -> None:
+    """Each write here is an admin's (F1): a member may write only a pause."""
     w = world
     _reset(w)
     box, lane = str(uuid.uuid4()), str(uuid.uuid4())
