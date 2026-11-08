@@ -19,9 +19,12 @@ import {
   reviewRulePatterns, saveAssistantSettings, scanFollowUps, updateKnowledge,
   upsertColdSender,
 } from "../../../lib/api";
-import { AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn } from "../../../lib/assistantSettings";
 import {
-  AssistantSettings, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
+  AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn,
+  settingsPatchBody, settingsSaveBody, withoutAutoRunChoice,
+} from "../../../lib/assistantSettings";
+import {
+  AssistantSettings, AssistantSettingsSave, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
   DraftConfidence, KnowledgeEntry, LearnedPattern,
   LearnedRulePattern, RuleGuidance, VoiceProfile, WEEKDAYS,
 } from "../../../lib/types";
@@ -305,14 +308,16 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
 
   // Persist the whole settings object. Toggles/selects persist immediately;
   // the free-text cards rely on the bottom "Save settings" button.
-  const persist = async (next: AssistantSettings) => {
-    setSettings(next);
+  // Task 2305: the state never holds the Auto-run marker, and only the
+  // Auto-run switch passes `autoRunChoice`. So only its save sends the marker.
+  const persist = async (next: AssistantSettingsSave, autoRunChoice = false) => {
+    setSettings(withoutAutoRunChoice(next));
     setSaving(true);
     setError(null);
     setSaved(false);
     try {
-      const res = await saveAssistantSettings(next);
-      setSettings(res);
+      const res = await saveAssistantSettings(settingsSaveBody(next, autoRunChoice));
+      setSettings(withoutAutoRunChoice(res));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -326,7 +331,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
   if (loading || !settings) return <Spinner label="Loading settings…" />;
 
   const s = settings; // narrowed
-  const persistPatch = (p: Partial<AssistantSettings>) => persist({ ...s, ...p });
+  const persistPatch = (p: Partial<AssistantSettings>) => persist(settingsPatchBody(s, p));
   const followUpOn = s.follow_up_awaiting_days > 0 || s.follow_up_needs_reply_days > 0;
   const digestOn = s.digest_frequency !== "OFF";
 
@@ -488,7 +493,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
             right={
               <Toggle
                 enabled={s.auto_run}
-                onChange={(v) => persistPatch({ auto_run: v })}
+                onChange={(v) => persist({ ...s, auto_run: v }, true)}
               />
             }
           />

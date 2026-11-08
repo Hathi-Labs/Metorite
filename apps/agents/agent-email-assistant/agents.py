@@ -4874,6 +4874,7 @@ async def update_assistant_settings(
     setif("sensitive_data_protection", sensitive_data_protection)
     setif("morning_brief_enabled", morning_brief_enabled)
     setif("org_domains", org_domains)
+    _mark_auto_run_choice(body, auto_run)
     body.pop("always_copy", None)
     if always_copy is not None:
         try:
@@ -5014,6 +5015,7 @@ async def apply_settings_to_mailboxes(
                 await _get("/email/assistant/settings", {"account_id": aid}))
             body.update(wanted)
             body["account_id"] = aid
+            _mark_auto_run_choice(body, wanted.get("auto_run"))
             await _patch_settings(body)
             done.append(_mailbox_text(a))
         except Exception:
@@ -5086,6 +5088,7 @@ async def _held_settings(account_id: str | None, wanted: dict[str, Any]) -> str:
         await _get("/email/assistant/settings", {"account_id": account_id}) or {})
     body["account_id"] = account_id
     body.update(values)
+    _mark_auto_run_choice(body, values.get("auto_run"))
     await _patch_settings(body)
     return f"Assistant settings updated for {box}: " + "; ".join(
         f"{k} is {_setting_shown(v)}" for k, v in values.items()) + "."
@@ -5712,6 +5715,22 @@ async def rule_guidance(
 
 async def _patch_settings(body: dict[str, Any]) -> Any:
     return (await _request("PUT", "/email/assistant/settings", json=body)).json()
+
+
+#: Task 2305 (``email_app_master_plan.md`` §12.3.13.7): the write-only marker
+#: of the member's own Auto-run choice. The PUT stamps the choice only for a
+#: body that carries it with ``auto_run``. The GET answers ``auto_run_chosen``,
+#: so a copy of the GET body never carries this name.
+_AUTO_RUN_CHOICE = "auto_run_choice"
+
+
+def _mark_auto_run_choice(body: dict[str, Any], auto_run: Any) -> None:
+    """Add the marker to a settings PUT body only when the model passed
+    ``auto_run``. A save of any other setting sends no marker, so it never
+    records an Auto-run choice that the member did not make."""
+    body.pop(_AUTO_RUN_CHOICE, None)
+    if auto_run is not None:
+        body[_AUTO_RUN_CHOICE] = True
 
 
 @_annotate_risk(open_world=False)

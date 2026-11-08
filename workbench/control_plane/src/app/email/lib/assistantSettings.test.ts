@@ -15,7 +15,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn } from "./assistantSettings";
+import {
+  AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn, autoRunChoiceBody,
+  settingsPatchBody, settingsSaveBody, withoutAutoRunChoice,
+} from "./assistantSettings";
+import type { AssistantSettings } from "./types";
 
 type NewMailboxFixture = {
   get_without_settings_row: { draft_replies: boolean };
@@ -97,7 +101,7 @@ describe("the Auto-run line (WS-17 EM-G11c2, item 6)", () => {
   it("draws the line in the Auto-run card", () => {
     const card = src.slice(
       src.indexOf("Run rules automatically on new mail"),
-      src.indexOf("persistPatch({ auto_run: v })"),
+      src.indexOf(AUTO_RUN_TOGGLE),
     );
     expect(card).toContain("{AUTO_RUN_AI_LINE}");
   });
@@ -108,9 +112,77 @@ describe("the Auto-run line (WS-17 EM-G11c2, item 6)", () => {
     expect(AUTO_RUN_DESCRIPTION).toMatch(/Turn it off to stop all three/);
     const card = src.slice(
       src.indexOf("Run rules automatically on new mail"),
-      src.indexOf("persistPatch({ auto_run: v })"),
+      src.indexOf(AUTO_RUN_TOGGLE),
     );
     expect(card).toContain("{AUTO_RUN_DESCRIPTION}");
+  });
+});
+
+/** The Auto-run switch's own save in `SettingsTab.tsx` (task 2305). */
+const AUTO_RUN_TOGGLE = "persist({ ...s, auto_run: v }, true)";
+
+const SETTINGS = {
+  account_id: "acc-1",
+  about: "Founder",
+  signature: "Ravi",
+  auto_run: false,
+  auto_run_chosen: false,
+  draft_replies: false,
+} as unknown as AssistantSettings;
+
+describe("the Auto-run choice marker (task 2305)", () => {
+  const src = codeOnly(readFileSync(SETTINGS_TAB, { encoding: "utf-8" }));
+
+  it("the member's own act sends the marker with the value", () => {
+    expect(autoRunChoiceBody(SETTINGS, true)).toEqual({
+      ...SETTINGS, auto_run: true, auto_run_choice: true,
+    });
+    expect(autoRunChoiceBody(SETTINGS, false)).toEqual({
+      ...SETTINGS, auto_run: false, auto_run_choice: true,
+    });
+  });
+
+  it("a save of another field never sends the marker, even from a state that held one", () => {
+    const held = { ...SETTINGS, auto_run_choice: true as const };
+    const body = settingsPatchBody(held, { signature: "— Ravi" });
+    expect(body).toEqual({ ...SETTINGS, signature: "— Ravi" });
+    expect("auto_run_choice" in body).toBe(false);
+    // A patch that changes auto_run is still no explicit act: no marker.
+    expect("auto_run_choice" in settingsPatchBody(SETTINGS, { auto_run: true })).toBe(false);
+  });
+
+  it("persist drops the marker unless the caller is the Auto-run switch", () => {
+    const held = { ...SETTINGS, auto_run_choice: true as const };
+    expect("auto_run_choice" in settingsSaveBody(held, false)).toBe(false);
+    expect(settingsSaveBody({ ...SETTINGS, auto_run: true }, true)).toEqual({
+      ...SETTINGS, auto_run: true, auto_run_choice: true,
+    });
+    expect(withoutAutoRunChoice(held)).toEqual(SETTINGS);
+  });
+
+  it("the read-only GET field is never the marker", () => {
+    const body = settingsPatchBody({ ...SETTINGS, auto_run_chosen: true }, { about: "x" });
+    expect(body.auto_run_chosen).toBe(true);
+    expect("auto_run_choice" in body).toBe(false);
+  });
+
+  it("only the Auto-run switch of the tab passes the act, through persist", () => {
+    expect(src).toContain(`onChange={(v) => ${AUTO_RUN_TOGGLE}}`);
+    // One caller passes the act, and the tab never names the marker itself.
+    expect(src.match(/persist\([^;]*?, true\)/g)).toHaveLength(1);
+    expect(src).not.toMatch(/auto_run_choice/);
+    expect(src).not.toMatch(/persistPatch\(\{\s*auto_run:/);
+  });
+
+  it("persistPatch and persist strip the marker", () => {
+    expect(src).toContain(
+      "const persistPatch = (p: Partial<AssistantSettings>) => persist(settingsPatchBody(s, p));",
+    );
+    expect(src).toMatch(
+      /const persist = async \(next: AssistantSettingsSave, autoRunChoice = false\) => \{\s*setSettings\(withoutAutoRunChoice\(next\)\);/,
+    );
+    expect(src).toContain("await saveAssistantSettings(settingsSaveBody(next, autoRunChoice));");
+    expect(src).toContain("setSettings(withoutAutoRunChoice(res));");
   });
 });
 

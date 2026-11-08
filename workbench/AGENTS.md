@@ -29,6 +29,7 @@ entry says ONE or THE, a second copy is a defect.
 - `lib/composerSize.ts`: ⚠️ do not put `min-h-0` on the body wrapper or `overscroll-contain` on the textarea. Fence: `lib/composerSize.test.ts`.
 - `lib/storage.ts` and `lib/cleanOlderMail.ts`: ⚠️ a removal deletes the copy in Metorite only (D-EM-14), and no word may say that Metorite deletes mail in Outlook. `removalReducer` is the one state machine of the dialog. Fences: `storage.test.ts`, `removeOlderMailDialog.test.ts`.
 - `lib/assistantSettings.ts`: `autoDraftRepliesOn` is true only for an explicit `draft_replies: true`. `lib/chatScope.ts`: a pick in the chat never moves the page.
+- `lib/assistantSettings.ts`: `autoRunChoiceBody` is the one body that carries the Auto-run marker `auto_run_choice` (task 2305). Only the member's own Auto-run acts use it, through `setAutoRun` or the AI settings switch. `persistPatch` and `persist` strip it. Fence: `lib/assistantSettings.test.ts`.
 - No file in `app/email/lib/` imports from `components/`.
 - `ContactTrigger` (`components/ContactCard.tsx`) is a real `<button>`, so a row that holds one must be a div.
 - `lib/sendCard.ts` (shared): the server classes each person, and the card only draws it. A send card needs a ticked To row (`sendCanGo`). Fence: `lib/sendCard.test.ts`.

@@ -112,6 +112,12 @@ describe("Turn on", () => {
     expect(calls.map((c) => c[0])).toEqual(["get", "save"]);
     expect(calls[1][1]).toMatchObject({ account_id: "acc-1", about: "Ravi", auto_run: true });
   });
+
+  it("sends the marker of the member's choice, so the server stamps it and the notice goes (task 2305)", async () => {
+    const { api, calls } = fake(NO_CHOICE, TWO_ON);
+    await turnOnAutoRun(api, "acc-1");
+    expect(calls[1][1]).toMatchObject({ auto_run: true, auto_run_choice: true });
+  });
 });
 
 describe("Not now", () => {

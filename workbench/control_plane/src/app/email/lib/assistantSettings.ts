@@ -13,7 +13,7 @@
 // cannot render `SettingsTab.tsx`. `assistantSettings.test.ts` runs this
 // function over the fixture that the gateway test also reads, and scans the
 // tab for the call.
-import type { AssistantSettings } from "./types";
+import type { AssistantSettings, AssistantSettingsSave } from "./types";
 
 /**
  * The tier of the email chat when the tier policy does not cover the
@@ -40,6 +40,51 @@ export const AUTO_RUN_AI_LINE =
 export const AUTO_RUN_DESCRIPTION =
   "Runs your enabled rules on new inbox mail as it arrives, and keeps the Reply Zero labels and the sorting sweep up to date. " +
   "Turn it off to stop all three on new mail. Your rules still apply when you run them yourself or process past emails.";
+
+/**
+ * The settings with no Auto-run marker (task 2305,
+ * `email_app_master_plan.md` §12.3.13.7). The settings screen keeps this as
+ * its state, and each save of another field sends it. So a later save cannot
+ * carry the marker of an earlier act.
+ */
+export function withoutAutoRunChoice(s: AssistantSettingsSave): AssistantSettings {
+  const { auto_run_choice: _marker, ...rest } = s;
+  void _marker;
+  return rest;
+}
+
+/**
+ * The body of a save of another field: the settings, the change, and no
+ * Auto-run marker. `SettingsTab.tsx` `persistPatch` sends only this.
+ */
+export function settingsPatchBody(
+  s: AssistantSettingsSave,
+  patch: Partial<AssistantSettings>,
+): AssistantSettings {
+  return withoutAutoRunChoice({ ...s, ...patch });
+}
+
+/**
+ * The body of the member's own Auto-run act: the switch in AI settings, the
+ * switch and Done of setup, and "Turn on" of the notice. It sets `auto_run`
+ * and adds the marker `auto_run_choice`, so the server stamps the choice. No
+ * other save sends the marker.
+ */
+export function autoRunChoiceBody(s: AssistantSettingsSave, on: boolean): AssistantSettingsSave {
+  return { ...withoutAutoRunChoice(s), auto_run: on, auto_run_choice: true };
+}
+
+/**
+ * The body that `SettingsTab.tsx` `persist` sends. It drops the marker,
+ * unless the caller is the Auto-run switch (`autoRunChoice`). Then it is the
+ * body of that act, with the value of `auto_run` in `next`.
+ */
+export function settingsSaveBody(
+  next: AssistantSettingsSave,
+  autoRunChoice: boolean,
+): AssistantSettingsSave {
+  return autoRunChoice ? autoRunChoiceBody(next, next.auto_run) : withoutAutoRunChoice(next);
+}
 
 /** True only when the server stored `draft_replies: true` for the mailbox. */
 export function autoDraftRepliesOn(
