@@ -1,10 +1,10 @@
 # Proactive agent — Mira acts for each person without being asked (WS-AUTO)
 
-> **Product:** Metorite · **Feature:** automations, standing watches and the chase, on a trust ladder · **Updated:** 2026-11-07 · **Owner:** vjvarada
-> **Status:** 📋 **SPEC, FOUR SLICES BUILT.** The first slice of AUTO-2 is merged (PR 1442, migration 313, dark): the run ledger, the incidents and the stall guard. The brief is its only caller. AUTO-3 is decided (D131). AUTO-7a is merged (PR 1615). H-328 parts (a) and (b) are merged, and part (c) is open. **AUTO-7b is built, dark behind `AUTO_PARK_ORGS` (task 1411), and waits for review** (§4.2, §9). **AUTO-8a is built, dark behind `HEADLESS_TURN_ORGS` (task 1392). It has no production caller, and its tests prove it** (§4.4, §9). AUTO-8b is the next slice of AUTO-8 (task 2194). **The owner answered AUTO-Q1 on 2026-11-06** with the recommended option (D192, §12).
-> **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §10 was read on that commit. The AUTO-7b paths were read again on `0591d53b3` (2026-11-04). The AUTO-8a paths were read on `2d2e71978` (2026-11-05). The line numbers of Open Instinct come from a read on 2026-11-02, and no code of it ran.
+> **Product:** Metorite · **Feature:** automations, standing watches and the chase, on a trust ladder · **Updated:** 2026-11-08 · **Owner:** vjvarada
+> **Status:** 📋 **SPEC, FIVE SLICES BUILT.** The first slice of AUTO-2 is merged (PR 1442, migration 313, dark): the run ledger, the incidents and the stall guard. The brief is its only caller. AUTO-3 is decided (D131). AUTO-7a is merged (PR 1615). H-328 parts (a) and (b) are merged, and part (c) is open. **AUTO-7b is built, dark behind `AUTO_PARK_ORGS` (task 1411), and waits for review** (§4.2, §9). **AUTO-8a is on main (PR 1878), dark behind `HEADLESS_TURN_ORGS` (task 1392). It has no production caller, and its tests prove it** (§4.4, §9). **AUTO-8b-1 is built, dark, and waits for review (task 2194).** The settle of a round has a time limit, and each round checks the bound of the goal cap (§4.4). AUTO-8b-2 (task 2230) waits for an owner decision. **The owner answered AUTO-Q1 on 2026-11-06** with the recommended option (D192, §12).
+> **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §10 was read on that commit. The AUTO-7b paths were read again on `0591d53b3` (2026-11-04). The AUTO-8a paths were read on `2d2e71978` (2026-11-05). The AUTO-8b-1 paths were read on `6c8d48d81` (2026-11-08), the base of the branch `auto-8b-mt-57b4e62c`. The line numbers of Open Instinct come from a read on 2026-11-02, and no code of it ran.
 > **Board:** WS-AUTO in `work_plan.md` §2.1. **Decision:** D161, and D192 for the answer of §12. D75, D100, D103, D124, D129, D131, D132, D140, D145 and workflows G5 bind it.
-> **Metorite:** project "Automations", epic 807, this spec task 1396. The slices are AUTO-1 (816), AUTO-4 (817), AUTO-5 to AUTO-10 (1389 to 1394). AUTO-2 is task 814, AUTO-3 is task 815 and AUTO-Q1 is task 1395.
+> **Metorite:** project "Automations", epic 807, this spec task 1396. The slices are AUTO-1 (816), AUTO-4 (817), AUTO-5 to AUTO-10 (1389 to 1394). AUTO-8a is task 1392, AUTO-8b-1 is task 2194 and AUTO-8b-2 is task 2230. AUTO-2 is task 814, AUTO-3 is task 815 and AUTO-Q1 is task 1395.
 > **Research first:** the comments "Research notes, 2026-11-02 (Open Instinct)" on epic 807, copied into §8, and the Hermes research of 2026-10-27.
 > **Gate summary:** every slice is AGENT-SAFE. A flag that spends credits stays the owner's flip. A slice that changes what a member sees follows the D145 loop.
 
@@ -119,23 +119,34 @@ Each turn has a tool list (read tools by default), a round cap, a time cap and a
 
 **AUTO-8a (built, dark).** The detached kind `auto.turn` runs one turn for one goal of kind `headless.turn`. The module is `gateway/jobs/headless_turn.py`. The kind registers only with `JOB_QUEUE` on, and no production code enqueues it. The payload is `{goal_id, candidate}` and nothing else. The member is `goal_records.member_email`, read under RLS, and never comes from the payload.
 
-The handler takes these steps in order:
+The handler takes these steps in order. A payload of another shape gives up before step 1.
 
-1. It reads `HEADLESS_TURN_ORGS`.
-2. It reads the goal as its member.
-3. It checks that the member is still in the org.
-4. It runs the candidate check. No candidate means no model call, and the goal does not change.
-5. It begins the ledger row and runs the rounds under the stall guard.
+1. It starts the clock of the turn and calls `unattended.recover` for its slot. So the time cap holds the checks below too.
+2. It reads `HEADLESS_TURN_ORGS`.
+3. It reads the goal as its member. A goal that allows more than 50 credits gives up with `CapTooHigh`.
+4. It checks that the member is still in the org.
+5. It runs the candidate check. No candidate means no model call, and the goal does not change.
+6. It begins the ledger row and runs the rounds under the stall guard.
 
-Before each round, the turn reads the flag and the goal again. So the flag is the kill switch, and an org that leaves the list stops before its next round.
+Before each round, the turn reads the flag and the goal again. So the flag is the kill switch, and an org that leaves the list stops before its next round. Each round checks the bound of 50 credits again. So a goal that another write raises over the bound between two rounds gets no next round.
+
+**A rule for the producer (AUTO-1 and AUTO-5).** The producer must set `dedupe_key` to the goal id, so one goal has at most one live turn in the queue. No producer exists yet, so this rule is ADVISORY (R7) until the producer slice names its fence.
 
 **The caps of AUTO-8a.** A turn runs 5 rounds at most, and 120 seconds for the whole turn. Module constants bound both. The credit cap is the cap of the goal, and a goal that allows more than 50 credits gets no turn. `goal_store.cap_block` is the one cap rule. A round whose cost the meter cannot read counts as the rest of the budget, so the goal blocks.
 
-**No cost reader, no call.** AUTO-8a has no reader of the cost of a run. The default meter raises `NoCostReader` before the first call of a round. So with the flag on, the turn makes no model call. It gives up with a named reason and logs `headless_turn.no_cost_reader` at error. AUTO-8b adds the reader.
+**No cost reader, no call.** AUTO-8a has no reader of the cost of a run. The default meter raises `NoCostReader` before the first call of a round. So with the flag on, the turn makes no model call. It gives up with a named reason and logs `headless_turn.no_cost_reader` at error. AUTO-8b-2 adds the reader.
 
 **Read tools only.** One round is one `run_agent` run of the internal agent `worker`, with one bound job and `no_egress`. The job holds only tools that the risk registry marks `read_only` and not `open_world`. The pin of the worker refuses every other tool. The worker makes at most 4 model calls in one round (`subagent_contract.MAX_CHILD_ROUNDS`). AUTO-8a changes no code of `orchestrator/executor.py`.
 
-**Limits of AUTO-8a.** ADVISORY (R7), with no fence: no credit stop happens inside one call. The last round can go past the cap, and the Router's per-run tripwire is the backstop. In `run_agent`, the run binds the agent name `worker` and the app `chat`. So the usage row does not name `auto.headless` yet. AUTO-8b decides that attribution.
+**The settle of a round (AUTO-8b-1).** After a call, the turn reads the meter and records the round. These two steps have `SETTLE_MARGIN_S` (60 seconds), and each step takes at most a third of it. The bound of the time cap (180 seconds) plus the margin stays inside `worker.HANDLER_TIMEOUT` (240 seconds). That stays inside the lease of the job (300 seconds). So the worker does not cancel a turn while it records a round.
+
+A meter that does not answer in time charges the rest of the budget: the cap minus the credits used. So the goal blocks with `cap_reached`. A record that does not end in time logs `headless_turn.round_unrecorded` at error, and the job gives up with `TurnFailed`. The settle catches only the timeout of its own scope. It never catches a cancel.
+
+**Limits.** ADVISORY (R7), with no fence: no credit stop happens inside one call. The cost of a round is known only at its end, so the last round can go past the goal cap. The goal cap is the cap. The Router's `RunCeiling` is a fixed tripwire of 500 credits for each run, and the Router checks it before each model call. It does not stop a turn at the goal cap.
+
+ADVISORY (R7), with no fence: three paths lose the cost of a round, so the goal row does not get it. They are a record that times out, a stop of the worker during the call, and a stop during the settle. The release stops the worker after 30 seconds (`worker.STOP_GRACE_SECONDS`). Then the next turn of the goal starts with too much room. Today no turn can spend, because the default meter raises. AUTO-8b-2 (task 2230) must close this before the real reader. It writes a mark on the goal before each call, and the record clears the mark. A goal that still holds a mark takes the rest of its budget and blocks.
+
+In `run_agent`, the run binds the agent name `worker` and the app `chat`. So the usage row does not name `auto.headless` yet. AUTO-8b-2 decides that attribution.
 
 ### 4.5 A cap on each member (AUTO-Q1, D192)
 
@@ -265,7 +276,8 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 | **AUTO-7a** (1391) | The mark `no person present` and its refusals (§4.2). Needs AUTO-2 | A fence (R7): an unattended turn that tries to approve gets a refusal, and no write happens. The fence verifies the `carry_run_context` claim on the SDK thread. A mutation that drops the mark turns the fence red | HIGH | AGENT-SAFE |
 | **AUTO-7b** (1391, task 1411) | Park and ask (§4.2). Needs AUTO-7a, ALN-2a and H-328 part (b). **Built, dark, in review** | A fixture run parks and writes one decision. A yes resumes it once, a no ends it, and an expiry ends it. A fence proves that the run cannot answer its own decision. Advisory, with no fence of its own (R7): the D131 five acts always ask. This holds by construction, because a parked gate resumes only on the owner's yes (F3, F8), and a write node still files its broker proposal. Non-goals: an agent turn (AUTO-8), `schedule_run` (AUTO-1), an act classifier, Reach and `tell_me` (AUTO-6), a new subject kind or a migration, the decision card (ALN-2b) and the flag flip | HIGH | AGENT-SAFE. The flip of `AUTO_PARK_ORGS` waits for ALN-2b. Owner question before merge: one task for each parked gate lands in the owner's inbox |
 | **AUTO-8a** (1392) | A headless turn with a credit cap, dark (§4.4). Needs AUTO-2, AUTO-7a. **Built, dark, no production caller, proven by tests** | A turn stops at its cap with `cap_reached` on the goal row and reports once. A run with no candidate makes no model call. R8: the run reads only what its member can read, and org B sees nothing. A kill switch stops all headless turns for an org. With no cost reader, no model call runs | HIGH | AGENT-SAFE. The flip of `HEADLESS_TURN_ORGS` is the owner's, because a turn spends credits |
-| **AUTO-8b** (1392) | The cost reader and a per-turn ceiling. Needs AUTO-8a | The Console reads the credits of one run, and the turn's meter calls it. A ceiling for each turn sits below the Router's `RunCeiling`. The usage row of a turn names `auto.headless` | HIGH | AGENT-SAFE. A Console route and a change of `RunCeiling` are the owner's |
+| **AUTO-8b-1** (2194) | The settle of a round has a time limit, and each round checks the bound of the goal cap (§4.4). Needs AUTO-8a. **Built, dark, in review** | A meter that sleeps past `SETTLE_MARGIN_S` ends the round inside the margin. `record_round` runs, and the round charges the cap minus the credits used. A goal that another write raises over 50 credits between rounds gets no next round. R8: in the timeout case the goal of org A blocks with `cap_reached`, org B sees nothing, and the ledger row ends `ok` | HIGH | AGENT-SAFE. It adds no flag. The flip of `HEADLESS_TURN_ORGS` stays the owner's |
+| **AUTO-8b-2** (2230) | The cost reader, a ceiling for each turn and the attribution. Needs AUTO-8b-1 and an owner decision | The Console has a door that reads the spend of one run, and the turn's meter calls it. A per-turn ceiling header can only lower `RunCeiling`. The attribution seam in `orchestrator/executor.py` makes the usage row of a turn name `auto.headless` | HIGH | Owner decision first. A Console route and a change of `RunCeiling` are the owner's |
 | **AUTO-6** (1390) | Silent by default (§4.1). Needs AUTO-2 | A run that finds nothing writes no outbox row and no bell row. Ten runs that find the same thing give one message. Quiet hours hold. The fence goes red under a mutation | STD | AGENT-SAFE |
 | **AUTO-1** (816) | "Do this every Monday": a `schedule_run` tool makes a workflow with one Mira step. Needs AUTO-2, AUTO-3, H-328, and a chat way to save a workflow | A request creates one automation, and the confirm card shows the next three run times. It delivers on Monday. It runs as the member who made it | STD | AGENT-SAFE. D145 preview. No second org before H-328 |
 | **AUTO-4** (817) | One list of every automation, in My profile. Needs AUTO-1 | A member pauses an automation from the list, and the next run does not happen. An admin sees the org's automations | STD | AGENT-SAFE. D145 preview |
@@ -281,7 +293,7 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 
 1. H-328, already in progress.
 2. AUTO-7a, then AUTO-7b after ALN-2a.
-3. AUTO-8a (built), then AUTO-8b.
+3. AUTO-8a (on main) and AUTO-8b-1 (built), then AUTO-8b-2.
 4. AUTO-6.
 5. AUTO-1.
 6. AUTO-4.
@@ -309,7 +321,7 @@ Each path was read on `ce29836ea`.
 - `apps/services/gateway/gateway/routes/projects/decisions.py` (`ask_decision`, `answer_decision`) and `personal.py` (`create_personal_task`, `announce=False`)
 - The flag `AUTO_PARK_ORGS` (default empty, owner-only, reloads on SIGHUP): `packages/acb_common/acb_common/settings.py`, `env_guard.py` and `.env.example`. Its one reader is `park.park_allowed`, and `DECISIONS_ORGS` must list the org too
 - `infra/postgres/132_workflows.sql`, `infra/postgres/313_unattended_ledger.sql`, `infra/postgres/271_reach_requests.sql`, `infra/postgres/66_pending_actions.sql`
-- `apps/services/gateway/gateway/jobs/queue.py`, `jobs/worker.py`, `jobs/unattended.py`, and `jobs/headless_turn.py` of AUTO-8a (read on `2d2e71978`)
+- `apps/services/gateway/gateway/jobs/queue.py`, `jobs/worker.py`, `jobs/unattended.py`, and `jobs/headless_turn.py` of AUTO-8a (read on `2d2e71978`) and AUTO-8b-1 (read on `6c8d48d81`)
 - `packages/acb_common/acb_common/goal_store.py` (`goal_member`, `get_goal`, `record_round`, `cap_block`) and `packages/acb_skills/acb_skills/subagent_contract.py` (`Job`, `bind_job`, `child_may_hold`, `child_pin`)
 - The flag `HEADLESS_TURN_ORGS` (default empty, `*` allowed, owner-only, reloads on SIGHUP): `packages/acb_common/acb_common/settings.py`, `env_guard.py` and `.env.example`. Its one reader is `headless_turn.headless_allowed`
 - `apps/services/gateway/gateway/brief/run.py` (the one caller of the ledger)
@@ -344,7 +356,10 @@ Each path was read on `ce29836ea`.
 | A turn holds read-only tools only | AUTO-8a: `tests/unit/test_headless_turn.py`, and `tests/unit/test_subagent_worker.py` for the pin of the worker |
 | With no cost reader, no model call runs | AUTO-8a: `tests/unit/test_headless_turn.py` and `tests/unit/test_headless_turn_r8.py` (R8) |
 | The headless handler runs with no person present | AUTO-8a: `tests/unit/test_no_person_present.py` |
-| No credit stop inside one call | ADVISORY (R7), no fence. The Router's `RunCeiling` is the backstop, and AUTO-8b adds a ceiling for each turn |
+| No credit stop inside one call | ADVISORY (R7), no fence. The goal cap is the cap. `RunCeiling` is a fixed tripwire of 500 credits for each run. AUTO-8b-2 adds a ceiling for each turn |
+| The settle of a round ends inside `SETTLE_MARGIN_S`, and a meter that does not answer in time charges the rest of the budget | AUTO-8b-1: `tests/unit/test_headless_turn.py` and `tests/unit/test_headless_turn_r8.py` (R8) |
+| The clock of the turn starts before `unattended.recover` | AUTO-8b-1: `tests/unit/test_headless_turn.py` |
+| Each round checks the bound of the goal cap | AUTO-8b-1: `tests/unit/test_headless_turn.py` |
 | A run happens at most once for a slot | `tests/unit/test_unattended_ledger.py` (exists) |
 | No second scheduler | New with AUTO-1: a scan that finds no new cron loop outside `routes/workflows/scheduler.py` |
 | A watch reads only what its member reads | New with AUTO-5: an R8 suite with two orgs |
@@ -364,6 +379,8 @@ For this spec only: `uv run pytest tests/unit/test_index_completeness.py tests/u
 For AUTO-7b: `uv run pytest tests/unit/test_auto_park.py tests/unit/test_no_person_present.py tests/unit/test_workflows_start_run_org_fence.py -q`, with `TENANT_LADDER_DATABASE_URL` set for the R8 cases.
 
 For AUTO-8a: `uv run pytest tests/unit/test_headless_turn.py tests/unit/test_headless_turn_r8.py tests/unit/test_no_person_present.py -q`, with `TENANT_LADDER_DATABASE_URL` set for the R8 cases.
+
+For AUTO-8b-1: the AUTO-8a command, plus `tests/unit/test_job_effects_fence.py`, `tests/unit/test_background_ai_member.py`, `tests/unit/test_unattended_ledger.py` and `tests/unit/test_job_queue.py`.
 
 ---
 

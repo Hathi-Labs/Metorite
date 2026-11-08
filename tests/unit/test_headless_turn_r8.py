@@ -1,4 +1,4 @@
-"""WS-AUTO AUTO-8a: the headless turn on a real database (R8).
+"""WS-AUTO AUTO-8a and AUTO-8b-1: the headless turn on a real database (R8).
 
 Spec: ``project-docs/specs/proactive_agent.md`` §4.4 and §11. Code:
 ``apps/services/gateway/gateway/jobs/headless_turn.py``. The hermetic half is
@@ -20,6 +20,9 @@ test calls a model.
 * A stale goal version (``StaleGoal``) ends the turn with no second round.
 * A job for a member who left makes no model call and ends ok.
 * The default meter makes no model call.
+* AUTO-8b-1: a meter that runs out of time after the call charges the rest
+  of the budget. The goal of A blocks with ``cap_reached``, org B sees
+  nothing, and the ledger row ends ``ok``.
 
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
@@ -293,6 +296,40 @@ def test_r8_cap_reached_writes_the_goal_of_a_only_and_reports_once(world, monkey
     assert _row(world, ana.id)["version"] == 2
     assert _job(world, second)["state"] == "done"
     assert _ledger(world, second) == []
+
+
+# ── The settle in time (AUTO-8b-1) ──────────────────────────────────────────
+
+
+def test_r8_a_meter_past_the_margin_blocks_the_goal_of_a_only(world, monkeypatch) -> None:
+    """AUTO-8b-1 acceptance 5. Round 1 spends 1 credit. In round 2 the meter
+    after the call sleeps past its part of ``SETTLE_MARGIN_S``. The round
+    charges the rest of the budget (10 - 1), so Ana's goal blocks with
+    ``cap_reached`` in one write. Ben's goal of org B does not move, and the
+    ledger row of the turn ends ``ok``."""
+    monkeypatch.setattr(ht, "SETTLE_MARGIN_S", 1.5)
+    ana = _goal(world, world.p.org_a, ANA, cost_cap_credits=10)
+    ben = _goal(world, world.p.org_b, BEN, cost_cap_credits=10)
+    runner, reports = FakeRunner(world.meter, cost="1"), Reports()
+
+    def _hang_in_round_2(n: int) -> None:
+        if n == 2:
+            world.meter.sleep_after = 60.0
+
+    runner.side = _hang_in_round_2
+    _use(monkeypatch, ht.HeadlessTurn(runner=runner, meter=world.meter, report=reports,
+                                      candidates=world.checks, go_on=lambda _r: True))
+    job_id = _enqueue(world, world.p.org_a, ana.id)
+    assert _tick(world, world.p.org_a) == Counter(done=1)
+    row = _row(world, ana.id)
+    assert (row["state"], row["block_code"], row["version"]) == ("blocked", "cap_reached", 3)
+    assert (row["round_count"], row["cost_used_credits"]) == (2, Decimal("10"))
+    assert len(runner.calls) == 2 and world.meter.cancelled is True
+    assert [g.version for g in reports.seen] == [3]
+    _assert_untouched(world, ben)
+    assert _job(world, job_id)["state"] == "done"
+    want = [("ok", None)] if world.ledger else []
+    assert [(r["state"], r["error_class"]) for r in _ledger(world, job_id)] == want
 
 
 # ── A stale goal ────────────────────────────────────────────────────────────
