@@ -6047,6 +6047,15 @@ and one thing that cannot be written until a second person exists.
 > owner first. `specs/crm_platform.md` §18.11 is the authority. No plan-guard
 > rule names these flags either.
 >
+> **DEC-1 — the Projects decide features.** *(Registered 2026-11-08.)* To
+> build the seam is AGENT-SAFE, and it ships dark. A mode other than `off` for
+> `projects.align` in `DECIDE_FEATURE_MODES` is an owner flip, because each
+> request spends the org's credits (CLAUDE.md §3a rule 3). A `projects.` mode
+> spends only for an org in `PROJECTS_DECIDE_ORGS`, so a name in that list is
+> half of the same flip. The grant `enforcement-flip` covers neither.
+> `specs/project_alignment.md` §6.2 is the authority. No plan-guard rule names
+> these flags either.
+>
 > **WS-53 — the CRM mapping pipeline.** *(Registered 2026-10-16 with
 > CRM-Q20-1.)* To build CRM-Q20-1 is AGENT-SAFE, and it ships dark. A mode
 > other than `off` for `crm.map_role`, `crm.map_target` or `crm.map_stage` in
