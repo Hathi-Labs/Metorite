@@ -42,12 +42,15 @@ import { REQUEST_TITLE, type AppRequestDecision } from "@/lib/appRequest";
 import { invalidate } from "@/lib/dataCache";
 import { openAssistant, useAskOutcome } from "@/lib/shell/assistant";
 import {
+  TELL_LABEL,
   askedRequestIds,
-  followUpNote,
+  cardNote,
   pressDecision,
+  pressTell,
   rememberCard,
   rememberedCard,
   shownRequest,
+  tellShows,
   type CardLocal,
 } from "@/lib/studio/studioCardState";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -76,10 +79,13 @@ export function StudioRequestCard({ requestId, sessionId }: { requestId: string;
     [requestId],
   );
 
+  // The follow-up goes into the card's own chat or into no chat (join only).
+  const tell = (text: string) => openAssistant({ text, joinOnly: true, ...(sessionId ? { sessionId } : {}) });
+
   const onDecide = (decision: AppRequestDecision) => {
     void pressDecision(requestId, decision, () => localRef.current, set, {
       decide: decideRequest,
-      tell: (text) => openAssistant({ text, ...(sessionId ? { sessionId } : {}) }),
+      tell,
       newKey: () => crypto.randomUUID(),
       refusal: (err) => (err instanceof Error && err.message ? err.message : NOT_SAVED),
       // Read the request again after each answer, refusals too, so the card
@@ -93,9 +99,10 @@ export function StudioRequestCard({ requestId, sessionId }: { requestId: string;
   if (read.data === undefined) {
     // Nothing to show yet: the space of the card, so nothing below it moves.
     if (!read.error) {
+      // About the height of the card, so the turns below it do not jump.
       return (
         <div className={SLOT_CLASS}>
-          <Skeleton className="h-28 w-full" />
+          <Skeleton className="h-80 w-full" />
         </div>
       );
     }
@@ -117,13 +124,19 @@ export function StudioRequestCard({ requestId, sessionId }: { requestId: string;
       </div>
     );
   }
+  const shown = shownRequest(read.data, local);
+  // An approval that never ran: one control sends the follow-up, once.
+  const act = tellShows(shown, local, outcome)
+    ? { label: TELL_LABEL, icon: "Send", onClick: () => void pressTell(requestId, () => localRef.current, set, tell) }
+    : null;
   return (
     <div className={SLOT_CLASS} data-studio-request={requestId}>
       <AppRequestCard
-        request={shownRequest(read.data, local)}
+        request={shown}
         busy={local.busy}
         error={local.error}
-        note={followUpNote(local, outcome)}
+        note={cardNote(shown, local, outcome)}
+        act={act}
         onDecide={onDecide}
       />
     </div>

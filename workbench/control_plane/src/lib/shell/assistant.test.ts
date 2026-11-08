@@ -33,6 +33,7 @@ import {
   __resetAssistantForTests,
   MAX_ASK_OUTCOMES,
   askOutcome,
+  joinOnlyTakes,
   assistantState,
   barMayJoin,
   clampDockWidth,
@@ -190,7 +191,43 @@ describe("the store", () => {
     expect(askOutcome(second)).toBe("lost");
   });
 
+  it("a join-only open marks its ask, and a plain open does not (STU-B2c-2c fix round 1)", () => {
+    openAssistant({ text: "I approved the change on the card.", joinOnly: true, sessionId: "chat-1" });
+    expect(assistantState().ask).toMatchObject({ joinOnly: true });
+    expect(assistantState().sessionId).toBe("chat-1");
+    openAssistant({ text: "what is due today" });
+    expect(assistantState().ask && "joinOnly" in assistantState().ask!).toBe(false);
+    closeAssistant();
+  });
+
+  it("a join-only ask takes only the member's own private chat that is not archived, at any age", () => {
+    const old = { updatedAt: new Date(Date.now() - STALE_CHAT_MS * 10).toISOString(), messageCount: 9 };
+    expect(joinOnlyTakes({ ...old, isOwner: true, participantCount: 1 })).toBe(true);
+    expect(joinOnlyTakes({ ...old, participantCount: 1 })).toBe(true);
+    expect(joinOnlyTakes({ ...old, archivedAt: new Date().toISOString() })).toBe(false);
+    expect(joinOnlyTakes({ ...old, participantCount: 2 })).toBe(false);
+    expect(joinOnlyTakes({ ...old, isOwner: false })).toBe(false);
+    expect(joinOnlyTakes(null)).toBe(false);
+    expect(joinOnlyTakes(undefined)).toBe(false);
+  });
+
+  it("the dock never opens a fresh chat for a join-only ask: it joins or marks the ask lost", () => {
+    // Mutation: drop the join-only branch -> an archived chat or a room opens
+    // a new chat, and the card says Sent -> red.
+    const dock = read("lib/shell/AssistantDock.tsx").replace(/\r\n/g, "\n");
+    const effect = dock.slice(dock.indexOf("const ask = st.ask;"), dock.indexOf("openAssistant({ fresh: true });"));
+    expect(effect).toMatch(
+      /if \(ask\.joinOnly\) \{\s*if \(joinOnlyTakes\(cur\)\) setDecided\(\{ seq: ask\.seq, sessionId: st\.sessionId \}\);\s*else consumeAsk\(ask\.seq, "lost"\);\s*return;\s*\}/,
+    );
+    // The store marks it lost, and the card reads that.
+    const seq = openAssistant({ text: "I approved it", joinOnly: true });
+    consumeAsk(seq!, "lost");
+    expect(askOutcome(seq)).toBe("lost");
+    expect(assistantState().ask).toBeNull();
+  });
+
   it("the store keeps at most MAX_ASK_OUTCOMES outcomes, the newest", () => {
+    expect(MAX_ASK_OUTCOMES).toBeGreaterThanOrEqual(500);
     const seqs: number[] = [];
     for (let i = 0; i < MAX_ASK_OUTCOMES + 5; i++) {
       const s = openAssistant({ text: `ask ${i}` });
@@ -198,6 +235,8 @@ describe("the store", () => {
       consumeAsk(s!, "sent");
     }
     expect(askOutcome(seqs[0])).toBeNull();
+    expect(askOutcome(seqs[4])).toBeNull();
+    expect(askOutcome(seqs[5])).toBe("sent");
     expect(askOutcome(seqs[seqs.length - 1])).toBe("sent");
     closeAssistant();
   });

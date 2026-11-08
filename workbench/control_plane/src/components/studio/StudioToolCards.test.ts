@@ -25,7 +25,7 @@ import { requestKey } from "@/app/integrations/lib/appRequests";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import type { AppRequest } from "@/lib/appRequest";
 import { clearAll, put } from "@/lib/dataCache";
-import { __forgetCardsForTests, STUDIO_CARD_TOOLS } from "@/lib/studio/studioCardState";
+import { __forgetCardsForTests, NOT_SAVED_YET, STUDIO_CARD_TOOLS, TELL_LABEL } from "@/lib/studio/studioCardState";
 
 import StudioToolCards from "./StudioToolCards";
 
@@ -115,7 +115,10 @@ describe("the card draws from an ask of each of the three write tools", () => {
   });
 
   it("before the read lands, it keeps the space of the card", () => {
-    expect(draw([askEvent("studio_record_create")])).toContain('aria-hidden="true"');
+    const html = draw([askEvent("studio_record_create")]);
+    expect(html).toContain('aria-hidden="true"');
+    // About the height of the card (fix round 1), so the turns below do not jump.
+    expect(html).toContain("h-80");
   });
 });
 
@@ -136,8 +139,16 @@ describe("a decided or expired request shows no buttons, also after a reload", (
       expect(html).not.toContain("data-app-request-approve");
       expect(html).not.toContain("data-app-request-decline");
       expect(html).toContain(`>${word}<`);
-      // No follow-up line: this mount sent nothing.
-      expect(html).not.toContain("data-app-request-note");
+      if (name === "approved") {
+        // Fix round 1: an approval that never ran says so, with one control.
+        expect(html).toContain("data-app-request-act");
+        expect(html).toContain(TELL_LABEL);
+        expect(html).toContain(NOT_SAVED_YET);
+      } else {
+        // No follow-up line and no control: this mount sent nothing.
+        expect(html).not.toContain("data-app-request-note");
+        expect(html).not.toContain("data-app-request-act");
+      }
     });
   }
 });
@@ -161,7 +172,16 @@ describe("the wiring", () => {
   });
 
   it("the follow-up goes into the same chat through the shell's one assistant", () => {
-    expect(live).toContain("tell: (text) => openAssistant({ text, ...(sessionId ? { sessionId } : {}) }),");
+    expect(live).toContain(
+      "const tell = (text: string) => openAssistant({ text, joinOnly: true, ...(sessionId ? { sessionId } : {}) });");
+    expect(live).toMatch(/decide: decideRequest,\s*tell,/);
+  });
+
+  it("Tell the assistant goes through the one guard, with the same join-only send", () => {
+    expect(live).toContain("const act = tellShows(shown, local, outcome)");
+    expect(live).toContain("onClick: () => void pressTell(requestId, () => localRef.current, set, tell) }");
+    expect(live).toContain("note={cardNote(shown, local, outcome)}");
+    expect(live).toContain("act={act}");
   });
 
   it("each answer reads the request again, and a refusal does too", () => {
@@ -170,8 +190,8 @@ describe("the wiring", () => {
 
   it("the card reads the request through the one cache, and draws the server's state with the local decision", () => {
     expect(live).toContain("useCachedResource(requestKey(requestId), () => readRequest(requestId))");
-    expect(live).toContain("request={shownRequest(read.data, local)}");
-    expect(live).toContain("note={followUpNote(local, outcome)}");
+    expect(live).toContain("const shown = shownRequest(read.data, local);");
+
     expect(live).toContain("const outcome = useAskOutcome(local.askSeq);");
   });
 

@@ -881,9 +881,14 @@ def test_the_studio_rules_tell_the_dark_and_the_lit_record_writes() -> None:
         "studio_record_create adds a record, studio_record_update changes one, and "
         "studio_record_delete deletes one.",
         "each asks the member first. The first call saves nothing.",
-        "the member approves or declines the change in Integrations, AI agents, Waiting for you.",
-        "call the same tool again with the same package id, the same object name and that "
-        "request_id. Send no data again",
+        # STU-B2c-2c fix round 1: the card of the web chat first, the list of
+        # Integrations in a channel with no card, and the resend by the id alone.
+        "In the web chat, the approval card shows under your reply, so ask the member to "
+        "answer it there.",
+        "In a channel with no card, the member approves or declines the change in "
+        "Integrations, AI agents, Waiting for you.",
+        "call the same tool again with only that request_id. Send no package id, no object "
+        "name and no data again",
         "Only a result with saved true is saved. Never say that a change is saved before that.",
         "A declined change wrote nothing. Say so.",
     )

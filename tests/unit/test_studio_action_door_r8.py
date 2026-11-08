@@ -2043,6 +2043,8 @@ def tworld(rworld, monkeypatch):
     _run(w, setup)
     app = FastAPI()
     app.include_router(studio_router)
+    # B2c-2c fix round 1: the resend by the request_id alone reads the request.
+    app.include_router(agent_requests.router)
 
     async def as_member(request: _HttpRequest) -> UserContext:
         return _user(w.a, request.headers.get("X-User-Email", ""))
@@ -2386,3 +2388,63 @@ def test_r8_av_org_b_and_another_member_see_no_request_of_ana(tworld, monkeypatc
             "SELECT count(*) FROM pm_agent_runs WHERE app = 'studio' "
             "AND organization_id = CAST(:b AS uuid) AND member_email IN (:a, :n)"),
             {"b": w.b, "a": ANA, "n": BEN}).scalar_one() == 0
+
+
+# ── aw and ax. The resend with only the request_id (B2c-2c fix round 1) ────
+#
+# The next turn of a chat may hold only text, so Mira may not know the package
+# id and the object name. The tool reads the request as the member (the read
+# route of the card) and sends the stored action with ``?request_id=``.
+#
+# aw. An ask, the approval on the decision route, then a resend with ONLY the
+#     request_id: the write runs once, and a second one is request_spent.
+# ax. A resend with ONLY the request_id of a declined request writes nothing.
+
+
+def test_r8_aw_a_resend_with_only_the_request_id_writes_once(tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    count = _record_count(w, w.tobj)
+    data = {**_DATA, "site": "Id only"}
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {"asked": await st.studio_record_create(w.tpkg, "visit", data=data)}
+        rid = got["asked"]["request_id"]
+        got["decided"] = await _decide_route(w.a, ANA, rid, "approve", "id-only-press")
+        got["ran"] = await st.studio_record_create(request_id=rid)
+        got["after"] = _record_count(w, w.tobj)
+        got["again"] = await st.studio_record_create(request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    rid = got["asked"]["request_id"]
+    assert got["decided"]["state"] == "approved"
+    assert (got["ran"]["ok"], got["ran"]["saved"]) == (True, True), got["ran"]
+    assert got["after"] == count + 1
+    assert _data_of(w, got["ran"]["record_id"])["site"] == "Id only"
+    assert (got["again"]["saved"], got["again"]["code"]) == (False, "request_spent")
+    assert _record_count(w, w.tobj) == count + 1
+    # The tool read the request, then sent the stored action. No call decided.
+    reads = [(m, p) for m, p, _q, _b in w.seen if m == "GET" and p.startswith("/agent-access/")]
+    assert reads == [("GET", f"/agent-access/requests/{rid}")] * 2
+    assert [q for _a, q, _b in _door_posts(w)] == [
+        "ask=1", f"request_id={rid}", f"request_id={rid}"]
+    assert all("decision" not in path for _m, path, _q, _b in w.seen)
+
+
+def test_r8_ax_a_resend_with_only_the_request_id_of_a_declined_change_writes_nothing(
+        tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    before = _record_row(w, w.trec)
+
+    async def go() -> dict[str, Any]:
+        asked = await st.studio_record_update(w.tpkg, "visit", w.trec, {"notes": "Id only"})
+        rid = asked["request_id"]
+        await _decide_route(w.a, ANA, rid, "decline", "id-only-decline")
+        return {"rid": rid, "resend": await st.studio_record_update(request_id=rid)}
+
+    got = _chat(w, go)
+    resend = got["resend"]
+    assert (resend["saved"], resend["code"]) == (False, "request_declined"), resend
+    assert _record_row(w, w.trec) == before, "a declined change writes nothing"

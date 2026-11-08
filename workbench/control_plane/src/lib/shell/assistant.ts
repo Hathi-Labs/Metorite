@@ -373,6 +373,13 @@ export interface AssistantAsk {
    * (`lib/typedMark.ts`). A start pill and "Get to know me" leave it unset.
    */
   typed?: boolean;
+  /**
+   * STU-B2c-2c fix round 1: the words go into the chat that the open names, or
+   * into no chat. The dock never opens a fresh chat for them: a room, an
+   * archived chat and a chat of another member mark the ask `lost`
+   * (`joinOnlyTakes`). The answer of an approval card in the chat sets it.
+   */
+  joinOnly?: boolean;
 }
 
 export interface AssistantState {
@@ -484,6 +491,8 @@ export interface OpenOptions {
   /** WS-63 D-PZ-37: the member typed `text` or `draft` in a box of the
    *  shell. Leave it unset for words that a click sends. */
   typed?: boolean;
+  /** STU-B2c-2c: `text` joins the named chat or no chat (`AssistantAsk.joinOnly`). */
+  joinOnly?: boolean;
 }
 
 /**
@@ -535,7 +544,10 @@ export function openAssistant(opts: OpenOptions = {}): number | null {
     mode: modeOnOpen({ phone, open: base.open, current: base.mode, opts }),
     sessionId: opts.sessionId !== undefined ? opts.sessionId : base.sessionId,
     ask: text && askSeq !== null
-      ? { seq: askSeq, text, join: base.open, ...(opts.typed === true ? { typed: true } : {}) }
+      ? {
+        seq: askSeq, text, join: base.open, ...(opts.typed === true ? { typed: true } : {}),
+        ...(opts.joinOnly === true ? { joinOnly: true } : {}),
+      }
       : base.ask,
     draft: draft
       ? {
@@ -637,8 +649,22 @@ export function consumeAsk(seq: number, outcome?: AskOutcome): void {
  */
 export type AskOutcome = "sent" | "kept" | "lost";
 
-/** The most outcomes the store keeps. The oldest goes first. Memory only. */
-export const MAX_ASK_OUTCOMES = 50;
+/**
+ * The most outcomes the store keeps. The oldest goes first. Memory only. A
+ * page makes far fewer asks than this, so a card never loses its outcome.
+ */
+export const MAX_ASK_OUTCOMES = 500;
+
+/**
+ * Whether a join-only ask (`AssistantAsk.joinOnly`) may go into `chat`: the
+ * member's own private chat that is not archived. Its age does not count,
+ * because the member pressed a control inside that chat. Else the ask is lost.
+ */
+export function joinOnlyTakes(
+  chat: Pick<ChatSession, "archivedAt" | "isOwner" | "participantCount"> | null | undefined,
+): boolean {
+  return Boolean(chat && !chat.archivedAt && chat.isOwner !== false && (chat.participantCount ?? 0) <= 1);
+}
 
 const _outcomes = new Map<number, AskOutcome>();
 const _outcomeListeners = new Set<() => void>();

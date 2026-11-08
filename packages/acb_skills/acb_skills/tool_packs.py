@@ -871,12 +871,15 @@ No Studio agent exists to hand a task to.
 - RECORD CHANGES. studio_record_create adds a record, studio_record_update
   changes one, and studio_record_delete deletes one. Each acts as the member of
   this chat, and each asks the member first. The first call saves nothing. It
-  gives a request_id, and the member approves or declines the change in
-  Integrations, AI agents, Waiting for you. Tell the member so, and stop.
-- When the member says that they approved it, call the same tool again with the
-  same package id, the same object name and that request_id. Send no data
-  again: the change runs as the member approved it. Only a result with saved
-  true is saved. Never say that a change is saved before that.
+  gives a request_id, and the change waits for the member's approval. In the
+  web chat, the approval card shows under your reply, so ask the member to
+  answer it there. In a channel with no card, the member approves or declines
+  the change in Integrations, AI agents, Waiting for you. Tell the member so,
+  and stop.
+- When the member says that they approved it, call the same tool again with
+  only that request_id. Send no package id, no object name and no data again:
+  the change runs as the member approved it. Only a result with saved true is
+  saved. Never say that a change is saved before that.
 - A declined change wrote nothing. Say so. Do not ask again unless the member
   asks for the change now. Each other refusal says what happened and the next
   step. Do that step.

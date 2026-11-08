@@ -33,18 +33,23 @@ import {
 
 import {
   IDLE,
+  NOT_SAVED_YET,
   STUDIO_CARD_TOOLS,
+  TELL_LABEL,
   __forgetCardsForTests,
   askedRequestId,
   askedRequestIds,
+  cardNote,
   followUpNote,
   followUpText,
   isRequestId,
   mayPress,
   pressDecision,
+  pressTell,
   rememberCard,
   rememberedCard,
   shownRequest,
+  tellShows,
   type CardLocal,
   type PressDeps,
 } from "./studioCardState";
@@ -236,7 +241,7 @@ describe("one press posts once and sends one follow-up", () => {
     const h = holder();
     const ok = await pressDecision(RID, "approve", h.get, h.set, {
       decide: decideRequest,
-      tell: (text) => openAssistant({ text }),
+      tell: (text) => openAssistant({ text, joinOnly: true }),
       newKey: () => "k-1",
       refusal: () => "no",
     });
@@ -250,6 +255,8 @@ describe("one press posts once and sends one follow-up", () => {
     expect(ask?.text).toBe(followUpText(RID, "approve"));
     // The card passes no typed mark: the member did not type these words.
     expect(ask && "typed" in ask).toBe(false);
+    // Fix round 1: the answer goes into the card's own chat or no chat.
+    expect(ask?.joinOnly).toBe(true);
     expect(h.get().askSeq).toBe(ask?.seq);
   });
 });
@@ -303,5 +310,58 @@ describe("the request as the card draws it", () => {
     expect(rememberedCard(RID)).toEqual(local);
     expect(JSON.stringify(rememberedCard(RID))).not.toMatch(/Plant 4|visit/);
     expect(rememberedCard("6c2f4d3b-8e5a-4b7c-8d9e-1f2a3b4c5d6e")).toBe(IDLE);
+  });
+});
+
+
+describe("an approval that never ran shows Tell the assistant, once (fix round 1)", () => {
+  const approved = request({ state: "approved", decision: "approve" });
+
+  it("shows on an approved request after a reload, and on a kept or lost follow-up", () => {
+    expect(TELL_LABEL).toBe("Tell the assistant");
+    expect(tellShows(approved, IDLE, null)).toBe(true);
+    expect(cardNote(approved, IDLE, null)).toBe(NOT_SAVED_YET);
+    const sentHere: CardLocal = { ...IDLE, decided: "approve", askSeq: 3 };
+    expect(tellShows(approved, sentHere, "kept")).toBe(true);
+    expect(tellShows(approved, sentHere, "lost")).toBe(true);
+    // A follow-up on its way or sent: no second way to send it.
+    expect(tellShows(approved, sentHere, null)).toBe(false);
+    expect(tellShows(approved, sentHere, "sent")).toBe(false);
+    expect(cardNote(approved, sentHere, "sent")).toBe("Sent to the chat.");
+  });
+
+  it("never shows on a request that waits, was declined, ran or expired", () => {
+    for (const state of ["awaiting", "declined", "done", "expired"] as const) {
+      expect(tellShows(request({ state }), IDLE, null), state).toBe(false);
+      expect(cardNote(request({ state }), IDLE, null), state).toBeNull();
+    }
+  });
+
+  it("sends the fixed follow-up once, into the card's chat, and a second press sends nothing", () => {
+    const h = holder();
+    const tell = vi.fn((_t: string) => 9 as number | null);
+    expect(pressTell(RID, h.get, h.set, tell)).toBe(true);
+    expect(tell).toHaveBeenCalledTimes(1);
+    expect(tell).toHaveBeenCalledWith(followUpText(RID, "approve"));
+    expect(h.get()).toMatchObject({ told: true, decided: "approve", askSeq: 9 });
+    expect(pressTell(RID, h.get, h.set, tell)).toBe(false);
+    expect(tell).toHaveBeenCalledTimes(1);
+    expect(tellShows(approved, h.get(), "lost")).toBe(false);
+  });
+
+  it("sends nothing while a decision is on its way", () => {
+    const h = holder({ ...IDLE, busy: "approve" });
+    const tell = vi.fn((_t: string) => 1 as number | null);
+    expect(pressTell(RID, h.get, h.set, tell)).toBe(false);
+    expect(tell).not.toHaveBeenCalled();
+  });
+
+  it("with the real store: a lost answer shows the control again, with the words of the note", () => {
+    const h = holder({ ...IDLE, decided: "approve" });
+    const seq = openAssistant({ text: followUpText(RID, "approve"), joinOnly: true });
+    h.set({ ...h.get(), askSeq: seq });
+    consumeAsk(seq!, "lost");
+    expect(followUpNote(h.get(), askOutcome(seq))).toContain("did not reach the chat");
+    expect(tellShows(approved, h.get(), askOutcome(seq))).toBe(true);
   });
 });

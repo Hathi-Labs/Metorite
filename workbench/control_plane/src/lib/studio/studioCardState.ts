@@ -24,6 +24,13 @@
  * 4. **What the card says.** "Sent to the chat" only after the chat sent the
  *    words. When the chat refused the send, the words wait in the composer,
  *    and the card says to press Send.
+ * 5. **Join only** (fix round 1). The follow-up goes into the card's own chat
+ *    or into no chat (`openAssistant({ joinOnly: true })`). A room, an
+ *    archived chat and a chat of another member mark it `lost`, and the card
+ *    says that the words did not reach the chat.
+ * 6. **An approval that never ran** (fix round 1). A request that is approved
+ *    and not spent shows "Tell the assistant" after a reload, or when the
+ *    follow-up was kept or lost. It sends the same follow-up, once.
  *
  * No stream event, no `request_confirmation` and no decision tool: the card
  * of the store is the one approval. Fence: `studioCardState.test.ts`.
@@ -122,9 +129,13 @@ export interface CardLocal {
   askSeq: number | null;
   /** The key of the last press. A retry of the same decision reuses it. */
   key: { decision: AppRequestDecision; value: string } | null;
+  /** "Tell the assistant" sent its follow-up. It sends once. */
+  told: boolean;
 }
 
-export const IDLE: CardLocal = { busy: null, decided: null, error: null, askSeq: null, key: null };
+export const IDLE: CardLocal = {
+  busy: null, decided: null, error: null, askSeq: null, key: null, told: false,
+};
 
 /** A press may go: nothing is on its way, and no decision landed here. */
 export function mayPress(local: CardLocal): boolean {
@@ -174,6 +185,41 @@ export async function pressDecision(
   return true;
 }
 
+/** The label of the control of an approval that never ran. */
+export const TELL_LABEL = "Tell the assistant";
+
+/**
+ * Whether the card shows "Tell the assistant": the request is approved and not
+ * spent, the control did not send yet, and no follow-up of this card is on
+ * its way or sent. A follow-up that was kept in the composer or lost counts
+ * as not sent.
+ */
+export function tellShows(shown: Pick<AppRequest, "state">, local: CardLocal, outcome: AskOutcome | null): boolean {
+  if (shown.state !== "approved" || local.told || local.busy !== null) return false;
+  return local.askSeq === null || outcome === "kept" || outcome === "lost";
+}
+
+/**
+ * One press of "Tell the assistant": the follow-up of an approval, sent once.
+ * A second press, or a press while a decision is on its way, sends nothing.
+ * Returns true when it sent.
+ */
+export function pressTell(
+  requestId: string,
+  get: () => CardLocal,
+  set: (next: CardLocal) => void,
+  tell: (text: string) => number | null,
+): boolean {
+  const before = get();
+  if (before.told || before.busy !== null) return false;
+  const text = followUpText(requestId, "approve");
+  if (!text) return false;
+  set({ ...before, told: true });
+  const askSeq = tell(text);
+  set({ ...get(), decided: before.decided ?? "approve", askSeq });
+  return true;
+}
+
 /**
  * The request as the card draws it. A decision that landed here wins over a
  * read that still says it waits, so the buttons go at once and never come
@@ -198,6 +244,16 @@ export function followUpNote(local: CardLocal, outcome: AskOutcome | null): stri
     return `Your answer did not reach the chat. Tell the assistant that you ${said} the change.`;
   }
   return "Sending your answer to the chat…";
+}
+
+/** The line of an approved request that never ran, before any follow-up. */
+export const NOT_SAVED_YET = "Not saved yet. Tell the assistant to run the approved change.";
+
+/** The line beside the state: the follow-up, or the next step of an approval that never ran. */
+export function cardNote(shown: Pick<AppRequest, "state">, local: CardLocal, outcome: AskOutcome | null): string | null {
+  const said = followUpNote(local, outcome);
+  if (said) return said;
+  return tellShows(shown, local, outcome) ? NOT_SAVED_YET : null;
 }
 
 /** The most cards that keep their state for a remount. Memory only. */
