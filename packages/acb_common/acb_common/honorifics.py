@@ -21,6 +21,7 @@ Rules that bind every reader (spec 16.4.1):
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 
 # Where the form goes with the name.
@@ -114,6 +115,31 @@ def _kin(form, spellings, register, langs, **kw):
 _G, _S = GIVEN_NAME, SURNAME
 _ANY = ANY_LANGUAGE
 
+# Native-script spellings (task 1894). Each one is a SPELLING of a row that the
+# catalogue already has for that meaning (spec 16.4.1 rule 9), so the row keeps
+# its form, placement and source tags. No spelling here adds a form. The tuples
+# join the spellings of the row they name, below.
+_SHRI_NATIVE = (
+    "श्री",  # Devanagari
+    "శ్రీ",  # Telugu
+    "ಶ್ರೀ",  # Kannada
+    "ശ്രീ",  # Malayalam
+    "শ্রী",  # Bengali
+    "શ્રી",  # Gujarati
+    "ਸ੍ਰੀ", "ਸ਼੍ਰੀ",  # Gurmukhi, two spellings
+    "ଶ୍ରୀ",  # Odia
+)
+_SHRIMATI_NATIVE = (
+    "श्रीमती",  # Devanagari
+    "శ్రీమతి",  # Telugu
+    "ಶ್ರೀಮತಿ",  # Kannada
+    "ശ്രീമതി",  # Malayalam
+    "শ্রীমতী",  # Bengali
+    "શ્રીમતી",  # Gujarati
+    "ਸ੍ਰੀਮਤੀ",  # Gurmukhi
+    "ଶ୍ରୀମତୀ",  # Odia
+)
+
 HONORIFICS: tuple[Honorific, ...] = (
     # --- Pan-Indian and English
     _s("sir", ("sir", "sar", "saar"), "formal, warm", f"{_ANY}=K"),
@@ -123,16 +149,17 @@ HONORIFICS: tuple[Honorific, ...] = (
     _p("Ms.", ("ms",), _S, "formal", f"{_ANY}=K", gender=FEMALE),
     _p("Mx.", ("mx",), _S, "formal", f"{_ANY}=K"),
     _p("Miss", ("miss",), _S, "formal, unmarried", f"{_ANY}=K", gender=FEMALE, marital=UNMARRIED),
-    _p("Dr.", ("dr",), _S, "formal", f"{_ANY}=K", kind=CREDENTIAL),
+    _p("Dr.", ("dr", "डॉ"), _S, "formal", f"{_ANY}=K", kind=CREDENTIAL),
     # --- Hindi belt (Punjabi and Gujarati share ji)
     _s("ji", ("ji", "jee"), "respectful, warm", "hi=K pa=K gu=K"),
-    _p("Shri", ("shri", "sri", "shree", "sree", "shrii", "shiri"), _G, "formal, male",
+    _p("Shri", ("shri", "sri", "shree", "sree", "shrii", "shiri", *_SHRI_NATIVE), _G, "formal, male",
        "hi=V bn=V gu=K mr=K or=K as=K te=K kn=K ml=K", gender=MALE),
-    _p("Shrimati", ("shrimati", "smt", "srimati", "srimathi", "shrimathi"), _G,
+    _p("Shrimati", ("shrimati", "smt", "srimati", "srimathi", "shrimathi",
+                  *_SHRIMATI_NATIVE), _G,
        "formal, female, married", "hi=V bn=V gu=K or=K as=K te=K kn=K ml=K",
        gender=FEMALE, marital=MARRIED),
-    _p("Sushri", ("sushri",), _G, "formal, female, any status", "hi=V", gender=FEMALE),
-    _p("Kumari", ("kumari", "kum"), _G, "formal, female, unmarried", "hi=K mr=K kn=K ml=K",
+    _p("Sushri", ("sushri", "सुश्री"), _G, "formal, female, any status", "hi=V", gender=FEMALE),
+    _p("Kumari", ("kumari", "kum", "कुमारी"), _G, "formal, female, unmarried", "hi=K mr=K kn=K ml=K",
        also_name=True, gender=FEMALE, marital=UNMARRIED),
     _s("Sahab", ("sahab", "sahib", "saheb", "saab"), "respectful, old style",
        "hi=V gu=V mr=V ur=V"),
@@ -140,7 +167,7 @@ HONORIFICS: tuple[Honorific, ...] = (
     _kin("Bhai", ("bhai", "bhaiya"), "kinship", "hi=K or=U as=U", gender=MALE),
     _kin("Didi", ("didi", "behenji"), "kinship", "hi=K", gender=FEMALE),
     _kin("Dada", ("dada",), "kinship, ambiguous", "hi=K mr=K", gender=MALE),
-    _p("Pandit", ("pandit", "pt"), _G, "title, linked to a community", "hi=V", gender=MALE),
+    _p("Pandit", ("pandit", "pt", "पंडित", "पण्डित"), _G, "title, linked to a community", "hi=V", gender=MALE),
     # --- Punjabi and Sikh
     _p("Sardar", ("sardar",), _G, "respectful, male", "pa=V", gender=MALE),
     _p("Giani", ("giani",), _G, "title, a religious or scholarly role", "pa=V"),
@@ -170,10 +197,10 @@ HONORIFICS: tuple[Honorific, ...] = (
     _s("garu", ("garu", "gaaru"), "respectful to formal, any gender", "te=K"),
     _kin("Anna", ("anna",), "kinship", "te=K ta=K kn=K mr=K", also_name=True, gender=MALE),
     _kin("Akka", ("akka",), "kinship", "te=K ta=K kn=K", gender=FEMALE),
-    _p("Thiru", ("thiru", "tiru"), _G, "formal, male", "ta=V", gender=MALE),
-    _p("Thirumathi", ("thirumathi", "tmt"), _G, "formal, female, married", "ta=V",
+    _p("Thiru", ("thiru", "tiru", "திரு"), _G, "formal, male", "ta=V", gender=MALE),
+    _p("Thirumathi", ("thirumathi", "tmt", "திருமதி"), _G, "formal, female, married", "ta=V",
        gender=FEMALE, marital=MARRIED),
-    _p("Selvi", ("selvi",), _G, "formal, female, unmarried", "ta=K", also_name=True,
+    _p("Selvi", ("selvi", "செல்வி"), _G, "formal, female, unmarried", "ta=K", also_name=True,
        gender=FEMALE, marital=UNMARRIED),
     _p("Selvan", ("selvan",), _G, "young men, on invitations", "ta=U", also_name=True,
        gender=MALE),
@@ -182,10 +209,10 @@ HONORIFICS: tuple[Honorific, ...] = (
     _kin("Chettan", ("chettan",), "kinship, elder brother", "ml=K", gender=MALE),
     _kin("Chechi", ("chechi",), "kinship, elder sister", "ml=K", gender=FEMALE),
     # --- Urdu and Muslim usage
-    _p("Janab", ("janab",), _G, "formal, male", "ur=K", gender=MALE),
-    _p("Mohtaram", ("mohtaram", "mohtarma"), _G, "formal", "ur=K"),
+    _p("Janab", ("janab", "جناب"), _G, "formal, male", "ur=K", gender=MALE),
+    _p("Mohtaram", ("mohtaram", "mohtarma", "محترم"), _G, "formal", "ur=K"),
     _s("Sahiba", ("sahiba",), "respectful", "ur=V", gender=FEMALE),
-    _s("Begum", ("begum",), "traditional, female, married", "ur=V", gender=FEMALE,
+    _s("Begum", ("begum", "بیگم"), "traditional, female, married", "ur=V", gender=FEMALE,
        marital=MARRIED),
     _p("Haji", ("haji",), _G, "religious title", "ur=K"),
     _p("Hafiz", ("hafiz",), _G, "religious title", "ur=K"),
@@ -246,22 +273,26 @@ INITIALS = Honorific(
     languages=((ANY_LANGUAGE, "K"),), kind=NAME_ONLY_KIND,
 )
 
+def normalize(token: str) -> str:
+    """NFC form, lower case, no full stop at the end, a plain apostrophe.
+
+    NFC first, so a spelling in an Indian or Arabic script compares the same
+    however a keyboard typed it. ``lower()`` changes Latin letters only."""
+    text = unicodedata.normalize("NFC", token or "")
+    return text.strip().replace(chr(0x2019), "'").rstrip(".").lower()
+
+
 _PREFIX_INDEX: dict[str, Honorific] = {
-    s: h for h in HONORIFICS if h.placement == PREFIX for s in h.spellings
+    normalize(s): h for h in HONORIFICS if h.placement == PREFIX for s in h.spellings
 }
 _SUFFIX_INDEX: dict[str, Honorific] = {
-    s: h for h in HONORIFICS if h.placement == SUFFIX for s in h.spellings
+    normalize(s): h for h in HONORIFICS if h.placement == SUFFIX for s in h.spellings
 }
 #: Every spelling of every row, any placement. The first row of a spelling wins.
 _FOLD_INDEX: dict[str, str] = {}
 for _row_ in (*HONORIFICS, *NEVER_OFFERED, NAME_ONLY, INITIALS):
     for _spelling in _row_.spellings:
-        _FOLD_INDEX.setdefault(_spelling, _row_.form)
-
-
-def normalize(token: str) -> str:
-    """Lower case, no full stop at the end, a plain apostrophe."""
-    return (token or "").strip().replace(chr(0x2019), "'").rstrip(".").lower()
+        _FOLD_INDEX.setdefault(normalize(_spelling), _row_.form)
 
 
 def find_prefix(token: str) -> Honorific | None:

@@ -88,6 +88,30 @@ def test_a_title_alone_is_not_a_name(h) -> None:
         ("Alice Kumar", "Alice"),
         ("Singh Rao", "Singh"),
         ("alice@example.com", ""),
+        # Task 1894: one native-script title for each script.
+        ("श्री रमेश कुमार", "श्री रमेश"),  # Devanagari
+        ("डॉ. अनिल मेहता", "डॉ. मेहता"),
+        ("திரு முருகன்", "திரு முருகன்"),  # Tamil
+        ("శ్రీ వెంకటేష్ రావు", "శ్రీ వెంకటేష్"),  # Telugu
+        ("ಶ್ರೀ ರಮೇಶ್ ಕುಮಾರ್", "ಶ್ರೀ ರಮೇಶ್"),  # Kannada
+        ("ശ്രീ രമേഷ് കുമാർ", "ശ്രീ രമേഷ്"),  # Malayalam
+        ("শ্রী রমেশ দাস", "শ্রী রমেশ"),  # Bengali
+        ("શ્રી રમેશ પટેલ", "શ્રી રમેશ"),  # Gujarati
+        ("ਸ੍ਰੀ ਹਰਪ੍ਰੀਤ ਸਿੰਘ", "ਸ੍ਰੀ ਹਰਪ੍ਰੀਤ"),  # Gurmukhi
+        ("ਸ਼੍ਰੀ ਹਰਪ੍ਰੀਤ ਸਿੰਘ", "ਸ਼੍ਰੀ ਹਰਪ੍ਰੀਤ"),  # Gurmukhi, composed sha
+        ("ଶ୍ରୀ ରମେଶ ଦାସ", "ଶ୍ରୀ ରମେଶ"),  # Odia
+        ("جناب عمران خان", "جناب عمران"),  # Urdu
+        ("श्री", ""),
+        # A leading suffix form is not the name. A lone one stays.
+        ("Sir Ramesh", "Ramesh"),
+        ("Madam Curie", "Curie"),
+        ("Sahab Khan", "Khan"),
+        ("Ji Kumar", "Kumar"),
+        ("Sir", "Sir"),
+        # A first token with no letter is not the name.
+        ("😀 Ramesh", "Ramesh"),
+        ("123 Ramesh", "Ramesh"),
+        ("😀", "😀"),
     ],
 )
 def test_salutation_name_table(name: str, expected: str) -> None:
