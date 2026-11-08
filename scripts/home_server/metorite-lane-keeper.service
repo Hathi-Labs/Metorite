@@ -1,0 +1,20 @@
+# The lane keeper (CIV-19, task 2206). A user unit of `dev`.
+# NOT installed by the repo. Install: copy this file and the timer to
+# ~/.config/systemd/user/, copy lane_keeper.py to ~/.local/lib/metorite/, then run:
+#   systemctl --user enable --now metorite-lane-keeper.timer
+# Settings (optional, in ~/.config/metorite-lane-keeper.env):
+#   ~/lanes/keeper-lanes.txt          the lanes that may wake, one name per line (no file: none)
+#   KEEPER_SKIP_LANES=...             default lane-chat,lane-bill
+#   KEEPER_SWITCH_CMD=...             the account switch; it reads KEEPER_SKIP_ACCOUNTS
+# Log: ~/lanes/keeper.log. Journal: journalctl --user -u metorite-lane-keeper.service
+[Unit]
+Description=Metorite lane keeper: wake the lanes whose turn ended (CIV-19)
+
+[Service]
+Type=oneshot
+# A trusted project directory. From the home directory claude says "Workspace not trusted".
+WorkingDirectory=%h/Metorite
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+EnvironmentFile=-%h/.config/metorite-lane-keeper.env
+ExecStart=/usr/bin/python3 %h/.local/lib/metorite/lane_keeper.py
+TimeoutStartSec=600

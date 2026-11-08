@@ -230,7 +230,7 @@ class _StoreDb:
     ``packages_store`` and writes each one to *log*. ``counts`` of None
     plays a row that a concurrent delete removed."""
 
-    def __init__(self, log: list[str], *, counts: tuple[int, int, int] | None = (2, 1, 0),
+    def __init__(self, log: list[str], *, counts: tuple[int, int, int, int] | None = (2, 1, 0, 0),
                  audit_fails: bool = False, earlier: int = 0) -> None:
         self.log = log
         self.counts = counts
@@ -501,7 +501,7 @@ def test_store_busy_on_the_first_step_raises(step: SimpleNamespace) -> None:
 
 def test_the_last_step_deletes_the_row_and_writes_one_audit_row(step: SimpleNamespace) -> None:
     step.records = {"visit": 120}
-    db = _StoreDb(step.log, counts=(4, 2, 1), earlier=300)
+    db = _StoreDb(step.log, counts=(4, 2, 1, 0), earlier=300)
     got = _run(store.delete_package(db, ANA, step.pid, names=("visit",), removed=1500))
     assert got == store.DeleteStep(deleted=True, removed=120, names=("visit",))
     assert step.log[-5:] == ["package_counts", "counts", "earlier", "delete", "audit"]
@@ -562,10 +562,12 @@ def test_a_failed_audit_raises_after_the_delete_in_the_same_session(step: Simple
 
 
 def test_the_preview_is_a_read_with_no_lock(step: SimpleNamespace) -> None:
-    found = _run(store.delete_preview(_StoreDb(step.log, counts=(3, 2, 1)), ANA, step.pid))
+    found = _run(store.delete_preview(_StoreDb(step.log, counts=(3, 2, 1, 1)), ANA, step.pid))
     assert step.log == ["get(for_update=False)", "package_counts", "counts"]
     assert (found.records, found.fields, found.versions, found.installs,
             found.other_member_installs, found.capped) == (1000, 6, 3, 2, 1, False)
+    # PKG-8a fix round 2: the active private install of the owner, for the dialog only.
+    assert found.own_entries == 1
     assert found.confirm == _token(step, (3, 2, 1))
     assert _run(store.delete_preview(_StoreDb(step.log), BEN, step.pid)) is None
 
@@ -587,6 +589,18 @@ def test_the_other_member_installs_use_the_one_share_rule() -> None:
     third = sql[sql.index("(SELECT count(*) FROM package_install WHERE"):]
     assert f"AND NOT {OTHERS_SEE_THE_INSTALL}" in third
     assert "package_install.scope_subject = a.owner_email" in third
+
+
+def test_the_own_entries_count_only_the_active_private_install_of_the_owner() -> None:
+    """PKG-8a fix round 2. The fourth count is the sidebar entry of the owner: a
+    private install of the owner that the resolve shows. An archived, paused or
+    expired install is no entry. It is not in the token, as the dialog alone reads it."""
+    sql = store._DELETE_COUNTS_SQL
+    fourth = sql[sql.index("(SELECT count(*) FROM package_install o WHERE"):]
+    for part in ("o.state = 'active'", "o.scope_kind = 'private'",
+                 "o.scope_subject = a.owner_email", "(o.ends_at IS NULL OR o.ends_at > now())"):
+        assert part in fourth, part
+    assert "own_entries" not in store.confirm_token.__code__.co_varnames
 
 
 def test_the_token_is_the_hash_of_the_id_the_names_and_the_counts() -> None:
@@ -955,7 +969,7 @@ def test_the_preview_names_counts_and_a_token_and_no_manifest(world: SimpleNames
                                "capped": True}]
     assert got["totals"] == {"objects": 1, "fields": 3, "records": 100_000,
                              "records_capped": True, "versions": 2, "installs": 1,
-                             "other_member_installs": 0}
+                             "other_member_installs": 0, "own_entries": 0}
     assert got["confirm"] == world.preview(pid).confirm
     assert "Secret purpose" not in r.text and "manifest" not in got
 

@@ -44,7 +44,8 @@ from __future__ import annotations
 
 import ast
 import inspect
-from typing import Any
+import json
+from typing import Any, ClassVar
 from uuid import uuid4
 
 import pytest
@@ -98,7 +99,45 @@ _LEAD = {"id": _LEAD_ID, "lead_name": "Ravi Menon", "email": "ravi@acme.test",
          "organization_name": "Acme Industries", "owner_email": _USER}
 
 _WRITE_TOOLS = ["create_lead", "update_deal_status", "log_activity",
-                "convert_lead"]
+                "convert_lead", "crm_create_pipeline", "crm_update_record",
+                "crm_update_task"]
+
+#: WS-CRM CRM-M3a: the pipelines and the plan that the gateway answers.
+_PIPELINE_ID = str(uuid4())
+_PLAN = {
+    "name": "AMC contracts", "kind": "deal", "copy_of": None,
+    "stages": [
+        {"id": None, "name": "Site visit", "type": "open", "source": "new"},
+        {"id": _NEGOTIATION, "name": "Negotiation", "type": "open", "source": "existing"},
+        {"id": str(uuid4()), "name": "Closed Won", "type": "won", "source": "added"},
+        {"id": _CLOSED_LOST, "name": "Closed Lost", "type": "lost", "source": "added"},
+    ],
+}
+
+_TASK_ID = str(uuid4())
+_COMPANY_A = str(uuid4())
+_COMPANY_B = str(uuid4())
+#: The task as ``GET /crm/activities/{id}`` serves it: open, due 2026-11-30,
+#: on the Acme AMC deal.
+_TASK = {"id": _TASK_ID, "type": "task", "subject": "Send quote",
+         "completed_at": None, "due_at": "2026-11-30T00:00:00+00:00",
+         "deal_id": _DEAL_ID}
+
+
+def _pipelines(call: dict) -> Any:
+    """The pipeline routes of ``_responder`` (CRM-M3a)."""
+    path, method, body = call["path"], call["method"], call["json"] or {}
+    if path == "/crm/pipelines" and method == "GET":
+        return [{"id": _PIPELINE_ID, "name": "Sales pipeline", "is_default": True,
+                 "position": 0, "stages": []}]
+    if path == "/crm/pipelines/preview" and method == "GET":
+        return dict(_PLAN, name=call["params"].get("name") or _PLAN["name"])
+    if path == "/crm/pipelines" and method == "POST":
+        return {"id": str(uuid4()), "name": body.get("name"), "is_default": False,
+                "position": 1, "stages": [
+                    {"id": s.get("id") or str(uuid4()), "name": s["name"], "position": i,
+                     "type": s["type"]} for i, s in enumerate(_PLAN["stages"])]}
+    raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
 
 
 def _responder(call: dict) -> Any:
@@ -124,10 +163,21 @@ def _responder(call: dict) -> Any:
             "contact": {"id": _CONTACT_ID},
             "organization": {"id": _ORG_ID},
         }
+    if path == f"/crm/activities/{_TASK_ID}":
+        return {**_TASK, **body} if method == "PATCH" else dict(_TASK)
+    if path == f"/crm/organizations/{_COMPANY_A}" and method == "GET":
+        return {"id": _COMPANY_A, "name": "Alpha Pumps"}
+    if path == f"/crm/organizations/{_COMPANY_B}" and method == "GET":
+        return {"id": _COMPANY_B, "name": "Beta Valves"}
     if path.endswith("/activities") and method == "POST":
         return {"id": str(uuid4()), **body}
     if path == "/crm/leads" and method == "POST":
         return {**body, "id": _NEW_LEAD_ID, "owner_email": _USER}
+    if path.startswith("/crm/pipelines"):
+        return _pipelines(call)
+    if method == "PATCH" and path.count("/") == 3:
+        return {"id": path.rsplit("/", 1)[-1], "name": "Acme AMC",
+                "first_name": "Ravi", **body}
     if method == "GET" and path.count("/") == 3:
         # Any other single record — the read `log_activity` now makes so its
         # card can name what it is writing to. Carries every column
@@ -154,6 +204,14 @@ _CALLS: dict[str, Any] = {
         "deals", _DEAL_ID, "call", "Intro call", body="Discussed the AMC",
     ),
     "convert_lead": lambda: _M.convert_lead(_LEAD_ID, deal_name="Acme AMC"),
+    "crm_create_pipeline": lambda: _M.crm_create_pipeline(
+        "AMC contracts", stages=["Site visit", "Negotiation"],
+    ),
+    "crm_update_record": lambda: _M.crm_update_record(
+        "deals", _DEAL_ID,
+        {"amount": 300000, "expected_close_date": "2026-12-31"},
+    ),
+    "crm_update_task": lambda: _M.crm_update_task(_TASK_ID, completed=True),
 }
 
 #: The one tool that needs nothing from the gateway before it can describe what
@@ -173,6 +231,9 @@ _CARD_MUST_NAME: dict[str, str] = {
     "update_deal_status": "Acme AMC",  # the deal being moved
     "log_activity": "Acme AMC",        # the record being written to
     "convert_lead": "Ravi Menon",      # the lead being converted
+    "crm_create_pipeline": "AMC contracts",  # the pipeline being made
+    "crm_update_record": "Acme AMC",   # the deal being edited
+    "crm_update_task": "Send quote",   # the task being changed (its subject)
 }
 
 
@@ -858,3 +919,395 @@ async def test_log_activity_relays_a_mirror_mode_refusal(monkeypatch) -> None:
                  client_class=_MirrorRefusingClient)
     out = await _CALLS["log_activity"]()
     assert "Nothing was changed" in out and "read-only" in out
+
+
+# ── WS-CRM CRM-M3a: a new pipeline ──────────────────────────────────────────
+
+
+async def test_the_pipeline_tool_reads_the_plan_and_posts_the_same_body(monkeypatch) -> None:
+    """The card shows the gateway's plan, in order, and Apply sends the body
+    that the plan read. The read is a GET, before the card."""
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit", "Negotiation"])
+    assert [(c["method"], c["path"]) for c in calls] == [
+        ("GET", "/crm/pipelines/preview"), ("POST", "/crm/pipelines")]
+    sent = calls[1]["json"]
+    # The card's plan goes with the create, so a plan that changed is refused.
+    assert sent == {"name": "AMC contracts",
+                    "stages": [{"name": "Site visit"}, {"name": "Negotiation"}],
+                    "planned": [stage["id"] for stage in _PLAN["stages"]]}
+    assert json.loads(calls[0]["params"]["stages"]) == sent["stages"]
+    assert "planned" not in calls[0]["params"], "the preview reads only the request"
+    assert calls[0]["params"]["name"] == "AMC contracts"
+    context = cards[0]["context"]
+    order = [context.index(name) for name in
+             ("Site visit", "Negotiation", "Closed Won", "Closed Lost")]
+    assert order == sorted(order), context
+    assert "added, so that a deal can close" in context
+    assert "starts from: new" in context
+    assert "Created the pipeline AMC contracts" in out
+
+
+async def test_the_card_of_a_pipeline_says_what_it_changes_and_no_zoho_note(monkeypatch) -> None:
+    """A pipeline never queues for Zoho, so the Zoho note would be false."""
+    cards = approve(monkeypatch)
+    _gateway(monkeypatch)
+    await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert _M._ZOHO_NOTE not in cards[0]["context"]
+    assert _M._PIPELINE_NOTE in cards[0]["context"]
+
+
+async def test_a_typed_new_stage_sends_its_type(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_create_pipeline("Renewals", stages=["Renewal due", "Signed (won)", "Gone (LOST)"])
+    assert calls[-1]["json"]["stages"] == [
+        {"name": "Renewal due"}, {"name": "Signed", "type": "won"},
+        {"name": "Gone", "type": "lost"}]
+
+
+async def test_copy_from_takes_a_name_and_sends_the_id(monkeypatch) -> None:
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_create_pipeline("AMC contracts", copy_from="sales PIPELINE")
+    assert [c["path"] for c in calls] == [
+        "/crm/pipelines", "/crm/pipelines/preview", "/crm/pipelines"]
+    assert calls[1]["params"] == {"name": "AMC contracts", "copy_from": _PIPELINE_ID}
+    assert calls[2]["json"] == {"name": "AMC contracts", "copy_from": _PIPELINE_ID,
+                                "planned": [stage["id"] for stage in _PLAN["stages"]]}
+    assert len(cards) == 1
+
+
+@pytest.mark.parametrize(("kwargs", "words"), [
+    ({"copy_from": "Renewals"}, "no pipeline called 'Renewals'"),
+    ({"copy_from": "Sales pipeline", "stages": ["Qualify"]}, "not both"),
+    ({}, "Which stages"),
+])
+async def test_a_bad_start_is_refused_before_any_card(monkeypatch, kwargs, words) -> None:
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_create_pipeline("AMC contracts", **kwargs)
+    assert words in out and "nothing was changed" in out.lower()
+    assert cards == [] and writes(calls) == []
+
+
+class _PreviewRefusingClient(FakeClient):
+    """The gateway answers the preview with one refusal."""
+
+    status: ClassVar[int] = 404
+    detail: ClassVar[Any] = "Not Found"
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        resp = await super().request(method, url, **kwargs)
+        if url.endswith("/crm/pipelines/preview"):
+            return FakeResponse({"detail": self.detail}, status_code=self.status)
+        return resp
+
+
+async def test_an_org_off_the_flag_reads_plain_words(monkeypatch) -> None:
+    """The run drops the tool for such an org. If it still runs, the 404 of
+    the route reads as words, with no card."""
+    cards = approve(monkeypatch)
+    calls = fake_gateway(_M, monkeypatch, _responder, user=_USER,
+                         client_class=_PreviewRefusingClient)
+    out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert out == _M._PIPELINES_OFF
+    assert cards == [] and writes(calls) == []
+
+
+async def test_a_mirror_org_reads_that_zoho_owns_its_pipelines(monkeypatch) -> None:
+    class _Mirror(_PreviewRefusingClient):
+        status: ClassVar[int] = 409
+        detail: ClassVar[Any] = {"code": "mirror_mode_settings",
+                                 "message": "The stages, pipelines and lost reasons come from Zoho."}
+
+    cards = approve(monkeypatch)
+    calls = fake_gateway(_M, monkeypatch, _responder, user=_USER, client_class=_Mirror)
+    out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert out.startswith("Nothing was changed.") and "Make the pipeline in Zoho" in out
+    assert cards == [] and writes(calls) == []
+
+
+async def test_the_card_shows_the_type_of_each_stage_and_a_hidden_one(monkeypatch) -> None:
+    """Repair round 1 (P2): the member sees each type, new or reused, before
+    Apply, in words, and a hidden stage of a copied pipeline says so."""
+    plan = {**_PLAN, "stages": [
+        {"id": None, "name": "Site visit", "type": "open", "source": "new"},
+        {"id": _NEGOTIATION, "name": "Negotiation", "type": "ongoing", "source": "existing"},
+        {"id": _CLOSED_LOST, "name": "Old lane", "type": "on_hold", "source": "existing",
+         "hidden": True},
+    ]}
+
+    def responder(call: dict) -> Any:
+        if call["path"] == "/crm/pipelines/preview":
+            return plan
+        return _responder(call)
+
+    cards = approve(monkeypatch)
+    _gateway(monkeypatch, responder)
+    await _M.crm_create_pipeline("AMC contracts", stages=["Site visit", "Negotiation"])
+    context = cards[0]["context"]
+    assert "Site visit · open · new" in context
+    assert "Negotiation · in progress · a stage the CRM has" in context
+    assert "Old lane · on hold · a stage the CRM has · hidden" in context
+
+
+class _PlanChangedClient(FakeClient):
+    """The create answers 409 ``plan_changed``: a stage changed after the card."""
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        resp = await super().request(method, url, **kwargs)
+        if method.upper() == "POST" and url.endswith("/crm/pipelines"):
+            return FakeResponse({"detail": {
+                "code": "plan_changed",
+                "message": "The stages changed after the card showed them.",
+            }}, status_code=409)
+        return resp
+
+
+async def test_a_plan_that_changed_after_the_card_reads_plain_words(monkeypatch) -> None:
+    """Repair round 1 (P3): Apply makes the card or nothing. The route refuses
+    a plan that changed, and the tool says so in words."""
+    approve(monkeypatch)
+    fake_gateway(_M, monkeypatch, _responder, user=_USER, client_class=_PlanChangedClient)
+    out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert out == _M._PLAN_CHANGED
+
+
+async def test_each_call_of_the_agent_carries_its_chat_stamp(monkeypatch) -> None:
+    """The gateway logs ``via=chat`` only for this stamp beside the internal
+    bearer (``change_log.via_of``)."""
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert calls and all(c["headers"]["X-Actor-Via"] == "chat:crm-assistant" for c in calls)
+
+
+# ── 7. CRM-M2b: the record edit and the task change ─────────────────────────
+
+_EDIT_ARGS = ("deals", _DEAL_ID, {"amount": 300000, "expected_close_date": "2026-12-31"})
+
+
+async def test_a_record_edit_shows_one_card_with_the_before_and_after(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record(*_EDIT_ARGS)
+    assert len(asked) == 1
+    context = asked[0]["context"]
+    assert "field Amount: 250000 → 300000" in context
+    assert "field Expected close date: (empty) → 2026-12-31" in context
+    assert "deal: Acme AMC" in context
+    assert [(c["method"], c["path"]) for c in calls] == [
+        ("GET", f"/crm/deals/{_DEAL_ID}"),
+        ("PATCH", f"/crm/deals/{_DEAL_ID}"),
+    ]
+    assert calls[-1]["json"] == {"amount": 300000, "expected_close_date": "2026-12-31"}
+    assert "Changed Acme AMC" in out
+
+
+@pytest.mark.parametrize("field, owner", [
+    ("owner_email", "later slice"),
+    ("status_id", "update_deal_status"),
+    ("stage", "update_deal_status"),
+    ("lost_reason_id", "update_deal_status"),
+    ("lost_note", "update_deal_status"),
+])
+async def test_a_record_edit_refuses_the_owner_the_stage_and_the_lost_reason(
+    field: str, owner: str, monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record("deals", _DEAL_ID, {"amount": 1, field: "x"})
+    assert owner in out and "Nothing was changed" in out
+    assert calls == [] and asked == []
+
+
+async def test_a_declined_record_edit_sends_nothing(monkeypatch) -> None:
+    deny(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record(*_EDIT_ARGS)
+    assert "Cancelled" in out and writes(calls) == []
+
+
+@pytest.mark.parametrize("entity, record, title, fields", [
+    ("leads", _LEAD_ID, "Ravi Menon", {"phone": "99"}),
+    ("contacts", _CONTACT_ID, "Ravi", {"title": "CTO"}),
+    ("companies", _ORG_ID, "Acme AMC", {"industry": "Pumps"}),
+])
+async def test_a_record_edit_reaches_leads_contacts_and_companies(
+    entity: str, record: str, title: str, fields: dict, monkeypatch,
+) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record(entity, record, fields)
+    slug = "organizations" if entity == "companies" else entity
+    assert calls[-1]["method"] == "PATCH" and calls[-1]["path"] == f"/crm/{slug}/{record}"
+    assert calls[-1]["json"] == fields
+    assert title in out
+
+
+async def test_a_custom_field_goes_in_the_custom_map(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_record("deals", _DEAL_ID, {"region": "South"})
+    assert calls[-1]["json"] == {"custom": {"region": "South"}}
+
+
+async def test_an_edit_that_changes_nothing_sends_nothing(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record("deals", _DEAL_ID, {"amount": 250000})
+    assert "nothing was changed" in out and asked == [] and writes(calls) == []
+
+
+async def test_a_mirror_mode_record_edit_comes_back_as_a_message(monkeypatch) -> None:
+    approve(monkeypatch)
+    fake_gateway(_M, monkeypatch, _responder, user=_USER,
+                 client_class=_MirrorRefusingClient)
+    out = await _CALLS["crm_update_record"]()
+    assert "Nothing was changed" in out and "read-only" in out
+
+
+async def test_a_task_completion_shows_one_card_and_sends_completed_at(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_task(_TASK_ID, completed=True)
+    assert len(asked) == 1 and "field Done: no → yes" in asked[0]["context"]
+    assert "field Task: Send quote" in asked[0]["context"]
+    assert "deal: Acme AMC" in asked[0]["context"]
+    assert _TASK_ID not in asked[0]["context"] and _TASK_ID not in asked[0]["detail"]
+    assert [(c["method"], c["path"]) for c in calls][:2] == [
+        ("GET", f"/crm/activities/{_TASK_ID}"), ("GET", f"/crm/deals/{_DEAL_ID}")]
+    assert calls[-1]["method"] == "PATCH" and calls[-1]["path"] == f"/crm/activities/{_TASK_ID}"
+    assert set(calls[-1]["json"]) == {"completed_at"} and calls[-1]["json"]["completed_at"]
+    assert "Send quote" in out
+
+
+async def test_a_task_due_date_is_sent_as_the_midnight_of_that_day(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_task(_TASK_ID, due_at="2026-12-31")
+    assert calls[-1]["json"] == {"due_at": "2026-12-31T00:00:00+00:00"}
+    assert "field Due date: 2026-11-30 → 2026-12-31" in asked[0]["context"]
+
+
+async def test_reopening_a_task_sends_a_null_completed_at(monkeypatch) -> None:
+    monkeypatch.setitem(_TASK, "completed_at", "2026-11-01T09:00:00+00:00")
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_task(_TASK_ID, completed=False)
+    assert calls[-1]["json"] == {"completed_at": None}
+
+
+async def test_a_task_change_with_nothing_to_change_or_a_bad_date_sends_nothing(
+    monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    assert "Nothing was changed" in await _M.crm_update_task(_TASK_ID)
+    assert "not a date" in await _M.crm_update_task(_TASK_ID, due_at="next week")
+    assert calls == [] and asked == []
+
+
+async def test_log_activity_takes_a_due_date_for_a_task(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.log_activity("deals", _DEAL_ID, "task", "Send quote", due_at="2026-12-01")
+    assert calls[-1]["json"]["due_at"] == "2026-12-01T00:00:00+00:00"
+    assert "not a date" in await _M.log_activity(
+        "deals", _DEAL_ID, "task", "x", due_at="soon")
+
+
+async def test_completing_a_done_task_shows_its_real_before_and_sends_nothing(
+    monkeypatch,
+) -> None:
+    """The card never states a false before value (repair round 1, P2)."""
+    monkeypatch.setitem(_TASK, "completed_at", "2026-11-01T09:00:00+00:00")
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_task(_TASK_ID, completed=True)
+    assert "already has those values" in out and asked == [] and writes(calls) == []
+
+
+async def test_a_done_task_reopened_with_a_new_due_date_shows_both_real_befores(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(_TASK, "completed_at", "2026-11-01T09:00:00+00:00")
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_task(_TASK_ID, completed=False, due_at="2026-12-05")
+    context = asked[0]["context"]
+    assert "field Done: yes → no (reopened)" in context
+    assert "field Due date: 2026-11-30 → 2026-12-05" in context
+    assert calls[-1]["json"]["completed_at"] is None
+
+
+async def test_a_task_change_sends_only_the_part_that_differs(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_task(_TASK_ID, completed=True, due_at="2026-11-30")
+    assert set(calls[-1]["json"]) == {"completed_at"}
+
+
+async def test_a_company_change_shows_names_never_ids_and_sends_only_changes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(_DEAL, "company_id", _COMPANY_A)
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_update_record(
+        "deals", _DEAL_ID,
+        {"company_id": _COMPANY_B, "amount": 250000, "name": "Acme AMC 2"},
+    )
+    context = asked[0]["context"]
+    assert "field Company: Alpha Pumps → Beta Valves" in context
+    assert "field Name: Acme AMC → Acme AMC 2" in context
+    assert "Amount" not in context, "an unchanged field is not on the card"
+    assert _COMPANY_A not in context + out and _COMPANY_B not in context + out
+    assert calls[-1]["json"] == {"company_id": _COMPANY_B, "name": "Acme AMC 2"}
+
+
+async def test_an_unchanged_custom_field_is_not_sent(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_update_record("deals", _DEAL_ID, {"region": "South", "amount": 1})
+    assert calls[-1]["json"] == {"amount": 1, "custom": {"region": "South"}}
+
+
+@pytest.mark.parametrize("tool", ["crm_update_record", "crm_update_task"])
+async def test_a_card_that_errors_sends_nothing(tool: str, monkeypatch) -> None:
+    """If the card cannot be asked, the tool raises before any write."""
+    import acb_skills.ask_tools as ask_tools
+
+    async def _boom(**_kw: Any) -> bool:
+        raise RuntimeError("the relay is down")
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", _boom)
+    calls = _gateway(monkeypatch)
+    with pytest.raises(RuntimeError):
+        await _CALLS[tool]()
+    assert writes(calls) == []
+
+
+@pytest.mark.parametrize("tool", ["crm_update_record", "crm_update_task"])
+async def test_a_card_that_times_out_sends_nothing(tool: str, monkeypatch) -> None:
+    """The REAL ``request_confirmation``: a timeout on the wait answers False
+    (``_block_on`` maps ``TimeoutError`` to ``TIMEOUT``), so the tool cancels."""
+    import asyncio
+
+    import orchestrator.executor as executor
+
+    queue: asyncio.Queue = asyncio.Queue()
+    token = executor._active_run_queue.set(queue)
+
+    async def _late(_fut: Any, _secs: Any) -> Any:
+        raise TimeoutError
+
+    monkeypatch.setattr(executor, "wait_user_future", _late)
+    calls = _gateway(monkeypatch)
+    try:
+        out = await _CALLS[tool]()
+    finally:
+        executor._active_run_queue.reset(token)
+    assert "cancelled" in out.lower() and writes(calls) == []

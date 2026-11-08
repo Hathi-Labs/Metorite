@@ -19,14 +19,14 @@ import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import FilterPills from "@/components/FilterPills";
 import type { AppMeta } from "@/app/build/apps/lib/types";
-import { shellChatOn } from "@/lib/shell/chatFlag";
+import { startApp } from "@/lib/studio/startApp";
+import { useViewMode } from "@/components/ViewModeProvider";
 import {
-  PACKAGES_FAILED_LINE, type LibraryFilter, appBrief, changedWords, libraryCounts, mergeLibrary,
+  PACKAGES_FAILED_LINE, type LibraryFilter, changedWords, libraryCounts, mergeLibrary,
   packageShows, type PackageCard as PackageCardData,
 } from "@/lib/studio/packageLibrary";
 import { buildHref } from "@/lib/studio/packageDraft";
 import { STUDIO_OFF, type PackageSummary, listPackages } from "@/lib/studio/realDoor";
-import { startBuild } from "@/lib/studio/startBuild";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -290,6 +290,7 @@ function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => vo
 
 export default function AppsGallery() {
   const router = useRouter();
+  const { isMobile } = useViewMode();
   const { data: session } = useSession();
   const myEmail = (session?.user?.email ?? "").toLowerCase();
 
@@ -357,17 +358,14 @@ export default function AppsGallery() {
   const [building, setBuilding] = useState(false);
   const [buildError, setBuildError] = useState<string | null>(null);
   const createApp = useCallback(
+    // One flow for this button and the phone bar's New app tab (`startApp`).
     (seed: string) => {
-      if (!shellChatOn()) {
-        router.push(`/chat?q=${encodeURIComponent(appBrief(seed))}`);
-        return;
-      }
       if (buildingRef.current) return;
       buildingRef.current = true;
       setBuilding(true);
       setBuildError(null);
-      void startBuild(seed, { go: (href) => router.push(href) })
-        .then((r) => { if (!r.ok) setBuildError(r.message); })
+      void startApp(seed, (href) => router.push(href))
+        .then((r) => { if (r && !r.ok) setBuildError(r.message); })
         .finally(() => { buildingRef.current = false; setBuilding(false); });
     },
     [router]
@@ -491,10 +489,13 @@ export default function AppsGallery() {
           >
             <Icon name="RefreshCw" className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")} loading={building} disabled={building}>
-            <Icon name="Plus" className="w-4 h-4" />
-            New app
-          </Button>
+          {/* On a phone the bar's New app tab holds it (MOB-12). */}
+          {!isMobile && (
+            <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")} loading={building} disabled={building}>
+              <Icon name="Plus" className="w-4 h-4" />
+              New app
+            </Button>
+          )}
         </div>
       </div>
 

@@ -736,6 +736,8 @@ Projects sheet. Capture
 opens the Inbox and sets the store's capture flag, so no second capture host
 exists. `shell/search.py` keeps its `/tasks` scope key, because it is a scope
 token and not a link. Any other `?do=` (the `open-chat` job) stays on `/tasks`.
+MOB-10 (§9b.4, 2026-11-07) removed `projects-mywork`. The Projects tab sends
+`projects-tree`, and the registry `lib/shell/phoneBar.ts` draws the bar.
 
 **Scope.** Builds after OP-2, dark behind the same flag.
 
@@ -1325,7 +1327,9 @@ is dark until a UI slice calls it.
    `projects_reports.md` refuses a subject on the outlook.
 8. **Needs attention.** `/needs-attention?mine=true` works with no project and
    does not change. Its "mine" is the assignee of a blocked task, so its
-   rows are a part of the list with `scope=mine`.
+   rows are a part of the list with `scope=mine`. AP-Q11 (owner, 2026-11-08)
+   folds the lens tab into one "Needs you" control (`waiting_on_me.md` §5.8,
+   AP-18). The route stays.
 9. **The MCP edge.** `list_tasks` takes `include_subtree`, and its default
    is true when the call names a project. `list_projects` rows and the
    `get_project` project carry `kind` and `level`. The gateway derives the
@@ -1377,7 +1381,8 @@ it.
    It writes to the server, because the store does not hold the task.
 8. **The phone.** The bar reads Menu, My tasks, Capture, Search, Ask. My
    tasks opens its List with the chip row. A second tap opens the Projects
-   sheet.
+   sheet. MOB-10 (§9b.4, 2026-11-07) replaced this: the bar reads Menu,
+   Projects, Capture, Search, Ask, and Projects opens the sheet at once.
 9. **The assistant.** The page facts say that My tasks is the member's
    roll-up and not a project.
 
@@ -1454,6 +1459,13 @@ On 2026-11-02 and 2026-11-03 the owner asked for five things.
 4. Select many tasks in every view, Done too, archive them in one act, and find them in an archive view. The owner chose no auto-archive (D170.4).
 5. When My tasks is empty, point to projects and spaces where the member can pick up work. WS-PJP owns this as PJP-12. MOB-5 below is the same slice.
 
+On 2026-11-07 the owner asked for four more phone changes. MOB-9 to MOB-12 below build them.
+
+6. "have the bottom menu bar always show. currently the popup end up covering the menu." This is MOB-9.
+7. "the icon of "My Tasks" is a little misleading. because i want to be able to see all tasks across the company." This is MOB-10.
+8. On a phone board, the status editor is "very prominently there". This is MOB-11.
+9. Every app's bar must make it "as obvious as possible to the user how to use the app". This is MOB-12.
+
 ### 9b.2 What the code does on 2026-11-03
 
 - **The inbox.** `inboxRows` (`app/tasks/lib/inbox.ts:53-58`) adds each untriaged company task assigned to the member, under "From Projects". The count (`gateway/routes/projects/mine.py:257-310`) adds them too. So a project task shows twice.
@@ -1482,6 +1494,10 @@ The audit captured every Projects surface at 390 px and 360 px, in dark and ligh
 | MOB-6 | 1540 | Phone shapes for Calendar (an agenda), Timeline (off the phone) and the View sheet (a grid) | No mode is hidden at 360 px. Calendar reads as a list of days | LOW |
 | MOB-7 | 1541 | Touch sizes and sheets: the bulk bar, card menus, remove buttons, `SelectButton` | Each control is 44 px or larger. The bulk bar takes at most 20% of the screen | LOW |
 | MOB-8 | 1542 | States: the phone skeleton, the search error, a failed tree read | Each state says what happened and offers the next step | LOW |
+| MOB-9 | 2002 | The phone's bar shows at all times. A sheet, a card, a dialog or the assistant ends at its top edge (`navigation_shell.md` §9.1) | At 390 px, with each overlay open, every tab stays tappable. A confirmation still paints above the bar | STANDARD |
+| MOB-10 | 2003 | The Projects bar opens the whole company: Projects, Capture, Search | One tap on Projects opens My tasks, Personal and every space. The tab shows selected while the sheet is open | LOW |
+| MOB-11 | 2004 | The phone board draws no Statuses row. "⋯ Manage this project" keeps Statuses | The status tabs are the board's first row at 390 px. Desktop does not change | LOW |
+| MOB-12 | 2005 | Every app's bar follows one rule from one registry (`navigation_shell.md` §9.2) | Each live app declares its bar. No bar holds more than 3 tabs | STANDARD |
 | INB-1 | 1522 | The inbox holds captures only (D170) | The list, the count and both chat tools hold only captures. An assigned untriaged task shows in My tasks as New | MEDIUM |
 | PJP-14 | 1605 | A ready agent task is not New (D170 amendment) | An `mcp` task with an assignee, a description and a type, on a company board, outside triage, shows under Next or Someday and not under New. Breaking a condition makes it New again | MEDIUM |
 | UNDO-1 | 1528 | Undo for a status change (and a reopen), each panel edit, a move, archive and unarchive | Each act shows a toast with Undo and answers Ctrl+Z. Undo restores the exact state before | MEDIUM |
@@ -1495,6 +1511,8 @@ The audit captured every Projects surface at 390 px and 360 px, in dark and ligh
 - INB-1: a test that a capture is in the inbox, that an assigned untriaged task is not, and that the count equals the list. The SQL runs against a real database (R8).
 - UNDO-1 and UNDO-2: a test for each act that its inverse restores the row it changed.
 - SEL-1 and ARC-1: a test that a bulk archive of the Done chip writes one request and that the Archive view lists the rows.
+- MOB-9: `lib/layers.test.ts`, `lib/phoneBarTap.test.ts`, `lib/menuClamp.test.ts` and `e2e/phone-bar-always.spec.ts`.
+- MOB-10: `lib/tasksRedirect.test.ts`. MOB-11: `components/TaskBoardPhone.test.ts`. MOB-12: `lib/shell/phoneBar.test.ts`.
 
 Each fence is advisory until its slice builds.
 

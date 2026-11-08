@@ -48,7 +48,10 @@ agent-whatsapp-assistant.
 
 from __future__ import annotations
 
+import json
 import os
+import re
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -164,7 +167,17 @@ def _headers() -> dict[str, str]:
         "Authorization": f"Bearer {_internal_token()}",
         "Content-Type": "application/json",
         "X-User-Email": user,
+        # WS-CRM CRM-M3a: the Change history row says `chat` for a change
+        # that this agent made. The gateway trusts the stamp only beside the
+        # internal bearer (`routes/crm/change_log.via_of`), and the BFF never
+        # forwards a browser's header, so a browser cannot claim it.
+        "X-Actor-Via": ACTOR_VIA,
     }
+
+
+#: The stamp of this agent on each gateway call (``X-Actor-Via``), in the
+#: grammar of ``acb_auth.agent_oauth.ACTOR_VIA_PATTERN``.
+ACTOR_VIA = "chat:crm-assistant"
 
 
 #: The verbs this agent may speak, enforced HERE at the single round-trip
@@ -691,7 +704,7 @@ _CARD_CONTEXT_LIMIT = CARD_CLIP
 _TRUNCATED = CUT_MARK
 
 
-def _fields_block(payload: dict[str, Any]) -> str:
+def _fields_block(payload: dict[str, Any], note: str = _ZOHO_NOTE) -> str:
     """The payload as the confirmation card's preformatted body.
 
     Rendered from the payload actually about to be sent, never re-typed from
@@ -711,16 +724,16 @@ def _fields_block(payload: dict[str, Any]) -> str:
     newline can forge a line of the card.
     """
     return card_body(
-        _ZOHO_NOTE, [(key, f"{key}: {one_line(value)}") for key, value in payload.items()])
+        note, [(key, f"{key}: {one_line(value)}") for key, value in payload.items()])
 
 
-async def _held_fields_block(payload: dict[str, Any]) -> str:
+async def _held_fields_block(payload: dict[str, Any], note: str = _ZOHO_NOTE) -> str:
     """:func:`_fields_block`, for a write's card. A chat that read outside mail
     refuses a cut card, because a cut text is not consent there (RX-1).
     ``egress.chat_is_held`` is the reader, and it fails closed. With no platform
     package, no run can be checked, so a cut card refuses.
     """
-    body = _fields_block(payload)
+    body = _fields_block(payload, note)
     if not is_cut(body):
         return body
     try:
@@ -842,6 +855,195 @@ async def create_lead(
     )
 
 
+# ── A new pipeline (WS-CRM CRM-M3a) ──────────────────────────────────────────
+
+#: A new stage with its type: "Contract signed (won)". A name with no type is
+#: a stage that the CRM holds, or a new open stage.
+_TYPED_STAGE = re.compile(r"^(?P<name>.*?)\s*\((?P<type>open|won|lost)\)\s*$", re.IGNORECASE)
+
+#: What each stage of the plan is, in the words of the card.
+_STAGE_SOURCE_WORDS: dict[str, str] = {
+    "existing": "a stage the CRM has",
+    "new": "new",
+    "added": "added, so that a deal can close",
+}
+
+#: The first line of the card of a new pipeline. A pipeline is the set-up of
+#: the CRM, so it never queues for Zoho, and the Zoho note does not apply.
+_PIPELINE_NOTE = (
+    "A new pipeline changes the set-up of the whole CRM. Change history keeps "
+    "it, and its Undo removes the pipeline while no deal is in it."
+)
+
+_PIPELINES_OFF = (
+    "Nothing was changed. Making a pipeline is not open for this organization "
+    "yet. An admin can make one in CRM settings when it opens."
+)
+
+_PIPELINE_MIRROR = (
+    "A Mirror CRM takes its pipelines from Zoho. Make the pipeline in Zoho, and "
+    "the next sync brings it here."
+)
+
+
+def _stage_items(stages: list[str]) -> list[dict[str, str]]:
+    """Each stage name as the route takes it: ``{name}`` or ``{name, type}``."""
+    items: list[dict[str, str]] = []
+    for raw in stages:
+        text = " ".join(str(raw or "").split())
+        typed = _TYPED_STAGE.match(text)
+        if typed and typed.group("name").strip():
+            items.append({"name": typed.group("name").strip(),
+                          "type": typed.group("type").lower()})
+        elif text:
+            items.append({"name": text})
+    return items
+
+
+#: The type of a stage, in the words of the card.
+_STAGE_TYPE_WORDS: dict[str, str] = {
+    "open": "open", "ongoing": "in progress", "on_hold": "on hold",
+    "won": "won", "lost": "lost",
+}
+
+_PLAN_CHANGED = (
+    "Nothing was changed. The stages changed after the card showed them. "
+    "Read the plan again, and ask the member once more."
+)
+
+
+def _plan_lines(plan: dict[str, Any]) -> list[tuple[str, str]]:
+    """One card line for each stage of the plan, in order: the name, the type
+    of the stage, new or reused, and where it comes from."""
+    lines: list[tuple[str, str]] = []
+    for index, stage in enumerate(plan.get("stages") or [], start=1):
+        if not isinstance(stage, dict):
+            continue
+        kind = str(stage.get("type") or "")
+        parts = [str(stage.get("name")), _STAGE_TYPE_WORDS.get(kind, kind)]
+        where = _STAGE_SOURCE_WORDS.get(str(stage.get("source") or ""), "")
+        if where:
+            parts.append(where)
+        if stage.get("hidden"):
+            parts.append("hidden")
+        lines.append((f"stage {index}", " · ".join(parts)))
+    return lines
+
+
+def _off_or_raise(refused: GatewayRefusal) -> str:
+    """The 404 of an org that ``CRM_PIPELINES_ORGS`` leaves out, and the 409
+    of a plan that changed after the card, in plain words. Each other refusal
+    raises, and the model reads it as text."""
+    # The code of the route is in the message (`_raise_if_error`); the safe
+    # detail keeps the words only.
+    if refused.status == 404 and "no_pipeline" not in str(refused):
+        return _PIPELINES_OFF
+    if refused.status == 409 and "plan_changed" in str(refused):
+        return _PLAN_CHANGED
+    raise refused
+
+
+# `open_world=True`, as each CRM write says: a pipeline never queues for Zoho,
+# but the claim is what makes a covered run hold the write off (H-236), and a
+# held chat keep it only through its card (`egress.HELD_CARD_WRITE_TOOLS`).
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_create_pipeline(
+    name: str,
+    stages: list[str] | None = None,
+    copy_from: str | None = None,
+) -> str:
+    """Create a new deal pipeline: a name, and its stages in order. Only a CRM
+    admin can, and the person you act for approves it on a card first.
+
+    Give EITHER ``stages`` OR ``copy_from``, never both. ``stages`` is the
+    stage names in order, as a person says them. A name that the CRM has
+    already is that same stage, so two pipelines can share "Proposal". A new
+    name becomes a new open stage. Add "(won)" or "(lost)" after a new name
+    to make a closing stage, such as "Contract signed (won)". ``copy_from``
+    is the NAME of a pipeline whose stages the new one takes, in order.
+
+    When the list has no won stage or no lost stage, the CRM adds its own, so
+    that a deal in the new pipeline can close. The card shows each stage
+    before anything is made. Use crm_list_pipelines to read the pipelines
+    and get_pipeline to read the stages."""
+    wanted = str(name or "").strip()
+    if not wanted:
+        return "A pipeline needs a name. Ask what to call it. Nothing was changed."
+    has_stages = any(str(s or "").strip() for s in stages or [])
+    source = str(copy_from or "").strip()
+    if has_stages and source:
+        return (
+            "Give the stages of the new pipeline, or the pipeline to copy, and "
+            "not both. Ask which one is meant. Nothing was changed."
+        )
+    body: dict[str, Any] = {"name": wanted}
+    if source:
+        pipelines = await _get("/crm/pipelines")
+        found = _matches_by_name(pipelines, "name", source)
+        if not found:
+            return (
+                f"There is no pipeline called '{source}', so nothing was changed. "
+                f"The pipelines are: {_name_list(pipelines, 'name')}."
+            )
+        if len(found) > 1:
+            return (
+                f"'{source}' matches more than one pipeline — "
+                f"{_quoted_names(found, 'name')} — so nothing was changed. Ask "
+                "which one is meant."
+            )
+        body["copy_from"] = str(found[0].get("id") or "")
+    elif has_stages:
+        body["stages"] = _stage_items(stages or [])
+    else:
+        return (
+            "Which stages should the new pipeline have? Name them in order, or "
+            "name a pipeline to copy. Nothing was changed."
+        )
+    # Read before asking: the gateway plans the pipeline with every check of
+    # the create, and reads only. So the card shows what Apply makes.
+    query = {k: v for k, v in body.items() if k != "stages"}
+    if "stages" in body:
+        query["stages"] = json.dumps(body["stages"])
+    try:
+        plan = await _get("/crm/pipelines/preview", query)
+    except _MirrorBlocked as blocked:
+        return f"Nothing was changed. {blocked} {_PIPELINE_MIRROR}"
+    except GatewayRefusal as refused:
+        return _off_or_raise(refused)
+    planned = plan if isinstance(plan, dict) else {}
+    title = str(planned.get("name") or wanted)
+    copy_of = planned.get("copy_of")
+    start = f"a copy of {copy_of}" if copy_of else "new"
+    count = len(planned.get("stages") or [])
+    card = {"pipeline": title, "starts from": start, **dict(_plan_lines(planned))}
+    # The create plans again. With the ids that the card showed, it refuses
+    # (409 `plan_changed`) when that plan differs, so Apply makes the card.
+    body["planned"] = [
+        stage.get("id") for stage in planned.get("stages") or [] if isinstance(stage, dict)
+    ]
+
+    from acb_skills.ask_tools import request_confirmation
+    if not await request_confirmation(
+        title=f"Create the pipeline {title}?",
+        detail=f"{title} · {start} · {count} stages",
+        context=await _held_fields_block(card, note=_PIPELINE_NOTE),
+    ):
+        return f"Cancelled — no pipeline was created. {title} does not exist."
+    try:
+        made = await _post("/crm/pipelines", body)
+    except _MirrorBlocked as blocked:
+        return f"Nothing was changed. {blocked} {_PIPELINE_MIRROR}"
+    except GatewayRefusal as refused:
+        return _off_or_raise(refused)
+    row = made if isinstance(made, dict) else {}
+    names = [str(s.get("name")) for s in row.get("stages") or [] if isinstance(s, dict)]
+    return (
+        f"Created the pipeline {row.get('name') or title} (id={row.get('id')}) "
+        f"with {len(names)} stages: {', '.join(names)}. The Deals board shows it "
+        "in the Pipeline switcher. Change history keeps the change, with Undo."
+    )
+
+
 @_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def update_deal_status(
     deal_id: str, stage: str, lost_reason: str | None = None,
@@ -929,11 +1131,13 @@ async def log_activity(
     activity_type: str,
     subject: str,
     body: str | None = None,
+    due_at: str | None = None,
 ) -> str:
     """Record that something happened to a CRM record — a note, a call, a
     meeting or a task. entity is 'leads', 'deals', 'contacts' or
     'organizations' and record_id is its id (from search_crm or get_pipeline).
     subject is the one line that will show on the timeline; body is the detail.
+    For a task, due_at is the due date (YYYY-MM-DD).
 
     The person you are acting for approves before anything is written, and the
     entry is attributed to them. Log what actually happened, in their words
@@ -960,6 +1164,14 @@ async def log_activity(
     detail = str(body or "").strip()
     if detail:
         payload["body"] = detail
+    if str(due_at or "").strip():
+        stamp = _due_stamp(due_at)
+        if stamp is None:
+            return (
+                f"'{due_at}' is not a date I can read. Give the due date as "
+                "YYYY-MM-DD. Nothing was logged."
+            )
+        payload["due_at"] = stamp
 
     # Read the record before asking, for the same reason `update_deal_status`
     # does — and here the reason is sharper, because this tool has no other
@@ -1061,6 +1273,264 @@ async def convert_lead(
     return " · ".join(parts) + "."
 
 
+#: Columns of each record type that ``crm_update_record`` may set at the top
+#: level. Any other key goes in ``custom`` (a custom field, CRM-C4a), and the
+#: route checks it against the field definitions.
+_EDITABLE_COLUMNS: dict[str, frozenset[str]] = {
+    "leads": frozenset({
+        "first_name", "last_name", "lead_name", "email", "phone", "mobile",
+        "organization_name", "website", "industry", "no_of_employees",
+        "annual_revenue", "lead_source", "description",
+    }),
+    "deals": frozenset({
+        "name", "company_id", "amount", "currency", "probability",
+        "expected_close_date", "next_step", "description",
+    }),
+    "contacts": frozenset({
+        "first_name", "last_name", "email", "phone", "mobile", "title",
+        "company_id", "description", "linkedin_url",
+    }),
+    "organizations": frozenset({
+        "name", "website", "industry", "no_of_employees", "annual_revenue",
+        "phone", "email", "address", "description", "linkedin_url",
+    }),
+}
+
+#: A field this tool refuses, and the words that say who owns it.
+_STAGE_REFUSAL = (
+    "Move the deal with update_deal_status, which also checks the stage name."
+)
+_OWNER_REFUSAL = (
+    "The owner changes in a later slice. Tell the member to reassign it in "
+    "the CRM."
+)
+_REFUSED_FIELDS: dict[str, str] = {
+    "owner_email": _OWNER_REFUSAL,
+    "owner": _OWNER_REFUSAL,
+    "status_id": _STAGE_REFUSAL,
+    "status_name": _STAGE_REFUSAL,
+    "status": _STAGE_REFUSAL,
+    "stage": _STAGE_REFUSAL,
+    "pipeline_id": _STAGE_REFUSAL,
+    "lost_reason_id": _STAGE_REFUSAL,
+    "lost_reason": _STAGE_REFUSAL,
+    "lost_note": _STAGE_REFUSAL,
+}
+
+
+def _due_stamp(value: Any) -> str | None:
+    """A due date as the ISO instant the route stores, or ``None`` if unreadable.
+
+    A task's ``due_at`` holds a DATE at 00:00 UTC (the one CRM day rule), so a
+    bare date becomes that midnight.
+    """
+    text = str(value or "").strip()
+    try:
+        if len(text) == 10:
+            return f"{date.fromisoformat(text).isoformat()}T00:00:00+00:00"
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        return None
+
+
+def _shown(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return "(empty)" if value in (None, "") else str(value)
+
+
+#: A field whose key reads better as a word than as its column name.
+_FIELD_WORDS: dict[str, str] = {"company_id": "Company"}
+
+
+def _human(key: str) -> str:
+    """A field key in the member's words: ``expected_close_date`` reads
+    "Expected close date". The card never prints a wire name."""
+    if key in _FIELD_WORDS:
+        return _FIELD_WORDS[key]
+    words = key.replace("_", " ").strip()
+    return words[0].upper() + words[1:] if words else words
+
+
+async def _company_name(company_id: Any) -> str:
+    """The company's name for a card, or a plain fallback. Never a raw id."""
+    if company_id in (None, ""):
+        return "(empty)"
+    record = _record_uuid(company_id)
+    try:
+        row = await _get(f"/crm/organizations/{record}")
+    except GatewayRefusal:
+        return "(a company I cannot read)"
+    name = str(row.get("name") or "").strip() if isinstance(row, dict) else ""
+    return name or "(unnamed company)"
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_update_record(
+    entity: str, record_id: str, fields: dict[str, Any],
+) -> str:
+    """Change fields on a CRM lead, deal, contact or company. entity is
+    'leads', 'deals', 'contacts' or 'organizations'. fields maps a field name
+    to its new value, for example {"amount": 50000, "expected_close_date":
+    "2026-12-31"}. A custom field goes in by its key. get_record shows the
+    current values.
+
+    The person you are acting for sees ONE card with the old and the new value
+    of each field, and nothing changes if they decline. Only the fields that
+    differ are sent. This tool does not change the owner, the stage or the
+    lost reason. Use update_deal_status for the stage and the lost reason. The
+    owner changes in a later slice."""
+    slug = _entity_slug(entity)
+    record = _record_uuid(record_id)
+    if not isinstance(fields, dict) or not fields:
+        return "Which fields should change, and to what? Nothing was changed."
+    for key in fields:
+        refusal = _REFUSED_FIELDS.get(str(key).strip().lower())
+        if refusal:
+            return f"I cannot set '{key}' here. {refusal} Nothing was changed."
+    columns = _EDITABLE_COLUMNS[slug]
+    asked: dict[str, Any] = {}
+    asked_custom: dict[str, Any] = {}
+    for key, value in fields.items():
+        name = str(key).strip()
+        if name:
+            (asked if name in columns else asked_custom)[name] = value
+
+    # Read first: the card shows the old value beside the new one.
+    row = await _get(f"/crm/{slug}/{record}")
+    current = row if isinstance(row, dict) else {}
+    held = current.get("custom") if isinstance(current.get("custom"), dict) else {}
+    # Only the fields that differ go on the card and on the wire.
+    changed: dict[str, Any] = {}
+    changed_custom: dict[str, Any] = {}
+    shown: dict[str, tuple[str, str]] = {}
+    for name, new in asked.items():
+        old = current.get(name)
+        if _shown(old) != _shown(new):
+            changed[name] = new
+            shown[name] = (_shown(old), _shown(new))
+    for name, new in asked_custom.items():
+        old = held.get(name)
+        if _shown(old) != _shown(new):
+            changed_custom[name] = new
+            shown[name] = (_shown(old), _shown(new))
+    if not shown:
+        return "Those fields already hold those values, so nothing was changed."
+    if "company_id" in shown:
+        shown["company_id"] = (
+            await _company_name(current.get("company_id")),
+            await _company_name(changed["company_id"]),
+        )
+    payload: dict[str, Any] = dict(changed)
+    if changed_custom:
+        payload["custom"] = changed_custom
+
+    target = _row_title(slug, current)
+    label = ENTITY_LABELS[slug].lower()
+    from acb_skills.ask_tools import request_confirmation
+    if not await request_confirmation(
+        title=f"Change this {label}?",
+        detail=f"{target} · " + ", ".join(_human(k) for k in shown),
+        context=await _held_fields_block({
+            label: target,
+            # `field <Name>` is the card's key for a field it has no line for.
+            **{f"field {_human(k)}": f"{o} → {n}" for k, (o, n) in shown.items()},
+        }),
+    ):
+        return f"Cancelled — {target} was not changed."
+    try:
+        await _patch(f"/crm/{slug}/{record}", payload)
+    except _MirrorBlocked as blocked:
+        return _mirror_message(blocked)
+    return f"Changed {target}: " + "; ".join(
+        f"{_human(k)} {o} → {n}" for k, (o, n) in shown.items()
+    ) + "."
+
+
+async def _linked_title(task: dict[str, Any]) -> dict[str, str]:
+    """The record a task hangs on, as ``{"deal": "Acme AMC"}``, or nothing."""
+    for key, slug in (("deal_id", "deals"), ("lead_id", "leads"),
+                      ("contact_id", "contacts"), ("company_id", "organizations")):
+        if task.get(key):
+            record = _record_uuid(task[key])
+            try:
+                found = await _get(f"/crm/{slug}/{record}")
+            except GatewayRefusal:
+                return {}
+            return {ENTITY_LABELS[slug].lower(): _row_title(
+                slug, found if isinstance(found, dict) else {})}
+    return {}
+
+
+def _day(value: Any) -> str:
+    """The date of a stored due instant, as the member reads it."""
+    text = str(value or "").strip()
+    # The date part of an ISO instant ("2026-11-30T10:00:00+00:00" or with a
+    # space). Not a head slice, so the paging fence has nothing to flag.
+    return text.split("T")[0].split(" ")[0] if text else "(empty)"
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_update_task(
+    activity_id: str, completed: bool | None = None, due_at: str | None = None,
+) -> str:
+    """Complete a CRM task, reopen it, or set its due date. activity_id is the
+    id of the task (from get_timeline). Pass completed true to complete it and
+    false to reopen it. Pass due_at (YYYY-MM-DD) to set the due date.
+
+    The task is read first. The person you are acting for sees ONE card with
+    the task's subject and its real before and after, and nothing changes if
+    they decline. This changes tasks and notes only. The pipeline writes the
+    stage changes."""
+    record = _record_uuid(activity_id)
+    stamp = None
+    if str(due_at or "").strip():
+        stamp = _due_stamp(due_at)
+        if stamp is None:
+            return (
+                f"'{due_at}' is not a date I can read. Give the due date as "
+                "YYYY-MM-DD. Nothing was changed."
+            )
+    if completed is None and stamp is None:
+        return (
+            "Say what to change on the task: completed (true or false), or a "
+            "due_at date. Nothing was changed."
+        )
+    # Read first: the card shows what the task is now, never a guess.
+    row = await _get(f"/crm/activities/{record}")
+    task = row if isinstance(row, dict) else {}
+    if task.get("type") in ("status_change", "system"):
+        return "The pipeline wrote that entry, so it cannot be edited. Nothing was changed."
+    subject = str(task.get("subject") or "").strip() or "(no subject)"
+    payload: dict[str, Any] = {}
+    lines: dict[str, str] = {}
+    is_done = bool(task.get("completed_at"))
+    if completed is not None and bool(completed) != is_done:
+        payload["completed_at"] = datetime.now(UTC).isoformat() if completed else None
+        lines["field Done"] = "no → yes" if completed else "yes → no (reopened)"
+    if stamp is not None and _day(task.get("due_at")) != _day(stamp):
+        payload["due_at"] = stamp
+        lines["field Due date"] = f"{_day(task.get('due_at'))} → {_day(stamp)}"
+    if not payload:
+        return f"{subject} already has those values, so nothing was changed."
+    link = await _linked_title(task)
+    names = {"field Done": "Done", "field Due date": "Due date"}
+    from acb_skills.ask_tools import request_confirmation
+    if not await request_confirmation(
+        title="Change this CRM task?",
+        detail=f"{subject} · " + ", ".join(names[k] for k in lines),
+        context=await _held_fields_block({"field Task": subject, **link, **lines}),
+    ):
+        return f"Cancelled — {subject} was not changed."
+    try:
+        await _patch(f"/crm/activities/{record}", payload)
+    except _MirrorBlocked as blocked:
+        return _mirror_message(blocked)
+    return f"Changed task {subject}: " + ", ".join(
+        f"{names[k].lower()} {v}" for k, v in lines.items()
+    ) + "."
+
+
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────
 
 _TOOLS = [
@@ -1072,6 +1542,10 @@ _TOOLS = [
     update_deal_status,
     log_activity,
     convert_lead,
+    # WS-CRM CRM-M3a: a new deal pipeline, on one card.
+    crm_create_pipeline,
+    crm_update_record,
+    crm_update_task,
     # CRM-C7: the shared read tools (records, fields, pipelines, contacts,
     # owners, reports, totals, stage dwell and the mirrored modules).
     *CRM_TOOLS,

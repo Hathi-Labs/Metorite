@@ -901,7 +901,7 @@ def test_each_r8_shard_runs_the_r8_files_in_pr_checks_split(parsed: dict, pr_che
 def test_a_hung_r8_shard_cannot_hold_the_release_for_hours(parsed: dict) -> None:
     """A shard took about 20 min in the measurement. 60 min is three times
     that. A hung shard ends red in one hour, and a re-run gets the
-    release out the same night."""
+    release out inside the same slot window."""
     assert parsed["jobs"][R8_SUITE].get("timeout-minutes") == 60
 
 
@@ -1223,3 +1223,27 @@ class TestTheApplyMustReachItsEnd:
         wf = WORKFLOW.read_text(encoding="utf-8")
         assert "verifying by health regardless" not in wf, (
             "that line WAS the bug: it announced the failure and continued")
+
+
+UNIT_UPLOAD = "Keep the unit report for the bisect poller"
+
+
+def test_the_unit_report_is_kept_for_the_bisect_poller_and_can_never_fail_the_gate(parsed: dict) -> None:
+    """CIV-5b. The poller (scripts/home_server/bisect_poll.sh) reads the artifact
+    `unit-junit` of a RED batch run, so the upload runs `always()`. It must
+    never turn the release gate red itself, so it carries continue-on-error."""
+    steps = _steps(parsed, "test")
+    names = [s.get("name") for s in steps]
+    assert names.index(UNIT_UPLOAD) > names.index(R8_COVER), "after the R8 cover step"
+    step = _named_step(parsed, UNIT_UPLOAD)
+    assert step["if"] == "always()"
+    assert step["continue-on-error"] is True
+    assert step["uses"].startswith("actions/upload-artifact@")
+    assert step["with"]["name"] == "unit-junit"
+    assert step["with"]["path"] == "junit/test.xml"
+    # The R8 cover step is still the check that gates: no `if:` there.
+    assert "if" not in _named_step(parsed, R8_COVER)
+    # The poller's default artifact name, when the poller is in the tree.
+    poll = Path(__file__).resolve().parents[2] / "scripts/home_server/bisect_poll.sh"
+    if poll.is_file():
+        assert "unit-junit" in poll.read_text(encoding="utf-8")
