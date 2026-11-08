@@ -8926,6 +8926,8 @@ synced board shows the subtasks that Hidden folded away.
 
 **The bottom line.** Projects runs five work styles as presets over one set of blocks. A cycle is a time box that people and agents share. A cycle is sized by the review hours of named people and by credits. A Goal sits above the epic, and one engine in `project_planning.md` computes the order of work.
 
+**Rule D binds §13 too.** A step in this section that sorts, ranks, selects or classifies follows §14.1 rule 8: the decision tier, never a JSON prompt on an LLM tier.
+
 ### 13.1 The work-style catalogue (WM-0, task 979)
 
 A **block** is a part that a project can show or hide. Examples are WIP limits, the Backlog canvas, cycles, a cooldown, milestones, baselines, a hill chart and priority scores. A **style** is a named set of blocks with defaults. No style adds a table of its own. The slices of the epic WM (task 977) build the blocks. This section only names them.
@@ -9213,6 +9215,257 @@ The web searches ran on 2026-10-29. Each item names its source type.
 #### Agents (research notes, 2026-11-08, design file)
 
 The research for cycles of agent teams is in §2 and §12 of `project-docs/research/agent_era_planning_2026-11.md`. That file lists its sources and its "Not verified" line.
+
+## 14. The Linear and Plane items (LP-0, task 987, 2026-11-08)
+
+**Status: ACTIVE. This section holds rows only.** It records no new decision. Epic: LP (task 978). Build order: LIN (task 2301). Reviews: `project-docs/research/linear_parity_2026-11.md` (§3, §7 and §8) and `project-docs/research/plane_pm_research_2026-08.md`. Task 956 restored the Plane file.
+
+**The bottom line.** This section gives each Linear and Plane item a spec row, so a builder may start it. Eleven items (LP-1 to LP-11), Templates (task 18) and OP-12 (task 839) have one row each. Two items wait for an owner call (§14.5). Every row ships dark behind a flag that is OFF by default. This section does not repeat a row of §13.6.
+
+### 14.1 Rules that bind every row
+
+1. **Chat first, with full parity.** Each action in the app works from the chat. §14.3 names the MCP tool and the chat tool for each row.
+2. **Tool classes follow the manifest.** Class A reads. Class B writes with no card. Class C writes after an approve card. Class X is refused for an agent. `skill_projects/manifest.py` holds the classes.
+3. **A migration, a new MCP write route, tenancy, money or outbound sending makes a row HIGH.** A HIGH row gets the full review. The builder states in the pull request which rule made the row HIGH.
+4. **The flag names are proposals.** Each flag is a `*_ORGS` flag, so a change reloads with no restart (`docs/flag_reload.md`). The builder checks the name against the flag registry at build time.
+5. **Text from outside is untrusted.** This covers intake text, mail, a form answer and a linked page. A suggester or a drafter gets no tools. An instruction inside the text is content, never an order.
+6. **A row with a vague task states its narrowest first slice.** The row says "First slice". The first slice ships and the rest stays on the task.
+7. **Anchors.** Verify each file path and line number at dispatch. A line number in a task may be stale.
+8. **Rule D: a choice runs on the decision tier.** A step that sorts, ranks, selects or classifies uses `acb_llm.decide` through `gateway/decide_features.py`. It does not use a JSON prompt on an LLM tier. Owner rule, 2026-11-01. Register a `projects.<step>` feature with the modes off, shadow and on. A step with more than 16 questions splits into parallel chunks. The step has a fallback that works with no model. An LLM tier writes prose that a person reads, or makes a real judgement. Code computes any value that has a rule. Each row names its question type (Boolean, Choice or Score), or says "code" or "LLM". Fence: `tests/unit/test_projects_ai_uses_decide.py` (task 2308). The seam work is DEC-1 (task 2306), and the moves of six existing picks are DEC-2 (task 2307). Until it lands, the rule is advisory.
+   - LP-1: health has a rule, so code computes it from the roll-up and the engine's finish against the due date. The lead can change it. The update text is LLM.
+   - LP-2: Choice questions pick the project, the assignee and the type. A Boolean question per candidate judges a tag or a duplicate. Code ranks the assignees first.
+   - LP-4: a Choice question picks the customer record from the candidates that the reader may open.
+   - SP-3, the next slice and the risk tier of SP-8: code. No model.
+
+### 14.2 The slice table
+
+Each row has one Metorite task. The scope carries the description of the task. Where the task is vague, the row says "First slice".
+
+| Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
+|---|---|---|---|---|---|---|---|
+| **LP-1** | 988 | Project updates. An update has a health value (On track, At risk, Off track) and a short text. The latest update shows on the project, in the project list and on the space dashboard. Mira drafts it from the week: done, slipped, blocked, the forecast (RA-6, task 423) and the signals of the `project_status` report (`projects_reports.md:325`). The lead edits and posts it. A reminder goes to the lead on a cadence per project (weekly by default), and only when the project has a lead. The watchers (`pm_project_watchers`) get a digest in My Day and in the 07:30 brief (task 583). The digest does not go by mail (P-25 stays banked). A space rolls up the health of its projects. A goal (WM-5, task 984) reads the same health | R8 tests on a real database prove tenancy, and that a member never sees an update of a project that the member cannot read | `tests/unit/test_pm_project_updates_r8.py` (new) | HIGH (a migration, a new MCP write route) | `PROJECTS_UPDATES_ORGS` | LP-0. The goal roll-up waits for WM-5 |
+| **LP-2** | 989 | Triage suggestions on intake. Each `pm_intake` item gets a suggested project, assignee, type, tags and duplicates or related tasks. For the assignee, reuse `fit_for_task` (the candidates routes of `routes/projects/candidates.py`). Each suggestion shows a one-line reason, and the member accepts or declines it. An admin writes triage guidance per project, and the nearest guidance weighs most. Auto-apply on high confidence is a project option, OFF by default. A project can have a triage owner, and the role can rotate weekly. The create form warns of a likely duplicate, as the chat does today (`skill-projects` `forms.py`). The suggester gets no tools. First slice: suggestions with reasons, accept and decline, and the injection fence. Guidance, auto-apply, rotation and the form warning follow | An eval set of 30 intake items passes its written gate. The injection fixture gets suggestions and makes no tool call | `tests/unit/test_pm_triage_suggest.py` (new), with the eval set and the injection fixture | STANDARD. HIGH if suggestions need a new table, and the builder states which | `PROJECTS_TRIAGE_SUGGEST_ORGS` | LP-0. Shares one engine with ALN-3 (task 1377) |
+| **LP-3** | 990 | SLAs. A project has rules. A task that matches a rule (by its D78 level, type, tag or intake source) gets a due-by. Example: Critical in 24 hours, Urgent in 3 days. The first matching rule wins. A task shows its time left. After the due-by it reads **Breached**. A task done after a breach reads **Failed**. A breach sends one notice to the assignee and the lead. An SLA report in Reports shows met, breached and failed per week. The timer runs in `/workflows` (`pm.task.due_in`, `workflows_app.md:508`), with no second engine. The rules use the D78 matrix and no second priority list | R8 tests on a real database prove the rule match, the first-match order and the breach state | `tests/unit/test_pm_sla_r8.py` (new) | HIGH (a migration, a notice that reaches people) | `PROJECTS_SLA_ORGS` | LP-0. The breach event can feed RT-4 later |
+| **LP-4** | 991 | Customer requests from the CRM. A task or a project links to a CRM company, contact or deal. A member sees the link only when the member can also read the CRM record (two-key access). A task shows, for example, "3 customers asked · ₹4.2 L in open deals", and the canvases sort and filter by it. The member makes the link from a mail, from a CRM note, or in the chat ("this is for Acme"). The CRM record shows its linked tasks. The Projects agent writes only the link, never a CRM record (`projects_agent_parity.md`). First slice: the link, the two-key rule, the count and value, and the back-link. The mail and note entry points follow | R8 tests on a real database prove the two-key rule and tenancy | `tests/unit/test_pm_customer_links_r8.py` (new) | HIGH (a migration, access across two apps) | `PROJECTS_CUSTOMER_LINKS_ORGS` | LP-0. Reads `crm_app.md` for the record grants |
+| **LP-5** | 992 | Project docs as linked Knowledge pages (D-PM-13). A project's Docs tab lists the Knowledge pages linked to it. Projects stores no document. "New doc" makes a Knowledge page in the project's space and links it. In a linked page the member selects text and picks "Make tasks". Mira proposes the tasks on one approve card. A member sees a linked page only when Knowledge lets the member read it (two-key access) | The visual review passes. An R8 test proves the two-key rule | `tests/unit/test_pm_project_docs_r8.py` (new) | HIGH. The board says STANDARD. The link store is a new table and the rule crosses two apps, so this row is raised. The builder may lower it if no migration is needed | `PROJECTS_DOCS_ORGS` | LP-0. First check the Knowledge dependency in D-PM-13 (§8). MCP-Gc (task 751) adds the document tools |
+| **LP-6** | 993 | Automation recipes. Project settings, Automations lists recipes as toggles. Each toggle makes a rule in `/workflows`. Projects runs no engine of its own. First recipes: the parent closes when all its children are done. The children close when the parent closes, and it asks first. A task moves to In progress when its first subtask starts. When a task moves to a chosen status, assign a person or notify one. Each run writes an activity row, so the member sees why a task moved. Auto-archive and auto-close of stale work exist (`166_projects_lifecycle.sql`). They show in the same list | Each recipe runs once in the local stack, and the activity row names the rule | `tests/unit/test_pm_recipes.py` (new) | STANDARD | `PROJECTS_RECIPES_ORGS` | LP-0. Reads the `/workflows` triggers. Templates (task 18) carry recipes |
+| **LP-7** | 994 | Approvals on a status change. **The owner decided on 2026-11-08 (D197, option A), so a builder can start and plan the migration.** A status change needs one named approver. The task waits in a pending state. Approve moves it on and Reject moves it back. The chat shows a card and WhatsApp shows text. The first users are the phase gates of WM-2 (task 981), a quote or buying sign-off and a publish. First slice: the pending state, Approve, Reject and the audit row | R8 tests on a real database prove that only a named approver can approve, and that each decision writes an audit row | `tests/unit/test_pm_approvals_r8.py` (new) | HIGH (it decides who may move work) | `PROJECTS_APPROVALS_ORGS` | LP-0. The owner answered question 1 (D197) |
+| **LP-8** | 995 | Intake forms and a project intake address. An internal form per project, built from the fields of a task type. Only members fill it. Each answer lands in `pm_intake`. Each mail to the project address becomes an intake item. Reuse the email capture of Tasks (`routes/tasks/capture_email.py`). Mail is untrusted: it gets the injection fence of LP-2 and a limit per sender. A public form is not in this row. The owner chose members only (D197). First slice: the internal form. The intake address follows | A form answer and a mail each make one intake item in the local stack, and LP-2 suggests a project for it | `tests/unit/test_pm_intake_forms_r8.py` (new) | HIGH (inbound mail, a new route) | `PROJECTS_INTAKE_FORMS_ORGS` | LP-0 and LP-2. The owner answered question 2 (D197), so a builder can start |
+| **LP-9** | 2213 | Label groups. A tag can belong to a named group. A task takes at most one tag of an exclusive group. Views group and filter by the group. Tags are flat today. Keep one colour vocabulary (`statusAccent.ts`). Linear parity row P11 | A group, an exclusive rule and a refusal with a reason are proved on a real database. Views group by a group | `tests/unit/test_pm_tag_groups_r8.py` (new) | HIGH (a migration, a new MCP write route) | `PROJECTS_TAG_GROUPS_ORGS` | LP-0. Shares the tag catalogue of MCP-G21 (task 2216) |
+| **LP-10** | 2214 | Importers for Jira, Asana and Linear, beside the ClickUp importer, on the adapter shape of `project_import.md` §4.2. Today only `routes/projects/importer/clickup.py` exists. Each source is one slice with its own row in `project_import.md`. First slice: the Jira CSV adapter, and its row there | A Jira export imports in one step in the local stack, and the idempotency rules of `project_import.md` §6.1 hold | `tests/unit/test_pm_import_jira.py` (new), beside the ClickUp import tests | STANDARD. HIGH if an adapter needs a migration | `PROJECTS_IMPORT_ORGS` (reuse the flag of the existing importer if it has one) | LP-0. D80 (a file importer is allowed) |
+| **LP-11** | 2215 | An Insights builder inside Reports. The member picks a measure (count, cycle time, lead time, triage time), a slice and a segment. The builder adds percentile markers and a cumulative flow chart. It stays inside Reports on the existing reads, with no second analytics seam. The MCP read `board_stats` (MCP-G19a, task 1957) counts on the same visibility path, so reuse it where it fits. First slice: one measure, one slice and the cumulative flow chart | A cumulative flow chart and a sliced measure match the numbers of the existing Reports sections | `tests/unit/test_pm_insights.py` (new) | STANDARD (read only) | `PROJECTS_INSIGHTS_ORGS` | LP-0. The row in `projects_reports.md` comes first |
+| **TPL** | 18 | Templates. A project template holds the statuses, types, custom fields and tags, the work style (WM-0), the milestones (WM-2), the starter tasks with dates relative to the project start, the intake settings and the recipes (LP-6). A task template holds a title pattern, its fields and a subtask checklist. A library per work style: an operations board (Flow), a product team (Sprints), a bet (Cycles), an installation and a customer order (Plan), customer onboarding, and hiring. "Save as template" works from any project. Mira builds a template from a short description, on one approve card. A template is org-wide by default, as task types are since migration 175. First slice: save a project as a template and make a project from it. The library and the Mira path follow | A member makes a project from a template in the local stack, and the starter dates fall in place | `tests/unit/test_pm_templates_r8.py` (new) | HIGH (a migration) | `PROJECTS_TEMPLATES_ORGS` | LP-0. Milestones, recipes and intake settings join when WM-2, LP-6 and LP-8 land |
+| **OP-12** | 839 | The views become one tab row on desktop and tablet: the six canvases, the saved views and "+ View". No sideways scroll. Below 1280 px the canvas tabs show the icon only, with a tooltip that names the key. Tabs that do not fit fold into a "More" menu. The phone keeps one View button and a vertical sheet. `ModeSwitch` is the one switcher. Subscriptions and favorites (Linear parity row P14) are not in the task. First slice: the tab row only | At 1440, 1024 and 768 px every canvas and saved view is one click away with no scrollbar. At 390 px the sheet lists them vertically. The keys o, b, l, t, c and m still switch the canvas | Advisory: a vitest test for the tab row (new) and the visual review. Nothing tests layout (CLAUDE.md §4) | STANDARD (frontend only) | None. It is a layout, and the D145 owner preview gates it | None. SP-3 (task 962) uses the row |
+
+### 14.3 MCP and chat parity
+
+Each row names the tool that an external agent calls and the tool that the chat calls. A tool name is a proposal. The builder adds each tool to `skill_projects/manifest.py` with its class, and the manifest fence must pass.
+
+| Row | MCP tool (class) | Chat tool (class) |
+|---|---|---|
+| LP-1 | `list_project_updates` (A), `post_project_update` (C) | `draft_project_update` (A), `post_project_update` (C, one card) |
+| LP-2 | `get_intake_suggestions` (A), `accept_intake_suggestion` (C) | The same two |
+| LP-3 | `get_task` and `get_task_context` carry the SLA state (A). `set_sla_rules` (C, admin) | `sla_report` (A), `set_sla_rules` (C) |
+| LP-4 | `get_task` carries the customer count and value, only when the caller can read the CRM record (A). `link_task_customer` (C, writes the link only) | `link_task_customer` (C) |
+| LP-5 | `list_project_docs` (A), `link_project_doc` (B). Document edits use MCP-Gc (task 751) | `list_project_docs` (A), `make_tasks_from_doc` (C, one card) |
+| LP-6 | `list_project_recipes` (A), `set_project_recipe` (C) | The same two |
+| LP-7 | `list_pending_approvals` (A), `decide_approval` (C, only a named approver) | The same two, as a card. WhatsApp shows text |
+| LP-8 | `list_intake_forms` (A), `submit_intake_form` (B) | The same two. The intake address needs no tool, because it is a setting and an inbound path |
+| LP-9 | `list_tag_groups` (A), `set_tag_group` (C). `update_task` refuses a second tag of an exclusive group, with a reason | `set_tag_group` (C) |
+| LP-10 | None. A file cannot travel over the MCP | A command that opens the importer for the named source |
+| LP-11 | `insights_query` (A), on the `board_stats` visibility path | `insights_query` (A) |
+| TPL | `list_templates` (A), `create_project_from_template` (C), `save_as_template` (C) | The same three |
+| OP-12 | None | None. The tab row only re-lays controls that the chat already reaches |
+
+### 14.4 The build order
+
+The order follows Metorite task 2301 (LIN). Waves 1 to 3 (cycles, epics, the plan engine and goals) come before these rows. Metorite holds the order of record. This list holds the rows that this section owns.
+
+1. **Wave 4.** LP-1, LP-3, LP-9, TPL and OP-12. Each is small and high in value.
+2. **Wave 5.** WM-2 (task 981), LP-2, LP-4 and LP-5. WM-2 builds the milestones first. Its phase gates wait for LP-7. MCP-G8 (task 413) ships beside this wave.
+3. **Wave 6.** LP-10, LP-11, RT-4 (task 1562), LP-8 and LP-6.
+4. **Not in a wave.** LP-7 waits for the owner answer to question 1. After the answer, the WM-2 gates and LP-7 build together.
+
+Task 2301 plans a short Linear comparison after wave 4. At most four slices run at once.
+
+### 14.5 Two decisions owed
+
+Each question is for the owner. The owner answered both on 2026-11-08, and `work_plan.md` §3 D197 records the answers. The options tables stay as the record.
+
+**Question 1: approvals on a status change (LP-7, task 994).** The Paca research found no approval pattern to copy (`paca_pm_research_2026-08.md` §10). Plane's model is the only one in the research. A status change needs a named approver, and the task waits in a pending state.
+
+**Answered 2026-11-08: option A.** See D197, point 1.
+
+| Option | What it means |
+|---|---|
+| **A. One named approver per gate (recommended)** | The project lead sets one approver per status change. One approval is enough. Reject sends the task back to the status it left, with a required reason. Each decision writes an audit row. An agent can ask for an approval and can never approve. |
+| B. All named approvers must approve | Plane's multi-level flow. It is slower, and the research did not verify it. |
+| C. Do not build approvals | The WM-2 gates become a plain checklist with no enforcement. |
+
+**Blocks.** Nothing now. Option A (D197) unblocks LP-7 and the phase gates of WM-2 (task 981). The quote, buying and publish sign-offs can use the same gate.
+
+**Question 2: the public intake form (D-PM-14, LP-8, task 995).** D-PM-14 defers public read-only boards (§8). A public form is a different case. An anonymous person would write into a tenant. The research in `plane_pm_research_2026-08.md` §6 Q1 names the risks of a public read.
+
+**Answered 2026-11-08: option A.** See D197, point 2.
+
+| Option | What it means |
+|---|---|
+| **A. Members only (recommended)** | LP-8 ships the internal form and the intake address. No anonymous write route exists. The posture of D-PM-14 stays. |
+| B. A public form with a capability URL | An anonymous write route, a limit per sender, a kill switch per form and an injection fence. The gateway has no such route today. Identity and outside parties apply (CLAUDE.md §3a rule 3). |
+| C. Never | Record the refusal as a decision. |
+
+**Blocks.** Nothing. Option A (D197) keeps intake for members only, so LP-8 builds the internal form and the intake address with no anonymous write route.
+
+### 14.6 What we refuse, and why
+
+This section does not restate a decision. Each line points to the place that records it.
+
+| Item that Linear or Plane has | Refused by | Recorded in |
+|---|---|---|
+| A docs store inside Projects | D-PM-13 | `project_management_app.md` §8. LP-5 links to Knowledge |
+| A Linear "team" as an object | D87 (with D49) | `work_plan.md` §3. A team view is a filter |
+| Story-point systems, estimate systems and Plane-style modules | P-31 | `plane_pm_research_2026-08.md` §8, row P-31. SP-0 may reopen it, so check §13 first |
+| A time-tracking timer | D77 | `work_plan.md` §3. D77 gives each work fact one home. The research reads it to refuse a second timer store. D77 does not name a timer. The owner decided on 2026-11-08 that Projects has no timer, and time spent stays a typed field (D197, point 3) |
+| A second priority scale | D78 | `work_plan.md` §3. The LP-3 rules use the D78 matrix |
+| A public intake form now | D-PM-14 | `project_management_app.md` §8. See §14.5, question 2 |
+
+The review also left out a GraphQL API, diffs and reviews, and releases. The reasons are in `linear_parity_2026-11.md` §7, "Items that I did not propose".
+
+### 14.7 What other apps do
+
+The notes below are research from the web, copied from two comments on epic LP (task 978). Each source is a claim to check. Check the vendor's current page before you copy a detail. Every "Not verified" line stays.
+
+#### Research notes, 2026-10-29 (Linear and Plane)
+
+The web searches ran on 2026-10-29. Each item names its source type.
+
+**Linear, project and initiative updates** (vendor docs)
+
+- An update has a health value (On track, At risk, Off track) and rich text: the status, the challenges and the next steps.
+- Reminders run weekly or every two weeks, on a set day and time. They run only when an owner exists. Updates can post to a Slack channel.
+- The health of an initiative is the health of its latest update.
+- **We take:** LP-1 (task 988).
+
+**Linear Pulse** (changelog, 2025-04)
+
+- A feed of the updates from the projects and initiatives that the member follows, with a daily or weekly AI summary. The summary can also play as audio.
+- **We take:** the digest in My Day and the brief (LP-1). Audio: not now.
+
+**Linear Triage Intelligence** (vendor docs and blog, a third-party overview)
+
+- For each triage item, it suggests assignees, labels, duplicates and related issues. Each suggestion has a reason in plain words, and the member accepts or declines it.
+- Guidance can sit at the sub-team, team and workspace level, and the nearest guidance weighs most. Auto-apply on high confidence is an option. It can also run on the backlog. It is a Business-plan feature.
+- **We take:** LP-2 (task 989).
+
+**Linear Triage** (vendor docs)
+
+- Triage is a team inbox for issues from outside the team. The triage duty can rotate.
+- **We take:** LP-2, the triage owner and the rotation.
+
+**Linear SLAs** (vendor docs)
+
+- The defaults: Urgent gets 24 hours, High gets 1 week. The first rule that matches wins.
+- Rules filter by team, status, assignee, priority, labels and project. An issue past its SLA is Breached. An issue done after a breach is Failed.
+- **We take:** LP-3 (task 990), on the D78 matrix.
+
+**Linear Customer Requests and Plane Customers** (vendor docs, Linear changelog 2024-12)
+
+- Linear: customers carry revenue, size and tier. Issues can be filtered by the customer count and revenue. Requests come from Intercom, Zendesk, Front, Asks and email.
+- Plane: a customer carries a name, email, website, employees, industry, stage, contract status and revenue. Requests link to work items, and a work item shows a Customers field.
+- A vendor caveat: the count holds only the requests that someone logged.
+- **We take:** LP-4 (task 991), from our own CRM.
+
+**Linear project documents and Plane Pages** (vendor docs)
+
+- Linear stores specs as documents on the project, and text in a document can become issues. Plane has nested pages and a wiki, linked to work.
+- **We take:** LP-5 (task 992), under D-PM-13 (docs live in Knowledge).
+
+**Templates** (Linear and Plane docs)
+
+- Linear: a template fills the description, the milestones, the issues and the properties. It belongs to the workspace or to one team.
+- Plane: a template holds the states, labels, workflows, estimates, types, epics, members, intake settings, milestones, modules, recurring items, automations and starter items.
+- **We take:** Templates (task 18).
+
+**Linear automations** (changelog 2024-09, vendor docs)
+
+- The parent completes when all its sub-issues are done. The sub-issues complete when the parent is done.
+- Stale issues auto-close after a set time. Done issues auto-archive after 1 to 12 months.
+- **We take:** LP-6 (task 993). The stale and archive parts exist already.
+
+**Plane workflows and approvals** (vendor docs)
+
+- A workflow sets the allowed transitions, and "by" limits who may move a task. An approval flow (Enterprise plan) sets "on approve, move to X" and "on reject, move to Y". The task waits in a pending state, with Approve and Reject buttons.
+- A pre-validation script can block a move. A post action cannot.
+- **We take:** LP-7 (task 994), decision first.
+
+**Plane Intake** (vendor docs)
+
+- Public forms need no project access. A custom form is built from the fields of a work item type.
+- Every answer lands in Intake under Triage. The member accepts it into a state or rejects it.
+- **We take:** LP-8 (task 995), with internal forms first (D-PM-14).
+
+**Plane time tracking** (vendor docs)
+
+- A member logs work on an item. A worklog sits at the workspace level, with a CSV export.
+- **We do not take** a timer (D77). Our time blocks already give `time_spent_mins`.
+
+**Linear agents** (developer docs)
+
+- An agent is a delegate, and the human stays responsible. A session has the states pending, active, error, awaitingInput and complete. Agents are not billable seats.
+- **We have this** (`pm_agent_runs`). The rule "the human stays responsible" is a candidate for the agent board (task 321).
+
+**Plane AI** (vendor docs and changelog)
+
+- Pi chat makes work items, projects, cycles and modules from a chat, with a preview first.
+- **We have this:** the chat `create_tasks`, with an approve card.
+
+**What we do not take.** The list is in §14.6 and in the epic description.
+
+**Not verified.** The details of Linear Asks and its Slack intake. Plane multi-level approvals. Plane "text to work items" in Pages, which comes from a second-hand source.
+
+**Sources.**
+
+- https://linear.app/docs/initiative-and-project-updates
+- https://linear.app/changelog/2025-04-16-pulse
+- https://linear.app/docs/triage-intelligence
+- https://linear.app/now/how-we-built-triage-intelligence
+- https://linear.app/docs/triage
+- https://linear.app/docs/sla
+- https://linear.app/docs/customer-requests
+- https://linear.app/docs/project-templates
+- https://linear.app/enablement/guide/building-blocks
+- https://linear.app/changelog/2024-09-06-auto-close-parent-and-sub-issues
+- https://linear.app/docs/delete-archive-issues
+- https://linear.app/docs/insights
+- https://linear.app/docs/agents-in-linear
+- https://docs.plane.so/workflows-and-approvals/workflows
+- https://docs.plane.so/intake/intake-forms
+- https://docs.plane.so/customers/customers
+- https://docs.plane.so/templates/project-templates
+- https://docs.plane.so/core-concepts/issues/time-tracking
+- https://plane.so/llms.txt
+- https://plane.so/changelog/2025-10-15-ai-work-creation-inline-comments-filters
+
+#### Research notes, 2026-11-08 (Linear parity review, task 2211)
+
+The file is `project-docs/research/linear_parity_2026-11.md`. The source type is Linear's own pages (linear.app/docs, /developers, /changelog), fetched 2026-11-08. One third-party MCP tool catalogue is marked as such.
+
+**The verdict.** The review has 90 rows: 28 covered, 22 partial, 36 gap and 4 not wanted. Metorite covers the daily core: tasks, subtasks, links, priority, tags, five views, saved views, intake, watchers, the bell, the command palette, GitHub, the ClickUp import, and the full MCP with agent runs.
+
+**The gaps, mapped to tasks under epic LP:**
+
+- Cycles: tasks 19, 959 and 977. The Scrum non-goal blocked them until SP-0 decided. §13 now records the decision.
+- Milestones, initiatives and the roadmap: tasks 981 and 977.
+- Project updates, health and the Pulse digest: LP-1 (task 988) and SW-36.
+- Triage suggestions, rules and rotation: LP-2 (task 989), SW-35 (task 1052), ALN-3 (task 1377) and LP-6 (task 993).
+- SLAs: LP-3 (task 990). Customer requests from the CRM: LP-4 (task 991). Templates: task 18. Documents over MCP: LP-5 (task 992).
+- Slack and support-desk intake: LP-8 (task 995). Outbound webhooks: RT-4 (task 1562). Views, subscriptions and favorites: task 839.
+- New on 2026-11-07: LP-9 label groups (task 2213), LP-10 Jira, Asana and Linear importers (task 2214), LP-11 an Insights builder in Reports (task 2215) and MCP-G21 members and tags tools (task 2216).
+
+**Not wanted** (the decisions are in §14.6): a Linear "team" as an object (D87, D49), a time tracker (D77), story points (P-31 unless SP-0 reopens it), a second priority scale (D78), a docs store in Projects (D-PM-13) and a public intake form now (D-PM-14).
+
+**Not verified.** Linear's SLA page (it answered 404). Linear's full MCP tool list (a third-party catalogue only). The changelog entries for January to March 2026.
+
 
 ---
 
