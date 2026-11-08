@@ -36,6 +36,12 @@ function one(f: FieldSpec, i: number): unknown {
     case "email": return `contact${n}@example.com`;
     case "phone": return `+9198765432${String(10 + n).padStart(2, "0")}`;
     case "geo": return { lat: 18.5204 + i / 100, lng: 73.8567 + i / 100 };
+    case "richText": return `**Sample report ${n}**\n\n- First point\n- Second point`;
+    case "rating": return Math.min(f.max ?? 5, Math.max(f.min ?? 1, (f.min ?? 1) + (i % 5)));
+    case "duration": return 900 * n;
+    case "quantity": return { value: String(n * 5), unit: f.units?.[0] ?? "kg" };
+    case "percent": return n * 250;
+    case "barcode": return f.format === "ean13" ? "4006381333931" : f.format === "code128" ? `SAMPLE-${n}` : `https://example.com/${n}`;
     default: return null;
   }
 }

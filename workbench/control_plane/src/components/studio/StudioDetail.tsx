@@ -10,6 +10,7 @@
  * Table cell does. The sheet is generic. A caller adds its own actions beside it.
  */
 import { ValueElement } from "@/components/CardFieldValue";
+import { MarkdownBody } from "@/components/MarkdownMessage";
 import { displayValue, labelOf, safeHref } from "@/lib/studio/blocks";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 
@@ -47,6 +48,11 @@ function Value({ field, value }: { field: FieldSpec; value: unknown }) {
       return <span className="break-all">{text}</span>;
     case "longText":
       return <span className="whitespace-pre-wrap break-words">{text}</span>;
+    case "richText":
+      // The one markdown seam. It makes no element of raw HTML, and the check refuses a tag.
+      return <div className="min-w-0 break-words"><MarkdownBody content={String(value)} /></div>;
+    case "barcode":
+      return <span className="break-all font-mono">{text}</span>;
     default:
       return <span className="break-words">{text}</span>;
   }

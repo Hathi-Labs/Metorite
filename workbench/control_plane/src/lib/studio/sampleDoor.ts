@@ -14,7 +14,7 @@ import type { FieldSpec } from "./fieldCheck";
 import { validateRecord } from "./fieldCheck";
 import type { ActionResult, Row, StudioDataDoor } from "./dataDoor";
 
-/** One object with a field of each of the 16 types. */
+/** One object with a field of each of the 22 types. */
 export const SAMPLE_FIELDS: FieldSpec[] = [
   { key: "title", type: "text", label: "Title", required: true },
   { key: "notes", type: "longText", label: "Notes" },
@@ -32,6 +32,12 @@ export const SAMPLE_FIELDS: FieldSpec[] = [
   { key: "contact", type: "email", label: "Contact" },
   { key: "phone", type: "phone", label: "Phone" },
   { key: "location", type: "geo", label: "Location" },
+  { key: "report", type: "richText", label: "Site report" },
+  { key: "score", type: "rating", label: "Customer score" },
+  { key: "duration", type: "duration", label: "Time on site" },
+  { key: "weight", type: "quantity", label: "Load", units: ["kg", "t"] },
+  { key: "discount", type: "percent", label: "Discount" },
+  { key: "serial", type: "barcode", label: "Serial", format: "ean13" },
 ];
 
 /** The columns the Table shows. The Form and the Detail show all of the fields. */
@@ -45,6 +51,9 @@ export const SAMPLE_ROWS: Row[] = [
     owner: "asha@example.com", customer: { id: "cust-104" },
     photo: { id: "123e4567-e89b-12d3-a456-426614174000" }, site: "https://example.com/sites/pune",
     contact: "ops@example.com", phone: "+919876543210", location: { lat: 18.5204, lng: 73.8567 },
+    report: "## Findings\n\nThe **base plate** is level.\n\n- Anchor bolts: set\n- Power: on site",
+    score: 4, duration: 5400, weight: { value: "1250.5", unit: "kg" }, discount: 1250,
+    serial: "4006381333931",
   },
   {
     id: "v2", title: "Calibrate the line", qty: 3, amount: { minor: 480050, currency: "INR" },
