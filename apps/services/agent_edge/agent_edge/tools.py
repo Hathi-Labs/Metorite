@@ -5284,10 +5284,14 @@ async def _put_epic_contract(ctx: Context, args: dict[str, Any]) -> dict[str, An
         path_params={"task_id": str(args["task_id"])},
         json_body={"epic_contract": dict(args["epic_contract"])},
         if_match=str(args["expected_version"]), details=_EPIC_DETAILS)
-    if not isinstance(answer, dict) or not isinstance(answer.get("task"), dict):
-        raise ToolError(TEXT_BUSY)
-    result = await _updated(ctx, answer["task"])
-    result["epic_contract"] = epic_contract(answer.get("epic_contract"))
+    # The write landed, so the call reports it and never says busy (EA-6d fix
+    # round 2). The task row of the answer is the fallback of the re-read.
+    body = answer if isinstance(answer, dict) else {}
+    written = body.get("task")
+    if not isinstance(written, dict) or _id(written.get("id")) is None:
+        written = {"id": str(args["task_id"])}
+    result = await _updated(ctx, written)
+    result["epic_contract"] = epic_contract(body.get("epic_contract"))
     return result
 
 

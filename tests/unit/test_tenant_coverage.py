@@ -493,6 +493,21 @@ def test_the_goal_record_table_is_tenant_scoped() -> None:
     assert "ALTER TABLE goal_records FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_epic_contract_table_is_tenant_scoped() -> None:
+    """SP-8a (``project_management_app.md`` §13.3). The contract of an epic
+    holds the outcome and the checks of one org's work. The table may not be
+    exempt, and the committed policy phase must carry it (R5). The numbered
+    file's own policy is pinned in ``test_epic_contract_r8.py``."""
+    gen = _generator()
+    assert "pm_epic_contracts" in gen.discover_tables()
+    assert "pm_epic_contracts" not in gen.EXEMPT
+    assert "pm_epic_contracts" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE pm_epic_contracts FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:
     """FORCE, WITH CHECK and the missing-ok flag each have an incident behind
     them (saas_multitenancy_implementation.md §1.1). Drop any one and the

@@ -72,6 +72,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Header, HTTPException
 from gateway.routes.projects.core import (
+    TaskModel,
     _tenant_session,
     actor,
     assert_task_is_epic,
@@ -83,6 +84,7 @@ from gateway.routes.projects.core import (
     record_field_change,
     resolve_visibility,
     router,
+    row_to_dict,
     task_is_epic,
 )
 from pydantic import BaseModel, ConfigDict
@@ -443,7 +445,8 @@ async def put_epic_contract(
     if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
     """Replace the whole contract of an epic. Each part that the body leaves
-    out is cleared. Returns the contract, the new version and ``changed``."""
+    out is cleared. Returns the contract, the new version, ``changed`` (the
+    ``field_change`` fields) and ``task``, the task row after the save."""
     values = clean_contract(payload.epic_contract)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -457,6 +460,9 @@ async def put_epic_contract(
         after = await lock_task(db, task_id)
         result = _reply(after, contract, epic=True)
         result["changed"] = [c["field"] for c in changes]
+        # The task row as it is now, so a caller merges it over its copy, and
+        # the edge reports the save with the new version (as a PATCH does).
+        result["task"] = row_to_dict(after, TaskModel)
     if changes:
         await emit("pm.task.updated", {"task_id": str(task.id)})
     return result
