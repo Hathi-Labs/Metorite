@@ -5349,10 +5349,10 @@ _UPDATE_DETAILS: Mapping[tuple[int, str], str] = {
 }
 
 #: The body keys of the POST, in a fixed order (edge rule 18).
-UPDATE_BODY_KEYS: tuple[str, ...] = ("health", "body")
+UPDATE_POST_BODY_KEYS: tuple[str, ...] = ("health", "body")
 
 #: The keys of one update in a result (§9.1). ``body`` is (U).
-UPDATE_KEYS: tuple[str, ...] = (
+PROJECT_UPDATE_KEYS: tuple[str, ...] = (
     "id", "project_id", "health", "body", "author", "posted_at", "drafted_by_ai", "via",
 )
 
@@ -5508,7 +5508,7 @@ async def _send_update(ctx: Context, project_id: str, args: Mapping[str, Any],
                        sent: _Sent) -> dict[str, Any]:
     """POST the update, and return the gateway's row. A hidden project is
     ``Project not found.``, and the flag and a space have their own texts."""
-    payload = {name: str(args[name]) for name in UPDATE_BODY_KEYS if name in args}
+    payload = {name: str(args[name]) for name in UPDATE_POST_BODY_KEYS if name in args}
     sent.post = True
     _, row = await _write(ctx, "POST", UPDATES_ROUTE, TEXT_PROJECT_NOT_FOUND,
                           path_params={"project_id": project_id}, json_body=payload,
@@ -5528,7 +5528,7 @@ async def _post_project_update(ctx: Context, args: dict[str, Any]) -> dict[str, 
         raise ToolError(TEXT_UPDATE_BLANK)
     # Postgres refuses a NUL in text. Without this check the route answers
     # 500, and the slot goes `unknown` for a write that never happened.
-    _refuse_nul(args, UPDATE_BODY_KEYS)
+    _refuse_nul(args, UPDATE_POST_BODY_KEYS)
     project_id = str(args["project_id"])
     claim = await _claim_slot(ctx, "post_project_update", str(args["idempotency_key"]),
                               args, _UPDATE_KEY_TEXTS)
@@ -8491,14 +8491,16 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: shows only while the runs flag is on too. ``record_outside_decision`` of
 #: MCP-G15 follows it, on the same flag. ``delete_task`` of EA-6h is last.
 #: It shows only while the member's switch is on (:func:`listed_for`).
+#: WS-39 LP-1a: ``list_project_updates`` closes the reads, and
+#: ``post_project_update`` follows the four tools of MCP-G1.
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, BOARD_STATS, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_PROJECT_UPDATES,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
-    ADD_COMMENT, POST_PROJECT_UPDATE, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,
-    CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS,
+    ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,
+    CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS, POST_PROJECT_UPDATE,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
     RELEASE_TASK, DELETE_TASK,

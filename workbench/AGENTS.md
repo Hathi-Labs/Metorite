@@ -84,6 +84,7 @@ The Knowledge app (spec `knowledge_base.md` §11.1 and §21). Only the first `GE
   - Single-source modules: `lib/grouping.ts` (`viewDivergence`), `lib/shownFields.ts`, `lib/commands.ts`, `lib/panelMode.ts`, `lib/taskMenu.ts`, `lib/rowState.ts`, `lib/pagedPicker.ts`.
   - `lib/taskMenu.ts` and `lib/commands.ts` stay disjoint in both directions (`taskMenu.test.ts`).
   - `lib/statusSetCopy.ts` holds every sentence about a status set (WS-42 PST-1). No component builds one, and no sentence uses a possessive of a name. Fences: `statusSetCopy.test.ts`, `projectsSettings.test.ts`.
+  - `lib/projectUpdateLine.ts` is the one rule of the line of the newest project update on the Overview (WS-39 LP-1a), and `components/ProjectUpdateLine.tsx` only draws it. The hue of a health comes from `statusAccent.PROJECT_HEALTHS` only. The line draws nothing while `PROJECTS_UPDATES_ORGS` is off (a 404). Fence: `lib/projectUpdateLine.test.ts`.
 
 ### Settings, identity and access
 - `app/settings/billing/` -- Settings → Billing (spec `subscription_console.md`). `Checkout.tsx` mounts only inside `data.purchaseEnabled`.
