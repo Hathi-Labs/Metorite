@@ -238,6 +238,9 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_day_digest", {}, [("GET", "/tasks/calendar/day-summary")]),
     ("my_tasks_estimate_stats", {}, [("GET", "/projects/my/calendar/estimate-stats")]),
     ("my_tasks_set_one_thing", {"item_id": TID}, [("PUT", "/tasks/calendar/day-state")]),
+    ("my_tasks_get_calendar_settings", {}, [("GET", "/tasks/settings")]),
+    ("my_tasks_update_calendar_settings", {"day_start_hour": 8, "confirmed": True},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
 ]
 
 
@@ -259,8 +262,11 @@ def test_each_tool_calls_exactly_the_lens_routes(gw: Recorder, tool, kwargs, exp
 
 # ── 2. The retired doors are named nowhere ──────────────────────────────────
 
+#: ``/tasks/settings`` left this list in CAL-2 (task 1676). That route reads
+#: ``user_settings``, not ``gtd_items``, and it is live. The calendar settings
+#: tools call it. The mounted-router test above still checks that it exists.
 RETIRED = (
-    "/tasks/items", "/tasks/projects", "/tasks/hierarchy", "/tasks/settings",
+    "/tasks/items", "/tasks/projects", "/tasks/hierarchy",
     "/tasks/accounts", "/tasks/sync", "/tasks/spaces", "/tasks/folders",
     "/tasks/local-projects", "/tasks/calendar/estimate-stats",
 )
@@ -379,6 +385,7 @@ def test_every_path_the_skill_calls_is_served_with_that_method():
 STORE_NEUTRAL: dict[str, str] = {
     "/tasks/calendar/day-state": "calendar_day_state — the member's day, not a task (D53.6)",
     "/tasks/people": "people — slice 1 of the rename (2026-09-21)",
+    "/tasks/settings": "user_settings — the calendar fields of the member, no task (CAL-2, task 1676)",
 }
 
 SEAMS = ("item_source(", "agent_source(")
