@@ -530,8 +530,8 @@ class TestTheWriteToolsAtTheEdge:
         off = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
         assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
         # The seven reads of EA-3, the two reads of EA-15 (§12.4) and
-        # `get_attachment` of IMG-3, and `board_stats` of MCP-G19a.
-        assert len(off) == 11
+        # `get_attachment` of IMG-3, `board_stats` of MCP-G19a, the two of MCP-G21, and `get_plan` of SP-12.
+        assert len(off) == 14
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read projects:write", WRITE_SCOPES),
