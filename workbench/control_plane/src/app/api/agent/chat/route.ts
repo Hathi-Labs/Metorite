@@ -56,6 +56,7 @@ import { cleanSurface, surfaceField } from "@/lib/shell/surface";
 import { typedField } from "@/lib/typedMark";
 import { bindToRun } from "@/lib/runBinding";
 import { MAX_CARD_DRAFTS } from "@/lib/redraftCard";
+import { unsafeGatewayPath } from "@/lib/gatewayPath";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -167,9 +168,11 @@ async function persistAssistantMessage(
     // lives in lib/assistantCheckpoint.ts.
     const payload = [assistantCheckpointRow(checkpoint)];
     // Write directly to the gateway's chat message store so messages survive
-    // even if the Next.js process restarts mid-stream.
+    // even if the Next.js process restarts mid-stream. The thread id comes
+    // from the body, so it is encoded: a `?` or `/` in it must not move the
+    // write to another route (H-280).
     await gatewayFetch(
-      `${GATEWAY_URL}/chat/sessions/${threadId}/messages`,
+      `${GATEWAY_URL}/chat/sessions/${encodeURIComponent(threadId)}/messages`,
       {
         method: "POST",
         headers: await gatewayHeaders({ "Content-Type": "application/json" }),
@@ -714,6 +717,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!agentName || (!message && !followUp)) {
     return new Response(
       `data: ${JSON.stringify({ type: "error", content: "agentName and message are required" })}\n\n`,
+      { status: 400, headers: sseHeaders() }
+    );
+  }
+  // The thread id goes into gateway paths. A `?`, `#` or `/` in it would
+  // move the call to another route, so the path guard refuses it (H-280).
+  if (threadId && (typeof threadId !== "string" || unsafeGatewayPath([threadId]) !== null)) {
+    return new Response(
+      `data: ${JSON.stringify({ type: "error", content: "Invalid threadId" })}\n\n`,
       { status: 400, headers: sseHeaders() }
     );
   }

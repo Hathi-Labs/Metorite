@@ -251,6 +251,14 @@ ALLOWED: dict[str, str] = {
         "'and N more', the card states the full count, and the convert takes every child.",
     "packages/acb_skills/acb_skills/studio_tools.py::_clip::text[:limit - 3]":
         "Text, not rows: the cut shortens one string.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_fields_problem::missing[:MAX_FIELD_NAMES]":
+        "Field names in one refusal sentence (STU-B2c-2b), not rows. The refusal "
+        "writes nothing and opens no request, and the next call names any key "
+        "left, so no field is lost.",
+    "packages/acb_skills/acb_skills/studio_tools.py::_fields_problem::unknown[:MAX_FIELD_NAMES]":
+        "Field names in one refusal sentence (STU-B2c-2b), not rows. The refusal "
+        "writes nothing and opens no request, and the next call names any key "
+        "left, so no field is lost.",
     "packages/acb_skills/acb_skills/studio_tools.py::_line_of::text[:limit * 4]":
         "Text, not rows: the cut shortens one string.",
     "packages/acb_skills/acb_skills/studio_tools.py::_skeleton::' '.join(text.split()[:5])[:MAX_NAME_CHARS]":
@@ -301,7 +309,9 @@ ALLOWED: dict[str, str] = {
 #: id as the route quotes it, and two 40-character prefixes that spot a card
 #: view (81). STU-BETA-2 added one: the plan card names six objects at most
 #: and says 'and N more', and two cuts keep a made action id in 48 characters (84).
-ALLOWED_CEILING = 84
+#: STU-B2c-2b added two: a refusal names at most two field keys, and it writes
+#: nothing, so the next call names the rest (86).
+ALLOWED_CEILING = 86
 
 
 def _stringy(node: ast.AST) -> bool:

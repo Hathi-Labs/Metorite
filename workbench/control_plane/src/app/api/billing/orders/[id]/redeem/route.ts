@@ -28,6 +28,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { checkoutCall, requirePurchaser } from "../../../_purchase";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,8 @@ export async function POST(
   if (who instanceof NextResponse) return who;
 
   const { id } = await params;
+  const refused = refuseUnsafePath([id]);
+  if (refused) return refused;
   const payload = (await req.json().catch(() => null)) as {
     code?: string;
   } | null;

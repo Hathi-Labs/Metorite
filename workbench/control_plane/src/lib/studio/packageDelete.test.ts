@@ -13,12 +13,14 @@ import { describe, expect, it } from "vitest";
 import {
   GONE_LINE, PREVIEW_FAILED_LINE, STALE_COUNTS_LINE, afterStall, changedText, classifyStep, deleteAndRefresh, forgetPackage, parsePreview, previewCopy, progressLine, readPreview, runDelete,
 } from "./packageDelete";
+import { peek, read } from "@/lib/dataCache";
+import { manifestKey } from "@/lib/shell/manifestCache";
 
 const ID = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
 const wire = (confirm = "t0", records = 12) => ({
   package: { id: ID, name: "Visits", slug: "visits" },
   objects: [{ name: "visit", fields: 4, records, capped: false }],
-  totals: { objects: 1, fields: 4, records, records_capped: false, versions: 3, installs: 2, other_member_installs: 1 },
+  totals: { objects: 1, fields: 4, records, records_capped: false, versions: 3, installs: 2, other_member_installs: 1, own_entries: 1 },
   confirm,
 });
 
@@ -36,7 +38,7 @@ function fakeFetch(replies: Reply[]) {
 describe("the preview", () => {
   it("reads the counts and the token", () => {
     const p = parsePreview(wire());
-    expect(p).toMatchObject({ name: "Visits", records: 12, versions: 3, installs: 2, otherMemberInstalls: 1, confirm: "t0" });
+    expect(p).toMatchObject({ name: "Visits", records: 12, versions: 3, installs: 2, otherMemberInstalls: 1, ownEntries: 1, confirm: "t0" });
     expect(p?.objects).toEqual([{ name: "visit", fields: 4, records: 12, capped: false }]);
   });
 
@@ -50,7 +52,28 @@ describe("the preview", () => {
     expect(c.subject).toBe("Visits");
     expect(c.body).toContain("1 object, 12 records, 3 versions");
     expect(c.body).toContain("cannot undo");
-    expect(c.note).toContain("1 of them reaches another member, who loses the app");
+    expect(c.note).toBe("Its entry in your sidebar goes too. 1 install reaches another member, who loses the app.");
+  });
+
+  it("names the owner's own entry once, and makes each verb agree with its count (PKG-8a fix round 1)", () => {
+    const note = (installs: number, other: number, own: number) =>
+      previewCopy({ ...parsePreview(wire())!, installs, otherMemberInstalls: other, ownEntries: own }).note;
+    expect(note(1, 0, 1)).toBe("Its entry in your sidebar goes too.");
+    expect(note(1, 1, 0)).toBe("1 install reaches another member, who loses the app.");
+    expect(note(3, 3, 0)).toBe("3 installs reach other members, who lose the app.");
+    expect(note(3, 2, 1)).toBe("Its entry in your sidebar goes too. 2 installs reach other members, who lose the app.");
+    expect(note(0, 0, 0)).toBeNull();
+    expect(note(2, 1, 1)).not.toMatch(/\b1 install\b[^.]*\bgo\b/);
+  });
+
+  it("names a sidebar entry only for an active install of the owner, as the server counts it (fix round 2)", () => {
+    // One install, archived: the server counts it in installs and in no other count.
+    const archived = parsePreview({ ...wire(), totals: { ...wire().totals, installs: 1, other_member_installs: 0, own_entries: 0 } })!;
+    expect(archived.ownEntries).toBe(0);
+    expect(previewCopy(archived).note).toBeNull();
+    // An answer of an older gateway has no own_entries: no sidebar sentence, never a guess.
+    const old = parsePreview({ ...wire(), totals: { ...wire().totals, installs: 1, other_member_installs: 0, own_entries: undefined } })!;
+    expect(previewCopy(old).note).toBeNull();
   });
 
   it("reads the preview from the delete-preview route", async () => {
@@ -282,6 +305,13 @@ describe("a deleted package leaves no cached page", () => {
     expect(page).toContain("detail.error === STUDIO_OFF || (detail.error && detail.data === undefined)");
     const btn = readFileSync(new URL("../../components/studio/DeletePackageButton.tsx", import.meta.url), "utf8");
     expect(btn).toContain("forgetPackage(id)");
+  });
+
+  it("drops the shell manifest too, so the sidebar entry of the app goes at once (PKG-8a fix round 1)", async () => {
+    await read(manifestKey(), async () => ({ version: "v1", contributions: {} }));
+    expect(peek(manifestKey())).toBeDefined();
+    forgetPackage(ID);
+    expect(peek(manifestKey())).toBeUndefined();
   });
 });
 

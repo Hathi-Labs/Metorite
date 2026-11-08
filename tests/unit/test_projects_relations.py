@@ -54,8 +54,13 @@ class FakeLinks:
     def __init__(self, edges: dict[str, list[str]]):
         self.edges = edges
         self.queries = 0
+        #: The advisory locks taken, and how many walk queries came before each.
+        self.locks: list[int] = []
 
     async def execute(self, sql: Any, params: dict | None = None):
+        if "pg_advisory_xact_lock" in str(sql):
+            self.locks.append(self.queries)
+            return SimpleNamespace(fetchall=lambda: [])
         self.queries += 1
         ids = (params or {}).get("ids") or []
         out: list[Any] = []
@@ -130,6 +135,13 @@ def test_an_existing_cycle_elsewhere_does_not_hang_the_walk():
     graph = FakeLinks({"b": ["c"], "c": ["b"]})
     run(assert_no_block_cycle(graph, "a", "b"))
     assert graph.queries < MAX_DEPTH, "the walk revisited nodes instead of tracking them"
+
+
+def test_the_lock_comes_before_the_first_read_of_the_graph():
+    """SW-16a. Two adds in opposite directions must not both pass the walk."""
+    graph = FakeLinks({"b": ["c"]})
+    run(assert_no_block_cycle(graph, "a", "b"))
+    assert graph.locks == [0]
 
 
 def test_the_walk_is_bounded():

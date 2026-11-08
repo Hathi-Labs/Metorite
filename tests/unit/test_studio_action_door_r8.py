@@ -1970,3 +1970,248 @@ def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None
     assert "pm_agent_runs_app_member" in lines[at], plan
     cond = lines[at + 1]
     assert "Index Cond" in cond and "created_at >" in cond, plan
+
+
+# ── ap. The chat tools of B2c-2b on the real door ──────────────────────────
+#
+# Acceptance (spec row B2c-2b). The three write tools of Mira call the door
+# over HTTP as the member, with no proof, as a chat does. An ``httpx``
+# transport carries each request into a FastAPI app that holds the REAL Studio
+# router, and it records the method, the path, the query and the body.
+#
+# ap. A create from chat asks ONCE: one request, nothing written, and the
+#     result says not saved. The member's list of open requests (``list_open``,
+#     the list of Integrations, AI agents, Waiting for you) holds that Studio
+#     request. A resend before the approval writes nothing. After the member
+#     approves, the resend runs the stored change once, with no body. A second
+#     resend writes nothing.
+# aq. An update that the member declines writes nothing, and the tool says so.
+#     A delete after the approval deletes the record once.
+# ar. With ``APP_REQUESTS_ORGS`` off, a write from chat opens no request and
+#     says that record changes from chat are not open yet.
+# as. Fix round 1: on the real package read, a key that is no field opens no
+#     request, and the tool says so before any ask.
+#
+# **The mutations (R7).** Each ran on 2026-11-06 on a committed tree, and was
+# restored with git. See the docstring of ``test_studio_record_writes.py``.
+
+import httpx  # noqa: E402
+from acb_auth import get_current_user  # noqa: E402
+from acb_skills import studio_tools as st  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi import Request as _HttpRequest  # noqa: E402
+from gateway.routes import agent_requests  # noqa: E402
+from gateway.routes.studio import router as studio_router  # noqa: E402
+
+#: The plain record actions of the package of the tools: no ``set``, so the
+#: tools may use each one.
+_PLAIN_ACTIONS: list[dict[str, Any]] = [
+    {"id": "find", "uses": "object:visit.list"},
+    {"id": "peek", "uses": "object:visit.get"},
+    {"id": "add", "uses": "object:visit.create"},
+    {"id": "change", "uses": "object:visit.update"},
+    {"id": "remove", "uses": "object:visit.delete"},
+]
+
+
+class _Seen(httpx.AsyncBaseTransport):
+    """The ASGI transport into *app*, which records each request first."""
+
+    def __init__(self, app: FastAPI, seen: list[tuple[str, str, str, bytes]]) -> None:
+        self.inner = httpx.ASGITransport(app=app)
+        self.seen = seen
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append((request.method, request.url.path, request.url.query.decode(),
+                          request.content))
+        return await self.inner.handle_async_request(request)
+
+
+@pytest.fixture
+def tworld(rworld, monkeypatch):
+    """The request world, with a package of Ana whose record actions are
+    plain, and the chat tools wired to the real Studio router."""
+    w = rworld
+    mid = f"door-{TAG}-tools{uuid.uuid4().hex[:6]}"
+    manifest = {"studio": 1, "id": mid, "name": "Visits", "purpose": "Track install visits.",
+                "objects": [{"name": "visit", "fields": _FIELDS}], "actions": _PLAIN_ACTIONS}
+
+    async def setup() -> None:
+        w.tpkg = await _package(w.a, ANA, manifest)
+        w.tobj, w.trec = await _object_with_record(w.a, w.tpkg)
+
+    _run(w, setup)
+    app = FastAPI()
+    app.include_router(studio_router)
+
+    async def as_member(request: _HttpRequest) -> UserContext:
+        return _user(w.a, request.headers.get("X-User-Email", ""))
+
+    app.dependency_overrides[get_current_user] = as_member
+    w.seen = []
+    real = httpx.AsyncClient
+    monkeypatch.setattr(st.httpx, "AsyncClient",
+                        lambda **kw: real(transport=_Seen(app, w.seen), **kw))
+    monkeypatch.setattr(st, "_current_user_email", lambda: ANA)
+    yield w
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM app_audit WHERE app_id = CAST(:p AS uuid)"), {"p": w.tpkg})
+        c.execute(text("DELETE FROM studio_objects WHERE package_id = CAST(:p AS uuid)"),
+                  {"p": w.tpkg})
+        c.execute(text("DELETE FROM apps WHERE id = CAST(:p AS uuid)"), {"p": w.tpkg})
+
+
+def _chat(w: Any, fn: Callable[[], Awaitable[Any]]) -> Any:
+    """Run ``fn()`` as a chat runs a tool: the org of the run is bound, as
+    the gateway binds it for the member of the internal bearer."""
+    async def go() -> Any:
+        token = bind_tenant(w.a)
+        try:
+            return await fn()
+        finally:
+            release_tenant(token)
+    return _run(w, go)
+
+
+async def _open_rows(w: Any) -> list[dict[str, Any]]:
+    """The open requests of Ana: the store read of the list route."""
+    async with tenant_session(w.a) as db:
+        return (await app_requests.list_open(db, org=w.a, member=ANA)).rows
+
+
+def _door_posts(w: Any) -> list[tuple[str, str, bytes]]:
+    return [(path.rsplit("/", 1)[-1], query, body) for method, path, query, body in w.seen
+            if method == "POST"]
+
+
+def test_r8_ap_a_chat_create_asks_once_and_the_resend_after_the_approval_runs_once(
+        tworld, monkeypatch) -> None:
+    w = tworld
+    count = _record_count(w, w.tobj)
+    data = {**_DATA, "site": "Chat site"}
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {"asked": await st.studio_record_create(w.tpkg, "visit", data=data)}
+        rid = got["asked"]["request_id"]
+        got["after_ask"] = _record_count(w, w.tobj)
+        got["open"] = await _open_rows(w)
+        # The list route of Integrations, AI agents, Waiting for you, as Ana.
+        await agent_requests._require_access(user=_user(w.a, ANA))
+        got["route"] = await agent_requests.list_app_requests(user=_user(w.a, ANA))
+        got["early"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        got["after_early"] = _record_count(w, w.tobj)
+        await _decide(w, rid, "approve")
+        got["open_after"] = await _open_rows(w)
+        got["ran"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        got["after_ran"] = _record_count(w, w.tobj)
+        got["again"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    asked = got["asked"]
+    assert (asked["ok"], asked["saved"], asked["state"]) == (False, False, "awaiting"), asked
+    assert asked["note"] == st._ASKED_NOTE and asked["expires_at"]
+    rid = asked["request_id"]
+    assert got["after_ask"] == count, "an ask writes nothing"
+    # The member sees the one Studio request in the list of Integrations.
+    mine = [r for r in got["open"] if r["request_id"] == rid]
+    assert len(mine) == 1 and len(got["open"]) == 1, got["open"]
+    row = mine[0]
+    assert (row["app"], row["client_via"], row["state"], row["class"]) == (
+        "studio", "studio:door", "awaiting", "B")
+    assert row["card"]["client"] == "Studio" and row["card"]["title"] == "Add a record to visit."
+    assert row["call"]["body"] == {"data": data} and row["subject"] == w.tpkg
+    assert [r["request_id"] for r in got["route"]["rows"]] == [rid]
+    # Before the approval, nothing runs.
+    assert got["early"]["saved"] is False and got["early"]["code"] == "request_awaiting"
+    assert got["after_early"] == count
+    assert got["open_after"] == [], "an answered request leaves the list"
+    # After it, the resend runs the stored change once.
+    ran = got["ran"]
+    assert (ran["ok"], ran["saved"]) == (True, True), ran
+    assert got["after_ran"] == count + 1
+    assert _data_of(w, ran["record_id"])["site"] == "Chat site"
+    again = got["again"]
+    assert (again["saved"], again["code"]) == (False, "request_spent"), again
+    assert _record_count(w, w.tobj) == count + 1
+    # The wire: one ask with the marker and the body, then three resends with
+    # the request and NO body. No call names a decision.
+    posts = _door_posts(w)
+    assert posts[0][:2] == ("add", "ask=1") and json.loads(posts[0][2]) == {"data": data}
+    assert posts[1:] == [("add", f"request_id={rid}", b"")] * 3
+    assert all("decision" not in path for _m, path, _q, _b in w.seen)
+    rows = _ran(w, w.tpkg, "add")
+    assert [(r["outcome"], r.get("reason"), r.get("request_id")) for r in rows] == [
+        ("asked", None, rid), ("refused", "request_awaiting", rid), ("ran", None, rid),
+        ("refused", "request_spent", rid)]
+
+
+def test_r8_aq_a_declined_update_writes_nothing_and_an_approved_delete_runs_once(
+        tworld) -> None:
+    w = tworld
+    before = _record_row(w, w.trec)
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {}
+        asked = await st.studio_record_update(w.tpkg, "visit", w.trec, {"notes": "From chat"})
+        got["asked"] = asked
+        await _decide(w, asked["request_id"], "decline")
+        got["declined"] = await st.studio_record_update(
+            w.tpkg, "visit", request_id=asked["request_id"])
+        got["after_decline"] = _record_row(w, w.trec)
+        gone = await st.studio_record_delete(w.tpkg, "visit", w.trec)
+        got["gone_asked"] = gone
+        got["after_gone_ask"] = _record_row(w, w.trec)
+        await _decide(w, gone["request_id"], "approve")
+        got["deleted"] = await st.studio_record_delete(
+            w.tpkg, "visit", request_id=gone["request_id"])
+        return got
+
+    got = _chat(w, go)
+    assert got["asked"]["saved"] is False and got["asked"]["state"] == "awaiting"
+    declined = got["declined"]
+    assert (declined["saved"], declined["code"]) == (False, "request_declined")
+    assert "nothing was written" in declined["errors"][0]["message"]
+    assert got["after_decline"] == before, "a declined card writes nothing"
+    assert got["gone_asked"]["saved"] is False and got["after_gone_ask"] == before
+    deleted = got["deleted"]
+    assert (deleted["ok"], deleted["saved"], deleted["record_id"]) == (True, True, w.trec)
+    assert _record_row(w, w.trec) is None
+    assert [q for _a, q, b in _door_posts(w) if b == b""] == [
+        f"request_id={got['asked']['request_id']}",
+        f"request_id={got['gone_asked']['request_id']}"]
+
+
+def test_r8_ar_with_the_org_flag_off_a_chat_write_opens_no_request(tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "app_requests_orgs", "")
+    runs = _studio_runs(w)
+
+    async def go() -> dict[str, Any]:
+        return await st.studio_record_create(w.tpkg, "visit", data=dict(_DATA))
+
+    out = _chat(w, go)
+    assert (out["ok"], out["saved"], out["code"], out["status"]) == (
+        False, False, "approval_required", 403)
+    assert out["errors"][0]["message"] == st.WRITE_REFUSALS["approval_required"]
+    assert _studio_runs(w) == runs
+    assert [r["outcome"] for r in _ran(w, w.tpkg, "add")] == ["refused"]
+
+
+def test_r8_as_a_key_that_is_no_field_opens_no_request_on_the_real_package_read(
+        tworld) -> None:
+    """Fix round 1 (P2), on the real package read: its ``objects`` hold the
+    fields that the tool checks. A key that is no field gets its sentence
+    before an ask, so no card waits for a change that the store refuses."""
+    w = tworld
+    runs = _studio_runs(w)
+
+    async def go() -> dict[str, Any]:
+        return await st.studio_record_create(w.tpkg, "visit", data={"site": "A", "sight": "B"})
+
+    out = _chat(w, go)
+    assert out["saved"] is False and out["errors"][0]["message"] == st._UNKNOWN_FIELD.format(
+        object="visit", keys="sight")
+    assert _studio_runs(w) == runs and _door_posts(w) == []
+    assert _ran(w, w.tpkg, "add") == []

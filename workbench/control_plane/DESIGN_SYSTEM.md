@@ -907,6 +907,9 @@ dependency and no second look. This changes the two-speed rule of
    `workbench/control_plane/src` without that line. Fence: the "Visual review
    line" step of the Frontend job in `.github/workflows/pr-check.yml`, a
    required check. `tests/unit/test_fence_lists.py` keeps the step there.
+   The step reads the LIVE body (CIV-8). When the line is missing, edit the PR
+   body and run `gh run rerun <run id> --failed`. Do not push a commit for it.
+   A push starts a whole new run of about 17 jobs.
 4. **The UI checklist of the diff review.** Item 8 of `diff-reviewer` reads
    the code for the rules that no test sees. For a UI diff it runs in build
    mode too. The full adversarial review still follows the tier of the slice

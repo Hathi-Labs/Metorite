@@ -1,8 +1,8 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-07 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. PKG-6b (task 1725) is built dark. The bell panel shows one setup row for each install that needs setup. The badge counts it. The bell draws a setup row only when the entry has a valid same-origin `setup_href`. A row without it is dropped from the bell and from the badge, because a row with no next step never clears (PKG-Q11). All apps lists an install pane. The access report no longer calls an install-only slug unmapped. An install pane has no star yet. The gateway accepts only `nav.ts` panes in `pins` and `known` (see the PKG-6 row). Star and hide for install panes moved to task 2195 (PKG-6c). PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. PKG-11 is specified in §6 and split into 11a (the store) and 11b (the org share, blocked on J2). PKG-11a is built dark, in the store only: `store.promote_to_group` and `promotion.share_with_people` of §6.2. No route, flag or migration calls them yet. The rest of this spec is not built.
-> **Verified against code on 2026-11-01 at `787269f0a`.** Each path in §12 was read on that commit.
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 is built dark: the resolve of §5.2 (`gateway/package_host/resolve.py`) and `GET /shell/manifest`, behind `PACKAGE_HOST_ORGS` (default empty). PKG-6 is built dark: the workbench reads the route through `/api/shell/manifest` (`src/lib/shell/packageManifest.ts`). An org install shows in the sidebar "Apps" section and in ⌘K. PKG-6b (task 1725) is built dark. The bell panel shows one setup row for each install that needs setup. The badge counts it. The bell draws a setup row only when the entry has a valid same-origin `setup_href`. A row without it is dropped from the bell and from the badge, because a row with no next step never clears (PKG-Q11). All apps lists an install pane. The access report no longer calls an install-only slug unmapped. An install pane has no star yet. The gateway accepts only `nav.ts` panes in `pins` and `known` (see the PKG-6 row). Star and hide for install panes moved to task 2195 (PKG-6c). PKG-9 is built dark, in the store only: `remove_install`, `pause_install` and `resume_install` of §5.3. No route, flag or migration calls them yet. PKG-11 is specified in §6 and split into 11a (the store) and 11b (the org share, blocked on J2). PKG-11a is built dark, in the store only: `store.promote_to_group` and `promotion.share_with_people` of §6.2. No route, flag or migration calls them yet. PKG-17a (the org default, backend only) is built dark: `GET` and `PUT /shell/layout` store the default star set and preset for each role, behind `PACKAGE_HOST_ORGS`. No client reads them yet (PKG-17b). PKG-18a is built dark, on the client only: the Today band, headed "Do first", reads the top five cards of the My Day feed, behind `NEXT_PUBLIC_TODAY_BAND` (default off). Its items hold for the visit, and start again when the member takes in new cards. It adds no route and no migration. PKG-Q14 to PKG-Q18 are open, with defaults. The rest of this spec is not built. PKG-8a is built dark: while `PACKAGE_HOST_ORGS` holds the org, a Studio publish keeps one private install of the owner, with one `nav` entry at `/apps/<package id>` in the sidebar and the phone drawer (§5.5). PKG-8b is built dark (task 1963): `POST /studio/packages/{id}/install` installs a live Studio app for the org or one group, and the org wins (PKG-Q6). §5.5 holds its limits.
+> **Verified against code on 2026-11-07 at `f2671c706`** for the paths of PKG-8a in §12, and at `96c1094c8` for the paths of PKG-8b. Each other path in §12 was read on `787269f0a`.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
 > **Research first:** the comment "Research notes, 2026-11-01" on epic 491, copied into §11.
@@ -139,18 +139,26 @@ Each point keeps the seam that owns it today. Only the place where the seam read
 **A duplicate claim fails at install,** not at render. The install refuses with the point, the key and the package that holds it. This is the Cordis rule: "declaring a slot is claiming it".
 
 **Claim overlap.** Two claims on the same point and key conflict when their scopes overlap:
-- An `org` claim conflicts with every other claim on the same key.
-- A `group:g` claim conflicts with the claims of group g and with org claims. It also conflicts with the private claims of the members of g.
-- A private claim of member u conflicts with the private claims of u, with org claims, and with claims of the groups of u.
+- A new `org` claim conflicts with the org claims and the group claims on the same key.
+- A new `group:g` claim conflicts with the claims of group g and with org claims.
+- A new private claim of member u conflicts with the private claims of u, with org claims, and with claims of the groups of u.
 - Any claim conflicts with a key that a system package holds.
 - `triggers` allows many claims. `slot` allows many claims in PKG-5b, and PKG-14 enforces the limit that the host declares.
 - Two claims of installs of the same app never conflict, at any scope. Ben can install the app Q privately, and an admin can then install Q for the org. The resolve shows one of the two (§5.2).
 
-**A member of a group is an active member.** The rule is the one group query, `_MY_GROUPS_SQL` in `routes/projects/core.py`. It counts a row of `org_group_member` only when `app_user.status = 'active'`. The remove route keeps those rows for a removed member. So the private claim of a removed member does not block a group install. The store reuses that query and keeps no copy.
+**The org wins (PKG-Q6, decided by the owner on 2026-11-07, task 1246).** A private claim never blocks an org or a group install. The org or group install goes in, even when the private install of a different app holds the key. The resolve then shows the org or group claim to each viewer in place of the private claim (§5.2). The member still reaches the private app from the Studio library.
 
-Overlap is one relation, so each rule holds from both sides. A private claim of u and a claim of a group of u conflict in either order of install. Each claim that exists holds its key, also a claim of a paused or archived install, until the disposal of §5.3 deletes it.
+So the overlap is one-sided on purpose. An org or group claim blocks a later private claim, and a private claim blocks no later org or group claim. `OVERLAP` in `gateway/package_host/store.py` holds the rule. Fences: `tests/unit/test_package_host_store_r8.py` (the overlap cases) and `tests/unit/test_studio_package_install_r8.py`.
 
-**The store checks these rules at install time only.** A later group join or a later share can still put two claims of one key in front of one viewer. §5.2 picks one winner. PKG-Q6 (§15) is open: a private claim of another app blocks an org install today.
+**A member of a group is an active member.** The rule is the one group query, `_MY_GROUPS_SQL` in `routes/projects/core.py`. It counts a row of `org_group_member` only when `app_user.status = 'active'`. The remove route keeps those rows for a removed member. So a group claim does not block the private claim of a removed member. The store reuses that query and keeps no copy.
+
+Each claim that exists holds its key, also a claim of a paused or archived install, until the disposal of §5.3 deletes it.
+
+**A kept key stays its own (PKG-8b fix round 1).** Under PKG-Q6 a wider install can take the key of a private install. That private install must still move to a new version, or its owner could not publish again. So `store.set_version` checks the overlap only for a claim whose point and key the install did not hold before the move.
+
+A kept claim stays, and the resolve shows the wider claim in its place (§5.2). A new key meets the full overlap, as at install. Every claim still meets the system keys. Fences: `tests/unit/test_package_host_store_r8.py` (`test_r8_a_kept_key_moves_and_a_new_key_meets_the_overlap`) and `tests/unit/test_studio_package_install_r8.py` (a publish after a wider install took the key).
+
+**The store checks these rules at install time only.** A later group join or a later share can still put two claims of one key in front of one viewer. §5.2 picks one winner.
 
 ---
 
@@ -251,6 +259,8 @@ The workbench caches the answer through `useCachedResource`. A change to an inst
 
 **Step 3.** A contribution names its feature in `payload.feature`. A contribution with no feature shows to every member, as an unknown href does in the system gates.
 
+**Step 3, a limit of the order (PKG-8b).** The resolve picks the winner of a key before it drops a claim for its feature. So an org or group claim that the viewer may not see still hides the private claim of the viewer on that key. The viewer then sees no entry at that key. Under PKG-Q6 this can happen only when the two claims name different features. The claims of a Studio app all name `studio`, so it does not happen today.
+
 **Step 4.** In PKG-5b, a need is `{"feature": "<slug>"}` or `{"package": "<manifest id>"}`. Any other shape counts as unmet, so the install shows its setup card (fail closed). A feature need is met when `user.can_use_feature(slug)` holds. A package need is met when a system or Studio package with that id is visible to the viewer.
 
 **Step 4, the source.** The resolve reads the needs from the manifest of the installed version (`app_versions.manifest`), or from `apps.manifest` for a draft. A connection need belongs to a later slice, the connection check of `ai_studio.md` I1.
@@ -272,6 +282,51 @@ The workbench caches the answer through `useCachedResource`. A change to an inst
 
 A package names what it needs: a connection, a feature, or another package. A missing need puts the install in `needs_setup`. The install shows one setup card, which links to the place that fixes it. It never shows an error. This is the Cordis `PENDING` state, and `ai_studio.md` I1 uses it for connections.
 
+### 5.5 A Studio app in the sidebar and in ⌘K (PKG-8a to PKG-8c)
+
+**A publish keeps one private install of the owner.** While `PACKAGE_HOST_ORGS` holds the org, `POST /studio/packages/{id}/versions` keeps the install in the session of the publish, after the sync of the objects. The first publish writes it through `store.install`. A later publish moves it through `store.set_version`, which replaces its claims and keeps its state. The version is the published number, and `ends_at` is NULL. With the switch off, a publish writes no install.
+
+**The install claims one `nav` key, `/apps/<package id>`.** The payload holds `href`, `label` (the manifest name), `icon` and `feature`. The icon is `Boxes`, the icon of a package card in the Studio library. The feature is `studio`, the gate of the app page. `gateway/package_host/studio_app.py` builds the claim.
+
+**The jobs of the manifest (PKG-8c).** Each `shell.jobs` item with a verb and a view adds one `jobs` claim to the same install. The key is `<package id>:<view>`. The payload is `label` (the verb), `href` and `feature` (`studio`). The `href` is `/apps/<package id>`, from the helper of the `nav` claim. The ⌘K "Do" group shows the job through `installJobs`, with the app name in the hint. A job only opens the app.
+
+**The limits of the jobs.** Two jobs on one view would make a `duplicate_claim`. So the first stays and the rest are dropped. At most 20 jobs go in, and a malformed item is skipped. If a system job holds the key, the store refuses the publish with `claim_taken`, and nothing is written. A viewer who is not the owner sees the job and meets the empty state of the app page until J2 (task 1200). A job that runs an action, and a `?view=` link, are later slices.
+
+**The href decision.** The app page is `/studio/package-preview?pkg=<id>`. The workbench drops an install entry whose href a system pane owns (`systemOwns` in `packageManifest.ts`), and `/studio` is a system pane. So the entry uses `/apps/<id>`, which no system pane owns. The route `app/apps/[id]/page.tsx` sends a package id to the app page with a server redirect, and any other id gets 404. The shell manifest `studio.json` gates `/apps` on `studio`, so the nav map and the access map agree.
+
+**A limit of the redirect.** After the redirect, the sidebar marks Studio as the open pane, not the entry of the app. A later slice can draw the app page at `/apps/<id>` itself.
+
+**Both navs and no reload (fix round 1).** The desktop sidebar and the phone drawer get the entries from one hook, `useInstallNav` in `lib/shell/packageManifest.ts`. A Studio write of the assistant reads the manifest again at once (`useLiveRefresh(refreshManifest, "studio")`). A delete on the app page drops it through `forgetPackage`. The delete dialog names the owner's own entry once ("Its entry in your sidebar goes too.") and counts only the installs that reach other members. The server counts the entry itself, as `own_entries` of the delete preview: an active private install of the owner, so a paused or archived install is no entry (fix round 2). The shell modules of every page import no component. So `PROJECTS_CHANGED_EVENT` lives in `lib/projectsEvents.ts`, and `liveRefresh.ts` does not pull the chat renderer into the shell.
+
+**Three limits of PKG-8a.**
+1. There is no backfill. An app that the owner published before `PACKAGE_HOST_ORGS` held the org gets its entry at its next publish. PKG-8b does not build the backfill, because it writes installs in live orgs. No slice owns it yet.
+2. A publish with the switch off writes nothing. So an install from an earlier publish stays at its old version and its old label until a publish with the switch on.
+3. A publish brings back an install that the disposal of PKG-9 removed. This holds until PKG-9 decides the rule of its route.
+
+**The lock order.** A publish holds the `apps` row `FOR UPDATE`, then the org lock of `objects_store`, then the org lock of the install store. A second caller of the install store that does not hold the `apps` row must lock it first. Else the FK check of its INSERT can wait for a publish that waits for it.
+
+The install route of PKG-8b is that caller. It locks the row `FOR KEY SHARE` through `studio/packages_store.lock_for_install` before it calls the store. Fence: `tests/unit/test_studio_package_install_r8.py` (the install waits for the row, and it does not hold the org lock while it waits).
+
+**A refusal rolls the publish back.** A 409 or a 422 of the store is `exc.detail_for(user.email)` and nothing else.
+
+**An org or group install (PKG-8b).** `POST /studio/packages/{id}/install`, with the body `{"scope": "org"}` or `{"scope": "group:<slug>"}`, installs the live version of a package for the whole org or for one group. The scope comes from the body. The member and the org come from the session. The route checks in this order:
+
+1. The switches `STUDIO_ORGS`, then `PACKAGE_HOST_ORGS`. An org outside either gets 404, and no session opens.
+2. The id, the body (at most 4 KiB, else 413) and the owner. Another member, another org and an App Workshop app get 404. Until J2, only the owner of the package calls the route.
+3. The scope and the version. A value other than `org` or `group:<slug>` is 422 `bad_scope`. The case does not matter: `Org` and `GROUP:Ops` fold to `org` and `group:ops`. The private install comes with each publish (PKG-8a). An optional `version` must be a whole number from 1, else 422.
+4. The right of §6.1. Each scope needs `studio:publish`, because D180.3 says that this verb gates the share to others. The check fails closed. Else the answer is 403 `forbidden`, and the route locks nothing and writes nothing.
+5. The group. A group install needs a group of that name in the bound org (`store.group_exists`), else 403 `unknown_group`. The caller does not need to be a member of the group.
+6. The row lock. `lock_for_install` holds the `apps` row `FOR KEY SHARE` and reads `apps.live_version`. A missing or archived package is 404. A package with no live version is 409 `not_published`. A `version` that is not the live version is 409 `version_changed`, with `live_version`, and the route writes nothing. This is the `based_on` idiom of STU-G1c.
+7. The install, through `studio_app.keep_scope_install`: `store.set_version` first, then `store.install`, with the claims of `claims_of`. A new install is 201, and a move is 200. A refusal of the store is 409 or 422 with `detail_for` of the member.
+8. The audit row. One `app_audit` row of kind `action`, op `package.install`, goes in the same transaction (`record_app_audit_in`). It names who, the scope kind, the scope and the version, and whether the call made the install. It needs no migration and no new kind.
+
+**A later publish does not move an org or group install.** The publish moves only the private install of the owner. The holder approves a new version with a new call, which moves the install and rewrites its claim (200).
+
+**Three limits of PKG-8b.**
+1. **A viewer who is not the owner meets 404.** An org or group install shows the sidebar entry to each viewer. But `/apps/<id>` redirects to the app page, and `GET /studio/packages/{id}` serves the owner only. Read access for viewers belongs to J2 (task 1200).
+2. **No uninstall.** No route removes an org or group install yet. The uninstall route is PKG-8e (task 2222).
+3. **No UI and no chat tool.** No workbench page and no chat tool calls the route yet. So the chat-parity fence counts no new row.
+
 ---
 
 ## 6. Scopes and lifetimes
@@ -281,11 +336,15 @@ A package names what it needs: a connection, a feature, or another package. A mi
 | Scope | Who sees it | Who installs it |
 |---|---|---|
 | `system` | Every member with the feature | The release |
-| `org` | Every member with the feature | The owner asks. A holder of `studio:publish` reads the manifest diff and approves one version (`ai_studio.md` J2, D180) |
-| `group:<slug>` | The active members of the group | The owner, who is a member of the group, with `studio:publish` (D180 item 3) |
-| `private` | The owner, and each person the owner shares with by name | Any member with `feature:studio`. A share by name needs `studio:publish` (D180 item 3) |
+| `org` | Every member with the feature | A holder of `studio:publish`, one approved version (`ai_studio.md` J2). Built in PKG-8b: `POST /studio/packages/{id}/install` with `{"scope": "org"}` The owner asks. A holder of `studio:publish` reads the manifest diff and approves one version (D180). PKG-11b builds the org share |
+| `group:<slug>` | The members of the group | A holder of `studio:publish`, for a group that exists in the org (D180.3). The holder need not be a member of the group. Built in PKG-8b: the same route with `{"scope": "group:<slug>"}`. For a promotion (PKG-11a), the owner must be a member of the group (D180 item 3). `store.promote_to_group` is built dark |
+| `private` | One member | Any member with `feature:studio`. Built in PKG-8a: each publish keeps it. A share by name needs `studio:publish` (D180 item 3). PKG-11a built `promotion.share_with_people` dark |
 
-**A package that holds code (D187).** A package with a member-authored logic module (`ai_studio.md` B5) runs code for each viewer. So each install for named people, a group or the org needs the `studio:publish` approval of one version first (`agent_sandbox.md` §8.1).
+**How PKG-8b reads the table (fix round 1).** D180.3 in `work_plan.md` §3 says that `studio:publish` gates the share to others. A decision of §3 wins over the older text of this table. So the check for each scope is `user.has_permission("studio:publish")`, and it fails closed.
+
+It is the one read of that verb in `routes/studio` (fence: `test_studio_route_gate.py`). A group install also needs a group of that name in the bound org (`store.group_exists`). The call is the approval of one version: the live version at the time of the call, or the `version` that the body names. Until J2 the caller must own the package too (§5.5).
+
+**A package that holds code (D187).** A package with a member-authored logic module (`ai_studio.md` B5) runs code for each viewer. So each install for named people, a group or the org needs the `studio:publish` approval of one version first (`agent_sandbox.md` §8.1). PKG-8b does not check this for a group install, because no package holds code before B5. B5 adds the check.
 
 ### 6.2 The lifecycle of an app made in chat (D147, PKG-Q2)
 
@@ -366,6 +425,16 @@ An overlay may not change an action's class, remove a permission check, or reach
 
 A nearer level wins: me, then the team lens, then the org default, then the system order.
 
+**What "sidebar order" means (PKG-17a, default of PKG-Q13).** The sidebar has no order that a member or an admin sets. The star model of `navigation_shell.md` §3.2b keeps the order of `nav.ts`. So the org default is the **default star set** (`pins`) and the **preset** for each role. The role keys are the system roles that a person holds: `owner`, `admin`, `manager`, `member` and `guest`.
+
+**The team lens stores nothing.** The team lens is the existing `scope=<slug>` filter (`navigation_shell.md` §4.2). It is a view, so it has no stored layer. The stored layers are two: the org default (`org_settings` key `shell_layout`) and the member (`user_settings.shell_prefs`).
+
+**The rule of precedence (`shell_layout.resolve_layout`).** The member's own `pins` win when they are a list, and an empty list counts. A member with `null` pins gets the `pins` of the default for their role. The member's `preset` wins when it is set. Else the default preset for the role applies. Else the client falls back to `roleDefault`.
+
+A member with many roles gets the default of the highest role that has an entry. The order is `owner`, `admin`, `manager`, `member`, `guest`. A pane in a default that the member does not hold stays hidden. The client's `visibleSections` subset rule (PKG-17b) owns that rule, not this module.
+
+A read fault on `GET /shell/layout` answers the empty default, because `load_org_setting` hides every error. The PKG-17b admin form must not do a whole-document `PUT` from an empty answer without a confirmation.
+
 ### 9.2 Stable and adaptive regions
 
 | Region | Where | How it changes |
@@ -380,6 +449,18 @@ A nearer level wins: me, then the team lens, then the org default, then the syst
 The signals are the member's open tasks and their due dates, the calendar, the bell, the apps the member opens, and the assistant profile. The arranger makes two kinds of output:
 
 1. **The Today band.** Up to five items, each with a reason, for example "3 visits planned today".
+
+   **The source of the band (PKG-18).** The band is the top five cards of the My Day feed, each with its `why` line (`my_day_feed.md` §7). My Day already owns the ranking and the reasons. PKG-18 adds no ranker, no table, no request and no model call. The band reads the same `useFeed` answer as the column, so it sends no second request and runs no second poll.
+
+   **What the band leaves out.** A card that the member marked done or hid does not show. A card with no `why` does not show, so no item lacks a reason. A reminder card does not show, because the Reminders band draws it, as in the column. So no reminder shows twice.
+
+   **The band is stable within a visit (PKG-Q15).** A later poll adds no item and reorders none, because the band sits above the column. A new row would move the held column down under the pointer (`my_day_feed.md` §7 rule 4). A reload sets the items again. So the "rebuilt each morning" line of §9.2 does not apply to the band.
+
+   The first fresh feed answer that gives an item sets the items. An answer that gives no item sets nothing. A cached answer of an earlier visit is not fresh. The band draws it and holds none, so the band changes once at most before it settles.
+
+   A card that the member marks done, snoozes or hides leaves at once, because that is a member action. When no held item is left, the next fresh answer that gives an item sets the items again. When the member takes in the column's new cards, the band sets its items again from the current answer.
+
+   **Where the band sits.** The band draws nothing when it has no item. It sits above the feed column as a summary, and the column stays whole. The heading is "Do first", because the calendar rail is already "Today" (PKG-Q18). The flag is `NEXT_PUBLIC_TODAY_BAND`, default off. The calendar `TodayCard` is a different card and stays as it is.
 2. **Suggestions for a stable region.** Example: "You opened Field visits 9 times this week. Pin it?" A tap on Yes writes the change. A tap on No hides that suggestion for 30 days.
 
 **No learning in silence** (D111). A learned change to a stable region is always a suggestion first.
@@ -418,7 +499,12 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 | **PKG-5b** | `GET /shell/manifest`, the resolve of §5.2, and the install store function (no route). PKG-8 adds the install route for Studio apps, and PKG-12 adds it for apps made in chat. **Part 1 is built:** the install store (`gateway/package_host/store.py`), the share rule (`gateway/package_host/sharing.py`) and `load_contributes()`. The store checks only that the app exists in the bound org, has `format = 'manifest'`, and is not archived. The PKG-8 and PKG-12 routes check that the member may use the app. **Part 2 is built dark:** the resolve (`gateway/package_host/resolve.py`), `GET /shell/manifest` (`routes/shell/manifest.py`) and the switch `PACKAGE_HOST_ORGS` (`gateway/package_host/flags.py`) | R8: a private install shows for its owner and for each named grantee, a group install for its members only, an org install for its org only. A contribution with a feature the viewer lacks never shows. A paused, archived or expired install shows nothing. A duplicate claim makes the store function raise. Part 1: `tests/unit/test_package_host_store_r8.py` (a duplicate claim, the overlap of §4, two installs at once, a scope that is a 422). Part 2: `tests/unit/test_package_host_resolve_r8.py`, `tests/unit/test_package_host_resolve.py` and `tests/unit/test_package_host_flag.py` | HIGH | AGENT-SAFE |
 | **PKG-6** | The workbench reads the resolved manifest behind the flag | With the flag off, the shell is byte-for-byte as before. With it on, an org install shows in the sidebar, ⌘K and the bell. Visual review in four contexts **Built dark for the sidebar and ⌘K:** The code reads the route through `/api/shell/manifest` and ignores `system` entries. It drops an unsafe href, a feature the member lacks and a clash with a system pane or job. `installNeeds` feeds the bell. PKG-6b draws it in the bell panel on the client, because the needs feed has a closed app list and the resolve already computes `needs_setup`. All apps lists the install panes. A star or a hide for an install pane is NOT built. The gateway refuses a `pins` or `known` href outside `SHELL_PANES`, so it needs a gateway change first. Fence: `src/lib/shell/packageManifest.test.ts`. Visual review in four contexts is still open. | STD | AGENT-SAFE |
 | **PKG-7** | Features from installs pass the one entitlement seam | A feature that only an install declares is visible to a holder of `*`. The `FEATURES` tuple stays the system list | HIGH | AGENT-SAFE |
-| **PKG-8** | Studio H1 and H2 use this path. `ai_studio.md` §14 points here. PKG-8 decides the open question PKG-Q6 (§15) first | An installed Studio app reaches every point of §4 through the registry. No Studio-only list exists | STD | AGENT-SAFE |
+| **PKG-8** | Studio H1 and H2 use this path. `ai_studio.md` §14 points here. Five slices carry it, PKG-8a to PKG-8e | The sum of the five rows below: an installed Studio app reaches every point of §4 through the registry. No Studio-only list exists | — | — |
+| **PKG-8a** | **Built dark (2026-11-07, task 1246).** A published Studio app joins the registry as a private `nav` entry of its owner (§5.5). `store.set_version` moves an install to a new version and replaces its claims. The route `/apps/<id>` sends the member to the app page | With `PACKAGE_HOST_ORGS` on, a publish writes one private install for the owner at the published version, with no end date and one `nav` claim. With it off, a publish writes no row and its answer does not change. A second publish moves the same install and rewrites its claim, with no second row and no 409. A refused install rolls the publish back, and the route sends only `detail_for` of the member. `GET /shell/manifest` shows the entry to the owner and to no other member (R8, two members, two orgs). The sidebar draws the entry in "Apps" at an href that `systemOwns` keeps. `nav.test.ts` still counts the built-in panes only. Fences: `tests/unit/test_studio_publish_install_r8.py`, `tests/unit/test_studio_publish_install.py`, `src/lib/shell/installedApp.test.ts`. Owner preview with four captures | HIGH | AGENT-SAFE |
+| **PKG-8b** | **Built dark (2026-11-07, task 1963).** The org and group scopes of a Studio app, through `POST /studio/packages/{id}/install` with `{"scope": "org"}` or `{"scope": "group:<slug>"}` (§5.5). The route locks the `apps` row `FOR KEY SHARE` (`lock_for_install`) before it calls the install store. The owner decided PKG-Q6: the org wins (§4, §15). Each scope needs `studio:publish` (D180.3, fix round 1). The answers: 201 for a new install, 200 for a move to the live version, 403 `forbidden` for a missing right, 403 `unknown_group` for a group that the org does not have, 404 for a non-owner, another org or a switch that is off, 409 `not_published` for a draft, 409 `version_changed` for a stale `version`, and 409 or 422 with `detail_for` of the member for a store refusal. Each install and each move writes one `app_audit` row. A kept key stays its own in `set_version` (§4). Not in this slice: the uninstall (PKG-8e, task 2222), read access for viewers who are not the owner (J2, task 1200), the backfill, a UI and a chat tool | An org install shows to each member of the org, and a group install to the members of the group only. The route refuses a scope that §6.1 does not give the member, and the refusal writes nothing. PKG-Q6 has an answer in §15. Fences: `tests/unit/test_studio_package_install_r8.py` (in the `--must-run` lists of `pr-check.yml` and `deploy.yml`), `tests/unit/test_studio_package_install.py`, `tests/unit/test_package_host_store_r8.py` and `tests/unit/test_package_host_store.py` (the overlap of §4), `tests/unit/test_studio_route_gate.py` (the one read of `studio:publish`) | HIGH | AGENT-SAFE |
+| **PKG-8c** | **Built dark (2026-11-08, task 1964).** The ⌘K jobs of a Studio app, from its manifest, as claims of the same install (§5.5). `claims_of` adds one `jobs` claim for each `shell.jobs` item with a verb and a view. The key is `<package id>:<view>`. The payload is `{label: verb, href: /apps/<package id>, feature: "studio", app: <manifest name>}`, and the href is the one of the `nav` claim. The verb is stripped. A verb over 120 characters, or one with a control or bidi character, is skipped. The `app` is cleaned and cut the same way, and it is left out when nothing remains. `position` is the order in the manifest. In ⌘K the row hint is `Start · <app>` and the app name joins the search words, so two apps with one verb stay apart. This is the one small change to `registry.ts` and `packageManifest.ts` (the hint and the words only). A second job on one view is dropped, because the store refuses a key that a request claims twice. The first one stays. At most 20 jobs go in. A malformed item is skipped. A job only opens the app. Not in this slice: a job that runs an action (a write path through the Studio door), a `?view=` link, and read access for a viewer who is not the owner (J2, task 1200). Such a viewer sees the job and meets the empty state of the app page, as with the sidebar entry. No change to the store, the routes or the schema | A job of a published app shows in ⌘K "Do" for each viewer of the install, and for no other member. The store refuses a job id that a system job holds, and the publish then writes nothing. Fences: `tests/unit/test_studio_publish_install.py` (the claims), `tests/unit/test_studio_publish_install_r8.py` (the owner only, a dropped job, a system clash), `tests/unit/test_studio_package_install_r8.py` (the org and group viewers), `src/lib/shell/packageManifest.test.ts` (the Do row, and two apps with one verb) | STD | AGENT-SAFE |
+| **PKG-8d** | Task 1965. The Home cards, the search sources and the needs of a Studio app, as claims of the same install | A card, a search source and a need of a published app reach their seams for each viewer of the install only. An unmet need shows the setup card of §5.4. No Studio-only list exists | STD | AGENT-SAFE |
+| **PKG-8e** | Task 2222. After PKG-8b. The uninstall route of an org or group install, over `store.remove_install` (§5.3) | The slice writes it at dispatch | HIGH | AGENT-SAFE |
 
 ### Phase P2 — Lifetimes and promotion
 
@@ -443,8 +529,9 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **PKG-17** | The org default and the team lens of §9.1 | An admin sets a sidebar order for a role. A member's own pins still win | STD | AGENT-SAFE |
-| **PKG-18** | The Today band, with a reason for each item (§9.3) | The band shows at most five items, each with a reason. A test shows that no stable region moves without a member action. D145 preview first | STD | AGENT-SAFE |
+| **PKG-17a** | The org default of §9.1, backend only: `GET` and `PUT /shell/layout`, the key `shell_layout` in `org_settings`, and the pure `resolve_layout` (no migration) | An admin PUT stores a per-role default. A member with stored pins gets their own. A member with null pins gets the role default. Org B reads none of org A's default. A non-admin PUT is 403. The flag off leaves the answer unchanged | STD | AGENT-SAFE |
+| **PKG-17b** | The client reads the org default (`shellNav.ts`, `packageManifest.ts`). It starts after the PR that edits those two files. The team lens needs no slice: it is the `scope=<slug>` filter. The chat parity fence reads UI requests only, so PKG-17b adds the decision row for `PUT /api/shell/layout` when its client sends the request | A member with null pins sees the starred apps of the role default, and a member with pins sees their own | STD | AGENT-SAFE |
+| **PKG-18** | The Today band, with a reason for each item (§9.3) | The band shows at most five items, each with a reason. A test shows that no stable region moves without a member action. D145 preview first. **Built client only (PKG-18a, task 1256), dark.** The source is the top five cards of the My Day feed with their `why` line, and there is no ranker. The items hold for the visit (PKG-Q15), and start again when the member takes in new cards. `todayBand.test.ts` fences the hold. The flag is `NEXT_PUBLIC_TODAY_BAND`, default off. Done when `src/lib/shell/arrangement.test.ts` passes its three checks: the band is a pure function of the feed answer, the band code imports nothing that writes the arrangement, and the sidebar order and the preset card order are equal before and after two feed answers pass through the band. Verify: `cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell src/lib/nav.test.ts`, then `uv run pytest tests/unit/test_chat_parity.py -q` | STD | AGENT-SAFE |
 | **PKG-19** | Pin suggestions with a reason, and generated personal views (§9.3, §9.4) | Yes writes the pin. No hides that suggestion for 30 days. A generated view is a private install with an end date | STD | AGENT-SAFE |
 | **PKG-20** | Appearance in `user_settings` (§9.5) | A second browser opens with the member's mode, density and accent | STD | AGENT-SAFE |
 
@@ -484,6 +571,7 @@ Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch
 - `lib/shell/registry.ts` (`ShellJob`, `JOBS`), `lib/shell/presets.ts` (`CARD_KEYS`), `lib/shell/assistant.ts` (`ALSO_SERVES`), `lib/shell/gates.generated.ts`, `lib/shell/seams.test.ts`
 - `lib/access.ts` (`HREF_FEATURES`, `ALWAYS_ALLOWED`)
 - `lib/theme/storage.ts` (appearance in the browser)
+- New with PKG-8a: `app/apps/[id]/page.tsx` (the redirect to the app page), `lib/shell/installedApp.ts` (`INSTALLED_APP_PREFIX`, `installedAppTarget`), `lib/shell/packageManifest.ts` (`installNavPanes`, `systemOwns`, `useInstallNav`), `lib/shell/manifestCache.ts` (`manifestKey`, `refreshManifest`), `lib/projectsEvents.ts` (`PROJECTS_CHANGED_EVENT`), `lib/studio/packagePreview.ts` (`previewHref`), `lib/studio/packageDelete.ts` (`forgetPackage`, `previewCopy`), `components/Sidebar.tsx` and `components/AppShell.tsx` (`MobileBottomNavInner`)
 - `components/GenerativeUINode.tsx`, `lib/useCachedResource.ts`
 
 **Gateway** (`apps/services/gateway/gateway/`)
@@ -494,6 +582,9 @@ Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch
 - `routes/projects/core.py` (`_MY_GROUPS_SQL`, the one group query)
 - New with PKG-5b part 1: `package_host/store.py` (`install`, `ClaimTaken`, `ScopeRefused`, `InstallError.detail_for`), `package_host/sharing.py` (`OTHERS_SEE_THE_INSTALL`)
 - New with PKG-5b part 2: `package_host/resolve.py` (`resolve`, `resolve_for`, `version_of`, `etag_matches`), `package_host/flags.py` (`package_host_allowed`), `routes/shell/manifest.py` (`GET /shell/manifest`)
+- New with PKG-8a: `package_host/studio_app.py` (`claims_of`, `keep_private_install`, `APP_HREF_PREFIX`), `package_host/store.py` (`set_version`), `routes/studio/packages.py` (`publish`, `_keep_install`)
+- New with PKG-8b: `routes/studio/packages.py` (`install_package`, `SHARE_RIGHT`), `package_host/studio_app.py` (`install_scope`, `keep_scope_install`), `studio/packages_store.py` (`lock_for_install`, `InstallTarget`)
+- Changed by PKG-8b: `package_host/store.py` (`group_exists`, `OVERLAP`, the kept keys of `set_version`). `group_exists` reads `routes/projects/core.py` (`org_groups`)
 - `routes/crm/access.py` (`my_groups`, the group read of the resolve)
 
 **Eval and CI**
@@ -515,6 +606,7 @@ Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch
 - `tests/unit/test_package_registry_r8.py` (PKG-4), `tests/unit/test_studio_manifest.py` (PKG-5a), `tests/unit/test_shell_manifests.py`
 - New with PKG-5b part 1: `tests/unit/test_package_host_store.py` and `tests/unit/test_package_host_store_r8.py`
 - New with PKG-5b part 2: `tests/unit/test_package_host_resolve.py`, `tests/unit/test_package_host_resolve_r8.py` and `tests/unit/test_package_host_flag.py`
+- New with PKG-8b: `tests/unit/test_studio_package_install.py` and `tests/unit/test_studio_package_install_r8.py`
 - `packages/acb_common/acb_common/settings.py` (`package_host_orgs`), `packages/acb_common/acb_common/env_guard.py` (`PACKAGE_HOST_`)
 - `apps/services/gateway/gateway/routes/admin/members.py` (`_PURGE_DELETES`, `_PURGE_KEEPS`, `_OTHERS_SEE_THE_APP`)
 
@@ -534,7 +626,28 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/nav.tes
 bash scripts/ci_local.sh
 ```
 
+PKG-17a adds:
+
+```bash
+uv run pytest tests/unit/test_shell_layout.py tests/unit/test_shell_layout_r8.py tests/unit/test_auth_me_shell.py tests/unit/test_chat_parity.py -q -p no:xdist -rs
+```
+
 A slice that changes UI also runs the `visual-review` skill in light mode, at compact density, under a changed accent and at four widths.
+
+PKG-8a adds these. Run the R8 suite on a private database, one R8 suite at a time:
+
+```bash
+export TENANT_LADDER_DATABASE_URL="${TENANT_LADDER_DATABASE_URL%/*}/<private db>"
+uv run pytest -q tests/unit/test_package_host_store.py tests/unit/test_package_host_store_r8.py tests/unit/test_package_host_resolve_r8.py tests/unit/test_package_host_flag.py tests/unit/test_studio_packages_r8.py tests/unit/test_studio_publish_install.py tests/unit/test_studio_publish_install_r8.py tests/unit/test_shell_manifests.py
+cd workbench/control_plane && npx vitest run src/lib/shell/installedApp.test.ts src/lib/shell/packageManifest.test.ts src/lib/nav.test.ts src/lib/navAccessAgreement.test.ts
+```
+
+PKG-8b adds these. It changes no workbench file. Run the R8 suites on a private database, one R8 run at a time:
+
+```bash
+export TENANT_LADDER_DATABASE_URL="${TENANT_LADDER_DATABASE_URL%/*}/<private db>"
+uv run pytest -q tests/unit/test_studio_package_install.py tests/unit/test_studio_package_install_r8.py tests/unit/test_package_host_store.py tests/unit/test_package_host_store_r8.py tests/unit/test_package_host_resolve_r8.py tests/unit/test_studio_route_gate.py tests/unit/test_studio_package_routes.py tests/unit/test_chat_parity.py tests/unit/test_tenant_coverage.py
+```
 
 ---
 
@@ -553,8 +666,16 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A refusal never names the private install of another member | `tests/unit/test_package_host_store.py`, `tests/unit/test_package_host_store_r8.py` |
 | The resolve shows an install only to the viewers of §5.2, and reads the one share rule | New with PKG-5b part 2: `tests/unit/test_package_host_resolve_r8.py`, `tests/unit/test_package_host_resolve.py` |
 | `GET /shell/manifest` answers 404 while `PACKAGE_HOST_ORGS` leaves the org out | New with PKG-5b part 2: `tests/unit/test_package_host_flag.py` |
+| A publish keeps one private install of the owner, moves it on the next publish, and a refusal rolls the publish back | New with PKG-8a: `tests/unit/test_studio_publish_install_r8.py` (in the `--must-run` lists of `pr-check.yml` and `deploy.yml`), `tests/unit/test_studio_publish_install.py` |
+| The sidebar keeps the entry of an installed Studio app, and `/apps` has the gate of the app page | New with PKG-8a: `src/lib/shell/installedApp.test.ts`, `tests/unit/test_shell_manifests.py` |
+| The shell modules of every page (`packageManifest.ts`, `liveRefresh.ts`, `manifestCache.ts`) reach no component and no chat renderer, through any chain of value imports | New with PKG-8a fix round 2: `src/lib/shell/shellImports.test.ts` |
 | Removal leaves no contribution, and a pause hides the install at the next read | New with PKG-9: `tests/unit/test_package_disposal_r8.py` |
 | A promotion keeps the install, and only a share by the owner counts | New with PKG-11a: `tests/unit/test_package_promotion_r8.py` |
+| The org wins (PKG-Q6): a private claim never blocks an org or a group install, and an org or a group claim still blocks a private claim | New with PKG-8b: `tests/unit/test_package_host_store_r8.py` (the overlap cases), `tests/unit/test_package_host_store.py`, `tests/unit/test_studio_package_install_r8.py` |
+| An org install and a group install each need `studio:publish` (D180.3), a group must exist in the org, a stale `version` is 409, and a refusal writes nothing and no audit row | New with PKG-8b: `tests/unit/test_studio_package_install_r8.py` (in the `--must-run` lists of `pr-check.yml` and `deploy.yml`), `tests/unit/test_studio_package_install.py` |
+| `install_package` is the one reader of `studio:publish` in `routes/studio`, in any quote style (a syntax-tree check), and no file reads `.access.has(` | New with PKG-8b: `tests/unit/test_studio_route_gate.py` |
+| A kept key stays its own in `set_version`, and a new key meets the full overlap | New with PKG-8b fix round 1: `tests/unit/test_package_host_store_r8.py`, `tests/unit/test_studio_package_install_r8.py` |
+| The install route locks the `apps` row before the org lock of the install store, so it never holds that lock while it waits for a publish | New with PKG-8b: `tests/unit/test_studio_package_install_r8.py`, `tests/unit/test_studio_package_install.py` |
 | A stable region moves only on a member action | New with PKG-18: `src/lib/shell/arrangement.test.ts` |
 
 ---
@@ -570,12 +691,18 @@ The owner accepted PKG-Q1 to PKG-Q5 as recommended on 2026-11-01 (D147).
 | PKG-Q3 | May a company app add a panel or a button to a built-in page? | **Yes**, T1 only, into declared slots (§8) |
 | PKG-Q4 | How far may the product rearrange itself for each person? | **It suggests and never moves** a stable region (§9.2) |
 | PKG-Q5 | Which harness lessons go first? | **Replay tests and logged model inputs**, then the goal record. `web_research.md` §8 carries them |
-| PKG-Q6 | May the private claim of a member, for a DIFFERENT app, block an org install? | **OPEN.** PKG-8 decides it before its install route ships. The two options are below |
+| PKG-Q6 | May the private claim of a member, for a DIFFERENT app, block an org install? | **The org wins** (option 1). Decided by the owner on 2026-11-07 at 03:22 UTC, task 1246. An org or group install takes the key, also where the private install of a different app claims it. The member sees the org app at that key, and reaches the private app from the Studio library. Built in PKG-8b (§4) |
 | PKG-Q9 | On a promotion to a group, do named people outside the group lose the app? | **No.** The store refuses the promotion while such a share exists (default, PKG-11a) |
 | PKG-Q10 | May a holder of `studio:publish` approve their own share to the org? | **OPEN. Default: no.** Another holder approves (PKG-11b) |
+| PKG-Q13 | Does "sidebar order" mean the default star set per role (default, built in PKG-17a) or a real order (this amends the star-model rule of `navigation_shell.md` §3.2b)? And does the default apply only to a member with null pins (default) or also to new apps? | **OPEN.** The defaults are built. The owner may change them |
+| PKG-Q14 | Is the Today band flag a public build flag, or a `PACKAGE_HOST_ORGS` entry through the manifest? | **OPEN.** Default: the public flag `NEXT_PUBLIC_TODAY_BAND`, as `NEXT_PUBLIC_BRIEF_CARD` is |
+| PKG-Q15 | Is the band live, or built once each morning? | **OPEN.** Default: stable within a visit. The band sets its items again when the member takes in new cards, and once when the first fresh answer arrives. A poll adds no item, so the column under the band does not move |
+| PKG-Q16 | Does the band sit above the feed column as a summary, or replace the top of the column? | **OPEN.** Default: above the column. The column stays whole. The preview shows that the band repeats the top cards of the column, and it is about 338 px tall. The owner decides between "above as a summary" (built) and "replace the top of the column" |
+| PKG-Q17 | What does the band draw when it has no item? | **OPEN.** Default: nothing |
+| PKG-Q18 | What is the heading of the band? | **OPEN.** Default: "Do first". The calendar rail is "Today", so two "Today" headings would show |
 | PKG-Q11 | Who sees the setup row? | **OPEN.** Every member whose resolve says needs_setup (now, only with a setup_href), or the installer and admins only? |
 | PKG-Q12 | May an install with `ends_at` set be shared or promoted? | **No** (default, PKG-11a). Keep comes first (§6.2) |
 
-**PKG-Q6 in detail.** Today the private claim blocks the org install, because an org claim conflicts with every claim (§4). So a member can squat on a key, and no route removes the install before PKG-9. PKG-8 picks one of two options:
-1. **The org wins.** The org install goes in, and the resolve shows the org claim in place of the private claim (§5.2).
+**PKG-Q6 in detail.** Before PKG-8b the private claim blocked the org install, because an org claim conflicted with every claim. So a member could squat on a key, and no route removed the install before PKG-9. The owner had two options and chose the first:
+1. **The org wins (chosen).** The org install goes in, and the resolve shows the org claim in place of the private claim (§5.2).
 2. **An admin disposes.** The store still refuses the org install. An admin route disposes of the blocking install first.

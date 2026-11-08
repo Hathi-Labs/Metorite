@@ -9,12 +9,14 @@ database.
 
 **The one writer.** :func:`install` holds the only ``INSERT INTO
 package_install`` and the only ``INSERT INTO package_contribution`` of
-``apps/`` and ``packages/``. The disposal of §5.3 (PKG-9) holds the only
-DELETE and the UPDATE of the state: :func:`remove_install`,
-:func:`pause_install` and :func:`resume_install`. The promotion of §6.2
-(PKG-11a) holds the UPDATE of the scope: :func:`promote_to_group`. The
-hermetic suite scans for a second writer. The member purge deletes rows,
-and that stays legal.
+``apps/`` and ``packages/``. Every UPDATE and DELETE of the two tables is in
+this module too. The disposal of §5.3 (PKG-9) holds the moves of ``state``
+and the delete of an install: :func:`remove_install`, :func:`pause_install`
+and :func:`resume_install`. :func:`set_version` (PKG-8a) holds the UPDATE of
+``version`` and the DELETE of the claims of one install. The promotion of §6.2
+(PKG-11a) holds the UPDATE of the scope: :func:`promote_to_group`. The hermetic
+suite scans ``apps/`` and ``packages/`` for a write outside this module. The
+member purge deletes rows, and that stays legal.
 
 **The promotion.** :func:`promote_to_group` takes the org lock, then reads
 the install with the row lock (:func:`locked_install`). It moves only a
@@ -85,19 +87,22 @@ with a key that a system package holds
 (:func:`acb_common.app_manifests.shell_manifest.load_contributes`), and with
 an existing claim of the same point and key whose scope overlaps:
 
-* a new ``org`` claim overlaps every claim;
-* a new ``group:g`` claim overlaps the org claims, the claims of group g, and
-  the private claims of each member of g;
+* a new ``org`` claim overlaps the org claims and the group claims;
+* a new ``group:g`` claim overlaps the org claims and the claims of group g;
 * a new private claim of u overlaps the org claims, the private claims of u,
   and the claims of each group of u.
 
-Overlap is one relation, so the store reads it from both sides: a private
-claim of u and a claim of a group of u conflict in either order of install.
-Each existing claim counts, also one of a paused or archived install, until
-the disposal of PKG-9 deletes it. A conflict raises :class:`ClaimTaken`
-with the point, the key and the holder. ⚠️ A route sends only
-:meth:`InstallError.detail_for` of the session member, because the holder
-can be the private install of another member.
+⚠️ **The org wins (PKG-Q6, owner, 2026-11-07, task 1246).** A private claim
+never blocks an org or a group install. The org or group install goes in,
+and the resolve shows its claim in place of the private claim of each
+viewer (§5.2: org, then group, then private). The member still reaches the
+private app from the Studio library. A private claim stays refused when an
+org claim or a claim of a group of its member holds the key. So the
+relation is one-sided on purpose. Each existing claim counts, also one of a
+paused or archived install, until the disposal of PKG-9 deletes it. A
+conflict raises :class:`ClaimTaken` with the point, the key and the holder.
+⚠️ A route sends only :meth:`InstallError.detail_for` of the session member,
+because the holder can be the private install of another member.
 
 **The groups.** A member of a group is an ACTIVE member. That is the rule of
 the one group query, ``routes/projects/core._MY_GROUPS_SQL``. The store
@@ -110,10 +115,38 @@ as each other reader does.
 org takes ``pg_advisory_xact_lock`` on ``package_install:<org>``. Each read
 that decides the write runs after it, so two installs of one org run one at
 a time. Two claims of one key then give one winner and one
-:class:`ClaimTaken`. The lock ends with the caller's transaction. A caller
-that also locks the row of the app in ``apps`` in the same transaction calls
-:func:`install` first, so the org lock always comes first (advisory: no fence
-holds this order yet).
+:class:`ClaimTaken`. The lock ends with the caller's transaction.
+
+⚠️ **The lock order (PKG-8a).** The first caller is the Studio publish. It
+holds the row of the app in ``apps`` ``FOR UPDATE``, then the org lock of
+``objects_store``, and only then calls :func:`set_version` or
+:func:`install`. The INSERT of an install checks its FK, and that check
+waits for a ``FOR UPDATE`` on the ``apps`` row. So a second caller that does
+not hold the row must lock it (``FOR KEY SHARE``) before it calls here.
+Else it can hold this lock and wait for the row while a publish holds the
+row and waits for this lock. The second caller is the install route of
+PKG-8b: it calls ``studio/packages_store.lock_for_install`` first. Fence:
+``tests/unit/test_studio_package_install_r8.py`` (the install waits for the
+row and does not hold this lock).
+
+**Who may install (PKG-8b).** The store does not decide it. The route reads
+``studio:publish`` for an org and for a group install (D180.3), and asks
+:func:`group_exists` for a group install (§6.1).
+
+**A new version (PKG-8a).** :func:`set_version` moves an install to a new
+version and replaces its claims. It takes the org lock through
+:func:`_lock_org`, as each writer does. It writes the new claims with the
+INSERT of :func:`install`. ⚠️ It does not run ``_APP_SQL``, because a caller
+holds the ``apps`` row of a live package: the publish ``FOR UPDATE``, and
+the install route of PKG-8b ``FOR KEY SHARE``.
+
+⚠️ **A kept key stays its own (PKG-8b fix round 1).** :func:`set_version`
+checks the overlap of §4 only for a claim whose point and key the install
+did not hold before the move. Under PKG-Q6 an org or a group install can
+take the key of a private install. That private install must still move,
+or its owner could not publish again. Its kept claim stays, and the resolve
+shows the wider claim in its place (§5.2). A NEW key meets the full overlap.
+Fence: the kept-key cases of ``tests/unit/test_package_host_store_r8.py``.
 
 **READ COMMITTED.** The conflict reads rely on READ COMMITTED, so the
 snapshot of each read comes after the lock. Under REPEATABLE READ a second
@@ -147,7 +180,7 @@ from acb_common.studio_manifest import CONTRIBUTION_POINTS
 from sqlalchemy import text
 
 from gateway.package_host.sharing import SHARE_ROW
-from gateway.routes.projects.core import _MY_GROUPS_SQL
+from gateway.routes.projects.core import _MY_GROUPS_SQL, org_groups
 from gateway.studio.packages_store import first_bad_value
 
 #: The points where many claims of one key are allowed (§4). PKG-14 adds the
@@ -213,16 +246,16 @@ def _groups_of(member: str) -> str:
 
 #: The groups of the member of the new install (``:subject``).
 _GROUPS_OF_MEMBER = _groups_of(":subject")
-#: The groups of the owner of an existing private install ``i``.
-_GROUPS_OF_HOLDER = _groups_of("i.scope_subject")
 
 #: The existing installs whose scope overlaps a new install of each kind (§4).
+#: ⚠️ PKG-Q6 (the org wins): the org and the group rows never name a private
+#: install, so a private claim never blocks them. The private row still names
+#: the org and the group claims, so a private claim cannot take their key.
 OVERLAP: dict[str, str] = {
-    "org": "TRUE",
+    "org": "i.scope_kind <> 'private'",
     "group": (
         "(i.scope_kind = 'org'"
-        " OR (i.scope_kind = 'group' AND i.scope_subject = :subject)"
-        f" OR (i.scope_kind = 'private' AND :subject IN ({_GROUPS_OF_HOLDER})))"
+        " OR (i.scope_kind = 'group' AND i.scope_subject = :subject))"
     ),
     "private": (
         "(i.scope_kind = 'org'"
@@ -703,6 +736,39 @@ async def _check_held(db: Any, kind: str, subject: str, app: str,
             scope_subject=str(row[5])))
 
 
+# ── The group of an install (PKG-8b) ────────────────────────────────────────
+
+
+async def group_exists(db: Any, *, group: str) -> bool:
+    """True when *group* names a group of the bound org.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    *group* is a ``group:<slug>`` subject. The read is
+    ``routes/projects/core.org_groups``, the group list of the grant routes,
+    with the bound org. ``org_group`` has no row security, so the org filter
+    of that list is the wall: a group of another org answers False. A value
+    that is not a group subject answers False and reads nothing. The store
+    takes no lock and writes nothing here. The install route of PKG-8b calls
+    it before it locks the ``apps`` row. It does not ask whether the caller
+    is a member of the group: D180.3 gates a group install on
+    ``studio:publish``, and a holder of it may install for any group.
+    """
+    if not _plain(group, limit=MAX_SUBJECT_BYTES):
+        return False
+    try:
+        subject = normalize_grant_subject(group)
+    except ValueError:
+        return False
+    if _kind_of(subject) != "group":
+        return False
+    bound = (await db.execute(text(_ORG_SQL))).first()
+    org = bound[0] if bound is not None else None
+    if not org:
+        raise TenantUnbound("a group read needs a session bound to a tenant")
+    slug = subject.removeprefix("group:")
+    return any(str(g["slug"]).lower() == slug for g in await org_groups(db, org))
+
+
 # ── The writer ──────────────────────────────────────────────────────────────
 
 
@@ -958,3 +1024,106 @@ async def promote_to_group(db: Any, *, install_id: str, group: str, actor: str) 
     return Install(
         id=install, app_id=app, version=version, scope_kind="group", scope_subject=subject,
         installed_by=by, ends_at=ends_at, contributions=claims)
+
+
+# ── The version of an install (PKG-8a) ──────────────────────────────────────
+
+#: The install of one app at one scope in the bound org, with the row lock.
+_INSTALL_AT_SCOPE_SQL = (
+    "SELECT CAST(id AS text), installed_by, ends_at FROM package_install "
+    f"WHERE organization_id = {_BOUND_ORG} AND app_id = CAST(:app AS uuid) "
+    "AND scope_kind = :kind AND scope_subject = :subject FOR UPDATE"
+)
+
+#: The new version of one install. The state and the end date stay.
+_SET_VERSION_SQL = (
+    "UPDATE package_install SET version = :version, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:install AS uuid)"
+)
+
+#: The claims of one install, before :func:`set_version` writes the new ones.
+_CLEAR_CLAIMS_SQL = (
+    "DELETE FROM package_contribution "
+    f"WHERE organization_id = {_BOUND_ORG} AND install_id = CAST(:install AS uuid)"
+)
+
+#: The point and the key of each claim that one install holds now. A kept key
+#: skips the overlap check of :func:`set_version` (PKG-8b fix round 1).
+_KEPT_KEYS_SQL = (
+    "SELECT point, key FROM package_contribution "
+    f"WHERE organization_id = {_BOUND_ORG} AND install_id = CAST(:install AS uuid)"
+)
+
+
+async def set_version(
+    db: Any,
+    *,
+    app_id: str,
+    version: int | None,
+    scope_subject: str,
+    scope_kind: str,
+    contributions: Sequence[Contribution],
+) -> Install | None:
+    """Move the install of *app_id* at one scope to *version*, with new claims.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    A publish calls this first, and calls :func:`install` only when it
+    answers None: the app has no install at the scope, and nothing is
+    written. So a second publish never gets :class:`AlreadyInstalled`.
+
+    The function takes the org lock of :func:`install`, then the row lock of
+    the install. It checks each claim against the system keys. It checks the
+    overlap of §4 only for a claim whose point and key the install did not
+    hold before: a kept key stays its own, also when a wider install took it
+    later (PKG-Q6). A new key meets the full overlap, as in :func:`install`.
+    The old claims of the install are of the same app, so they never
+    conflict. Then it writes the version and replaces each claim. The state,
+    the end date and ``installed_by`` stay, so a paused install stays paused.
+    Each refusal raises an :class:`InstallError` and writes nothing. The
+    store does not check that the member may change the install. The routes
+    own that check.
+
+    ⚠️ The lock order of a publish is the ``apps`` row ``FOR UPDATE``, then
+    the org lock of ``objects_store``, then this org lock. A second caller
+    that does not hold the ``apps`` row must lock it before it calls here or
+    :func:`install`. Else the FK check of an INSERT waits for the row, while
+    a publish waits for the org lock, and Postgres ends one with a deadlock.
+    """
+    ver = _version(version)
+    # A private install belongs to its subject, so the subject is the member
+    # of the check. A bad subject gives "", and _scope refuses it.
+    try:
+        owner = (normalize_grant_subject(str(scope_subject))
+                 if _plain(scope_subject, limit=MAX_SUBJECT_BYTES) else "")
+    except ValueError:
+        owner = ""
+    kind, subject = _scope(scope_subject, scope_kind, owner, ver)
+    app = _app_id(app_id)
+    claims = _claims(contributions)
+    # The lock comes first, as in install. Each read below decides the write.
+    await _lock_org(db, "a new version")
+    # ⚠️ No _APP_SQL here. The publish holds the ``apps`` row FOR UPDATE and
+    # has just made it live. The install route of PKG-8b reads the row FOR KEY
+    # SHARE with the same filters first. A later caller (a rollback) must
+    # check the app first, as install does.
+    row = (await db.execute(text(_INSTALL_AT_SCOPE_SQL), {
+        "app": app, "kind": kind, "subject": subject})).first()
+    if row is None:
+        return None
+    install_id = str(row[0])
+    wanted = [c for c, _ in claims]
+    _check_system(wanted)
+    # A kept key stays its own (PKG-Q6). Only a new key meets the overlap.
+    kept = {(str(r[0]), str(r[1])) for r in (await db.execute(
+        text(_KEPT_KEYS_SQL), {"install": install_id})).all()}
+    await _check_held(db, kind, subject, app, [c for c in wanted if (c.point, c.key) not in kept])
+    await db.execute(text(_SET_VERSION_SQL), {"install": install_id, "version": ver})
+    await db.execute(text(_CLEAR_CLAIMS_SQL), {"install": install_id})
+    if claims:
+        await db.execute(text(_INSERT_CONTRIBUTION_SQL), [
+            {"install": install_id, "point": c.point, "key": c.key, "payload": payload,
+             "position": c.position}
+            for c, payload in claims])
+    return Install(
+        id=install_id, app_id=app, version=ver, scope_kind=kind, scope_subject=subject,
+        installed_by=str(row[1]), ends_at=row[2], contributions=tuple(wanted))
