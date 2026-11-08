@@ -89,6 +89,12 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # and no shell tool, so D85 and the egress rule both keep it.
     # Fence: ``tests/unit/test_chat_upload_every_agent.py``.
     "read_attachment",
+    # An attached image to the model of `tier-vision` (WS-VOX VOX-3,
+    # projects_ai_chat.md §31). Each call draws credits, so it is dark behind
+    # IMAGE_ANALYSIS_ORGS, and it is NOT in `_FLOOR_KEEP`: the email assistant
+    # and the worker agent opt out. Fence:
+    # ``tests/unit/test_attachment_analyze_image.py``.
+    "analyze_image",
 })
 
 
@@ -2182,9 +2188,11 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     # Chat attachments (H-229) — the text of a file the member attached in
     # THIS chat, by pure parsing: no subprocess, no code. It is no shell
     # tool, so D85 does not withhold it (`_withheld_shell_tools`).
+    # `analyze_image` (WS-VOX VOX-3) sends an attached image to `tier-vision`
+    # through the Console, and decodes no pixel here.
     try:
-        from acb_skills.attachment_tools import read_attachment
-        _all_tools = [*_all_tools, read_attachment]
+        from acb_skills.attachment_tools import analyze_image, read_attachment
+        _all_tools = [*_all_tools, read_attachment, analyze_image]
     except ImportError:
         pass
 
