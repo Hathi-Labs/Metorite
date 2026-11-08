@@ -1580,10 +1580,10 @@ def is_held_card_write(item: Any) -> bool:
 
 
 #: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
-#: slug. The pack is the ``calendar-day`` pack, and its fourteen tools are the
+#: slug. The pack is the ``calendar-day`` pack, and its sixteen tools are the
 #: My Tasks planner tools, the two calendar settings tools and the four day rule
 #: tools, which the Tasks assistant holds too. **The choice.** In a held chat the
-#: pack holds off its ten writes. They have no card: a plan is
+#: pack holds off its twelve writes. They have no card: a plan is
 #: proposed in text and applied by a second call, so mail that the chat read
 #: could steer the apply. The pack keeps its four reads (``my_tasks_day_digest``,
 #: ``my_tasks_get_calendar_settings``, ``my_tasks_list_day_rules`` and
@@ -1602,6 +1602,10 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
         # CAL-3 (task 1677): the three writes of the day rules. The read
         # (``my_tasks_list_day_rules``) stays.
         "my_tasks_add_day_rule", "my_tasks_delete_day_rule", "my_tasks_edit_day_rule",
+        # CAL-4 (task 1678): the two day flows. They write no calendar, but
+        # their propose calls store a pending plan on the server, which a later
+        # apply replays. Mail that a held chat read could steer that apply.
+        "my_tasks_close_my_day", "my_tasks_start_my_day",
     }),
 }
 
