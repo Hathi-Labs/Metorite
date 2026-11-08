@@ -33,6 +33,14 @@ connect routes, the poll and `github.installation_of` ask it, so the lazy
 readers follow the list too. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` set the write cap of each agent
+connection (`external_agent_access.md` §9.2, MCP-G20). The defaults are 120
+writes in 600 s. They are not `*_ORGS` or `*_MODES` keys, so a reload does
+NOT apply them. The gateway counts the writes, and the agent edge names the
+numbers in each write tool. Set both units to the same value. Then restart
+`acb-gateway` and `acb-agent-edge`. A change stays OWNER-GATE
+(`enforcement-flip`).
+
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:
 

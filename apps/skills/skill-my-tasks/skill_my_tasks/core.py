@@ -54,7 +54,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -1558,7 +1558,6 @@ async def my_tasks_schedule(item_id: str, start: str, end: str = "") -> str:
             the current local time + offset), e.g. 2026-07-18T14:00:00+05:30.
         end: ISO 8601 end datetime; empty = start + 30 minutes.
     """
-    from datetime import timedelta
     s = start.strip()
     if not s:
         return "A start time (ISO 8601) is required to schedule."
@@ -2232,6 +2231,11 @@ async def my_tasks_day_digest() -> str:
     d = await _request("GET", "/tasks/calendar/day-summary")
     if not d:
         return "Couldn't read the day summary."
+    return _fmt_digest(d)
+
+
+def _fmt_digest(d: dict[str, Any]) -> str:
+    """The text of ``my_tasks_day_digest``, from the answer of ``day-summary``."""
     lines = [f"Day summary for {d.get('day', 'today')}:"]
     one = d.get("one_thing")
     if one and one.get("title"):
@@ -2306,3 +2310,195 @@ async def my_tasks_set_one_thing(item_id: str = "", date: str = "") -> str:
     if not item_id.strip():
         return f"Cleared the One Thing for {day}."
     return f"Set the One Thing for {day}. The planner will protect it."
+
+
+# ── The two day flows (CAL-4, task 1678) ─────────────────────────────────────
+#
+# "Start my day" and "close my day" in ONE reply, as the Calendar app does them
+# in ``StartupRitual.tsx`` and ``EndOfDayReview.tsx``. Each flow only reads or
+# proposes: it calls ``GET`` routes and the ``apply=False`` calls, so the member
+# agrees before any write. The day is the day of the server (``day-summary``
+# answers ``day``). A step that fails shows its own line and the rest stays.
+
+_NEXT_AFTER_AGREE = (
+    "The server keeps ONE pending proposal for the day: the last one. In the start "
+    "flow the rebuild was proposed last, so it is pending and the rollover proposal "
+    "was replaced. After the member agrees to a step, call that tool with "
+    "apply=False first and show it, then with apply=True. Say that it is done "
+    "only after the tool says so.")
+_CANDIDATES = 5
+
+
+def _page_lines(lines: list[str], noun: str) -> list[str]:
+    """The first ``_DIGEST_BLOCKS`` lines, and a line that says how many are left out."""
+    page = paged(lines, 0, _DIGEST_BLOCKS, default=_DIGEST_BLOCKS, noun=noun)
+    out = list(page.items)
+    if page.line:
+        out.append(f"{len(lines) - len(page.items)} more {noun}: my_tasks_list_schedule lists them all.")
+    return out
+
+
+def _why(exc: BaseException) -> str:
+    """A short reason for a failed step, one line."""
+    return " ".join(str(exc).split())[:120] or type(exc).__name__
+
+
+async def _flow_step(failed: list[str], what: str, run: Any) -> str | None:
+    """Run one step. A failure becomes a line and the flow goes on."""
+    try:
+        return await run()
+    except Exception as exc:  # a step must not break the reply
+        failed.append(f"{what} is not available now: {_why(exc)}")
+        return None
+
+
+async def _plan_proposal(path: str, body: dict[str, Any]) -> str:
+    plan = await _request("POST", path, json={**body, "apply": False})
+    # The call is a proposal. Whatever the server says, the text says "proposed".
+    return _fmt_plan(plan or {}, applied=False)
+
+
+async def _one_thing_candidates() -> str:
+    """The ritual's pool: next actions with no block yet, in the order of the list."""
+    rows = await _fetch_all(_MY_INBOX, {"include_deferred": "true", "disposition": "NEXT"})
+    pool = [r for r in _ordered(rows)
+            if not r.get("scheduled_start") and not r.get("archived_at")]
+    if not pool:
+        return "No unscheduled tasks to pick from. Plan or capture first."
+    page = paged(pool, 0, _CANDIDATES, default=_CANDIDATES, noun="tasks")
+    lines = [f"• {_data(r.get('title', '?'))}"
+             + (f" ({r['time_estimate_mins']} min)" if r.get("time_estimate_mins") else "")
+             + f" (id: {r.get('id', '')})"
+             for r in page.items]
+    if page.line:
+        lines.append(f"{len(pool) - len(page.items)} more: my_tasks_list (view next) lists them.")
+    return "\n".join(lines)
+
+
+def _flow_reply(title: str, sections: list[tuple[str, str | None]],
+                failed: list[str], notes: list[str], next_steps: list[str]) -> str:
+    out = [title]
+    for head, body in sections:
+        if body:
+            out.append(f"\n{head}\n{body}")
+    if failed:
+        out.append("\nNot available:\n" + "\n".join(f"• {f}" for f in failed))
+    for n in notes:
+        out.append(f"\n{n}")
+    out.append("\nNext steps, only after the member agrees (nothing is changed yet):\n"
+               + "\n".join(f"• {n}" for n in next_steps) + f"\n{_NEXT_AFTER_AGREE}")
+    return "\n".join(out)
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_start_my_day(energy_note: str = "") -> str:
+    """Start the member's day in ONE reply, as the Start your day ritual does:
+    the digest of today, a PROPOSAL to roll over overdue work, the tasks to pick
+    the ★ One Thing from, and a PROPOSAL to rebuild the day. It changes nothing.
+    Show the member each part, ask what they agree to, and only then call the
+    tools named under "Next steps".
+
+    Args:
+        energy_note: optional words of the member about their state, e.g. "low
+            energy, lots of meetings". They steer the rebuild proposal. Pass
+            them unchanged.
+    """
+    failed: list[str] = []
+    digest = await _flow_step(failed, "The day digest", lambda: _digest_text())
+    rollover = await _flow_step(
+        failed, "The rollover proposal",
+        lambda: _plan_proposal("/tasks/calendar/rollover-today", {}))
+    candidates = await _flow_step(
+        failed, "The list of tasks for the One Thing", _one_thing_candidates)
+    rebuild = await _flow_step(
+        failed, "The rebuild proposal",
+        lambda: _plan_proposal("/tasks/calendar/plan-today",
+                               {"energy_note": energy_note or None}))
+    return _flow_reply(
+        "Start your day. This is a proposal: nothing is changed yet.",
+        [("Your day so far", digest),
+         ("Roll over overdue work (proposal)", rollover),
+         ("Pick the ★ One Thing (if only one thing gets done today, it should be...)",
+          candidates),
+         ("Rebuild my day (proposal)", rebuild)],
+        failed, [],
+        ["Rollover: my_tasks_rollover (apply=False, then apply=True) moves the overdue work back to the list.",
+         "One Thing: my_tasks_set_one_thing with the id the member picks.",
+         "Rebuild: my_tasks_plan_day (apply=False, then apply=True, same energy_note) places the day. "
+         "Propose it again after a rollover, because the rollover changes the list."])
+
+
+async def _digest_text() -> str:
+    d = await _request("GET", "/tasks/calendar/day-summary")
+    if not d:
+        raise RuntimeError("the server sent no day summary")
+    return _fmt_digest(d)
+
+
+def _tomorrow(day: str) -> str:
+    """The day after ``day`` (YYYY-MM-DD, from the server), or "" if unreadable."""
+    try:
+        return (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return ""
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_close_my_day() -> str:
+    """Close the member's day in ONE reply, as the Day review does: what got
+    done today, what is left (not done), a PROPOSAL to roll the leftover work
+    back to the list, and the tasks to seed tomorrow with. It changes nothing.
+    Show the member each part, ask what they agree to, and only then call the
+    tools named under "Next steps". The server plans TODAY only: it cannot
+    fit tomorrow, so the reply says so.
+    """
+    failed: list[str] = []
+    day = ""
+    done_lines: list[str] = []
+    left_lines: list[str] = []
+    summary_text: str | None = None
+    one_thing_line = ""
+
+    async def _summary() -> str:
+        nonlocal day, one_thing_line
+        d = await _request("GET", "/tasks/calendar/day-summary")
+        if not d:
+            raise RuntimeError("the server sent no day summary")
+        day = str(d.get("day") or "")
+        sched = d.get("scheduled") or []
+        for b in sched:
+            title = _data(b.get("title", "?"))
+            (done_lines if b.get("done") else left_lines).append(f"• {title}")
+        one = d.get("one_thing") or {}
+        if one.get("title"):
+            one_thing_line = f"★ One Thing: {_data(one['title'])}"
+        out = [f"Done today: {len(done_lines)}", *_page_lines(done_lines, "blocks")]
+        out.append(f"Not done today: {len(left_lines)}")
+        out.extend(_page_lines(left_lines, "blocks"))
+        if d.get("overdue_count"):
+            out.append(f"Overdue from earlier days: {d['overdue_count']}")
+        if one_thing_line:
+            out.append(one_thing_line)
+        return "\n".join(out)
+
+    summary_text = await _flow_step(failed, "The summary of today", _summary)
+    rollover = await _flow_step(
+        failed, "The rollover proposal",
+        lambda: _plan_proposal("/tasks/calendar/rollover-today", {}))
+    seeds = await _flow_step(
+        failed, "The list of tasks for tomorrow", _one_thing_candidates)
+    tomorrow = _tomorrow(day)
+    notes = [
+        "Fit tomorrow: not available here. The day planner tools plan TODAY only, "
+        "so no proposal for tomorrow's calendar exists. What the member can do now "
+        "is leave unfinished work on the list (the rollover above) and pick the "
+        "★ One Thing for tomorrow from the tasks above."]
+    return _flow_reply(
+        "Close your day. This is a proposal: nothing is changed yet.",
+        [("What got done, and what did not", summary_text),
+         ("Move what is not done back to the list (proposal)", rollover),
+         ("Candidates for tomorrow's ★ One Thing", seeds)],
+        failed, notes,
+        ["Rollover: my_tasks_rollover (apply=False, then apply=True) moves the work that is not done back to the list.",
+         "Tomorrow's One Thing: my_tasks_set_one_thing with the id the member picks"
+         + (f" and date {tomorrow}." if tomorrow else " and tomorrow's date.")])

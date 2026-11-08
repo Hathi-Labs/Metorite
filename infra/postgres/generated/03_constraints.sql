@@ -2701,3 +2701,51 @@ ALTER TABLE package_field_value ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE package_field_value ADD CONSTRAINT package_field_value_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS package_field_value_org_idx ON package_field_value (organization_id);
+
+-- pm_cycles
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_cycles WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_cycles still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_cycles ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_cycles ADD CONSTRAINT pm_cycles_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_cycles_org_idx ON pm_cycles (organization_id);
+
+-- pm_cycle_tasks
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_cycle_tasks WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_cycle_tasks still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_cycle_tasks ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_cycle_tasks ADD CONSTRAINT pm_cycle_tasks_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_cycle_tasks_org_idx ON pm_cycle_tasks (organization_id);
+
+-- pm_cycle_committed
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_cycle_committed WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_cycle_committed still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_cycle_committed ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_cycle_committed ADD CONSTRAINT pm_cycle_committed_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_cycle_committed_org_idx ON pm_cycle_committed (organization_id);
+
+-- pm_cycle_capacity
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_cycle_capacity WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_cycle_capacity still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_cycle_capacity ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_cycle_capacity ADD CONSTRAINT pm_cycle_capacity_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_cycle_capacity_org_idx ON pm_cycle_capacity (organization_id);

@@ -250,6 +250,10 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # so NO window: an operator proves a binding right after saving it, and
     # a second window for the proof would teach the break-glass token.
     ("POST", "/catalog/decide/try"): _R(ADMIN),
+    # VOX-4 (task 2264): the two voice tries spend OUR platform key on a real
+    # vendor call, so ADMIN with no window, exactly as the decide try.
+    ("POST", "/catalog/transcribe/try"): _R(ADMIN),
+    ("POST", "/catalog/vision/try"): _R(ADMIN),
     # ⚠️ This is what customers are BILLED. Admin and a window, and the
     # number itself stays the owner's commercial act (H-42, §8).
     # The model-keyed route is RETIRED (D67) and answers 410 — the row stays

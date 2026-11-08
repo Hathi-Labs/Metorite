@@ -280,6 +280,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                               "add a focus block on Fridays"),
     "my_tasks_edit_day_rule": ("move my focus block to 9 to 12",),
     "my_tasks_delete_day_rule": ("delete the second day rule",),
+    # -- calendar-day flows (CAL-4, task 1678) --
+    "my_tasks_start_my_day": ("start my day", "good morning plan"),
+    "my_tasks_close_my_day": ("close my day", "wrap up my day"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"

@@ -42,6 +42,11 @@ gives the answer, and no later check runs:
    (MCP-P1a, spec §19.4, ``tools.scope_of``). An app that no manifest holds
    gets a tool error, and no 403.
 
+**The read-only door (SW-34b).** ``POST /mcp/readonly`` runs the same checks
+in the same order. Right after check 6 it narrows the caller's scopes to the
+read scopes (``bearer.read_only``). Check 8 and each method then read the
+narrowed scopes, so a write tool gets the 403 of check 8 there.
+
 **The error body (EA3-13).** Each 4xx and each 503 carries a JSON-RPC error
 with ``id: null``. The code is ``-32700`` for a body that is not JSON,
 ``-32603`` for a 503, and ``-32600`` for every other case.
@@ -290,6 +295,20 @@ def path() -> str:
     return urlsplit(agent_oauth.resource()).path or "/mcp"
 
 
+#: SW-34b. The last segment of the read-only door, below :func:`path`.
+READONLY_SEGMENT = "readonly"
+
+
+def readonly_path() -> str:
+    """The read-only door, ``/mcp/readonly`` by default (SW-34b).
+
+    The same token works here and on :func:`path`, because the audience is
+    the resource of :func:`path`. The path is the mode: each call here runs
+    with its scopes narrowed to the read scopes (``bearer.read_only``).
+    """
+    return f"{path().rstrip('/')}/{READONLY_SEGMENT}"
+
+
 def resource_metadata_url() -> str:
     """The RFC 9728 document of the resource, named in each challenge."""
     return f"{agent_oauth.issuer()}/.well-known/oauth-protected-resource{path()}"
@@ -436,6 +455,24 @@ def _session_of(request: Request, caller: bearer.Caller,
 
 async def endpoint(request: Request) -> Response:
     """``/mcp``. Checks 2 to 8 of §9.6, in order, then the method."""
+    return await _serve(request, read_only=False)
+
+
+async def readonly_endpoint(request: Request) -> Response:
+    """``/mcp/readonly`` (SW-34b). The same checks, in the same order, with
+    the caller's scopes narrowed to the read scopes right after check 6.
+
+    So ``tools/list`` shows only reads, and check 8 answers 403
+    ``insufficient_scope`` for each write tool. The prompt, the resources
+    and the instructions read the same narrowed scopes. The path can only
+    narrow a token, never widen it. Fence:
+    ``tests/unit/test_mcp_edge_readonly.py``.
+    """
+    return await _serve(request, read_only=True)
+
+
+async def _serve(request: Request, *, read_only: bool) -> Response:
+    """Checks 2 to 8 of §9.6, in order, then the method."""
     key = agent_signing.signing_key()
     if key is None:
         return http_error(503, INTERNAL_ERROR, "The server is not ready.",
@@ -477,6 +514,10 @@ async def endpoint(request: Request) -> Response:
             return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
                               {"Retry-After": str(bearer.OUTAGE_RETRY_AFTER_S)})
         return challenge_401(sent=refused.sent)
+    if read_only:
+        # SW-34b: the one narrowing of the read-only door. Every later check
+        # reads `caller.scopes`, so no second scope rule exists.
+        caller = bearer.read_only(caller)
 
     method = message.get("method") if kind != "response" else None
     # 7. The version, and 7b. the session (SW-7).
@@ -601,6 +642,7 @@ __all__ = [
     "LEGACY_VERSION",
     "MAX_BODY_BYTES",
     "NO_KEY_RETRY_AFTER_S",
+    "READONLY_SEGMENT",
     "ROUTE_METHODS",
     "SESSION_HEADER",
     "SUPPORTED_VERSIONS",
@@ -608,5 +650,7 @@ __all__ = [
     "challenge_403",
     "endpoint",
     "path",
+    "readonly_endpoint",
+    "readonly_path",
     "resource_metadata_url",
 ]

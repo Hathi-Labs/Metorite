@@ -46,6 +46,33 @@ function countAll(nodes: readonly ProjectRow[]): number {
   return total;
 }
 
+/** Archived entries that share one parent path, in tree order. */
+export interface ArchivedGroup {
+  /** The ancestor names, nearest last. Empty for filed spaces. */
+  path: string[];
+  entries: ArchivedEntry[];
+}
+
+/**
+ * The Archived section's rows, grouped by where they came from. The section
+ * prints each group's path once, above its rows, so a member can tell where
+ * a filed project lived. Siblings sit next to each other in tree order, so
+ * one pass groups them.
+ */
+export function groupByPath(entries: readonly ArchivedEntry[]): ArchivedGroup[] {
+  const groups: ArchivedGroup[] = [];
+  for (const entry of entries) {
+    const last = groups[groups.length - 1];
+    if (last && samePath(last.path, entry.path)) last.entries.push(entry);
+    else groups.push({ path: entry.path, entries: [entry] });
+  }
+  return groups;
+}
+
+function samePath(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((name, i) => name === b[i]);
+}
+
 export function splitArchived(roots: readonly ProjectRow[]): ArchiveSplit {
   const archived: ArchivedEntry[] = [];
   let count = 0;
@@ -65,7 +92,12 @@ export function splitArchived(roots: readonly ProjectRow[]): ArchiveSplit {
       }
       const children = node.children ?? [];
       const live = walk(children, [...path, node.name]);
-      kept.push(live.length === children.length ? node : { ...node, children: live });
+      // ⚠️ Compare each child, not the count. A filed GRANDCHILD leaves the
+      // count of this node's own children unchanged, but its parent comes back
+      // as a new object. Keeping `node` then kept the old parent too, with the
+      // filed row inside it, so the rail drew that row twice (ARC-BUG-1).
+      const same = live.length === children.length && live.every((child, i) => child === children[i]);
+      kept.push(same ? node : { ...node, children: live });
     }
     return kept;
   };
