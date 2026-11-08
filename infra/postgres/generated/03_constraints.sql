@@ -2737,3 +2737,15 @@ ALTER TABLE pm_cycle_capacity ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE pm_cycle_capacity ADD CONSTRAINT pm_cycle_capacity_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_cycle_capacity_org_idx ON pm_cycle_capacity (organization_id);
+
+-- email_signature_images
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM email_signature_images WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: email_signature_images still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE email_signature_images ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE email_signature_images ADD CONSTRAINT email_signature_images_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS email_signature_images_org_idx ON email_signature_images (organization_id);

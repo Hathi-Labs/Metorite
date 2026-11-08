@@ -7431,6 +7431,39 @@ STANDARD, and treated as HIGH, because it spends the platform key at a vendor.
 - **Fence (R7):** `tests/unit/test_image_need_eval.py` and the `--scripted` line of
   `skill-eval.yml`. The live run is manual and advisory until the owner sets its schedule.
 
+**VOX-6 (task 2448). AssemblyAI in the transcribe door.** HIGH, because it is
+the metered door. A Sonnet builder, because Opus was rate-limited until 2026-11-12.
+
+- **Why:** the owner's rule of 2026-11-08 is that every model and speech call
+  goes through the operator console, and nothing reads a provider key
+  directly. The owner installed an AssemblyAI key there. litellm 1.103.0
+  cannot call the Sync API. Three routes failed on 2026-11-08:
+  - `assemblyai/best` answers "Unmapped provider passed in".
+  - `openrouter/assemblyai/universal-3-5-pro` gives the same answer.
+  - The generic OpenAI route answers 404.
+- **Files:** a new `customer_console/stt_assemblyai.py`, and edits to
+  `handlers.py`, `catalog.py` and `router.py`. In the operator console:
+  `src/lib/invocation.ts` and `providerGuides.ts`.
+- **Do:** copy the VOX-2 pattern.
+  - Add the verb `native_assemblyai` for `transcribe` only. The `assemblyai/`
+    prefix ties to it, and the credential provider is `assemblyai`.
+  - The id is `assemblyai/universal-3-5-pro` or
+    `assemblyai/universal-3-5-pro/hi,en`. The declare route refuses an unknown
+    language code.
+  - Send one `POST https://sync.assemblyai.com/v1/transcribe` for each clip,
+    with the header `X-AAI-Model`. Send the `config` part only when the id
+    names languages.
+  - Bill the seconds that the Console measures from the WAV bytes. Never bill
+    `audio_duration_ms`. Answer 415 for a clip that is not WAV.
+  - Fail over on a 5xx, a 504 and a network error. Do not fail over on a 400.
+    A 401 strikes the vendor, as the router does for every vendor.
+  - Update the `assemblyai` card. It says that Notes keeps its own AssemblyAI
+    client until task 2449.
+- **Done when:** a WAV clip on a `tier-stt` chain with the AssemblyAI model
+  writes one `transcribe` row with the measured minutes.
+- **Fence (R7):** `tests/unit/test_customer_console_stt_assemblyai.py` (R8),
+  `test_operator_console_invocations.py` and `providerGuides.test.ts`.
+
 ### 31.6 Owner calls
 
 **The owner accepted all four recommendations on 2026-11-08 at 08:42 UTC**, on
@@ -7449,6 +7482,8 @@ VOX-4 (the cards) and VOX-1 go first. VOX-1 works at once with ElevenLabs,
 Deepgram, OpenAI or Groq on `tier-stt`. VOX-2 follows, for Sarvam. VOX-3 goes
 in parallel with VOX-1, because the two touch different code. VOX-5 follows
 VOX-3.
+VOX-6 follows VOX-2, because it copies the same handler pattern. It serves
+the chat mic (VOX-1) and the operator Try box (VOX-4).
 
 ### 31.8 What §31 does not do
 
