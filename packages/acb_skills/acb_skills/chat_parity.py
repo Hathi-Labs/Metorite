@@ -208,9 +208,11 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/tasks/calendar/day-state": "my_tasks_set_one_thing",
     # CAL-2 (task 1676): the CALENDAR fields of the settings (the standing instruction,
     # the working hours, capacity, buffer, focus run, break, lunch, energy windows,
-    # auto rollover, time zone). The model choices, the sync flags, capture_dedup and
-    # day_templates are not here: the tool has no parameter for them. Fence:
-    # tests/unit/test_calendar_settings_tools.py.
+    # auto rollover, time zone). The model choices, the sync flags and capture_dedup
+    # are not here: the tool has no parameter for them. The day rules
+    # (day_templates) are written by the four day rule tools of CAL-3 (task 1677),
+    # through the same route with an If-Match token. Fence:
+    # tests/unit/test_calendar_settings_tools.py and tests/unit/test_day_rules_tools.py.
     "GET /api/tasks/settings": "my_tasks_get_calendar_settings",
     "PUT /api/tasks/settings": "my_tasks_update_calendar_settings",
     # ── Email ──

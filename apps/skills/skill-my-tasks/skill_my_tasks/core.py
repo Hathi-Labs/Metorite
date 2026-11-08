@@ -178,10 +178,22 @@ def _headers() -> dict[str, str]:
     }
 
 
+class _GatewayError(RuntimeError):
+    """A gateway answer of 400 or more. ``status`` is the code, so a tool can
+    tell a 412 (a stale ``If-Match``) from a fault."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 async def _request(method: str, path: str, **kwargs: Any) -> Any:
+    # CAL-3 (task 1677): a caller may add headers (``If-Match``). They go on top
+    # of the identity headers, which a caller cannot replace.
+    headers = {**(kwargs.pop("headers", None) or {}), **_headers()}
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.request(
-            method, f"{_gateway_url()}{path}", headers=_headers(), **kwargs
+            method, f"{_gateway_url()}{path}", headers=headers, **kwargs
         )
     if resp.status_code >= 400:
         detail = ""
@@ -191,9 +203,10 @@ async def _request(method: str, path: str, **kwargs: Any) -> Any:
                 detail = str(body.get("detail") or "")
         except Exception:
             detail = (resp.text or "")[:200]
-        raise RuntimeError(
+        raise _GatewayError(
             f"Tasks {method} {path} failed ({resp.status_code})"
-            + (f": {detail}" if detail else "")
+            + (f": {detail}" if detail else ""),
+            resp.status_code,
         )
     return resp.json() if resp.text else None
 
@@ -1884,6 +1897,296 @@ async def my_tasks_update_calendar_settings(
                 + "\nAsk the member, then call again with confirmed=True.")
     await _request("PUT", _CAL_SETTINGS_PATH, json=patch)
     return "Saved. The calendar settings changed:\n" + "\n".join(changed)
+
+
+# ── Day rules (CAL-3, task 1677) ─────────────────────────────────────────────
+#
+# The day rules are ``day_templates`` of ``/tasks/settings``: recurring windows
+# [{days, start_hour, end_hour, kind, label, theme}]. The server saves the WHOLE
+# list, and it drops a malformed rule without a word. So each write here is a
+# read-modify-write of the list that checks every rule first and refuses in
+# text. The list carries a token (``day_rules_token``). The write sends the
+# token it read in ``If-Match``, and the server refuses it with 412 when the
+# list changed in between. Propose first, as the settings tool does.
+
+_DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_DAY_RULES_MAX = 40
+_DAY_RULE_TEXT_MAX = 40
+_RULE_KINDS = ("block", "focus")
+STALE_DAY_RULES = "The day rules changed since I read them. Read the list again."
+#: A confirmed call names the version of the proposal it applies. A number means
+#: "rule n of the list the member saw", so it is valid only for that list.
+STALE_PROPOSAL = ("The day rules changed since I proposed this. Read the list again. "
+                  "I changed nothing.")
+NO_VERSION = ("Propose the change first, then pass the version it showed. "
+              "I changed nothing.")
+
+
+def _version_line(token: str) -> str:
+    return f"Version: {token}"
+
+
+def _apply_gate(version: str, token: str) -> str | None:
+    """The refusal for a confirmed call, or None when it may write. The version
+    must be the token of the list that the proposal read, and it must still be
+    the token of the list now."""
+    if not version:
+        return NO_VERSION
+    if str(version).strip().strip('"') != token:
+        return STALE_PROPOSAL
+    return None
+
+
+def day_rules_token(rules: list[dict]) -> str:
+    """The ``If-Match`` token of a list of day rules as the server returned it:
+    sha256 hex of its canonical JSON (sorted keys, no spaces). The mirror of
+    ``gateway.routes.tasks.settings.day_templates_token`` for a list that the
+    server normalised already. ``test_day_rules_tools`` fences that the two agree."""
+    import hashlib
+
+    canon = json.dumps(rules, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _days_text(days: list[int]) -> str:
+    ds = sorted(set(days))
+    if not ds:
+        return "no days"
+    if len(ds) == 7:
+        return "every day"
+    if len(ds) > 1 and ds[-1] - ds[0] == len(ds) - 1:
+        return f"{_DAY_NAMES[ds[0]]}-{_DAY_NAMES[ds[-1]]}"
+    return ", ".join(_DAY_NAMES[d] for d in ds)
+
+
+def _rule_text(r: dict) -> str:
+    """One rule as "Mon-Fri 8-11 focus 'Deep work'" (the label and theme only
+    when set). The label is the member's own text, 40 characters at most, and a
+    quote inside it drops so the quotes stay the border."""
+    out = f"{_days_text(r.get('days') or [])} {_hours(r['start_hour'])}-{_hours(r['end_hour'])} {r['kind']}"
+    if r.get("label"):
+        out += " '" + str(r["label"]).replace("'", "") + "'"
+    if r.get("theme"):
+        out += f" (theme {r['theme']})"
+    return out
+
+
+async def _read_day_rules() -> tuple[list[dict], str]:
+    """The stored rules and their token."""
+    s = await _request("GET", _CAL_SETTINGS_PATH) or {}
+    rules = [r for r in (s.get("day_templates") or []) if isinstance(r, dict)]
+    return rules, day_rules_token(rules)
+
+
+def _rule_refusal(
+    days: Any, start_hour: Any, end_hour: Any, kind: Any, label: Any, theme: Any,
+) -> str | None:
+    """The refusal for a rule, as the server normaliser would silently drop it,
+    or None. Every argument is the final value of the rule."""
+    def _whole(v: Any) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool)
+
+    if (not isinstance(days, list) or not days
+            or not all(_whole(d) and 0 <= d <= 6 for d in days)):
+        return ("A day rule needs days: a list of day numbers from 0 (Monday) to 6 (Sunday), "
+                "for example [0, 1, 2, 3, 4] for Monday to Friday. I changed nothing.")
+    if not (_whole(start_hour) and _whole(end_hour) and 0 <= start_hour < end_hour <= 24):
+        return ("A day rule needs start_hour and end_hour as whole hours, "
+                "0 <= start_hour < end_hour <= 24. I changed nothing.")
+    if kind not in _RULE_KINDS:
+        return "The kind of a day rule is block or focus. I changed nothing."
+    for what, v in (("label", label), ("theme", theme)):
+        if not isinstance(v, str) or len(v.strip()) > _DAY_RULE_TEXT_MAX:
+            return (f"The {what} of a day rule is text of {_DAY_RULE_TEXT_MAX} characters "
+                    "at most. I changed nothing.")
+    return None
+
+
+def _rule_of(days: list[int], start_hour: int, end_hour: int, kind: str,
+             label: str, theme: str) -> dict:
+    """The rule in the form the server stores (see ``_day_templates``)."""
+    return {"days": sorted(set(days)), "start_hour": start_hour, "end_hour": end_hour,
+            "kind": kind, "label": label.strip(), "theme": theme.strip().lower()}
+
+
+async def _save_day_rules(rules: list[dict], token: str) -> str | None:
+    """Write the whole list with the token that was read. None when saved, else
+    the answer for the model (the list changed, or the save failed)."""
+    try:
+        await _request("PUT", _CAL_SETTINGS_PATH, json={"day_templates": rules},
+                       headers={"If-Match": f'"{token}"'})
+    except _GatewayError as exc:
+        if exc.status == 412:
+            return STALE_DAY_RULES
+        raise
+    return None
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def my_tasks_list_day_rules() -> str:
+    """Read the member's day rules: the recurring windows that the day planner
+    keeps (a focus window, or a block that nothing else takes). Each rule shows
+    with its number, as "1. Mon-Fri 8-11 focus 'Deep work'". The number is what
+    my_tasks_edit_day_rule and my_tasks_delete_day_rule take. Read the list
+    again before a change if the member changed it.
+    """
+    rules, _ = await _read_day_rules()
+    if not rules:
+        return "No day rules are set."
+    return "Day rules:\n" + "\n".join(f"{i}. {_rule_text(r)}" for i, r in enumerate(rules, 1))
+
+
+@_annotate_risk(idempotent=False, open_world=False)
+async def my_tasks_add_day_rule(
+    days: list[int],
+    start_hour: int,
+    end_hour: int,
+    kind: str = "focus",
+    label: str = "",
+    theme: str = "",
+    confirmed: bool = False,
+    version: str = "",
+) -> str:
+    """Add one day rule: a recurring window that the day planner keeps. days
+    are numbers from 0 (Monday) to 6 (Sunday). start_hour and end_hour are whole
+    hours (0 to 24, the end after the start). kind is focus (default: the
+    planner puts focused work there) or block (nothing else is booked there).
+    label is a short name, 40 characters at most. theme is an optional word.
+    "Keep mornings for deep work" is days [0, 1, 2, 3, 4], start_hour 8,
+    end_hour 11, kind focus, label "Deep work". At most 40 rules fit.
+
+    Propose first. With confirmed=False the tool writes nothing and shows the
+    rule and a line "Version: ...". Show the rule to the member. Call again with
+    confirmed=True, the same arguments and that version only after the member
+    agrees. Without the version the tool saves nothing.
+
+    Args:
+        confirmed: False = show the rule only (default). True = save it.
+        version: the version that the last proposal showed. Needed with confirmed=True.
+    """
+    bad = _rule_refusal(days, start_hour, end_hour, kind, label, theme)
+    if bad:
+        return bad
+    rules, token = await _read_day_rules()
+    if len(rules) >= _DAY_RULES_MAX:
+        return (f"The list is full: {_DAY_RULES_MAX} day rules at most. Delete one first. "
+                "I changed nothing.")
+    rule = _rule_of(days, start_hour, end_hour, kind, label, theme)
+    if not confirmed:
+        return (f"Not saved yet. The new rule would be number {len(rules) + 1}: "
+                f"{_rule_text(rule)}\n{_version_line(token)}\n"
+                "Ask the member, then call again with confirmed=True and this version.")
+    gate = _apply_gate(version, token)
+    if gate:
+        return gate
+    stale = await _save_day_rules([*rules, rule], token)
+    return stale or f"Saved. Day rule {len(rules) + 1} added: {_rule_text(rule)}"
+
+
+def _number_refusal(number: Any, rules: list[dict]) -> str | None:
+    if isinstance(number, bool) or not isinstance(number, int) or not 1 <= number <= len(rules):
+        have = (f"The list has {len(rules)} rule(s), numbered 1 to {len(rules)}."
+                if rules else "No day rules are set.")
+        return f"There is no day rule number {_data(number)}. {have} I changed nothing."
+    return None
+
+
+@_annotate_risk(idempotent=True, open_world=False)
+async def my_tasks_edit_day_rule(
+    number: int,
+    days: list[int] | None = None,
+    start_hour: int | None = None,
+    end_hour: int | None = None,
+    kind: str | None = None,
+    label: str | None = None,
+    theme: str | None = None,
+    confirmed: bool = False,
+    version: str = "",
+) -> str:
+    """Change one day rule. number is the number that my_tasks_list_day_rules
+    shows (read the list first). Pass ONLY the fields to change: a field left
+    out stays as it is. The fields are days (0 Monday to 6 Sunday), start_hour,
+    end_hour, kind (focus or block), label and theme. An empty label or theme
+    clears it.
+
+    Propose first. With confirmed=False the tool writes nothing and shows the
+    rule before and after, and a line "Version: ...". Show the change to the
+    member. Call again with confirmed=True, the same arguments and that version
+    only after the member agrees. Without the version the tool saves nothing.
+    After any change, read the list again before you use another number.
+
+    Args:
+        confirmed: False = show the change only (default). True = save it.
+        version: the version that the last proposal showed. Needed with confirmed=True.
+    """
+    rules, token = await _read_day_rules()
+    if confirmed:
+        gate = _apply_gate(version, token)
+        if gate:
+            return gate
+    bad = _number_refusal(number, rules)
+    if bad:
+        return bad
+    old = rules[number - 1]
+    given = {"days": days, "start_hour": start_hour, "end_hour": end_hour,
+             "kind": kind, "label": label, "theme": theme}
+    patch = {k: v for k, v in given.items() if v is not None}
+    if not patch:
+        return "No field was given. Say what to change in the rule."
+    merged = {**old, **patch}
+    # A stored rule may have no days (the server keeps it). That is no fault of
+    # this edit, so the days are checked only when the member changed them.
+    bad = _rule_refusal(patch["days"] if "days" in patch else [0],
+                        merged.get("start_hour"), merged.get("end_hour"),
+                        merged.get("kind"), merged.get("label", ""), merged.get("theme", ""))
+    if bad:
+        return bad
+    new = _rule_of(merged["days"], merged["start_hour"], merged["end_hour"], merged["kind"],
+                   merged.get("label", ""), merged.get("theme", ""))
+    if new == old:
+        return f"Nothing changes: rule {number} already is {_rule_text(old)}"
+    shown = f"Rule {number}: {_rule_text(old)} -> {_rule_text(new)}"
+    if not confirmed:
+        return (f"Not saved yet. The change would be:\n{shown}\n{_version_line(token)}\n"
+                "Ask the member, then call again with confirmed=True and this version.")
+    edited = [new if i == number else r for i, r in enumerate(rules, 1)]
+    stale = await _save_day_rules(edited, token)
+    return stale or f"Saved. {shown}"
+
+
+# A day rule is a setting: the member proposes, agrees, and can add it again.
+@_annotate_risk(idempotent=False, open_world=False)
+async def my_tasks_delete_day_rule(
+    number: int, confirmed: bool = False, version: str = "",
+) -> str:
+    """Delete one day rule. number is the number that my_tasks_list_day_rules
+    shows (read the list first). The other rules move up by one place, so read
+    the list again before the next change.
+
+    Propose first. With confirmed=False the tool writes nothing and names the
+    rule that would go, as "Delete rule 2: Mon-Fri 8-11 focus". Show that to the
+    member. Call again with confirmed=True and the version that the proposal
+    showed ("Version: ...") only after the member agrees. Without the version,
+    or when the list changed since the proposal, the tool deletes nothing.
+
+    Args:
+        confirmed: False = show which rule goes (default). True = delete it.
+        version: the version that the last proposal showed. Needed with confirmed=True.
+    """
+    rules, token = await _read_day_rules()
+    if confirmed:
+        gate = _apply_gate(version, token)
+        if gate:
+            return gate
+    bad = _number_refusal(number, rules)
+    if bad:
+        return bad
+    shown = f"rule {number}: {_rule_text(rules[number - 1])}"
+    if not confirmed:
+        return (f"Not deleted yet. Delete {shown}\n{_version_line(token)}\n"
+                "Ask the member, then call again with confirmed=True and this version.")
+    stale = await _save_day_rules([r for i, r in enumerate(rules, 1) if i != number], token)
+    return stale or f"Deleted {shown}"
 
 
 @_annotate_risk(idempotent=True, open_world=False)
