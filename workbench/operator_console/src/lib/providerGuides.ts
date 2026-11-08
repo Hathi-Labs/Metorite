@@ -242,12 +242,19 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
     label: "AssemblyAI",
     description:
       "Speech to text that names the speakers, and handles Hindi and English " +
-      "in one recording. The cheapest per hour of the transcription options.",
+      "in one recording. The cheapest per hour of the transcription options. " +
+      "Notes still uses its own AssemblyAI client until task 2449.",
     setupUrl: "https://www.assemblyai.com/dashboard/signup",
     docsUrl: "https://www.assemblyai.com/docs/speech-to-text/pre-recorded-audio",
+    // VOX-6 (2026-11-08). litellm 1.103.0 cannot call the AssemblyAI Sync API,
+    // so the Console calls it with its own handler (`stt_assemblyai.py`,
+    // `native_assemblyai`). The vendor-slug fence exempts this slug from the
+    // "litellm must not know it" half, because litellm lists the id.
     steps: [
       "Create an account at assemblyai.com. It includes free credit.",
-      "Copy the key from the dashboard home.",
+      "Copy the key from the dashboard home, and install it here with the provider id assemblyai.",
+      "On Models, declare assemblyai/universal-3-5-pro/hi,en for Speech to text, with the verb native_assemblyai and no streaming. The last part is the language codes, such as hi,en. Leave it off to let the vendor choose.",
+      "Bind tier-stt to it on Tiers. The Console takes WAV clips only for this model.",
     ],
     serves: ["transcribe"],
   },
@@ -262,13 +269,25 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
     ],
     serves: ["transcribe"],
   },
+  // VOX-4 (2026-11-08). Scribe is ElevenLabs' speech to text. litellm calls it
+  // as `elevenlabs/scribe_v2` with the verb `atranscription`, so no native
+  // handler is needed. The ids come from litellm's price map (1.103.0), which
+  // is also the Models feed.
   elevenlabs: {
     label: "ElevenLabs",
-    description: "The most natural voices for reading text aloud. Billed per character.",
+    description:
+      "Scribe turns speech into text, and the most natural voices read text " +
+      "aloud. Scribe needs no new code: litellm calls it. Voices bill per character.",
     setupUrl: "https://elevenlabs.io/app/settings/api-keys",
-    docsUrl: "https://elevenlabs.io/docs/capabilities/text-to-speech",
-    steps: ["Sign in at elevenlabs.io.", "Open Settings, then API Keys."],
-    serves: ["speak"],
+    docsUrl: "https://elevenlabs.io/docs/capabilities/speech-to-text",
+    steps: [
+      "Sign in at elevenlabs.io.",
+      "Open Settings, then API Keys. Give the key access to Speech to Text.",
+      "Install it here with the provider id elevenlabs.",
+      "On Models, declare elevenlabs/scribe_v2 for Speech to text, with the verb atranscription and no streaming.",
+      "Bind tier-stt to it on Tiers, then use Try speech to text there to prove it.",
+    ],
+    serves: ["speak", "transcribe"],
   },
   // 🔴 **The one vendor here that litellm cannot call** (CP-13b, D75). litellm
   // reaches TypeSafe only through its Proxy, and D58 rejects the Proxy. So the
@@ -336,6 +355,23 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
     ],
     serves: ["transcribe"],
   },
+};
+
+/** 📌 VOX-4 (task 2264). Which models read images, and where they bind.
+ *
+ *  A vision model is not a vendor, so it has no card of its own. Gemini and
+ *  Anthropic already have cards (key and docs), and this note names the models
+ *  and the tier. The ids are litellm's, as the Models feed lists them
+ *  (litellm 1.103.0): `gemini/gemini-3.1-flash-lite` and
+ *  `anthropic/claude-haiku-5-5`. Fence: `providerGuides.test.ts`. */
+export const VISION_NOTE = {
+  tier: "tier-vision",
+  models: ["gemini/gemini-3.1-flash-lite", "anthropic/claude-haiku-5-5"],
+  text:
+    "Gemini 3.1 Flash-Lite and Claude Haiku 5.5 read images. Both cost well " +
+    "under a tenth of a US cent for each image. Install the key of one vendor " +
+    "(the Google Gemini or the Anthropic card), declare the model for Vision on " +
+    "Models, and bind it on tier-vision. Then use Try image analysis on Tiers.",
 };
 
 /** Vendors we can offer a guide for. Insertion order, which is roughly the
@@ -410,8 +446,8 @@ export const SECTIONS: Section[] = [
     key: "listen",
     title: "Speech to text",
     note:
-      "The Router has no transcription endpoint yet, so a key installed " +
-      "here is stored and not yet called. Install it when the endpoint lands.",
+      "The Router serves speech to text on tier-stt (POST /v1/audio/transcriptions). " +
+      "Bind a model to it on Tiers, then prove it with Try speech to text.",
   },
   {
     key: "voice",

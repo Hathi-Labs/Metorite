@@ -145,7 +145,11 @@ def _manifest(mid: str, objects: list[dict[str, Any]] | None = None) -> dict[str
     return {
         "studio": 1, "id": mid, "name": "Visits", "purpose": "Track install visits.",
         "objects": objs,
-        "actions": [{"id": "find", "uses": f"object:{objs[0]['name']}.list"}] if objs else [],
+        # The five record actions of the first object, so a draft save (which adds the missing ones,
+        # STU-G3c) stores the manifest as written and the hash of a fixture stays the hash of the row.
+        "actions": [{"id": "find", "uses": f"object:{objs[0]['name']}.list"},
+                    *({"id": f"{objs[0]['name']}_{v}", "uses": f"object:{objs[0]['name']}.{v}"}
+                      for v in ("get", "create", "update", "delete"))] if objs else [],
     }
 
 

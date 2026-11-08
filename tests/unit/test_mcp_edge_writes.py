@@ -114,13 +114,17 @@ def _uuid(n: int) -> str:
 
 #: Every write tool, in the order of ``tools/list``: the two of EA-6a, then
 #: the two of EA-6d (``test_mcp_edge_task_writes.py``), then ``add_comment``
-#: of EA-6c (``test_mcp_edge_comments.py``), ``claim_task`` of EA-6b
+#: of EA-6c (``test_mcp_edge_comments.py``), ``update_comment`` and
+#: ``delete_comment`` of MCP-G9 (``test_mcp_edge_comment_edit_r8.py``),
+#: ``claim_task`` of EA-6b
 #: (``test_mcp_edge_claim.py``), ``set_assignees`` of MCP-G2
 #: (``test_mcp_edge_assignees.py``), the two link tools of SW-16a
 #: (``test_task_links_mcp_r8.py``) and the four tools of MCP-G1
-#: (``test_mcp_edge_projects.py``).
+#: (``test_mcp_edge_projects.py``). ``update_tasks`` of MCP-G20 follows
+#: ``update_task`` (``test_mcp_edge_bulk_updates.py``).
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
-                    "add_comment", "claim_task", "set_assignees", "add_task_link",
+                    "update_tasks", "add_comment", "update_comment", "delete_comment",
+                    "claim_task", "set_assignees", "add_task_link",
                     "remove_task_link", "create_project",
                     "update_project", "preview_move_tasks", "move_tasks")
 
@@ -1276,7 +1280,7 @@ class TestOnARealRedis:
         counter = f"cc:{live.org}:{agent_oauth.WRITE_CAP_NAMESPACE}:{live.c['fresh']}"
         assert await real_redis.get(counter) == "1"
         assert 0 < await real_redis.ttl(counter) <= 600
-        monkeypatch.setattr(agent_oauth, "WRITE_CAP", 2)
+        monkeypatch.setattr(get_settings(), "agent_write_cap", 2)
         assert (await _patch(live, "fresh", task, live.s.review)).status_code == 200
         over = await _patch(live, "fresh", task, live.s.doing)
         assert over.status_code == 429, over.text

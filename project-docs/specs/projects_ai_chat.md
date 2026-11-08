@@ -7040,9 +7040,10 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 ## 31. Voice input and image analysis in the chat (VOX, 2026-11-08)
 
-**Status.** VOX-1, VOX-2 and VOX-3 BUILT 2026-11-08, dark (§31.9). VOX-4 and
-VOX-5 are not built. Epic: Metorite task 2240. The owner decided the four
-calls of §31.6 on 2026-11-08. No migration.
+**Status.** VOX-1 to VOX-5 BUILT 2026-11-08, dark (§31.9). VOX-5 waits for its
+first live run (task 2265).
+Epic: Metorite task 2240. The owner decided the four calls of §31.6 on
+2026-11-08. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
 
 ### 31.1 The request
@@ -7381,28 +7382,45 @@ edits.
   - `uv run python scripts/affected_tests.py --run`.
 
 **VOX-4 (task 2264). Set up and try the models in the operator console.**
-STANDARD.
+STANDARD, and treated as HIGH, because it spends the platform key at a vendor.
 
 - **Files:** `workbench/operator_console/src/lib/providerGuides.ts`, the Tiers
-  page (`tiers/TierBoard`, `TryDecision`), and an operator API route that
-  calls the two doors with the operator's own org.
+  page (`tiers/TierBoard`, `TrySpeech`, `TryVision`). Add two BFF routes under
+  `api/operator/catalog/`. Add two Console routes in `customer_console/main.py`.
 - **Do:**
   1. Provider cards for Sarvam (speech-to-text, the four modes) and
-     ElevenLabs Scribe (speech-to-text).
-  2. A note on the vision models that read images.
-  3. A key that does not work shows the provider's error in the Try box.
+     ElevenLabs Scribe (speech-to-text). VOX-2 wrote the Sarvam card. The
+     ElevenLabs card declares `elevenlabs/scribe_v2` with the verb
+     `atranscription`.
+  2. A note on the vision models that read images. It names
+     `gemini/gemini-3.1-flash-lite` and `anthropic/claude-haiku-5-5`.
+  3. A key that does not work shows the provider's error in the Try box. The
+     Console removes the key from that text and cuts it to 300 characters.
   4. On the Tiers page, a Try box for `tier-stt` (upload a clip, read the
-     transcript and the minutes) and for `tier-vision` (upload an image and
-     a question, read the answer). The Console meters each try to the
-     operator's org.
+     transcript and the seconds) and for `tier-vision` (upload an image and
+     a question, read the answer).
+- **How the tries are metered (the CP-13b rule, `customer_console.md`
+  §6A.14).** No platform organization exists, and `usage_event.organization_id`
+  is NOT NULL. So a try never calls the customer door and writes no
+  `usage_event` row. The route resolves the chain itself. It reads the platform
+  credential only (`organization_id IS NULL`), so a key that belongs to an org
+  is never spent. It calls the provider through `router.call_chain`. It writes
+  one `control_audit` row for each call that reached the vendor, served or
+  failed. The two routes are `POST /catalog/transcribe/try` and
+  `POST /catalog/vision/try`. Both need the `admin` role.
+- **Limits of a try.** A clip is WAV only, and it takes 10 MB and 60 seconds.
+  A clip of another type gets a 415. An image takes 4 MB (png, jpeg, gif or
+  webp, read from the first bytes). A question takes 500 characters.
 - **Done when:** an operator binds Sarvam to `tier-stt` and a vision model to
   `tier-vision`, and tries both from the Tiers page.
-- **Fence (R7):** operator console unit tests of the cards and the Try box.
+- **Fence (R7):** `tests/unit/test_customer_console_try_voice.py` (R8, the
+  routes), `workbench/operator_console/src/lib/voiceTry.test.ts` and
+  `providerGuides.test.ts`.
 
 **VOX-5 (task 2265). Prove "only when needed".** STANDARD.
 
-- **Files:** `evals/trajectories/` (beside the attachment scope trajectory).
-- **Do:** trajectory cases with an attached image.
+- **Files:** `evals/image_need/`, built on the pattern of `evals/routing/`. The trajectory folder never calls a model, so it cannot test the choice of the model.
+- **Do:** cases with an attached image.
   - No `analyze_image` call: "attach this to task X", "make a task with this
     screenshot", "email this to Priya", "put it in the Files".
   - One call: "what does this screenshot say", "read the invoice number",
@@ -7410,8 +7428,41 @@ STANDARD.
     (the description needs what the image shows).
 - **Done when:** the cases pass on the default chat tier. An eval run that
   costs over USD 0.50 waits for the owner's OK.
-- **Fence (R7):** the trajectory file runs in the eval suite. It is advisory
-  until the owner sets its schedule.
+- **Fence (R7):** `tests/unit/test_image_need_eval.py` and the `--scripted` line of
+  `skill-eval.yml`. The live run is manual and advisory until the owner sets its schedule.
+
+**VOX-6 (task 2448). AssemblyAI in the transcribe door.** HIGH, because it is
+the metered door. A Sonnet builder, because Opus was rate-limited until 2026-11-12.
+
+- **Why:** the owner's rule of 2026-11-08 is that every model and speech call
+  goes through the operator console, and nothing reads a provider key
+  directly. The owner installed an AssemblyAI key there. litellm 1.103.0
+  cannot call the Sync API. Three routes failed on 2026-11-08:
+  - `assemblyai/best` answers "Unmapped provider passed in".
+  - `openrouter/assemblyai/universal-3-5-pro` gives the same answer.
+  - The generic OpenAI route answers 404.
+- **Files:** a new `customer_console/stt_assemblyai.py`, and edits to
+  `handlers.py`, `catalog.py` and `router.py`. In the operator console:
+  `src/lib/invocation.ts` and `providerGuides.ts`.
+- **Do:** copy the VOX-2 pattern.
+  - Add the verb `native_assemblyai` for `transcribe` only. The `assemblyai/`
+    prefix ties to it, and the credential provider is `assemblyai`.
+  - The id is `assemblyai/universal-3-5-pro` or
+    `assemblyai/universal-3-5-pro/hi,en`. The declare route refuses an unknown
+    language code.
+  - Send one `POST https://sync.assemblyai.com/v1/transcribe` for each clip,
+    with the header `X-AAI-Model`. Send the `config` part only when the id
+    names languages.
+  - Bill the seconds that the Console measures from the WAV bytes. Never bill
+    `audio_duration_ms`. Answer 415 for a clip that is not WAV.
+  - Fail over on a 5xx, a 504 and a network error. Do not fail over on a 400.
+    A 401 strikes the vendor, as the router does for every vendor.
+  - Update the `assemblyai` card. It says that Notes keeps its own AssemblyAI
+    client until task 2449.
+- **Done when:** a WAV clip on a `tier-stt` chain with the AssemblyAI model
+  writes one `transcribe` row with the measured minutes.
+- **Fence (R7):** `tests/unit/test_customer_console_stt_assemblyai.py` (R8),
+  `test_operator_console_invocations.py` and `providerGuides.test.ts`.
 
 ### 31.6 Owner calls
 
@@ -7431,6 +7482,8 @@ VOX-4 (the cards) and VOX-1 go first. VOX-1 works at once with ElevenLabs,
 Deepgram, OpenAI or Groq on `tier-stt`. VOX-2 follows, for Sarvam. VOX-3 goes
 in parallel with VOX-1, because the two touch different code. VOX-5 follows
 VOX-3.
+VOX-6 follows VOX-2, because it copies the same handler pattern. It serves
+the chat mic (VOX-1) and the operator Try box (VOX-4).
 
 ### 31.8 What §31 does not do
 
@@ -7452,6 +7505,17 @@ its tier and its flag turns on.
 | VOX-1 | https://github.com/Hathi-Labs/Metorite/pull/1965 | 2ffe78dc3 | `CHAT_VOICE_ORGS` |
 | VOX-2 | https://github.com/Hathi-Labs/Metorite/pull/1967 | 1d82796cd | A `sarvam/` binding on `tier-stt` |
 | VOX-3 | https://github.com/Hathi-Labs/Metorite/pull/1970 | e6bf9be1e | `IMAGE_ANALYSIS_ORGS` |
+| VOX-4 | https://github.com/Hathi-Labs/Metorite/pull/1994 | 4439b200f | None. ADMIN staff only |
+| VOX-5 | https://github.com/Hathi-Labs/Metorite/pull/1993 | fa5643fb5 | None. An eval |
+
+VOX-4 adds the two operator tries, `POST /catalog/transcribe/try` and
+`POST /catalog/vision/try`. They follow CP-13b: the platform key only, one
+audit row, and no usage row (§31.5 VOX-4, `customer_console.md` §6A.14).
+
+VOX-5 adds `evals/image_need/`. Its 12 cases go through the real one-assistant
+run. `--scripted` runs in CI, and `--live` is a manual run with a budget of
+USD 0.50. The one assistant gets no addendum section for `analyze_image`. So
+it reads the rule of the tool from the tool description only.
 
 The code is the fact. The build differs from §31.5 in these places.
 
@@ -7502,4 +7566,5 @@ The code is the fact. The build differs from §31.5 in these places.
   Scribe v2 rank 2) and `tier-vision` in the operator console.
 - Before either flag turns on, one live clip and one live image analysis on
   production, each with its `usage_event` row.
-- VOX-4 (task 2264) and VOX-5 (task 2265).
+- The first live run of VOX-5 (task 2265). It costs about USD 0.25.
+- Two small fixes to the vendor text of the VOX-4 tries (task 2428).

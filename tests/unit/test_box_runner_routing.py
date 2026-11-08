@@ -54,8 +54,9 @@ def test_every_pr_check_job_but_e2e_may_reach_the_box_and_e2e_never_does() -> No
     assert "e2e" in pr and _BOX not in pr["e2e"], "e2e stays on ubuntu-24.04"
     assert pr["e2e"] == "ubuntu-24.04"
     assert pr["backup-restore"] == "ubuntu-24.04", "its verify containers share the daemon (CIV-6)"
+    assert pr["test"] == "ubuntu-24.04", "unit shards ran 40+ min on the box against 14 hosted (D201)"
     for j, r in pr.items():
-        if j not in ("e2e", "backup-restore"):
+        if j not in ("e2e", "backup-restore", "test"):
             assert r == _RUNS_ON, f"pr-check.yml:{j} is not routed by the reviewed expression"
 
 

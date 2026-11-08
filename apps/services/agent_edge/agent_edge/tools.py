@@ -153,14 +153,28 @@ TEXT_CAP = "Too many changes. Wait a few minutes."
 #: MCP-G10. The seconds of a wait that an agent sees, at most. A header value
 #: beyond it is a fault, and the edge does not pass it on.
 MAX_RETRY_AFTER_S = 3600
-#: MCP-G10. The ONE line that every write tool carries (not the server
-#: instructions, which are over the 4096 cut). It names the real limit from
-#: ``agent_oauth``. ``test_mcp_edge_write_clarity.py`` pins the text.
-WRITE_LIMIT_LINE = (
-    f" Limit: a connection makes at most {agent_oauth.WRITE_CAP} changes in"
-    f" {agent_oauth.WRITE_WINDOW_S // 60} minutes, counted from its first change."
-    " Past it, a refusal holds retry_after, the seconds to wait."
-)
+def _span(seconds: int) -> str:
+    """*seconds* in words: whole minutes when it divides by 60, else seconds."""
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return "1 minute" if minutes == 1 else f"{minutes} minutes"
+    return "1 second" if seconds == 1 else f"{seconds} seconds"
+
+
+def write_limit_line() -> str:
+    """MCP-G10. The ONE line that every write tool carries (not the server
+    instructions, which are over the 4096 cut).
+
+    MCP-G20: it names the LIVE limit, ``agent_oauth.write_cap`` and
+    ``agent_oauth.write_window_s``, when ``tools/list`` runs. So the text
+    follows ``AGENT_WRITE_CAP`` and ``AGENT_WRITE_WINDOW_S``.
+    ``test_mcp_edge_write_clarity.py`` pins the text of the defaults.
+    """
+    return (
+        f" Limit: a connection makes at most {agent_oauth.write_cap()} changes in"
+        f" {_span(agent_oauth.write_window_s())}, counted from its first change."
+        " Past it, a refusal holds retry_after, the seconds to wait."
+    )
 #: EA-6f (EA3-32). An agent may move a task to done. A cancel stays a human
 #: step, and a new task may not start closed.
 TEXT_CANCEL_STEP = "Cancelling a task stays a human step."
@@ -200,14 +214,28 @@ TEXT_EPIC_TYPE_HAS_PARENT = (
 TEXT_MOVE_ALONE = (
     "Send parent_task_id in a call of its own. Then change the other fields"
     " with the new version.")
+#: MCP-G20. Each refusal of a move says why and what to do next. An agent
+#: moves a task under a parent of the SAME project only (MCP-G2), and a task
+#: of the Epic type is always the top level (``project_management_app.md``
+#: §3.4). So a plan epic that carries the Epic type cannot sit under a
+#: workstream epic: give it another type first.
 TEXT_MOVE_OTHER_PROJECT = (
-    "The new parent task is in another project. To move a task to another"
-    " project, call preview_move_tasks and then move_tasks.")
-TEXT_MOVE_OWN_PARENT = "A task cannot be its own parent."
+    "The new parent task is in another project, and an agent moves a task under"
+    " a parent of the same project only. First move the task to the project of"
+    " the parent with preview_move_tasks and move_tasks. Then send"
+    " parent_task_id again. Nothing changed.")
+TEXT_MOVE_OWN_PARENT = "A task cannot be its own parent. Nothing changed."
 TEXT_MOVE_CYCLE = (
-    "The new parent is a subtask of this task. A task cannot move under its own subtask.")
-TEXT_MOVE_TOO_DEEP = "That move makes the task tree too deep."
-TEXT_MOVE_EPIC = "An epic is the top level, so it cannot have a parent task."
+    "The new parent is a subtask of this task. A task cannot move under its own"
+    " subtask. Nothing changed.")
+TEXT_MOVE_TOO_DEEP = (
+    "That move makes the task tree too deep: a tree holds at most 50 levels."
+    " Nothing changed.")
+TEXT_MOVE_EPIC = (
+    "This task has the Epic type, and an Epic is always the top level, so it"
+    " cannot have a parent task. To nest it, first send type_id with another"
+    " type, or null, in a call of its own. Then send parent_task_id. Nothing"
+    " changed.")
 TEXT_ASSIGNEES_REFUSED = (
     "Metorite cannot assign the task to {names}. An agent can assign only a"
     " person who can already open the task through a project grant or an admin"
@@ -1143,6 +1171,9 @@ class Tool:
     #: The input that holds the wait of a long poll, or ``None`` (EA-12b).
     #: The call limit is then that wait plus :data:`LONG_POLL_TOOL_MARGIN_S`.
     wait_input: str | None = None
+    #: MCP-G20. The call limit of a tool that runs many writes, or ``None``
+    #: for :data:`TOOL_TIMEOUT_S`. Only ``update_tasks`` has one.
+    timeout_s: float | None = None
     #: True for ``delete_task`` (EA-6h). It shows only while the member's
     #: switch is on, which :func:`listed_for` reads at ``tools/list``.
     switch: bool = False
@@ -1162,7 +1193,7 @@ class Tool:
             "name": self.name,
             "title": self.title,
             "description": session_text(self.description + (
-                WRITE_LIMIT_LINE if self.method != "GET" else "")),
+                write_limit_line() if self.method != "GET" else "")),
             "inputSchema": dict(self.input_schema),
             "outputSchema": dict(self.output_schema),
             "annotations": {"title": self.title, **self.annotations},
@@ -3071,13 +3102,82 @@ def reference(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+#: SP-9. The roll-up of an epic over EVERY descendant that the member sees.
+#: The gateway adds ``rollup`` to ``GET /projects/tasks/{id}`` for a task whose
+#: type is an epic type, and leaves the key out for any other task. The four
+#: keys after ``hidden`` are ``null`` until their sources land (spend: SP-8, the
+#: others: PJP-6).
+ROLLUP_KEYS: tuple[str, ...] = (
+    "slices", "estimate_mins", "waits", "hidden", "spend", "forecast", "health", "hill",
+)
+WAIT_KEYS: tuple[str, ...] = ("run_id", "task_id", "task_number", "title", "person", "since")
+_DONE_TOTAL_SCHEMA = _object({"done": {"type": "integer"}, "total": {"type": "integer"}})
+_WAIT_SCHEMA = _object({
+    "run_id": {"type": "string"}, "task_id": {"type": "string"},
+    "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_SCHEMA,
+    "person": _NULLABLE_STRING, "since": _NULLABLE_STRING,
+})
+_ROLLUP_SCHEMA = _object({
+    "slices": _DONE_TOTAL_SCHEMA,
+    "estimate_mins": _DONE_TOTAL_SCHEMA,
+    "waits": _object({"count": {"type": "integer"},
+                      "items": {"type": "array", "items": _WAIT_SCHEMA}}),
+    "hidden": {"type": "integer"},
+    "spend": {"type": "null"}, "forecast": {"type": "null"},
+    "health": {"type": "null"}, "hill": {"type": "null"},
+})
+
+
+def _rollup_count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _done_total(value: Any) -> dict[str, int]:
+    raw = value if isinstance(value, dict) else {}
+    return {"done": _rollup_count(raw.get("done")), "total": _rollup_count(raw.get("total"))}
+
+
+def rollup(raw: Any) -> dict[str, Any] | None:
+    """The roll-up of an epic (SP-9), the pinned keys and no other. ``None``
+    when the gateway sent none (the task is not an epic). The title of a task
+    that waits is text from other people, so it is (U). The four keys that wait
+    for their source stay ``None``, whatever the gateway sends."""
+    if not isinstance(raw, dict):
+        return None
+    waits = raw.get("waits") if isinstance(raw.get("waits"), dict) else {}
+    items = waits.get("items")
+    return {
+        "slices": _done_total(raw.get("slices")),
+        "estimate_mins": _done_total(raw.get("estimate_mins")),
+        "waits": {
+            "count": _rollup_count(waits.get("count")),
+            "items": [
+                {
+                    "run_id": str(w.get("run_id")),
+                    "task_id": str(w.get("task_id")),
+                    "task_number": _int_or_none(w.get("task_number")),
+                    "title": untrusted(w.get("title") or ""),
+                    "person": _str_or_none(w.get("person")),
+                    "since": _str_or_none(w.get("since")),
+                }
+                for w in items or () if isinstance(w, dict)
+            ] if isinstance(items, list) else [],
+        },
+        "hidden": _rollup_count(raw.get("hidden")),
+        "spend": None, "forecast": None, "health": None, "hill": None,
+    }
+
+
 _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "task": _TASK_SCHEMA,
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "links": {"type": "array", "items": _LINK_SCHEMA},
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
+    "rollup": _ROLLUP_SCHEMA,
 })
+# `rollup` is present for an epic only, so it is the one key that is not required.
+_GET_TASK_OUTPUT["required"].remove("rollup")
 
 
 def _custom_fields(value: Any) -> dict[str, Any]:
@@ -3193,7 +3293,7 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(relations, dict):
         raise ToolError(TEXT_BUSY)
     subtasks, links = relations.get("subtasks"), relations.get("links")
-    return {
+    out = {
         "task": _task(row, names),
         "subtasks": [_subtask(r) for r in subtasks or () if isinstance(r, dict)]
         if isinstance(subtasks, list) else [],
@@ -3202,6 +3302,12 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         "refs": [reference(r) for r in _rows_of(refs)],
         "agent_runs": runs,
     }
+    # SP-9. The same read, the same visibility: the gateway counted for this
+    # member, and a pin of the agent narrowed it there.
+    shaped_rollup = rollup(row.get("rollup"))
+    if shaped_rollup is not None:
+        out["rollup"] = shaped_rollup
+    return out
 
 
 GET_TASK = Tool(
@@ -3218,7 +3324,11 @@ GET_TASK = Tool(
         " question that waits for an answer. A run with the state awaiting"
         " waits for a person, so do not start a second run for the same"
         " work. url is the address of the task in Metorite, and short_id is the"
-        " short form for a branch name. Put url in the description of each pull"
+        " short form for a branch name. For an epic, rollup counts the slices and"
+        " the estimate done and total over every level below it, lists the"
+        " questions that wait on a person, and gives hidden, the number of"
+        " tasks left out because this member cannot see them. Put url in the"
+        " description of each pull"
         " request, and short_id in the branch name, so that the pull request"
         " links itself to the task." + _UNTRUSTED_NOTE
     ),
@@ -5523,6 +5633,181 @@ UPDATE_TASK = Tool(
 )
 
 
+# ── update_tasks (MCP-G20, §9.2) ────────────────────────────────────────────
+
+#: MCP-G20. The most items of one ``update_tasks`` call.
+MAX_BULK_UPDATES = 50
+#: ``update_tasks`` starts no new item after this many seconds of its call.
+#: The items after it come back with ``tried`` false and
+#: :data:`TEXT_BULK_TIME`, so a long call never ends as busy after its
+#: writes landed.
+BULK_START_BUDGET_S = 60.0
+#: The limit of one ``update_tasks`` call: the start budget, one more item
+#: at :data:`TOOL_TIMEOUT_S`, the grace of a landed write and a margin. Each
+#: item has its own limit of :data:`TOOL_TIMEOUT_S` (:func:`_one_update`).
+BULK_TOOL_TIMEOUT_S = BULK_START_BUDGET_S + TOOL_TIMEOUT_S + POST_WRITE_GRACE_S + 7.0
+
+TEXT_BULK_DUPLICATE = (
+    "Each task_id may be in updates only once. Put all the fields of a task in"
+    " one item, and send a move in a call of its own. Nothing changed.")
+TEXT_BULK_TIME = (
+    "Metorite stopped before this item because the call took too long. Nothing"
+    " changed for this task. Send it again in a new call.")
+TEXT_BULK_STOPPED = (
+    "Metorite refused this connection, so it did not try this item. Nothing"
+    " changed for this task.")
+#: The texts after which no later item can land, so the call sends no more.
+_BULK_STOP_TEXTS: frozenset[str] = frozenset({TEXT_CAP, TEXT_WRITES_OFF})
+
+_BULK_UPDATE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "updates": {
+            "type": "array", "minItems": 1, "maxItems": MAX_BULK_UPDATES,
+            "description": "The changes, one item for each task. Each item takes the"
+                           " inputs of update_task.",
+            "items": _UPDATE_INPUT,
+        },
+    },
+    "required": ["updates"],
+    "additionalProperties": False,
+}
+
+_BULK_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "task_id": {"type": "string"},
+        "ok": {"type": "boolean"},
+        "tried": {"type": "boolean"},
+        "task": _UPDATE_OUTPUT["properties"]["task"],
+        "error": {"type": "string"},
+        "retry_after": {"type": "integer"},
+    },
+    "required": ["task_id", "ok", "tried"],
+    "additionalProperties": False,
+}
+
+_BULK_UPDATE_OUTPUT: dict[str, Any] = _object({
+    "results": {"type": "array", "items": _BULK_RESULT_SCHEMA},
+    "changed": {"type": "integer"},
+    "failed": {"type": "integer"},
+})
+
+
+async def _one_update(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One item of ``update_tasks``: :func:`_update_task`, under a limit of
+    its own (MCP-G20).
+
+    The item gets its own :data:`_TOOL_TIMER`, so :func:`_landed` and the
+    reads after a landed write work for this item as they do for one
+    ``update_task`` call. A limit that fires is the busy text of this item.
+    """
+    try:
+        async with asyncio.timeout(TOOL_TIMEOUT_S) as timer:
+            token = _TOOL_TIMER.set(timer)
+            try:
+                return await _update_task(ctx, args)
+            finally:
+                _TOOL_TIMER.reset(token)
+    except TimeoutError:
+        raise ToolError(TEXT_BUSY) from None
+
+
+def _bulk_failure(task_id: str, text: str, *, tried: bool,
+                  retry_after: int | None = None) -> dict[str, Any]:
+    """One failed item of ``update_tasks`` (MCP-G20). *text* is a fixed
+    text of the edge, never a gateway text."""
+    row: dict[str, Any] = {"task_id": task_id, "ok": False, "tried": tried, "error": text}
+    if retry_after is not None:
+        row["retry_after"] = retry_after
+    return row
+
+
+async def _update_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``update_tasks``: each item through :func:`_update_task`, one at a
+    time (MCP-G20, §9.2).
+
+    There is no second write path. Each item is the PATCH or the move of
+    ``update_task``, a request of its own through ``gateway_client.write``,
+    with its own nonce and its own ``If-Match``. So branch 0 checks the scope
+    and counts the cap for EACH item, and the route checks who may see and
+    change EACH task in its own transaction. A failed item never stops the
+    others. After the cap or the writes switch refuses an item, no later item
+    can land, so the call sends no more and marks them ``tried`` false.
+
+    Each item is checked again against the input of ``update_task``, so a
+    null means the same here. A ``task_id`` twice is refused before any
+    request.
+    """
+    raw = list(args["updates"])
+    ids = [str(item.get("task_id")).lower() for item in raw]
+    if len(set(ids)) != len(ids):
+        raise ToolError(TEXT_BULK_DUPLICATE)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    results: list[dict[str, Any]] = []
+    stop: tuple[str, int | None] | None = None
+    for task_id, item in zip(ids, raw, strict=True):
+        if stop is not None:
+            results.append(_bulk_failure(task_id, stop[0], tried=False, retry_after=stop[1]))
+            continue
+        if loop.time() - started > BULK_START_BUDGET_S:
+            stop = (TEXT_BULK_TIME, None)
+            results.append(_bulk_failure(task_id, TEXT_BULK_TIME, tried=False))
+            continue
+        try:
+            done = await _one_update(ctx, check_input(_UPDATE_INPUT, item))
+        except ToolError as exc:
+            results.append(_bulk_failure(task_id, exc.text, tried=True,
+                                         retry_after=exc.retry_after))
+            if exc.text in _BULK_STOP_TEXTS:
+                stop = (exc.text, exc.retry_after)
+            continue
+        except GatewayUnauthorized:
+            # A 401 with nothing landed is the MCP 401, as for update_task.
+            # After a landed item the call reports what landed.
+            if not any(r["ok"] for r in results):
+                raise
+            results.append(_bulk_failure(task_id, TEXT_BULK_STOPPED, tried=True))
+            stop = (TEXT_BULK_STOPPED, None)
+            continue
+        results.append({"task_id": task_id, "ok": True, "tried": True, "task": done["task"]})
+    changed = sum(1 for r in results if r["ok"])
+    return {"results": results, "changed": changed, "failed": len(results) - changed}
+
+
+UPDATE_TASKS = Tool(
+    name="update_tasks",
+    title="Update many tasks",
+    description=(
+        "Change up to 50 tasks in one call, for a clean-up of a board. Each item"
+        " of updates takes the inputs of update_task: task_id, expected_version"
+        " and the fields to change, type_id and parent_task_id too. The rules of"
+        " update_task hold for each item. Each item is a change of its own, with"
+        " its own version. A failed item never stops the others. The result"
+        " lists each item: ok true with the task and its new version, or ok"
+        " false with the error. tried false means that Metorite stopped before"
+        " the item, so nothing changed for that task. A task_id may be in one call"
+        " only once. Send parent_task_id in an item with no other field. Each"
+        " item counts as one change in the limit, and after the limit the items"
+        " that were not tried hold retry_after." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_BULK_UPDATE_INPUT,
+    output_schema=_BULK_UPDATE_OUTPUT,
+    route=TASK_ROUTE,
+    params={},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_update_tasks,
+    routes=(TASK_ROUTE, STATUSES_ROUTE, TYPES_ROUTE),
+    method="PATCH",
+    edge_inputs=frozenset({"updates"}),
+    alt_writes=(("POST", MOVE_ROUTE),),
+    annotations=dict(WRITE_ANNOTATIONS),
+    timeout_s=BULK_TOOL_TIMEOUT_S,
+)
+
+
 # ── add_comment (EA-6c, §9.2) ───────────────────────────────────────────────
 
 COMMENTS_ROUTE = "/projects/tasks/{task_id}/comments"
@@ -5681,6 +5966,259 @@ ADD_COMMENT = Tool(
     method="POST",
     edge_inputs=frozenset({"idempotency_key"}),
     annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
+# ── update_comment and delete_comment (WS-55 MCP-G9, §9.2) ──────────────────
+
+COMMENT_ROUTE = "/projects/comments/{activity_id}"
+
+#: The annotations of ``update_comment`` and ``delete_comment`` (MCP-G9).
+#: Class C: an edit replaces the words and Metorite keeps no copy, and a
+#: delete removes them for good. ``destructiveHint`` lets the client ask the
+#: person first. The key makes the same call twice change nothing more.
+COMMENT_CHANGE_ANNOTATIONS: Mapping[str, bool] = {
+    **WRITE_ANNOTATIONS, "destructiveHint": True}
+
+#: The body keys of the PATCH (edge rule 18). The route never moves a comment
+#: to another thread, and the edge sends no other key.
+COMMENT_EDIT_BODY_KEYS: tuple[str, ...] = ("body",)
+
+#: The keys of the result of ``update_comment``. A replay returns ``id`` and
+#: ``updated`` only, with no read.
+COMMENT_UPDATE_KEYS: tuple[str, ...] = (
+    "id", "task_id", "parent_id", "body", "created_by", "created_at", "updated_at",
+    "updated",
+)
+COMMENT_UPDATE_REPLAY_KEYS: tuple[str, ...] = ("id", "updated")
+
+#: The keys of the result of ``delete_comment``.
+COMMENT_DELETE_KEYS: tuple[str, ...] = ("id", "deleted")
+
+TEXT_COMMENT_NOT_FOUND = "Comment not found."
+#: The ``detail`` of the gateway's 403 (``activities.AGENT_COMMENT_NOT_OWN``).
+#: A copy, because the edge may not import the gateway.
+#: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal. The edge matches
+#: the detail and sends its own text, never the detail.
+COMMENT_NOT_OWN_DETAIL = "Only its author can change this comment in Metorite."
+#: MCP-G9 fix rounds 2 and 3: the text names the three rules of the fix
+#: rounds in one sentence, because the gateway sends the one detail for each
+#: of them too.
+TEXT_COMMENT_NOT_OWN = (
+    COMMENT_NOT_OWN_DETAIL + " An agent can change only a comment that its own"
+    " client wrote. It cannot change a comment when a person edited it, it"
+    " belongs to an agent run, or someone else wrote on the task after it."
+    " Nothing changed.")
+#: MCP-G9 fix round 4. The ``detail`` of the gateway's 409 when a deadlock or
+#: a lock timeout rolled the change back (``activities.AGENT_COMMENT_RACE``).
+#: A copy, as for the 403. ``test_mcp_edge_comment_edit_r8.py`` pins the two
+#: equal. The change did not land, so the key is free for the same call.
+COMMENT_RACE_DETAIL = "The task changed while this ran, so nothing changed. Try again."
+TEXT_COMMENT_RACE = (
+    "The task changed while this ran, so nothing changed. Send the same call"
+    " again.")
+TEXT_COMMENT_CHANGE_KEY_REUSED = (
+    "This idempotency_key was used for a different change. Send a new key.")
+TEXT_COMMENT_CHANGE_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it changed the comment. Read the comments with get_task_timeline before"
+    " you use a new key.")
+_COMMENT_CHANGE_KEY_TEXTS = _KeyTexts(reused=TEXT_COMMENT_CHANGE_KEY_REUSED,
+                                      unknown=TEXT_COMMENT_CHANGE_KEY_UNKNOWN)
+_COMMENT_CHANGE_DETAILS: Mapping[tuple[int, str], str] = {
+    (403, COMMENT_NOT_OWN_DETAIL): TEXT_COMMENT_NOT_OWN,
+    (409, COMMENT_RACE_DETAIL): TEXT_COMMENT_RACE,
+}
+
+_COMMENT_ID_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _UUID_PATTERN,
+    "description": "The id of a comment that this client wrote: the id that"
+                   " add_comment returned, or a comment row of get_task_timeline"
+                   " whose meta.via names this client."}
+_CHANGE_KEY_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": idempotency.KEY_PATTERN,
+    "description": "8 to 128 letters, digits and . _ : -. Use a new key for each"
+                   " change. The same key again changes nothing more. Metorite"
+                   " keeps a key for 24 hours."}
+
+_UPDATE_COMMENT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "comment_id": _COMMENT_ID_INPUT,
+        "body": {"type": "string", "minLength": 1, "maxLength": MAX_COMMENT_CHARS,
+                 "description": "The new text of the comment, in Markdown, at most"
+                                " 20000 characters. It replaces the old text."},
+        "idempotency_key": _CHANGE_KEY_INPUT,
+    },
+    "required": ["comment_id", "body", "idempotency_key"],
+    "additionalProperties": False,
+}
+_UPDATE_COMMENT_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"}, "task_id": {"type": "string"},
+        "parent_id": _NULLABLE_STRING, "body": _UNTRUSTED_OR_NULL,
+        "created_by": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+        "updated_at": _NULLABLE_STRING, "updated": {"type": "boolean"},
+    },
+    "required": list(COMMENT_UPDATE_REPLAY_KEYS),
+    "additionalProperties": False,
+}
+
+_DELETE_COMMENT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "comment_id": _COMMENT_ID_INPUT,
+        "idempotency_key": _CHANGE_KEY_INPUT,
+    },
+    "required": ["comment_id", "idempotency_key"],
+    "additionalProperties": False,
+}
+_DELETE_COMMENT_OUTPUT: dict[str, Any] = _object({
+    "id": {"type": "string"}, "deleted": {"type": "boolean"},
+})
+
+
+def updated_comment(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The pinned keys of a changed comment (MCP-G9), and no other. The body
+    is (U). ``created_by`` is the member's own address."""
+    return {
+        "id": str(row.get("id")),
+        "task_id": str(row.get("task_id")),
+        "parent_id": _str_or_none(row.get("parent_id")),
+        "body": untrusted(row.get("body")),
+        "created_by": _str_or_none(row.get("created_by")),
+        "created_at": _str_or_none(row.get("created_at")),
+        "updated_at": _str_or_none(row.get("updated_at")),
+        "updated": True,
+    }
+
+
+async def _patch_comment(ctx: Context, comment_id: str, args: Mapping[str, Any],
+                         sent: _Sent) -> dict[str, Any]:
+    """PATCH the comment, and return the gateway's row. A comment that the
+    agent cannot reach is ``Comment not found.``, and a comment of another
+    author or another client has its own text."""
+    payload = {name: str(args[name]) for name in COMMENT_EDIT_BODY_KEYS}
+    sent.post = True
+    _, row = await _write(ctx, "PATCH", COMMENT_ROUTE, TEXT_COMMENT_NOT_FOUND,
+                          path_params={"activity_id": comment_id}, json_body=payload,
+                          details=_COMMENT_CHANGE_DETAILS)
+    if not isinstance(row, dict) or str(row.get("id")).lower() != comment_id:
+        raise ToolError(TEXT_BUSY)
+    return row
+
+
+async def _update_comment(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``update_comment`` (MCP-G9): one PATCH, and at most one change per key.
+
+    The edge checks the body before it claims the slot, as ``add_comment``
+    does. A replay returns the comment id with ``updated: false`` and no read.
+    """
+    body = str(args["body"])
+    if not body.strip():
+        raise ToolError(TEXT_COMMENT_BLANK)
+    _refuse_nul(args, COMMENT_EDIT_BODY_KEYS)
+    comment_id = str(args["comment_id"]).lower()
+    claim = await _claim_slot(ctx, "update_comment", str(args["idempotency_key"]),
+                              args, _COMMENT_CHANGE_KEY_TEXTS)
+    if claim.earlier is not None:
+        return {"id": claim.earlier, "updated": False}
+    sent = _Sent()
+    row = await _keyed_write(claim, sent,
+                             lambda: _patch_comment(ctx, comment_id, args, sent),
+                             lambda done: str(done["id"]))
+    return updated_comment(row)
+
+
+async def _send_comment_delete(ctx: Context, comment_id: str, sent: _Sent) -> str:
+    """DELETE the comment. The gateway answers ``{"deleted": <id>}``."""
+    sent.post = True
+    _, answer = await _write(ctx, "DELETE", COMMENT_ROUTE, TEXT_COMMENT_NOT_FOUND,
+                             path_params={"activity_id": comment_id}, json_body={},
+                             details=_COMMENT_CHANGE_DETAILS)
+    if not isinstance(answer, dict) or str(answer.get("deleted")).lower() != comment_id:
+        raise ToolError(TEXT_BUSY)
+    return comment_id
+
+
+async def _delete_comment(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``delete_comment`` (MCP-G9): one DELETE, and at most one per key. A
+    replay returns the comment id with ``deleted: false`` and no request."""
+    comment_id = str(args["comment_id"]).lower()
+    claim = await _claim_slot(ctx, "delete_comment", str(args["idempotency_key"]),
+                              args, _COMMENT_CHANGE_KEY_TEXTS)
+    if claim.earlier is not None:
+        return {"id": claim.earlier, "deleted": False}
+    sent = _Sent()
+    gone = await _keyed_write(claim, sent,
+                              lambda: _send_comment_delete(ctx, comment_id, sent),
+                              lambda done: done)
+    return {"id": gone, "deleted": True}
+
+
+_COMMENT_RULE_TEXT = (
+    " You may change only a comment that this client wrote: the member is its"
+    " author, and its meta.via in get_task_timeline is the stamp of this"
+    " client. Metorite refuses a comment that the member typed in Metorite, a"
+    " comment of another member and a comment of another agent client. It also"
+    " refuses your comment when a person edited it, it belongs to an agent run,"
+    " or someone else wrote on the task after it. Nothing changes then. A"
+    " comment that is gone, or on a task that this"
+    " connection cannot reach, answers Comment not found. The timeline of the"
+    " task gets one row that says what changed and names your client. That"
+    " row holds no text of the comment."
+)
+
+UPDATE_COMMENT = Tool(
+    name="update_comment",
+    title="Change a comment",
+    description=(
+        "Replace the text of one comment that this agent client wrote, such as"
+        " a note that a stop cut off. The new text replaces the old text, and"
+        " Metorite keeps no copy of the old text." + _COMMENT_RULE_TEXT
+        + " An @ followed by the address of a member who can see the task"
+        " notifies that member when the old text did not name that member."
+        " These notifications go to the bell in Metorite, not by email. Send a"
+        " new idempotency_key for each change. The same key again returns"
+        " updated false and changes nothing more. Returns the comment."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_UPDATE_COMMENT_INPUT,
+    output_schema=_UPDATE_COMMENT_OUTPUT,
+    route=COMMENT_ROUTE,
+    params={"comment_id": "activity_id", "body": "body"},
+    not_found=TEXT_COMMENT_NOT_FOUND,
+    run=_update_comment,
+    routes=(),
+    method="PATCH",
+    edge_inputs=frozenset({"idempotency_key"}),
+    annotations=dict(COMMENT_CHANGE_ANNOTATIONS),
+)
+
+DELETE_COMMENT = Tool(
+    name="delete_comment",
+    title="Delete a comment",
+    description=(
+        "Delete one comment that this agent client wrote, such as a note that"
+        " a stop cut off. You cannot undo a delete. The words are gone, and the"
+        " comment leaves the timeline. Its replies stay." + _COMMENT_RULE_TEXT
+        + " Send a new idempotency_key for each delete. The same key again"
+        " returns deleted false and changes nothing more, because the first"
+        " call deleted the comment."
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_DELETE_COMMENT_INPUT,
+    output_schema=_DELETE_COMMENT_OUTPUT,
+    route=COMMENT_ROUTE,
+    params={"comment_id": "activity_id"},
+    not_found=TEXT_COMMENT_NOT_FOUND,
+    run=_delete_comment,
+    routes=(),
+    method="DELETE",
+    edge_inputs=frozenset({"idempotency_key"}),
+    annotations=dict(COMMENT_CHANGE_ANNOTATIONS),
 )
 
 
@@ -8596,8 +9134,9 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: Every tool of the edge, by name, in the order of ``tools/list``. The two
 #: reads of EA-15 (``get_task_context`` and ``my_work``) follow the seven
 #: reads of EA-3, then ``get_attachment`` of IMG-3. The write
-#: tools come after the reads: the two of EA-6a, then the two of EA-6d, then
-#: ``add_comment`` of EA-6c and ``claim_task`` of EA-6b, then
+#: tools come after the reads: the two of EA-6a, then the two of EA-6d and
+#: ``update_tasks`` of MCP-G20, then ``add_comment`` of EA-6c,
+#: ``update_comment`` and ``delete_comment`` of MCP-G9, and ``claim_task`` of EA-6b, then
 #: ``set_assignees`` of MCP-G2, then the four tools of MCP-G1:
 #: ``create_project``, ``update_project``, ``preview_move_tasks`` and
 #: ``move_tasks``. The six agent-run
@@ -8611,8 +9150,9 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
     BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT,
-    SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
-    ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,
+    SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK, UPDATE_TASKS,
+    ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
+    ADD_TASK_LINK, REMOVE_TASK_LINK,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
@@ -8638,7 +9178,14 @@ def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
     """True when *scopes* hold the tool's scope and the tool is offered.
     ``app_read`` and ``app_write`` show with no app scope, because their scope
     is the one of the app in each call (:func:`scope_of`), and check 8 asks
-    for it then (MCP-P1a, §19.4)."""
+    for it then (MCP-P1a, §19.4).
+
+    SW-34b: ``app_write`` shows only when *scopes* hold a write scope. So a
+    connection with the read scopes only, such as the read-only door
+    ``/mcp/readonly``, lists no write tool. Fence:
+    ``tests/unit/test_mcp_edge_readonly.py``."""
+    if tool.app_scope == "write" and not any(agent_oauth.covered_by(s) for s in scopes):
+        return False
     return (tool.required_scope is None or tool.required_scope in scopes) and offered(tool)
 
 
@@ -8678,7 +9225,10 @@ async def listed_for(ctx: Context) -> list[dict[str, Any]]:
 
 def call_timeout(tool: Tool, args: Mapping[str, Any]) -> float:
     """The limit of one call. :data:`TOOL_TIMEOUT_S`, or for a long poll its
-    wait plus :data:`LONG_POLL_TOOL_MARGIN_S` (EA-12b, §12.1)."""
+    wait plus :data:`LONG_POLL_TOOL_MARGIN_S` (EA-12b, §12.1). MCP-G20: a
+    tool with its own ``timeout_s`` (``update_tasks``) has that limit."""
+    if tool.timeout_s is not None:
+        return tool.timeout_s
     if tool.wait_input is None:
         return TOOL_TIMEOUT_S
     return float(args.get(tool.wait_input, 0)) + LONG_POLL_TOOL_MARGIN_S
@@ -8758,12 +9308,21 @@ __all__ = [
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
     "BOARD_STATS",
+    "BULK_START_BUDGET_S",
+    "BULK_TOOL_TIMEOUT_S",
     "CLAIM_TASK",
     "CLAIM_TEXTS",
     "CLOSING_CATEGORIES",
     "COMMENT_BODY_KEYS",
+    "COMMENT_CHANGE_ANNOTATIONS",
+    "COMMENT_DELETE_KEYS",
+    "COMMENT_EDIT_BODY_KEYS",
     "COMMENT_KEYS",
+    "COMMENT_NOT_OWN_DETAIL",
     "COMMENT_REPLAY_KEYS",
+    "COMMENT_ROUTE",
+    "COMMENT_UPDATE_KEYS",
+    "COMMENT_UPDATE_REPLAY_KEYS",
     "COMPLETED_CATEGORY",
     "CONTENT_IMAGE",
     "CONTENT_NONE",
@@ -8780,6 +9339,7 @@ __all__ = [
     "CREATE_TASK",
     "DELETE_ANNOTATIONS",
     "DELETE_BODY_KEYS",
+    "DELETE_COMMENT",
     "DELETE_TASK",
     "DESCRIBE_APP",
     "DOOR_APPS_ROUTE",
@@ -8827,6 +9387,7 @@ __all__ = [
     "LONG_POLL_TOOL_MARGIN_S",
     "MAX_ANCESTORS",
     "MAX_ASSIGNEES",
+    "MAX_BULK_UPDATES",
     "MAX_COMMENT_CHARS",
     "MAX_DELETE_IDS",
     "MAX_ESTIMATE_MINS",
@@ -8906,12 +9467,19 @@ __all__ = [
     "TEXT_BAD_CURSOR",
     "TEXT_BAD_REQUEST",
     "TEXT_BAD_SHARE",
+    "TEXT_BULK_DUPLICATE",
+    "TEXT_BULK_STOPPED",
+    "TEXT_BULK_TIME",
     "TEXT_BUSY",
     "TEXT_CANCEL_STEP",
     "TEXT_CAP",
     "TEXT_COMMENT_BLANK",
+    "TEXT_COMMENT_CHANGE_KEY_REUSED",
+    "TEXT_COMMENT_CHANGE_KEY_UNKNOWN",
     "TEXT_COMMENT_KEY_REUSED",
     "TEXT_COMMENT_KEY_UNKNOWN",
+    "TEXT_COMMENT_NOT_FOUND",
+    "TEXT_COMMENT_NOT_OWN",
     "TEXT_COMMENT_NUL",
     "TEXT_CREATE_CLOSED",
     "TEXT_DELETE_OFF",
@@ -9011,14 +9579,15 @@ __all__ = [
     "TYPE_KEYS",
     "UPDATED_TASK_KEYS",
     "UPDATE_BODY_KEYS",
+    "UPDATE_COMMENT",
     "UPDATE_PROJECT",
     "UPDATE_TASK",
+    "UPDATE_TASKS",
     "WAITING_REASONS",
     "WHOAMI",
     "WHOAMI_KEYS",
     "WHY_NOT_TEXTS",
     "WRITE_ANNOTATIONS",
-    "WRITE_LIMIT_LINE",
     "Context",
     "GatewayUnauthorized",
     "ImageContent",
@@ -9054,4 +9623,6 @@ __all__ = [
     "text_of",
     "timeline_meta",
     "untrusted",
+    "updated_comment",
+    "write_limit_line",
 ]
