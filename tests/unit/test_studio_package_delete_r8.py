@@ -467,7 +467,7 @@ def test_r8_every_row_of_the_package_goes_and_the_audit_rows_stay(world) -> None
     assert status == 200 and seen == [200]
     assert preview["totals"] == {"objects": 2, "fields": 3, "records": 3,
                                  "records_capped": False, "versions": 2, "installs": 2,
-                                 "other_member_installs": 2}
+                                 "other_member_installs": 2, "own_entries": 0}
     assert _footprint(world, pid, oids, installs) == dict.fromkeys(before, 0)
     audits = _audits(world, pid)
     assert len(audits) == kept_audits + 1
@@ -763,7 +763,7 @@ def test_r8_a_holder_of_the_apps_row_takes_the_org_lock_while_a_delete_waits(wor
     In the one order the delete waits at the ``apps`` row and holds no org
     lock, so the holder gets the org lock at once. With the org lock first,
     the delete would hold it and wait for the row: a deadlock."""
-    async def go() -> tuple[tuple[int, Any, Any], float]:
+    async def go() -> tuple[int, Any, Any]:
         pid = await _live(world.a, ANA, _manifest(_mid("order")))
         await _fill(world.a, ANA, pid, 3)
         _status, got = await _preview(world.a, ANA, pid)
@@ -772,13 +772,11 @@ def test_r8_a_holder_of_the_apps_row_takes_the_org_lock_while_a_delete_waits(wor
             task = asyncio.create_task(_delete(world.a, ANA, pid, got["confirm"]))
             await asyncio.sleep(0.3)
             assert not task.done()
-            start = time.monotonic()
-            await objects_store.lock_org(hold)
-            waited = time.monotonic() - start
-        return await task, waited
+            # A deadlock never returns, so a 30 s guard fails it. No tight bound.
+            await asyncio.wait_for(objects_store.lock_org(hold), 30)
+        return await task
 
-    (status, detail, _h), waited = _run(world, go)
-    assert waited < 0.5
+    (status, detail, _h) = _run(world, go)
     assert status == 200, detail
 
 

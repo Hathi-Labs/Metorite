@@ -1571,7 +1571,7 @@ async def my_tasks_unschedule(item_id: str) -> str:
     return f"Unscheduled → {await _show(await _my_task(item_id))}"
 
 
-@_annotate_risk(idempotent=True, open_world=False)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_list_schedule(from_iso: str, to_iso: str, offset: int = 0,
                                  limit: int = 50) -> str:
     """List what's timeboxed on the calendar in a datetime window — so you can
@@ -1725,7 +1725,7 @@ async def my_tasks_rollover(apply: bool = False) -> str:
     return _fmt_plan(plan or {}, applied=bool((plan or {}).get("applied")))
 
 
-@_annotate_risk(idempotent=True, open_world=False)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_day_digest() -> str:
     """A quick snapshot of the user's day — what's scheduled, how much is
     unscheduled, what's overdue, the ★ One Thing, and estimate accuracy. Use it

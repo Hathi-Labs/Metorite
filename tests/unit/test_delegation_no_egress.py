@@ -110,6 +110,10 @@ EXPECTED_OPEN_WORLD = frozenset({
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    # crm-assistant, WS-CRM CRM-M3a: a new pipeline. It never queues for Zoho,
+    # but it says open_world as each CRM write does, so a covered run holds it off.
+    "crm_create_pipeline",
+    "crm_update_record", "crm_update_task",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })
@@ -2480,16 +2484,16 @@ TASK_MANAGER_RISK_BLOCK = (
     "- Read-only (call freely): ask_questions, ask_user, decide, fetch_page, get_errors, "
     "get_workflow_run, github_repo_search, github_search, list_integrations, "
     "list_workflows, load_design_system, my_tasks_accounts, my_tasks_clarify, "
-    "my_tasks_detail, my_tasks_inbox_insights, my_tasks_list, my_tasks_list_projects, "
-    "my_tasks_people, my_tasks_subtasks, my_tasks_sync, query_history, read_attachment, "
+    "my_tasks_day_digest, my_tasks_detail, my_tasks_inbox_insights, my_tasks_list, "
+    "my_tasks_list_projects, my_tasks_list_schedule, my_tasks_people, my_tasks_subtasks, my_tasks_sync, query_history, read_attachment, "
     "recall_notes, recall_timeline, remember, request_confirmation, run_diagnostics, "
     "share_artifact, web_search\n"
     "- State-writing (reversible): call_agent, call_agent_background, "
     "call_agents_parallel, code_task, make_document, make_report, manage_todo_list, "
     "my_tasks_add_subtasks, "
     "my_tasks_archive, my_tasks_capture, my_tasks_capture_many, my_tasks_complete, "
-    "my_tasks_day_digest, my_tasks_delegate, my_tasks_estimate_stats, "
-    "my_tasks_list_schedule, my_tasks_move, my_tasks_organize, my_tasks_plan_day, "
+    "my_tasks_delegate, my_tasks_estimate_stats, "
+    "my_tasks_move, my_tasks_organize, my_tasks_plan_day, "
     "my_tasks_plan_project, my_tasks_replan_day, my_tasks_rollover, my_tasks_schedule, "
     "my_tasks_set_one_thing, my_tasks_set_stage, my_tasks_unschedule, my_tasks_update, "
     "package_artifacts, run_script, run_workflow, save_episode, save_memory, save_note, "
