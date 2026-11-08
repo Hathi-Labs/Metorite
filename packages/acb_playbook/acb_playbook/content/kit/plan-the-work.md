@@ -1,6 +1,6 @@
 ---
 slug: kit/plan-the-work
-version: 3
+version: 4
 title: "Kit: plan the work on the board"
 summary: How an agent turns a goal into epics and slices on a Metorite board, with the approval of a person at each gate, using the tools of today.
 audience: agent
@@ -84,7 +84,7 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 |---|---|
 | The goal is written in each epic | A Goal type, with its epics under it |
 | The contract is headings in the description | Contract fields on the epic |
-| An epic counts its direct subtasks | Roll-ups over every level: progress, spend and waits |
+| `get_task` of an epic gives `rollup`: slices and estimate done and total over every level, the waits, and `hidden` | The same roll-up with spend against the appetite, a forecast, health and hill position |
 | An agent sets `blocks` with `add_task_link`, and you work out the waves by hand | Metorite computes the ready set, the waves, the critical path and the forecast |
 | Due dates mark the week | A cycle, with its capacity in review hours and credits |
 | A person assigns each slice | `my_work` gives the ready slices of the cycle in critical-path order |

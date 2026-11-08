@@ -1,6 +1,6 @@
 ---
 slug: start-here
-version: 3
+version: 4
 title: "Start here: agent teams in plain words"
 summary: What the words mean, how a week of work goes, and how to start. For people who are new to agents, and for the agents that help them.
 audience: both
@@ -189,7 +189,7 @@ flowchart LR
 | Part | Built today | Coming |
 |---|---|---|
 | The board | Tasks, subtasks, statuses, assignees, due dates, estimates, comments | — |
-| Epics | An Epic type. A person sets the type on the task or uses "Make it an epic". An agent can also set it. Each epic counts its direct subtasks. | An epic contract: the outcome and the checks. A count over every level. An epic page. |
+| Epics | An Epic type. A person sets the type on the task or uses "Make it an epic". An agent can also set it. Each epic counts every slice below it that you can see, and shows the estimate done and total. It lists the questions that wait on a person, and counts the tasks hidden from you. `get_task` gives this as `rollup`. | An epic contract: the outcome and the checks. Spend against an appetite, a forecast and health. An epic page. |
 | Goals | — | A Goal above the epics |
 | The order of work | "Blocks" links, set by a person in the app or by an agent with `add_task_link`. `my_work` skips a blocked task | Metorite works out what is ready, the waves and the critical path. |
 | Planning | An agent plans with you and asks at each gate | The same three gates in the Metorite chat |

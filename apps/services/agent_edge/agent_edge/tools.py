@@ -2678,13 +2678,82 @@ def reference(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+#: SP-9. The roll-up of an epic over EVERY descendant that the member sees.
+#: The gateway adds ``rollup`` to ``GET /projects/tasks/{id}`` for a task whose
+#: type is an epic type, and leaves the key out for any other task. The four
+#: keys after ``hidden`` are ``null`` until their sources land (spend: SP-8, the
+#: others: PJP-6).
+ROLLUP_KEYS: tuple[str, ...] = (
+    "slices", "estimate_mins", "waits", "hidden", "spend", "forecast", "health", "hill",
+)
+WAIT_KEYS: tuple[str, ...] = ("run_id", "task_id", "task_number", "title", "person", "since")
+_DONE_TOTAL_SCHEMA = _object({"done": {"type": "integer"}, "total": {"type": "integer"}})
+_WAIT_SCHEMA = _object({
+    "run_id": {"type": "string"}, "task_id": {"type": "string"},
+    "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_SCHEMA,
+    "person": _NULLABLE_STRING, "since": _NULLABLE_STRING,
+})
+_ROLLUP_SCHEMA = _object({
+    "slices": _DONE_TOTAL_SCHEMA,
+    "estimate_mins": _DONE_TOTAL_SCHEMA,
+    "waits": _object({"count": {"type": "integer"},
+                      "items": {"type": "array", "items": _WAIT_SCHEMA}}),
+    "hidden": {"type": "integer"},
+    "spend": {"type": "null"}, "forecast": {"type": "null"},
+    "health": {"type": "null"}, "hill": {"type": "null"},
+})
+
+
+def _rollup_count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _done_total(value: Any) -> dict[str, int]:
+    raw = value if isinstance(value, dict) else {}
+    return {"done": _rollup_count(raw.get("done")), "total": _rollup_count(raw.get("total"))}
+
+
+def rollup(raw: Any) -> dict[str, Any] | None:
+    """The roll-up of an epic (SP-9), the pinned keys and no other. ``None``
+    when the gateway sent none (the task is not an epic). The title of a task
+    that waits is text from other people, so it is (U). The four keys that wait
+    for their source stay ``None``, whatever the gateway sends."""
+    if not isinstance(raw, dict):
+        return None
+    waits = raw.get("waits") if isinstance(raw.get("waits"), dict) else {}
+    items = waits.get("items")
+    return {
+        "slices": _done_total(raw.get("slices")),
+        "estimate_mins": _done_total(raw.get("estimate_mins")),
+        "waits": {
+            "count": _rollup_count(waits.get("count")),
+            "items": [
+                {
+                    "run_id": str(w.get("run_id")),
+                    "task_id": str(w.get("task_id")),
+                    "task_number": _int_or_none(w.get("task_number")),
+                    "title": untrusted(w.get("title") or ""),
+                    "person": _str_or_none(w.get("person")),
+                    "since": _str_or_none(w.get("since")),
+                }
+                for w in items or () if isinstance(w, dict)
+            ] if isinstance(items, list) else [],
+        },
+        "hidden": _rollup_count(raw.get("hidden")),
+        "spend": None, "forecast": None, "health": None, "hill": None,
+    }
+
+
 _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "task": _TASK_SCHEMA,
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "links": {"type": "array", "items": _LINK_SCHEMA},
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
+    "rollup": _ROLLUP_SCHEMA,
 })
+# `rollup` is present for an epic only, so it is the one key that is not required.
+_GET_TASK_OUTPUT["required"].remove("rollup")
 
 
 def _custom_fields(value: Any) -> dict[str, Any]:
@@ -2800,7 +2869,7 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(relations, dict):
         raise ToolError(TEXT_BUSY)
     subtasks, links = relations.get("subtasks"), relations.get("links")
-    return {
+    out = {
         "task": _task(row, names),
         "subtasks": [_subtask(r) for r in subtasks or () if isinstance(r, dict)]
         if isinstance(subtasks, list) else [],
@@ -2809,6 +2878,12 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         "refs": [reference(r) for r in _rows_of(refs)],
         "agent_runs": runs,
     }
+    # SP-9. The same read, the same visibility: the gateway counted for this
+    # member, and a pin of the agent narrowed it there.
+    shaped_rollup = rollup(row.get("rollup"))
+    if shaped_rollup is not None:
+        out["rollup"] = shaped_rollup
+    return out
 
 
 GET_TASK = Tool(
@@ -2825,7 +2900,11 @@ GET_TASK = Tool(
         " question that waits for an answer. A run with the state awaiting"
         " waits for a person, so do not start a second run for the same"
         " work. url is the address of the task in Metorite, and short_id is the"
-        " short form for a branch name. Put url in the description of each pull"
+        " short form for a branch name. For an epic, rollup counts the slices and"
+        " the estimate done and total over every level below it, lists the"
+        " questions that wait on a person, and gives hidden, the number of"
+        " tasks left out because this member cannot see them. Put url in the"
+        " description of each pull"
         " request, and short_id in the branch name, so that the pull request"
         " links itself to the task." + _UNTRUSTED_NOTE
     ),
