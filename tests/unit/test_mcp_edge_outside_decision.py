@@ -809,6 +809,21 @@ class TestTheQuestionBellClosesWithTheRun:
         assert _run_status(runs, run_id) == "completed"
         assert _unread(runs, task) == {MEMBER: False, OTHER: False}
 
+    async def test_a_takeover_reads_them_too(self, runs):
+        """``_take_over`` is the one move out of ``awaiting`` that skips
+        ``_move_run``. A lease that ended lets another member's agent take
+        the task, and the old question no longer waits on anyone."""
+        task, run_id = await _watched_question(runs, "bug3 takeover")
+        with runs.admin.begin() as c:
+            c.execute(text("UPDATE pm_agent_runs SET last_activity_at = now() - interval '30 days',"
+                           " last_agent_activity_at = now() - interval '30 days'"
+                           " WHERE id = CAST(:r AS uuid)"), {"r": run_id})
+        taken = _structured(await _agent(runs, "start_agent_run", name="other", task_id=task,
+                                         idempotency_key=_key()))
+        assert taken["run"]["id"] != run_id
+        assert _run_status(runs, run_id) == "abandoned"
+        assert _unread(runs, task) == {MEMBER: False, OTHER: False}
+
     async def test_a_new_question_rings_again(self, runs):
         """The clear binds the move OUT of ``awaiting`` only. A new question
         on the same run writes new unread rows, and they stay unread."""

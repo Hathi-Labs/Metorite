@@ -1603,19 +1603,24 @@ async def _take_over(db: Any, holder: Any, *, me: str, via: str | None) -> bool:
     """Move a run whose lease ended to ``abandoned``, and write the line
     "Taken over by <member>/<client>". False when the run moved in the
     meantime: a heartbeat changes ``last_activity_at``, so the guard misses
-    and the caller reads the holder again."""
+    and the caller reads the holder again.
+
+    AP-BUG-3. This is the one move out of ``awaiting`` that does not go
+    through :func:`_move_run`, so it closes the question bells itself."""
     ts = await _clock(db)
+    to = transition(holder.status, "abandon")
     moved = (await db.execute(
         text(
             "UPDATE pm_agent_runs SET status = :to, ended_at = :ts, session_key = NULL "
             " WHERE id = CAST(:rid AS uuid) AND status = ANY(:open) "
             "   AND last_activity_at = :seen RETURNING id"
         ),
-        {"to": transition(holder.status, "abandon"), "ts": ts, "rid": str(holder.id),
+        {"to": to, "ts": ts, "rid": str(holder.id),
          "open": list(AGENT_RUN_OPEN_STATUSES), "seen": holder.last_activity_at},
     )).fetchone()
     if moved is None:
         return False
+    await _close_question_bells(db, holder, to)
     client = agent_oauth.client_label(via) if via else "the app"
     await _system_activity(
         db, holder, actor_email=me, via=via,
