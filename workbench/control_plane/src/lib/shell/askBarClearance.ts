@@ -34,6 +34,14 @@ export const CLEARANCE_GAP = 16;
 export const CLEARANCE_MIN_HEIGHT = 80;
 /** The wait between two scans of a busy page. */
 export const CLEARANCE_SETTLE_MS = 120;
+/** A scroll that moves panes under the bar is measured this long after it stops. */
+export const CLEARANCE_SCROLL_STOP_MS = 140;
+/**
+ * How far above its holder's foot a nested pane may end and still be the pane
+ * at the foot. A board lane sits a few pixels up, inside the board's padding.
+ * A block further up is content of the holder, so the holder gets the room.
+ */
+export const CLEARANCE_FOOT_SLACK = 24;
 
 export const MARK = "data-askbar-clear";
 const EXTRA = "--askbar-extra";
@@ -84,10 +92,26 @@ function isPane(f: ScrollerFacts): boolean {
 }
 
 /**
+ * A box written to scroll sideways only: `overflow-x-auto` and no vertical
+ * class. The browser computes its `overflow-y` as `auto` too, so the computed
+ * style cannot tell. Such a box (a table wrapper) grows with its content, and
+ * room inside it is a blank band in the table (People, Seats).
+ */
+export function declaredSideways(className: string): boolean {
+  return (
+    /(^|[\s:])overflow-x-(auto|scroll)(\s|$)/.test(className) &&
+    !/(^|[\s:])overflow-(y-)?(auto|scroll)(\s|$)/.test(className)
+  );
+}
+
+/**
  * The extra padding, in pixels, for each scroller that needs room. A scroller
  * counts when it is a pane, overlaps the bar sideways and ends below the bar's
- * top. Only the deepest counts: a pane that holds another counted pane gets
- * nothing. The extra is the room the bar needs, less the padding the pane has.
+ * top. A nested pane counts only when it reaches the foot of each pane that
+ * holds it: a list or a code block in the middle of a page is content, and the
+ * page takes the room. Then only the deepest counts: a pane that holds another
+ * counted pane gets nothing. The extra is the room the bar needs, less the
+ * padding the pane has.
  */
 export function planClearance(
   bar: Box | null,
@@ -99,8 +123,15 @@ export function planClearance(
   const counted = scrollers.filter(
     (s) => isPane(s) && s.rect.right > bar.left && s.rect.left < bar.right && s.rect.bottom > bar.top,
   );
-  const holders = new Set(counted.flatMap((s) => s.ancestors));
-  for (const s of counted) {
+  const byId = new Map(counted.map((s) => [s.id, s]));
+  const atFoot = counted.filter((s) =>
+    s.ancestors.every((id) => {
+      const holder = byId.get(id);
+      return !holder || s.rect.bottom >= holder.rect.bottom - holder.paddingBottom - CLEARANCE_FOOT_SLACK;
+    }),
+  );
+  const holders = new Set(atFoot.flatMap((s) => s.ancestors));
+  for (const s of atFoot) {
     if (holders.has(s.id)) continue;
     const needed = s.rect.bottom - bar.top + gap;
     const extra = Math.max(0, Math.ceil(needed - s.paddingBottom));
@@ -144,15 +175,15 @@ function clipBottomOf(el: HTMLElement, column: HTMLElement, columnBottom: number
  * the boxes it measures: padding on `<main>` once squeezed the board under it
  * to end above the bar, and the scan then took `<main>` for the pane. So it
  * lifts every mark, reads, and writes the new marks in one task, so no frame
- * paints between. A lifted mark can clamp a scroll position, so it keeps and
- * restores each `scrollTop`.
+ * paints between. A lifted mark can clamp the scroll position of its pane and
+ * of any pane around it, so the scan keeps and restores EVERY `scrollTop`.
  */
 export function scanClearance(column: HTMLElement, area: Box) {
-  const kept = [...column.querySelectorAll<HTMLElement>(`[${MARK}]`)].map((el) => [el, el.scrollTop] as const);
-  kept.forEach(([el]) => unmark(el));
   const found = new Set<HTMLElement>(column.querySelectorAll<HTMLElement>('[class*="overflow"]'));
   column.querySelectorAll<HTMLElement>("main").forEach((m) => found.add(m));
-  const els = [...found].filter((el) => !el.closest('[role="dialog"],[aria-modal="true"]'));
+  const els = [...found].filter((el) => !el.closest('[role="dialog"],[aria-modal="true"],[data-ask-bar]'));
+  const tops = els.map((el) => el.scrollTop);
+  clearMarks(column);
   const ids = new Map<HTMLElement, number>(els.map((el, i) => [el, i]));
   const facts: ScrollerFacts[] = [];
   for (const el of els) {
@@ -166,7 +197,9 @@ export function scanClearance(column: HTMLElement, area: Box) {
       display: cs.display,
       flexDirection: cs.flexDirection,
       clientHeight: el.clientHeight,
-      horizontalOnly: el.scrollWidth > el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1,
+      horizontalOnly:
+        declaredSideways(el.getAttribute("class") ?? "") ||
+        (el.scrollWidth > el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1),
       paddingBottom: px(cs.paddingBottom),
       ancestors: els.filter((o) => o !== el && o.contains(el)).map((o) => ids.get(o)!),
     });
@@ -180,16 +213,28 @@ export function scanClearance(column: HTMLElement, area: Box) {
     el.setAttribute(MARK, "");
     el.style.setProperty(EXTRA, `${extra}px`);
   }
-  kept.forEach(([el, top]) => {
-    if (el.scrollTop !== top) el.scrollTop = top;
+  els.forEach((el, i) => {
+    if (el.scrollTop !== tops[i]) el.scrollTop = tops[i];
+    settled.set(el, offset(el));
   });
+}
+
+/** Where each scroller stood when the last scan ended. */
+const settled = new WeakMap<HTMLElement, string>();
+
+function offset(el: HTMLElement): string {
+  return `${el.scrollLeft}:${el.scrollTop}`;
 }
 
 /**
  * Keep the marks right for the page column that `areaRef` covers. The scan
  * runs at most once per `CLEARANCE_SETTLE_MS`, after the column or its
- * children change, and on a window resize. It does not run on a phone, and it
- * clears every mark when `enabled` turns false or the bar leaves.
+ * children change, on a window resize, and after a scroll stops: a board
+ * scrolled sideways brings other lanes under the bar. A scroll event at the
+ * place the last scan left the scroller is the scan's own restore, and it
+ * starts nothing, or a pane parked at its end would scan for ever. The scan
+ * does not run on a phone, and it clears every mark when `enabled` turns false
+ * or the bar leaves.
  */
 export function useAskBarClearance(areaRef: RefObject<HTMLElement | null>, enabled: boolean) {
   useEffect(() => {
@@ -198,9 +243,13 @@ export function useAskBarClearance(areaRef: RefObject<HTMLElement | null>, enabl
     if (!enabled || !area || !column) return;
     const desktop = window.matchMedia("(min-width: 640px)");
     let timer: number | null = null;
+    let scrollStop: number | null = null;
     let frame = 0;
+    // A frame queued in a hidden tab can outlive the cleanup's cancel.
+    let stopped = false;
     const run = () => {
       timer = null;
+      if (stopped) return;
       if (!desktop.matches) {
         clearMarks(column);
         return;
@@ -214,6 +263,15 @@ export function useAskBarClearance(areaRef: RefObject<HTMLElement | null>, enabl
         frame = window.requestAnimationFrame(run);
       }, CLEARANCE_SETTLE_MS);
     };
+    const onScroll = (e: Event) => {
+      const target = e.target;
+      if (target instanceof HTMLElement && settled.get(target) === offset(target)) return;
+      if (scrollStop !== null) window.clearTimeout(scrollStop);
+      scrollStop = window.setTimeout(() => {
+        scrollStop = null;
+        schedule();
+      }, CLEARANCE_SCROLL_STOP_MS);
+    };
     frame = window.requestAnimationFrame(run);
     const resize = new ResizeObserver(schedule);
     resize.observe(area);
@@ -221,11 +279,15 @@ export function useAskBarClearance(areaRef: RefObject<HTMLElement | null>, enabl
     mutate.observe(column, { childList: true, subtree: true });
     window.addEventListener("resize", schedule);
     desktop.addEventListener("change", schedule);
+    column.addEventListener("scroll", onScroll, { capture: true, passive: true });
     return () => {
+      stopped = true;
       if (timer !== null) window.clearTimeout(timer);
+      if (scrollStop !== null) window.clearTimeout(scrollStop);
       window.cancelAnimationFrame(frame);
       resize.disconnect();
       mutate.disconnect();
+      column.removeEventListener("scroll", onScroll, { capture: true });
       window.removeEventListener("resize", schedule);
       desktop.removeEventListener("change", schedule);
       clearMarks(column);

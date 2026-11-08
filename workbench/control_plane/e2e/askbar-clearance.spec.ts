@@ -177,6 +177,46 @@ test("People with 30 people scrolls the last row above the bar", async ({ page }
   expect(rows.some((r) => r.scrolled)).toBe(true);
 });
 
+test("a page parked at its end stays put through a re-scan, and rests with no scans", async ({ page }) => {
+  // Review round 1: a scan lifts each mark, which clamps a parked page. It must
+  // put every scroll position back. A scroll starts a scan, and the scan's own
+  // restore must not start another, or a parked page scans for ever.
+  test.setTimeout(120_000);
+  await open(page, "/people", { "people/facets": { departments: [], statuses: [] }, people: people(30) });
+  await expect(page.getByText("Person 30")).toBeVisible({ timeout: 60_000 });
+  await settled(page);
+  expectClear(await endsUnderBar(page), "People, at its end");
+  await page.waitForTimeout(700);
+  const pane = page.locator("[data-askbar-clear]").first();
+  const parked = await pane.evaluate((el) => el.scrollTop);
+  expect(parked).toBeGreaterThan(0);
+  await page.evaluate(() => {
+    const w = window as unknown as { __scans: number };
+    w.__scans = 0;
+    const real = Element.prototype.querySelectorAll;
+    Element.prototype.querySelectorAll = function (this: Element, sel: string) {
+      if (sel.includes('class*="overflow"')) w.__scans += 1;
+      return real.call(this, sel);
+    } as typeof Element.prototype.querySelectorAll;
+  });
+  const scans = () => page.evaluate(() => (window as unknown as { __scans: number }).__scans);
+  // A node mounted in the column starts a scan, as the Ask bar's own rows do.
+  await page.evaluate(() => document.querySelector("main")!.appendChild(document.createElement("span")));
+  await expect.poll(scans, { timeout: 5_000 }).toBeGreaterThan(0);
+  await page.waitForTimeout(700);
+  expect(await pane.evaluate((el) => el.scrollTop), "the re-scan moved the page").toBe(parked);
+  // At rest, parked at the end, nothing scans.
+  const atRest = await scans();
+  await page.waitForTimeout(1500);
+  expect(await scans(), "a parked page keeps scanning").toBe(atRest);
+  // A real scroll starts a scan once it stops.
+  await pane.evaluate((el) => {
+    el.scrollTop -= 120;
+  });
+  await expect.poll(scans, { timeout: 5_000 }).toBeGreaterThan(atRest);
+  expectClear(await endsUnderBar(page), "People, after the re-scans");
+});
+
 test("a settings page scrolls its last line above the bar", async ({ page }) => {
   test.setTimeout(120_000);
   await open(page, "/settings/appearance", {});

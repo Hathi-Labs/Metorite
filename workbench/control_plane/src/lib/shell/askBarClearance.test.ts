@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { type ScrollerFacts, barFootprint, planClearance } from "./askBarClearance";
+import { type ScrollerFacts, barFootprint, declaredSideways, planClearance } from "./askBarClearance";
 
 /** A 1200 x 800 column at the origin: the bar's top is 800 - 20 - 46 = 734. */
 const COLUMN = { left: 0, top: 0, right: 1200, bottom: 800 };
@@ -115,5 +115,41 @@ describe("planClearance", () => {
     const outer = pane({ id: 1 });
     const strip = pane({ id: 2, ancestors: [1], horizontalOnly: true });
     expect(planClearance(BAR, [outer, strip]).get(1)).toBe(82);
+  });
+
+  it("gives the room to the page when a nested box ends above its foot (a list mid-page)", () => {
+    const page = pane({ id: 1 });
+    const list = pane({ id: 2, ancestors: [1], rect: { left: 0, top: 500, right: 1200, bottom: 760 }, clientHeight: 260 });
+    const plan = planClearance(BAR, [page, list]);
+    expect(plan.get(1)).toBe(82);
+    expect(plan.has(2)).toBe(false);
+  });
+
+  it("lets a lane a few pixels above its holder's foot keep the room (a board's padding)", () => {
+    const main = pane({ id: 1 });
+    const lane = pane({ id: 2, ancestors: [1], rect: { left: 0, top: 100, right: 400, bottom: 780 }, clientHeight: 680 });
+    const plan = planClearance(BAR, [main, lane]);
+    expect(plan.get(2)).toBe(62);
+    expect(plan.has(1)).toBe(false);
+  });
+
+  it("measures the foot inside the holder's own padding", () => {
+    const holder = pane({ id: 1, paddingBottom: 30 });
+    const inner = pane({ id: 2, ancestors: [1], rect: { left: 0, top: 100, right: 1200, bottom: 760 }, clientHeight: 660 });
+    expect(planClearance(BAR, [holder, inner]).has(2)).toBe(true);
+  });
+});
+
+describe("declaredSideways", () => {
+  it("names a box written to scroll sideways only", () => {
+    expect(declaredSideways("overflow-x-auto rounded-lg border")).toBe(true);
+    expect(declaredSideways("w-full sm:overflow-x-scroll")).toBe(true);
+  });
+
+  it("leaves a box that also scrolls down, and any other box", () => {
+    expect(declaredSideways("overflow-x-auto overflow-y-auto")).toBe(false);
+    expect(declaredSideways("overflow-auto")).toBe(false);
+    expect(declaredSideways("flex-1 overflow-y-auto")).toBe(false);
+    expect(declaredSideways("overflow-x-hidden overflow-y-auto")).toBe(false);
   });
 });
