@@ -5751,6 +5751,20 @@ Owner decisions, 2026-10-29 (WM-0) and 2026-11-08, in chat. Design: `project-doc
 
 Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of each slice in `specs/project_management_app.md` §13.6 bind its rule. Until a slice lands, the rule is advisory (R7).
 
+### D198 — GitHub Actions unit shards run on the box's own runners, with a safety design (2026-11-08)
+
+Owner decision, 2026-11-08, in chat. Metorite: task 2304 (CIV-23). It reverses the non-goal "no GitHub self-hosted runner" of `specs/ci_velocity.md` §2. It changes no other rule.
+
+1. **What runs on the box.** Only the unit shard job (`test`) of `pr-check.yml`. Every other job stays on `ubuntu-24.04`.
+2. **The label.** The runners carry only the label `metorite-box`. They carry no default label, and no job uses `self-hosted`.
+3. **The switch.** The variable `USE_BOX_RUNNERS` set to `1` turns it on. Any other value sends the job to `ubuntu-24.04`.
+4. **No fork code on the box.** A pull request from a fork always gets `ubuntu-24.04`. The job tests the head repository against this repository.
+5. **The runner user.** User `ghrunner` has no sudo, is not in the docker group, and has a home with mode 750. Its Docker is rootless. Four runners, `metorite-box-1` to `-4`, run as capped systemd user services (6 GB and 4 CPUs each).
+6. **No sudo in a job.** A step that needs `sudo` or `apt-get` runs only when `runner.environment == 'github-hosted'`. The owner of the box installs each tool that a job needs.
+7. **Service containers.** The four runners share one Docker daemon. The Postgres containers publish to a host port that Docker picks. A step writes the database URLs from that port.
+
+Fence: `tests/unit/test_box_runner_routing.py`. **Re-check this number at merge.** The first merge wins a D-number. Branches held D196 and D197 when task 2304 wrote this record.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
