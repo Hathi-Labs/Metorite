@@ -2,6 +2,8 @@
 
 **Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
+**SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
@@ -1022,6 +1024,18 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** A connection through the read-only path lists only reads. A call of each write tool gets 403 `insufficient_scope` at the edge.
 - **Fence.** An edge test that walks every tool of `MCP_WRITE_ROUTES` on the read-only path.
 - **Risk.** HIGH (auth). **Gate.** AGENT-SAFE.
+- **Status.** BUILT, 2026-11-07, task 1051. It is not merged yet.
+- **As built (SW-34b).**
+  - The anchors moved. In `mcp.py`, check 8 is in `_serve` (about line 540), and `tools/list` is in `_dispatch` (about line 594). In `tools.py`, `listed` and `listed_for` are at about line 8258 and line 8283. `MCP_WRITE_ROUTES` is at `agent_oauth.py:824`, and `SCOPE_COPY` is at `consent.ts:133`.
+  - The door is not a boundary against an agent that holds the token. The gateway reads the scopes of the connection row, so that agent can call `/mcp` itself. Only the "Read only" grant on the consent page limits such an agent.
+  - The edge serves `POST /mcp/readonly` (`mcp.readonly_path`, `mcp.readonly_endpoint`). It runs the same checks in the same order as `/mcp`.
+  - Right after the bearer check, `bearer.read_only` narrows the caller's scopes. The one rule is `agent_oauth.read_only` with `agent_oauth.READ_SCOPES`. It only removes a scope.
+  - `tools/list`, check 8, the prompt, the resources and the instructions read the narrowed scopes. A write tool gets 403 `insufficient_scope`, and no request reaches the gateway.
+  - The token is the same on both paths. Its audience stays the resource `/mcp`, so a client that connects to `/mcp/readonly` signs in against `/mcp`. An MCP client usually keeps one token for each server entry, so the read-only entry signs in by itself. This was not checked against each client.
+  - `app_write` has no fixed scope. `tools._covered` now shows it only when the scopes hold a write scope. So a read-only token on `/mcp` no longer lists it either.
+  - The consent page has a "Read only" button above the permission switches (`consent.ts`: `readOnlyChoice`, `offersReadOnly`, `isReadOnly`). The gateway needed no change, because the page already sends a subset of the requested scopes.
+  - Caddy proxies each path of `mcp.metorite.com` to the edge, so the route needs no Caddy change.
+  - Fences: `tests/unit/test_mcp_edge_readonly.py` (the walk, the list and the surfaces, under four named mutations) and `consent.test.ts` ("the Read only choice").
 
 ### 5.6 P5 — dependencies, delegation, wake-ups and shared resources
 
@@ -1984,7 +1998,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **The `push` event.** It is not known whether the GitHub App subscribes to `push` (1045b).
 - **The board half of SW-5.** EA-13g may already draw part of the holder line. Read it at dispatch.
 - **The production flags.** This spec uses the reading of 2026-10-29. Read the env files of the box again before SW-7a and SW-10b.
-- **The read-only door.** The edge already hides write tools from a connection with read scopes only, and it refuses their call (SW-34b, "What exists"). It is not known yet how a client keeps a separate token for the path `/mcp/readonly`. SW-34b settles it.
+- **The read-only door.** SW-34b settled it. The path is the mode, and one token works on both paths. An MCP client usually keeps one token for each server entry (SW-34b, "As built").
 - **Stale status lines in `external_agent_access.md`.** Its header still calls SW-7, SW-10a and SW-11a "not merged". They merged as #1312, #1333 and #1345. The next slice that touches that file fixes the lines.
 - **The owner map.** CODEOWNERS (task 1872, ONB-7) and the leads on the board are two maps. A pr-check test cannot read the board. SW-52 keeps them in step by hand, and it is advisory.
 - **The login-to-member map.** SW-55 needs to know which GitHub login is which member. Read at dispatch whether such a map exists.
