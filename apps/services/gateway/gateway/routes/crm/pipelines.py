@@ -111,6 +111,7 @@ from gateway.routes.crm.core import (
     insert_row,
     load_row,
     lock_pipeline_creates,
+    pipelines_holding,
     provider_link_context,
     require_deal_pipeline,
     require_row,
@@ -997,7 +998,10 @@ async def _new_stages_to_remove(
     pipeline of the kind holds now. The Undo of the create removes them.
 
     A new stage that holds a record refuses the Undo with the name of the
-    stage and the count. A stage that another pipeline holds now stays."""
+    stage and the count. A stage that another pipeline holds now stays. So
+    does a stage that another pipeline needs for the Undo of its own create
+    (CRM-M4a repair 3, ``core.pipelines_holding``): it stays, and its own
+    create row stays open."""
     doomed: list[Any] = []
     noun = kind.stage_noun
     for row in rows:
@@ -1013,7 +1017,9 @@ async def _new_stages_to_remove(
             f"SELECT count(*) FROM {kind.stages_table} WHERE status_id = CAST(:s AS uuid) "
             "AND pipeline_id <> CAST(:p AS uuid)"
         ), {"s": str(row.id), "p": pipeline_id})).scalar() or 0)
-        if not shared:
+        others = [h for h in await pipelines_holding(db, kind.status_table, str(row.id))
+                  if h.id != str(pipeline_id).strip().lower()]
+        if not shared and not others:
             doomed.append(row)
     return doomed
 
@@ -1112,7 +1118,9 @@ async def add_stage_in(
     one row when ITS statement put the stage in the pipeline (CRM-M1), and
     returns whether it did. A write of another request that put the stage
     there first, between the check and the INSERT, makes the INSERT do
-    nothing, so no row is logged."""
+    nothing, so no row is logged. It takes the pipeline create lock first
+    (CRM-M4a repair 3), because it changes who holds the stage."""
+    await lock_pipeline_creates(db)
     pipeline = await _native_pipeline(db, pipeline_id)
     stage = await require_row(db, "crm_deal_statuses", status_id, "Status")
     await assert_writable(db, current_tenant(), "crm_pipeline_stages")
@@ -1176,7 +1184,10 @@ async def remove_stage_in(
     caller's transaction. The route and the Undo of an added stage both call
     it. It logs one row when ITS statement took the stage out (CRM-M1), and
     returns whether it did. The place in the row comes from ``RETURNING``,
-    so a removal by another request at the same time logs nothing here."""
+    so a removal by another request at the same time logs nothing here. It
+    takes the pipeline create lock first (CRM-M4a repair 3), because it
+    changes who holds the stage."""
+    await lock_pipeline_creates(db)
     pipeline = await _native_pipeline(db, pipeline_id)
     await assert_writable(db, current_tenant(), "crm_pipeline_stages")
     in_use = int((await db.execute(

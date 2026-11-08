@@ -199,11 +199,11 @@ _NEXT_ACTIVITY_RE = re.compile(
 #: ``core.PIPELINE_CREATE_LOCK_SQL`` (CRM-M4a repair 2). One request runs at a
 #: time here, so the lock takes nothing.
 _ADVISORY_LOCK_RE = re.compile(r"^SELECT pg_advisory_xact_lock\(", re.I)
-#: ``core._HOLDERS_SQL`` (CRM-M4a repair 2): the pipelines of one kind that hold
-#: a status. The membership table is read off the statement.
+#: ``core._HOLDERS_SQL`` (CRM-M4a repairs 2 and 3): the pipelines of one kind
+#: that hold a status. The membership table is read off the statement.
 _HOLDERS_RE = re.compile(
-    r"^SELECT p\.name FROM (\w+) ps JOIN crm_pipelines p ON p\.id = ps\.pipeline_id "
-    r"AND p\.kind = :kind\b", re.I,
+    r"^SELECT h\.id, h\.name, h\.made FROM \(SELECT p\.id.*?"
+    r"SELECT 1 FROM (\w+) ps WHERE ps\.pipeline_id = p\.id", re.I,
 )
 
 # ── WS-26d-email: the shapes the CRM timeline's email source emits ──────────
@@ -945,14 +945,14 @@ class FakeCrmDB:
 
     def _holders(self, stages: str, args: dict) -> _Result:
         """``core._HOLDERS_SQL``: the pipelines of ``:kind`` that hold ``:s``,
-        less the default deal pipeline ``:dp``. The fake holds no change log,
-        so the default never counts here. The R8 suite proves that clause."""
+        less the default deal pipeline ``:dp``. The fake reads no change log,
+        so ``made`` is always false here. The R8 suite proves that clause."""
         held = {
             str(m.get("pipeline_id")) for m in self.rows(stages)
             if str(m.get("status_id")) == str(args.get("s"))
         }
         return _Result([
-            SimpleNamespace(name=p.get("name"))
+            SimpleNamespace(id=p.get("id"), name=p.get("name"), made=False)
             for p in sorted(self.rows("crm_pipelines"),
                             key=lambda r: (r.get("position") or 0, str(r.get("name"))))
             if str(p.get("id")) in held and p.get("kind", "deal") == args.get("kind")

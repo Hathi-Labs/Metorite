@@ -58,6 +58,7 @@ from gateway.routes.crm.core import (
     MIRROR_OVERLAY_COLUMNS,
     STAGE_REQUIREABLE_FIELDS,
     STATUS_TYPES,
+    Holder,
     LostReasonModel,
     StatusModel,
     _tenant_session,
@@ -700,43 +701,50 @@ def _names(names: list[str]) -> str:
 
 
 def _held_by_pipelines(
-    kind: str, name: Any, holders: list[str], *, undo: bool,
+    kind: str, name: Any, holders: list[Holder], *, undo: bool,
 ) -> HTTPException:
-    """409 ``in_use``: pipelines hold the status, so it stays (CRM-M4a repair 2).
+    """409 ``in_use``: pipelines hold the status, so it stays (CRM-M4a repair 3).
 
-    The words name each pipeline by its name now, say what did not happen,
-    and give the next step. A lead pipeline has no route that takes a status
-    out, so its Undo is the one step. A deal pipeline also has the route that
-    takes a stage out (``DELETE /crm/pipelines/{id}/stages/{status_id}``)."""
-    many = len(holders) > 1
-    pipeline = ("lead pipeline" if kind == "lead" else "pipeline") + ("s" if many else "")
-    which = f"the {pipeline} {_names(holders)}"
-    outcome = "nothing was undone" if undo else "it was not deleted"
-    then = "undo this" if undo else f"delete the {_STATUS_NOUNS[kind]}"
-    first = f"{which[0].upper()}{which[1:]} {'use' if many else 'uses'} the " \
-        f"{_STATUS_NOUNS[kind]} {quoted(name)}, so {outcome}."
-    if kind == "lead":
-        step = f"Undo {which} in Change history first, and then {then}."
+    The words name each pipeline by its name now and say what did not happen.
+    They name a next step only when it exists: the Undo of the creation of
+    each pipeline, when an open create of each one lists the status. A
+    pipeline with no such create (the default pipeline, an imported one) only
+    uses the status, so the words say that the status stays."""
+    names = [h.name for h in holders]
+    many = len(names) > 1
+    noun = _STATUS_NOUNS[kind]
+    pipeline = ("lead pipeline" if kind == "lead" else "deal pipeline") + ("s" if many else "")
+    which = f"the {pipeline} {_names(names)}"
+    undoable = all(h.made for h in holders)
+    if not undoable:
+        outcome = f"the {noun} stays"
     else:
-        step = (f"Undo {which} in Change history first, or take the stage out of "
-                f"{'them' if many else 'it'}. Then {then}.")
-    return change_log.in_use(f"{first} {step}")
+        outcome = "nothing was undone" if undo else "it was not deleted"
+    words = (f"{which[0].upper()}{which[1:]} {'use' if many else 'uses'} the {noun} "
+             f"{quoted(name)}, so {outcome}.")
+    if undoable:
+        then = "undo this" if undo else f"delete the {noun}"
+        words += f" Undo the creation of {which} first, and then {then}."
+    return change_log.in_use(words)
 
 
 async def delete_status_in(db: Any, kind: str, status_id: str, *, undo: bool = False) -> Any:
     """The body of ``DELETE /crm/statuses/{kind}/{id}``. Returns the row that
     went. The Undo of a create calls it too, with *undo* for its words.
 
-    CRM-M4a repair 2: it takes the pipeline create lock, then the row ``FOR
-    UPDATE``, as a pipeline create does. It refuses (409 ``in_use``) while a
-    pipeline holds the status (``core.pipelines_holding``). The cascade
-    would take the status out of that pipeline, and then the Undo of the
-    pipeline answers 409 ``changed_since`` for ever."""
+    CRM-M4a repairs 2 and 3: it takes the pipeline create lock, then the row
+    ``FOR UPDATE``, as a pipeline create does. It refuses (409 ``in_use``)
+    while a pipeline holds the status (``core.pipelines_holding``). The
+    cascade would take the status out of that pipeline, and then the Undo of
+    the pipeline answers 409 ``changed_since`` for ever. Each read after the
+    row uses the id of the row, so an id of the path in upper case reads the
+    same as in lower case."""
     table, _ = _kind(kind)
     await lock_pipeline_creates(db)
     row = await load_row(db, table, status_id, lock=True)
     if row is None:
         raise HTTPException(status_code=404, detail="Status not found")
+    status_id = str(row.id)
     in_use = await status_in_use(db, kind, status_id)
     if in_use:
         raise HTTPException(
