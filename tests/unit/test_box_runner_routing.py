@@ -1,4 +1,4 @@
-"""Fence for CIV-23 (D198): which pr-check jobs may run on the box runners.
+"""Fence for CIV-23 (D201): which pr-check jobs may run on the box runners.
 
 A job that can reach the label `metorite-box` must test the variable
 `USE_BOX_RUNNERS` AND the same-repo condition, so a fork PR never runs code
@@ -32,7 +32,7 @@ def _jobs():
 
 def test_no_job_uses_the_self_hosted_label() -> None:
     bad = [f"{w}:{j}" for w, j, r in _jobs() if "self-hosted" in r]
-    assert not bad, f"`self-hosted` is banned (D198): {bad}"
+    assert not bad, f"`self-hosted` is banned (D201): {bad}"
 
 
 def test_a_box_job_has_the_switch_and_the_same_repo_check() -> None:
