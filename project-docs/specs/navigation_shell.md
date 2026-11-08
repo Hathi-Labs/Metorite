@@ -5,6 +5,11 @@ and 2, NS-3 slices A, B and C, NS-4a, NS-4b, NS-6 slice 6a, NS-7, NS-10, NS-10b 
 since 2026-10-08. NS-2 slice 1 is ON in production since 2026-10-09
 (`NEXT_PUBLIC_SHELL_NAV=1`, owner decision). Board row **WS-44**.
 
+**BUILT 2026-11-08, by owner direction (ASK-1, task 2242):** on a desktop,
+every page scrolls its last line clear of the floating Ask bar (§7.1, "The last
+line of a page scrolls clear of the Ask bar"). It has no flag, and it ships
+live.
+
 Email (2026-10-29, task #914): its own `CommandPalette`, its ⌘K listener and its
 `⌘K` button are gone. Its "Write an email" job is the one command that the shell
 carries. Fence: `src/app/email/emailShellSeam.test.ts`.
