@@ -38,6 +38,9 @@ KNOWN_INVOCATIONS = frozenset({
     "native_typesafe",
     # CP-13h (2026-09-24): the same Jev through the AI/ML API reseller.
     "native_aimlapi",
+    # VOX-2 (2026-11-08): Sarvam speech to text. litellm 1.103.0 has no
+    # Sarvam transcription (`projects_ai_chat.md` §31).
+    "native_sarvam",
 })
 
 #: Only these tasks stream (§6A.9 rule 4). A `transcribe` capability claiming
@@ -119,30 +122,46 @@ def check_invocation(invocation: str) -> str:
 NATIVE_INVOCATION_PREFIX = "native_"
 
 #: The tasks a NATIVE handler serves, and the only tasks it may serve.
-#: ``decide`` has no litellm verb at all (§6A.14), and a litellm task has no
-#: native handler yet.
-NATIVE_TASKS = frozenset({"decide"})
+#: ``decide`` has no litellm verb at all (§6A.14). ``transcribe`` joined on
+#: 2026-11-08 (VOX-2), for Sarvam, and it keeps its litellm verb too.
+NATIVE_TASKS = frozenset({"decide", "transcribe"})
+
+#: The tasks that take a NATIVE verb ONLY. ``decide`` has no litellm verb.
+#: ``transcribe`` is not here, because ``atranscription`` still serves it.
+NATIVE_ONLY_TASKS = frozenset({"decide"})
 
 
 def check_invocation_for_task(invocation: str, task: str) -> str:
     """The verb must fit the task. Two directions, one rule (§6A.14 CP-13a).
 
-    🔴 **A ``native_*`` verb serves ``decide`` only, and ``decide`` takes a
-    ``native_*`` verb only.** Without this pair an operator could declare
-    ``(model, decide, acompletion)``. The door would then hand a decision to
-    a chat verb, get back a shape it cannot read, and answer 502 on the
-    first customer call. The other way round, ``(model, chat,
-    native_typesafe)`` sends a chat request to a decision vendor. Both are
-    refused at declare time, where the operator can fix them.
+    🔴 **A ``native_*`` verb serves the ONE task its handler names, and
+    ``decide`` takes a ``native_*`` verb only.** Without this pair an
+    operator could declare ``(model, decide, acompletion)``. The door would
+    then hand a decision to a chat verb, get back a shape it cannot read, and
+    answer 502 on the first customer call. The other way round, ``(model,
+    chat, native_typesafe)`` sends a chat request to a decision vendor. Both
+    are refused at declare time, where the operator can fix them.
+
+    📌 **VOX-2 (2026-11-08).** ``transcribe`` takes a litellm verb or
+    ``native_sarvam``. ``native_sarvam`` serves ``transcribe`` only, and a
+    System One verb still serves ``decide`` only. The task of each native
+    verb is read from ``handlers.NATIVE_HANDLERS``, never typed here.
     """
     verb = check_invocation(invocation)
-    native = verb.startswith(NATIVE_INVOCATION_PREFIX)
-    if native and task not in NATIVE_TASKS:
-        raise CatalogRefused(
-            f"invocation {verb!r} is a native handler and serves only "
-            f"{', '.join(sorted(NATIVE_TASKS))}, not task {task!r}"
-        )
-    if task in NATIVE_TASKS and not native:
+    if verb.startswith(NATIVE_INVOCATION_PREFIX):
+        # Imported here: `handlers` imports the Router, and this module stays
+        # a leaf that the Router may import.
+        from customer_console import handlers
+
+        serves = handlers.native_task_of(verb)
+        if serves is None:
+            raise CatalogRefused(f"invocation {verb!r} has no native handler")
+        if task not in NATIVE_TASKS or task != serves:
+            raise CatalogRefused(
+                f"invocation {verb!r} is a native handler and serves only "
+                f"{serves}, not task {task!r}"
+            )
+    elif task in NATIVE_ONLY_TASKS:
         raise CatalogRefused(
             f"task {task!r} takes only a native invocation "
             f"({NATIVE_INVOCATION_PREFIX}*), not {verb!r}"
@@ -150,7 +169,7 @@ def check_invocation_for_task(invocation: str, task: str) -> str:
     return verb
 
 
-def check_model_for_invocation(model: str, invocation: str) -> None:
+def check_model_for_invocation(model: str, invocation: str, *, task: str | None = None) -> None:
     """A native verb must match the vendor the model id names (CP-13h).
 
     🔴 **The model prefix picks the credential, and the verb picks the
@@ -159,17 +178,30 @@ def check_model_for_invocation(model: str, invocation: str) -> None:
     and the handler refuses it again before any network call.
 
     ⚠️ **The verb-to-vendor map comes from ``handlers.NATIVE_HANDLERS``**,
-    never from a list typed here. A litellm verb is not checked, because
-    litellm routes by the prefix itself.
+    never from a list typed here. A litellm verb is not checked against a
+    vendor, because litellm routes by the prefix itself.
+
+    📌 **VOX-2: the tie works both ways when the caller names the task.** A
+    ``sarvam/`` model on ``transcribe`` takes ``native_sarvam`` only, because
+    litellm cannot call Sarvam for speech. A handler that reads its own model
+    id refuses an id it cannot call, so a wrong Sarvam mode is a 400 here.
     """
-    if not invocation.startswith(NATIVE_INVOCATION_PREFIX):
-        return
     # Imported here: `handlers` imports the Router, and this module stays a
     # leaf that the Router may import.
     from customer_console import handlers
 
-    vendor = handlers.native_provider_of(invocation)
     prefix = model.partition("/")[0]
+    if not invocation.startswith(NATIVE_INVOCATION_PREFIX):
+        tied = handlers.native_verb_for(prefix, task) if task is not None else None
+        if tied is not None:
+            raise CatalogRefused(
+                f"model {model!r} names the credential {prefix!r}, which litellm "
+                f"cannot call for task {task!r}. Declare it with {tied!r}, "
+                f"not {invocation!r}"
+            )
+        return
+
+    vendor = handlers.native_provider_of(invocation)
     if vendor is None:
         raise CatalogRefused(f"invocation {invocation!r} has no native handler")
     if prefix != vendor:
@@ -178,6 +210,9 @@ def check_model_for_invocation(model: str, invocation: str) -> None:
             f"{invocation!r} calls {vendor!r}. Declare {vendor}/<model> for "
             f"{invocation!r}, or pick the verb that calls {prefix!r}"
         )
+    refusal = handlers.native_model_refusal(invocation, model)
+    if refusal is not None:
+        raise CatalogRefused(refusal)
 
 
 def check_streams(task: str, streams: bool) -> bool:

@@ -125,7 +125,34 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
     writes one audit row (:func:`audit_change`). A body that equals the row
     writes nothing, logs nothing and audits nothing. It does not call
     :func:`_require_org_allowed`, as the list and the revoke do not. Fence:
-    ``tests/unit/test_agent_change_access.py``.
+    ``tests/unit/test_agent_change_access.py``. A box connection is never
+    changed here (EA-19c): the store reads no box, so a box id is 404.
+
+15. ⚠️ **Box tokens (EA-19c, D-EA-5, spec §10.9).** Four routes.
+    ``POST /agent-access/box-tokens/check`` gives a ticket in its own
+    namespace ``box-mint``, never ``agent-consent``. The ticket binds the
+    member, the organization and each field of the body: the box name, the
+    scopes, the days and the reach for a mint, the connection id, ``days``
+    and ``now`` for a rotation. ``POST /agent-access/box-tokens`` (the mint)
+    and ``POST /agent-access/box-tokens/{connection_id}/rotate`` spend it
+    with one ``GETDEL`` before each other check of the body. Each of the
+    three is for a person only: a signed agent gets 404, and none of them
+    is in ``agent_oauth.MCP_ROUTES``. The member is :func:`_member` and the
+    organization is ``current_tenant()``. While ``agent_box_tokens_enabled``
+    is off, the three answer 404 (:func:`_require_box_tokens`). The scopes
+    follow the consent rule, less ``offline_access``, and a write scope
+    needs the writes flag. The reach follows §10.8. The mint and the
+    rotation answer the raw token ONCE, with ``Cache-Control: no-store``,
+    and no log line or audit row holds it. ``POST
+    /agent-access/box-tokens/revoke-all`` is for an admin, with the gates of
+    ``routes/integrations_agents.py``. It revokes every box connection of
+    the organization with the reason ``flag_off``, and it stays live with
+    the flag off. Both list routes write the audit row
+    ``box_token.new_address`` once for each fresh mark
+    (:func:`audit_new_addresses`). The ``Sec-Fetch-Site`` check is the
+    BFF's (``box-tokens/relay.ts``), because this router sees only the
+    server call of the BFF. Fence:
+    ``tests/unit/test_agent_box_token_routes.py``.
 
 What is not here: dynamic client registration (EA-2b), pre-registered
 clients, the organization switch and the client allow list (EA-4c), the audit
@@ -145,7 +172,14 @@ from typing import Annotated, Any, NamedTuple
 from uuid import UUID
 
 import httpx
-from acb_auth import UserContext, agent_oauth, agent_tokens, get_current_user
+from acb_auth import (
+    UserContext,
+    agent_oauth,
+    agent_tokens,
+    get_current_user,
+    require_feature_router,
+    require_permission,
+)
 from acb_common import get_logger, get_settings
 from acb_common.tenant_redis import OUTAGE_ERRORS, get_tenant_redis, key, organization_scope
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -153,11 +187,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from gateway import outbound_guard
 from gateway.db import current_tenant
+from gateway.routes.integrations import MANAGE_PERMISSION
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     StrictBool,
+    StrictInt,
     ValidationError,
     field_validator,
 )
@@ -593,9 +629,13 @@ def _binding(req: AuthorizeRequest, email: str, org: str) -> _TicketBinding:
         req.state, req.resource, req.scope)
 
 
-def _ticket_key(ticket: str) -> Any:
-    """The tenant-prefixed key of a ticket: the SHA-256 of it, never the ticket."""
-    return key(_TICKET_NAMESPACE, hashlib.sha256(ticket.encode("ascii")).hexdigest())
+def _ticket_key(ticket: str, namespace: str = _TICKET_NAMESPACE) -> Any:
+    """The tenant-prefixed key of a ticket: the SHA-256 of it, never the ticket.
+
+    *namespace* keeps two purposes apart: ``agent-consent`` (rule 10) and
+    ``box-mint`` (rule 15). A ticket of one never opens the other.
+    """
+    return key(namespace, hashlib.sha256(ticket.encode("ascii")).hexdigest())
 
 
 def _redis_unavailable() -> HTTPException:
@@ -607,17 +647,47 @@ def _redis_unavailable() -> HTTPException:
     )
 
 
-async def _mint_ticket(binding: _TicketBinding) -> str:
-    """A new ticket for *binding*. The server keeps its SHA-256 for 300 s."""
+async def _mint_ticket(binding: Any, *, namespace: str = _TICKET_NAMESPACE) -> str:
+    """A new ticket for *binding*. The server keeps its SHA-256 for 300 s.
+
+    *binding* is a ``NamedTuple`` with an ``organization_id`` field, and each
+    field a JSON string, number or boolean, so a spend reads it back equal.
+    """
     ticket = secrets.token_urlsafe(_TICKET_BYTES)
     try:
         async with asyncio.timeout(_REDIS_TIMEOUT_S):
             with organization_scope(binding.organization_id):
                 await get_tenant_redis().setex(
-                    _ticket_key(ticket), _TICKET_TTL_S, json.dumps(list(binding)))
+                    _ticket_key(ticket, namespace), _TICKET_TTL_S,
+                    json.dumps(list(binding)))
     except OUTAGE_ERRORS:
         raise _redis_unavailable() from None
     return ticket
+
+
+async def _take_ticket(ticket: str | None, binding: Any, *, namespace: str) -> bool:
+    """Spend *ticket* with one ``GETDEL``, and say whether it bound *binding*.
+
+    The ticket is gone after this call, whatever the answer. A missing,
+    spent, expired or unmatched ticket is ``False``. A Redis outage is the
+    503 of :func:`_redis_unavailable`. The organization of the key is the
+    one of *binding*, which the caller took from the session.
+    """
+    if not ticket or not ticket.isascii():
+        return False
+    try:
+        async with asyncio.timeout(_REDIS_TIMEOUT_S):
+            with organization_scope(binding.organization_id):
+                raw = await get_tenant_redis().getdel(_ticket_key(ticket, namespace))
+    except OUTAGE_ERRORS:
+        raise _redis_unavailable() from None
+    if raw is None:
+        return False
+    try:
+        stored = type(binding)(*json.loads(raw))
+    except (TypeError, ValueError):
+        return False
+    return stored == binding
 
 
 async def _spend_ticket(req: ApproveRequest, binding: _TicketBinding) -> None:
@@ -627,24 +697,8 @@ async def _spend_ticket(req: ApproveRequest, binding: _TicketBinding) -> None:
     spent, expired or unmatched ticket is 400 ``invalid_request`` with no
     ``redirect_to``, because nothing in the request is verified yet.
     """
-    refused = _error("invalid_request", "The consent ticket is missing or not valid.")
-    ticket = req.consent_ticket
-    if not ticket or not ticket.isascii():
-        raise refused
-    try:
-        async with asyncio.timeout(_REDIS_TIMEOUT_S):
-            with organization_scope(binding.organization_id):
-                raw = await get_tenant_redis().getdel(_ticket_key(ticket))
-    except OUTAGE_ERRORS:
-        raise _redis_unavailable() from None
-    if raw is None:
-        raise refused
-    try:
-        stored = _TicketBinding(*json.loads(raw))
-    except (TypeError, ValueError):
-        raise refused from None
-    if stored != binding:
-        raise refused
+    if not await _take_ticket(req.consent_ticket, binding, namespace=_TICKET_NAMESPACE):
+        raise _error("invalid_request", "The consent ticket is missing or not valid.")
 
 
 # ── First-party clients (rule 13, D-EA-11) ──────────────────────────────────
@@ -840,6 +894,13 @@ class AgentConnectionOut(BaseModel):
     #: The resource scopes that Change access may turn on: the scopes that
     #: every live token of the connection covers (D-EA-13 rule 2, EA-17c-1).
     ceiling_scopes: list[str]
+    #: EA-19c (spec §10.9): ``oauth`` or ``box``. For a box, ``last_used_at``
+    #: is the last call, and ``expires_at`` never slides.
+    credential: str
+    #: EA-19c: the last client address of a box, and the time of its last
+    #: new-address mark. ``None`` for an OAuth connection.
+    last_seen_addr: str | None
+    addr_changed_at: str | None
 
 
 class AgentConnectionsOut(BaseModel):
@@ -863,7 +924,53 @@ def connection_out(row: agent_tokens.ConnectionRow) -> AgentConnectionOut:
         requested_scopes=(
             None if row.requested_scopes is None else list(row.requested_scopes)),
         ceiling_scopes=list(row.ceiling_scopes),
+        credential=row.credential,
+        last_seen_addr=row.last_seen_addr,
+        addr_changed_at=row.addr_changed_at.isoformat() if row.addr_changed_at else None,
     )
+
+
+#: The actor of a new-address audit row: the edge saw the address, and the
+#: list route writes the row for it (spec §10.9 question 5).
+_EDGE_ACTOR = "system:agent_edge"
+
+
+async def audit_new_addresses(org: str, rows: list[agent_tokens.ConnectionRow]) -> None:
+    """Write the audit row ``box_token.new_address`` for the newest mark of each live box (rule 15).
+
+    The edge marks ``addr_changed_at`` and writes no audit row, because the
+    audit writer opens a sync engine that the edge must not hold. So both
+    list routes call this. The row id comes from the connection and the time
+    of the mark (``agent_tokens.box_address_event_id``). A mark whose row
+    exists already writes nothing, and the primary key holds one row when
+    two reads race. A mark that a later mark replaces before any list read gets no row, and neither does a mark on a box that is revoked or expired first. It never blocks the list: a failure only logs.
+    """
+    marks = {
+        agent_tokens.box_address_event_id(row.id, row.addr_changed_at): row
+        for row in rows
+        if row.credential == agent_tokens.BOX and row.addr_changed_at is not None
+    }
+    if not marks:
+        return
+    try:
+        from acb_audit import AuditEvent, record
+
+        done = await agent_tokens.audited_events(org, list(marks))
+        for event_id, row in marks.items():
+            if event_id in done:
+                continue
+            record(AuditEvent(
+                actor=_EDGE_ACTOR,
+                action=agent_tokens.BOX_NEW_ADDRESS_ACTION,
+                target=f"agent_connection:{row.id}",
+                payload={"addr": row.last_seen_addr,
+                         "marked_at": row.addr_changed_at.isoformat()},
+                id=UUID(event_id),
+                at=row.addr_changed_at,
+                organization_id=org,
+            ))
+    except Exception as exc:  # an audit backend that is down must not block the list
+        _log.warning("agent_access.audit_failed", error=type(exc).__name__)
 
 
 def audit_revoke(actor_email: str, org: str, connection_id: str, *, admin: bool) -> None:
@@ -900,8 +1007,9 @@ async def list_my_connections(
 ) -> JSONResponse:
     """The member's own live connections, newest first (rule 12)."""
     email = _member(user)
-    rows = await agent_tokens.list_connections(
-        str(current_tenant()), member_email=email)
+    org = str(current_tenant())
+    rows = await agent_tokens.list_connections(org, member_email=email)
+    await audit_new_addresses(org, rows)
     body = AgentConnectionsOut(connections=[connection_out(r) for r in rows])
     return JSONResponse(body.model_dump(), headers=_NO_STORE)
 
@@ -1009,6 +1117,27 @@ async def _require_change_access(
         raise HTTPException(status_code=404, detail="Not Found")
 
 
+async def _capped_body(request: Request, cap: int) -> bytes:
+    """The raw body of *request*, read with a cap. Past *cap* bytes, 413."""
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > cap:
+            raise HTTPException(status_code=413, detail="The body is too large.")
+    return bytes(raw)
+
+
+def _validated(model: type[BaseModel], raw: bytes) -> Any:
+    """*raw* checked by *model*. A body that is not JSON, or that the model
+    refuses, is the 422 of FastAPI, with no input echoed back."""
+    try:
+        return model.model_validate_json(raw)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors(
+            include_url=False, include_context=False, include_input=False,
+        )) from None
+
+
 async def _change_body(request: Request) -> ChangeAccessRequest:
     """The body of a change, read with a cap and checked by the model.
 
@@ -1016,17 +1145,7 @@ async def _change_body(request: Request) -> ChangeAccessRequest:
     not JSON, or that the model refuses, is the 422 of FastAPI, with no
     input echoed back.
     """
-    raw = bytearray()
-    async for chunk in request.stream():
-        raw += chunk
-        if len(raw) > _MAX_CHANGE_BODY:
-            raise HTTPException(status_code=413, detail="The body is too large.")
-    try:
-        return ChangeAccessRequest.model_validate_json(bytes(raw))
-    except ValidationError as exc:
-        raise RequestValidationError(exc.errors(
-            include_url=False, include_context=False, include_input=False,
-        )) from None
+    return _validated(ChangeAccessRequest, await _capped_body(request, _MAX_CHANGE_BODY))
 
 
 def _unprocessable(error: str, description: str, **extra: Any) -> HTTPException:
@@ -1130,3 +1249,443 @@ async def change_my_connection(
         )
         audit_change(email, str(current_tenant()), result)
     return JSONResponse(connection_out(row).model_dump(), headers=_NO_STORE)
+
+
+# ── Box tokens (rule 15, EA-19c, D-EA-5, spec §10.9) ────────────────────────
+
+
+#: The Redis namespace of the box ticket. It is not the namespace of the
+#: consent ticket, so a ticket of one purpose never opens the other.
+_BOX_TICKET_NAMESPACE = "box-mint"
+
+#: The two purposes of a box ticket.
+_BOX_MINT = "mint"
+_BOX_ROTATE = "rotate"
+
+#: The longest body of a box route. Two lists of 50 ids and every scope fit.
+_MAX_BOX_BODY = 16_384
+
+#: The audit actions of the box routes. The new-address row is
+#: ``agent_tokens.BOX_NEW_ADDRESS_ACTION``.
+BOX_MINT_ACTION = "box_token.create"
+BOX_ROTATE_ACTION = "box_token.rotate"
+BOX_REVOKE_ALL_ACTION = "box_token.revoke_all"
+
+
+async def _require_box_tokens() -> None:
+    """404 while ``agent_box_tokens_enabled`` is off (rule 15).
+
+    A dependency of the check, the mint and the rotate, so it runs before
+    the path id and the body are read. The list, the revoke of one
+    connection and the revoke of all box tokens do not take it: they stay
+    live with the flag off, so an admin can still remove access.
+    """
+    if not agent_oauth.box_tokens_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _box_name_ok(value: str) -> str:
+    """The box name, trimmed: 1 to 100 characters with no control character.
+
+    A control character is any of Unicode category ``Cc``, so C0, DEL and C1.
+    """
+    name = value.strip()
+    if not name or len(name) > agent_tokens.BOX_NAME_MAX:
+        raise ValueError(f"a box name has 1 to {agent_tokens.BOX_NAME_MAX} characters")
+    if any(unicodedata.category(c) == "Cc" for c in name):
+        raise ValueError("a box name holds a control character")
+    return name
+
+
+class BoxMintFields(BaseModel):
+    """What a member asks for when they make a box token (spec §10.9 q. 2).
+
+    ⚠️ ``extra="forbid"``: a body cannot name an organization or a member.
+    The member is the one of the session, and the organization is the bound
+    tenant (rule 1).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(max_length=4 * agent_tokens.BOX_NAME_MAX)
+    #: The default is ``projects:read projects:write``. An app scope is on
+    #: only when the member asks for it by name.
+    scopes: list[Annotated[str, Field(max_length=_MAX_SCOPE_NAME)]] = Field(
+        default_factory=lambda: [agent_oauth.PROJECTS_READ, agent_oauth.PROJECTS_WRITE],
+        max_length=len(agent_oauth.SUPPORTED_SCOPES))
+    days: StrictInt = Field(
+        default=agent_tokens.BOX_DAYS_DEFAULT, ge=1, le=agent_tokens.BOX_DAYS_MAX)
+    pinned_projects: list[UUID] = Field(default_factory=list, max_length=_MAX_PINS)
+    left_out_projects: list[UUID] = Field(default_factory=list, max_length=_MAX_PINS)
+    include_personal: StrictBool = False
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def _clean(cls, value: str) -> str:
+        return _box_name_ok(value)
+
+
+class BoxMintRequest(BoxMintFields):
+    """A mint: the fields of the check, and the ticket that the check gave."""
+
+    ticket: str | None = Field(default=None, max_length=_MAX_TICKET)
+
+
+class BoxRotateFields(BaseModel):
+    """A rotation (spec §10.9 question 4). ``now`` kills the old token at
+    once. Else the old token lives 24 hours more at most."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: StrictInt = Field(
+        default=agent_tokens.BOX_DAYS_DEFAULT, ge=1, le=agent_tokens.BOX_DAYS_MAX)
+    now: StrictBool = False
+
+
+class BoxRotateCheck(BoxRotateFields):
+    """The check of a rotation names the connection. The ticket binds it."""
+
+    connection_id: UUID
+
+
+class BoxRotateRequest(BoxRotateFields):
+    """A rotation: the fields of the check, and its ticket."""
+
+    ticket: str | None = Field(default=None, max_length=_MAX_TICKET)
+
+
+class _BoxBinding(NamedTuple):
+    """What one box ticket binds. The mint or the rotation must match each
+    field. The lists are joined with commas, so the JSON form reads back
+    equal. ``connection_id`` is empty for a mint."""
+
+    purpose: str
+    member_email: str
+    organization_id: str
+    connection_id: str
+    name: str
+    scopes: str
+    days: int
+    now: bool
+    pinned_projects: str
+    left_out_projects: str
+    include_personal: bool
+
+
+def _mint_binding(req: BoxMintFields, email: str, org: str) -> _BoxBinding:
+    """The binding of a mint, from the body as the member sent it."""
+    return _BoxBinding(
+        _BOX_MINT, email, org, "", req.name, " ".join(req.scopes), req.days, False,
+        ",".join(str(p) for p in req.pinned_projects),
+        ",".join(str(p) for p in req.left_out_projects),
+        req.include_personal)
+
+
+def _rotate_binding(
+    connection_id: str, req: BoxRotateFields, email: str, org: str
+) -> _BoxBinding:
+    """The binding of a rotation of *connection_id*."""
+    return _BoxBinding(
+        _BOX_ROTATE, email, org, connection_id, "", "", req.days, req.now, "", "", False)
+
+
+def _box_refusal(status: int, error: str, description: str, **extra: Any) -> HTTPException:
+    """A refusal of a box route, with a code that the dialog reads."""
+    return HTTPException(
+        status_code=status,
+        detail={"error": error, "error_description": description, **extra},
+        headers=_NO_STORE,
+    )
+
+
+def _no_ticket() -> HTTPException:
+    return _box_refusal(400, "invalid_request", "The box ticket is missing or not valid.")
+
+
+def _box_person(user: UserContext) -> str:
+    """The member of the session, for a person only (rule 15).
+
+    A signed agent gets 404: branch 0 already refuses each pair that is not
+    in ``MCP_ROUTES``, and this is the second lock. Then the organization
+    must be on the allowlist.
+    """
+    email = _member(user)
+    if user.agent is not None:
+        raise _not_found()
+    _require_org_allowed()
+    return email
+
+
+def _box_scopes(asked: list[str]) -> tuple[str, ...]:
+    """The scopes of a box token, by the consent rule (spec §10.9 q. 2).
+
+    ``agent_oauth.parse_scope`` reads them, as ``_validate`` does for the
+    consent page. ``offline_access`` drops out, because a box has no
+    refresh token. A scope that the server does not know is a 422 here, not
+    a silent drop, so the member sees what the token cannot hold. A write
+    scope needs ``agent_oauth.writes_enabled``.
+    """
+    words = [w for item in asked for w in item.split(" ") if w]
+    try:
+        parsed = agent_oauth.parse_scope(" ".join(words))
+    except ValueError:
+        raise _box_refusal(422, "invalid_scope", "A scope is malformed.") from None
+    unknown = [w for w in dict.fromkeys(words) if w not in parsed]
+    if unknown:
+        raise _box_refusal(
+            422, "invalid_scope", "This server does not know a scope.", scopes=unknown)
+    kept = tuple(s for s in parsed if s != agent_oauth.OFFLINE_ACCESS)
+    if not kept:
+        raise _box_refusal(422, "no_scope", "Choose one scope or more.")
+    if not agent_oauth.writes_enabled() and any(agent_oauth.covered_by(s) for s in kept):
+        raise _box_refusal(
+            422, agent_oauth.WRITES_DISABLED_CODE,
+            "Changes are turned off for agents. Choose only read scopes.")
+    return kept
+
+
+async def _box_reach(
+    user: UserContext, req: BoxMintFields
+) -> tuple[list[str], list[str]]:
+    """The pins and the left-out list of a box, by the rules of §10.8.
+
+    A copy of an id drops out, and the order stays. An id in both lists is
+    422 ``project_in_both_lists``. Each id must be a project that the member
+    of the session sees, or a personal root of the member
+    (``tree.grantable_project_ids``), else 422 ``project_not_seen``. The cap
+    is the cap of the pins, in the model.
+    """
+    pins = list(dict.fromkeys(str(p) for p in req.pinned_projects))
+    left_out = list(dict.fromkeys(str(p) for p in req.left_out_projects))
+    left_set = set(left_out)
+    both = [p for p in pins if p in left_set]
+    if both:
+        raise _box_refusal(
+            422, "project_in_both_lists",
+            "A project cannot be chosen and left out at once.", projects=both)
+    if not pins and not left_out:
+        return pins, left_out
+    from gateway.routes.projects.tree import grantable_project_ids
+
+    seen = await grantable_project_ids(user)
+    unseen = [p for p in (*pins, *left_out) if p not in seen]
+    if unseen:
+        raise _box_refusal(
+            422, agent_tokens.CHANGE_PROJECT_NOT_SEEN,
+            "You can only choose a project that you can see.", projects=unseen)
+    return pins, left_out
+
+
+async def _own_box(org: str, email: str, connection_id: str) -> agent_tokens.ConnectionRow:
+    """The live box connection *connection_id* of the member, else 404.
+
+    The read names the member, so a box of another member, an OAuth
+    connection, a revoked one and an unknown id are all 404.
+    """
+    for row in await agent_tokens.list_connections(org, member_email=email):
+        if row.id == connection_id and row.credential == agent_tokens.BOX:
+            return row
+    raise _not_found()
+
+
+#: The words of each refusal of the store, by its reason.
+_BOX_REFUSALS: dict[str, tuple[int, str]] = {
+    agent_tokens.BOX_OFF: (404, "Not Found"),
+    agent_tokens.ORG_NOT_ALLOWED: (
+        403, "Your organization has not turned on agent connections yet."),
+    agent_tokens.BOX_MEMBER_FULL: (
+        409, "You hold the most box tokens you may. Revoke one first."),
+    agent_tokens.BOX_ORG_FULL: (
+        409, "Your organization holds the most box tokens it may."),
+    agent_tokens.BOX_NOT_FOUND: (404, "No such agent connection."),
+}
+
+
+def _store_refusal(refused: agent_tokens.BoxRefused) -> HTTPException:
+    status, words = _BOX_REFUSALS.get(refused.reason, (409, "The box token was refused."))
+    if status == 404:
+        return HTTPException(status_code=404, detail=words)
+    error = ORG_NOT_ENABLED if refused.reason == agent_tokens.ORG_NOT_ALLOWED else refused.reason
+    return _box_refusal(status, error, words)
+
+
+def _audit_box(actor_email: str, org: str, action: str, target: str,
+               payload: dict[str, Any]) -> None:
+    """One audit row of a box act. Ids and counts only, never a token."""
+    try:
+        from acb_audit import AuditEvent, record
+
+        record(AuditEvent(
+            actor=f"user:{actor_email}", action=action, target=target,
+            payload=payload, organization_id=org))
+    except Exception as exc:  # an audit backend that is down must not block this
+        _log.warning("agent_access.audit_failed", error=type(exc).__name__)
+
+
+def _issued(made: agent_tokens.BoxToken, name: str) -> JSONResponse:
+    """The ONE answer that holds the raw token. No cache may keep it."""
+    return JSONResponse(
+        {
+            "token": made.token,
+            "connection_id": made.connection_id,
+            "name": name,
+            "scopes": [s for s in made.scope.split(" ") if s],
+            "expires_at": made.expires_at.isoformat(),
+        },
+        headers=_NO_STORE,
+    )
+
+
+@router.post("/box-tokens/check", dependencies=[Depends(_require_box_tokens)])
+async def check_box_token(
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """Check a mint or a rotation, and give the one-time ``box-mint`` ticket.
+
+    A body that names ``connection_id`` is the check of a rotation
+    (:class:`BoxRotateCheck`). Each other body is the check of a mint
+    (:class:`BoxMintFields`). The check runs every rule of the act that it
+    names, and writes nothing but the ticket. The ticket binds the member,
+    the organization and each field of the body, for 300 seconds.
+    """
+    email = _box_person(user)
+    org = str(current_tenant())
+    raw = await _capped_body(request, _MAX_BOX_BODY)
+    try:
+        peek = json.loads(raw)
+    except ValueError:
+        peek = None
+    if isinstance(peek, dict) and "connection_id" in peek:
+        rotate = _validated(BoxRotateCheck, raw)
+        connection_id = str(rotate.connection_id)
+        await _own_box(org, email, connection_id)
+        ticket = await _mint_ticket(
+            _rotate_binding(connection_id, rotate, email, org),
+            namespace=_BOX_TICKET_NAMESPACE)
+        return JSONResponse(
+            {"ticket": ticket, "connection_id": connection_id,
+             "days": rotate.days, "now": rotate.now},
+            headers=_NO_STORE)
+    mint = _validated(BoxMintFields, raw)
+    scopes = _box_scopes(mint.scopes)
+    await _box_reach(user, mint)
+    ticket = await _mint_ticket(
+        _mint_binding(mint, email, org), namespace=_BOX_TICKET_NAMESPACE)
+    return JSONResponse(
+        {"ticket": ticket, "name": mint.name, "scopes": list(scopes), "days": mint.days},
+        headers=_NO_STORE)
+
+
+@router.post("/box-tokens", dependencies=[Depends(_require_box_tokens)])
+async def mint_box_token(
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """Make a box token for the member of the session (rule 15).
+
+    The checks run in this order, and each refusal writes nothing:
+
+    1. The flag ``agent_box_tokens_enabled``, else 404.
+    2. A person of an organization (:func:`_member`), else 403. A signed
+       agent gets 404. The organization on the allowlist, else 403.
+    3. The body (:class:`BoxMintRequest`), else 413 or 422.
+    4. The ``box-mint`` ticket, spent with one ``GETDEL`` BEFORE each other
+       check of the body. It must bind this member, this organization and
+       each field of the body, else 400.
+    5. The scopes by the consent rule (:func:`_box_scopes`), the reach by
+       §10.8 (:func:`_box_reach`), then the store with its caps.
+
+    The answer holds the raw token ONCE, with ``Cache-Control: no-store``.
+    No log line and no audit row holds it.
+    """
+    email = _box_person(user)
+    org = str(current_tenant())
+    req = _validated(BoxMintRequest, await _capped_body(request, _MAX_BOX_BODY))
+    if not await _take_ticket(
+            req.ticket, _mint_binding(req, email, org), namespace=_BOX_TICKET_NAMESPACE):
+        raise _no_ticket()
+    scopes = _box_scopes(req.scopes)
+    pins, left_out = await _box_reach(user, req)
+    made = await agent_tokens.create_box_connection(
+        email,
+        req.name,
+        scopes=scopes,
+        days=req.days,
+        pinned_projects=pins,
+        include_personal=req.include_personal,
+        left_out_projects=left_out,
+    )
+    if isinstance(made, agent_tokens.BoxRefused):
+        raise _store_refusal(made)
+    _log.info("agent_access.box_token_created", connection_id=made.connection_id,
+              scopes=made.scope, days=req.days)
+    _audit_box(email, org, BOX_MINT_ACTION, f"agent_connection:{made.connection_id}",
+               {"scopes": list(scopes), "days": req.days, "pinned": len(pins),
+                "left_out": len(left_out), "include_personal": req.include_personal})
+    return _issued(made, req.name)
+
+
+@router.post(
+    "/box-tokens/{connection_id}/rotate", dependencies=[Depends(_require_box_tokens)])
+async def rotate_my_box_token(
+    connection_id: UUID,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """Give one of the member's own box connections a new token (rule 15).
+
+    A rotation hands out a new secret, so it has every control of a mint:
+    the flag, a person, the allowlist, and a ``box-mint`` ticket that binds
+    this connection id, ``days`` and ``now``. The store takes the connection
+    from the member's own rows only, so a box of another member is 404.
+    """
+    email = _box_person(user)
+    org = str(current_tenant())
+    req = _validated(BoxRotateRequest, await _capped_body(request, _MAX_BOX_BODY))
+    target = str(connection_id)
+    if not await _take_ticket(
+            req.ticket, _rotate_binding(target, req, email, org),
+            namespace=_BOX_TICKET_NAMESPACE):
+        raise _no_ticket()
+    # Read the name first, so a revoke that lands between the two reads can
+    # never lose a token that the store already made.
+    row = await _own_box(org, email, target)
+    made = await agent_tokens.rotate_box_token(
+        org, target, member_email=email, now=req.now, days=req.days)
+    if isinstance(made, agent_tokens.BoxRefused):
+        raise _store_refusal(made)
+    _log.info("agent_access.box_token_rotated", connection_id=made.connection_id,
+              now=req.now, days=req.days)
+    _audit_box(email, org, BOX_ROTATE_ACTION, f"agent_connection:{made.connection_id}",
+               {"days": req.days, "now": req.now})
+    return _issued(made, row.client_name)
+
+
+@router.post(
+    "/box-tokens/revoke-all",
+    dependencies=[require_feature_router("integrations"),
+                  require_permission(MANAGE_PERMISSION)],
+)
+async def revoke_all_box_tokens(
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """Revoke every box token of the organization, for an admin (rule 15).
+
+    The gates of ``routes/integrations_agents.py``: ``feature:integrations``
+    and ``integrations:manage``. It stays live with the box flag off, so an
+    admin revokes before an operator turns the flag on again (spec §10.9
+    question 5). The reason is ``flag_off``. Each revoked connection writes
+    the revoke audit row of an admin. The answer is the count.
+    """
+    email = _member(user)
+    if user.agent is not None:
+        raise _not_found()
+    org = str(current_tenant())
+    ids = await agent_tokens.revoke_box_connections(
+        org, reason=agent_tokens.REVOKE_FLAG_OFF)
+    for connection_id in ids:
+        audit_revoke(email, org, connection_id, admin=True)
+    _audit_box(email, org, BOX_REVOKE_ALL_ACTION, f"organization:{org}",
+               {"count": len(ids)})
+    return JSONResponse({"revoked": len(ids)}, headers=_NO_STORE)

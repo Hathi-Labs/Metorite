@@ -1080,6 +1080,19 @@ class Settings(BaseSettings):
     # tests/unit/test_attachment_ocr.py.
     attachment_ocr: bool = False
 
+    # ── Image analysis in the chat (WS-VOX VOX-3, projects_ai_chat.md §31) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On for an org, the chat tool `analyze_image` sends an image
+    # that a member attached to the model of `tier-vision` through the Console,
+    # and each call draws AI credits. Off, the tool answers one sentence and
+    # calls no model. The one reader is
+    # `acb_common.assistant_profile.image_analysis_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). ⚠️ The flip on production spends
+    # credits, so it is an owner step (§31.6 Q4). Fence:
+    # tests/unit/test_attachment_analyze_image.py.
+    image_analysis_orgs: str = ""
+
     # ── The member's corrections and limits in a chat (WS-67 OA-4) ──────────
     #
     # ON gives the orchestrator `keep_correction` and `drop_correction` and
