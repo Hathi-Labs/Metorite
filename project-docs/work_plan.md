@@ -5745,7 +5745,7 @@ Owner decisions, 2026-10-29 (WM-0) and 2026-11-08, in chat. Design: `project-doc
    8. **Q8, the critical path.** `specs/project_planning.md` (PJP-6) owns the maths. SW-90 and WM-3 read it. Code computes the path and the model judges it.
    9. **Q9, dogfood.** HathiLabs runs its Metorite work in cycles from phase 4 of the design. Lanes L1 to L8 are the workstreams.
 
-**What this does not change.** Each slice ships dark. A slice that changes what a member sees needs a D145 preview and the owner's approval. The decision for a Goal above projects (WM-5, task 984) still waits on task 352.
+**What this does not change.** Each slice ships dark. A slice that changes what a member sees needs a D145 preview and the owner's approval. Q3 sets the shape of the Goal that WM-5 (task 984) builds. How one goal links to many projects, and how it reaches agents as context, stays with SW-21 (task 352).
 
 **Re-check this number at merge.** The first merge wins a D-number. No branch or worktree held D195 when task 959 wrote this record. D194 was the highest on `main`.
 
