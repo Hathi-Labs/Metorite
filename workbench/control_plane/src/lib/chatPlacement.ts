@@ -244,6 +244,9 @@ const WRITE: readonly string[] = [
   "pin_authority",
   "unpin_authority",
   "answer_decision",
+  // WS-AP AP-10a: a member asks a person, and withdraws the ask. Each shows a card.
+  "ask_person",
+  "withdraw_ask",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",
