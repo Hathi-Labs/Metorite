@@ -901,6 +901,7 @@ class TestTheHelpers:
         assert "account_id" not in line and "message_id" not in line
 
     async def test_ask_takes_ids_and_module_slug(self, tenant, monkeypatch):
+        _modes(monkeypatch)  # DEC-1: `ask` reads the mode (shadow asks too)
         fake = _fake(monkeypatch)
         q = acb_llm.ChoiceQuestion(instructions="x", criteria={"a": "a", "b": "b"})
         with structlog.testing.capture_logs() as caps:
