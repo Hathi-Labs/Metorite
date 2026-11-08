@@ -26,7 +26,9 @@
  * Pure and DOM-guarded, so the node-env vitest holds it.
  */
 
+import { APP_REQUESTS_KEY } from "@/app/integrations/lib/appRequests";
 import { placementOf } from "@/lib/chatPlacement";
+import { invalidate } from "@/lib/dataCache";
 import { bareToolName } from "@/lib/toolSteps";
 
 /** The window event name. */
@@ -92,6 +94,16 @@ const STUDIO_WRITES: ReadonlySet<string> = new Set([
   "studio_record_create", "studio_record_update", "studio_record_delete",
 ]);
 
+/**
+ * The record writes of the studio pack (STU-B2c-2b). Each one ends a request of
+ * the approval store: an ask opens one, and a resend spends one. The cards of
+ * the chat (`components/studio/StudioToolCards.tsx`) and the list of
+ * Integrations read those requests under `APP_REQUESTS_KEY`.
+ */
+export const STUDIO_RECORD_WRITES: ReadonlySet<string> = new Set([
+  "studio_record_create", "studio_record_update", "studio_record_delete",
+]);
+
 /** The assistant profile tools write the settings page, which no live app shows. */
 const PROFILE_WRITES = /^profile_/;
 
@@ -126,6 +138,11 @@ export const APPS_WITH_WRITE_TOOLS: readonly LiveApp[] = [
 export function announceAssistantWrite(toolName: string): LiveApp[] {
   const apps = appsForWrite(toolName);
   if (apps.length === 0) return apps;
+  // STU-B2c-2c: a record write of Mira changes a request of the approval store.
+  // A saved resend spends it, so drop the cached reads of the requests. Each
+  // card in the chat then reads its request again and shows Done with no
+  // control, and the list of Integrations drops the request.
+  if (STUDIO_RECORD_WRITES.has(bareToolName(toolName))) invalidate(APP_REQUESTS_KEY);
   try {
     window.dispatchEvent(new CustomEvent(ASSISTANT_WROTE_EVENT, { detail: { apps, tool: bareToolName(toolName) } }));
   } catch {
