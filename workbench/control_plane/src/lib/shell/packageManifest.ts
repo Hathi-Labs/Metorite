@@ -159,6 +159,8 @@ export interface InstallJob {
   words: readonly string[];
   href: string;
   icon: string;
+  /** The name of the app that gives the job, when the payload names it. */
+  app?: string;
 }
 
 /** The ⌘K jobs the installs give. */
@@ -173,7 +175,8 @@ export function installJobs(m: PackageManifest, features: readonly string[] = []
     const words = Array.isArray(e.payload.words)
       ? e.payload.words.filter((w): w is string => typeof w === "string")
       : [];
-    out.push({ id: e.key, label, words, href, icon: text(e.payload.icon) ?? "Zap" });
+    const app = text(e.payload.app);
+    out.push({ id: e.key, label, words, href, icon: text(e.payload.icon) ?? "Zap", ...(app ? { app } : {}) });
   }
   return out;
 }

@@ -733,10 +733,12 @@ async def remove_install(db: Any, *, install_id: str) -> bool:
 
     *db* is a session that the caller opened with ``tenant_session(org)``.
     The FK cascade of ``package_contribution`` deletes each claim, so each
-    key of the install is free when the caller's transaction commits. An
-    install in any state can go. An id that no install of the bound org has
-    raises :class:`InstallNotFound` and writes nothing. The store does not
-    check that the member may remove the install. The routes own that check.
+    key of the install is free when the caller's transaction commits. The
+    FK cascade of ``package_field_value`` deletes each extension value of
+    the install too (PKG-13). An install in any state can go. An id that no
+    install of the bound org has raises :class:`InstallNotFound` and writes
+    nothing. The store does not check that the member may remove the install.
+    The routes own that check.
     Answers True.
     """
     install = _install_id(install_id)
