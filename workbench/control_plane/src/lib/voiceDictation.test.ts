@@ -152,9 +152,10 @@ describe("source fences", () => {
 
   it("the composer puts the transcript in the box and never sends it", () => {
     const start = chat.indexOf("const putDictation = useCallback(");
-    const end = chat.indexOf("}, []);", start);
+    const end = chat.indexOf("}, [setInput, setComposerNotice]);", start);
     const body = chat.slice(start, end);
     expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
     expect(body).toContain("insertAtCaret(");
     expect(body).toContain("setInput(next.value)");
     expect(body).toContain("box.focus()");

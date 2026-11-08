@@ -30,6 +30,9 @@ import {
   type VoiceState,
 } from "@/lib/voiceDictation";
 
+/** The size of the RIFF header that `encodeWav` writes. */
+const WAV_HEADER_BYTES = 44;
+
 /** Read whether the composer shows the mic. The read cache keeps it, so a
  *  second chat on the page asks nothing. */
 async function readAvailability(): Promise<VoiceAvailability> {
@@ -47,6 +50,8 @@ export function useVoiceAvailability(): VoiceAvailability {
 /** Send one clip. The answer is the text, or the sentence of a refusal. */
 export async function postClip(clip: Blob): Promise<{ text: string } | { error: string }> {
   if (clip.size > MAX_CLIP_BYTES) return { error: TOO_LONG };
+  // A WAV header and no sound: nothing to send, and nothing to bill.
+  if (clip.size <= WAV_HEADER_BYTES) return { text: "" };
   const form = new FormData();
   form.append("file", clip, "clip.wav");
   let res: Response;
@@ -150,8 +155,8 @@ export function useVoiceDictation(opts: {
   useEffect(() => {
     mounted.current = true;
     return () => {
+      // A grant that arrives after this reads `mounted` and records nothing.
       mounted.current = false;
-      attempt.current++;
       capture.current?.cancel();
       capture.current = null;
     };

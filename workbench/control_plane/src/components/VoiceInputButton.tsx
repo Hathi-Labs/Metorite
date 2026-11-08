@@ -62,10 +62,8 @@ export default function VoiceInputButton({
   const recording = phase === "recording";
   const waiting = phase === "asking" || phase === "transcribing";
 
-  useImperativeHandle(ref, () => ({ stop: () => void voice.stop(), cancel: voice.cancel }), [
-    voice.stop,
-    voice.cancel,
-  ]);
+  const { stop, cancel } = voice;
+  useImperativeHandle(ref, () => ({ stop: () => void stop(), cancel }), [stop, cancel]);
   useEffect(() => {
     onPhase?.(phase);
   }, [phase, onPhase]);

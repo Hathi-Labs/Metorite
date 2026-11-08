@@ -935,7 +935,7 @@ export default function AgentChat({
       box.focus();
       box.setSelectionRange(next.caret, next.caret);
     });
-  }, []);
+  }, [setInput, setComposerNotice]);
   // IMG-1 (projects_ai_chat §30.4): a file is a chip until the member sends.
   const att = useChatAttachments(sessionId);
   const attRef = useRef(att);
