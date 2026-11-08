@@ -14,7 +14,9 @@ keeps no cache and no trigger.
 So a project pin narrows a signed agent here as it does elsewhere. A slice that
 the caller cannot see is COUNTED in ``hidden`` and never named. It is left out
 of the plan, and so is each link that touches it. The result carries ids and
-numbers only. It carries no text that another person wrote.
+numbers, plus ``labels``: the number and title of the visible slices that the
+answer names (SP-12). A hidden task has no label, because its text is read as
+NULL in SQL.
 """
 
 from __future__ import annotations
@@ -42,6 +44,9 @@ from sqlalchemy import text
 #: The most tasks one read plans. A bigger tree is a goal for a person to split.
 MAX_PLAN_TASKS = 2000
 
+#: The most labels one answer carries (SP-12). The ids come in the order of use.
+MAX_LABELS = 100
+
 #: Every non-archived task under the root, the root included. ``vis`` says if
 #: the caller may see it. A task that the caller cannot see is read only to
 #: count it, and its text never leaves this module.
@@ -54,6 +59,8 @@ WITH RECURSIVE tree AS (
      WHERE c.archived_at IS NULL AND tree.depth < :max_depth
 )
 SELECT t.id, t.parent_task_id, s.category, t.estimate_mins,
+       CASE WHEN ({visible}) THEN t.task_number END AS task_number,
+       CASE WHEN ({visible}) THEN t.title END AS title,
        t.importance, t.leveraged, t.due_at,
        ty.name AS type_name,
        (SELECT min(a.assignee) FROM pm_task_assignees a
@@ -159,8 +166,21 @@ async def plan_analysis(
     hidden_outside = sum(1 for r in outside_rows if not r.vis)
     links = [(str(r.source_task_id), str(r.target_task_id)) for r in link_rows]
     result = analyze_plan(tasks, links, start=start or _today(), outside=outside)
+    answer = result.to_dict()
+    # SP-12: a number and a title for each visible task that the answer names,
+    # so a reader can say it in words. Never a hidden task: its title is NULL.
+    named = [answer["next_slice"], *answer["critical_path"], *answer["ready"],
+             *answer["held"], *(o["task_id"] for o in answer["outside_blockers"])]
+    seen: set[str] = set()
+    labels: dict[str, dict[str, Any]] = {}
+    by_id = {str(r.id): r for r in rows if r.vis}
+    for tid in named:
+        if tid and tid not in seen and tid in by_id and len(labels) < MAX_LABELS:
+            seen.add(tid)
+            labels[tid] = {"number": by_id[tid].task_number, "title": by_id[tid].title}
     return {
         "root_task_id": root,
-        **result.to_dict(),
+        **answer,
+        "labels": labels,
         "hidden": {"slices": hidden, "outside_blockers": hidden_outside},
     }

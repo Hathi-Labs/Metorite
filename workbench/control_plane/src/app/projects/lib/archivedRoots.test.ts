@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { splitArchived } from "./archivedRoots";
+import { groupByPath, splitArchived } from "./archivedRoots";
 import type { ProjectRow } from "./api";
 
 const row = (id: string, children: ProjectRow[] = [], archived = false, kind?: string) =>
@@ -41,4 +41,43 @@ describe("splitArchived", () => {
     expect(out.archived[0].parentGen).toBe(0);
     expect(out.active.map((r) => r.id)).toEqual(["t"]);
   });
+
+  // ARC-BUG-1 (owner, 2026-11-08): a project filed inside a live folder drew
+  // twice, in the live tree and in the Archived section. The space kept its
+  // OLD folder object, because the space's own child count did not change.
+  it("takes a filed grandchild out of the live tree", () => {
+    const roots = [
+      row("space", [row("ops"), row("folder", [row("filed", [], true), row("live")], false, "folder")]),
+    ];
+    const out = splitArchived(roots);
+    expect(out.archived.map((a) => a.node.id)).toEqual(["filed"]);
+    expect(out.active[0].children?.[1].children?.map((c) => c.id)).toEqual(["live"]);
+    expect(liveIds(out.active)).not.toContain("filed");
+  });
+
+  it("never leaves a filed row anywhere in the live tree, at any depth", () => {
+    const roots = [
+      row("s", [row("a", [row("b", [row("c", [row("deep", [], true)])])]), row("x", [row("y", [], true)])]),
+    ];
+    const out = splitArchived(roots);
+    expect(liveIds(out.active)).toEqual(["s", "a", "b", "c", "x"]);
+    expect(out.archived.map((a) => a.node.id)).toEqual(["deep", "y"]);
+  });
 });
+
+describe("groupByPath", () => {
+  it("prints one path for filed siblings, and a new one where the parent changes", () => {
+    const out = splitArchived([
+      row("s", [row("f", [row("one", [], true), row("live"), row("two", [], true)]), row("three", [], true)]),
+    ]);
+    const groups = groupByPath(out.archived);
+    expect(groups.map((g) => [g.path, g.entries.map((e) => e.node.id)])).toEqual([
+      [["s", "f"], ["one", "two"]],
+      [["s"], ["three"]],
+    ]);
+  });
+});
+
+function liveIds(nodes: readonly ProjectRow[]): string[] {
+  return nodes.flatMap((n) => [n.id, ...liveIds(n.children ?? [])]);
+}
