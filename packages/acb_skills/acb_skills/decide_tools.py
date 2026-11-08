@@ -111,6 +111,7 @@ import math
 import re
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any
 
 from acb_common import get_logger
@@ -629,13 +630,21 @@ def typed_choices_on() -> bool:
         return False
 
 
+#: The cool-down area of the typed choices (a feature prefix).
+TYPED_AREA = "projects."
+
+#: True while :func:`ask_typed` runs, so a 402 of ITS requests starts the
+#: ``projects.`` cool-down and a 402 of the general tool starts none.
+_TYPED_CALL: ContextVar[bool] = ContextVar("decide_typed_call", default=False)
+
+
 def _typed_cooling() -> bool:
-    """Whether the bound org is in its cool-down. Any error reads as no."""
+    """Whether the bound org is in the ``projects.`` cool-down. Any error reads as no."""
     try:
         from acb_common.db import current_tenant
         from acb_llm import decide_policy
 
-        return decide_policy.cooling(current_tenant())
+        return decide_policy.cooling(current_tenant(), area=TYPED_AREA)
     except Exception:  # a broken read must not stop a tool
         return False
 
@@ -653,8 +662,11 @@ async def ask_typed(context: str, items: list[Any], *, purpose: str) -> list[Any
     context, a question or an option.
 
     DEC-1: the call joins the one seam of the ``decide`` tier. It honours the
-    org's cool-down after a 402 (``acb_llm.decide_policy``, the state that
-    ``gateway/decide_features.py`` reads too), and it writes the same
+    cool-down of the ``projects.`` area (``acb_llm.decide_policy``, the logic
+    that ``gateway/decide_features.py`` uses too). Only a 402 on one of its
+    own requests starts it. An email, My Day or CRM verdict never pauses it,
+    and its 402 never pauses them. The general System-1 ``decide`` tool
+    starts no cool-down. The call writes the same
     ``decide.decided`` and ``decide.unavailable`` lines, with the purpose as
     ``decide_feature``. The gate stays ``AI_TIER_ROUTING``. These two choices
     ran before the modes existed, and a mode default of ``off`` would turn
@@ -666,11 +678,12 @@ async def ask_typed(context: str, items: list[Any], *, purpose: str) -> list[Any
         return None
     ids = {"decide_feature": purpose, "questions": len(items)}
     if _typed_cooling():
-        # DEC-1: a 402 came back within the cool-down. No Router call, as
+        # DEC-1: a Projects 402 came back within the cool-down. No Router call, as
         # `decide_features.ask` refuses. The tool keeps its refusal path.
         _log.info("decide.unavailable", **ids, decide_reason="cooldown")
         return None
     started = time.monotonic()
+    marker = _TYPED_CALL.set(True)
     try:
         answers = await _answers_of(context or "", list(items), purpose)
     except system_one.SystemOneUnavailable as exc:
@@ -683,6 +696,8 @@ async def ask_typed(context: str, items: list[Any], *, purpose: str) -> list[Any
                      error_type=type(exc).__name__)
         _log.warning("decide.unavailable", **ids, decide_reason=type(exc).__name__)
         return None
+    finally:
+        _TYPED_CALL.reset(marker)
     _log.info("decide_tool.typed_choice", purpose=purpose, status="ok", items=len(items),
               confidences=[a.confidence for a in answers])
     _log.info("decide.decided", **ids, latency_ms=int((time.monotonic() - started) * 1000))
@@ -850,18 +865,21 @@ async def _one_decide(
 
 
 def _note_refusal(status: Any, where: dict[str, Any]) -> None:
-    """Start the org's cool-down after a 402 (DEC-1), as ``decide_features`` does.
+    """Start the ``projects.`` cool-down after a 402 of a typed choice (DEC-1).
 
-    The state is ``acb_llm.decide_policy``, the one copy that the gateway seam
-    reads too. Only a 402 counts: a 403 can name one app's grant, and the
-    cool-down is the whole org's. Never raises, and logs no tenant text.
+    The logic is ``acb_llm.decide_policy``, the one copy that the gateway seam
+    uses too. It runs only inside :func:`ask_typed`. A call of the general
+    System-1 ``decide`` tool starts no cool-down, as before DEC-1. Only a 402
+    counts. Never raises, and logs no tenant text.
     """
+    if not _TYPED_CALL.get():
+        return
     try:
         from acb_common.db import current_tenant
         from acb_llm import decide_policy
 
         if decide_policy.starts_cooldown(status, only_402=True) and (
-            decide_policy.start_cooldown(current_tenant())
+            decide_policy.start_cooldown(current_tenant(), area=TYPED_AREA)
         ):
             _log.warning(
                 "decide.cooldown_started", decide_feature=where.get("decide_kind"),

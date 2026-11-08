@@ -70,13 +70,19 @@ def _clean(monkeypatch):
     for name in ("DECIDE_FEATURE_MODES", *(s.upper() for s in ORG_SETTINGS)):
         monkeypatch.setenv(name, "")
     _clear()
-    df._cooldown_until.clear()
+    _clear_cooldowns()
     token = bind_tenant(ORG)
     yield
     release_tenant(token)
     monkeypatch.undo()
     _clear()
+    _clear_cooldowns()
+
+
+def _clear_cooldowns() -> None:
     df._cooldown_until.clear()
+    for table in decide_policy.ISOLATED_UNTIL.values():
+        table.clear()
 
 
 def _set(monkeypatch, modes: str, **orgs: str) -> None:
@@ -263,10 +269,13 @@ def test_a_403_from_projects_does_not_start_the_cool_down(monkeypatch):
     fake = _fake(monkeypatch, raises=acb_llm.DecideUnavailable("forbidden", status=403))
     _set(monkeypatch, "projects.align=on", projects_decide_orgs=ORG)
     asyncio.run(df.ask("projects.align", build=lambda: ({}, _questions(1)), read=_read))
-    assert not df.cooling()
+    assert not df.cooling("projects.align") and not df.cooling()
     fake.raises = acb_llm.DecideUnavailable("insufficient_credits", status=402)
     asyncio.run(df.ask("projects.align", build=lambda: ({}, _questions(1)), read=_read))
-    assert df.cooling()
+    assert df.cooling("projects.align")
+    # DEC-1 repair: a Projects 402 pauses Projects only.
+    assert not df.cooling() and not df.cooling("crm.map_role")
+    assert not df.cooling("my_day.triage") and not df.cooling("email.rule_match")
 
 
 # ── ask reads the mode ───────────────────────────────────────────────────────
@@ -398,7 +407,8 @@ def test_the_gateway_cool_down_is_the_shared_state():
     assert df.REFUSAL_COOLDOWN_S == decide_policy.REFUSAL_COOLDOWN_S
     assert not df.cooling()
     decide_policy.start_cooldown(ORG)
-    assert df.cooling()
+    assert df.cooling() and df.cooling("crm.map_role") and df.cooling("my_day.triage")
+    assert not df.cooling("projects.align"), "Projects has its own table"
     assert not decide_policy.cooling(OTHER)
     assert not decide_policy.start_cooldown(None)
 
@@ -435,8 +445,8 @@ def test_ask_typed_writes_the_decide_lines_and_honours_the_cool_down(monkeypatch
     done = log.fields("decide.decided")
     assert done and done[0]["decide_feature"] == "projects.name"
 
-    # A refused verdict in the gateway seam pauses the skill seam as well.
-    decide_policy.start_cooldown(ORG)
+    # A Projects verdict in the gateway seam pauses the skill seam as well.
+    decide_policy.start_cooldown(ORG, area="projects.")
     out = asyncio.run(decide_tools.ask_typed("ctx", ["i"], purpose="projects.name"))
     assert out is None and asked == ["projects.name"], "no second call in the cool-down"
     gone = log.fields("decide.unavailable")
@@ -444,27 +454,101 @@ def test_ask_typed_writes_the_decide_lines_and_honours_the_cool_down(monkeypatch
     assert gone[-1]["decide_feature"] == "projects.name"
 
 
-def test_a_402_on_the_tool_path_starts_the_shared_cool_down(monkeypatch):
+def _cooling_features() -> list[str]:
+    """The probe features that are cooling for ORG. Empty means none."""
+    return [f for f in ("email.rule_match", "my_day.triage", "crm.map_role", "projects.align")
+            if df.cooling(f)]
+
+
+def test_a_402_inside_ask_typed_pauses_projects_only(monkeypatch):
     from acb_skills import decide_tools
 
     monkeypatch.setattr(decide_tools, "_log", Log())
     monkeypatch.setattr(
         acb_llm, "decide",
         FakeDecide(raises=acb_llm.DecideUnavailable("insufficient_credits", status=402)))
-    out = asyncio.run(decide_tools._one_decide("ctx", {"q": object()}, {}, 1, "projects.twin"))
-    assert out is None
-    assert df.cooling(), "the gateway seam sees the 402 of the skill seam"
+
+    async def _answers(context, items, kind):
+        await decide_tools._one_decide(context, {"q": object()}, {}, 1, kind)
+        raise decide_tools.system_one.SystemOneUnavailable("down") \
+            if hasattr(decide_tools, "system_one") else RuntimeError("down")
+
+    monkeypatch.setattr(decide_tools, "_answers_of", _answers)
+    assert asyncio.run(decide_tools.ask_typed("c", ["i"], purpose="projects.twin")) is None
+    assert _cooling_features() == ["projects.align"]
+    # The marker is released after the call.
+    assert decide_tools._TYPED_CALL.get() is False
 
 
-def test_a_403_on_the_tool_path_does_not_start_it(monkeypatch):
+def test_a_403_inside_ask_typed_starts_nothing(monkeypatch):
     from acb_skills import decide_tools
 
     monkeypatch.setattr(decide_tools, "_log", Log())
     monkeypatch.setattr(
         acb_llm, "decide",
         FakeDecide(raises=acb_llm.DecideUnavailable("forbidden", status=403)))
-    asyncio.run(decide_tools._one_decide("ctx", {"q": object()}, {}, 1, "projects.twin"))
-    assert not df.cooling()
+
+    async def _answers(context, items, kind):
+        await decide_tools._one_decide(context, {"q": object()}, {}, 1, kind)
+        return []
+
+    monkeypatch.setattr(decide_tools, "_answers_of", _answers)
+    asyncio.run(decide_tools.ask_typed("c", ["i"], purpose="projects.twin"))
+    assert _cooling_features() == []
+
+
+@pytest.mark.parametrize("status", [402, 403])
+def test_the_general_decide_tool_path_starts_no_cool_down(monkeypatch, status):
+    from acb_skills import decide_tools
+
+    monkeypatch.setattr(decide_tools, "_log", Log())
+    monkeypatch.setattr(
+        acb_llm, "decide",
+        FakeDecide(raises=acb_llm.DecideUnavailable("refused", status=status)))
+    out = asyncio.run(decide_tools._one_decide("ctx", {"q": object()}, {}, 1, "decide"))
+    assert out is None
+    assert _cooling_features() == [], "as before DEC-1, the tool starts none"
+
+
+def test_an_email_403_does_not_pause_ask_typed_and_still_pauses_email(monkeypatch):
+    from acb_skills import decide_tools
+
+    _fake(monkeypatch, raises=acb_llm.DecideUnavailable("forbidden", status=403))
+    _set(monkeypatch, "email.rule_match=on", decide_feature_orgs=ORG)
+    asyncio.run(df.ask("email.rule_match", build=lambda: ({}, _questions(1)), read=_read))
+    assert df.cooling(), "email's own 403 cool-down works as before"
+    assert df.cooling("crm.map_role") and df.cooling("my_day.triage")  # the shared table
+    assert not df.cooling("projects.align")
+
+    monkeypatch.setattr(decide_tools, "_log", Log())
+    asked: list[str] = []
+
+    async def _answers(context, items, kind):
+        asked.append(kind)
+        return [_Answer("yes", 0.95)]
+
+    monkeypatch.setattr(decide_tools, "_answers_of", _answers)
+    out = asyncio.run(decide_tools.ask_typed("ctx", ["i"], purpose="projects.name"))
+    assert out is not None and asked == ["projects.name"]
+
+
+def test_a_projects_cool_down_does_not_pause_email_crm_or_my_day(monkeypatch):
+    fake = _fake(monkeypatch)
+    decide_policy.start_cooldown(ORG, area="projects.")
+    _set(monkeypatch, "email.rule_match=on,crm.note_labels=on,my_day.day_plan=on",
+         decide_feature_orgs=ORG, crm_decide_orgs=ORG, my_day_decide_orgs=ORG)
+    for feature in ("email.rule_match", "crm.note_labels", "my_day.day_plan"):
+        out = asyncio.run(df.ask(feature, build=lambda: ({}, _questions(1)), read=_read))
+        assert out == ["q00"], feature
+    assert len(fake.calls) == 3
+
+
+def test_an_email_402_does_not_pause_a_projects_ask(monkeypatch):
+    fake = _fake(monkeypatch)
+    decide_policy.start_cooldown(ORG)
+    _set(monkeypatch, "projects.align=on", projects_decide_orgs=ORG)
+    out = asyncio.run(df.ask("projects.align", build=lambda: ({}, _questions(1)), read=_read))
+    assert out == ["q00"] and len(fake.calls) == 1
 
 
 def test_the_projects_name_and_twin_checks_use_that_seam(monkeypatch):
@@ -486,7 +570,7 @@ def test_the_projects_name_and_twin_checks_use_that_seam(monkeypatch):
     assert {f["decide_feature"] for f in log.fields("decide.decided")} == {
         "projects.name", "projects.twin"}
 
-    decide_policy.start_cooldown(ORG)
+    decide_policy.start_cooldown(ORG, area="projects.")
     for purpose in ("projects.name", "projects.twin"):
         assert asyncio.run(choices._ask({"wanted": "x"}, ["item"], purpose)) is None
     assert asked == ["projects.name", "projects.twin"], "the cool-down made no call"

@@ -107,9 +107,13 @@ apps that came after email:
 - **A long list of questions.** :func:`chunk_requests` cuts it into requests
   of :data:`QUESTION_LIMIT`. They run at the same time, each with the full
   state, and the answers come back in order.
-- **The cool-down is shared.** ``acb_llm.decide_policy`` holds it, so the typed
-  choices of a skill (``acb_skills.decide_tools.ask_typed``) honour it. A
-  skill may not import this module.
+- **The cool-down logic is shared, the areas are not.** ``acb_llm.decide_policy``
+  holds it, because a skill may not import this module. Email, My Day and CRM
+  keep ONE table, as before DEC-1. ``projects.`` has its own, and a 402 is the
+  only verdict that starts it. So a Projects verdict never pauses email, My
+  Day or CRM, and theirs never pause Projects. The typed choices of a skill
+  (``acb_skills.decide_tools.ask_typed``) use the ``projects.`` area. The
+  general System-1 ``decide`` tool starts no cool-down.
 
 Fences: ``tests/unit/test_decide_seam.py``,
 ``tests/unit/test_email_decide_shadow.py``,
@@ -397,19 +401,28 @@ def _now() -> float:
     return time.monotonic()
 
 
-def _cooling(org: Any) -> bool:
-    return _policy.cooling(org, at=_now())
+def _area(feature: str | None) -> str:
+    """The cool-down area of ``feature``: its prefix when the policy isolates
+    it (``projects.``), else "" (the table that email, My Day and CRM share)."""
+    prefix = prefix_of(feature) if feature else None
+    return prefix.prefix if prefix and prefix.prefix in _policy.ISOLATED_AREAS else ""
 
 
-def cooling() -> bool:
-    """Whether the bound organization is in its cool-down after a 402 or a
-    403. A caller that spends a counter before it asks reads it first
-    (``routes/shell/feed_decide.py``)."""
-    return _cooling(current_tenant())
+def _cooling(org: Any, feature: str | None = None) -> bool:
+    return _policy.cooling(org, at=_now(), area=_area(feature))
 
 
-def _start_cooldown(ids: Mapping[str, Any], status: int | None) -> None:
-    if not _policy.start_cooldown(current_tenant(), at=_now()):
+def cooling(feature: str | None = None) -> bool:
+    """Whether the bound organization is in its cool-down after a refused
+    verdict. A caller that spends a counter before it asks reads it first
+    (``routes/shell/feed_decide.py``). With no ``feature`` it reads the table
+    of email, My Day and CRM. A ``projects.`` feature reads its own."""
+    return _cooling(current_tenant(), feature)
+
+
+def _start_cooldown(ids: Mapping[str, Any], status: int | None,
+                    feature: str | None = None) -> None:
+    if not _policy.start_cooldown(current_tenant(), at=_now(), area=_area(feature)):
         return
     _log.warning("decide.cooldown_started", **ids, decide_status=status,
                  cooldown_s=int(REFUSAL_COOLDOWN_S))
@@ -925,7 +938,7 @@ async def _ask_all(
             starts = (_MY_DAY_COOLDOWN_STATUSES if feature.startswith(_402_ONLY_PREFIXES)
                       else _COOLDOWN_STATUSES)
             if getattr(unavailable, "status", None) in starts:
-                _start_cooldown(ids, unavailable.status)
+                _start_cooldown(ids, unavailable.status, feature)
         else:
             # The type name only. A message can quote the request.
             _no_answer(ids, on=on, shadow_event="decide.shadow_failed",
@@ -1061,8 +1074,10 @@ async def ask[R](
       DEC-1: ``projects.align`` bills ``projects``). An email feature keeps
       the run context's app, and then ``email``.
 
-    Returns None with no Router call while the organization is in its
-    cool-down (:data:`REFUSAL_COOLDOWN_S` after a 402 or 403 verdict).
+    Returns None with no Router call while the organization is in the
+    cool-down of the feature's area (:data:`REFUSAL_COOLDOWN_S` after a
+    refused verdict: 402 or 403 for email, 402 only for My Day, CRM and
+    Projects).
     Returns None on every failure: a timeout past :data:`ON_BOUND_S`,
     ``DecideUnavailable``, ``DecideRequestInvalid``, a reply that is not a
     ``Decision``, or a ``read`` that cannot read it. Each logs
@@ -1076,7 +1091,7 @@ async def ask[R](
         # nothing. The caller's fallback serves. `shadow` and `on` go on.
         _LAST_NO_ANSWER.set("mode_off")
         return None
-    if _cooling(current_tenant()):
+    if _cooling(current_tenant(), feature):
         # A 402 or 403 came back within REFUSAL_COOLDOWN_S. No Router call.
         _no_answer(ids, on=True, shadow_event="", reason="cooldown")
         return None
@@ -1172,7 +1187,7 @@ async def shadow[T](
         return await old()
 
     ids = _log_ids(feature, account_id, message_id, ids)
-    if _cooling(current_tenant()):
+    if _cooling(current_tenant(), feature):
         # A 402 or 403 came back within REFUSAL_COOLDOWN_S. No Router call.
         _log.info("decide.shadow_skipped", **ids, reason="cooldown")
         return await old()
