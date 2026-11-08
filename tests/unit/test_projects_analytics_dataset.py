@@ -131,7 +131,10 @@ def test_the_filters_are_build_task_filters_plus_three() -> None:
     # key outside FILTER_KEYS is a 422, never ignored. `created_after` is
     # already a dataset date filter.
     audit = {"has_parent", "is_epic", "assigned", "updated_before",
-             "updated_after", "created_after", "title_prefix"}
+             "updated_after", "created_after", "title_prefix",
+             # MCP-G19c. The type filters and the task number of the agent
+             # door. The dataset groups by `type` instead.
+             "type_id", "type_name", "task_number"}
     assert own == builder - {"include_archived", "archived_only", "viewer", "day_start"} - audit
     assert set(route.DATE_FILTERS) == {"created_after", "completed_after", "completed_before"}
 

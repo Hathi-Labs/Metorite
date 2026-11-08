@@ -271,6 +271,9 @@ NOT_ON_THE_EXPORT = {
     # MCP-G19a. `compact` is a row shape for the agent door, not a filter. The
     # CSV has its own columns.
     "compact",
+    # MCP-G19c. The type filters and the task number of the agent door. The
+    # board never sends them, and the export of them is a later slice.
+    "type_id", "type_name", "task_number",
     # A page is a screen's unit. Half a filter's tasks in a file IS the silent
     # truncation this endpoint refuses; the cap is a refusal instead.
     "page", "page_size",

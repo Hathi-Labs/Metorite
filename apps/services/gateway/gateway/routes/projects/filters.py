@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -102,6 +103,11 @@ def task_number(raw: str) -> int | None:
     if not (stripped.isascii() and stripped.isdigit()) or len(stripped) > 18:
         return None
     return int(stripped)
+
+
+#: The parser of :func:`task_number`, by a second name. ``build_task_filters``
+#: has a ``task_number`` parameter that hides the function inside it.
+_parse_task_number = task_number
 
 
 def short_text_query(term: str) -> bool:
@@ -270,6 +276,9 @@ def build_task_filters(
     updated_after: str | None = None,
     created_after: str | None = None,
     title_prefix: str | None = None,
+    type_id: str | None = None,
+    type_name: str | None = None,
+    task_number: int | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """The WHERE fragments for one task query, and their bound parameters.
 
@@ -417,6 +426,28 @@ def build_task_filters(
     if title_prefix and title_prefix.strip():
         clauses.append("t.title ILIKE :title_prefix")
         params["title_prefix"] = like_escape(title_prefix.strip()) + "%"
+    # MCP-G19c. The type filters and the number of the agent door. They
+    # combine with every filter above. A type is the property of a project,
+    # so a type name can match a type in each project. The name form matches
+    # them all, not case sensitive. The number is unique only in one root
+    # project, so it can match one task in each root project.
+    if type_id:
+        try:
+            params["type_id"] = str(uuid.UUID(type_id))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail="type_id is not a valid id.",
+            ) from None
+        clauses.append("t.type_id = CAST(:type_id AS uuid)")
+    if type_name and type_name.strip():
+        clauses.append(
+            "EXISTS (SELECT 1 FROM pm_task_types tn WHERE tn.id = t.type_id"
+            " AND lower(tn.name) = lower(:type_name))"
+        )
+        params["type_name"] = type_name.strip()
+    if task_number is not None:
+        clauses.append("t.task_number = :task_number")
+        params["task_number"] = task_number
 
     if importance_gte is not None:
         clauses.append("t.importance >= :importance_gte")
@@ -441,7 +472,9 @@ def build_task_filters(
     # an exact lookup on `task_number`, at any length, and never a text scan.
     # The search route answers it the same way, so the two endpoints agree.
     term = clean_query(q or "")
-    number = task_number(term) if term else None
+    # `task_number` is also a parameter of this function (MCP-G19c), so the
+    # parser is read through its module alias.
+    number = _parse_task_number(term) if term else None
     if number is not None:
         clauses.append("t.task_number = :q_number")
         params["q_number"] = number
