@@ -100,6 +100,22 @@ MAX_COMMENT_DEPTH = 1
 #: two numbers equal.
 AGENT_MAX_COMMENT_CHARS = 20_000
 
+#: WS-55 MCP-G9 (``external_agent_access.md`` §9.2). The ``detail`` of the 403
+#: when a signed agent edits or deletes a comment that its own client did not
+#: write. It names who may change the comment. The edge matches this text and
+#: sends its own copy (``agent_edge.tools.COMMENT_NOT_OWN_DETAIL``), and
+#: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal.
+AGENT_COMMENT_NOT_OWN = "Only its author can change this comment in Metorite."
+
+#: MCP-G9. The body of the timeline row that an agent's edit or delete of a
+#: comment writes. An existing type (``system``), so no migration. The web
+#: timeline prints the body of a ``system`` row (``activityStream.ts``). The
+#: row never holds the old text: a deleted comment's words stay gone.
+AGENT_COMMENT_CHANGE_BODIES: dict[str, str] = {
+    "edited": "Edited a comment",
+    "deleted": "Deleted a comment",
+}
+
 
 async def _parent_comment(db: Any, parent_id: str, task_id: str) -> Any:
     """The comment a reply may attach to, or a 4xx that says why not.
@@ -329,6 +345,70 @@ async def _load_own_comment(db: Any, activity_id: str, user: UserContext) -> Any
     return row
 
 
+async def _load_agent_comment(
+    db: Any, activity_id: str, user: UserContext, via: str,
+) -> Any:
+    """A comment that a signed agent may change, or the refusal (MCP-G9).
+
+    The author column holds the member, so the rule of a person would let an
+    agent rewrite words that the member typed in the app. So an agent may
+    change a comment only when the member wrote it AND ``meta.via`` equals
+    *via*, the stamp of the connection's own client (``AgentScope.actor_via``,
+    which ``record_activity`` wrote on the agent's own comment).
+
+    The order is the rule. A missing comment, a comment of another tenant
+    (RLS hides the row) and a comment on a task outside the reach of the
+    connection (its pins, through ``load_visible_task``) all answer the same
+    404. Only a comment on a task that the agent can already read reaches the
+    403, and the timeline of that task already shows its author.
+
+    ``FOR UPDATE`` holds the row until the change commits, so a delete that
+    commits first makes this read find nothing (404), and the change never
+    writes words into a deleted comment.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT * FROM pm_activities WHERE id = CAST(:aid AS uuid) "
+            "AND type = 'comment' AND deleted_at IS NULL FOR UPDATE"
+        ),
+        {"aid": activity_id},
+    )).fetchone()
+    if row is None or row.task_id is None:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    vis = await resolve_visibility(db, user)
+    try:
+        await load_visible_task(db, vis, str(row.task_id))
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        raise HTTPException(status_code=404, detail="Comment not found") from None
+    meta = from_jsonb(row.meta)
+    stamp = meta.get("via") if isinstance(meta, dict) else None
+    author = str(row.created_by or "").strip().lower()
+    if author != actor(user).lower() or not via or stamp != via:
+        raise HTTPException(status_code=403, detail=AGENT_COMMENT_NOT_OWN)
+    return row
+
+
+async def _record_agent_change(
+    db: Any, comment: Any, user: UserContext, via: str, action: str,
+) -> None:
+    """The ONE timeline row of an agent's edit or delete of a comment (MCP-G9).
+
+    Type ``system``, the actor as ``created_by``, and in ``meta`` the stamp of
+    the client, the action and the comment id. It holds NO text of the comment,
+    old or new: the comment row holds the words, and a deleted comment's
+    words stay gone.
+    """
+    await record_activity(
+        db, activity_type="system", created_by=actor(user),
+        task_id=str(comment.task_id),
+        body=AGENT_COMMENT_CHANGE_BODIES[action],
+        meta={"via": via, "action": f"comment_{action}",
+              "comment_id": str(comment.id)},
+    )
+
+
 @router.patch("/comments/{activity_id}")
 async def edit_comment(
     activity_id: str, payload: CommentIn,
@@ -337,18 +417,33 @@ async def edit_comment(
     body = (payload.body or "").strip()
     if not body:
         raise HTTPException(status_code=422, detail="A comment needs a body.")
+    # WS-55 MCP-G9: a signed agent has the cap of `add_comment`, and a rule of
+    # its own (`_load_agent_comment`). A person keeps the path below as it was.
+    agent = getattr(user, "agent", None)
+    if agent is not None and len(body) > AGENT_MAX_COMMENT_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A comment from an agent holds at most {AGENT_MAX_COMMENT_CHARS}"
+                   " characters.",
+        )
     async with _tenant_session() as db:
-        comment = await _load_own_comment(db, activity_id, user)
-        # The task must still be visible: a member removed from a Center keeps
-        # authorship of what they wrote but not access to it.
-        vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, str(comment.task_id))
+        if agent is None:
+            comment = await _load_own_comment(db, activity_id, user)
+            # The task must still be visible: a member removed from a Center
+            # keeps authorship of what they wrote but not access to it.
+            vis = await resolve_visibility(db, user)
+            await load_visible_task(db, vis, str(comment.task_id))
+        else:
+            comment = await _load_agent_comment(
+                db, activity_id, user, agent.actor_via)
         row = await update_row(db, "pm_activities", activity_id, {"body": body})
         task_id = str(comment.task_id)
         # WS-27ae / P-27 — an edit UPDATEs an existing activity row rather than
         # inserting one, so it never reaches `record_activity`'s bump. Reworded
         # comments are exactly the change a delta client must not miss.
         await touch_task(db, task_id)
+        if agent is not None:
+            await _record_agent_change(db, comment, user, agent.actor_via, "edited")
         # WS-27v — mention DIFFING: only the addresses this edit ADDED are
         # notified. The old body is the one loaded above, before the update, so
         # fixing a typo next to `@priya@…` re-pings nobody, while appending
@@ -394,9 +489,18 @@ async def delete_comment(
     referring to something that never existed. The body is cleared as well as
     the row hidden, so "deleted" means the words are gone rather than merely
     filtered out of one read path.
+
+    WS-55 MCP-G9: a signed agent deletes only a comment of its own client on a
+    task in its reach (``_load_agent_comment``), and the delete writes one
+    timeline row with no text. A person's delete is as it was.
     """
+    agent = getattr(user, "agent", None)
     async with _tenant_session() as db:
-        comment = await _load_own_comment(db, activity_id, user)
+        if agent is None:
+            comment = await _load_own_comment(db, activity_id, user)
+        else:
+            comment = await _load_agent_comment(
+                db, activity_id, user, agent.actor_via)
         await update_row(
             db, "pm_activities", activity_id,
             {"deleted_at": now(), "body": None},
@@ -405,6 +509,8 @@ async def delete_comment(
         # so nothing on the activity spine bumps the task. A client that never
         # hears about it keeps rendering words their author retracted.
         await touch_task(db, getattr(comment, "task_id", None))
+        if agent is not None:
+            await _record_agent_change(db, comment, user, agent.actor_via, "deleted")
         return {"deleted": activity_id}
 
 
