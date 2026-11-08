@@ -8877,6 +8877,57 @@ uv run pytest tests/unit/test_customer_console_tasks.py \
   tests/unit/test_customer_console_catalog.py -q
 ```
 
+#### VOX-2 · Sarvam, and the minutes of a WAV clip — BUILT 2026-11-08
+
+✅ **Built on branch `mt-4d2d1c72-vox2`** (task 2262). `projects_ai_chat.md`
+§31 VOX-2 owns the slice. This block records how the build changes the ten
+clauses above. Each other clause holds as written.
+
+1. **Clause 3, the quantity.** The door reads a WAV clip with the standard
+   library `wave` module before any provider call. It bills that length for
+   every provider, a litellm step too. A clip that `wave` cannot read keeps
+   the old rule: the `verbose_json` duration, else zero with the log line
+   `router.unmeasured_quantity`.
+   - `customer_console/wav.py` holds the reader.
+   - It counts the frames that are present. So a streaming header that
+     claims `0xFFFFFFFF` bytes cannot bill 37 hours.
+2. **Clause 6, the dispatch.** `native_sarvam` is in `KNOWN_INVOCATIONS` and
+   `SERVING_INVOCATIONS`, and it serves `transcribe` only.
+   - `customer_console/stt_sarvam.py` holds the handler.
+   - A native step gets a `TranscribePayload`: the clip, its name and the
+     key. A litellm step gets the same kwargs as before.
+3. **The prefix ties the verb.** A `sarvam/` model on `transcribe` takes
+   `native_sarvam` only, because litellm has no Sarvam transcription.
+   - The declare route refuses another verb with a 400.
+   - The mode is the last part of the id, as in `sarvam/saaras:v3/translit`.
+     The route refuses a mode that is not `translit`, `codemix`,
+     `transcribe` or `translate`. An id with no mode gets `translit`.
+4. **A new refusal, 415.** The Sarvam handler takes PCM WAV only.
+   - For any other clip, the door drops each Sarvam step from the chain.
+   - When no step is left, the door answers 415 before any provider call.
+   - The 415 writes no usage row, as the 413 writes none. Clause 10's three
+     walls do not change.
+5. **The 30-second limit.** Sarvam's REST call takes 30 seconds of audio at
+   most, and it answers 422 above that. A 422 does not fail over. So the
+   handler cuts a longer clip into parts of 29 seconds and joins the text.
+6. **Failover.** A Sarvam 5xx, 429 or 403 falls to the next step, as a
+   litellm step does. A 200 with no transcript is terminal, because the
+   vendor has charged for it.
+
+**The vendor facts**, read on 2026-11-08 at
+`https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe`:
+`POST https://api.sarvam.ai/speech-to-text`, the header
+`api-subscription-key`, and the multipart fields `file`, `model` and `mode`.
+The 200 body holds `transcript` and no duration.
+
+| Rule | Fence |
+|---|---|
+| A WAV clip bills the measured minutes, on a Sarvam step and on a litellm step | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor`, `::TestALitellmStepBillsTheMeasuredWav` (R8) |
+| The Sarvam request carries the header, the vendor model and the mode | `test_customer_console_stt_sarvam.py::TestTheRequestShape`, and the R8 class above |
+| A clip that is not WAV on a Sarvam-only chain answers 415 and writes no row | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor` (R8) |
+| A Sarvam 5xx fails over to the next step | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor` (R8), `test_customer_console_stt_sarvam.py::TestTheFailures` |
+| A `sarvam/` transcribe model takes `native_sarvam` only | `test_customer_console_stt_sarvam.py::TestTheNativeVerbForSpeech` |
+
 ### 6A.10b The handler seam (H-47) — BUILT 2026-09-23 by CP-13a
 
 ✅ **CP-13a built this seam on 2026-09-23**, with `native_typesafe` as its
@@ -10172,6 +10223,10 @@ facts the table did not state:
   `native_*`. `POST /catalog/capabilities` answers 400 and names the rule.
   Without it, `(model, decide, acompletion)` would answer 502 on the first
   customer call.
+  📌 **VOX-2 changed the first half on 2026-11-08.** From that date, each
+  `native_*` verb serves the ONE task of its handler. `native_sarvam` serves `transcribe`, and a
+  System One verb still serves `decide` only. `decide` still takes a native
+  verb only (`catalog.NATIVE_ONLY_TASKS`). §6A.10a holds the transcribe half.
 - **A 200 that the handler cannot read STOPS the chain.** The vendor has
   already charged for it, so a second step would pay a second vendor for the
   same request. The handler raises `NativeProviderError` with
@@ -10314,6 +10369,9 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
 - **The verb list on the page is a mirror.** `src/lib/invocation.ts` copies
   three constants from `catalog.py`. `test_operator_console_invocations.py`
   fails when the copies differ.
+  📌 VOX-2 (2026-11-08) added two more copies: `NATIVE_ONLY_TASKS`, and
+  `NATIVE_TASK_OF`, the task of each native verb. The same test reads both.
+  `/providers` gained a minimal `sarvam` card, and VOX-4 owns its full text.
 - **The declare form follows the pairing rule.** `src/lib/invocation.ts`
   mirrors `check_invocation_for_task`, so `/models` offers only
   `native_typesafe` for `decide`, and never offers it for another job.

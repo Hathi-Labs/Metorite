@@ -149,7 +149,13 @@ from customer_console.dsml import (
     normalise_stream,
     policy_for,
 )
-from customer_console.handlers import DECIDE_TASK, DecidePayload, ProviderResult
+from customer_console.handlers import (
+    DECIDE_TASK,
+    DecidePayload,
+    ProviderResult,
+    TranscribePayload,
+    native_requires_wav,
+)
 from customer_console.keys import (
     ENV_DISCOUNT,
     is_discount_code,
@@ -180,6 +186,7 @@ from customer_console.router import (
     usage_from_response,
 )
 from customer_console.seats import CORE_PLAN_SLUG, decide_assignment, seat_counts
+from customer_console.wav import wav_seconds
 
 _log = logging.getLogger("platform.router")
 
@@ -2932,7 +2939,9 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     try:
         invocation = catalog.check_invocation_for_task(req.invocation, req.task)
         # CP-13h: a native verb must call the vendor the model prefix names.
-        catalog.check_model_for_invocation(req.model, invocation)
+        # VOX-2: with the task, a `sarvam/` transcribe model takes
+        # `native_sarvam` only, and a wrong Sarvam mode is refused here.
+        catalog.check_model_for_invocation(req.model, invocation, task=req.task)
         streams = catalog.check_streams(req.task, req.streams)
     except catalog.CatalogRefused as exc:
         raise _catalog_refusal(exc) from exc
@@ -9382,6 +9391,130 @@ def _transcript_of(response: Any) -> str:
     return text_value if isinstance(text_value, str) else ""
 
 
+#: The 415 detail for a clip that no step of the chain can take (VOX-2).
+_WAV_ONLY_DETAIL = (
+    "this tier's speech model takes WAV audio only; send a PCM WAV clip"
+)
+
+
+def _transcribe_attempts(
+    chain: list[ResolvedTier],
+    credentials: dict[str, router_mod.Credential | None],
+    invocations: dict[str, str],
+    *,
+    is_wav: bool,
+) -> list[ResolvedTier]:
+    """The steps the transcribe door may try for one clip, in chain order.
+
+    A step we hold no key for, or no capability row for, is not a step. It
+    cannot be tried at all, so it is dropped rather than attempted and
+    counted as a failure. No step left is the 503 of ``_nothing_to_try``.
+
+    🔴 **VOX-2: a WAV-only step is not a step for a clip that is not WAV.**
+    ``native_sarvam`` cuts the clip with the ``wave`` module. So a webm clip
+    skips it and goes to the next step. When no step is left, the door
+    answers 415 BEFORE any provider call. It writes no usage row, as the 413
+    and the stream 400 write none (§6A.10a clause 10 names the three walls
+    that do).
+    """
+    keyed = [
+        step
+        for step in chain
+        if credentials.get(step.model.split("/", 1)[0]) is not None and step.model in invocations
+    ]
+    if not keyed:
+        raise _nothing_to_try(chain[0], invocations, task=TRANSCRIBE_TASK)
+    usable = keyed if is_wav else [
+        step for step in keyed if not native_requires_wav(invocations[step.model])
+    ]
+    if not usable:
+        raise HTTPException(status_code=415, detail=_WAV_ONLY_DETAIL)
+    return usable[: router_mod.MAX_CHAIN_ATTEMPTS]
+
+
+def _transcribe_kwargs(
+    step: ResolvedTier,
+    *,
+    cred: router_mod.Credential,
+    invocation: str,
+    audio: bytes,
+    filename: str,
+    org_id: str,
+    request_id: str,
+) -> dict[str, Any]:
+    """The outgoing call for one transcribe step. ALLOWLIST.
+
+    Nothing the caller sent reaches the provider except the audio itself and
+    its name. ``api_base`` is ours alone.
+
+    🔴 **A native verb gets a typed payload** (VOX-2 Do 2). The
+    ``TranscribePayload`` carries the clip, its name and the key, and
+    ``router._default_provider_call`` hands it to the handler. A litellm verb
+    gets the kwargs it always got, ``verbose_json`` included.
+    """
+    if invocation.startswith(router_mod.NATIVE_PREFIX):
+        return {
+            "model": step.model,
+            "task": TRANSCRIBE_TASK,
+            "invocation": invocation,
+            "payload": TranscribePayload(
+                model=step.model,
+                audio=audio,
+                filename=filename,
+                api_key=cred.secret,
+                api_base=cred.api_base or None,
+                # Log context for the handler's alarms. Never sent.
+                organization_id=org_id,
+                request_id=request_id,
+            ),
+        }
+    out: dict[str, Any] = {
+        "model": step.model,
+        # A FRESH reader per attempt. The first attempt consumes it, and a
+        # failover that re-sent an exhausted stream would transcribe zero
+        # bytes and bill for it.
+        "file": _NamedAudio(audio, filename),
+        "api_key": cred.secret,
+        # 🔴 The meter owns this field (clause 3). Without it the provider
+        # reports no duration, the zero-bill arm is the only arm that ever
+        # runs, and the meter records zero for every call.
+        "response_format": router_mod.TRANSCRIPTION_RESPONSE_FORMAT,
+        # D60 step two: the verb `model_capability` named for this pair.
+        "invocation": invocation,
+        "num_retries": 1,
+        "timeout": 120,
+    }
+    if cred.api_base:
+        out["api_base"] = cred.api_base
+    return out
+
+
+def _transcribe_minutes(
+    measured: Decimal | None,
+    response: Any,
+    resolved: ResolvedTier,
+    *,
+    org_id: str,
+    request_id: str,
+) -> Decimal:
+    """The minutes one served clip bills.
+
+    🔴 **A WAV clip bills the length the door measured** (VOX-2 Do 4), for
+    every provider. The bytes we sent are the fact, and a figure the metered
+    vendor reports is not. Another format keeps clause 3: the provider's
+    ``verbose_json`` duration, else ZERO with ``router.unmeasured_quantity``.
+    """
+    seconds = measured if measured is not None else router_mod.duration_seconds(response)
+    if seconds is None:
+        # ⚠️ BILL ZERO, LOUDLY (clause 3). The customer already holds the
+        # transcript, so the only choice left is whether we also lose the
+        # row. We keep the row, because it is the evidence, and this line is
+        # how an unmeasured call becomes visible instead of merely cheap.
+        _unmeasured(resolved, TRANSCRIBE_TASK, org_id=org_id, request_id=request_id)
+        return Decimal(0)
+    return (seconds / _SECONDS_PER_MINUTE).quantize(_MINUTE_QUANTUM)
+
+
 @app.post("/v1/audio/transcriptions")
 def audio_transcriptions(
     # 📌 `ServingCaller` since 2026-09-23 (H-152). An organization key
@@ -9425,6 +9558,12 @@ def audio_transcriptions(
     §8.1 forbids. The three walls that DO write one are the ones clause 10
     names, and they are the same three the chat route carries.
 
+    🔴 **VOX-2 (2026-11-08, ``projects_ai_chat.md`` §31).** The door reads a
+    WAV clip with the standard library ``wave`` module before anything
+    resolves, and bills that length for every provider. A ``native_sarvam``
+    step gets a typed payload and calls Sarvam. A clip that is not WAV skips
+    that step, and with no step left the door answers 415 with no usage row.
+
     Declared ``def`` for the reason the module docstring gives — the engine is
     synchronous, and the provider coroutine is driven with ``asyncio.run``
     inside the threadpool worker.
@@ -9451,6 +9590,10 @@ def audio_transcriptions(
                 "read the transcript from the response body"
             ),
         )
+
+    # VOX-2: measured ONCE, before anything resolves. None means the clip is
+    # not a WAV that the standard library reads, and the old rule bills it.
+    measured = wav_seconds(audio)
 
     # 🔴 **A CUSTOMER refusal leaves this block before it is raised**, exactly
     # as the chat route carries it (§8.1 clause 3). A row written on the
@@ -9501,46 +9644,33 @@ def audio_transcriptions(
             client_ref=client_ref,
         )
 
-    # A step we hold no key for, or no capability row for, is not a step. It
-    # cannot be tried at all, so it is dropped rather than attempted and
-    # counted as a failure.
-    attempts = [
-        step
-        for step in chain
-        if credentials.get(step.model.split("/", 1)[0]) is not None and step.model in invocations
-    ][: router_mod.MAX_CHAIN_ATTEMPTS]
+    # The 503 for no step we hold a key for, and the 415 for a clip no step
+    # can take. Neither writes a usage row.
+    attempts = _transcribe_attempts(
+        chain, credentials, invocations, is_wav=measured is not None
+    )
 
-    if not attempts:
-        raise _nothing_to_try(chain[0], invocations, task=TRANSCRIBE_TASK)
+    # H-85: minted BEFORE the call, so a handler's alarm and the usage row
+    # name the same request.
+    request_id = _new_request_id()
 
     def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
         """Build the outgoing call for one step of the chain.
 
-        ⚠️ ALLOWLIST, exactly as the chat route builds one. Nothing the
-        caller sent reaches the provider except the audio itself and its
-        name. `api_base` is ours alone.
+        ⚠️ ALLOWLIST, exactly as the chat route builds one.
+        :func:`_transcribe_kwargs` holds the two shapes.
         """
         cred = credentials[step.model.split("/", 1)[0]]
         assert cred is not None  # the attempts filter removed keyless steps
-        out: dict[str, Any] = {
-            "model": step.model,
-            # A FRESH reader per attempt. The first attempt consumes it, and
-            # a failover that re-sent an exhausted stream would transcribe
-            # zero bytes and bill for it.
-            "file": _NamedAudio(audio, filename),
-            "api_key": cred.secret,
-            # 🔴 The meter owns this field (clause 3). Without it the
-            # provider reports no duration, the zero-bill arm is the only arm
-            # that ever runs, and the meter records zero for every call.
-            "response_format": router_mod.TRANSCRIPTION_RESPONSE_FORMAT,
-            # D60 step two: the verb `model_capability` named for this pair.
-            "invocation": invocations[step.model],
-            "num_retries": 1,
-            "timeout": 120,
-        }
-        if cred.api_base:
-            out["api_base"] = cred.api_base
-        return out
+        return _transcribe_kwargs(
+            step,
+            cred=cred,
+            invocation=invocations[step.model],
+            audio=audio,
+            filename=filename,
+            org_id=org_id,
+            request_id=request_id,
+        )
 
     def _byok_served(step: ResolvedTier) -> bool:
         """Whose account ran this step. §3.4 turns on exactly this bit."""
@@ -9572,22 +9702,11 @@ def audio_transcriptions(
         # grow a second opinion about what a vendor 500 means.
         raise _upstream_refusal(failed) from failed
 
-    # H-85: minted HERE so the alarm below and the row further down name the
-    # same call. One id, passed to both.
-    request_id = _new_request_id()
-
-    seconds = router_mod.duration_seconds(response)
-    if seconds is None:
-        # ⚠️ BILL ZERO, LOUDLY (clause 3). The customer already holds the
-        # transcript, so the only choice left is whether we also lose the
-        # row. We keep the row — it is the evidence — and this line is how
-        # an unmeasured call becomes visible instead of merely cheap.
-        _unmeasured(
-            resolved, TRANSCRIBE_TASK, org_id=org_id, request_id=request_id
-        )
-        minutes = Decimal(0)
-    else:
-        minutes = (seconds / _SECONDS_PER_MINUTE).quantize(_MINUTE_QUANTUM)
+    # VOX-2 Do 4: the measured WAV length first, then clause 3's rule. The
+    # alarm and the row name the same `request_id`.
+    minutes = _transcribe_minutes(
+        measured, response, resolved, org_id=org_id, request_id=request_id
+    )
 
     # Metering is best-effort and NEVER fails the call.
     _record_completion(
