@@ -93,43 +93,38 @@ def _today() -> date:
     return datetime.now(tz=ZoneInfo(DEFAULT_ZONE)).date()
 
 
-@router.get("/plan/analysis")
-async def plan_analysis(
-    root_task_id: str = Query(..., description="The goal, epic or project task to plan."),
-    start: date | None = Query(None, description="The first working day. Default: today."),
-    user: UserContext = Depends(get_current_user),
-) -> dict:
-    """The ready set, waves, critical path, slack and finish of one tree."""
-    try:
-        root = str(UUID(root_task_id))
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Task not found") from None
-    async with _tenant_session() as db:
-        vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, root)
-        rows = (await db.execute(
-            text(_TREE_SQL.format(visible=task_visibility_clause(vis))),
-            {"root": root, "max_depth": MAX_DEPTH, "cap": MAX_PLAN_TASKS + 1,
-             **vis.params},
-        )).fetchall()
-        if len(rows) > MAX_PLAN_TASKS:
-            raise HTTPException(
-                status_code=422,
-                detail=f"This tree has more than {MAX_PLAN_TASKS} tasks. Plan a smaller epic.",
-            )
-        ids = [str(r.id) for r in rows]
-        link_rows = (await db.execute(
-            text(_LINKS_SQL), {"ids": ids},
-        )).fetchall()
-        inside = set(ids)
-        far = sorted({
-            str(end) for r in link_rows
-            for end in (r.source_task_id, r.target_task_id) if str(end) not in inside
-        })
-        outside_rows = (await db.execute(
-            text(_OUTSIDE_SQL.format(visible=task_visibility_clause(vis))),
-            {"ids": far, **vis.params},
-        )).fetchall() if far else []
+async def compute_plan(db: Any, vis: Any, root: str, start: date | None = None) -> dict:
+    """The plan of the tree under *root*, for the caller *vis*.
+
+    The caller has loaded *root* with ``load_visible_task`` already. This is
+    the one place that fetches the tree and calls the engine. The route below
+    and ``plan_order`` (SW-68a, the order of ``my_work``) both call it, so
+    neither keeps a second copy of the fetch or the visibility rule. It
+    raises a 422 for a tree over :data:`MAX_PLAN_TASKS`.
+    """
+    rows = (await db.execute(
+        text(_TREE_SQL.format(visible=task_visibility_clause(vis))),
+        {"root": root, "max_depth": MAX_DEPTH, "cap": MAX_PLAN_TASKS + 1,
+         **vis.params},
+    )).fetchall()
+    if len(rows) > MAX_PLAN_TASKS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"This tree has more than {MAX_PLAN_TASKS} tasks. Plan a smaller epic.",
+        )
+    ids = [str(r.id) for r in rows]
+    link_rows = (await db.execute(
+        text(_LINKS_SQL), {"ids": ids},
+    )).fetchall()
+    inside = set(ids)
+    far = sorted({
+        str(end) for r in link_rows
+        for end in (r.source_task_id, r.target_task_id) if str(end) not in inside
+    })
+    outside_rows = (await db.execute(
+        text(_OUTSIDE_SQL.format(visible=task_visibility_clause(vis))),
+        {"ids": far, **vis.params},
+    )).fetchall() if far else []
 
     parents = {str(r.parent_task_id) for r in rows if r.parent_task_id}
     visible_parents = {
@@ -164,3 +159,20 @@ async def plan_analysis(
         **result.to_dict(),
         "hidden": {"slices": hidden, "outside_blockers": hidden_outside},
     }
+
+
+@router.get("/plan/analysis")
+async def plan_analysis(
+    root_task_id: str = Query(..., description="The goal, epic or project task to plan."),
+    start: date | None = Query(None, description="The first working day. Default: today."),
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The ready set, waves, critical path, slack and finish of one tree."""
+    try:
+        root = str(UUID(root_task_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await load_visible_task(db, vis, root)
+        return await compute_plan(db, vis, root, start)

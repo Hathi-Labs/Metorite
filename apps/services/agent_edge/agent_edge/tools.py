@@ -3990,6 +3990,12 @@ WAITING_REASONS: Mapping[str, str] = {
 REASON_HELD = "held_by_you"
 REASON_ASSIGNED = "assigned"
 MY_WORK_REASONS: tuple[str, ...] = (*WAITING_REASONS.values(), REASON_HELD, REASON_ASSIGNED)
+#: SW-68a. The route that ranks the assigned rows by the plan engine, and the
+#: key of the row that it adds: ``{epic_id, ready, slack_mins, blocked_by,
+#: blocked_by_hidden}``. Ids and counts only. The key is absent on a row that
+#: sits under no epic, and on every row while the route answers nothing.
+PLAN_ORDER_ROUTE = "/projects/plan/order"
+PLAN_KEY = "plan"
 
 #: The keys of one row of ``my_work`` (§12.4). ``version`` is the token that
 #: ``claim_task`` sends back as ``expected_version``.
@@ -4017,9 +4023,51 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "yours": {"type": "boolean"},
     "external_link": _SHAPED_OR_NULL,
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
+_MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, PLAN_KEY, _object({
+    "epic_id": {"type": "string"}, "ready": {"type": "boolean"},
+    "slack_mins": _NULLABLE_INTEGER,
+    "blocked_by": {"type": "array", "items": {"type": "string"}},
+    "blocked_by_hidden": {"type": "integer", "minimum": 0},
+}))
 _MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
 }), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
+
+
+async def _plan_of(ctx: Context, ids: list[str]) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """SW-68a: *ids* in the order of the plan engine, and the plan of each
+    task that sits under an epic. The gateway ranks, so the chat ``my_work``
+    and this tool use one rule. A failed read (busy, or an old gateway) and
+    an answer of the wrong shape keep the order of *ids* and give no plan."""
+    if not ids:
+        return ids, {}
+    try:
+        found = await _get(ctx, PLAN_ORDER_ROUTE, TEXT_TASK_NOT_FOUND,
+                           query=[("task_ids", ",".join(ids))])
+    except ToolError:
+        # The plan is an aid. A slow or missing read must not hide the work.
+        return ids, {}
+    order = found.get("order") if isinstance(found, dict) else None
+    plans = found.get("plan") if isinstance(found, dict) else None
+    if (not isinstance(order, list) or not isinstance(plans, dict)
+            or sorted(order, key=str) != sorted(ids, key=str)):
+        return ids, {}
+    shaped: dict[str, dict[str, Any]] = {}
+    for task_id, plan in plans.items():
+        if task_id not in ids or not isinstance(plan, dict):
+            continue
+        slack, hidden = plan.get("slack_mins"), plan.get("blocked_by_hidden")
+        blockers = [b for b in plan.get("blocked_by") or [] if _id(b) is not None]
+        epic = _id(plan.get("epic_id"))
+        if (epic is None or not isinstance(plan.get("ready"), bool)
+                or isinstance(hidden, bool) or not isinstance(hidden, int)):
+            continue
+        shaped[task_id] = {
+            "epic_id": epic, "ready": plan["ready"],
+            "slack_mins": slack if isinstance(slack, int) and not isinstance(slack, bool) else None,
+            "blocked_by": blockers, "blocked_by_hidden": max(hidden, 0),
+        }
+    return order, shaped
 
 
 async def _my_runs(ctx: Context, via: str, *, needs_agent: bool = False,
@@ -4228,13 +4276,17 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         listed.append((task_id, reason, _id(run.get("id")),
                        _yours(run, ctx.session)))
 
+    offered: list[str] = []
     for row in assigned:
         task_id = _id(row.get("id"))
         if (task_id is None or task_id in seen or _live_holder(row.get("held_by"))
                 or _blocked(row)):
             continue
         seen.add(task_id)
-        listed.append((task_id, REASON_ASSIGNED, None, False))
+        offered.append(task_id)
+    # SW-68a: the assigned rows go in plan order. The run rows above stay put.
+    offered, plans = await _plan_of(ctx, offered)
+    listed.extend((task_id, REASON_ASSIGNED, None, False) for task_id in offered)
     # P3c: every read below runs on the rows that are shown, after the cut.
     listed = listed[:limit]
 
@@ -4245,6 +4297,9 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     names = await _status_names(ctx, _distinct_projects(shown))
     out = [_work_row(t, rows.get(t), reason, run_id, names, mine, links.get(t))
            for t, reason, run_id, mine in listed]
+    for item in out:
+        if item["reason"] == REASON_ASSIGNED and item["task_id"] in plans:
+            item[PLAN_KEY] = plans[item["task_id"]]
     # SW-31a: one read of the refs for all rows. No body: the agent reads the
     # blocks with get_task_context.
     refs = await _guidance_refs(
@@ -4271,7 +4326,11 @@ MY_WORK = Tool(
         " yours only when yours is true) or run_stopping"
         " (a member asked you to stop).[[QUIET]] Third, the tasks assigned to"
         " this member that no AI session holds and that no open task blocks"
-        " (assigned). Take the top row. For a waiting run, read it with"
+        " (assigned). A task under an epic is ranked by the plan: a ready"
+        " slice before a held one, then the least slack. Its plan field says"
+        " ready, slack_mins and blocked_by (ids), and blocked_by_hidden counts"
+        " the blockers you cannot see. A task under no epic keeps its place."
+        " Take the top row. For a waiting run, read it with"
         " get_agent_run and its run_id. For a task, with projects:write, claim"
         " the task with claim_task, the task_id and the version.[[ROWS]]"
         "[[ANSWER]] The"
@@ -4286,7 +4345,7 @@ MY_WORK = Tool(
     not_found=TEXT_PROJECT_NOT_FOUND,
     run=_my_work,
     routes=(LIST_TASKS_ROUTE, ME_ROUTE, MY_RUNS_ROUTE, TASK_ROUTE, STATUSES_ROUTE,
-            GUIDANCE_REFS_ROUTE),
+            GUIDANCE_REFS_ROUTE, PLAN_ORDER_ROUTE),
     edge_inputs=frozenset({"limit"}),
 )
 

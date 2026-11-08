@@ -646,6 +646,44 @@ async def _clock_line() -> str:
     return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label})."
 
 
+async def _plan_ordered(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """SW-68a: *rows* in the order of the plan engine, and the plan of each
+    task that sits under an epic. The gateway route does the ranking, so the
+    MCP ``my_work`` and this list use one rule (``plan_order.py``). A task
+    outside every epic keeps its place. A read that fails keeps today's order."""
+    ids = [str(r["id"]) for r in rows if r.get("id")]
+    if not ids:
+        return rows, {}
+    try:
+        answer = await get("/projects/plan/order", {"task_ids": ",".join(ids)})
+    except GatewayRefusal:
+        return rows, {}
+    order = (answer or {}).get("order")
+    plans = (answer or {}).get("plan")
+    if not isinstance(order, list) or not isinstance(plans, dict):
+        return rows, {}
+    by_id = {str(r["id"]): r for r in rows if r.get("id")}
+    ranked = [by_id[i] for i in order if i in by_id]
+    if len(ranked) != len(by_id):
+        return rows, {}
+    return [*ranked, *(r for r in rows if not r.get("id"))], plans
+
+
+def _plan_note(plan: Any) -> str:
+    """One line for a task that sits under an epic: ready or blocked, the
+    slack, and what blocks it. A blocker the member cannot see has no name."""
+    if not isinstance(plan, dict):
+        return ""
+    if plan.get("ready"):
+        slack = plan.get("slack_mins")
+        return "  plan: ready" + (f" · slack {slack} mins" if isinstance(slack, int) else "")
+    named = [str(i) for i in plan.get("blocked_by") or []]
+    parts = [f"blocked by {', '.join(named)}"] if named else []
+    if plan.get("blocked_by_hidden"):
+        parts.append("blocked by a task you cannot see")
+    return "  plan: " + (" · ".join(parts) or "blocked")
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_work(
     view: str = "assigned", include_done: bool = False, page: int = 1, untriaged: bool = False
@@ -700,6 +738,9 @@ async def my_work(
     total = int((payload or {}).get("total") or 0)
     if not rows:
         return "\n".join([*home, f"{title}: nothing."])
+    plans: dict[str, Any] = {}
+    if which != "inbox":
+        rows, plans = await _plan_ordered(rows)
     names = await _status_names(
         {str(r.get("root_project_id")) for r in rows if r.get("root_project_id")}
     )
@@ -714,6 +755,9 @@ async def my_work(
             head += " · " + " · ".join(overlay)
         out.append(head)
         out.append(ident)
+        note = _plan_note(plans.get(str(row.get("id"))))
+        if note:
+            out.append(note)
     return "\n".join(out)
 
 
