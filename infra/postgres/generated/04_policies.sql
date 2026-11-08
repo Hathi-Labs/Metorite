@@ -1586,3 +1586,10 @@ DROP POLICY IF EXISTS package_field_value_tenant_isolation ON package_field_valu
 CREATE POLICY package_field_value_tenant_isolation ON package_field_value
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE agent_box_health ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agent_box_health FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS agent_box_health_tenant_isolation ON agent_box_health;
+CREATE POLICY agent_box_health_tenant_isolation ON agent_box_health
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

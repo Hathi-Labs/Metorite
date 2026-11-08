@@ -867,6 +867,10 @@ def _type_ok(value: Any, kind: str | list[str]) -> bool:
         return isinstance(value, str)
     if kind == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "number":
+        # SW-77: the load of a box. A finite int or float, never a bool.
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and value == value and value not in (float("inf"), float("-inf")))
     if kind == "boolean":
         return isinstance(value, bool)
     if kind == "object":
@@ -1155,6 +1159,11 @@ class Tool:
     #: 3 and 4 of ``test_mcp_edge_coverage.py`` do not read them, and
     #: ``tests/unit/test_mcp_edge_app_door.py`` holds them.
     app_scope: str = ""
+    #: SW-77. True for a tool of a box runner, whose scope is a box scope
+    #: (``agent_oauth.BOX_SCOPES``). Only a box token can hold one, so a
+    #: call from any other connection answers a tool error and never the
+    #: ``insufficient_scope`` 403, which no sign-in could cure.
+    box: bool = False
 
     def describe(self) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool."""
@@ -7641,6 +7650,102 @@ RELEASE_TASK = Tool(
 )
 
 
+# ── report_box_health (SW-77) ───────────────────────────────────────────────
+#
+# The heartbeat of a box (``agent_coordination.md`` §3.11.4 and SW-77). Only a
+# box token with ``box:runner`` holds the scope (``bearer.effective_scopes``),
+# so ``tools/list`` shows the tool to such a box only. Branch 0 and the route
+# check the box and the scope again. Each value is untrusted display data.
+
+#: The route of the heartbeat. A pair of ``MCP_WRITE_ROUTES`` and of
+#: ``agent_oauth.BOX_WRITE_ROUTES``.
+BOX_HEALTH_ROUTE = "/agent-box-health"
+#: The keys of the body of the heartbeat. The route refuses any other key.
+BOX_HEALTH_BODY_KEYS: tuple[str, ...] = (
+    "mem_free_mb", "load_1m", "sessions", "sign_in", "account", "account_note",
+    "ci_lane_busy", "leases")
+#: The fixed texts of the tool.
+TEXT_BOX_ONLY = (
+    "Only an agent box with a runner token (the scope box:runner) can post a"
+    " heartbeat. A session never calls this tool.")
+TEXT_BOX_HEALTH_OFF = "The box heartbeat is turned off in this organization."
+TEXT_BOX_NOTE_NUL = text_nul("account_note")
+
+_BOX_HEALTH_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "mem_free_mb": {"type": "integer", "minimum": 0, "maximum": 16777216,
+                        "description": "Free memory of the box, in MiB."},
+        "load_1m": {"type": "number", "minimum": 0, "maximum": 10000,
+                    "description": "The load average of the last minute."},
+        "sessions": {"type": "integer", "minimum": 0, "maximum": 10000,
+                     "description": "The count of agent sessions that run on the box."},
+        "sign_in": {"type": "string", "enum": ["signed_in", "signed_out", "unknown"],
+                    "description": "The sign-in state of the agent client on the box."},
+        "account": {"type": "string", "enum": ["ok", "rate_limited", "unknown"],
+                    "description": "The account state of the agent client. Best effort."},
+        "account_note": {"type": "string", "maxLength": 200,
+                         "description": "A short note on the account state, such as the"
+                                        " time a limit ends."},
+        "ci_lane_busy": {"type": "boolean",
+                         "description": "True when the CI lane of the box runs a job."},
+        "leases": {"type": "object", "maxProperties": 8,
+                   "additionalProperties": {"type": "integer", "minimum": 0,
+                                            "maximum": 10000},
+                   "description": "The count of each kind of lease, such as"
+                                  " {\"database\": 2, \"port\": 3}. A kind is a"
+                                  " lower-case word."},
+    },
+    "additionalProperties": False,
+}
+_BOX_HEALTH_OUTPUT: dict[str, Any] = _object({
+    "reported_at": {"type": "string"}, "offline_after_s": {"type": "integer"}})
+
+
+async def _report_box_health(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST the heartbeat. A caller that is not a box with ``box:runner``
+    gets :data:`TEXT_BOX_ONLY` and sends no request."""
+    lookup = ctx.caller.lookup
+    if (lookup.credential != agent_oauth.BOX_CREDENTIAL
+            or agent_oauth.BOX_RUNNER not in ctx.caller.scopes):
+        raise ToolError(TEXT_BOX_ONLY)
+    note = args.get("account_note")
+    if isinstance(note, str) and "\x00" in note:
+        raise ToolError(TEXT_BOX_NOTE_NUL)
+    body = {k: args[k] for k in BOX_HEALTH_BODY_KEYS if k in args}
+    _, answer = await _write(
+        ctx, "POST", BOX_HEALTH_ROUTE, TEXT_BOX_HEALTH_OFF, json_body=body,
+        details={(403, agent_oauth.BOX_ONLY_CODE): TEXT_BOX_ONLY})
+    reported = answer.get("reported_at") if isinstance(answer, dict) else None
+    after = answer.get("offline_after_s") if isinstance(answer, dict) else None
+    return {"reported_at": _str_or_none(reported) or "",
+            "offline_after_s": after if isinstance(after, int) else 180}
+
+
+REPORT_BOX_HEALTH = Tool(
+    name="report_box_health",
+    title="Report the health of a box",
+    description=(
+        "The Metorite runner on an agent box calls this each minute. It posts"
+        " the free memory, the load, the count of sessions, the sign-in state,"
+        " the account state, whether the CI lane is busy and the lease counts."
+        " Metorite keeps one row for each box, and a box with no heartbeat for 3"
+        " minutes reads offline. Only a runner token (the scope box:runner) can"
+        " call it. A coding session never calls it."
+    ),
+    required_scope=agent_oauth.BOX_RUNNER,
+    input_schema=_BOX_HEALTH_INPUT,
+    output_schema=_BOX_HEALTH_OUTPUT,
+    route=BOX_HEALTH_ROUTE,
+    params={k: k for k in BOX_HEALTH_BODY_KEYS},
+    not_found=TEXT_BOX_HEALTH_OFF,
+    run=_report_box_health,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    box=True,
+)
+
+
 # ── The app door (MCP-P1a, spec §19.4) ──────────────────────────────────────
 #
 # Four fixed tools serve each app of ``acb_common.app_manifests``. The
@@ -8407,6 +8512,8 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: shows only while the runs flag is on too. ``record_outside_decision`` of
 #: MCP-G15 follows it, on the same flag. ``delete_task`` of EA-6h is last.
 #: It shows only while the member's switch is on (:func:`listed_for`).
+#: SW-77: ``report_box_health`` follows it. It shows only to a box token
+#: with ``box:runner``.
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
@@ -8418,7 +8525,7 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
-    RELEASE_TASK, DELETE_TASK,
+    RELEASE_TASK, DELETE_TASK, REPORT_BOX_HEALTH,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
 )}
 
@@ -8436,11 +8543,21 @@ def offered(tool: Tool) -> bool:
     return tool.method == "GET" or agent_oauth.writes_enabled()
 
 
+def box_only(scopes: frozenset[str]) -> bool:
+    """True when *scopes* hold box scopes and nothing else (SW-77). Such a
+    caller is a runner token, and it reaches the box tools only: not even a
+    tool for any live token, such as ``whoami``."""
+    return bool(scopes) and scopes <= frozenset(agent_oauth.BOX_SCOPES)
+
+
 def _covered(tool: Tool, scopes: frozenset[str]) -> bool:
     """True when *scopes* hold the tool's scope and the tool is offered.
     ``app_read`` and ``app_write`` show with no app scope, because their scope
     is the one of the app in each call (:func:`scope_of`), and check 8 asks
-    for it then (MCP-P1a, §19.4)."""
+    for it then (MCP-P1a, §19.4). A runner token covers the box tools only
+    (:func:`box_only`)."""
+    if box_only(scopes) and not tool.box:
+        return False
     return (tool.required_scope is None or tool.required_scope in scopes) and offered(tool)
 
 
@@ -8560,6 +8677,8 @@ __all__ = [
     "AUTHOR_AGENT",
     "AUTHOR_PERSON",
     "BOARD_STATS",
+    "BOX_HEALTH_BODY_KEYS",
+    "BOX_HEALTH_ROUTE",
     "CLAIM_TASK",
     "CLAIM_TEXTS",
     "CLOSING_CATEGORIES",
@@ -8679,6 +8798,7 @@ __all__ = [
     "RELEASE_TASK",
     "REMOVE_LINK_KEYS",
     "REMOVE_TASK_LINK",
+    "REPORT_BOX_HEALTH",
     "REQUEST_TASK_ARCHIVE",
     "RUN_ACTIVITY_KEYS",
     "RUN_KEYS",
@@ -8707,6 +8827,9 @@ __all__ = [
     "TEXT_BAD_CURSOR",
     "TEXT_BAD_REQUEST",
     "TEXT_BAD_SHARE",
+    "TEXT_BOX_HEALTH_OFF",
+    "TEXT_BOX_NOTE_NUL",
+    "TEXT_BOX_ONLY",
     "TEXT_BUSY",
     "TEXT_CANCEL_STEP",
     "TEXT_CAP",
@@ -8826,6 +8949,7 @@ __all__ = [
     "Tool",
     "ToolError",
     "agent_run",
+    "box_only",
     "call",
     "call_timeout",
     "check_input",

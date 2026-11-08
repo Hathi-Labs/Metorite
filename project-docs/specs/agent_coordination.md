@@ -2,7 +2,7 @@
 
 **Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
-**P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
+**P10 (§3.11, §5.11, D186) was planned on 2026-11-06. SW-77 (the box heartbeat) is built and dark, 2026-11-08. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
@@ -1541,6 +1541,14 @@ They keep their own gates.
 - **Done when.** R8: a box token writes a heartbeat. An OAuth connection gets 403. A member reads only the boxes of the member's organization that the member may see. A revoked token writes nothing.
 - **Fence.** `test_agent_box_health_r8.py` (new), `test_mcp_edge_coverage.py`, `test_tenant_coverage.py`.
 - **Risk.** HIGH (a tenant table, token auth). **Gate.** AGENT-SAFE dark. **Depends on.** EA-19.
+- **Status.** **Built and dark** (2026-11-08), behind `AGENT_BOX_HEALTH_ORGS`. No screen. SW-81 draws it.
+- **As built (SW-77).** These notes record the build.
+  - **Table.** Migration 372 (`infra/postgres/372_agent_box_health.sql`) adds `agent_box_health`. The builder took the number at build time, and premerge checks it again (R1). The key is `(organization_id, connection_id)`, so each box has one row, and each heartbeat replaces it. The columns are `member_email`, `reported_at` (the server time), `mem_free_mb`, `load_1m`, `sessions`, `sign_in_state`, `account_state`, `account_note`, `ci_lane_busy` and `leases` (a JSON object of counts). The table is tenant-scoped with FORCE RLS, and the generated phases carry it.
+  - **The scope.** `agent_oauth.BOX_RUNNER` is `box:runner`. It is not in `SUPPORTED_SCOPES`, so consent, `/authorize` and `/oauth/token` never grant it. Only the box mint takes it, and it stands alone on its token (422 `box_runner_alone`). The edge counts it only for a box token (`bearer.effective_scopes`). A runner token reaches the box tools and no other tool, not even `whoami`. `agent_oauth.BOX_RUNNER_TOOLS` names the three things it covers. `list_agent_queue` (SW-68) and the server start of a run (SW-78 release 2) are not built, so only `report_box_health` needs the scope today.
+  - **The write.** The tool `report_box_health` calls `POST /agent-box-health`, a pair of `MCP_WRITE_ROUTES` and of `agent_oauth.BOX_WRITE_ROUTES`. Branch 0 admits the pair only for a box connection with the scope, else it answers the coded 403 `box_only`. The route checks the box stamp and the scope again, so a person and an OAuth connection get 403. The write cap of the connection applies, and no other cap.
+  - **"May see".** `GET /agent-box-health` gives the boxes of the member's own connections. A holder of `integrations:manage` gets every box of the org, as the list of all agent connections does (EA-4b). A revoked or an expired box is not listed. A signed agent cannot read the list.
+  - **Untrusted values.** The model holds each number to a range and each state to a closed list (422). The route strips each control character of the note, NUL too, and the edge refuses a NUL first. The note holds at most 200 characters. The lease counts take at most 8 kinds. A heartbeat older than 3 minutes reads `offline`.
+  - **Deviation.** The scope text above says "no gateway REST route for it". The build has one route, which the tool calls through branch 0, as each MCP tool does. No person can write through it.
 
 #### SW-78 · The runner
 

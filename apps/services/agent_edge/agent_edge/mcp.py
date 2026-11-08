@@ -40,7 +40,8 @@ gives the answer, and no later check runs:
    tool error (EA-6a fix round 1). For ``app_read`` and ``app_write`` the
    scope is ``<app>:read`` or ``<app>:write`` of ``arguments.app``
    (MCP-P1a, spec §19.4, ``tools.scope_of``). An app that no manifest holds
-   gets a tool error, and no 403.
+   gets a tool error, and no 403. A box tool (SW-77, ``tools.Tool.box``)
+   from a connection that is not a box gets its tool error, and no 403.
 
 **The error body (EA3-13).** Each 4xx and each 503 carries a JSON-RPC error
 with ``id: null``. The code is ``-32700`` for a body that is not JSON,
@@ -494,7 +495,17 @@ async def endpoint(request: Request) -> Response:
         # MCP-P1a: a door tool's scope is the one of the app it names.
         required = (tools.scope_of(tool, params.get("arguments"))
                     if tool is not None else None)
-        if (tool is not None and tools.offered(tool)
+        # SW-77: a box tool from a connection that is not a box skips the
+        # 403 too. No sign-in can give such a connection a box scope, so the
+        # call answers the tool error of the tool.
+        not_a_box = tool is not None and tool.box and (
+            caller.lookup.credential != agent_oauth.BOX_CREDENTIAL)
+        # SW-77: a runner token (box scopes only) reaches the box tools and
+        # nothing else, not even a tool for any live token.
+        if (tool is not None and not tool.box and tools.box_only(caller.scopes)
+                and required is None):
+            required = agent_oauth.PROJECTS_READ
+        if (tool is not None and tools.offered(tool) and not not_a_box
                 and not bearer.covers(caller.scopes, required)):
             _log.info("agent_edge.insufficient_scope", tool=tool.name,
                       connection_id=caller.lookup.connection_id)

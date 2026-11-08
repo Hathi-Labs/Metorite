@@ -1424,10 +1424,14 @@ def _box_scopes(asked: list[str]) -> tuple[str, ...]:
     refresh token. A scope that the server does not know is a 422 here, not
     a silent drop, so the member sees what the token cannot hold. A write
     scope needs ``agent_oauth.writes_enabled``.
+
+    SW-77: the box scope ``agent_oauth.BOX_RUNNER`` is known here, and only
+    here (``agent_oauth.parse_box_scope``). It stands alone: with another
+    scope it is 422 ``agent_oauth.BOX_RUNNER_ALONE``.
     """
     words = [w for item in asked for w in item.split(" ") if w]
     try:
-        parsed = agent_oauth.parse_scope(" ".join(words))
+        parsed = agent_oauth.parse_box_scope(" ".join(words))
     except ValueError:
         raise _box_refusal(422, "invalid_scope", "A scope is malformed.") from None
     unknown = [w for w in dict.fromkeys(words) if w not in parsed]
@@ -1437,6 +1441,10 @@ def _box_scopes(asked: list[str]) -> tuple[str, ...]:
     kept = tuple(s for s in parsed if s != agent_oauth.OFFLINE_ACCESS)
     if not kept:
         raise _box_refusal(422, "no_scope", "Choose one scope or more.")
+    if agent_oauth.box_scopes_in(kept) and len(kept) > 1:
+        raise _box_refusal(
+            422, agent_oauth.BOX_RUNNER_ALONE,
+            "A runner token holds box:runner and no other scope. Make a second token.")
     if not agent_oauth.writes_enabled() and any(agent_oauth.covered_by(s) for s in kept):
         raise _box_refusal(
             422, agent_oauth.WRITES_DISABLED_CODE,

@@ -92,6 +92,57 @@ SUPPORTED_SCOPES: tuple[str, ...] = (
 #: specification says a resource does not advertise it (spec §8).
 RESOURCE_SCOPES: tuple[str, ...] = (*FIXED_RESOURCE_SCOPES, *APP_SCOPES)
 
+#: SW-77 (``agent_coordination.md`` §3.11.4, Q18). The scope of a box
+#: runner. ⚠️ It is a BOX scope: it is not in :data:`SUPPORTED_SCOPES`, so
+#: :func:`parse_scope` drops it, and the consent page, ``/authorize`` and
+#: ``/oauth/token`` can never grant it. Only the box mint takes it
+#: (:func:`parse_box_scope`), and it stands alone on its token
+#: (:data:`BOX_RUNNER_ALONE`). The edge counts it only for a token of a box
+#: connection (``bearer.effective_scopes``), and branch 0 checks it only for
+#: a pair of :data:`BOX_WRITE_ROUTES` of a box connection.
+BOX_RUNNER = "box:runner"
+
+#: Every box scope, in the canonical order.
+BOX_SCOPES: tuple[str, ...] = (BOX_RUNNER,)
+
+#: The tools that :data:`BOX_RUNNER` covers, and nothing else (SW-77). A tool
+#: that needs the scope must be on this list. ``list_agent_queue`` (SW-68)
+#: and the server start of a run (SW-78 release 2) are not built, so only
+#: ``report_box_health`` needs it today. Fence:
+#: ``tests/unit/test_agent_box_health_r8.py``.
+BOX_RUNNER_TOOLS: frozenset[str] = frozenset(
+    {"report_box_health", "list_agent_queue", "start_agent_run"})
+
+#: The 422 code of a box mint that names :data:`BOX_RUNNER` with another
+#: scope. The runner token is a second token, with this one scope (Q18).
+BOX_RUNNER_ALONE = "box_runner_alone"
+
+
+def box_scopes_in(value: str | Iterable[str] | None) -> tuple[str, ...]:
+    """The box scopes that *value* names, in the canonical order (SW-77).
+
+    *value* is a space-separated scope string or a list of scopes. Any other
+    word is ignored, so the result is a subset of :data:`BOX_SCOPES`.
+    """
+    if value is None:
+        return ()
+    words = value.split(" ") if isinstance(value, str) else [str(v) for v in value]
+    named = set(words)
+    return tuple(s for s in BOX_SCOPES if s in named)
+
+
+def parse_box_scope(value: str | None) -> tuple[str, ...]:
+    """:func:`parse_scope` of a box mint, then each box scope it names
+    (SW-77). A malformed token still raises ``ValueError``."""
+    return (*parse_scope(value), *box_scopes_in(value))
+
+
+def box_scope_string(scopes: Iterable[str]) -> str:
+    """:func:`scope_string`, then each box scope of *scopes* (SW-77). The
+    mint and the rotation of a box token write their scope with it."""
+    held = list(scopes)
+    return " ".join(w for w in (scope_string(held), *box_scopes_in(held)) if w)
+
 
 def covered_by(scope: str) -> str | None:
     """The cover rule (spec §7.1 step 4, §19.6): ``<x>:write`` covers
@@ -828,7 +879,26 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
+    # SW-77: the heartbeat of a box, the route of `report_box_health`. It
+    # needs `box:runner` on a box connection, not `projects:write`
+    # (`BOX_WRITE_ROUTES`).
+    ("POST", "/agent-box-health"),
 })
+
+#: SW-77. The pairs of :data:`MCP_WRITE_ROUTES` that a box runner sends, each
+#: with the box scope that it needs IN PLACE of ``projects:write``. Branch 0
+#: admits such a pair only for a connection of credential ``box`` that holds
+#: the scope, else it answers the coded 403 :data:`BOX_ONLY_CODE`. The route
+#: checks the box stamp and the scope again. Fence:
+#: ``tests/unit/test_agent_box_health_r8.py``.
+BOX_WRITE_ROUTES: Mapping[tuple[str, str], str] = MappingProxyType({
+    ("POST", "/agent-box-health"): BOX_RUNNER,
+})
+
+#: SW-77. The ``detail`` of the 403 of a box pair that a connection which is
+#: not a box, or a box with no runner scope, sends. Never a 401, so a client
+#: keeps its token.
+BOX_ONLY_CODE = "box_only"
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
 #: full FastAPI route template. Branch 0 of ``deps.get_current_user`` refuses
@@ -1177,8 +1247,14 @@ __all__ = [
     "ATTACHMENT_FILENAME_PATTERN",
     "BOX_CLIENT_ID",
     "BOX_CREDENTIAL",
+    "BOX_ONLY_CODE",
+    "BOX_RUNNER",
+    "BOX_RUNNER_ALONE",
+    "BOX_RUNNER_TOOLS",
+    "BOX_SCOPES",
     "BOX_SLUG_MAX",
     "BOX_STAMP_PREFIX",
+    "BOX_WRITE_ROUTES",
     "CLIENT_LABELS",
     "CLIENT_SLUG_MAX",
     "CONTEXT_READ",
@@ -1209,6 +1285,8 @@ __all__ = [
     "ascii_host",
     "authorization_redirect",
     "authorize_url",
+    "box_scope_string",
+    "box_scopes_in",
     "box_slug",
     "box_tokens_enabled",
     "client_host",
@@ -1229,6 +1307,7 @@ __all__ = [
     "issuer",
     "mcp_sessions_enabled",
     "org_allowed",
+    "parse_box_scope",
     "parse_scope",
     "path_shapes",
     "pkce_matches",

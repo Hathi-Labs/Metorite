@@ -676,16 +676,36 @@ async def _claim_door_read(connection: agent_tokens.LiveConnection) -> int | Non
     return over
 
 
+def _box_only() -> HTTPException:
+    """SW-77. The coded 403 of a box pair from a connection that is not a box
+    with the runner scope. Never a 401, so the client keeps its token."""
+    _log.info("auth.agent_refused", reason=agent_oauth.BOX_ONLY_CODE)
+    return HTTPException(status_code=403, detail=agent_oauth.BOX_ONLY_CODE)
+
+
 async def _claim_call(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
-    nonce: str | None, via: str,
+    nonce: str | None, via: str, pair: tuple[str, str | None] = ("", None),
 ) -> str | None:
     """Steps 5a to 5d of branch 0: :func:`_door_gate` for a door pair, else
     :func:`_claim_write` with ``projects:write`` for a write of
     ``MCP_WRITE_ROUTES``. A read of ``MCP_ROUTES`` needs neither. A refusal
-    reason (401), or ``None``."""
+    reason (401), or ``None``.
+
+    SW-77: a pair of ``agent_oauth.BOX_WRITE_ROUTES`` needs a connection of
+    credential ``box`` that holds the box scope of the pair, else the coded
+    403 of :func:`_box_only`. Then the nonce and the cap of
+    :func:`_claim_write`, with that scope in place of ``projects:write``."""
     if door is not None:
         return await _door_gate(connection, door, nonce, via)
+    box_scope = agent_oauth.BOX_WRITE_ROUTES.get(pair)  # type: ignore[call-overload]
+    if box_scope is not None:
+        if (connection.credential != agent_oauth.BOX_CREDENTIAL
+                or box_scope not in connection.scopes):
+            raise _box_only()
+        if nonce is None:
+            return "method"
+        return await _claim_write(connection, nonce, box_scope)
     if nonce is not None:
         return await _claim_write(connection, nonce, agent_oauth.PROJECTS_WRITE)
     return None
@@ -884,7 +904,7 @@ async def _agent_user(request: Request) -> UserContext:
     # `projects:write` on the connection (EA3-29), a fresh nonce (EA3-28) and
     # room under the cap (EA3-30). They run before the resolve, so a refused
     # call binds no tenant.
-    refused = await _claim_call(connection, door, nonce, expected_via)
+    refused = await _claim_call(connection, door, nonce, expected_via, pair)
     if refused is not None:
         return _refuse_agent(refused, **ids)
 

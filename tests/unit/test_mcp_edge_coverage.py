@@ -106,7 +106,18 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "MCP-P1a. `describe_app` reads the ops of one app and their args schema."
         " It is not a Projects route (spec §19.4)."
     ),
+    # WS-MCP SW-77 (agent_coordination.md SW-77): the heartbeat of a box. It
+    # is not a Projects route, and the chat never reaches it.
+    ("POST", "/agent-box-health"): (
+        "SW-77. `report_box_health` posts the heartbeat of a box. Only a box"
+        " token with box:runner reaches it. It is not a Projects route."
+    ),
 }
+
+#: SW-77. The tools whose scope is a box scope (``agent_oauth.BOX_SCOPES``),
+#: each with that scope. Rule 3 reads the scope from here, not from
+#: ``RESOURCE_SCOPES``. A new entry needs a spec amendment.
+BOX_TOOLS: dict[str, str] = {"report_box_health": "box:runner"}
 
 #: The tools of the app door whose route is the route of the op in each call
 #: (MCP-P1a, spec §19.4). Rules 3 and 4 cannot read a fixed route for them,
@@ -198,6 +209,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
         ("POST", "/projects/tasks/{task_id}/links"),
         ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+        # SW-77: the heartbeat of a box, for `report_box_health`.
+        ("POST", "/agent-box-health"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -471,15 +484,31 @@ def _route_parameters() -> dict[tuple[str, str], set[str]]:
     return out
 
 
+def _scope_faults(tool, box_scope: str | None, resource_scopes) -> list[str]:
+    """The scope faults of one tool record (rule 3). SW-77: a box tool needs
+    its box scope of :data:`BOX_TOOLS` and the mark ``box``. Any other tool
+    needs a resource scope, or ``None``."""
+    if box_scope is not None:
+        if tool.required_scope != box_scope or not tool.box:
+            return [f"{tool.name}: a box tool needs {box_scope}"]
+        return []
+    if tool.box:
+        return [f"{tool.name}: a box tool that BOX_TOOLS does not name"]
+    if tool.required_scope is not None and tool.required_scope not in resource_scopes:
+        return [f"{tool.name}: required_scope {tool.required_scope!r}"]
+    return []
+
+
 def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
     from acb_auth.agent_oauth import PROJECTS_WRITE, RESOURCE_SCOPES
 
     wrong: list[str] = []
     for tool in _tools():
+        box_scope = BOX_TOOLS.get(tool.name)
         if not hasattr(tool, "required_scope"):
             wrong.append(f"{tool.name}: no required_scope")
-        elif tool.required_scope is not None and tool.required_scope not in RESOURCE_SCOPES:
-            wrong.append(f"{tool.name}: required_scope {tool.required_scope!r}")
+        else:
+            wrong.extend(_scope_faults(tool, box_scope, RESOURCE_SCOPES))
         write = tool.method != "GET"
         hints = WRITE_HINTS if write else READ_HINTS
         if write and tool.name in NON_IDEMPOTENT_WRITES:
@@ -494,7 +523,7 @@ def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
             wrong.append(f"{tool.name}: destructive, and not a named exception")
         if dict(tool.annotations) != hints:
             wrong.append(f"{tool.name}: annotations {dict(tool.annotations)}")
-        if write and tool.required_scope != PROJECTS_WRITE:
+        if write and box_scope is None and tool.required_scope != PROJECTS_WRITE:
             wrong.append(f"{tool.name}: a write needs {PROJECTS_WRITE}")
         for name in ("input_schema", "output_schema"):
             schema = getattr(tool, name, None)
@@ -505,6 +534,34 @@ def test_rule_3_each_tool_declares_its_scope_hints_and_schemas():
             if not listed.get(key):
                 wrong.append(f"{tool.name}: tools/list shows no {key}")
     assert not wrong, "\n  ".join(["A tool record breaks §9.5 rule 3:", *wrong])
+
+
+def test_the_box_runner_scope_covers_only_its_named_tools():
+    """SW-77 (``agent_coordination.md`` SW-77, Q18). ``box:runner`` covers
+    ``report_box_health``, ``list_agent_queue`` and the start of a run, and
+    nothing else. Each tool that needs a box scope is a box tool on that list,
+    its pair needs the scope at branch 0, and the scope is never a scope that
+    consent can grant. Mutation: give ``get_task`` the scope ``box:runner``,
+    or drop the pair from ``BOX_WRITE_ROUTES``, and this test fails."""
+    from acb_auth import agent_oauth
+    from agent_edge.tools import TOOLS
+
+    assert agent_oauth.BOX_SCOPES == ("box:runner",)
+    assert agent_oauth.BOX_RUNNER_TOOLS == frozenset(
+        {"report_box_health", "list_agent_queue", "start_agent_run"})
+    for scope in agent_oauth.BOX_SCOPES:
+        assert scope not in agent_oauth.SUPPORTED_SCOPES
+        assert agent_oauth.parse_scope(scope) == ()
+    boxed = {t.name for t in TOOLS.values()
+             if t.box or t.required_scope in agent_oauth.BOX_SCOPES}
+    assert boxed == set(BOX_TOOLS)
+    assert boxed <= agent_oauth.BOX_RUNNER_TOOLS
+    for name in boxed:
+        tool = TOOLS[name]
+        pair = (tool.method, tool.route)
+        assert pair in MCP_WRITE_ROUTES, pair
+        assert agent_oauth.BOX_WRITE_ROUTES[pair] == tool.required_scope, pair
+    assert set(agent_oauth.BOX_WRITE_ROUTES) <= set(MCP_WRITE_ROUTES)
 
 
 #: The inputs that the edge applies itself, because the route takes no such

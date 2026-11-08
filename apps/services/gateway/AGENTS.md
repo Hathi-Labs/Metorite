@@ -99,6 +99,13 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - A save takes `pg_advisory_xact_lock` on its scope, and the unique index and the retry stay as the backstop.
    - ⚠️ Each statement names `kind = 'guidance'`, so a rule row of item 0r never reaches a block, the history or the next version. Fences: `test_agent_guidance_r8.py` (case 9), `test_project_rules_static.py`.
    - Fences: `test_agent_guidance_r8.py`, `test_agent_guidance.py`.
+0v. routes/agent_box_health.py -- **The heartbeat of an agent box** (SW-77, `agent_coordination.md` §3.11.4). `POST /agent-box-health` is the route of the MCP tool `report_box_health`. `GET /agent-box-health` is the read of a member.
+   - The router checks `AGENT_BOX_HEALTH_ORGS` first, so a dark route answers 404. Then it checks `feature:projects`.
+   - ⚠️ Only a box writes. Branch 0 admits the pair only for a box connection with `box:runner` (`agent_oauth.BOX_WRITE_ROUTES`, coded 403 `box_only`). The route checks the box stamp and the scope again, so a person and an OAuth connection get 403.
+   - Each heartbeat replaces the one row of the box. The connection, the member and the org come from branch 0, never from the body (`extra="forbid"`).
+   - ⚠️ "May see": a member reads the boxes of the member's own connections. A holder of `integrations:manage` reads every box of the org. RLS binds the org, and the read names the org in its WHERE too.
+   - The values are untrusted display data. The note loses each control character. A heartbeat older than 3 minutes reads `offline`.
+   - Fences: `test_agent_box_health_r8.py` (R8, two orgs), `test_mcp_edge_coverage.py`, `test_tenant_coverage.py`.
 0r. routes/project_rules.py -- **The rules of a project** (WS-ALN ALN-5a, `project_alignment.md` §4.2). It is the one writer of a rule row: `kind = 'rule'` on `pm_agent_guidance`. No third store.
    - The router checks `PROJECT_RULES_ORGS` first, so a dark route answers 404. Then it checks `feature:projects`. The prefix is `/project-rules`, and the chat tools are a follow-up slice.
    - ⚠️ Append only. A create, an accept, an edit, a retire and a change of level each add a version row of one `rule_key`. Only the accept route moves `proposed` to `active`. The trigger refuses an UPDATE.

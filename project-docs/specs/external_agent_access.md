@@ -1536,6 +1536,7 @@ The review of 2026-11-06 had two Opus readers, a spec audit and an adversarial r
 - **A box token reaches what the same member's OAuth connection of the same grant reaches, and no more.** The parity test in `test_agent_box_token_routes.py` runs every scope the mint accepts through the consent validator.
 - An agent cannot mint. `MCP_ROUTES` is an allow list, and the mint routes are not in it. The test asserts the absence, and names the routes (R7). Branch 0 admits only listed pairs.
 - The rate limits are the existing ones: the write cap and the door caps. EA-19 adds none.
+- **The box scope `box:runner`** (SW-77, `agent_coordination.md` SW-77). It covers `report_box_health`, `list_agent_queue` and the start of a run, and nothing else. Only the box mint takes it, alone on its token. Consent never offers it.
 
 **3. Secret handling.**
 - The token is `mbt_` plus 43 URL-safe characters, 256 bits. The prefix lets a scanner and a log filter find it.

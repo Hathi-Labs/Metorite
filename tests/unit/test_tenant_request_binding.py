@@ -1163,8 +1163,17 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # (door.scope). No step of branch 0 changed. Both digests were computed
     # with this test's own function under 3.12 and 3.13. This pin needs the
     # diff-reviewer review and the independent verification.
-    (3, 12): "29b8aaad9bc2b3ffc2f9e8a747835a1e4a674622096afeca886d98107ba0a9a2",
-    (3, 13): "187571d8c6dbac8f05cf131dcea9a476289ebb2ae03ef6f58870fa49cbd721f7",
+    # SW-77 (2026-11-08, agent_coordination.md SW-77): `_claim_call` takes the
+    # pair, and a pair of `agent_oauth.BOX_WRITE_ROUTES` needs a box
+    # connection that holds the box scope, else the coded 403 of the new helper
+    # `_box_only`. The pair is the matched template, and the credential and the
+    # scopes come from the connection row, never from the request. The scan
+    # and the tripwire are as before. The pins before it were 3.12
+    # ``29b8aaad…07ba0a9a2`` and 3.13 ``187571d8…a49cbd721f7``. Both digests
+    # were computed with this test's own rule under 3.12 and 3.13. This pin
+    # needs the diff-reviewer review and the independent verification.
+    (3, 12): "221756f123fe8917e3e6756643a63cd2f87a1c75d871bbc952f4a37ce4c32cb1",
+    (3, 13): "061621d560f5d217c8eff79cbbc4cf3826ffcba8ae8b7ba545904349209d757f",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1174,8 +1183,10 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 #: MCP-P1a adds the four helpers of the app door: the claim dispatch, the door
 #: gate (the door flag, AD-18, the app scope and the caps), the door read cap
 #: and the audit row. None of them sees the request.
+#: SW-77 adds ``_box_only``, the coded 403 of a box pair that ``_claim_call``
+#: raises.
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
-                        "_claim_door_read", "_audit_door")
+                        "_claim_door_read", "_audit_door", "_box_only")
 
 
 def _branch_zero_digest() -> str:

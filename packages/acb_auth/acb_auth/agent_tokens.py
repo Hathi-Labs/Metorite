@@ -2096,14 +2096,19 @@ def _box_name(name: str) -> str:
 def _box_scopes(scopes: Sequence[str]) -> tuple[str, ...]:
     """The scopes of a box token, by the consent rule (spec §10.9 q. 2).
 
-    ``agent_oauth.parse_scope`` reads them, so an unknown scope drops out and
-    a malformed one raises. ``offline_access`` drops out, because a box has
-    no refresh token. No resource scope left raises.
+    ``agent_oauth.parse_box_scope`` reads them, so an unknown scope drops out
+    and a malformed one raises. ``offline_access`` drops out, because a box
+    has no refresh token. No scope left raises.
+
+    SW-77: the box scope ``agent_oauth.BOX_RUNNER`` is kept, and it stands
+    alone. A list that names it with another scope raises.
     """
-    parsed = agent_oauth.parse_scope(" ".join(str(s) for s in scopes))
+    parsed = agent_oauth.parse_box_scope(" ".join(str(s) for s in scopes))
     kept = tuple(s for s in parsed if s != agent_oauth.OFFLINE_ACCESS)
     if not kept:
         raise ValueError("a box token needs one scope or more")
+    if agent_oauth.box_scopes_in(kept) and len(kept) > 1:
+        raise ValueError("box:runner stands alone on its token")
     return kept
 
 
@@ -2318,7 +2323,7 @@ async def create_box_connection(
     if not agent_oauth.box_tokens_enabled():
         return BoxRefused(BOX_OFF)
     raw = new_box_token()
-    scope = agent_oauth.scope_string(granted)
+    scope = agent_oauth.box_scope_string(granted)
     async with _tenant_session() as db:
         org = str(current_tenant())
         if not agent_oauth.org_allowed(org):
@@ -2420,7 +2425,7 @@ async def rotate_box_token(
         ).one_or_none()
         if locked is None:
             return BoxRefused(BOX_NOT_FOUND)
-        scope = agent_oauth.scope_string(locked.scopes or ())
+        scope = agent_oauth.box_scope_string(locked.scopes or ())
         await db.execute(text(_BOX_KEEP_NEWEST_SQL), where)
         if now:
             await db.execute(text(_BOX_OLD_NOW_SQL), where)

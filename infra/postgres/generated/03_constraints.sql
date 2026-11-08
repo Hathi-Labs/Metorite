@@ -2689,3 +2689,15 @@ ALTER TABLE package_field_value ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE package_field_value ADD CONSTRAINT package_field_value_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS package_field_value_org_idx ON package_field_value (organization_id);
+
+-- agent_box_health
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM agent_box_health WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: agent_box_health still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE agent_box_health ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE agent_box_health ADD CONSTRAINT agent_box_health_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS agent_box_health_org_idx ON agent_box_health (organization_id);

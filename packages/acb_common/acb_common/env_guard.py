@@ -221,6 +221,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # WS-MCP SW-77: AGENT_BOX_HEALTH_ORGS opens the heartbeat of the agent
+    # boxes of an org. The rows name the boxes and the members of the org, so
+    # a tenant must not open it for another org.
+    "AGENT_BOX_HEALTH_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).

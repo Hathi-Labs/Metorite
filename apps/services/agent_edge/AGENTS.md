@@ -81,6 +81,12 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - While `AGENT_GUIDANCE_ORGS` does not name the org, the gateway answers 404, and the edge leaves out each key. A claim whose guidance read fails still succeeds, with no key.
   - The server instructions say how to read the guidance. Fences: `test_agent_guidance.py`, `test_mcp_edge_claim.py` (`TestClaimReturnsGuidance`), `test_mcp_edge_prompts.py` (`TestGuidanceRule`).
 
+- SW-77 (`agent_coordination.md` SW-77) adds `report_box_health` over `POST /agent-box-health`. Its scope is the box scope `box:runner` (`agent_oauth.BOX_RUNNER`).
+  - `bearer.effective_scopes` counts a box scope only for a box token, and only when the token and the connection both name it.
+  - A runner token (box scopes only) reaches the box tools and no other tool, not even `whoami` (`tools.box_only`). Check 8 asks it for `projects:read`.
+  - A box tool (`Tool.box`) from a connection that is not a box answers `TEXT_BOX_ONLY` and sends no request. It never gets the `insufficient_scope` 403, because no sign-in can give it the scope.
+  - The tool refuses a NUL in `account_note`. The body holds the keys of `BOX_HEALTH_BODY_KEYS` only. Fence: `tests/unit/test_agent_box_health_r8.py`.
+
 ## Local contract
 
 1. **The flag.** While `agent_access_enabled` is false, every request answers 404 and does nothing else. That covers every path and every method, `OPTIONS` and `HEAD` too. The ASGI middleware `EdgeGate` in `app.py` answers first, before the router. A wrong method then cannot leak a 405 with an `Allow` header.

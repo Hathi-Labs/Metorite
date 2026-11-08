@@ -23,6 +23,9 @@ Spec ``project-docs/specs/external_agent_access.md`` §7.1 and §9.6, check 6.
    stamps the use with ``agent_tokens.touch_box_use`` and the client
    address that ``mcp.py`` passes in (``request.client.host``, never
    ``X-Real-IP``). A failed stamp never fails the request.
+6. **The runner scope (SW-77).** Only a box token can hold
+   ``agent_oauth.BOX_RUNNER``, and only when its token scope and its
+   connection both name it (:func:`effective_scopes`).
 
 The tenant comes from the token row and from nowhere else. This module reads
 one request input, the ``Authorization`` header, and it never sends that
@@ -89,18 +92,29 @@ def _expand(scopes: Iterable[str]) -> set[str]:
     return agent_oauth.covered_scopes(scopes)
 
 
-def effective_scopes(token_scope: str | None, connection_scopes: Iterable[str]) -> frozenset[str]:
+def effective_scopes(
+    token_scope: str | None, connection_scopes: Iterable[str], *, box: bool = False,
+) -> frozenset[str]:
     """The token scope intersected with the connection scopes (§7.1 step 4).
 
     A broader scope covers a narrower one on each side before the
     intersection, so a ``projects:write`` token on a ``projects:read``
     connection may read. A malformed token scope gives no scope.
+
+    SW-77: for a token of a box connection (*box*), a box scope
+    (``agent_oauth.BOX_SCOPES``) that both sides name joins the result. A
+    token of any other connection never holds one, whatever its rows say.
     """
+    held = list(connection_scopes)
     try:
         token = _expand(agent_oauth.parse_scope(token_scope))
     except ValueError:
-        token = set()
-    return frozenset(token & _expand(connection_scopes))
+        return frozenset()
+    out = token & _expand(held)
+    if box:
+        out |= set(agent_oauth.box_scopes_in(token_scope)) & set(
+            agent_oauth.box_scopes_in(held))
+    return frozenset(out)
 
 
 def covers(scopes: frozenset[str], required: str | None) -> bool:
@@ -154,7 +168,7 @@ async def authenticate(header_value: str | None, client_addr: str | None = None)
         raise BearerRefused(401, sent=True, reason="audience")
     if box:
         await _touch_box(found, client_addr)
-    return Caller(lookup=found, scopes=effective_scopes(found.scope, found.scopes))
+    return Caller(lookup=found, scopes=effective_scopes(found.scope, found.scopes, box=box))
 
 
 __all__ = [

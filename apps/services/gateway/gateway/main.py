@@ -2220,6 +2220,17 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-MCP SW-77 — the heartbeat of an agent box (agent_coordination.md
+    # §3.11.4 and SW-77): the write of `report_box_health`, for a box with
+    # `box:runner` only, and the read of a member. Ships dark: 404 while
+    # `AGENT_BOX_HEALTH_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_box_health import router as _agent_box_health_router
+
+    app.include_router(_agent_box_health_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-ALN ALN-5a — the rules of a project (project_alignment.md §4.2), on
     # the one guidance store: create, accept, edit, retire, the level, the
     # list and the history. Ships dark: 404 while `PROJECT_RULES_ORGS` does

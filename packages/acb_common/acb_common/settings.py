@@ -962,6 +962,16 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # ── The box heartbeat (WS-MCP SW-77, agent_coordination.md §3.11.4) ─────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `POST /agent-box-health` (the route of the MCP tool
+    # `report_box_health`) and `GET /agent-box-health` answer 404, and no
+    # heartbeat is stored. The one reader is
+    # `gateway.routes.agent_box_health.box_health_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_agent_box_health_r8.py.
+    agent_box_health_orgs: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids
