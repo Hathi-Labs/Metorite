@@ -104,6 +104,23 @@ CONTRIBUTION_POINTS: tuple[str, ...] = (
 #: The loader owns the second list (`_CONTRIBUTES_KEYS`), so this module keeps no copy of it.
 ALLOWED_POINTS: frozenset[str] = frozenset(CONTRIBUTION_POINTS) | frozenset(_P0_POINTS)
 
+#: The host records that a package may extend (package_host.md section 8.3, PKG-14a-2).
+#: A copy of `HOST_RECORD_KINDS` in `gateway/package_host/field_values.py`, because this
+#: package cannot import the gateway. `tests/unit/test_studio_field_claims.py` holds the
+#: two equal, so a change to one without the other fails there.
+HOST_RECORD_KINDS: tuple[str, ...] = ("task", "crm.lead", "crm.contact", "crm.company", "crm.deal")
+#: The most entries of `contributes.fields` in one manifest (PKG-14a-2).
+MAX_HOST_FIELDS = 20
+#: The keys of one entry of `contributes.fields`: the record kind and a field spec of
+#: `studio_fields` without `required`, `hot` and `to`.
+HOST_FIELD_KEYS: frozenset[str] = frozenset({"record", "key", "type", "label", "many", "options"})
+#: The parts of a field spec that an extension field cannot set. The same set as
+#: `REFUSED_SPEC_KEYS` of `field_values.py`, and the same test holds the two equal.
+HOST_FIELD_REFUSED_KEYS: frozenset[str] = frozenset({"required", "hot", "to"})
+#: The types that an extension field cannot have. The same set as `REFUSED_TYPES`
+#: of `field_values.py`.
+HOST_FIELD_REFUSED_TYPES: frozenset[str] = frozenset({"relation", "file"})
+
 #: Points that only a shipped `system` file holds. An anchor is the guide's contract with the
 #: shipped shell code (assistant_guide.md section 5.7), so a package never declares one.
 SYSTEM_ONLY_POINTS: frozenset[str] = frozenset({"anchors"})
@@ -384,6 +401,7 @@ class Manifest(_Strict):
     shell: Shell | None = None
     # PKG-5a: package_host.md sections 3.1, 4, 5.4 and 8. Loose by design.
     # PKG-14 to PKG-16 give `slots`, `needs` and `overrides` their meaning.
+    # PKG-14a-2: `_check_host_fields` checks `contributes.fields`. The schema stays loose.
     contributes: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     extends: str | None = Field(default=None, pattern=rf"^{_DASHED}$")
     slots: list[dict[str, Any]] = Field(default_factory=list)
@@ -781,6 +799,49 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
 
 
+def _check_host_fields(m: Manifest, out: list[ManifestError]) -> None:
+    """The extension fields of `contributes.fields` (package_host.md section 8.3,
+    PKG-14a-2). Each entry names a host record kind and holds a field spec of
+    `studio_fields` without its three refused parts. The field rules are
+    `studio_fields.validate_field_spec`, the one check. This adds the record
+    kind, the refused parts and types, the duplicates and the count cap."""
+    entries = m.contributes.get("fields")
+    if not entries:
+        return
+    base = "$.contributes.fields"
+    if len(entries) > MAX_HOST_FIELDS:
+        out.append(_err(base, f"A package declares at most {MAX_HOST_FIELDS} extension fields."))
+    seen: set[tuple[str, str]] = set()
+    for i, entry in enumerate(entries):
+        path = f"{base}[{i}]"
+        for extra in sorted(str(k) for k in entry if k not in HOST_FIELD_KEYS):
+            message = (f"An extension field cannot set `{extra}`. Remove it."
+                       if extra in HOST_FIELD_REFUSED_KEYS
+                       else "This is not a key of an extension field. Remove it.")
+            out.append(_err(f"{path}.{_short(extra)}", message))
+        record = entry.get("record")
+        if not isinstance(record, str) or record not in HOST_RECORD_KINDS:
+            out.append(_err(
+                f"{path}.record",
+                f"The record kind is one of {', '.join(HOST_RECORD_KINDS)}.{_got(record)}"))
+        spec = {k: v for k, v in entry.items() if k in HOST_FIELD_KEYS and k != "record"}
+        for problem in validate_field_spec(spec):
+            tail = "" if problem.got is None else _got(problem.got)
+            where = f"{path}.{problem.path}" if problem.path else path
+            out.append(_err(where, problem.message + tail))
+        kind = entry.get("type")
+        if isinstance(kind, str) and kind in HOST_FIELD_REFUSED_TYPES:
+            out.append(_err(f"{path}.type", f"An extension field cannot have the type `{kind}`."))
+        key = entry.get("key")
+        if isinstance(record, str) and isinstance(key, str):
+            if (record, key) in seen:
+                out.append(_err(
+                    f"{path}.key",
+                    f"The field `{_short(key)}` of `{_short(record)}` is declared twice. "
+                    "Each must be unique."))
+            seen.add((record, key))
+
+
 def _rollup_sources(others: Sequence[ObjectDef], own: str) -> dict[str, RollupSource]:
     """The other objects of the package, as the sources of a roll-up (C7b). An
     object whose fields or rules do not parse is left out, and its own refusal
@@ -919,6 +980,7 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
     _check_links(m, objects, catalog, out)
+    _check_host_fields(m, out)
     return out
 
 
