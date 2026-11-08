@@ -53,8 +53,9 @@ def test_every_pr_check_job_but_e2e_may_reach_the_box_and_e2e_never_does() -> No
     pr = {j: r for w, j, r in _jobs() if w == "pr-check.yml"}
     assert "e2e" in pr and _BOX not in pr["e2e"], "e2e stays on ubuntu-24.04"
     assert pr["e2e"] == "ubuntu-24.04"
+    assert pr["backup-restore"] == "ubuntu-24.04", "its verify containers share the daemon (CIV-6)"
     for j, r in pr.items():
-        if j != "e2e":
+        if j not in ("e2e", "backup-restore"):
             assert r == _RUNS_ON, f"pr-check.yml:{j} is not routed by the reviewed expression"
 
 
@@ -72,3 +73,9 @@ def test_a_sudo_step_in_a_box_job_runs_only_on_github_hosted() -> None:
                 run = str(step.get("run", ""))
                 if "sudo" in run or "apt-get" in run:
                     assert "runner.environment == 'github-hosted'" in str(step.get("if", "")), (wf.name, name, step)
+
+
+def test_pr_check_is_triggered_by_pull_request_only() -> None:
+    """`pull_request_target` or `workflow_run` would send fork code to the box."""
+    doc = yaml.safe_load((_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8"))
+    assert set(doc[True] if True in doc else doc["on"]) == {"pull_request"}

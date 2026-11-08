@@ -709,7 +709,10 @@ jobs:
   # against an empty database.
   backup-restore:
     name: "Backup/restore rehearsal"
-    runs-on: ${{ (vars.USE_BOX_RUNNERS == '1' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && 'metorite-box' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
+    # CIV-23 (D198). Stays hosted. The verify container count and the EXIT trap
+    # of scripts/rehearse_verify_scratch.sh work on the WHOLE Docker daemon, so two
+    # runs on the box daemon would kill each other (CIV-6).
     # Its scripts live under scripts/, and the schema under infra/. A PR
     # that touches neither cannot change the result (2026-10-19).
     needs: changes
@@ -858,7 +861,7 @@ jobs:
         run: |
           set -euo pipefail
           createdb console
-          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:${PGPORT}/console"
+          export CUSTOMER_CONSOLE_DATABASE_URL="postgresql://postgres:ladder@localhost:${PGPORT:-5432}/console"
           for i in 1 2 3; do
             echo "--- console ladder run $i ---"
             bash scripts/apply_customer_console_migrations.sh | tail -1
@@ -1188,6 +1191,10 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
+
+      # A missing tool must be loud. `continue-on-error` hides exit 127 otherwise.
+      - name: Check that gitleaks is on the PATH
+        run: command -v gitleaks || { echo "::error::gitleaks is not installed on this runner"; exit 1; }
 
       - name: Scan PR commits for secrets
         run: |
