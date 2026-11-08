@@ -18,7 +18,11 @@ c. A holder of ``feature:studio`` passes the gate on each route. With the
    org outside ``STUDIO_ORGS``, each route answers 404, and no handler reads
    a store.
 d. The router carries one feature gate, ``feature:studio``. No route adds a
-   second gate, and no route reads ``studio:publish`` (J2 owns that check).
+   second gate. Only the org and group install of WS-PKG PKG-8b reads
+   ``studio:publish``, in its handler, because such an install is a share to
+   others (D180.3, ``package_host.md`` §6.1). No other route reads it (J2 owns
+   the review of a share). The fence reads the syntax tree, so a second read
+   in another quote style fails too.
 e. ``EXPECTED_ROUTES`` pins the routes. A new route fails here until a person
    adds it, and so adds its 403 case.
 f. No file of ``routes/studio`` names the ``workflows`` gate.
@@ -46,9 +50,9 @@ with 16 routes, and each test named here went red.
   publish route. Red: ``test_no_route_adds_a_second_gate_or_the_share_verb``
   and ``test_a_studio_holder_passes_the_gate_on_each_route`` (the
   ``feature:studio`` and ``feature:*`` holders) on that route, and
-  ``test_the_share_verb_is_a_capability_that_no_studio_route_reads``.
+  ``test_the_share_verb_is_read_by_the_install_only``.
 * M5: remove ``"studio"`` from ``FEATURES`` and ``"studio:publish"`` from
-  ``CAPABILITIES``. Red: ``test_the_share_verb_is_a_capability_that_no_studio_route_reads``,
+  ``CAPABILITIES``. Red: ``test_the_share_verb_is_read_by_the_install_only``,
   and the pins in ``test_org_access_control.py`` and
   ``test_auth_me_features.py``.
 """
@@ -102,6 +106,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     # A5c-1, the package delete.
     ("GET", "/studio/packages/{package_id}/delete-preview"),
     ("DELETE", "/studio/packages/{package_id}"),
+    # WS-PKG PKG-8b, the org and group install.
+    ("POST", "/studio/packages/{package_id}/install"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
 )
@@ -317,15 +323,62 @@ def test_no_studio_file_names_the_workflows_gate() -> None:
     assert 'dependencies=[require_feature_router("studio")]' in actions_src
 
 
-def test_the_share_verb_is_a_capability_that_no_studio_route_reads() -> None:
-    """J1-1 adds `studio:publish` to the vocabulary only. Version publish of
-    a member's own app needs `feature:studio` and ownership (STU-Q4b)."""
+def _owners(tree: Any) -> dict[int, str]:
+    """The top-level function that holds each node, by ``id(node)``. A node
+    outside every function maps to ``<module>``."""
+    import ast
+
+    out: dict[int, str] = {}
+    for top in tree.body:
+        name = top.name if isinstance(top, ast.AsyncFunctionDef | ast.FunctionDef) else "<module>"
+        for node in ast.walk(top):
+            out[id(node)] = name
+    return out
+
+
+def test_the_share_verb_is_read_by_the_install_only() -> None:
+    """J1-1 adds `studio:publish` to the vocabulary. Version publish of a
+    member's own app needs `feature:studio` and ownership (STU-Q4b). The one
+    reader in `routes/studio` is the org and group install of PKG-8b, a share
+    to others (D180.3, `package_host.md` §6.1).
+
+    The check reads the syntax tree, so the quote style does not matter. The
+    string constant `studio:publish` occurs once in `routes/studio`: the
+    definition of `packages.SHARE_RIGHT`. The name `SHARE_RIGHT` is read in
+    `install_package` only. The one `has_permission` call is
+    `user.has_permission(SHARE_RIGHT)` in `install_package`. No file reads
+    `.access.has(`, the other door to the same check."""
+    import ast
+
+    from gateway.routes.studio import packages
+
     assert "studio:publish" in CAPABILITIES
     assert "studio" in FEATURES
+    assert packages.SHARE_RIGHT == "studio:publish"
+    verbs: list[tuple[str, str, str]] = []
+    names: list[tuple[str, str, str]] = []
+    calls: list[tuple[str, str, str]] = []
     for path in sorted(_STUDIO_DIR.glob("*.py")):
         text = path.read_text(encoding="utf-8")
-        assert "studio:publish" not in text, path.name
-        assert "has_permission(" not in text, path.name
+        assert ".access.has(" not in text, path.name
+        tree = ast.parse(text)
+        owner = _owners(tree)
+        for node in ast.walk(tree):
+            where = (path.name, owner.get(id(node), "<module>"))
+            if isinstance(node, ast.Constant) and node.value == "studio:publish":
+                verbs.append((*where, "constant"))
+            if isinstance(node, ast.Name) and node.id == "SHARE_RIGHT":
+                names.append((*where, type(node.ctx).__name__))
+            if isinstance(node, ast.Attribute) and node.attr == "SHARE_RIGHT":
+                names.append((*where, "attribute"))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and \
+                    node.func.attr in ("has_permission", "has"):
+                calls.append((*where, ast.unparse(node)))
+    assert verbs == [("packages.py", "<module>", "constant")], verbs
+    assert sorted(names) == [("packages.py", "<module>", "Store"),
+                             ("packages.py", "install_package", "Load")], names
+    assert calls == [("packages.py", "install_package",
+                      "user.has_permission(SHARE_RIGHT)")], calls
 
 
 # ── g. The chat gets the refusal ──────────────────────────────────────────

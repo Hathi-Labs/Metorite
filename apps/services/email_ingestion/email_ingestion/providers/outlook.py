@@ -13,7 +13,8 @@ import base64
 import json
 import logging
 import re
-from collections import deque
+import time
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,7 @@ from .base import (
     EmailFolder,
     EmailMessage,
     EstimateCallback,
+    FolderCheckIncomplete,
     InlineImage,
     InlineRead,
     ProviderAttachmentFailed,
@@ -46,6 +48,34 @@ from .base import (
 GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 
 logger = logging.getLogger(__name__)
+
+#: Resolved folder ids, shared by the provider objects of one mailbox. A
+#: provider object lives for one request, so a bulk apply builds one per
+#: message. The key holds the account id that the gateway sets on the
+#: provider, so two mailboxes and two tenants never share an entry. A
+#: provider with no scope uses no module entry (H-267).
+_FOLDER_ID_TTL_SECONDS = 300.0
+_FOLDER_ID_MAX_ENTRIES = 1000
+_folder_id_shared: OrderedDict[tuple[str, str], tuple[str, float]] = OrderedDict()
+
+
+def _folder_shared_get(scope: str, key: str) -> str | None:
+    hit = _folder_id_shared.get((scope, key))
+    if hit is None:
+        return None
+    if hit[1] <= time.monotonic():
+        _folder_id_shared.pop((scope, key), None)
+        return None
+    _folder_id_shared.move_to_end((scope, key))
+    return hit[0]
+
+
+def _folder_shared_put(scope: str, key: str, folder_id: str) -> None:
+    _folder_id_shared[(scope, key)] = (
+        folder_id, time.monotonic() + _FOLDER_ID_TTL_SECONDS)
+    _folder_id_shared.move_to_end((scope, key))
+    while len(_folder_id_shared) > _FOLDER_ID_MAX_ENTRIES:
+        _folder_id_shared.popitem(last=False)
 
 # Cap on how long we'll honour a Graph 429 ``Retry-After`` before giving up on
 # the retry. Graph throttles bulk labelling; a short, bounded wait lets the apply
@@ -733,6 +763,18 @@ class OutlookProvider(BaseEmailProvider):
         # read. The delta then keeps the links of the folders that the list
         # left out (WS-17 EM-T4d review round 1 F2).
         self._folder_list_partial = False
+        # name (trimmed, lower-cased) -> Graph folder id, for the life of this
+        # provider instance (one request, sweep or rule run). It spares the
+        # per-message move a tree read (H-267).
+        self._folder_id_cache: dict[str, str] = {}
+        # folder id -> parent folder id (None at top level), set by the last
+        # ``list_folders`` read. It ranks same-name folders.
+        self._folder_parent_ids: dict[str, str | None] = {}
+        # HTTP status of each ``childFolders`` read that failed twice in the
+        # last ``list_folders`` (0 = no HTTP answer, e.g. a network error).
+        self._folder_list_failures: list[int] = []
+        #: The account id, set by the gateway. It scopes the shared cache.
+        self.folder_cache_scope: str | None = None
 
     def credentials_dirty(self) -> bool:
         return self._creds_dirty
@@ -920,6 +962,8 @@ class OutlookProvider(BaseEmailProvider):
         """
         client = await self._get_client()
         self._folder_list_partial = False
+        self._folder_parent_ids = {}
+        self._folder_list_failures = []
         # NB: ``wellKnownName`` is intentionally NOT requested — personal/consumer
         # (MSA) accounts reject it in ``$select`` with HTTP 400, which used to fail
         # the whole folder listing. We classify system vs user by name instead
@@ -959,21 +1003,34 @@ class OutlookProvider(BaseEmailProvider):
                 resp = await client.get(next_link)
                 resp.raise_for_status()
 
-        async def _descend(raw: dict[str, Any]) -> list[EmailFolder]:
+        async def _descend(
+            raw: dict[str, Any], parent: str | None = None,
+        ) -> list[EmailFolder]:
             # Skip the Outlook "Sync Issues" diagnostic tree entirely (the folder
             # and its Conflicts / Local Failures / Server Failures children).
             if (raw.get("displayName") or "").strip().lower() in \
                     _OUTLOOK_HIDDEN_FOLDER_NAMES:
                 return []
             out = [self._folder_from_graph(raw)]
+            self._folder_parent_ids[raw["id"]] = parent
             if raw.get("childFolderCount"):
                 try:
-                    children = await _page(
-                        f"/me/mailFolders/{raw['id']}/childFolders",
-                        {"$top": 200, "$select": select},
-                    )
-                    for child in children:
-                        out.extend(await _descend(child))
+                    children = None
+                    for attempt in (0, 1):
+                        try:
+                            children = await _page(
+                                f"/me/mailFolders/{raw['id']}/childFolders",
+                                {"$top": 200, "$select": select},
+                            )
+                            break
+                        except Exception as exc:
+                            if attempt:
+                                resp = getattr(exc, "response", None)
+                                self._folder_list_failures.append(
+                                    resp.status_code if resp is not None else 0)
+                                raise
+                    for child in children or []:
+                        out.extend(await _descend(child, raw["id"]))
                 except Exception:  # noqa: BLE001
                     # A forbidden subtree shouldn't drop the parent. The mark
                     # tells the delta that the list is short (EM-T4d review
@@ -987,43 +1044,140 @@ class OutlookProvider(BaseEmailProvider):
             folders.extend(await _descend(raw))
         return folders
 
-    async def _get_or_create_folder_id(self, name: str) -> str | None:
+    async def _find_folder_any_depth(self, name: str) -> str | None:
+        """Return the id of the folder named ``name`` at any depth, or None.
+
+        The cheap top-level ``$filter`` call comes first. Only when it finds
+        nothing does this read the whole tree with ``list_folders``. With
+        several matches the pick is fixed: top-level, then the Inbox
+        subtree, then the shallowest, then list order. A tree read that
+        skipped a failed subtree and found nothing raises, because the
+        folder may sit in the part that failed (H-267).
+        """
+        client = await self._get_client()
+        esc = name.replace("'", "''")
+        resp = await client.get(
+            "/me/mailFolders",
+            params={"$filter": f"displayName eq '{esc}'",
+                    "$select": "id,displayName", "$top": 1},
+        )
+        resp.raise_for_status()
+        vals = resp.json().get("value", [])
+        if vals:
+            return vals[0]["id"]
+        folders = await self.list_folders()
+        want = name.strip().lower()
+        matches = [
+            f for f in folders
+            if (f.name or "").strip().lower() == want
+        ]
+        if not matches:
+            if self._folder_list_partial:
+                if any(c not in (403, 404) for c in self._folder_list_failures):
+                    # A 429, a 5xx or a network error may pass. Fail now and
+                    # let the next run succeed, with no duplicate folder.
+                    raise FolderCheckIncomplete(
+                        f"Could not check the Outlook folders for {name!r}: "
+                        "part of the folder tree could not be read. "
+                        "No folder was made."
+                    )
+                # Every failure is permanent (403 or 404). Waiting does not
+                # help, so the create goes on.
+                logger.warning(
+                    "outlook.folder_tree_unreadable count=%d name=%r",
+                    len(self._folder_list_failures), name)
+            return None
+        parents = self._folder_parent_ids
+
+        def chain(fid: str) -> list[str]:
+            out: list[str] = []
+            cur = parents.get(fid)
+            while cur and cur not in out:
+                out.append(cur)
+                cur = parents.get(cur)
+            return out
+
+        inbox_id = next(
+            (f.provider_folder_id for f in folders
+             if not parents.get(f.provider_folder_id)
+             and (f.name or "").strip().lower() == "inbox"), None)
+
+        def rank(item: tuple[int, EmailFolder]) -> tuple[int, int, int]:
+            idx, f = item
+            up = chain(f.provider_folder_id)
+            return (
+                0 if not up else 1,
+                0 if inbox_id and inbox_id in up else 1,
+                len(up) * 1000 + idx,
+            )
+
+        ordered = sorted(enumerate(matches), key=rank)
+        if len(matches) > 1:
+            logger.info(
+                "outlook.folder_name_matches name=%r count=%d",
+                name, len(matches))
+        return ordered[0][1].provider_folder_id
+
+    def _cached_folder_id(self, key: str) -> str | None:
+        hit = self._folder_id_cache.get(key)
+        if hit:
+            return hit
+        if self.folder_cache_scope:
+            hit = _folder_shared_get(self.folder_cache_scope, key)
+            if hit:
+                self._folder_id_cache[key] = hit
+        return hit
+
+    def _remember_folder_id(self, key: str, folder_id: str) -> None:
+        self._folder_id_cache[key] = folder_id
+        if self.folder_cache_scope:
+            _folder_shared_put(self.folder_cache_scope, key, folder_id)
+
+    def _forget_folder_id(self, key: str) -> None:
+        self._folder_id_cache.pop(key, None)
+        if self.folder_cache_scope:
+            _folder_id_shared.pop((self.folder_cache_scope, key), None)
+
+    async def _get_or_create_folder_id(
+        self, name: str, *, use_cache: bool = True,
+    ) -> str | None:
         """Return the Graph id of the folder named ``name``, creating it if absent.
 
-        Dedups by ``displayName`` and tolerates the create race
-        (``ErrorFolderExists`` / HTTP 409) by re-reading — mirrors upstream
-        inbox-zero's ``getOrCreateOutlookFolderIdByName``.
+        Looks the name up at any depth first, so a folder under Inbox is
+        reused and no second top-level folder appears (H-267). Tolerates the
+        create race (``ErrorFolderExists`` / HTTP 409) by looking again at
+        any depth. The id is cached on this instance for the length of one run.
         """
         if not name or not name.strip():
             return None
         name = name.strip()
+        key = name.lower()
+        if use_cache:
+            cached = self._cached_folder_id(key)
+            if cached:
+                return cached
         client = await self._get_client()
-        esc = name.replace("'", "''")
-
-        async def _find() -> str | None:
-            resp = await client.get(
-                "/me/mailFolders",
-                params={"$filter": f"displayName eq '{esc}'",
-                        "$select": "id,displayName", "$top": 1},
-            )
-            resp.raise_for_status()
-            vals = resp.json().get("value", [])
-            return vals[0]["id"] if vals else None
-
-        existing = await _find()
-        if existing:
-            return existing
+        found = await self._find_folder_any_depth(name)
+        if found:
+            self._remember_folder_id(key, found)
+            return found
         resp = await client.post("/me/mailFolders", json={"displayName": name})
         if resp.is_success:
-            return resp.json().get("id")
+            new_id = resp.json().get("id")
+            if new_id:
+                self._remember_folder_id(key, new_id)
+            return new_id
         if resp.status_code == 409 or "ErrorFolderExists" in resp.text:
-            return await _find()
+            found = await self._find_folder_any_depth(name)
+            if found:
+                self._remember_folder_id(key, found)
+            return found
         resp.raise_for_status()
         return None
 
     async def create_folder(self, name: str) -> EmailFolder:
         """Create (or reuse) a top-level mail folder; return it normalized."""
-        folder_id = await self._get_or_create_folder_id(name)
+        folder_id = await self._get_or_create_folder_id(name, use_cache=False)
         if not folder_id:
             raise ValueError(f"Could not create Outlook folder: {name!r}")
         return EmailFolder(
@@ -1598,7 +1752,10 @@ class OutlookProvider(BaseEmailProvider):
         # name is treated as a user folder and created on demand (inbox-zero
         # parity — promo/automation rules file into same-named folders).
         target = self._MOVE_TARGETS.get((folder or "").lower())
+        from_cache = False
         if not target:
+            from_cache = bool(
+                self._cached_folder_id((folder or "").strip().lower()))
             target = await self._get_or_create_folder_id(folder)
         if not target:
             return None
@@ -1607,6 +1764,15 @@ class OutlookProvider(BaseEmailProvider):
             f"/me/messages/{provider_message_id}/move",
             json={"destinationId": target},
         )
+        if resp.status_code == 404 and from_cache:
+            # The cached folder may be gone. Drop it and resolve again once.
+            self._forget_folder_id((folder or "").strip().lower())
+            fresh = await self._get_or_create_folder_id(folder)
+            if fresh and fresh != target:
+                resp = await client.post(
+                    f"/me/messages/{provider_message_id}/move",
+                    json={"destinationId": fresh},
+                )
         resp.raise_for_status()
         # Graph /move creates the message in the destination folder with a NEW
         # id; the old id is no longer valid. Return it so the caller can re-key

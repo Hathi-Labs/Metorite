@@ -573,8 +573,10 @@ goal, with no person present. `proactive_agent.md` §4.4 holds the design.
 - **The ledger.** The turn runs inside `unattended.once`, and the slot is
   the job id. At the cap the ledger row ends `ok`, because `cap_reached`
   lives on the goal row.
-- **The time limit.** A turn has 120 seconds, and 180 seconds at most. That
-  bound and a settle margin of 60 seconds stay at or below `HANDLER_TIMEOUT`.
+- **The time limit.** A turn has 120 seconds, and 180 seconds at most. The
+  clock starts in `run()`, before `unattended.recover`. That bound and a
+  settle margin of 60 seconds stay at or below `HANDLER_TIMEOUT`. The meter
+  and the record of a round each get a third of the margin.
   `test_the_caps_are_bounded` fences the order.
 - **No cost reader, no call.** The default meter raises before the first
   call. The job then gives up with `NoCostReader`, and
@@ -586,5 +588,6 @@ goal, with no person present. `proactive_agent.md` §4.4 holds the design.
 | `headless_turn.ended` | info | A turn ended, with its outcome and its count of rounds |
 | `headless_turn.cap_reached` | info | A round moved the goal to its cap. One line for each goal |
 | `headless_turn.no_cost_reader` | error | No meter can read the cost of a run, so the turn made no model call |
-| `headless_turn.cost_unknown` | error | The meter failed after a call, so the round counts as the rest of the budget |
+| `headless_turn.cost_unknown` | error | The meter failed or timed out (`MeterTimeout`) after a call, so the round counts as the rest of the budget |
 | `headless_turn.round_unrecorded` | warning | The turn did not record a round, because the goal changed twice or is not active now |
+| `headless_turn.round_unrecorded` | error | The record of a round timed out (`RecordTimeout`). The cost of that round does not reach the goal, and the job gives up with `TurnFailed` |

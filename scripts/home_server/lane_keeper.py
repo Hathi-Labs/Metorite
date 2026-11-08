@@ -4,19 +4,31 @@
 metorite-lane-keeper.timer runs this every 10 minutes as user dev. It needs
 no PC and no person. One pass:
 
-1. Read ``claude agents --json``. Keep the newest session of each lane name.
-2. A lane is ended when its state is done, blocked or idle. A lane that
+1. Read ``~/lanes/keeper-lanes.txt``, one lane name per line. It is the
+   whole list of lanes that may wake. With no file, nothing wakes.
+2. Read ``claude agents --json``. Keep the newest session of each listed lane.
+3. A lane is ended when its state is done, blocked or idle. A lane that
    sleeps inside a ``sleep 600`` has state working, so it is never woken.
-3. Wake it with ``claude --bg --resume <session id> <note>`` when its
-   transcript is older than 10 minutes, and no wake went out in 30 minutes.
-4. After an account change, wake every ended lane once, at the next pass,
+4. A lane with a busy session is never woken. That is a busy session that
+   has the lane's name, or a busy session of any name whose transcript header
+   names the lane. A fork copies the header of its parent, so a fork that an old
+   resume gave an automatic name still starts with the lane's name.
+5. Wake it when its transcript is older than 10 minutes, and no wake went out
+   in 30 minutes: ``claude stop <old id>`` (only while the old session still has
+   a process), then ``claude --bg --resume <session id> -n <lane>
+   --remote-control=<lane> <note>``. A resume of a session that still runs starts
+   a copy, so a failed stop means no resume in that pass. ``-n`` gives the new
+   session the lane's name, so the next pass finds it and not the old one
+   (task 2206, 2026-11-08).
+6. After an account change, wake every ended lane once, at the next pass,
    and ignore the 30-minute cap that time.
-5. Run the account switch when ``KEEPER_SWITCH_CMD`` names one. The skip list
+7. Run the account switch when ``KEEPER_SWITCH_CMD`` names one. The skip list
    goes to it as ``KEEPER_SKIP_ACCOUNTS``, and the keeper does not run it
    while the box sits on a skip-list account.
 
 Every wake and every skip with a reason goes to ``~/lanes/keeper.log``.
-The keeper never stops a process and never starts a new lane.
+The keeper stops only the ended session of a lane that it is about to resume,
+and it never starts a new lane.
 Fence: tests/unit/test_lane_keeper.py.
 """
 
@@ -69,6 +81,55 @@ def transcript_age(session_id: str, now: float, projects: Path) -> float | None:
     return None
 
 
+def lane_names() -> set[str]:
+    """The lanes that may wake: one name per line of keeper-lanes.txt. None: empty."""
+    try:
+        text = (LANES_DIR / "keeper-lanes.txt").read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return {ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")}
+
+
+def _header_names(path: Path, lines: int = 20) -> set[str]:
+    """The names in the first records of a transcript. A fork copies the header of
+    its parent, so a fork with an automatic name still starts with the lane's name."""
+    names: set[str] = set()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for _ in range(lines):
+                line = f.readline()
+                if not line:
+                    break
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("type") in ("custom-title", "agent-name"):
+                    n = rec.get("customTitle") or rec.get("agentName")
+                    if isinstance(n, str):
+                        names.add(n)
+    except OSError:
+        pass
+    return names
+
+
+def busy_lanes(agents: list[dict], lanes: set[str], projects: Path) -> set[str]:
+    """Lanes that have a busy session: one with the lane's name, or a busy session
+    of any name whose transcript header names the lane (a fork with an automatic name)."""
+    out: set[str] = set()
+    for a in agents:
+        if a.get("status") != "busy":
+            continue
+        if a.get("name") in lanes:
+            out.add(a["name"])
+        sid = a.get("sessionId")
+        if not sid:
+            continue
+        for f in projects.glob(f"*/{sid}.jsonl"):
+            out |= _header_names(f) & lanes
+    return out
+
+
 def plan(
     agents: list[dict],
     state: dict[str, float],
@@ -78,11 +139,13 @@ def plan(
     skip_lanes: set[str],
     only_lanes: set[str],
     force_all: bool,
+    busy: set[str] = frozenset(),  # type: ignore[assignment]
 ) -> list[tuple[str, str, str]]:
     """The wakes of one pass: (lane, session id, reason). Pure, so a test can call it."""
     wakes = []
     for name, a in sorted(newest_per_lane(agents).items()):
-        if name in skip_lanes or (only_lanes and name not in only_lanes):
+        # An empty `only_lanes` wakes nothing: the list file is the whole list.
+        if name in skip_lanes or name not in only_lanes or name in busy:
             continue
         if a.get("state") not in ENDED:
             continue
@@ -116,6 +179,37 @@ def log(line: str) -> None:
     LANES_DIR.mkdir(parents=True, exist_ok=True)
     with open(LANES_DIR / "keeper.log", "a", encoding="utf-8") as f:
         f.write(f"{stamp}Z {line}\n")
+
+
+def _wake(name: str, sid: str, agent: dict) -> tuple[int, str]:
+    """Stop the ended session when it still has a process, then resume it under the
+    lane's name. Returns (exit code, a short reason). Never raises."""
+    # Claude refuses to resume from an untrusted directory such as the home
+    # directory ("Workspace not trusted", exit 1). Resume from the cwd of the lane.
+    cwd = agent.get("cwd")
+    where = cwd if cwd and Path(cwd).is_dir() else None
+    try:
+        if agent.get("pid"):
+            # A resume of a session that still runs starts a copy, and then the lane
+            # has two live sessions. So no resume until the stop worked.
+            short = agent.get("id")
+            if not short:
+                return 1, " the session runs and has no short id to stop"
+            r = subprocess.run(
+                ["claude", "stop", short], capture_output=True, text=True, timeout=60, cwd=where
+            )
+            if r.returncode:
+                return r.returncode, f" stop failed: {r.stderr.strip()[:100]!r}"
+        r = subprocess.run(
+            ["claude", "--bg", "--resume", sid, "-n", name, f"--remote-control={name}", NOTE],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=where,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return 1, f" {type(exc).__name__}"
+    return r.returncode, (f" {r.stderr.strip()[:120]!r}" if r.returncode and r.stderr else "")
 
 
 def run_pass(
@@ -160,31 +254,26 @@ def run_pass(
         for a in agents
         if a.get("sessionId")
     }
+    lanes = lane_names()
+    if not lanes:
+        log("no lane named in keeper-lanes.txt, so no wake")
+    busy = busy_lanes(agents, lanes, projects)
     wakes = plan(
         agents,
         state,
         now,
         ages=ages,
         skip_lanes=_csv("KEEPER_SKIP_LANES", DEFAULT_SKIP_LANES),
-        only_lanes=_csv("KEEPER_LANES"),
+        only_lanes=lanes,
         force_all=force_all,
+        busy=busy,
     )
     failed_forced = False
-    cwds = {a["sessionId"]: a.get("cwd") for a in agents if a.get("sessionId")}
+    by_sid = {a["sessionId"]: a for a in agents if a.get("sessionId")}
     for name, sid, reason in wakes:
-        # Claude refuses to resume from an untrusted directory such as the home
-        # directory ("Workspace not trusted", exit 1). Resume from the cwd of the lane.
-        cwd = cwds.get(sid)
-        r = subprocess.run(
-            ["claude", "--bg", "--resume", sid, NOTE],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=cwd if cwd and Path(cwd).is_dir() else None,
-        )
-        why = f" {r.stderr.strip()[:120]!r}" if r.returncode and r.stderr else ""
-        log(f"wake {name} session={sid[:8]} reason={reason} exit={r.returncode}{why}")
-        if r.returncode == 0:
+        rc, why = _wake(name, sid, by_sid.get(sid, {}))
+        log(f"wake {name} session={sid[:8]} reason={reason} exit={rc}{why}")
+        if rc == 0:
             state[name] = now
         elif reason == "account change":
             failed_forced = True
