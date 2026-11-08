@@ -3421,10 +3421,12 @@ def _fields_problem(package: _Reply, name: str, verb: str,
     return None
 
 
-#: The door path of a stored Studio call: the package and the action id.
-_DOOR_PATH = re.compile(r"^/studio/apps/([0-9a-f-]{36})/actions/([a-z][a-z0-9_]{0,47})$")
-#: The ``uses`` of an object write: the object and the verb.
-_OBJECT_USES = re.compile(r"^object:([a-z][a-z0-9_]{0,47})\.(create|update|delete)$")
+#: The door path of a stored Studio call: the package and the action id. A
+#: plain string, as each pattern of this module is (``_IDENT``, ``_USES``).
+_RESEND_PATH = r"^/studio/apps/([0-9a-f-]{36})/actions/([a-z][a-z0-9_]{0,47})$"
+#: The ``uses`` of an object write: the object and the verb. Not
+#: :data:`_OBJECT_USES`, which also takes a read.
+_WRITE_USES = r"^object:([a-z][a-z0-9_]{0,47})\.(create|update|delete)$"
 
 
 def _resend_target(reply: _Reply, verb: str, rid: str, pid: str | None,
@@ -3448,12 +3450,12 @@ def _resend_target(reply: _Reply, verb: str, rid: str, pid: str | None,
             or not isinstance(subject, str) or _skill_path(subject) != subject):
         return _NOT_A_RECORD_REQUEST
     path = call.get("path")
-    door = _DOOR_PATH.match(path) if isinstance(path, str) else None
+    door = re.match(_RESEND_PATH, path) if isinstance(path, str) else None
     if door is None or door.group(1) != subject or call.get("method") != "POST":
         return _NOT_A_RECORD_REQUEST
     query = call.get("query") if isinstance(call.get("query"), list) else []
     uses = [p[1] for p in query if isinstance(p, list) and len(p) == 2 and p[0] == "uses"]
-    found = _OBJECT_USES.match(uses[0]) if len(uses) == 1 and isinstance(uses[0], str) else None
+    found = re.match(_WRITE_USES, uses[0]) if len(uses) == 1 and isinstance(uses[0], str) else None
     if found is None:
         return _NOT_A_RECORD_REQUEST
     if found.group(2) != verb:
