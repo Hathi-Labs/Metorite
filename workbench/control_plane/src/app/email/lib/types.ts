@@ -36,6 +36,12 @@ export interface Email {
   snippet: string;
   hasAttachments: boolean;
   attachments?: Attachment[];
+  /**
+   * "failed" when the gateway could not get the files of this mail from the
+   * provider (an expired token, a rate limit). An empty list with "ok" or no
+   * value is a mail with inline pictures only. Never guess it from the list.
+   */
+  attachmentsStatus?: "ok" | "failed";
   isRead: boolean;
   isStarred: boolean;
   isFlagged: boolean;

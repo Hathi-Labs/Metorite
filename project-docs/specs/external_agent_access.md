@@ -2155,6 +2155,8 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 
 ### 12.7 Needs attention (SW-11a)
 
+**AP-Q11 (owner, 2026-11-08).** This list folds into "For you" of the Waiting list, as one "Needs you" (`waiting_on_me.md` §5.8). Its three kinds become kinds of the Waiting seam (AP-17), and one Projects control takes the place of its view (AP-18). The route and its rules below stay. The AP-17 providers read them.
+
 **BUILT 2026-10-25, not merged (Metorite task #342, branch `sw11-attention-mt-eb3949d0`).** It is live at the merge and has no flag of its own. The list only reads, and its two actions use member writes that exist. The supervisor's audit gave GO-NARROWED, with the product decisions below.
 
 **The answer.** A list in the Projects app shows the work that stopped and that waits for a person. It holds three kinds. A count on the project header opens it. Each row shows the task, its owner, the kind, the age and one next action.
