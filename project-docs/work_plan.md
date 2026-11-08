@@ -5752,9 +5752,9 @@ Owner decisions, 2026-10-29 (WM-0) and 2026-11-08, in chat. Design: `project-doc
 Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of each slice in `specs/project_management_app.md` §13.6 bind its rule. Until a slice lands, the rule is advisory (R7).
 
 
-### D196 — Setup health: each live app lists its setup items, the chat nudges one at a time, and a score follows (PROPOSED 2026-11-08)
+### D196 — Setup health: each live app lists its setup items, the chat nudges one at a time, and a score follows (ACCEPTED 2026-11-08)
 
-**PROPOSED. It waits for the owner's answers (`specs/personalization.md` §18.12).** Owner asks of 2026-10-29 (epic 940) and 2026-11-08, in chat. Metorite: tasks 940 and 945.
+**ACCEPTED.** Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945). Owner asks of 2026-10-29 (epic 940) and 2026-11-08, in chat. Metorite: tasks 940 and 945.
 
 1. **Two phases.** Phase A gives each live app setup items (done, missing, stale) and one chat nudge. Phase B adds measures, weights, a nightly score and a Setup health page.
 2. **One seam.** The items ride `setup_status` (OB-1a) and the `setup` field of the shell manifest (PZ-18). The nudge rides the personalization interview. No second registry and no second budget.
@@ -5762,6 +5762,8 @@ Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_r
 4. **A check reads counts and settings, never content.** A member sees the member checks. An admin also sees the org checks and the adoption counts.
 5. **A check with no data waits.** No column is invented. A check that cannot run is out of the score.
 6. **"Not for us"** takes a check out of the nudges and the score. A member marks member checks, and an admin marks org checks.
+
+**Not covered.** Q8 (where the nudge state lives, `specs/personalization.md` §18.12) is open. The owner has not answered it. The proposed default is the `setup` key of `my_day_prefs`.
 
 **Re-check this number at merge.** The first merge wins a D-number. A scan of `origin/*` and the worktrees on 2026-11-08 found D195 as the highest, so D196 was free.
 
