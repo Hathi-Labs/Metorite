@@ -69,10 +69,16 @@ and a delta-level mirror would break that promise. H-180 carries it.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+_log = logging.getLogger("platform.router")
 
 __all__ = [
     "REASONING_PARAMS",
+    "SAMPLING_PARAMS",
+    "sampling_params_for",
+    "step_takes_sampling",
     "publish_reasoning_alias",
     "reasoning_for_vendor",
     "reasoning_params_for",
@@ -121,6 +127,64 @@ def reasoning_params_for(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
     if not drop:
         return kwargs
     return {k: v for k, v in kwargs.items() if k not in drop}
+
+#: The sampling values that a Claude 5.5 model refuses (task 2450).
+SAMPLING_PARAMS = ("temperature", "top_p", "top_k")
+
+
+def step_takes_sampling(model: str) -> bool:
+    """Whether litellm sends sampling values to the step model *model*.
+
+    Measured on litellm 1.103.0: ``claude-haiku-5-5``, ``claude-sonnet-5-5``,
+    ``claude-opus-5-5`` and ``claude-opus-4-8`` raise ``UnsupportedParamsError``
+    for ``temperature=0.2``. Only ``temperature=1`` passes. Anthropic models
+    use litellm's own rule (``AnthropicModelInfo._supports_sampling_params``).
+    Any provider also honours ``supports_sampling_params: False`` in
+    ``litellm.model_cost``. A model that litellm cannot place keeps its values.
+    """
+    try:
+        import litellm
+
+        name, provider, _key, _base = litellm.get_llm_provider(model)
+    except Exception:  # a model that litellm cannot place keeps its params
+        return True
+    if provider == "anthropic":
+        try:
+            from litellm.llms.anthropic.common_utils import AnthropicModelInfo
+
+            if not AnthropicModelInfo._supports_sampling_params(name):
+                return False
+        except Exception:  # litellm moved the rule: fall to the model map
+            pass
+    cost = getattr(litellm, "model_cost", None) or {}
+    for key in (f"{provider}/{name}", name, model):
+        entry = cost.get(key)
+        if isinstance(entry, dict) and entry.get("supports_sampling_params") is False:
+            return False
+    return True
+
+
+def sampling_params_for(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
+    """*kwargs* with no sampling value that the step *model* refuses.
+
+    Task 2450. litellm runs here with no ``drop_params``, so ``temperature=0.2``
+    on a Claude 5.5 step answers 400. This drops ``temperature``, ``top_p`` and
+    ``top_k`` for THAT step only. A ``temperature`` of 1 stays, because litellm
+    accepts it. Returns *kwargs* itself when nothing is dropped. The log line
+    names the model and the dropped keys, and never the message content.
+    """
+    drop = [
+        k for k in SAMPLING_PARAMS
+        if k in kwargs and not (k == "temperature" and kwargs[k] == 1)
+    ]
+    if not drop or step_takes_sampling(model):
+        return kwargs
+    _log.info(
+        "router.sampling_params_dropped",
+        extra={"sp_model": model, "sp_dropped": ",".join(drop)},
+    )
+    return {k: v for k, v in kwargs.items() if k not in drop}
+
 
 #: What DeepSeek calls it, and what it wants back.
 VENDOR_KEY = "reasoning_content"

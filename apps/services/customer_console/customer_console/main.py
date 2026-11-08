@@ -175,6 +175,7 @@ from customer_console.reasoning import (
     messages_for_step,
     publish_reasoning_alias,
     reasoning_params_for,
+    sampling_params_for,
 )
 from customer_console.router import (
     SSE_DONE,
@@ -9090,6 +9091,9 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         # takes it. litellm here runs with no `drop_params`, so a step that
         # refuses `thinking` would answer 400 for the whole request.
         passthrough = reasoning_params_for(passthrough, step.model)
+        # Task 2450: a Claude 5.5 step refuses `temperature`, `top_p` and
+        # `top_k`. Per step, so a Gemini step after it keeps its values.
+        passthrough = sampling_params_for(passthrough, step.model)
         requested_max = passthrough.get("max_tokens")
         passthrough["max_tokens"] = min(
             int(requested_max) if requested_max else _MAX_OUTPUT_TOKENS,
