@@ -126,12 +126,17 @@ STUDIO = ("feature:studio",)
 PUBLISHER = ("feature:studio", "studio:publish")
 
 
-def _manifest(mid: str, name: str = "Site visits") -> dict[str, Any]:
-    return {
+def _manifest(mid: str, name: str = "Site visits",
+              jobs: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {
         "studio": 1, "id": mid, "name": name, "purpose": "Track the visits to a site.",
         "objects": [{"name": "visit", "fields": [{"key": "site", "type": "text"}]}],
         "actions": [{"id": "find", "uses": "object:visit.list"}],
     }
+    if jobs is not None:
+        out["views"] = [{"id": j["view"], "block": "markdown", "text": "x"} for j in jobs]
+        out["shell"] = {"jobs": jobs}
+    return out
 
 
 def _mid() -> str:
@@ -184,9 +189,16 @@ async def _new(org: str, email: str, name: str = "Site visits") -> str:
     return str(got["package"]["id"])
 
 
-async def _live(org: str, email: str, name: str = "Site visits") -> str:
+async def _live(org: str, email: str, name: str = "Site visits",
+                jobs: list[dict[str, str]] | None = None) -> str:
     """A new package of *email*, published once."""
-    pid = await _new(org, email, name)
+    if jobs is not None:
+        made, got = await _call("create_package", org, email,
+                                payload=_manifest(_mid(), name, jobs))
+        assert made == 200, got
+        pid = str(got["package"]["id"])
+    else:
+        pid = await _new(org, email, name)
     status, got = await _call("publish", org, email, pid, payload={})
     assert status == 200, got
     return pid
@@ -306,11 +318,13 @@ def _view(world: Any, who: str, org: str) -> Any:
 
     resp = _run(world, go)
     if resp.status_code != 200:
-        return SimpleNamespace(status=resp.status_code, nav={})
+        return SimpleNamespace(status=resp.status_code, nav={}, jobs={})
     body = json.loads(resp.body)
     nav = {e["key"]: e for e in body["contributions"].get("nav", [])
            if e["install_id"] is not None}
-    return SimpleNamespace(status=200, nav=nav)
+    jobs = {e["key"]: e for e in body["contributions"].get("jobs", [])
+            if e["install_id"] is not None}
+    return SimpleNamespace(status=200, nav=nav, jobs=jobs)
 
 
 # ── a, f. The org wins over a private claim ────────────────────────────────
@@ -367,6 +381,39 @@ def test_r8_a_group_install_shows_to_the_members_of_the_group_only(world) -> Non
     # Cat is in eng, not in ops. Owen's private install shows to Owen only.
     assert href not in _view(world, CAT, world.a).nav
     assert ANA_LOW not in json.dumps(got).lower()
+
+
+# ── PKG-8c. The jobs of the manifest follow the scope of the install ───────
+
+_JOBS = [{"verb": "Log a visit", "view": "visits"}]
+
+
+def test_r8_the_jobs_of_an_org_install_show_to_each_member_of_the_org(world) -> None:
+    async def go() -> tuple[str, tuple[int, Any]]:
+        y = await _live(world.a, OWEN, jobs=_JOBS)
+        return y, await _install(world.a, OWEN, y, "org")
+
+    y, (status, got) = _run(world, go)
+    assert status == 201, got
+    [org_install] = _shared(world, y)
+    for who in (ANA, BEN, CAT, OWEN):
+        entry = _view(world, who, world.a).jobs[f"{y}:visits"]
+        assert (entry["label"], entry["href"], entry["source"], entry["install_id"]) == (
+            "Log a visit", f"/apps/{y}", "org", org_install["id"]), who
+    assert _view(world, ZED, world.b).jobs == {}
+
+
+def test_r8_the_jobs_of_a_group_install_show_to_the_members_of_the_group_only(world) -> None:
+    async def go() -> tuple[str, tuple[int, Any]]:
+        y = await _live(world.a, OWEN, jobs=_JOBS)
+        return y, await _install(world.a, OWEN, y, OPS)
+
+    y, (status, got) = _run(world, go)
+    assert status == 201, got
+    for who in (ANA, BEN, OWEN):
+        assert f"{y}:visits" in _view(world, who, world.a).jobs, who
+    # Cat is in eng, not in ops, so Cat sees no job.
+    assert _view(world, CAT, world.a).jobs == {}
 
 
 def test_r8_a_holder_of_the_verb_installs_for_a_group_that_they_are_not_in(world) -> None:

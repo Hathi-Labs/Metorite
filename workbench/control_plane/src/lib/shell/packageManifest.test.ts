@@ -114,6 +114,22 @@ describe("PKG-6 packageManifest", () => {
     expect(items[0]).toMatchObject({ key: "do:new-lead", group: "do", label: "New lead", words: ["deal"] });
   });
 
+  it("PKG-8c: a Studio job (the payload claims_of writes) is a Do row that opens the app", () => {
+    const id = "3f2b7c1e-0a4d-4e8b-9c6f-1d2e3f4a5b6c";
+    const m = manifest({
+      jobs: [entry(`${id}:visits`, { label: "Log a visit", href: `/apps/${id}`, feature: "studio" })],
+    });
+    const jobs = installJobs(m, ["studio"]);
+    expect(jobs).toEqual([
+      { id: `${id}:visits`, label: "Log a visit", words: [], href: `/apps/${id}`, icon: "Zap" },
+    ]);
+    const items = addInstallJobs(buildItems([], false, []), jobs);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ key: `do:${id}:visits`, group: "do", label: "Log a visit", href: `/apps/${id}` });
+    // A member without the feature of the app page sees no row.
+    expect(installJobs(m, [])).toEqual([]);
+  });
+
   it("needs_setup gives one row for each install", () => {
     const m = manifest({
       nav: [entry("crm", { href: "/zz-crm", label: "CRM", name: "CRM", setup_href: "/zz-crm/setup" }, { needs_setup: true })],

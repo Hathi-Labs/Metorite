@@ -55,6 +55,52 @@ def test_an_app_with_no_name_is_untitled() -> None:
         assert claim.payload["label"] == "Untitled app"
 
 
+# ── 1b. The jobs (PKG-8c) ──────────────────────────────────────────────────
+
+
+def _jobs(*items: Any) -> dict[str, Any]:
+    return {"name": "V", "shell": {"jobs": list(items)}}
+
+
+def test_a_job_claims_the_key_app_and_view_and_opens_the_app() -> None:
+    claims = studio_app.claims_of(PID, _jobs({"verb": "Log a visit", "view": "visits"}))
+    assert claims[1:] == [store.Contribution(point="jobs", key=f"{PID}:visits", payload={
+        "label": "Log a visit", "href": f"/apps/{PID}", "feature": "studio"})]
+    assert claims[0].point == "nav"
+
+
+def test_a_job_href_is_the_href_of_the_nav_claim() -> None:
+    nav, job = studio_app.claims_of(PID, _jobs({"verb": "Go", "view": "v"}))
+    assert job.payload["href"] == nav.payload["href"] == nav.key == studio_app.app_href(PID)
+
+
+def test_no_shell_block_gives_the_nav_claim_only() -> None:
+    for manifest in ({"name": "V"}, {"shell": None}, {"shell": {}}, {"shell": {"jobs": []}},
+                     {"shell": {"jobs": "x"}}, {"shell": "x"}):
+        assert [c.point for c in studio_app.claims_of(PID, manifest)] == ["nav"], manifest
+
+
+def test_two_jobs_on_one_view_keep_the_first() -> None:
+    claims = studio_app.claims_of(PID, _jobs(
+        {"verb": "First", "view": "v"}, {"verb": "Second", "view": "v"}))
+    assert [(c.key, c.payload["label"]) for c in claims[1:]] == [(f"{PID}:v", "First")]
+
+
+def test_the_jobs_stop_at_twenty() -> None:
+    items = [{"verb": f"Do {n}", "view": f"v{n}"} for n in range(30)]
+    claims = studio_app.claims_of(PID, _jobs(*items))
+    assert len(claims) == 1 + studio_app.MAX_JOBS == 21
+    assert claims[-1].key == f"{PID}:v19"
+
+
+def test_a_malformed_job_is_skipped() -> None:
+    claims = studio_app.claims_of(PID, _jobs(
+        None, "x", {}, {"verb": "", "view": "v"}, {"verb": "  ", "view": "v"},
+        {"verb": "Go"}, {"view": "v"}, {"verb": 1, "view": "v"}, {"verb": "Go", "view": 2},
+        {"verb": "Good", "view": "ok"}))
+    assert [c.key for c in claims[1:]] == [f"{PID}:ok"]
+
+
 # ── 2. The sidebar keeps the href ──────────────────────────────────────────
 
 

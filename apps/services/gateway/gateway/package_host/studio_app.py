@@ -13,7 +13,10 @@ later publish moves that install to the new version and replaces its claims
 (``store.set_version``). So a publish never writes a second row and never
 answers 409 ``already_installed``.
 
-**One claim.** The install claims one ``nav`` key: the href of the app,
+**Jobs (PKG-8c).** Each ``shell.jobs`` item with a verb and a view adds a
+``jobs`` claim, keyed ``<app id>:<view>``. See :func:`_job_claims`.
+
+**One nav claim.** The install claims one ``nav`` key: the href of the app,
 :func:`app_href`. The payload holds the href, the name of the manifest as
 the label, the icon of a package card in the Studio library, and the
 feature ``studio``. The workbench serves the href with a redirect to the app
@@ -57,6 +60,8 @@ NAV_ICON = "Boxes"
 NAV_FEATURE = "studio"
 #: The label of an app whose manifest name is empty, as in the Studio library.
 UNTITLED = "Untitled app"
+#: The most ``jobs`` claims of one app (PKG-8c).
+MAX_JOBS = 20
 
 
 def app_href(app_id: str) -> str:
@@ -64,17 +69,50 @@ def app_href(app_id: str) -> str:
     return f"{APP_HREF_PREFIX}{app_id}"
 
 
-def claims_of(app_id: str, manifest: Mapping[str, Any]) -> list[Contribution]:
-    """The claims of a published Studio app: one ``nav`` entry (PKG-8a).
+def _job_claims(app_id: str, manifest: Mapping[str, Any]) -> list[Contribution]:
+    """The ``jobs`` claims of the ``shell.jobs`` list (PKG-8c).
 
-    PKG-8c adds the jobs, and PKG-8d adds the cards, the search and the
-    needs.
+    A job claims the key ``<app id>:<view>`` and opens the app at
+    :func:`app_href`, the same href as the ``nav`` claim. An item with no
+    verb or no view is skipped. A second job on one view is dropped, as the
+    store refuses a key that the request claims twice. At most
+    :data:`MAX_JOBS` jobs go in.
+    """
+    shell = manifest.get("shell")
+    jobs = shell.get("jobs") if isinstance(shell, Mapping) else None
+    if not isinstance(jobs, list):
+        return []
+    out: list[Contribution] = []
+    seen: set[str] = set()
+    for item in jobs:
+        if not isinstance(item, Mapping):
+            continue
+        verb, view = item.get("verb"), item.get("view")
+        if not (isinstance(verb, str) and verb.strip() and isinstance(view, str) and view.strip()):
+            continue
+        key = f"{app_id}:{view}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(Contribution(point="jobs", key=key, payload={
+            "label": verb, "href": app_href(app_id), "feature": NAV_FEATURE}))
+        if len(out) >= MAX_JOBS:
+            break
+    return out
+
+
+def claims_of(app_id: str, manifest: Mapping[str, Any]) -> list[Contribution]:
+    """The claims of a published Studio app: one ``nav`` entry (PKG-8a) and
+    one ``jobs`` entry for each job of the manifest (PKG-8c).
+
+    PKG-8d adds the cards, the search and the needs.
     """
     name = manifest.get("name")
     label = name.strip() if isinstance(name, str) and name.strip() else UNTITLED
     href = app_href(app_id)
-    return [Contribution(point="nav", key=href, payload={
-        "href": href, "label": label, "icon": NAV_ICON, "feature": NAV_FEATURE})]
+    nav = Contribution(point="nav", key=href, payload={
+        "href": href, "label": label, "icon": NAV_ICON, "feature": NAV_FEATURE})
+    return [nav, *_job_claims(app_id, manifest)]
 
 
 async def keep_private_install(
