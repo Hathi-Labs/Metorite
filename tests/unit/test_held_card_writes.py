@@ -77,8 +77,11 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The four CRM record writes. Each says ``open_world=True`` and keeps saying it.
-KEPT_CRM = frozenset({"convert_lead", "create_lead", "log_activity", "update_deal_status"})
+#: The seven CRM writes. Each says ``open_world=True`` and keeps saying it.
+KEPT_CRM = frozenset({
+    "convert_lead", "create_lead", "log_activity", "update_deal_status",
+    "crm_update_record", "crm_update_task", "crm_create_pipeline",
+})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
 #: ``promote_reminder``. A covered run still holds them. ``answer_decision``
@@ -422,6 +425,9 @@ async def test_a_held_load_of_the_crm_pack_keeps_the_nine_tools(store, monkeypat
         return "live"
 
     monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS. The flag drop has its own fence
+    # (test_crm_pipelines_native.py).
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
     await _mark_chat()
     build = await _build("crm-records")
     assert build.held is True and build.dropped == ()
@@ -967,7 +973,10 @@ def test_off_the_note_and_the_answer_are_the_old_words(monkeypatch) -> None:
     monkeypatch.setattr(eg, "hold_is_for_mail", lambda *_a: True)
     assert eg.egress_hold_note(ctx) == eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES
     assert eg.egress_held_answer("x", ctx) == eg.EGRESS_HELD_PACK_ANSWER_NO_WRITES.format(name="x")
-    assert "new chat" in eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES, "the text of before the slice"
+    # WT-3: the plain form sends the member to no new chat
+    # (``test_no_new_chat_copy.py``), and it still names the app.
+    assert "new chat" not in eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES.lower()
+    assert "make the change in the app" in eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES
     _switch(monkeypatch, "*")
     assert eg.egress_hold_note(ctx) == eg.EGRESS_HOLD_NOTE_PACK_OTHER
 
