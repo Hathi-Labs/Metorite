@@ -2711,7 +2711,8 @@ async def _save_draft(pid: str, doc: dict[str, Any], based_on: str) -> dict[str,
             return _refusal(_PKG_MOVED.format(act="saved"), decision=decision)
     # The store compares the hash that this save read, under its row lock. A
     # save that lands after the read gives 409, and nothing is lost.
-    reply = await _send("PUT", f"{PACKAGES_PATH}/{pid}/draft?based_on={digest}", doc, "save",
+    # The path starts with a literal, so the chat-parity reader can read the route (STU-G3c).
+    reply = await _send("PUT", f"/studio/packages/{pid}/draft?based_on={digest}", doc, "save",
                         _PKG_MAYBE_SAVED)
     if reply.status == 409 and _code(reply) == _DRAFT_CHANGED:
         return _refusal(_PKG_RACED_SAVE, status=409, code=_DRAFT_CHANGED, package_id=pid)

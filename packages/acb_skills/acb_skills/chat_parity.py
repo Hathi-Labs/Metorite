@@ -359,6 +359,8 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # (lib/studio/packageDraft.ts createDraftPackage). studio_save makes one with
     # the same POST when it gets no package_id.
     "POST /api/studio/packages": "studio_save",
+    # STU-G3c: the IDE saves a draft with the PUT that studio_save sends (based_on in the query).
+    "PUT /api/studio/packages/{}/draft": "studio_save",
     "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",

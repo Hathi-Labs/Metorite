@@ -1213,6 +1213,10 @@ async def create_task(
         # A stated status always wins. A new step with no stated status takes
         # its parent's lane through the ONE seam (D-PM-38, D79), so the
         # Projects panel, the board, both chat tools and My Tasks agree.
+        # MCP-G20: a signed agent create is not one of those doors. Its tool
+        # `create_task` says "leave status_id out to use the default status",
+        # so an agent's subtask with no stated status starts in the default
+        # lane, and never inherits an In progress parent's lane.
         if values.get("status_id"):
             status = await require_status_in_project(
                 db, status_home, str(values["status_id"]),
@@ -1220,7 +1224,7 @@ async def create_task(
             _refuse_agent_close(user, getattr(status, "category", None),
                                 refused=AGENT_CREATE_REFUSED,
                                 detail=AGENT_CREATE_REFUSAL)
-        elif parent is not None:
+        elif parent is not None and getattr(user, "agent", None) is None:
             status = await parent_lane_status(db, parent, status_home)
         else:
             status = await load_default_status(db, status_home)
