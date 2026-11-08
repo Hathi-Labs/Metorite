@@ -13,7 +13,9 @@
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-09**
-> 🟢 **WS-39 SP-1 BUILT 2026-11-08, not merged** (§13.2a, migration 372, task 960). The cycle
+> 🟢 **WS-39 LP-1a BUILT 2026-11-08, not merged** (§14.2a, migration 383, task 988). A member posts a project update
+> with a health that the author picks. The Overview shows the newest one. Dark behind `PROJECTS_UPDATES_ORGS`.
+> 🟢 **WS-39 SP-1 BUILT 2026-11-08, merged 2026-11-09** (§13.2a, migration 372, task 960). The cycle
 > store: four tables and nine routes, dark behind `PROJECTS_SPRINTS_ORGS`. No UI and no chat tool.
 > Fix round 2 (2026-11-08): a task that leaves the node of its open cycle also leaves the cycle.
 > Fix round 3 (2026-11-08): a task sits in one open cycle at most, and a closed cycle is history.
@@ -9318,7 +9320,7 @@ The research for cycles of agent teams is in §2 and §12 of `project-docs/resea
 
 ## 14. The Linear and Plane items (LP-0, task 987, 2026-11-08)
 
-**Status: ACTIVE. This section holds rows only.** It records no new decision. Epic: LP (task 978). Build order: LIN (task 2301). Reviews: `project-docs/research/linear_parity_2026-11.md` (§3, §7 and §8) and `project-docs/research/plane_pm_research_2026-08.md`. Task 956 restored the Plane file.
+**Status: ACTIVE. This section holds rows, and §14.2a holds the design of LP-1a (built 2026-11-08, not merged).** It records no new decision. Epic: LP (task 978). Build order: LIN (task 2301). Reviews: `project-docs/research/linear_parity_2026-11.md` (§3, §7 and §8) and `project-docs/research/plane_pm_research_2026-08.md`. Task 956 restored the Plane file.
 
 **The bottom line.** This section gives each Linear and Plane item a spec row, so a builder may start it. Eleven items (LP-1 to LP-11), Templates (task 18) and OP-12 (task 839) have one row each. Two items wait for an owner call (§14.5). Every row ships dark behind a flag that is OFF by default. This section does not repeat a row of §13.6.
 
@@ -9343,7 +9345,7 @@ Each row has one Metorite task. The scope carries the description of the task. W
 
 | Row | Task | Scope | Done when | Fence | Risk | Flag (default OFF) | Depends on |
 |---|---|---|---|---|---|---|---|
-| **LP-1** | 988 | Project updates. An update has a health value (On track, At risk, Off track) and a short text. The latest update shows on the project, in the project list and on the space dashboard. Mira drafts it from the week: done, slipped, blocked, the forecast (RA-6, task 423) and the signals of the `project_status` report (`projects_reports.md:325`). The lead edits and posts it. A reminder goes to the lead on a cadence per project (weekly by default), and only when the project has a lead. The watchers (`pm_project_watchers`) get a digest in My Day and in the 07:30 brief (task 583). The digest does not go by mail (P-25 stays banked). A space rolls up the health of its projects. A goal (WM-5, task 984) reads the same health | R8 tests on a real database prove tenancy, and that a member never sees an update of a project that the member cannot read | `tests/unit/test_pm_project_updates_r8.py` (new) | HIGH (a migration, a new MCP write route) | `PROJECTS_UPDATES_ORGS` | LP-0. The goal roll-up waits for WM-5 |
+| **LP-1** | 988 | **LP-1a BUILT 2026-11-08, not merged (§14.2a, migration 383).** The rest of the row is open: §14.2a lists it. Project updates. An update has a health value (On track, At risk, Off track) and a short text. The latest update shows on the project, in the project list and on the space dashboard. Mira drafts it from the week: done, slipped, blocked, the forecast (RA-6, task 423) and the signals of the `project_status` report (`projects_reports.md:325`). The lead edits and posts it. A reminder goes to the lead on a cadence per project (weekly by default), and only when the project has a lead. The watchers (`pm_project_watchers`) get a digest in My Day and in the 07:30 brief (task 583). The digest does not go by mail (P-25 stays banked). A space rolls up the health of its projects. A goal (WM-5, task 984) reads the same health | R8 tests on a real database prove tenancy, and that a member never sees an update of a project that the member cannot read | `tests/unit/test_pm_project_updates_r8.py` (new) | HIGH (a migration, a new MCP write route) | `PROJECTS_UPDATES_ORGS` | LP-0. The goal roll-up waits for WM-5 |
 | **LP-2** | 989 | Triage suggestions on intake. Each `pm_intake` item gets a suggested project, assignee, type, tags and duplicates or related tasks. For the assignee, reuse `fit_for_task` (the candidates routes of `routes/projects/candidates.py`). Each suggestion shows a one-line reason, and the member accepts or declines it. An admin writes triage guidance per project, and the nearest guidance weighs most. Auto-apply on high confidence is a project option, OFF by default. A project can have a triage owner, and the role can rotate weekly. The create form warns of a likely duplicate, as the chat does today (`skill-projects` `forms.py`). The suggester gets no tools. First slice: suggestions with reasons, accept and decline, and the injection fence. Guidance, auto-apply, rotation and the form warning follow | An eval set of 30 intake items passes its written gate. The injection fixture gets suggestions and makes no tool call | `tests/unit/test_pm_triage_suggest.py` (new), with the eval set and the injection fixture | STANDARD. HIGH if suggestions need a new table, and the builder states which | `PROJECTS_TRIAGE_SUGGEST_ORGS` | LP-0. Shares one engine with ALN-3 (task 1377) |
 | **LP-3** | 990 | SLAs. A project has rules. A task that matches a rule (by its D78 level, type, tag or intake source) gets a due-by. Example: Critical in 24 hours, Urgent in 3 days. The first matching rule wins. A task shows its time left. After the due-by it reads **Breached**. A task done after a breach reads **Failed**. A breach sends one notice to the assignee and the lead. An SLA report in Reports shows met, breached and failed per week. The timer runs in `/workflows` (`pm.task.due_in`, `workflows_app.md:508`), with no second engine. The rules use the D78 matrix and no second priority list | R8 tests on a real database prove the rule match, the first-match order and the breach state | `tests/unit/test_pm_sla_r8.py` (new) | HIGH (a migration, a notice that reaches people) | `PROJECTS_SLA_ORGS` | LP-0. The breach event can feed RT-4 later |
 | **LP-4** | 991 | Customer requests from the CRM. A task or a project links to a CRM company, contact or deal. A member sees the link only when the member can also read the CRM record (two-key access). A task shows, for example, "3 customers asked · ₹4.2 L in open deals", and the canvases sort and filter by it. The member makes the link from a mail, from a CRM note, or in the chat ("this is for Acme"). The CRM record shows its linked tasks. The Projects agent writes only the link, never a CRM record (`projects_agent_parity.md`). First slice: the link, the two-key rule, the count and value, and the back-link. The mail and note entry points follow | R8 tests on a real database prove the two-key rule and tenancy | `tests/unit/test_pm_customer_links_r8.py` (new) | HIGH (a migration, access across two apps) | `PROJECTS_CUSTOMER_LINKS_ORGS` | LP-0. Reads `crm_app.md` for the record grants |
@@ -9357,13 +9359,76 @@ Each row has one Metorite task. The scope carries the description of the task. W
 | **TPL** | 18 | Templates. A project template holds the statuses, types, custom fields and tags, the work style (WM-0), the milestones (WM-2), the starter tasks with dates relative to the project start, the intake settings and the recipes (LP-6). A task template holds a title pattern, its fields and a subtask checklist. A library per work style: an operations board (Flow), a product team (Sprints), a bet (Cycles), an installation and a customer order (Plan), customer onboarding, and hiring. "Save as template" works from any project. Mira builds a template from a short description, on one approve card. A template is org-wide by default, as task types are since migration 175. First slice: save a project as a template and make a project from it. The library and the Mira path follow | A member makes a project from a template in the local stack, and the starter dates fall in place | `tests/unit/test_pm_templates_r8.py` (new) | HIGH (a migration) | `PROJECTS_TEMPLATES_ORGS` | LP-0. Milestones, recipes and intake settings join when WM-2, LP-6 and LP-8 land |
 | **OP-12** | 839 | The views become one tab row on desktop and tablet: the six canvases, the saved views and "+ View". No sideways scroll. Below 1280 px the canvas tabs show the icon only, with a tooltip that names the key. Tabs that do not fit fold into a "More" menu. The phone keeps one View button and a vertical sheet. `ModeSwitch` is the one switcher. Subscriptions and favorites (Linear parity row P14) are not in the task. First slice: the tab row only | At 1440, 1024 and 768 px every canvas and saved view is one click away with no scrollbar. At 390 px the sheet lists them vertically. The keys o, b, l, t, c and m still switch the canvas | Advisory: a vitest test for the tab row (new) and the visual review. Nothing tests layout (CLAUDE.md §4) | STANDARD (frontend only) | None. It is a layout, and the D145 owner preview gates it | None. SP-3 (task 962) uses the row |
 
+### 14.2a LP-1a — the design of the first slice of LP-1 (built 2026-11-08)
+
+**Status: BUILT 2026-11-08, repair round 2026-11-09, not merged.** Task 988. The spec audit asked for this design before the build. It records the choices of LP-1a. The repair round added the delete, the line from the summary and the open state of the line. The rest of LP-1 stays open (the list at the end).
+
+**The slice.** A member posts an update on a project. The update holds a health that the author picks by hand and a short text. The Overview of the project shows the newest update as one line, and the line opens the whole text in place. The author or a Projects admin deletes an update. An outside agent lists and posts updates over the MCP. The chat lists them, posts one after an approve card, and deletes one after a card.
+
+**The table.** Migration 383 (`infra/postgres/383_pm_project_updates.sql`) adds `pm_project_updates`. Expand only (R6). The number was 363 at build, and then 373. Main then reached 378, and open branches held up to 382, so the file became 383. Check it again at merge (R1).
+
+| Column | Rule |
+|---|---|
+| `id` | UUID, the key |
+| `organization_id` | NOT NULL, the bound tenant by DEFAULT. ENABLE and FORCE ROW LEVEL SECURITY with one policy, in the shape of 339 (R5) |
+| `project_id` | The project node. A trigger refuses a project of another organization, for each role |
+| `author` | The actor string of the session, in lower case. Never a body field |
+| `health` | `on_track`, `at_risk` or `off_track` (a CHECK) |
+| `body` | 1 to 20000 characters, not blank (a CHECK) |
+| `posted_at` | The time of the post |
+| `drafted_by_ai` | True when a signed agent (the MCP edge) posts, and false for a member |
+| `meta` | JSONB. It holds `via` (D-PM-36) and no text that a person typed |
+| `created_at` | The time of the insert |
+| `deleted_at`, `deleted_by` | The soft delete. Both are null on a live update and both are set on a deleted one (a CHECK). `deleted_by` is the actor, in lower case |
+
+The partial index on `(project_id, posted_at DESC, id DESC) WHERE deleted_at IS NULL` serves the list. The id breaks a tie of the time, so a page never skips a row. The foreign key to `pm_projects` takes a SHARE ROW EXCLUSIVE lock on `pm_projects` until COMMIT. The lock blocks a write to `pm_projects`, not a read. So the file sets `lock_timeout` first, and the runner tries it again on a timeout.
+
+**The routes.** `gateway/routes/projects/updates.py` is the one writer.
+
+- `GET /projects/nodes/{project_id}/updates` lists the updates, newest first. `limit` is 1 to 50 (20 by default). `before` takes the `next_before` of the page before. A cursor of another project is a 422.
+- `POST /projects/nodes/{project_id}/updates` takes `{health, body}` and answers 201 with the row. The body model forbids every other key, so a body names no author and no organization (R11).
+- `DELETE /projects/nodes/{project_id}/updates/{update_id}` sets `deleted_at` and `deleted_by`. The row stays, and no read shows it again. A second delete answers 404.
+- `GET /projects/nodes/{project_id}/summary` carries `latest_update`, the newest live update of a project or a subproject, or null. The key is there only while the flag holds the organization.
+- Each row carries `can_delete` and `delete_refusal` for the reader, so the chat quotes the server before a card.
+
+**Who may post.** The right of a task write on the same project: `core.load_visible_project` with `lock_share`, the check of `POST /tasks`. Projects has no read-only grant for a person, so a member who sees a project may post on it. "Read but not edit" has two forms, and each one refuses the post. A filed (archived) project answers 422 (`core.assert_not_archived`), as it does for a new task. A connection with `projects:read` only gets 401 from branch 0. A space and a folder hold no update (422).
+
+**Who may delete.** The author, or a Projects admin (`projects:settings:write`, `core.can_manage_settings`), as for a task. `authority.may_delete_update` is the one rule. Any other member who sees the project gets 403. A member who cannot see the project gets 404, and so does an update of another project or another organization. The delete is not on the MCP in LP-1a: `MCP_ROUTES` holds no pair for it, and `NEVER_ON_THE_EDGE` of `test_mcp_edge_coverage.py` holds it out.
+
+**Who may read.** A member who sees the project reads its updates. A member who cannot see it gets 404, the same answer as a missing project. A pinned agent reads and posts only inside its pin, because the route loads the project through the reach of the connection (EA-17a).
+
+**The audit.** Each post and each delete writes one `system` activity on the project, through `core.record_activity`, with `update_id` and `health` in its meta. LP-1a adds no activity type, because SP-1 changes the CHECK of the type on another branch.
+
+**The flag.** `PROJECTS_UPDATES_ORGS` (a `*_ORGS` flag, default empty). `updates.updates_allowed` is its one reader. While the flag does not hold the organization, the three routes answer 404 with the detail `agent_oauth.PROJECT_UPDATES_OFF`, and the summary holds no `latest_update` key. The MCP tools then say that the feature is off, and the web line does not draw. A SIGHUP reload applies a change (`docs/flag_reload.md`). A flip in production is the owner's (`enforcement-flip`).
+
+**The MCP tools.** `list_project_updates` (a read, `projects:read`) and `post_project_update` (a write, `projects:write`). The GET pair is in `MCP_ROUTES`, and the POST pair is in `MCP_WRITE_ROUTES`. The post takes an `idempotency_key` in the slot of `add_comment`, and the write cap of branch 0 counts it. The text leaves as `untrusted_text`. `external_agent_access.md` §9.1, §9.2 and §9.5 hold the tool records.
+
+**The chat tools.** `list_project_updates` (class A), `post_project_update` (class B, one card) and `delete_project_update` (class C, one card) sit in the `projects-authority` pack, which follows the core pack. The post says that a filed project takes no update before its card. `project_summary` also prints the newest update. The reports pack has no room: two more tools there change the measured turns of `test_projects_packs.py`. The manifest gives the POST class B, because a newer update takes the place of the older one on the project, and the author can delete it. Rule 2 of `test_mcp_edge_coverage.py` also admits only a class B write pair on the MCP. The card shows the project, the health and the exact text. A held chat keeps the tool behind its card (`egress.HELD_CARD_WRITE_TOOLS`).
+
+**The web line.** On the Overview of a project or a subproject, under the title row: a health chip, the first line of the text, the author and the day (`components/ProjectUpdateLine.tsx`, `lib/projectUpdateLine.ts`). The line comes with the node summary (`latest_update`), so it draws with the roll-up and nothing below it moves. The text is a button. Enter, a click or a tap opens the whole update in place, and again closes it. The opened text draws as Markdown with `MarkdownBody` and the props of a task comment, so a heading and a list show as elements and HTML stays text. A heading line such as "## Week 45" is skipped, so the line shows the first line of real text. A body of headings only shows the heading text with no marks. The day is the day in the reader's own time zone. The chip takes its hue from `statusAccent.PROJECT_HEALTHS`: On track is green (`--success`), At risk is amber (`--warning`) and Off track is red (`--destructive`). Each value also has a glyph and its words. The line draws nothing and keeps no space while the flag is off and while the project has no update.
+
+**Rule D (§14.1 rule 8).** In LP-1a the author picks the health. No code computes it, and no model writes the text.
+
+**Fences.** `tests/unit/test_pm_project_updates_r8.py` (R8): tenant B gets 404, a member who cannot see the project sees nothing, the author is the actor, the health CHECK holds, read but not edit cannot post, the flag off answers 404, a pinned agent stays in its pin, and the route pair is in the MCP sets. The delete: the author deletes, another member gets 403, a Projects admin deletes, a deleted update leaves the list and the summary, and a delete across tenants or out of sight is 404. The summary carries the newest update only while the flag is on. `tests/unit/test_tenant_coverage.py` holds FORCE row level security on the table. `src/app/projects/lib/projectUpdateLine.test.ts` holds the line and the three hues.
+
+**Still open in LP-1.** Each item is a later slice under task 988:
+
+1. The update in the project list and on the space dashboard.
+2. The draft by Mira from the week (an LLM writes the text, Rule D), and `draft_project_update` in the chat.
+3. The health that code computes from the roll-up and the forecast, which the lead can change (Rule D).
+4. The reminder to the lead on a cadence for each project.
+5. The digest for the watchers in My Day and in the 07:30 brief.
+6. The roll-up of health for a space.
+7. The link to a goal (WM-5, task 984).
+8. An edit of an update. The delete is built (a soft delete), and it is not on the MCP yet.
+
 ### 14.3 MCP and chat parity
 
 Each row names the tool that an external agent calls and the tool that the chat calls. A tool name is a proposal. The builder adds each tool to `skill_projects/manifest.py` with its class, and the manifest fence must pass.
 
 | Row | MCP tool (class) | Chat tool (class) |
 |---|---|---|
-| LP-1 | `list_project_updates` (A), `post_project_update` (C) | `draft_project_update` (A), `post_project_update` (C, one card) |
+| LP-1 | `list_project_updates` (A), `post_project_update` (B in the manifest, built in LP-1a, §14.2a) | `list_project_updates` (A, built in LP-1a), `post_project_update` (B, one card, built in LP-1a), `delete_project_update` (C, one card, built in LP-1a, not on the MCP), `draft_project_update` (A, open) |
 | LP-2 | `get_intake_suggestions` (A), `accept_intake_suggestion` (C) | The same two |
 | LP-3 | `get_task` and `get_task_context` carry the SLA state (A). `set_sla_rules` (C, admin) | `sla_report` (A), `set_sla_rules` (C) |
 | LP-4 | `get_task` carries the customer count and value, only when the caller can read the CRM record (A). `link_task_customer` (C, writes the link only) | `link_task_customer` (C) |
