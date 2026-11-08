@@ -7040,10 +7040,9 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 ## 31. Voice input and image analysis in the chat (VOX, 2026-11-08)
 
-**Status.** SPECIFIED 2026-11-08. Epic: Metorite task 2240. The owner decided
-the four calls of §31.6 on 2026-11-08. No migration.
-VOX-4 (the operator console tries) was built 2026-11-08, and it waits for
-review. It is stacked on VOX-2. No migration.
+**Status.** VOX-1 to VOX-4 BUILT 2026-11-08, dark (§31.9). VOX-5 is not built.
+Epic: Metorite task 2240. The owner decided the four calls of §31.6 on
+2026-11-08. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
 
 ### 31.1 The request
@@ -7459,3 +7458,65 @@ VOX-3.
 - **No voice output** (text to speech).
 - **No live streaming captions in the chat.** The Console transcribes a clip
   after stop.
+
+### 31.9 What was built (2026-11-08)
+
+VOX-1, VOX-2 and VOX-3 merged on 2026-11-08. Each is dark until the owner binds
+its tier and its flag turns on.
+
+| Slice | Pull request | Squash | Switch |
+|---|---|---|---|
+| VOX-1 | https://github.com/Hathi-Labs/Metorite/pull/1965 | 2ffe78dc3 | `CHAT_VOICE_ORGS` |
+| VOX-2 | https://github.com/Hathi-Labs/Metorite/pull/1967 | 1d82796cd | A `sarvam/` binding on `tier-stt` |
+| VOX-3 | https://github.com/Hathi-Labs/Metorite/pull/1970 | e6bf9be1e | `IMAGE_ANALYSIS_ORGS` |
+
+The code is the fact. The build differs from §31.5 in these places.
+
+**VOX-1.**
+
+- The gateway takes a WAV clip only (`audio/wav`, `audio/x-wav`,
+  `audio/wave`). The slice also named webm, mp4 and ogg. The recorder writes
+  WAV, and the Console measures only WAV, so no other type has a use.
+- The gateway counts the frames that the bytes hold. It does not trust the
+  data size in the header. It refuses a clip above 120 s, and its chunk walk
+  stops at 64 chunks. So a false header cannot pass the 120 s limit.
+- `member_proven` comes from the run context that the session bound
+  (`run_attribution`, H-73). The slice named `member_proof.verify_member`.
+- The fence of `customer_console.md` §6A.10 clause 7 now lists the callers of
+  each door. `console_resolve.py` is the one caller of
+  `/v1/audio/transcriptions`. The two media doors have no caller.
+
+**VOX-2.**
+
+- A Sarvam REST call takes 30 s of audio at most. The handler cuts a clip
+  into parts of 29 s and joins the text of the parts.
+- A WAV clip bills the minutes that the Console counts from its bytes. The
+  figure of the provider never sets the bill of a WAV clip. The slice said
+  "the `wave` module", but `wave` trusts the data size in the header. So the
+  Console reads the RIFF chunks with `struct` and counts the frames that are
+  present.
+- The Console refuses a WAV clip above 600 s with 413, before any provider
+  call. It reads 64 chunks at most. It takes PCM (format tag 1) only, and it
+  refuses `WAVE_FORMAT_EXTENSIBLE` (0xFFFE).
+- `customer_console.md` §6A.10a and §6A.14 hold these rules.
+
+**VOX-3.**
+
+- The image sniffer moved from the gateway to `acb_common/image_probe.py`,
+  because `acb_skills` cannot import the gateway.
+- With `IMAGE_ANALYSIS_ORGS` off, the tool and its rule also leave the
+  injected addendum. This keeps about 370 tokens off each chat turn. The cache
+  key of the addendum holds the flag, so an org never gets the text of
+  another org.
+- A refused or failed model call gives its slot of the cap (20 an hour) back.
+- One constant, `acb_llm.routed.OUT_OF_CREDITS`, holds the credits sentence.
+  The bot reply uses it too.
+- `CORE_SCHEMA_TOTAL_CEILING` in `test_tool_schema_diet.py` is 7040.
+
+**Still open.**
+
+- The owner binds `tier-stt` (`sarvam/saaras:v3/translit` rank 1, ElevenLabs
+  Scribe v2 rank 2) and `tier-vision` in the operator console.
+- Before either flag turns on, one live clip and one live image analysis on
+  production, each with its `usage_event` row.
+- VOX-4 (task 2264) and VOX-5 (task 2265).

@@ -10393,6 +10393,13 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
   fails when the copies differ.
   📌 VOX-2 (2026-11-08) added two more copies: `NATIVE_ONLY_TASKS`, and
   `NATIVE_TASK_OF`, the task of each native verb. The same test reads both.
+  `/providers` gained a minimal `sarvam` card, and VOX-4 owns its full text.
+- **The declare form follows the pairing rule.** `src/lib/invocation.ts`
+  mirrors `check_invocation_for_task`, so `/models` offers only
+  `native_typesafe` for `decide`, and never offers it for another job.
+- **The TypeSafe guide sits in a new "Decisions" section on `/providers`.**
+- `METERING_EXEMPTION` and `_CAPABILITY_GATED_ROUTES` did not change. The
+  route reaches no credit write, and a deployment key meets 401 on it.
 
 **VOX-4 (2026-11-08): two more tries, by the same rule.** Spec:
 `projects_ai_chat.md` §31.5.
@@ -10409,8 +10416,8 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
 - **The speech route uses the door's helpers.** `_transcribe_attempts` picks the
   steps. `_transcribe_kwargs` builds the call. `wav.py` measures a WAV clip
   from its bytes, so a WAV clip answers the length that the Console measured.
-  A try takes 10 MB and 60 seconds. Sarvam takes WAV only, and with no other
-  step a clip that is not WAV gets a 415.
+  A try takes 10 MB and 60 seconds. A try takes WAV only, and a clip that is
+  not WAV gets a 415 before the chain resolves.
 - **The vision route sends one chat call with one image part.** The door serves
   `vision` with the chat verb. The route reads the format from the first
   bytes (`image_sniff.py`) and decodes no pixel. It takes 4 MB. The system text
@@ -10422,13 +10429,6 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
 - **The `MATRIX` rows are `admin`, with no elevation window.** `_PROBES` in
   `test_operator_roles.py` and `NOT_COMMERCIAL` in `test_customer_console_catalog.py`
   gained both routes. The suite is `test_customer_console_try_voice.py`.
-  `/providers` gained a minimal `sarvam` card, and VOX-4 owns its full text.
-- **The declare form follows the pairing rule.** `src/lib/invocation.ts`
-  mirrors `check_invocation_for_task`, so `/models` offers only
-  `native_typesafe` for `decide`, and never offers it for another job.
-- **The TypeSafe guide sits in a new "Decisions" section on `/providers`.**
-- `METERING_EXEMPTION` and `_CAPABILITY_GATED_ROUTES` did not change. The
-  route reaches no credit write, and a deployment key meets 401 on it.
 
 #### CP-13c · The tenant client
 

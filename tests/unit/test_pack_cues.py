@@ -52,7 +52,7 @@ WHEN = {
     "projects-authority": "Load for the authority page of a project: to read it, pin a page as the authority, or remove a pin.",
     # CAL-1a: the day planner pack.
     "calendar-day": (
-        "Load to rebuild or replan the day, block time, set the One Thing, roll over, or change the calendar settings."),
+        "Load to rebuild or replan the day, block time, set the One Thing, roll over, or change calendar settings and day rules."),
     # STU-G1: the Studio builder pack. STU-B2c-2b adds the record write tools,
     # so the line says "read and change".
     "studio": (
