@@ -782,8 +782,8 @@ _PROJECTS_AUTHORITY_WORDS = (
 
 #: The words of the waiting pack (WS-AP AP-10a). A bare "ask" is out.
 _PROJECTS_WAITING_WORDS = (
-    "wait on", "waiting on", "wait for", "ask her", "ask him", "ask them",
-    "ask priya", "withdraw the ask", "withdraw my ask",
+    "ask her about", "ask him about", "ask them about", "wait for her reply",
+    "wait for his reply", "wait for their reply", "withdraw the ask", "withdraw my ask",
 )
 
 #: The apps that load the core Projects pack with no word of the member

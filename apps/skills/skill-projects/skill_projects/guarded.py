@@ -2484,7 +2484,7 @@ def _ask_refusal(exc: GatewayRefusal) -> str:
         return WAITS_OFF
     if status == 403:
         return f"{REFUSED} A person must ask. Nothing was changed."
-    if status == 404 and "ask" in said:
+    if status == 404 and said.strip() == "ask not found":
         return f"{REFUSED} The ask is not yours, or it is already gone. Nothing was changed."
     if status == 404:
         return f"{REFUSED} The task was not found, or you cannot open it. Nothing was changed."
@@ -2502,8 +2502,24 @@ def _ask_refusal(exc: GatewayRefusal) -> str:
     if status == 429:
         return f"{REFUSED} You asked enough people today. Try again tomorrow. Nothing was changed."
     if status == 422:
-        return f"{REFUSED} The server did not accept the ask: {data(said)}. Nothing was changed."
+        words = "".join(ch for ch in said if not ch.isdigit())
+        return f"{REFUSED} The server did not accept the ask: {data(words)}. Nothing was changed."
     raise exc
+
+
+async def _asks_of_task(task: str) -> dict[str, Any] | str:
+    """The asks read of one task, or one sentence for the member. The flag
+    guards answer 404 "Not Found" and a missing task answers "Task not found".
+    No ``asks`` key means that WAITING_ORGS is off."""
+    try:
+        got = (await get("/projects/decisions", params={"task_id": task})) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) != 404:
+            raise
+        if str(getattr(exc, "detail", "") or "").strip().lower() == "task not found":
+            return f"{REFUSED} The task was not found, or you cannot open it. Nothing was changed."
+        return WAITS_OFF
+    return got if "asks" in got else WAITS_OFF
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
@@ -2530,6 +2546,9 @@ async def ask_person(
     words = str(question or "").strip()
     if not who or not words:
         return "ask_person needs an addressee and a question. Nothing was done."
+    probe = await _asks_of_task(task)
+    if isinstance(probe, str):
+        return probe
     try:
         title = data(((await get(f"/projects/tasks/{task}")) or {}).get("title"))
     except GatewayRefusal as exc:
@@ -2575,14 +2594,9 @@ async def withdraw_ask(task_id: str, ask_id: str | None = None) -> str:
         return f"withdraw_ask {ONE_ACT.replace('id', 'task_id and ask_id')}"
     task = uuid_of(task_id, "task_id")
     aid = uuid_of(ask_id, "ask_id") if ask_id else ""
-    try:
-        got = (await get("/projects/decisions", params={"task_id": task})) or {}
-    except GatewayRefusal as exc:
-        if getattr(exc, "status", None) == 404:
-            return WAITS_OFF
-        raise
-    if "asks" not in got:
-        return WAITS_OFF
+    got = await _asks_of_task(task)
+    if isinstance(got, str):
+        return got
     asks = got.get("asks") or []
     if not aid:
         if not asks:

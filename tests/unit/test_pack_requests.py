@@ -227,8 +227,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "pin_authority": ("pin this page as the authority of the project",),
     "unpin_authority": ("remove the authority page of the project",),
     # -- projects-waiting (WS-AP AP-10a) --
-    "ask_person": ("ask priya about this task",),
-    "withdraw_ask": ("withdraw my ask to priya",),
+    "ask_person": ("ask her about this task",),
+    "withdraw_ask": ("withdraw my ask on this task",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
@@ -297,6 +297,12 @@ CONTROLS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("undo that send", ()),
     ("revert that draft", ()),
     ("revert that deal update", ()),
+    # AP-10a: a broad cue once loaded projects-waiting for these three turns.
+    # A named ask ("ask ravi about this task") loads only projects by words. Layer (b)
+    # offers projects-waiting, and projects-assistant holds both tools. No word list holds a name.
+    ("what's waiting on me?", ()),
+    ("which emails am I waiting on a reply for?", ("email",)),
+    ("plan my day, I wait for the courier", ("calendar-day",)),
     ("what senders email me most about the crm deals", ("email", "crm-records")),
 )
 

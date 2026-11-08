@@ -3753,7 +3753,7 @@ async def test_a_caller_header_never_replaces_the_identity(monkeypatch) -> None:
 # ── WS-AP AP-10a: ask_person and withdraw_ask ───────────────────────────────
 
 
-def _ask_gateway(monkeypatch, *, refuse=None, waits_off=False):
+def _ask_gateway(monkeypatch, *, refuse=None, waits_off=False, read_404=None):
     """The fake gateway of the ask tools. ``refuse`` answers the write with a
     status and a sentence. ``waits_off`` drops the ``asks`` key of the read."""
     from tests.unit._projects_agent_fakes import FakeResponse
@@ -3761,6 +3761,8 @@ def _ask_gateway(monkeypatch, *, refuse=None, waits_off=False):
     def answer(call: dict) -> Any:
         if call["method"] == "POST" and refuse is not None:
             return FakeResponse({"detail": refuse[1]}, refuse[0])
+        if read_404 and call["method"] == "GET" and call["path"] == "/projects/decisions":
+            return FakeResponse({"detail": read_404}, 404)
         if waits_off and call["method"] == "GET" and call["path"] == "/projects/decisions":
             return {"decisions": [], "waiting_on": []}
         return responder(call)
@@ -3817,20 +3819,41 @@ async def test_a_refused_ask_is_one_sentence_with_no_number(monkeypatch, status,
     assert not any(ch.isdigit() for ch in out)
 
 
-async def test_the_ask_tools_say_waits_are_off_and_write_nothing(monkeypatch) -> None:
+async def test_the_ask_tools_say_waits_are_off_before_any_card(monkeypatch) -> None:
+    """A flag off gives the text, no card and no POST (the probe of the read)."""
+    for kind in ("no_asks_key", "decisions_off"):
+        asked = approve(monkeypatch)
+        if kind == "no_asks_key":
+            calls = _ask_gateway(monkeypatch, waits_off=True)
+        else:
+            calls = _ask_gateway(monkeypatch, read_404="Not Found")
+        out = await skill_projects.ask_person(LIVE, "priya@x.io", "Is it final?")
+        assert out == skill_projects.guarded.WAITS_OFF, kind
+        assert await skill_projects.withdraw_ask(LIVE, ASK_ID) == skill_projects.guarded.WAITS_OFF
+        assert asked == [] and writes(calls) == [], kind
+
+
+async def test_a_wrong_task_is_not_said_to_be_a_flag(monkeypatch) -> None:
     asked = approve(monkeypatch)
-    calls = _ask_gateway(monkeypatch, refuse=(404, "Not Found"))
-    out = await skill_projects.ask_person(LIVE, "priya@x.io", "Is it final?")
-    assert out == skill_projects.guarded.WAITS_OFF
-    out = await skill_projects.withdraw_ask(LIVE, ASK_ID)
-    assert out == skill_projects.guarded.WAITS_OFF
-    # Each POST is refused by the route (404), so nothing is written. The card
-    # came first, because only the route knows the flags (R5).
-    assert len(asked) == 2 and [c["method"] for c in writes(calls)] == ["POST", "POST"]
-    asked.clear()
-    calls = _ask_gateway(monkeypatch, waits_off=True)
-    assert await skill_projects.withdraw_ask(LIVE, ASK_ID) == skill_projects.guarded.WAITS_OFF
+    calls = _ask_gateway(monkeypatch, read_404="Task not found")
+    for out in (await skill_projects.ask_person(LIVE, "priya@x.io", "Is it final?"),
+                await skill_projects.withdraw_ask(LIVE, ASK_ID)):
+        assert "task was not found" in out and "not on" not in out
     assert asked == [] and writes(calls) == []
+
+
+async def test_a_post_404_of_a_task_is_not_an_ask_that_is_gone(monkeypatch) -> None:
+    approve(monkeypatch)
+    _ask_gateway(monkeypatch, refuse=(404, "Task not found"))
+    out = await skill_projects.ask_person(LIVE, "priya@x.io", "Is it final?")
+    assert "task was not found" in out and "not yours" not in out
+
+
+async def test_a_422_that_falls_through_shows_no_number(monkeypatch) -> None:
+    approve(monkeypatch)
+    _ask_gateway(monkeypatch, refuse=(422, "An ask takes no choices, or 2 to 3."))
+    out = await skill_projects.ask_person(LIVE, "priya@x.io", "Is it final?")
+    assert "did not accept" in out and not any(ch.isdigit() for ch in out)
 
 
 async def test_withdraw_ask_card_shows_the_task_and_the_addressee(monkeypatch) -> None:
