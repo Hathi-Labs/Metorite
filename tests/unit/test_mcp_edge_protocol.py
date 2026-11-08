@@ -121,7 +121,7 @@ NEVER_SENT = {"include_triage", "include_archived", "archived_only", "watching"}
 #: two reads of EA-15 (§12.4), then ``get_attachment`` of IMG-3.
 ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_members", "list_tags",
              "list_tasks", "board_stats",
-             "get_task",
+             "get_plan", "get_task",
              "get_task_timeline", "search_tasks", "get_task_context", "my_work",
              "get_attachment"]
 
