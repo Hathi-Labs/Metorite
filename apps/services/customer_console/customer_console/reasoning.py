@@ -77,12 +77,12 @@ _log = logging.getLogger("platform.router")
 __all__ = [
     "REASONING_PARAMS",
     "SAMPLING_PARAMS",
-    "sampling_params_for",
-    "step_takes_sampling",
     "publish_reasoning_alias",
     "reasoning_for_vendor",
     "reasoning_params_for",
+    "sampling_params_for",
     "step_takes",
+    "step_takes_sampling",
 ]
 
 #: The request parameters that control a model's thinking (task 1128).

@@ -11239,6 +11239,20 @@ gets no embeddings, and the premium features of a zero-credit org are decided
 later. The door keeps the shared prelude. A page saved during the refusal
 keeps NULL vectors until its next edit.
 
+### 6A.17 Sampling values per step — BUILT (task 2450)
+
+The Router runs litellm with no `drop_params`. A step whose model refuses a sampling value would answer 400 for the whole request.
+
+- Measured on 2026-11-08, litellm 1.103.0: `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5` and `claude-opus-4-8` refuse `temperature=0.2`. The error reads "Only temperature=1 is supported."
+- `claude-sonnet-4-6` and `claude-haiku-4-5` take the value.
+- Metorite sends `temperature=0.2` by default, so Claude 5.5 failed on every chat tier and on `tier-vision`.
+- `reasoning.sampling_params_for(kwargs, model)` drops `temperature`, `top_p` and `top_k` for a refusing step. It keeps `temperature` when the value is 1.
+- For an Anthropic model, it asks litellm's own rule, `AnthropicModelInfo._supports_sampling_params`. For any provider, it also honours `supports_sampling_params: false` in `litellm.model_cost`.
+- A model that litellm cannot place keeps its values. The function never sets `drop_params`.
+- The chat `_kwargs_for` calls it for each step, beside `reasoning_params_for` (task 1128). A chain with Claude 5.5 first and Gemini second gives each step its own body. The stream path and the image path use the same `_kwargs_for`.
+- Each drop writes one INFO line, `router.sampling_params_dropped`, with the model and the dropped names. It never logs message content.
+- Fences: `test_customer_console_sampling_params.py` and `test_customer_console_router.py::TestSamplingPerStep` (R8).
+
 ## 6B. CP-11 in detail — credits, keys, and the hop that makes them real
 
 **Written 2026-08-26 on owner directive:** *"The next main task is assigning AI credits and
