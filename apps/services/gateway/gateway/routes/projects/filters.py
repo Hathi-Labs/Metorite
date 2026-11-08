@@ -1250,7 +1250,7 @@ def holder_sql() -> str:
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "(SELECT lower(h.member_email) FROM pm_agent_runs h"
-        " WHERE h.task_id = t.id"
+        " WHERE h.task_id IS NOT NULL AND h.task_id = t.id"
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')}"

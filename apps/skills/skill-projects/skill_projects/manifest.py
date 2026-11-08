@@ -1221,6 +1221,16 @@ _MAPPING_CARD_REASON = (
     "The answer on the app's mapping card. Without it the server's own rule maps "
     "each row, and the preview the chat card shows already counts that rule."
 )
+#: MCP-G19a (task 1957). The audit filters of the agent door. The chat
+#: gets them with its count tool, Metorite task 2223.
+_AUDIT_FILTER_REASON = (
+    "An audit filter of the agent door (MCP-G19a). The chat gets it with "
+    "the board count tool, Metorite task 2223."
+)
+_STATS_ROUTE_REASON = (
+    "A field of the board count route of the agent door (MCP-G19a). Its "
+    "chat tool is Metorite task 2223."
+)
 _READ_FILTER_REASON = (
     "A filter of the app's list. The chat narrows tasks through list_tasks, "
     "which prints the facts this filter reads."
@@ -1268,6 +1278,27 @@ _STATUS_PLACE_REASON = (
 
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/projects/tasks/stats"): {
+        "assigned": _STATS_ROUTE_REASON,
+        "assignee": _STATS_ROUTE_REASON,
+        "created_after": _STATS_ROUTE_REASON,
+        "due_before": _STATS_ROUTE_REASON,
+        "group_by": _STATS_ROUTE_REASON,
+        "has_parent": _STATS_ROUTE_REASON,
+        "include_archived": _STATS_ROUTE_REASON,
+        "include_subtree": _STATS_ROUTE_REASON,
+        "is_epic": _STATS_ROUTE_REASON,
+        "parent_task_id": _STATS_ROUTE_REASON,
+        "project_id": _STATS_ROUTE_REASON,
+        "q": _STATS_ROUTE_REASON,
+        "status_category": _STATS_ROUTE_REASON,
+        "status_id": _STATS_ROUTE_REASON,
+        "tags": _STATS_ROUTE_REASON,
+        "title_prefix": _STATS_ROUTE_REASON,
+        "unheld": _STATS_ROUTE_REASON,
+        "updated_after": _STATS_ROUTE_REASON,
+        "updated_before": _STATS_ROUTE_REASON,
+    },
     # WS-42 PST-4: the place of a lane. The tools send them when the model
     # passes a place, and this fence's witnesses pass none.
     ("POST", "/projects/nodes/{project_id}/statuses"): {
@@ -1286,6 +1317,14 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "reason": "The chat answer carries no reason. The card shows the option only."
     },
     ("GET", "/projects/tasks"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
+        "compact": "A row shape of the agent door (MCP-G19a), not a filter. The chat prints its own rows.",
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. list_tasks filters by status_category, and render_board "
@@ -1312,6 +1351,13 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     },
     # WS-64 OP-6c: the export takes the same subset as list_tasks.
     ("GET", "/projects/export/tasks.csv"): {
+        "assigned": _AUDIT_FILTER_REASON,
+        "created_after": _AUDIT_FILTER_REASON,
+        "has_parent": _AUDIT_FILTER_REASON,
+        "is_epic": _AUDIT_FILTER_REASON,
+        "title_prefix": _AUDIT_FILTER_REASON,
+        "updated_after": _AUDIT_FILTER_REASON,
+        "updated_before": _AUDIT_FILTER_REASON,
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
             "One lane by id. export_tasks filters by status_category, as list_tasks does."
