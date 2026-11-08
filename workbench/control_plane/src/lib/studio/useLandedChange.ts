@@ -46,7 +46,7 @@ export function useLandedChange(pkg: string, watch: DraftWatch): LandedChange {
   const markOwn = useCallback((who: "you" | "undo" | "redo", hash: string | null) => { tracker.current = mark(tracker.current, who, hash); }, []);
 
   const liveBlock = useMemo(
-    () => (landed ? undoDropsLive(landed.before, (draft?.objects ?? []) as unknown as LiveObject[]) : null),
+    () => (landed ? undoDropsLive(landed.before, draft?.manifest, (draft?.objects ?? []) as unknown as LiveObject[]) : null),
     [landed, draft],
   );
 

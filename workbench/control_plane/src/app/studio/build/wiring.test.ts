@@ -24,7 +24,15 @@ describe("G5 wiring", () => {
   });
   it("closes the dialog only when no publish runs", () => {
     expect(dialog).toMatch(/onClose=\{\(\) => guardedClose\(busy, p\.onClose\)\}/);
-    expect(dialog).not.toMatch(/setBusy\(false\);\n\s*setSnap/);
+    // The open effect resets no `busy` at all, in any layout.
+    const open = dialog.slice(dialog.indexOf("if (!open) return;"), dialog.indexOf("}, [open, pkg]);"));
+    expect(open.length).toBeGreaterThan(50);
+    expect(open).not.toContain("setBusy(");
+  });
+  it("the effect that tracks the draft runs the tracker and shows its result", () => {
+    expect(hook).toMatch(/const next = observe\(tracker\.current, draft\);/);
+    expect(hook).toMatch(/if \(changed\) \{ setLanded\(next\.landed\); setNote\(null\); \}/);
+    expect(hook).toMatch(/undoDropsLive\(landed\.before, draft\?\.manifest,/);
   });
   it("Undo goes through the tracker and the one save, and not through a second path", () => {
     expect(hook).toMatch(/runUndo\(pkg, draft, landed\)/);

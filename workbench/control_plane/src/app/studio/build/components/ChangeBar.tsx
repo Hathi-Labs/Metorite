@@ -55,7 +55,7 @@ export default function ChangeBar({ landed, dirty, saving, fault, undoing, note,
           {label}
         </Button>
       </div>
-      <p className="mt-1 text-muted-foreground">{block ? `${block} ${UNDO_NOTE}` : UNDO_NOTE}</p>
+      <p className="mt-1 text-muted-foreground">{block ?? UNDO_NOTE}</p>
       {note ? (
         <div role="alert" className="mt-1 flex flex-wrap items-center gap-2 text-destructive">
           <span className="min-w-0 break-words">{note}</span>

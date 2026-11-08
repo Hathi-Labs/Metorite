@@ -7,9 +7,9 @@
  * that last one, so the bar says "Mira or another tab".
  */
 import type { PackageDraft } from "./packageDraft";
-import { publishEffect, type LiveObject } from "./draftEdit";
+import type { LiveObject } from "./draftEdit";
 import { SAVE_BUSY, saveDraft } from "./draftSave";
-import { diffLines, diffManifests, type Change } from "./manifestDiff";
+import { cleanName, diffLines, diffManifests, type Change } from "./manifestDiff";
 import { stableJson } from "./dataDoor";
 
 export type Who = "you" | "undo" | "redo" | "other";
@@ -82,22 +82,35 @@ export function barLines(l: Landed, all: boolean): { lines: string[]; hidden: nu
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
- * The reason that Undo would drop something that is live, or null. A publish makes each record type
- * and field a table or a column that no member can remove yet (`objects_store._plan_sync`). So an
- * Undo that brings back a manifest with no such record type or field would make the next publish
- * fail. The words are the ones of G3c (`publishEffect`).
+ * The reason that Undo would remove something that is live, or null. A publish makes each record
+ * type and field a table or a column that no member can remove yet (`objects_store._plan_sync`). So
+ * an Undo is off only for a live record type or field that the CURRENT draft holds and `before` does
+ * not. A part that the draft already lacks is not removed by Undo, so it never blocks.
  */
-export function undoDropsLive(before: unknown, live: readonly LiveObject[]): string | null {
+export function undoDropsLive(before: unknown, current: unknown, live: readonly LiveObject[]): string | null {
   if (live.length === 0) return null;
-  const objects = isObj(before) && Array.isArray(before.objects) ? before.objects.filter(isObj) : [];
+  const objectsOf = (m: unknown) => (isObj(m) && Array.isArray(m.objects) ? m.objects.filter(isObj) : []);
+  const fieldsOf = (o: Record<string, unknown>) => (Array.isArray(o.fields) ? o.fields.filter(isObj) : []);
+  const was = objectsOf(before);
+  const now = objectsOf(current);
+  const tail = "A published record type or field cannot be removed yet.";
   for (const lo of live) {
-    const o = objects.find((x) => x.name === lo.name);
-    if (!o) return `Undo is off. ${publishEffect("object", true)}`;
-    const keys = new Set((Array.isArray(o.fields) ? o.fields.filter(isObj) : []).map((f) => f.key));
-    if (lo.fields.some((f) => !keys.has(f.key))) return `Undo is off. ${publishEffect("field", true)}`;
+    const inNow = now.find((x) => x.name === lo.name);
+    if (!inNow) continue;
+    const inBefore = was.find((x) => x.name === lo.name);
+    if (!inBefore) return `Undo is off: it would remove the record type ${q(shownName(inNow, "name"))}, which is live. ${tail}`;
+    const keys = new Set(fieldsOf(inBefore).map((f) => f.key));
+    const nowFields = fieldsOf(inNow);
+    for (const f of lo.fields) {
+      const held = nowFields.find((x) => x.key === f.key);
+      if (held && !keys.has(f.key)) return `Undo is off: it would remove ${q(shownName(held, "key"))} from ${q(shownName(inNow, "name"))}, which is live. ${tail}`;
+    }
   }
   return null;
 }
+
+const q = (s: string) => `«${s}»`;
+const shownName = (item: Record<string, unknown>, key: string): string => cleanName(typeof item.label === "string" && item.label ? item.label : item[key]);
 
 // ── The tracker: what the page remembers about the newest change ─────────────
 
@@ -130,8 +143,9 @@ export function observe(t: Tracker, draft: PackageDraft | null): Tracker {
   const moved = stableJson(prev.manifest ?? null) !== stableJson(draft.manifest ?? null);
   const mine = t.own && t.own.hash !== null && t.own.hash === draft.manifestHash ? t.own.who : null;
   const own = mine ? null : t.own;
-  if (moved) return { prev: draft, landed: landChange(prev, draft, mine ?? "other"), own };
+  // A new live version clears the bar, even when the manifest moved in the same poll: the change is live then.
   if (prev.liveVersion !== draft.liveVersion) return { prev: draft, landed: null, own };
+  if (moved) return { prev: draft, landed: landChange(prev, draft, mine ?? "other"), own };
   return { prev: draft, landed: t.landed, own };
 }
 
