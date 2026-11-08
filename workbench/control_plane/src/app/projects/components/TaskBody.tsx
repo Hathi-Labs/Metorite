@@ -72,6 +72,7 @@ import {
   type StatusRow,
   type TagRow,
   type TaskRow,
+  type TaskTypeRow,
   attachmentsApi,
   projectsApi,
   watchersApi,
@@ -113,6 +114,7 @@ import {
   rollUp,
   threadComments,
 } from "../lib/activityStream";
+import { typeRefusal, typeSelectOptions } from "../lib/taskEpic";
 import { parseAssignees, withAssignee, withoutAssignee } from "../lib/assignees";
 import { insertMention, notDeliveredNotice } from "../lib/notifications";
 
@@ -507,6 +509,24 @@ export function TaskBody({
   // D77 — every member's timed work on the task, summed by the gateway
   // (`GET /projects/tasks/{id}` → `time_spent_mins`). Null until read.
   const [spent, setSpent] = useState<number | null>(null);
+  // SP-6 — the types of THIS task's project, read here so the host (the
+  // Projects panel or My Tasks' detail) need not pass them. A failed read
+  // leaves the list empty: the control then offers "No type" only.
+  const [taskTypes, setTaskTypes] = useState<TaskTypeRow[]>([]);
+  useEffect(() => {
+    let live = true;
+    projectsApi
+      .types(task.project_id)
+      .then((res) => {
+        if (live) setTaskTypes(res.rows);
+      })
+      .catch(() => {
+        if (live) setTaskTypes([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [task.project_id]);
   const assignees = task.assignees ?? [];
   // Agents are excluded: an agent cannot receive a notification (migration
   // 152's CHECK), so offering to mention one would promise nothing.
@@ -820,6 +840,17 @@ export function TaskBody({
     } finally {
       setBusy(false);
     }
+  }
+
+  /** SP-6 — set the type through the same save path as the other fields. */
+  async function changeType(next: string) {
+    const type = taskTypes.find((t) => t.id === next);
+    const refusal = typeRefusal(task, type);
+    if (refusal) {
+      setError(refusal);
+      return;
+    }
+    await patch({ type_id: next === "" ? null : next });
   }
 
   /** One shared fact of the task — due date, priority, tags — patched and
@@ -1215,6 +1246,20 @@ export function TaskBody({
                       projectsApi.createTag(task.project_id, { name, color })
                     }
                     onChange={(next) => void patch({ tags: next })}
+                  />
+                </FieldCell>
+
+                {/* SP-6 — the type. Epic is a type that only a top-level task
+                    may wear, so the epic option is disabled on a subtask. */}
+                <FieldCell label="Type" icon="Layers">
+                  <SelectButton
+                    label="Type"
+                    layer="top"
+                    widthClass="w-full"
+                    value={task.type_id ?? ""}
+                    disabled={busy}
+                    onChange={(next) => void changeType(next)}
+                    options={typeSelectOptions(taskTypes, task)}
                   />
                 </FieldCell>
 
