@@ -956,13 +956,40 @@ def path_shapes(method: str, template: str) -> Mapping[str, str]:
         return dict(door.route.path_shapes)
     return MCP_PATH_SHAPES.get((method, template), {})
 
-#: The cap of EA3-30: a connection makes at most :data:`WRITE_CAP` writes in
-#: :data:`WRITE_WINDOW_S` seconds, counted from its first write of the window.
+#: The cap of EA3-30: a connection makes at most :func:`write_cap` writes in
+#: :func:`write_window_s` seconds, counted from its first write of the window.
 #: Branch 0 counts in the tenant Redis wrapper, under the namespace
-#: :data:`WRITE_CAP_NAMESPACE`, and the 121st write gets 429.
+#: :data:`WRITE_CAP_NAMESPACE`, and the write after the cap gets 429.
+#: MCP-G20: these two are the DEFAULTS. The settings ``AGENT_WRITE_CAP`` and
+#: ``AGENT_WRITE_WINDOW_S`` set the live values, and the two readers below
+#: are the one source of them.
 WRITE_CAP = 120
 WRITE_WINDOW_S = 600
 WRITE_CAP_NAMESPACE = "agent_writes"
+
+
+def _positive(value: object, default: int) -> int:
+    """*value* as a whole number of 1 or more, else *default* (MCP-G20)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return default
+    return value
+
+
+def write_cap() -> int:
+    """The writes that one connection makes in one window (MCP-G20).
+
+    ``agent_write_cap``, or :data:`WRITE_CAP` for a value below 1. Branch 0
+    reads it at each write, and the edge names it in each write tool.
+    """
+    return _positive(get_settings().agent_write_cap, WRITE_CAP)
+
+
+def write_window_s() -> int:
+    """The seconds of one window of the cap (MCP-G20).
+
+    ``agent_write_window_s``, or :data:`WRITE_WINDOW_S` for a value below 1.
+    """
+    return _positive(get_settings().agent_write_window_s, WRITE_WINDOW_S)
 
 
 #: EA-13a (spec §12.2 item 1, EA3-47). The longest ``<slug>`` of a client
@@ -1242,5 +1269,7 @@ __all__ = [
     "scope_holds",
     "scope_string",
     "token_endpoint",
+    "write_cap",
+    "write_window_s",
     "writes_enabled",
 ]

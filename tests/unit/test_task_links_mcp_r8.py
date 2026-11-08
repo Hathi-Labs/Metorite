@@ -135,7 +135,7 @@ class TestTheRecords:
         for name in ("add_task_link", "remove_task_link"):
             entry = self._listed(name)
             assert entry["annotations"]["readOnlyHint"] is False
-            assert tools.WRITE_LIMIT_LINE.strip() in entry["description"]
+            assert tools.write_limit_line().strip() in entry["description"]
 
     def test_get_task_links_carry_the_link_id(self):
         assert "link_id" in tools.LINK_KEYS

@@ -8553,6 +8553,12 @@ always wins. `tasks.create_task` and `personal.step_status` both call the
 seam, so there is no second copy. The NEXT rule (`step_overlay`) stays on
 the My Tasks door only.
 
+**The MCP door is not one of these doors (MCP-G20, 2026-11-08, task 2212).**
+An outside agent's `create_task` says "leave status_id out to use the default
+status". So `tasks.create_task` gives a signed agent's subtask
+`load_default_status`, and not the parent's lane. The doors of the app keep
+the rule above. Fence: `tests/unit/test_mcp_edge_bulk_updates.py`.
+
 **The chat receipt names the lane.** `add_subtasks` reads the lane name after
 the writes. The first line reads "Added to «In review» under #7 «…»:". When
 that read fails, the tool still reports the steps.
