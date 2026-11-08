@@ -119,7 +119,8 @@ NEVER_SENT = {"include_triage", "include_archived", "archived_only", "watching"}
 
 #: The seven tools of EA-3, in the order of ``tools/list`` (§15.1), then the
 #: two reads of EA-15 (§12.4), then ``get_attachment`` of IMG-3.
-ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_tasks", "board_stats",
+ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_members", "list_tags",
+             "list_tasks", "board_stats",
              "get_plan", "get_task",
              "get_task_timeline", "search_tasks", "get_task_context", "my_work",
              "get_attachment"]

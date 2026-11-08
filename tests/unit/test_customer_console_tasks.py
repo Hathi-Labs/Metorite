@@ -17,16 +17,20 @@ no route could call it. The last section of this file DRIVES
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import os
 import pathlib
+import struct
 import uuid
+import wave
 from decimal import Decimal
 
 import pytest
 
 pytest.importorskip("fastapi")
-from customer_console import catalog
+import httpx
+from customer_console import catalog, handlers, stt_sarvam
 from customer_console import router as router_mod
 from customer_console.credits import UnpricedModel
 from customer_console.router import TierUnknown, resolve_invocation, resolve_rate_card, resolve_tier
@@ -1171,6 +1175,326 @@ class TestTheUploadCeilingAndTheEmptyFile:
         assert len(provider["calls"][-1]["file"].read()) == len(big)
 
 
+# ══ VOX-2 — Sarvam on the transcribe door (`projects_ai_chat.md` §31) ══════
+#
+# 🔴 **These fences DRIVE the route with the REAL Sarvam handler**, behind an
+# `httpx.MockTransport`. A litellm step still answers from the `provider`
+# stub, so a failover lands on a step that costs nothing. Every claim about a
+# `usage_event` row is read off the row the POST wrote. The pure halves are
+# in `test_customer_console_stt_sarvam.py`.
+
+SARVAM_MODEL = "sarvam/saaras:v3/translit"
+SARVAM_KEY = "sk-sarvam-fence-key"
+SARVAM_SAID = "mera phone number hai"
+
+#: The label of every row the Sarvam fixtures write, so the teardown removes
+#: its OWN rows and never a sibling suite's.
+_SARVAM_LABEL = "vox2-fence"
+
+
+def _wav(seconds: float, *, rate: int = 16_000) -> bytes:
+    """A mono 16-bit PCM WAV of silence, built with the standard library."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(rate)
+        writer.writeframes(b"\x00\x00" * int(seconds * rate))
+    return buffer.getvalue()
+
+
+#: Three seconds of WAV, and the minutes the door must bill for it.
+WAV_3S = _wav(3)
+WAV_3S_MINUTES = Decimal("0.0500")
+
+#: The EBML magic of a WebM file. Not a WAV.
+WEBM_CLIP = b"\x1a\x45\xdf\xa3" + b"\x00" * 64
+
+
+class _SarvamVendor:
+    """Sarvam's documented 200 body behind `httpx.MockTransport`. No network."""
+
+    def __init__(self) -> None:
+        self.status = 200
+        self.body: dict = {"request_id": "r", "transcript": SARVAM_SAID,
+                           "language_code": "hi-IN"}
+        self.requests: list[httpx.Request] = []
+
+    def transport(self) -> httpx.MockTransport:
+        def _answer(request: httpx.Request) -> httpx.Response:
+            self.requests.append(request)
+            return httpx.Response(self.status, json=self.body)
+        return httpx.MockTransport(_answer)
+
+
+@pytest.fixture
+def sarvam_vendor(monkeypatch, provider):
+    """The REAL `SarvamHandler`, and the `provider` stub for litellm steps.
+
+    A native step goes to `router._default_provider_call`, which hands it to
+    `handlers.NATIVE_HANDLERS`. So the recorded vendor sees the request, and
+    `provider["calls"]` sees only litellm steps.
+
+    ⚠️ **The stub is restored by hand, never by `monkeypatch`.** `provider`
+    restores the original call at its own teardown, and a `monkeypatch` undo
+    that ran after it would put this wrapper back for the next suite.
+    """
+    vendor = _SarvamVendor()
+    monkeypatch.setitem(handlers.NATIVE_HANDLERS, "native_sarvam",
+                        stt_sarvam.SarvamHandler(transport=vendor.transport()))
+    stub = router_mod._PROVIDER_CALL[0]
+
+    async def _route(**kwargs):
+        if str(kwargs.get("invocation", "")).startswith(router_mod.NATIVE_PREFIX):
+            return await router_mod._default_provider_call(**kwargs)
+        return await stub(**kwargs)
+
+    router_mod.set_provider_call(_route)
+    yield vendor
+    router_mod.set_provider_call(stub)
+
+
+@pytest.fixture
+def stt_tier(db, org_key):
+    """Make a fresh `transcribe` tier with the models given, ranked in order.
+
+    Each tier is priced per minute, and it binds Sarvam's capability row and
+    a platform `sarvam` key. ⚠️ **Removed afterwards**, rows and key alike,
+    because `tier_binding` and `model_capability` are global rows.
+    """
+    made: list[str] = []
+
+    def _make(*models: str) -> str:
+        tier = f"tier-stt-vox2-{uuid.uuid4().hex[:8]}"
+        # Noted FIRST, so the teardown removes a half-made tier too.
+        made.append(tier)
+        with db.begin() as c:
+            # `tier_rate_card.tier` names a `tier_catalog` row. Hidden, as
+            # migration 021 hides `tier-stt`.
+            c.execute(text(
+                "INSERT INTO tier_catalog (slug, label, task, customer_visible) "
+                "VALUES (:t, 'VOX-2 fence', 'transcribe', FALSE)"), {"t": tier})
+            for rank, model in enumerate(models, start=1):
+                c.execute(text(
+                    "INSERT INTO tier_binding (tier, model, task, rank, effective_from) "
+                    "VALUES (:t, :m, 'transcribe', :r, '2026-01-01T00:00:00Z')"),
+                    {"t": tier, "m": model, "r": rank})
+            # ⚠️ An UPSERT, never DO NOTHING. Migration 010 replays at the
+            # top of each suite and declares `atranscription` for every model
+            # in force on a `transcribe` tier. A tier row left by a broken run
+            # would then win, and the door would skip the Sarvam step.
+            c.execute(text(
+                "INSERT INTO model_capability (model, task, invocation, streams) "
+                "VALUES (:m, 'transcribe', 'native_sarvam', FALSE) "
+                "ON CONFLICT (model, task) DO UPDATE "
+                "SET invocation = EXCLUDED.invocation"), {"m": SARVAM_MODEL})
+            c.execute(text(
+                "INSERT INTO provider_credential (provider, secret_enc, label) "
+                "VALUES ('sarvam', :s, :l) ON CONFLICT DO NOTHING"),
+                {"s": router_mod.encrypt_secret(SARVAM_KEY), "l": _SARVAM_LABEL})
+        _price(db, tier=tier, task="transcribe", unit="minutes",
+               per_unit=CREDITS_PER_MINUTE)
+        return tier
+
+    yield _make
+    with db.begin() as c:
+        for tier in made:
+            c.execute(text("DELETE FROM tier_binding WHERE tier = :t"), {"t": tier})
+            c.execute(text("DELETE FROM tier_rate_card WHERE tier = :t"), {"t": tier})
+            c.execute(text("DELETE FROM tier_catalog WHERE slug = :t"), {"t": tier})
+        c.execute(text(
+            "DELETE FROM model_capability WHERE model = :m AND task = 'transcribe'"),
+            {"m": SARVAM_MODEL})
+        c.execute(text(
+            "DELETE FROM provider_credential WHERE provider = 'sarvam' AND label = :l"),
+            {"l": _SARVAM_LABEL})
+
+
+class TestSarvamOnTheTranscribeDoor:
+    """VOX-2 Done-when 1 and 3, read off the row a real POST wrote."""
+
+    def test_a_wav_clip_reaches_sarvam_and_bills_the_measured_minutes(
+            self, client, db, org_key, org_id, provider, sarvam_vendor, stt_tier):
+        tier = stt_tier(SARVAM_MODEL, WHISPER)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=WAV_3S, filename="clip.wav")
+        assert answer.status_code == 200, answer.text
+        assert answer.json() == {"text": SARVAM_SAID}
+
+        # The request: the endpoint, the header, the vendor model and the
+        # mode split off the bound id. No litellm step ran.
+        [request] = sarvam_vendor.requests
+        assert str(request.url) == "https://api.sarvam.ai/speech-to-text"
+        assert request.headers["api-subscription-key"] == SARVAM_KEY
+        body = request.read()
+        assert b'name="model"\r\n\r\nsaaras:v3\r\n' in body
+        assert b'name="mode"\r\n\r\ntranslit\r\n' in body
+        assert b'filename="clip.wav"' in body
+        assert provider["calls"] == []
+
+        # 🔴 One `transcribe` row with the minutes the door MEASURED.
+        [row] = _rows(db, org_id)
+        assert row.task == "transcribe"
+        assert row.tier == tier
+        assert row.model == SARVAM_MODEL
+        assert row.quantity == WAV_3S_MINUTES
+        assert row.unit == "minutes"
+        assert row.billed_credits == WAV_3S_MINUTES * CREDITS_PER_MINUTE
+        assert row.refusal_reason is None
+
+    def test_a_sarvam_5xx_fails_over_to_the_next_step(
+            self, client, db, org_key, org_id, provider, sarvam_vendor, stt_tier):
+        sarvam_vendor.status = 503
+        sarvam_vendor.body = {"error": {"message": "overloaded",
+                                        "code": "internal_server_error"}}
+        tier = stt_tier(SARVAM_MODEL, WHISPER)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=WAV_3S)
+        assert answer.status_code == 200, answer.text
+        assert answer.json() == {"text": TRANSCRIPT}
+        assert len(sarvam_vendor.requests) == 1
+        assert provider["calls"][-1]["model"] == WHISPER
+
+        # The step that ANSWERED bills the clip's own length.
+        [row] = _rows(db, org_id)
+        assert row.model == WHISPER
+        assert row.quantity == WAV_3S_MINUTES
+
+    def test_a_webm_clip_on_a_sarvam_binding_answers_415_and_writes_no_row(
+            self, client, db, org_key, org_id, provider, sarvam_vendor, stt_tier):
+        tier = stt_tier(SARVAM_MODEL)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=WEBM_CLIP,
+                             filename="clip.webm")
+        assert answer.status_code == 415, answer.text
+        assert "WAV" in answer.json()["detail"]
+        # Refused BEFORE any provider call, and no row: §6A.10a clause 10
+        # names the three walls that write one, and this is not one of them.
+        assert sarvam_vendor.requests == []
+        assert provider["calls"] == []
+        assert _rows(db, org_id) == []
+
+    def test_a_webm_clip_skips_the_sarvam_step(
+            self, client, db, org_key, org_id, provider, sarvam_vendor, stt_tier):
+        tier = stt_tier(SARVAM_MODEL, WHISPER)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=WEBM_CLIP,
+                             filename="clip.webm")
+        assert answer.status_code == 200, answer.text
+        assert sarvam_vendor.requests == []
+        assert provider["calls"][-1]["model"] == WHISPER
+        # Not a WAV, so clause 3's rule bills: the provider's 90 seconds.
+        [row] = _rows(db, org_id)
+        assert row.quantity == MINUTES
+
+    def test_a_long_clip_goes_to_sarvam_in_parts(
+            self, client, db, org_key, org_id, sarvam_vendor, stt_tier):
+        """Sarvam's REST call takes 30 s at most. A 65 s clip is three parts."""
+        tier = stt_tier(SARVAM_MODEL)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=_wav(65, rate=8_000))
+        assert answer.status_code == 200, answer.text
+        assert len(sarvam_vendor.requests) == 3
+        assert answer.json() == {"text": " ".join([SARVAM_SAID] * 3)}
+        [row] = _rows(db, org_id)
+        assert row.quantity == Decimal("1.0833")
+
+    @pytest.mark.parametrize("declared", [0, 0xFFFFFFFF, 100], ids=["zero", "max", "small"])
+    def test_a_lying_data_size_bills_the_bytes_present(
+            self, client, db, org_key, org_id, sarvam_vendor, stt_tier, declared):
+        """P1. The header says 0, 0xFFFFFFFF or 100 bytes. 3 s of audio is
+        present, the vendor decodes all of it, and the row bills 3 s."""
+        audio = bytearray(WAV_3S)
+        at = audio.index(b"data")
+        audio[at + 4: at + 8] = struct.pack("<I", declared)
+        tier = stt_tier(SARVAM_MODEL)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=bytes(audio))
+        assert answer.status_code == 200, answer.text
+        [row] = _rows(db, org_id)
+        assert row.quantity == WAV_3S_MINUTES
+
+    @pytest.mark.parametrize("rate", [0, 999, 384_001], ids=["zero", "below", "above"])
+    def test_an_unmeasurable_rate_on_a_litellm_binding_keeps_the_old_rule(
+            self, client, db, org_key, org_id, priced_stt, provider, rate):
+        audio = bytearray(WAV_3S)
+        at = audio.index(b"fmt ")
+        audio[at + 12: at + 16] = struct.pack("<I", rate)
+        _, key = org_key
+        assert _transcribe(client, key, audio=bytes(audio)).status_code == 200
+        [row] = _rows(db, org_id)
+        assert row.quantity == MINUTES  # the vendor's 90 s, as for any non-WAV
+
+    def test_a_zero_sample_rate_on_a_sarvam_binding_answers_415(
+            self, client, db, org_key, org_id, sarvam_vendor, stt_tier):
+        audio = bytearray(WAV_3S)
+        at = audio.index(b"fmt ")
+        audio[at + 12: at + 16] = struct.pack("<I", 0)
+        tier = stt_tier(SARVAM_MODEL)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=bytes(audio))
+        assert answer.status_code == 415, answer.text
+        assert sarvam_vendor.requests == []
+        assert _rows(db, org_id) == []
+
+    def test_a_clip_above_600_seconds_answers_413_and_writes_no_row(
+            self, client, db, org_key, org_id, provider, sarvam_vendor, stt_tier):
+        """P2. 601 s at 8 kHz is 9.6 MB, under the byte cap, over the length cap."""
+        tier = stt_tier(SARVAM_MODEL, WHISPER)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=_wav(601, rate=8_000))
+        assert answer.status_code == 413, answer.text
+        assert "600 seconds" in answer.json()["detail"]
+        assert sarvam_vendor.requests == []
+        assert provider["calls"] == []
+        assert _rows(db, org_id) == []
+
+    def test_a_clip_of_exactly_600_seconds_serves(
+            self, client, db, org_key, org_id, sarvam_vendor, stt_tier):
+        tier = stt_tier(SARVAM_MODEL)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=_wav(600, rate=8_000))
+        assert answer.status_code == 200, answer.text
+        assert len(sarvam_vendor.requests) == 21
+        [row] = _rows(db, org_id)
+        assert row.quantity == Decimal("10.0000")
+
+    def test_the_capability_write_ties_sarvam_to_native_sarvam(self, client, db):
+        """Do 1: a `sarvam/` transcribe model takes `native_sarvam` only."""
+        model = f"sarvam/vox2-{uuid.uuid4().hex[:6]}/codemix"
+        refused = client.post("/catalog/capabilities", headers=OP, json={
+            "model": model, "task": "transcribe", "invocation": "atranscription"})
+        assert refused.status_code == 400, refused.text
+        assert "'native_sarvam'" in refused.json()["detail"]
+        try:
+            served = client.post("/catalog/capabilities", headers=OP, json={
+                "model": model, "task": "transcribe", "invocation": "native_sarvam"})
+            assert served.status_code == 200, served.text
+            bad_mode = client.post("/catalog/capabilities", headers=OP, json={
+                "model": model.replace("codemix", "romanize"), "task": "transcribe",
+                "invocation": "native_sarvam"})
+            assert bad_mode.status_code == 400, bad_mode.text
+        finally:
+            with db.begin() as c:
+                c.execute(text("DELETE FROM model_capability WHERE model LIKE :m"),
+                          {"m": model.rsplit("/", 1)[0] + "/%"})
+
+
+class TestALitellmStepBillsTheMeasuredWav:
+    """VOX-2 Done-when 2. The vendor says 90 seconds, and the clip holds 3."""
+
+    def test_a_wav_clip_on_whisper_bills_the_clip_not_the_vendor(
+            self, client, db, org_key, org_id, priced_stt, provider):
+        _, key = org_key
+        assert _transcribe(client, key, audio=WAV_3S).status_code == 200
+        # The litellm call is unchanged: the meter still asks for verbose_json.
+        assert provider["calls"][-1]["response_format"] == "verbose_json"
+        [row] = _rows(db, org_id)
+        assert row.model == WHISPER
+        assert row.quantity == WAV_3S_MINUTES
+        assert row.billed_credits == WAV_3S_MINUTES * CREDITS_PER_MINUTE
+
+
 # ══ §6A.10c — the image endpoint and the speak endpoint ═════════════════════
 #
 # 🔴 **These fences DRIVE the two routes.** Every claim about a `usage_event`
@@ -1953,6 +2277,9 @@ class TestTheProviderCallDispatchesOnTheCapabilityVerb:
         assert "aimage_generation" in router_mod.SERVING_INVOCATIONS
         assert "aspeech" in router_mod.SERVING_INVOCATIONS
         assert "aembedding" in router_mod.SERVING_INVOCATIONS
+        # VOX-2 (2026-11-08): the first native verb on the transcribe door.
+        assert "native_sarvam" in router_mod.SERVING_INVOCATIONS
+        assert "native_sarvam" in catalog.KNOWN_INVOCATIONS
 
 
 class TestTheEndpointHasNoTenantCaller:
