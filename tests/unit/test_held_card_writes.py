@@ -97,6 +97,8 @@ OFF_PROJECTS = frozenset({
     "set_status_set", "unarchive_project",
     # WS-ALN ALN-4, off in a held chat as every class C tool but promote_reminder.
     "pin_authority", "unpin_authority",
+    # WS-39 TPL-1a: an org-wide template, and a project made from one.
+    "save_as_template", "create_project_from_template",
 })
 
 #: The class A Projects tools that write a file of the chat. They stay.

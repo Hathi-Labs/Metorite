@@ -93,6 +93,8 @@ const EVIDENCE: readonly string[] = [
   "watchers",
   "project_access",
   "project_authorities",
+  // WS-39 TPL-1a: the templates of the organization.
+  "list_templates",
   "my_decisions",
   "project_views",
   "recurrence",
@@ -243,6 +245,9 @@ const WRITE: readonly string[] = [
   "revoke_access",
   "pin_authority",
   "unpin_authority",
+  // WS-39 TPL-1a: an org-wide template, and a project made from one.
+  "save_as_template",
+  "create_project_from_template",
   "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",

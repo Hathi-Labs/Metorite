@@ -1104,6 +1104,24 @@ async def create_node(
     payload: ProjectIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
     values = clean_payload(payload)
+    kind = check_node_values(user, values)
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        row = await create_node_in(db, user, vis, values, kind)
+        project_id = str(row.id)
+        result = row_to_dict(row, ProjectModel)
+
+    await emit("pm.project.created", {"project_id": project_id, "name": values["name"]})
+    return result
+
+
+def check_node_values(user: UserContext, values: dict[str, Any]) -> str:
+    """The checks of a new node that need no database. Returns its kind.
+
+    It sets ``name`` (trimmed) and ``created_by`` on *values*. The route and
+    ``templates.apply_template`` (WS-39 TPL-1a) both call it before
+    :func:`create_node_in`, so a node has one set of rules on every door.
+    """
     # WS-55 MCP-G1. A signed agent sends only the keys of `create_project`,
     # and a connection with pins makes no space.
     _narrow_agent_body(user, values, AGENT_NODE_CREATE_FIELDS)
@@ -1125,120 +1143,127 @@ async def create_node(
     _refuse_lifecycle_on_child(values, values.get("parent_project_id"))
     values["name"] = name
     values["created_by"] = actor(user)
-    kind = node_kind(values.get("kind"))
+    return node_kind(values.get("kind"))
 
-    async with _tenant_session() as db:
-        vis = await resolve_visibility(db, user)
-        parent_id = values.get("parent_project_id")
-        parent_row = None
-        if parent_id:
-            # Creating INSIDE a project requires seeing it — otherwise a caller
-            # could graft a subtree onto another department by guessing an id,
-            # and inherit that department's grants for it.
-            parent_row = await load_visible_project(db, vis, str(parent_id))
-            # WS-64: nothing is filed under an archived project.
-            assert_not_archived(parent_row, then="Create it in")
 
-        # WS-64, task #304. A child of a private tree is private too, so it
-        # takes the tree owner's `personal_owner`. Every read tests the node's
-        # OWN column (`_visible_projects`, `_AGENT_NOT_PERSONAL_SQL`, the move
-        # checks), so an unstamped child read as a team node: an orphan root
-        # in each `data:org:read` tree, open to an agent with
-        # `include_personal=false`, and free to move into a team space.
-        #
-        # Only the tree owner may add a node here. `/projects/my/areas` is
-        # the personal seam, but the Projects app's Personal space (OP-3)
-        # files through this route, so the owner is allowed. Anyone else,
-        # an org reader too, gets the same 404 as an unseen parent: a node
-        # filed in another member's private tree is a taking act, and a
-        # different answer would confirm that the tree exists.
-        #
-        # Fix round 2. `personal_tree_owner` is the one walk, with the stop
-        # rule of migration 297. A team node that 297 kept under a private
-        # tree answers None, so its team files nodes under it as team work.
-        tree_owner = (
-            await personal_tree_owner(db, str(parent_id)) if parent_id else None
-        )
-        if tree_owner is not None:
-            if tree_owner != actor(user).lower():
-                raise HTTPException(status_code=404, detail="Project not found")
-            values["personal_owner"] = tree_owner
+async def create_node_in(
+    db: Any, user: UserContext, vis: Any, values: dict[str, Any], kind: str,
+) -> Any:
+    """THE one creator of a ``pm_projects`` row on a member's request.
 
-        # The tree grammar (migration 193): space → [folder] → project →
-        # [folder] → subproject, and stop. Checked before the org resolve so
-        # a bad shape is refused as a shape, not as a permission.
-        parent_kind = None
-        if parent_id:
-            # OP-10 fix round 1: serialize with a convert above the parent.
-            await _lock_ancestor_chain(db, str(parent_id))
-            # Fix round 2: the parent's kind from after the lock. A convert
-            # of the parent that committed while this waited changed it.
-            parent_kind = node_kind(await _locked_kind(db, str(parent_id)))
-        parent_gen = (
-            await _project_generation(db, str(parent_id)) if parent_id else 0
-        )
-        assert_node_grammar(
-            kind=kind,
-            parent_kind=parent_kind,
-            parent_generation=parent_gen,
-            subtree_depth=1 if kind == "project" else 0,
-        )
+    It runs in the caller's transaction and returns the new row. It emits
+    nothing: the caller emits ``pm.project.created`` after the commit.
+    *values* passed :func:`check_node_values` first. ``POST /nodes`` and the
+    apply of a template (WS-39 TPL-1a) both create through it.
+    """
+    name = values["name"]
+    parent_id = values.get("parent_project_id")
+    parent_row = None
+    if parent_id:
+        # Creating INSIDE a project requires seeing it — otherwise a caller
+        # could graft a subtree onto another department by guessing an id,
+        # and inherit that department's grants for it.
+        parent_row = await load_visible_project(db, vis, str(parent_id))
+        # WS-64: nothing is filed under an archived project.
+        assert_not_archived(parent_row, then="Create it in")
 
-        # Level-gated fields, checked once the level is knowable.
-        level = node_level(
-            kind, parent_gen + (1 if kind == "project" else 0),
-        )
-        if values.get("status") is not None:
-            assert_run_state_allowed(level)
-        _refuse_identity_off_a_space(values, level)
-        # WS-64 OP-8 (D-OP-11). The lead IS delete and grant authority, so
-        # naming one is a grant write. After the parent's 404.
-        await assert_may_name_lead(db, user, parent_row, values.get("lead"))
+    # WS-64, task #304. A child of a private tree is private too, so it
+    # takes the tree owner's `personal_owner`. Every read tests the node's
+    # OWN column (`_visible_projects`, `_AGENT_NOT_PERSONAL_SQL`, the move
+    # checks), so an unstamped child read as a team node: an orphan root
+    # in each `data:org:read` tree, open to an agent with
+    # `include_personal=false`, and free to move into a team space.
+    #
+    # Only the tree owner may add a node here. `/projects/my/areas` is
+    # the personal seam, but the Projects app's Personal space (OP-3)
+    # files through this route, so the owner is allowed. Anyone else,
+    # an org reader too, gets the same 404 as an unseen parent: a node
+    # filed in another member's private tree is a taking act, and a
+    # different answer would confirm that the tree exists.
+    #
+    # Fix round 2. `personal_tree_owner` is the one walk, with the stop
+    # rule of migration 297. A team node that 297 kept under a private
+    # tree answers None, so its team files nodes under it as team work.
+    tree_owner = (
+        await personal_tree_owner(db, str(parent_id)) if parent_id else None
+    )
+    if tree_owner is not None:
+        if tree_owner != actor(user).lower():
+            raise HTTPException(status_code=404, detail="Project not found")
+        values["personal_owner"] = tree_owner
 
-        # WS-29a. This is the ONE place in the package that decides a tenant:
-        # `pm_projects` is the root of every other `pm_*` row, and migration
-        # 158's trigger derives the key for all of them from here. Written for
-        # a child project too, not just a root — the trigger then REFUSES it if
-        # it disagrees with the parent's, which turns "the caller's org and the
-        # parent's org differ" into a refused write rather than a silent graft.
-        #
-        # AFTER the parent check, deliberately: a caller with no organization
-        # asking to create inside a project they cannot see must still get R5's
-        # 404. Answering 403 first would confirm the project exists.
-        values["organization_id"] = require_organization(vis)
+    # The tree grammar (migration 193): space → [folder] → project →
+    # [folder] → subproject, and stop. Checked before the org resolve so
+    # a bad shape is refused as a shape, not as a permission.
+    parent_kind = None
+    if parent_id:
+        # OP-10 fix round 1: serialize with a convert above the parent.
+        await _lock_ancestor_chain(db, str(parent_id))
+        # Fix round 2: the parent's kind from after the lock. A convert
+        # of the parent that committed while this waited changed it.
+        parent_kind = node_kind(await _locked_kind(db, str(parent_id)))
+    parent_gen = (
+        await _project_generation(db, str(parent_id)) if parent_id else 0
+    )
+    assert_node_grammar(
+        kind=kind,
+        parent_kind=parent_kind,
+        parent_generation=parent_gen,
+        subtree_depth=1 if kind == "project" else 0,
+    )
 
-        # A SPACE owns its statuses; everything below it inherits until somebody
-        # says otherwise (migration 196). Written here rather than defaulted in
-        # the table because the default has to be false — the common row is a
-        # child — and a root that owns nothing resolves to no statuses at all,
-        # which that migration's CHECK refuses outright.
-        values["owns_statuses"] = parent_id is None
+    # Level-gated fields, checked once the level is knowable.
+    level = node_level(
+        kind, parent_gen + (1 if kind == "project" else 0),
+    )
+    if values.get("status") is not None:
+        assert_run_state_allowed(level)
+    _refuse_identity_off_a_space(values, level)
+    # WS-64 OP-8 (D-OP-11). The lead IS delete and grant authority, so
+    # naming one is a grant write. After the parent's 404.
+    await assert_may_name_lead(db, user, parent_row, values.get("lead"))
 
-        row = await insert_row(db, "pm_projects", values)
-        project_id = str(row.id)
-        if tree_owner is not None:
-            # The grant every personal node carries (`mint_personal_child`).
-            await grant_personal_owner(db, project_id, tree_owner)
+    # WS-29a. This is the ONE place in the package that decides a tenant:
+    # `pm_projects` is the root of every other `pm_*` row, and migration
+    # 158's trigger derives the key for all of them from here. Written for
+    # a child project too, not just a root — the trigger then REFUSES it if
+    # it disagrees with the parent's, which turns "the caller's org and the
+    # parent's org differ" into a refused write rather than a silent graft.
+    #
+    # AFTER the parent check, deliberately: a caller with no organization
+    # asking to create inside a project they cannot see must still get R5's
+    # 404. Answering 403 first would confirm the project exists.
+    values["organization_id"] = require_organization(vis)
 
-        if parent_id is None:
-            await _seed_root(db, project_id, actor(user))
-            # A root project starts org-visible so a solo org is not immediately
-            # locked out of the thing it just created. It is an ordinary grant
-            # row: the importer writes `group:<slug>` instead (§7.1), and
-            # removing this one is how scoping starts.
-            await insert_row(db, "pm_project_grants", {
-                "project_id": project_id, "subject": "org",
-                "created_by": actor(user),
-            })
+    # A SPACE owns its statuses; everything below it inherits until somebody
+    # says otherwise (migration 196). Written here rather than defaulted in
+    # the table because the default has to be false — the common row is a
+    # child — and a root that owns nothing resolves to no statuses at all,
+    # which that migration's CHECK refuses outright.
+    values["owns_statuses"] = parent_id is None
 
-        await record_activity(
-            db, activity_type="system", created_by=actor(user),
-            project_id=project_id, body=f"Project '{name}' created",
-        )
-        result = row_to_dict(row, ProjectModel)
+    row = await insert_row(db, "pm_projects", values)
+    project_id = str(row.id)
+    if tree_owner is not None:
+        # The grant every personal node carries (`mint_personal_child`).
+        await grant_personal_owner(db, project_id, tree_owner)
 
-    await emit("pm.project.created", {"project_id": project_id, "name": name})
-    return result
+    if parent_id is None:
+        await _seed_root(db, project_id, actor(user))
+        # A root project starts org-visible so a solo org is not immediately
+        # locked out of the thing it just created. It is an ordinary grant
+        # row: the importer writes `group:<slug>` instead (§7.1), and
+        # removing this one is how scoping starts.
+        await insert_row(db, "pm_project_grants", {
+            "project_id": project_id, "subject": "org",
+            "created_by": actor(user),
+        })
+
+    await record_activity(
+        db, activity_type="system", created_by=actor(user),
+        project_id=project_id, body=f"Project '{name}' created",
+    )
+    return row
 
 
 @router.patch("/nodes/{project_id}")

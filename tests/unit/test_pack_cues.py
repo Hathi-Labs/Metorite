@@ -43,7 +43,7 @@ WHEN = {
         "Load for tasks, projects and my work: find, create, update, assign and complete. "
         "Also for a question on a named project or task."),
     "projects-plan": "Load for team load, capacity, a timeline, a plan from a goal, task links, repeats or new projects.",
-    "projects-structure": "Load to change statuses, task types, custom fields, tags, project access or saved views.",
+    "projects-structure": "Load to change statuses, task types, custom fields, tags, project access, saved views or project templates.",
     "projects-bulk": "Load for many tasks at once, and to archive, delete, move, merge, attach a file, watch, nudge or undo a change.",
     "projects-reminders": (
         'Load for "remind me", or to list, move, snooze or resolve a reminder (not a task). '

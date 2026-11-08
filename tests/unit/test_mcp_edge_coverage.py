@@ -122,6 +122,27 @@ CLASS_X_WRITES: dict[tuple[str, str], str] = {
 }
 
 
+#: The pairs of ``MCP_WRITE_ROUTES`` that are class C in the manifest, each
+#: with its reason. The chat asks one card for each. An outside agent reaches
+#: them with ``projects:write``, as it reaches each write pair. A new entry
+#: needs a spec amendment (§9.5).
+CLASS_C_WRITES: dict[tuple[str, str], str] = {
+    ("POST", "/projects/templates"): (
+        "WS-39 TPL-1a. `save_as_template` makes one new template row of the org."
+        " It changes no row that exists, and the server takes only a project that"
+        " the whole org can see. The chat shows one card, because the app has no"
+        " delete of a template yet."
+    ),
+    ("POST", "/projects/templates/{template_id}/apply"): (
+        "WS-39 TPL-1a. `create_project_from_template` makes one new project under a"
+        " parent that the member sees, with the access of that parent, through the"
+        " one creator of a node and of a task. A required idempotency key makes a"
+        " retry return the first project. The chat shows one card, because the"
+        " project can hold up to 500 tasks."
+    ),
+}
+
+
 #: The GET pairs of ``MCP_ROUTES`` that are class X in the manifest, each with
 #: its reason. The chat never reaches them. A new entry needs a spec
 #: amendment (§9.5).
@@ -171,7 +192,9 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     the move preview and the move (§9.2). MCP-G15 adds the outside decision
     (§12.1): an agent records a decision that its member made outside
     Metorite, on its own awaiting run. SW-16a adds the link POST and the link
-    DELETE, the routes of ``add_task_link`` and ``remove_task_link``."""
+    DELETE, the routes of ``add_task_link`` and ``remove_task_link``. WS-39
+    TPL-1a adds the template save and the apply, the routes of
+    ``save_as_template`` and ``create_project_from_template``."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -193,6 +216,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
         ("POST", "/projects/tasks/{task_id}/links"),
         ("DELETE", "/projects/tasks/{task_id}/links/{link_id}"),
+        ("POST", "/projects/templates"),
+        ("POST", "/projects/templates/{template_id}/apply"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -315,6 +340,8 @@ def test_rule_2_each_pair_is_class_a_or_a_named_exception():
         allowed = {"A", "B"} if pair in MCP_WRITE_ROUTES else {"A"}
         if pair in CLASS_X_WRITES or pair in CLASS_X_READS:
             allowed = {"X"}
+        if pair in CLASS_C_WRITES:
+            allowed = {"C"}
         if cls not in allowed:
             wrong.append(f"{pair[0]} {pair[1]} (class {cls or 'none'})")
     assert not wrong, (
@@ -328,6 +355,7 @@ def test_every_named_exception_is_still_in_the_allowlist():
     stale = sorted(set(NAMED_EXCEPTIONS) - set(MCP_ROUTES))
     assert not stale, stale
     assert set(CLASS_X_WRITES) <= set(MCP_WRITE_ROUTES)
+    assert set(CLASS_C_WRITES) <= set(MCP_WRITE_ROUTES)
     assert set(CLASS_X_READS) <= set(MCP_ROUTES) - set(MCP_WRITE_ROUTES)
 
 

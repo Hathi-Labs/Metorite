@@ -803,6 +803,12 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: SW-16a adds the link pair: the POST and the DELETE of a task link, the
 #: routes of ``add_task_link`` and ``remove_task_link``. The route checks that
 #: the member sees BOTH tasks. SW-16b owns the write fence for these routes.
+#: WS-39 TPL-1a adds the two template pairs: the save, the route of
+#: ``save_as_template``, and the apply, the route of
+#: ``create_project_from_template``. Both are class C in the chat manifest, a
+#: named exception of rule 2 (``external_agent_access.md`` §9.5). The apply
+#: takes a required idempotency key, and both answer 404 while
+#: ``PROJECTS_TEMPLATES_ORGS`` does not hold the org.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
@@ -828,6 +834,9 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
+    # WS-39 TPL-1a: `save_as_template` and `create_project_from_template`.
+    ("POST", "/projects/templates"),
+    ("POST", "/projects/templates/{template_id}/apply"),
 })
 
 #: The ONE allowlist of the MCP edge (EA3-6). Each pair is a method and the
@@ -877,6 +886,9 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # for `list_apps` and `describe_app`. They hold no data of an app.
     ("GET", "/agent-access/apps"),
     ("GET", "/agent-access/apps/{app}"),
+    # WS-39 TPL-1a: `list_templates`. It answers 404 while
+    # `PROJECTS_TEMPLATES_ORGS` does not hold the org.
+    ("GET", "/projects/templates"),
     *MCP_WRITE_ROUTES,
 })
 

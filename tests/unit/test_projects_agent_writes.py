@@ -545,9 +545,37 @@ def _reminder_answers(call: dict) -> Any:
     return {**REMINDER_ROW, "state": "scheduled"}
 
 
+#: WS-39 TPL-1a. One template of the org, as `GET /projects/templates` lists it.
+TEMPLATE_ROW = {
+    "id": UUID, "kind": "project", "name": "Install kit", "description": None,
+    "work_style": None, "created_by": "a@x.io", "created_at": "2026-11-08T10:00:00+00:00",
+    "counts": {"statuses": 4, "types": 3, "fields": 2, "tags": 1, "tasks": 6},
+}
+
+
+def _template_answers(call: dict) -> Any:
+    """The three template routes (WS-39 TPL-1a)."""
+    path, method = call["path"], call["method"]
+    body = call["json"] if isinstance(call["json"], dict) else {}
+    if path == "/projects/templates" and method == "GET":
+        return {"rows": [TEMPLATE_ROW], "total": 1, "more": False}
+    if path == "/projects/templates" and method == "POST":
+        return {**TEMPLATE_ROW, "id": OTHER, "name": body.get("name")}
+    if path.startswith("/projects/templates/") and path.endswith("/apply"):
+        return {
+            "project": {"id": OTHER, "name": body.get("name") or "Install kit"},
+            "template_id": UUID, "replayed": False, "own_statuses": True,
+            "created": {"statuses": 4, "types": 0, "fields": 0, "tags": 0, "tasks": 6},
+        }
+    return None
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
+    template = _template_answers(call)
+    if template is not None:
+        return template
     if path == f"/projects/tasks/{UUID}":
         return TASK
     if path == f"/projects/tasks/{OTHER}":
@@ -783,6 +811,9 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "grant_access": [{"project_id": UUID, "subject": "org"}],
     # WS-ALN ALN-4 — one pin per card, by pin_id
     "pin_authority": [{"project_id": UUID, "page_id": OTHER}],
+    # WS-39 TPL-1a: one template per card, and one project per card.
+    "save_as_template": [{"project_id": UUID, "name": "Office move"}],
+    "create_project_from_template": [{"template_id": UUID, "parent_id": UUID}],
     "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
     # WS-ALN ALN-2a: one answer per card
     "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
@@ -894,6 +925,8 @@ _ONE_ID: dict[str, str] = {
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",
     "promote_reminder": "reminder_id",
+    "save_as_template": "project_id",
+    "create_project_from_template": "template_id",
 }
 
 

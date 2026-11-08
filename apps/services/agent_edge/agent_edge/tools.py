@@ -6571,6 +6571,302 @@ MOVE_TASKS = Tool(
 )
 
 
+# ── The templates of Projects (WS-39 TPL-1a, project_management_app.md §14.8) ─
+
+TEMPLATES_ROUTE = "/projects/templates"
+TEMPLATE_APPLY_ROUTE = "/projects/templates/{template_id}/apply"
+
+#: The body keys of each template write (edge rule 18). The edge builds a body
+#: from these names only, and the gateway's body models forbid any other key.
+TEMPLATE_SAVE_BODY_KEYS: tuple[str, ...] = ("project_id", "name", "description", "start_date")
+TEMPLATE_APPLY_BODY_KEYS: tuple[str, ...] = (
+    "idempotency_key", "parent_project_id", "name", "description", "start_date")
+#: The free-text inputs of the two template writes. The NUL check reads them.
+_TEMPLATE_TEXT_INPUTS: tuple[str, ...] = ("name", "description")
+#: Copies of ``templates.NAME_MAX`` and ``templates.DESCRIPTION_MAX`` of the
+#: gateway. ``test_mcp_edge_templates.py`` pins the copies equal.
+MAX_TEMPLATE_NAME = 120
+MAX_TEMPLATE_DESCRIPTION = 2000
+#: The numbers of a template, in the order of the gateway's ``counts``.
+TEMPLATE_COUNT_KEYS: tuple[str, ...] = ("statuses", "types", "fields", "tags", "tasks")
+TEMPLATE_KEYS: tuple[str, ...] = ("id", "kind", "name", "description", "counts", "created_at")
+
+TEXT_TEMPLATES_OFF = "Project templates are not on for this organization."
+TEXT_TEMPLATE_NOT_FOUND = "Template not found. Call list_templates."
+TEXT_TEMPLATE_NOT_ORG_WIDE = (
+    "Each member of the organization can read a template, so a template comes only"
+    " from a project that the whole organization can see. Pick another project, or"
+    " ask a person to give this project the organization grant in the Metorite app.")
+TEXT_TEMPLATE_NOT_A_PROJECT = (
+    "A space or a folder holds no tasks. Save a template from a project.")
+TEXT_TEMPLATE_NAME_TAKEN = (
+    "A template with that name already exists. Call list_templates, or send another name.")
+TEXT_TEMPLATE_TOO_LARGE = (
+    "The template is larger than Metorite allows: at most 500 tasks, 10 levels of"
+    " subtasks and 1 MiB. Ask a person to make the project smaller first.")
+TEXT_TEMPLATE_INVALID = (
+    "Metorite cannot use this template. Ask a person to save it again from a project.")
+TEXT_TEMPLATE_KEY_USED = (
+    "This idempotency_key was sent with another request, or the project that it"
+    " made is gone. Send a new key.")
+TEXT_TEMPLATE_FIELD_CONFLICT = (
+    "The space already has a field with a key of this template and another type, or"
+    " it would hold too many fields. Make the project in another space, or ask a"
+    " person to change the field in the Metorite app.")
+
+#: The coded refusals of the template routes (``templates.py``). The edge
+#: reads the code to choose a text, and never sends the gateway's words.
+_TEMPLATE_CODES: Mapping[str, str] = {
+    "source_not_org_wide": TEXT_TEMPLATE_NOT_ORG_WIDE,
+    "source_not_a_project": TEXT_TEMPLATE_NOT_A_PROJECT,
+    "template_name_taken": TEXT_TEMPLATE_NAME_TAKEN,
+    "template_too_large": TEXT_TEMPLATE_TOO_LARGE,
+    "template_invalid": TEXT_TEMPLATE_INVALID,
+    "not_a_project_template": TEXT_TEMPLATE_INVALID,
+    "key_used": TEXT_TEMPLATE_KEY_USED,
+    "field_conflict": TEXT_TEMPLATE_FIELD_CONFLICT,
+}
+
+_COUNTS_SCHEMA = _object({name: {"type": "integer"} for name in TEMPLATE_COUNT_KEYS})
+_TEMPLATE_SCHEMA = _object({
+    "id": {"type": "string"}, "kind": _NULLABLE_STRING, "name": _UNTRUSTED_SCHEMA,
+    "description": _UNTRUSTED_OR_NULL, "counts": _COUNTS_SCHEMA,
+    "created_at": _NULLABLE_STRING,
+})
+_TEMPLATE_START_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _START_DATE_PATTERN,
+    "description": "A calendar date, such as 2026-12-01."}
+
+
+def _template(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One template, in the keys of :data:`TEMPLATE_KEYS` only. Its name and
+    its description are text that a member wrote, so each is untrusted."""
+    counts = _dict(row.get("counts"))
+    return {
+        "id": str(row.get("id")),
+        "kind": _str_or_none(row.get("kind")),
+        "name": untrusted(row.get("name") or ""),
+        "description": untrusted(row.get("description")),
+        "counts": {name: int(counts.get(name) or 0) if _number(counts.get(name)) else 0
+                   for name in TEMPLATE_COUNT_KEYS},
+        "created_at": _str_or_none(row.get("created_at")),
+    }
+
+
+async def _templates(ctx: Context) -> tuple[list[dict[str, Any]], bool]:
+    """``(rows, more)`` of the org's templates. A 404 is the flag off."""
+    body = await _get(ctx, TEMPLATES_ROUTE, TEXT_TEMPLATES_OFF)
+    if not isinstance(body, dict):
+        raise ToolError(TEXT_BUSY)
+    return [r for r in _rows_of(body) if isinstance(r, dict)], body.get("more") is True
+
+
+_LIST_TEMPLATES_INPUT: dict[str, Any] = {
+    "type": "object", "properties": {}, "additionalProperties": False,
+}
+_LIST_TEMPLATES_OUTPUT: dict[str, Any] = _object({
+    "templates": {"type": "array", "items": _TEMPLATE_SCHEMA},
+    "more": {"type": "boolean"},
+})
+
+
+async def _list_templates(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    rows, more = await _templates(ctx)
+    return {"templates": [_template(r) for r in rows], "more": more}
+
+
+LIST_TEMPLATES = Tool(
+    name="list_templates",
+    title="List project templates",
+    description=(
+        "List the project templates of this member's organization, by name. Each"
+        " template gives its id, its description and its counts: the statuses,"
+        " task types, fields, tags and starter tasks that a new project gets from"
+        " it. Every member of the organization sees the same list. Use an id with"
+        " create_project_from_template." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_TEMPLATES_INPUT,
+    output_schema=_LIST_TEMPLATES_OUTPUT,
+    route=TEMPLATES_ROUTE,
+    params={},
+    not_found=TEXT_TEMPLATES_OFF,
+    run=_list_templates,
+    routes=(TEMPLATES_ROUTE,),
+)
+
+
+_SAVE_TEMPLATE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "The project to save. An id from list_projects."},
+        "name": {"type": "string", "minLength": 1, "maxLength": MAX_TEMPLATE_NAME,
+                 "description": "The name of the template. A name is used once in the"
+                                " organization."},
+        "description": {"type": "string", "maxLength": MAX_TEMPLATE_DESCRIPTION,
+                        "description": "What the template is for."},
+        "start_date": {**_TEMPLATE_START_INPUT,
+                       "description": "The day that the task dates count from, such as"
+                                      " 2026-11-10. Leave it out to count from the"
+                                      " earliest task date."},
+    },
+    "required": ["project_id", "name"],
+    "additionalProperties": False,
+}
+_SAVE_TEMPLATE_OUTPUT: dict[str, Any] = _object({"template": _TEMPLATE_SCHEMA})
+
+
+async def _save_as_template(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST the save with the keys of :data:`TEMPLATE_SAVE_BODY_KEYS` only.
+    The read of the list comes first, so a 404 of the save means the project."""
+    _refuse_nul(args, _TEMPLATE_TEXT_INPUTS)
+    if not str(args["name"]).strip():
+        raise ToolError(TEXT_NAME_BLANK)
+    await _templates(ctx)
+    payload = {name: args[name] for name in TEMPLATE_SAVE_BODY_KEYS if name in args}
+    payload["name"] = str(payload["name"]).strip()
+    _, row = await _write(
+        ctx, "POST", TEMPLATES_ROUTE, TEXT_PROJECT_NOT_FOUND, json_body=payload,
+        coded=_TEMPLATE_CODES, coded_statuses=(403, 409, 422))
+    if not isinstance(row, dict) or _id(row.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    return {"template": _template(row)}
+
+
+SAVE_AS_TEMPLATE = Tool(
+    name="save_as_template",
+    title="Save a project as a template",
+    description=(
+        "Save one project that this member can see as a new template of the"
+        " organization. The template copies the statuses, task types, fields and"
+        " tags of the project, and its open and done tasks and subtasks as starter"
+        " tasks, with each date as days from the start. It copies no person, no"
+        " comment and no history, and a done task starts open in a new project."
+        " Every member of the organization can read and use a template, so Metorite"
+        " takes only a project that the whole organization can see. A name is used"
+        " once in the organization. Returns the template and its counts."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_SAVE_TEMPLATE_INPUT,
+    output_schema=_SAVE_TEMPLATE_OUTPUT,
+    route=TEMPLATES_ROUTE,
+    params={name: name for name in TEMPLATE_SAVE_BODY_KEYS},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_save_as_template,
+    routes=(TEMPLATES_ROUTE,),
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
+#: The input that fills each body key of the apply.
+_APPLY_INPUT_OF: Mapping[str, str] = {
+    "idempotency_key": "idempotency_key", "parent_project_id": "parent_id",
+    "name": "name", "description": "description", "start_date": "start_date",
+}
+
+_APPLY_TEMPLATE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "template_id": {"type": "string", "pattern": _UUID_PATTERN,
+                        "description": "The template. An id from list_templates."},
+        "parent_id": {"type": "string", "pattern": _UUID_PATTERN,
+                      "description": "The space, folder or project to make the new"
+                                     " project in. An id from list_projects."},
+        "idempotency_key": {
+            "type": "string", "pattern": _IDEMPOTENCY_PATTERN,
+            "description": "A new unique key for this project, such as a UUID. The"
+                           " same key and the same input again give back the first"
+                           " project and make nothing."},
+        "name": {**_NAME_INPUT, "description": "The name of the new project. Leave it"
+                                               " out to use the name of the template."},
+        "description": _DESCRIPTION_INPUT,
+        "start_date": {**_TEMPLATE_START_INPUT,
+                       "description": "The start of the new project, such as"
+                                      " 2026-12-01. Each task date is this day plus"
+                                      " its days in the template. Leave it out for"
+                                      " today."},
+    },
+    "required": ["template_id", "parent_id", "idempotency_key"],
+    "additionalProperties": False,
+}
+_APPLY_TEMPLATE_OUTPUT: dict[str, Any] = _object({
+    "project": _PROJECT_SCHEMA, "template_id": {"type": "string"},
+    "replayed": {"type": "boolean"}, "own_statuses": {"type": "boolean"},
+    "tasks": _NULLABLE_INTEGER,
+})
+
+
+async def _create_project_from_template(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One POST of the apply. The gateway keeps the ``idempotency_key``, as it
+    does for ``request_task_archive``, so the tool has no edge input. The read
+    of the list comes first: an unknown template needs no write, and a 404 of
+    the apply then means the parent."""
+    _refuse_nul(args, _TEMPLATE_TEXT_INPUTS)
+    if "name" in args and not str(args["name"]).strip():
+        raise ToolError(TEXT_NAME_BLANK)
+    template_id = str(args["template_id"]).lower()
+    rows, _more = await _templates(ctx)
+    if not any(str(r.get("id") or "").lower() == template_id for r in rows):
+        raise ToolError(TEXT_TEMPLATE_NOT_FOUND)
+    payload = {key: args[_APPLY_INPUT_OF[key]] for key in TEMPLATE_APPLY_BODY_KEYS
+               if _APPLY_INPUT_OF[key] in args}
+    if "name" in payload:
+        payload["name"] = str(payload["name"]).strip()
+    _, made = await _write(
+        ctx, "POST", TEMPLATE_APPLY_ROUTE, TEXT_PROJECT_NOT_FOUND,
+        path_params={"template_id": template_id}, json_body=payload,
+        details={(409, TREE_RACE_DETAIL): TEXT_TREE_RACE},
+        prefixes={(422, "A subproject is the lowest level"): TEXT_LEVEL_FLOOR},
+        coded=_TEMPLATE_CODES, coded_statuses=(403, 409, 422))
+    project = _dict(made.get("project")) if isinstance(made, dict) else {}
+    if _id(project.get("id")) is None:
+        raise ToolError(TEXT_BUSY)
+    created = _dict(made.get("created"))
+    current = await _after_write(lambda: _reread_node(ctx, dict(project)), dict(project))
+    return {
+        "project": _project(current),
+        "template_id": template_id,
+        "replayed": made.get("replayed") is True,
+        "own_statuses": made.get("own_statuses") is True,
+        "tasks": int(created["tasks"]) if _number(created.get("tasks")) else None,
+    }
+
+
+CREATE_PROJECT_FROM_TEMPLATE = Tool(
+    name="create_project_from_template",
+    title="Create a project from a template",
+    description=(
+        "Make one new project from a template of the organization, inside a space,"
+        " a folder or a project that this member can see. Find the template with"
+        " list_templates and the parent with list_projects. The new project gets"
+        " the template's statuses and its starter tasks and subtasks, with each"
+        " date as start_date plus the days in the template, in calendar days. A"
+        " task type, field or tag that the space lacks is added to the whole"
+        " space. The new project has the access of its parent: this tool cannot"
+        " change who sees a project. A connection that is pinned to projects"
+        " sees and uses only a template whose source project it can see. Send a"
+        " new idempotency_key for each project. The same key and the same input"
+        " again give back the first project with replayed true, and make nothing."
+        " Returns the project and how many tasks it got." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_APPLY_TEMPLATE_INPUT,
+    output_schema=_APPLY_TEMPLATE_OUTPUT,
+    route=TEMPLATE_APPLY_ROUTE,
+    params={"template_id": "template_id", "parent_id": "parent_project_id",
+            "idempotency_key": "idempotency_key", "name": "name",
+            "description": "description", "start_date": "start_date"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_create_project_from_template,
+    routes=(TEMPLATES_ROUTE, NODE_ROUTE),
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+)
+
+
 # ── The agent-run tools (EA-12b, §12.1) ─────────────────────────────────────
 
 _RUN_ID_INPUT: dict[str, Any] = {
@@ -8207,7 +8503,9 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: ``add_comment`` of EA-6c and ``claim_task`` of EA-6b, then
 #: ``set_assignees`` of MCP-G2, then the four tools of MCP-G1:
 #: ``create_project``, ``update_project``, ``preview_move_tasks`` and
-#: ``move_tasks``. The six agent-run
+#: ``move_tasks``. WS-39 TPL-1a adds the read ``list_templates`` after
+#: ``get_attachment``, and the writes ``save_as_template`` and
+#: ``create_project_from_template`` after ``move_tasks``. The six agent-run
 #: tools of EA-12b come last, then ``request_task_archive`` of EA-6g, which
 #: shows only while the runs flag is on too. ``record_outside_decision`` of
 #: MCP-G15 follows it, on the same flag. ``delete_task`` of EA-6h is last.
@@ -8216,10 +8514,11 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, BOARD_STATS, GET_TASK, GET_TASK_TIMELINE,
-    SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT,
+    SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_TEMPLATES,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS,
+    SAVE_AS_TEMPLATE, CREATE_PROJECT_FROM_TEMPLATE,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
     RELEASE_TASK, DELETE_TASK,
