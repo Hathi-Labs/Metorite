@@ -17,7 +17,9 @@ any type would let a client forge a ``status_change`` nobody performed.
 
 from __future__ import annotations
 
+import functools
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -29,6 +31,7 @@ from gateway.routes.projects.core import (
     actor,
     emit,
     from_jsonb,
+    is_transient,
     load_visible_task,
     lock_task,
     now,
@@ -109,6 +112,12 @@ AGENT_MAX_COMMENT_CHARS = 20_000
 #: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal. Rules 1 to 3 of
 #: ``_load_agent_comment`` (fix rounds 1 to 3) send the same detail.
 AGENT_COMMENT_NOT_OWN = "Only its author can change this comment in Metorite."
+
+#: MCP-G9 fix round 4. The ``detail`` of the 409 when a signed agent's edit or
+#: delete of a comment meets a transient SQLSTATE (``_agent_comment_race_as_409``).
+#: The edge holds a copy (``agent_edge.tools.COMMENT_RACE_DETAIL``), and
+#: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal.
+AGENT_COMMENT_RACE = "The task changed while this ran, so nothing changed. Try again."
 
 #: MCP-G9 fix round 1, rule 1. The key in ``meta`` that a person's edit sets
 #: on a comment (``_mark_person_edit``). After a person edits a comment, the
@@ -446,9 +455,12 @@ async def _load_agent_comment(
 #: Rule 3 of MCP-G9 (fix round 3), the last word. A comment row on the task
 #: of *aid* that is later than it, by ``created_at`` and then by ``id``, and
 #: that is not the agent's own. The agent's own means that *who* (the member)
-#: wrote it, its ``meta.via`` is *via*, and no person edited it (rule 1). A
-#: soft-deleted row counts too, so the check fails closed. A reply is on the
-#: same task and always later, so the rule covers a direct reply.
+#: wrote it, its ``meta.via`` is *via*, no person edited it (rule 1), and no
+#: agent run wrote it (rule 2, fix round 4). A question or an answer of a run
+#: always blocks, also one that this client wrote, such as the answer of
+#: ``record_outside_decision``. A soft-deleted row counts too, so the check
+#: fails closed. A reply is on the same task and always later, so the rule
+#: covers a direct reply.
 _LATER_COMMENT_SQL = (
     "SELECT 1 FROM pm_activities o"
     " JOIN pm_activities me ON me.id = CAST(:aid AS uuid)"
@@ -456,7 +468,8 @@ _LATER_COMMENT_SQL = (
     " AND (o.created_at, o.id) > (me.created_at, me.id)"
     " AND NOT (lower(o.created_by) = :who"
     " AND COALESCE(o.meta ->> 'via', '') = :via"
-    " AND (o.meta ->> CAST(:mark AS text)) IS NULL) LIMIT 1"
+    " AND (o.meta ->> CAST(:mark AS text)) IS NULL"
+    " AND (o.meta ->> CAST(:run AS text)) IS NULL) LIMIT 1"
 )
 
 
@@ -465,13 +478,14 @@ async def _has_later_comment(db: Any, activity_id: str, who: str, via: str) -> b
     comment on the task after this comment (``_LATER_COMMENT_SQL``).
 
     Somebody else is any author but this client: the member in the app or the
-    chat, another member, another agent client, and the client's own comment
-    after a person edited it. The caller holds the task lock, so no new
+    chat, another member, another agent client, the client's own comment
+    after a person edited it, and each comment of an agent run. The caller holds the task lock, so no new
     comment on the task commits between this read and the change.
     """
     found = (await db.execute(
         text(_LATER_COMMENT_SQL),
-        {"aid": activity_id, "who": who, "via": via, "mark": PERSON_EDITED_KEY},
+        {"aid": activity_id, "who": who, "via": via, "mark": PERSON_EDITED_KEY,
+         "run": RUN_COMMENT_KEY},
     )).fetchone()
     return found is not None
 
@@ -513,7 +527,41 @@ async def _record_agent_change(
     )
 
 
+def _agent_comment_race_as_409(
+    route: Callable[..., Awaitable[Any]],
+) -> Callable[..., Awaitable[Any]]:
+    """Answer a transient SQLSTATE of a SIGNED AGENT's edit or delete of a
+    comment with a 409, not a 500 (MCP-G9 fix round 4).
+
+    The agent path locks the comment, then the task (``lock_task``). A task
+    delete locks the task, then its cascade reaches the comment. So the two
+    can deadlock, and Postgres rolls one of them back, with nothing of it
+    kept. The set is ``core.TRANSIENT_SQLSTATES`` (40P01, 40001, 55P03),
+    read by ``core.is_transient``, as ``tree._tree_race_as_409`` and
+    ``cycles._cycle_race_as_409`` read it. A person's request is as it was:
+    the guard maps only a request with ``UserContext.agent``. FastAPI passes
+    ``user`` as a keyword, and ``functools.wraps`` keeps the signature that
+    FastAPI reads.
+    """
+
+    @functools.wraps(route)
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await route(*args, **kwargs)
+        except HTTPException:
+            raise
+        except Exception as err:
+            agent = getattr(kwargs.get("user"), "agent", None)
+            if agent is not None and is_transient(err):
+                raise HTTPException(status_code=409, detail=AGENT_COMMENT_RACE) from err
+            raise
+
+    guarded.agent_comment_race_guard = True  # type: ignore[attr-defined]
+    return guarded
+
+
 @router.patch("/comments/{activity_id}")
+@_agent_comment_race_as_409
 async def edit_comment(
     activity_id: str, payload: CommentIn,
     user: UserContext = Depends(get_current_user),
@@ -588,6 +636,7 @@ async def edit_comment(
 
 
 @router.delete("/comments/{activity_id}")
+@_agent_comment_race_as_409
 async def delete_comment(
     activity_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict:

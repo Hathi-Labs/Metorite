@@ -69,6 +69,17 @@ client's own (L1 to L6).
   ``test_l2_a_new_comment_of_a_peer_refuses``,
   ``test_l4_a_later_comment_of_the_member_in_the_app_refuses`` and
   ``test_l5_a_later_comment_that_the_peer_deleted_refuses`` turn red.
+
+Fix round 4: a comment of an agent run is never the agent's own (L7), and a
+transient SQLSTATE of the agent path answers 409.
+
+* G11. ``G/activities.py``: ``_LATER_COMMENT_SQL`` drops the clause on
+  ``RUN_COMMENT_KEY``. ``test_l7_an_outside_decision_after_the_comment_refuses``
+  turns red.
+* G12. ``G/activities.py``: ``_agent_comment_race_as_409`` re-raises a
+  transient error. ``test_projects_comments.py``
+  ``test_the_agent_race_guard_answers_each_transient_sqlstate_with_409``
+  turns red.
 """
 from __future__ import annotations
 
@@ -320,11 +331,16 @@ class TestTheToolRecords:
     """§9.2 and §9.5. The edge half of the slice."""
 
     def test_the_refusal_text_is_the_one_of_the_gateway(self):
-        """The edge matches the gateway's 403 sentence and sends its own copy."""
-        from gateway.routes.projects.activities import AGENT_COMMENT_NOT_OWN
+        """The edge matches the gateway's 403 and 409 sentences and sends its
+        own copy."""
+        from gateway.routes.projects.activities import (
+            AGENT_COMMENT_NOT_OWN,
+            AGENT_COMMENT_RACE,
+        )
 
         assert tools.COMMENT_NOT_OWN_DETAIL == AGENT_COMMENT_NOT_OWN
         assert tools.TEXT_COMMENT_NOT_OWN.startswith(AGENT_COMMENT_NOT_OWN)
+        assert tools.COMMENT_RACE_DETAIL == AGENT_COMMENT_RACE
 
     def test_both_pairs_are_write_pairs_and_both_tools_need_projects_write(self):
         for method in ("PATCH", "DELETE"):
@@ -428,6 +444,7 @@ class TestTheEdgeWithAFakeGateway:
         (403, tools.COMMENT_NOT_OWN_DETAIL, tools.TEXT_COMMENT_NOT_OWN),
         (403, "something else", tools.TEXT_WRITE_FORBIDDEN),
         (404, "Comment not found", tools.TEXT_COMMENT_NOT_FOUND),
+        (409, tools.COMMENT_RACE_DETAIL, tools.TEXT_COMMENT_RACE),
     ])
     async def test_each_refusal_has_its_text_and_frees_the_key(
             self, edge, status, detail, expected):
@@ -979,3 +996,38 @@ class TestFixRoundThree:
         assert src.index("lock_task(") < src.index("_has_later_comment(")
         spine = inspect.getsource(core.record_activity)
         assert spine.index("touch_task(") < spine.index("insert_row(")
+
+
+# ── Fix round 4: a comment of an agent run is never the agent's own ─────────
+
+
+class TestFixRoundFour:
+    """A later question or answer of a run blocks the earlier comment, also
+    when this client wrote it."""
+
+    @pytest.mark.parametrize("tool", COMMENT_TOOLS)
+    async def test_l7_an_outside_decision_after_the_comment_refuses(
+            self, live, tool, monkeypatch):
+        """The agent asks in a plain comment, the member answers in another
+        place, and the agent records it with ``record_outside_decision``. The
+        run's question and answer carry this client's stamp, and they still
+        end the agent's rights over the plain comment."""
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        task = live.doing_task(f"l7 {tool}")
+        ask = await _agent_comment(live, task, "l7 May I drop the staging rows?")
+        asked = await _tool(live, "write", "ask_on_task", task_id=task,
+                            question="See my comment above. May I?",
+                            idempotency_key=_key("l7-ask"))
+        assert asked["isError"] is False, asked
+        decided = await _tool(live, "write", "record_outside_decision",
+                              run_id=asked["structuredContent"]["run"]["id"],
+                              decision="Yes.", where="Claude Code chat",
+                              idempotency_key=_key("l7-yes"))
+        assert decided["isError"] is False, decided
+        with live.admin.begin() as c:
+            stamps = {r.via for r in c.execute(text(
+                "SELECT meta->>'via' AS via FROM pm_activities WHERE type = 'comment'"
+                " AND task_id = CAST(:t AS uuid)"), {"t": task})}
+        assert stamps == {R8_VIA}, "only this client wrote on the task"
+        await _refused_one(live, ask, tool)
+        assert _comment(live, ask).body == "l7 May I drop the staging rows?"

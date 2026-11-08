@@ -5803,6 +5803,14 @@ TEXT_COMMENT_NOT_OWN = (
     " client wrote. It cannot change a comment when a person edited it, it"
     " belongs to an agent run, or someone else wrote on the task after it."
     " Nothing changed.")
+#: MCP-G9 fix round 4. The ``detail`` of the gateway's 409 when a deadlock or
+#: a lock timeout rolled the change back (``activities.AGENT_COMMENT_RACE``).
+#: A copy, as for the 403. ``test_mcp_edge_comment_edit_r8.py`` pins the two
+#: equal. The change did not land, so the key is free for the same call.
+COMMENT_RACE_DETAIL = "The task changed while this ran, so nothing changed. Try again."
+TEXT_COMMENT_RACE = (
+    "The task changed while this ran, so nothing changed. Send the same call"
+    " again.")
 TEXT_COMMENT_CHANGE_KEY_REUSED = (
     "This idempotency_key was used for a different change. Send a new key.")
 TEXT_COMMENT_CHANGE_KEY_UNKNOWN = (
@@ -5813,6 +5821,7 @@ _COMMENT_CHANGE_KEY_TEXTS = _KeyTexts(reused=TEXT_COMMENT_CHANGE_KEY_REUSED,
                                       unknown=TEXT_COMMENT_CHANGE_KEY_UNKNOWN)
 _COMMENT_CHANGE_DETAILS: Mapping[tuple[int, str], str] = {
     (403, COMMENT_NOT_OWN_DETAIL): TEXT_COMMENT_NOT_OWN,
+    (409, COMMENT_RACE_DETAIL): TEXT_COMMENT_RACE,
 }
 
 _COMMENT_ID_INPUT: dict[str, Any] = {
