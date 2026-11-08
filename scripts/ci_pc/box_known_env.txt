@@ -1,0 +1,16 @@
+# CIV-22 (task 2288): unit tests that fail on the home box for a reason of the box,
+# and not of the code. One entry per line: <test id> TAB <reason> TAB <task>.
+#
+# What the list does. When a unit shard of a LOCAL run fails, and every failed
+# test of that shard is in this list, the run counts the shard as "expected" and
+# can still end GREEN. The tests still run and still show in the log. A failure
+# that is NOT in the list keeps the run RED. GitHub's pr-check never reads this
+# file (fence: tests/unit/test_box_verdict.py).
+#
+# Rules for an entry:
+#   * the reason names a cause that a reviewer can check on the box, not "flaky";
+#   * the task is open until the cause is gone, and the entry leaves with it;
+#   * keep the list short. A flaky test or a real bug is not an environment fault:
+#     fix it or file a task, do not list it.
+tests/unit/test_web_reader_confine.py::TestTheConfinement::test_each_attack_works_unconfined	every process in the CI container already has the Docker default seccomp filter (Seccomp: 2 in /proc/self/status), so the unconfined control reads mode2, and GitHub runs the job outside a container and reads mode0	2288
+tests/unit/test_attachment_ocr.py::TestTheConfinement::test_each_attack_works_unconfined	the same control as test_web_reader_confine.py (seccomp mode2 in the CI container, mode0 on a GitHub runner)	2288

@@ -51,11 +51,16 @@ def repo(tmp_path):
     return tmp_path, wt
 
 
-def _run(tmp, wt, body="Visual review: no UI change", others="", head=None):
+def _run(tmp, wt, body="Visual review: no UI change", others="", head=None, verdicts=None):
+    sha = git(wt, "rev-parse", "HEAD")
+    (tmp / "verdicts.txt").write_text(
+        f"GREEN {sha} selection expected=0\n" if verdicts is None else verdicts, encoding="utf-8"
+    )
     env = {
         **os.environ,
         "PATH": f"{tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "HANDOVER_QUEUE": str(tmp / "queue.tsv"),
+        "HANDOVER_VERDICTS_FILE": str(tmp / "verdicts.txt"),
         "FAKE_HEAD": head or git(wt, "rev-parse", "HEAD"),
         "FAKE_BODY": body,
         "FAKE_OTHERS": others,
@@ -163,10 +168,14 @@ def test_an_empty_pr_number_is_refused(repo):
 def test_a_relative_worktree_is_written_as_an_absolute_path(repo):
     tmp, wt = repo
     _commit(wt, "a.txt", "x\n")
+    (tmp / "verdicts.txt").write_text(
+        f"GREEN {git(wt, 'rev-parse', 'HEAD')} full expected=0\n", encoding="utf-8"
+    )
     env = {
         **os.environ,
         "PATH": f"{tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "HANDOVER_QUEUE": str(tmp / "queue.tsv"),
+        "HANDOVER_VERDICTS_FILE": str(tmp / "verdicts.txt"),
         "FAKE_HEAD": git(wt, "rev-parse", "HEAD"),
         "FAKE_BODY": "",
         "FAKE_OTHERS": "",
@@ -199,3 +208,17 @@ def test_a_repeated_index_row_after_the_merge_is_refused(repo):
     r = _run(tmp, wt)
     assert r.returncode == 1 and "lists a spec twice: a.md" in r.stderr, r.stderr
     assert _queue(tmp) == ""
+
+
+def test_a_hand_over_needs_a_green_box_run_of_the_head_commit(repo):
+    tmp, wt = repo
+    _commit(wt, "a.txt", "x\n")
+    sha = git(wt, "rev-parse", "HEAD")
+    r = _run(tmp, wt, verdicts="")
+    assert r.returncode == 1 and "no GREEN box run" in r.stderr and _queue(tmp) == ""
+    r = _run(tmp, wt, verdicts=f"GREEN {'0' * 40} full expected=0\n")
+    assert r.returncode == 1 and "no GREEN box run" in r.stderr  # a GREEN run of another commit
+    r = _run(tmp, wt, verdicts=f"RED {sha} selection expected=0 unexpected=shard-2\n")
+    assert r.returncode == 1 and "is RED" in r.stderr and _queue(tmp) == ""
+    r = _run(tmp, wt, verdicts=f"RED {sha} selection expected=0\nGREEN {sha} full expected=2\n")
+    assert r.returncode == 0, r.stderr  # a later GREEN run of the same commit passes

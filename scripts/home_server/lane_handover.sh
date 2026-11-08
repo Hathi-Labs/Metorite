@@ -10,7 +10,12 @@
 #      workbench/control_plane/src (DESIGN_SYSTEM.md section 11);
 #   3. origin/main merges into the branch with no conflict;
 #   4. each new migration number is above main's highest, and no other open PR
-#      adds the same number (R1).
+#      adds the same number (R1);
+#   5. a GREEN box run exists for the full commit id of the PR head (CIV-22,
+#      task 2288): a line "GREEN <sha> ..." in /home/ci/runs/*/verdict, written
+#      by scripts/ci_pc/run_suite.sh. Run: bash scripts/ci_local.sh   (it tests
+#      the committed head). Off the box (no user ci) the check is skipped with a
+#      warning, and HANDOVER_VERDICTS_FILE names a file of verdict lines for a test.
 # A failed check prints its reason and exits 1. Nothing is appended.
 # Settings for a test: HANDOVER_BASE (default origin/main), HANDOVER_QUEUE.
 # Fence: tests/unit/test_lane_handover.py.
@@ -33,6 +38,24 @@ WT="$(pwd -P)"  # lane-merge runs from another directory, so the queue needs an 
 [ -z "$(git status --porcelain)" ] || fail "the worktree has uncommitted changes. Commit and push them first."
 head_pr="$(gh pr view "$PR" --json headRefOid -q .headRefOid)" || fail "gh cannot read PR $PR"
 [ "$head_pr" = "$(git rev-parse HEAD)" ] || fail "PR $PR head is ${head_pr:0:9}, and this worktree is at $(git rev-parse --short=9 HEAD). Push first."
+
+# 5. The box verdict (CIV-22). A RED line, or none, refuses the hand-over.
+head_sha="$(git rev-parse HEAD)"
+if [ -n "${HANDOVER_VERDICTS_FILE:-}" ]; then
+  verdicts="$(cat "$HANDOVER_VERDICTS_FILE" 2>/dev/null || true)"
+elif id ci >/dev/null 2>&1; then
+  verdicts="$(sudo -n -u ci -H sh -c 'cat /home/ci/runs/*/verdict 2>/dev/null' || true)"
+else
+  verdicts="__NO_BOX__"
+fi
+if [ "$verdicts" = "__NO_BOX__" ]; then
+  echo "warning: no user ci on this machine, so the box verdict is NOT checked" >&2
+elif ! grep -q "^GREEN $head_sha " <<< "$verdicts"; then
+  if grep -q "^RED $head_sha " <<< "$verdicts"; then
+    fail "the box run of $head_sha is RED. Read its log (/home/ci/runs/*/), fix, push, and run bash scripts/ci_local.sh again."
+  fi
+  fail "no GREEN box run for $head_sha. Run: bash scripts/ci_local.sh   (it tests the committed head, about 10 to 35 min)"
+fi
 
 git fetch -q origin "${BASE#origin/}" 2>/dev/null || echo "warning: git fetch failed, so $BASE may be stale" >&2
 base="$(git merge-base HEAD "$BASE")" || fail "no merge base with $BASE"
