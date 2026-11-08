@@ -255,6 +255,14 @@ _RUN_INSTRUCTIONS = (
 )
 
 
+#: IMG-3 (``projects_ai_chat.md`` §30.4 item 9). The last sentence of the
+#: instructions on every connection. On a write connection it sits after the
+#: cut of Claude Code at 4096 characters, so it moves no sentence before the
+#: cut. There the prompt and the ``get_task_context`` description carry it.
+#: Fence: ``test_mcp_edge_prompts.py`` ``TestTheImageRule``.
+_IMAGE_INSTRUCTIONS = " " + prompts.IMAGE_RULE
+
+
 def instructions(scopes: Iterable[str] = ()) -> str:
     """The ``instructions`` of ``initialize``.
 
@@ -263,12 +271,13 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     ``projects:write`` on the connection. So a read-only connection names no
     write tool. The agent-run part shows only when ``tools/list`` shows the
     run writes: the runs flag too. The protocol of EA-15c (§12.4) comes first
-    in the routine, in its form for the runs flag.
+    in the routine, in its form for the runs flag. The image sentence of
+    IMG-3 comes last.
     """
     held = frozenset(scopes)
     text = _INSTRUCTIONS + prompts.BRIEF_RULE
     if not prompts.offered(held):
-        return text
+        return text + _IMAGE_INSTRUCTIONS
     runs = agent_oauth.runs_enabled()
     protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()).replace(
         "{answer}", prompts.answer_pointer()) if runs \
@@ -278,7 +287,7 @@ def instructions(scopes: Iterable[str] = ()) -> str:
         text += _RUN_INSTRUCTIONS
         if agent_oauth.answer_change_enabled():
             text += prompts.ANSWER_RULE
-    return text
+    return text + _IMAGE_INSTRUCTIONS
 
 #: The methods the route accepts, so that check 3 answers and not the router.
 ROUTE_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -466,7 +475,11 @@ async def endpoint(request: Request) -> Response:
     try:
         if len(authorizations) > 1:
             raise bearer.BearerRefused(401, sent=True, reason="two_tokens")
-        caller = await bearer.authenticate(authorizations[0] if authorizations else None)
+        # EA-19b: the client address that uvicorn read from the proxy, never
+        # `X-Real-IP`, which a client could set. Only a box token reads it.
+        caller = await bearer.authenticate(
+            authorizations[0] if authorizations else None,
+            request.client.host if request.client else None)
     except bearer.BearerRefused as refused:
         if refused.status == 503:
             return http_error(503, INTERNAL_ERROR, "Metorite is busy. Try again.",
@@ -577,6 +590,16 @@ async def _dispatch(request_id: Any, method: str, params: dict[str, Any],
             params.get("arguments"))
     except tools.GatewayUnauthorized:
         return challenge_401(sent=True)
+    # IMG-3: the result of `get_attachment` can hold an image part
+    # (`tools.image_result`). It goes out as it is, with no second wrap.
+    # MCP-G10: a refusal that names a wait also sends `Retry-After`, where the
+    # transport allows it. The answer stays HTTP 200 with `isError: true`.
+    wait = None
+    if result.get("isError"):
+        wait = (result.get("structuredContent") or {}).get("retry_after")
+    if isinstance(wait, int):
+        return JSONResponse({"jsonrpc": "2.0", "id": request_id, "result": result},
+                            headers={"Retry-After": str(wait)})
     return _result(request_id, result)
 
 

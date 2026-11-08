@@ -24,6 +24,12 @@ async function open(page: Page, id: string) {
   await expect(page.locator(`[data-message-actions="${id}"]`)).toBeVisible({ timeout: 60_000 });
 }
 
+// Since Glass GL-11 (8f497e7b8, 2026-11-01) the full-height sidebar leaves the
+// reading pane about 330 px at 1280. That is the "collapsed" tier, where Reply
+// all, Forward and the sun move into the menu. The specs below that ask for
+// the wide row therefore start at this width (CIV-8i).
+const WIDE = { width: 1600, height: 900 };
+
 const row = (page: Page, id: string) => page.locator(`[data-message-actions="${id}"]`);
 const frame = (page: Page) => page.locator('iframe[title="Email content"]').first();
 
@@ -31,6 +37,7 @@ test.describe("The action row of a message", () => {
   test.describe.configure({ timeout: 120_000 });
 
   test("a single email has Reply, Reply all, Forward and More actions", async ({ page }) => {
+    await page.setViewportSize(WIDE);
     await installEmailMocks(page, [IDS.text]);
     await open(page, IDS.text);
     const r = row(page, IDS.text);
@@ -44,6 +51,7 @@ test.describe("The action row of a message", () => {
   });
 
   test("the menu works by keyboard, and Escape gives focus back", async ({ page }) => {
+    await page.setViewportSize(WIDE);
     await installEmailMocks(page, [IDS.text]);
     await open(page, IDS.text);
     const more = row(page, IDS.text).getByRole("button", { name: "More actions" });
@@ -344,6 +352,7 @@ test.describe("The body in dark mode", () => {
   });
 
   test("the light version shows the original, and stays after a reload", async ({ page }) => {
+    await page.setViewportSize(WIDE);
     await installEmailMocks(page, [IDS.newsletter]);
     await open(page, IDS.newsletter);
     const toggle = row(page, IDS.newsletter).getByRole("button", { name: "View light version" });
@@ -721,6 +730,7 @@ test.describe("Fix round 1", () => {
   // P2-b. Mutation caught: the label toggles were plain buttons, so the
   // arrows of the menu skipped them and no key could reach one.
   test("the Label view works with the keyboard only", async ({ page }) => {
+    await page.setViewportSize(WIDE);
     const rec = await installEmailMocks(page, [IDS.text]);
     await open(page, IDS.text);
     const more = row(page, IDS.text).getByRole("button", { name: "More actions" });

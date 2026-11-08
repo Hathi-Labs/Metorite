@@ -264,6 +264,13 @@ def build_task_filters(
     watching: bool = False,
     viewer: str | None = None,
     top_level: bool = False,
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """The WHERE fragments for one task query, and their bound parameters.
 
@@ -374,6 +381,43 @@ def build_task_filters(
     if due_before:
         clauses.append("t.due_at < :due_before")
         params["due_before"] = parse_when(due_before, field="due_before")
+
+    # MCP-G19a. The audit filters of the agent door. Each is optional, and
+    # they combine with every filter above. `list_tasks` and `board_stats`
+    # both call this builder, so a count and a list cannot disagree.
+    if has_parent is True:
+        clauses.append("t.parent_task_id IS NOT NULL")
+    elif has_parent is False:
+        clauses.append("t.parent_task_id IS NULL")
+    if assigned is True:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM pm_task_assignees aa WHERE aa.task_id = t.id)"
+        )
+    elif assigned is False:
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM pm_task_assignees aa WHERE aa.task_id = t.id)"
+        )
+    if is_epic is not None:
+        # The same rule as `core.is_epic_type`: the flag, or the system seed
+        # type named Epic. A task with no type is not an epic.
+        epic = (
+            "EXISTS (SELECT 1 FROM pm_task_types ty WHERE ty.id = t.type_id"
+            " AND (coalesce(ty.is_epic, false)"
+            " OR (coalesce(ty.is_system, false) AND ty.name = 'Epic')))"
+        )
+        clauses.append(epic if is_epic else f"NOT {epic}")
+    if updated_before:
+        clauses.append("t.updated_at < :updated_before")
+        params["updated_before"] = parse_when(updated_before, field="updated_before")
+    if updated_after:
+        clauses.append("t.updated_at >= :updated_after")
+        params["updated_after"] = parse_when(updated_after, field="updated_after")
+    if created_after:
+        clauses.append("t.created_at >= :created_after")
+        params["created_after"] = parse_when(created_after, field="created_after")
+    if title_prefix and title_prefix.strip():
+        clauses.append("t.title ILIKE :title_prefix")
+        params["title_prefix"] = like_escape(title_prefix.strip()) + "%"
 
     if importance_gte is not None:
         clauses.append("t.importance >= :importance_gte")
@@ -1224,6 +1268,34 @@ def unheld_clause() -> str:
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')})"
     )
+
+
+def holder_sql() -> str:
+    """The member who holds the task now, or null for a free task. The same
+    open-run, lease and connection rules as :func:`unheld_clause`, so
+    ``holder`` is null exactly where ``unheld`` is true."""
+    open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
+    return (
+        "(SELECT lower(h.member_email) FROM pm_agent_runs h"
+        " WHERE h.task_id IS NOT NULL AND h.task_id = t.id"
+        f"   AND h.status IN ({open_list})"
+        f"   AND {lease_held_sql('h')}"
+        f"   AND NOT {connection_gone_sql('h')}"
+        " ORDER BY h.last_activity_at DESC LIMIT 1)"
+    )
+
+
+#: The age bands of ``updated_age``, in order.
+UPDATED_AGE_BANDS: tuple[str, ...] = ("<1d", "1-3d", "3-7d", "7-30d", ">30d")
+
+UPDATED_AGE_SQL = (
+    "(CASE"
+    " WHEN t.updated_at >= now() - interval '1 day' THEN '<1d'"
+    " WHEN t.updated_at >= now() - interval '3 days' THEN '1-3d'"
+    " WHEN t.updated_at >= now() - interval '7 days' THEN '3-7d'"
+    " WHEN t.updated_at >= now() - interval '30 days' THEN '7-30d'"
+    " ELSE '>30d' END)"
+)
 
 
 def agent_state_sql(task_filter: str) -> str:

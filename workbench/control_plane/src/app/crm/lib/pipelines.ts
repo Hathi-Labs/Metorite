@@ -70,6 +70,21 @@ export function placesOf(
   return places;
 }
 
+/**
+ * The stages a deal may move to: those of its own pipeline, plus its current
+ * stage (CRM-M3). `places` is `placesOf` for the deal's pipeline, and the
+ * default pipeline when the deal has none. No places (a pipeline that lists no
+ * stage, or no pipeline list) offers every stage.
+ */
+export function stagesInPlaces<T extends { id: string }>(
+  stages: readonly T[],
+  places: ReadonlyMap<string, number> | null | undefined,
+  currentId?: string | null,
+): T[] {
+  if (!places || places.size === 0) return [...stages];
+  return stages.filter((s) => places.has(s.id) || s.id === currentId);
+}
+
 type Store = Pick<Storage, "getItem" | "setItem">;
 
 /** The browser's local store, or null where reading it throws. */

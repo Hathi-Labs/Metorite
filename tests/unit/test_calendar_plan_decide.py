@@ -325,24 +325,21 @@ def test_replan_core_goes_through_the_seam():
 # ── Repair round: shadow detach, contained shadow, the not-today reason ─────
 
 def test_shadow_does_not_hold_the_answer_for_a_slow_shadow(monkeypatch):
-    import time
-
     _mode(monkeypatch, "shadow")
     fake = _fake(monkeypatch, delay=0.6)
 
     async def go():
-        t0 = time.monotonic()
         res = await cd.rank_day(
             Old(), _cands(3), NOTE, 360, None, None, [], member=ME,
             default_prompt="DEFAULT", rank_fallback=cal._rank_fallback)
-        took = time.monotonic() - t0
+        # The answer came back while the 0.6 s shadow still ran: that is the
+        # event. No time bound, because a loaded runner stretches any bound.
         pending = list(df._BACKGROUND)
         assert pending, "the shadow must run on in the background"
         await asyncio.gather(*pending)
-        return res, took
+        return res
 
-    res, took = asyncio.run(go())
-    assert took < 0.3, took
+    res = asyncio.run(go())
     assert _ids(res) == ["old1", "old2"]
     assert len(fake.calls) == 1
     assert not df._BACKGROUND

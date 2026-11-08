@@ -1,12 +1,12 @@
 -- ============================================================================
--- 351_agent_run_waiting.sql - the `waiting` time of an agent run (WS-MCP
+-- 361_agent_run_waiting.sql - the `waiting` time of an agent run (WS-MCP
 -- task 1045a, agent_coordination.md §3.2, §3.3, D140.8)
 -- ============================================================================
 -- Spec: project-docs/specs/agent_coordination.md, slice 1045a · Metorite task
 -- 1045 · R1 · R5 · R6 · R8.
 -- R1: origin/main held 348 as its highest file on 2026-11-06. Branch
 -- kg4-structural-edges holds 346, branch mt-1170f52b-cc2-today holds 349 and
--- branch mt-c6e41e26-cc5a-focus-log holds 350. So this file is 351. Check the
+-- branch mt-c6e41e26-cc5a-focus-log holds 350. So this file is 361 (renumbered at merge, R1: main held 359 and an open branch held 360). Check the
 -- number again at merge.
 --
 -- What: two nullable columns on `pm_agent_runs`.
