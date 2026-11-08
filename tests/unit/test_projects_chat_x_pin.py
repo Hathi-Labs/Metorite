@@ -91,14 +91,18 @@ STAYS_X: dict[str, str] = {
 #: Routes that later slices of OP-6 move out of class X. Each value is the slice.
 #: Empty since WS-64 OP-6d, the last slice that owned a route. The pin is now
 #: exactly :data:`STAYS_X`.
-PENDING_OP6: dict[str, str] = {
-    # PJP-6a (task 1483) built the one plan engine and its read route with no
-    # chat tool. PJP-6b adds the chat tool and moves it to class A.
+PENDING_OP6: dict[str, str] = {}
+
+#: Routes that a later slice OUTSIDE OP-6 gives a chat tool. Each value names
+#: the slice that moves the route to class A. Keep this list short: a route
+#: waits here only while its chat tool is being built.
+PENDING_TOOL: dict[str, str] = {
+    # PJP-6a (task 1483) built the one plan engine and its read route.
     "GET /projects/plan/analysis": "PJP-6b",
 }
 
 #: The slices that may own a pending route. OP-6e (agent runs) owns no route.
-SLICES: frozenset[str] = frozenset({"PJP-6b"})
+SLICES: frozenset[str] = frozenset()
 
 
 def _class_x() -> dict[str, str]:
@@ -107,7 +111,7 @@ def _class_x() -> dict[str, str]:
 
 def test_the_class_x_routes_are_exactly_the_two_lists() -> None:
     now = set(_class_x())
-    pinned = set(STAYS_X) | set(PENDING_OP6)
+    pinned = set(STAYS_X) | set(PENDING_OP6) | set(PENDING_TOOL)
     assert now - pinned == set(), (
         "a route is class X and no list names it. D-OP-9: give it a chat tool, or "
         f"add it to STAYS_X in this file with a reason in the spec: {sorted(now - pinned)}"
@@ -120,6 +124,7 @@ def test_the_class_x_routes_are_exactly_the_two_lists() -> None:
 
 def test_no_route_is_in_both_lists_and_every_value_is_known() -> None:
     assert set(STAYS_X) & set(PENDING_OP6) == set()
+    assert set(STAYS_X) & set(PENDING_TOOL) == set()
     assert set(STAYS_X.values()) <= GROUPS
     assert set(PENDING_OP6.values()) <= SLICES
     # Every group is used, so a group nobody needs leaves the list.
@@ -132,8 +137,8 @@ def test_the_counts_the_spec_states() -> None:
     archive approval INTO class X (D-OP-13), so 28 stay. WS-64 OP-11 added
     the Overview of My tasks, a second door to a read the chat has: 29."""
     assert len(STAYS_X) == 29
-    assert len(PENDING_OP6) == 1
-    assert len(_class_x()) == len(STAYS_X) + len(PENDING_OP6) == 30
+    assert len(PENDING_OP6) == 0
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 30
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:
