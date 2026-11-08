@@ -1428,6 +1428,18 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
 [data-askbar-clear] {
   padding-bottom: calc(var(--askbar-pb, 0px) + var(--askbar-extra, 0px));
 }
+/* Where the page column itself takes the room (Email Cleaner's fixed last
+   row), the panes stop above the bar and their vertical lines ended in mid-air
+   (owner, 2026-11-08). One hairline closes them. The negative margin makes its
+   net height zero, so the column cannot grow a 1 px scroll. */
+main[data-askbar-clear]::after {
+  content: "";
+  display: block;
+  position: relative;
+  height: 1px;
+  margin-top: -1px;
+  background: var(--border);
+}
 /* The shared toast viewport's bottom edge. On a phone it sits ABOVE the fixed
    bottom nav (the same 3.5rem + safe-area clearance as .pb-nav, plus a gap),
    or every toast covers the nav for its whole life. From `sm` up there is no

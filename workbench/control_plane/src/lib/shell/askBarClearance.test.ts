@@ -3,6 +3,8 @@
  * under the Ask bar gets room, and how much. The layout itself is measured by
  * `e2e/askbar-clearance.spec.ts`.
  */
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { type ScrollerFacts, barFootprint, declaredSideways, planClearance } from "./askBarClearance";
@@ -158,6 +160,16 @@ describe("planClearance", () => {
     const holder = pane({ id: 1, paddingBottom: 30 });
     const inner = pane({ id: 2, ancestors: [1], rect: { left: 0, top: 100, right: 1200, bottom: 760 }, clientHeight: 660 });
     expect(planClearance(BAR, [holder, inner]).has(2)).toBe(true);
+  });
+});
+
+describe("the line that closes a shortened page column", () => {
+  it("is a hairline with no net height, so the column cannot grow a scroll", () => {
+    const css = readFileSync(new URL("../../app/globals.css", import.meta.url), "utf-8");
+    const rule = css.match(/main\[data-askbar-clear\]::after\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(rule, "the rule moved or changed shape").toContain("height: 1px");
+    expect(rule).toContain("margin-top: -1px");
+    expect(rule).toContain("background: var(--border)");
   });
 });
 
