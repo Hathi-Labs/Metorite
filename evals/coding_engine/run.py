@@ -653,9 +653,10 @@ async def sweep(
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m evals.coding_engine.run", description=__doc__)
     p.add_argument("--engine", choices=["maf"], default="maf")
-    p.add_argument("--agent", choices=[AGENT], default=AGENT)
+    # WS-43h: app-builder has its own task, WS43-E8 (evals/coding_engine/app_builder.py).
+    p.add_argument("--agent", choices=[AGENT, "app-builder"], default=AGENT)
     p.add_argument("--tier", default="tier-balanced", help="the Router tier of the sweep")
-    p.add_argument("--tasks", default="all", help="all, a comma list, or WS43-E10..WS43-E17")
+    p.add_argument("--tasks", default="all", help="all, a comma list, or WS43-E10..WS43-E17 (WS43-E8 with --agent app-builder)")
     p.add_argument("--repeat", "--runs", dest="repeat", type=int, default=DEFAULT_REPEAT)
     p.add_argument("--org", default="", help="the test organization (default: the fixture's)")
     p.add_argument("--out", default="", help="the results dir (default: a new one under results/)")
@@ -666,6 +667,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.agent == "app-builder":
+        from evals.coding_engine import app_builder
+
+        return app_builder.main(args)
     try:
         chosen = tasks.select(args.tasks)
     except ValueError as exc:
