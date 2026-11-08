@@ -279,6 +279,17 @@ async def project_summary(project_id: str = "") -> str:
         out.append("  " + " · ".join(facts))
         if node.get("description"):
             out.append(f"  description: {data(str(node['description'])[:600])}")
+    # WS-39 LP-1a: the newest update, the line the Overview draws. The key is
+    # there only while project updates are on for the organization.
+    latest = payload.get("latest_update")
+    if isinstance(latest, dict):
+        from skill_projects.inbox import UPDATE_HEALTHS  # inbox imports this module
+
+        health = UPDATE_HEALTHS.get(str(latest.get("health")), str(latest.get("health")))
+        out.append(
+            f"  latest update: {health} · by {data(latest.get('author') or '?')}"
+            f" · {latest.get('posted_at')} · {data(str(latest.get('body') or '')[:300])}"
+        )
     out.append(
         f"  tasks {payload.get('tasks', 0)} · overdue {payload.get('overdue', 0)}"
         f" · projects {payload.get('projects', 0)}"

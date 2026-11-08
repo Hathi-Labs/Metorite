@@ -5745,7 +5745,7 @@ POST_PROJECT_UPDATE = Tool(
         "Post one update on a project this member can see: its health and a"
         " short text. health is on_track, at_risk or off_track. The member picks"
         " it, so ask the member when you do not know it. The update shows the"
-        " member as its author, and the project timeline names your client. The"
+        " member as its author, and Metorite marks it as written by an agent. The"
         " newest update shows on the project, so a later update takes its place"
         " there. A space or a folder has no updates. Send a new idempotency_key"
         " for each update. The same key again returns the first update with"

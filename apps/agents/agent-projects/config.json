@@ -169,6 +169,7 @@
     "remove_report_recipient",
     "revoke_access",
     "unpin_authority",
+    "delete_project_update",
     "revert_activity",
     "set_report_schedule",
     "set_status_set",

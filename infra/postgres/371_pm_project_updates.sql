@@ -1,10 +1,11 @@
 -- ============================================================================
--- 363_pm_project_updates.sql — a project update with its health (WS-39 LP-1a,
+-- 371_pm_project_updates.sql — a project update with its health (WS-39 LP-1a,
 -- Metorite task 988).
 --
 -- What: one new table. `pm_project_updates` holds one update of one
 --       `pm_projects` node: the health (`on_track`, `at_risk` or `off_track`)
---       that the author picks, a short text, who posted it and when.
+--       that the author picks, a short text, who posted it and when, and
+--       a soft delete (`deleted_at`, `deleted_by`).
 --       gateway/routes/projects/updates.py is the one writer.
 -- Why:  Linear parity P3 (project_management_app.md §14.2 row LP-1, design
 --       §14.2a). A lead tells the team how a project is going. LP-1a stores
@@ -15,9 +16,14 @@
 --       (pm_projects).
 --
 -- Expand only (R6): one new table, one index, one trigger function and one
--- trigger. No rename, no drop, and no change to an existing table. `pm_projects`
--- gains no constraint, so this file takes no long lock on it. Old code names
--- no new object, and no running code writes this table.
+-- trigger. No rename, no drop, and no change to an existing table. Old code
+-- names no new object, and no running code writes this table.
+-- The locks. The foreign key to `pm_projects` takes a SHARE ROW EXCLUSIVE
+-- lock on `pm_projects` until COMMIT. That lock blocks a write to
+-- `pm_projects`, and it does not block a read. The file is short, so the lock
+-- is short. `lock_timeout` stops the file from waiting in the queue behind a
+-- long writer, where it would block every later writer too. The runner tries
+-- the whole file again on a lock timeout.
 -- Idempotent per infra/postgres/README.md: CREATE TABLE IF NOT EXISTS, CREATE
 -- INDEX IF NOT EXISTS, CREATE OR REPLACE FUNCTION, DROP TRIGGER IF EXISTS then
 -- CREATE, and an RLS block guarded on relforcerowsecurity.
@@ -35,21 +41,28 @@
 -- update must be a row of the update's own org, for each role.
 --
 -- `author` is the actor string of the session, in lower case. The route
--- never reads it from the body. `drafted_by_ai` is false in LP-1a: no route
--- writes true until the drafter slice. `meta` holds `via` (D-PM-36) and
--- nothing that a person typed.
+-- never reads it from the body. `drafted_by_ai` is true when a signed agent
+-- (the MCP edge) posted the update, and false for a member. `meta` holds `via`
+-- (D-PM-36) and nothing that a person typed.
+-- A delete is soft: `deleted_at` and `deleted_by` (the actor, in lower case)
+-- are set together, once. The list and the line skip a deleted row. Only the
+-- author or a Projects admin deletes (`authority.may_delete_update`).
 -- The body cap (20000 characters) is the cap of an agent comment. The route
 -- refuses a longer body first, so the CHECK is the second line.
 -- Retention: no pruning. This file deletes nothing.
 --
--- The number is taken at build time (R1). On 2026-11-08 origin/main held up
--- to 359. Open branches held 360 (two), 361 (SP-1), 362 (SP-8), 366 and 367.
--- Check it again at merge.
+-- The number is taken at build time (R1), and it was 363 at build. On
+-- 2026-11-09 main held up to 366, and open branches held 367 (PKG-20), 368
+-- (TPL-1a), 369 (SP-8a) and 370 (SP-1). premerge.sh refuses a number that is
+-- not above the highest of main, so the file became 371. Check it again at
+-- merge.
 -- Pinned by tests/unit/test_pm_project_updates_r8.py, which finds this file
 -- by CONTENT, never by number (R1).
 -- ============================================================================
 
 BEGIN;
+
+SET LOCAL lock_timeout = '5s';
 
 CREATE TABLE IF NOT EXISTS pm_project_updates (
     id               UUID NOT NULL DEFAULT gen_random_uuid(),
@@ -67,6 +80,9 @@ CREATE TABLE IF NOT EXISTS pm_project_updates (
     -- `via` (D-PM-36): the channel that the member acted through.
     meta             JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- The soft delete. Both NULL on a live update, both set on a deleted one.
+    deleted_at       TIMESTAMPTZ NULL,
+    deleted_by       TEXT NULL,
     PRIMARY KEY (id),
     -- The target of a later child's foreign key, so a child stays in its org.
     CONSTRAINT pm_project_updates_org_id_key UNIQUE (organization_id, id),
@@ -76,13 +92,18 @@ CREATE TABLE IF NOT EXISTS pm_project_updates (
         author <> '' AND author = lower(author)),
     CONSTRAINT pm_project_updates_body CHECK (
         char_length(btrim(body)) > 0 AND char_length(body) <= 20000),
-    CONSTRAINT pm_project_updates_meta CHECK (jsonb_typeof(meta) = 'object')
+    CONSTRAINT pm_project_updates_meta CHECK (jsonb_typeof(meta) = 'object'),
+    CONSTRAINT pm_project_updates_deleted CHECK (
+        (deleted_at IS NULL) = (deleted_by IS NULL)),
+    CONSTRAINT pm_project_updates_deleted_by CHECK (
+        deleted_by IS NULL OR (deleted_by <> '' AND deleted_by = lower(deleted_by)))
 );
 
--- The updates of one project, newest first. The id breaks a tie of the time,
--- so a page of the list never skips or repeats a row.
+-- The live updates of one project, newest first. The id breaks a tie of the
+-- time, so a page of the list never skips or repeats a row.
 CREATE INDEX IF NOT EXISTS idx_pm_project_updates_project
-    ON pm_project_updates (project_id, posted_at DESC, id DESC);
+    ON pm_project_updates (project_id, posted_at DESC, id DESC)
+    WHERE deleted_at IS NULL;
 
 -- The project of an update is a row of the update's own org. For each role,
 -- the table owner too. Fence: tests/unit/test_pm_project_updates_r8.py.

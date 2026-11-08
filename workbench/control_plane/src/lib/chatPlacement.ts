@@ -247,6 +247,8 @@ const WRITE: readonly string[] = [
   "revoke_access",
   "pin_authority",
   "unpin_authority",
+  // WS-39 LP-1a: the delete of a project update, class C.
+  "delete_project_update",
   "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",

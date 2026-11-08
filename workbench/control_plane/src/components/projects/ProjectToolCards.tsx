@@ -207,6 +207,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   revoke_access: { icon: "UserMinus", label: "Access removed" },
   pin_authority: { icon: "UserPlus", label: "Authority page pinned" },
   unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
+  // WS-39 LP-1a: the delete of a project update.
+  delete_project_update: { icon: "Trash2", label: "Project update deleted" },
   answer_decision: { icon: "UserPlus", label: "Decision answered" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
@@ -324,6 +326,7 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "revoke_access",
   "pin_authority",
   "unpin_authority",
+  "delete_project_update",
   "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",

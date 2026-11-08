@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §14.2 row LP-1 and the
 design §14.2a. Code: ``gateway/routes/projects/updates.py`` (the one writer),
 the two MCP tools of ``agent_edge/tools.py`` and the two chat tools of
 ``skill_projects/inbox.py``. Migration: the file that creates
-``pm_project_updates`` (363 at build).
+``pm_project_updates`` (363 at build, 371 at the repair round).
 
 Two halves.
 
@@ -54,6 +54,12 @@ gets 401 on the post (branch 0, ``write_scope``).
   ``test_the_health_check_holds_in_the_route_and_the_database`` goes red.
 * M6. ``acb_auth.agent_oauth``: drop the POST pair from ``MCP_WRITE_ROUTES``.
   ``test_the_route_pair_is_in_the_mcp_sets`` goes red.
+* M7. ``U`` ``list_updates``: drop ``AND deleted_at IS NULL``.
+  ``test_the_author_deletes_and_the_update_leaves_every_read`` goes red.
+* M8. ``U`` ``delete_update``: drop ``assert_may_delete_update``.
+  ``test_another_member_gets_403_and_a_projects_admin_deletes`` goes red.
+* M9. ``U``: drop the DELETE route (the code before the repair round).
+  ``test_the_author_deletes_and_the_update_leaves_every_read`` goes red.
 """
 
 from __future__ import annotations
@@ -91,6 +97,8 @@ _UPDATES = _GATEWAY / "routes" / "projects" / "updates.py"
 #: The members. The domain is the one ``live_app`` allows.
 LEAD = "lead@mcpwrites.test"
 OUTSIDER = "outsider@mcpwrites.test"
+#: A Projects admin (`projects:settings:write`), who may delete any update.
+ADMIN = "admin@mcpwrites.test"
 BOB = "bob@mcpwrites.test"
 
 _APP_ROLE = "acb_app_lp1aupd"
@@ -115,6 +123,12 @@ def _updates():
 
 def _path(project: str) -> str:
     return f"/projects/nodes/{project}/updates"
+
+
+def _authority():
+    from gateway.routes.projects import authority
+
+    return authority
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -173,7 +187,13 @@ def test_the_migration_holds_the_checks_the_rls_and_the_trigger() -> None:
     assert "pm_project_updates_same_org" in sql
     assert "author = lower(author)" in sql
     assert "drafted_by_ai    BOOLEAN NOT NULL DEFAULT false" in sql
-    assert "(project_id, posted_at DESC, id DESC)" in sql
+    assert "(project_id, posted_at DESC, id DESC)\n    WHERE deleted_at IS NULL" in sql
+    # The soft delete: both columns set together, the actor in lower case.
+    assert "deleted_at       TIMESTAMPTZ NULL" in sql
+    assert "(deleted_at IS NULL) = (deleted_by IS NULL)" in sql
+    assert "deleted_by = lower(deleted_by)" in sql
+    # The FK to pm_projects takes SHARE ROW EXCLUSIVE, so the file bounds its wait.
+    assert "SET LOCAL lock_timeout" in sql
     # Expand only (R6).
     for banned in ("DROP TABLE", "DROP COLUMN", "RENAME", "ALTER TABLE pm_projects"):
         assert banned not in sql, banned
@@ -253,6 +273,52 @@ async def test_the_chat_tools_say_the_feature_is_off_and_show_no_card(monkeypatc
     assert out == inbox.UPDATES_OFF
     assert asked == [], "a dark flag shows no card"
     assert writes(calls) == []
+
+
+async def test_the_chat_post_says_archived_before_any_card(monkeypatch) -> None:
+    """P3-1: a filed project takes no update. The chat says so before the
+    card, as `writes._file_destinations` does for a task."""
+    import skill_projects
+
+    from tests.unit._projects_agent_fakes import approve, fake_gateway, writes
+
+    pid = str(uuid.uuid4())
+
+    def responder(call: dict) -> Any:
+        if call["path"] == f"/projects/nodes/{pid}":
+            return {"id": pid, "name": "Filed", "parent_project_id": str(uuid.uuid4()),
+                    "kind": "project", "archived_at": "2026-11-01T00:00:00+00:00"}
+        return {"rows": [], "next_before": None}
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.post_project_update(pid, "on track", "Fine.")
+    assert "archived" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_the_chat_delete_quotes_the_server_before_any_card(monkeypatch) -> None:
+    """A member who may not delete gets the server's words and no card."""
+    import skill_projects
+
+    from tests.unit._projects_agent_fakes import approve, fake_gateway, writes
+
+    pid, uid = str(uuid.uuid4()), str(uuid.uuid4())
+
+    def responder(call: dict) -> Any:
+        if call["path"] == f"/projects/nodes/{pid}":
+            return {"id": pid, "name": "Ops", "parent_project_id": str(uuid.uuid4()),
+                    "kind": "project"}
+        return {"rows": [{"id": uid, "project_id": pid, "author": "lead@x.io",
+                          "health": "at_risk", "body": "Late.", "can_delete": False,
+                          "delete_refusal": _authority().UPDATE_DELETE_REFUSED}],
+                "next_before": None}
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.delete_project_update(pid, uid)
+    assert _authority().UPDATE_DELETE_REFUSED in out
+    assert asked == [] and writes(calls) == []
 
 
 async def test_the_chat_post_asks_for_a_health_it_cannot_read(monkeypatch) -> None:
@@ -340,6 +406,7 @@ def world():
     a = w._Seeder(eng, org_a)
     a.member(LEAD, ["feature:projects"])
     a.member(OUTSIDER, ["feature:projects"])
+    a.member(ADMIN, ["feature:projects", "projects:settings:write"])
     b = w._Seeder(eng, org_b)
     b.member(BOB, ["feature:projects"])
 
@@ -388,6 +455,12 @@ def _rows(world, sql: str, *, org: str | None = None, **params: Any) -> list[Any
 def _count(world, project: str) -> int:
     return int(_rows(world, "SELECT count(*) AS n FROM pm_project_updates"
                             " WHERE project_id = CAST(:p AS uuid)", p=project)[0].n)
+
+
+def _live(world, update: str) -> bool:
+    """True while the update is not deleted."""
+    return bool(_rows(world, "SELECT 1 FROM pm_project_updates WHERE id = CAST(:i AS uuid)"
+                             " AND deleted_at IS NULL", i=update))
 
 
 async def _as(world, who: str, method: str, path: str,
@@ -578,6 +651,9 @@ class TestTheRoutes:
             assert r.json()["detail"] == agent_oauth.PROJECT_UPDATES_OFF
             r = await _post(live, LEAD, live.team)
             assert r.status_code == 404, r.text
+            r = await _as(live, LEAD, "DELETE", f"{_path(live.team)}/{uuid.uuid4()}")
+            assert r.status_code == 404, r.text
+            assert r.json()["detail"] == agent_oauth.PROJECT_UPDATES_OFF
         assert _count(live, live.team) == before
         monkeypatch.setattr(get_settings(), "projects_updates_orgs", live.org, raising=False)
         assert (await _as(live, LEAD, "GET", _path(live.team))).status_code == 200
@@ -593,6 +669,7 @@ class TestTheAgent:
         assert r.status_code == 201, r.text
         got = r.json()
         assert got["author"] == LEAD and got["via"] == w.R8_VIA
+        assert got["drafted_by_ai"] is True, "a signed agent wrote the text"
         assert (await _signed(live, "pinned", "GET", _path(live.team))).status_code == 200
         before = _count(live, live.other)
         for method in ("GET", "POST"):
@@ -653,3 +730,115 @@ class TestTheAgent:
             "idempotency_key": "lp1a-key-off1"})
         assert out["content"][0]["text"] == edge.TEXT_UPDATES_OFF
         assert _count(live, live.team) == before
+
+
+class TestTheDelete:
+    """The soft delete (§14.2a): the author or a Projects admin, one activity,
+    and no read shows the update again. It is not on the MCP."""
+
+    pytestmark = _DB_GATE
+
+    async def test_the_author_deletes_and_the_update_leaves_every_read(self, live):
+        """M7: drop `AND deleted_at IS NULL` from the list and the update shows."""
+        older = (await _post(live, LEAD, live.other, "on_track", "Older news.")).json()
+        mine = (await _post(live, LEAD, live.other, "at_risk", "Delete me.")).json()
+        assert mine["can_delete"] is True and mine["delete_refusal"] is None
+        summary = (await _as(live, LEAD, "GET", f"/projects/nodes/{live.other}/summary")).json()
+        assert summary["latest_update"]["id"] == mine["id"]
+        r = await _as(live, LEAD, "DELETE", f"{_path(live.other)}/{mine['id']}")
+        assert r.status_code == 200, r.text
+        assert r.json()["deleted"] is True and r.json()["id"] == mine["id"]
+        rows = (await _as(live, LEAD, "GET", _path(live.other))).json()["rows"]
+        assert mine["id"] not in {u["id"] for u in rows}
+        assert older["id"] in {u["id"] for u in rows}
+        summary = (await _as(live, LEAD, "GET", f"/projects/nodes/{live.other}/summary")).json()
+        assert summary["latest_update"]["id"] == older["id"], "the line falls back"
+        row = _rows(live, "SELECT deleted_at, deleted_by FROM pm_project_updates"
+                          " WHERE id = CAST(:i AS uuid)", i=mine["id"])[0]
+        assert row.deleted_at is not None and row.deleted_by == LEAD
+        acts = _rows(live, "SELECT type, created_by, body FROM pm_activities"
+                           " WHERE project_id = CAST(:p AS uuid) AND task_id IS NULL"
+                           " AND meta->>'update_id' = :u ORDER BY created_at",
+                     p=live.other, u=mine["id"])
+        assert [(a.type, a.created_by) for a in acts] == [("system", LEAD), ("system", LEAD)]
+        assert acts[-1].body == "Deleted a project update"
+        again = await _as(live, LEAD, "DELETE", f"{_path(live.other)}/{mine['id']}")
+        assert again.status_code == 404, again.text
+
+    async def test_another_member_gets_403_and_a_projects_admin_deletes(self, live):
+        """M8: drop `assert_may_delete_update` and the other member deletes."""
+        made = (await _post(live, LEAD, live.other, "off_track", "Not yours.")).json()
+        listed = (await _as(live, OUTSIDER, "GET", _path(live.other))).json()["rows"]
+        seen = next(u for u in listed if u["id"] == made["id"])
+        assert seen["can_delete"] is False
+        assert seen["delete_refusal"] == _authority().UPDATE_DELETE_REFUSED
+        r = await _as(live, OUTSIDER, "DELETE", f"{_path(live.other)}/{made['id']}")
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == _authority().UPDATE_DELETE_REFUSED
+        assert _live(live, made["id"]), "a refused delete changes nothing"
+        r = await _as(live, ADMIN, "DELETE", f"{_path(live.other)}/{made['id']}")
+        assert r.status_code == 200, r.text
+        assert not _live(live, made["id"])
+        row = _rows(live, "SELECT deleted_by FROM pm_project_updates"
+                          " WHERE id = CAST(:i AS uuid)", i=made["id"])[0]
+        assert row.deleted_by == ADMIN
+
+    async def test_a_delete_across_tenants_or_out_of_sight_is_404(self, live):
+        hidden = (await _post(live, LEAD, live.hidden, body=SECRET_TEXT)).json()
+        team = (await _post(live, LEAD, live.team, body="A team update.")).json()
+        cases = [
+            # Org B cannot see org A's project at all.
+            (BOB, live.team, team["id"]),
+            # A member who cannot see the project.
+            (OUTSIDER, live.hidden, hidden["id"]),
+            # An update of org B, named through a project of org A.
+            (LEAD, live.team, live.update_b),
+            # An update of another project of the same org.
+            (LEAD, live.other, team["id"]),
+            (LEAD, live.team, str(uuid.uuid4())),
+            (LEAD, live.team, "not-an-id"),
+        ]
+        for who, project, update in cases:
+            r = await _as(live, who, "DELETE", f"{_path(project)}/{update}")
+            assert r.status_code == 404, (who, project, update, r.text)
+            assert SECRET_TEXT not in r.text
+        assert _live(live, hidden["id"]) and _live(live, team["id"])
+        rows_b = _rows(live, "SELECT deleted_at FROM pm_project_updates"
+                             " WHERE id = CAST(:i AS uuid)", org=live.org_b, i=live.update_b)
+        assert rows_b[0].deleted_at is None
+
+    async def test_the_delete_is_off_the_mcp_and_off_with_the_flag(self, live, monkeypatch):
+        from acb_common import get_settings
+
+        made = (await _post(live, LEAD, live.team, body="Stays.")).json()
+        path = f"{_path(live.team)}/{made['id']}"
+        r = await _signed(live, "write", "DELETE", path)
+        assert r.status_code == 401, r.text
+        assert _live(live, made["id"])
+        monkeypatch.setattr(get_settings(), "projects_updates_orgs", "", raising=False)
+        r = await _as(live, LEAD, "DELETE", path)
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"] == agent_oauth.PROJECT_UPDATES_OFF
+        assert _live(live, made["id"])
+
+
+class TestTheSummary:
+    """The Overview line comes with the roll-up, so nothing moves (§14.2a)."""
+
+    pytestmark = _DB_GATE
+
+    async def test_the_summary_carries_the_newest_update_only_while_the_flag_is_on(
+            self, live, monkeypatch):
+        from acb_common import get_settings
+
+        newest = (await _post(live, LEAD, live.team, "at_risk", "Newest for the line.")).json()
+        got = (await _as(live, LEAD, "GET", f"/projects/nodes/{live.team}/summary")).json()
+        assert got["latest_update"]["id"] == newest["id"]
+        assert got["latest_update"]["body"] == "Newest for the line."
+        space = (await _as(live, LEAD, "GET", f"/projects/nodes/{live.space}/summary")).json()
+        assert "latest_update" not in space, "a space draws no line"
+        empty = (await _as(live, LEAD, "GET", f"/projects/nodes/{live.filed}/summary")).json()
+        assert empty["latest_update"] is None, "a project with no update keeps no space"
+        monkeypatch.setattr(get_settings(), "projects_updates_orgs", "", raising=False)
+        off = (await _as(live, LEAD, "GET", f"/projects/nodes/{live.team}/summary")).json()
+        assert "latest_update" not in off, "a dark org gets the answer it got before"

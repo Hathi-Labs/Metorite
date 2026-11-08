@@ -66,6 +66,7 @@ import {
   completionPercent,
 } from "../lib/progressWheel";
 import { nodeKind } from "../lib/tree";
+import { ProjectUpdateLine } from "./ProjectUpdateLine";
 import { CATEGORY_LABEL, STATUS_CATEGORIES } from "@/lib/statusCategory";
 
 /** The order lanes read in: the one lifecycle order of `lib/statusCategory.ts`. */
@@ -399,15 +400,8 @@ export default function NodeDashboard({
   onReport,
   personal = false,
   personalPlaces,
-  updateLine,
 }: {
   summary: NodeSummary;
-  /**
-   * WS-39 LP-1a. The newest project update, drawn by the page
-   * (`ProjectUpdateLine`). It shows on a project and a subproject only, under
-   * the title row. This component reads no second endpoint for it.
-   */
-  updateLine?: React.ReactNode;
   /** OP-12b — the summary is the private space. Its empty state names a folder. */
   personal?: boolean;
   /** The live folders and projects under the personal root, from the tree the page holds. */
@@ -487,7 +481,13 @@ export default function NodeDashboard({
         ) : null}
       </div>
 
-      {level === "project" || level === "subproject" ? updateLine : null}
+      {/* WS-39 LP-1a: the newest update of a project, from the same read as
+          the roll-up (`summary.latest_update`), so nothing moves when it
+          arrives. No key (the flag is off) and null (no update) draw nothing
+          and keep no space. */}
+      {(level === "project" || level === "subproject") && summary.latest_update ? (
+        <ProjectUpdateLine update={summary.latest_update} />
+      ) : null}
 
       {/* ⚠️ SIX tiles, and six is why the orphan is gone. Five divided by
           neither 2 nor 3, so the last tile used to sit alone on its own row

@@ -225,6 +225,9 @@ NEVER_ON_THE_EDGE = (
     ("POST", "/projects/nodes/{project_id}/move"),
     ("POST", "/projects/nodes/{project_id}/archive"),
     ("DELETE", "/projects/nodes/{project_id}"),
+    # WS-39 LP-1a (project_management_app.md §14.2a): the delete of a project
+    # update stays a member's act in this slice.
+    ("DELETE", "/projects/nodes/{project_id}/updates/{update_id}"),
 )
 
 

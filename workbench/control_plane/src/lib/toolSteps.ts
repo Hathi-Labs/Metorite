@@ -209,6 +209,7 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   edit_comment: { kind: "edit", verb: V.edit, object: "a comment" },
   comment: { kind: "edit", verb: V.comment, object: "a task" },
   post_project_update: { kind: "edit", verb: V.wrote, object: "a project update" },
+  delete_project_update: { kind: "edit", verb: V.delete, object: "a project update" },
   assign: { kind: "edit", verb: V.assign, object: "a task" },
   complete: { kind: "edit", verb: V.complete, object: "a task" },
   defer: { kind: "edit", verb: V.defer, object: "a task" },

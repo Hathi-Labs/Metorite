@@ -454,6 +454,28 @@ DECISION = {"id": DECISION_ID, "subject_kind": "task", "subject_id": LIVE,
             "options": [{"key": "yes", "label": "Yes"}, {"key": "no", "label": "No"}]}
 
 
+#: WS-39 LP-1a. One live update of the project UUID, which the member may delete.
+UPDATE_ID = "c3d9fad5-d9cb-469f-a165-70867728950e"
+UPDATE_ROW = {"id": UPDATE_ID, "project_id": UUID, "author": "pm@fracktal.in",
+              "health": "at_risk", "body": "The vendor slipped a week.",
+              "posted_at": "2026-11-08T10:00:00+00:00", "drafted_by_ai": False,
+              "via": None, "can_delete": True, "delete_refusal": None}
+
+
+def _lp1a_answers(call: dict) -> Any:
+    """WS-39 LP-1a: the updates of a project, a post and a delete."""
+    path, method = call["path"], call["method"]
+    base = f"/projects/nodes/{UUID}/updates"
+    if path == base and method == "GET":
+        return {"rows": [UPDATE_ROW], "next_before": None}
+    if path == base and method == "POST":
+        return {**UPDATE_ROW, "id": OTHER, **(call["json"] or {})}
+    if path == f"{base}/{UPDATE_ID}" and method == "DELETE":
+        return {"id": UPDATE_ID, "project_id": UUID, "deleted": True,
+                "deleted_at": "2026-11-09T10:00:00+00:00"}
+    return None
+
+
 def _aln2a_answers(call: dict) -> Any:
     """WS-ALN ALN-2a: the member's open decisions, and the answer."""
     path, method = call["path"], call["method"]
@@ -558,7 +580,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -849,10 +871,12 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             f'{{"task_id": "{OTHER}", "destination_project_id": "{SALES}"}}]',
         }
     ],
-    # WS-39 LP-1a — a project update with the health that the member picks.
+    # WS-39 LP-1a — a project update with the health that the member picks,
+    # and the delete of one, one card each.
     "post_project_update": [
         {"project_id": UUID, "health": "at risk", "body": "The vendor slipped a week."}
     ],
+    "delete_project_update": [{"project_id": UUID, "update_id": UPDATE_ID}],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -894,6 +918,7 @@ _ONE_ID: dict[str, str] = {
     "pin_authority": "page_id",
     "unpin_authority": "pin_id",
     "answer_decision": "decision_id",
+    "delete_project_update": "update_id",
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",

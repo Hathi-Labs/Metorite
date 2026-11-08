@@ -69,6 +69,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "archived": { label: "Archived", kind: "date" },
   "area": { label: "Area" },
   "assignees": { label: "Assignees", kind: "person", many: true },
+  // WS-39 LP-1a: who wrote a project update, on its delete card.
+  "author": { label: "Author", kind: "person" },
   "assignees_add": { label: "Assign", kind: "person", many: true },
   "assignees_remove": { label: "Unassign", kind: "person", many: true },
   "body": { label: "Text" },

@@ -26,6 +26,7 @@ from skill_projects.guarded import (
     bulk_update,
     convert_folder_to_project,
     delete_area,
+    delete_project_update,
     delete_attachment,
     delete_comment,
     delete_field,
@@ -299,6 +300,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "report_delete",
     "revoke_access",
     "unpin_authority",
+    # Class C — WS-39 LP-1a, the delete of a project update, one card
+    "delete_project_update",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",

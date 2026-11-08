@@ -162,6 +162,12 @@ MANIFEST: tuple[Route, ...] = (
     # outside agent reaches both routes over MCP (MCP_ROUTES).
     Route("GET", "/projects/nodes/{project_id}/updates", "list_project_updates", "A"),
     Route("POST", "/projects/nodes/{project_id}/updates", "post_project_update", "B"),
+    # The soft delete: the author or a Projects admin. Class C, one card. It
+    # stays off the MCP in LP-1a (test_mcp_edge_coverage.NEVER_ON_THE_EDGE).
+    Route(
+        "DELETE", "/projects/nodes/{project_id}/updates/{update_id}",
+        "delete_project_update", "C",
+    ),
     # WS-ALN ALN-2a (D-OP-9): one person decides. The reader is the decider
     # only, and the route is dark behind DECISIONS_ORGS. The answer is the
     # person's word: the tool refuses a run with no person present, then raises
@@ -671,6 +677,7 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # also reads the newest update first, so a dark flag shows no card.
     "list_project_updates": frozenset({"project_summary"}),
     "post_project_update": frozenset({"project_summary", "list_project_updates"}),
+    "delete_project_update": frozenset({"project_summary", "list_project_updates"}),
     "project_views": frozenset({"project_summary"}),
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
@@ -1664,8 +1671,6 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.moveNode": "move_project",
     "projectsApi.archiveProject": "archive_project",
     "projectsApi.unarchiveProject": "unarchive_project",
-    # WS-39 LP-1a: the newest update on the project Overview.
-    "projectsApi.projectUpdates": "list_project_updates",
     "projectsApi.deleteProject": "delete_project",
     "projectsApi.convertFolder": "convert_folder_to_project",
     "projectsApi.grants": "project_access",

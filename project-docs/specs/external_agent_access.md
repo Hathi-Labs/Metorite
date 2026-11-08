@@ -966,6 +966,7 @@ WS-39 LP-1a (`project_management_app.md` §14.2a) adds one read pair and one wri
 - **The read.** `list_project_updates` takes `project_id`, `limit` (1 to 50, default 20) and `before`, the `next_before` of the page before. Each input maps to a parameter of the route, so it adds no edge input. Each update holds `id`, `project_id`, `health`, `body` (U), `author` (S), `posted_at`, `drafted_by_ai` and `via`.
 - **The write.** `post_project_update` takes the `idempotency_key` in the slot of `add_comment`, so it adds one edge input. The write cap of branch 0 counts it. A space or a folder gets its own text, and an archived project gets a refusal.
 - **The flag.** While `PROJECTS_UPDATES_ORGS` does not hold the organization, both routes answer 404 with the detail `agent_oauth.PROJECT_UPDATES_OFF`. The edge maps that detail to the text that the feature is off. Any other 404 is `Project not found.`
+- **The delete stays off.** `DELETE /projects/nodes/{project_id}/updates/{update_id}` is a member's act in LP-1a. No pair of `MCP_ROUTES` names it, and `NEVER_ON_THE_EDGE` of the fence holds it out. An update that an agent posts has `drafted_by_ai` true.
 
 SW-31a (`agent_coordination.md` SW-31) adds two read pairs: `GET /agent-guidance/tasks/{task_id}` and `GET /agent-guidance/refs`. They are not Projects routes, so `NAMED_EXCEPTIONS` of the fence names each one (rule 2). The save and the history stay off the edge, because only a member writes guidance. Neither pair changes branch 0.
 

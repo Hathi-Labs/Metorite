@@ -5,12 +5,18 @@ design §14.2a. Migration: the file that creates ``pm_project_updates``.
 
 THE one writer of ``pm_project_updates``. An update says how one project is
 going: a health that the author picks by hand (``on_track``, ``at_risk`` or
-``off_track``) and a short text. LP-1a has two routes. The flag
-``PROJECTS_UPDATES_ORGS`` (default empty) keeps both at 404.
+``off_track``) and a short text. LP-1a has three routes. The flag
+``PROJECTS_UPDATES_ORGS`` (default empty) keeps each one at 404.
 
-* ``GET  /nodes/{project_id}/updates``  newest first, a page of ``limit``,
-  and the cursor ``before`` (the id of the last row of the page before).
-* ``POST /nodes/{project_id}/updates``  body ``{"health", "body"}``.
+* ``GET    /nodes/{project_id}/updates``  the live updates, newest first, a
+  page of ``limit``, and the cursor ``before`` (the id of the last row of the
+  page before).
+* ``POST   /nodes/{project_id}/updates``  body ``{"health", "body"}``.
+* ``DELETE /nodes/{project_id}/updates/{update_id}``  a soft delete.
+
+The node summary (``tree.get_node_summary``) carries the newest live update
+of a project through :func:`latest_update`, so the Overview draws its line
+with the roll-up and nothing moves when it arrives.
 
 **Who may post.** The right of a task write on the same project:
 :func:`core.load_visible_project` with ``lock_share``, the check of
@@ -19,18 +25,24 @@ project takes no new update, by :func:`core.assert_not_archived`, as it takes
 no new task. A space and a folder hold no update, because the update is about
 a project. No new grant word.
 
-**Who may read.** A member who sees the project reads its updates. A member
-who cannot see it gets 404, the same answer as a missing project (R5). A
-signed agent reads and posts only inside its pin, because
+**Who may delete.** The author, or a Projects admin
+(:func:`authority.may_delete_update`, the one rule of a delete). Any other
+member who sees the project gets 403. The row stays, with ``deleted_at`` and
+``deleted_by``, and no read shows it again. The delete is not on the MCP in
+LP-1a: ``MCP_ROUTES`` does not hold its pair.
+
+**Who may read.** A member who sees the project reads its live updates. A
+member who cannot see it gets 404, the same answer as a missing project (R5).
+A signed agent reads and posts only inside its pin, because
 ``load_visible_project`` narrows by the connection (EA-17a).
 
 **The tenant and the actor.** The session sets both. ``organization_id`` is
 the column DEFAULT, the bound tenant, and ``author`` is the caller's email in
 lower case. The body model forbids every other key, so a body cannot name an
-author or an org (R11).
+author or an org (R11). ``drafted_by_ai`` is true when a signed agent posts.
 
-**The audit.** Each post writes one ``system`` activity on the project, as
-the authority pin does. No new activity type.
+**The audit.** Each post and each delete writes one ``system`` activity on
+the project, as the authority pin does. No new activity type.
 
 **Health is the author's word in LP-1a.** Rule D (§14.1 rule 8) asks that code
 computes the health, and that an LLM writes only the text. Both are later
@@ -48,6 +60,11 @@ from typing import Any, Literal
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_common import get_settings
 from fastapi import Depends, HTTPException, Query
+from gateway.routes.projects.authority import (
+    UPDATE_DELETE_REFUSED,
+    assert_may_delete_update,
+    may_delete_update,
+)
 from gateway.routes.projects.core import (
     ACTOR_VIA,
     _tenant_session,
@@ -101,11 +118,23 @@ BLANK_BODY = "Write the text of the update."
 #: The 422 of a cursor that is not an update of this project.
 BAD_CURSOR = "The cursor 'before' is not an update of this project."
 
+#: The 404 of a delete of an update that the project does not hold, or that
+#: is gone already.
+UPDATE_NOT_FOUND = "Update not found"
+
 #: The columns a read returns. ``via`` comes out of ``meta``. No other key of
 #: ``meta`` leaves the route.
 _COLUMNS = (
     "id, project_id, author, health, body, posted_at, drafted_by_ai, "
     "meta->>'via' AS via"
+)
+
+#: The newest live update of one project. The partial index of the migration
+#: serves it.
+_LATEST_SQL = (
+    f"SELECT {_COLUMNS} FROM pm_project_updates "
+    "WHERE project_id = CAST(:pid AS uuid) AND deleted_at IS NULL "
+    "ORDER BY posted_at DESC, id DESC LIMIT 1"
 )
 
 
@@ -160,9 +189,11 @@ def _project_id(value: str) -> str:
     return pid
 
 
-def _view(row: Any) -> dict[str, Any]:
-    """One update for the caller."""
+def _view(row: Any, user: Any) -> dict[str, Any]:
+    """One update for the caller. ``can_delete`` is this caller's right
+    (:func:`authority.may_delete_update`), so a client never guesses it."""
     posted = row.posted_at
+    may = may_delete_update(user, row)
     return {
         "id": str(row.id),
         "project_id": str(row.project_id),
@@ -172,6 +203,9 @@ def _view(row: Any) -> dict[str, Any]:
         "posted_at": posted.isoformat() if posted is not None else None,
         "drafted_by_ai": bool(row.drafted_by_ai),
         "via": row.via or None,
+        "can_delete": may,
+        # The words of the 403, so the chat quotes the server before a card.
+        "delete_refusal": None if may else UPDATE_DELETE_REFUSED,
     }
 
 
@@ -182,6 +216,16 @@ def _refuse_space_or_folder(node: Any) -> None:
         raise HTTPException(status_code=422, detail=NOT_A_PROJECT)
 
 
+async def latest_update(db: Any, user: Any, project_id: str) -> dict[str, Any] | None:
+    """The newest live update of a project the caller already loaded, or None.
+
+    The node summary calls it inside its own session, after its own
+    visibility load, and only while :func:`updates_allowed` holds the org.
+    """
+    row = (await db.execute(text(_LATEST_SQL), {"pid": project_id})).fetchone()
+    return _view(row, user) if row is not None else None
+
+
 @router.get("/nodes/{project_id}/updates", dependencies=_ENABLED)
 async def list_updates(
     project_id: str,
@@ -189,10 +233,11 @@ async def list_updates(
     before: str | None = Query(None),
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """The updates of one project, newest first, one page at a time.
+    """The live updates of one project, newest first, one page at a time.
 
     ``next_before`` is the id to send as ``before`` for the next page, or null
-    on the last page.
+    on the last page. A deleted update never shows. Its row can still be the
+    cursor of the page after it, so a delete between two pages skips nothing.
     """
     pid = _project_id(project_id)
     cursor = None
@@ -223,7 +268,7 @@ async def list_updates(
         rows = (await db.execute(
             text(
                 f"SELECT {_COLUMNS} FROM pm_project_updates "
-                "WHERE project_id = CAST(:pid AS uuid) "
+                "WHERE project_id = CAST(:pid AS uuid) AND deleted_at IS NULL "
                 f"{after_cursor}"
                 "ORDER BY posted_at DESC, id DESC LIMIT :lim"
             ),
@@ -232,7 +277,7 @@ async def list_updates(
     page = rows[:limit]
     more = len(rows) > limit
     return {
-        "rows": [_view(r) for r in page],
+        "rows": [_view(r, user) for r in page],
         "next_before": str(page[-1].id) if more and page else None,
     }
 
@@ -250,6 +295,8 @@ async def post_update(
     if "\x00" in body or not body.strip():
         raise HTTPException(status_code=422, detail=BLANK_BODY)
     via = ACTOR_VIA.get("")
+    # A signed agent (the MCP edge) wrote this text, not the member's hand.
+    by_agent = getattr(user, "agent", None) is not None
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         # The check of `POST /tasks`: the member sees the project. The share
@@ -259,8 +306,10 @@ async def post_update(
         assert_not_archived(node, then="Post the update on")
         row = (await db.execute(
             text(
-                "INSERT INTO pm_project_updates (project_id, author, health, body, meta) "
-                "VALUES (CAST(:pid AS uuid), :who, :health, :body, CAST(:meta AS jsonb)) "
+                "INSERT INTO pm_project_updates "
+                "(project_id, author, health, body, drafted_by_ai, meta) "
+                "VALUES (CAST(:pid AS uuid), :who, :health, :body, :ai, "
+                "CAST(:meta AS jsonb)) "
                 f"RETURNING {_COLUMNS}"
             ),
             {
@@ -268,6 +317,7 @@ async def post_update(
                 "who": actor(user).lower(),
                 "health": payload.health,
                 "body": body,
+                "ai": by_agent,
                 "meta": json.dumps({"via": via} if via else {}),
             },
         )).fetchone()
@@ -277,4 +327,54 @@ async def post_update(
             body=f"Posted a project update: {HEALTH_LABELS[payload.health]}",
             meta={"update_id": str(row.id), "health": payload.health},
         )
-        return _view(row)
+        return _view(row, user)
+
+
+@router.delete("/nodes/{project_id}/updates/{update_id}", dependencies=_ENABLED)
+async def delete_update(
+    project_id: str, update_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Delete one update: the author or a Projects admin. The row stays,
+    with ``deleted_at`` and ``deleted_by``, and no read shows it again."""
+    pid = _project_id(project_id)
+    uid = _uuid_or_none(update_id)
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        # A member who cannot see the project gets 404 before any update read.
+        await load_visible_project(db, vis, pid)
+        if uid is None:
+            raise HTTPException(status_code=404, detail=UPDATE_NOT_FOUND)
+        row = (await db.execute(
+            text(
+                f"SELECT {_COLUMNS} FROM pm_project_updates "
+                "WHERE id = CAST(:uid AS uuid) AND project_id = CAST(:pid AS uuid) "
+                "AND deleted_at IS NULL FOR UPDATE"
+            ),
+            {"uid": uid, "pid": pid},
+        )).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=UPDATE_NOT_FOUND)
+        assert_may_delete_update(user, row)
+        gone = (await db.execute(
+            text(
+                "UPDATE pm_project_updates SET deleted_at = now(), deleted_by = :who "
+                "WHERE id = CAST(:uid AS uuid) AND deleted_at IS NULL "
+                "RETURNING id, deleted_at"
+            ),
+            {"uid": uid, "who": actor(user).lower()},
+        )).fetchone()
+        if gone is None:
+            raise HTTPException(status_code=404, detail=UPDATE_NOT_FOUND)
+        await record_activity(
+            db, activity_type="system", created_by=actor(user),
+            project_id=pid,
+            body="Deleted a project update",
+            meta={"update_id": uid, "health": row.health},
+        )
+        return {
+            "id": uid,
+            "project_id": pid,
+            "deleted": True,
+            "deleted_at": gone.deleted_at.isoformat(),
+        }

@@ -96,6 +96,7 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.notifications import project_audience
 from gateway.routes.projects.due_day import overdue_sql
 from gateway.routes.projects.tasks import _narrow_agent_body
+from gateway.routes.projects.updates import latest_update, updates_allowed
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -1005,7 +1006,15 @@ async def get_node_summary(
     a space but only one project inside it therefore gets a dashboard whose
     totals match what they could reach by clicking, which is the property
     that keeps a roll-up from becoming a disclosure channel.
+
+    WS-39 LP-1a (``project_management_app.md`` §14.2a). A project and a
+    subproject also carry ``latest_update``: their newest live update, or
+    null. The key is there only while ``PROJECTS_UPDATES_ORGS`` holds the
+    org, so the Overview draws the line with the roll-up, and a dark org gets
+    the answer it got before.
     """
+    latest: dict[str, Any] | None = None
+    with_latest = False
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         node = await load_visible_project(db, vis, project_id)
@@ -1013,6 +1022,10 @@ async def get_node_summary(
             node_kind(getattr(node, "kind", None)),
             await _project_generation(db, project_id),
         )
+        if level in ("project", "subproject") and updates_allowed(
+                getattr(user, "organization_id", None)):
+            with_latest = True
+            latest = await latest_update(db, user, str(node.id))
 
         # Every visible PROJECT under this node (folders excluded — they
         # hold no work), each with the id of the child of `project_id` it
@@ -1053,6 +1066,7 @@ async def get_node_summary(
             if node_kind(getattr(r, "kind", None)) == "project"
         ),
         **folded,
+        **({"latest_update": latest} if with_latest else {}),
     }
 
 

@@ -2,9 +2,11 @@
  * WS-39 LP-1a — the line of the newest project update (§14.2a).
  *
  * The server half is `tests/unit/test_pm_project_updates_r8.py`. This file
- * holds what the Overview draws from its answer, and the three health hues of
- * the one colour vocabulary.
+ * holds what the Overview draws from `summary.latest_update`, the three
+ * health hues of the one colour vocabulary, and the open state of the line.
  */
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,8 +16,9 @@ import {
   projectHealthChip,
 } from "@/lib/statusAccent";
 
-import type { ProjectUpdate, ProjectUpdatesPage } from "./api";
-import { UPDATE_LINE_MAX, firstLine, projectUpdateLine } from "./projectUpdateLine";
+import { ProjectUpdateLine } from "../components/ProjectUpdateLine";
+import type { ProjectUpdate } from "./api";
+import { UPDATE_LINE_MAX, firstLine, projectUpdateLine, updateDay } from "./projectUpdateLine";
 
 function update(over: Partial<ProjectUpdate> = {}): ProjectUpdate {
   return {
@@ -29,10 +32,6 @@ function update(over: Partial<ProjectUpdate> = {}): ProjectUpdate {
     via: null,
     ...over,
   };
-}
-
-function page(rows: ProjectUpdate[]): ProjectUpdatesPage {
-  return { rows, next_before: null };
 }
 
 describe("the health of a project update", () => {
@@ -58,8 +57,8 @@ describe("the health of a project update", () => {
 });
 
 describe("the Overview line", () => {
-  it("draws the newest update: the health, the first line, the author and the date", () => {
-    const line = projectUpdateLine(page([update(), update({ id: "u0", health: "on_track" })]));
+  it("draws the update: the health, the first line, the author and the day", () => {
+    const line = projectUpdateLine(update(), "UTC");
     expect(line).toEqual({
       health: "at_risk",
       label: "At risk",
@@ -71,19 +70,27 @@ describe("the Overview line", () => {
     });
   });
 
-  it("draws nothing with no update, no answer, or a health it does not know", () => {
-    expect(projectUpdateLine(page([]))).toBeNull();
+  it("draws nothing with no update, or a health it does not know", () => {
     expect(projectUpdateLine(null)).toBeNull();
     expect(projectUpdateLine(undefined)).toBeNull();
     expect(
-      projectUpdateLine(page([update({ health: "sideways" as ProjectUpdate["health"] })]))
+      projectUpdateLine(update({ health: "sideways" as ProjectUpdate["health"] }))
     ).toBeNull();
   });
 
-  it("drops a Markdown mark at the start and skips blank lines", () => {
-    expect(firstLine("\n\n## Summary of the week\nmore")).toBe("Summary of the week");
-    expect(firstLine("- shipped the frame")).toBe("shipped the frame");
+  it("skips a heading line and shows the first line of real text", () => {
+    expect(firstLine("## Week 45\nThe tiles slipped a week.\nMore")).toBe(
+      "The tiles slipped a week."
+    );
+    expect(firstLine("\n\n# Summary #\n\n- shipped the frame")).toBe("shipped the frame");
+    expect(firstLine("> quoted note")).toBe("quoted note");
+    expect(firstLine("1. first item")).toBe("first item");
     expect(firstLine("   ")).toBe("");
+  });
+
+  it("shows the heading text with no marks when the body is only headings", () => {
+    expect(firstLine("## Week 45")).toBe("Week 45");
+    expect(firstLine("### Week 45 ###\n#### Later")).toBe("Week 45");
   });
 
   it("cuts a long first line at a word, with an ellipsis", () => {
@@ -92,5 +99,40 @@ describe("the Overview line", () => {
     expect(shown.endsWith("…")).toBe(true);
     expect(shown.length).toBeLessThanOrEqual(UPDATE_LINE_MAX + 1);
     expect(shown).not.toMatch(/\s…$/);
+  });
+
+  it("writes the day in the reader's zone, not the UTC day", () => {
+    // 20:00 UTC on 8 Nov is already 9 Nov in India.
+    expect(updateDay("2026-11-08T20:00:00Z", "Asia/Kolkata")).toBe("9 Nov 2026");
+    expect(updateDay("2026-11-08T20:00:00Z", "UTC")).toBe("8 Nov 2026");
+    expect(updateDay("2026-11-09T02:00:00Z", "America/New_York")).toBe("8 Nov 2026");
+    expect(updateDay(null)).toBe("—");
+    expect(updateDay("not a date")).toBe("—");
+  });
+});
+
+describe("the line opens the whole update in place", () => {
+  const full = "## Week 45\nThe tiles slipped a week.\nWe fit them on Friday.";
+
+  it("draws the text as a closed button that names what it opens", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProjectUpdateLine, { update: update({ body: full }) })
+    );
+    expect(html).toMatch(/<button type="button"[^>]*aria-expanded="false"/);
+    expect(html).toMatch(/aria-controls="[^"]+"/);
+    expect(html).toContain("The tiles slipped a week.");
+    expect(html).toContain("Show the whole update");
+    expect(html).not.toContain("We fit them on Friday.");
+  });
+
+  it("shows the whole text below the line when open", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProjectUpdateLine, { update: update({ body: full }), defaultOpen: true })
+    );
+    expect(html).toMatch(/aria-expanded="true"/);
+    const panel = /<div id="([^"]+)"[^>]*>([\s\S]*?)<\/div>/.exec(html);
+    expect(panel?.[2]).toContain("We fit them on Friday.");
+    expect(html).toContain(`aria-controls="${panel?.[1]}"`);
+    expect(html).toContain("Hide the whole update");
   });
 });

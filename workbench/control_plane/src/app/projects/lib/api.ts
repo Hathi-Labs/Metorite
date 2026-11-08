@@ -301,6 +301,13 @@ export interface NodeSummary {
     by_category: Record<string, number>;
   };
   /**
+   * WS-39 LP-1a — the newest live update of a project or a subproject, or
+   * null when it has none. The key is there only while
+   * `PROJECTS_UPDATES_ORGS` holds the org, so the Overview draws the line
+   * with the roll-up, in one read, and nothing moves when it arrives.
+   */
+  latest_update?: ProjectUpdate | null;
+  /**
    * WS-64 OP-11 — the My tasks summary only (`GET /projects/my/summary`).
    * `due_soon` is open work due in the next `due_soon_days`. `by_disposition`
    * holds the chip counts, by the rules of `mine.fold_dispositions`. `today`
@@ -2157,6 +2164,9 @@ export type ProjectUpdate = {
   posted_at: string | null;
   drafted_by_ai: boolean;
   via: string | null;
+  /** This reader's right to delete it (`authority.may_delete_update`). */
+  can_delete?: boolean;
+  delete_refusal?: string | null;
 };
 
 export type ProjectUpdatesPage = {
@@ -2318,14 +2328,6 @@ export const projectsApi = {
   /** The same shape one level up — every space the caller can see. */
   portfolio: () => call<NodeSummary>("summary"),
 
-  /**
-   * WS-39 LP-1a — the updates of one project, newest first. The Overview
-   * asks for one, the newest. A 404 means that `PROJECTS_UPDATES_ORGS` does
-   * not hold the org, or that the project is hidden, and the line then does
-   * not draw (`projectUpdateLine.ts`).
-   */
-  projectUpdates: (projectId: string, limit = 1) =>
-    call<ProjectUpdatesPage>(`nodes/${projectId}/updates?limit=${limit}`),
 
   /**
    * §9.12.7 analytics. `nodeId` omitted means the PORTFOLIO.

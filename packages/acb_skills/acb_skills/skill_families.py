@@ -730,7 +730,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Projects authority page and updates",
         "summary": (
             "The authority page and the updates of a project: read the pinned "
-            "pages, pin or unpin one, and read or post an update with its health."
+            "pages, pin or unpin one, and read, post or delete an update."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -738,12 +738,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "assistant to load when a turn names them. The pack holds the "
             "tools to read the pins of a project, to pin a page and to "
             "remove a pin. It also holds the tools to read the updates of a "
-            "project and to post one with the health that the member picks. "
+            "project, to post one with the health that the member picks, and "
+            "to delete one. "
             "Each change asks the member first. A run loads a pack only "
             "where tool packs are on, so until then this switch has no "
             "effect."
         ),
         "tools": (
+            "delete_project_update",
             "list_project_updates",
             "pin_authority",
             "post_project_update",

@@ -943,6 +943,13 @@ async def post_project_update(project_id: str, health: str, body: str) -> str:
             f"{data(node.get('name'))} is a space or a folder, and it has no project "
             "updates. Ask the member which project inside it the update is for."
         )
+    # A filed project takes no new update. Say so before the card, as
+    # `writes._file_destinations` does for a task.
+    if node.get("archived_at") or node.get("archived"):
+        return (
+            f"{data(node.get('name'))} is archived, so it takes no new update. "
+            "Restore it first, or post on another project."
+        )
     # The read before the card: it also says when the feature is off, so the
     # member never answers a card that cannot post.
     try:
