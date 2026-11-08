@@ -6,11 +6,10 @@ against the code on 2026-10-29, at `origin/main` `0988e0de9`. The highest
 migration on main is 315.
 
 **Built.** KG-1 (`585046f02`), KG-2 (`ccdf3c109`, dark, backfill open) and
-KG-3a (`a373b0152`, migration 314) are merged. KG-3b is built dark on branch
-`kg3b-fusion`, behind `CONTEXT_RECENCY`. KG-4 is built dark on its branch
-(migration 355, 2026-11-05). KG-6 is built dark on branch
-`kg6-graph-step-mt-a54c11fc`, stacked on KG-3b and KG-4, behind
-`GRAPH_SEARCH_ORGS` (2026-11-07). KG-5 and KG-7 to KG-14 are not built.
+KG-3a (`a373b0152`, migration 314), KG-3b (`d7cc083d4`, dark, behind
+`CONTEXT_RECENCY`) and KG-4 (`8d9e643ea`, migration 355) are merged. KG-6 is
+built dark on branch `kg6-graph-step-mt-a54c11fc`, behind `GRAPH_SEARCH_ORGS`
+(2026-11-07). KG-5 is on its own branch. KG-7 to KG-14 are not built.
 
 **Open.** The KG-3b eval, with the flag off and on, needs the KG-2 backfill.
 That backfill is OWNER-GATE and has not run.

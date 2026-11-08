@@ -27,11 +27,28 @@ import {
 
 // ── The header ──────────────────────────────────────────────────────────────
 
-/** "Good morning" before noon, "Good afternoon" before six, then evening. */
+/**
+ * The ONE table of greetings (PZ-39). Each row is the first hour of a band and
+ * its greeting. A band runs until the next row starts. The last band runs past
+ * midnight until 05:00. The late hours read "Hello", never "Good night",
+ * because "Good night" is a goodbye. The server holds the same table in
+ * `acb_common.today.GREETING_TABLE`.
+ * Fence: `tests/unit/test_greeting_table.py` fails when the two differ.
+ */
+export const GREETING_TABLE: ReadonlyArray<readonly [number, string]> = [
+  [5, "Good morning"],
+  [12, "Good afternoon"],
+  [17, "Good evening"],
+  [21, "Hello"],
+];
+
+/** The greeting for an hour (0 to 23), from `GREETING_TABLE`. */
 export function greeting(hour: number): string {
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
+  let found = GREETING_TABLE[GREETING_TABLE.length - 1][1];
+  for (const [from, word] of GREETING_TABLE) {
+    if (from <= hour) found = word;
+  }
+  return found;
 }
 
 /**

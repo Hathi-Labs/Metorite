@@ -45,6 +45,7 @@ from gateway.routes.projects.notifications import (
     notify,
     task_audience,
 )
+from gateway.routes.projects.relations import drop_unseen_link_targets
 from gateway.routes.projects.text_links import link_from_text
 from gateway.routes.projects.watchers import ensure_watchers
 from pydantic import BaseModel
@@ -222,10 +223,11 @@ async def get_timeline(
             ),
             params,
         )).fetchall()
-        return {
-            "rows": [row_to_dict(r, ActivityModel) for r in rows],
-            "total": int(total),
-        }
+        activities = [row_to_dict(r, ActivityModel) for r in rows]
+        # SW-16a: a `link` row names the other task. This read checks only the
+        # near task, so the far end goes through the reader's visibility too.
+        await drop_unseen_link_targets(db, vis, activities)
+        return {"rows": activities, "total": int(total)}
 
 
 @router.post("/tasks/{task_id}/comments", status_code=201)

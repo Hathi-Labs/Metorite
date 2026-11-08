@@ -620,6 +620,7 @@ jobs:
               tests/unit/test_user_settings_per_org_r8.py \
               tests/unit/test_auth_me_shell_r8.py \
               tests/unit/test_h6_identity_shadow.py \
+              tests/unit/test_member_of_org_read.py \
               tests/unit/test_h6_rbac_rekey.py \
               tests/unit/test_email_otp_token.py \
               tests/unit/test_invited_member_promotion.py \
@@ -641,6 +642,8 @@ jobs:
               tests/unit/test_studio_rollup_r8.py \
               tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
+              tests/unit/test_studio_publish_install_r8.py \
+              tests/unit/test_studio_package_install_r8.py \
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
@@ -649,13 +652,19 @@ jobs:
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
               tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_shell_layout_r8.py \
               tests/unit/test_package_disposal_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
+              tests/unit/test_project_rules_propose.py \
               tests/unit/test_crm_change_history.py \
+              tests/unit/test_crm_pipelines_native.py \
               tests/unit/test_auto_park.py \
+              tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
+              tests/unit/test_mcp_edge_attachment_r8.py \
+              tests/unit/test_projects_status_slot_r8.py \
               tests/unit/test_staging_export.py
 
       # CIV-3. A selection run holds part of the timings. Only a full run
@@ -907,14 +916,21 @@ jobs:
       # * With no event file (the local CI on the PC) there is no body, so
       #   the step passes.
       # * `!cancelled()`: it reports even when a test above failed.
-      # ⚠️ A rerun replays the first event. After you edit the body, push a
-      # commit. Fence: tests/unit/test_fence_lists.py.
+      # * CIV-8 (2026-11-07). The step reads the LIVE body through the API, and
+      #   uses the event body only when the API call fails. A rerun replays the
+      #   first EVENT, so with the event body alone a missing line cost a new
+      #   push and a whole new run (about 17 jobs). 21 of the last 50 red
+      #   pr-check runs failed on this line alone. Now: edit the body, then
+      #   `gh run rerun <run id> --failed` reruns only the failed jobs.
+      # Fence: tests/unit/test_fence_lists.py.
       - name: Visual review line (a frontend PR)
         if: "!cancelled()"
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -u
           if [ ! -f "${GITHUB_EVENT_PATH:-}" ]; then echo "no pull request event, so no body to check"; exit 0; fi
-          ev() { python3 -c 'import json, os, sys; p = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("pull_request") or {}; print(((p.get("base") or {}).get("sha") if sys.argv[1] == "base" else p.get("body")) or "")' "$1"; }
+          ev() { python3 -c 'import json, os, sys; p = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("pull_request") or {}; k = sys.argv[1]; print(((p.get("base") or {}).get("sha") if k == "base" else str(p.get("number") or "") if k == "number" else p.get("body")) or "")' "$1"; }
           base="$(ev base)"
           frontend=true
           if [ -n "$base" ] \
@@ -923,12 +939,19 @@ jobs:
             grep -q '^workbench/control_plane/src/' <<< "$files" || frontend=false
           fi
           $frontend || { echo "no change under workbench/control_plane/src"; exit 0; }
-          body="$(ev body)"
+          pr="$(ev number)"
+          if [ -n "${GH_TOKEN:-}" ] && [ -n "$pr" ] && live="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.body // ""' 2>/dev/null)"; then
+            body="$live"
+            echo "read the live body of PR ${pr}"
+          else
+            body="$(ev body)"
+            echo "the live body is not available, so the body of the event is checked"
+          fi
           if grep -qE '^Visual review:[[:space:]]*[^[:space:]<]' <<< "$body"; then
             echo "the body names its visual review"
             exit 0
           fi
-          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then push a commit, because a rerun reads the old body. Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
+          echo "::error::This PR changes workbench/control_plane/src, and no line of its body starts with 'Visual review:'. Name the four captures (light, compact, a changed accent, 390 px), or write 'Visual review: no UI change'. Then edit the PR body and rerun the failed jobs of this run: gh run rerun <run id> --failed (or the button Re-run failed jobs). Rule: workbench/control_plane/DESIGN_SYSTEM.md section 11."
           exit 1
 
   # The operator console had tests but NO CI running them — a fence that never

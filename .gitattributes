@@ -18,3 +18,7 @@ deploy/hostinger/root_env_names.txt text eol=lf
 # WEB-3 file fixtures are bytes. A CRLF checkout would move the offsets of the PDF.
 tests/unit/fixtures/web/files/* binary
 tests/unit/fixtures/web/files/make_files.py -binary text eol=lf
+# CIV-20 slice 3: INDEX.md is an append-only list of spec rows. Two PRs that each
+# add a row used to conflict (8 of 21 BACK lines on 2026-11-07). Union keeps both.
+# Fence: tests/unit/test_index_union.py (no row is listed twice).
+project-docs/INDEX.md merge=union

@@ -1852,7 +1852,9 @@ def _salutation_name(recipient_name: str) -> str:
     first = tokens[idx]
     if idx + 1 < len(tokens):
         s = honorifics.find_suffix(tokens[idx + 1])
-        if s is not None and not s.also_name:
+        # A credential (IAS, IPS) is not a spoken suffix: the greeting drops it.
+        # A polite or kinship suffix (ji, garu, bhai) stays, as in PZ-41.
+        if s is not None and not s.also_name and s.kind != honorifics.CREDENTIAL:
             first = f"{first} {tokens[idx + 1]}"
     shown = [word for word, h in lead if h.greet_title]
     return " ".join([*shown, first])

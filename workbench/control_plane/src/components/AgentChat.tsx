@@ -63,6 +63,8 @@ import { DraftPinContext, draftPin, draftsOf } from "@/lib/pinnedDraft";
 import { withEmailSteps } from "@/lib/delegatedSteps";
 import { mailboxMarksOf } from "@/lib/mailboxMark";
 import MailboxMark from "@/components/MailboxMark";
+import ContinueOffer from "@/components/ContinueOffer";
+import { newestOfferId, type ContinueOpened } from "@/lib/chatContinue";
 import { ANSWER_CAPTION, typedAnswers, typedAnswerTarget } from "@/lib/typedAnswer";
 import { RollupRegistry, TURN_ATTR, turnThenArrival } from "@/lib/cardRollup";
 import { attachStickToBottom, nearAfterScroll, showJumpToBottom } from "@/lib/stickToBottom";
@@ -384,6 +386,13 @@ interface AgentChatProps {
    * on purpose omits it, and its refusal shows as an error.
    */
   onSessionRefused?: (pendingText: string) => boolean;
+  /**
+   * The shell opens the fresh chat that the pill "Continue in a fresh chat"
+   * made (`lib/chatContinue.ts`, `one_assistant_context.md` §9 WT-2). Pass it
+   * only from the shell's dock. A host that omits it draws no pill. The new
+   * chat gets `text` in its composer, and nothing is sent.
+   */
+  onContinueHeld?: (opened: ContinueOpened) => void;
 }
 
 /** The `answer` of a resolved card that closed with no answer. */
@@ -425,6 +434,7 @@ export default function AgentChat({
   onAutoSendConsumed,
   assistantName,
   onSessionRefused,
+  onContinueHeld,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
   const [currentAgentName, setCurrentAgentName] = useState(agentName);
@@ -1816,6 +1826,8 @@ export default function AgentChat({
     () => (messages.length > renderLimit ? messages.slice(-renderLimit) : messages),
     [messages, renderLimit],
   );
+  // WT-2: the newest settled turn that the server marked as held.
+  const continueOfferId = useMemo(() => newestOfferId(visibleMessages), [visibleMessages]);
 
   // A steer the server refused gives its words back, and says why. Text the
   // member typed since then keeps its place (`mergeCappedText`).
@@ -2660,6 +2672,11 @@ export default function AgentChat({
                   receipts={confirmations.receipts.filter((r) => r.afterId === msg.id)}
                   onUndo={undoReject}
                 />
+                {/* WT-2: the server marked this held turn, and the shell can open
+                    the fresh chat. Under the newest marked turn only. */}
+                {onContinueHeld && msg.id === continueOfferId && (
+                  <ContinueOffer sessionId={sessionId} onOpened={onContinueHeld} />
+                )}
                 {/* Inline HITL card — anchored to the asking assistant turn. */}
                 {msg.id === hitlAnchorId && renderHitlCards()}
               </div>
