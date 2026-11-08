@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { VIEW_MODES } from "./commands";
 import {
   ADD_WIDTH,
+  ICON_ACTION,
   ICON_ONLY_BELOW,
   type TabSpec,
   canvasTitle,
@@ -24,7 +25,7 @@ const views = (n: number): TabSpec[] =>
 describe("view tab row", () => {
   it("draws every tab when the row is wide", () => {
     const tabs = [...CANVASES, ...views(2)];
-    const out = layoutTabs({ tabs, activeId: "board", available: 1100, viewport: 1440 });
+    const out = layoutTabs({ tabs, active: ["board"], available: 1100, viewport: 1440 });
     expect(out.iconOnly).toBe(false);
     expect(out.folded).toEqual([]);
     expect(out.visible).toEqual(tabs.map((t) => t.id));
@@ -32,18 +33,18 @@ describe("view tab row", () => {
 
   it("shows icons only below 1280 px of window", () => {
     const tabs = [...CANVASES, ...views(1)];
-    expect(layoutTabs({ tabs, activeId: "list", available: 1100, viewport: ICON_ONLY_BELOW - 1 }).iconOnly).toBe(true);
-    expect(layoutTabs({ tabs, activeId: "list", available: 1100, viewport: ICON_ONLY_BELOW }).iconOnly).toBe(false);
+    expect(layoutTabs({ tabs, active: ["list"], available: 1100, viewport: ICON_ONLY_BELOW - 1 }).iconOnly).toBe(true);
+    expect(layoutTabs({ tabs, active: ["list"], available: 1100, viewport: ICON_ONLY_BELOW }).iconOnly).toBe(false);
   });
 
   it("drops the labels before it folds a tab", () => {
-    const wide = foldTabs({ tabs: CANVASES, activeId: "list", available: 10_000, iconOnly: false });
+    const wide = foldTabs({ tabs: CANVASES, active: ["list"], available: 10_000, iconOnly: false });
     expect(wide.folded).toEqual([]);
     // Too narrow for six labels, wide enough for six icons and "+ View".
     const narrow = layoutTabs({
       tabs: CANVASES,
-      activeId: "list",
-      available: 6 * 34 + 5 * 4 + 4 + ADD_WIDTH + 4,
+      active: ["list"],
+      available: 6 * 30 + 5 * 4 + 4 + ADD_WIDTH + 4,
       viewport: 1440,
     });
     expect(narrow.iconOnly).toBe(true);
@@ -52,7 +53,7 @@ describe("view tab row", () => {
 
   it("folds the extra tabs into More, in order, and loses none", () => {
     const tabs = [...CANVASES, ...views(8)];
-    const out = layoutTabs({ tabs, activeId: "board", available: 700, viewport: 1024 });
+    const out = layoutTabs({ tabs, active: ["board"], available: 700, viewport: 1024 });
     expect(out.iconOnly).toBe(true);
     expect(out.folded.length).toBeGreaterThan(0);
     expect(out.visible.slice(0, 6)).toEqual(CANVASES.map((c) => c.id));
@@ -60,27 +61,60 @@ describe("view tab row", () => {
     expect(out.folded).toEqual(tabs.map((t) => t.id).filter((id) => out.folded.includes(id)));
   });
 
-  it("never folds the tab on screen", () => {
+  it("keeps all six canvases while any saved view shows", () => {
     const tabs = [...CANVASES, ...views(8)];
-    const out = layoutTabs({ tabs, activeId: "v7", available: 520, viewport: 768 });
-    expect(out.visible).toContain("v7");
-    expect(out.folded).not.toContain("v7");
-    expect(out.folded.length).toBeGreaterThan(0);
+    for (const available of [400, 450, 520, 600, 700, 900, 1100]) {
+      const out = layoutTabs({ tabs, active: ["board"], available, viewport: 1024 });
+      const canvasesKept = CANVASES.every((c) => out.visible.includes(c.id));
+      const viewShown = out.visible.some((id) => id.startsWith("v"));
+      if (viewShown) expect(canvasesKept, `width ${available}`).toBe(true);
+    }
   });
 
-  it("keeps the active tab even when nothing else fits", () => {
-    const out = foldTabs({ tabs: [...CANVASES, ...views(3)], activeId: "v2", available: 10, iconOnly: true });
-    expect(out.visible).toEqual(["v2"]);
+  it("folds the saved views first, last first", () => {
+    const tabs = [...CANVASES, ...views(8)];
+    const out = layoutTabs({ tabs, active: ["board"], available: 560, viewport: 1024 });
+    expect(out.visible.slice(0, 6)).toEqual(CANVASES.map((c) => c.id));
+    expect(out.folded.length).toBeGreaterThan(0);
+    expect(out.folded.every((id) => id.startsWith("v"))).toBe(true);
+    // The first views stay, the last ones go.
+    expect(out.folded).toEqual(tabs.map((t) => t.id).filter((id) => out.folded.includes(id)));
+    expect(out.visible).toContain("v0");
+    expect(out.folded).toContain("v7");
+  });
+
+  it("keeps the saved view on screen ahead of the others", () => {
+    const tabs = [...CANVASES, ...views(8)];
+    const out = layoutTabs({ tabs, active: ["board", "v7"], available: 560, viewport: 1024 });
+    expect(out.visible).toContain("v7");
+  });
+
+  it("folds canvases only when even the six icons do not fit", () => {
+    const tabs = [...CANVASES, ...views(2)];
+    // Six icons, five gaps, the margin, "+ View" and "More": the least that holds all six.
+    const least = 6 * 30 + 5 * 4 + 4 + ICON_ACTION + ICON_ACTION + 4;
+    const fits = layoutTabs({ tabs, active: ["board"], available: least, viewport: 1024 });
+    expect(CANVASES.every((c) => fits.visible.includes(c.id))).toBe(true);
+    expect(fits.folded.every((id) => id.startsWith("v"))).toBe(true);
+    const tight = layoutTabs({ tabs, active: ["table"], available: least - 40, viewport: 1024 });
+    expect(tight.folded.some((id) => CANVASES.some((c) => c.id === id))).toBe(true);
+    expect(tight.visible).toContain("table");
+    expect(tight.folded).toContain("v0");
+  });
+
+  it("keeps the canvas on screen when nothing else fits", () => {
+    const out = foldTabs({ tabs: [...CANVASES, ...views(3)], active: ["table"], available: 10, iconOnly: true });
+    expect(out.visible).toEqual(["table"]);
   });
 
   it("selects no tab for the lens (null)", () => {
-    const out = foldTabs({ tabs: CANVASES, activeId: null, available: 10_000, iconOnly: false });
+    const out = foldTabs({ tabs: CANVASES, active: [null], available: 10_000, iconOnly: false });
     expect(out.folded).toEqual([]);
   });
 
   it("is data-driven: one more canvas is one more entry", () => {
     const seven = [...CANVASES, { id: "backlog", label: "Backlog", kind: "canvas" as const }];
-    const out = layoutTabs({ tabs: seven, activeId: "board", available: 10_000, viewport: 1440 });
+    const out = layoutTabs({ tabs: seven, active: ["board"], available: 10_000, viewport: 1440 });
     expect(out.visible).toContain("backlog");
   });
 

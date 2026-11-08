@@ -5952,11 +5952,18 @@ function ProjectsWorkspace() {
               // `flex-wrap`: with the chat docked the canvas loses 26rem, and
               // an action row that cannot wrap paints its right half over the
               // chat column (measured at 1440, 2026-09-23).
-              <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5">
+              <div
+                className={`flex items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5${
+                  compactChrome ? " @container flex-wrap" : " flex-wrap"
+                }`}
+              >
                 {compactChrome ? (
                   // WS-64 OP-12 (D-OP-17) — the canvases and the saved views
                   // are one tab row. The View popover no longer holds them.
                   <ViewTabs
+                    // In a pane under 40rem the row drops below the title
+                    // line, at the full width, so no tab shares its room.
+                    className="@max-[40rem]:order-last @max-[40rem]:basis-full"
                     canvas={shownMode}
                     onCanvas={pickMode}
                     views={tabViews}
@@ -5987,10 +5994,18 @@ function ProjectsWorkspace() {
                     Pressed while the list is on screen. */}
                 {selected ? (
                   <Button
+                    className="shrink-0 @max-[40rem]:ml-auto"
                     variant="ghost"
                     size="sm"
                     icon="TriangleAlert"
                     selected={attentionLens}
+                    // OP-12: in a narrow row the word folds away, so the tabs
+                    // keep their room. The name and the tooltip stay.
+                    aria-label={
+                      compactChrome
+                        ? `${LENS_LABEL}${attentionHere && attentionHere.total > 0 ? ` ${attentionHere.total}` : ""}`
+                        : undefined
+                    }
                     data-attention-toggle=""
                     title={
                       attentionLens
@@ -5999,13 +6014,21 @@ function ProjectsWorkspace() {
                     }
                     onClick={() => setAttentionFor(attentionLens ? null : selected.id)}
                   >
-                    {LENS_LABEL}
+                    {compactChrome ? (
+                      <span className="hidden @[56rem]:inline">{LENS_LABEL}</span>
+                    ) : (
+                      LENS_LABEL
+                    )}
                     {attentionHere && attentionHere.total > 0 ? (
                       <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
                     ) : null}
                   </Button>
                 ) : null}
-                <div className="ml-auto flex shrink-0 items-center gap-1">
+                <div
+                  className={`flex shrink-0 items-center gap-1${
+                    compactChrome ? " ml-auto @max-[40rem]:ml-0" : " ml-auto"
+                  }`}
+                >
                   {projectActions(false)}
                 </div>
               </div>

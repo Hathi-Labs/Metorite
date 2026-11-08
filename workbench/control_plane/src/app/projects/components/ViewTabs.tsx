@@ -54,6 +54,8 @@ export interface ViewTabsProps {
   /** False while nothing is filtered, regrouped or reshaped: nothing to save. */
   canAddView: boolean;
   addViewHint?: string;
+  /** Classes for the outer box, so the page can move the row below the title in a narrow pane. */
+  className?: string;
 }
 
 /** A menu that hangs under a button of the row. */
@@ -63,9 +65,12 @@ function RowMenu({
   children,
   highlighted = false,
   ariaLabel,
+  iconOnly = false,
 }: {
   label: string;
   ariaLabel?: string;
+  /** The bare icon, for a narrow row. The aria-label and the title carry the name. */
+  iconOnly?: boolean;
   icon: string;
   children: (close: () => void) => React.ReactNode;
   highlighted?: boolean;
@@ -79,18 +84,19 @@ function RowMenu({
     <span ref={root} className="inline-flex shrink-0">
       <Button
         variant="ghost"
-        size="sm"
+        size={iconOnly ? "icon-sm" : "sm"}
         icon={icon}
         selected={highlighted}
         aria-haspopup="menu"
-        aria-label={ariaLabel}
+        aria-label={ariaLabel ?? (iconOnly ? label : undefined)}
+        title={iconOnly ? (ariaLabel ?? label) : undefined}
         aria-expanded={open}
         onClick={(event) => {
           setAnchor(event.currentTarget);
           setOpen((now) => !now);
         }}
       >
-        {label}
+        {iconOnly ? null : label}
       </Button>
       <AnchoredPanel
         anchor={anchor}
@@ -116,20 +122,26 @@ export function ViewTabs({
   onDeleteView,
   canAddView,
   addViewHint,
+  className = "",
 }: ViewTabsProps) {
   const box = useRef<HTMLDivElement | null>(null);
   // Wide until measured: the first paint on the server and in the browser
   // agree, and the effect below settles it before the member sees the row.
+  const inner = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ available: 2000, viewport: 1440 });
+  // Pixels that the estimates were short by, found by measuring the real tabs.
+  const [slack, setSlack] = useState(0);
   const [viewName, setViewName] = useState("");
 
   const measure = useCallback(() => {
     const el = box.current;
     if (!el) return;
     const next = { available: el.clientWidth, viewport: window.innerWidth };
-    setSize((now) =>
-      now.available === next.available && now.viewport === next.viewport ? now : next
-    );
+    setSize((now) => {
+      if (now.available === next.available && now.viewport === next.viewport) return now;
+      setSlack(0);
+      return next;
+    });
   }, []);
 
   useLayoutEffect(() => {
@@ -165,9 +177,9 @@ export function ViewTabs({
   const savedTab = activeViewId ? VIEW_PREFIX + activeViewId : null;
   const layout = layoutTabs({
     tabs: specs,
-    // The saved view on screen never folds. The canvases lead the row, so they fold last.
-    activeId: savedTab && specs.some((s) => s.id === savedTab) ? savedTab : canvas,
-    available: size.available,
+    // The canvas and the saved view on screen are the last to fold in their group.
+    active: [canvas, savedTab],
+    available: size.available - slack,
     viewport: size.viewport,
   });
   const visible = new Set(layout.visible);
@@ -185,15 +197,24 @@ export function ViewTabs({
     .map((v) => ({ id: v.id, icon: viewTabIcon(v.view_type), label: v.name, title: v.name }));
   const folded = foldedCanvases.length + foldedViews.length > 0;
   const activeSavedView = views.find((v) => v.id === activeViewId) ?? null;
+  // The widths are estimates. When the real tabs overflow the box, take the
+  // difference off the room and lay out again, before the member sees it.
+  const shownKey = layout.visible.join("|");
+  useLayoutEffect(() => {
+    const box_ = box.current;
+    const row = inner.current;
+    if (!box_ || !row || layout.visible.length <= 1) return;
+    const over = row.scrollWidth - box_.clientWidth;
+    if (over > 0) setSlack((now) => now + over);
+  }, [shownKey, size, slack, layout.visible.length, layout.iconOnly]);
   const viewById = (id: string) => views.find((v) => v.id === id);
 
   return (
-    <div
-      ref={box}
-      className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden"
-      data-view-tabs=""
-      data-icon-only={layout.iconOnly ? "" : undefined}
-    >
+    // The outer box is the space the row MAY take: it is flex-1 beside a
+    // shrink-0 group, so its width never follows the tabs it holds. The fold
+    // measures this box and not the tabs.
+    <div ref={box} className={`min-w-0 flex-1 overflow-hidden ${className}`} data-view-tabs="" data-icon-only={layout.iconOnly ? "" : undefined}>
+    <div ref={inner} className="flex w-max max-w-full items-center gap-1">
       <ModeSwitch
         modes={canvasModes}
         mode={canvas}
@@ -227,7 +248,7 @@ export function ViewTabs({
         </button>
       ) : null}
       {folded ? (
-        <RowMenu label="More" icon="MoreHorizontal" highlighted={foldedViews.some((v) => v.id === activeViewId)}>
+        <RowMenu label="More" ariaLabel="More views" iconOnly={layout.iconOnly} icon="MoreHorizontal" highlighted={foldedViews.some((v) => v.id === activeViewId)}>
           {(close) => (
             <div className="flex flex-col gap-1" data-view-tabs-more="">
               {foldedCanvases.length > 0 ? (
@@ -259,7 +280,7 @@ export function ViewTabs({
           )}
         </RowMenu>
       ) : null}
-      <RowMenu label="View" icon="Plus" ariaLabel="New saved view">
+      <RowMenu label="View" icon="Plus" ariaLabel="New saved view" iconOnly={layout.iconOnly}>
         {(close) => (
           <form
             className="flex flex-col gap-1.5 p-2"
@@ -293,6 +314,7 @@ export function ViewTabs({
           </form>
         )}
       </RowMenu>
+    </div>
     </div>
   );
 }

@@ -7,9 +7,10 @@
  *
  *   1. Below `ICON_ONLY_BELOW` px of window, or when the labels do not fit, the
  *      canvas tabs show their icon alone. The tooltip names the key.
- *   2. The tabs that still do not fit fold into a "More" menu, last first.
- *   3. The tab on screen never folds. It takes the place of the last tab that
- *      fits.
+ *   2. The saved views that still do not fit fold into a "More" menu, last
+ *      first. The six canvases stay while their icons fit.
+ *   3. Only when even the six icons, "More" and "+ View" do not fit do the
+ *      canvases fold too, and the canvas on screen is the last to go.
  *
  * The arithmetic is here, as pure functions, because the vitest runner has no
  * layout. The widths are estimates and err wide: a tab that folds too soon is
@@ -27,14 +28,16 @@ const GAP = 4;
 /** Estimated width of the "More" button. */
 export const MORE_WIDTH = 76;
 /** Estimated width of the "+ View" button. */
-export const ADD_WIDTH = 84;
+export const ADD_WIDTH = 78;
+/** "More" and "+ View" when the row is icon-only: a bare icon button. */
+export const ICON_ACTION = 32;
 /** The divider between the canvases and the saved views, with its margin. */
 export const DIVIDER_WIDTH = 13;
 /** An icon-only tab: 16 px glyph and the button padding. */
-const ICON_TAB = 34;
-/** A labelled tab: padding, glyph and gap, then the label at about 7 px a letter. */
-const LABEL_FIXED = 52;
-const LABEL_PER_CHAR = 7;
+const ICON_TAB = 30;
+/** A labelled tab: padding, glyph and gap, then the label at about 6.7 px a letter (measured 2026-11-08). */
+const LABEL_FIXED = 46;
+const LABEL_PER_CHAR = 6.7;
 /** A saved-view tab is capped, as its name truncates. */
 const VIEW_TAB_MAX = 176;
 
@@ -68,36 +71,53 @@ export interface TabLayout {
 }
 
 /**
- * Which tabs fit in `available` px. `available` is the width of the row's own
- * box, and the "+ View" button is counted inside it. `activeId` is the tab on
- * screen, or null when none is (the Needs attention lens).
+ * Which tabs fit in `available` px. `available` is the width the row MAY take,
+ * and the "+ View" button is counted inside it. `active` names the tabs on
+ * screen (the canvas, the saved view), and null entries are ignored.
+ *
+ * The order of loss: saved views fold first, last first. The six canvases stay
+ * while their icons, "More" and "+ View" fit. Only then do canvases fold, last
+ * first. A tab on screen is the last to go in its own group.
  */
 export function foldTabs({
   tabs,
-  activeId,
+  active,
   available,
   iconOnly,
 }: {
   tabs: readonly TabSpec[];
-  activeId: string | null;
+  active: readonly (string | null)[];
   available: number;
   iconOnly: boolean;
 }): { visible: string[]; folded: string[] } {
   const room = (spare: number, list: readonly TabSpec[]) => runWidth(list, iconOnly) + GAP <= spare;
-  const whole = available - ADD_WIDTH;
+  const addWidth = iconOnly ? ICON_ACTION : ADD_WIDTH;
+  const moreWidth = iconOnly ? ICON_ACTION : MORE_WIDTH;
+  const whole = available - addWidth;
   if (room(whole, tabs)) return { visible: tabs.map((t) => t.id), folded: [] };
 
-  const spare = whole - MORE_WIDTH - GAP;
-  let count = tabs.length;
-  while (count > 0 && !room(spare, tabs.slice(0, count))) count -= 1;
-  let shown = tabs.slice(0, count);
+  const spare = whole - moreWidth - GAP;
+  const canvases = tabs.filter((t) => t.kind === "canvas");
+  const views = tabs.filter((t) => t.kind === "view");
+  const isActive = (t: TabSpec) => active.includes(t.id);
 
-  const active = tabs.find((t) => t.id === activeId);
-  if (active && !shown.includes(active)) {
-    // The tab on screen takes the place of the last tabs that fit.
-    shown = shown.slice();
-    while (shown.length > 0 && !room(spare, [...shown, active])) shown.pop();
-    shown.push(active);
+  let shown: TabSpec[];
+  if (room(spare, canvases)) {
+    // Every canvas stays. The saved views take what is left: the one on screen
+    // first, then the others in order.
+    shown = canvases.slice();
+    const order = [...views.filter(isActive), ...views.filter((v) => !isActive(v))];
+    for (const view of order) {
+      if (room(spare, [...shown, view])) shown.push(view);
+    }
+  } else {
+    // Not even the six icons fit. The canvases fold from the end, and the one on
+    // screen stays.
+    shown = canvases.slice();
+    while (shown.length > 1 && !room(spare, shown)) {
+      const at = shown.map((t) => !isActive(t)).lastIndexOf(true);
+      shown.splice(at === -1 ? shown.length - 1 : at, 1);
+    }
   }
   const ids = new Set(shown.map((t) => t.id));
   return {
@@ -113,19 +133,19 @@ export function foldTabs({
  */
 export function layoutTabs({
   tabs,
-  activeId,
+  active,
   available,
   viewport,
 }: {
   tabs: readonly TabSpec[];
-  activeId: string | null;
+  active: readonly (string | null)[];
   available: number;
   viewport: number;
 }): TabLayout {
-  const labelled = foldTabs({ tabs, activeId, available, iconOnly: false });
+  const labelled = foldTabs({ tabs, active, available, iconOnly: false });
   const iconOnly = viewport < ICON_ONLY_BELOW || labelled.folded.length > 0;
   if (!iconOnly) return { iconOnly, ...labelled };
-  return { iconOnly, ...foldTabs({ tabs, activeId, available, iconOnly: true }) };
+  return { iconOnly, ...foldTabs({ tabs, active, available, iconOnly: true }) };
 }
 
 /** The icon of a saved view's tab: the canvas it was saved from. */
