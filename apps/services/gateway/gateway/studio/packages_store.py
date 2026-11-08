@@ -75,6 +75,11 @@ contributions, the grants, the files, the pins and the data. So the store
 still holds no statement that updates or deletes a version row.
 ``app_audit`` has no foreign key, so its rows stay.
 
+**The lock of an install (PKG-8b).** :func:`lock_for_install` holds the
+package row ``FOR KEY SHARE`` and reads ``live_version``. The install route
+of WS-PKG calls it before the install store, so its lock order is the order
+of a publish: the ``apps`` row, then the org lock of the install store.
+
 **Not here.** No UI. Install is WS-PKG. The routes are
 ``routes/studio/packages.py`` (A5 and A5c-1), which runs no SQL of its own.
 The admin path of a delete and its chat tool are A5c-2.
@@ -822,6 +827,52 @@ async def get_version(db: Any, member: str, package_id: str,
     row = (await db.execute(text(_VERSION_GET_SQL), {
         "m": _member(member), "id": _package_id(package_id), "v": version})).first()
     return None if row is None else _version(row)
+
+
+# --- the lock of an install (WS-PKG PKG-8b) ---------------------------------
+
+#: The row of a package that the install route holds, ``FOR KEY SHARE``. A
+#: publish takes ``FOR UPDATE`` on the same row, so the two wait for each
+#: other here, before either takes the org lock of the install store.
+_INSTALL_LOCK_SQL = (
+    "SELECT live_version FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid) AND status <> 'archived' "
+    "FOR KEY SHARE"
+)
+
+
+@dataclass(frozen=True)
+class InstallTarget:
+    """The package row that an install route holds (PKG-8b).
+
+    ``live_version`` is ``apps.live_version``: the version that an org or a
+    group install runs. None means that the package has no published version.
+    """
+
+    package_id: str
+    live_version: int | None
+
+
+async def lock_for_install(db: Any, member: str, package_id: str) -> InstallTarget | None:
+    """Lock the package *package_id* of *member* ``FOR KEY SHARE``, and read
+    its live version (``package_host.md`` §5.5, PKG-8b).
+
+    The install route calls this BEFORE ``package_host/store.set_version``
+    or ``store.install``. A publish holds the row ``FOR UPDATE``, then the
+    org lock of the install store. So the route takes the row first, as the
+    publish does. Else the FK check of the install INSERT waits for the row
+    while the route holds the org lock, and the publish waits for that lock.
+
+    The lock ends with the caller's transaction. Answers None for a package
+    of another member or org, an App Workshop app and an archived package.
+    The read writes nothing.
+    """
+    pid = _package_id(package_id)
+    row = (await db.execute(text(_INSTALL_LOCK_SQL), {"m": _member(member), "id": pid})).first()
+    if row is None:
+        return None
+    return InstallTarget(package_id=pid, live_version=None if row[0] is None else int(row[0]))
 
 
 # --- the delete of a package (A5c-1) ----------------------------------------

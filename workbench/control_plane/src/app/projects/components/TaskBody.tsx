@@ -72,6 +72,7 @@ import {
   type StatusRow,
   type TagRow,
   type TaskRow,
+  type TaskTypeRow,
   attachmentsApi,
   projectsApi,
   watchersApi,
@@ -113,6 +114,7 @@ import {
   rollUp,
   threadComments,
 } from "../lib/activityStream";
+import { typeRefusal, typeSelectOptions } from "../lib/taskEpic";
 import { parseAssignees, withAssignee, withoutAssignee } from "../lib/assignees";
 import { insertMention, notDeliveredNotice } from "../lib/notifications";
 
@@ -516,6 +518,32 @@ export function TaskBody({
   // D77 — every member's timed work on the task, summed by the gateway
   // (`GET /projects/tasks/{id}` → `time_spent_mins`). Null until read.
   const [spent, setSpent] = useState<number | null>(null);
+  // SP-6 — the types of THIS task's project, read here so the host (the
+  // Projects panel or My Tasks' detail) need not pass them. A failed read
+  // leaves the list empty: the control then offers "No type" only.
+  // `typesFor` names the project the list belongs to, so the control stays
+  // disabled until the types of THIS task's project have loaded.
+  const [taskTypes, setTaskTypes] = useState<TaskTypeRow[]>([]);
+  const [typesFor, setTypesFor] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTaskTypes([]);
+    setTypesFor(null);
+    projectsApi
+      .types(task.project_id)
+      .then((res) => {
+        if (!live) return;
+        setTaskTypes(res.rows);
+        setTypesFor(task.project_id);
+      })
+      .catch(() => {
+        if (live) setError("Couldn't load the task types. Close this task and open it again.");
+      });
+    return () => {
+      live = false;
+    };
+  }, [task.project_id]);
   const assignees = task.assignees ?? [];
   // Agents are excluded: an agent cannot receive a notification (migration
   // 152's CHECK), so offering to mention one would promise nothing.
@@ -831,9 +859,28 @@ export function TaskBody({
     }
   }
 
+  /** SP-6 — set the type through the same save path as the other fields. */
+  async function changeType(next: string) {
+    const type = taskTypes.find((t) => t.id === next);
+    const refusal = typeRefusal(task, type);
+    if (refusal) {
+      setError(refusal);
+      return;
+    }
+    await patch(
+      { type_id: next === "" ? null : next },
+      "Couldn't change the type.",
+      "Check the task and try again.",
+    );
+  }
+
   /** One shared fact of the task — due date, priority, tags — patched and
    *  merged back. The board's cell editors write the same payloads. */
-  async function patch(payload: Record<string, unknown>) {
+  async function patch(
+    payload: Record<string, unknown>,
+    failure?: string,
+    nextStep?: string,
+  ) {
     setBusy(true);
     setError(null);
     try {
@@ -846,7 +893,8 @@ export function TaskBody({
         after: reload,
       });
     } catch (err) {
-      setError(String((err as Error).message));
+      const detail = String((err as Error).message);
+      setError(failure ? `${failure} ${detail} ${nextStep ?? ""}`.trim() : detail);
     } finally {
       setBusy(false);
     }
@@ -1227,6 +1275,21 @@ export function TaskBody({
                       projectsApi.createTag(task.project_id, { name, color })
                     }
                     onChange={(next) => void patch({ tags: next })}
+                  />
+                </FieldCell>
+
+                {/* SP-6 — the type. Epic is a type that only a top-level task
+                    may wear, so the epic option is disabled on a subtask. */}
+                <FieldCell label="Type" icon="Layers">
+                  <SelectButton
+                    label="Type"
+                    layer="top"
+                    align="end"
+                    widthClass="w-full"
+                    value={task.type_id ?? ""}
+                    disabled={busy || typesFor !== task.project_id}
+                    onChange={(next) => void changeType(next)}
+                    options={typeSelectOptions(taskTypes, task)}
                   />
                 </FieldCell>
 

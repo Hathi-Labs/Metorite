@@ -194,6 +194,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # the chat greets on the day. It adds a line to each turn, so only the
     # operator writes it.
     "CELEBRATIONS_ORGS",
+    # WS-63 PZ-40: the orgs where the name question offers forms of address
+    # and the block keeps the chosen form as written. It adds a line to each
+    # turn, so only the operator writes it.
+    "ADDRESS_FORMS_ORGS",
     # H-328 part (b): the orgs whose unattended workflow runs may start. A run
     # can send mail or WhatsApp and spend credits with no person present, so
     # only the operator writes it. The `WORKFLOW_` prefix covers it too, and
@@ -206,6 +210,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # decision of the workflow's owner. It moves who settles a run, so only
     # the operator writes it.
     "AUTO_PARK_ORGS",
+    # WS-AUTO AUTO-8a: HEADLESS_TURN_ORGS opens the capped headless turn for an
+    # org. A turn spends the member's AI credits with no person present, so
+    # only the owner writes it.
+    "HEADLESS_TURN_ORGS",
     # WS-MCP SW-31a: AGENT_GUIDANCE_ORGS opens the org's written rules for
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.

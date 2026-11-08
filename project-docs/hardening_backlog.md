@@ -110,3 +110,12 @@ Add a section per feature as you build it. Example:
 |---|---|---|---|
 | WB-1 | Move `_PinnedTransport` to `acb_common`, and put the gateway's two pinned copies on it | `web_tools.py` holds the third copy of the pin, beside `outbound_guard.send` and `outbound_guard._PinnedTransport`. A package cannot import the gateway, so WEB-1 copied the pattern. Three copies can drift (WEB-1 review, 2026-11-01) | One pinned transport lives in `acb_common`. `web_tools.py` and `outbound_guard.py` use it, and no other copy of the pin is left |
 | WB-2 | Read a page once when Jina is on | The walk reads the page, and then Jina reads it again from its own network. So the site sees two reads for one call (WEB-1 review, 2026-11-01) | WEB-2's local reader reads the body of the walk. A test shows that one call reads the page once |
+
+### MCP board reads (MCP-G19a, task 1957)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| BR-1 | A compact `list_tasks` read selects only its columns | A compact page of 500 rows still selects `t.*`, descriptions included, and the edge trims the rows. A narrow SELECT through `row_to_model` gave HTTP 500, because `TaskModel.source` refused None (G19a re-verify, 2026-11-08) | The compact path has its own row model and a narrow SELECT. A test fails when the compact read selects `t.*` |
+| BR-2 | `board_stats` takes every `list_tasks` filter | The edge leaves out `include_descendants`, and the `/tasks/stats` route leaves out `assignees`, `unassigned`, `overdue`, `importance_gte`, `tags_all`, `top_level` and `watching`. The edge sends none of them, so no count disagrees today | A test sends each `list_tasks` filter to both reads and gets the same total |
+| BR-3 | Drop the stale named exception for `GET /projects/tasks/stats` | `test_mcp_edge_coverage.py` names the route as having no manifest row. The manifest now holds one (class A), so the comment is false | The exception is gone, and the coverage fence passes |
+| BR-4 | Split `build_task_filters` | ruff C901 on it went from 20 to 29 with the nine audit filters | Its complexity is at most what it was on 2026-11-07, or ruff names an accepted reason |

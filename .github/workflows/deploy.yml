@@ -708,6 +708,7 @@ jobs:
               tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_publish_install_r8.py \
+              tests/unit/test_studio_package_install_r8.py \
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
@@ -723,7 +724,9 @@ jobs:
               tests/unit/test_project_rules.py \
               tests/unit/test_project_rules_propose.py \
               tests/unit/test_crm_change_history.py \
+              tests/unit/test_crm_pipelines_native.py \
               tests/unit/test_auto_park.py \
+              tests/unit/test_headless_turn_r8.py \
               tests/unit/test_projects_status_set_read_r8.py \
               tests/unit/test_mcp_edge_attachment_r8.py \
               tests/unit/test_projects_status_slot_r8.py \

@@ -293,6 +293,15 @@ class Settings(BaseSettings):
     # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_crm_field_studio_r8.py.
     crm_field_studio_orgs: str = ""
+    # `crm_pipelines_orgs` (WS-CRM CRM-M3a, 2026-11-07) lists the
+    # organization ids whose admins may create a deal pipeline, from CRM
+    # settings and from the chat (`crm_conversational.md` §8 CRM-M3). The
+    # grammar is the one of `crm_orgs`. Default empty means NO organization
+    # (fail closed): the create route answers 404, the button does not
+    # show, and the chat tool leaves the run. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_crm_pipelines_native.py.
+    crm_pipelines_orgs: str = ""
     # `crm_fill_rank_orgs` (WS-53 CRM-Q17a-1, 2026-10-16) lists the
     # organization ids that get the fill rank and the source labels of the
     # mirror (`crm_platform.md` §18.9.3), in the grammar of `crm_orgs`.
@@ -899,6 +908,18 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_celebrations.py.
     celebrations_orgs: str = ""
 
+    # ── Forms of address (WS-63 PZ-40, personalization.md §16.4) ────────────
+    #
+    # ADDRESS_FORMS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default. On, the name question of the interview offers "just my name"
+    # first and then the forms that fit the member's language, and the profile
+    # block tells the chat to use `address.name` exactly as written. The
+    # profile switch must be on too. The one reader is
+    # `acb_common.assistant_profile.address_forms_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). It calls no model.
+    # Fences: tests/unit/test_honorifics.py.
+    address_forms_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -921,6 +942,16 @@ class Settings(BaseSettings):
     # `workflow_unattended_orgs`. If the org leaves that list, a yes resumes
     # nothing and no expiry ends the run, until the org is on it again.
     auto_park_orgs: str = ""
+    # ── The headless turn (WS-AUTO AUTO-8a, proactive_agent.md §4.4) ────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, a job of kind `auto.turn` runs one capped turn with no
+    # person present. It is the on switch and the kill switch: the turn reads
+    # it again before each round. The one reader is
+    # `gateway.jobs.headless_turn.headless_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A turn spends the member's AI credits,
+    # so only the owner flips it. Fence: tests/unit/test_headless_turn.py.
+    headless_turn_orgs: str = ""
     # ── Guidance for agents (WS-MCP SW-31a, agent_coordination.md SW-31) ────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
