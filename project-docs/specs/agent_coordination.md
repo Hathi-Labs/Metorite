@@ -1,6 +1,6 @@
 # Agent coordination — many agents and many people on one board
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. No P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
@@ -173,7 +173,7 @@ A quiet run keeps its task until the lease ends. An orchestrator can wait 20 to 
 - **The conflict radar** (SW-26) catches what a sequence cannot prevent. Two open runs whose pull requests change the same file, or add the same new number, each get an affects note. Needs attention lists the pair as "Will collide".
 - **A Check** (SW-23) is the field that lets `HANDOFF.md` retire into tasks (D135.1). An agent runs it, and a pass closes the task with its evidence.
 
-**One link tool.** SW-16 adds `add_task_link` and `remove_task_link` for `blocks`. SW-25 adds `affects` and `relates_to` to the same two tools. The name `set_dependencies` in the first text of SW-16 changes to `add_task_link`, so no second link tool exists.
+**One link tool.** SW-16a adds `add_task_link` and `remove_task_link` for `blocks`. SW-25 adds `affects` and `relates_to` to the same two tools. The name `set_dependencies` in the first text of SW-16 changes to `add_task_link`, so no second link tool exists.
 
 ### 3.6 Cost
 
@@ -1068,22 +1068,30 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Fence.** R8 tests for each case.
 - **Risk.** HIGH (the fingerprint store is a migration). **Gate.** AGENT-SAFE. **Depends on.** SW-9.
 
-#### SW-16 · Agents split work and set dependencies, inside a fence
+#### SW-16a · Agents set dependencies: the link tools
+
+**Status: BUILT 2026-11-08 (task 347).** The chat tools `link_tasks` and `unlink_tasks` were built before it (class B, one confirm card).
+
+- **Scope.** `add_task_link` and `remove_task_link` over the MCP, for `blocks`, through `POST /projects/tasks/{task_id}/links` and `DELETE /projects/tasks/{task_id}/links/{link_id}`. `task_id` blocks `target_task_id`. The `links` rows of `get_task` carry `link_id`. A hidden task answers the same text as a task that does not exist. A loop and a link from a task to itself are refused with a plain text. A removal writes one `link` activity on each task, with the member and the client. A signed agent must see both ends of a link that it removes. A repeated add writes no activity and moves neither task. `remove_task_link` removes a `blocks` link only. The loop check holds a per-organization lock to the end of its transaction, and it compares ids in one case. `my_work` does not offer a blocked task, and a claim is not refused.
+- **Done when.** An agent makes A1 and A2, and sets A2 blocked by A1. `get_task` shows the link. `remove_task_link` removes it.
+- **Fence.** `tests/unit/test_task_links_mcp_r8.py` (R8, a real database) and `tests/unit/test_mcp_edge_coverage.py`.
+- **Risk.** HIGH (it changes the MCP write-route allowlist). **Gate.** AGENT-SAFE.
+
+#### SW-16b · Agents split work inside a fence
 
 - **Scope.**
-  1. `add_task_link` and `remove_task_link` over the MCP, for `blocks`, through `POST /projects/tasks/{task_id}/links`. Class B, with one confirm card in chat.
-  2. **The write fence, behind a flag.** An agent run may change only the task it holds, that task's descendants, and a comment on the direct parent. For anything else it makes a new task.
-  3. **Fan-out once.** The protocol tells agents to key each subtask `<parent short_id>:<step>` with `create_task`'s `idempotency_key`.
+  1. **The write fence, behind a flag.** An agent run may change only the task it holds, that task's descendants, and a comment on the direct parent. For anything else it makes a new task.
+  2. **Fan-out once.** The protocol tells agents to key each subtask `<parent short_id>:<step>` with `create_task`'s `idempotency_key`.
 - **Done when.** An agent that holds A makes A1 and A2, and sets A2 blocked by A1. The same agent gets 403 on sibling task B, and the text names the fence. A retried fan-out makes no second tree.
 - **Fence.** R8 route tests, an edge test for the tools, and a test for the retried fan-out.
-- **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE.
+- **Risk.** HIGH (a write authority rule). **Gate.** AGENT-SAFE. **Depends on.** SW-16a. **Metorite:** task 2298.
 
 #### SW-25 · Affects notes between tasks
 
 - **Scope.** As task 859. The link type `affects`, with a short note (widen the CHECK of `pm_task_links`, expand only). `add_task_link` takes `affects` and `relates_to` with a `note`. `my_work` gains the reason `note_from_task`, once per note. A person holder gets the bell. The task panel lists "Affects" and "Affected by".
 - **Done when.** Agent A links its task to task B as `affects`. Agent B sees the note on its next `my_work`, once. R8: a link to a task that the caller cannot see is refused, and the answer never shows that the task exists.
 - **Fence.** A new R8 suite for the link and the visibility.
-- **Risk.** HIGH (a migration, visibility). **Gate.** AGENT-SAFE. **Depends on.** SW-16.
+- **Risk.** HIGH (a migration, visibility). **Gate.** AGENT-SAFE. **Depends on.** SW-16a.
 
 #### SW-26 · The conflict radar
 
@@ -1863,7 +1871,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-11 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py` and `npx vitest run src/app/projects/lib/needsAttention.test.ts` |
 | SW-12 to SW-14, SW-13b | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-15 | `uv run pytest -q -p no:cacheprovider tests/unit/test_blocker_wake_r8.py` (new) |
-| SW-16, SW-25 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_links_mcp_r8.py` (new) `tests/unit/test_mcp_edge_coverage.py` |
+| SW-16a, SW-16b, SW-25 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_links_mcp_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | SW-18 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_review_r8.py` (new) |
 | SW-19a, SW-19c | `node .claude/hooks/session-handoff.test.mjs`, and the test of the PR hook (new) |
 | SW-19, SW-19b | `uv run pytest -q -p no:cacheprovider tests/unit/test_handoff_queue.py` |

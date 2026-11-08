@@ -1,6 +1,6 @@
 ---
 slug: kit/team-setup
-version: 2
+version: 3
 title: Kit: set up a team of people and agents on one board
 summary: The concrete setup for several people who each run one or more agents on one Metorite board.
 audience: both
@@ -121,4 +121,3 @@ Metorite limits what the connection can reach. It cannot limit the shell, `git p
 ## Not built yet
 
 - A tool to read this playbook through the connection. Until then, paste `kit/paste-in`.
-- A tool to set a link between two tasks.

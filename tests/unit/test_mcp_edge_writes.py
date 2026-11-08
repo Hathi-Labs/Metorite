@@ -116,10 +116,12 @@ def _uuid(n: int) -> str:
 #: the two of EA-6d (``test_mcp_edge_task_writes.py``), then ``add_comment``
 #: of EA-6c (``test_mcp_edge_comments.py``), ``claim_task`` of EA-6b
 #: (``test_mcp_edge_claim.py``), ``set_assignees`` of MCP-G2
-#: (``test_mcp_edge_assignees.py``) and the four tools of MCP-G1
+#: (``test_mcp_edge_assignees.py``), the two link tools of SW-16a
+#: (``test_task_links_mcp_r8.py``) and the four tools of MCP-G1
 #: (``test_mcp_edge_projects.py``).
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
-                    "add_comment", "claim_task", "set_assignees", "create_project",
+                    "add_comment", "claim_task", "set_assignees", "add_task_link",
+                    "remove_task_link", "create_project",
                     "update_project", "preview_move_tasks", "move_tasks")
 
 
