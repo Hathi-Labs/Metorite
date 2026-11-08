@@ -245,7 +245,8 @@ export function NewPipelineForm({
               defaultValue=""
               disabled={saving}
               onChange={(value) => change({ feeds: targets.find((p) => p.id === value)?.name ?? null })}
-              widthClass="w-full sm:w-72"
+              // The default option names the pipeline it follows, so it takes the row.
+              widthClass="w-full"
             />
             <p className="text-[11px] text-muted-foreground">
               When a lead of this pipeline converts, its deal starts in this deal pipeline.
