@@ -1223,11 +1223,17 @@ async def detect_commitment_from_reply(
         people = await fetch_people_for_clarify(db)
         models = await task_models(db, uid)
 
-        detected = await _llm_detect_commitment(
+        contexts = await _user_contexts(db, uid)
+        # DEC-2a: `projects.commitment`. `off` calls `_llm_detect_commitment` as before.
+        from gateway.routes.tasks import projects_decide
+        detected = await projects_decide.commitment(
             subject=req.subject, owner_name=owner_name, owner_addrs=owner_addrs,
-            body=req.body, thread=thread, people=people,
-            model=models["email_capture"],
-            contexts=await _user_contexts(db, uid))
+            body=req.body, thread=thread,
+            old=lambda: _llm_detect_commitment(
+                subject=req.subject, owner_name=owner_name,
+                owner_addrs=owner_addrs, body=req.body, thread=thread,
+                people=people, model=models["email_capture"],
+                contexts=contexts))
         if not detected or not detected.get("is_commitment"):
             return DetectCommitmentResponse(is_commitment=False, used_llm=bool(detected))
 

@@ -1609,8 +1609,12 @@ async def suggest_title(
             return {"is_vague": False, "suggested_title": None}
         models = await task_models(db, uid)
         use_title = (title or item.title or "").strip()
-        return await _llm_suggest_title(
-            use_title, getattr(item, "description", None), models["clarify"])
+        notes = getattr(item, "description", None)
+        # DEC-2a: `projects.vague_title`. `off` calls `_llm_suggest_title` as before.
+        from gateway.routes.tasks import projects_decide
+        return await projects_decide.vague_title(
+            use_title, notes,
+            lambda: _llm_suggest_title(use_title, notes, models["clarify"]))
 
 
 @router.post("/ai/backfill-context")
@@ -1852,7 +1856,13 @@ async def atomize_dump(
                          "disposition": r.disposition, "source": r.source}
                         for r in rows if str(r.id) not in skip]
 
+    import time
+    _t0 = time.perf_counter()
     llm_items = await _llm_atomize(text_, existing, model=models["atomize"])
+    # DEC-2a: `projects.atomize_dedup`. `off` returns llm_items as it is.
+    from gateway.routes.tasks import projects_decide
+    llm_items = await projects_decide.atomize_dedup(
+        llm_items, existing, int((time.perf_counter() - _t0) * 1000))
     used_llm = llm_items is not None
     candidates = llm_items if llm_items is not None else [
         {"title": t, "duplicate_of": None, "same": "no"}
