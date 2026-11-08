@@ -5728,6 +5728,29 @@ The owner installs the new timer on the home box with `bash scripts/home_server/
 
 Fence: `tests/unit/test_daily_release.py` and `tests/unit/test_nightly_release_box.py`. They fail when a slot loses its cron, its window or its timer line, or when two windows overlap.
 
+### D195 — Projects supports modern ways of working, and cycles are in scope for people and agents: the nine answers of the agent-era plan (2026-11-08)
+
+Owner decisions, 2026-10-29 (WM-0) and 2026-11-08, in chat. Design: `project-docs/research/agent_era_planning_2026-11.md` §11. Metorite: tasks 2247, 979 and 959. Owner spec: `specs/project_management_app.md` §13. It reverses the sprint non-goal of that spec (§1). It changes no other rule.
+
+1. **Ways of working are presets.** Projects supports Flow, Sprints or Cycles, Shape Up cycles, Plan-driven and Personal. Each style is a preset over one set of building blocks. A project has one style. A change of style hides blocks and never deletes data. Task 979 writes the catalogue.
+2. **Sprints and cycles are in scope.** They serve people and agents. Task 959 writes the cycle part under this decision.
+3. **The nine answers.** The owner accepted the recommended option of each question in §11 of the design.
+   1. **Q1, length.** A cycle lasts one week by default. The daily release is the beat inside it. A cooldown of one or two days is optional.
+   2. **Q2, capacity.** The unit is the review hours of named people, plus credits. Story points stay refused. Estimates stay hours from `estimate_mins`.
+   3. **Q3, the Goal.** A Goal is a task type in the one task store (D52). It needs no second store.
+   4. **Q4, nesting.** The order is Goal, Epic, Slice. An epic never sits inside an epic.
+   5. **Q5, done.** A slice is done for a cycle when it is merged.
+   6. **Q6, dispatch.** Agents pull the ready slices of the active cycle by themselves. They take them in critical-path order, inside the WIP limits. A person can still assign by hand.
+   7. **Q7, the workstation.** The first path for a non-developer is one workstation with the runner (path B: EA-19 and SW-78). Cloud agents (WS-56) come later.
+   8. **Q8, the critical path.** `specs/project_planning.md` (PJP-6) owns the maths. SW-90 and WM-3 read it. Code computes the path and the model judges it.
+   9. **Q9, dogfood.** HathiLabs runs its Metorite work in cycles from phase 4 of the design. Lanes L1 to L8 are the workstreams.
+
+**What this does not change.** Each slice ships dark. A slice that changes what a member sees needs a D145 preview and the owner's approval. Q3 sets the shape of the Goal that WM-5 (task 984) builds. How one goal links to many projects, and how it reaches agents as context, stays with SW-21 (task 352).
+
+**Re-check this number at merge.** The first merge wins a D-number. No branch or worktree held D195 when task 959 wrote this record. D194 was the highest on `main`.
+
+Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of each slice in `specs/project_management_app.md` §13.6 bind its rule. Until a slice lands, the rule is advisory (R7).
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
