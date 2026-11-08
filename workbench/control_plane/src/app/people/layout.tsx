@@ -43,6 +43,7 @@ import type { ReactNode } from "react";
 import { AppTopBar, appBarPane } from "@/components/AppTopBar";
 import Tabs, { type TabDef } from "@/components/Tabs";
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { hasCapability } from "@/lib/access";
 
 /**
@@ -99,6 +100,9 @@ const TABS: ReadonlyArray<
     note: "What you can reach, and why anything else is hidden" },
 ];
 
+/** The tabs that the phone's bottom bar holds. */
+const PHONE_BAR_TABS: ReadonlySet<string> = new Set(["directory", "chart", "search"]);
+
 /**
  * Which tab a path is on.
  *
@@ -150,10 +154,14 @@ export default function PeopleLayout({ children }: { children: ReactNode }) {
   // for the rest. The bar names the one the member opened.
   const app = appBarPane(pathname)?.label ?? "People";
 
+  const { isMobile } = useViewMode();
+  // On a phone the bottom bar holds Directory, Org chart and Find skills
+  // (`lib/shell/phoneBar.ts`, MOB-12), under the same gates. The strip keeps
+  // the rest, so no tab shows twice.
   const visible = visibleTabs(
     access.features.includes("people"),
     hasCapability(access, "admin:members:read"),
-  );
+  ).filter((t) => !(isMobile && PHONE_BAR_TABS.has(t.id)));
 
   // ⚠️ Not while access resolves. `AccessProvider` starts at NO_ACCESS, which
   // would draw the two personal tabs and then jump to the full bar, the same

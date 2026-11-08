@@ -1136,9 +1136,35 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: comes from the connection row, as the pins do. Nothing new is read from
 #: the request: the scan and the tripwire are as before. The pins before it
 #: were 3.12 ``8eff3015…1f25d2bc9`` and 3.13 ``340a6d01…d2bd756a``.
+#:
+#: EA-19b (2026-11-06, external_agent_access.md §10.9 question 1, D-EA-5):
+#: step 5 passes ``credential``, ``connection_id`` and ``client_name`` of the
+#: connection row to ``actor_via_for``. So a box connection expects the stamp
+#: ``mcp:box:<slug>-<8 hex>``, and an OAuth connection expects the same stamp
+#: as before. The three values come from the row, never from the request.
+#: The scan and the tripwire are as before. The box flag is read in
+#: ``agent_tokens.read_live_connection``, which this digest does not cover.
+#: The pins before it were 3.12 ``c737e1f1…0ae25127`` and 3.13
+#: ``034c2925…9155f094``.
+#:
+#: BR-7b-1 (2026-11-07, core_brief.md §8.2): the audit row of a door call
+#: (`_audit_door`) also holds ``policy``, the app scope that the door
+#: checks (``door.scope``). The value comes from the manifest, never from
+#: the request, and no step of branch 0 changes. The pins before it were
+#: 3.12 ``ec7a40eb…a945b693`` and 3.13 ``792f53b4…a1c4ea5e`` (WS-24b). The
+#: pins of the BR-7b build before the merge with WS-24b were 3.12
+#: ``7c955afa…6a81b34b`` and 3.13 ``b16fc2b1…7fabf2``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "c737e1f19f504f87f62fea3f76428c02c0a4861b23299dad137501ed0ae25127",
-    (3, 13): "034c2925beaec3fae77ed31ae84a05ad7917a2a32269fd8337164b209155f094",
+    # WS-24b (2026-11-06): branches 1' and 2 of get_current_user changed (the
+    # LLM-key fallback went, and an unset token fails closed). Branch 0 did not.
+    # This pin needs the diff-reviewer review and the independent verification.
+    # BR-7b (2026-11-07): the merge of main (the EA-19b pins above) with the BR-7b
+    # change of `_audit_door`: it adds the `policy` key of the audit payload
+    # (door.scope). No step of branch 0 changed. Both digests were computed
+    # with this test's own function under 3.12 and 3.13. This pin needs the
+    # diff-reviewer review and the independent verification.
+    (3, 12): "29b8aaad9bc2b3ffc2f9e8a747835a1e4a674622096afeca886d98107ba0a9a2",
+    (3, 13): "187571d8c6dbac8f05cf131dcea9a476289ebb2ae03ef6f58870fa49cbd721f7",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see

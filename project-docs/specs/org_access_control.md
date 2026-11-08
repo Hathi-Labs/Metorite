@@ -355,6 +355,8 @@ Deploy order makes fail-closed safe: `apply_migrations.sh` runs before the gatew
 
 ## 8a. Integration credentials and org memory (seam 3, authorization half)
 
+> **Status, 2026-11-07 (task 1120, H-437):** 🟢 A web chat run gets the filter of its session member. MCP-C1 shipped this on 2026-11-04 with no flag. `_integration_authorizer` takes the member as the keyword `session_user`, and the stream route passes the session member. A run with no session keeps the body's claim. Fence: `tests/unit/test_org_access_credentials.py`.
+
 ### What is enforced
 
 An agent's `config.json` declares which integrations it *wants*. Which of those the platform actually resolves is now decided by the **acting member**, via `integrations:use:<service>`:
@@ -404,7 +406,7 @@ Now two secrets with different jobs:
 
 `/v1` accepts either, because the Next.js server and internal jobs route completions too. Everything else accepts identity only. Every `/v1` client now reads `settings.llm_api_key`; a test asserts none of them resolves `gateway_internal_token`, so the escalation cannot be reintroduced by a future edit.
 
-When `GATEWAY_INTERNAL_TOKEN` is unset the identity token still falls back to the LLM key, so an un-migrated deployment does not 401 every internal call on upgrade — but it warns on every resolution, because a silent fallback here is the vulnerability wearing a fix's clothes.
+**Updated 2026-11-06 (WS-24b).** The identity token has no fallback to the LLM key. When `GATEWAY_INTERNAL_TOKEN` is unset, the gateway fails closed outside `ACB_ENV=dev`. No Bearer is service identity, `require_internal_auth` answers 401, and a bare `X-User-Email` resolves anonymous. Every caller of an internal route sends `gateway_internal_token` only. Fence: `tests/unit/test_service_identity_and_webhook_auth.py`.
 
 **What this does not fix.** Agents run in-process (BO-7), so an agent that reads `get_settings()` directly can still obtain `gateway_internal_token`. What is closed is the *shared-secret* exposure: the value most likely to leak outside the process — an API key, by design present in BYOK configs, provider settings and logs — is no longer an identity credential. The in-process path needs the sandbox.
 

@@ -1235,8 +1235,9 @@ async def purge_member_rows(
 
     # Before the commit, on its own connection — see the admin route's
     # docstring.
+    # Task 2221: the org of this purge. The operator door binds no tenant.
     record_admin_change(actor_email, "org.member_purged", f"user:{addr}",
-                        deleted=deleted, kept=kept)
+                        organization_id=org_id, deleted=deleted, kept=kept)
     return deleted, kept, plans
 
 
