@@ -2427,10 +2427,15 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-55 EA-18a: the list of the questions that wait on a person. A read
     # tool for "what questions wait on me" is a later slice (spec §12.8, D109).
     ea_18a = {"agent_questions"}
+    # WS-55 MCP-G19a: the board count read serves an outside agent over MCP.
+    # The chat tool for the same counts is Metorite task 2223.
+    mcp_g19a = {"board_stats"}
     # WS-66 RM-3 built the seven reminder tools that RM-1 planned, so no
     # reminder tool is planned now.
+    # WS-AP AP-8a: the person ask and its withdraw. AP-10 builds both tools.
+    ap_10 = {"ask_person", "withdraw_ask"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
-                              | mcp_g15 | sw_43 | ea_18a), m.PLANNED
+                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 

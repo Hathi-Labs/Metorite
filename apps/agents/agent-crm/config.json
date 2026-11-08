@@ -58,6 +58,7 @@
     "crm_list_module_records",
     "crm_get_module_record",
     "crm_search_notes",
-    "crm_change_history"
+    "crm_change_history",
+    "crm_create_pipeline"
   ]
 }

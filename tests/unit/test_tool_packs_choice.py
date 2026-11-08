@@ -1631,6 +1631,9 @@ async def test_a_crm_turn_holds_the_crm_pack_and_no_crm_assistant_tool(
         return "live"
 
     monkeypatch.setattr("acb_skills.crm_tools.crm_mode", crm_mode)
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS, so the pack keeps each of its
+    # tools. The flag drop has its own fence (test_crm_pipelines_native.py).
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
     assert "crm_assistant" in _names(orchestrator), "non-vacuity"
     with _tenant():
         applied = await _apply(orchestrator, "Show me my deals in the CRM", allowed=EVERY)

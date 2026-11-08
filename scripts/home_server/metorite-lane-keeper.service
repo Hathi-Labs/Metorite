@@ -3,7 +3,7 @@
 # ~/.config/systemd/user/, copy lane_keeper.py to ~/.local/lib/metorite/, then run:
 #   systemctl --user enable --now metorite-lane-keeper.timer
 # Settings (optional, in ~/.config/metorite-lane-keeper.env):
-#   KEEPER_LANES=lane-ci,lane-merge   only these lanes wake (empty: every lane)
+#   ~/lanes/keeper-lanes.txt          the lanes that may wake, one name per line (no file: none)
 #   KEEPER_SKIP_LANES=...             default lane-chat,lane-bill
 #   KEEPER_SWITCH_CMD=...             the account switch; it reads KEEPER_SKIP_ACCOUNTS
 # Log: ~/lanes/keeper.log. Journal: journalctl --user -u metorite-lane-keeper.service
