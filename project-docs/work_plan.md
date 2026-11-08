@@ -5751,6 +5751,18 @@ Owner decisions, 2026-10-29 (WM-0) and 2026-11-08, in chat. Design: `project-doc
 
 Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of each slice in `specs/project_management_app.md` §13.6 bind its rule. Until a slice lands, the rule is advisory (R7).
 
+### D197 — Approvals have one named approver, the intake form is for members only, and Projects has no timer: the three answers of LP-0 (2026-11-08)
+
+Owner decision, 2026-11-08 at 15:02 UTC, on Metorite task 987 (LP-0). The owner chose "Accept all three recommendations". The options are in `specs/project_management_app.md` §14.5 (two questions) and §14.6 (the timer note). It changes no other rule.
+
+1. **Approvals (LP-7, task 994).** Option A. The project lead sets one named approver per gate, and one approval is enough. Reject sends the task back to the status it left, with a required reason. Each decision writes an audit row. An agent can ask for an approval and can never approve. LP-7 can plan its migration, and the phase gates of WM-2 (task 981) can build on it.
+2. **Public intake form (LP-8, task 995, D-PM-14).** Option A, members only. LP-8 ships the internal form and the project intake address. No anonymous write route exists. The posture of D-PM-14 stays.
+3. **Timer.** Projects has no timer. Time spent stays a typed field. D77 does not name a timer, so this decision is the record that refuses one.
+
+**Re-check this number at merge.** The first merge wins a D-number. D196 is held by branch `mt-e634d840-sh0-setup-health`. No branch or worktree held D197 when this record was written.
+
+Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of LP-7 and LP-8 in `specs/project_management_app.md` §14.2 bind their rules. Until those slices land, the rules are advisory (R7).
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
