@@ -13,7 +13,7 @@
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-08**
-> 🟢 **WS-39 SP-1 BUILT 2026-11-08, not merged** (§13.2a, migration 361, task 960). The cycle
+> 🟢 **WS-39 SP-1 BUILT 2026-11-08, not merged** (§13.2a, migration 364, task 960). The cycle
 > store: four tables and nine routes, dark behind `PROJECTS_SPRINTS_ORGS`. No UI and no chat tool.
 > · **Previously updated 2026-10-25**
 > 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 304). A comment or a link
@@ -8974,7 +8974,7 @@ A **cycle** and a **sprint** are one record. Copy for a Scrum team says "sprint"
 
 ### 13.2a The cycle store (SP-1, task 960)
 
-**Status: BUILT 2026-11-08, not merged.** Migration `infra/postgres/361_pm_cycles.sql`. Check the number again at merge (R1). The routes are in `gateway/routes/projects/cycles.py`. Fence: `tests/unit/test_sprint_store_r8.py` (R8).
+**Status: BUILT 2026-11-08, not merged.** Migration `infra/postgres/364_pm_cycles.sql`. Check the number again at merge (R1). The routes are in `gateway/routes/projects/cycles.py`. Fence: `tests/unit/test_sprint_store_r8.py` (R8).
 
 **The flag.** The board names the flag `PROJECTS_SPRINTS`. It is the per-org list `PROJECTS_SPRINTS_ORGS`, and the default is empty. While the list does not hold the org, each cycle route answers 404 and writes nothing. A SIGHUP reload applies a change (`docs/flag_reload.md`). The one reader is `cycles.sprints_allowed`. Only the owner flips it.
 
@@ -9097,7 +9097,7 @@ Each row has one Metorite task. The rows SP-1 to SP-5 keep the scope of the boar
 
 | Row | Task | Scope | Done when | Risk | Depends on |
 |---|---|---|---|---|---|
-| **SP-1** | 960 | The cycle store (§13.2a): a cycle table, a membership table with `UNIQUE (task_id)`, the committed snapshot and the capacity snapshot. Each is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and expand only (R6). Nine routes: list the cycles of a node, read one, plan, edit (`If-Match`), delete a planned cycle, add a task, remove a task, start and close. Start needs a goal and stores the committed scope and its total. Close takes a choice for each unfinished task and logs each move. The flag `PROJECTS_SPRINTS` (`PROJECTS_SPRINTS_ORGS`) is OFF by default. **BUILT 2026-11-08, not merged** (migration 361) | R8 tests prove one cycle for a task, no read across organizations, one active cycle for each node, a logged move for each carry-over, a start total that a carry-over does not change, the visible count and `hidden`, FORCE RLS on each table, and 404 on each route with the flag off. Verify: `TENANT_LADDER_DATABASE_URL=<scratch> uv run pytest tests/unit/test_sprint_store_r8.py -rs` (no skip), and `uv run pytest tests/unit/test_projects_migration.py tests/unit/test_projects_chat_coverage.py tests/unit/test_tenant_coverage.py` | HIGH | SP-0 |
+| **SP-1** | 960 | The cycle store (§13.2a): a cycle table, a membership table with `UNIQUE (task_id)`, the committed snapshot and the capacity snapshot. Each is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and expand only (R6). Nine routes: list the cycles of a node, read one, plan, edit (`If-Match`), delete a planned cycle, add a task, remove a task, start and close. Start needs a goal and stores the committed scope and its total. Close takes a choice for each unfinished task and logs each move. The flag `PROJECTS_SPRINTS` (`PROJECTS_SPRINTS_ORGS`) is OFF by default. **BUILT 2026-11-08, not merged** (migration 364) | R8 tests prove one cycle for a task, no read across organizations, one active cycle for each node, a logged move for each carry-over, a start total that a carry-over does not change, the visible count and `hidden`, FORCE RLS on each table, and 404 on each route with the flag off. Verify: `TENANT_LADDER_DATABASE_URL=<scratch> uv run pytest tests/unit/test_sprint_store_r8.py -rs` (no skip), and `uv run pytest tests/unit/test_projects_migration.py tests/unit/test_projects_chat_coverage.py tests/unit/test_tenant_coverage.py` | HIGH | SP-0 |
 | **SP-2** | 961 | A seeded Story type. An epic filter in the Backlog and on the Board. Epics as bars on the Timeline. "Suggest stories" with Mira, and nothing is written before the accept. The progress of an epic moves to SP-9 | An epic with 5 children and 2 done shows "2 of 5". "Suggest stories" creates no task before the accept. Visual review at 1440 px and 390 px | STANDARD | SP-0 |
 | **SP-3** | 962 | The style picker (§13.1) with the Sprints or Cycles style. A Backlog canvas in the tab row (OP-12, task 839): planned cycles above, the backlog below. Drag, or "Move to sprint" on the phone. Each cycle shows its count and its hours against its capacity: the review hours of named people, plus credits. Over capacity warns and never blocks | Four-capture visual review at 1440 px and 390 px. A drag and its Undo both work | STANDARD | SP-1 |
 | **SP-4** | 963 | Start and close dialogs. The default length is one week, and the goal is required. The Board opens on the active cycle. Reports: committed, added, done and carried over. A burndown that shows each change of scope. Throughput by count and by hours, with no points | R8 tests prove the report numbers after a carry-over. Visual review on desktop and phone | STANDARD | SP-1, SP-3 |

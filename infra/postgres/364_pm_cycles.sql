@@ -1,5 +1,5 @@
 -- ============================================================================
--- 361_pm_cycles.sql — the cycle store of Projects (WS-39 SP-1, Metorite task
+-- 364_pm_cycles.sql — the cycle store of Projects (WS-39 SP-1, Metorite task
 -- 960, D195).
 --
 -- What: four new tables and one wider CHECK.
@@ -83,8 +83,9 @@
 -- No score for any person: no column or index ranks a member.
 -- Retention: no pruning. This file deletes nothing.
 --
--- The number is taken at build time (R1). On 2026-11-08 origin/main held 359,
--- and open branches held 356, 357, 358 and 360. Check it again at merge.
+-- The number is taken at build time (R1). It was 361 at build. On 2026-11-08
+-- origin/main held 359, and branches held 360 to 363, 366 and 367, so it
+-- became 364. Check it again at merge.
 -- Pinned by tests/unit/test_sprint_store_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
