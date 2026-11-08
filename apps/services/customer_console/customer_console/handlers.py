@@ -37,6 +37,14 @@ before any network call. ``native_typesafe`` calls TypeSafe
 direct. ``native_aimlapi`` calls the same Jev through the AI/ML API reseller,
 because TypeSafe paused signups. Do not add a second wire class for a third
 reseller. Add an instance.
+
+🔴 **A second task since VOX-2** (``projects_ai_chat.md`` §31, 2026-11-08).
+``native_sarvam`` serves ``transcribe``, because litellm 1.103.0 has no Sarvam
+transcription. Its wire lives in ``stt_sarvam.py``. A ``transcribe`` call
+carries a :class:`TranscribePayload` (the clip, its name and the key), and
+it answers a :class:`TranscriptResult` that the door reads with
+``_transcript_of`` and ``router.duration_seconds``. Each handler names the
+ONE task it serves (``task``), and the declare check reads that.
 """
 from __future__ import annotations
 
@@ -50,27 +58,39 @@ from typing import Any, Protocol
 import httpx
 
 from customer_console.router import ExtractedUsage, reported_cost_usd
+from customer_console.stt_sarvam import TRANSCRIBE_TASK, SarvamHandler
 
 __all__ = [
     "DECIDE_TASK",
     "NATIVE_HANDLERS",
     "QUESTION_TYPES",
+    "TRANSCRIBE_TASK",
     "AimlApiHandler",
     "DecidePayload",
     "NativeHandler",
+    "NativePayload",
     "NativeProviderError",
+    "NativeResult",
     "ProviderResult",
     "Question",
+    "SarvamHandler",
     "SystemOneHandler",
+    "TranscribePayload",
+    "TranscriptResult",
     "TypeSafeHandler",
     "call_native",
+    "native_model_refusal",
     "native_provider_of",
+    "native_requires_wav",
+    "native_task_of",
     "native_vendors",
+    "native_verb_for",
 ]
 
 _log = logging.getLogger(__name__)
 
-#: The ONE task a native handler serves today (D75).
+#: The task the System One handlers serve (D75). ``native_sarvam`` serves
+#: :data:`TRANSCRIBE_TASK` (VOX-2).
 DECIDE_TASK = "decide"
 
 #: Our three question types, in OUR words. The door refuses anything else
@@ -188,10 +208,58 @@ class ProviderResult:
     unit: str | None = None
 
 
-class NativeHandler(Protocol):
-    """Every native handler answers this one call."""
+@dataclass(frozen=True)
+class TranscribePayload:
+    """The typed request a ``transcribe`` handler takes (VOX-2 Do 2).
 
-    async def call(self, task: str, payload: DecidePayload) -> ProviderResult: ...
+    ``model`` is the BOUND id, prefix and mode and all
+    (``sarvam/saaras:v3/translit``). ``audio`` and ``filename`` are the clip
+    the door read once. ``api_key`` and ``api_base`` come from the
+    ``provider_credential`` row, and never from the caller.
+    """
+
+    model: str
+    #: ⚠️ ``repr=False``: customer audio never reaches a log line.
+    audio: bytes = field(repr=False)
+    filename: str
+    #: ⚠️ ``repr=False``: a payload in a traceback never prints our key.
+    api_key: str = field(repr=False)
+    api_base: str | None = None
+    timeout: float = 120.0
+    #: Log context only. The vendor never sees either.
+    organization_id: str | None = None
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class TranscriptResult:
+    """What a ``transcribe`` handler hands back to the door.
+
+    The door reads ``text`` with ``_transcript_of`` and ``duration`` with
+    ``router.duration_seconds``. 🔴 For a WAV clip the door bills its OWN
+    measure of the clip, so ``duration`` is the fallback only.
+    """
+
+    text: str
+    duration: Decimal | None = None
+
+
+#: The request one native call carries, by task.
+NativePayload = DecidePayload | TranscribePayload
+
+#: The answer one native call gives, by task.
+NativeResult = ProviderResult | TranscriptResult
+
+
+class NativeHandler(Protocol):
+    """Every native handler answers this one call.
+
+    ⚠️ A handler also names ``provider`` (the credential prefix) and ``task``
+    (the one task it serves). The helpers below read both with ``getattr``,
+    so a test fake without them reads as "no such handler".
+    """
+
+    async def call(self, task: str, payload: NativePayload) -> NativeResult: ...
 
 
 def _model_prefix(model: str) -> str:
@@ -459,6 +527,11 @@ class SystemOneHandler:
     no network. Production passes none.
     """
 
+    #: The one task a System One vendor serves.
+    task = DECIDE_TASK
+    #: It sends JSON, so the clip format is none of its business.
+    requires_wav = False
+
     def __init__(
         self,
         *,
@@ -474,8 +547,8 @@ class SystemOneHandler:
         self.reads_cost = reads_cost
         self._transport = transport
 
-    async def call(self, task: str, payload: DecidePayload) -> ProviderResult:
-        if task != DECIDE_TASK:
+    async def call(self, task: str, payload: NativePayload) -> ProviderResult:
+        if task != DECIDE_TASK or not isinstance(payload, DecidePayload):
             raise NativeProviderError(
                 None, f"{self.provider} serves {DECIDE_TASK!r}, not {task!r}"
             )
@@ -592,6 +665,8 @@ class AimlApiHandler(SystemOneHandler):
 NATIVE_HANDLERS: dict[str, NativeHandler] = {
     "native_typesafe": TypeSafeHandler(),
     "native_aimlapi": AimlApiHandler(),
+    # VOX-2 (2026-11-08): Sarvam speech to text, on the `transcribe` task.
+    "native_sarvam": SarvamHandler(),
 }
 
 
@@ -603,6 +678,43 @@ def native_provider_of(invocation: str) -> str | None:
     """
     vendor = getattr(NATIVE_HANDLERS.get(invocation), "provider", None)
     return vendor if isinstance(vendor, str) else None
+
+
+def native_task_of(invocation: str) -> str | None:
+    """The one task a native verb serves, or None. Read from the table."""
+    task = getattr(NATIVE_HANDLERS.get(invocation), "task", None)
+    return task if isinstance(task, str) else None
+
+
+def native_verb_for(provider: str, task: str) -> str | None:
+    """The native verb that serves ``task`` for the credential ``provider``.
+
+    VOX-2 Do 1: the prefix ``sarvam/`` ties a ``transcribe`` model to
+    ``native_sarvam``, because litellm cannot call Sarvam for that task.
+    None means litellm may call the pair, as before.
+    """
+    for verb in NATIVE_HANDLERS:
+        if native_provider_of(verb) == provider and native_task_of(verb) == task:
+            return verb
+    return None
+
+
+def native_requires_wav(invocation: str) -> bool:
+    """True when the handler for this verb takes a PCM WAV clip only."""
+    return getattr(NATIVE_HANDLERS.get(invocation), "requires_wav", False) is True
+
+
+def native_model_refusal(invocation: str, model: str) -> str | None:
+    """Why the handler cannot call this model id, or None.
+
+    Only a handler that reads its model id itself checks it. Sarvam reads
+    the mode from the id (VOX-2 Do 3), so a wrong mode fails at declare time.
+    """
+    check = getattr(NATIVE_HANDLERS.get(invocation), "model_refusal", None)
+    if not callable(check):
+        return None
+    refusal = check(model)
+    return refusal if isinstance(refusal, str) else None
 
 
 def native_vendors() -> frozenset[str]:
@@ -621,9 +733,9 @@ async def call_native(
     *,
     invocation: str,
     task: str,
-    payload: DecidePayload,
+    payload: NativePayload,
     **_route_fields: Any,
-) -> ProviderResult:
+) -> NativeResult:
     """Dispatch one native call to the handler its capability row names.
 
     ``router._default_provider_call`` is the one caller. The door's other

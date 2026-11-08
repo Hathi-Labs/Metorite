@@ -23,7 +23,14 @@ whole ladder and two organizations. It proves:
 * the private-source rule: a project that the whole org cannot see is no
   source, and an agent with pins sees only a template whose source it sees;
 * the caps refuse an oversized template on the save, on the apply and in the
-  database;
+  database, and a date past the range is a 422, never a 500;
+* a task create in the same space does not wait for a long apply, because
+  the apply reserves its task numbers first (review P1-b);
+* two applies of the same moment into a space that lacks a type and a field
+  both land, with one row of each (review P2-b);
+* a caller without ``projects:settings:write`` keeps the parent's status set,
+  and each task maps to the lane of its stage (review P2-c);
+* one template reads by its id (review P3-b);
 * each route answers 404 with the flag off, and writes nothing;
 * each new table has FORCE row level security.
 
@@ -39,6 +46,14 @@ whole ladder and two organizations. It proves:
   ``test_an_agent_with_pins_sees_only_a_template_whose_source_it_sees``.
 * M5. ``parse_payload``: drop the depth check ->
   ``test_the_caps_refuse_an_oversized_template``.
+* M10. ``_apply_tasks``: pass no reserved number (``task_number=None``) ->
+  ``test_a_task_create_in_the_space_does_not_wait_for_an_apply``.
+* M11. ``_TYPE_INSERT_SQL`` and ``_FIELD_INSERT_SQL``: drop ``ON CONFLICT DO
+  NOTHING`` -> ``test_two_applies_of_one_moment_both_land``.
+* M12. ``_apply_statuses``: drop the test of ``can_manage_settings`` ->
+  ``test_without_the_settings_right_the_project_keeps_the_parent_set``.
+* M13. ``_offset_day``: no range check ->
+  ``test_a_date_past_the_range_is_a_422``.
 
 Run::
 
@@ -449,6 +464,30 @@ def _error(response: httpx.Response) -> str:
     return detail["error"] if isinstance(detail, dict) else str(detail)
 
 
+def _lead(email: str, org: str) -> Any:
+    """A member who holds ``projects:settings:write`` (``core.SETTINGS_WRITE``)."""
+    from acb_auth import UserContext, UserRole, build_access
+
+    return UserContext(
+        email=email, role=UserRole.EMPLOYEE,
+        access=build_access(["feature:projects", "projects:settings:write"]),
+        organization_id=org,
+    )
+
+
+def _store(p: Any, org: str, by: str, name: str, payload: dict[str, Any]) -> str:
+    """A template written straight into the table, for a shape no save makes."""
+    tid = str(uuid.uuid4())
+    _exec(p, "INSERT INTO pm_templates (id, organization_id, name, payload, created_by)"
+          " VALUES (:id, :o, :n, CAST(:b AS jsonb), :e)",
+          id=tid, o=org, n=name, b=json.dumps(payload), e=by)
+    return tid
+
+
+def _flat(n: int, **extra: Any) -> list[dict[str, Any]]:
+    return [_task(f"Step {i}", **extra) for i in range(n)]
+
+
 @pytest.fixture(scope="module")
 def world(promoted):  # noqa: F811 — a fixture
     ns = SimpleNamespace(p=promoted)
@@ -459,6 +498,8 @@ def world(promoted):  # noqa: F811 — a fixture
         _member(promoted, promoted.org_a, email)
     _member(promoted, promoted.org_b, ns.zed)
     ns.u_alice = _principal(ns.alice, promoted.org_a)
+    # Alice with the right that gives a project a status set of its own.
+    ns.u_lead = _lead(ns.alice, promoted.org_a)
     ns.u_bob = _principal(ns.bob, promoted.org_a)
     ns.u_zed = _principal(ns.zed, promoted.org_b)
     return ns
@@ -556,9 +597,10 @@ class TestTheTemplateStoreOnARealDatabase:
             assert listed.status_code == 200
             assert out["id"] in {r["id"] for r in listed.json()["rows"]}
 
-            # Apply in another space, whose lanes differ: the project owns a copy.
+            # Apply in another space, whose lanes differ. The caller holds the
+            # settings right, so the project owns a copy (review P2-c).
             other = await _space(call, w.u_alice, f"Other {src.tag}")
-            made = await _apply(call, w.u_alice, out["id"], other, f"k-{src.tag}",
+            made = await _apply(call, w.u_lead, out["id"], other, f"k-{src.tag}",
                                 start_date="2026-12-01")
             assert made.status_code == 201, made.text
             result = made.json()
@@ -812,3 +854,118 @@ class TestTheTemplateStoreOnARealDatabase:
                 _exec(w.p, "INSERT INTO pm_templates (organization_id, name, payload, created_by)"
                       " VALUES (:o, :n, '{}'::jsonb, :e)", o=w.p.org_a, n=f"Bare {src.tag}",
                       e=w.alice)
+
+    # ── The settings right (review P2-c) ────────────────────────────────
+
+    async def test_without_the_settings_right_the_project_keeps_the_parent_set(self, w):
+        async with _session(w.p) as call:
+            src = await _source(call, w)
+            tid = (await _save(call, w.u_alice, src.project, f"Plain {src.tag}")).json()["id"]
+            other = await _space(call, w.u_alice, f"Plain other {src.tag}")
+            made = await _apply(call, w.u_alice, tid, other, f"plain-{src.tag}",
+                                start_date="2026-12-01")
+            assert made.status_code == 201, made.text
+            new = made.json()["project"]["id"]
+            assert made.json()["own_statuses"] is False
+            assert made.json()["created"]["statuses"] == 0
+            assert _one(w.p, "SELECT owns_statuses FROM pm_projects WHERE id = CAST(:n AS uuid)",
+                        n=new).owns_statuses is False
+            assert _lanes(w.p, new) == {}
+            lanes = {r.title: r.lane for r in _all(
+                w.p, "SELECT t.title, s.name AS lane FROM pm_tasks t"
+                " JOIN pm_task_statuses s ON s.id = t.status_id"
+                " WHERE t.project_id = CAST(:n AS uuid)", n=new)}
+            # "Review" is an in-progress lane the space lacks: it maps by stage.
+            assert lanes == {"Survey the site": "In progress", "Measure the room": "To do",
+                             "Bring the laser": "To do", "Ship the kit": "Backlog"}
+            assert set(_lanes(w.p, other)) == {"Backlog", "To do", "In progress", "Done"}
+
+    # ── The counter lock (review P1-b) ──────────────────────────────────
+
+    async def test_a_task_create_in_the_space_does_not_wait_for_an_apply(self, w):
+        """The apply reserves its numbers in a short transaction of its own.
+        A task create of another member in the same space finishes while the
+        long apply still runs. Before the repair it waited for the whole
+        apply (48.7 s in the review)."""
+        loop = asyncio.get_running_loop()
+        async with _session(w.p) as call:
+            tag = _tag()
+            space = await _space(call, w.u_alice, f"Busy {tag}")
+            here = await _project(call, w.u_alice, space, f"Busy work {tag}")
+            await _make_task(call, w.u_alice, {"project_id": here, "title": "The first"})
+            tid = _store(w.p, w.p.org_a, w.alice, f"Long {tag}",
+                         _payload(_flat(templates.MAX_TASKS)))
+            applying = asyncio.ensure_future(_apply(call, w.u_alice, tid, space, f"long-{tag}"))
+            await asyncio.sleep(2.0)
+            assert not applying.done(), "the apply ended too soon to probe; make it longer"
+            started = loop.time()
+            await _make_task(call, w.u_bob, {"project_id": here, "title": "Meanwhile"})
+            took = loop.time() - started
+            waited_for_it = applying.done()
+            made = await applying
+            assert made.status_code == 201, made.text
+            assert made.json()["created"]["tasks"] == templates.MAX_TASKS
+            assert not waited_for_it, f"the create waited {took:.1f} s for the apply"
+            numbers = [r.task_number for r in _all(
+                w.p, "SELECT task_number FROM pm_tasks WHERE root_project_id = CAST(:s AS uuid)",
+                s=space)]
+            assert len(numbers) == len(set(numbers)) == templates.MAX_TASKS + 2
+
+    # ── Two applies of one moment (review P2-b) ─────────────────────────
+
+    async def test_two_applies_of_one_moment_both_land(self, w):
+        async with _session(w.p) as call:
+            tag = _tag()
+            space = await _space(call, w.u_alice, f"Twin {tag}")
+            payload = _payload(
+                _flat(150, type="Feature"),
+                types=[{"name": "Feature", "icon": "star", "color": None, "is_epic": False}],
+                fields=[{"field_key": "customer_po", "name": "Customer PO", "description": None,
+                         "field_type": "text", "options": [], "position": 0, "required": False}],
+            )
+            tid = _store(w.p, w.p.org_a, w.alice, f"Twin {tag}", payload)
+            one, two = await asyncio.gather(
+                _apply(call, w.u_alice, tid, space, f"twin-a-{tag}"),
+                _apply(call, w.u_bob, tid, space, f"twin-b-{tag}"),
+            )
+            assert (one.status_code, two.status_code) == (201, 201), (one.text, two.text)
+            assert _count(w.p, "SELECT count(*) FROM pm_task_types WHERE project_id ="
+                          " CAST(:s AS uuid) AND name = 'Feature'", s=space) == 1
+            assert _count(w.p, "SELECT count(*) FROM pm_custom_fields WHERE project_id ="
+                          " CAST(:s AS uuid) AND field_key = 'customer_po'", s=space) == 1
+            assert sorted([one.json()["created"]["types"], two.json()["created"]["types"]]) == [0, 1]
+            feature = _one(w.p, "SELECT id FROM pm_task_types WHERE project_id = CAST(:s AS uuid)"
+                           " AND name = 'Feature'", s=space).id
+            assert _count(w.p, "SELECT count(*) FROM pm_tasks WHERE root_project_id ="
+                          " CAST(:s AS uuid) AND type_id = CAST(:f AS uuid)",
+                          s=space, f=str(feature)) == 300
+
+    # ── The date range (review P2-a) ────────────────────────────────────
+
+    async def test_a_date_past_the_range_is_a_422(self, w):
+        async with _session(w.p) as call:
+            tag = _tag()
+            space = await _space(call, w.u_alice, f"Far {tag}")
+            tid = _store(w.p, w.p.org_a, w.alice, f"Far {tag}",
+                         _payload([_task("Late", due_offset_days=templates.MAX_OFFSET_DAYS)]))
+            before = _count(w.p, "SELECT count(*) FROM pm_projects")
+            far = await _apply(call, w.u_alice, tid, space, f"far-{tag}", start_date="9999-12-31")
+            assert far.status_code == 422 and _error(far) == templates.DATE_OUT_OF_RANGE, far.text
+            edge = await _apply(call, w.u_alice, tid, space, f"edge-{tag}", start_date="2999-06-01")
+            assert edge.status_code == 422 and _error(edge) == templates.DATE_OUT_OF_RANGE, edge.text
+            assert _count(w.p, "SELECT count(*) FROM pm_projects") == before
+            assert _count(w.p, "SELECT count(*) FROM pm_template_applies WHERE idempotency_key"
+                          " IN (:a, :b)", a=f"far-{tag}", b=f"edge-{tag}") == 0
+
+    # ── One template by its id (review P3-b) ────────────────────────────
+
+    async def test_one_template_reads_by_its_id(self, w):
+        async with _session(w.p) as call:
+            src = await _source(call, w)
+            tid = (await _save(call, w.u_alice, src.project, f"By id {src.tag}")).json()["id"]
+            one = await call(w.u_bob, "GET", f"/projects/templates?template_id={tid}")
+            assert one.status_code == 200 and [r["id"] for r in one.json()["rows"]] == [tid]
+            hidden = await call(w.u_zed, "GET", f"/projects/templates?template_id={tid}")
+            assert hidden.status_code == 200 and hidden.json()["rows"] == []
+            bad = await call(w.u_bob, "GET", "/projects/templates?template_id=not-an-id")
+            assert bad.status_code == 422

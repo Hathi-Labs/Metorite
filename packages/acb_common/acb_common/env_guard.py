@@ -175,6 +175,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # a held chat in a fresh chat. It opens a way around a hold, so only the
     # owner writes it (work_plan.md §6 D4).
     "CHAT_CONTINUE_ORGS",
+    # projects_ai_chat.md §31 VOX-1: the orgs whose chat shows the mic. Each
+    # clip draws AI credits, so only the operator writes it.
+    "CHAT_VOICE_ORGS",
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
@@ -288,6 +291,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # daily ceiling. Each moves what an org pays, so only the operator writes
     # them (my_day_feed.md §10.9 items 5 and 6).
     "MY_DAY_DECIDE_ORGS", "MY_DAY_DECIDE_ORG_DAILY_CALLS",
+    # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
+    # moves what an org pays, so only the operator writes it.
+    "PROJECTS_DECIDE_ORGS",
     # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
     # Only its tests set it. A tenant that set it would break each verb.
     "DATA_ENGINE_FAULT",
@@ -421,6 +427,10 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-OB OB-8: the push prompt. PUSH_PROMPT_ORGS opens the chat sheet for an
     # org, so a tenant that set it could open the sheet for every org.
     "PUSH_PROMPT_",
+    # WS-VOX VOX-3: IMAGE_ANALYSIS_ORGS lets the chat send an image to a model
+    # for an org, and each call draws credits. A tenant that set it could
+    # open it for every org on the box.
+    "IMAGE_ANALYSIS_",
     # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
     # tenant that set it could send a push to the members of every org.
     "DUE_PUSH_",

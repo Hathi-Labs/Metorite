@@ -2389,6 +2389,40 @@ class TestTheRouterImageRule:
         assert row.tier == "tier-vision"
         assert row.task == "vision"
 
+    def test_one_analyze_image_call_writes_ONE_vision_usage_row(
+            self, client, org_key, db, calls, vision_bound):
+        """WS-VOX VOX-3 (``projects_ai_chat.md`` §31.5): the shape that
+        ``acb_skills.attachment_tools.analyze_image`` sends. A system text,
+        then one text part and one ``image_url`` part as a data URL, on
+        ``tier-vision`` with ``task: vision``. One call is one bill row of the
+        pair (``tier-vision``, ``vision``), and never two."""
+        slug, key = org_key
+
+        def _rows() -> int:
+            with db.begin() as c:
+                return c.execute(text(
+                    "SELECT count(*) FROM usage_event u JOIN organization o "
+                    "ON o.id = u.organization_id WHERE o.slug = :s"),
+                    {"s": slug}).scalar_one()
+
+        before = _rows()
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-vision", "task": "vision", "max_tokens": 1024,
+            "messages": [
+                {"role": "system", "content": "Describe only what the image shows."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "What does the error say?"},
+                    {"type": "image_url", "image_url": {
+                        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}},
+                ]},
+            ]})
+
+        assert r.status_code == 200, r.text
+        assert [c["model"] for c in calls] == [vision_bound]
+        assert _rows() == before + 1
+        row = _last_row(db, slug)
+        assert (row.tier, row.task, row.model) == ("tier-vision", "vision", vision_bound)
+
     def test_a_SECOND_vision_tier_serves_ITSELF_too(
             self, client, org_key, db, calls, bound_tier):
         """The rule reads the declared TASK, never a list of slugs.

@@ -167,6 +167,9 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   project_authorities: { kind: "read", verb: V.read, object: "the authority pages of a project" },
   // WS-39 TPL-1a: the templates of the organization.
   list_templates: { kind: "read", verb: V.read, object: "the project templates" },
+  // WS-39 TPL-1a repair (P2-e): the generic label read "Saved an as template".
+  save_as_template: { kind: "edit", verb: V.save, object: "a project as a template" },
+  create_project_from_template: { kind: "edit", verb: V.create, object: "a project from a template" },
   my_decisions: { kind: "read", verb: V.read, object: "the decisions that wait for you" },
   project_views: { kind: "read", verb: V.read, object: "the saved views" },
   recurrence: { kind: "read", verb: V.read, object: "a repeat rule" },

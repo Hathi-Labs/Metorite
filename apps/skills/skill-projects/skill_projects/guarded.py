@@ -2773,12 +2773,14 @@ TEMPLATE_NAME_MAX = 120
 TEMPLATE_DESCRIPTION_MAX = 2000
 
 
-async def _templates_or_off() -> tuple[list[dict[str, Any]], str]:
+async def _templates_or_off(template_id: str = "") -> tuple[list[dict[str, Any]], str]:
     """``(templates, "")``, or ``([], TEMPLATES_OFF)`` when the flag is off.
     This read runs BEFORE any card. A 404 here is the flag. Any other
-    refusal is raised again for the shared wrapper."""
+    refusal is raised again for the shared wrapper. *template_id* reads that
+    one template, so a template past the first page of the list is found."""
+    params = {"template_id": template_id} if template_id else None
     try:
-        got = (await get("/projects/templates")) or {}
+        got = (await get("/projects/templates", params)) or {}
     except GatewayRefusal as exc:
         if getattr(exc, "status", None) == 404:
             return [], TEMPLATES_OFF
@@ -2888,7 +2890,7 @@ async def create_project_from_template(
     title = " ".join(str(name or "").split())
     about = " ".join(str(description or "").split())
     start = _date_arg(start_date, "start_date")
-    held, off = await _templates_or_off()
+    held, off = await _templates_or_off(tid)
     if off:
         return off
     template = next((r for r in held if str(r.get("id") or "").lower() == tid), None)

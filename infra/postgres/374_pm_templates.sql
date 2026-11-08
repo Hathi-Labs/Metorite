@@ -1,5 +1,5 @@
 -- ============================================================================
--- 368_pm_templates.sql — the template store of Projects (WS-39 TPL-1a,
+-- 374_pm_templates.sql — the template store of Projects (WS-39 TPL-1a,
 -- Metorite task 18, Linear parity P7).
 --
 -- What: two new tables.
@@ -65,8 +65,9 @@
 -- No score for any person: no column or index ranks a member.
 -- Retention: no pruning. This file deletes nothing.
 --
--- The number is taken at build time (R1). On 2026-11-08 origin/main held 366,
--- and open branches held 360 to 365 and 367. Check it again at merge.
+-- The number is taken at build time (R1). It was 368 at build on 2026-11-08.
+-- On 2026-11-09 origin/main held 366, and open branches held 367 and 369 to
+-- 373, so it became 374. Check it again at merge.
 -- Pinned by tests/unit/test_pm_templates_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================

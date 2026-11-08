@@ -141,6 +141,11 @@ def _no_database(monkeypatch):
     """
     import acb_auth.access as auth_access
     import gateway.routes.agent as routes_agent
+    import orchestrator._tool_injection as _ti_vox
+
+    # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
+    # of a lit org (the dark case is in test_attachment_analyze_image.py).
+    monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
 
     monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
@@ -822,7 +827,13 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: card, and says open_world=False. None sends anything outside Metorite.
 #: 2026-11-02 (WS-PJP PJP-4, D168.1): update_tasks joined. Each ticked row is one
 #: update_task patch through the gateway, behind one card, and says open_world=False.
+#: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
+#: floor. It sends an attached image only to the metered tier-vision model of the
+#: Console, writes nothing, and says open_world=False.
+#: 2026-11-08 (SP-12, task 2295): get_plan (a read) joined. It reads one gateway route,
+#: the one plan engine, writes nothing and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
+    "analyze_image",
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
     "ask_questions", "assign", "bulk_update", "calendar", "call_agent",
@@ -842,7 +853,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "file_tasks",
     "file_access_ls", "file_access_read", "file_access_read_lines",
     "file_access_replace", "file_access_replace_lines", "file_access_write",
-    "find_conflicts", "find_tasks", "fit_for_task",
+    "find_conflicts", "find_tasks", "fit_for_task", "get_plan",
     "intake_queue", "link_tasks", "link_tasks_batch", "list_tasks",
     "make_document", "make_report", "mark_notifications_read", "merge_tags", "merge_tasks",
     "move_project", "convert_folder_to_project",
@@ -2484,7 +2495,7 @@ def _task_manager_block() -> str:
 #: and the risky tools of task-manager, whatever else this process imported.
 TASK_MANAGER_RISK_BLOCK = (
     "### Tool risk annotations\n"
-    "- Read-only (call freely): ask_questions, ask_user, decide, fetch_page, get_errors, "
+    "- Read-only (call freely): analyze_image, ask_questions, ask_user, decide, fetch_page, get_errors, "
     "get_workflow_run, github_repo_search, github_search, list_integrations, "
     "list_workflows, load_design_system, my_tasks_accounts, my_tasks_clarify, "
     "my_tasks_day_digest, my_tasks_detail, my_tasks_inbox_insights, my_tasks_list, "

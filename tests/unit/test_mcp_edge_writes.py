@@ -122,9 +122,7 @@ def _uuid(n: int) -> str:
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
                     "add_comment", "claim_task", "set_assignees", "add_task_link",
                     "remove_task_link", "create_project",
-                    "update_project", "preview_move_tasks", "move_tasks",
-                    # WS-39 TPL-1a
-                    "save_as_template", "create_project_from_template")
+                    "update_project", "preview_move_tasks", "move_tasks")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -531,9 +529,9 @@ class TestTheWriteToolsAtTheEdge:
         off = [t["name"] for t in (await _post(_rpc("tools/list"))).json()["result"]["tools"]]
         assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
         # The seven reads of EA-3, the two reads of EA-15 (§12.4) and
-        # `get_attachment` of IMG-3, `board_stats` of MCP-G19a and
-        # `list_templates` of WS-39 TPL-1a.
-        assert len(off) == 12
+        # `get_attachment` of IMG-3, `board_stats` of MCP-G19a, the two of MCP-G21, `get_plan` of
+        # SP-12, and `list_templates` of WS-39 TPL-1a.
+        assert len(off) == 15
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read projects:write", WRITE_SCOPES),

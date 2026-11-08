@@ -116,15 +116,18 @@ For a team of people who each run agents on one board, read `docs/external_agent
 
 ## What the agent can do
 
-Ten tools read:
+Twelve tools read:
 
 | Tool | What it reads |
 |---|---|
 | `whoami` | The member and the organization of the connection, its scopes and its pins |
 | `list_projects` | The projects you see |
 | `get_project` | One project |
+| `list_members` | The members that `set_assignees` accepts, with the address and the name only. Send `project_id` for one project. Without it, you get the members who open at least one project you see. A task in a personal project takes only its owner. `agent:<name>` is not in the list |
+| `list_tags` | The tag names of one project tree, or of every tree you see. Tags belong to the top project of a tree. A name shows once, in alphabetical order. Read it before you make a tag, so you reuse a name |
 | `list_tasks` | The tasks you see, at most 100 in one call. It filters by project, status, tag, assignee and text. It also filters by `status_category` (a list of backlog, todo, in_progress, done and cancelled), `updated_before`, `updated_after`, `created_after` and `due_before` (ISO dates), `has_parent` (false gives top-level tasks), `is_epic`, `assigned` (false gives tasks with no assignee) and `title_prefix` (not case sensitive, such as a plan id). With `compact` true, each row is small and one call gives up to 500 rows |
 | `board_stats` | The number of tasks you see, with no rows. It takes the filters of `list_tasks`. `group_by` takes one or two of `project`, `status_category`, `is_epic`, `assignee`, `holder` and `updated_age` (bands `<1d`, `1-3d`, `3-7d`, `7-30d`, `>30d`). Its `total` equals the rows that `list_tasks` gives for the same filters. A task with two assignees counts once for each under `assignee` |
+| `get_plan` | The order of work under one goal, epic or project: `root_task_id`. It returns the `ready` slices, the `waves`, the `critical_path` with `slack` in minutes, one `finish` date, the `next_slice`, the slices `held` by an open blocker outside the tree (`outside_blockers`), a `cycle` if the links loop, and `hidden`, the count of slices you cannot see. It names no hidden slice. `labels` gives the number and title of the tasks it names. It gives one finish date and no range. A read-only connection can call it |
 | `get_task` | One task, with its references |
 | `get_task_timeline` | The history of one task |
 | `search_tasks` | A search of the tasks you see, at most 50 hits |
@@ -165,15 +168,13 @@ The agent can also do these three things:
 
 ### Project templates
 
-When your organization has project templates turned on, three more tools show:
+When your organization has project templates turned on, one more tool shows:
 
-| Tool | What it does |
+| Tool | What it reads |
 |---|---|
-| `list_templates` | It reads the project templates of your organization. Each template gives its name, its description and how many statuses, task types, fields, tags and starter tasks it holds. Every member sees the same list |
-| `save_as_template` | It saves one project as a new template of your organization. The template copies the statuses, task types, fields, tags and tasks of the project, with each date as days from the start. It copies no person, no comment and no history. Metorite takes only a project that the whole organization can see, because every member can read a template |
-| `create_project_from_template` | It makes one new project from a template, inside a space, a folder or a project that you can see. Each task date is the start date plus its days in the template. The tool adds to the whole space each task type, field or tag that the space does not have. The same `idempotency_key` again gives back the first project and makes no second one |
+| `list_templates` | The project templates of your organization, or one template by its id. Each template gives its name, its description and how many statuses, task types, fields, tags and starter tasks it holds. Every member sees the same list. An agent that you pinned to some projects sees only a template whose source project it can see |
 
-The new project has the access of the space or the project above it. An agent that you pinned to some projects sees only a template whose source project it can see.
+The agent cannot save a template or make a project from one. Do that in Metorite, in the chat or in the app.
 
 ## Ask an agent in Metorite
 

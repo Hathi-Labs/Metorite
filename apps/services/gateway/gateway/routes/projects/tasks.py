@@ -1092,6 +1092,14 @@ async def get_task(
         await attach_agent_state(db, [result])
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="task")
+        # SP-9 — an epic rolls up EVERY descendant the reader can see. The key
+        # is absent for any other task. `subtasks` (direct children) is not
+        # touched. The one home of the rule is `rollup.py`.
+        from gateway.routes.projects.rollup import epic_rollup
+
+        rollup = await epic_rollup(db, vis, row)
+        if rollup is not None:
+            result["rollup"] = rollup
         return result
 
 
@@ -1211,6 +1219,7 @@ def check_task_values(
 async def create_task_in(
     db: Any, user: UserContext, values: dict[str, Any],
     first_assignees: set[str], *, vis: Any = None, align: bool = True,
+    task_number: int | None = None,
 ) -> CreatedTask:
     """THE one creator of a ``pm_tasks`` row on a member's request.
 
@@ -1221,7 +1230,11 @@ async def create_task_in(
     visibility when one transaction creates many tasks. *align* False skips
     the ALN-1 check job: the apply of a template is a bulk creator, and
     ``project_alignment.md`` §5 leaves the bulk creators out, as it leaves
-    out the file import.
+    out the file import. *task_number* is a number that the caller reserved
+    with ``core.reserve_task_numbers`` in a short transaction of its own, as
+    the file import does. Then this transaction never takes the lock of the
+    counter row, so a long apply of a template does not hold up each task
+    create in the space (TPL-1a repair, P1-b).
     """
     project_id = values["project_id"]
     await _store_due(db, user, values)
@@ -1285,7 +1298,9 @@ async def create_task_in(
     else:
         status = await load_default_status(db, status_home)
     values["status_id"] = str(status.id)
-    values["task_number"] = await next_task_number(db, root)
+    values["task_number"] = (
+        task_number if task_number is not None else await next_task_number(db, root)
+    )
     # WS-27m — through the registry, never straight into the array. Create
     # and patch both go this way, so there is no route by which a tag enters
     # the system unregistered; that is the only thing that keeps the

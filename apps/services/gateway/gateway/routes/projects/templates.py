@@ -64,7 +64,7 @@ from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_settings
-from fastapi import Depends, HTTPException, Response
+from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -73,6 +73,7 @@ from gateway.routes.projects.core import (
     Visibility,
     _tenant_session,
     actor,
+    can_manage_settings,
     emit,
     from_jsonb,
     insert_row,
@@ -82,6 +83,7 @@ from gateway.routes.projects.core import (
     record_activity,
     require_done_status,
     require_organization,
+    reserve_task_numbers,
     resolve_visibility,
     root_project_id,
     router,
@@ -108,6 +110,7 @@ from gateway.routes.projects.tags import (
 )
 from gateway.routes.projects.tasks import check_task_values, create_task_in
 from gateway.routes.projects.tree import (
+    TREE_RACE_DETAIL,
     _tree_race_as_409,
     check_node_values,
     create_node_in,
@@ -160,6 +163,11 @@ LIST_LIMIT = 200
 #: The shape of an idempotency key: the shape of the MCP edge's key input.
 KEY_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
 _DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+#: The years that a date of a template may name. Python adds days only up to
+#: 9999-12-31, and the due-date seam turns a day into an instant in a zone, so
+#: a date outside these years is a 422 and never a 500 (repair P2-a).
+MIN_YEAR = 1900
+MAX_YEAR = 2999
 #: The unique index of one name for each kind in each org.
 NAME_INDEX = "uq_pm_templates_name"
 #: The CHECK of the size of the payload.
@@ -174,6 +182,7 @@ TOO_LARGE = "template_too_large"
 INVALID = "template_invalid"
 KEY_USED = "key_used"
 FIELD_CONFLICT = "field_conflict"
+DATE_OUT_OF_RANGE = "date_out_of_range"
 NOT_A_PROJECT_TEMPLATE = "not_a_project_template"
 
 
@@ -249,9 +258,31 @@ def _day(value: str | None) -> date | None:
     if not value:
         return None
     try:
-        return date.fromisoformat(value)
+        day = date.fromisoformat(value)
     except ValueError as exc:
         raise _refusal(422, INVALID, f"{value} is not a real date. Send a date such as 2026-12-01.") from exc
+    _in_range(day)
+    return day
+
+
+def _in_range(day: date) -> date:
+    """*day*, or a 422 when its year is outside :data:`MIN_YEAR` to :data:`MAX_YEAR`."""
+    if not MIN_YEAR <= day.year <= MAX_YEAR:
+        raise _refusal(
+            422, DATE_OUT_OF_RANGE,
+            f"A template date must fall in the years {MIN_YEAR} to {MAX_YEAR}. Send another start date.",
+        )
+    return day
+
+
+def _offset_day(start: date, days: int) -> str:
+    """*start* plus *days* calendar days, as ``YYYY-MM-DD``, or a 422 when the
+    sum leaves the range. ``timedelta`` raises OverflowError past 9999-12-31."""
+    try:
+        day = start + timedelta(days=days)
+    except OverflowError:
+        day = date.max
+    return _in_range(day).isoformat()
 
 
 # ── The payload (schema_version 1) ──────────────────────────────────────────
@@ -530,12 +561,26 @@ _RETURNED_COLUMNS = (
 
 
 @router.get("/templates", dependencies=_ENABLED)
-async def list_templates(user: UserContext = Depends(get_current_user)) -> dict:
-    """The templates of the caller's org, by name.
+async def list_templates(
+    user: UserContext = Depends(get_current_user),
+    template_id: str | None = Query(None),
+) -> dict:
+    """The templates of the caller's org, by name, or one by its id.
 
     Each row holds the numbers of the template, never its tree. The org is
-    in the WHERE as well as in RLS, two fences on purpose.
+    in the WHERE as well as in RLS, two fences on purpose. ``template_id``
+    reads one template, so a caller never looks for an id inside the first
+    :data:`LIST_LIMIT` rows (repair P3-b). An id of another org, or one that
+    the reach of an agent hides, gives no row.
     """
+    one = ""
+    extra: dict[str, Any] = {}
+    if template_id is not None:
+        try:
+            extra["tid"] = str(uuid.UUID(str(template_id)))
+        except ValueError as exc:
+            raise _refusal(422, INVALID, "template_id is not an id. Send an id from the list.") from exc
+        one = " AND t.id = CAST(:tid AS uuid)"
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         org = require_organization(vis)
@@ -544,11 +589,11 @@ async def list_templates(user: UserContext = Depends(get_current_user)) -> dict:
             text(
                 f"SELECT {_TEMPLATE_COLUMNS} FROM pm_templates t"
                 " WHERE t.organization_id = CAST(:org AS uuid)"
-                f"{reach}"
+                f"{one}{reach}"
                 " ORDER BY lower(t.name), t.kind, t.id"
                 " LIMIT :limit"
             ),
-            {**params, "org": org, "limit": LIST_LIMIT + 1},
+            {**params, **extra, "org": org, "limit": LIST_LIMIT + 1},
         )).fetchall()
     more = len(rows) > LIST_LIMIT
     shown = [_template_wire(r) for r in rows[:LIST_LIMIT]]
@@ -858,25 +903,43 @@ async def _replay(db: Any, vis: Visibility, org: str, by: str, key: str, digest:
 
 
 async def _apply_statuses(
-    db: Any, project_id: str, payload: PayloadV1,
-) -> tuple[dict[str, str], bool, int]:
+    db: Any, user: UserContext, project_id: str, payload: PayloadV1,
+) -> tuple[dict[str, str | None], bool, int]:
     """``(lane id by lower name, owns, lanes made)`` of the new project.
 
     The project inherits its parent's set, as each new child does. When the
     template's set is the same set (the names and the stages), it keeps it.
-    Else it owns a copy of the template's set, with no task to move (the
-    switch of ``admin.set_status_set``, on an empty node), and D79 holds.
+
+    When the sets differ, the caller's right decides (repair P2-c). A set of
+    its own is a settings write (``core.SETTINGS_WRITE``, the right of
+    ``admin.set_status_set``). With the right, the project owns a copy of the
+    template's set, with no task to move, and D79 holds. Without it, the
+    project keeps the parent's set, and each template status maps to a lane of
+    that set: the lane of the same name and stage, else the first lane of the
+    same stage, else none, so the task takes the first open lane.
     """
     owner = await status_owner_id(db, project_id)
     lanes = (await db.execute(
-        text("SELECT id, name, category FROM pm_task_statuses WHERE project_id = CAST(:o AS uuid)"),
+        text(
+            "SELECT id, name, category FROM pm_task_statuses"
+            f" WHERE project_id = CAST(:o AS uuid) ORDER BY {status_order_sql()}"
+        ),
         {"o": owner},
     )).fetchall()
     have = {(str(r.name).strip().lower(), str(r.category)) for r in lanes}
     want = {(s.name.strip().lower(), s.category) for s in payload.statuses}
     if have == want:
         return {str(r.name).strip().lower(): str(r.id) for r in lanes}, False, 0
-    ids: dict[str, str] = {}
+    if not can_manage_settings(user):
+        mapped: dict[str, str | None] = {}
+        for spec in payload.statuses:
+            name = spec.name.strip().lower()
+            same = next((r for r in lanes if str(r.name).strip().lower() == name
+                         and str(r.category) == spec.category), None)
+            stage = same or next((r for r in lanes if str(r.category) == spec.category), None)
+            mapped[name] = str(stage.id) if stage is not None else None
+        return mapped, False, 0
+    ids: dict[str, str | None] = {}
     for spec in payload.statuses:
         row = await insert_row(db, "pm_task_statuses", {
             "project_id": project_id, "name": spec.name.strip(),
@@ -892,7 +955,25 @@ async def _apply_statuses(
     return ids, True, len(ids)
 
 
-async def _apply_types(db: Any, root: str, payload: PayloadV1) -> tuple[dict[str, str], int]:
+#: The insert of one task type of a space. ``ON CONFLICT DO NOTHING`` on the
+#: unique name of migration 175, so a second apply into the same space at the
+#: same moment waits for the first and then reuses its row (repair P2-b). The
+#: tenant is explicit, as ``admin.create_type`` passes it.
+_TYPE_INSERT_SQL = (
+    "INSERT INTO pm_task_types (project_id, organization_id, name, icon, color,"
+    " is_default, is_epic, is_system)"
+    " VALUES (CAST(:root AS uuid), CAST(:org AS uuid), :name, :icon, :color,"
+    " false, :is_epic, false)"
+    " ON CONFLICT DO NOTHING RETURNING id"
+)
+_TYPE_OF_SQL = (
+    "SELECT id FROM pm_task_types WHERE project_id = CAST(:root AS uuid) AND name = :name"
+)
+
+
+async def _apply_types(
+    db: Any, root: str, org: str, payload: PayloadV1,
+) -> tuple[dict[str, str], int]:
     """``(type id by name, types made)``. A name the space already
     holds, of its own or org-wide, is reused. A type is never the default and
     never a system type: those are each space's own."""
@@ -903,14 +984,43 @@ async def _apply_types(db: Any, root: str, payload: PayloadV1) -> tuple[dict[str
     made = 0
     for spec in payload.types:
         name = spec.name.strip()
-        if name not in by_name:
-            row = await insert_row(db, "pm_task_types", {
-                "project_id": root, "name": name, "icon": spec.icon, "color": spec.color,
-                "is_default": False, "is_system": False, "is_epic": spec.is_epic,
-            })
-            by_name[name] = str(row.id)
+        if name in by_name:
+            continue
+        row = (await db.execute(text(_TYPE_INSERT_SQL), {
+            "root": root, "org": org, "name": name, "icon": spec.icon,
+            "color": spec.color, "is_epic": spec.is_epic,
+        })).first()
+        if row is None:
+            # Another apply made it a moment ago. Its commit is visible now.
+            row = (await db.execute(text(_TYPE_OF_SQL), {"root": root, "name": name})).first()
+            if row is None:
+                raise _refusal(409, FIELD_CONFLICT, f"The task type '{name}' changed at the same moment. Try again.")
+        else:
             made += 1
+        by_name[name] = str(row.id)
     return {t.name.strip(): by_name[t.name.strip()] for t in payload.types}, made
+
+
+#: The insert of one custom field of a space: the SQL of
+#: ``custom_fields.create_field`` (``options`` is JSONB, and the tenant is
+#: explicit for the trigger of migration 161), with ``ON CONFLICT DO NOTHING``
+#: for an apply of the same moment (repair P2-b).
+_FIELD_INSERT_SQL = (
+    "INSERT INTO pm_custom_fields (project_id, organization_id, field_key, name,"
+    " description, field_type, options, position, created_by)"
+    " VALUES (CAST(:root AS uuid), CAST(:org AS uuid), :key, :name, :description,"
+    " :type, CAST(:options AS jsonb), :position, :by)"
+    " ON CONFLICT DO NOTHING RETURNING id"
+)
+
+
+def _field_clash(key: str, held: str, wanted: str) -> HTTPException:
+    return _refusal(
+        409, FIELD_CONFLICT,
+        f"The space already has the field '{key}' of type {held}, and the template "
+        f"has it as {wanted}. Make the project in another space, or change the field "
+        "there first.",
+    )
 
 
 async def _apply_fields(db: Any, root: str, org: str, by: str, payload: PayloadV1) -> int:
@@ -921,34 +1031,31 @@ async def _apply_fields(db: Any, root: str, org: str, by: str, payload: PayloadV
     for spec in payload.fields:
         held = existing.get(spec.field_key)
         if held is not None and str(held["field_type"]) != spec.field_type:
-            raise _refusal(
-                409, FIELD_CONFLICT,
-                f"The space already has the field '{spec.field_key}' of type "
-                f"{held['field_type']}, and the template has it as {spec.field_type}. "
-                "Make the project in another space, or change the field there first.",
-            )
+            raise _field_clash(spec.field_key, str(held["field_type"]), spec.field_type)
     if len(existing) + len(missing) > MAX_FIELDS:
         raise _refusal(
             409, FIELD_CONFLICT,
             f"The space would hold more than {MAX_FIELDS} custom fields. Remove some fields first.",
         )
+    made = 0
     for spec in missing:
-        # The SQL of `custom_fields.create_field`: `options` is JSONB, and
-        # the tenant is explicit for the trigger of migration 161.
-        await db.execute(
-            text(
-                "INSERT INTO pm_custom_fields (project_id, organization_id, field_key, name,"
-                " description, field_type, options, position, created_by)"
-                " VALUES (CAST(:root AS uuid), CAST(:org AS uuid), :key, :name, :description,"
-                " :type, CAST(:options AS jsonb), :position, :by)"
-            ),
-            {
-                "root": root, "org": org, "key": spec.field_key, "name": spec.name.strip(),
-                "description": spec.description, "type": spec.field_type,
-                "options": json.dumps(spec.options), "position": spec.position, "by": by,
-            },
-        )
-    return len(missing)
+        row = (await db.execute(text(_FIELD_INSERT_SQL), {
+            "root": root, "org": org, "key": spec.field_key, "name": spec.name.strip(),
+            "description": spec.description, "type": spec.field_type,
+            "options": json.dumps(spec.options), "position": spec.position, "by": by,
+        })).first()
+        if row is not None:
+            made += 1
+            continue
+        # Another apply made it a moment ago: read it again, and refuse a
+        # field of another type, as above.
+        now = {str(d["field_key"]): d for d in await load_definitions(db, root)}
+        held = now.get(spec.field_key)
+        if held is None:
+            raise _refusal(409, FIELD_CONFLICT, f"The field '{spec.field_key}' changed at the same moment. Try again.")
+        if str(held["field_type"]) != spec.field_type:
+            raise _field_clash(spec.field_key, str(held["field_type"]), spec.field_type)
+    return made
 
 
 async def _apply_tags(db: Any, root: str, by: str, payload: PayloadV1) -> int:
@@ -972,9 +1079,15 @@ async def _apply_tags(db: Any, root: str, by: str, payload: PayloadV1) -> int:
 
 async def _apply_tasks(
     db: Any, user: UserContext, vis: Visibility, project_id: str, start: date,
-    payload: PayloadV1, lanes: dict[str, str], types: dict[str, str],
+    payload: PayloadV1, lanes: dict[str, str | None], types: dict[str, str],
+    numbers: list[int],
 ) -> int:
-    """Make the task tree through ``tasks.create_task_in``, parents first."""
+    """Make the task tree through ``tasks.create_task_in``, parents first.
+
+    Each task takes the next of *numbers*, which the caller reserved before
+    this transaction, so this transaction never locks the counter row of the
+    space (repair P1-b).
+    """
     made = 0
     stack: list[tuple[TaskSpec, str | None]] = [(t, None) for t in reversed(payload.tasks)]
     while stack:
@@ -984,8 +1097,9 @@ async def _apply_tasks(
             values["description"] = spec.description
         if parent is not None:
             values["parent_task_id"] = parent
-        if spec.status is not None:
-            values["status_id"] = lanes[spec.status.strip().lower()]
+        lane = lanes.get(spec.status.strip().lower()) if spec.status is not None else None
+        if lane is not None:
+            values["status_id"] = lane
         if spec.type is not None:
             values["type_id"] = types[spec.type.strip()]
         if spec.tags:
@@ -996,16 +1110,56 @@ async def _apply_tasks(
             if getattr(spec, key) is not None:
                 values[key] = getattr(spec, key)
         if spec.start_offset_days is not None:
-            values["start_date"] = (start + timedelta(days=spec.start_offset_days)).isoformat()
+            values["start_date"] = _offset_day(start, spec.start_offset_days)
         if spec.due_offset_days is not None:
             # A date with no time: the one seam stores noon of that day in
             # the caller's zone (`personal.stored_due`, RX-5).
-            values["due_at"] = (start + timedelta(days=spec.due_offset_days)).isoformat()
+            values["due_at"] = _offset_day(start, spec.due_offset_days)
         first = check_task_values(user, values, narrow=False)
-        task = await create_task_in(db, user, values, first, vis=vis, align=False)
+        task = await create_task_in(db, user, values, first, vis=vis, align=False,
+                                    task_number=numbers[made])
         made += 1
         stack.extend((c, str(task.row.id)) for c in reversed(spec.children))
     return made
+
+
+_TEMPLATE_OF_SQL = (
+    "SELECT t.* FROM pm_templates t WHERE t.id = CAST(:id AS uuid)"
+    " AND t.organization_id = CAST(:org AS uuid)"
+)
+
+
+async def _reserve(
+    user: UserContext, tid: str, parent: str, by: str, key: str, digest: str,
+) -> tuple[Any, PayloadV1, str, list[int]] | dict:
+    """The first, short transaction of an apply (repair P1-b).
+
+    It answers a replay of a key at once. Else it reads the template and the
+    parent, and it reserves one task number for each starter task with
+    ``core.reserve_task_numbers``, the one allocator, as the file import does.
+    It commits at once, so the lock of the counter row lasts one statement,
+    and a task create in the same space never waits for the long apply.
+    A failed apply leaves a gap in the numbers. Returns ``(template row,
+    payload, root, numbers)``, or the replay answer.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        org = require_organization(vis)
+        earlier = (await db.execute(text(_CLAIMED_SQL), {"org": org, "by": by, "key": key})).first()
+        if earlier is not None:
+            return await _replay(db, vis, org, by, key, digest)
+        reach, params = _reach_clause(vis)
+        row = (await db.execute(text(_TEMPLATE_OF_SQL + reach), {**params, "id": tid, "org": org})).first()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Template not found")
+        if row.kind != PROJECT_KIND:
+            raise _refusal(422, NOT_A_PROJECT_TEMPLATE, "This template makes no project.")
+        spec = parse_payload(row.payload)
+        await load_visible_project(db, vis, parent)
+        root = await root_project_id(db, parent)
+        count = spec.counts.tasks
+        first = await reserve_task_numbers(db, root, count) if count else 0
+    return row, spec, root, list(range(first, first + count))
 
 
 @router.post("/templates/{template_id}/apply", status_code=201, dependencies=_ENABLED)
@@ -1014,19 +1168,29 @@ async def apply_template(
     template_id: str, payload: TemplateApplyIn, response: Response,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """Make a new project from a template, in one transaction.
+    """Make a new project from a template.
 
-    201 with the new project. The same ``idempotency_key`` with the same body
-    again answers 200 with the first project, ``replayed: true``, and makes
-    nothing. The same key with another body answers 409.
+    Two transactions. :func:`_reserve` answers a replay, or reserves the task
+    numbers and commits at once. Then ONE transaction claims the key and
+    makes the project, its statuses, the space's missing vocabulary and the
+    task tree. 201 with the new project. The same ``idempotency_key`` with
+    the same body again answers 200 with the first project, ``replayed:
+    true``, and makes nothing. The same key with another body answers 409.
     """
     tid = _uuid_or_404(template_id, "Template")
     parent = _uuid_or_404(payload.parent_project_id, "Project")
     name = _clean_text(payload.name, "name", PROJECT_NAME_MAX, required=False)
     description = _clean_text(payload.description, "description", DESCRIPTION_MAX, required=False)
+    start_day = _day(payload.start_date)
     by = actor(user).lower()
     digest = request_hash(tid, payload)
     key = payload.idempotency_key
+
+    prepared = await _reserve(user, tid, parent, by, key, digest)
+    if isinstance(prepared, dict):
+        response.status_code = 200
+        return prepared
+    row, spec, reserved_root, numbers = prepared
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -1035,22 +1199,11 @@ async def apply_template(
             text(_CLAIM_SQL), {"by": by, "key": key, "hash": digest},
         )).first()
         if claim is None:
+            # A second apply of the key won the claim after the reserve. Its
+            # numbers stay unused: a gap, which §14.8 accepts.
             response.status_code = 200
             return await _replay(db, vis, org, by, key, digest)
-        reach, params = _reach_clause(vis)
-        row = (await db.execute(
-            text(
-                "SELECT t.* FROM pm_templates t WHERE t.id = CAST(:id AS uuid)"
-                f" AND t.organization_id = CAST(:org AS uuid){reach}"
-            ),
-            {**params, "id": tid, "org": org},
-        )).first()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Template not found")
-        if row.kind != PROJECT_KIND:
-            raise _refusal(422, NOT_A_PROJECT_TEMPLATE, "This template makes no project.")
-        spec = parse_payload(row.payload)
-        start = _day(payload.start_date) or await member_today(db, by)
+        start = start_day or _in_range(await member_today(db, by))
 
         values: dict[str, Any] = {
             "name": name or row.name,
@@ -1061,13 +1214,18 @@ async def apply_template(
         kind = check_node_values(user, values)
         node = await create_node_in(db, user, vis, values, kind)
         project_id = str(node.id)
-
-        lanes, owns, lanes_made = await _apply_statuses(db, project_id, spec)
         root = await root_project_id(db, project_id)
-        types, types_made = await _apply_types(db, root, spec)
+        if root != reserved_root:
+            # The parent moved to another space between the two
+            # transactions. Its numbers belong to the other counter.
+            raise HTTPException(status_code=409, detail=TREE_RACE_DETAIL)
+
+        lanes, owns, lanes_made = await _apply_statuses(db, user, project_id, spec)
+        types, types_made = await _apply_types(db, root, org, spec)
         fields_made = await _apply_fields(db, root, org, by, spec)
         tags_made = await _apply_tags(db, root, by, spec)
-        tasks_made = await _apply_tasks(db, user, vis, project_id, start, spec, lanes, types)
+        tasks_made = await _apply_tasks(
+            db, user, vis, project_id, start, spec, lanes, types, numbers)
 
         await db.execute(
             text(
