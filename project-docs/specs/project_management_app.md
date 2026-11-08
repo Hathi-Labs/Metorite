@@ -15,6 +15,7 @@
 > module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-08**
 > 🟢 **WS-39 SP-1 BUILT 2026-11-08, not merged** (§13.2a, migration 364, task 960). The cycle
 > store: four tables and nine routes, dark behind `PROJECTS_SPRINTS_ORGS`. No UI and no chat tool.
+> Fix round 2 (2026-11-08): a task that leaves the node of its open cycle also leaves the cycle.
 > · **Previously updated 2026-10-25**
 > 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 304). A comment or a link
 > on a task no longer gives 412 to a pending write with the old `If-Match`. A field change still does.
@@ -8974,7 +8975,7 @@ A **cycle** and a **sprint** are one record. Copy for a Scrum team says "sprint"
 
 ### 13.2a The cycle store (SP-1, task 960)
 
-**Status: BUILT 2026-11-08, not merged.** Migration `infra/postgres/364_pm_cycles.sql`. Check the number again at merge (R1). The routes are in `gateway/routes/projects/cycles.py`. Fence: `tests/unit/test_sprint_store_r8.py` (R8).
+**Status: BUILT 2026-11-08, not merged. Fix round 2 done 2026-11-08.** Migration `infra/postgres/364_pm_cycles.sql`. Check the number again at merge (R1). The routes are in `gateway/routes/projects/cycles.py`. Fence: `tests/unit/test_sprint_store_r8.py` (R8).
 
 **The flag.** The board names the flag `PROJECTS_SPRINTS`. It is the per-org list `PROJECTS_SPRINTS_ORGS`, and the default is empty. While the list does not hold the org, each cycle route answers 404 and writes nothing. A SIGHUP reload applies a change (`docs/flag_reload.md`). The one reader is `cycles.sprints_allowed`. Only the owner flips it.
 
@@ -9009,9 +9010,19 @@ A **cycle** and a **sprint** are one record. Copy for a Scrum team says "sprint"
 - An agent follows the same right, because `resolve_visibility` narrows the agent.
 - A miss is 404, never 403 (R5).
 
-**Hidden tasks (§13.7, the default of task 849).** The store keeps the full total. A reader sees the tasks that it can see, and `hidden`, the count of the rest. `GET /projects/my/summary` also counts only what the reader can see. The committed view of a cycle gives the visible count, `hidden` and the visible estimate. A close refuses with 409 when the caller cannot see an unfinished task, so nothing moves that the caller cannot see.
+**Hidden tasks (§13.7, the default of task 849).** The store keeps the full total. A reader sees the tasks that it can see, and `hidden`, the count of the rest. `GET /projects/my/summary` also counts only what the reader can see. The committed view of a cycle gives the visible count, `hidden` and the visible estimate. The start answers the same two counts.
+
+**A refusal for a hidden task.** A close refuses with 409 `hidden_tasks` when the caller cannot see an unfinished task. So nothing moves that the caller cannot see. A delete of a planned cycle moves each of its tasks to the backlog. So the delete refuses with the same 409 when the cycle holds a task that the caller cannot see.
 
 **The carry-over log.** The CHECK of `pm_activities.type` takes `cycle_transfer`, and `core.ACTIVITY_TYPES` mirrors it. A close writes one row for each task that it moves. The meta is `{from_cycle, to_cycle, choice}`, and `to_cycle` is null for `backlog`. The body names no cycle, because a reader of the task may not see the node of the cycle. The web timeline prints the body of a type that it does not know, so the web app does not change.
+
+**An archived task at the close.** A merge archives the merged task and leaves its status (`merge.py`). The close keeps each archived task in the closing cycle as part of its record, and needs no choice for it. A choice for an archived task gets 422 `task_archived`, the rule of the add. The close writes no row for it.
+
+**A task that moves away.** Three moves can take a task out of the node of its cycle: `POST /projects/tasks/move`, `POST /projects/tasks/{id}/move` and `POST /projects/nodes/{id}/move`. Each calls `cycles.detach_moved_tasks` inside its own transaction. The helper removes the row of each open cycle (`planned` or `active`) whose node no longer holds the task. It writes one `cycle_transfer` row for each removal, with the meta `{from_cycle, to_cycle: null, cause: "task_moved"}`. It reads no flag, so it runs while `PROJECTS_SPRINTS_ORGS` is off.
+
+**What a move keeps.** A move inside the node keeps the row. A closed cycle keeps its rows, and the start snapshot does not change. Without this rule, a row that stays blocks the task for good. A member who sees only the new node cannot remove the row. The lead of the old node cannot close the cycle, so that node cannot start another cycle.
+
+**Locks.** A close locks the closing cycle and each next cycle `FOR UPDATE` in one statement, in id order, before any other work. So two closes cannot deadlock. The close reads its member tasks `FOR SHARE`, in id order. A delete or a move of a member task then waits for the close, or the close waits for that write. A membership row that left the cycle during the close gets no activity row.
 
 **Capacity.** The start takes `capacity`, a list of members with their review minutes. Each member must be an active member of the org. SP-1 writes the rows at the start only. SP-3 decides where a planned cycle keeps its planned capacity.
 
@@ -9023,11 +9034,11 @@ A **cycle** and a **sprint** are one record. Copy for a Scrum team says "sprint"
 | `POST /projects/nodes/{project_id}/cycles` | Plan a cycle with a name and two dates. The goal, the cooldown and the credit budget are optional. An archived node refuses it |
 | `GET /projects/cycles/{cycle_id}` | The cycle, its visible tasks, `hidden`, the committed view and the capacity |
 | `PATCH /projects/cycles/{cycle_id}` | Edit with `If-Match`. A closed cycle answers 409. A started cycle keeps a goal |
-| `DELETE /projects/cycles/{cycle_id}` | A planned cycle only. Its tasks go back to the backlog |
+| `DELETE /projects/cycles/{cycle_id}` | A planned cycle only. Its tasks go back to the backlog. A hidden task in the cycle answers 409 `hidden_tasks` |
 | `POST /projects/cycles/{cycle_id}/tasks` | Add a task on the node or below it. A task in another cycle answers 409. The text names that cycle only when the caller can see its node |
 | `DELETE /projects/cycles/{cycle_id}/tasks/{task_id}` | Remove a task. A closed cycle keeps each finished task (409). A task that is open again may leave a closed cycle |
-| `POST /projects/cycles/{cycle_id}/start` | The cycle needs a goal. The start stores both snapshots. A second active cycle on the node answers 409 |
-| `POST /projects/cycles/{cycle_id}/close` | One choice for each unfinished task: `next` with a cycle id, or `backlog`. The close moves the membership, writes the log and sets `closed_at`. A finished task stays in the closed cycle |
+| `POST /projects/cycles/{cycle_id}/start` | The cycle needs a goal. The start stores both snapshots. A negative estimate goes into the snapshot as no estimate (NULL). A second active cycle on the node answers 409. The answer gives the caller's own count and `hidden` |
+| `POST /projects/cycles/{cycle_id}/close` | One choice for each unfinished task: `next` with a cycle id, or `backlog`. The close moves the membership, writes the log and sets `closed_at`. A finished task and an archived task stay in the closed cycle |
 
 **The chat and the MCP.** Each route has a row in `skill_projects/manifest.py`. Each tool is in `PLANNED` for SP-5 (task 964). The fields are gap G26 of `projects_agent_parity.md` §3.3.
 
@@ -9097,7 +9108,7 @@ Each row has one Metorite task. The rows SP-1 to SP-5 keep the scope of the boar
 
 | Row | Task | Scope | Done when | Risk | Depends on |
 |---|---|---|---|---|---|
-| **SP-1** | 960 | The cycle store (§13.2a): a cycle table, a membership table with `UNIQUE (task_id)`, the committed snapshot and the capacity snapshot. Each is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and expand only (R6). Nine routes: list the cycles of a node, read one, plan, edit (`If-Match`), delete a planned cycle, add a task, remove a task, start and close. Start needs a goal and stores the committed scope and its total. Close takes a choice for each unfinished task and logs each move. The flag `PROJECTS_SPRINTS` (`PROJECTS_SPRINTS_ORGS`) is OFF by default. **BUILT 2026-11-08, not merged** (migration 364) | R8 tests prove one cycle for a task, no read across organizations, one active cycle for each node, a logged move for each carry-over, a start total that a carry-over does not change, the visible count and `hidden`, FORCE RLS on each table, and 404 on each route with the flag off. Verify: `TENANT_LADDER_DATABASE_URL=<scratch> uv run pytest tests/unit/test_sprint_store_r8.py -rs` (no skip), and `uv run pytest tests/unit/test_projects_migration.py tests/unit/test_projects_chat_coverage.py tests/unit/test_tenant_coverage.py` | HIGH | SP-0 |
+| **SP-1** | 960 | The cycle store (§13.2a): a cycle table, a membership table with `UNIQUE (task_id)`, the committed snapshot and the capacity snapshot. Each is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and expand only (R6). Nine routes: list the cycles of a node, read one, plan, edit (`If-Match`), delete a planned cycle, add a task, remove a task, start and close. Start needs a goal and stores the committed scope and its total. Close takes a choice for each unfinished task and logs each move. The flag `PROJECTS_SPRINTS` (`PROJECTS_SPRINTS_ORGS`) is OFF by default. **BUILT 2026-11-08, not merged** (migration 364) | R8 tests prove one cycle for a task, no read across organizations, one active cycle for each node, a logged move for each carry-over, a start total that a carry-over does not change, the visible count and `hidden`, FORCE RLS on each table, and 404 on each route with the flag off. Fix round 2 adds proofs that a move out of the node frees the row, and that an archived task needs no choice. It also proves that a negative estimate starts, and that two closes cannot deadlock. Verify: `TENANT_LADDER_DATABASE_URL=<scratch> uv run pytest tests/unit/test_sprint_store_r8.py -rs` (no skip), and `uv run pytest tests/unit/test_projects_migration.py tests/unit/test_projects_chat_coverage.py tests/unit/test_tenant_coverage.py` | HIGH | SP-0 |
 | **SP-2** | 961 | A seeded Story type. An epic filter in the Backlog and on the Board. Epics as bars on the Timeline. "Suggest stories" with Mira, and nothing is written before the accept. The progress of an epic moves to SP-9 | An epic with 5 children and 2 done shows "2 of 5". "Suggest stories" creates no task before the accept. Visual review at 1440 px and 390 px | STANDARD | SP-0 |
 | **SP-3** | 962 | The style picker (§13.1) with the Sprints or Cycles style. A Backlog canvas in the tab row (OP-12, task 839): planned cycles above, the backlog below. Drag, or "Move to sprint" on the phone. Each cycle shows its count and its hours against its capacity: the review hours of named people, plus credits. Over capacity warns and never blocks | Four-capture visual review at 1440 px and 390 px. A drag and its Undo both work | STANDARD | SP-1 |
 | **SP-4** | 963 | Start and close dialogs. The default length is one week, and the goal is required. The Board opens on the active cycle. Reports: committed, added, done and carried over. A burndown that shows each change of scope. Throughput by count and by hours, with no points | R8 tests prove the report numbers after a carry-over. Visual review on desktop and phone | STANDARD | SP-1, SP-3 |

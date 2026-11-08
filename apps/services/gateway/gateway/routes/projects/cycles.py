@@ -43,7 +43,16 @@ trigger ``pm_cycles_guard`` refuses a change of the start columns.
 **The carry-over.** The close takes a choice for each unfinished task:
 ``next`` with a cycle id, or ``backlog``. It moves the membership and writes
 one ``cycle_transfer`` activity on the task, with the meta
-``{from_cycle, to_cycle, choice}``.
+``{from_cycle, to_cycle, choice}``. An archived task (a merged task too) needs
+no choice. It stays in the closing cycle as part of its record.
+
+**A task that moves away.** A move of a task, or of a project above it, can
+take a task out of the node of its open cycle. :func:`detach_moved_tasks`
+then takes the task out of that cycle, in the transaction of the move, and
+writes one ``cycle_transfer`` activity with the meta
+``{from_cycle, to_cycle: null, cause: "task_moved"}``. It runs while the flag
+is off too. The start snapshot does not change, and a closed cycle keeps its
+rows.
 
 The tenant and the actor come from the session. ``organization_id`` is the
 column DEFAULT, the bound tenant, and each ``*_by`` is the caller's email. The
@@ -55,7 +64,7 @@ Fence: ``tests/unit/test_sprint_store_r8.py`` (R8).
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from datetime import date
 from decimal import Decimal
@@ -90,6 +99,8 @@ CYCLE_STATES: tuple[str, ...] = ("planned", "active", "closed")
 CLOSE_CHOICES: tuple[str, ...] = ("next", "backlog")
 #: The activity type of one logged move (the CHECK of ``pm_activities.type``).
 TRANSFER_TYPE = "cycle_transfer"
+#: The meta ``cause`` of a task that left its cycle because the task moved.
+MOVED_CAUSE = "task_moved"
 #: The bounds of the text columns (the CHECKs hold them too).
 NAME_MAX = 120
 GOAL_MAX = 500
@@ -555,7 +566,9 @@ async def delete_cycle(
     cycle_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Delete a planned cycle. Its tasks go back to the backlog. A started
-    cycle is 409: close it instead, so its record stays."""
+    cycle is 409: close it instead, so its record stays. A cycle that holds a
+    task that the caller cannot see is 409 too, as for a close: the delete
+    would move that task."""
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         cycle = await _load_cycle(db, vis, cycle_id, lock="FOR UPDATE")
@@ -563,10 +576,17 @@ async def delete_cycle(
             raise _refusal(409, "cycle_started",
                            "Only a planned cycle can be deleted. Close this cycle instead, "
                            "so its record stays.")
-        freed = int((await db.execute(
-            text("SELECT count(*) FROM pm_cycle_tasks WHERE cycle_id = CAST(:cid AS uuid)"),
-            {"cid": str(cycle.id)},
-        )).scalar() or 0)
+        # FOR UPDATE above: an add waits for this delete, so the count stays true.
+        counts = (await db.execute(
+            text(_member_counts_sql(vis)), {"ids": [str(cycle.id)], **vis.params},
+        )).fetchone()
+        freed = int(counts.total) if counts is not None else 0
+        hidden = freed - (int(counts.visible) if counts is not None else 0)
+        if hidden:
+            raise _refusal(409, "hidden_tasks",
+                           "This cycle holds tasks that are hidden from you "
+                           f"(hidden: {hidden}). A member who can see them must delete the "
+                           "cycle.")
         await db.execute(
             text("DELETE FROM pm_cycles WHERE id = CAST(:cid AS uuid)"),
             {"cid": str(cycle.id)},
@@ -681,6 +701,92 @@ async def remove_cycle_task(
     return {"cycle_id": str(cycle.id), "task_id": tid, "removed": True}
 
 
+# ── A task that moves away ──────────────────────────────────────────────────
+
+#: The body of a task that left its cycle because it moved. It names no
+#: cycle, for the reason of ``_TRANSFER_BODY``.
+MOVED_BODY = "Left its cycle, because the task moved out of the project of the cycle."
+
+#: The rows of open cycles that hold one of the tasks ``:ids``. The caller
+#: checks each row with the one ancestor walk (``_IN_NODE_SQL``).
+_OPEN_ROWS_OF_TASKS_SQL = (
+    "SELECT ct.cycle_id, ct.task_id, t.project_id, c.project_id AS cycle_node"
+    "  FROM pm_cycle_tasks ct"
+    "  JOIN pm_cycles c ON c.id = ct.cycle_id"
+    "  JOIN pm_tasks t ON t.id = ct.task_id"
+    " WHERE ct.task_id = ANY(CAST(:ids AS uuid[])) AND c.state <> 'closed'"
+    " ORDER BY ct.task_id"
+)
+
+#: The rows of open cycles that a move of the node ``:node`` takes out of
+#: their node. Each task of the subtree is below the moved node. A cycle on a
+#: node outside the subtree holds the task only when that node is in
+#: ``chain``: the moved node and each node above its new place. The walk up
+#: is the one ancestor chain of ``core``.
+_OPEN_ROWS_LEFT_BY_NODE_SQL = _ancestor_chain_sql("id = CAST(:node AS uuid)") + (
+    ", sub AS ("
+    "    SELECT id FROM pm_projects WHERE id = CAST(:node AS uuid)"
+    "    UNION ALL"
+    "    SELECT p.id FROM pm_projects p JOIN sub s ON p.parent_project_id = s.id"
+    ")"
+    " SELECT ct.cycle_id, ct.task_id, t.project_id, c.project_id AS cycle_node"
+    "  FROM pm_cycle_tasks ct"
+    "  JOIN pm_cycles c ON c.id = ct.cycle_id"
+    "  JOIN pm_tasks t ON t.id = ct.task_id"
+    " WHERE c.state <> 'closed'"
+    "   AND t.project_id IN (SELECT id FROM sub)"
+    "   AND c.project_id NOT IN (SELECT id FROM sub)"
+    "   AND c.project_id NOT IN (SELECT id FROM chain)"
+    " ORDER BY ct.task_id"
+)
+
+
+async def detach_moved_tasks(
+    db: Any, task_ids: Iterable[Any] = (), *, by: str, node_id: str | None = None,
+) -> int:
+    """Take each moved task out of an open cycle whose node no longer holds it.
+
+    The callers are the moves of a task (``POST /tasks/move``,
+    ``tasks.move_task_in``) with ``task_ids``, and the move of a project
+    (``POST /nodes/{id}/move``) with ``node_id``. Each calls it after its own
+    write, inside its own transaction. The move has a lock on each task row,
+    so a close of the cycle waits for the move, or the move waits for it.
+
+    It writes one ``cycle_transfer`` activity for each row that it removes.
+    A closed cycle keeps its rows, and the start snapshot does not change. It
+    reads no flag: a row that stays after a move blocks the task for good
+    (§13.2a). Returns the count of rows that it removed.
+    """
+    if node_id is not None:
+        rows = (await db.execute(
+            text(_OPEN_ROWS_LEFT_BY_NODE_SQL), {"node": str(node_id)},
+        )).fetchall()
+    else:
+        ids = sorted({str(t) for t in task_ids})
+        if not ids:
+            return 0
+        found = (await db.execute(text(_OPEN_ROWS_OF_TASKS_SQL), {"ids": ids})).fetchall()
+        rows = [r for r in found if not await _task_in_node(db, r, str(r.cycle_node))]
+    removed = 0
+    for row in rows:
+        cid, tid = str(row.cycle_id), str(row.task_id)
+        gone = (await db.execute(
+            text(
+                "DELETE FROM pm_cycle_tasks WHERE cycle_id = CAST(:cid AS uuid)"
+                " AND task_id = CAST(:t AS uuid) RETURNING id"
+            ),
+            {"cid": cid, "t": tid},
+        )).fetchone()
+        if gone is None:
+            continue
+        await record_activity(
+            db, activity_type=TRANSFER_TYPE, created_by=by, task_id=tid, body=MOVED_BODY,
+            meta={"from_cycle": cid, "to_cycle": None, "cause": MOVED_CAUSE},
+        )
+        removed += 1
+    return removed
+
+
 # ── Start ───────────────────────────────────────────────────────────────────
 
 
@@ -771,11 +877,14 @@ async def start_cycle(
         if other is not None:
             raise _active_refusal(other.name)
         # The committed snapshot: every member task, the hidden ones too, so
-        # the stored total is the full total (§13.7).
+        # the stored total is the full total (§13.7). `pm_tasks.estimate_mins`
+        # has no CHECK, and a member can save a negative estimate. The snapshot
+        # refuses one, so a negative estimate counts as no estimate.
         await db.execute(
             text(
                 "INSERT INTO pm_cycle_committed (cycle_id, task_id, estimate_mins) "
-                "SELECT ct.cycle_id, ct.task_id, t.estimate_mins"
+                "SELECT ct.cycle_id, ct.task_id,"
+                "       CASE WHEN t.estimate_mins >= 0 THEN t.estimate_mins END"
                 "  FROM pm_cycle_tasks ct JOIN pm_tasks t ON t.id = ct.task_id"
                 " WHERE ct.cycle_id = CAST(:cid AS uuid)"
             ),
@@ -815,7 +924,17 @@ async def start_cycle(
                 ),
                 {"cid": cid, "email": email, "minutes": minutes},
             )
-    return {"cycle": _wire(row), "committed_tasks": int(totals.n)}
+        # The caller's own count, as `get_cycle` gives it (§13.7). The stored
+        # total counts the tasks that the caller cannot see too.
+        seen = int((await db.execute(
+            text(
+                "SELECT count(*) FROM pm_cycle_committed c JOIN pm_tasks t ON t.id = c.task_id"
+                " WHERE c.cycle_id = CAST(:cid AS uuid)"
+                f"  AND {task_visibility_clause(vis)}"
+            ),
+            {"cid": cid, **vis.params},
+        )).scalar() or 0)
+    return {"cycle": _wire(row), "committed_tasks": seen, "hidden": int(totals.n) - seen}
 
 
 # ── Close ───────────────────────────────────────────────────────────────────
@@ -828,34 +947,53 @@ _TRANSFER_BODY = {
 }
 
 
+async def _lock_cycles(db: Any, vis: Any, ids: list[str]) -> dict[str, Any]:
+    """Lock the cycles ``ids`` that the caller can see, FOR UPDATE, in ONE
+    statement ordered by id. Returns each locked row by its id.
+
+    The close locks the closing cycle and each next cycle here, before any
+    other work. So two closes take their cycle locks in one order: a close of
+    A that carries to B and a close of B that carries to A wait for each
+    other, and never deadlock. The rows that come back are the rows that the
+    lock holds, so their state is current.
+    """
+    rows = (await db.execute(
+        text(
+            "SELECT c.* FROM pm_cycles c WHERE c.id = ANY(CAST(:ids AS uuid[]))"
+            f" AND {vis.project_clause('c.project_id')}"
+            " ORDER BY c.id FOR UPDATE OF c"
+        ),
+        {"ids": sorted(set(ids)), **vis.params},
+    )).fetchall()
+    return {str(r.id): r for r in rows}
+
+
 async def _check_targets(
-    db: Any, vis: Any, closing: Any, choices: list[CloseChoiceIn], tasks: dict[str, Any],
+    db: Any, closing: Any, choices: list[CloseChoiceIn], tasks: dict[str, Any],
+    locked: dict[str, Any],
 ) -> None:
     """Each ``next`` cycle: not this one, on a node that the caller sees, not
-    closed, and on a node that holds the task. The rows are locked FOR SHARE
-    in id order, so two closes take the locks in one order."""
+    closed, and on a node that holds the task. ``locked`` holds the rows that
+    :func:`_lock_cycles` locked, so this takes no lock of its own."""
     targets = sorted({str(c.cycle_id) for c in choices if c.choice == "next"})
-    found: dict[str, Any] = {}
     for target in targets:
         if target == str(closing.id):
             raise _refusal(422, "bad_choice",
                            "A task cannot carry over to the cycle that closes. Pick the next "
                            "cycle, or the backlog.")
-        try:
-            row = await _load_cycle(db, vis, target, lock="FOR SHARE")
-        except HTTPException:
+        row = locked.get(target)
+        if row is None:
             raise _refusal(422, "bad_choice",
                            "The next cycle is not found. Pick a planned or an active cycle "
-                           "that you can see.") from None
+                           "that you can see.")
         if row.state == "closed":
             raise _refusal(422, "bad_choice",
                            f'The cycle "{row.name}" is closed. Pick a planned or an active '
                            "cycle.")
-        found[target] = row
     for choice in choices:
         if choice.choice != "next":
             continue
-        target = found[str(choice.cycle_id)]
+        target = locked[str(choice.cycle_id)]
         if not await _task_in_node(db, tasks[str(choice.task_id)], str(target.project_id)):
             raise _refusal(422, "bad_choice",
                            f'A task is not in the project of the cycle "{target.name}". '
@@ -871,32 +1009,50 @@ async def close_cycle(
     Each unfinished task (its status is not done or cancelled) needs one
     choice: ``next`` with a cycle id, or ``backlog``. The close moves each
     membership row and writes one ``cycle_transfer`` activity on the task. A
-    finished task stays in the closed cycle as its record. The snapshot of the
+    finished task stays in the closed cycle as its record. An archived task
+    (a merged task too) stays there as well, needs no choice, and refuses
+    one (422 ``task_archived``, the rule of the add). The snapshot of the
     start does not change. An unfinished task that the caller cannot see
     refuses the whole close (409): nothing moves.
     """
     me = actor(user)
+    cid = _uuid_or_404(cycle_id, "Cycle")
+    targets = [str(c.cycle_id) for c in payload.choices
+               if c.choice == "next" and c.cycle_id is not None]
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        cycle = await _load_cycle(db, vis, cycle_id, lock="FOR UPDATE")
+        # Before any other work: the closing cycle and each next cycle, in one
+        # lock order (`_lock_cycles`).
+        locked = await _lock_cycles(db, vis, [cid, *targets])
+        cycle = locked.get(cid)
+        if cycle is None:
+            raise HTTPException(status_code=404, detail="Cycle not found")
         if cycle.state == "planned":
             raise _refusal(409, "cycle_not_started",
                            "This cycle has not started. Start it, or delete it.")
         if cycle.state == "closed":
             raise _refusal(409, "cycle_closed", "This cycle is already closed.")
-        cid = str(cycle.id)
+        # FOR SHARE OF t, in id order: a delete or a move of a member task
+        # waits for this close, or this close waits for it and then reads
+        # what it left. A task deleted first is not here.
         members = (await db.execute(
             text(
-                "SELECT t.id, t.project_id, s.category,"
+                "SELECT t.id, t.project_id, t.archived_at, s.category,"
                 f"       ({task_visibility_clause(vis)}) AS visible"
                 "  FROM pm_cycle_tasks ct"
                 "  JOIN pm_tasks t ON t.id = ct.task_id"
                 "  LEFT JOIN pm_task_statuses s ON s.id = t.status_id"
                 " WHERE ct.cycle_id = CAST(:cid AS uuid)"
+                " ORDER BY t.id FOR SHARE OF t"
             ),
             {"cid": cid, **vis.params},
         )).fetchall()
-        unfinished = {str(m.id): m for m in members if m.category not in CLOSING_CATEGORIES}
+        # An archived task stays as part of the record, so it needs no choice.
+        archived = {str(m.id) for m in members if m.archived_at is not None}
+        unfinished = {
+            str(m.id): m for m in members
+            if m.category not in CLOSING_CATEGORIES and m.archived_at is None
+        }
         hidden = sum(1 for m in unfinished.values() if not m.visible)
         if hidden:
             raise _refusal(409, "hidden_tasks",
@@ -908,6 +1064,10 @@ async def close_cycle(
             tid = str(choice.task_id)
             if tid in chosen:
                 raise _refusal(422, "bad_choice", "A task has two choices. Give each task one.")
+            if tid in archived:
+                raise _refusal(422, "task_archived",
+                               "This task is archived. Unarchive it first, or send no choice "
+                               "for it: it stays in this cycle as part of its record.")
             if tid not in unfinished:
                 raise _refusal(422, "bad_choice",
                                "A choice names a task that is not an unfinished task of this "
@@ -924,30 +1084,35 @@ async def close_cycle(
             raise _refusal(422, "choices_missing",
                            "Choose the next cycle or the backlog for each unfinished task. "
                            f"Tasks with no choice: {missing}.")
-        await _check_targets(db, vis, cycle, list(chosen.values()), unfinished)
+        await _check_targets(db, cycle, list(chosen.values()), unfinished, locked)
         moved = {"next": 0, "backlog": 0}
         for tid in sorted(chosen):
             choice = chosen[tid]
             to = str(choice.cycle_id) if choice.choice == "next" else None
             if to is not None:
-                await db.execute(
+                hit = (await db.execute(
                     text(
                         "UPDATE pm_cycle_tasks SET cycle_id = CAST(:to AS uuid),"
                         " added_at = now(), added_by = :me"
                         " WHERE cycle_id = CAST(:cid AS uuid) AND task_id = CAST(:t AS uuid)"
+                        " RETURNING id"
                     ),
                     {"to": to, "me": me, "cid": cid, "t": tid},
-                )
+                )).fetchone()
             else:
-                await db.execute(
+                hit = (await db.execute(
                     text(
                         "DELETE FROM pm_cycle_tasks WHERE cycle_id = CAST(:cid AS uuid)"
-                        " AND task_id = CAST(:t AS uuid)"
+                        " AND task_id = CAST(:t AS uuid) RETURNING id"
                     ),
                     {"cid": cid, "t": tid},
-                )
+                )).fetchone()
+            if hit is None:
+                # The row left this cycle while the close ran. No move, so no
+                # activity, which would name a task that may be gone.
+                continue
             await record_activity(
-                db, activity_type="cycle_transfer", created_by=me, task_id=tid,
+                db, activity_type=TRANSFER_TYPE, created_by=me, task_id=tid,
                 body=_TRANSFER_BODY[choice.choice],
                 meta={"from_cycle": cid, "to_cycle": to, "choice": choice.choice},
             )
@@ -965,7 +1130,9 @@ async def close_cycle(
 __all__ = [
     "CLOSE_CHOICES",
     "CYCLE_STATES",
+    "MOVED_CAUSE",
     "TRANSFER_TYPE",
+    "detach_moved_tasks",
     "require_sprints",
     "sprints_allowed",
 ]

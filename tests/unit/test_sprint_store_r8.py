@@ -23,9 +23,19 @@ whole ladder and two organizations. It proves:
 * a close moves each unfinished task as chosen, and writes one
   ``cycle_transfer`` row for each, with the meta;
 * the total of the start does not change after a carry-over;
-* a reader who cannot see a task gets the visible count and ``hidden``;
+* a reader who cannot see a task gets the visible count and ``hidden``, from
+  the start too, and a delete of a cycle with a hidden task gets 409;
 * each new table has FORCE row level security;
-* with the flag off, every route answers 404 and writes nothing.
+* with the flag off, every route answers 404 and writes nothing;
+* a move of a task, or of a project above it, that takes the task out of the
+  node of its open cycle takes it out of the cycle, with the flag off too. A
+  move inside the node keeps it, a closed cycle keeps its rows, and the start
+  snapshot does not change;
+* a negative estimate counts as no estimate in the start snapshot;
+* an archived (merged) task stays in the closing cycle and needs no choice;
+* a task deleted while a close waits writes no activity, and the close does
+  not answer 500;
+* a close locks its cycles in one order, so two closes cannot deadlock.
 
 **Mutations this suite catches.** Commit first, and restore from HEAD.
 
@@ -37,6 +47,19 @@ whole ladder and two organizations. It proves:
 * M4. ``get_cycle``: read the committed count from ``pm_cycle_tasks`` in
   place of ``pm_cycle_committed`` ->
   ``test_the_start_total_does_not_change_after_a_carry_over``.
+* M5. ``detach_moved_tasks``: return 0 at once ->
+  ``test_a_task_that_moves_out_of_the_node_leaves_its_open_cycle`` and
+  ``test_a_project_move_that_carries_tasks_out_frees_them``.
+* M6. ``start_cycle``: copy ``t.estimate_mins`` as it is ->
+  ``test_a_negative_estimate_counts_as_no_estimate_at_the_start``.
+* M7. ``close_cycle``: treat an archived task as unfinished ->
+  ``test_an_archived_task_stays_in_the_closing_cycle_and_needs_no_choice``.
+* M8. ``close_cycle``: drop ``FOR SHARE OF t`` and the skip of a row that
+  is gone -> ``test_a_task_deleted_while_a_close_waits_writes_no_activity``.
+* M9. ``close_cycle``: lock the closing cycle alone first ->
+  ``test_two_closes_take_their_cycle_locks_in_one_order``.
+* M10. ``delete_cycle``: drop the hidden refusal, or ``start_cycle``: return
+  the stored total -> ``test_a_reader_who_cannot_see_a_task_gets_the_visible_count_and_hidden``.
 
 Run::
 
@@ -395,6 +418,30 @@ async def _add(call: Any, user: Any, cycle: str, task: str) -> httpx.Response:
 def _error(response: httpx.Response) -> str:
     detail = response.json()["detail"]
     return detail["error"] if isinstance(detail, dict) else str(detail)
+
+
+async def _until_lock_waits(p: Any, needle: str, n: int = 1) -> None:
+    """Wait until *n* backends of this database wait on a lock, each in a
+    statement that names *needle*. At most ``_WAIT`` seconds: broken code
+    goes red, and never hangs."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _WAIT
+    while True:
+        waiting = _count(
+            p, "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
+               " AND wait_event_type = 'Lock' AND query LIKE :q AND pid <> pg_backend_pid()",
+            q=f"%{needle}%")
+        if waiting >= n:
+            return
+        assert loop.time() < deadline, f"fewer than {n} lock waits on {needle}"
+        await asyncio.sleep(0.05)
+
+
+async def _settle(*pending: Any) -> None:
+    """Let each request that a failed test started end, at most ``_WAIT``."""
+    left = [f for f in pending if f is not None and not f.done()]
+    if left:
+        await asyncio.wait(left, timeout=_WAIT)
 
 
 @_DB_GATE
@@ -899,8 +946,16 @@ class TestTheCycleStoreOnARealDatabase:
             listed = (await call(w.u_alice, "GET",
                                  f"/projects/nodes/{w.space['id']}/cycles")).json()
             assert [(c["tasks"], c["hidden"]) for c in listed["cycles"]] == [(1, 1)]
-            assert (await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start",
-                               {})).status_code == 200
+            # A delete would move the hidden task to the backlog: refused whole.
+            refused = await call(w.u_alice, "DELETE", f"/projects/cycles/{cycle}")
+            assert refused.status_code == 409 and _error(refused) == "hidden_tasks"
+            assert "(hidden: 1)" in refused.json()["detail"]["message"]
+            assert _members_of(w.p, cycle) == {seen, unseen}
+            started = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start", {})
+            assert started.status_code == 200, started.text
+            # The start answers the caller's own count, as the read does.
+            assert (started.json()["committed_tasks"], started.json()["hidden"]) == (1, 1)
+            assert unseen not in started.text
             read = (await call(w.u_alice, "GET", f"/projects/cycles/{cycle}")).json()
             # The visible count, the hidden count, and the visible estimate only.
             assert read["committed"] == {"tasks": 1, "hidden": 1, "estimate_mins": 15}
@@ -916,3 +971,253 @@ class TestTheCycleStoreOnARealDatabase:
             2, 615, "active")
         assert _members_of(w.p, cycle) == {seen, unseen}
         assert _count(w.p, "SELECT count(*) FROM pm_activities WHERE type = 'cycle_transfer'") == 0
+
+    # ── Fix round 2: the start, the close and a task that moves away ────
+
+    async def test_a_negative_estimate_counts_as_no_estimate_at_the_start(self, w):
+        # `pm_tasks.estimate_mins` has no CHECK, and the snapshot refuses a
+        # negative value. Before the fix the start answered 500.
+        negative = _task(w.p, w.p.org_a, w.alice, w.proj, estimate=-30)
+        sized = _task(w.p, w.p.org_a, w.alice, w.proj, estimate=20)
+        async with _session(w.p) as call:
+            cycle = await _plan(call, w.u_alice, w.space["id"], goal="Sizes")
+            for task in (negative, sized):
+                assert (await _add(call, w.u_alice, cycle, task)).status_code == 200
+            started = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start", {})
+            assert started.status_code == 200, started.text
+            assert started.json()["committed_tasks"] == 2
+            read = (await call(w.u_alice, "GET", f"/projects/cycles/{cycle}")).json()
+            assert read["committed"] == {"tasks": 2, "hidden": 0, "estimate_mins": 20}
+        rows = {str(r.task_id): r.estimate_mins for r in _all(
+            w.p, "SELECT task_id, estimate_mins FROM pm_cycle_committed"
+                 " WHERE cycle_id = CAST(:c AS uuid)", c=cycle)}
+        assert rows == {negative: None, sized: 20}
+        row = _one(w.p, "SELECT committed_task_count, committed_estimate_mins FROM pm_cycles"
+                        " WHERE id = CAST(:c AS uuid)", c=cycle)
+        assert (row.committed_task_count, row.committed_estimate_mins) == (2, 20)
+
+    async def test_an_archived_task_stays_in_the_closing_cycle_and_needs_no_choice(self, w):
+        merged = _task(w.p, w.p.org_a, w.alice, w.proj)
+        survivor = _task(w.p, w.p.org_a, w.alice, w.proj)
+        async with _session(w.p) as call:
+            cycle = await _plan(call, w.u_alice, w.space["id"], name="Now", goal="Now")
+            nxt = await _plan(call, w.u_alice, w.space["id"], name="Next")
+            for task in (merged, survivor):
+                assert (await _add(call, w.u_alice, cycle, task)).status_code == 200
+            assert (await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start",
+                               {})).status_code == 200
+            # A merge archives the merged task and leaves its status (merge.py).
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE pm_tasks SET merged_into_task_id = CAST(:s AS uuid),"
+                    " merged_at = now(), merged_by = :e, archived_at = now()"
+                    " WHERE id = CAST(:t AS uuid)"), {"s": survivor, "e": w.alice, "t": merged})
+            # A choice for the archived task is refused by the rule of the add.
+            for choice in ({"task_id": merged, "choice": "next", "cycle_id": nxt},
+                           {"task_id": merged, "choice": "backlog"}):
+                refused = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/close",
+                                     {"choices": [choice,
+                                                  {"task_id": survivor, "choice": "backlog"}]})
+                assert refused.status_code == 422 and _error(refused) == "task_archived", (
+                    choice, refused.text)
+                assert "Unarchive it first" in refused.json()["detail"]["message"]
+            added = await _add(call, w.u_alice, nxt, merged)
+            assert added.status_code == 422 and _error(added) == "task_archived"
+            assert _members_of(w.p, cycle) == {merged, survivor}
+            # It needs no choice: the close takes the survivor's choice only.
+            closed = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/close",
+                                {"choices": [{"task_id": survivor, "choice": "backlog"}]})
+            assert closed.status_code == 200, closed.text
+            assert closed.json()["moved"] == {"next": 0, "backlog": 1}
+        # The archived task stays in the closed cycle as part of its record.
+        assert _members_of(w.p, cycle) == {merged} and _members_of(w.p, nxt) == set()
+        logged = _all(w.p, "SELECT task_id FROM pm_activities WHERE type = 'cycle_transfer'")
+        assert {str(r.task_id) for r in logged} == {survivor}
+
+    async def test_a_task_deleted_while_a_close_waits_writes_no_activity(self, w):
+        # Before the fix: the close read the task, waited for the delete, moved
+        # no row, and then logged a move of a task that was gone (500).
+        gone = _task(w.p, w.p.org_a, w.alice, w.proj)
+        kept = _task(w.p, w.p.org_a, w.alice, w.proj)
+        choices = [{"task_id": gone, "choice": "backlog"},
+                   {"task_id": kept, "choice": "backlog"}]
+        async with _session(w.p) as call:
+            cycle = await _plan(call, w.u_alice, w.space["id"], goal="Now")
+            for task in (gone, kept):
+                assert (await _add(call, w.u_alice, cycle, task)).status_code == 200
+            assert (await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start",
+                               {})).status_code == 200
+            # The delete holds the row of the task, open, while the close runs.
+            holder = w.p.admin_engine.connect()
+            closing = None
+            try:
+                hold = holder.begin()
+                holder.execute(text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+                               {"t": gone})
+                closing = asyncio.ensure_future(call(
+                    w.u_alice, "POST", f"/projects/cycles/{cycle}/close", {"choices": choices}))
+                await _until_lock_waits(w.p, "pm_cycle_tasks")
+                hold.commit()
+                refused = await asyncio.wait_for(closing, _WAIT)
+            finally:
+                holder.close()
+                await _settle(closing)
+            # The task is gone, so its choice names no task of the cycle.
+            assert refused.status_code == 422 and _error(refused) == "bad_choice", refused.text
+            assert _members_of(w.p, cycle) == {kept}
+            assert _one(w.p, "SELECT state FROM pm_cycles WHERE id = CAST(:c AS uuid)",
+                        c=cycle).state == "active"
+            closed = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/close",
+                                {"choices": choices[1:]})
+            assert closed.status_code == 200, closed.text
+            assert closed.json()["moved"] == {"next": 0, "backlog": 1}
+        logged = _all(w.p, "SELECT task_id FROM pm_activities WHERE type = 'cycle_transfer'")
+        assert {str(r.task_id) for r in logged} == {kept}
+
+    async def test_two_closes_take_their_cycle_locks_in_one_order(self, w):
+        # A on S carries to B, and B on P carries to A. Before the fix each close
+        # locked its own cycle first, so the two could deadlock (40P01, 500).
+        task_a = _task(w.p, w.p.org_a, w.alice, w.proj)
+        task_b = _task(w.p, w.p.org_a, w.alice, w.proj)
+        async with _session(w.p) as call:
+            a = await _plan(call, w.u_alice, w.space["id"], name="A", goal="A")
+            b = await _plan(call, w.u_alice, w.proj["id"], name="B", goal="B")
+            for cycle, task in ((a, task_a), (b, task_b)):
+                assert (await _add(call, w.u_alice, cycle, task)).status_code == 200
+                assert (await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start",
+                                   {})).status_code == 200
+            task_of = {a: task_a, b: task_b}
+            low, high = sorted((a, b))
+
+            def body(closing: str, target: str) -> dict[str, Any]:
+                return {"choices": [{"task_id": task_of[closing], "choice": "next",
+                                     "cycle_id": target}]}
+
+            holder = w.p.admin_engine.connect()
+            first = second = None
+            try:
+                hold = holder.begin()
+                holder.execute(text("SELECT 1 FROM pm_cycles WHERE id = CAST(:c AS uuid)"
+                                    " FOR UPDATE"), {"c": low})
+                first = asyncio.ensure_future(call(
+                    w.u_alice, "POST", f"/projects/cycles/{high}/close", body(high, low)))
+                await _until_lock_waits(w.p, "pm_cycles")
+                # The close of `high` waits for `low`, and holds no lock on
+                # `high` while it waits: it takes the two in id order.
+                with w.p.admin_engine.connect() as probe, probe.begin():
+                    probe.execute(text("SELECT 1 FROM pm_cycles WHERE id = CAST(:c AS uuid)"
+                                       " FOR UPDATE NOWAIT"), {"c": high})
+                second = asyncio.ensure_future(call(
+                    w.u_alice, "POST", f"/projects/cycles/{low}/close", body(low, high)))
+                await _until_lock_waits(w.p, "pm_cycles", 2)
+                hold.commit()
+                done = await asyncio.wait_for(asyncio.gather(first, second), _WAIT)
+            finally:
+                holder.close()
+                await _settle(first, second)
+        # The first in the queue closes. The second finds that the task it
+        # carried in has no choice.
+        assert done[0].status_code == 200, done[0].text
+        assert done[1].status_code == 422 and _error(done[1]) == "choices_missing", done[1].text
+        states = {str(r.id): r.state for r in _all(w.p, "SELECT id, state FROM pm_cycles")}
+        assert (states[high], states[low]) == ("closed", "active")
+        assert _members_of(w.p, low) == {task_a, task_b}
+
+    async def test_a_task_that_moves_out_of_the_node_leaves_its_open_cycle(self, w, monkeypatch):
+        from acb_common import get_settings
+
+        proj2 = _node(w.p, w.p.org_a, w.alice, parent=w.space, grants=(w.alice,))
+        done = _task(w.p, w.p.org_a, w.alice, w.proj, category="done", estimate=10)
+        by_bulk = _task(w.p, w.p.org_a, w.alice, w.proj, estimate=20)
+        by_route = _task(w.p, w.p.org_a, w.alice, w.proj, estimate=30)
+        inside = _task(w.p, w.p.org_a, w.alice, w.proj)
+        async with _session(w.p) as call:
+            # A closed cycle on P that keeps a finished task as its record.
+            old = await _plan(call, w.u_alice, w.proj["id"], name="Old", goal="Old")
+            assert (await _add(call, w.u_alice, old, done)).status_code == 200
+            for step, body in (("start", {}), ("close", {"choices": []})):
+                assert (await call(w.u_alice, "POST", f"/projects/cycles/{old}/{step}",
+                                   body)).status_code == 200
+            # An active cycle on P, and a planned cycle on the space S above P.
+            now = await _plan(call, w.u_alice, w.proj["id"], name="Now", goal="Now")
+            for task in (by_bulk, by_route):
+                assert (await _add(call, w.u_alice, now, task)).status_code == 200
+            assert (await call(w.u_alice, "POST", f"/projects/cycles/{now}/start",
+                               {})).status_code == 200
+            on_space = await _plan(call, w.u_alice, w.space["id"], name="Space")
+            assert (await _add(call, w.u_alice, on_space, inside)).status_code == 200
+            snapshot = _all(w.p, "SELECT cycle_id, task_id, estimate_mins FROM pm_cycle_committed"
+                                 " ORDER BY cycle_id, task_id")
+            # The moves run with the flag off: the rule reads no flag.
+            monkeypatch.setattr(get_settings(), "projects_sprints_orgs", w.p.org_b)
+            bulk = await call(w.u_alice, "POST", "/projects/tasks/move",
+                              {"task_ids": [by_bulk, done],
+                               "destination_project_id": proj2["id"]})
+            assert bulk.status_code == 200, bulk.text
+            for task in (by_route, inside):
+                moved = await call(w.u_alice, "POST", f"/projects/tasks/{task}/move",
+                                   {"project_id": proj2["id"]})
+                assert moved.status_code == 200, moved.text
+            # P2 is outside P, so the active cycle on P lets both tasks go. P2
+            # is inside S, so the cycle on S keeps its task. The closed cycle
+            # keeps its record.
+            assert _members_of(w.p, now) == set()
+            assert _members_of(w.p, on_space) == {inside}
+            assert _members_of(w.p, old) == {done}
+            monkeypatch.setattr(get_settings(), "projects_sprints_orgs",
+                                f"{w.p.org_a},{w.p.org_b}")
+            # Each task can join a cycle on its new node.
+            there = await _plan(call, w.u_alice, proj2["id"], name="There")
+            for task in (by_bulk, by_route):
+                added = await _add(call, w.u_alice, there, task)
+                assert added.status_code == 200 and added.json()["added"] is True, added.text
+            # The cycle on P closes with no choice, and its start total stays.
+            closed = await call(w.u_alice, "POST", f"/projects/cycles/{now}/close",
+                                {"choices": []})
+            assert closed.status_code == 200, closed.text
+            read = (await call(w.u_alice, "GET", f"/projects/cycles/{now}")).json()
+            assert read["committed"] == {"tasks": 2, "hidden": 0, "estimate_mins": 50}
+        assert _all(w.p, "SELECT cycle_id, task_id, estimate_mins FROM pm_cycle_committed"
+                         " ORDER BY cycle_id, task_id") == snapshot
+        logged = _all(w.p, "SELECT task_id, meta, body, created_by FROM pm_activities"
+                           " WHERE type = 'cycle_transfer'")
+        assert sorted(str(r.task_id) for r in logged) == sorted((by_bulk, by_route))
+        for row in logged:
+            assert row.meta["from_cycle"] == now and row.meta["to_cycle"] is None, row.meta
+            assert row.meta["cause"] == cycles.MOVED_CAUSE and "choice" not in row.meta
+            assert row.body == cycles.MOVED_BODY and row.created_by == w.alice
+
+    async def test_a_project_move_that_carries_tasks_out_frees_them(self, w):
+        leaving = _node(w.p, w.p.org_a, w.alice, parent=w.space, grants=(w.alice,))
+        with w.p.admin_engine.begin() as c:
+            # A lead may move the project (D-OP-14).
+            c.execute(text("UPDATE pm_projects SET lead = :e WHERE id = CAST(:p AS uuid)"),
+                      {"e": w.alice, "p": leaving["id"]})
+        carried = _task(w.p, w.p.org_a, w.alice, leaving, estimate=40)
+        own = _task(w.p, w.p.org_a, w.alice, leaving)
+        stays = _task(w.p, w.p.org_a, w.alice, w.proj, estimate=5)
+        async with _session(w.p) as call:
+            on_space = await _plan(call, w.u_alice, w.space["id"], name="Space", goal="S")
+            for task in (carried, stays):
+                assert (await _add(call, w.u_alice, on_space, task)).status_code == 200
+            assert (await call(w.u_alice, "POST", f"/projects/cycles/{on_space}/start",
+                               {})).status_code == 200
+            # A cycle on the moved project goes with it.
+            on_leaving = await _plan(call, w.u_alice, leaving["id"], name="Leaving")
+            assert (await _add(call, w.u_alice, on_leaving, own)).status_code == 200
+            moved = await call(w.u_alice, "POST", f"/projects/nodes/{leaving['id']}/move",
+                               {"parent_project_id": w.other["id"]})
+            assert moved.status_code == 200, moved.text
+            assert _members_of(w.p, on_space) == {stays}
+            assert _members_of(w.p, on_leaving) == {own}
+            read = (await call(w.u_alice, "GET", f"/projects/cycles/{on_space}")).json()
+            assert read["committed"] == {"tasks": 2, "hidden": 0, "estimate_mins": 45}
+            assert [t["id"] for t in read["tasks"]] == [stays]
+        row = _one(w.p, "SELECT committed_task_count, committed_estimate_mins FROM pm_cycles"
+                        " WHERE id = CAST(:c AS uuid)", c=on_space)
+        assert (row.committed_task_count, row.committed_estimate_mins) == (2, 45)
+        logged = _all(w.p, "SELECT task_id, meta FROM pm_activities"
+                           " WHERE type = 'cycle_transfer'")
+        assert [str(r.task_id) for r in logged] == [carried]
+        assert logged[0].meta["from_cycle"] == on_space
+        assert logged[0].meta["cause"] == cycles.MOVED_CAUSE

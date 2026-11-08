@@ -31,9 +31,11 @@
 -- passes the wider CHECK.
 -- The CHECK is added NOT VALID and then validated, as 359 does. The ALTER
 -- TABLE takes the ACCESS EXCLUSIVE lock of `pm_activities`, and the file
--- holds it until COMMIT. The scan of VALIDATE is short, because each old row
--- passes a CHECK that only grew. The file sets lock_timeout first, and the
--- runner tries the whole file again on a lock timeout.
+-- holds it until COMMIT. VALIDATE reads each row of `pm_activities`, so the
+-- time of the scan follows the row count, and writes to the table wait for
+-- it. On 2026-11-08 production held 10,769 rows, so the scan is short. The
+-- file sets lock_timeout first, and the runner tries the whole file again on
+-- a lock timeout.
 -- Idempotent per infra/postgres/README.md: CREATE TABLE IF NOT EXISTS, CREATE
 -- INDEX IF NOT EXISTS, CREATE OR REPLACE FUNCTION, DROP TRIGGER IF EXISTS then
 -- CREATE, DROP CONSTRAINT IF EXISTS then ADD, and an RLS block guarded on
