@@ -1238,8 +1238,8 @@ _AUDIT_FILTER_REASON = (
 )
 #: MCP-G19c (task 2315). The type filters of the agent door.
 _AGENT_DOOR_TYPE_REASON = (
-    "A type filter of the agent door (MCP-G19c). The chat gets it with "
-    "the board count tool, Metorite task 2223."
+    "A type filter of the agent door (MCP-G19c). The chat tool for it is "
+    "part of Metorite task 2223."
 )
 _STATS_ROUTE_REASON = (
     "A field of the board count route of the agent door (MCP-G19a). Its "
