@@ -1,5 +1,5 @@
 -- ============================================================================
--- 371_pm_project_updates.sql — a project update with its health (WS-39 LP-1a,
+-- 373_pm_project_updates.sql — a project update with its health (WS-39 LP-1a,
 -- Metorite task 988).
 --
 -- What: one new table. `pm_project_updates` holds one update of one
@@ -52,10 +52,10 @@
 -- Retention: no pruning. This file deletes nothing.
 --
 -- The number is taken at build time (R1), and it was 363 at build. On
--- 2026-11-09 main held up to 366, and open branches held 367 (PKG-20), 368
--- (TPL-1a), 369 (SP-8a) and 370 (SP-1). premerge.sh refuses a number that is
--- not above the highest of main, so the file became 371. Check it again at
--- merge.
+-- 2026-11-09 main held up to 366, and open branches held 367 to 372 (372 is
+-- SP-1). premerge.sh refuses a number that is not above the highest of main,
+-- and a number of another branch collides at its merge, so the file became
+-- 373. Check it again at merge.
 -- Pinned by tests/unit/test_pm_project_updates_r8.py, which finds this file
 -- by CONTENT, never by number (R1).
 -- ============================================================================

@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §14.2 row LP-1 and the
 design §14.2a. Code: ``gateway/routes/projects/updates.py`` (the one writer),
 the two MCP tools of ``agent_edge/tools.py`` and the two chat tools of
 ``skill_projects/inbox.py``. Migration: the file that creates
-``pm_project_updates`` (363 at build, 371 at the repair round).
+``pm_project_updates`` (363 at build, 373 at the repair round).
 
 Two halves.
 
