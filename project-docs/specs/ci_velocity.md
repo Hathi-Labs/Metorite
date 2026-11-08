@@ -638,19 +638,26 @@ On 2026-11-07 the box lanes sat idle for about 5 hours. An account switch ended
 the turn of 8 lanes. The loops that wake lanes ran on the owner's PC, and the
 PC went quiet.
 
-A box user timer runs `lane_keeper.py` every 10 minutes. It reads
-`claude agents --json` and keeps the newest session of each lane name. It wakes
-a lane with `claude --bg --resume <session id> <note>` when the state is done,
-blocked or idle, and the transcript is more than 10 minutes old. A lane in a
-`sleep 600` has state working, so the keeper leaves it alone. The keeper wakes
-a lane once in 30 minutes. After an account change it wakes every ended lane
-once, with no cap. Each wake goes to `~/lanes/keeper.log`.
+A box user timer runs `lane_keeper.py` every 10 minutes. Only the lanes named in
+`~/lanes/keeper-lanes.txt` (one name per line) may wake, and with no file nothing
+wakes. The keeper reads `claude agents --json` and keeps the newest session of
+each listed lane. A lane is ended when the state is done, blocked or idle and the
+transcript is more than 10 minutes old. A lane in a `sleep 600` has state
+working, so the keeper leaves it alone. The keeper also leaves a lane alone when
+it has a busy session. That is a busy session with the lane's name, or a busy
+session of any name whose transcript names the ended session.
 
-The keeper never stops a process and never starts a new lane. `lane-chat` and
-`lane-bill` are on the default skip list, because they wait on the owner.
-`KEEPER_LANES` limits the wake to a named set. An old, stopped session of a
-name that has no newer session counts as ended, so name the lanes on a night
-when only some lanes run.
+**The fork rule (2026-11-08).** A resume forks a new session. The first keeper
+woke the old session again at each pass, and lane-merge reached 3 live copies.
+Now the keeper runs `claude stop <old id>` and then `claude --bg --resume <id>
+-n <lane> --remote-control=<lane> <note>`. One session of the lane is left, and
+the fork has the lane's name, so the next pass finds the fork.
+
+A lane wakes once in 30 minutes. After an account change the keeper wakes every
+ended listed lane once, with no cap. Each wake goes to `~/lanes/keeper.log`.
+The keeper stops only the ended session that it is about to resume, and it
+never starts a new lane. `lane-chat` and `lane-bill` are also on the default skip
+list, because they wait on the owner.
 
 The account switch is a hook. `KEEPER_SWITCH_CMD` names the command, and the
 keeper gives it `KEEPER_SKIP_ACCOUNTS`. The keeper does not run it while the box

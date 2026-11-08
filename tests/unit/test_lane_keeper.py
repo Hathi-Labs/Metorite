@@ -26,14 +26,18 @@ def _load():
     return mod
 
 
-def _agent(name, sid, state, started=1):
-    return {
+def _agent(name, sid, state, started=1, status="idle", short=None):
+    a = {
         "name": name,
         "sessionId": sid,
         "state": state,
         "startedAt": started,
         "kind": "background",
+        "status": status,
     }
+    if short:
+        a["id"] = short
+    return a
 
 
 @pytest.fixture
@@ -41,14 +45,21 @@ def keeper(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("KEEPER_LANES_DIR", str(tmp_path / "lanes"))
     for k in (
-        "KEEPER_LANES",
         "KEEPER_SKIP_LANES",
         "KEEPER_SWITCH_CMD",
         "KEEPER_SKIP_ACCOUNTS",
         "CLAUDE_CONFIG_DIR",
     ):
         monkeypatch.delenv(k, raising=False)
+    # The list file is the whole list of lanes that may wake (task 2206, 2026-11-08).
+    names = ("lane-ci", "lane-pro", "lane-new", "lane-ghost", "lane-chat", "lane-a", "lane-b")
+    _lanes(tmp_path, *names)
     return _load(), tmp_path
+
+
+def _lanes(home, *names):
+    (home / "lanes").mkdir(exist_ok=True)
+    (home / "lanes" / "keeper-lanes.txt").write_text("\n".join(names) + "\n", encoding="utf-8")
 
 
 def _transcript(home, sid, age_s):
@@ -77,6 +88,7 @@ def test_one_idle_lane_gets_one_wake(keeper, monkeypatch):
     wakes = mod.run_pass(json.dumps(agents), now=NOW)
     assert [w[0] for w in wakes] == ["lane-ci"]
     assert calls[0][:4] == ["claude", "--bg", "--resume", "s-ci"]
+    assert calls[0][4:7] == ["-n", "lane-ci", "--remote-control=lane-ci"]
     assert "wake lane-ci" in (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
 
 
@@ -135,7 +147,7 @@ def test_only_lanes_limits_the_wake(keeper, monkeypatch):
     mod, home = keeper
     for s in ("a", "b"):
         _transcript(home, s, 5000)
-    monkeypatch.setenv("KEEPER_LANES", "lane-b")
+    _lanes(home, "lane-b")
     monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
     agents = [_agent("lane-a", "a", "done"), _agent("lane-b", "b", "done")]
     assert [w[0] for w in mod.run_pass(json.dumps(agents), now=NOW)] == ["lane-b"]
@@ -192,7 +204,7 @@ def test_the_units_are_a_user_timer_of_ten_minutes():
 def test_a_state_file_that_is_not_an_object_is_ignored(keeper, monkeypatch):
     mod, home = keeper
     _transcript(home, "s-ci", 1200)
-    (home / "lanes").mkdir()
+    (home / "lanes").mkdir(exist_ok=True)
     (home / "lanes" / "keeper-state.json").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
     agents = json.dumps([_agent("lane-ci", "s-ci", "done")])
@@ -231,5 +243,80 @@ def test_the_wake_runs_in_the_directory_of_the_lane(keeper, monkeypatch):
 
 
 def test_the_service_starts_in_a_project_directory():
-    svc = (ROOT / "scripts" / "home_server" / "metorite-lane-keeper.service").read_text(encoding="utf-8")
+    svc = (ROOT / "scripts" / "home_server" / "metorite-lane-keeper.service").read_text(
+        encoding="utf-8"
+    )
     assert "WorkingDirectory=%h/Metorite" in svc
+
+
+def test_a_wake_stops_the_old_session_and_names_the_fork_after_the_lane(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-x")
+    _transcript(home, "s-x", 1200)
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = [_agent("lane-x", "s-x", "done", short="abcd1234")]
+    assert [w[0] for w in mod.run_pass(json.dumps(agents), now=NOW)] == ["lane-x"]
+    assert calls[0][:3] == ["claude", "stop", "abcd1234"]
+    assert calls[1][:5] == ["claude", "--bg", "--resume", "s-x", "-n"] and calls[1][5] == "lane-x"
+    assert "--remote-control=lane-x" in calls[1]
+    assert len(calls) == 2
+
+
+def test_the_fork_with_the_lane_name_is_the_session_of_the_next_pass(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-x")
+    _transcript(home, "s-old", 5000)
+    _transcript(home, "s-fork", 5000)
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    agents = [
+        _agent("lane-x", "s-old", "done", started=1),
+        _agent("lane-x", "s-fork", "done", started=2),
+    ]
+    wakes = mod.run_pass(json.dumps(agents), now=NOW)
+    assert [(w[0], w[1]) for w in wakes] == [("lane-x", "s-fork")]
+
+
+def test_a_lane_with_a_busy_session_of_its_name_is_not_woken(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-x")
+    _transcript(home, "s-old", 5000)
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = [
+        _agent("lane-x", "s-old", "done", started=1),
+        _agent("lane-x", "s-busy", "working", started=2, status="busy"),
+    ]
+    assert mod.run_pass(json.dumps(agents), now=NOW) == []
+    assert calls == []
+
+
+def test_a_busy_auto_named_fork_of_the_lane_blocks_its_wake(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-x", "lane-y")
+    for sid in ("s-x", "s-y"):
+        _transcript(home, sid, 5000)
+    # The fork has an automatic name, and its transcript names the old session of lane-x.
+    d = home / ".claude" / "projects" / "-p"
+    (d / "s-fork.jsonl").write_text('{"note": "continued from s-x"}\n', encoding="utf-8")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    agents = [
+        _agent("lane-x", "s-x", "done"),
+        _agent("lane-y", "s-y", "done"),
+        _agent("merge-queue-lane", "s-fork", "working", started=3, status="busy"),
+    ]
+    wakes = mod.run_pass(json.dumps(agents), now=NOW)
+    assert [w[0] for w in wakes] == ["lane-y"]  # lane-x has a busy fork, lane-y has none
+
+
+def test_an_unlisted_lane_is_not_woken_and_no_list_file_wakes_nothing(keeper, monkeypatch):
+    mod, home = keeper
+    _transcript(home, "s-x", 5000)
+    _transcript(home, "s-z", 5000)
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    agents = json.dumps([_agent("lane-x", "s-x", "done"), _agent("lane-z", "s-z", "done")])
+    _lanes(home, "lane-x")
+    assert [w[0] for w in mod.run_pass(agents, now=NOW)] == ["lane-x"]
+    (home / "lanes" / "keeper-lanes.txt").unlink()
+    assert mod.run_pass(agents, now=NOW + 99999) == []
+    assert "no lane named" in (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
