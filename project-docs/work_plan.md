@@ -5815,9 +5815,9 @@ Owner directive, 2026-11-08, in chat. Metorite: task 2310. It amends D145 for on
 
 Fence: `tests/unit/test_loop_local_first.py` pins D200 in `CLAUDE.md`, `next-ticket.md` and `engineering_practice.md` §1.3. The judgement of "small" is advisory (R7).
 
-### D202 — AI Studio is a full web IDE inside Metorite: blocks first, code files first-class, one UI kit, a sandbox per organization and per person, and the new blocks (2026-11-09)
+### D202 — AI Studio is a full web IDE inside Metorite: blocks first, code files first-class, one UI kit, a sandbox per organization and per person, and the new blocks (2026-11-08)
 
-Owner directives of 2026-11-08 and 2026-11-09, in chat, and the owner's answers in Metorite on tasks 2326 and 2327. Owner spec: `specs/ai_studio.md` §0, §2.2, §5.1, §5.4, §6.3, §6.5, §11.2, §14, §15, §19.10 and §20.1, and the row PKG-14c of `specs/package_host.md`. Board: **WS-STU**. Metorite: task 2326, task 2327 and epic 491. **It keeps D146 and D193, and refines them. It reopens no decision.**
+Owner directives of 2026-11-08, in chat, and the owner's answers in Metorite on tasks 2326 and 2327. Owner spec: `specs/ai_studio.md` §0, §2.2, §5.1, §5.4, §6.3, §6.5, §11.2, §14, §15, §19.10 and §20.1, and the row PKG-14c of `specs/package_host.md`. Board: **WS-STU**. Metorite: task 2326, task 2327 and epic 491. **It keeps D193, and refines it. It amends one line of D146.1, by the owner's choice 4 on task 2326 (the end of this record says how). It reopens no other decision.** All dates are UTC.
 
 ```text
 "The app studio should function like a full blown web IDE, with guardrails and
@@ -5832,25 +5832,25 @@ into account the organisation and people within the organisation."
 
 "the main usecase is that when a company needs to build custom apps to extend
 the functionality of metorite to adapt it with their own organisation"
-                                                          (chat, 2026-11-09)
+                                                          (chat, 2026-11-08)
 
 "Overall goal is to have standard apps like CRM, projects, finance module,
 etc., that are common for all organizations, but be able to extend Metorite by
 making custom applications and also customizing the core apps to completely
 fit hand in glove with existing organizations. Ensure that the app creator is
-able to do something like that."                          (chat, 2026-11-09)
+able to do something like that."                          (chat, 2026-11-08)
 
 "Accept all four"   (Metorite, task 2326, 2026-11-08 18:25 UTC: choices 1 to 4)
-"looks good"        (chat, 2026-11-09: the use-case brainstorm)
-"Accept all four"   (Metorite, task 2326, 2026-11-09 19:04 UTC: questions A to D)
-"Finance and HR we will build later."                     (chat, 2026-11-09)
-"Accept all six"    (Metorite, task 2327, 2026-11-09 19:04 UTC)
-"go ahead with your recommendations"  (chat, 2026-11-09: questions 7 to 9 of task 2327)
-"would also be good to have git."                         (chat, 2026-11-09)
+"looks good"        (chat, 2026-11-08: the use-case brainstorm)
+"Accept all four"   (Metorite, task 2326, 2026-11-08 19:04 UTC: questions A to D)
+"Finance and HR we will build later."                     (chat, 2026-11-08)
+"Accept all six"    (Metorite, task 2327, 2026-11-08 19:04 UTC)
+"go ahead with your recommendations"  (chat, 2026-11-08: questions 7 to 9 of task 2327)
+"would also be good to have git."                         (chat, 2026-11-08)
 "I like your ideas for Git, we should do that. If we are developing a Studio
 app in VS Code, then we need to ensure that there is a proper
 scaffolding/connection/harness to ensure that it properly is compatible with
-AI Studio."                                               (chat, 2026-11-09)
+AI Studio."                                               (chat, 2026-11-08)
 ```
 
 1. **One IDE: blocks first, code files first-class (choice 1).** The IDE of D193 gets a Files branch beside Data, Views and Rules. Each file is TypeScript or TSX, with type hints for the UI kit and the door. The IDE adds a preview that reloads on save, a console, a test panel, a package panel and version history. Mira uses blocks first, and writes code only where no block fits. The four layers of D146.1 stay.
@@ -5863,16 +5863,16 @@ AI Studio."                                               (chat, 2026-11-09)
    - Code reads and writes with the rights of the viewer, never of the author.
    - A restricted field never enters a sandbox, unless a reviewer approves it.
    - A run with no viewer runs as one named member (B6).
-4. **Custom screens first, before SBX-9 (choice 4).** Screen code runs in the viewer's browser, in a locked frame with no network. The screen path comes first, with the standard set: React, the UI kit, the icons and three.js. Packages and server code come after SBX-9. **The condition:** a spike (L3) must first prove that the TS and TSX compile runs in the browser, because member code stays off our servers (D127.2). If it cannot, all code waits for SBX-9.
-5. **The answers to the brainstorm (2026-11-09).**
+4. **Custom screens first, before SBX-9 (choice 4).** Screen code runs in the viewer's browser, in a locked frame with no network. The screen path comes first, with the standard set: React, the UI kit, the icons and three.js. Packages and server code come after SBX-9. **The condition:** a spike (L3) must first prove that the TS and TSX compile runs in the browser, because member code stays off the production box (D127.2). If it cannot, all code waits for SBX-9.
+5. **The answers to the brainstorm (2026-11-08).**
    - People outside the org stay in Group O (§20). No portal accounts.
    - Offline capture comes in wave 2, for forms and guided steps only.
    - Record history and the version lock come in wave 1, and formal e-signatures in wave 2.
    - The first three templates are an assembly guide (Fracktal, customer zero), a shipment tracker and a field site survey.
-6. **More asks of 2026-11-09.** The owner also asked for three.js components, generated images once the image tier exists (task 1406), Mira inside each app, and photos or video that turn into a process. Each one is a block or an action of §14. Generated images wait on task 1406.
+6. **More asks of 2026-11-08.** The owner also asked for three.js components, generated images once the image tier exists (task 1406), Mira inside each app, and photos or video that turn into a process. Each one is a block or an action of §14. Generated images wait on task 1406.
 7. **Core apps, fitted and extended (questions A to D of task 2326).** Core apps serve every org. Packages fit them to one org through `package_host.md` §8, and custom apps are Studio packages. All three layers share one door, one look and one channel layer.
    - **A.** When Metorite builds Finance and HR, they are first-party Studio packages. The owner put Finance and HR later, so no slice exists for them now. The HR rows B18, I7 and K10 stay in Backlog, marked later.
-   - **B.** An org may rename record kinds and stages, as display labels in an overlay. The data and the APIs keep one name (H4).
+   - **B.** An org may rename record kinds and stages, as display labels in an overlay. The data and the APIs keep one name (STU-H4).
    - **C.** An org uses its own domain and its own WhatsApp number first. Metorite gives a sender subdomain for notices only, as a fallback, and no shared WhatsApp number (O21).
    - **D.** A package may add save rules to a core app, through one save-rule seam in each core app. The rules use the closed Studio grammar, only refuse a save, and ship dark (C26).
 8. **The clinic answers (task 2327: the six choices, and questions 7 to 9).**
@@ -5885,17 +5885,17 @@ AI Studio."                                               (chat, 2026-11-09)
    - Automatic replies to people outside the org follow the four rules of O18.
    - Booking by email runs on the shared mailbox (task 733, O17).
    - Payments use Razorpay on the account of each clinic (O10), and prepay is a setting for each service. The owner approves the first live payment link.
-9. **Git in the IDE (2026-11-09).** A full save history with revisions (G17), named drafts as branches (G18), and an optional two-way sync with a folder in the GitHub repository of the org (G19). A push never publishes by itself, and the token never reaches a sandbox.
-10. **Building outside Metorite (2026-11-09).** An app that a member builds in VS Code is the same package as one built in Studio: one manifest format, one validator, one build and one review. A scaffold, an SDK, a CLI and an AI harness keep it compatible, and add no second seam. The CLI calls the server for each check, and has no publish. Metorite accepts source only, and never a bundle that a laptop built. `ai_studio.md` §6.5 and G20 to G27 hold the design.
+9. **Git in the IDE (2026-11-08).** A full save history with revisions (G17), named drafts as branches (G18), and an optional two-way sync with a folder in the GitHub repository of the org (G19). A push never publishes by itself, and the token never reaches a sandbox.
+10. **Building outside Metorite (2026-11-08).** An app that a member builds in VS Code is the same package as one built in Studio: one manifest format, one validator, one build and one review. A scaffold, an SDK, a CLI and an AI harness keep it compatible, and add no second seam. The CLI calls the server for each check, and has no publish. Metorite accepts source only, and never a bundle that a laptop built. `ai_studio.md` §6.5 and G20 to G27 hold the design.
 
 **How D202 reads earlier decisions.**
 
-- **The layers of D146.1** stay. Its line "the code block runs only on the off-box sandbox" now reads: no member code runs on our servers. A custom screen compiles and runs in the browser (item 4). A member logic module still waits for SBX-9.
+- **The layers of D146.1** stay. **D202 amends one line of D146.1, by the owner's choice 4 on task 2326.** D146.1 said that "a member-authored logic module and the code block run only on the off-box sandbox (D127.2)". Now member code runs only in the off-box sandbox (server code) or in the viewer's browser (screens). D127.2 means off the production box. A member logic module still waits for SBX-9. The owner confirms this wording on task 2326.
 - **The IDE of D193** keeps its route, its layout and the one dock. The Explorer gains Files, and the centre gains the code tools of item 1 and the git parts of item 9.
-- **The access model of D180** holds. A group carries no permission (D180.4), and Studio adds no new permission (D180.5). So the code right of item 3 is a Studio setting: a list of D12 grants that J7 stores and the Studio routes read. This is agent design.
+- **The access model of D180** holds. A group carries no permission (D180.4), and Studio adds no new permission (D180.5). So the code right of item 3 is a Studio setting, not a permission: a list of D12 grants that J7 stores and the Studio routes read. The owner confirms the label on task 2326.
 - **The health rule of D174.6** holds. Each clinical field stays restricted, and the AI reads one only after an admin opened it.
 
-**Re-check this number at merge.** The first merge wins a D-number. On 2026-11-09, main held D200, and the branch `civ23-box-runners` held D201.
+**Re-check this number at merge.** The first merge wins a D-number. On 2026-11-08, main held D200, and the branch `civ23-box-runners` held D201.
 
 Fence: each rule of `ai_studio.md` §19.10 names its fence, and each rule stays advisory until its slice builds that fence (R7). The four rules of O18 name theirs. `tests/unit/test_decision_ids.py` fails when two D202 entries merge.
 
