@@ -98,8 +98,12 @@ keeps no counter of its own.
   ``customer_console.credits.RunCeiling`` is a fixed tripwire of 500 credits
   for each run, checked before each model call. It does not stop a turn at
   the goal cap.
-* ADVISORY (R7), no fence: a stop of the worker during the settle cancels
-  the turn, and then the cost of that round does not reach the goal.
+* ADVISORY (R7), no fence: three paths lose the cost of a round, so the
+  goal row does not get it. A record that times out (``RecordTimeout``), a
+  stop of the worker during the call, and a stop during the settle. The next
+  turn then starts with too much room. Today no turn can spend, because the
+  default meter raises. AUTO-8b-2 (task 2230) must close this before the
+  real reader: a mark on the goal before each call, cleared by the record.
 
 **The round limit inside one call.** One call of the default runner is one
 ``orchestrator.executor.run_agent`` run of the internal agent ``worker``.

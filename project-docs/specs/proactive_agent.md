@@ -130,7 +130,7 @@ The handler takes these steps in order. A payload of another shape gives up befo
 
 Before each round, the turn reads the flag and the goal again. So the flag is the kill switch, and an org that leaves the list stops before its next round. Each round checks the bound of 50 credits again. So a goal that another write raises over the bound between two rounds gets no next round.
 
-The producer sets `dedupe_key` to the goal id (AUTO-1 and AUTO-5), so one goal has at most one live turn in the queue.
+**A rule for the producer (AUTO-1 and AUTO-5).** The producer must set `dedupe_key` to the goal id, so one goal has at most one live turn in the queue. No producer exists yet, so this rule is ADVISORY (R7) until the producer slice names its fence.
 
 **The caps of AUTO-8a.** A turn runs 5 rounds at most, and 120 seconds for the whole turn. Module constants bound both. The credit cap is the cap of the goal, and a goal that allows more than 50 credits gets no turn. `goal_store.cap_block` is the one cap rule. A round whose cost the meter cannot read counts as the rest of the budget, so the goal blocks.
 
@@ -138,13 +138,15 @@ The producer sets `dedupe_key` to the goal id (AUTO-1 and AUTO-5), so one goal h
 
 **Read tools only.** One round is one `run_agent` run of the internal agent `worker`, with one bound job and `no_egress`. The job holds only tools that the risk registry marks `read_only` and not `open_world`. The pin of the worker refuses every other tool. The worker makes at most 4 model calls in one round (`subagent_contract.MAX_CHILD_ROUNDS`). AUTO-8a changes no code of `orchestrator/executor.py`.
 
-**The settle of a round (AUTO-8b-1).** After a call, the turn reads the meter and records the round. These two steps have `SETTLE_MARGIN_S` (60 seconds), and each step takes at most a third of it. The time cap of 180 seconds plus the margin stays inside `worker.HANDLER_TIMEOUT` (240 seconds). That stays inside the lease of the job (300 seconds). So the worker does not cancel a turn while it records a round.
+**The settle of a round (AUTO-8b-1).** After a call, the turn reads the meter and records the round. These two steps have `SETTLE_MARGIN_S` (60 seconds), and each step takes at most a third of it. The bound of the time cap (180 seconds) plus the margin stays inside `worker.HANDLER_TIMEOUT` (240 seconds). That stays inside the lease of the job (300 seconds). So the worker does not cancel a turn while it records a round.
 
 A meter that does not answer in time charges the rest of the budget: the cap minus the credits used. So the goal blocks with `cap_reached`. A record that does not end in time logs `headless_turn.round_unrecorded` at error, and the job gives up with `TurnFailed`. The settle catches only the timeout of its own scope. It never catches a cancel.
 
 **Limits.** ADVISORY (R7), with no fence: no credit stop happens inside one call. The cost of a round is known only at its end, so the last round can go past the goal cap. The goal cap is the cap. The Router's `RunCeiling` is a fixed tripwire of 500 credits for each run, and the Router checks it before each model call. It does not stop a turn at the goal cap.
 
-A stop of the worker during the settle cancels the turn, and then the cost of that round does not reach the goal. In `run_agent`, the run binds the agent name `worker` and the app `chat`. So the usage row does not name `auto.headless` yet. AUTO-8b-2 decides that attribution.
+ADVISORY (R7), with no fence: three paths lose the cost of a round, so the goal row does not get it. They are a record that times out, a stop of the worker during the call, and a stop during the settle. The release stops the worker after 30 seconds (`worker.STOP_GRACE_SECONDS`). Then the next turn of the goal starts with too much room. Today no turn can spend, because the default meter raises. AUTO-8b-2 (task 2230) must close this before the real reader. It writes a mark on the goal before each call, and the record clears the mark. A goal that still holds a mark takes the rest of its budget and blocks.
+
+In `run_agent`, the run binds the agent name `worker` and the app `chat`. So the usage row does not name `auto.headless` yet. AUTO-8b-2 decides that attribution.
 
 ### 4.5 A cap on each member (AUTO-Q1, D192)
 
