@@ -1,5 +1,7 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
+import { useClampedMenu } from "@/lib/menuClamp";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -383,11 +385,14 @@ export function EmailList({
         </div>
       ) : (
         <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-border flex-shrink-0 overflow-x-auto scrollbar-hide">
-          {/* Compose — always available, even with nothing selected */}
-          <Button size="none" radius="keep" layout="flex items-center" title="New Email" onClick={onCompose} className="gap-1 px-2.5 py-1.5 rounded-md flex-shrink-0">
-            <AppIcon name="Pencil" size={12} />
-            <span className="text-[10px] font-medium">New</span>
-          </Button>
+          {/* Compose — always available, even with nothing selected. On a
+              phone the bar's Write tab holds it (MOB-12). */}
+          {!isMobile && (
+            <Button size="none" radius="keep" layout="flex items-center" title="New Email" onClick={onCompose} className="gap-1 px-2.5 py-1.5 rounded-md flex-shrink-0">
+              <AppIcon name="Pencil" size={12} />
+              <span className="text-[10px] font-medium">New</span>
+            </Button>
+          )}
 
           {selectedEmail ? (
             <>
@@ -799,6 +804,8 @@ function ContextMenu({
   onFix: () => void;
 }) {
   const { email, bulk, count = 1 } = ctx;
+  // The foot of the menu stays above the phone's bar (MOB-9 fix round).
+  const { ref: menuRef, pos: menuPos, maxHeight: menuMax } = useClampedMenu(ctx.x, ctx.y);
   const hasCategories = bulk || (email.categories?.length ?? 0) > 0;
   const run = (fn: () => void) => {
     fn();
@@ -810,6 +817,8 @@ function ContextMenu({
   const moveTargets = folders.filter(
     (f) => isRealFolder(f.key) && (bulk || f.key !== email.folder)
   );
+  // A bar tap closes the menu (MOB-9).
+  useCloseOnBarTap(onClose);
   // Open submenu flyouts to the LEFT when the menu sits near the right edge.
   const flipLeft =
     typeof window !== "undefined" && ctx.x > window.innerWidth - 460;
@@ -826,8 +835,9 @@ function ContextMenu({
         }}
       />
       <div
+        ref={menuRef}
         className="fixed z-[81] w-52 bg-popover border border-border rounded-lg shadow-xl py-1 text-xs"
-        style={{ left: ctx.x, top: ctx.y }}
+        style={{ left: menuPos.x, top: menuPos.y, ...(menuMax ? { maxHeight: menuMax, overflowY: "auto" as const } : {}) }}
       >
         {bulk ? (
           <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border mb-1">

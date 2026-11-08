@@ -830,11 +830,8 @@ _RUN_AGENT_WITHOUT_SESSION_USER: dict[tuple[str, str], tuple[int, str]] = {
         1, "AUTO-8a: runs inside `job_member_scope` with the goal's payer, read "
            "from `goal_records` and never from the payload; its `user_email` is "
            "that same member, which `_run_member` keeps verified (H-152)"),
-    ("apps/services/gateway/gateway/routes/projects/agent_dispatch.py",
-     "_run_and_record"): (
-        1, "an inline event sink. From PUT /tasks/{id}/assignees it inherits "
-           "the assigner's session member. From a workflow tool node it "
-           "inherits the member `_execute_run` binds for the whole run"),
+    # H-240 (2026-11-07): `agent_dispatch._run_and_record` left this list. It
+    # passes the assigner that the gateway's emitter took from the session.
     ("apps/services/gateway/gateway/routes/agent.py", "_run"): (
         1, "OPEN (H-152): the HMAC-signed /agent/webhook has no owning member "
            "or organization; it runs memberless or on a signed body claim"),
