@@ -10,7 +10,6 @@ from acb_auth import (UserContext, UserRole, get_current_user,
                       require_role)
 from acb_common import configure_logging, get_logger, get_settings
 from acb_common import db_busy
-from acb_common.child_env import copilot_env
 from acb_common.db import TenantUnbound, clear_tenant, release_tenant
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -130,29 +129,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # pragma: no cover
         _log.warning("gateway.runtime_check_failed", error=str(exc))
 
-    # Pre-warm the Copilot model list cache so /api/models/all returns instantly.
-    async def _warmup_copilot_models() -> None:
-        try:
-            _gh = getattr(settings, "github_token", "") or os.environ.get("GITHUB_TOKEN", "")
-            if not _gh:
-                return
-            os.environ.setdefault("GITHUB_TOKEN", _gh)
-            import time as _t
-
-            _m = await _list_copilot_models(_gh)
-            if _m:
-                _copilot_models_cache["data"] = {
-                    "models": [{"id": x.id, "label": x.name, "model_picker_enabled": True}
-                               for x in _m if not x.policy or x.policy.state == "enabled"],
-                    "source": "live",
-                }
-                _copilot_models_cache["ts"] = _t.monotonic()
-                _log.info("gateway.copilot_models_cache_warmed", count=len(_m))
-        except Exception as _e:
-            _log.warning("gateway.copilot_models_warmup_failed", error=str(_e))
-
     import asyncio as _asyncio
-    _asyncio.ensure_future(_warmup_copilot_models())
 
     # Sweep any `cc-copilot-*` sandbox containers (BO-7 phase 2 —
     # copilot_sandbox.py) left running by a prior crashed gateway process.
@@ -1923,6 +1900,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # projects_ai_chat.md §31 VOX-1 — the chat's voice input, a clip to the
+    # Console's metered transcribe door. Shares /chat's prefix, in its own
+    # module, as the brief does. Dark behind CHAT_VOICE_ORGS.
+    from gateway.routes.chat_transcribe import router as _chat_transcribe_router
+
+    app.include_router(_chat_transcribe_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
     # message that code built (`calendar_events_reminders.md` §5.7). Shares
     # /chat's prefix, in its own module, as the brief does.
@@ -2298,12 +2285,10 @@ class Version(BaseModel):
 
 
 def _runtime_checks() -> dict[str, dict]:
-    """Validate the GitHub Copilot SDK (Tier 1.5) sandbox prerequisites.
+    """Report the Tier 1.5 sandbox prerequisites that remain, plus the Router.
 
-    Checks (M2.6 cloud-sandbox requirements):
-      - copilot SDK importable (bundled copilot.exe present)
-      - pwsh on PATH (copilot.exe shell tool backend)
-      - GITHUB_TOKEN configured (Copilot auth)
+    WS-43o: no check imports the Copilot SDK. ``pwsh`` and ``github_token``
+    stay until WS-43q removes the executor Copilot path.
 
     Returns ``{check_name: {"ok": bool, "detail": str}}``. Never raises.
     """
@@ -2312,13 +2297,22 @@ def _runtime_checks() -> dict[str, dict]:
     settings = get_settings()
     checks: dict[str, dict] = {}
 
-    # copilot SDK importable
+    # The Router (Console) is how the model list and chat are served.
     try:
-        import copilot  # noqa: F401
+        from acb_llm.routed import router_wired
 
-        checks["copilot_sdk"] = {"ok": True, "detail": "importable"}
+        wired = router_wired()
+        # With Router serving on, chat needs the wiring (D57.7), so an unwired
+        # Router is a failed check. With serving off, the tier slate still lists.
+        serving = bool(getattr(settings, "router_serving_enabled", False))
+        checks["router"] = {
+            "ok": bool(wired) or not serving,
+            "detail": "wired" if wired else (
+                "NOT wired, and Router serving is on: chat fails" if serving
+                else "not wired (the tier slate still lists)"),
+        }
     except Exception as exc:
-        checks["copilot_sdk"] = {"ok": False, "detail": f"import failed: {exc}"}
+        checks["router"] = {"ok": False, "detail": f"router check failed: {exc}"}
 
     # pwsh on PATH
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
@@ -2412,7 +2406,7 @@ async def version() -> Version:
 
 @app.get("/health/runtime", tags=["meta"])
 async def health_runtime() -> dict:
-    """Report Tier 1.5 sandbox readiness (copilot SDK, pwsh, GITHUB_TOKEN)."""
+    """Report runtime readiness (Router, pwsh, GITHUB_TOKEN). No Copilot SDK check."""
     checks = _runtime_checks()
     return {"ok": all(c["ok"] for c in checks.values()), "checks": checks}
 
@@ -2482,146 +2476,24 @@ async def embeddings(
 
 
 
-# ---------- Copilot models ----------
-# Returns the list of models available via the GitHub Copilot SDK.
-# The UI at /api/models/all calls this to populate the Copilot SDK model group.
-# If GITHUB_TOKEN is not set, returns the static fallback list so the UI still
-# works without blocking.
-
-_COPILOT_MODELS_STATIC = [
-    {"id": "claude-sonnet-4.6",    "label": "Claude Sonnet 4.6"},
-    {"id": "claude-sonnet-4.5",    "label": "Claude Sonnet 4.5"},
-    {"id": "claude-haiku-4.5",     "label": "Claude Haiku 4.5"},
-    {"id": "claude-opus-4.6",      "label": "Claude Opus 4.6"},
-    {"id": "claude-opus-4.6-fast", "label": "Claude Opus 4.6 (fast mode)"},
-    {"id": "claude-opus-4.5",      "label": "Claude Opus 4.5"},
-    {"id": "gpt-5.4",              "label": "GPT-5.4"},
-    {"id": "gpt-5-mini",           "label": "GPT-5 mini"},
-]
-
-
-def _copilot_ctx(model_id: str) -> int:
-    """Curated context-window (tokens) for a Copilot SDK model id.
-
-    Used as a fallback when the SDK model object doesn't expose its limits.
-    Substring match so version variants (claude-sonnet-4.5/4.6, gpt-5.4/5.5)
-    resolve to the right family.
-    """
-    mid = (model_id or "").lower()
-    if "claude" in mid:
-        return 200_000
-    if "gpt-5" in mid or "gpt5" in mid:
-        return 400_000
-    if "gpt-4.1" in mid:
-        return 1_000_000
-    if "gpt-4o" in mid or "gpt-4" in mid:
-        return 128_000
-    if mid.startswith(("o1", "o3", "o4")) or "-o3" in mid or "-o1" in mid:
-        return 200_000
-    if "gemini-3" in mid or "gemini-2.5" in mid or "gemini" in mid:
-        return 1_000_000
-    # DeepSeek V4 via Copilot CLI: docs configure an 840K prompt limit
-    # (https://api-docs.deepseek.com/quick_start/agent_integrations/copilot_cli);
-    # native DeepSeek API context is 1M but Copilot CLI caps the prompt budget.
-    if "deepseek-v4" in mid or "deepseek/deepseek-v4" in mid:
-        return 840_000
-    if "deepseek" in mid:
-        return 128_000
-    return 0
-
-
-def _sdk_ctx(model: object) -> int:
-    """Best-effort extraction of a Copilot SDK model's context window.
-
-    The GitHub Copilot models API exposes
-    capabilities.limits.max_context_window_tokens; the SDK may surface it as
-    nested attributes or a dict.  Returns 0 when unavailable (caller falls back
-    to the curated map)."""
-    caps = getattr(model, "capabilities", None)
-    # Dict form
-    if isinstance(caps, dict):
-        lim = caps.get("limits") or {}
-        if isinstance(lim, dict):
-            v = lim.get("max_context_window_tokens") or lim.get("max_prompt_tokens")
-            if isinstance(v, int) and v > 0:
-                return v
-    # Attribute form
-    lim = getattr(caps, "limits", None)
-    for attr in ("max_context_window_tokens", "max_prompt_tokens"):
-        v = getattr(lim, attr, None)
-        if isinstance(v, int) and v > 0:
-            return v
-    return 0
-
-import time as _time
-
-_copilot_models_cache: dict = {"data": None, "ts": 0.0}
-_COPILOT_MODELS_CACHE_TTL = 300
-
-
-async def _list_copilot_models(github_token: str) -> list:
-    """Start one Copilot CLI to list the models, then stop it.
-
-    The startup warmup and ``/copilot/models`` both call this. WS-49 BH-1: the
-    CLI gets ``copilot_env()`` and no gateway secret. The SDK adds
-    ``COPILOT_SDK_AUTH_TOKEN`` from ``github_token`` itself.
-    """
-    from copilot import CopilotClient
-
-    sdk = CopilotClient(github_token=github_token, env=copilot_env())  # SDK 1.0: keywords (H-181)
-    await sdk.start()
-    try:
-        return list(await sdk.list_models() or [])
-    finally:
-        await sdk.stop()
-
+# ---------- Model list (WS-43o, D84) ----------
+# The Copilot SDK model list is gone. The model picker reads the Router tier
+# slate through the Control Plane at /api/models/all. This route stays so an
+# old caller gets a clear answer and not a 404.
 
 @app.get("/copilot/models", tags=["copilot"])
 async def copilot_models() -> dict:
-    """Return Copilot SDK models with 5-min TTL cache."""
-    _now = _time.monotonic()
-    if _copilot_models_cache["data"] is not None and (_now - _copilot_models_cache["ts"]) < _COPILOT_MODELS_CACHE_TTL:
-        return _copilot_models_cache["data"]
-    settings = get_settings()
-    github_token: str = (
-        os.environ.get("COPILOT_GITHUB_TOKEN", "")
-        or getattr(settings, "github_token", "")
-        or os.environ.get("GITHUB_TOKEN", "")
-    )
-    if github_token:
-        try:
-            os.environ.setdefault("GITHUB_TOKEN", github_token)
-            _models = await _list_copilot_models(github_token)
-            if _models:
-                result = {
-                    "models": [
-                        {
-                            "id": m.id,
-                            "label": m.name,
-                            "model_picker_enabled": True,
-                            # Real context window from the provider (SDK) when
-                            # exposed; curated fallback otherwise.
-                            "context_window": _sdk_ctx(m) or _copilot_ctx(m.id),
-                        }
-                        for m in _models if not m.policy or m.policy.state == "enabled"
-                    ],
-                    "source": "live",
-                }
-                _copilot_models_cache["data"] = result
-                _copilot_models_cache["ts"] = _now
-                return result
-        except Exception as _e:
-            _log.warning("gateway.copilot_models_failed", error=str(_e))
-    static = {
+    """Retired (WS-43o). Answers the Router tier slate, never the Copilot SDK."""
+    from acb_llm.routed import PICKER_WIRE_IDS
+
+    return {
         "models": [
-            dict(m, model_picker_enabled=False, context_window=_copilot_ctx(m["id"]))
-            for m in _COPILOT_MODELS_STATIC
+            {"id": wire, "label": slate, "model_picker_enabled": True}
+            for wire, slate in PICKER_WIRE_IDS.items()
         ],
-        "source": "static",
+        "source": "router",
+        "retired": "Use /api/models/all. The Copilot SDK list is removed.",
     }
-    _copilot_models_cache["data"] = static
-    _copilot_models_cache["ts"] = _now - (_COPILOT_MODELS_CACHE_TTL - 30)
-    return static
 
 
 # ---------- Pull mode (Phase 0 stub) ----------
