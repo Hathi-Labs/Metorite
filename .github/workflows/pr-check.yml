@@ -138,6 +138,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # CIV-23 (D201). Eight box runners share one home, and a job's `uv cache
+      # prune` deleted an archive that another job was installing ("Failed to
+      # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
+      - name: Keep uv's cache private to this runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          d="$(dirname "$RUNNER_WORKSPACE")/uv"
+          echo "UV_CACHE_DIR=$d/cache" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$d/python" >> "$GITHUB_ENV"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
         with:
@@ -387,6 +397,16 @@ jobs:
         run: |
           echo "CUSTOMER_CONSOLE_DATABASE_URL=postgresql+psycopg://cc:cc@127.0.0.1:${CC_PORT}/cc_platform" >> "$GITHUB_ENV"
           echo "TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:${TENANT_PORT}/acb_tenant" >> "$GITHUB_ENV"
+
+      # CIV-23 (D201). Eight box runners share one home, and a job's `uv cache
+      # prune` deleted an archive that another job was installing ("Failed to
+      # read directory ... uv/archive-v0"). Each runner keeps its own uv cache.
+      - name: Keep uv's cache private to this runner
+        if: runner.environment == 'self-hosted'
+        run: |
+          d="$(dirname "$RUNNER_WORKSPACE")/uv"
+          echo "UV_CACHE_DIR=$d/cache" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$d/python" >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
