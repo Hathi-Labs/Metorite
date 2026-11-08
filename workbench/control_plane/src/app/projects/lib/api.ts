@@ -18,6 +18,7 @@ import {
   normalizeRunDetail,
 } from "./agentRuns";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
   type AttentionPage,
@@ -1811,6 +1812,12 @@ export interface TaskRow {
    * the list endpoint does not, so a board row reads `undefined`.
    */
   time_spent_mins?: number;
+  /**
+   * SP-9 — the roll-up of an EPIC over every descendant the reader can see.
+   * Only the single read carries it, and only for a task whose type is an
+   * epic type. `subtasks` above still counts the direct children.
+   */
+  rollup?: EpicRollup;
   /**
    * WS-55 EA-12c — the derived state of the newest open agent run, or null
    * when the task has none (`external_agent_access.md` §12.1, EA12-10).
