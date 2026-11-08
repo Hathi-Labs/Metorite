@@ -105,8 +105,9 @@ def app(sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch, short_tmp: Path) -> P
 
 def _run(ws: Path, org: str, body: Any, *, thread: str | None = None, **bind: Any) -> Any:
     bind.setdefault("instance", "")
+    bind.setdefault("member", MEMBER)
     with bound_run(org, agent=AGENT, thread=thread or new_thread(), workspace=str(ws),
-                   member=MEMBER, **bind):
+                   **bind):
         return asyncio.run(body())
 
 
@@ -499,6 +500,83 @@ def _wire(agent: Any, model: ScriptedModel) -> None:
     oc._client = httpx.AsyncClient(
         transport=httpx.MockTransport(model), event_hooks=oc._client.event_hooks,
     )
+
+
+# ── R8: the harness session through the REAL store ──────────────────────────
+#
+# The phase-4 catalog of the H3 rehearsal, as its NOBYPASSRLS role. The store
+# loads and saves the session that the harness agent's own provider writes,
+# so the confirm turn sees the tool output of the turn before (H-215).
+
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: E402,F401 — fixtures by name
+    _APP_ROLE,
+    _DB_GATE,
+    app_engine,
+    promoted,
+)
+from tests.unit.test_native_session_persistence import (  # noqa: E402,F401 — fixtures by name
+    _ALICE,
+    _agent_row,
+    _chat,
+    _session_catalog,
+    _tid,
+    _user_row,
+    graph_as_app,
+)
+
+
+@_DB_GATE
+def test_r8_the_store_keeps_the_harness_session_for_the_confirm_turn(
+    graph_as_app: Any, app: Path, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    from orchestrator import native_session_store as store
+    from orchestrator._native_run_context import agent_for_run
+    from orchestrator.executor import _native_session_skip
+
+    org, tid = graph_as_app.org_a, _tid()
+    sandbox.set_scope(monkeypatch, f"app_builder:{org}")
+    _chat(org, tid, agent=AGENT)
+    model = ScriptedModel([
+        tool_turn("file_access_read", json.dumps({"file_name": "app.json"}), "c1"),
+        text_turn("Rename it to New?"),
+        text_turn("Done."),
+    ])
+
+    def turn(current: str) -> Any:
+        return asyncio.run(store.begin_turn(
+            organization_id=org, thread_id=tid, agent_name=AGENT, instance="",
+            current_message=current, browser_history=None, token_budget=50_000,
+            actor=_ALICE,
+        ))
+
+    def run(agent: Any, loaded: Any, text: str) -> None:
+        view = agent_for_run(agent, None, history=loaded.history)
+
+        async def go() -> None:
+            async for _u in view.run(text, stream=True, session=loaded.session):
+                pass
+
+        _run(app, org, go, thread=tid, member=_ALICE)
+
+    _user_row(org, tid, "rename the app")
+    first = turn("rename the app")
+    assert first is not None and first.outcome == "no_row"
+    agent = _built(org, app)
+    _wire(agent, model)
+    assert _native_session_skip(agent, AGENT, {"message": "x"}, run_id="r",
+                                caller_thread_id=tid, delegated=False) is None
+    run(agent, first, "rename the app")
+    assert asyncio.run(store.finish_turn(first, token_budget=50_000)) == "saved"
+    _agent_row(org, tid, "Rename it to New?", agent=AGENT)
+
+    _user_row(org, tid, "yes")
+    second = turn("yes")
+    assert second is not None and second.loaded, second and second.outcome
+    run(agent, second, "yes")
+    sent = model.bodies[2]["messages"]
+    assert [m["role"] for m in sent].count("tool") == 1, sent
+    assert any('"name": "Old"' in str(m.get("content")) for m in sent), sent
+    assert sent[-1]["role"] == "user"
 
 
 # ── the App Workshop checkpoints (WS43-F13, the Custom Apps half) ───────────
