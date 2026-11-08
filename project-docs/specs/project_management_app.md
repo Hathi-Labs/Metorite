@@ -12,7 +12,11 @@
 > only task store, and `routes/projects/personal.py` is the lens Tasks renders.
 
 > **Product:** Metorite · **Feature:** Projects (the primary work-management
-> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-10-25**
+> module, sliced into every other Center) · **Created:** 2026-08-05 · **Updated: 2026-11-08**
+> 🟢 **SP-8a BUILT 2026-11-08, not merged** (§13.3, §13.6 row SP-8, migration 362, branch
+> `mt-1cb9f2de-sp8-epic-contract`). An epic has a contract: the store, the routes, `epic_contract`
+> in `get_task` and `get_task_context`, the MCP block and the chat tool `set_epic_contract`.
+> SP-8b, the form in the app, is open. · **Previously updated 2026-10-25**
 > 🟢 **WS-55 MCP-G7 BUILT 2026-10-25, not merged** (§9.10.3, migration 304). A comment or a link
 > on a task no longer gives 412 to a pending write with the old `If-Match`. A field change still does.
 > · **Previously updated 2026-08-25**
@@ -8986,10 +8990,23 @@ The model has five records. Each lives in the one task store (D52) or beside it.
 | Outcome | One sentence: what is true when the epic is done | The lead, drafted by Mira |
 | Acceptance | 3 to 7 checks that a reviewer can tick | The lead, drafted by Mira |
 | Out of scope | What this epic does not do | The lead |
-| Risk tier | LOW, STANDARD or HIGH. It sets the review depth | Code proposes it from the paths. The lead confirms |
+| Risk tier | LOW, STANDARD or HIGH. It sets the review depth | The lead sets it. No code proposes a tier yet (SP-8a) |
 | Appetite | Credits and review hours that the epic may spend | The lead |
 | Workstream | The track that owns it | The lead |
 | Spec link | A Knowledge page or a repository file | Anyone |
+
+**How SP-8a stores the contract (2026-11-08, Metorite task 2291).** These rules bind the build. The column "Who writes it" names a role. It is not a permission check.
+
+1. **A table of its own, not the custom-field store.** `pm_epic_contracts` (migration 362) holds one row for each epic, keyed by `task_id`. The custom-field store has no list type for the checks and no scope for epics only. Each project would also have to define the seven fields by hand. The table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and a guard refuses a row whose task is in another organization. Each column is nullable (R6).
+2. **3 to 7 checks on each save.** The code refuses a save with fewer than 3 or more than 7 checks, so the store keeps no draft. The chat card holds a draft until the member approves it. Each check has a text of 1 to 300 characters, and two checks may not have one text. A check that comes with no id gets an id from its text, so a save of the same text keeps the id. Fence: `tests/unit/test_epic_contract_r8.py`.
+3. **The lead sets the risk tier.** The tier is LOW, STANDARD or HIGH, and a CHECK in the database holds it. No code proposes a tier from the paths in SP-8a. A later slice can add the proposal.
+4. **Only an epic takes a contract.** A write on a task that is not an epic answers 422: "This task is not an epic, so it takes no epic contract. Nothing changed. Make it an epic first: set its type to Epic, then save the contract." A read of such a task gives `epic_contract: null`. `core.assert_task_is_epic` uses the predicate of the Epic-root rule (`core.is_epic_type`).
+5. **A change of type keeps the row.** When the type of a task stops being an epic, the row stays and every read ignores it. A change back to an epic shows the contract again. Nothing deletes a contract except the delete of its task.
+6. **A save replaces the whole contract.** `PUT /projects/tasks/{id}/epic-contract` takes the whole contract under the key `epic_contract`, and a part that the body leaves out is cleared. The MCP block of `update_task` and the chat tool `set_epic_contract` send the whole contract too. `POST /projects/tasks` takes the same block for a task of an epic type.
+7. **The version is the version of the task.** `If-Match` carries `pm_tasks.updated_at`, and the match is strict. A save writes one `field_change` activity, which moves the version, so a second writer with an old read gets 412. An agent must send the header. A member without it writes, as D-PM-20 allows.
+8. **Who may write.** The rule of the task: a member who can see the task can write its contract. A pinned agent connection reaches only the epics inside its pin.
+9. **The record.** A save that changes something writes one `field_change` row. It names each part that changed (`epic_outcome`, `epic_acceptance` and the others), and the timeline prints "Edited Epic outcome". Only the tier and the two appetite numbers carry the old and new values. No long text goes into the record. `meta.via` comes from the actor seam.
+10. **The workstream is text until SW-67.** It holds a project id or the name of a track, as the lead writes it, at most 120 characters. SW-67 adds the lane record, and a later slice can then keep the lane id. Text now keeps the field useful with no record that does not exist yet.
 
 **Roll-ups.** An epic computes these values from all of its descendants. Today it counts only its direct children.
 
@@ -9042,7 +9059,7 @@ Each row has one Metorite task. The rows SP-1 to SP-5 keep the scope of the boar
 | **SP-5** | 964 | Cycles in the chat, on WhatsApp and over the MCP, through the one manifest (D136): list, status, create, plan, start, close and move. A bulk move and a close show the payload on one approve card (D124.2). External agents see the cycle of a task in `get_task` and `get_task_context` | The manifest fence passes with each route in its class. One chat run plans a cycle and starts it | STANDARD | SP-1 |
 | **SP-6** | 2289 | A type control on the task page and the row menu, and a command "Make it an epic". The Epic-root rule still holds: an Epic has no parent, or only a Goal parent after WM-5. Chat sets the type on one card. `update_task` takes `type_id`, with a parity row in `skill_projects/manifest.py` (**built 2026-11-08, items 3 and 4: the MCP `type_id` and the chat card. The type control in the app is open.**) | A member sets the type in the app and in chat. An agent sets it with `update_task`. A type change that breaks the Epic-root rule is refused with a reason | STANDARD | SP-0 |
 | **SP-7** | 2290 | A script moves each top-level task tagged "Epic" that has no epic type to the Epic type of its project. The tag stays. A task with a parent is skipped and listed. Each change goes in the task timeline. A dry run comes first, with a count for each organization | The dry-run counts are on the task. After the run, no top-level task tagged "Epic" lacks an epic type. Run it on HathiLabs first. A customer organization needs the owner's OK on the count | HIGH (a data write in live organizations) | SP-6 |
-| **SP-8** | 2291 | The seven fields of the epic contract (§13.3). The chat drafts the outcome and the checks. The MCP reads and writes them. A field on a task that is not an epic is refused. The custom-field store makes it STANDARD. A migration makes it HIGH, and the builder states which | A member fills the contract in the app and in chat. An agent reads it in `get_task_context` | STANDARD with the custom-field store, HIGH with a migration | SP-0, SP-6 |
+| **SP-8** | 2291 | The seven fields of the epic contract (§13.3). The chat drafts the outcome and the checks. The MCP reads and writes them. A field on a task that is not an epic is refused. The builder chose a migration, so the row is HIGH (§13.3, "How SP-8a stores the contract"). **SP-8a is built (2026-11-08, migration 362, not merged): the table `pm_epic_contracts`, `GET` and `PUT /projects/tasks/{id}/epic-contract`, `epic_contract` in `get_task` and `get_task_context`, the `epic_contract` block of the MCP tools `update_task` and `create_task`, and the chat tool `set_epic_contract`. SP-8b is open: the form in the app, with the D145 owner preview** | A member fills the contract in the app and in chat. An agent reads it in `get_task_context`. SP-8a: R8 proves the 422 on a task that is not an epic, the count of 3 to 7 checks, the tier CHECK, the read over the real edge, the pin, and no read or write across tenants | HIGH (a migration) | SP-0, SP-6 |
 | **SP-9** | 2292 | One read that computes, for an epic, progress, spend and waits over every descendant that the reader can see. It leaves room for forecast, health and hill position. A hidden descendant is left out and counted in `hidden` | R8: an epic with slices at depth 1, 2 and 3 counts all of them. A hidden descendant is counted in `hidden`. The direct-child count of today stays correct | STANDARD (read only) | SP-0. Spend needs SP-8 |
 | **SP-10** | 2293 | The epic page (§13.3). The graph shows the links and no path until the engine ships. On the phone the graph becomes an ordered list. The one look applies (`DESIGN_SYSTEM.md`, `statusAccent.ts`). D145 owner preview | The page renders for an epic with 3 levels of slices, in light and dark, at compact density and at phone width. The captures are on the task | STANDARD | SP-8, SP-9. The graph needs SW-16 (task 347) |
 | **SP-11** | 2294 | The spec merge of §13.4. This change closes it | Three rows name one owner. The two doc tests pass | LOW | SP-0 |

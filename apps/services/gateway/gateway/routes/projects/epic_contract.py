@@ -41,11 +41,13 @@ connection sees only the tasks inside its pin (``core.Visibility``), so it
 reads and writes only those contracts. A hidden task answers 404.
 
 **The version.** ``If-Match`` carries the version of the TASK
-(``pm_tasks.updated_at``), and the match is strict: any change after the
-read gives 412. A save writes one ``field_change`` activity, and that touches
-the task, so the next writer must read again. A signed agent must send the
-header (428 without it). A member without the header writes, as D-PM-20
-allows for a PATCH.
+(``pm_tasks.updated_at``), as for the PUT of the assignees. A signed agent
+must send it (428 without it), and its match is strict
+(``core.require_exact_version``, the one strict check of a replace): any
+change after the read gives 412. A save writes one ``field_change`` activity,
+which touches the task, so the next agent must read again. A member's header
+follows the one rule (``core.require_precondition``), and a member without
+it writes, as D-PM-20 allows.
 
 **The record.** A save that changes something writes ONE ``field_change``
 activity through ``core.record_field_change``. It names each part that
@@ -80,8 +82,9 @@ from gateway.routes.projects.core import (
     from_jsonb,
     load_visible_task,
     lock_task,
-    parse_precondition,
     record_field_change,
+    require_exact_version,
+    require_precondition,
     resolve_visibility,
     router,
     row_to_dict,
@@ -132,10 +135,6 @@ VERSION_REQUIRED_DETAIL = (
     "An agent sends If-Match with the version of the task. Read the task, "
     "then send its version."
 )
-_STALE = {
-    "error": "precondition_failed",
-    "message": "This row changed since you loaded it.",
-}
 
 
 class AcceptanceCheckIn(BaseModel):
@@ -398,20 +397,24 @@ async def save_contract(db: Any, user: UserContext, task: Any,
     return after, changes
 
 
-def _require_version(task: Any, if_match: str | None, user: UserContext) -> None:
-    """Strict ``If-Match`` on the version of the task.
+async def _require_version(db: Any, task: Any, if_match: str | None,
+                           user: UserContext) -> None:
+    """``If-Match`` on the version of the task, as the PUT of the assignees
+    checks it (``tasks.set_assignees``).
 
     ``precondition_holds`` passes a token from before a satellite bump, and
-    a contract save is itself such a bump. A replace on that token would drop
-    another writer's save in silence. So the match is equality, as
-    ``tasks._require_exact_version`` does for a replaced assignee set.
+    a contract save is itself such a bump. An agent's replace on that token
+    would drop another writer's save in silence. So a signed agent sends the
+    header, and its match is strict (``core.require_exact_version``, the one
+    strict check of a replace). A member keeps the one rule
+    (``core.require_precondition``).
     """
-    if not isinstance(if_match, str):
-        if getattr(user, "agent", None) is not None:
-            raise HTTPException(status_code=428, detail=VERSION_REQUIRED_DETAIL)
+    if getattr(user, "agent", None) is None:
+        require_precondition(task, if_match, row_to_dict(task, TaskModel))
         return
-    if parse_precondition(if_match) != task.updated_at:
-        raise HTTPException(status_code=412, detail=_STALE)
+    if not isinstance(if_match, str):
+        raise HTTPException(status_code=428, detail=VERSION_REQUIRED_DETAIL)
+    await require_exact_version(db, str(task.id), if_match)
 
 
 def _reply(task: Any, contract: dict[str, Any] | None, *, epic: bool) -> dict[str, Any]:
@@ -454,7 +457,7 @@ async def put_epic_contract(
         await load_visible_task(db, vis, task_id)
         # The lock holds the version check and the save together.
         task = await lock_task(db, task_id)
-        _require_version(task, if_match, user)
+        await _require_version(db, task, if_match, user)
         await assert_task_is_epic(db, getattr(task, "type_id", None))
         contract, changes = await save_contract(db, user, task, values)
         after = await lock_task(db, task_id)

@@ -42,7 +42,8 @@ Run::
   ``test_the_numbered_migration_writes_its_policy_and_its_guard``.
 * M6. ``G/epic_contract.py``: ``epic_contract_of`` skips ``task_is_epic``.
   ``test_a_row_stays_when_the_type_changes_and_the_reads_ignore_it``.
-* M7. ``G/epic_contract.py``: ``_require_version`` uses ``precondition_holds``.
+* M7. ``G/epic_contract.py``: ``_require_version`` gives an agent the member
+  rule (``require_precondition``) in place of ``require_exact_version``.
   ``test_a_stale_version_is_refused_after_a_save``.
 """
 from __future__ import annotations
@@ -457,7 +458,14 @@ class TestTheEdge:
         assert _text(both) == tools.TEXT_EPIC_CONTRACT_ALONE
 
     async def test_a_stale_version_is_refused_after_a_save(self, live):
+        """A field edit first, so ``fields_at`` is the version that the agent
+        reads. The save then moves only ``updated_at``. The range rule of
+        ``core.precondition_holds`` would pass the old token, and the strict
+        rule refuses it (M7)."""
         epic = _epic(live, "sp8 stale")
+        renamed = await _send(live, "PATCH", f"/projects/tasks/{epic}",
+                              body={"title": "sp8 stale renamed"}, signed=None)
+        assert renamed.status_code == 200, renamed.text
         old = await _version(live, epic)
         first = await _send(live, "PUT", ROUTE.format(epic), body=_body(outcome="First"),
                             signed=None)

@@ -96,6 +96,7 @@ from gateway.routes.projects.core import (
     record_field_change,
     remap_one_status,
     remap_one_type,
+    require_exact_version,
     require_precondition,
     require_row,
     require_status_in_project,
@@ -264,32 +265,6 @@ def _check_version(task: Any, if_match: str | None) -> None:
     """
     if isinstance(if_match, str):
         require_precondition(task, if_match, row_to_dict(task, TaskModel))
-
-
-async def _require_exact_version(db: Any, task_id: str, if_match: str | None) -> None:
-    """Strict ``If-Match`` for an agent that replaces the assignee set.
-
-    WS-55 MCP-G2, fix round 1. An assignment moves ``updated_at`` and not
-    ``fields_at``, so ``precondition_holds`` passes a token from before
-    somebody else's assignment. A replaced set would then drop that person
-    in silence. So an agent's PUT keeps strict equality, as
-    ``agent_delete_task`` does: any change after the read, a comment too,
-    stales the token. The caller reads the assignees first, so the stamp
-    read here is at least as new as the set it replaces. A member's PUT
-    keeps :func:`_check_version`. An absent header passes (D-PM-20).
-    """
-    if not isinstance(if_match, str):
-        return
-    expected = parse_precondition(if_match)
-    stamp = (await db.execute(
-        text("SELECT updated_at FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
-        {"tid": task_id},
-    )).scalar()
-    if stamp != expected:
-        raise HTTPException(status_code=412, detail={
-            "error": "precondition_failed",
-            "message": "This row changed since you loaded it.",
-        })
 
 
 def _is_calendar_date(value: Any) -> bool:
@@ -2482,7 +2457,7 @@ async def set_assignees(
 
     WS-55 MCP-G2. For a member, ``If-Match`` is the version rule of the
     PATCH (``precondition_holds``). For a signed agent it is strict equality
-    (:func:`_require_exact_version`, fix round 1), checked after the read of
+    (``core.require_exact_version``, fix round 1), checked after the read of
     the current set. An absent header passes (D-PM-20), so the app's calls
     are unchanged. The writer is :func:`_write_assignees`.
     """
@@ -2516,7 +2491,7 @@ async def set_assignees(
         if agent_call:
             # After the read of `current`: an assignment that this read saw
             # moved `updated_at` in the same commit, so it stales the token.
-            await _require_exact_version(db, task_id, if_match)
+            await require_exact_version(db, task_id, if_match)
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,

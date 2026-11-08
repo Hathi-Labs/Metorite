@@ -37,7 +37,14 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 
 - SW-16a adds `add_task_link` over `POST /projects/tasks/{task_id}/links` and `remove_task_link` over `DELETE /projects/tasks/{task_id}/links/{link_id}`. The `DELETE` is the one `DELETE` of `MCP_WRITE_ROUTES`. `task_id` blocks `target_task_id`, and `link_type` is `blocks` only until SW-25. The links of `get_task` carry `link_id`. The gateway checks that the member sees both tasks, so a hidden task reads as "Task not found." A removal needs both ends inside the reach of the agent, and it writes one `link` activity on each task. `remove_task_link` reads the link first and refuses a link that is not `blocks`. The edge maps the cycle and the self-link texts by their `detail` (`_LINK_DETAILS`). SP-6 adds `type_id` to `update_task`, and a type that breaks the Epic-root rule gets `TEXT_EPIC_TYPE_HAS_PARENT`. Fence: `tests/unit/test_task_links_mcp_r8.py`.
 
-- MCP-G2 adds `set_assignees` over `PUT /projects/tasks/{task_id}/assignees`, the one `PUT` of `MCP_WRITE_ROUTES` (spec §9.2, EA3-52). `create_task` and `update_task` gain the four planning fields of the app, and `create_task` gains `assignees`. `update_task` sends `parent_task_id` to `POST /projects/tasks/{task_id}/move` in place of its PATCH.
+- SP-8a (`project_management_app.md` §13.3) adds the epic contract.
+  - `get_task` and `get_task_context` return `epic_contract` from the task row, so neither makes a request more. `tools.epic_contract` maps it: each free text leaves as `untrusted_text`, and a check id is plain only in its shape.
+  - `update_task` sends the input `epic_contract` in a call of its own to `PUT /projects/tasks/{task_id}/epic-contract`, the second `alt_writes` pair. The body is `{"epic_contract": {...}}` and nothing more (`EPIC_CONTRACT_BODY_KEYS`). `create_task` sends the same key in its POST body.
+  - The input schema holds the rules: 3 to 7 checks, the caps and the risk tiers. Each `EPIC_*` constant is a copy of `routes/projects/epic_contract.py`, pinned equal. Each 422 of the route maps by its `detail` (`_EPIC_DETAILS`).
+  - The input type `number` is new in `check_input` (`_type_ok`), for the two appetite inputs. A bool, an infinity and a NaN are not numbers.
+  - Fence: `tests/unit/test_epic_contract_r8.py`.
+
+- MCP-G2 adds `set_assignees` over `PUT /projects/tasks/{task_id}/assignees`, the first `PUT` of `MCP_WRITE_ROUTES` (spec §9.2, EA3-52). `create_task` and `update_task` gain the four planning fields of the app, and `create_task` gains `assignees`. `update_task` sends `parent_task_id` to `POST /projects/tasks/{task_id}/move` in place of its PATCH.
   - The tool record names that route in `alt_writes`, and only `update_task` has one. Rule 4 of the coverage fence reads its parameters.
   - A coded text of `_write` may be a function of the gateway detail. It names only entries of the call's own input, never a gateway text.
   - `check_input` keeps a null only for an input whose type lists `null`. Today that is `parent_task_id` of `update_task`.

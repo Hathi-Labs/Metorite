@@ -2492,6 +2492,38 @@ def require_precondition(row: Any, if_match: str | None, current: dict) -> None:
     )
 
 
+async def require_exact_version(db: Any, task_id: str, if_match: str | None) -> None:
+    """Strict ``If-Match`` for an agent that REPLACES a satellite of a task.
+
+    WS-55 MCP-G2, fix round 1. An assignment moves ``updated_at`` and not
+    ``fields_at``, so ``precondition_holds`` passes a token from before
+    somebody else's assignment. A replaced set would then drop that person
+    in silence. So an agent's PUT keeps strict equality, as
+    ``agent_delete_task`` does: any change after the read, a comment too,
+    stales the token. The caller reads what it replaces first, so the stamp
+    read here is at least as new as the state it replaces. A member's PUT
+    keeps :func:`require_precondition`. An absent header passes (D-PM-20).
+
+    The ONE strict check of a replace. Two routes call it: the PUT of the
+    assignees (``tasks.set_assignees``) and the PUT of an epic contract
+    (``epic_contract.put_epic_contract``, SP-8a), whose save is a satellite
+    bump too. It moved here from ``tasks.py`` so that both share it. Do not
+    write another copy.
+    """
+    if not isinstance(if_match, str):
+        return
+    expected = parse_precondition(if_match)
+    stamp = (await db.execute(
+        text("SELECT updated_at FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": task_id},
+    )).scalar()
+    if stamp != expected:
+        raise HTTPException(status_code=412, detail={
+            "error": "precondition_failed",
+            "message": "This row changed since you loaded it.",
+        })
+
+
 async def count_where(db: Any, table: str, column: str, value: str) -> int:
     total = (await db.execute(
         text(f"SELECT count(*) FROM {table} WHERE {column} = CAST(:value AS uuid)"),
