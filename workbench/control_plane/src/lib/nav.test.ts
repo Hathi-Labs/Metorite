@@ -159,6 +159,23 @@ describe("the launch allowlist (LS-1)", () => {
     expect(pane?.[1].label).toBe("My Tasks");
   });
 
+  it("keeps Waiting a preview pane, first in Personal Center (WS-AP AP-2a)", () => {
+    // `waiting_on_me.md` §5.1. The pane stays `preview` while WAITING_ORGS is
+    // off in production. AP-2c moves it into LIVE_SET with launch_surface.md
+    // §2. Team `personal`, so `byTeam` never puts it in "Across teams".
+    const personal = NAV_SECTIONS.find((s) => s.id === "personal")!;
+    const pane = personal.items[0];
+    expect(pane.href).toBe("/waiting");
+    expect(pane.launch).toBe("preview");
+    expect(pane.team).toBe("personal");
+    expect(pane.feature).toBeUndefined();
+    expect(pane.adminOnly).toBeUndefined();
+    expect((pane.blurb ?? "").length).toBeGreaterThan(0);
+    expect((pane.blurb ?? "").length).toBeLessThanOrEqual(60);
+    expect(LIVE_SET.some(([, href]) => href === "/waiting")).toBe(false);
+    expect(featureForPath("/waiting")).toBeNull();
+  });
+
   it("has no Centers section — D49 withdrew the surface", () => {
     for (const s of NAV_SECTIONS) {
       expect(s.id).not.toBe("centers");

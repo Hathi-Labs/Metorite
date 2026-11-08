@@ -213,7 +213,7 @@ def test_vocabulary_ts_is_current():
 
 def test_vocabulary_counts():
     vocab = load_vocabulary()
-    assert len(vocab.panes) == 21
+    assert len(vocab.panes) == 22  # WS-AP AP-2a added /waiting
     assert len(vocab.presets) == 8
     assert len(vocab.cards) == 5
     assert vocab.cards == ("needs", "today", "next", "team-pulse", "out-today")
