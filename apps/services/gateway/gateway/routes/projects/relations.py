@@ -134,9 +134,11 @@ async def insert_task_link(
 
     The ONE insert of ``pm_task_links``. ``POST /tasks/{id}/links`` calls it
     after its checks, and so do the links from text (TR-5, ``text_links.py``).
-    It writes the ``link`` activity on the source and bumps the target,
-    because a link is readable from both ends. The caller has checked that
-    both tasks are visible, and the cycle rule for ``blocks``.
+    A new row writes the ``link`` activity on the source and bumps the target,
+    because a link is readable from both ends. A link that is already there
+    changes nothing: no activity and no bump, so a repeated add cannot stale
+    the ``expected_version`` that another writer holds (SW-16a). The caller
+    has checked that both tasks are visible, and the cycle rule for ``blocks``.
     """
     row = (await db.execute(
         text(
@@ -144,10 +146,15 @@ async def insert_task_link(
             "(source_task_id, target_task_id, link_type, created_by) "
             "VALUES (CAST(:src AS uuid), CAST(:tgt AS uuid), :kind, :who) "
             "ON CONFLICT (source_task_id, target_task_id, link_type) "
-            "DO UPDATE SET link_type = EXCLUDED.link_type RETURNING id"
+            "DO UPDATE SET link_type = EXCLUDED.link_type "
+            # `xmax = 0` is true for a row this statement inserted, and false
+            # for a row that the conflict arm found.
+            "RETURNING id, (xmax = 0) AS inserted"
         ),
         {"src": source_id, "tgt": target_id, "kind": link_type, "who": by},
     )).fetchone()
+    if not row.inserted:
+        return str(row.id)
     await record_activity(
         db, activity_type="link", created_by=by, task_id=source_id,
         meta={"target": target_id, "type": link_type},
@@ -158,6 +165,79 @@ async def insert_task_link(
     # only the blocked task would otherwise never learn it is blocked.
     await touch_task(db, target_id)
     return str(row.id)
+
+
+#: The ONE delete of ``pm_task_links``. The path may name either end.
+_DELETE_LINK_SQL = (
+    "DELETE FROM pm_task_links WHERE id = CAST(:lid AS uuid) "
+    "AND (source_task_id = CAST(:tid AS uuid) "
+    "     OR target_task_id = CAST(:tid AS uuid)) "
+    "{far_end}"
+    "RETURNING id, source_task_id, target_task_id, link_type"
+)
+
+#: The far end of the link, inside the reach of a signed agent. In the DELETE
+#: itself, so no read can go stale before the write.
+_FAR_END_VISIBLE_SQL = (
+    "AND EXISTS (SELECT 1 FROM pm_tasks t WHERE t.id = "
+    "CASE WHEN pm_task_links.source_task_id = CAST(:tid AS uuid) "
+    "     THEN pm_task_links.target_task_id "
+    "     ELSE pm_task_links.source_task_id END "
+    "AND {visible}) "
+)
+
+#: The timeline line of a removal. It names no task: the reader of one end may
+#: not see the other end.
+LINK_REMOVED_BODY = "Removed a link"
+
+
+async def delete_task_link(
+    db: Any, task_id: str, link_id: str, *, by: str,
+    far_end_vis: Any | None = None,
+) -> bool:
+    """Remove one task link inside the caller's transaction. True when it went.
+
+    ``DELETE /tasks/{id}/links/{link_id}`` calls it after it has checked that
+    the caller sees ``task_id``. A signed agent passes ``far_end_vis``: its
+    reach must hold the other end too, as ``create_link`` requires. A link
+    that leaves its pin then matches no row, so the agent reads the answer of
+    a missing link and nothing is written. A person passes nothing, and the
+    end that they see is enough.
+
+    A removal writes one ``link`` activity on EACH end, and each activity bumps
+    its task. ``meta.link_action`` says that the link went, ``meta.target`` is
+    the other task and ``meta.direction`` is the side of this task. Without
+    the row, an agent removes "A1 blocks A2", A2 becomes startable, and nobody
+    can see who did it (SW-16a).
+    """
+    far_end = (
+        _FAR_END_VISIBLE_SQL.format(visible=task_visibility_clause(far_end_vis))
+        if far_end_vis is not None else ""
+    )
+    row = (await db.execute(
+        text(_DELETE_LINK_SQL.format(far_end=far_end)),
+        {
+            "lid": link_id, "tid": task_id,
+            **(far_end_vis.params if far_end_vis is not None else {}),
+        },
+    )).fetchone()
+    if row is None:
+        return False
+    source, target = str(row.source_task_id), str(row.target_task_id)
+    # In id order, as `touch_task` writes them, so that two removals over the
+    # same pair of tasks take their row locks in one order.
+    for here, other, direction in sorted((
+        (source, target, "outgoing"), (target, source, "incoming"),
+    )):
+        await record_activity(
+            db, activity_type="link", created_by=by, task_id=here,
+            body=LINK_REMOVED_BODY,
+            meta={
+                "target": other, "type": row.link_type,
+                "direction": direction, "link_action": "removed",
+            },
+        )
+    return True
 
 
 #: Subtasks, with the one status field the panel needs to draw progress.
@@ -276,9 +356,11 @@ async def get_relations(
 
 __all__ = [
     "DIRECTED_TYPES",
+    "LINK_REMOVED_BODY",
     "LINK_TYPES",
     "assert_no_block_cycle",
     "blocked_by_open",
+    "delete_task_link",
     "insert_task_link",
     "subtask_progress",
 ]

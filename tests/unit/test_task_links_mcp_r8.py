@@ -32,6 +32,11 @@ Run::
 * L6. ``G/tasks.py``: ``AGENT_PATCH_FIELDS`` loses ``type_id``. ``test_the_type_is_set_and_cleared``.
 * L7. ``G/tasks.py``: ``patch_task`` drops ``assert_epic_has_no_parent``. ``test_an_epic_type_on_a_task_with_a_parent_is_refused``.
 * L8. ``E/tools.py``: ``_update_task`` drops ``_check_type``. ``test_a_type_of_another_project_is_refused``.
+* L9. ``G/relations.py``: ``delete_task_link`` writes no activity. ``test_an_agent_removal_writes_one_row_on_each_task`` and ``test_a_person_removal_writes_the_record_too``.
+* L10. ``G/tasks.py``: ``delete_link`` passes no ``far_end_vis``. ``test_a_pinned_agent_cannot_remove_a_link_that_leaves_its_pin``.
+* L11. ``G/tasks.py``: ``delete_link`` passes ``far_end_vis`` for a person too. ``test_a_person_may_still_remove_a_link_to_a_hidden_task``.
+* L12. ``G/relations.py``: ``insert_task_link`` loses ``if not row.inserted``. ``test_a_second_identical_add_writes_nothing``.
+* L13. ``E/tools.py``: ``_meta_link`` loses ``link_action``. ``test_the_timeline_keeps_the_mark_of_a_removal``.
 """
 from __future__ import annotations
 
@@ -117,6 +122,13 @@ class TestTheRecords:
         # The cycle text is split over two source lines. Compare it flat.
         assert " ".join(tools.LINK_CYCLE_DETAIL.split()) in flat.replace('" "', "")
         assert tools.LINK_SELF_DETAIL in tasks
+
+    def test_the_timeline_keeps_the_mark_of_a_removal(self):
+        kept = tools.timeline_meta("link", {
+            "target": ID_B, "type": "blocks", "direction": "incoming",
+            "link_action": "removed", "intake": "x"})
+        assert kept == {"target": ID_B, "type": "blocks", "direction": "incoming",
+                        "link_action": "removed"}
 
     def test_the_texts_say_what_happened_and_what_next(self):
         assert "Nothing changed" in tools.TEXT_LINK_CYCLE
@@ -255,6 +267,138 @@ class TestLinksOnARealDatabase:
             await _mcp(live, "read", "remove_task_link", {
                 "task_id": a, "link_id": str(uuid.uuid4())})
         assert _links(live, a) == []
+
+
+def _link_rows(live, task: str) -> list[Any]:
+    """The ``link`` rows of the timeline of *task*, oldest first."""
+    with live.admin.begin() as c:
+        return list(c.execute(text(
+            "SELECT created_by, body, meta FROM pm_activities"
+            " WHERE task_id = CAST(:t AS uuid) AND type = 'link' ORDER BY seq"),
+            {"t": task}))
+
+
+def _stamps(live, *tasks: str) -> list[Any]:
+    return [t._row(live, task).updated_at for task in tasks]
+
+
+def _pinned(live) -> None:
+    """A write connection that is pinned to the team project."""
+    if "pinned" not in live.c:
+        live.c["pinned"], live.tok["pinned"] = live.seeder.connection(
+            scopes=w.WRITE_SCOPES, pins=(live.team,))
+
+
+class TestTheRecordOfALink:
+    """What a link write leaves on the timeline, and the reach of a removal."""
+
+    pytestmark = _DB_GATE
+
+    async def test_an_agent_removal_writes_one_row_on_each_task(self, live):
+        a = live.task(live.team, live.s.todo, "sw16a record A")
+        b = live.task(live.team, live.s.todo, "sw16a record B")
+        link_id = (await _link(live, a, b))["structuredContent"]["link_id"]
+        seen_a, seen_b = len(_link_rows(live, a)), len(_link_rows(live, b))
+        removed = await _mcp(live, "write", "remove_task_link", {
+            "task_id": a, "link_id": link_id})
+        assert removed["isError"] is False, removed
+        new_a, new_b = _link_rows(live, a)[seen_a:], _link_rows(live, b)[seen_b:]
+        assert len(new_a) == 1 and len(new_b) == 1, (new_a, new_b)
+        for row, other, side in ((new_a[0], b, "outgoing"), (new_b[0], a, "incoming")):
+            assert row.created_by == w.MEMBER
+            assert row.body == "Removed a link"
+            assert row.meta == {"target": other, "type": "blocks", "direction": side,
+                                "link_action": "removed", "via": t.R8_VIA}
+        # An agent reads that record, and it does not read as an add.
+        read = await _mcp(live, "write", "get_task_timeline", {"task_id": b, "kind": "events"})
+        newest = read["structuredContent"]["activities"][0]
+        assert newest["type"] == "link" and newest["created_by"] == w.MEMBER
+        assert newest["meta"]["link_action"] == "removed"
+        assert newest["meta"]["via"] == t.R8_VIA
+
+    async def test_a_person_removal_writes_the_record_too(self, live):
+        a = live.task(live.team, live.s.todo, "sw16a person A")
+        b = live.task(live.team, live.s.todo, "sw16a person B")
+        link_id = (await _link(live, a, b))["structuredContent"]["link_id"]
+        seen_a, seen_b = len(_link_rows(live, a)), len(_link_rows(live, b))
+        sent = await t._send(live, "DELETE", f"/projects/tasks/{b}/links/{link_id}",
+                             signed=None)
+        assert sent.status_code == 200, sent.text
+        new_a, new_b = _link_rows(live, a)[seen_a:], _link_rows(live, b)[seen_b:]
+        assert len(new_a) == 1 and len(new_b) == 1, (new_a, new_b)
+        for row, other, side in ((new_a[0], b, "outgoing"), (new_b[0], a, "incoming")):
+            assert row.created_by == w.MEMBER
+            assert row.body == "Removed a link"
+            assert row.meta == {"target": other, "type": "blocks", "direction": side,
+                                "link_action": "removed"}
+
+    async def test_a_pinned_agent_cannot_remove_a_link_that_leaves_its_pin(self, live):
+        _pinned(live)
+        inside = live.task(live.team, live.s.todo, "sw16a pin inside")
+        outside = live.task(live.other, live.s.other, "sw16a pin outside")
+        link_id = (await _link(live, inside, outside))["structuredContent"]["link_id"]
+        stamps = _stamps(live, inside, outside)
+        rows = len(_link_rows(live, inside)), len(_link_rows(live, outside))
+        missing_id = str(uuid.uuid4())
+        refused = await _mcp(live, "pinned", "remove_task_link", {
+            "task_id": inside, "link_id": link_id})
+        missing = await _mcp(live, "pinned", "remove_task_link", {
+            "task_id": inside, "link_id": missing_id})
+        assert _text(refused) == _text(missing) == tools.TEXT_LINK_NOT_FOUND
+        # The gateway gives the answer of a missing link, word for word.
+        path = "/projects/tasks/" + inside + "/links/"
+        direct = await t._send(live, "DELETE", path + link_id, signed="pinned")
+        gone = await t._send(live, "DELETE", path + missing_id, signed="pinned")
+        assert direct.status_code == gone.status_code == 404
+        assert direct.json() == gone.json()
+        # Nothing was written: the row stays, and neither task moved.
+        assert len(_links(live, inside)) == 1
+        assert _stamps(live, inside, outside) == stamps
+        assert (len(_link_rows(live, inside)), len(_link_rows(live, outside))) == rows
+        # A link with both ends inside the pin still goes.
+        other_inside = live.task(live.team, live.s.todo, "sw16a pin inside 2")
+        ok_id = (await _link(live, inside, other_inside))["structuredContent"]["link_id"]
+        ok = await _mcp(live, "pinned", "remove_task_link", {
+            "task_id": other_inside, "link_id": ok_id})
+        assert ok["isError"] is False, ok
+
+    async def test_a_person_may_still_remove_a_link_to_a_hidden_task(self, live):
+        seeder = live.seeder
+        hidden_project = seeder.project("sw16a far end", in_space=True)
+        for node in (hidden_project, seeder.root(hidden_project)):
+            seeder.one("DELETE FROM pm_project_grants WHERE project_id = CAST(:p AS uuid)"
+                       " AND subject = :s RETURNING project_id", p=node, s=w.MEMBER)
+        hidden_status = seeder.status(hidden_project, "To do", "todo", 0)
+        hidden = seeder.task(hidden_project, hidden_status, "sw16a far task")
+        mine = live.task(live.team, live.s.todo, "sw16a far mine")
+        link_id = str(seeder.one(
+            "INSERT INTO pm_task_links (source_task_id, target_task_id, link_type, created_by)"
+            " VALUES (CAST(:a AS uuid), CAST(:b AS uuid), 'blocks', :m) RETURNING id",
+            a=mine, b=hidden, m=w.MEMBER))
+        # The member's agent does not see that end, so the link is not there for it.
+        refused = await _mcp(live, "write", "remove_task_link", {
+            "task_id": mine, "link_id": link_id})
+        assert _text(refused) == tools.TEXT_LINK_NOT_FOUND
+        assert len(_links(live, mine)) == 1
+        # The member still removes it from the end they see, as before SW-16a.
+        sent = await t._send(live, "DELETE", f"/projects/tasks/{mine}/links/{link_id}",
+                             signed=None)
+        assert sent.status_code == 200, sent.text
+        assert _links(live, mine) == []
+
+    async def test_a_second_identical_add_writes_nothing(self, live):
+        a = live.task(live.team, live.s.todo, "sw16a again A")
+        b = live.task(live.team, live.s.todo, "sw16a again B")
+        first = await _link(live, a, b)
+        assert first["structuredContent"]["created"] is True
+        assert len(_link_rows(live, a)) == 1, "the first add writes its one row"
+        stamps = _stamps(live, a, b)
+        rows = len(_link_rows(live, a)), len(_link_rows(live, b))
+        second = await _link(live, a, b)
+        assert second["isError"] is False, second
+        assert second["structuredContent"]["created"] is False
+        assert (len(_link_rows(live, a)), len(_link_rows(live, b))) == rows
+        assert _stamps(live, a, b) == stamps
 
 
 class TestTheTypeOnARealDatabase:

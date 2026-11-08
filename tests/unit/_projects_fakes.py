@@ -515,6 +515,17 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+#: ``RETURNING … (xmax = 0) AS inserted`` — true for a row the statement made,
+#: false for a row the conflict arm found. Only a statement that asks gets it.
+_INSERTED_FLAG = re.compile(r"\(\s*xmax\s*=\s*0\s*\)\s+AS\s+inserted", re.I)
+
+
+def _returned(row: dict[str, Any], statement: str, *, inserted: bool) -> SimpleNamespace:
+    """One row of an INSERT, with the ``inserted`` flag when the SQL asks."""
+    flag = {"inserted": inserted} if _INSERTED_FLAG.search(statement) else {}
+    return SimpleNamespace(**row, **flag)
+
+
 #: Column defaults migration 145 declares. Kept here so a row read back after an
 #: INSERT looks like Postgres would have returned it.
 _DEFAULTS: dict[str, dict[str, Any]] = {
@@ -1487,7 +1498,8 @@ class FakeProjectsDB:
                     # DO NOTHING affects nothing, so `rowcount` is 0 — the number
                     # `tags.register` reports as "created".
                     return _Result(
-                        [SimpleNamespace(**row)], rowcount=1 if updated else 0,
+                        [_returned(row, statement, inserted=False)],
+                        rowcount=1 if updated else 0,
                     )
 
         row = {"id": str(uuid4()), **_DEFAULTS.get(table, {}), **values}
@@ -1507,7 +1519,7 @@ class FakeProjectsDB:
             self._seq += 1
             row.setdefault("seq", self._seq)
         self.tables.setdefault(table, []).append(row)
-        return _Result([SimpleNamespace(**row)])
+        return _Result([_returned(row, statement, inserted=True)])
 
     def _update(self, statement: str, table: str, args: dict) -> _Result:
         assignments = _SET_RE.search(statement)

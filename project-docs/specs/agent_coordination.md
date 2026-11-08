@@ -1072,10 +1072,10 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 
 **Status: BUILT 2026-11-08 (task 347).** The chat tools `link_tasks` and `unlink_tasks` were built before it (class B, one confirm card).
 
-- **Scope.** `add_task_link` and `remove_task_link` over the MCP, for `blocks`, through `POST /projects/tasks/{task_id}/links` and `DELETE /projects/tasks/{task_id}/links/{link_id}`. `task_id` blocks `target_task_id`. The `links` rows of `get_task` carry `link_id`. A hidden task answers the same text as a task that does not exist. A loop and a link from a task to itself are refused with a plain text.
+- **Scope.** `add_task_link` and `remove_task_link` over the MCP, for `blocks`, through `POST /projects/tasks/{task_id}/links` and `DELETE /projects/tasks/{task_id}/links/{link_id}`. `task_id` blocks `target_task_id`. The `links` rows of `get_task` carry `link_id`. A hidden task answers the same text as a task that does not exist. A loop and a link from a task to itself are refused with a plain text. A removal writes one `link` activity on each task, with the member and the client. A signed agent must see both ends of a link that it removes. A repeated add writes no activity and moves neither task.
 - **Done when.** An agent makes A1 and A2, and sets A2 blocked by A1. `get_task` shows the link. `remove_task_link` removes it.
 - **Fence.** `tests/unit/test_task_links_mcp_r8.py` (R8, a real database) and `tests/unit/test_mcp_edge_coverage.py`.
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE.
+- **Risk.** HIGH (it changes the MCP write-route allowlist). **Gate.** AGENT-SAFE.
 
 #### SW-16b · Agents split work inside a fence
 

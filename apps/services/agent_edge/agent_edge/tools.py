@@ -2893,7 +2893,13 @@ def _meta_assignment(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _meta_link(raw: Mapping[str, Any]) -> dict[str, Any]:
-    return {"target": _id(raw.get("target")), "type": _key(raw.get("type"))}
+    # SW-16a: `link_action` marks a removal row, so it does not read as an add,
+    # and `direction` is the side of this task on that row.
+    return {
+        "target": _id(raw.get("target")), "type": _key(raw.get("type")),
+        "link_action": _key(raw.get("link_action")),
+        "direction": _key(raw.get("direction")),
+    }
 
 
 def _meta_merge(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -5549,7 +5555,8 @@ TEXT_LINK_TOO_LONG = (
     "The chain of tasks that wait on each other is too long. Nothing changed.")
 TEXT_LINK_NOT_FOUND = "Task or link not found."
 #: The ``detail`` strings of the gateway's 422 (``relations.assert_no_block_cycle``
-#: and ``create_link``). ``test_mcp_edge_links.py`` pins them equal to the
+#: and ``create_link``). ``tests/unit/test_task_links_mcp_r8.py``, in
+#: ``test_the_details_are_the_ones_of_the_gateway``, pins them equal to the
 #: gateway's own text, so a changed detail fails the test.
 LINK_SELF_DETAIL = "A task cannot be linked to itself."
 LINK_SELF_BLOCK_DETAIL = "A task cannot block itself."

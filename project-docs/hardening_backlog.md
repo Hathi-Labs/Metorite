@@ -119,3 +119,9 @@ Add a section per feature as you build it. Example:
 | BR-2 | `board_stats` takes every `list_tasks` filter | The edge leaves out `include_descendants`, and the `/tasks/stats` route leaves out `assignees`, `unassigned`, `overdue`, `importance_gte`, `tags_all`, `top_level` and `watching`. The edge sends none of them, so no count disagrees today | A test sends each `list_tasks` filter to both reads and gets the same total |
 | BR-3 | Drop the stale named exception for `GET /projects/tasks/stats` | `test_mcp_edge_coverage.py` names the route as having no manifest row. The manifest now holds one (class A), so the comment is false | The exception is gone, and the coverage fence passes |
 | BR-4 | Split `build_task_filters` | ruff C901 on it went from 20 to 29 with the nine audit filters | Its complexity is at most what it was on 2026-11-07, or ruff names an accepted reason |
+
+### Agent link tools (SW-16a, task 347)
+
+| # | Item | Why | Done when |
+|---|---|---|---|
+| LK-1 | Review the loop refusal of `assert_no_block_cycle` under a pin | ACCEPTED, do not change it before the review. The walk in `relations.py` reads `pm_task_links` with no visibility check, so "would make a loop" can tell an agent that a hidden chain exists. The refusal shows no id and no title, and a correct loop check must see the whole graph (SW-16a verify, 2026-11-08) | The harden pass keeps the acceptance, or a test shows a narrower refusal that still stops every loop |

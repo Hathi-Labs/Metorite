@@ -7137,8 +7137,8 @@ request.
 **Satellites that bump the task, and the ones that deliberately do not.** The bump lives at
 ONE choke point — `core.record_activity` bumps whenever the entry names a task, because an
 activity naming a task *is* the statement that the task changed — plus `core.touch_task`
-at the writes that legitimately record no activity: link **target** on create, **both ends**
-on unlink, comment edit, comment soft-delete, the old and new **parent** on a re-parent, and
+at the writes that legitimately record no activity: link **target** on create (an unlink
+writes one `link` activity on each end since SW-16a, so both ends bump there), comment edit, comment soft-delete, the old and new **parent** on a re-parent, and
 the **promoted subtasks** plus the parent on a delete (their `parent_task_id` SET NULLs, so
 nothing in this package writes them). Covered: assignees, links, attachments, comments and
 timeline entries, subtask membership, plus tags/custom fields/status which already live on

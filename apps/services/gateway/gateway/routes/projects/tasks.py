@@ -143,6 +143,7 @@ from gateway.routes.projects.notifications import (
 from gateway.routes.projects.relations import (
     DIRECTED_TYPES,
     assert_no_block_cycle,
+    delete_task_link,
     insert_task_link,
 )
 from gateway.routes.projects.tags import apply_task_tags
@@ -2839,24 +2840,13 @@ async def delete_link(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
-        row = (await db.execute(
-            text(
-                "DELETE FROM pm_task_links WHERE id = CAST(:lid AS uuid) "
-                "AND (source_task_id = CAST(:tid AS uuid) "
-                "     OR target_task_id = CAST(:tid AS uuid)) "
-                "RETURNING id, source_task_id, target_task_id"
-            ),
-            {"lid": link_id, "tid": task_id},
-        )).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Link not found")
-        # WS-27ae / P-27 — unlinking records NO activity (deliberately: WS-27p
-        # kept the timeline for the link, not the unlink), so this is the one
-        # place the bump cannot ride the spine. BOTH ends, read off the deleted
-        # row rather than assumed from the path, because the caller may be
-        # either end of it.
-        await touch_task(
-            db, getattr(row, "source_task_id", None),
-            getattr(row, "target_task_id", None),
+        # SW-16a: a signed agent must see BOTH ends, as `create_link` requires.
+        # A link that leaves its pin reads as a link that does not exist. A
+        # person keeps the rule of this route: the end they see is enough.
+        removed = await delete_task_link(
+            db, task_id, link_id, by=actor(user),
+            far_end_vis=vis if getattr(user, "agent", None) is not None else None,
         )
+        if not removed:
+            raise HTTPException(status_code=404, detail="Link not found")
         return {"deleted": link_id}
