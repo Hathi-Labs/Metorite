@@ -5969,6 +5969,259 @@ ADD_COMMENT = Tool(
 )
 
 
+# ── update_comment and delete_comment (WS-55 MCP-G9, §9.2) ──────────────────
+
+COMMENT_ROUTE = "/projects/comments/{activity_id}"
+
+#: The annotations of ``update_comment`` and ``delete_comment`` (MCP-G9).
+#: Class C: an edit replaces the words and Metorite keeps no copy, and a
+#: delete removes them for good. ``destructiveHint`` lets the client ask the
+#: person first. The key makes the same call twice change nothing more.
+COMMENT_CHANGE_ANNOTATIONS: Mapping[str, bool] = {
+    **WRITE_ANNOTATIONS, "destructiveHint": True}
+
+#: The body keys of the PATCH (edge rule 18). The route never moves a comment
+#: to another thread, and the edge sends no other key.
+COMMENT_EDIT_BODY_KEYS: tuple[str, ...] = ("body",)
+
+#: The keys of the result of ``update_comment``. A replay returns ``id`` and
+#: ``updated`` only, with no read.
+COMMENT_UPDATE_KEYS: tuple[str, ...] = (
+    "id", "task_id", "parent_id", "body", "created_by", "created_at", "updated_at",
+    "updated",
+)
+COMMENT_UPDATE_REPLAY_KEYS: tuple[str, ...] = ("id", "updated")
+
+#: The keys of the result of ``delete_comment``.
+COMMENT_DELETE_KEYS: tuple[str, ...] = ("id", "deleted")
+
+TEXT_COMMENT_NOT_FOUND = "Comment not found."
+#: The ``detail`` of the gateway's 403 (``activities.AGENT_COMMENT_NOT_OWN``).
+#: A copy, because the edge may not import the gateway.
+#: ``test_mcp_edge_comment_edit_r8.py`` pins the two equal. The edge matches
+#: the detail and sends its own text, never the detail.
+COMMENT_NOT_OWN_DETAIL = "Only its author can change this comment in Metorite."
+#: MCP-G9 fix rounds 2 and 3: the text names the three rules of the fix
+#: rounds in one sentence, because the gateway sends the one detail for each
+#: of them too.
+TEXT_COMMENT_NOT_OWN = (
+    COMMENT_NOT_OWN_DETAIL + " An agent can change only a comment that its own"
+    " client wrote. It cannot change a comment when a person edited it, it"
+    " belongs to an agent run, or someone else wrote on the task after it."
+    " Nothing changed.")
+#: MCP-G9 fix round 4. The ``detail`` of the gateway's 409 when a deadlock or
+#: a lock timeout rolled the change back (``activities.AGENT_COMMENT_RACE``).
+#: A copy, as for the 403. ``test_mcp_edge_comment_edit_r8.py`` pins the two
+#: equal. The change did not land, so the key is free for the same call.
+COMMENT_RACE_DETAIL = "The task changed while this ran, so nothing changed. Try again."
+TEXT_COMMENT_RACE = (
+    "The task changed while this ran, so nothing changed. Send the same call"
+    " again.")
+TEXT_COMMENT_CHANGE_KEY_REUSED = (
+    "This idempotency_key was used for a different change. Send a new key.")
+TEXT_COMMENT_CHANGE_KEY_UNKNOWN = (
+    "A call with this idempotency_key got no answer, so Metorite cannot tell if"
+    " it changed the comment. Read the comments with get_task_timeline before"
+    " you use a new key.")
+_COMMENT_CHANGE_KEY_TEXTS = _KeyTexts(reused=TEXT_COMMENT_CHANGE_KEY_REUSED,
+                                      unknown=TEXT_COMMENT_CHANGE_KEY_UNKNOWN)
+_COMMENT_CHANGE_DETAILS: Mapping[tuple[int, str], str] = {
+    (403, COMMENT_NOT_OWN_DETAIL): TEXT_COMMENT_NOT_OWN,
+    (409, COMMENT_RACE_DETAIL): TEXT_COMMENT_RACE,
+}
+
+_COMMENT_ID_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": _UUID_PATTERN,
+    "description": "The id of a comment that this client wrote: the id that"
+                   " add_comment returned, or a comment row of get_task_timeline"
+                   " whose meta.via names this client."}
+_CHANGE_KEY_INPUT: dict[str, Any] = {
+    "type": "string", "pattern": idempotency.KEY_PATTERN,
+    "description": "8 to 128 letters, digits and . _ : -. Use a new key for each"
+                   " change. The same key again changes nothing more. Metorite"
+                   " keeps a key for 24 hours."}
+
+_UPDATE_COMMENT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "comment_id": _COMMENT_ID_INPUT,
+        "body": {"type": "string", "minLength": 1, "maxLength": MAX_COMMENT_CHARS,
+                 "description": "The new text of the comment, in Markdown, at most"
+                                " 20000 characters. It replaces the old text."},
+        "idempotency_key": _CHANGE_KEY_INPUT,
+    },
+    "required": ["comment_id", "body", "idempotency_key"],
+    "additionalProperties": False,
+}
+_UPDATE_COMMENT_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"}, "task_id": {"type": "string"},
+        "parent_id": _NULLABLE_STRING, "body": _UNTRUSTED_OR_NULL,
+        "created_by": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+        "updated_at": _NULLABLE_STRING, "updated": {"type": "boolean"},
+    },
+    "required": list(COMMENT_UPDATE_REPLAY_KEYS),
+    "additionalProperties": False,
+}
+
+_DELETE_COMMENT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "comment_id": _COMMENT_ID_INPUT,
+        "idempotency_key": _CHANGE_KEY_INPUT,
+    },
+    "required": ["comment_id", "idempotency_key"],
+    "additionalProperties": False,
+}
+_DELETE_COMMENT_OUTPUT: dict[str, Any] = _object({
+    "id": {"type": "string"}, "deleted": {"type": "boolean"},
+})
+
+
+def updated_comment(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The pinned keys of a changed comment (MCP-G9), and no other. The body
+    is (U). ``created_by`` is the member's own address."""
+    return {
+        "id": str(row.get("id")),
+        "task_id": str(row.get("task_id")),
+        "parent_id": _str_or_none(row.get("parent_id")),
+        "body": untrusted(row.get("body")),
+        "created_by": _str_or_none(row.get("created_by")),
+        "created_at": _str_or_none(row.get("created_at")),
+        "updated_at": _str_or_none(row.get("updated_at")),
+        "updated": True,
+    }
+
+
+async def _patch_comment(ctx: Context, comment_id: str, args: Mapping[str, Any],
+                         sent: _Sent) -> dict[str, Any]:
+    """PATCH the comment, and return the gateway's row. A comment that the
+    agent cannot reach is ``Comment not found.``, and a comment of another
+    author or another client has its own text."""
+    payload = {name: str(args[name]) for name in COMMENT_EDIT_BODY_KEYS}
+    sent.post = True
+    _, row = await _write(ctx, "PATCH", COMMENT_ROUTE, TEXT_COMMENT_NOT_FOUND,
+                          path_params={"activity_id": comment_id}, json_body=payload,
+                          details=_COMMENT_CHANGE_DETAILS)
+    if not isinstance(row, dict) or str(row.get("id")).lower() != comment_id:
+        raise ToolError(TEXT_BUSY)
+    return row
+
+
+async def _update_comment(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``update_comment`` (MCP-G9): one PATCH, and at most one change per key.
+
+    The edge checks the body before it claims the slot, as ``add_comment``
+    does. A replay returns the comment id with ``updated: false`` and no read.
+    """
+    body = str(args["body"])
+    if not body.strip():
+        raise ToolError(TEXT_COMMENT_BLANK)
+    _refuse_nul(args, COMMENT_EDIT_BODY_KEYS)
+    comment_id = str(args["comment_id"]).lower()
+    claim = await _claim_slot(ctx, "update_comment", str(args["idempotency_key"]),
+                              args, _COMMENT_CHANGE_KEY_TEXTS)
+    if claim.earlier is not None:
+        return {"id": claim.earlier, "updated": False}
+    sent = _Sent()
+    row = await _keyed_write(claim, sent,
+                             lambda: _patch_comment(ctx, comment_id, args, sent),
+                             lambda done: str(done["id"]))
+    return updated_comment(row)
+
+
+async def _send_comment_delete(ctx: Context, comment_id: str, sent: _Sent) -> str:
+    """DELETE the comment. The gateway answers ``{"deleted": <id>}``."""
+    sent.post = True
+    _, answer = await _write(ctx, "DELETE", COMMENT_ROUTE, TEXT_COMMENT_NOT_FOUND,
+                             path_params={"activity_id": comment_id}, json_body={},
+                             details=_COMMENT_CHANGE_DETAILS)
+    if not isinstance(answer, dict) or str(answer.get("deleted")).lower() != comment_id:
+        raise ToolError(TEXT_BUSY)
+    return comment_id
+
+
+async def _delete_comment(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """``delete_comment`` (MCP-G9): one DELETE, and at most one per key. A
+    replay returns the comment id with ``deleted: false`` and no request."""
+    comment_id = str(args["comment_id"]).lower()
+    claim = await _claim_slot(ctx, "delete_comment", str(args["idempotency_key"]),
+                              args, _COMMENT_CHANGE_KEY_TEXTS)
+    if claim.earlier is not None:
+        return {"id": claim.earlier, "deleted": False}
+    sent = _Sent()
+    gone = await _keyed_write(claim, sent,
+                              lambda: _send_comment_delete(ctx, comment_id, sent),
+                              lambda done: done)
+    return {"id": gone, "deleted": True}
+
+
+_COMMENT_RULE_TEXT = (
+    " You may change only a comment that this client wrote: the member is its"
+    " author, and its meta.via in get_task_timeline is the stamp of this"
+    " client. Metorite refuses a comment that the member typed in Metorite, a"
+    " comment of another member and a comment of another agent client. It also"
+    " refuses your comment when a person edited it, it belongs to an agent run,"
+    " or someone else wrote on the task after it. Nothing changes then. A"
+    " comment that is gone, or on a task that this"
+    " connection cannot reach, answers Comment not found. The timeline of the"
+    " task gets one row that says what changed and names your client. That"
+    " row holds no text of the comment."
+)
+
+UPDATE_COMMENT = Tool(
+    name="update_comment",
+    title="Change a comment",
+    description=(
+        "Replace the text of one comment that this agent client wrote, such as"
+        " a note that a stop cut off. The new text replaces the old text, and"
+        " Metorite keeps no copy of the old text." + _COMMENT_RULE_TEXT
+        + " An @ followed by the address of a member who can see the task"
+        " notifies that member when the old text did not name that member."
+        " These notifications go to the bell in Metorite, not by email. Send a"
+        " new idempotency_key for each change. The same key again returns"
+        " updated false and changes nothing more. Returns the comment."
+        + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_UPDATE_COMMENT_INPUT,
+    output_schema=_UPDATE_COMMENT_OUTPUT,
+    route=COMMENT_ROUTE,
+    params={"comment_id": "activity_id", "body": "body"},
+    not_found=TEXT_COMMENT_NOT_FOUND,
+    run=_update_comment,
+    routes=(),
+    method="PATCH",
+    edge_inputs=frozenset({"idempotency_key"}),
+    annotations=dict(COMMENT_CHANGE_ANNOTATIONS),
+)
+
+DELETE_COMMENT = Tool(
+    name="delete_comment",
+    title="Delete a comment",
+    description=(
+        "Delete one comment that this agent client wrote, such as a note that"
+        " a stop cut off. You cannot undo a delete. The words are gone, and the"
+        " comment leaves the timeline. Its replies stay." + _COMMENT_RULE_TEXT
+        + " Send a new idempotency_key for each delete. The same key again"
+        " returns deleted false and changes nothing more, because the first"
+        " call deleted the comment."
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_DELETE_COMMENT_INPUT,
+    output_schema=_DELETE_COMMENT_OUTPUT,
+    route=COMMENT_ROUTE,
+    params={"comment_id": "activity_id"},
+    not_found=TEXT_COMMENT_NOT_FOUND,
+    run=_delete_comment,
+    routes=(),
+    method="DELETE",
+    edge_inputs=frozenset({"idempotency_key"}),
+    annotations=dict(COMMENT_CHANGE_ANNOTATIONS),
+)
+
+
 # ── claim_task (EA-6b, §9.2, EA3-34) ────────────────────────────────────────
 
 CLAIM_ROUTE = "/projects/tasks/{task_id}/claim"
@@ -8966,8 +9219,8 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: reads of EA-15 (``get_task_context`` and ``my_work``) follow the seven
 #: reads of EA-3, then ``get_attachment`` of IMG-3. The write
 #: tools come after the reads: the two of EA-6a, then the two of EA-6d and
-#: ``update_tasks`` of MCP-G20, then
-#: ``add_comment`` of EA-6c and ``claim_task`` of EA-6b, then
+#: ``update_tasks`` of MCP-G20, then ``add_comment`` of EA-6c,
+#: ``update_comment`` and ``delete_comment`` of MCP-G9, and ``claim_task`` of EA-6b, then
 #: ``set_assignees`` of MCP-G2, then the four tools of MCP-G1:
 #: ``create_project``, ``update_project``, ``preview_move_tasks`` and
 #: ``move_tasks``. WS-39 TPL-1a adds the read ``list_templates`` after
@@ -8983,7 +9236,8 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_TEMPLATES,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK, UPDATE_TASKS,
-    ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES, ADD_TASK_LINK, REMOVE_TASK_LINK,
+    ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
+    ADD_TASK_LINK, REMOVE_TASK_LINK,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
@@ -9145,8 +9399,15 @@ __all__ = [
     "CLAIM_TEXTS",
     "CLOSING_CATEGORIES",
     "COMMENT_BODY_KEYS",
+    "COMMENT_CHANGE_ANNOTATIONS",
+    "COMMENT_DELETE_KEYS",
+    "COMMENT_EDIT_BODY_KEYS",
     "COMMENT_KEYS",
+    "COMMENT_NOT_OWN_DETAIL",
     "COMMENT_REPLAY_KEYS",
+    "COMMENT_ROUTE",
+    "COMMENT_UPDATE_KEYS",
+    "COMMENT_UPDATE_REPLAY_KEYS",
     "COMPLETED_CATEGORY",
     "CONTENT_IMAGE",
     "CONTENT_NONE",
@@ -9163,6 +9424,7 @@ __all__ = [
     "CREATE_TASK",
     "DELETE_ANNOTATIONS",
     "DELETE_BODY_KEYS",
+    "DELETE_COMMENT",
     "DELETE_TASK",
     "DESCRIBE_APP",
     "DOOR_APPS_ROUTE",
@@ -9297,8 +9559,12 @@ __all__ = [
     "TEXT_CANCEL_STEP",
     "TEXT_CAP",
     "TEXT_COMMENT_BLANK",
+    "TEXT_COMMENT_CHANGE_KEY_REUSED",
+    "TEXT_COMMENT_CHANGE_KEY_UNKNOWN",
     "TEXT_COMMENT_KEY_REUSED",
     "TEXT_COMMENT_KEY_UNKNOWN",
+    "TEXT_COMMENT_NOT_FOUND",
+    "TEXT_COMMENT_NOT_OWN",
     "TEXT_COMMENT_NUL",
     "TEXT_CREATE_CLOSED",
     "TEXT_DELETE_OFF",
@@ -9398,6 +9664,7 @@ __all__ = [
     "TYPE_KEYS",
     "UPDATED_TASK_KEYS",
     "UPDATE_BODY_KEYS",
+    "UPDATE_COMMENT",
     "UPDATE_PROJECT",
     "UPDATE_TASK",
     "UPDATE_TASKS",
@@ -9441,5 +9708,6 @@ __all__ = [
     "text_of",
     "timeline_meta",
     "untrusted",
+    "updated_comment",
     "write_limit_line",
 ]
