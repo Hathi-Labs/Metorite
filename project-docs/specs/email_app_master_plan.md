@@ -15020,9 +15020,9 @@ showed. Five points bind.
    the GET field, so a copy of the GET body never carries it. The PUT stamps only for
    `auto_run_choice: true` with a value of `auto_run`. It stamps once with `COALESCE`, and no body
    clears the stamp. A body without the marker leaves the stamp as it is.
-3. **Who sends the marker.** The web client sends it from the member's own Auto-run acts only: the
-   switch in AI settings, the switch and Done of setup, and "Turn on" of the notice
-   (`autoRunChoiceBody`). `persistPatch` and `persist` strip it. Each chat path sends it only when
+3. **Who sends the marker.** The web client sends it from the member's own Auto-run acts only
+   (`autoRunChoiceBody`). These acts are the switch in AI settings, the switch and Done of setup,
+   and "Turn on" of the notice. `persistPatch` and `persist` strip it. Each chat path sends it only when
    the model passed `auto_run`: `update_assistant_settings`, its held path and
    `apply_settings_to_mailboxes`.
 4. **The rule.** `auto_run_chosen` is `auto_run_chosen_at IS NOT NULL OR auto_run`, and false with
