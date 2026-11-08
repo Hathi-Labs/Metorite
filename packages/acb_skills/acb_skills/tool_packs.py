@@ -1028,8 +1028,8 @@ PACKS: dict[str, Pack] = {
     # on wherever the core pack is on (FOLLOWS).
     "projects-authority": Pack(
         slug="projects-authority",
-        when=("Load for the authority page of a project: to read it, pin a page as the authority, "
-              "or remove a pin. Also to set the contract of an epic."),
+        when=("Load for the authority page of a project (read, pin or unpin it), "
+              "or to set the contract of an epic."),
         rules=_PROJECTS_AUTHORITY_RULES,
         words=_PROJECTS_AUTHORITY_WORDS,
         replaces_core="projects",

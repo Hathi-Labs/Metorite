@@ -49,7 +49,8 @@ WHEN = {
         'Load for "remind me", or to list, move, snooze or resolve a reminder (not a task). '
         "Also my areas, task inbox and notifications."),
     "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
-    "projects-authority": "Load for the authority page of a project: to read it, pin a page as the authority, or remove a pin.",
+    # SP-8a: the contract of an epic joins the authority pack.
+    "projects-authority": "Load for the authority page of a project (read, pin or unpin it), or to set the contract of an epic.",
     # CAL-1a: the day planner pack.
     "calendar-day": (
         "Load to rebuild or replan the day, start my day, fit what is left, "

@@ -5282,7 +5282,7 @@ async def _put_epic_contract(ctx: Context, args: dict[str, Any]) -> dict[str, An
     _, answer = await _write(
         ctx, "PUT", EPIC_CONTRACT_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])},
-        json_body={"epic_contract": dict(args["epic_contract"])},
+        json_body={name: args[name] for name in EPIC_CONTRACT_BODY_KEYS},
         if_match=str(args["expected_version"]), details=_EPIC_DETAILS)
     # The write landed, so the call reports it and never says busy (EA-6d fix
     # round 2). The task row of the answer is the fallback of the re-read.

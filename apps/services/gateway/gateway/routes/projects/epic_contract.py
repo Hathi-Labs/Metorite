@@ -107,7 +107,7 @@ MAX_SPEC_LINK_CHARS = 500
 #: The largest appetite. A larger number is a 422, never a stored typo.
 MAX_APPETITE_CREDITS = 1_000_000_000
 MAX_APPETITE_REVIEW_HOURS = 100_000
-#: The risk tiers. Migration 362 holds the same CHECK.
+#: The risk tiers. The migration that makes the table holds the same CHECK.
 RISK_TIERS: tuple[str, ...] = ("LOW", "STANDARD", "HIGH")
 #: The shape of a check id that a writer sends.
 _CHECK_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,40}")
