@@ -54,7 +54,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
 
-  const declared = Number(req.headers.get("content-length") ?? "0");
+  // No Content-Length: `formData()` would buffer a body of any size.
+  const length = req.headers.get("content-length");
+  if (length === null || !/^\d+$/.test(length)) {
+    return refusal(411, "length_required", NO_CLIP);
+  }
+  const declared = Number(length);
   if (declared > MAX_CLIP_BYTES + FRAMING_BYTES) return refusal(413, "too_long", TOO_LONG);
 
   let clip: File;

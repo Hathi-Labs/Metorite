@@ -15,10 +15,10 @@ Two routes:
 
 **The checks, in this order.** The member and the flag (404). The routing
 flag: with ``routing_is_on()`` false the route refuses, because a call off
-the Console would not bill. The body cap (10 MB of clip). The kind: an audio
-MIME type (wav, webm, mp4, ogg) and a file name extension that agrees with
-it. The length of a WAV clip (120 s, with a small allowance). The cap of 30
-clips for each member in each hour. Then the one Console call.
+the Console would not bill. The body cap (10 MB of clip). The kind: WAV only,
+a WAV MIME type and a ``.wav`` name (415 for the rest). The length, counted
+from the bytes present and not from the header (120 s, with a small
+allowance, 413). No frame: 400. The cap of 30 clips for each member in each hour. Then the one Console call.
 
 **Nothing goes to disk.** The route reads the body itself, with a hard cap,
 and parses the multipart body in memory. Starlette's own form parser spools
@@ -42,8 +42,7 @@ Fence: ``tests/unit/test_chat_transcribe.py``.
 
 from __future__ import annotations
 
-import io
-import wave
+import struct
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
@@ -88,15 +87,9 @@ CAP_WINDOW_S = 3600
 #: The namespace of the cap counter in the tenant Redis wrapper.
 CAP_NAMESPACE = "chat_voice"
 
-#: Each extension the route takes, and the MIME types that agree with it.
-#: The parameters of a MIME type (``;codecs=opus``) do not count.
-AUDIO_KINDS: dict[str, frozenset[str]] = {
-    "wav": frozenset({"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}),
-    "webm": frozenset({"audio/webm"}),
-    "mp4": frozenset({"audio/mp4"}),
-    "m4a": frozenset({"audio/mp4", "audio/x-m4a"}),
-    "ogg": frozenset({"audio/ogg"}),
-}
+#: The one format the route takes: the composer always records a WAV clip.
+#: The parameters of a MIME type do not count.
+WAV_MIMES = frozenset({"audio/wav", "audio/x-wav", "audio/wave"})
 
 # ── The words the member reads ───────────────────────────────────────────────
 #
@@ -112,7 +105,7 @@ NO_CREDITS = (
 TOO_LONG = "The clip is too long."
 NO_ANSWER = "The speech service did not answer. Try again."
 NOT_HERE = "Voice input is not available here."
-WRONG_KIND = "Metorite takes a WAV, WebM, MP4 or OGG clip. Record it again."
+WRONG_KIND = "Voice input takes a WAV clip. Record it again."
 NO_CLIP = "The clip did not arrive. Record it again."
 
 
@@ -229,29 +222,49 @@ async def _clip_of(request: Request, raw: bytes) -> tuple[bytes, str, str]:
 
 
 def check_kind(filename: str, content_type: str) -> str:
-    """The extension of an audio clip whose MIME type agrees with it, or 415."""
+    """``"wav"`` when the name ends in ``.wav`` and the MIME type is a WAV, else 415."""
     name = filename.replace("\\", "/").rsplit("/", 1)[-1]
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     mime = content_type.split(";", 1)[0].strip().lower()
-    if ext not in AUDIO_KINDS or mime not in AUDIO_KINDS[ext]:
+    if ext != "wav" or mime not in WAV_MIMES:
         raise _refuse(415, "wrong_kind", WRONG_KIND)
     return ext
 
 
 def wav_seconds(audio: bytes) -> float:
-    """The length of a WAV clip, from its header. 415 when it is not a WAV.
+    """The length of a WAV clip, counted from the bytes that are present.
 
-    The standard library ``wave`` module reads the RIFF chunks and decodes no
-    sample, so the cost is bounded by the size cap.
+    The header's data size is never trusted: a header that says 0.1 s can
+    carry 5 MB. The RIFF chunks are walked with ``struct``. ``fmt `` gives the
+    rate and the frame size, and the frames are the bytes after the start of
+    ``data``, divided by the frame size. Not a RIFF/WAVE file: 415. A
+    malformed ``fmt `` or no ``data`` chunk: 400. No frame: 400.
     """
-    try:
-        with wave.open(io.BytesIO(audio), "rb") as clip:
-            rate = clip.getframerate()
-            frames = clip.getnframes()
-    except (wave.Error, EOFError, ValueError):
-        raise _refuse(415, "wrong_kind", WRONG_KIND) from None
-    if rate <= 0:
+    if len(audio) < 12 or audio[0:4] != b"RIFF" or audio[8:12] != b"WAVE":
         raise _refuse(415, "wrong_kind", WRONG_KIND)
+    pos = 12
+    rate = align = 0
+    data_start: int | None = None
+    while pos + 8 <= len(audio):
+        cid = audio[pos:pos + 4]
+        (size,) = struct.unpack_from("<I", audio, pos + 4)
+        body = pos + 8
+        if cid == b"fmt ":
+            if size < 16 or body + 16 > len(audio):
+                raise _refuse(400, "no_clip", NO_CLIP)
+            _tag, channels, rate, _bps, align, _bits = struct.unpack_from(
+                "<HHIIHH", audio, body)
+            if channels < 1 or rate < 1 or align < 1:
+                raise _refuse(400, "no_clip", NO_CLIP)
+        elif cid == b"data":
+            data_start = body
+            break
+        pos = body + size + (size & 1)
+    if data_start is None or rate < 1 or align < 1:
+        raise _refuse(400, "no_clip", NO_CLIP)
+    frames = (len(audio) - data_start) // align
+    if frames < 1:
+        raise _refuse(400, "no_clip", NO_CLIP)
     return frames / rate
 
 
@@ -327,11 +340,9 @@ async def transcribe(
     if len(audio) > MAX_CLIP_BYTES:
         raise _refuse(413, "too_long", TOO_LONG)
     ext = check_kind(filename, content_type)
-    seconds: float | None = None
-    if ext == "wav":
-        seconds = wav_seconds(audio)
-        if seconds > MAX_SECONDS + _SECONDS_SLACK:
-            raise _refuse(413, "too_long", TOO_LONG)
+    seconds = wav_seconds(audio)
+    if seconds > MAX_SECONDS + _SECONDS_SLACK:
+        raise _refuse(413, "too_long", TOO_LONG)
 
     await _take_a_slot(org, member)
 
@@ -357,7 +368,7 @@ async def transcribe(
         "chat.transcribe",
         console_status=status,
         clip_bytes=len(audio),
-        clip_seconds=round(seconds, 1) if seconds is not None else None,
+        clip_seconds=round(seconds, 1),
     )
     if isinstance(answer, str):
         return {"text": answer}

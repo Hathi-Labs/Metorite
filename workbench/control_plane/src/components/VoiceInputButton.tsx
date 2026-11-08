@@ -118,7 +118,7 @@ export default function VoiceInputButton({
         )}
       </Button>
       {recording && (
-        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" data-chat-voice-meter="">
+        <span className="ml-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground" data-chat-voice-meter="">
           <span className="font-mono tabular-nums text-foreground" aria-label={`Recording, ${formatClock(voice.elapsed)}`}>
             {formatClock(voice.elapsed)}
           </span>

@@ -5,9 +5,9 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { CLIP_RATE, downsampleToInt16, encodeWav, joinBlocks, levelOf } from "./audioCapture";
+import { CLIP_RATE, downsampleToInt16, encodeWav, joinBlocks, levelOf, startPcmCapture } from "./audioCapture";
 
 const read = (f: string) => readFileSync(join(process.cwd(), "src", f), "utf-8");
 const ascii = (b: Uint8Array, at: number, n: number) => String.fromCharCode(...b.slice(at, at + n));
@@ -100,5 +100,28 @@ describe("source fences", () => {
   it("the seam imports no app", () => {
     const seam = read("lib/audioCapture.ts");
     expect(seam).not.toMatch(/from "@\/app\//);
+  });
+});
+
+describe("a setup that throws", () => {
+  it("stops every track and closes the context, then rethrows", async () => {
+    const stop = vi.fn();
+    const close = vi.fn(async () => {});
+    const stream = { getTracks: () => [{ stop }, { stop }] };
+    class Ctx {
+      close = close;
+      createMediaStreamSource() {
+        throw new Error("no source");
+      }
+    }
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia: async () => stream } });
+    vi.stubGlobal("window", { AudioContext: Ctx });
+    try {
+      await expect(startPcmCapture({})).rejects.toThrow("no source");
+      expect(stop).toHaveBeenCalledTimes(2);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

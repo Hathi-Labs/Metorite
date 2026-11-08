@@ -161,10 +161,20 @@ export async function startPcmCapture(opts: {
     stream.getTracks().forEach((t) => t.stop());
     throw err;
   }
-  const source = ctx.createMediaStreamSource(stream);
-  const node = ctx.createScriptProcessor(4096, 1, 1);
-  const sink = ctx.createGain();
-  sink.gain.value = 0;
+  let source: MediaStreamAudioSourceNode;
+  let node: ScriptProcessorNode;
+  let sink: GainNode;
+  try {
+    source = ctx.createMediaStreamSource(stream);
+    node = ctx.createScriptProcessor(4096, 1, 1);
+    sink = ctx.createGain();
+    sink.gain.value = 0;
+  } catch (err) {
+    // A setup that throws must not leave the mic open.
+    stream.getTracks().forEach((t) => t.stop());
+    void ctx.close().catch(() => {});
+    throw err;
+  }
   const blocks: Float32Array[] = [];
   let open = true;
   node.onaudioprocess = (e) => {

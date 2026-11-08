@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import re
+import struct
 import wave
 from pathlib import Path
 from typing import Any
@@ -278,12 +279,13 @@ def test_the_server_names_the_file_sent_upstream(box) -> None:
     ("clip.mp4", "audio/mp4"),
     ("clip.m4a", "audio/x-m4a"),
 ])
-def test_the_other_audio_kinds_pass(box, name, mime) -> None:
-    console, _ = box
-    res = _post(_client(), b"\x1a\x45\xdf\xa3 not decoded here", name=name, mime=mime)
-    assert res.status_code == 200
-    ext = name.rsplit(".", 1)[1]
-    assert f'filename="clip.{ext}"' in console.requests[0].content.decode("latin-1")
+def test_a_clip_that_is_not_a_wav_is_refused_with_no_slot(box, name, mime) -> None:
+    """The chat records WAV only. Mutation: accept other kinds -> red."""
+    console, redis = box
+    res = _post(_client(), b"not a wav, not decoded here", name=name, mime=mime)
+    assert _refusal(res) == (415, "wrong_kind", ct.WRONG_KIND)
+    assert console.requests == []
+    assert redis.counts == {}
 
 
 def test_an_unproven_member_travels_without_the_proof(box) -> None:
@@ -337,6 +339,46 @@ def test_a_wav_over_two_minutes_is_refused(box) -> None:
     res = _post(_client(), wav_clip(ct.MAX_SECONDS + 6))
     assert _refusal(res) == (413, "too_long", ct.TOO_LONG)
     assert console.requests == []
+
+
+def _header(data_size: int, payload: int, rate: int = 16000) -> bytes:
+    """A 16-bit mono WAV whose header says ``data_size`` and carries ``payload``."""
+    fmt = struct.pack("<HHIIHH", 1, 1, rate, rate * 2, 2, 16)
+    return (b"RIFF" + struct.pack("<I", 36 + data_size) + b"WAVE"
+            + b"fmt " + struct.pack("<I", 16) + fmt
+            + b"data" + struct.pack("<I", data_size) + b"\x00" * payload)
+
+
+def test_a_lying_header_is_measured_from_the_bytes(box) -> None:
+    """0.1 s declared, 5 MB present (about 156 s). Mutation: read the
+    declared size -> red."""
+    console, redis = box
+    res = _post(_client(), _header(3200, 5 * 1024 * 1024))
+    assert _refusal(res) == (413, "too_long", ct.TOO_LONG)
+    assert console.requests == []
+    assert redis.counts == {}
+
+
+@pytest.mark.parametrize("audio", [
+    _header(0, 0),               # a header only
+    _header(0, 1),               # less than one frame
+    _header(32000, 0),           # declares 1 s, carries nothing
+])
+def test_a_clip_with_no_frame_is_refused_with_no_slot(box, audio) -> None:
+    console, redis = box
+    res = _post(_client(), audio)
+    assert _refusal(res) == (400, "no_clip", ct.NO_CLIP)
+    assert console.requests == []
+    assert redis.counts == {}
+
+
+def test_a_malformed_fmt_chunk_is_refused_with_no_slot(box) -> None:
+    console, redis = box
+    bad = bytearray(_header(100, 100))
+    bad[32:34] = b"\x00\x00"  # block align 0
+    res = _post(_client(), bytes(bad))
+    assert _refusal(res) == (400, "no_clip", ct.NO_CLIP)
+    assert console.requests == [] and redis.counts == {}
 
 
 def test_a_wav_of_two_minutes_passes(box) -> None:
