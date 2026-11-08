@@ -23,6 +23,13 @@ WS-43t2 (the session store, migration 228) is built and dark
 (2026-10-08). D86 paused it and D92 restarted it. Every other slice is
 spec only.**
 
+**WS-43h (app-builder on the MAF harness, task 2280) is built and dark
+(2026-11-08).** With `app_builder:<org>` in `MAF_CODING_SCOPE`, the factory
+builds a MAF harness agent on the one factory of `code_task`. Every other
+org keeps the Copilot agent until WS-43j. The block of WS-43h records what is
+true. On 2026-11-08 the owner told the team in chat to finish the removal,
+because Metorite will not use the Copilot SDK.
+
 **H-232 (WS-29, task 616) is built (2026-11-05).** The gate of the
 root agent also compares the member's org with the run's org (§15.4).
 **H-232b (task 1712) is built (2026-11-07).** The root-agent gate and the
@@ -60,7 +67,8 @@ toolkit adds `WS-43y1` to `WS-43y4`, and the Email track splits `WS-43x` into
 **Amended 2026-10-03 by D86 (§16): Projects first, then Email.** The active
 track is WS-43d, WS-43u, WS-43v and WS-43w. The slices that port the older
 agents are parked, and §16.2 lists them. D84 stays decided, and it is
-deferred.
+deferred. D92 restarted those slices on 2026-10-07 (§17). On 2026-11-08 the
+owner confirmed that the removal goes on to its end.
 
 ## 0. One paragraph
 
@@ -1801,7 +1809,7 @@ until its PR merges.
 | WS-43e | `code_task` on a MAF harness session, and no host git. Built 2026-10-08, dark, in review | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
 | WS-43g | Egress proxy, the approved grant, the host firewall script | WS-43c, WS-43d | AGENT-SAFE. The flip and the firewall install are owner acts |
-| WS-43h | app-builder on the MAF harness | WS-43d, WS-43e | AGENT-SAFE. ⏸ Parked by D86 |
+| WS-43h | app-builder on the MAF harness. Built 2026-11-08, dark (task 2280) | WS-43d, WS-43e | AGENT-SAFE |
 | WS-43i | Parity eval through the broker | WS-43f, WS-43h | AGENT-SAFE on a local stack. The flips are owner acts |
 | WS-43j | Retire the Copilot `code_task` path | WS-43i, 14 days on production | **OWNER-GATE** to merge (WS43-G7). ⏸ Parked by D86 |
 | WS-43k | The no-Copilot ratchet fence | Nothing | AGENT-SAFE |
@@ -4913,7 +4921,7 @@ assistants for now.
 | WS-43c | Kept. PR #591 |
 | D85 | Kept. PR #598 |
 | WS-8i | ⏸ Parked by D86. The task-manager move. ▶ Restarted by D92, 2026-10-07 (§17) |
-| WS-43h | ⏸ Parked by D86. app-builder. ▶ Restarted by D92, 2026-10-07 (§17) |
+| WS-43h | ⏸ Parked by D86. app-builder. ▶ Restarted by D92, 2026-10-07 (§17). Built 2026-11-08, dark |
 | WS-43j, WS-43l to WS-43s | ⏸ Parked by D86. The Copilot removal and the older agents. ▶ Restarted by D92, 2026-10-07 (§17) |
 | WS-43t2 | ⏸ Parked by D86, paused mid-build. Its branch `ws43t2-sessions` is kept. ▶ Restarted by D92, 2026-10-07 (§17) |
 | WS-43a, WS-43e, WS-43f, WS-43g, WS-43i | Not in the Projects track, and with no order yet. WS-43v takes the place of WS-43a here |
@@ -5489,7 +5497,7 @@ SDK agents, and that every agent runs on Microsoft Agent Framework.
 |---|---|---|
 | WS-43t2 | Parked, paused mid-build, branch `ws43t2-sessions` kept | ▶ Open. It comes first, because WS-8i and WS-43q wait on its soak (WS43-G13) |
 | WS-8i | Parked. The task-manager move | ▶ Open, after the soak of WS-43t2 |
-| WS-43h | Parked. app-builder | ▶ Open |
+| WS-43h | Parked. app-builder | ▶ Open. Built 2026-11-08, dark |
 | WS-43l, WS-43m, WS-43n, WS-43o | Parked. Self-mutation, the root agent, the repo agents, the model list | ▶ Open |
 | WS-43j, WS-43p, WS-43q, WS-43r, WS-43s | Parked. The removal | ▶ Open. Each merge stays an owner gate (WS43-G7, WS43-G9) |
 

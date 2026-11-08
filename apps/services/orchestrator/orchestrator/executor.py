@@ -10142,6 +10142,13 @@ def _native_session_skip(
     ``<agent>:<run>`` default), a delegated run, and an event with no current
     turn. An agent that brings its own history provider keeps it, and gets
     no second one.
+
+    WS-43h: a provider with the store's own source id
+    (``native_session_store.HISTORY_SOURCE_ID``) is the store's provider. A
+    harness agent must hold one history provider, so app-builder's factory
+    gives it that one. It reads and writes the very session state that the
+    store loads and saves, so it is no reason to skip, and
+    :func:`_agent_for_run` attaches no second one beside it.
     """
     thread = str(caller_thread_id or "").strip()
     if not thread or thread == f"{agent_name}:{run_id}":
@@ -10153,8 +10160,13 @@ def _native_session_skip(
         return "no_current_turn"
     from agent_framework import HistoryProvider
 
+    from orchestrator.native_session_store import HISTORY_SOURCE_ID
+
     for provider in getattr(agent, "context_providers", None) or []:
-        if isinstance(provider, HistoryProvider) and provider.load_messages:
+        if (
+            isinstance(provider, HistoryProvider) and provider.load_messages
+            and getattr(provider, "source_id", None) != HISTORY_SOURCE_ID
+        ):
             return "agent_history_provider"
     return None
 

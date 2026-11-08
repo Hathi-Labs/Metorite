@@ -47,6 +47,11 @@ from sqlalchemy import text
 # short-lived local ops so they get a tighter timeout than the scaffold.
 _GIT_IDENT = ("-c", "user.name=Metorite", "-c", "user.email=metorite@local")
 _GIT_TIMEOUT_S = 10
+#: Each checkpoint git runs with no file monitor and no hook (§7.5 rule A,
+#: WS-43h). A sandbox container writes the app workspace, and an empty
+#: read-only mount covers its ``.git``. These flags hold even if a ``.git``
+#: there was ever changed: host git then starts no program from it.
+_GIT_SAFE = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null")
 
 CHECKPOINT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
@@ -291,11 +296,12 @@ async def ensure_workspace(db: Any, row: Any) -> Path:
 # ── Git checkpoints (best-effort subprocess — None/[] on any failure) ────────
 
 def _git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
+    # GIT_CONFIG_NOSYSTEM: no system config either (§7.5 rule A, WS-43h).
     try:
         return subprocess.run(
-            ["git", *args], cwd=str(workspace), capture_output=True,
+            ["git", *_GIT_SAFE, *args], cwd=str(workspace), capture_output=True,
             text=True, timeout=_GIT_TIMEOUT_S, check=False,
-            env=child_env(),
+            env=child_env(extra={"GIT_CONFIG_NOSYSTEM": "1"}),
         )
     except (OSError, subprocess.SubprocessError):
         return None

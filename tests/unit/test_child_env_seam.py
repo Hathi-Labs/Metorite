@@ -718,14 +718,16 @@ def test_the_fence_accepts(name: str) -> None:
 
 
 _REAL = "apps/services/gateway/gateway/routes/apps/durability.py"
+#: The env of the checkpoint git (WS-43h added GIT_CONFIG_NOSYSTEM).
+_REAL_ENV = 'env=child_env(extra={"GIT_CONFIG_NOSYSTEM": "1"}),'
 
 
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        ("env=child_env(),", "env=None,"),
-        ("env=child_env(),", "env=child_env(extra=dict(os.environ)),"),
-        ("env=child_env(),", ""),
+        (_REAL_ENV, "env=None,"),
+        (_REAL_ENV, "env=child_env(extra=dict(os.environ)),"),
+        (_REAL_ENV, ""),
     ],
     ids=["env-None", "extra-os-environ", "env-removed"],
 )

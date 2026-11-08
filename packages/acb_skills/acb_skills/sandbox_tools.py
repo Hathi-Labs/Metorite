@@ -11,6 +11,13 @@ agent that carries :class:`ProjectsSandboxProvider`. The agent object itself
 never changes (``_native_run_context.agent_with_providers``). With an empty
 scope it returns the agent unchanged, so nothing about any run changes.
 
+Two more holders read the scope target of their own. The ``code_task`` session
+(WS-43e) takes :func:`code_task_session_parts`. app-builder (WS-43h, §7.8)
+takes :func:`app_builder_session_parts` when ``MAF_CODING_SCOPE`` names
+``app_builder`` for the run's org. Its store and its ``run_command`` read the
+run binding on each call, and its ``run_command`` runs only in an app's own
+workspace under the Custom Apps root.
+
 **The boundaries are structural, and no permission mode moves them.**
 Production runs ``AGENT_PERMISSION_MODE=audit``, where ``decide()`` logs and
 approves everything. So ``decide()`` is called for the audit line only, and
@@ -81,6 +88,7 @@ from acb_common import get_logger
 from acb_common.paging import page_line, paged
 from agent_framework import (
     DEFAULT_FILE_ACCESS_INSTRUCTIONS,
+    AgentFileStore,
     ContextProvider,
     FileAccessProvider,
     FileSkillsSource,
@@ -97,16 +105,21 @@ from acb_skills.write_artifact import announce_artifact, artifact_context
 _log = get_logger("acb_skills.sandbox_tools")
 
 __all__ = [
+    "APP_BUILDER_TARGET",
     "CODE_TASK_SESSION_TOOLS",
     "HOST_NETWORK_TOOLS",
     "PROJECTS_AGENT",
     "WITHHELD_HOST_TOOLS",
     "LockedSkillsSource",
     "ProjectsSandboxProvider",
+    "RunAppFileStore",
     "SandboxScriptRunner",
+    "app_builder_run_command",
+    "app_builder_session_parts",
     "attach_for_run",
     "code_task_run_command",
     "code_task_session_parts",
+    "host_tool_guard",
     "request_network_access",
     "run_code_task_command",
     "run_command",
@@ -1055,3 +1068,172 @@ def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
         tool(request_network_access, approval_mode="never_require"),
     ]
     return store, skills, tools
+
+
+# ── app-builder on the MAF harness (WS-43h, §7.8) ────────────────────────────
+#
+# The app-builder factory builds its harness agent BEFORE the executor binds
+# the run, so these parts hold no binding. Each call reads the run binding
+# itself (R5): the org, the agent, the thread and the dir. A call refuses
+# when the run is not app-builder, or when ``MAF_CODING_SCOPE`` does not name
+# ``app_builder`` for the run's own org. Nothing here runs on the host.
+
+#: The scope target of app-builder (§7.1, §7.8).
+APP_BUILDER_TARGET = "app_builder"
+
+#: The answer when a command would run in a dir that is not an app's own.
+APP_ONLY_ANSWER = (
+    "{tool} refused: commands run in the sandbox only in an app's own "
+    "workspace. Open the app in the App Workshop, then ask again. Nothing ran."
+)
+
+
+def _app_builder_binding(sb: Any, tool_name: str) -> tuple[Any, str | None]:
+    """The bound run, when the ``app_builder`` target covers it. Else a refusal.
+
+    The org comes from the run binding, never from input (R5). The scope is
+    read on each call, so a flip off ends the agent's tools at once.
+    """
+    try:
+        binding = sb.read_run_binding()
+    except sb.SandboxError as exc:
+        return None, f"{tool_name} refused: {exc} Nothing ran."
+    if binding.target != APP_BUILDER_TARGET or not sb.maf_coding_scope_allows(
+        APP_BUILDER_TARGET, binding.org,
+    ):
+        return None, (
+            f"{tool_name} refused: MAF_CODING_SCOPE does not name app_builder for "
+            "this organization. Nothing ran."
+        )
+    return binding, None
+
+
+async def _no_sweep(binding: Any, *, since: float) -> list[str]:
+    """An app's files stay on disk only, as the Copilot CLI left them."""
+    del binding, since
+    return []
+
+
+async def app_builder_run_command(
+    command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS,
+) -> str:
+    """Run a shell command in this app's sandbox and return its output.
+
+    The sandbox is a Linux container with Node.js 22, Python 3.12 and bash.
+    It has NO network and NO credentials. It sees the app's workspace at
+    ``/workspace``, read-write, and the command starts there. The build
+    scripts are at ``/opt/app-builder/build/``, and the T2 vendor cache is at
+    ``/opt/t2-vendor``.
+
+    Args:
+        command: The bash command, for example
+            ``"node /opt/app-builder/build/build_t2.mjs ."``.
+        timeout_s: Seconds before the command is killed. The most is 300.
+
+    Returns:
+        The exit code, the time, and the output (cut to its first and last
+        6 KB when it is long).
+    """
+    tool_name = "run_command"
+    ctx = artifact_context()
+    if not ctx.get("workspace_root") or not ctx.get("session_id"):
+        return f"{tool_name} failed: no run is bound, so nothing ran."
+    if not isinstance(command, str) or not command.strip():
+        return f"{tool_name} failed: the command is empty."
+    try:
+        sb = _broker_module()
+    except ImportError:
+        return f"{tool_name} is unavailable: the sandbox broker is not installed. Nothing ran."
+    binding, refusal = _app_builder_binding(sb, tool_name)
+    if refusal is not None:
+        return refusal
+    if binding.instance:
+        # A store key means the tenant dir ``o:<org>``, not an app's own dir.
+        # It holds the files of every thread and member, and the container
+        # mounts its dir whole and read-write (the rule of WS-43e for code_task).
+        return APP_ONLY_ANSWER.format(tool=tool_name)
+    return await _exec_and_sweep(
+        sb, binding, command, timeout_s, tool_name=tool_name, label=tool_name,
+        sweep=_no_sweep,
+    )
+
+
+# H-236: the platform's own tool, trusted by identity. It has no network.
+_register_platform_callable(app_builder_run_command, "run_command")
+
+
+class RunAppFileStore(AgentFileStore):
+    """The file store of app-builder's harness agent (WS-43h, §7.8).
+
+    MAF's ``FileAccessProvider`` holds ONE store for the life of the agent,
+    and the factory builds the agent before the run is bound. So this store
+    holds no dir. Each call reads the run binding (R5) and works on an
+    :class:`~acb_skills.tenant_file_store.AppWorkspaceFileStore` over the
+    run's own dir, under the broker's dir lock. A call outside an
+    ``app_builder`` run raises ``ValueError``, which the file tool shows to
+    the model as its answer.
+    """
+
+    def _inner(self) -> Any:
+        from acb_skills.tenant_file_store import AppWorkspaceFileStore
+
+        sb = _broker_module()
+        binding, refusal = _app_builder_binding(sb, "file_access")
+        if refusal is not None:
+            raise ValueError(refusal)
+        member = str(artifact_context().get("member") or "")
+        guard = _WorkspaceGuard(sb.get_broker(), binding.workspace)
+        return AppWorkspaceFileStore(workspace=binding.workspace, guard=guard, member=member)
+
+    async def write(self, path: str, content: str, *, overwrite: bool = True) -> None:
+        await self._inner().write(path, content, overwrite=overwrite)
+
+    async def read(self, path: str) -> str | None:
+        return await self._inner().read(path)
+
+    async def delete(self, path: str) -> bool:
+        return await self._inner().delete(path)
+
+    async def list_children(self, directory: str = "") -> list[Any]:
+        return await self._inner().list_children(directory)
+
+    async def file_exists(self, path: str) -> bool:
+        return await self._inner().file_exists(path)
+
+    async def create_directory(self, path: str) -> None:
+        await self._inner().create_directory(path)
+
+    async def search(
+        self,
+        directory: str,
+        regex_pattern: str,
+        glob_pattern: str | None = None,
+        *,
+        recursive: bool = False,
+    ) -> list[Any]:
+        return await self._inner().search(
+            directory, regex_pattern, glob_pattern, recursive=recursive,
+        )
+
+
+def host_tool_guard() -> list[Any]:
+    """The pair that takes :data:`WITHHELD_HOST_TOOLS` out of a sandboxed run.
+
+    The same pair as a covered ``projects`` run (§16.3): the host floor tools
+    that open the working dir with plain path calls, and the host web tools.
+    A container writes app-builder's dir, so a link there could steer a host
+    file call (§7.5 rule B).
+    """
+    return [WithholdHostTools(), RefuseHostTools()]
+
+
+def app_builder_session_parts() -> tuple[Any, list[Any]]:
+    """``(file store, tools)`` of app-builder's harness agent (WS-43h, §7.8).
+
+    The store is :class:`RunAppFileStore`. The one tool is ``run_command``
+    (:func:`app_builder_run_command`), with no approval prompt: the store and
+    the broker are the boundary, and the container has no network.
+    """
+    return RunAppFileStore(), [
+        tool(app_builder_run_command, name="run_command", approval_mode="never_require"),
+    ]

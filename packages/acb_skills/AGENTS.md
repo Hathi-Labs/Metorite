@@ -91,9 +91,10 @@ not write a second copy of that seam. A bare test file name is under
    - A link at any depth fails the call. Do not open a mounted dir any other way. Fence: `test_sandbox_safe_open.py`.
 5e. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (D86, spec §7.4 and §16.3).
    - Only `attach_for_run` hands them out, to ONE run, when `sandbox_broker.covers()` is true for the run's own tenant. They are never injected.
-   - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`. Do not write that no data leaves the platform, because a called agent runs outside the sandbox.
-   - The store takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
-   - Fences: `test_run_command_tool.py`, `test_maf_code_session.py` (R8), `test_projects_sandbox_tools.py`, `test_generated_addendum.py`.
+   - Two harness agents take their own parts. The `code_task` session takes `code_task_session_parts`. The app-builder factory takes `app_builder_session_parts` under `app_builder:<org>` (WS-43h). Each of those tools reads the run binding and the scope on every call.
+   - A covered run does not hold `WITHHELD_HOST_TOOLS` or `HOST_NETWORK_TOOLS`, and app-builder's harness agent holds neither (`host_tool_guard`). Do not write that no data leaves the platform, because a called agent runs outside the sandbox.
+   - `TenantFileStore` takes only the heads `agent-data/`, `inputs/`, `outputs/` and `.run/`. `AppWorkspaceFileStore` maps each path of the app dir as it is, refuses each name that starts with a dot, and mirrors nothing to the blob store. Put prose for a sandbox-only tool in `addendum.RUN_SECTIONS`, never in `FULL_SECTIONS`.
+   - Fences: `test_run_command_tool.py`, `test_maf_code_session.py` (R8), `test_projects_sandbox_tools.py`, `test_generated_addendum.py`, `test_app_builder_engine.py`.
 5f. attachment_text.py + attachment_tools.py -- `read_attachment` (spec `projects_ai_chat.md` §22).
    - `attachment_text` parses bytes only, with no subprocess and no code. Every cap is a module constant there. No regex may run over a whole line of HTML.
    - `attachment_tools` takes the workspace and the thread from `artifact_context()`, and only a file name from the model. `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands.
