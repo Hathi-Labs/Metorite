@@ -148,7 +148,7 @@ _CLEAR = {"is_vague": False, "suggested_title": None}
 def test_vague_off_makes_no_decide_call(monkeypatch):
     fake = _fake(monkeypatch)
     old = Old(_VAGUE)
-    assert _run(pd.vague_title("Call", None, old)) == _VAGUE
+    assert _run(pd.vague_title("Call", None, old, auto=True)) == _VAGUE
     assert fake.calls == [] and old.calls == 1
 
 
@@ -187,15 +187,40 @@ def test_vague_on_uses_decide_and_skips_the_rewrite_when_clear(monkeypatch):
     fake = _fake(monkeypatch, p=lambda _q: 0.1)
     _mode(monkeypatch, pd.VAGUE_TITLE, "on")
     old = Old(_VAGUE)
-    assert _run(pd.vague_title("Send Priya the Q3 quote", None, old)) == _CLEAR
+    assert _run(pd.vague_title("Send Priya the Q3 quote", None, old, auto=True)) == _CLEAR
     assert old.calls == 0 and len(fake.calls) == 1
+
+
+def test_vague_on_an_explicit_request_always_runs_the_rewrite(monkeypatch):
+    # "Improve title" is a person's request: no gate, no decide call.
+    fake = _fake(monkeypatch, p=lambda _q: 0.1)
+    _mode(monkeypatch, pd.VAGUE_TITLE, "on")
+    suggestion = {"is_vague": False, "suggested_title": "Send Priya the Q3 quote today"}
+    old = Old(suggestion)
+    assert _run(pd.vague_title("Send Priya the Q3 quote", None, old, auto=False)) == suggestion
+    assert old.calls == 1 and fake.calls == []
+
+
+def test_vague_on_an_old_client_with_no_auto_field_gets_the_rewrite(monkeypatch):
+    _fake(monkeypatch, p=lambda _q: 0.1)
+    _mode(monkeypatch, pd.VAGUE_TITLE, "on")
+    old = Old(_VAGUE)
+    assert _run(pd.vague_title("Send Priya the Q3 quote", None, old)) == _VAGUE
+    assert old.calls == 1
+
+
+def test_the_suggest_title_route_defaults_auto_to_false():
+    import inspect
+
+    from gateway.routes.tasks import ai
+    assert inspect.signature(ai.suggest_title).parameters["auto"].default is False
 
 
 def test_vague_on_runs_the_rewrite_when_vague(monkeypatch):
     _fake(monkeypatch, p=lambda _q: 0.9)
     _mode(monkeypatch, pd.VAGUE_TITLE, "on")
     old = Old({"is_vague": False, "suggested_title": "Call Priya"})
-    out = _run(pd.vague_title("Call", None, old))
+    out = _run(pd.vague_title("Call", None, old, auto=True))
     assert old.calls == 1 and out["is_vague"] is True
     assert out["suggested_title"] == "Call Priya"
 
@@ -205,18 +230,18 @@ def test_vague_on_falls_back_to_the_old_call(monkeypatch, failure):
     _fake(monkeypatch, raises=failure)
     _mode(monkeypatch, pd.VAGUE_TITLE, "on")
     old = Old(_VAGUE)
-    assert _run(pd.vague_title("Call", None, old)) == _VAGUE
+    assert _run(pd.vague_title("Call", None, old, auto=True)) == _VAGUE
     assert old.calls == 1
 
 
 def test_vague_on_falls_back_while_cooling(monkeypatch):
     fake = _fake(monkeypatch, raises=acb_llm.DecideUnavailable("x", status=402))
     _mode(monkeypatch, pd.VAGUE_TITLE, "on")
-    _run(pd.vague_title("Call", None, Old(_VAGUE)))
+    _run(pd.vague_title("Call", None, Old(_VAGUE), auto=True))
     assert df.cooling(pd.VAGUE_TITLE)
     fake.calls.clear()
     old = Old(_VAGUE)
-    assert _run(pd.vague_title("Call", None, old)) == _VAGUE
+    assert _run(pd.vague_title("Call", None, old, auto=True)) == _VAGUE
     assert fake.calls == [] and old.calls == 1
 
 

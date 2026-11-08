@@ -1595,6 +1595,7 @@ async def _llm_suggest_title(title: str, notes: str | None, model: str) -> dict[
 async def suggest_title(
     item_id: str,
     title: str | None = None,
+    auto: bool = False,
     user: UserContext = Depends(get_current_user),
 ):
     """Rephrase a task title more clearly (the 'Improve title' affordance) and
@@ -1614,7 +1615,8 @@ async def suggest_title(
         from gateway.routes.tasks import projects_decide
         return await projects_decide.vague_title(
             use_title, notes,
-            lambda: _llm_suggest_title(use_title, notes, models["clarify"]))
+            lambda: _llm_suggest_title(use_title, notes, models["clarify"]),
+            auto=auto)
 
 
 @router.post("/ai/backfill-context")

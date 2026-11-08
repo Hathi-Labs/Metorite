@@ -130,14 +130,20 @@ def _vague_request(title: str, notes: str | None) -> tuple[dict[str, Any], dict[
 async def vague_title(
     title: str, notes: str | None,
     old: Callable[[], Awaitable[dict[str, Any]]],
+    *, auto: bool = False,
 ) -> dict[str, Any]:
     """The ``{is_vague, suggested_title}`` answer, with ``decide`` on the gate.
 
     ``old`` is the LLM call that judges and rewrites. In ``on`` the rewrite
-    runs only when ``decide`` says the title is vague.
+    runs only when ``decide`` says the title is vague, but only for an
+    automatic caller (``auto=True``). A person who asks for a rewrite (the
+    "Improve title" button, ``auto=False``, the default) always gets the
+    rewrite, so in ``on`` an explicit call runs ``old`` with no gate.
     """
     mode = df.mode_for(VAGUE_TITLE)
     if mode == "off" or not (title or "").strip():
+        return await old()
+    if mode == "on" and not auto:
         return await old()
     if mode == "on":
         vague = await df.ask(
