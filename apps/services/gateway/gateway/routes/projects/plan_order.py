@@ -37,6 +37,7 @@ from typing import Any
 from uuid import UUID
 
 from acb_auth import UserContext, get_current_user
+from acb_auth.agent_oauth import plan_order_allowed
 from acb_common.planning import CLOSED_CATEGORIES
 from fastapi import Depends, HTTPException, Query
 from gateway.routes.projects.core import (
@@ -85,7 +86,9 @@ SELECT t.id, t.importance, t.leveraged, t.due_at
 #: The ``blocks`` links that point at a task or at one of its ancestors.
 _BLOCKERS_SQL = """
 SELECT l.source_task_id AS src, l.target_task_id AS dst, s.category,
-       ({visible}) AS vis
+       ({visible}) AS vis,
+       CASE WHEN ({visible}) THEN t.task_number END AS number,
+       CASE WHEN ({visible}) THEN t.title END AS title
   FROM pm_task_links l
   JOIN pm_tasks t ON t.id = l.source_task_id
   JOIN pm_task_statuses s ON s.id = t.status_id
@@ -106,7 +109,10 @@ class TaskPlan:
     rank: int | None = None
 
     def key(self, task_id: str) -> tuple[Any, ...]:
-        return (self.blocked, self.slack_mins or 0, self.rank or _NO_RANK, task_id)
+        # A slice with no computed slack (an epic with under two linked
+        # slices) ranks AFTER the slices with a known slack.
+        return (self.blocked, self.slack_mins is None, self.slack_mins or 0,
+                self.rank or _NO_RANK, task_id)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -127,13 +133,15 @@ def reorder(ids: Sequence[str], plans: Mapping[str, TaskPlan]) -> list[str]:
             + [i for i in seated if i in plans and plans[i].blocked])
 
 
-async def plan_tasks(db: Any, vis: Any, task_ids: Sequence[str]) -> dict[str, TaskPlan]:
+async def plan_tasks(db: Any, vis: Any, task_ids: Sequence[str],
+                     labels: dict[str, dict[str, Any]] | None = None) -> dict[str, TaskPlan]:
     """The plan of each task in *task_ids* that sits under an epic, by id.
 
     A task that is not in the answer has no plan: no epic above it, a parent
     task, a task the caller cannot read, or an epic that is over the cap.
     """
     ids = list(dict.fromkeys(task_ids))[:MAX_TASKS]
+    labels = labels if labels is not None else {}
     if not ids:
         return {}
     walk = (await db.execute(
@@ -174,12 +182,13 @@ async def plan_tasks(db: Any, vis: Any, task_ids: Sequence[str]) -> dict[str, Ta
                 slack_mins=result["slack"].get(leaf), blocked_by=(),
                 blocked_by_hidden=0, rank=ranks.get(leaf))
     if plans:
-        plans = await _with_blockers(db, vis, plans, chain)
+        plans = await _with_blockers(db, vis, plans, chain, labels)
     return plans
 
 
 async def _with_blockers(db: Any, vis: Any, plans: dict[str, TaskPlan],
-                         chain: Mapping[str, list[str]]) -> dict[str, TaskPlan]:
+                         chain: Mapping[str, list[str]],
+                         labels: dict[str, dict[str, Any]]) -> dict[str, TaskPlan]:
     """Add what blocks each task. A visible open blocker is named by id, and
     only for a task that the engine holds back. An open blocker that the caller
     cannot see is counted, and it also marks the task as blocked."""
@@ -192,15 +201,19 @@ async def _with_blockers(db: Any, vis: Any, plans: dict[str, TaskPlan],
     for leaf, plan in plans.items():
         mine = set(chain[leaf])
         named: set[str] = set()
-        hidden = 0
+        hidden_ids: set[str] = set()
         for r in rows:
             src, dst = str(r.src), str(r.dst)
             if dst not in mine or src in mine or r.category in CLOSED_CATEGORIES:
                 continue
             if r.vis:
                 named.add(src)
-            else:
-                hidden += 1
+                labels[src] = {"number": r.number, "title": r.title}
+            elif dst == leaf:
+                # Distinct blockers of the slice itself. A hidden blocker of
+                # an ancestor is not counted here.
+                hidden_ids.add(src)
+        hidden = len(hidden_ids)
         out[leaf] = TaskPlan(
             epic_id=plan.epic_id, blocked=plan.blocked or hidden > 0,
             slack_mins=plan.slack_mins,
@@ -210,12 +223,12 @@ async def _with_blockers(db: Any, vis: Any, plans: dict[str, TaskPlan],
 
 
 async def order_for(db: Any, user: UserContext, task_ids: Sequence[str]) -> tuple[
-        list[str], dict[str, TaskPlan]]:
-    """``(ids in plan order, plan by id)``. The chat route calls it in its own
-    session, and the read below calls it for the MCP edge."""
+        list[str], dict[str, TaskPlan], dict[str, dict[str, Any]]]:
+    """``(ids in plan order, plan by id, labels of the visible blockers)``."""
     vis = await resolve_visibility(db, user)
-    plans = await plan_tasks(db, vis, task_ids)
-    return reorder(list(dict.fromkeys(task_ids)), plans), plans
+    labels: dict[str, dict[str, Any]] = {}
+    plans = await plan_tasks(db, vis, task_ids, labels)
+    return reorder(list(dict.fromkeys(task_ids)), plans), plans, labels
 
 
 @router.get("/plan/order")
@@ -231,6 +244,12 @@ async def plan_order(
         except ValueError:
             continue
     ids = list(dict.fromkeys(ids))[:MAX_TASKS]
+    # Dark by default (SW-68a): an org off the list gets the input order, and
+    # no plan. The organization comes from the session, never from the request.
+    if not plan_order_allowed(getattr(user, "organization_id", None)):
+        return {"order": ids, "plan": {}, "labels": {}}
     async with _tenant_session() as db:
-        order, plans = await order_for(db, user, ids)
-    return {"order": order, "plan": {i: p.to_dict() for i, p in plans.items()}}
+        order, plans, labels = await order_for(db, user, ids)
+    named = {b for p in plans.values() for b in p.blocked_by}
+    return {"order": order, "plan": {i: p.to_dict() for i, p in plans.items()},
+            "labels": {i: labels[i] for i in named if i in labels}}

@@ -962,6 +962,13 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # SW-68a (agent_coordination.md SW-68): the organizations where `my_work`
+    # (MCP and chat) ranks the tasks under an epic by the plan engine. Comma
+    # list of organization ids, or `*`. Empty: off, and `my_work` keeps its old
+    # order and sends no plan read. A SIGHUP reload applies a change.
+    # The one reader is `acb_auth.agent_oauth.plan_order_allowed`. Fence:
+    # tests/unit/test_my_work_plan_order_r8.py.
+    my_work_plan_order_orgs: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids

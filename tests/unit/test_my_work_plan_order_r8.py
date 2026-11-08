@@ -23,12 +23,17 @@ Mutations (R7). ``G`` is ``apps/services/gateway/gateway/routes/projects``.
 
 * O1. ``G/plan_order.py`` ``reorder`` returns ``ids``. ``test_the_critical_slice_comes_first``,
   ``test_a_blocked_slice_is_never_the_top_row``.
-* O2. ``G/plan_order.py`` ``TaskPlan.key`` drops ``blocked``. ``test_a_blocked_slice_is_never_the_top_row``.
+* O2. ``G/plan_order.py`` ``reorder`` drops its last step, the move of blocked
+  slices to the end. ``test_a_lone_blocked_slice_never_leads`` (pure).
 * O3. ``G/plan_order.py`` ``plan_tasks`` runs ``compute_plan`` without the visibility
   of the caller (``_TREE_SQL`` ``vis`` is true). ``test_a_hidden_slice_changes_nothing``.
 * O4. ``agent_edge/tools.py`` ``_my_work`` skips ``_plan_of``. ``test_the_critical_slice_comes_first``.
 * O5. ``skill_projects/reads.py`` ``_plan_ordered`` returns ``rows``.
   ``test_the_mcp_and_the_chat_agree``.
+* O6. ``agent_edge/tools.py`` ``_my_work`` sends only the offered rows to the plan
+  (probe V7 of the verifier). ``test_the_mcp_and_the_chat_agree`` (the whole order).
+* O7. ``G/plan_order.py`` ``plan_order`` skips ``plan_order_allowed``.
+  ``test_with_the_flag_off_the_route_answers_the_input_order``.
 """
 from __future__ import annotations
 
@@ -40,12 +45,12 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from gateway.routes.projects.plan_order import MAX_EPICS, TaskPlan, reorder
+from gateway.routes.projects.plan_order import MAX_EPICS, MAX_TASKS, TaskPlan, reorder
 
 from tests.unit import test_mcp_edge_task_writes as t
 from tests.unit import test_mcp_edge_writes as w
 from tests.unit.test_mcp_edge_assignees import _assign, world  # noqa: F401  (the fixture)
-from tests.unit.test_plan_analysis_r8 import _block, _under
+from tests.unit.test_plan_analysis_r8 import _block, _pinned, _under
 
 _DB_GATE = w._DB_GATE
 live_app = t.live_app
@@ -53,6 +58,14 @@ live = t.live
 redis_fake = t.redis_fake
 
 ORDER = "/projects/plan/order"
+
+
+@pytest.fixture(autouse=True)
+def _flag_on(monkeypatch):
+    """The plan order is dark by default. These tests turn it on for every org."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "my_work_plan_order_orgs", "*")
 
 
 def _epic(live, label: str) -> str:
@@ -153,8 +166,12 @@ class TestTheRuleWithNoDatabase:
     def test_no_plan_is_no_change(self):
         assert reorder(["c", "a", "b"], {}) == ["c", "a", "b"]
 
-    def test_the_cap_is_a_number(self):
-        assert MAX_EPICS >= 1
+    def test_the_caps_are_the_documented_numbers(self):
+        assert (MAX_TASKS, MAX_EPICS) == (100, 10)
+
+    def test_a_slice_with_no_slack_ranks_after_a_known_slack(self):
+        plans = {"a": self._plan(False, None), "b": self._plan(False, 400)}
+        assert reorder(["a", "b"], plans) == ["b", "a"]
 
 
 class TestTheOrderOnARealDatabase:
@@ -201,7 +218,7 @@ class TestTheOrderOnARealDatabase:
         a, b, c = (_plain(live, f"sw68a plain {n}") for n in "abc")
         r = await t._send(live, "GET", ORDER, query=f"task_ids={c},{a},{b}", signed=None)
         assert r.status_code == 200, r.text
-        assert r.json() == {"order": [c, a, b], "plan": {}}
+        assert r.json() == {"order": [c, a, b], "plan": {}, "labels": {}}
 
     async def test_a_hidden_slice_changes_nothing(self, live, monkeypatch):
         """``u`` blocks a hidden slice ``h`` of 5000 minutes. Were ``h`` in the
@@ -232,7 +249,7 @@ class TestTheOrderOnARealDatabase:
 
         titles, text_ = await _chat(live, monkeypatch)
         assert _where(titles, "hidden x2") < _where(titles, "hidden u")
-        assert _where(titles, "hidden v") == len(titles) - 1  # blocked: last
+        assert _where(titles, "hidden v") > _where(titles, "hidden u")  # blocked: after
         assert "blocked by a task you cannot see" in text_
         assert secret not in text_ and also not in text_ and "sw68a secret" not in text_
         r = await t._send(live, "GET", ORDER, query=f"task_ids={v},{u},{x2}", signed=None)
@@ -241,7 +258,24 @@ class TestTheOrderOnARealDatabase:
         assert plan["blocked_by_hidden"] == 1
         assert secret not in r.text and also not in r.text
 
-    async def test_a_pinned_agent_cannot_widen_the_plan(self, live):
+    async def test_a_pinned_agent_does_not_plan_what_its_pin_hides(self, live):
+        """An agent pinned to the team project plans no slice of another project
+        (the pin narrows the input of the engine). The slice stays in the order."""
+        _pinned(live)
+        epic = _epic(live, "sw68a pin")
+        a = _slice(live, epic, "sw68a pin a", 30)
+        b = _slice(live, epic, "sw68a pin b", 30)
+        _block(live, a, b)
+        far = _under(live, epic, live.other, live.s.other, "sw68a pin far", 30)
+        r = await t._send(live, "GET", ORDER, query=f"task_ids={far},{b},{a}",
+                          signed="pinned")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert far not in body["plan"] and far in body["order"]
+        assert set(body["plan"]) == {a, b}
+        assert "sw68a pin far" not in r.text
+
+    async def test_a_task_of_another_tenant_never_joins_the_plan(self, live):
         """A tenant boundary: a task of another tenant never joins the plan."""
         epic = _epic(live, "sw68a tenant")
         a = _slice(live, epic, "sw68a tenant a", 30)
@@ -255,27 +289,70 @@ class TestTheOrderOnARealDatabase:
         assert r.status_code == 200, r.text
         assert foreign not in r.json()["plan"] and foreign in r.json()["order"]
 
+    async def test_with_the_flag_off_the_route_answers_the_input_order(
+            self, live, monkeypatch):
+        from acb_common import get_settings
+
+        epic = _epic(live, "sw68a flag")
+        y = _slice(live, epic, "sw68a flag y", 30)
+        x = _slice(live, epic, "sw68a flag x", 300)
+        j = _slice(live, epic, "sw68a flag j", 60)
+        _block(live, x, j)
+        _block(live, y, j)
+        monkeypatch.setattr(get_settings(), "my_work_plan_order_orgs", "")
+        r = await t._send(live, "GET", ORDER, query=f"task_ids={y},{x},{j}", signed=None)
+        assert r.json() == {"order": [y, x, j], "plan": {}, "labels": {}}
+        assert all("plan" not in row for row in await _mcp_rows(live))
+        monkeypatch.setattr(get_settings(), "my_work_plan_order_orgs", "*")
+        r = await t._send(live, "GET", ORDER, query=f"task_ids={y},{x},{j}", signed=None)
+        assert r.json()["order"][0] == x
+
+    async def test_two_hidden_blockers_count_twice(self, live):
+        seeder = live.seeder
+        epic = _epic(live, "sw68a hidden count")
+        v = _slice(live, epic, "sw68a hc v", 30)
+        _slice(live, epic, "sw68a hc other", 30, mine=False)
+        hidden_project = seeder.project("sw68a hc project", in_space=True)
+        for node in (hidden_project, seeder.root(hidden_project)):
+            seeder.one("DELETE FROM pm_project_grants WHERE project_id = CAST(:p AS uuid)"
+                       " AND subject = :s RETURNING project_id", p=node, s=w.MEMBER)
+        status = seeder.status(hidden_project, "To do", "todo", 0)
+        for n in (1, 2):
+            _block(live, _under(live, epic, hidden_project, status, f"sw68a hc h{n}", 5), v)
+        r = await t._send(live, "GET", ORDER, query=f"task_ids={v}", signed=None)
+        assert r.json()["plan"][v]["blocked_by_hidden"] == 2
+        assert "sw68a hc h" not in r.text
+
     async def test_the_mcp_and_the_chat_agree(self, live, monkeypatch):
+        """The WHOLE order agrees: plain tasks between epic slices, a slice
+        blocked by an epic link, a slice with a direct blocker, a diamond."""
+        from sqlalchemy import text
+
         epic = _epic(live, "sw68a agree")
         x = _slice(live, epic, "sw68a agree x", 300)
+        pa = _plain(live, "sw68a agree plain a")
         y = _slice(live, epic, "sw68a agree y", 30)
+        first, second = _epic(live, "sw68a agree first"), _epic(live, "sw68a agree second")
+        _slice(live, first, "sw68a agree p", 60, mine=False)
+        pb = _plain(live, "sw68a agree plain b")
+        z = _slice(live, second, "sw68a agree z", 60)
+        # j is the newest task, so it holds the first slot. The old edge dropped
+        # it before the plan, gave its slot away, and so differed from the chat.
         j = _slice(live, epic, "sw68a agree j", 60)
         _block(live, x, j)
         _block(live, y, j)
-        first, second = _epic(live, "sw68a agree first"), _epic(live, "sw68a agree second")
-        _slice(live, first, "sw68a agree p", 60, mine=False)
-        _plain(live, "sw68a agree w")
-        z = _slice(live, second, "sw68a agree z", 60)
         _block(live, first, second)
         mcp = [r for r in await _mcp_rows(live) if r["reason"] == "assigned"]
         titles, text_ = await _chat(live, monkeypatch)
         ids = [r["task_id"] for r in mcp]
-        assert {x, y, z} <= set(ids) and j not in ids
-        names = {x: "agree x", y: "agree y", z: "agree z"}
-        chat_order = [i for i, _ in sorted(
-            ((i, _where(titles, n)) for i, n in names.items()), key=lambda p: p[1])]
-        assert chat_order == [i for i in ids if i in names]
-        assert chat_order[0] == x and chat_order[-1] == z
+        assert {x, y, z, pa, pb} <= set(ids) and j not in ids
+        with live.admin.begin() as c:
+            name = {str(r[0]): r[1] for r in c.execute(
+                text("SELECT id, title FROM pm_tasks WHERE id = ANY(CAST(:i AS uuid[]))"),
+                {"i": ids})}
+        chat_order = sorted(ids, key=lambda i: _where(titles, name[i]))
+        assert chat_order == ids, (chat_order, ids)  # the whole order
+        assert ids.index(x) < ids.index(y)
         _top_is_not_blocked(mcp)
-        assert "plan: blocked by " + first in text_
+        assert "plan: blocked by #" in text_ and "sw68a agree first epic" in text_
         assert "plan: ready · slack 0 mins" in text_

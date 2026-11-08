@@ -4498,6 +4498,9 @@ MY_WORK_REASONS: tuple[str, ...] = (*WAITING_REASONS.values(), REASON_HELD, REAS
 #: blocked_by_hidden}``. Ids and counts only. The key is absent on a row that
 #: sits under no epic, and on every row while the route answers nothing.
 PLAN_ORDER_ROUTE = "/projects/plan/order"
+#: The seconds that the plan read may take (SW-68a). Over it, `my_work` keeps
+#: today's order.
+PLAN_ORDER_BUDGET_S = 2.0
 PLAN_KEY = "plan"
 
 #: The keys of one row of ``my_work`` (§12.4). ``version`` is the token that
@@ -4542,13 +4545,16 @@ async def _plan_of(ctx: Context, ids: list[str]) -> tuple[list[str], dict[str, d
     task that sits under an epic. The gateway ranks, so the chat ``my_work``
     and this tool use one rule. A failed read (busy, or an old gateway) and
     an answer of the wrong shape keep the order of *ids* and give no plan."""
-    if not ids:
+    if not ids or not agent_oauth.plan_order_allowed(ctx.caller.lookup.organization_id):
         return ids, {}
     try:
-        found = await _get(ctx, PLAN_ORDER_ROUTE, TEXT_TASK_NOT_FOUND,
-                           query=[("task_ids", ",".join(ids))])
-    except ToolError:
-        # The plan is an aid. A slow or missing read must not hide the work.
+        # Its own short limit, so a hung read never turns `my_work` into
+        # "busy" (the pattern of `_after_write`). The plan is an aid.
+        async with asyncio.timeout(PLAN_ORDER_BUDGET_S):
+            found = await _get(ctx, PLAN_ORDER_ROUTE, TEXT_TASK_NOT_FOUND,
+                               query=[("task_ids", ",".join(ids))],
+                               timeout_s=PLAN_ORDER_BUDGET_S)
+    except (ToolError, GatewayUnauthorized, TimeoutError):
         return ids, {}
     order = found.get("order") if isinstance(found, dict) else None
     plans = found.get("plan") if isinstance(found, dict) else None
@@ -4779,17 +4785,20 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         listed.append((task_id, reason, _id(run.get("id")),
                        _yours(run, ctx.session)))
 
-    offered: list[str] = []
-    for row in assigned:
-        task_id = _id(row.get("id"))
-        if (task_id is None or task_id in seen or _live_holder(row.get("held_by"))
-                or _blocked(row)):
+    # SW-68a: the plan ranks the WHOLE assigned list, before any row is hidden,
+    # as the chat does. Then this tool hides the rows that it never offers. So
+    # a blocked slice keeps its slot in both surfaces. The run rows stay put.
+    every = list(dict.fromkeys(
+        i for i in (_id(r.get("id")) for r in assigned) if i is not None))
+    ranked, plans = await _plan_of(ctx, every)
+    hidden_rows = {
+        _id(r.get("id")) for r in assigned
+        if _live_holder(r.get("held_by")) or _blocked(r)}
+    for task_id in ranked:
+        if task_id in seen or task_id in hidden_rows:
             continue
         seen.add(task_id)
-        offered.append(task_id)
-    # SW-68a: the assigned rows go in plan order. The run rows above stay put.
-    offered, plans = await _plan_of(ctx, offered)
-    listed.extend((task_id, REASON_ASSIGNED, None, False) for task_id in offered)
+        listed.append((task_id, REASON_ASSIGNED, None, False))
     # P3c: every read below runs on the rows that are shown, after the cut.
     listed = listed[:limit]
 

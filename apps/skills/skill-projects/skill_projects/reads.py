@@ -646,38 +646,55 @@ async def _clock_line() -> str:
     return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label})."
 
 
-async def _plan_ordered(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+async def _plan_ordered(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     """SW-68a: *rows* in the order of the plan engine, and the plan of each
     task that sits under an epic. The gateway route does the ranking, so the
     MCP ``my_work`` and this list use one rule (``plan_order.py``). A task
-    outside every epic keeps its place. A read that fails keeps today's order."""
+    outside every epic keeps its place. ANY failure of the read (a timeout, a
+    connect or protocol error, a refusal, a body of the wrong shape) keeps
+    today's order. The plan is an aid and never hides the work."""
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if not ids:
-        return rows, {}
+        return rows, {}, {}
     try:
         answer = await get("/projects/plan/order", {"task_ids": ",".join(ids)})
-    except GatewayRefusal:
-        return rows, {}
-    order = (answer or {}).get("order")
-    plans = (answer or {}).get("plan")
-    if not isinstance(order, list) or not isinstance(plans, dict):
-        return rows, {}
-    by_id = {str(r["id"]): r for r in rows if r.get("id")}
-    ranked = [by_id[i] for i in order if i in by_id]
-    if len(ranked) != len(by_id):
-        return rows, {}
-    return [*ranked, *(r for r in rows if not r.get("id"))], plans
+        if not isinstance(answer, dict):
+            return rows, {}, {}
+        order, plans = answer.get("order"), answer.get("plan")
+        labels = answer.get("labels")
+        if not isinstance(order, list) or not isinstance(plans, dict):
+            return rows, {}, {}
+        by_id = {str(r["id"]): r for r in rows if r.get("id")}
+        ranked = [by_id[i] for i in order if i in by_id]
+        if len(ranked) != len(by_id) or len(set(order)) != len(order):
+            return rows, {}, {}
+        return ([*ranked, *(r for r in rows if not r.get("id"))], plans,
+                labels if isinstance(labels, dict) else {})
+    except Exception:  # the plan is an aid, see the docstring
+        return rows, {}, {}
 
 
-def _plan_note(plan: Any) -> str:
+def _blocker_text(task_id: str, label: Any) -> str:
+    """``#7 Fix the extruder`` for a visible blocker. The title is fenced as
+    member text. With no label the short id is all there is."""
+    if isinstance(label, dict) and label.get("title"):
+        number = f"#{label['number']} " if label.get("number") else ""
+        return f"{number}{data(label['title'])}"
+    return task_id[:8]
+
+
+def _plan_note(plan: Any, labels: dict[str, Any] | None = None) -> str:
     """One line for a task that sits under an epic: ready or blocked, the
-    slack, and what blocks it. A blocker the member cannot see has no name."""
+    slack, and what blocks it. A blocker is named by its number and title. A
+    blocker the member cannot see has no name."""
     if not isinstance(plan, dict):
         return ""
     if plan.get("ready"):
         slack = plan.get("slack_mins")
         return "  plan: ready" + (f" · slack {slack} mins" if isinstance(slack, int) else "")
-    named = [str(i) for i in plan.get("blocked_by") or []]
+    named = [_blocker_text(str(i), (labels or {}).get(str(i))) for i in plan.get("blocked_by") or []]
     parts = [f"blocked by {', '.join(named)}"] if named else []
     if plan.get("blocked_by_hidden"):
         parts.append("blocked by a task you cannot see")
@@ -739,8 +756,9 @@ async def my_work(
     if not rows:
         return "\n".join([*home, f"{title}: nothing."])
     plans: dict[str, Any] = {}
+    labels: dict[str, Any] = {}
     if which != "inbox":
-        rows, plans = await _plan_ordered(rows)
+        rows, plans, labels = await _plan_ordered(rows)
     names = await _status_names(
         {str(r.get("root_project_id")) for r in rows if r.get("root_project_id")}
     )
@@ -755,7 +773,7 @@ async def my_work(
             head += " · " + " · ".join(overlay)
         out.append(head)
         out.append(ident)
-        note = _plan_note(plans.get(str(row.get("id"))))
+        note = _plan_note(plans.get(str(row.get("id"))), labels)
         if note:
             out.append(note)
     return "\n".join(out)
