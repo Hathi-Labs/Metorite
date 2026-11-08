@@ -1481,6 +1481,9 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_deal_status": _pin("deal_id stage lost_reason"),
     "log_activity": _pin("entity record_id activity_type subject body due_at"),
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
+    # WS-CRM CRM-M3a: a new deal pipeline. Its card shows each stage. It says
+    # open_world=True as each CRM write does, so a covered run holds it off.
+    "crm_create_pipeline": _pin("name stages copy_from"),
     "crm_update_record": _pin("entity record_id fields"),
     "crm_update_task": _pin("activity_id completed due_at"),
 }

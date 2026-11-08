@@ -293,6 +293,15 @@ class Settings(BaseSettings):
     # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_crm_field_studio_r8.py.
     crm_field_studio_orgs: str = ""
+    # `crm_pipelines_orgs` (WS-CRM CRM-M3a, 2026-11-07) lists the
+    # organization ids whose admins may create a deal pipeline, from CRM
+    # settings and from the chat (`crm_conversational.md` §8 CRM-M3). The
+    # grammar is the one of `crm_orgs`. Default empty means NO organization
+    # (fail closed): the create route answers 404, the button does not
+    # show, and the chat tool leaves the run. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_crm_pipelines_native.py.
+    crm_pipelines_orgs: str = ""
     # `crm_fill_rank_orgs` (WS-53 CRM-Q17a-1, 2026-10-16) lists the
     # organization ids that get the fill rank and the source labels of the
     # mirror (`crm_platform.md` §18.9.3), in the grammar of `crm_orgs`.
