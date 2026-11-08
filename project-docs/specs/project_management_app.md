@@ -8926,6 +8926,8 @@ synced board shows the subtasks that Hidden folded away.
 
 **The bottom line.** Projects runs five work styles as presets over one set of blocks. A cycle is a time box that people and agents share. A cycle is sized by the review hours of named people and by credits. A Goal sits above the epic, and one engine in `project_planning.md` computes the order of work.
 
+**Rule D binds §13 too.** A step in this section that sorts, ranks, selects or classifies follows §14.1 rule 8: the decision tier, never a JSON prompt on an LLM tier.
+
 ### 13.1 The work-style catalogue (WM-0, task 979)
 
 A **block** is a part that a project can show or hide. Examples are WIP limits, the Backlog canvas, cycles, a cooldown, milestones, baselines, a hill chart and priority scores. A **style** is a named set of blocks with defaults. No style adds a table of its own. The slices of the epic WM (task 977) build the blocks. This section only names them.
@@ -9229,6 +9231,11 @@ The research for cycles of agent teams is in §2 and §12 of `project-docs/resea
 5. **Text from outside is untrusted.** This covers intake text, mail, a form answer and a linked page. A suggester or a drafter gets no tools. An instruction inside the text is content, never an order.
 6. **A row with a vague task states its narrowest first slice.** The row says "First slice". The first slice ships and the rest stays on the task.
 7. **Anchors.** Verify each file path and line number at dispatch. A line number in a task may be stale.
+8. **Rule D: a choice runs on the decision tier.** A step that sorts, ranks, selects or classifies uses `acb_llm.decide` through `gateway/decide_features.py`. It does not use a JSON prompt on an LLM tier. Owner rule, 2026-11-01. Register a `projects.<step>` feature with the modes off, shadow and on. A step with more than 16 questions splits into parallel chunks. The step has a fallback that works with no model. An LLM tier writes prose that a person reads, or makes a real judgement. Code computes any value that has a rule. Each row names its question type (Boolean, Choice or Score), or says "code" or "LLM". Fence: `tests/unit/test_projects_ai_uses_decide.py` (task 2308). The seam work is DEC-1 (task 2306). It adds the `projects.` prefix. A `projects.` feature reads `projects_decide_orgs`, bills `projects`, has its own cool-down, and is one entry in `FEATURE_TABLE` of `decide_features.py`. The moves of six existing picks are DEC-2 (task 2307). The fence is live, with the six DEC-2 picks on its allow-list.
+   - LP-1: health has a rule, so code computes it from the roll-up and the engine's finish against the due date. The lead can change it. The update text is LLM.
+   - LP-2: Choice questions pick the project, the assignee and the type. A Boolean question per candidate judges a tag or a duplicate. Code ranks the assignees first.
+   - LP-4: a Choice question picks the customer record from the candidates that the reader may open.
+   - SP-3, the next slice and the risk tier of SP-8: code. No model.
 
 ### 14.2 The slice table
 
@@ -9242,8 +9249,8 @@ Each row has one Metorite task. The scope carries the description of the task. W
 | **LP-4** | 991 | Customer requests from the CRM. A task or a project links to a CRM company, contact or deal. A member sees the link only when the member can also read the CRM record (two-key access). A task shows, for example, "3 customers asked · ₹4.2 L in open deals", and the canvases sort and filter by it. The member makes the link from a mail, from a CRM note, or in the chat ("this is for Acme"). The CRM record shows its linked tasks. The Projects agent writes only the link, never a CRM record (`projects_agent_parity.md`). First slice: the link, the two-key rule, the count and value, and the back-link. The mail and note entry points follow | R8 tests on a real database prove the two-key rule and tenancy | `tests/unit/test_pm_customer_links_r8.py` (new) | HIGH (a migration, access across two apps) | `PROJECTS_CUSTOMER_LINKS_ORGS` | LP-0. Reads `crm_app.md` for the record grants |
 | **LP-5** | 992 | Project docs as linked Knowledge pages (D-PM-13). A project's Docs tab lists the Knowledge pages linked to it. Projects stores no document. "New doc" makes a Knowledge page in the project's space and links it. In a linked page the member selects text and picks "Make tasks". Mira proposes the tasks on one approve card. A member sees a linked page only when Knowledge lets the member read it (two-key access) | The visual review passes. An R8 test proves the two-key rule | `tests/unit/test_pm_project_docs_r8.py` (new) | HIGH. The board says STANDARD. The link store is a new table and the rule crosses two apps, so this row is raised. The builder may lower it if no migration is needed | `PROJECTS_DOCS_ORGS` | LP-0. First check the Knowledge dependency in D-PM-13 (§8). MCP-Gc (task 751) adds the document tools |
 | **LP-6** | 993 | Automation recipes. Project settings, Automations lists recipes as toggles. Each toggle makes a rule in `/workflows`. Projects runs no engine of its own. First recipes: the parent closes when all its children are done. The children close when the parent closes, and it asks first. A task moves to In progress when its first subtask starts. When a task moves to a chosen status, assign a person or notify one. Each run writes an activity row, so the member sees why a task moved. Auto-archive and auto-close of stale work exist (`166_projects_lifecycle.sql`). They show in the same list | Each recipe runs once in the local stack, and the activity row names the rule | `tests/unit/test_pm_recipes.py` (new) | STANDARD | `PROJECTS_RECIPES_ORGS` | LP-0. Reads the `/workflows` triggers. Templates (task 18) carry recipes |
-| **LP-7** | 994 | Approvals on a status change. **The design waits for the owner (§14.5, question 1).** After the answer, a status change needs a named approver. The task waits in a pending state. Approve moves it on and Reject moves it back. The chat shows a card and WhatsApp shows text. The first users are the phase gates of WM-2 (task 981), a quote or buying sign-off and a publish. First slice, after the answer: the pending state, Approve, Reject and the audit row | R8 tests on a real database prove that only a named approver can approve, and that each decision writes an audit row | `tests/unit/test_pm_approvals_r8.py` (new) | HIGH (it decides who may move work) | `PROJECTS_APPROVALS_ORGS` | LP-0 and the owner answer to question 1 |
-| **LP-8** | 995 | Intake forms and a project intake address. An internal form per project, built from the fields of a task type. Only members fill it. Each answer lands in `pm_intake`. Each mail to the project address becomes an intake item. Reuse the email capture of Tasks (`routes/tasks/capture_email.py`). Mail is untrusted: it gets the injection fence of LP-2 and a limit per sender. A public form is not in this row (§14.5, question 2). First slice: the internal form. The intake address follows | A form answer and a mail each make one intake item in the local stack, and LP-2 suggests a project for it | `tests/unit/test_pm_intake_forms_r8.py` (new) | HIGH (inbound mail, a new route) | `PROJECTS_INTAKE_FORMS_ORGS` | LP-0 and LP-2. The public form waits for question 2 |
+| **LP-7** | 994 | Approvals on a status change. **The owner decided on 2026-11-08 (D197, option A), so a builder can start and plan the migration.** A status change needs one named approver. The task waits in a pending state. Approve moves it on and Reject moves it back. The chat shows a card and WhatsApp shows text. The first users are the phase gates of WM-2 (task 981), a quote or buying sign-off and a publish. First slice: the pending state, Approve, Reject and the audit row | R8 tests on a real database prove that only a named approver can approve, and that each decision writes an audit row | `tests/unit/test_pm_approvals_r8.py` (new) | HIGH (it decides who may move work) | `PROJECTS_APPROVALS_ORGS` | LP-0. The owner answered question 1 (D197) |
+| **LP-8** | 995 | Intake forms and a project intake address. An internal form per project, built from the fields of a task type. Only members fill it. Each answer lands in `pm_intake`. Each mail to the project address becomes an intake item. Reuse the email capture of Tasks (`routes/tasks/capture_email.py`). Mail is untrusted: it gets the injection fence of LP-2 and a limit per sender. A public form is not in this row. The owner chose members only (D197). First slice: the internal form. The intake address follows | A form answer and a mail each make one intake item in the local stack, and LP-2 suggests a project for it | `tests/unit/test_pm_intake_forms_r8.py` (new) | HIGH (inbound mail, a new route) | `PROJECTS_INTAKE_FORMS_ORGS` | LP-0 and LP-2. The owner answered question 2 (D197), so a builder can start |
 | **LP-9** | 2213 | Label groups. A tag can belong to a named group. A task takes at most one tag of an exclusive group. Views group and filter by the group. Tags are flat today. Keep one colour vocabulary (`statusAccent.ts`). Linear parity row P11 | A group, an exclusive rule and a refusal with a reason are proved on a real database. Views group by a group | `tests/unit/test_pm_tag_groups_r8.py` (new) | HIGH (a migration, a new MCP write route) | `PROJECTS_TAG_GROUPS_ORGS` | LP-0. Shares the tag catalogue of MCP-G21 (task 2216) |
 | **LP-10** | 2214 | Importers for Jira, Asana and Linear, beside the ClickUp importer, on the adapter shape of `project_import.md` §4.2. Today only `routes/projects/importer/clickup.py` exists. Each source is one slice with its own row in `project_import.md`. First slice: the Jira CSV adapter, and its row there | A Jira export imports in one step in the local stack, and the idempotency rules of `project_import.md` §6.1 hold | `tests/unit/test_pm_import_jira.py` (new), beside the ClickUp import tests | STANDARD. HIGH if an adapter needs a migration | `PROJECTS_IMPORT_ORGS` (reuse the flag of the existing importer if it has one) | LP-0. D80 (a file importer is allowed) |
 | **LP-11** | 2215 | An Insights builder inside Reports. The member picks a measure (count, cycle time, lead time, triage time), a slice and a segment. The builder adds percentile markers and a cumulative flow chart. It stays inside Reports on the existing reads, with no second analytics seam. The MCP read `board_stats` (MCP-G19a, task 1957) counts on the same visibility path, so reuse it where it fits. First slice: one measure, one slice and the cumulative flow chart | A cumulative flow chart and a sliced measure match the numbers of the existing Reports sections | `tests/unit/test_pm_insights.py` (new) | STANDARD (read only) | `PROJECTS_INSIGHTS_ORGS` | LP-0. The row in `projects_reports.md` comes first |
@@ -9283,9 +9290,11 @@ Task 2301 plans a short Linear comparison after wave 4. At most four slices run 
 
 ### 14.5 Two decisions owed
 
-Each question is for the owner. The default below is the one the builder uses until the owner answers. The owner can reverse it. Answer on the named task.
+Each question is for the owner. The owner answered both on 2026-11-08, and `work_plan.md` §3 D197 records the answers. The options tables stay as the record.
 
 **Question 1: approvals on a status change (LP-7, task 994).** The Paca research found no approval pattern to copy (`paca_pm_research_2026-08.md` §10). Plane's model is the only one in the research. A status change needs a named approver, and the task waits in a pending state.
+
+**Answered 2026-11-08: option A.** See D197, point 1.
 
 | Option | What it means |
 |---|---|
@@ -9293,9 +9302,11 @@ Each question is for the owner. The default below is the one the builder uses un
 | B. All named approvers must approve | Plane's multi-level flow. It is slower, and the research did not verify it. |
 | C. Do not build approvals | The WM-2 gates become a plain checklist with no enforcement. |
 
-**Blocks.** Option A or B unblocks LP-7 and the phase gates of WM-2 (task 981). Until the answer, WM-2 builds milestones only. The quote, buying and publish sign-offs also wait.
+**Blocks.** Nothing now. Option A (D197) unblocks LP-7 and the phase gates of WM-2 (task 981). The quote, buying and publish sign-offs can use the same gate.
 
 **Question 2: the public intake form (D-PM-14, LP-8, task 995).** D-PM-14 defers public read-only boards (§8). A public form is a different case. An anonymous person would write into a tenant. The research in `plane_pm_research_2026-08.md` §6 Q1 names the risks of a public read.
+
+**Answered 2026-11-08: option A.** See D197, point 2.
 
 | Option | What it means |
 |---|---|
@@ -9303,7 +9314,7 @@ Each question is for the owner. The default below is the one the builder uses un
 | B. A public form with a capability URL | An anonymous write route, a limit per sender, a kill switch per form and an injection fence. The gateway has no such route today. Identity and outside parties apply (CLAUDE.md §3a rule 3). |
 | C. Never | Record the refusal as a decision. |
 
-**Blocks.** Only option B blocks anything: the public half of LP-8. Option A needs no answer to build the rest of LP-8.
+**Blocks.** Nothing. Option A (D197) keeps intake for members only, so LP-8 builds the internal form and the intake address with no anonymous write route.
 
 ### 14.6 What we refuse, and why
 
@@ -9314,7 +9325,7 @@ This section does not restate a decision. Each line points to the place that rec
 | A docs store inside Projects | D-PM-13 | `project_management_app.md` §8. LP-5 links to Knowledge |
 | A Linear "team" as an object | D87 (with D49) | `work_plan.md` §3. A team view is a filter |
 | Story-point systems, estimate systems and Plane-style modules | P-31 | `plane_pm_research_2026-08.md` §8, row P-31. SP-0 may reopen it, so check §13 first |
-| A time-tracking timer | D77 | `work_plan.md` §3. D77 gives each work fact one home. The research reads it to refuse a second timer store. D77 does not name a timer, so ask the owner before you cite it as a ban |
+| A time-tracking timer | D77 | `work_plan.md` §3. D77 gives each work fact one home. The research reads it to refuse a second timer store. D77 does not name a timer. The owner decided on 2026-11-08 that Projects has no timer, and time spent stays a typed field (D197, point 3) |
 | A second priority scale | D78 | `work_plan.md` §3. The LP-3 rules use the D78 matrix |
 | A public intake form now | D-PM-14 | `project_management_app.md` §8. See §14.5, question 2 |
 

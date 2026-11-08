@@ -116,6 +116,7 @@
       "tests/unit/test_no_new_clock_flakes.py",
       "tests/unit/test_no_sales_assistant.py",
       "tests/unit/test_no_task_provider_connectors.py",
+      "tests/unit/test_projects_ai_uses_decide.py",
       "tests/unit/test_projects_analytics.py",
       "tests/unit/test_projects_chat_coverage.py",
       "tests/unit/test_projects_field_parity.py",

@@ -189,7 +189,9 @@ def _run_handler(vendor: _Vendor, *, api_base: str | None = None) -> ProviderRes
 # ── Row 3: the plane boundary ────────────────────────────────────────────────
 
 class TestTheHandlerImportsNoTenantPackage:
-    @pytest.mark.parametrize("module", ["handlers.py", "decide.py"])
+    @pytest.mark.parametrize(
+        "module", ["handlers.py", "decide.py", "stt_sarvam.py", "wav.py"]
+    )
     def test_no_import_under_packages_acb(self, module):
         """§6A.10b clause 1. The Console is cross-tenant, and `acb_*` is the
         tenant plane. A module that imported one would read tenant config."""
@@ -1293,10 +1295,19 @@ class TestAimlApiIsRegistered:
                           handlers.AimlApiHandler)
 
     def test_one_wire_class_serves_both_vendors(self):
-        """No parallel abstraction: both are instances of ONE class."""
+        """No parallel abstraction: both are instances of ONE class.
+
+        VOX-2 (2026-11-08) added ``sarvam``, a speech vendor on its own wire
+        (``stt_sarvam.SarvamHandler``). So the System One set is pinned on
+        its own, and the full vendor set names all three."""
         for name in ("native_typesafe", "native_aimlapi"):
             assert isinstance(handlers.NATIVE_HANDLERS[name], handlers.SystemOneHandler)
-        assert handlers.native_vendors() == frozenset({"typesafe", "aimlapi"})
+        system_one = {
+            h.provider for h in handlers.NATIVE_HANDLERS.values()
+            if isinstance(h, handlers.SystemOneHandler)
+        }
+        assert system_one == {"typesafe", "aimlapi"}
+        assert handlers.native_vendors() == frozenset({"typesafe", "aimlapi", "sarvam"})
 
     def test_the_pairing_refuses_it_for_chat(self):
         with pytest.raises(catalog.CatalogRefused):

@@ -2689,3 +2689,15 @@ ALTER TABLE crm_lead_pipeline_stages ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE crm_lead_pipeline_stages ADD CONSTRAINT crm_lead_pipeline_stages_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS crm_lead_pipeline_stages_org_idx ON crm_lead_pipeline_stages (organization_id);
+
+-- package_field_value
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM package_field_value WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: package_field_value still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE package_field_value ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE package_field_value ADD CONSTRAINT package_field_value_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS package_field_value_org_idx ON package_field_value (organization_id);
