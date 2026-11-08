@@ -926,6 +926,12 @@ _PLAN_CHANGED = (
     "Nothing was changed. The stages changed after the card showed them. "
     "Read the plan again, and ask the member once more."
 )
+#: CRM-M4a repair 2: the deal pipeline that the card named as the feed is
+#: another one now, or none (409 ``plan_changed`` with ``changed: feeds``).
+_FEED_CHANGED = (
+    "Nothing was changed. The deal pipeline that this lead pipeline feeds changed "
+    "after the card showed it. Read the plan again, and ask the member once more."
+)
 
 
 def _plan_lines(plan: dict[str, Any], kind: str = "deal") -> list[tuple[str, str]]:
@@ -957,7 +963,8 @@ def _off_or_raise(refused: GatewayRefusal) -> str:
     if refused.status == 404 and "no_pipeline" not in str(refused):
         return _PIPELINES_OFF
     if refused.status == 409 and "plan_changed" in str(refused):
-        return _PLAN_CHANGED
+        # The route says what changed in `changed` (CRM-M4a repair 2).
+        return _FEED_CHANGED if "'changed': 'feeds'" in str(refused) else _PLAN_CHANGED
     raise refused
 
 

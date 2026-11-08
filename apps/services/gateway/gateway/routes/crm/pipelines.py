@@ -110,6 +110,7 @@ from gateway.routes.crm.core import (
     default_pipeline_id,
     insert_row,
     load_row,
+    lock_pipeline_creates,
     provider_link_context,
     require_deal_pipeline,
     require_row,
@@ -425,10 +426,6 @@ MAX_STAGES = 50
 #: The two types that close a record. A new pipeline holds one of each.
 _CLOSING: tuple[str, ...] = ("won", "lost")
 
-#: One create at a time in an org, so the check of the name holds until the
-#: INSERT. ``crm_pipelines`` has no unique index on the name (migration 247).
-_CREATE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
-
 #: A name as the SQL folds it: inner spaces folded, in lower case. The same
 #: rule as :func:`_fold`.
 _FOLDED_NAME = "lower(regexp_replace(btrim(name), '\\s+', ' ', 'g'))"
@@ -493,12 +490,27 @@ def _refuse(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
-def _plan_changed(kind: PipelineKind) -> HTTPException:
-    """The plan of the create differs from the card: a stage, or the feed."""
-    return _refuse(409, "plan_changed", (
-        f"The {kind.stage_nouns} changed after the card showed them, so nothing "
-        f"was made. Ask for the card again, and check the {kind.stage_nouns}."
-    ))
+def _plan_changed(kind: PipelineKind, *, feeds: bool = False) -> HTTPException:
+    """The plan of the create differs from the card: the stages, or the feed.
+
+    The words say which of the two changed, and the next step. ``changed``
+    says it in code (``stages`` or ``feeds``), so the chat tool can tell the
+    member which one (CRM-M4a repair 2)."""
+    if feeds:
+        message = (
+            "The deal pipeline that this lead pipeline feeds changed after the card "
+            "showed it, so nothing was made. Ask for the card again, and check where "
+            "its deals go."
+        )
+    else:
+        message = (
+            f"The {kind.stage_nouns} changed after the card showed them, so nothing "
+            f"was made. Ask for the card again, and check the {kind.stage_nouns}."
+        )
+    return HTTPException(status_code=409, detail={
+        "code": "plan_changed", "message": message,
+        "changed": "feeds" if feeds else "stages",
+    })
 
 
 def _kind_of(kind: str) -> PipelineKind:
@@ -567,7 +579,7 @@ async def _feeds_of(
     wanted = (raw or "").strip()
     if not wanted:
         if pinned:
-            raise _plan_changed(kind)
+            raise _plan_changed(kind, feeds=True)
         return None, None
     if kind.status_kind != "lead":
         raise HTTPException(status_code=422, detail=(
@@ -578,7 +590,7 @@ async def _feeds_of(
         text(_FEEDS_SQL + share), {"name": _fold(wanted)},
     )).fetchall()
     if pinned is not None and (len(rows) != 1 or str(rows[0].id) != pinned.strip().lower()):
-        raise _plan_changed(kind)
+        raise _plan_changed(kind, feeds=True)
     if not rows:
         raise _refuse(404, "no_pipeline", (
             f"There is no deal pipeline called {quoted(wanted)}. Pick one of the "
@@ -816,9 +828,7 @@ async def create_pipeline_in(
     stages in the pipeline in the planned order, in the stage table of the
     kind. It logs one ``pipeline`` row, and each new stage logs its own
     ``deal_stage`` or ``lead_status`` row (CRM-M1)."""
-    await db.execute(text(_CREATE_LOCK_SQL), {
-        "key": f"crm_pipeline_create:{current_tenant()}",
-    })
+    await lock_pipeline_creates(db)
     plan = await plan_pipeline(db, payload, lock=True)
     kind = plan.kind
     if payload.planned is not None and [p.id for p in plan.stages] != [
@@ -1233,9 +1243,7 @@ async def _undo_pipeline(db: Any, user: Any, logged: Logged) -> None:
         # CRM-M4a repair 1: the create lock of the org first, as a create takes
         # it before it reads a copied pipeline and its stages. A copy and this
         # Undo then never wait on each other in a cycle.
-        await db.execute(text(_CREATE_LOCK_SQL), {
-            "key": f"crm_pipeline_create:{current_tenant()}",
-        })
+        await lock_pipeline_creates(db)
     new_rows = await _lock_new_stages(db, stages, kind) if creates else []
     row = await load_row(db, "crm_pipelines", str(logged.entity_id or ""), lock=True)
     if row is None:

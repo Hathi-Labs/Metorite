@@ -1666,6 +1666,62 @@ async def require_deal_pipeline(db: Any, pipeline_id: str) -> Any:
     return row
 
 
+#: One pipeline create at a time in an org (CRM-M3a). ``crm_pipelines`` has no
+#: unique index on the name (migration 247), so the create holds this lock
+#: from the check of the name to the INSERT.
+PIPELINE_CREATE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+
+
+async def lock_pipeline_creates(db: Any) -> None:
+    """Take the pipeline create lock of the bound org until the transaction ends.
+
+    The create takes it first, and so do the Undo of a pipeline and each
+    delete of a status (CRM-M4a repair 2). Each takes it before it locks a
+    status or a pipeline row, so no two wait on each other in a cycle. A
+    status delete then checks :func:`pipelines_holding` and deletes in one
+    state: no create can put the status in a pipeline between the two. The
+    lock is re-entrant inside one transaction."""
+    await db.execute(text(PIPELINE_CREATE_LOCK_SQL), {
+        "key": f"crm_pipeline_create:{current_tenant()}",
+    })
+
+
+#: CRM-M4a repair 2: the pipelines of one kind that hold a status now, by their
+#: names now. The default deal pipeline (``:dp``) does not count, because a new
+#: deal stage joins it with no row of its own (:func:`add_stage_to_default_pipeline`).
+#: It counts only when its own open create lists the status: the Undo of that
+#: create needs the status where it is. A lead has no default pipeline.
+_HOLDERS_SQL = (
+    "SELECT p.name FROM {stages} ps JOIN crm_pipelines p ON p.id = ps.pipeline_id "
+    "AND p.kind = :kind WHERE ps.status_id = CAST(:s AS uuid) "
+    "AND (CAST(:dp AS uuid) IS NULL OR p.id <> CAST(:dp AS uuid) OR EXISTS ("
+    "SELECT 1 FROM crm_change_log c WHERE c.organization_id = p.organization_id "
+    "AND c.area = 'pipeline' AND c.action = 'create' AND c.entity_id = p.id::text "
+    "AND c.undone_by IS NULL AND c.undoes_id IS NULL "
+    "AND c.after -> 'stages' @> CAST(:listed AS jsonb))) "
+    "ORDER BY p.position, p.name, p.id"
+)
+
+
+async def pipelines_holding(db: Any, table: str, status_id: str) -> list[str]:
+    """The names of the pipelines that hold one status of *table*, in order.
+
+    A status that a pipeline holds cannot go (CRM-M4a repair 2). The cascade
+    would take it out of that pipeline with no row, and then the Undo of the
+    pipeline never matches its stages again. A lead pipeline has no route
+    that removes a status, so it could never go. It reads the live tables
+    under the tenant session: whatever made the status, and whatever put it
+    in the pipeline. The default deal pipeline is the exception above."""
+    stages = _STAGE_TABLES[table]
+    kind = "lead" if table == "crm_lead_statuses" else "deal"
+    default = await default_pipeline_id(db) if kind == "deal" else None
+    rows = (await db.execute(text(_HOLDERS_SQL.format(stages=stages)), {
+        "s": str(status_id), "kind": kind, "dp": default,
+        "listed": json.dumps([{"id": str(status_id)}]),
+    })).fetchall()
+    return [str(r.name) for r in rows]
+
+
 # ── SQL helpers ─────────────────────────────────────────────────────────────
 #
 # Every identifier reaching an f-string below is one of ours: a table name from

@@ -1075,6 +1075,29 @@ async def test_a_plan_that_changed_after_the_card_reads_plain_words(monkeypatch)
     assert out == _M._PLAN_CHANGED
 
 
+class _FeedChangedClient(FakeClient):
+    """The create answers 409 ``plan_changed`` with ``changed: feeds``."""
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        resp = await super().request(method, url, **kwargs)
+        if method.upper() == "POST" and url.endswith("/crm/pipelines"):
+            return FakeResponse({"detail": {
+                "code": "plan_changed", "changed": "feeds",
+                "message": "The deal pipeline that this lead pipeline feeds changed.",
+            }}, status_code=409)
+        return resp
+
+
+async def test_a_feed_that_changed_after_the_card_says_the_feed(monkeypatch) -> None:
+    """Repair round 2 (P3): the route says what changed, so the tool tells the
+    member that the feed changed, not the stages."""
+    approve(monkeypatch)
+    fake_gateway(_M, monkeypatch, _responder, user=_USER, client_class=_FeedChangedClient)
+    out = await _M.crm_create_pipeline("AMC contracts", stages=["Site visit"])
+    assert out == _M._FEED_CHANGED
+    assert "feeds changed" in out and "stages" not in out
+
+
 async def test_each_call_of_the_agent_carries_its_chat_stamp(monkeypatch) -> None:
     """The gateway logs ``via=chat`` only for this stamp beside the internal
     bearer (``change_log.via_of``)."""

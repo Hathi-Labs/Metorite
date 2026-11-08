@@ -229,9 +229,9 @@ def test_the_undo_of_a_pipeline_takes_the_create_lock_first() -> None:
     from gateway.routes.crm import pipelines
 
     source = inspect.getsource(pipelines._undo_pipeline)
-    assert source.index("_CREATE_LOCK_SQL") < source.index("_lock_new_stages(")
+    assert source.index("lock_pipeline_creates(") < source.index("_lock_new_stages(")
     create = inspect.getsource(pipelines.create_pipeline_in)
-    assert create.index("_CREATE_LOCK_SQL") < create.index("plan_pipeline(")
+    assert create.index("lock_pipeline_creates(") < create.index("plan_pipeline(")
 
 
 def test_this_suite_is_named_in_both_must_run_lists() -> None:
@@ -737,55 +737,304 @@ def test_old_code_on_the_new_schema_gets_a_deal_pipeline(pns, app_engine) -> Non
                      "CAST(:o AS uuid)", o=pns.org_a) == 1
 
 
-# ── Repair round 1 ──────────────────────────────────────────────────────────
+# ── Repair rounds 1 and 2: a status that a pipeline holds ───────────────────
+
+DEAL_A = {"name": "AMC contracts", "stages": [{"name": "Qualify"}, {"name": "Site visit"}]}
+DEAL_B = {"name": "Service", "stages": [{"name": "Qualify"}, {"name": "Site visit"}]}
+LEAD_B = {"name": "Expo", "kind": "lead", "stages": [{"name": "New"}, {"name": "Booth visit"}]}
+
+
+def _area(kind: str) -> str:
+    return "lead_status" if kind == "lead" else "deal_stage"
+
+
+def _status_table(kind: str) -> str:
+    return "crm_lead_statuses" if kind == "lead" else "crm_deal_statuses"
+
+
+def _created(p: Any, kind: str, status_id: str) -> Any:
+    """The create row of one status in the Change history."""
+    (row,) = [x for x in _rows(p, p.org_a) if x.area == _area(kind)
+              and x.action == "create" and str(x.entity_id) == status_id]
+    return row
+
+
+def _pipeline_made(p: Any, pipeline_id: str) -> Any:
+    """The create row of one pipeline in the Change history."""
+    (row,) = [x for x in _rows(p, p.org_a) if x.area == "pipeline"
+              and x.action == "create" and str(x.entity_id) == pipeline_id]
+    return row
+
+
+async def _undo(p: Any, admin: Any, row: Any) -> Any:
+    return await _call(p, admin, "POST", f"/crm/change-history/{row.id}/undo")
+
+
+def _exists(p: Any, table: str, row_id: str) -> bool:
+    return _one(p, f"SELECT count(*) FROM {table} WHERE id = CAST(:i AS uuid)", i=row_id) == 1
+
+
+def _held(kind: str, pipeline: str, status: str, *, undo: bool = True) -> str:
+    """The first sentence of the refusal, with the name of the pipeline now."""
+    noun = "lead pipeline" if kind == "lead" else "pipeline"
+    status_noun = "lead status" if kind == "lead" else "deal stage"
+    outcome = "nothing was undone" if undo else "it was not deleted"
+    return f'The {noun} "{pipeline}" uses the {status_noun} "{status}", so {outcome}.'
+
+
+def _no_orphan(p: Any, kind: str) -> None:
+    """No membership row names a pipeline that is gone."""
+    stages = "crm_lead_pipeline_stages" if kind == "lead" else "crm_pipeline_stages"
+    assert _one(p, f"SELECT count(*) FROM {stages} ps WHERE ps.organization_id = "
+                   "CAST(:o AS uuid) AND NOT EXISTS (SELECT 1 FROM crm_pipelines x "
+                   "WHERE x.id = ps.pipeline_id)", o=p.org_a) == 0
+
+
+def test_the_status_undo_and_delete_take_the_create_lock_first() -> None:
+    """Repair 2 (P1). The Undo of a status takes the pipeline create lock
+    before it locks the status row, as a pipeline create does. The delete
+    helper takes it before its own row lock, and checks the pipelines before
+    the DELETE. Mutation: move either lock after the row read -> red."""
+    import inspect
+
+    from gateway.routes.crm import admin
+
+    undo = inspect.getsource(admin._undo_status)
+    assert undo.index("lock_pipeline_creates(") < undo.index("_current(")
+    delete = inspect.getsource(admin.delete_status_in)
+    assert delete.index("lock_pipeline_creates(") < delete.index("load_row(")
+    assert delete.index("load_row(") < delete.index("pipelines_holding(")
+    assert delete.index("pipelines_holding(") < delete.index("DELETE FROM")
 
 
 @pytest.mark.parametrize("kind", ["deal", "lead"])
 async def test_the_undo_of_a_status_that_a_pipeline_made_refuses_and_names_it(
     pns, kind: str,  # noqa: F811
 ) -> None:
-    """P1. The status Undo would take the status out of the pipeline, and then
-    the pipeline Undo answers 409 forever. It refuses, names the pipeline and
-    says to undo that one, for a deal pipeline and a lead pipeline. The
-    pipeline Undo then works."""
+    """Round 1 P1, now under the round 2 rule. The status Undo would take the
+    status out of the pipeline, and then the pipeline Undo answers 409 for
+    ever. It refuses, names the pipeline and says to undo that one. The
+    pipeline Undo then works, and the status goes with it."""
     _seed(pns, pns.org_a)
     _leads(pns, pns.org_a)
     admin = _admin(pns.org_a)
-    body = (TRADE_SHOW if kind == "lead"
-            else {"name": "AMC contracts", "stages": [{"name": "Qualify"}, {"name": "Site visit"}]})
+    body = TRADE_SHOW if kind == "lead" else DEAL_A
     made = (await _call(pns, admin, "POST", "/crm/pipelines", body)).json()
-    new = made["stages"][1]["id"]
-    area = "lead_status" if kind == "lead" else "deal_stage"
-    rows = _rows(pns, pns.org_a)
-    (status_row,) = [x for x in rows if x.area == area and x.action == "create"
-                     and str(x.entity_id) == new]
-    (pipe_row,) = [x for x in rows if x.area == "pipeline"]
-    undo = await _call(pns, admin, "POST", f"/crm/change-history/{status_row.id}/undo")
+    new = made["stages"][1]
+    status_row = _created(pns, kind, new["id"])
+    undo = await _undo(pns, admin, status_row)
     assert undo.status_code == 409 and _code(undo) == "in_use", undo.text
     words = _words(undo)
-    assert f'came with the {"lead pipeline" if kind == "lead" else "pipeline"} "{body["name"]}"' in words
-    assert "nothing was undone" in words and "Undo that" in words
-    assert new in [s["id"] for s in (await _call(
+    assert words.startswith(_held(kind, body["name"], new["name"])), words
+    assert "in Change history first" in words and words.endswith("undo this."), words
+    assert _exists(pns, _status_table(kind), new["id"])
+    assert new["id"] in [s["id"] for s in (await _call(
         pns, admin, "GET", "/crm/pipelines",
         params={"kind": kind})).json()[-1]["stages"]], "the status stays in the pipeline"
-    again = await _call(pns, admin, "POST", f"/crm/change-history/{pipe_row.id}/undo")
+    again = await _undo(pns, admin, _pipeline_made(pns, made["id"]))
     assert again.status_code == 200, again.text
-    # After the pipeline Undo, the status is gone with it.
-    gone = await _call(pns, admin, "POST", f"/crm/change-history/{status_row.id}/undo")
+    assert not _exists(pns, _status_table(kind), new["id"])
+    gone = await _undo(pns, admin, status_row)
     assert gone.status_code == 409, gone.text
+    _no_orphan(pns, kind)
 
 
-async def test_a_status_that_no_pipeline_made_still_undoes(pns) -> None:  # noqa: F811
-    """The refusal reads only a pipeline create that made the status. A lead
-    status that an admin added keeps its Undo."""
+@pytest.mark.parametrize("kind", ["deal", "lead"])
+async def test_bypass_a_a_status_that_one_pipeline_made_and_another_reuses(
+    pns, kind: str,  # noqa: F811
+) -> None:
+    """Round 2 P1, bypass A. Pipeline A makes S, and pipeline B reuses S. The
+    Undo of A leaves S, because B holds it. The Undo of S then refuses and
+    names B, so B never strands. Undo B, then undo S: 200 twice, and no row
+    is left over."""
     _seed(pns, pns.org_a)
     _leads(pns, pns.org_a)
     admin = _admin(pns.org_a)
-    added = await _call(pns, admin, "POST", "/crm/statuses/lead", {"name": "Walk-in"})
+    a = (await _call(pns, admin, "POST", "/crm/pipelines",
+                     TRADE_SHOW if kind == "lead" else DEAL_A)).json()
+    b = await _call(pns, admin, "POST", "/crm/pipelines", LEAD_B if kind == "lead" else DEAL_B)
+    assert b.status_code == 201, b.text
+    b = b.json()
+    s_name = "Booth visit" if kind == "lead" else "Site visit"
+    (s,) = [x for x in a["stages"] if x["name"] == s_name]
+    assert s["id"] in [x["id"] for x in b["stages"]], "B reuses S"
+    assert (await _undo(pns, admin, _pipeline_made(pns, a["id"]))).status_code == 200
+    assert _exists(pns, _status_table(kind), s["id"]), "B holds S, so the Undo of A leaves it"
+    s_row = _created(pns, kind, s["id"])
+    refused = await _undo(pns, admin, s_row)
+    assert refused.status_code == 409 and _code(refused) == "in_use", refused.text
+    assert _words(refused).startswith(_held(kind, b["name"], s_name)), _words(refused)
+    assert s_name in [x["name"] for x in (await _call(
+        pns, admin, "GET", "/crm/pipelines", params={"kind": kind})).json()[-1]["stages"]]
+    # The full happy path: undo B, then undo S.
+    first = await _undo(pns, admin, _pipeline_made(pns, b["id"]))
+    assert first.status_code == 200, first.text
+    second = await _undo(pns, admin, s_row)
+    assert second.status_code == 200, second.text
+    assert not _exists(pns, _status_table(kind), s["id"])
+    assert not _exists(pns, "crm_pipelines", b["id"])
+    _no_orphan(pns, kind)
+
+
+@pytest.mark.parametrize("kind", ["deal", "lead"])
+async def test_bypass_b_a_status_that_an_admin_added_and_a_pipeline_reuses(
+    pns, kind: str,  # noqa: F811
+) -> None:
+    """Round 2 P1, bypass B. An admin adds S in Settings, and pipeline B reuses
+    S. The Undo of S refuses and names B. A delete of S refuses too. Undo B,
+    then undo S: 200 twice, and no row is left over."""
+    _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    added = await _call(pns, admin, "POST", f"/crm/statuses/{kind}", {"name": "Walk-in"})
     assert added.status_code == 201, added.text
-    (row,) = [x for x in _rows(pns, pns.org_a) if x.area == "lead_status"]
-    undo = await _call(pns, admin, "POST", f"/crm/change-history/{row.id}/undo")
+    s_id = added.json()["id"]
+    first = "New" if kind == "lead" else "Qualify"
+    b = await _call(pns, admin, "POST", "/crm/pipelines", {
+        "name": "Expo", **({"kind": "lead"} if kind == "lead" else {}),
+        "stages": [{"name": first}, {"name": "Walk-in"}]})
+    assert b.status_code == 201, b.text
+    b = b.json()
+    s_row = _created(pns, kind, s_id)
+    refused = await _undo(pns, admin, s_row)
+    assert refused.status_code == 409 and _code(refused) == "in_use", refused.text
+    assert _words(refused).startswith(_held(kind, "Expo", "Walk-in")), _words(refused)
+    deleted = await _call(pns, admin, "DELETE", f"/crm/statuses/{kind}/{s_id}")
+    assert deleted.status_code == 409 and _code(deleted) == "in_use", deleted.text
+    assert _words(deleted).startswith(_held(kind, "Expo", "Walk-in", undo=False))
+    assert _exists(pns, _status_table(kind), s_id)
+    one = await _undo(pns, admin, _pipeline_made(pns, b["id"]))
+    assert one.status_code == 200, one.text
+    two = await _undo(pns, admin, s_row)
+    assert two.status_code == 200, two.text
+    assert not _exists(pns, _status_table(kind), s_id)
+    _no_orphan(pns, kind)
+
+
+@pytest.mark.parametrize("kind", ["deal", "lead"])
+async def test_a_status_that_only_the_default_holds_still_undoes(
+    pns, kind: str,  # noqa: F811
+) -> None:
+    """As on main. A deal stage that an admin added sits in the default deal
+    pipeline only, and a lead status in the default lead list (no pipeline
+    row). Its Undo answers 200, and so does a delete."""
+    deal = _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    added = await _call(pns, admin, "POST", f"/crm/statuses/{kind}", {"name": "Walk-in"})
+    assert added.status_code == 201, added.text
+    if kind == "deal":
+        assert _one(pns, "SELECT count(*) FROM crm_pipeline_stages WHERE pipeline_id = "
+                         "CAST(:pl AS uuid) AND status_id = CAST(:s AS uuid)",
+                    pl=deal["pipeline"], s=added.json()["id"]) == 1
+    undo = await _undo(pns, admin, _created(pns, kind, added.json()["id"]))
     assert undo.status_code == 200, undo.text
+    again = await _call(pns, admin, "POST", f"/crm/statuses/{kind}", {"name": "Walk-in"})
+    assert again.status_code == 201, again.text
+    gone = await _call(pns, admin, "DELETE", f"/crm/statuses/{kind}/{again.json()['id']}")
+    assert gone.status_code == 200, gone.text
+
+
+@pytest.mark.parametrize("kind", ["deal", "lead"])
+async def test_the_refusal_names_the_pipeline_by_its_name_now(
+    pns, kind: str,  # noqa: F811
+) -> None:
+    """Round 2 P3. After a rename, the refusal names the new name, not the
+    name in the log row. A deal pipeline is renamed through its route. A lead
+    pipeline has no rename route yet, so the test renames it in SQL."""
+    _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    made = (await _call(pns, admin, "POST", "/crm/pipelines",
+                        TRADE_SHOW if kind == "lead" else DEAL_A)).json()
+    if kind == "deal":
+        renamed = await _call(pns, admin, "PATCH", f"/crm/pipelines/{made['id']}",
+                              {"name": "Renamed one"})
+        assert renamed.status_code == 200, renamed.text
+    else:
+        _one(pns, "UPDATE crm_pipelines SET name = 'Renamed one' WHERE id = CAST(:pl AS uuid) "
+                  "RETURNING id", pl=made["id"])
+    new = made["stages"][1]
+    refused = await _undo(pns, admin, _created(pns, kind, new["id"]))
+    assert refused.status_code == 409, refused.text
+    assert _words(refused).startswith(_held(kind, "Renamed one", new["name"])), _words(refused)
+
+
+async def test_the_refusal_names_each_pipeline_that_holds_the_status(pns) -> None:  # noqa: F811
+    """Two lead pipelines hold one status: the words name both, in order."""
+    _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    added = (await _call(pns, admin, "POST", "/crm/statuses/lead", {"name": "Walk-in"})).json()
+    for name in ("Expo", "Fair"):
+        made = await _call(pns, admin, "POST", "/crm/pipelines", {
+            "name": name, "kind": "lead", "stages": [{"name": "New"}, {"name": "Walk-in"}]})
+        assert made.status_code == 201, made.text
+    refused = await _undo(pns, admin, _created(pns, "lead", added["id"]))
+    assert refused.status_code == 409, refused.text
+    assert _words(refused) == (
+        'The lead pipelines "Expo" and "Fair" use the lead status "Walk-in", so nothing '
+        'was undone. Undo the lead pipelines "Expo" and "Fair" in Change history first, '
+        "and then undo this.")
+
+
+async def test_a_pipeline_that_is_the_default_holds_the_stages_it_made(pns) -> None:  # noqa: F811
+    """An org with no other deal pipeline: the first pipeline that a create
+    makes is the default. It still holds the stage that it made, so the Undo
+    of that stage refuses. A stage that an admin adds then joins it as the
+    default, and its Undo answers 200. Then the pipeline undoes."""
+    deal = _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    _one(pns, "DELETE FROM crm_pipelines WHERE id = CAST(:pl AS uuid) RETURNING id",
+         pl=deal["pipeline"])
+    admin = _admin(pns.org_a)
+    only = (await _call(pns, admin, "POST", "/crm/pipelines", DEAL_A)).json()
+    site = only["stages"][1]
+    refused = await _undo(pns, admin, _created(pns, "deal", site["id"]))
+    assert refused.status_code == 409, refused.text
+    assert _words(refused).startswith(_held("deal", "AMC contracts", "Site visit"))
+    added = await _call(pns, admin, "POST", "/crm/statuses/deal", {"name": "Walk-in"})
+    assert added.status_code == 201, added.text
+    assert "Walk-in" in [s["name"] for s in (await _call(
+        pns, admin, "GET", "/crm/pipelines")).json()[0]["stages"]], "it joins the default"
+    walk = await _undo(pns, admin, _created(pns, "deal", added.json()["id"]))
+    assert walk.status_code == 200, walk.text
+    whole = await _undo(pns, admin, _pipeline_made(pns, only["id"]))
+    assert whole.status_code == 200, whole.text
+    _no_orphan(pns, "deal")
+
+
+async def test_an_undo_of_a_status_waits_for_a_create_that_reuses_it(pns) -> None:  # noqa: F811
+    """The race of round 2. A create holds the create lock and puts S in a new
+    lead pipeline, and has not committed. The Undo of S waits for the lock.
+    After the commit it sees the pipeline, and refuses with its name."""
+    import asyncio
+
+    _seed(pns, pns.org_a)
+    _leads(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    added = (await _call(pns, admin, "POST", "/crm/statuses/lead", {"name": "Walk-in"})).json()
+    s_row = _created(pns, "lead", added["id"])
+    with pns.admin_engine.connect() as c:
+        tx = c.begin()
+        c.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                  {"k": f"crm_pipeline_create:{pns.org_a}"})
+        pipe = c.execute(text(
+            "INSERT INTO crm_pipelines (organization_id, name, position, is_default, kind) "
+            "VALUES (CAST(:o AS uuid), 'Late fair', 9, false, 'lead') RETURNING id"),
+            {"o": pns.org_a}).scalar()
+        c.execute(text(
+            "INSERT INTO crm_lead_pipeline_stages (organization_id, pipeline_id, status_id, "
+            "position) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), CAST(:s AS uuid), 0)"),
+            {"o": pns.org_a, "p": str(pipe), "s": added["id"]})
+        undo = asyncio.ensure_future(_undo(pns, admin, s_row))
+        await asyncio.sleep(1.5)
+        assert not undo.done(), "the Undo waits for the create lock"
+        tx.commit()
+    refused = await undo
+    assert refused.status_code == 409 and _code(refused) == "in_use", refused.text
+    assert _words(refused).startswith(_held("lead", "Late fair", "Walk-in"))
+    assert _exists(pns, "crm_lead_statuses", added["id"])
 
 
 async def test_a_feed_renamed_after_the_card_refuses_with_plan_changed(pns) -> None:  # noqa: F811
@@ -811,7 +1060,18 @@ async def test_a_feed_renamed_after_the_card_refuses_with_plan_changed(pns) -> N
               "RETURNING id", pl=other.json()["id"])
     stale = await _call(pns, admin, "POST", "/crm/pipelines", {**body, **planned})
     assert stale.status_code == 409 and _code(stale) == "plan_changed", stale.text
+    # Repair 2 (P3): the words say that the feed changed, not the statuses.
+    assert stale.json()["detail"]["changed"] == "feeds"
+    assert _words(stale).startswith(
+        "The deal pipeline that this lead pipeline feeds changed after the card showed it"
+    ), _words(stale)
     assert _lead_pipelines(pns, pns.org_a) == []
+    # A stage that changed says so, in the nouns of the kind.
+    statuses = {**planned, "planned": [None, *planned["planned"][1:]]}
+    moved = await _call(pns, admin, "POST", "/crm/pipelines",
+                        {**body, **statuses, "planned_feeds": other.json()["id"]})
+    assert moved.status_code == 409 and moved.json()["detail"]["changed"] == "stages", moved.text
+    assert _words(moved).startswith("The statuses changed after the card showed them")
     fresh = await _call(pns, admin, "POST", "/crm/pipelines",
                         {**body, **planned, "planned_feeds": other.json()["id"]})
     assert fresh.status_code == 201, fresh.text

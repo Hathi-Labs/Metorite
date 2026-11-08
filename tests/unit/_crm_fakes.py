@@ -196,6 +196,15 @@ _MY_GROUPS_RE = re.compile(r"FROM\s+org_group\s+g\s+JOIN\s+org_group_member", re
 _NEXT_ACTIVITY_RE = re.compile(
     r"^SELECT DISTINCT ON \(a\.(\w+)\).*\bFROM crm_activities a\b", re.I,
 )
+#: ``core.PIPELINE_CREATE_LOCK_SQL`` (CRM-M4a repair 2). One request runs at a
+#: time here, so the lock takes nothing.
+_ADVISORY_LOCK_RE = re.compile(r"^SELECT pg_advisory_xact_lock\(", re.I)
+#: ``core._HOLDERS_SQL`` (CRM-M4a repair 2): the pipelines of one kind that hold
+#: a status. The membership table is read off the statement.
+_HOLDERS_RE = re.compile(
+    r"^SELECT p\.name FROM (\w+) ps JOIN crm_pipelines p ON p\.id = ps\.pipeline_id "
+    r"AND p\.kind = :kind\b", re.I,
+)
 
 # ── WS-26d-email: the shapes the CRM timeline's email source emits ──────────
 #
@@ -616,6 +625,11 @@ class FakeCrmDB:
         next_activity = _NEXT_ACTIVITY_RE.match(statement)
         if next_activity:
             return self._next_activity(next_activity.group(1), args)
+        if _ADVISORY_LOCK_RE.match(statement):
+            return _Result([])
+        holders = _HOLDERS_RE.match(statement)
+        if holders:
+            return self._holders(holders.group(1), args)
         head = statement.split(None, 1)[0].upper()
         table = _table(statement)
         if head == "INSERT":
@@ -928,6 +942,22 @@ class FakeCrmDB:
                 merged[name] = (source or {}).get(column)
             out.append(merged)
         return out
+
+    def _holders(self, stages: str, args: dict) -> _Result:
+        """``core._HOLDERS_SQL``: the pipelines of ``:kind`` that hold ``:s``,
+        less the default deal pipeline ``:dp``. The fake holds no change log,
+        so the default never counts here. The R8 suite proves that clause."""
+        held = {
+            str(m.get("pipeline_id")) for m in self.rows(stages)
+            if str(m.get("status_id")) == str(args.get("s"))
+        }
+        return _Result([
+            SimpleNamespace(name=p.get("name"))
+            for p in sorted(self.rows("crm_pipelines"),
+                            key=lambda r: (r.get("position") or 0, str(r.get("name"))))
+            if str(p.get("id")) in held and p.get("kind", "deal") == args.get("kind")
+            and (args.get("dp") is None or str(p.get("id")) != str(args.get("dp")))
+        ])
 
     def _my_groups(self, args: dict) -> _Result:
         """``_MY_GROUPS_SQL``: the ``group:<slug>`` subjects of ``:email``.
