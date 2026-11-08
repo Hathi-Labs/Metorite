@@ -536,6 +536,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "edit_project",
             "find_conflicts",
             "fit_for_task",
+            "get_plan",
             "link_tasks",
             "link_tasks_batch",
             "needs_attention",
@@ -761,7 +762,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Calendar day planner",
         "summary": (
             "The member's day: rebuild it, plan what is left, roll over, "
-            "set the One Thing, block or release time, and read or change the calendar settings."
+            "set the One Thing, block or release time, read or change the calendar settings, and keep the day rules."
         ),
         "description": (
             "A tool pack: the day planner, for the main assistant to load "
@@ -769,13 +770,17 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "\"I fell behind\". The pack holds the tools to propose and apply "
             "a plan of the day, to fit what is left, to roll over unfinished "
             "work, to read the digest of the day, to set the One Thing, and to "
-            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. A plan is proposed first "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. A plan is proposed first "
             "and applied after the member agrees. A run loads a pack only "
             "where tool packs are on, so until then this switch has no effect."
         ),
         "tools": (
+            "my_tasks_add_day_rule",
             "my_tasks_day_digest",
+            "my_tasks_delete_day_rule",
+            "my_tasks_edit_day_rule",
             "my_tasks_get_calendar_settings",
+            "my_tasks_list_day_rules",
             "my_tasks_list_schedule",
             "my_tasks_plan_day",
             "my_tasks_replan_day",

@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 365).**
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 365).**
 
 Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
@@ -269,7 +269,7 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 
 **Build.**
 
-- A manifest of CRM UI actions, and a ratchet. New gaps fail. Old gaps burn down. `tests/unit/test_projects_ui_actions.py` is the model.
+- A manifest of CRM routes (CRM-M2a, built), and a ratchet. New gaps fail. Old gaps burn down. `tests/unit/test_projects_ui_actions.py` is the model.
 - Record tools: edit any field, change owner, and change owner in bulk.
 - Task tools: complete a task and set a due date. A delete asks on a card.
 - Config tools: stages, lost reasons, fields, record names, saved views, board card fields, rules (change and delete).
@@ -286,9 +286,39 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 5. A voice note on WhatsApp can update a deal and log the note, with one card.
 6. A chat turn on the live path loads each new tool. A test proves it.
 
-**Fence.** `tests/unit/test_crm_ui_actions.py` (planned), a ratchet like `test_projects_ui_actions.py`.
+**Fence.** `tests/unit/test_crm_ui_actions.py` (built in CRM-M2a), a ratchet like `test_projects_ui_actions.py`.
 
 **A trap from CRM-M1.** The views code logs each view change at the `own` level, a delete and an edit of a shared view too. D164 puts a delete at "always asks". So CRM-M2 must not take the ladder level of a card from these rows.
+
+### CRM-M2a. The route manifest and its ratchet (task 2047) — Wave 1
+
+**Gate.** AGENT-SAFE. **Tier** STANDARD. **Depends on** nothing. **Status.** Built 2026-11-08, in review.
+
+**One owner.** `packages/acb_common/acb_common/app_manifests/crm.py` is the one route manifest of the CRM (D136.1). CRM-M2a builds it. It holds one row for each route of `gateway.routes.crm`, and every row is `off_door`. A row has a class. It names a chat tool, a planned slice of the table below, or a reason.
+
+MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of each row. It adds `crm` to `APPS`, builds `email.py` and adds the door fences. MCP-P2a does not build `crm.py` again.
+
+**The fence.** `tests/unit/test_crm_ui_actions.py` walks the live router and the CRM client files. It fails on a route with no row and on a row with no route. It fails on a client request with no row, and on a tool claim that the source of the tool does not bear out. The count of planned rows has a ceiling that only goes down.
+
+`chat_parity.py` holds no CRM row. It sends `/api/crm` to this manifest, as it does for Knowledge.
+
+**The door fences are a second test.** The Knowledge precedent holds: the router walk is `test_knowledge_chat_coverage.py`, and the door half is `test_app_door_coverage.py`. So the CRM door fences stay a second test, `test_crm_door_coverage.py` of MCP-P2a, on the same manifest. They do not merge into `test_crm_ui_actions.py`.
+
+**The planned slices.** A `planned` value in `crm.py` names one row of this table. The M2b row is built. A slice that ships moves its rows to a tool and lowers the ceiling in the same change.
+
+| Slice | The chat gets |
+|---|---|
+| CRM-M2b | Edit a record field, complete a task and set a due date. Built |
+| CRM-M2c | Create a deal, a contact and an organization. Delete a record and an activity. Undo a change from the change history |
+| CRM-M2d | Add and remove a contact of a deal. Edit a record of a custom module |
+| CRM-M2e | Stages and lost reasons: add, rename, order, reset and delete |
+| CRM-M2f | Fields, sections, layout, field rules and the module catalogue |
+| CRM-M2g | Saved views, record names, labels, access and the settings |
+| CRM-M2h | Business rules and the open questions of the AI |
+| CRM-M2i | Mapping plans, field suggestions and the conversion mapping |
+| CRM-M2j | Rename a pipeline, add a stage and remove a stage |
+| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again |
+| CRM-M2l | The reads of the setup screens, the digests and the exports |
 
 ### CRM-M3. Many deal pipelines (#1097) — Wave 2
 

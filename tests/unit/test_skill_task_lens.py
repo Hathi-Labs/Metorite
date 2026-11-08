@@ -62,6 +62,21 @@ LANES = {"rows": [
 ]}
 
 
+#: The one day rule that the Recorder answers for ``GET /tasks/settings``, and the
+#: version that a proposal of it shows (CAL-3). A confirmed write names it.
+STORED_RULES = [{"days": [0, 1, 2, 3, 4], "start_hour": 8, "end_hour": 11,
+                 "kind": "focus", "label": "", "theme": ""}]
+
+
+def _rules_version() -> str:
+    from skill_my_tasks import core
+
+    return core.day_rules_token(STORED_RULES)
+
+
+RULES_VERSION = _rules_version()
+
+
 class Recorder:
     """A fake `_request` that records `(method, path)` and answers in the
     shape each route answers with. Query params are kept for inspection."""
@@ -130,6 +145,9 @@ class Recorder:
     @staticmethod
     def _answer_projects(method: str, path: str, kw: dict[str, Any]) -> Any:
         """`/projects/tasks/*` and `/projects/nodes*` — the board's doors."""
+        if (method, path) == ("GET", "/tasks/settings"):
+            # CAL-3: one day rule, so the edit and the delete have a number 1.
+            return {"day_templates": [dict(r) for r in STORED_RULES]}
         if path == "/projects/nodes":
             return {"rows": [{"id": PID, "name": "Alpha", "kind": "project"}], "total": 1}
         if path.endswith("/statuses"):
@@ -240,6 +258,15 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_set_one_thing", {"item_id": TID}, [("PUT", "/tasks/calendar/day-state")]),
     ("my_tasks_get_calendar_settings", {}, [("GET", "/tasks/settings")]),
     ("my_tasks_update_calendar_settings", {"day_start_hour": 8, "confirmed": True},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_list_day_rules", {}, [("GET", "/tasks/settings")]),
+    ("my_tasks_add_day_rule",
+     {"days": [0, 1], "start_hour": 8, "end_hour": 11, "confirmed": True,
+      "version": RULES_VERSION},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_edit_day_rule", {"number": 1, "start_hour": 9, "confirmed": True, "version": RULES_VERSION},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_delete_day_rule", {"number": 1, "confirmed": True, "version": RULES_VERSION},
      [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
 ]
 

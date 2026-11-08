@@ -1228,7 +1228,7 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
         "project_summary", "projects_tree", "task_detail", "vocabulary"}),
     "projects-plan": frozenset({
         "analytics_finished", "analytics_load", "analytics_outlook", "analytics_stuck",
-        "analytics_throughput", "find_conflicts", "fit_for_task", "needs_attention",
+        "analytics_throughput", "find_conflicts", "fit_for_task", "get_plan", "needs_attention",
         "rebalance", "recurrence", "task_dataset", "team_capacity",
         "waiting_agent_requests"}),
     "projects-reports": frozenset({"report_list", "report_recipients", "report_render"}),
