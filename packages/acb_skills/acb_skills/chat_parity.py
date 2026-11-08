@@ -609,6 +609,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "Creates an account and an organization. A person who signs up has no chat yet.",
     ),
     # ── Integrations ──
+    "GET /api/agent-access/requests/{}": (
+        "chat",
+        "The approval card in the chat reads its own request to draw it, also after a reload "
+        "(STU-B2c-2c). It is the chat's own card. The tool result gives Mira the request.",
+    ),
     "POST /api/agent-access/authorize/approve": (
         "oauth",
         "The member's approval on the consent screen of an outside agent (MCP OAuth).",
@@ -964,7 +969,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
     # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
-    # AppRequestCard. The chat tool and card are MCP-P1b-4 (task 1703).
+    # AppRequestCard. In a chat, the card of STU-B2c-2c (task 1866) is the
+    # chat surface of the decision: the member presses Approve or Decline on
+    # the card. No chat tool decides, because Mira calls as the member and
+    # would approve her own change. So the decision stays debt of P-8.
     "GET /api/agent-access/requests": "P-8",
     "POST /api/agent-access/requests/{}/decision": "P-8",
     "GET /api/integrations/agent-connections": "P-8",
