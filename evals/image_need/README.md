@@ -73,7 +73,14 @@ and it writes `baseline.json`.
 ⚠️ A live run spends money. The owner must approve a run above USD 0.50.
 Each live case sends about 21,000 input tokens. A `call` case sends two
 requests, and a `no_call` case sends one. A live run answers a confirmation
-card with a refusal, so no write happens.
+card with a refusal, so no carded write happens.
+
+⚠️ The live run sets no HTTP allow-list, as in the routing eval. A read tool
+can reach the gateway of the local stack. So run it against a stack that holds
+only seeded test data.
+
+The budget check runs before each case, not before each request. A `call` case
+sends two requests, so one case can go above the cap by about one request.
 
 ## The files
 
