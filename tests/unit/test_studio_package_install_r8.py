@@ -2,17 +2,19 @@
 database (R8).
 
 Spec: ``project-docs/specs/package_host.md`` §4 (PKG-Q6, the org wins),
-§5.2, §5.5, §6.1 and the PKG-8b row of §10. Code: ``install_package`` of
+§5.2, §5.5, §6.1 and the PKG-8b row of §10. Decision: D180.3
+(``studio:publish`` gates the share to others). Code: ``install_package`` of
 ``gateway/routes/studio/packages.py``, ``package_host/studio_app.py``,
-``package_host/store.py`` (``OVERLAP`` and ``in_group``) and
-``studio/packages_store.lock_for_install``. The hermetic twin is
-``tests/unit/test_studio_package_install.py``.
+``package_host/store.py`` (``OVERLAP``, ``group_exists`` and
+``set_version``) and ``studio/packages_store.lock_for_install``. The
+hermetic twin is ``tests/unit/test_studio_package_install.py``.
 
 The real install, publish and ``GET /shell/manifest`` handlers run on a
 phase-4 promoted scratch database, as the non-privileged app role, so FORCE
 RLS binds each statement. Each call binds its org as the auth layer does.
 Org A has five members: Owen, Ana and Ben are in ``ops``, Cat is in ``eng``,
-and Dan was in ``ops`` until an admin removed him. Org B has Zed.
+and Dan was in ``ops`` until an admin removed him. Org B has Zed and a group
+``ext<tag>``.
 
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
@@ -24,40 +26,50 @@ Run (a PRIVATE ladder database, one R8 suite at a time, because the
 Without the database every test here SKIPS, and the run reads green. A skip
 is not a pass.
 
-**Acceptance (PKG-8b).**
+**Acceptance (PKG-8b and fix round 1).**
 
 a. Ana holds a private nav claim of app X on the key of app Y. Owen's org
    install of Y goes in. Ana and each other member of org A see Y at that
    key, with the source ``org``. Ana's install of X stays.
 b. The same for a group install: a member of the group sees Y, and a member
-   outside it sees nothing of Y.
+   outside it sees nothing of Y. A holder of ``studio:publish`` who is not in
+   the group installs for it.
 c. Ana's private install of app Z on a key that an org or a group install
    holds is refused (409).
 d. Org B sees nothing of org A, and its member cannot install an app of org
-   A.
+   A. A group of org B is no group of org A.
 e. An org claim still meets another org claim and a group claim, and a group
    claim still meets an org claim (409).
 f. No answer of the route names Ana or her app.
-g. The route refuses a scope that §6.1 does not give the member (403 or
-   422), and the refusal writes nothing. A draft is 409 ``not_published``.
+g. The route refuses a scope that D180.3 and §6.1 do not give the member
+   (403 or 422), and the refusal writes nothing. A member of the group with
+   ``feature:studio`` only gets 403. A draft is 409 ``not_published``.
 h. A second call moves the install to the live version (200). A publish
-   alone does not move it.
+   alone does not move it. A call that names another version than the live
+   one is 409 ``version_changed`` and writes nothing.
 i. The install locks the ``apps`` row before the org lock of the install
    store, so it never holds that lock while it waits for a publish.
+j. Each install and each move writes one ``app_audit`` row: who, the scope
+   and the version. A refusal writes none.
+k. After the org wins, Ana still publishes her app: the key that her install
+   kept stays hers, and the resolve shows the wider claim. A new key that an
+   org claim holds is still 409.
 
-**R7: red first, then mutate.** Each mutation ran on 2026-11-07, and the
-build report of task 1963 holds the counts.
+**R7: red first, then mutate.** Each mutation ran on 2026-11-07 or
+2026-11-08, and the build report of task 1963 holds the counts.
 
-* M1. ``install_package``: drop the ``studio:publish`` check. The 403 case
-  of an org install without the verb goes red.
-* M2. ``install_package``: drop the ``in_group`` check. The 403 cases of a
-  member outside the group, a removed member and a group that does not
-  exist go red.
+* M1. ``install_package``: read ``studio:publish`` for an org install only.
+  The 403 case of a group install without the verb goes red.
+* M2. ``install_package``: drop the ``group_exists`` check. The 403 cases of
+  a group that does not exist and a group of org B go red.
 * M3. ``packages_store._INSTALL_LOCK_SQL``: drop ``FOR KEY SHARE``. The lock
   order test goes red: the install waits on its INSERT, and it holds the org
   lock.
 * M4. ``store.OVERLAP["org"]``: set it back to ``TRUE``. The org install of
   case a goes red with 409 ``claim_taken``.
+* M5. ``install_package``: drop the version check. Case h goes red.
+* M6. ``store.set_version``: check the overlap of every claim again. Case k
+  goes red: the second publish of Ana is 409.
 """
 
 from __future__ import annotations
@@ -104,6 +116,8 @@ DAN = f"dan.{TAG}@pkg8b.test"
 ZED = f"zed.{TAG}@pkg8b.test"
 OPS = f"group:ops{TAG}"
 ENG = f"group:eng{TAG}"
+#: A group of org B. Org A has no group of this name.
+EXT = f"group:ext{TAG}"
 _EMAIL_LIKE = f"%.{TAG}@pkg8b.test"
 _GROUP_LIKE = f"%{TAG}"
 _SLUG_LIKE = f"p8b{TAG}-%"
@@ -179,9 +193,12 @@ async def _live(org: str, email: str, name: str = "Site visits") -> str:
 
 
 async def _install(org: str, email: str, pid: str, scope: Any,
-                   grants: tuple[str, ...] = PUBLISHER) -> tuple[int, Any]:
-    return await _call("install_package", org, email, pid, payload={"scope": scope},
-                       grants=grants)
+                   grants: tuple[str, ...] = PUBLISHER,
+                   version: int | None = None) -> tuple[int, Any]:
+    payload: dict[str, Any] = {"scope": scope}
+    if version is not None:
+        payload["version"] = version
+    return await _call("install_package", org, email, pid, payload=payload, grants=grants)
 
 
 async def _seed(org: str, *, app: str, scope: str, member: str, key: str,
@@ -225,7 +242,7 @@ def world(promoted, monkeypatch):  # noqa: F811
                 "VALUES (:e, :e, 'employee', :s, :org) RETURNING id"),
                 {"e": email, "s": status, "org": org}).scalar_one())
         for group, org, members in ((OPS, p.org_a, (OWEN, ANA, BEN, DAN)),
-                                    (ENG, p.org_a, (CAT,))):
+                                    (ENG, p.org_a, (CAT,)), (EXT, p.org_b, (ZED,))):
             gid = str(c.execute(text(
                 "INSERT INTO org_group (organization_id, slug, display_name) "
                 "VALUES (:org, :s, :s) RETURNING id"),
@@ -336,9 +353,8 @@ def test_r8_a_group_install_shows_to_the_members_of_the_group_only(world) -> Non
         y = await _live(world.a, OWEN)
         x = await _new(world.a, ANA)
         await _seed(world.a, app=x, scope=ANA, member=ANA, key=f"/apps/{y}", version=None)
-        # Owen holds feature:studio only: a group install needs no share verb.
-        return y, await _install(world.a, OWEN, y, OPS.upper().replace("GROUP:", "group:"),
-                                 grants=STUDIO)
+        # D180.3: a group install needs the share verb too. The case folds.
+        return y, await _install(world.a, OWEN, y, OPS.upper())
 
     y, (status, got) = _run(world, go)
     assert status == 201, got
@@ -351,6 +367,38 @@ def test_r8_a_group_install_shows_to_the_members_of_the_group_only(world) -> Non
     # Cat is in eng, not in ops. Owen's private install shows to Owen only.
     assert href not in _view(world, CAT, world.a).nav
     assert ANA_LOW not in json.dumps(got).lower()
+
+
+def test_r8_a_holder_of_the_verb_installs_for_a_group_that_they_are_not_in(world) -> None:
+    """Cat is in eng, not in ops, and she holds ``studio:publish``. Her group
+    install of her own app for ops goes in. The members of ops see it with the
+    source ``group``. Cat sees her own private install, which the publish
+    keeps."""
+    async def go() -> tuple[str, tuple[int, Any]]:
+        y = await _live(world.a, CAT)
+        return y, await _install(world.a, CAT, y, OPS)
+
+    y, (status, got) = _run(world, go)
+    assert status == 201, got
+    [group_install] = _shared(world, y)
+    assert (group_install["subject"], group_install["by"]) == (OPS, CAT)
+    href = f"/apps/{y}"
+    for who in (ANA, BEN, OWEN):
+        assert _view(world, who, world.a).nav[href]["source"] == "group", who
+    assert _view(world, CAT, world.a).nav[href]["source"] == "private"
+
+
+def test_r8_a_group_member_without_the_verb_gets_403_and_nothing_is_written(world) -> None:
+    """D180.3: ``feature:studio`` and a membership of the group are not
+    enough. Owen is in ops and owns the app, and he holds no share verb."""
+    async def go() -> tuple[str, tuple[int, Any]]:
+        y = await _live(world.a, OWEN)
+        return y, await _install(world.a, OWEN, y, OPS, grants=STUDIO)
+
+    y, (status, got) = _run(world, go)
+    assert status == 403 and got["code"] == "forbidden", got
+    assert _shared(world, y) == []
+    assert _audits(world, y) == []
 
 
 # ── c. A private claim cannot take a key that an org or a group holds ──────
@@ -433,29 +481,32 @@ def test_r8_the_route_refuses_a_scope_that_the_member_lacks(world) -> None:
     async def go() -> dict[str, Any]:
         mine = await _live(world.a, OWEN)
         cats = await _live(world.a, CAT)
-        dans = await _live(world.a, DAN)
         return {
-            "pids": (mine, cats, dans),
+            "pids": (mine, cats),
             "org without the verb": await _install(world.a, OWEN, mine, "org", STUDIO),
-            "outside the group": await _install(world.a, CAT, cats, OPS),
-            "removed member": await _install(world.a, DAN, dans, OPS),
+            "group without the verb": await _install(world.a, CAT, cats, ENG, STUDIO),
             "no such group": await _install(world.a, OWEN, mine, f"group:none{TAG}"),
+            "a group of org B": await _install(world.a, OWEN, mine, EXT),
             "an address": await _install(world.a, OWEN, mine, OWEN),
             "no scope": await _call("install_package", world.a, OWEN, mine, {}, PUBLISHER),
+            "a bad version": await _install(world.a, OWEN, mine, "org", version=0),
             "not the owner": await _install(world.a, BEN, mine, "org"),
         }
 
     got = _run(world, go)
     pids = got.pop("pids")
-    want = {"org without the verb": 403, "outside the group": 403, "removed member": 403,
-            "no such group": 403, "an address": 422, "no scope": 422, "not the owner": 404}
+    want = {"org without the verb": 403, "group without the verb": 403, "no such group": 403,
+            "a group of org B": 403, "an address": 422, "no scope": 422,
+            "a bad version": 422, "not the owner": 404}
     assert {k: s for k, (s, _) in got.items()} == want, got
-    for case in ("org without the verb", "outside the group", "removed member",
-                 "no such group"):
+    for case in ("org without the verb", "group without the verb"):
         assert got[case][1]["code"] == "forbidden", case
+    for case in ("no such group", "a group of org B"):
+        assert got[case][1]["code"] == "unknown_group", case
     assert got["an address"][1]["code"] == "bad_scope"
     for pid in pids:
         assert _shared(world, pid) == [], pid
+        assert _audits(world, pid) == [], pid
 
 
 def test_r8_a_draft_is_409_not_published_and_writes_nothing(world) -> None:
@@ -509,6 +560,106 @@ def test_r8_a_publish_alone_leaves_the_org_install_at_its_version(world) -> None
     pid = _run(world, go)
     by_kind = {i["kind"]: i["version"] for i in _installs(world, pid)}
     assert by_kind == {"private": 2, "org": 1}
+
+
+def test_r8_a_call_for_another_version_is_409_and_writes_nothing(world) -> None:
+    """The caller approves one version (D180, the ``based_on`` idiom of
+    STU-G1c). A publish after the read moves the live version, and the call
+    for the old one writes nothing."""
+    async def go() -> tuple[str, list[tuple[int, Any]]]:
+        pid = await _live(world.a, OWEN)
+        first = await _install(world.a, OWEN, pid, "org", version=1)
+        assert (await _call("publish", world.a, OWEN, pid, payload={}))[0] == 200
+        stale = await _install(world.a, OWEN, pid, "org", version=1)
+        newer = await _install(world.a, OWEN, pid, "org", version=3)
+        fresh = await _install(world.a, OWEN, pid, "org", version=2)
+        return pid, [first, stale, newer, fresh]
+
+    pid, (first, stale, newer, fresh) = _run(world, go)
+    assert first[0] == 201 and first[1]["install"]["version"] == 1, first
+    for refused in (stale, newer):
+        assert refused[0] == 409, refused
+        assert refused[1]["code"] == "version_changed" and refused[1]["live_version"] == 2
+    assert fresh[0] == 200 and fresh[1]["install"]["version"] == 2, fresh
+    [org_install] = _shared(world, pid)
+    assert org_install["version"] == 2
+    assert [a["detail"]["version"] for a in _audits(world, pid)] == [1, 2]
+
+
+def _audits(world: Any, pid: str) -> list[dict[str, Any]]:
+    """The audit rows of the install route for *pid*, oldest first."""
+    with world.p.admin_engine.connect() as c:
+        rows = c.execute(text(
+            "SELECT user_email, kind, app_version, detail FROM app_audit "
+            "WHERE app_id = CAST(:p AS uuid) AND detail->>'op' = 'package.install' "
+            "ORDER BY id"), {"p": pid}).all()
+    return [{"by": r[0], "kind": r[1], "app_version": r[2],
+             "detail": r[3] if not isinstance(r[3], str) else json.loads(r[3])} for r in rows]
+
+
+def test_r8_each_install_and_move_writes_one_audit_row(world) -> None:
+    async def go() -> str:
+        pid = await _live(world.a, OWEN)
+        assert (await _install(world.a, OWEN, pid, OPS))[0] == 201
+        assert (await _install(world.a, OWEN, pid, OPS))[0] == 200
+        return pid
+
+    pid = _run(world, go)
+    rows = _audits(world, pid)
+    assert rows == [
+        {"by": OWEN, "kind": "action", "app_version": 1, "detail": {
+            "op": "package.install", "scope_kind": "group", "scope": OPS, "version": 1,
+            "created": created}}
+        for created in (True, False)]
+
+
+@pytest.mark.parametrize("wider", ["org", "ops"])
+def test_r8_a_publish_keeps_a_key_that_a_wider_install_took(world, wider: str) -> None:
+    """Ana's private install of her app B holds ``/apps/B``. A wider install
+    of another app takes that key, as the org wins. Ana's next publish still
+    moves her install, and her claim stays. The resolve shows her the wider
+    claim. Before fix round 1 this publish was 409 and went back."""
+    scope = "org" if wider == "org" else OPS
+
+    async def go() -> tuple[str, store.Install, tuple[int, Any]]:
+        b = await _live(world.a, ANA)
+        w = await _live(world.a, OWEN, "Other app")
+        taker = await _seed(world.a, app=w, scope=scope, member=OWEN, key=f"/apps/{b}")
+        return b, taker, await _call("publish", world.a, ANA, b, payload={})
+
+    b, taker, (status, got) = _run(world, go)
+    assert status == 200, got
+    [mine] = _installs(world, b)
+    assert (mine["kind"], mine["version"]) == ("private", 2)
+    assert _label(world, mine["id"]) == "Site visits"
+    entry = _view(world, ANA, world.a).nav[f"/apps/{b}"]
+    assert (entry["source"], entry["install_id"]) == (taker.scope_kind, taker.id)
+
+
+def test_r8_a_move_that_adds_a_key_held_by_the_org_is_still_409(world) -> None:
+    """A kept key stays its own, and a NEW key meets the full overlap."""
+    async def go() -> tuple[str, Any]:
+        b = await _live(world.a, ANA)
+        w = await _live(world.a, OWEN, "Other app")
+        await _seed(world.a, app=w, scope="org", member=OWEN, key="/apps/held-by-org")
+        try:
+            async with tenant_session(world.a) as db:
+                return b, await store.set_version(
+                    db, app_id=b, version=1, scope_subject=ANA, scope_kind="private",
+                    contributions=[store.Contribution(point="nav", key=f"/apps/{b}"),
+                                   store.Contribution(point="nav", key="/apps/held-by-org")])
+        except store.InstallError as exc:
+            return b, exc
+
+    b, got = _run(world, go)
+    assert isinstance(got, store.ClaimTaken), got
+    assert (got.status, got.key, got.holder.source) == (409, "/apps/held-by-org", "org")
+    [mine] = _installs(world, b)
+    with world.p.admin_engine.connect() as c:
+        keys = [r[0] for r in c.execute(text(
+            "SELECT key FROM package_contribution WHERE install_id = CAST(:i AS uuid)"),
+            {"i": mine["id"]}).all()]
+    assert keys == [f"/apps/{b}"]
 
 
 # ── i. The lock order ──────────────────────────────────────────────────────

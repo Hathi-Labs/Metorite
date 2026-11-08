@@ -28,8 +28,8 @@ gates the ``/apps`` route on the feature ``studio``. Fence:
 
 **An org or a group install (PKG-8b).** The route
 ``POST /studio/packages/{id}/install`` calls :func:`install_scope` on the
-body, decides who may install, locks the ``apps`` row, and then calls
-:func:`keep_scope_install` with the live version. That function moves the
+body, checks ``studio:publish`` (D180.3), locks the ``apps`` row, and then
+calls :func:`keep_scope_install` with the live version. That function moves the
 install at the scope when it exists, and writes it when it does not, with
 the claims of :func:`claims_of`. A later publish moves only the private
 install, so the holder approves a new version by a new call.
@@ -116,7 +116,9 @@ def install_scope(raw: object) -> tuple[str, str]:
     """The kind and the normalised subject of the scope in a route body.
 
     *raw* is the value of ``scope`` in the body: ``org`` or
-    ``group:<slug>``. Each other value, an address too, raises
+    ``group:<slug>``. The case of the text does not matter: ``Org``, ``ORG``
+    and ``GROUP:Ops`` fold to ``org`` and ``group:ops``, as a slug is lower
+    case. Each other value, an address too, raises
     :class:`store.ScopeRefused` (422), and the route reads nothing. The store
     checks the subject again before its first statement.
     """
@@ -127,7 +129,7 @@ def install_scope(raw: object) -> tuple[str, str]:
         # A lone surrogate raises UnicodeEncodeError, a ValueError.
         if len(raw.encode("utf-8")) > store.MAX_SUBJECT_BYTES:
             raise refused
-        subject = normalize_grant_subject(raw)
+        subject = normalize_grant_subject(raw.strip().lower())
     except ValueError:
         raise refused from None
     kind = "org" if subject == "org" else "group" if subject.startswith("group:") else "private"

@@ -93,6 +93,9 @@ result.
 * M12. ``store.py``: set ``OVERLAP["org"]`` back to ``TRUE``, so a private
   claim blocks an org install again. The cases ``ana`` then ``org`` and
   ``dan`` then ``org`` of the overlap test go red.
+* M13. ``store.set_version``: check the overlap of every claim again, not
+  only of a new key. Both cases of
+  ``test_r8_a_kept_key_moves_and_a_new_key_meets_the_overlap`` go red.
 """
 
 from __future__ import annotations
@@ -368,6 +371,47 @@ def test_r8_the_overlap_of_two_scopes_follows_section_4(
     else:
         assert isinstance(got, store.Install), got
         assert _installs_of(world, "p2") == 1
+
+
+def _move(world: Any, app: str, who: str, keys: list[str], version: int) -> Any:
+    """``set_version`` of the private install of *app* by *who*, with one
+    claim on ``jobs`` for each of *keys*. Answers the install or the
+    refusal."""
+    async def go() -> Any:
+        try:
+            async with tenant_session(world.p.org_a) as db:
+                return await store.set_version(
+                    db, app_id=world.apps[app], version=version, scope_subject=who,
+                    scope_kind="private", contributions=[_claim(k) for k in keys])
+        except store.InstallError as exc:
+            return exc
+    return _go(world.p.app_url, go)
+
+
+@pytest.mark.parametrize("wider", ["org", "ops"])
+def test_r8_a_kept_key_moves_and_a_new_key_meets_the_overlap(world, wider: str) -> None:
+    """PKG-8b fix round 1 (M13). Ana holds ``k`` privately. A wider install of
+    another app takes ``k``, as the org wins, and a third holds ``k2``. Her
+    move with ``k`` alone goes in, and her claim of ``k`` stays. Her move that
+    adds ``k2`` meets the full overlap: 409, and nothing changes."""
+    mine = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(ANA)))
+    assert isinstance(mine, store.Install), mine
+    subject = "org" if wider == "org" else OPS
+    for app, key in (("p2", "k"), ("p3", "k2")):
+        got = _run(world, **_args(world, app, installed_by=BEN, contributions=[_claim(key)],
+                                  **_scope(subject)))
+        assert isinstance(got, store.Install), (app, got)
+    moved = _move(world, "p1", ANA, ["k"], 2)
+    assert isinstance(moved, store.Install), moved
+    assert (moved.id, moved.version) == (mine.id, 2)
+    refused = _move(world, "p1", ANA, ["k", "k2"], 3)
+    assert isinstance(refused, ClaimTaken), refused
+    assert (refused.key, refused.holder.source) == ("k2", "org" if wider == "org" else "group")
+    assert _admin(world, "SELECT version FROM package_install WHERE id = CAST(:i AS uuid)",
+                  {"i": mine.id})[0][0] == 2
+    assert [r[0] for r in _admin(world, "SELECT key FROM package_contribution "
+                                        "WHERE install_id = CAST(:i AS uuid)",
+                                 {"i": mine.id})] == ["k"]
 
 
 @pytest.mark.parametrize("point", ["triggers", "slot"])
@@ -693,21 +737,14 @@ def test_r8_a_removed_member_is_in_no_group(world) -> None:
     """The remove route keeps the rows of ``org_group_member`` and sets
     ``app_user.status`` to ``removed``. The one group query then puts Ben in
     no group, and so does the store. So an ops claim does not block his
-    private claim, and ``in_group`` answers False for him (M7). Before
-    PKG-8b this case ran the other way round, but a private claim no longer
-    blocks a group install (PKG-Q6)."""
+    private claim (M7). Before PKG-8b this case ran the other way round, but
+    a private claim no longer blocks a group install (PKG-Q6)."""
     ops = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(OPS)))
     assert isinstance(ops, store.Install), ops
     with world.p.admin_engine.begin() as c:
         c.execute(text("UPDATE app_user SET status = 'removed' WHERE email = :e"), {"e": BEN})
     got = _run(world, **_args(world, "p2", contributions=[_claim("k")], **_scope(BEN)))
     assert isinstance(got, store.Install), got
-
-    async def member() -> list[bool]:
-        async with tenant_session(world.p.org_a) as db:
-            return [await store.in_group(db, member=who, group=OPS) for who in (BEN, ANA)]
-
-    assert _go(world.p.app_url, member) == [False, True]
 
 
 # ── j. What a route may send ───────────────────────────────────────────────

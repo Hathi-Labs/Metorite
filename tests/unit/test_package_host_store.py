@@ -268,7 +268,7 @@ def test_the_lock_comes_before_each_read_that_decides_the_write() -> None:
 def test_each_read_names_the_bound_org_and_no_insert_names_an_org() -> None:
     bound = "NULLIF(current_setting('app.tenant_id', true), '')"
     for sql in (store._APP_SQL, store._SCOPE_TAKEN_SQL, store._HELD_SQL,
-                store._GROUPS_OF_MEMBER, store._IN_GROUP_SQL):
+                store._GROUPS_OF_MEMBER, store._KEPT_KEYS_SQL):
         assert f"organization_id = CAST({bound} AS uuid)" in sql, sql
     for sql in (store._INSERT_INSTALL_SQL, store._INSERT_CONTRIBUTION_SQL):
         assert "organization_id" not in sql
@@ -296,8 +296,9 @@ def test_the_overlap_of_each_kind_follows_section_4() -> None:
 
 def test_the_groups_are_the_one_group_query_with_active_members_only() -> None:
     """§4: a member of a group is an active member. The store reuses
-    ``_MY_GROUPS_SQL`` for the overlap of a private claim and for
-    :func:`store.in_group` (PKG-8b), and keeps no copy. So the rule
+    ``_MY_GROUPS_SQL`` for the overlap of a private claim, and keeps no
+    copy. ``group_exists`` (PKG-8b) reads ``org_groups`` of the same module,
+    the group list of the grant routes. So the rule
     ``au.status = 'active'`` and the fold ``lower(au.email)`` have one home.
     The R8 twin holds the behaviour: a removed member and a mixed-case
     address."""
@@ -307,9 +308,10 @@ def test_the_groups_are_the_one_group_query_with_active_members_only() -> None:
     assert "lower(au.email) = :email AND au.status = 'active'" in one
     bound = f"g.organization_id = {store._BOUND_ORG}"
     of_member = f"{one.replace(':email', ':subject')} AND {bound}"
-    in_group = (f"SELECT 1 FROM ({one.replace(':email', ':member')} AND {bound}) AS mine "
-                "WHERE mine.subject = :group")
-    assert (of_member, in_group) == (store._GROUPS_OF_MEMBER, store._IN_GROUP_SQL)
+    assert of_member == store._GROUPS_OF_MEMBER
+    from gateway.routes.projects import core
+
+    assert store.org_groups is core.org_groups
     source = (_ROOT / "apps/services/gateway/gateway/package_host/store.py").read_text(
         encoding="utf-8")
     assert not re.search(r"\b(FROM|JOIN)\s+org_group", source), (

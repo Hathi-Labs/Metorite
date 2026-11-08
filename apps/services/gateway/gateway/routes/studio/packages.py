@@ -71,15 +71,20 @@ publish back. With the switch off, a publish writes no install.
 and the org come from the session. The order: the two switches
 (``STUDIO_ORGS``, then ``PACKAGE_HOST_ORGS``, each 404 with no session), the
 id, the raw body (at most :data:`MAX_INSTALL_BODY_BYTES`), the owner read
-(404), the scope (422), then the right (403). An org install needs
-``studio:publish``. A group install needs an active membership of that group
-in the bound org (``host_store.in_group``). Then one session locks the
-``apps`` row ``FOR KEY SHARE`` (``store.lock_for_install``, 404 when it is
-gone), reads the live version (409 ``not_published`` when there is none),
-and keeps the install at that version. The answer is 201 for a new install
-and 200 for a move. A store refusal is its ``detail_for`` of the member. A
-later publish does not move an org or group install, so the holder approves
-a new version with a new call. Only the owner reaches the route until J2.
+(404), the scope and the optional ``version`` (422), then the right (403).
+Each scope needs ``studio:publish`` (D180.3: the verb gates the share to
+others), and the check fails closed. A group install also needs a group of
+that name in the bound org (``host_store.group_exists``, else 403
+``unknown_group``). The caller need not be a member of the group. Then one
+session locks the ``apps`` row ``FOR KEY SHARE`` (``store.lock_for_install``,
+404 when it is gone) and reads the live version: 409 ``not_published`` when
+there is none, and 409 ``version_changed`` when the body names another
+version. It keeps the install at that version and writes one ``app_audit``
+row (kind ``action``, op ``package.install``) in the same transaction. The
+answer is 201 for a new install and 200 for a move. A store refusal is its
+``detail_for`` of the member. A later publish does not move an org or group
+install, so the holder approves a new version with a new call. Only the
+owner reaches the route until J2.
 
 **The answers.** 422 holds ``{message, errors: [{path, message}]}`` with at
 most :data:`MAX_PROBLEMS` errors. 409 holds ``{code, message, ...}``:
@@ -162,7 +167,7 @@ from gateway.db import tenant_session as _tenant_session
 from gateway.package_host import store as host_store
 from gateway.package_host import studio_app
 from gateway.package_host.flags import package_host_allowed
-from gateway.routes.apps._common import record_app_audit_bound
+from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store
@@ -198,10 +203,11 @@ MAX_DELETE_BODY_BYTES = 4 * 1024
 DELETE_BUDGET_SECONDS = 8.0
 #: The most bytes of the body of an install (4 KiB). It holds the scope only.
 MAX_INSTALL_BODY_BYTES = 4 * 1024
-#: The right of an org install (``package_host.md`` §6.1, ``ai_studio.md`` J2).
-#: It is the one read of the share verb in ``routes/studio``. Fence:
-#: ``test_studio_route_gate.py::test_the_share_verb_is_read_by_the_org_install_only``.
-ORG_INSTALL_RIGHT = "studio:publish"
+#: The right of an org or a group install: the share verb (D180.3,
+#: ``package_host.md`` §6.1). It is the one read of the verb in
+#: ``routes/studio``. Fence:
+#: ``test_studio_route_gate.py::test_the_share_verb_is_read_by_the_install_only``.
+SHARE_RIGHT = "studio:publish"
 _DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
 _HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
@@ -214,7 +220,9 @@ BODY_TOO_LARGE = "body_too_large"
 DRAFT_CHANGED = "draft_changed"
 COUNTS_CHANGED = "counts_changed"
 NOT_PUBLISHED = "not_published"
+VERSION_CHANGED = "version_changed"
 FORBIDDEN = "forbidden"
+UNKNOWN_GROUP = "unknown_group"
 
 CATALOG_DOWN = "The action catalog is not available now, so try the publish again later."
 BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
@@ -225,10 +233,14 @@ BAD_HASH = ("based_on is the hash of the draft that you read: 64 hexadecimal dig
             "or leave it out.")
 BAD_CONFIRM = ("confirm is the token of the delete preview: 64 hexadecimal digits. Read the "
                "preview, then send its token.")
-NO_ORG_RIGHT = ("Only a holder of studio:publish installs an app for the whole organization. "
-                "Ask the owner of your organization for that right.")
-NOT_IN_GROUP = ("You install an app for a group only when you are a member of that group. "
-                "Ask an admin to add you, or choose a group of your own.")
+NO_SHARE_RIGHT = ("Only a holder of studio:publish installs an app for the organization or "
+                  "for a group. Ask the owner of your organization for that right.")
+NO_SUCH_GROUP = ("Your organization has no group with this name, so nothing was installed. "
+                 "Check the name of the group, then install again.")
+BAD_VERSION = ("version is the live version that you approve: a whole number from 1. Send it, "
+               "or leave it out.")
+LIVE_MOVED = ("The live version of this app changed after your read, so nothing was "
+              "installed. Read the live version, then install it again.")
 NOT_LIVE = ("This app has no published version, so nothing can be installed. Publish it "
             "first, then install it again.")
 
@@ -743,6 +755,17 @@ def _refused(user: UserContext, exc: host_store.InstallError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=exc.detail_for(user.email or ""))
 
 
+def _approved(raw: object) -> int | None:
+    """The version that the caller approves, or None when the body names
+    none. Any other value than a whole number from 1 is 422. It says nothing
+    about the package."""
+    if raw is None:
+        return None
+    if isinstance(raw, int) and not isinstance(raw, bool) and 1 <= raw <= store.MAX_VERSION:
+        return raw
+    raise _unprocessable(BAD_VERSION, [{"path": "$.version", "message": BAD_VERSION}])
+
+
 @router.post("/packages/{package_id}/install", status_code=201)
 async def install_package(
     package_id: str,
@@ -753,10 +776,10 @@ async def install_package(
     """Install the live version of a package of the caller for the whole org
     or for one group (``package_host.md`` §6.1, PKG-8b).
 
-    The body is ``{"scope": "org"}`` or ``{"scope": "group:<slug>"}``. An org
-    install needs ``studio:publish``, and a group install needs an active
-    membership of the group. 201 for a new install, 200 when the call moved
-    the install at that scope to the live version."""
+    The body is ``{"scope": "org"}`` or ``{"scope": "group:<slug>"}``, with an
+    optional ``version``. Each scope needs ``studio:publish`` (D180.3), and a
+    group must exist in the org. 201 for a new install, 200 when the call
+    moved the install at that scope to the live version."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     if not package_host_allowed(user.organization_id):
@@ -769,12 +792,14 @@ async def install_package(
         kind, subject = studio_app.install_scope(body.get("scope"))
     except host_store.InstallError as exc:
         raise _refused(user, exc) from None
-    if kind == "org" and not user.has_permission(ORG_INSTALL_RIGHT):
-        raise _forbidden(NO_ORG_RIGHT)
+    approved = _approved(body.get("version"))
+    # D180.3: the share verb gates each install for other people. Fail closed.
+    if not user.has_permission(SHARE_RIGHT):
+        raise _forbidden(NO_SHARE_RIGHT)
     async with _tenant_session() as db:
-        if kind == "group" and not await host_store.in_group(
-                db, member=user.email, group=subject):
-            raise _forbidden(NOT_IN_GROUP)
+        if kind == "group" and not await host_store.group_exists(db, group=subject):
+            raise HTTPException(status_code=403, detail={
+                "code": UNKNOWN_GROUP, "message": NO_SUCH_GROUP})
         with _store_errors():
             # The apps row first, then the org lock of the install store: the
             # lock order of a publish (``package_host.md`` §5.5).
@@ -784,6 +809,10 @@ async def install_package(
             if target.live_version is None:
                 raise HTTPException(status_code=409, detail={
                     "code": NOT_PUBLISHED, "message": NOT_LIVE})
+            if approved is not None and approved != target.live_version:
+                raise HTTPException(status_code=409, detail={
+                    "code": VERSION_CHANGED, "message": LIVE_MOVED,
+                    "live_version": target.live_version})
             version = await store.get_version(db, user.email, pid, target.live_version)
             if version is None or version.manifest is None:
                 raise _not_found()
@@ -793,6 +822,11 @@ async def install_package(
                 scope_subject=subject, member=user.email, manifest=version.manifest)
         except host_store.InstallError as exc:
             raise _refused(user, exc) from None
+        # The audit row commits with the install, or neither does.
+        await record_app_audit_in(
+            db, app_id=pid, user_email=user.email, kind="action", app_version=kept.version,
+            detail={"op": "package.install", "scope_kind": kind, "scope": subject,
+                    "version": kept.version, "created": made})
     if not made:
         response.status_code = 200
     _log.info("studio.packages.installed", package_id=pid, scope_kind=kind,
