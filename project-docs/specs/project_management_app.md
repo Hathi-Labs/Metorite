@@ -8555,8 +8555,9 @@ the My Tasks door only.
 
 **The MCP door is not one of these doors (MCP-G20, 2026-11-08, task 2212).**
 An outside agent's `create_task` says "leave status_id out to use the default
-status". So `tasks.create_task` gives a signed agent's subtask
-`load_default_status`, and not the parent's lane. The doors of the app keep
+status", and the owner asked for that in gap 5 of task 2212. So
+`tasks.create_task` gives a signed agent's subtask
+`load_default_status`, and not the parent's lane. D-PM-38 is not reopened. The doors of the app keep
 the rule above. Fence: `tests/unit/test_mcp_edge_bulk_updates.py`.
 
 **The chat receipt names the lane.** `add_subtasks` reads the lane name after
