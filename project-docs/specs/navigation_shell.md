@@ -469,8 +469,9 @@ each under its own category.
 **The storage.** `shell_prefs.pins` now holds the starred apps. The field
 keeps its NS-7 name, so no row and no migration changes (R6). A new field,
 `known`, holds the apps that the member could see at their last save. The
-gateway accepts the `nav.ts` hrefs only, and it caps `known` as it caps
-`pins`.
+gateway accepts the `nav.ts` hrefs, and the install hrefs of the viewer's
+own resolved manifest while `PACKAGE_HOST_ORGS` holds the org
+(`package_host.md` PKG-6c-1). It caps `known` as it caps `pins`.
 
 **Four rules for what shows** (`starredHrefs` in `presets.ts`):
 
