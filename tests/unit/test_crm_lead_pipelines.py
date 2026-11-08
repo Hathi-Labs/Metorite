@@ -1334,10 +1334,20 @@ async def _run_order(p: Any, admin: Any, kind: str, how: str, ops: tuple[str, ..
     _no_orphan(p, kind)
 
 
-@pytest.mark.parametrize("how", ["made", "reused"])
-@pytest.mark.parametrize("kind", ["deal", "lead"])
+#: Each case: the kind, how S came, and the order. One case for each, so a
+#: slow box never meets the timeout of one test.
+_ORDER_CASES = [
+    (kind, how, ops)
+    for kind, orders in (("deal", _DEAL_ORDERS), ("lead", _LEAD_ORDERS))
+    for how in ("made", "reused")
+    for ops in orders
+]
+
+
+@pytest.mark.parametrize(("kind", "how", "ops"), _ORDER_CASES,
+                         ids=[f"{k}-{h}-{'-'.join(o)}" for k, h, o in _ORDER_CASES])
 async def test_no_order_leaves_the_undo_of_a_pipeline_stuck(
-    pns, kind: str, how: str,  # noqa: F811
+    pns, kind: str, how: str, ops: tuple[str, ...],  # noqa: F811
 ) -> None:
     """Repair 3 (P1). Each order of status create, status Undo, status
     delete, pipeline create, pipeline Undo, take-out, Undo of the take-out,
@@ -1345,9 +1355,7 @@ async def test_no_order_leaves_the_undo_of_a_pipeline_stuck(
     orders leave out the take-out and the rename, which have no lead route."""
     _seed(pns, pns.org_a)
     _leads(pns, pns.org_a)
-    admin = _admin(pns.org_a)
-    for index, ops in enumerate(_DEAL_ORDERS if kind == "deal" else _LEAD_ORDERS):
-        await _run_order(pns, admin, kind, how, ops, f"{how} {index}")
+    await _run_order(pns, _admin(pns.org_a), kind, how, ops, how)
 
 
 async def test_a_feed_renamed_after_the_card_refuses_with_plan_changed(pns) -> None:  # noqa: F811
