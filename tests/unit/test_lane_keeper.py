@@ -26,7 +26,7 @@ def _load():
     return mod
 
 
-def _agent(name, sid, state, started=1, status="idle", short=None):
+def _agent(name, sid, state, started=1, status="idle", short=None, pid=None):
     a = {
         "name": name,
         "sessionId": sid,
@@ -37,6 +37,8 @@ def _agent(name, sid, state, started=1, status="idle", short=None):
     }
     if short:
         a["id"] = short
+    if pid:
+        a["pid"] = pid
     return a
 
 
@@ -255,7 +257,7 @@ def test_a_wake_stops_the_old_session_and_names_the_fork_after_the_lane(keeper, 
     _transcript(home, "s-x", 1200)
     calls: list = []
     monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
-    agents = [_agent("lane-x", "s-x", "done", short="abcd1234")]
+    agents = [_agent("lane-x", "s-x", "done", short="abcd1234", pid=4242)]
     assert [w[0] for w in mod.run_pass(json.dumps(agents), now=NOW)] == ["lane-x"]
     assert calls[0][:3] == ["claude", "stop", "abcd1234"]
     assert calls[1][:5] == ["claude", "--bg", "--resume", "s-x", "-n"] and calls[1][5] == "lane-x"
@@ -291,22 +293,105 @@ def test_a_lane_with_a_busy_session_of_its_name_is_not_woken(keeper, monkeypatch
     assert calls == []
 
 
-def test_a_busy_auto_named_fork_of_the_lane_blocks_its_wake(keeper, monkeypatch):
+def _fork_transcript(home, sid, lane):
+    """A fork of a lane: the header copies the lane's name, the later records do not."""
+    d = home / ".claude" / "projects" / "-p"
+    d.mkdir(parents=True, exist_ok=True)
+    recs = [
+        {"type": "history-suppression", "sessionId": sid},
+        {"type": "custom-title", "customTitle": lane, "sessionId": sid},
+        {"type": "agent-name", "agentName": lane, "sessionId": sid},
+        {"type": "agent-name", "agentName": "merge-queue-lane", "sessionId": sid},
+    ]
+    (d / f"{sid}.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+
+
+def test_the_fence_of_task_2206_an_idle_lane_a_busy_fork_and_an_unlisted_lane(keeper, monkeypatch):
+    """The 5 points: lane-x is idle but has a busy auto-named fork, lane-y is idle,
+    lane-z is idle and not in the list. One stop and one resume, for lane-y only."""
     mod, home = keeper
     _lanes(home, "lane-x", "lane-y")
-    for sid in ("s-x", "s-y"):
+    for sid in ("s-x", "s-y", "s-z"):
         _transcript(home, sid, 5000)
-    # The fork has an automatic name, and its transcript names the old session of lane-x.
-    d = home / ".claude" / "projects" / "-p"
-    (d / "s-fork.jsonl").write_text('{"note": "continued from s-x"}\n', encoding="utf-8")
+    _fork_transcript(home, "s-fork", "lane-x")
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = [
+        _agent("lane-x", "s-x", "done", short="x1", pid=11),
+        _agent("lane-y", "s-y", "done", short="y1", pid=12),
+        _agent("lane-z", "s-z", "done", short="z1", pid=13),
+        _agent("merge-queue-lane", "s-fork", "working", started=3, status="busy", pid=14),
+    ]
+    wakes = mod.run_pass(json.dumps(agents), now=NOW)
+    assert [w[0] for w in wakes] == ["lane-y"]
+    assert [c[:3] for c in calls if c[1] == "stop"] == [["claude", "stop", "y1"]]
+    resumes = [c for c in calls if c[1] == "--bg"]
+    assert len(resumes) == 1 and resumes[0][3] == "s-y" and resumes[0][4:6] == ["-n", "lane-y"]
+
+
+def test_an_idle_fork_of_another_name_does_not_block(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-x")
+    _transcript(home, "s-x", 5000)
+    _fork_transcript(home, "s-other", "lane-q")
     monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
     agents = [
         _agent("lane-x", "s-x", "done"),
-        _agent("lane-y", "s-y", "done"),
-        _agent("merge-queue-lane", "s-fork", "working", started=3, status="busy"),
+        _agent("some-other-session", "s-other", "working", started=3, status="busy"),
     ]
-    wakes = mod.run_pass(json.dumps(agents), now=NOW)
-    assert [w[0] for w in wakes] == ["lane-y"]  # lane-x has a busy fork, lane-y has none
+    assert [w[0] for w in mod.run_pass(json.dumps(agents), now=NOW)] == ["lane-x"]
+
+
+def test_a_session_without_a_process_is_not_stopped(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-x")
+    _transcript(home, "s-x", 5000)
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    mod.run_pass(json.dumps([_agent("lane-x", "s-x", "done", short="x1")]), now=NOW)
+    assert [c[1] for c in calls] == ["--bg"]
+
+
+def test_a_failed_stop_means_no_resume_and_a_retry(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-x")
+    _transcript(home, "s-x", 5000)
+    calls: list = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 1 if argv[1] == "stop" else 0, stdout="", stderr="no"
+        )
+
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    agents = json.dumps([_agent("lane-x", "s-x", "done", short="x1", pid=7)])
+    mod.run_pass(agents, now=NOW)
+    assert [c[1] for c in calls] == ["stop"]
+    assert "stop failed" in (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
+    mod.run_pass(agents, now=NOW + 60)  # no cap after a failure: it tries again
+    assert [c[1] for c in calls] == ["stop", "stop"]
+
+
+def test_a_stop_that_times_out_does_not_lose_the_earlier_wake(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-a", "lane-b")
+    for sid in ("s-a", "s-b"):
+        _transcript(home, sid, 5000)
+
+    def run(argv, **kw):
+        if argv[1] == "stop":
+            raise subprocess.TimeoutExpired(argv, 60)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    agents = [
+        _agent("lane-a", "s-a", "done"),
+        _agent("lane-b", "s-b", "done", short="b1", pid=9),
+    ]
+    mod.run_pass(json.dumps(agents), now=NOW)
+    state = json.loads((home / "lanes" / "keeper-state.json").read_text(encoding="utf-8"))
+    assert state.get("lane-a") == NOW and "lane-b" not in state
 
 
 def test_an_unlisted_lane_is_not_woken_and_no_list_file_wakes_nothing(keeper, monkeypatch):

@@ -645,13 +645,16 @@ each listed lane. A lane is ended when the state is done, blocked or idle and th
 transcript is more than 10 minutes old. A lane in a `sleep 600` has state
 working, so the keeper leaves it alone. The keeper also leaves a lane alone when
 it has a busy session. That is a busy session with the lane's name, or a busy
-session of any name whose transcript names the ended session.
+session of any name whose transcript header names the lane.
 
-**The fork rule (2026-11-08).** A resume forks a new session. The first keeper
-woke the old session again at each pass, and lane-merge reached 3 live copies.
-Now the keeper runs `claude stop <old id>` and then `claude --bg --resume <id>
--n <lane> --remote-control=<lane> <note>`. One session of the lane is left, and
-the fork has the lane's name, so the next pass finds the fork.
+**The fork rule (2026-11-08).** A resume of a session that still runs starts a
+copy. The first keeper woke the old session again at each pass, and lane-merge
+reached 3 live copies. Now the keeper runs `claude stop <old id>` while the old
+session has a process, and it resumes only when the stop worked. The resume is
+`claude --bg --resume <id> -n <lane> --remote-control=<lane> <note>`. One session
+of the lane is left, and it has the lane's name, so the next pass finds it. The
+busy check reads the header of a busy session's transcript: a fork copies the
+header of its parent, so it still starts with the lane's name.
 
 A lane wakes once in 30 minutes. After an account change the keeper wakes every
 ended listed lane once, with no cap. Each wake goes to `~/lanes/keeper.log`.

@@ -10,16 +10,19 @@ no PC and no person. One pass:
 3. A lane is ended when its state is done, blocked or idle. A lane that
    sleeps inside a ``sleep 600`` has state working, so it is never woken.
 4. A lane with a busy session is never woken. That is a busy session that
-   has the lane's name, or a busy session of any name whose transcript names
-   the ended session (a fork made by an old resume, which has an automatic name).
+   has the lane's name, or a busy session of any name whose transcript header
+   names the lane. A fork copies the header of its parent, so a fork that an old
+   resume gave an automatic name still starts with the lane's name.
 5. Wake it when its transcript is older than 10 minutes, and no wake went out
-   in 30 minutes: ``claude stop <old id>``, then ``claude --bg --resume <session id>
-   -n <lane> --remote-control=<lane> <note>``. A resume forks a new session. The
-   stop leaves one session of the lane, and ``-n`` gives the fork the lane's name,
-   so the next pass finds the fork and not the old session (task 2206, 2026-11-08).
+   in 30 minutes: ``claude stop <old id>`` (only while the old session still has
+   a process), then ``claude --bg --resume <session id> -n <lane>
+   --remote-control=<lane> <note>``. A resume of a session that still runs starts
+   a copy, so a failed stop means no resume in that pass. ``-n`` gives the new
+   session the lane's name, so the next pass finds it and not the old one
+   (task 2206, 2026-11-08).
 6. After an account change, wake every ended lane once, at the next pass,
    and ignore the 30-minute cap that time.
-5. Run the account switch when ``KEEPER_SWITCH_CMD`` names one. The skip list
+7. Run the account switch when ``KEEPER_SWITCH_CMD`` names one. The skip list
    goes to it as ``KEEPER_SKIP_ACCOUNTS``, and the keeper does not run it
    while the box sits on a skip-list account.
 
@@ -87,33 +90,43 @@ def lane_names() -> set[str]:
     return {ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")}
 
 
-def _mentions(path: Path, needles: list[str], limit: int = 600_000) -> bool:
+def _header_names(path: Path, lines: int = 20) -> set[str]:
+    """The names in the first records of a transcript. A fork copies the header of
+    its parent, so a fork with an automatic name still starts with the lane's name."""
+    names: set[str] = set()
     try:
-        with open(path, "rb") as f:
-            head = f.read(limit).decode("utf-8", "replace")
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for _ in range(lines):
+                line = f.readline()
+                if not line:
+                    break
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict) and rec.get("type") in ("custom-title", "agent-name"):
+                    n = rec.get("customTitle") or rec.get("agentName")
+                    if isinstance(n, str):
+                        names.add(n)
     except OSError:
-        return False
-    return any(n in head for n in needles)
+        pass
+    return names
 
 
 def busy_lanes(agents: list[dict], lanes: set[str], projects: Path) -> set[str]:
     """Lanes that have a busy session: one with the lane's name, or a busy session
-    of any name whose transcript names a session of the lane (an old fork)."""
+    of any name whose transcript header names the lane (a fork with an automatic name)."""
     out: set[str] = set()
-    busy = [a for a in agents if a.get("status") == "busy"]
-    for lane in lanes:
-        mine = [a for a in agents if a.get("name") == lane]
-        if any(a.get("status") == "busy" for a in mine):
-            out.add(lane)
+    for a in agents:
+        if a.get("status") != "busy":
             continue
-        ids = [a["sessionId"] for a in mine if a.get("sessionId")]
-        for b in busy:
-            if b.get("name") == lane or not b.get("sessionId"):
-                continue
-            files = list(projects.glob(f"*/{b['sessionId']}.jsonl"))
-            if ids and any(_mentions(f, ids) for f in files):
-                out.add(lane)
-                break
+        if a.get("name") in lanes:
+            out.add(a["name"])
+        sid = a.get("sessionId")
+        if not sid:
+            continue
+        for f in projects.glob(f"*/{sid}.jsonl"):
+            out |= _header_names(f) & lanes
     return out
 
 
@@ -168,6 +181,37 @@ def log(line: str) -> None:
         f.write(f"{stamp}Z {line}\n")
 
 
+def _wake(name: str, sid: str, agent: dict) -> tuple[int, str]:
+    """Stop the ended session when it still has a process, then resume it under the
+    lane's name. Returns (exit code, a short reason). Never raises."""
+    # Claude refuses to resume from an untrusted directory such as the home
+    # directory ("Workspace not trusted", exit 1). Resume from the cwd of the lane.
+    cwd = agent.get("cwd")
+    where = cwd if cwd and Path(cwd).is_dir() else None
+    try:
+        if agent.get("pid"):
+            # A resume of a session that still runs starts a copy, and then the lane
+            # has two live sessions. So no resume until the stop worked.
+            short = agent.get("id")
+            if not short:
+                return 1, " the session runs and has no short id to stop"
+            r = subprocess.run(
+                ["claude", "stop", short], capture_output=True, text=True, timeout=60, cwd=where
+            )
+            if r.returncode:
+                return r.returncode, f" stop failed: {r.stderr.strip()[:100]!r}"
+        r = subprocess.run(
+            ["claude", "--bg", "--resume", sid, "-n", name, f"--remote-control={name}", NOTE],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=where,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return 1, f" {type(exc).__name__}"
+    return r.returncode, (f" {r.stderr.strip()[:120]!r}" if r.returncode and r.stderr else "")
+
+
 def run_pass(
     agents_json: str | None = None, now: float | None = None
 ) -> list[tuple[str, str, str]]:
@@ -211,6 +255,8 @@ def run_pass(
         if a.get("sessionId")
     }
     lanes = lane_names()
+    if os.environ.get("KEEPER_LANES"):
+        log("KEEPER_LANES is not read any more: name the lanes in keeper-lanes.txt")
     if not lanes:
         log("no lane named in keeper-lanes.txt, so no wake")
     busy = busy_lanes(agents, lanes, projects)
@@ -225,33 +271,11 @@ def run_pass(
         busy=busy,
     )
     failed_forced = False
-    cwds = {a["sessionId"]: a.get("cwd") for a in agents if a.get("sessionId")}
-    short = {a["sessionId"]: a.get("id") for a in agents if a.get("sessionId")}
+    by_sid = {a["sessionId"]: a for a in agents if a.get("sessionId")}
     for name, sid, reason in wakes:
-        # Claude refuses to resume from an untrusted directory such as the home
-        # directory ("Workspace not trusted", exit 1). Resume from the cwd of the lane.
-        cwd = cwds.get(sid)
-        where = cwd if cwd and Path(cwd).is_dir() else None
-        # A resume forks a session. Stop the ended one first, so one session of the
-        # lane is left, and name the fork like the lane, so the next pass finds it.
-        if short.get(sid):
-            subprocess.run(
-                ["claude", "stop", short[sid]],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                cwd=where,
-            )
-        r = subprocess.run(
-            ["claude", "--bg", "--resume", sid, "-n", name, f"--remote-control={name}", NOTE],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=where,
-        )
-        why = f" {r.stderr.strip()[:120]!r}" if r.returncode and r.stderr else ""
-        log(f"wake {name} session={sid[:8]} reason={reason} exit={r.returncode}{why}")
-        if r.returncode == 0:
+        rc, why = _wake(name, sid, by_sid.get(sid, {}))
+        log(f"wake {name} session={sid[:8]} reason={reason} exit={rc}{why}")
+        if rc == 0:
             state[name] = now
         elif reason == "account change":
             failed_forced = True
