@@ -218,6 +218,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # WS-MCP PB-2: PLAYBOOK_ORGS opens the orchestration playbook prompts,
+    # resources and the default guidance block. It is Metorite's own text and
+    # it reaches every agent session of the org, so only the operator writes it.
+    "PLAYBOOK_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
