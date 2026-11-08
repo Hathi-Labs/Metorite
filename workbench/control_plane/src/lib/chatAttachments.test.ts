@@ -163,4 +163,11 @@ describe("source fences", () => {
     const src = read("components/ChatAttachmentChips.tsx");
     for (const m of src.matchAll(/<(button|Button)(?=[\s>])[^>]*>/g)) expect(m[0], m[0]).toContain('type="button"');
   });
+
+  it("the mic beside Attach never submits the composer form (VOX-1)", () => {
+    const src = read("components/VoiceInputButton.tsx");
+    const tags = [...src.matchAll(/<(button|Button)(?=[\s>])[^>]*>/g)];
+    expect(tags.length).toBeGreaterThan(0);
+    for (const m of tags) expect(m[0], m[0]).toContain('type="button"');
+  });
 });

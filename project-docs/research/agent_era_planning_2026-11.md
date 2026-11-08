@@ -6,6 +6,8 @@
 
 **Decision recorded with this proposal (owner, 2026-11-08):** cycles and sprints are in scope, for agents as well as for people. It confirms the reversal of 2026-10-29 (WM-0, task 979). SP-0 (task 959) records it in the spec.
 
+**Accepted by the owner, 2026-11-08: all nine answers of §11.** Decision D195 in `work_plan.md` §3. The rows live in the specs named in §10.
+
 ---
 
 ## 1. The answer first

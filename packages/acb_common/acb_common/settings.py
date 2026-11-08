@@ -293,6 +293,15 @@ class Settings(BaseSettings):
     # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_crm_field_studio_r8.py.
     crm_field_studio_orgs: str = ""
+    # `crm_pipelines_orgs` (WS-CRM CRM-M3a, 2026-11-07) lists the
+    # organization ids whose admins may create a deal pipeline, from CRM
+    # settings and from the chat (`crm_conversational.md` §8 CRM-M3). The
+    # grammar is the one of `crm_orgs`. Default empty means NO organization
+    # (fail closed): the create route answers 404, the button does not
+    # show, and the chat tool leaves the run. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_crm_pipelines_native.py.
+    crm_pipelines_orgs: str = ""
     # `crm_fill_rank_orgs` (WS-53 CRM-Q17a-1, 2026-10-16) lists the
     # organization ids that get the fill rank and the source labels of the
     # mirror (`crm_platform.md` §18.9.3), in the grammar of `crm_orgs`.
@@ -899,6 +908,18 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_celebrations.py.
     celebrations_orgs: str = ""
 
+    # ── Forms of address (WS-63 PZ-40, personalization.md §16.4) ────────────
+    #
+    # ADDRESS_FORMS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default. On, the name question of the interview offers "just my name"
+    # first and then the forms that fit the member's language, and the profile
+    # block tells the chat to use `address.name` exactly as written. The
+    # profile switch must be on too. The one reader is
+    # `acb_common.assistant_profile.address_forms_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). It calls no model.
+    # Fences: tests/unit/test_honorifics.py.
+    address_forms_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1059,6 +1080,19 @@ class Settings(BaseSettings):
     # tests/unit/test_attachment_ocr.py.
     attachment_ocr: bool = False
 
+    # ── Image analysis in the chat (WS-VOX VOX-3, projects_ai_chat.md §31) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On for an org, the chat tool `analyze_image` sends an image
+    # that a member attached to the model of `tier-vision` through the Console,
+    # and each call draws AI credits. Off, the tool answers one sentence and
+    # calls no model. The one reader is
+    # `acb_common.assistant_profile.image_analysis_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). ⚠️ The flip on production spends
+    # credits, so it is an owner step (§31.6 Q4). Fence:
+    # tests/unit/test_attachment_analyze_image.py.
+    image_analysis_orgs: str = ""
+
     # ── The member's corrections and limits in a chat (WS-67 OA-4) ──────────
     #
     # ON gives the orchestrator `keep_correction` and `drop_correction` and
@@ -1142,6 +1176,21 @@ class Settings(BaseSettings):
     # D4, slice WT-5). The flip also waits for WT-1b and WT-2 (§9.3 item 9).
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
+
+    # ── Voice input in the chat (projects_ai_chat.md §31, VOX-1) ────────────
+    #
+    # `chat_voice_orgs` lists the organization ids whose chat composer shows the
+    # mic, or `*` for each one. Empty means off, and `/chat/transcribe` answers
+    # 404 for each caller. The one reader is
+    # `acb_common.chat_voice_flag.voice_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`).
+    #
+    # Each clip draws AI credits through the Console's `tier-stt` door, so a
+    # value other than empty on a box is an `enforcement-flip`. A real clip and
+    # its usage row must be proven first (§31.5 VOX-1, Done when 4).
+    # Fence: tests/unit/test_chat_transcribe.py.
+    chat_voice_orgs: str = ""
 
     # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
     #
@@ -1245,6 +1294,21 @@ class Settings(BaseSettings):
     # billed to the org (`work_plan.md` §6). Fence:
     # tests/unit/test_crm_note_labels.py.
     crm_decide_orgs: str = ""
+
+    # ── The Projects `decide` org list (DEC-1) ──────────────────────────────
+    #
+    # `projects_decide_orgs` lists the organization ids that may run a
+    # `projects.*` feature (today `projects.align`) in a mode other than
+    # `off`, in the grammar of `decide_feature_orgs`. For a `projects.` feature
+    # `mode_for` reads it and NOT `decide_feature_orgs`, so a mode change never
+    # starts every Projects org at once. Default empty: no organization. A
+    # `*_ORGS` field, so it reloads with no restart (`docs/flag_reload.md`).
+    # The one reader is `gateway/decide_features.py`.
+    #
+    # 🔴 OWNER-GATE on a box: a value in the list starts real Router calls,
+    # billed to the org (`work_plan.md` §6). Fence:
+    # tests/unit/test_decide_seam.py.
+    projects_decide_orgs: str = ""
 
     # ── AI tier routing (WS-45, D90) ────────────────────────────────────────
     #

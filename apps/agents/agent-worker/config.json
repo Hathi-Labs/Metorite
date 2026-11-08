@@ -25,6 +25,7 @@
     "fetch_page"
   ],
   "floor_opt_out": [
+    "analyze_image",
     "call_agent",
     "call_agent_background",
     "call_agents_parallel",
