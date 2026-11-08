@@ -28,10 +28,12 @@ CONFINE = (
 )
 
 
-def _report(tmp_path: Path, failed: list[tuple[str, str, str]], passed: int = 3) -> Path:
-    """A xunit1 report: failed = (file, classname, name)."""
+def _report(
+    tmp_path: Path, failed: list[tuple[str, str, str]], passed: int = 3, msg: str = "x"
+) -> Path:
+    """A xunit1 report: failed = (file, classname, name). msg is the failure message."""
     cases = "".join(
-        f'<testcase classname="{c}" name="{n}" file="{f}"><failure message="x"/></testcase>'
+        f'<testcase classname="{c}" name="{n}" file="{f}"><failure message="{msg}"/></testcase>'
         for f, c, n in failed
     )
     cases += "".join(
@@ -66,7 +68,10 @@ def test_the_list_parses_and_every_entry_has_a_reason_and_an_open_task():
     known = bv.load_known(KNOWN)
     assert known, "the list is empty: delete the feature, or fill the list"
     assert len(known) <= 10, "the list must stay short (task 2288)"
-    for test_id, (reason, task) in known.items():
+    for test_id, (reason, task, text) in known.items():
+        assert len(text) >= 8, (
+            f"{test_id}: the text of the failure message is too short to mean anything"
+        )
         assert re.match(r"tests/unit/test_\w+\.py::", test_id), test_id
         assert len(reason) >= 30 and "flaky" not in reason.lower(), (test_id, reason)
         assert task.isdigit()
@@ -88,13 +93,28 @@ def test_a_bad_line_is_an_error(tmp_path):
         bv.load_known(bad)
 
 
+BOX_MSG = "assert &apos;mode2&apos; == &apos;mode0&apos;"
+
+
 def test_a_shard_with_only_listed_failures_is_expected(tmp_path):
-    r = _shard(tmp_path, _report(tmp_path, [CONFINE_CASE]))
+    r = _shard(tmp_path, _report(tmp_path, [CONFINE_CASE], msg=BOX_MSG))
     assert r.returncode == 0 and r.stdout.strip() == CONFINE
 
 
+def test_a_listed_test_with_another_message_is_a_real_failure(tmp_path):
+    # An earlier assertion of the control (the secret file, a fork) breaks: same
+    # test id, another message. That is a regression, and the shard stays red.
+    r = _shard(
+        tmp_path,
+        _report(
+            tmp_path, [CONFINE_CASE], msg="assert got[&apos;fork&apos;] == &apos;allowed&apos;"
+        ),
+    )
+    assert r.returncode == 1 and CONFINE in r.stdout
+
+
 def test_one_failure_outside_the_list_keeps_the_shard_red(tmp_path):
-    r = _shard(tmp_path, _report(tmp_path, [CONFINE_CASE, OTHER_CASE]))
+    r = _shard(tmp_path, _report(tmp_path, [CONFINE_CASE, OTHER_CASE], msg=BOX_MSG))
     assert r.returncode == 1 and "tests/unit/test_other.py::test_real_bug" in r.stdout
     assert CONFINE not in r.stdout
 
@@ -120,6 +140,8 @@ def test_the_verdict_line_names_the_commit_the_mode_and_the_count():
 def test_run_suite_counts_a_listed_failure_and_writes_the_verdict():
     assert "scripts/ci_pc/box_known_env.txt" in RUN_SUITE
     assert 'box_verdict.py shard "$KNOWN_ENV"' in RUN_SUITE
+    # Only pytest exit code 1 can be excused (2 to 5 are not a failed test).
+    assert '"$RUN/shard-$i.rc")" = 1 ]' in RUN_SUITE
     # A shard with a state file does not turn the unit guard red.
     assert re.search(r'\[ -f "\$RUN/shard-\$i\.state" \] \|\| shards_ok=failure', RUN_SUITE)
     assert 'box_verdict.py line "$verdict"' in RUN_SUITE and '"$RUN/verdict"' in RUN_SUITE

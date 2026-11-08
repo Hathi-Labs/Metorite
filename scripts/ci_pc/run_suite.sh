@@ -219,7 +219,9 @@ wait
 # RED. GitHub's pr-check never reads the list.
 KNOWN_ENV=scripts/ci_pc/box_known_env.txt
 for i in $(seq 1 "$SHARDS"); do
-  if [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" != 0 ] && [ -f "junit/shard-$i.xml" ] \
+  # Only pytest exit code 1 ("tests failed") can be excused. 2 to 5 (interrupted, an
+  # internal error, a usage error, no test) are not a failure of a listed test.
+  if [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 1 ] && [ -f "junit/shard-$i.xml" ] \
      && .venv/bin/python scripts/ci_pc/box_verdict.py shard "$KNOWN_ENV" "junit/shard-$i.xml" > "$RUN/shard-$i.expected" 2>/dev/null; then
     echo "expected" > "$RUN/shard-$i.state"
   else

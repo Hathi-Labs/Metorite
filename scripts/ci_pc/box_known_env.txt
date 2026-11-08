@@ -1,5 +1,5 @@
 # CIV-22 (task 2288): unit tests that fail on the home box for a reason of the box,
-# and not of the code. One entry per line: <test id> TAB <reason> TAB <task>.
+# and not of the code. One entry per line: <test id> TAB <reason> TAB <task> TAB <text>.
 #
 # What the list does. When a unit shard of a LOCAL run fails, and every failed
 # test of that shard is in this list, the run counts the shard as "expected" and
@@ -8,9 +8,12 @@
 # file (fence: tests/unit/test_box_verdict.py).
 #
 # Rules for an entry:
+#   * <text> is a piece of the failure message of the BOX fault. A failure of the
+#     same test with another message (a real regression of an earlier assertion
+#     in the test) is NOT excused;
 #   * the reason names a cause that a reviewer can check on the box, not "flaky";
 #   * the task is open until the cause is gone, and the entry leaves with it;
 #   * keep the list short. A flaky test or a real bug is not an environment fault:
 #     fix it or file a task, do not list it.
-tests/unit/test_web_reader_confine.py::TestTheConfinement::test_each_attack_works_unconfined	every process in the CI container already has the Docker default seccomp filter (Seccomp: 2 in /proc/self/status), so the unconfined control reads mode2, and GitHub runs the job outside a container and reads mode0	2288
-tests/unit/test_attachment_ocr.py::TestTheConfinement::test_each_attack_works_unconfined	the same control as test_web_reader_confine.py (seccomp mode2 in the CI container, mode0 on a GitHub runner)	2288
+tests/unit/test_web_reader_confine.py::TestTheConfinement::test_each_attack_works_unconfined	every process in the CI container already has the Docker default seccomp filter (Seccomp: 2 in /proc/self/status), so the unconfined control reads mode2 where it asserts mode0; the CI container is a Docker container, a GitHub runner is not	2288	'mode2' == 'mode0'
+tests/unit/test_attachment_ocr.py::TestTheConfinement::test_each_attack_works_unconfined	the Docker default seccomp filter of the CI container refuses io_uring_setup with EPERM, where the unconfined control asserts allowed (shard log of run 20261108-035612)	2288	'refused:EPERM' == 'allowed'

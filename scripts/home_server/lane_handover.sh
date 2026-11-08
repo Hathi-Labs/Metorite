@@ -11,11 +11,11 @@
 #   3. origin/main merges into the branch with no conflict;
 #   4. each new migration number is above main's highest, and no other open PR
 #      adds the same number (R1);
-#   5. a GREEN box run exists for the full commit id of the PR head (CIV-22,
+#   5. the LAST box run of the full commit id of the PR head is GREEN (CIV-22,
 #      task 2288): a line "GREEN <sha> ..." in /home/ci/runs/*/verdict, written
 #      by scripts/ci_pc/run_suite.sh. Run: bash scripts/ci_local.sh   (it tests
-#      the committed head). Off the box (no user ci) the check is skipped with a
-#      warning, and HANDOVER_VERDICTS_FILE names a file of verdict lines for a test.
+#      the committed head). Off the box (no user ci) the hand-over is refused.
+#      HANDOVER_VERDICTS_FILE names a file of verdict lines, for a test only.
 # A failed check prints its reason and exits 1. Nothing is appended.
 # Settings for a test: HANDOVER_BASE (default origin/main), HANDOVER_QUEUE.
 # Fence: tests/unit/test_lane_handover.py.
@@ -39,23 +39,23 @@ WT="$(pwd -P)"  # lane-merge runs from another directory, so the queue needs an 
 head_pr="$(gh pr view "$PR" --json headRefOid -q .headRefOid)" || fail "gh cannot read PR $PR"
 [ "$head_pr" = "$(git rev-parse HEAD)" ] || fail "PR $PR head is ${head_pr:0:9}, and this worktree is at $(git rev-parse --short=9 HEAD). Push first."
 
-# 5. The box verdict (CIV-22). A RED line, or none, refuses the hand-over.
-head_sha="$(git rev-parse HEAD)"
+# 5. The box verdict (CIV-22). The LAST verdict line of this commit decides: a RED
+# after a GREEN refuses. Off the box (no user ci) there is no verdict to read, so
+# the hand-over is refused. A selection run and a full run both count.
 if [ -n "${HANDOVER_VERDICTS_FILE:-}" ]; then
   verdicts="$(cat "$HANDOVER_VERDICTS_FILE" 2>/dev/null || true)"
 elif id ci >/dev/null 2>&1; then
   verdicts="$(sudo -n -u ci -H sh -c 'cat /home/ci/runs/*/verdict 2>/dev/null' || true)"
 else
-  verdicts="__NO_BOX__"
+  fail "this machine has no box (no user ci), so it cannot show a GREEN box run. Hand over from the home box."
 fi
-if [ "$verdicts" = "__NO_BOX__" ]; then
-  echo "warning: no user ci on this machine, so the box verdict is NOT checked" >&2
-elif ! grep -q "^GREEN $head_sha " <<< "$verdicts"; then
-  if grep -q "^RED $head_sha " <<< "$verdicts"; then
-    fail "the box run of $head_sha is RED. Read its log (/home/ci/runs/*/), fix, push, and run bash scripts/ci_local.sh again."
-  fi
-  fail "no GREEN box run for $head_sha. Run: bash scripts/ci_local.sh   (it tests the committed head, about 10 to 35 min)"
-fi
+head_sha="$(git rev-parse HEAD)"
+last="$(grep -E "^(GREEN|RED) $head_sha " <<< "$verdicts" | tail -n 1 | cut -d' ' -f1)"
+case "$last" in
+  GREEN) ;;
+  RED) fail "the last box run of $head_sha is RED. Read its log (/home/ci/runs/*/), fix, push, and run bash scripts/ci_local.sh again." ;;
+  *) fail "no box run of $head_sha. Run: bash scripts/ci_local.sh   (it tests the committed head, about 10 to 35 min)" ;;
+esac
 
 git fetch -q origin "${BASE#origin/}" 2>/dev/null || echo "warning: git fetch failed, so $BASE may be stale" >&2
 base="$(git merge-base HEAD "$BASE")" || fail "no merge base with $BASE"
