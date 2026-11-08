@@ -5819,7 +5819,7 @@ Fence: `tests/unit/test_loop_local_first.py` pins D200 in `CLAUDE.md`, `next-tic
 
 Owner decision, 2026-11-08, in chat. Metorite: task 2304 (CIV-23). It reverses the non-goal "no GitHub self-hosted runner" of `specs/ci_velocity.md` §2. It changes no other rule.
 
-1. **What runs on the box.** Only the unit shard job (`test`) of `pr-check.yml`. Every other job stays on `ubuntu-24.04`.
+1. **What runs on the box.** The light jobs of `pr-check.yml`: lint, migrations, frontend, caddy and the secret scan. The unit shard job (`test`) stays on `ubuntu-24.04`, because it ran over 40 minutes on the box against 14 on GitHub (measured 2026-11-08, quiet box, tmpfs database). `e2e` and `backup-restore` stay there too.
 2. **The label.** The runners carry only the label `metorite-box`. They carry no default label, and no job uses `self-hosted`.
 3. **The switch.** The variable `USE_BOX_RUNNERS` set to `1` turns it on. Any other value sends the job to `ubuntu-24.04`.
 4. **No fork code on the box.** A pull request from a fork always gets `ubuntu-24.04`. The job tests the head repository against this repository.
