@@ -62,6 +62,21 @@ LANES = {"rows": [
 ]}
 
 
+#: The one day rule that the Recorder answers for ``GET /tasks/settings``, and the
+#: version that a proposal of it shows (CAL-3). A confirmed write names it.
+STORED_RULES = [{"days": [0, 1, 2, 3, 4], "start_hour": 8, "end_hour": 11,
+                 "kind": "focus", "label": "", "theme": ""}]
+
+
+def _rules_version() -> str:
+    from skill_my_tasks import core
+
+    return core.day_rules_token(STORED_RULES)
+
+
+RULES_VERSION = _rules_version()
+
+
 class Recorder:
     """A fake `_request` that records `(method, path)` and answers in the
     shape each route answers with. Query params are kept for inspection."""
@@ -130,6 +145,9 @@ class Recorder:
     @staticmethod
     def _answer_projects(method: str, path: str, kw: dict[str, Any]) -> Any:
         """`/projects/tasks/*` and `/projects/nodes*` — the board's doors."""
+        if (method, path) == ("GET", "/tasks/settings"):
+            # CAL-3: one day rule, so the edit and the delete have a number 1.
+            return {"day_templates": [dict(r) for r in STORED_RULES]}
         if path == "/projects/nodes":
             return {"rows": [{"id": PID, "name": "Alpha", "kind": "project"}], "total": 1}
         if path.endswith("/statuses"):
@@ -238,6 +256,25 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_day_digest", {}, [("GET", "/tasks/calendar/day-summary")]),
     ("my_tasks_estimate_stats", {}, [("GET", "/projects/my/calendar/estimate-stats")]),
     ("my_tasks_set_one_thing", {"item_id": TID}, [("PUT", "/tasks/calendar/day-state")]),
+    ("my_tasks_get_calendar_settings", {}, [("GET", "/tasks/settings")]),
+    ("my_tasks_update_calendar_settings", {"day_start_hour": 8, "confirmed": True},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_list_day_rules", {}, [("GET", "/tasks/settings")]),
+    ("my_tasks_add_day_rule",
+     {"days": [0, 1], "start_hour": 8, "end_hour": 11, "confirmed": True,
+      "version": RULES_VERSION},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_edit_day_rule", {"number": 1, "start_hour": 9, "confirmed": True, "version": RULES_VERSION},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_delete_day_rule", {"number": 1, "confirmed": True, "version": RULES_VERSION},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    # CAL-4 (task 1678): the two day flows. Reads and apply=False proposals only.
+    ("my_tasks_start_my_day", {},
+     [("GET", "/tasks/calendar/day-summary"), ("POST", "/tasks/calendar/rollover-today"),
+      ("GET", "/projects/my/inbox"), ("POST", "/tasks/calendar/plan-today")]),
+    ("my_tasks_close_my_day", {},
+     [("GET", "/tasks/calendar/day-summary"), ("POST", "/tasks/calendar/rollover-today"),
+      ("GET", "/projects/my/inbox")]),
 ]
 
 
@@ -259,8 +296,11 @@ def test_each_tool_calls_exactly_the_lens_routes(gw: Recorder, tool, kwargs, exp
 
 # ── 2. The retired doors are named nowhere ──────────────────────────────────
 
+#: ``/tasks/settings`` left this list in CAL-2 (task 1676). That route reads
+#: ``user_settings``, not ``gtd_items``, and it is live. The calendar settings
+#: tools call it. The mounted-router test above still checks that it exists.
 RETIRED = (
-    "/tasks/items", "/tasks/projects", "/tasks/hierarchy", "/tasks/settings",
+    "/tasks/items", "/tasks/projects", "/tasks/hierarchy",
     "/tasks/accounts", "/tasks/sync", "/tasks/spaces", "/tasks/folders",
     "/tasks/local-projects", "/tasks/calendar/estimate-stats",
 )
@@ -379,6 +419,7 @@ def test_every_path_the_skill_calls_is_served_with_that_method():
 STORE_NEUTRAL: dict[str, str] = {
     "/tasks/calendar/day-state": "calendar_day_state — the member's day, not a task (D53.6)",
     "/tasks/people": "people — slice 1 of the rename (2026-09-21)",
+    "/tasks/settings": "user_settings — the calendar fields of the member, no task (CAL-2, task 1676)",
 }
 
 SEAMS = ("item_source(", "agent_source(")
