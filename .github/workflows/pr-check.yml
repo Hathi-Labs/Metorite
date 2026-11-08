@@ -508,6 +508,7 @@ jobs:
             --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
             -o faulthandler_timeout=900 \
+            --basetemp="$RUNNER_TEMP/pytest" \
             -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml || rc=$?
           if [ "$rc" -eq 5 ] && [ "$SHARD_MODE" = "selection" ]; then
             echo "this shard drew no test from the selection"
