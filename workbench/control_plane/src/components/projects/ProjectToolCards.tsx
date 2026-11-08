@@ -96,6 +96,8 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   // S5 — the rest of the reads
   project_access: { icon: "Users", label: "Access" },
   project_authorities: { icon: "Users", label: "Authority pages" },
+  // WS-39 LP-1a: the updates of a project, newest first.
+  list_project_updates: { icon: "Megaphone", label: "Project updates" },
   // WS-39 TPL-1a: the templates of the organization.
   list_templates: { icon: "LayoutList", label: "Templates" },
   my_decisions: { icon: "Users", label: "Decisions" },
@@ -146,6 +148,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   update_task: { icon: "PenLine", label: "Task updated" },
   assign: { icon: "UserPlus", label: "Assignees changed" },
   comment: { icon: "MessageSquare", label: "Comment posted" },
+  // WS-39 LP-1a: one update of a project, with its health.
+  post_project_update: { icon: "Megaphone", label: "Project update posted" },
   add_subtasks: { icon: "ListTree", label: "Subtasks added" },
   link_tasks: { icon: "Link", label: "Tasks linked" },
   unlink_tasks: { icon: "Unlink", label: "Link removed" },
@@ -205,6 +209,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   revoke_access: { icon: "UserMinus", label: "Access removed" },
   pin_authority: { icon: "UserPlus", label: "Authority page pinned" },
   unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
+  // WS-39 LP-1a: the delete of a project update.
+  delete_project_update: { icon: "Trash2", label: "Project update deleted" },
   // WS-39 TPL-1a: an org-wide template, and a project made from one.
   save_as_template: { icon: "LayoutList", label: "Template saved" },
   create_project_from_template: { icon: "FolderPlus", label: "Project made from a template" },
@@ -325,6 +331,7 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "revoke_access",
   "pin_authority",
   "unpin_authority",
+  "delete_project_update",
   "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",

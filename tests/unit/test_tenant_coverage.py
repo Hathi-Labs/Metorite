@@ -540,6 +540,20 @@ def test_the_cycle_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_project_update_table_is_tenant_scoped() -> None:
+    """WS-39 LP-1a (``project_management_app.md`` §14.2a). An update tells
+    how one project of one organization goes. The table may not be exempt,
+    and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "pm_project_updates" in gen.discover_tables()
+    assert "pm_project_updates" not in gen.EXEMPT
+    assert "pm_project_updates" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE pm_project_updates FORCE  ROW LEVEL SECURITY" in policies
+
+
 @pytest.mark.parametrize("table", ["pm_templates", "pm_template_applies"])
 def test_the_template_tables_are_tenant_scoped(table: str) -> None:
     """WS-39 TPL-1a (``project_management_app.md`` §14.8). A template holds

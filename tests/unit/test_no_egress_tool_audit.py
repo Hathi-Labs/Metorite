@@ -101,6 +101,8 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "pin_authority", "unpin_authority",
         # WS-ALN ALN-2a: a decision answer is class C, so a held run gets no card.
         "answer_decision",
+        # WS-39 LP-1a: the delete of a project update is class C.
+        "delete_project_update",
         # WS-39 TPL-1a: a template save and an apply are class C, so a held
         # run gets no card.
         "save_as_template", "create_project_from_template",

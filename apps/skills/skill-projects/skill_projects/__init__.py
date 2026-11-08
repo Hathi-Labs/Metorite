@@ -31,6 +31,7 @@ from skill_projects.guarded import (
     delete_comment,
     delete_field,
     delete_project,
+    delete_project_update,
     delete_status,
     delete_tag,
     delete_task,
@@ -59,6 +60,7 @@ from skill_projects.inbox import (
     capture_intake,
     create_area,
     intake_queue,
+    list_project_updates,
     list_templates,
     mark_notifications_read,
     my_areas,
@@ -66,6 +68,7 @@ from skill_projects.inbox import (
     my_decisions,
     my_led_projects,
     notifications,
+    post_project_update,
     project_access,
     project_authorities,
     project_views,
@@ -197,6 +200,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "project_views",
     "watchers",
     "my_decisions",
+    # Class A — WS-39 LP-1a, the updates of a project with their health
+    "list_project_updates",
     # Class A — WS-39 TPL-1a, the templates of the organization
     "list_templates",
     # Class A — navigation (S6)
@@ -273,6 +278,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "resolve_reminder",
     "reopen_reminder",
     "reschedule_reminder",
+    # Class B — WS-39 LP-1a, an update of a project with its health, one card
+    "post_project_update",
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
@@ -300,6 +307,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "report_delete",
     "revoke_access",
     "unpin_authority",
+    # Class C — WS-39 LP-1a, the delete of a project update, one card
+    "delete_project_update",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",

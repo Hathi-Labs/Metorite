@@ -229,6 +229,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "project_authorities": ("which page is the authority page of this project?",),
     "pin_authority": ("pin this page as the authority of the project",),
     "unpin_authority": ("remove the authority page of the project",),
+    # WS-39 LP-1a: the updates of a project sit in the same pack.
+    "list_project_updates": ("show the project updates of Website Relaunch",),
+    "post_project_update": ("post a project update: the vendor slipped a week",),
+    "delete_project_update": ("remove my last project update",),
     # WS-39 TPL-1a: the project templates of the organization.
     "list_templates": ("which project templates do we have?",),
     "save_as_template": ("save this project as a template",),
