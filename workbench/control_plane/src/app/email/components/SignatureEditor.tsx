@@ -1,8 +1,10 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
+import { uploadSignatureImage } from "../lib/api";
+import { UPLOAD_OFF } from "../lib/signatureSave";
 import {
   EditorContent, ReactNodeViewRenderer, NodeViewWrapper, useEditor,
   useEditorState, type Editor, type NodeViewProps,
@@ -17,16 +19,23 @@ import { Placeholder } from "@tiptap/extensions";
 /**
  * Rich email-signature editor — Tiptap (MIT, ProseMirror) with a
  * signature-focused toolbar: text formatting, font size + colour, alignment,
- * lists, links, images (by URL or uploaded inline) that can be DRAGGED to
- * reposition and RESIZED by their corner handle, resizable tables with
- * row/column controls, and a raw-HTML source view for full control. The two
- * views share one HTML string, so switching round-trips losslessly. Output is
- * DOMPurify-sanitised HTML that mail clients render (tables + inline styles).
+ * lists, links, images (by URL, or uploaded to a hosted https address) that
+ * can be DRAGGED to reposition and RESIZED by their corner handle, resizable
+ * tables with row/column controls, and a raw-HTML source view for full
+ * control. The two views share one HTML string, so switching round-trips
+ * losslessly. Output is DOMPurify-sanitised HTML that mail clients render
+ * (tables + inline styles).
+ *
+ * WS-17 SG-1 (D-EM-67, D-EM-70): an uploaded image goes to the server, which
+ * re-encodes and hosts it, and the editor inserts its https address. The
+ * editor makes no `data:` URI. The server cleans the HTML again on save with
+ * the same tags, attributes and URL schemes (`routes/email/signature.py`).
  */
 
 // Signatures are user-authored but we still sanitise: strip scripts/handlers and
 // keep only presentational markup + links + images (the tags a mail client will
-// actually render). Mirrors the intent of MessageContent's email sanitiser.
+// actually render). The server allowlist (`clean_signature_html`) holds the
+// same tags, attributes and schemes, so the editor shows what the save keeps.
 const SIG_ALLOWED_TAGS = [
   "a", "b", "strong", "i", "em", "u", "s", "strike", "span", "div", "p", "br",
   "hr", "img", "ul", "ol", "li",
@@ -38,14 +47,27 @@ const SIG_ALLOWED_ATTR = [
   "color", "align", "border", "cellpadding", "cellspacing", "class",
   "colspan", "rowspan",
 ];
+/** The URL schemes that a SAVE keeps in an `href` or `src` (D-EM-70). The
+ *  server's `_clean_url` keeps the same three. */
+export const SIG_ALLOWED_URI = /^(?:https:|mailto:|tel:)/i;
+
+/** The URL schemes that the editor keeps when it LOADS a signature (fix round
+ *  3). It keeps `http:` and a legacy `data:image` too, so a signature edit
+ *  sends them back and the SERVER decides: it hosts a `data:` image, and it
+ *  removes an `http:` address and names it in `signature_removed`, so the
+ *  dialog says what went. With the save list here, DOMPurify dropped an
+ *  `http:` logo at load and the member lost it with no word. */
+export const SIG_LOAD_URI =
+  /^(?:https?:|mailto:|tel:|data:image\/(?:png|jpe?g|gif|webp);base64,)/i;
 
 export function cleanSignatureHtml(html: string): string {
   if (typeof window === "undefined") return html || "";
   return DOMPurify.sanitize(html || "", {
     ALLOWED_TAGS: SIG_ALLOWED_TAGS,
     ALLOWED_ATTR: SIG_ALLOWED_ATTR,
-    // data: URIs for uploaded/inline images; http(s) + mailto/tel for links.
-    ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|tel:|data:image\/[a-z]+;base64,)/i,
+    // The load list, not the save list: the server removes what a save may
+    // not keep, and reports it (D-EM-70). No script and no handler pass.
+    ALLOWED_URI_REGEXP: SIG_LOAD_URI,
     ADD_ATTR: ["target"],
   });
 }
@@ -105,9 +127,16 @@ function ResizableImageView({ node, updateAttributes, selected }: NodeViewProps)
 
 /** Tiptap Image extended with a width attribute (the resize handle writes it;
  *  <img width> is the one sizing every mail client honours) and the resizable
- *  node view. Inline, so a logo can sit beside text; data: URIs allowed for
- *  uploaded images. */
-const SigImage = TiptapImage.extend({
+ *  node view. Inline, so a logo can sit beside text.
+ *
+ *  WS-17 SG-1: a new upload is a hosted https image, and the editor makes no
+ *  `data:` URI. `allowBase64` stays TRUE for a LEGACY `data:` image only. With
+ *  false, Tiptap drops that image at load, and an edit then saves the
+ *  signature without the member's logo. The save hosts each `data:` image of
+ *  a changed signature (`signature_for_save`), or refuses with a plain
+ *  sentence, so the image is converted and never lost. DOMPurify keeps a
+ *  `data:` `src` on `img` by its default `DATA_URI_TAGS`. */
+export const SigImage = TiptapImage.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
@@ -161,20 +190,37 @@ function Divider() {
 
 const FONT_SIZES = ["12px", "13px", "14px", "16px", "18px", "22px"];
 
+// The sentence of a server with no https address to host an image (§23.3.9).
+// lib/signatureSave.ts holds it, so the dialog can drop it from a save error.
+export { UPLOAD_OFF };
+
 // ── The editor ────────────────────────────────────────────────────────────────
 
 export function SignatureEditor({
   value,
   onChange,
+  accountId,
+  uploadAvailable = true,
+  upload = uploadSignatureImage,
 }: {
   value: string;
   onChange: (html: string) => void;
+  /** The mailbox whose signature this is. The upload needs it, because only
+   *  a member who may send from the mailbox may upload. */
+  accountId?: string;
+  /** False when the server cannot host an image (`signature_image_upload`).
+   *  The upload button is then off, with {@link UPLOAD_OFF}. */
+  uploadAvailable?: boolean;
+  /** The upload call. A test passes a fake. */
+  upload?: typeof uploadSignatureImage;
 }) {
   // The HTML we last emitted — external `value` changes that didn't originate
   // here (async settings load, reset) are pushed INTO the editor; our own
   // keystrokes are not, so the caret never jumps.
   const lastEmitted = useRef<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const editor = useEditor({
     immediatelyRender: false, // SSR-safe under Next
@@ -256,18 +302,23 @@ export function SignatureEditor({
     }
   }, [editor]);
 
+  // The server re-encodes the file and hosts it. The editor inserts the https
+  // address it answers, never the file itself (WS-17 SG-1, D-EM-67).
   const onPickImage = useCallback(
-    (file: File | undefined) => {
-      if (!file || !editor) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          editor.chain().focus().setImage({ src: reader.result }).run();
-        }
-      };
-      reader.readAsDataURL(file); // embeds as a data: URI
+    async (file: File | undefined) => {
+      if (!file || !editor || !accountId) return;
+      setUploading(true);
+      setUploadError(null);
+      try {
+        const image = await upload(accountId, file);
+        editor.chain().focus().setImage({ src: image.url, alt: "" }).run();
+      } catch (e) {
+        setUploadError((e as Error).message || "The upload failed. Try again.");
+      } finally {
+        setUploading(false);
+      }
     },
-    [editor],
+    [editor, accountId, upload],
   );
 
   if (!editor) {
@@ -365,15 +416,20 @@ export function SignatureEditor({
         <TBtn title="Insert image by URL" onClick={addImageByUrl}>
           <Icon name="Image" size={14} />
         </TBtn>
-        <TBtn title="Upload an image (embedded)" onClick={() => fileRef.current?.click()}>
+        <TBtn
+          title={!uploadAvailable ? UPLOAD_OFF : uploading ? "Uploading the image…" : "Upload an image"}
+          disabled={!uploadAvailable || uploading || !accountId}
+          onClick={() => fileRef.current?.click()}
+        >
           <Icon name="Upload" size={14} />
         </TBtn>
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept="image/png,image/jpeg,image/gif"
           className="hidden"
-          onChange={(e) => { onPickImage(e.target.files?.[0]); e.target.value = ""; }}
+          aria-label="Upload an image"
+          onChange={(e) => { void onPickImage(e.target.files?.[0]); e.target.value = ""; }}
         />
         <TBtn
           title="Insert table (3×3)"
@@ -424,6 +480,20 @@ export function SignatureEditor({
             Delete table
           </button>
         </div>
+      )}
+
+      {/* No https address on this server: the upload is off, and says why. */}
+      {!uploadAvailable && (
+        <p data-upload-off className="px-2 py-1 border-b border-border text-[11px] text-muted-foreground">
+          {UPLOAD_OFF}
+        </p>
+      )}
+
+      {/* A refused upload says what failed and what to do (the server's words). */}
+      {uploadError && (
+        <p role="alert" className="px-2 py-1 border-b border-border text-[11px] text-destructive">
+          {uploadError}
+        </p>
       )}
 
       {/* Editor body (styles in globals.css under .sig-rich) */}
