@@ -2424,8 +2424,10 @@ LIST_TAGS = Tool(
     name="list_tags",
     title="List the tags",
     description=(
-        "List the tag names of one project, or of every project you see when"
-        " project_id is left out. A name shows once, in alphabetical order."
+        "List the tag names of one project tree, or of every tree you see when"
+        " project_id is left out. Tags belong to the top project of a tree, so"
+        " the list can hold a tag that a hidden project of that tree uses."
+        " A name shows once, in alphabetical order."
         " Read this before you make a tag in create_task or update_task, so"
         " you reuse a name that exists. Each row has the tag name only."
         " Send nextCursor back as cursor to read the next page. The pages are"
