@@ -10,11 +10,15 @@ CIV-6 is built (task 1634, PR open). CIV-4b merged on 2026-11-05 (task 1711). CI
 
 CIV-4c is BUILT on 2026-11-07 (task 1736, branch `civ4c-r8-cover`).
 
+CIV-21 (D194) is BUILT on 2026-11-07 (task 2210, branch
+`civ21-three-releases-mt-06e30527`). Production releases three times a day,
+at 05:30, 13:30 and 21:30 UTC. The owner installs the new timer.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
-keeps the two-speed rules. `staging_and_daily_release.md` keeps the 21:30 UTC
-release. This spec links to them and adds nothing to them.
+keeps the two-speed rules. `staging_and_daily_release.md` keeps the release
+slots at 05:30, 13:30 and 21:30 UTC (D194). This spec links to them and adds nothing to them.
 
 ---
 
@@ -26,7 +30,8 @@ release. This spec links to them and adds nothing to them.
   unit tests that its diff can affect. Target: about 10 minutes.
 - After the merge, `main` runs the full suite in batches. While one run goes,
   new merges wait, and the next run tests them together.
-- The 21:30 UTC release ships only a `main` whose full suite is green.
+- Each release slot (05:30, 13:30 and 21:30 UTC, D194) ships only a `main`
+  whose full suite is green.
 - **R8 runs at the release.** The batch has no database, so its R8 suites
   skip. Each release runs every R8 file against two real Postgres servers,
   and a red R8 gate holds the release (CIV-4b). CIV-9 makes the R8 files
@@ -67,7 +72,9 @@ waited up to 22 minutes for a runner.
 - No GitHub self-hosted runner while the repo is public. A fork PR could run
   code on it. The home box takes work only from our own sessions, over
   Tailscale (task 1534).
-- No change to when production moves. It moves at 21:30 UTC only (D145).
+- This spec does not change the full-suite rule of a release. CIV-21
+  (D194) changes only the clock: production moves three times a day, at
+  05:30, 13:30 and 21:30 UTC.
 - No change to the owner's preview step for a UI slice (D145 step 1).
 
 ## 4. The tiers
@@ -77,7 +84,7 @@ waited up to 22 minutes for a runner.
 | 0. Local | Home box first, this PC second (`ci_local.sh`) | The affected tests, lint, the touched app's type check | Advice before a push |
 | 1. PR | GitHub (pr-check) | Lint, secret scan, type checks, SAFETY fences, the affected tests. The full set when the diff is FULL. | The 7 required checks |
 | 2. Batch | GitHub (deploy.yml on push to `main`) | The full unit suite with no database, so R8 skips until CIV-9. One run at a time. Pending merges fold into the next run. | Signal. Red means fix forward now. |
-| 3. Release | GitHub (deploy.yml at 21:30 UTC) | The full suite on the tip of `main`, and the R8 files in 6 shards with both databases (CIV-4b) | Gate for the release |
+| 3. Release | GitHub (deploy.yml at 05:30, 13:30 and 21:30 UTC, D194) | The full suite on the tip of `main`, and the R8 files in 6 shards with both databases (CIV-4b) | Gate for the release |
 
 ## 5. Slices
 
@@ -551,6 +558,79 @@ on linger, copies the script, and enables the timer. In WSL, the Windows
 task "Metorite WSL keep-alive" keeps the distro up.
 HIGH tier.
 
+D194 (CIV-21) moves this timer to three slots. The text above keeps the
+record of 2026-11-05.
+
+### CIV-21 · Production releases three times a day (HIGH: deploy path)
+
+**Status: BUILT 2026-11-07** (task 2210, branch
+`civ21-three-releases-mt-06e30527`). Owner decision, 2026-11-07 (D194). It
+supersedes D145 point 5 and the time in D178 point 1.
+
+**What changes.**
+- Production moves three times a day: at 05:30, 13:30 and 21:30 UTC. That
+  is 11:00, 19:00 and 03:00 IST.
+- `deploy.yml` has three crons: `30 5 * * *`, `30 13 * * *` and
+  `30 21 * * *`.
+- The step `clock` of `release-window` opens a window for each slot. Each
+  window opens 30 min before its slot: 21:00 to 02:00, 05:00 to 10:00 and
+  13:00 to 18:00 UTC. The windows do not overlap. A late nightly run waits
+  for the next slot. A person's rerun is not held.
+- A slot ships once. The step `once` looks back to the open time of the
+  window of the current slot. That is the latest of 05:00, 13:00 and 21:00
+  UTC that is not after now.
+- The home box timer has three `OnCalendar` lines. The script dispatches
+  only from 21:00 to 01:00, 05:00 to 09:00 and 13:00 to 17:00 UTC.
+
+**What does not change.** The input `nightly`, the step id `once`, the
+output names and the unit name keep their names. `RELEASE_HOLD`, the R8
+gate, the full-suite rule and a plain dispatch behave as before.
+
+**Acceptance.**
+1. Each slot has a cron, a window and a timer line. A test fails when one
+   is missing.
+2. The windows do not overlap, and a test fails when two do.
+3. A nightly run in a slot does not publish when another nightly run
+   published since the window of that slot opened.
+4. D194 and the doc lines are in place.
+
+**Files:** `.github/workflows/deploy.yml`,
+`scripts/home_server/nightly_release.sh`,
+`scripts/home_server/metorite-nightly-release.service`,
+`scripts/home_server/metorite-nightly-release.timer`.
+**Fence:** `tests/unit/test_daily_release.py` and
+`tests/unit/test_nightly_release_box.py`.
+**Install (owner, on the home box, as `dev`):** run
+`bash ~/Metorite/scripts/home_server/nightly_release.sh install` again
+after the merge. Until then the box fires at 21:30 UTC only.
+HIGH tier.
+
+### CIV-20: fewer PRs sent back (task 2207)
+
+**Status: slices 1 and 3 BUILT 2026-11-07. Slice 2 is CIV-8** (PR 1872, merged).
+STANDARD tier. Of the PRs that lane-merge handled from 2026-11-06 22:05 UTC,
+21 went BACK, about 1 in 3. The causes: 8 merge conflicts, 6 a missing
+"Visual review:" line, 6 a red test, 1 a migration number below main's highest.
+
+**Slice 1.** `scripts/home_server/lane_handover.sh <PR> <task> <worktree> <lane>
+<note>` is the one way a lane hands a PR over. It appends the line to
+`~/lanes/merge-queue.tsv` only after these checks pass: the worktree is clean
+and sits at the PR head, the body has the Visual review line when the diff
+touches `workbench/control_plane/src`, a trial merge of `origin/main` has no
+conflict, and each new migration number is above main's highest and free of
+other open PRs. A failed check prints the reason and appends nothing.
+**Fence:** `tests/unit/test_lane_handover.py`.
+
+**Slice 3.** `.gitattributes` gives `project-docs/INDEX.md` the `union` merge
+driver, so two PRs that each add a row no longer conflict. A fence checks that
+no spec row repeats in one section. Other append-only files stay out: a union
+there would keep both sides of a real clash in one line.
+**Fence:** `tests/unit/test_index_union.py`.
+
+**Open.** The lane rules live outside the repo. Rule 14 must name
+`lane_handover.sh`. The done test is a BACK rate under 1 in 10 over 20
+hand-overs.
+
 ### CIV-19: the lane keeper (task 2206)
 
 **Status: BUILT 2026-11-07** (task 2206). STANDARD tier.
@@ -612,7 +692,7 @@ rerun adds to it.
 ## 6. Order
 
 CIV-2 and CIV-4 start now, beside each other. CIV-4b follows CIV-4. It is a
-sharded R8 gate. It runs on the 21:30 release and on a dispatch, beside
+sharded R8 gate. It runs on each release slot and on a dispatch, beside
 `test`, and `publish-release` needs it green. CIV-3 merges only after CIV-4b,
 because the PR gate then skips R8 suites that CIV-4b still covers. CIV-7
 lands with CIV-3. CIV-5, CIV-6, CIV-8 and CIV-9 follow, in any
@@ -663,4 +743,6 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-5 | 1633 | CIV-4b | 1711 |
 | CIV-17 | 1988 | CIV-13 | 1721 |
 | CIV-10 | 1643 | CIV-4c | 1736 |
+| CIV-21 | 2210 | | |
+| CIV-20 | 2207 | | |
 | CIV-19 | 2206 | | |

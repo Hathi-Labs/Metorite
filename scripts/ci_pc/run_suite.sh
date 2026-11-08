@@ -194,8 +194,9 @@ SHARD_CTX=("${FULL_RUN[@]}")
 if [ -n "$SELECT_FILE" ]; then
   SHARD_CTX=(--ctx needs.changes.result=success --ctx needs.changes.outputs.full=false
              --ctx "needs.changes.outputs.files=$(tr '\n' ' ' < "$SELECT_FILE")"
-             --ctx steps.pick.outputs.mode=selection
-             --ctx "steps.pick.outputs.paths=$(tr '\n' ' ' < "$SELECT_FILE")")
+             --ctx steps.pick.outputs.mode=selection --ctx steps.pick.outputs.splits=6
+             --ctx "steps.pick.outputs.paths=$(tr '\n' ' ' < "$SELECT_FILE")"
+             --ctx "needs.changes.outputs.shards=[1,2,3,4,5,6]")
 fi
 for i in $(seq 1 "$SHARDS"); do
   job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "${SHARD_CTX[@]}" "--replace=--splits 6=>--splits $SHARDS"
