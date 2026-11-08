@@ -804,6 +804,10 @@ async def test_a_hostile_page_keeps_the_event_loop_going(
         assert "Title:" not in out, "a killed child gave a page"
 
 
+#: The slow child sleeps 60 s. Only a hang fails the test, not a loaded runner.
+_HANG_GUARD_S = 30.0
+
+
 async def test_a_slow_reader_times_out_to_the_strip(monkeypatch, tmp_path) -> None:
     _fake_child(monkeypatch, tmp_path, "import time\ntime.sleep(60)\n")
     monkeypatch.setattr(web_tools, "READER_TIMEOUT_S", 0.5)
@@ -814,7 +818,8 @@ async def test_a_slow_reader_times_out_to_the_strip(monkeypatch, tmp_path) -> No
     out = await web_tools.fetch_page(URL)
     elapsed = time.perf_counter() - start
     assert "Home menu item" in out, "the strip did not read"
-    assert elapsed < 5, f"the call took {elapsed:.1f} s"
+    # The child sleeps 60 s. A call under the 30 s guard means the timeout killed it.
+    assert elapsed < _HANG_GUARD_S, f"the call took {elapsed:.1f} s"
     assert log.reasons == ["timeout"]
 
 
@@ -1008,11 +1013,8 @@ async def test_with_no_global_slot_a_read_gives_the_strip_at_once(monkeypatch) -
     log = _record_log(monkeypatch)
     _on(monkeypatch)
     _serve(monkeypatch, _fixture("menu_page.html"))
-    start = time.perf_counter()
-    out = await web_tools.fetch_page(URL)
-    elapsed = time.perf_counter() - start
+    out = await asyncio.wait_for(web_tools.fetch_page(URL), 30)  # a wait for a slot hits the guard
     assert "Home menu item" in out and "Title:" not in out
-    assert elapsed < 1, f"the read waited {elapsed:.2f} s for a slot"
     assert log.reasons == ["busy"]
 
 

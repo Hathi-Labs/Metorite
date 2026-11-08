@@ -169,9 +169,9 @@ class Settings(BaseSettings):
     # GATEWAY_INTERNAL_TOKEN. Distinct from litellm_master_key ON PURPOSE:
     # the LLM key is handed to every agent's BYOK client, so while the two
     # were one value any agent could authenticate as the platform (BO-2
-    # residual #4). When this is unset the gateway still falls back to
-    # litellm_master_key so an un-migrated deployment keeps working, but it
-    # logs a warning on every resolution because the separation is then absent.
+    # residual #4). There is NO fallback to litellm_master_key (WS-24b,
+    # 2026-11-06). Unset fails closed outside ACB_ENV=dev: no Bearer is
+    # service identity, and require_internal_auth answers 401.
     #
     # Never hand this to a /v1 client — use `llm_api_key` below.
     gateway_internal_token: str = ""
@@ -293,6 +293,15 @@ class Settings(BaseSettings):
     # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_crm_field_studio_r8.py.
     crm_field_studio_orgs: str = ""
+    # `crm_pipelines_orgs` (WS-CRM CRM-M3a, 2026-11-07) lists the
+    # organization ids whose admins may create a deal pipeline, from CRM
+    # settings and from the chat (`crm_conversational.md` §8 CRM-M3). The
+    # grammar is the one of `crm_orgs`. Default empty means NO organization
+    # (fail closed): the create route answers 404, the button does not
+    # show, and the chat tool leaves the run. The one reader is
+    # `gateway.routes.crm.flags`. 🔴 A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_crm_pipelines_native.py.
+    crm_pipelines_orgs: str = ""
     # `crm_fill_rank_orgs` (WS-53 CRM-Q17a-1, 2026-10-16) lists the
     # organization ids that get the fill rank and the source labels of the
     # mirror (`crm_platform.md` §18.9.3), in the grammar of `crm_orgs`.
@@ -907,6 +916,18 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_celebrations.py.
     celebrations_orgs: str = ""
 
+    # ── Forms of address (WS-63 PZ-40, personalization.md §16.4) ────────────
+    #
+    # ADDRESS_FORMS_ORGS: a comma list of organization ids, or `*`. Empty: off,
+    # the default. On, the name question of the interview offers "just my name"
+    # first and then the forms that fit the member's language, and the profile
+    # block tells the chat to use `address.name` exactly as written. The
+    # profile switch must be on too. The one reader is
+    # `acb_common.assistant_profile.address_forms_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). It calls no model.
+    # Fences: tests/unit/test_honorifics.py.
+    address_forms_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -929,6 +950,16 @@ class Settings(BaseSettings):
     # `workflow_unattended_orgs`. If the org leaves that list, a yes resumes
     # nothing and no expiry ends the run, until the org is on it again.
     auto_park_orgs: str = ""
+    # ── The headless turn (WS-AUTO AUTO-8a, proactive_agent.md §4.4) ────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, a job of kind `auto.turn` runs one capped turn with no
+    # person present. It is the on switch and the kill switch: the turn reads
+    # it again before each round. The one reader is
+    # `gateway.jobs.headless_turn.headless_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A turn spends the member's AI credits,
+    # so only the owner flips it. Fence: tests/unit/test_headless_turn.py.
+    headless_turn_orgs: str = ""
     # ── Guidance for agents (WS-MCP SW-31a, agent_coordination.md SW-31) ────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -939,6 +970,14 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # SW-56 (agent_coordination.md SW-56): the organizations where the results
+    # of `claim_task` and `my_work` carry the `protocol` block, up to six short
+    # lines of fixed server text. The same shape as `agent_access_orgs`: ids
+    # with a comma between them, or `*`. Empty, the default, leaves the key
+    # out. Only the edge reads it, at each call, through
+    # `acb_auth.agent_oauth.protocol_allowed`. 🔴 A change on a box is gate
+    # `enforcement-flip`.
+    agent_protocol_orgs: str = ""
     # ── The trigger of the project alignment check (WS-ALN ALN-1, D160) ─────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -982,6 +1021,19 @@ class Settings(BaseSettings):
     # a change. A flip is OWNER-GATE (`enforcement-flip`).
     # Fence: tests/unit/test_waiting_seam_r8.py.
     waiting_orgs: str = ""
+
+    # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the chat tools `create_status`, `update_status` and
+    # `delete_status` refuse to change a status set that the project shares,
+    # unless the member says so, and they send a `slot` and never a raw
+    # `position`. The one reader is `gateway.routes.projects.admin.
+    # status_set_guard_allowed`. It returns `guard_on` on the status-set read,
+    # and the tools read that. A SIGHUP reload applies a change. A flip is
+    # OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_projects_status_chat.py.
+    status_set_guard_orgs: str = ""
 
     # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
     #
@@ -1111,7 +1163,7 @@ class Settings(BaseSettings):
     # `chat_continue_orgs` lists the organization ids where
     # `POST /chat/sessions/{id}/continue` answers, or `*` for each one. Empty
     # means off, and the route answers 404 for each caller. The one reader is
-    # `gateway.routes.chat.continue_allowed`, and it fails closed. The name
+    # `acb_common.chat_continue_flag.continue_allowed`, and it fails closed. The name
     # ends in `_orgs`, so a SIGHUP applies a change with no restart
     # (`docs/flag_reload.md`).
     #
@@ -1133,6 +1185,17 @@ class Settings(BaseSettings):
     # Name the flag and the box in the same message.
     # Fence: tests/unit/test_email_new_mail_card.py.
     email_edit_card_orgs: str = ""
+
+    # ── Outlook all-mail webhook (WS-17, task 1966) ─────────────────────────
+    #
+    # `outlook_all_mail_webhook_orgs` lists the organization ids whose Outlook
+    # push subscription watches ALL mail (`/me/messages`), so mail that a rule
+    # files into a user folder arrives at once and not at the next poll. Empty
+    # means off, and the subscription watches the Inbox only. The reader is
+    # `gateway.routes.email.transport.sync._all_mail_webhook_on`. The name ends
+    # in `_orgs`, so a SIGHUP applies a change with no restart.
+    # Fence: tests/unit/test_outlook_all_mail_webhook.py.
+    outlook_all_mail_webhook_orgs: str = ""
 
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #
@@ -1576,6 +1639,18 @@ class Settings(BaseSettings):
     # `enforcement-flip`. `connections/github_app.py` reads the key file once
     # for each process. Fence: tests/unit/test_github_app_auth.py.
     github_app_enabled: bool = False
+    # ── The App for each organization (WS-MCP SW-53, agent_coordination.md) ─
+    #
+    # A comma list of organization ids, or `*` for each one. The master
+    # `github_app_enabled` comes first: off means off for every org. With the
+    # master on, an org that the list does not name is off. An EMPTY list
+    # turns every org off (fail closed). Off for an org: a webhook delivery
+    # for its installation answers 202 and writes nothing, the connect routes
+    # answer 404, and the reconcile poll skips it. The one reader is
+    # `gateway.connections.github_app.github_app_org_allowed`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_github_webhook_r8.py.
+    github_app_orgs: str = ""
     github_app_slug: str = ""                 # the App's URL name, e.g. "metorite"
     github_app_client_id: str = ""            # the JWT `iss`, and the OAuth client id
     github_app_client_secret: str = ""        # the OAuth client secret of the App
@@ -2125,6 +2200,16 @@ class Settings(BaseSettings):
     # Only the edge reads it. `acb_auth.agent_oauth.mcp_sessions_enabled` is
     # the one reader. 🔴 A flip on a box is gate `enforcement-flip`.
     agent_mcp_sessions_enabled: bool = False
+    # EA-19b (external_agent_access.md §10.9, D-EA-5): box tokens, the one
+    # access token of a headless agent box, with no refresh token. Default
+    # OFF. While it is false, the edge bearer check and the connection read
+    # of branch 0 refuse a box connection, so a box token gets 401. It is a
+    # pause and not a kill: `/oauth/revoke` and the revoke routes still work,
+    # and a flip back to on revives each box token that no one revoked. Both
+    # units read it, so both need the same value, and a change needs a
+    # restart of each. `acb_auth.agent_oauth.box_tokens_enabled` is the one
+    # reader. 🔴 A flip on a box is gate `enforcement-flip`.
+    agent_box_tokens_enabled: bool = False
     # SW-10a (spec §12.6): the sweep of stranded agent runs. Default OFF.
     # While it is false, the gateway starts no sweep task, so no fingerprint
     # and no recovery record exist, and no member gets a nudge. Only the

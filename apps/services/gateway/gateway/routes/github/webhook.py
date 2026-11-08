@@ -22,6 +22,9 @@ signature.
 4. **The installation.** ``installation.id`` goes to the SECURITY DEFINER
    ``github_installation_org`` (migration 282). No org is 202, and nothing is
    written. The org comes from the database, never from the body.
+   **4b. The org switch (SW-53).** An org that ``GITHUB_APP_ORGS`` does not
+   name is 202, and nothing is written
+   (``github_app.github_app_org_allowed``).
 5. **The tenant.** The org is bound (``bind_tenant`` and the Redis
    ``organization_scope``), and every write runs in ``tenant_session(org)``.
 6. **The delivery key.** ``SET key("github", "delivery", <guid>) NX EX
@@ -427,6 +430,12 @@ async def receive_github_webhook(request: Request) -> JSONResponse:
     if org is None or installation_id is None:
         _log.info("github.webhook.unknown_installation", delivery=delivery,
                   github_event=event)
+        return _answer(202, {"ignored": True})
+    # 4b. SW-53: the org of the installation must be on GITHUB_APP_ORGS. The
+    # org is the lookup's, never the body's. An org off the list writes
+    # NOTHING: no tenant bind, no delivery key, no handler.
+    if not github_app.github_app_org_allowed(org):
+        _log.info("github.webhook.org_off", delivery=delivery, github_event=event)
         return _answer(202, {"ignored": True})
     # 5. The tenant: every write after this point is bound (R5).
     token = bind_tenant(org)

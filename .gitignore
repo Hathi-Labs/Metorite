@@ -9,6 +9,8 @@ build/
 # Re-include Next.js app route directories named "build" inside src/app
 !workbench/control_plane/src/app/build/
 !workbench/control_plane/src/app/build/**
+!workbench/control_plane/src/app/studio/build/
+!workbench/control_plane/src/app/studio/build/**
 # Re-include the App Workshop's platform-owned T2 build script (not a build
 # artifact — versioned source the app-builder agent shells out to)
 !apps/agents/agent-app-builder/build/

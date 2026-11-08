@@ -103,8 +103,9 @@
  * WS-27bd recorded for the email `ContextMenu`. Do not add a sixth consumer.
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import { Dialog } from "@base-ui/react/dialog";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -364,6 +365,19 @@ export default function Modal({
       setOpener(active instanceof HTMLElement && active !== document.body ? active : null);
     }
   }
+
+  /**
+   * The phone's bottom bar counts as an outside press (MOB-9, task 2002).
+   *
+   * The bar paints above every overlay, and the scrim ends at its top edge. A
+   * tap on a tab is then a press outside the dialog, but the substrate does
+   * not dismiss on it: it treats the bar, inside the app root that it marked
+   * inert, as part of the page behind the scrim. Measured at 390 px: the tab
+   * opened its sheet and the dialog stayed under it. So a click on the bar
+   * closes the dialog, and the tab then does its own job. Fence:
+   * `e2e/phone-bar-always.spec.ts`.
+   */
+  useCloseOnBarTap(onClose, open);
 
   /** The order documented on `finalFocus`. Runs in Base UI's close cleanup. */
   const returnFocus = () => {

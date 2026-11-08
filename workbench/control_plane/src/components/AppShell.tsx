@@ -48,12 +48,13 @@ import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 import { ActivityControl, ActivityHost } from "@/lib/shell/ActivityControl";
 import { shellDockOn } from "@/lib/shell/dockFlag";
+import { useInstallNav } from "@/lib/shell/packageManifest";
 import { ShellBell, ShellBellHost } from "@/lib/shell/ShellBell";
 import { AgentPill, RunSignalsHost } from "@/lib/shell/RunSignals";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { AssistantWorkArea } from "@/lib/shell/ChatBar";
 import { ChatNudge, useChatFirstLanding } from "@/lib/shell/ChatNudge";
-import { openAssistant } from "@/lib/shell/assistant";
+import { closeAssistant, openAssistant, useAssistant } from "@/lib/shell/assistant";
 // D99: the one assistant, loaded on demand, so a shell with the flag off
 // never carries the chat in its bundle.
 const AssistantDock = dynamic(() => import("@/lib/shell/AssistantDock"), { ssr: false });
@@ -74,7 +75,7 @@ import {
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
-import { shouldPollWorkspace } from "@/lib/access";
+import { canUseFeature, hasCapability, shouldPollWorkspace } from "@/lib/access";
 import { useSaveZone } from "@/lib/shell/saveZone";
 import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
@@ -88,8 +89,9 @@ import { SubtaskPromptHost } from "@/app/tasks/components/SubtaskPromptHost";
 // in-progress meeting recording follows the user across every app (spec §5.2).
 import { LiveDock } from "@/app/notes/components/LiveDock";
 import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
-import { myWorkEnabled } from "@/app/projects/lib/myWorkFlag";
-import { projectsPhoneTabs } from "@/app/projects/lib/phoneTabs";
+import { sendBarTap } from "@/lib/phoneBarTap";
+import { hrefSelected, phoneBarFor, resolvePhoneTabs } from "@/lib/shell/phoneBar";
+import { PHONE_BAR_EVENT, currentPhoneBarReport, type PhoneBarReport } from "@/lib/shell/phoneBarEvent";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
 import { LAYER_CLASS } from "@/lib/layers";
 // ---------------------------------------------------------------------------
@@ -97,17 +99,23 @@ import { LAYER_CLASS } from "@/lib/layers";
 // drawer without AppShell needing to know about sessions or filters.
 // ---------------------------------------------------------------------------
 
+/** What the open drawer shows: the shell's Menu, or a page's own sheet. */
+type DrawerKind = "menu" | "sheet";
+
 type MobileDrawerCtx = {
   /** True when the drawer is currently open. */
   isOpen: boolean;
+  /** What the open drawer shows. A page's `open(content)` is a `sheet`. */
+  shows: DrawerKind;
   /** Open the drawer with the given React content. */
-  open: (content: ReactNode) => void;
+  open: (content: ReactNode, kind?: DrawerKind) => void;
   /** Close the drawer. */
   close: () => void;
 };
 
 const MobileDrawerCtx = createContext<MobileDrawerCtx>({
   isOpen: false,
+  shows: "sheet",
   open: () => {},
   close: () => {},
 });
@@ -136,6 +144,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { isMobile, isNarrow, forceDesktop, toggleView } = useViewMode();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerContent, setDrawerContent] = useState<ReactNode>(null);
+  const [drawerKind, setDrawerKind] = useState<DrawerKind>("sheet");
   const pathname = usePathname();
   const { access, loading: accessLoading } = useAccess();
 
@@ -199,8 +208,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // D99: the chat bar and the one assistant, behind their own flag.
   const [chatOn] = useState(() => shellChatOn());
 
-  const openDrawer = useCallback((content: ReactNode) => {
+  const openDrawer = useCallback((content: ReactNode, kind: DrawerKind = "sheet") => {
     setDrawerContent(content);
+    setDrawerKind(kind);
     setDrawerOpen(true);
   }, []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
@@ -360,8 +370,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // ── Mobile layout ────────────────────────────────────────────────────────
   return (
     <MobileDrawerCtx.Provider
-      value={{ isOpen: drawerOpen, open: openDrawer, close: closeDrawer }}
+      value={{ isOpen: drawerOpen, shows: drawerKind, open: openDrawer, close: closeDrawer }}
     >
+      <PhoneNavFlag />
       {/* No top app bar on mobile — every screen is reachable from the bottom
           nav, so pages get the full viewport. pt-safe on the shell keeps
           content out of the notch/status bar. */}
@@ -397,8 +408,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             badge carries the pill's count. */}
         {chatOn ? null : <AgentPill />}
 
-        {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
-        <div className={`fixed bottom-0 inset-x-0 ${LAYER_CLASS.bottomNav} border-t border-border bg-card/90 backdrop-blur pb-safe glass:border-t-0 glass:glass-chrome glass:rounded-t-2xl`}>
+        {/* Bottom navigation bar — fixed at viewport bottom, never scrolls.
+            MOB-9: it is `--phone-bar-h` tall (3.5rem plus its foot), and it paints above every
+            overlay (`LAYER_CLASS.bottomNav`). `globals.css` ends each full-height fixed layer at
+            its top edge while `data-phone-nav` is on <html>.
+            The foot (`--phone-bar-foot`) is the home-indicator inset and never less than 0.75rem,
+            so the labels keep clear of a rounded iPhone corner (owner, 2026-11-07).
+            The top edge is SQUARE and keeps its hairline, in the glass look too: a sheet ends on
+            that edge, and round corners with no line left two gaps where the sheet seemed to run
+            on behind the bar (owner, 2026-11-07, on the Calendar Schedule sheet). Fence:
+            `layers.test.ts`. */}
+        <div data-phone-nav-bar="" className={`fixed bottom-0 inset-x-0 box-border h-[var(--phone-bar-h)] ${LAYER_CLASS.bottomNav} border-t border-border bg-card/90 backdrop-blur pb-[var(--phone-bar-foot)] glass:glass-chrome`}>
           {/* CF-2: one nudge above the Ask tab, for a member who never wrote
               to the assistant. Behind the chat-first flag. */}
           {chatOn ? <ChatNudge placement="tab" /> : null}
@@ -414,10 +434,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <RecordingDock />
         {/* Server-side "live now" presence (bot calls / other devices). */}
         <LiveDock />
-        {/* D99: the one assistant, as a full-screen sheet over the nav. */}
+        {/* D99: the one assistant, as a full-height sheet that ends at the nav's top edge (MOB-9). */}
         {chatOn ? <AssistantDock phone /> : null}
 
-        {/* Unified drawer (slide-up panel for bottom-nav tab content) */}
+        {/* Unified drawer (slide-up panel for bottom-nav tab content). It ends at the bar's top
+            edge (MOB-9), so every tab stays in reach. */}
         {drawerOpen && (
           <div className="fixed inset-0 z-[70]">
             <div
@@ -461,7 +482,19 @@ function MobileBottomNavInner({
   pathname: string | null;
   toggleView: () => void;
 }) {
-  const { isOpen, open, close } = useMobileDrawer();
+  const { isOpen, shows, open, close } = useMobileDrawer();
+  const menuOpen = isOpen && shows === "menu";
+  // MOB-9: the assistant's sheet is open when it is open and not the strip.
+  const assistantSt = useAssistant();
+  const sheetOpen = assistantSt.open && assistantSt.mode !== "peek";
+  // The tab whose tap opened the sheet that shows now, for the second tap.
+  // `pendingTab` holds a tab for a moment after its tap. The drawer that
+  // opens in that moment is that tab's.
+  const openedBy = useRef<string | null>(null);
+  const pendingTab = useRef<string | null>(null);
+  useEffect(() => {
+    openedBy.current = isOpen ? pendingTab.current : null;
+  }, [isOpen]);
   // Same access filter as the desktop Sidebar — the two navs must agree, or a
   // pane hidden on desktop reappears in the phone drawer. Same unresolved rule
   // too: `null` yields nothing and the skeleton below holds the space.
@@ -490,9 +523,12 @@ function MobileBottomNavInner({
   // The member's stars (owner, 2026-10-11), the same model as the desktop
   // sidebar: each category lists only the apps they starred.
   const shell = useShellPrefs();
-  const drawerSections = shellNav
-    ? shellSidebar(navSections, shell.loading ? undefined : shell.layout)
-    : navSections;
+  // PKG-8a: the panes of the installs join "Apps" here too, through the hook that
+  // the desktop sidebar calls, so the phone shows the same installs.
+  const drawerSections = useInstallNav(
+    shellNav ? shellSidebar(navSections, shell.loading ? undefined : shell.layout) : navSections,
+    access.features,
+  );
   // The skeleton holds the place while the first layout read is out, as on
   // the desktop sidebar (`useShellPending`).
   const shellPending = useShellPending(shellNav && shell.loading);
@@ -689,60 +725,44 @@ function MobileBottomNavInner({
     </>
   );
 
-  const isChatPage = pathname?.startsWith("/chat") ?? false;
   const tabBadge = runBadge(activeCount, needsTotal, unreadTotal);
-  const isEmailPage = pathname?.startsWith("/email") ?? false;
-  const isTasksPage = pathname?.startsWith("/tasks") ?? false;
-  // Notes actions live on the library page; the meeting/session sub-pages have
-  // their own in-view controls, so scope the context tabs to the list.
-  const isNotesPage = pathname === "/notes";
-  // WhatsApp: "Sections" (the app sub-nav) applies across every /whatsapp page;
-  // "Triage" (the stream filter) is inbox-only. Both open bottom drawers.
-  const isWhatsAppPage = pathname?.startsWith("/whatsapp") ?? false;
-  const isWhatsAppInbox = pathname === "/whatsapp";
-  // App Workshop editor: chat and the preview/code/tests pane are full-screen
-  // alternatives on mobile (desktop shows both side by side) — the page owns
-  // the "workshop-*" cc-mobile-nav detail values.
-  const isAppWorkshopEditPage =
-    (pathname?.startsWith("/build/apps/") && pathname?.endsWith("/edit")) ?? false;
-  // Projects: three things the desktop layout owns have no home on a phone —
-  // the project tree (a 240px rail), the five view modes (a toolbar row) and
-  // ⌘K search (a keyboard). Each becomes a tab here; the page turns the first
-  // two into drawer sheets and the third into its own overlay. Notifications
-  // stay in the page's own title row: the bell is self-anchored and has no
-  // external open control, so a tab could not raise it.
-  const isProjectsPage = pathname?.startsWith("/projects") ?? false;
-  const projectsTabs = projectsPhoneTabs(myWorkEnabled());
-  // CRM (CRM-U10): the page names the lists of the bar and the one on screen,
-  // because it knows the mode, the source's labels and the rows Zoho turned
-  // off. It emits `cc-crm-nav`, and `null` when it unmounts.
-  const isCrmPage = pathname?.startsWith("/crm") ?? false;
+  // The bar of this app (MOB-12): the registry names the tabs by the path
+  // (`lib/shell/phoneBar.ts`), and the page tells the shell, in ONE event,
+  // which tab is selected, which tabs to hide and which counts to draw.
+  const bar = phoneBarFor(pathname);
+  const [report, setReport] = useState<PhoneBarReport | null>(null);
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- a page that painted first left its report in the store */
+    setReport(currentPhoneBarReport());
+    /* eslint-enable react-hooks/set-state-in-effect */
+    const h = (e: Event) => setReport((e as CustomEvent<PhoneBarReport | null>).detail ?? null);
+    window.addEventListener(PHONE_BAR_EVENT, h);
+    return () => window.removeEventListener(PHONE_BAR_EVENT, h);
+  }, []);
+  // The member's access gates a tab. While access resolves, a gated tab waits,
+  // so the bar does not draw a tab and then take it back.
+  const barTabs = resolvePhoneTabs(bar, pathname ?? "", {
+    ask: chatOn,
+    hide: report?.hide,
+    allowed: (t) =>
+      (!t.feature || (!accessLoading && canUseFeature(access, t.feature))) &&
+      (!t.capability || (!accessLoading && hasCapability(access, t.capability))),
+  });
+  const barDefault = bar && "tabs" in bar.entry ? bar.entry.defaultActive : undefined;
+  const selectedTab = report?.active ?? barDefault ?? null;
+  // On a page with a Chats tab, that tab carries the run badge. Elsewhere the
+  // Menu tab does (when the Ask tab is absent).
+  const chatsTab = barTabs.some((t) => t.runBadge);
+  // CRM (CRM-U10): the one dynamic bar. The page names the lists of the bar
+  // and the one on screen, because it knows the mode, the source's labels and
+  // the rows Zoho turned off. It emits `cc-crm-nav`, and `null` when it
+  // unmounts.
+  const hasDynamicBar = !!bar && "dynamic" in bar.entry;
   const [crmNav, setCrmNav] = useState<PhoneNav | null>(null);
   useEffect(() => {
     const h = (e: Event) => setCrmNav((e as CustomEvent<PhoneNav | null>).detail ?? null);
     window.addEventListener("cc-crm-nav", h);
     return () => window.removeEventListener("cc-crm-nav", h);
-  }, []);
-
-  // Tasks: the bottom bar reflects which My Tasks section you're in. The page emits
-  // `cc-tasks-section` whenever the active view changes.
-  const [tasksSection, setTasksSection] = useState("inbox");
-  useEffect(() => {
-    const h = (e: Event) =>
-      setTasksSection((e as CustomEvent<string>).detail || "inbox");
-    window.addEventListener("cc-tasks-section", h);
-    return () => window.removeEventListener("cc-tasks-section", h);
-  }, []);
-
-  // Email: with no mailbox the page shows only "Connect your email", so the
-  // Inbox / Automation / AI Chat tabs would open empty sheets. The page emits
-  // `cc-email-empty` (true while the empty state shows, false otherwise and on
-  // unmount), and the tabs hide while it is true (WS-17 EM-T3b).
-  const [emailEmpty, setEmailEmpty] = useState(false);
-  useEffect(() => {
-    const h = (e: Event) => setEmailEmpty((e as CustomEvent<boolean>).detail === true);
-    window.addEventListener("cc-email-empty", h);
-    return () => window.removeEventListener("cc-email-empty", h);
   }, []);
 
   // WS-OB GD-4: the guide opens and closes the Menu drawer, which holds the
@@ -752,112 +772,95 @@ function MobileBottomNavInner({
   menuRef.current = menuContent;
   useEffect(() => {
     const h = (e: Event) => {
-      if ((e as CustomEvent<string>).detail === "open") open(menuRef.current);
+      if ((e as CustomEvent<string>).detail === "open") open(menuRef.current, "menu");
       else close();
     };
     window.addEventListener(GUIDE_MENU_EVENT, h);
     return () => window.removeEventListener(GUIDE_MENU_EVENT, h);
   }, [open, close]);
 
+  // MOB-9 (task 2002): a tap on a bar tab first closes what is open, then
+  // does its job. The assistant's sheet always closes. The drawer closes too,
+  // and the event goes one tick later, so the page sees the closed drawer
+  // before it answers. The exception is a second tap on the tab that opened
+  // the sheet that shows: that tap closes it and sends nothing.
   const dispatchNav = (detail: string) => {
-    window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail }));
+    // Every overlay that is not the drawer or the assistant gives way first.
+    sendBarTap(detail);
+    if (sheetOpen) closeAssistant();
+    if (isOpen && shows === "sheet" && openedBy.current === detail) {
+      close();
+      return;
+    }
+    pendingTab.current = detail;
+    window.setTimeout(() => {
+      if (pendingTab.current === detail) pendingTab.current = null;
+    }, 600);
+    const send = () => window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail }));
+    if (isOpen) {
+      close();
+      window.setTimeout(send, 0);
+    } else {
+      send();
+    }
+  };
+
+  // A link tab: the same first step as a tab with an event, then the route.
+  const goLink = (id: string) => {
+    sendBarTap(id);
+    pendingTab.current = null;
+    if (sheetOpen) closeAssistant();
+    if (isOpen) close();
   };
 
   return (
     <>
-    <nav className="flex items-stretch justify-around gap-0.5 py-1 px-1">
+    <nav className="flex h-full items-stretch justify-around gap-0.5 px-2 py-1">
         <button
-          onClick={() => { open(menuContent); }}
-          className={`relative flex flex-1 min-w-0 flex-col items-center gap-0.5 px-1 py-1 rounded-lg transition-colors ${
-            isOpen ? "text-primary" : "text-muted-foreground hover:text-foreground"
-          }`}
+          onClick={() => {
+            // A second tap on Menu closes it. A page's sheet gives way to the Menu.
+            sendBarTap("menu");
+            pendingTab.current = null;
+            if (sheetOpen) closeAssistant();
+            if (menuOpen) close();
+            else open(menuContent, "menu");
+          }}
+          aria-pressed={menuOpen}
+          className={`relative ${BAR_TAB}`}
         >
-          <span className="relative">
-            <AppIcon name="Menu" size={20} />
-            {!isChatPage && !chatOn && tabBadge && (
+          <BarIcon look={menuOpen ? "selected" : "idle"}>
+            <AppIcon name="Menu" size={20} strokeWidth={menuOpen ? 2.4 : 2} />
+            {!chatsTab && !chatOn && tabBadge && (
               <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
             )}
-          </span>
-          <span className="text-[10px] font-medium leading-none">Menu</span>
+          </BarIcon>
+          <span className={`pb-0.5 text-[10px] leading-none ${BAR_LABEL[menuOpen ? "selected" : "idle"]}`}>Menu</span>
         </button>
-        {isEmailPage && !emailEmpty && (
-          <>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-accounts")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="Mail" size={20} />
-              <span className="text-[10px] font-medium leading-none">Inbox</span>
-            </Button>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-automation")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="Zap" size={20} />
-              <span className="text-[10px] font-medium leading-none">Automation</span>
-            </Button>
-            {!chatOn && (
-              <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("email-ai")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-                <AppIcon name="MessageCircle" size={20} />
-                <span className="text-[10px] font-medium leading-none">AI Chat</span>
-              </Button>
-            )}
-          </>
-        )}
-        {isChatPage && (
-          <>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("chats")} className="relative flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <span className="relative">
-                <AppIcon name="MessageCircle" size={20} />
-                {tabBadge && (
-                  <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
-                )}
-              </span>
-              <span className="text-[10px] font-medium leading-none">Chats</span>
-            </Button>
-            <Button variant="text" size="none" layout="flex items-center" onClick={() => dispatchNav("files")} className="flex-1 min-w-0 flex-col gap-0.5 px-1 py-1">
-              <AppIcon name="FolderOpen" size={20} />
-              <span className="text-[10px] font-medium leading-none">Files</span>
-            </Button>
-          </>
-        )}
-        {isTasksPage && (
-          <>
+        {barTabs.map((tab) => {
+          // Menu and Ask each draw their own pill while open. A place tab gives
+          // its pill up then, so two pills never show (MOB-12).
+          const selected =
+            tab.kind === "place" &&
+            !menuOpen &&
+            !sheetOpen &&
+            (hrefSelected(tab, pathname) || selectedTab === tab.id);
+          const count = report?.counts?.[tab.id] ?? 0;
+          return (
             <TaskTab
-              active={tasksSection === "inbox"}
-              onClick={() => dispatchNav("tasks-inbox")}
-              icon={themedIcon("Inbox")}
-              label="Inbox"
+              key={tab.id}
+              href={tab.href}
+              active={selected}
+              onClick={tab.href ? () => goLink(tab.id) : () => dispatchNav(tab.event ?? tab.id)}
+              icon={themedIcon(tab.icon)}
+              label={tab.label}
+              accent={tab.accent}
+              badge={count > 0 && tab.countLabel ? count : null}
+              badgeLabel={tab.countLabel ? `${count} ${tab.countLabel}` : undefined}
+              runBadge={tab.runBadge ? tabBadge : null}
             />
-            <TaskTab
-              active={tasksSection !== "inbox"}
-              onClick={() => dispatchNav("tasks-lists")}
-              icon={themedIcon("ListChecks")}
-              label="Lists"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("tasks-capture")}
-              icon={themedIcon("Plus")}
-              label="Capture"
-              accent
-            />
-            {!chatOn && (
-              <TaskTab
-                onClick={() => dispatchNav("tasks-assistant")}
-                icon={themedIcon("Sparkles")}
-                label="Assistant"
-              />
-            )}
-          </>
-        )}
-        {isProjectsPage && (
-          <>
-            {projectsTabs.map((tab) => (
-              <TaskTab
-                key={tab.event}
-                onClick={() => dispatchNav(tab.event)}
-                icon={themedIcon(tab.icon)}
-                label={tab.label}
-                accent={tab.accent}
-              />
-            ))}
-          </>
-        )}
-        {isCrmPage && crmNav && (
+          );
+        })}
+        {hasDynamicBar && crmNav && (
           <>
             {crmNav.tabs.map((tab) => (
               <TaskTab
@@ -877,70 +880,6 @@ function MobileBottomNavInner({
             />
           </>
         )}
-        {isNotesPage && (
-          <>
-            <TaskTab
-              onClick={() => dispatchNav("notes-record")}
-              icon={themedIcon("Mic")}
-              label="Record"
-              accent
-            />
-            <TaskTab
-              onClick={() => dispatchNav("notes-join")}
-              icon={themedIcon("Video")}
-              label="Join call"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("notes-upload")}
-              icon={themedIcon("Upload")}
-              label="Upload"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("notes-glossary")}
-              icon={themedIcon("BookMarked")}
-              label="Glossary"
-            />
-          </>
-        )}
-        {isWhatsAppInbox && (
-          <TaskTab
-            onClick={() => dispatchNav("wa-triage")}
-            icon={themedIcon("Filter")}
-            label="Triage"
-          />
-        )}
-        {isWhatsAppPage && (
-          <TaskTab
-            onClick={() => dispatchNav("wa-sections")}
-            icon={themedIcon("LayoutGrid")}
-            label="Sections"
-          />
-        )}
-        {isAppWorkshopEditPage && (
-          <>
-            <TaskTab
-              onClick={() => dispatchNav("workshop-chat")}
-              icon={themedIcon("Sparkles")}
-              label="Chat"
-              accent
-            />
-            <TaskTab
-              onClick={() => dispatchNav("workshop-preview")}
-              icon={themedIcon("Play")}
-              label="Preview"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("workshop-code")}
-              icon={themedIcon("FileCode")}
-              label="Code"
-            />
-            <TaskTab
-              onClick={() => dispatchNav("workshop-tests")}
-              icon={themedIcon("FlaskConical")}
-              label="Tests"
-            />
-          </>
-        )}
         {/* D99 on the phone: the one assistant is a tab of its own, at the
             right end of every page's bar, so the thumb learns one place.
             It opens the assistant as a full-screen sheet with the keyboard
@@ -952,21 +891,31 @@ function MobileBottomNavInner({
           <button
             type="button"
             onClick={() => {
+              // A second tap on Ask closes the sheet (MOB-9).
+              sendBarTap("ask");
+              pendingTab.current = null;
+              if (sheetOpen) {
+                closeAssistant();
+                return;
+              }
               close();
               openAssistant({ mode: "full" });
             }}
             aria-label={tabBadge ? `Ask Metorite, ${tabBadge.label}` : "Ask Metorite"}
+            aria-pressed={sheetOpen}
             data-ask-tab=""
             data-guide="home.ask"
-            className="relative flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-primary transition-colors"
+            className={`relative ${BAR_TAB}`}
           >
-            <span className="relative">
-              <AppIcon name="Sparkles" size={20} strokeWidth={2.4} />
+            {/* Ask keeps the brand's sparkle in the primary colour, idle or
+                open, so the thumb finds it. Its pill shows while it is open. */}
+            <BarIcon look={sheetOpen ? "selected" : "idle"}>
+              <AppIcon name="Sparkles" size={20} strokeWidth={2.4} className="text-primary" />
               {tabBadge && (
                 <NavBadge count={tabBadge.count} tone={tabBadge.tone} label={tabBadge.label} placement="tab" />
               )}
-            </span>
-            <span className="text-[10px] font-medium leading-none">Ask</span>
+            </BarIcon>
+            <span className={`pb-0.5 text-[10px] leading-none ${BAR_LABEL[sheetOpen ? "selected" : "idle"]}`}>Ask</span>
           </button>
         )}
     </nav>
@@ -983,41 +932,113 @@ function MobileBottomNavInner({
   );
 }
 
+/**
+ * MOB-9: the phone layout is on screen. `data-phone-nav` on <html> turns on
+ * the rule in `globals.css` that ends every full-height fixed layer at the
+ * bar's top edge. It goes with the layout: the member who switches to the
+ * desktop view, or a route with no chrome, gets no attribute.
+ */
+function PhoneNavFlag() {
+  useEffect(() => {
+    const root = document.documentElement;
+    root.setAttribute("data-phone-nav", "");
+    return () => root.removeAttribute("data-phone-nav");
+  }, []);
+  return null;
+}
+
+/**
+ * The one look of a bar tab (MOB-12, owner 2026-11-07: the bar must make it
+ * "as obvious as possible" how to use the app).
+ *
+ * - `selected`: a place that shows now. Its icon sits in a tinted pill.
+ * - `accent`: the app's one "new". Its icon sits in a filled circle.
+ * - `idle`: every other tab, bare and muted.
+ *
+ * Before this, a selected place, the accent and Ask all drew in the same
+ * blue, so on Studio and Organisation three tabs looked chosen at once.
+ * Menu and Ask take the same wells. Fence: `phoneBar.test.ts`.
+ */
+type BarLook = "idle" | "selected" | "accent";
+
+const BAR_TAB =
+  "flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-muted-foreground transition-colors hover:text-foreground";
+
+const BAR_LABEL: Record<BarLook, string> = {
+  idle: "font-medium",
+  selected: "font-semibold text-foreground",
+  accent: "font-medium text-foreground",
+};
+
+function BarIcon({ look, children }: { look: BarLook; children: ReactNode }) {
+  return (
+    <span
+      data-bar-look={look}
+      className={`flex h-7 w-12 items-center justify-center rounded-full transition-colors ${
+        look === "selected" ? "bg-primary/15 text-primary" : ""
+      }`}
+    >
+      {look === "accent" ? (
+        <span className="relative flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground">
+          {children}
+        </span>
+      ) : (
+        <span className="relative flex items-center justify-center">{children}</span>
+      )}
+    </span>
+  );
+}
+
 function TaskTab({
   active,
   onClick,
+  href,
   icon: Icon,
   label,
   accent,
   badge,
+  badgeLabel,
+  runBadge: run,
 }: {
   active?: boolean;
   onClick: () => void;
+  /** A route: the tab is a link, and `onClick` is its first step. */
+  href?: string;
   icon: ThemedIcon;
   label: string;
   accent?: boolean;
   /** A count that waits for the member, drawn on the icon. */
   badge?: number | null;
+  /** The words of that count, for a screen reader. */
+  badgeLabel?: string;
+  /** The run badge (`runBadge`): the Chats tab carries it. */
+  runBadge?: ReturnType<typeof runBadge>;
 }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-current={active ? "page" : undefined}
-      className={`flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 transition-colors ${
-        accent
-          ? "text-primary"
-          : active
-            ? "text-primary"
-            : "text-muted-foreground hover:text-foreground"
-      }`}
-    >
-      <span className="relative">
-        <Icon size={20} strokeWidth={active || accent ? 2.4 : 2} />
+  const look: BarLook = accent ? "accent" : active ? "selected" : "idle";
+  const inner = (
+    <>
+      <BarIcon look={look}>
+        <Icon size={look === "accent" ? 16 : 20} strokeWidth={look === "idle" ? 2 : 2.4} />
         {badge ? (
-          <NavBadge count={badge} tone="info" label={`${badge} waiting`} placement="tab" />
+          <NavBadge count={badge} tone="info" label={badgeLabel ?? `${badge} waiting`} placement="tab" />
+        ) : run ? (
+          <NavBadge count={run.count} tone={run.tone} label={run.label} placement="tab" />
         ) : null}
-      </span>
-      <span className="text-[10px] font-medium leading-none">{label}</span>
+      </BarIcon>
+      <span className={`w-full truncate pb-0.5 text-center text-[10px] leading-none ${BAR_LABEL[look]}`}>{label}</span>
+    </>
+  );
+  const cls = BAR_TAB;
+  if (href) {
+    return (
+      <Link href={href} onClick={onClick} aria-current={active ? "page" : undefined} className={cls}>
+        {inner}
+      </Link>
+    );
+  }
+  return (
+    <button onClick={onClick} aria-current={active ? "page" : undefined} className={cls}>
+      {inner}
     </button>
   );
 }
