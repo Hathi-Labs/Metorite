@@ -482,7 +482,7 @@ A simple app uses Data and Views. A complex app adds the other branches of the s
 
 **The tabs** are Preview, Data, Views and Code. Preview draws each object as a Table, and as a Board when it has a select field to group by. The rows are SAMPLE rows from the `sampleRows` module, and a door refuses every write. The page says "Sample data. Nothing is saved."
 
-A toggle sets the frame to 390 px. Data, Views and Code are read only in G3a. The Code tab shows the draft JSON in the Monaco editor of the Workshop.
+A toggle sets the frame to 390 px. Data, Views and Code are read only in G3a and editable since G3c (below). The Code tab shows the draft JSON in the Monaco editor of the Workshop.
 
 **The Problems panel** shows errors and warnings with a count. No gateway route runs the validator on a draft. So G3a runs structural checks in the browser (`lib/studio/draftProblems.ts`). The panel says that the full check runs at a save and at a publish.
 
@@ -499,6 +499,26 @@ The page gives the facts only while the app exists. After a 404 it gives none, a
 "Build it" holds its brief in a one-shot holder keyed by the package id, then opens the IDE. The IDE sends the brief as an ask of the shell after the first draft loaded and the facts are published. This order stops a second package from being made.
 
 A rule of the `studio` pack tells Mira to edit the package that the facts name. The page reads the draft again every 5 s while it shows, and when a chat run ends. It redraws only when the draft changed. The app nav folds while the IDE is open, only when the member allows the auto fold. The page marks its fold in `sessionStorage`, so a reload keeps it. On leave it opens the nav again, except when the dock rule holds it folded.
+
+**Direct edits (G3c).** One bar above the tabs holds the mark "Unsaved changes", Save and Revert. The tabs draw the edit. The facts of the dock keep the stored draft.
+
+The Data tab adds, labels and deletes an object. It adds, labels, retypes and deletes a field. It changes the required flag and the options of a select field. It offers only the types that need no more than a label.
+
+The Views tab adds a Table or a Board, changes its title and its object, and deletes it. The Code tab edits the JSON. A text that does not parse is refused in the page, with its line.
+
+**One save.** Every save is `PUT /studio/packages/{id}/draft?based_on=<hash>`, the route of `studio_save` (`lib/studio/draftSave.ts`). The hash is the `manifest_hash` that the edit began from. A 409 says that Mira or another tab saved the draft. It says that nothing was saved and that the edit stays, and it offers Reload. A 422 puts each error in the Problems panel at its path.
+
+The poll never replaces an unsaved edit. It shows "A newer draft exists" instead. Leaving with an edit asks first (`useLeaveGuard`).
+
+After a save the page adopts the answer. So the facts carry the new hash, and the next save of Mira uses it. The route adds the record actions of each object, by the rule of `studio_save`. It names them in `record_actions`.
+
+**What a delete does.** A delete changes the draft only. It also removes what names the item. These are the actions and views of an object, the page cells of a view, and the name of a field in the views. A relation field that links to an object blocks the delete of that object.
+
+At publish, `sync_objects` refuses a published object or field that the manifest no longer holds. The answer is 409 `objects_out_of_sync` with "A published object cannot go yet". It refuses a change of type, required flag, options or label of a published field too. The live app and its records stay as they are. The dialog says this for a live item. For an item never published, it says that the item only leaves the draft.
+
+**Reuse of the Workshop (G3c).** The Monaco editor, its theme and its save key are now `components/CodeEditor.tsx`. The Workshop page uses it too. The mark of an unsaved buffer is `components/UnsavedMark.tsx`, in both. The leave guard is the one of the skill form.
+
+The Workshop checkpoints (`/api/apps/{slug}/checkpoints`) are git commits of files. They do not fit the manifest draft. G5 undo can reuse the 409 hash check and the `adopt` step of the draft watch.
 
 **Publish** is not in the IDE in G3a. Mira publishes after the member approves the plan card. A Publish button waits for G5.
 
@@ -969,7 +989,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **G1d** | **Chat reads packages.** `studio_package_list`, one package read (the outline, `based_on`, `live_version` and the object names, never manifest text past a cut) and a version list. It waits for the first UI call of a package route, so that its parity row is real | A member opens a package from a past chat and saves to it with a valid `based_on` | STD | AGENT-SAFE. After G1c |
 | **G3a** | 🔨 **BUILT, dark (2026-11-07, task 1188).** The Studio IDE shell (§6.3): the route `/studio/build`, the Explorer, the Preview, Data, Views and Code tabs, the Problems panel, the dock bound to the package, and "Build it" opening it. Decision of the owner, 2026-11-06 | `buildOutline.test.ts`, `sampleRows.test.ts`, `draftProblems.test.ts`, `startBuild.test.ts`, `draftWatch.test.ts` and `build/page.test.ts` pass. `seams.test.ts` and `nav.test.ts` pass. `uv run pytest tests/unit/test_studio_pack_page_facts.py -q` passes | STD | AGENT-SAFE |
 | **G3b** | The goal record of the build session (WEB-10, §11.1): a round cap and a block code | A build that reaches its round cap stops with a block code that the member can read | STD | AGENT-SAFE. After G3a |
-| **G3c** | Direct edits in the Data, Views and Code tabs, saved through the draft route (`PUT /studio/packages/{id}/draft`, with `based_on`) | A member edits a field in the Data tab and the draft changes. A stale `based_on` is refused and says what to do | STD | AGENT-SAFE. After G3a |
+| **G3c** | 🔨 **BUILT, dark (2026-11-07, task 2208).** Direct edits in the Data, Views and Code tabs, saved through the draft route (`PUT /studio/packages/{id}/draft`, with `based_on`). REUSE MAP: the Workshop Monaco editor, theme and save key are now `components/CodeEditor.tsx`, shared by the Workshop page and the IDE. The unsaved mark is `components/UnsavedMark.tsx`, shared too. The Studio `useLeaveGuard` guards the leave. The draft route adds the record actions of each object, as `studio_save` does | `draftEdit.test.ts`, `draftEditor.test.ts` and `build/page.test.ts` pass. `uv run pytest tests/unit/test_studio_package_routes.py -q -o timeout_method=thread` passes | STD | AGENT-SAFE |
 | **G4** | Preview on sample data, with a preview store and simulated sends | A preview write never reaches `app_data` of the live package. A send in preview leaves no message | HIGH | AGENT-SAFE |
 | **G5** | Edit by diff, with one-step undo. It lives in the Studio IDE (G3a): the diff shows in the dock, and Undo and Publish sit in the top bar of the IDE | Each change shows its diff before it applies | STD | AGENT-SAFE. After G3a |
 | **G6** | The build eval: 30 prompts from §2.1. The regression cases replay recorded builder turns on the WEB-12 harness, with no model and no network (§11.1). The live run is the quality gate only | The replay cases run in the unit suite at no cost. The eval reports the pass rate per shape. The owner sets the run cost before the live run | STD | **OWNER-GATE** for a live run over USD 0.50. The replay half waits on WEB-12 |
