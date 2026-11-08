@@ -213,9 +213,27 @@ job caddy "" caddy
 
 wait
 
+# CIV-22 (task 2288). A shard that failed ONLY on tests of box_known_env.txt (a
+# fault of this box, each with a reason and a task) counts as "expected". The
+# test still ran and its failure is in the log. Any other failure keeps the run
+# RED. GitHub's pr-check never reads the list.
+KNOWN_ENV=scripts/ci_pc/box_known_env.txt
+for i in $(seq 1 "$SHARDS"); do
+  # Only pytest exit code 1 ("tests failed") can be excused. 2 to 5 (interrupted, an
+  # internal error, a usage error, no test) are not a failure of a listed test.
+  if [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 1 ] && [ -f "junit/shard-$i.xml" ] \
+     && .venv/bin/python scripts/ci_pc/box_verdict.py shard "$KNOWN_ENV" "junit/shard-$i.xml" > "$RUN/shard-$i.expected" 2>/dev/null; then
+    echo "expected" > "$RUN/shard-$i.state"
+  else
+    rm -f "$RUN/shard-$i.expected"
+  fi
+done
+
 # The guard reads every shard's junit, so it runs after them.
 shards_ok=success
-for i in $(seq 1 "$SHARDS"); do [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 0 ] || shards_ok=failure; done
+for i in $(seq 1 "$SHARDS"); do
+  [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 0 ] || [ -f "$RUN/shard-$i.state" ] || shards_ok=failure
+done
 if [ -z "$SELECT_FILE" ]; then
   job unit-tests "" unit-tests --ctx "needs.test.result=$shards_ok" "${FULL_RUN[@]}"
   wait
@@ -249,13 +267,14 @@ cp -r junit "$RUN/junit" 2>/dev/null || true
 
 # ── Summary ───────────────────────────────────────────────────────────────
 ADVISORY=" secret-scan "   # continue-on-error in pr-check
-fail=0
+fail=0 expected=0 bad=()
 printf '\n%-18s %-8s %s\n' JOB RESULT SECONDS
 for f in "$RUN"/*.rc; do
   name="$(basename "$f" .rc)"; read -r rc secs < "$f"
   if [ "$rc" = 0 ]; then res=pass
+  elif [ -f "$RUN/$name.state" ]; then res=expected; expected=$(( expected + $(wc -l < "$RUN/$name.expected") ))
   elif [[ "$ADVISORY" == *" $name "* ]]; then res=warn
-  else res=FAIL; fail=1
+  else res=FAIL; fail=1; bad+=("$name")
   fi
   printf '%-18s %-8s %s\n' "$name" "$res" "$secs"
   if [ "$res" = FAIL ]; then
@@ -265,10 +284,18 @@ for f in "$RUN"/*.rc; do
     grep -hE " (FAILED|ERROR)( \[ *[0-9]+%\])?$|::error::|^ +[0-9]+ failed$" "$RUN/$name.log" 2>/dev/null \
       | grep -v RERUN | cut -c1-160 | head -4 | sed "s/^/    /"
   fi
+  if [ "$res" = expected ]; then
+    sed "s/^/    box-only failure (box_known_env.txt): /" "$RUN/$name.expected" | cut -c1-200
+  fi
   # Advisory steps inside a job (process fences) print ::warning:: and pass.
   grep -h "^::warning::" "$RUN/$name.log" 2>/dev/null | cut -c1-160 | head -2 | sed "s/^/    /"
 done
 echo
 echo "total $(( $(date +%s) - T0 ))s. Logs: $RUN"
-[ $fail = 0 ] && echo "local CI: PASS ($SHA)" || echo "local CI: FAIL ($SHA). Read the log of each FAIL job above."
+# CIV-22: one verdict line, also written to the run folder. lane_handover.sh reads
+# it: a hand-over needs a GREEN line for the full commit id of the PR head.
+mode=full; [ -n "$SELECT_FILE" ] && mode=selection
+verdict=GREEN; [ $fail = 0 ] || verdict=RED
+.venv/bin/python scripts/ci_pc/box_verdict.py line "$verdict" "$(git rev-parse HEAD)" "$mode" "$expected" "${bad[@]}" | tee "$RUN/verdict"
+[ $fail = 0 ] && echo "local CI: $verdict ($SHA), $expected expected box-only failure(s)" || echo "local CI: $verdict ($SHA). Read the log of each FAIL job above."
 exit $fail

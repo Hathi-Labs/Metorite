@@ -364,7 +364,7 @@ class TestTheToolRecords:
             text_ = tool.describe()["description"]
             for needed in ("this client wrote", "meta.via", "another member",
                            "another agent client", "Comment not found",
-                           "idempotency_key", tools.WRITE_LIMIT_LINE.strip()):
+                           "idempotency_key", tools.write_limit_line().strip()):
                 assert needed in text_, (tool.name, needed)
         assert "keeps no copy of the old text" in tools.UPDATE_COMMENT.description
         assert "cannot undo a delete" in tools.DELETE_COMMENT.description
