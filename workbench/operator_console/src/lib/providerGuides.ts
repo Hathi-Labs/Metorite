@@ -317,6 +317,25 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
     ],
     serves: ["decide"],
   },
+  // VOX-2 (2026-11-08). litellm 1.103.0 has no Sarvam transcription, so the
+  // Console calls Sarvam with its own handler (`stt_sarvam.py`,
+  // `native_sarvam`). The vendor-slug fence exempts this slug, and it reads
+  // the exemption from the handler table. VOX-4 (task 2264) owns the full card.
+  sarvam: {
+    label: "Sarvam",
+    description:
+      "Speech to text for Indian languages and English, Hinglish included. " +
+      "The Console calls Sarvam natively, and it takes WAV clips only.",
+    setupUrl: "https://indus.sarvam.ai/key-management",
+    docsUrl: "https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe",
+    steps: [
+      "Create an API key in the Sarvam dashboard.",
+      "Install it here with the provider id sarvam.",
+      "On Models, declare sarvam/saaras:v3/translit for Speech to text, with the verb native_sarvam and no streaming. The last part is the mode: translit, codemix, transcribe or translate.",
+      "Bind tier-stt to it on Tiers.",
+    ],
+    serves: ["transcribe"],
+  },
 };
 
 /** Vendors we can offer a guide for. Insertion order, which is roughly the

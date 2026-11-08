@@ -1091,6 +1091,19 @@ class Settings(BaseSettings):
     # tests/unit/test_attachment_ocr.py.
     attachment_ocr: bool = False
 
+    # ── Image analysis in the chat (WS-VOX VOX-3, projects_ai_chat.md §31) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On for an org, the chat tool `analyze_image` sends an image
+    # that a member attached to the model of `tier-vision` through the Console,
+    # and each call draws AI credits. Off, the tool answers one sentence and
+    # calls no model. The one reader is
+    # `acb_common.assistant_profile.image_analysis_for`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). ⚠️ The flip on production spends
+    # credits, so it is an owner step (§31.6 Q4). Fence:
+    # tests/unit/test_attachment_analyze_image.py.
+    image_analysis_orgs: str = ""
+
     # ── The member's corrections and limits in a chat (WS-67 OA-4) ──────────
     #
     # ON gives the orchestrator `keep_correction` and `drop_correction` and
@@ -1174,6 +1187,21 @@ class Settings(BaseSettings):
     # D4, slice WT-5). The flip also waits for WT-1b and WT-2 (§9.3 item 9).
     # Fence: tests/unit/test_continue_carry.py.
     chat_continue_orgs: str = ""
+
+    # ── Voice input in the chat (projects_ai_chat.md §31, VOX-1) ────────────
+    #
+    # `chat_voice_orgs` lists the organization ids whose chat composer shows the
+    # mic, or `*` for each one. Empty means off, and `/chat/transcribe` answers
+    # 404 for each caller. The one reader is
+    # `acb_common.chat_voice_flag.voice_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`).
+    #
+    # Each clip draws AI credits through the Console's `tier-stt` door, so a
+    # value other than empty on a box is an `enforcement-flip`. A real clip and
+    # its usage row must be proven first (§31.5 VOX-1, Done when 4).
+    # Fence: tests/unit/test_chat_transcribe.py.
+    chat_voice_orgs: str = ""
 
     # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
     #

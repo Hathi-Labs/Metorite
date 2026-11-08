@@ -1915,6 +1915,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # projects_ai_chat.md §31 VOX-1 — the chat's voice input, a clip to the
+    # Console's metered transcribe door. Shares /chat's prefix, in its own
+    # module, as the brief does. Dark behind CHAT_VOICE_ORGS.
+    from gateway.routes.chat_transcribe import router as _chat_transcribe_router
+
+    app.include_router(_chat_transcribe_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-66 RM-4 — a tap on a reminder link opens the chat with a first
     # message that code built (`calendar_events_reminders.md` §5.7). Shares
     # /chat's prefix, in its own module, as the brief does.

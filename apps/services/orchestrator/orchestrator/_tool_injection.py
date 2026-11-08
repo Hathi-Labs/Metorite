@@ -89,6 +89,12 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # and no shell tool, so D85 and the egress rule both keep it.
     # Fence: ``tests/unit/test_chat_upload_every_agent.py``.
     "read_attachment",
+    # An attached image to the model of `tier-vision` (WS-VOX VOX-3,
+    # projects_ai_chat.md §31). Each call draws credits, so it is dark behind
+    # IMAGE_ANALYSIS_ORGS, and it is NOT in `_FLOOR_KEEP`: the email assistant
+    # and the worker agent opt out. Fence:
+    # ``tests/unit/test_attachment_analyze_image.py``.
+    "analyze_image",
 })
 
 
@@ -1482,8 +1488,13 @@ def _build_injected_tools_addendum(
     effective_scope: frozenset[str] | None = None,
     own_risk: frozenset[tuple[str, bool, bool, bool]] = frozenset(),
     agent_name: str | None = None,
+    image_org_on: bool = False,
 ) -> str:
     """Return a system-prompt addendum describing the Metorite-injected tools.
+
+    ``image_org_on`` is a CACHE KEY only (WS-VOX VOX-3 fix round). The renderer
+    reads the run's org itself (``addendum._dark_tools``), so an unscoped
+    agent of a dark org and one of a lit org need two cache entries.
 
     Appended to every GitHub Copilot agent's system message at run time so the
     LLM knows the injected tools exist, when to use them, and what valid agent
@@ -1536,6 +1547,8 @@ def _build_injected_tools_addendum(
         effective_scope=effective_scope,
         registry_block=_registry_block_for(agent_name),
         risk_block=risk_summary_block(own=own_risk),
+        # The text depends on the cache key alone, never on a tenant read.
+        image_on=image_org_on,
     )
 
 
@@ -1970,6 +1983,26 @@ def _facts_withheld() -> frozenset[str]:
     return frozenset(off)
 
 
+def _image_withheld() -> frozenset[str]:
+    """``analyze_image`` when the run's org is not on ``IMAGE_ANALYSIS_ORGS``.
+
+    WS-VOX VOX-3 fix round. The tool costs about 250 schema tokens, and its
+    addendum section more, in each chat. A dark org pays nothing: the name
+    leaves the SCOPE and the final list, like :func:`_facts_withheld`. The
+    org is the run's own (:func:`_run_org_or_none`), never request input. The
+    answer is per org and not per thread, so the tool list stays the same from
+    turn to turn and the prompt cache holds. No org withholds it too.
+    Fence: ``tests/unit/test_attachment_analyze_image.py``.
+    """
+    try:
+        from acb_common.assistant_profile import image_analysis_for
+    except ImportError:
+        return frozenset({"analyze_image"})
+    if image_analysis_for(_run_org_or_none()):
+        return frozenset()
+    return frozenset({"analyze_image"})
+
+
 def _whatsapp_withheld() -> frozenset[str]:
     """The tools a WhatsApp run does not get, or nothing outside one (WAC-10a).
 
@@ -2212,9 +2245,11 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
     # Chat attachments (H-229) — the text of a file the member attached in
     # THIS chat, by pure parsing: no subprocess, no code. It is no shell
     # tool, so D85 does not withhold it (`_withheld_shell_tools`).
+    # `analyze_image` (WS-VOX VOX-3) sends an attached image to `tier-vision`
+    # through the Console, and decodes no pixel here.
     try:
-        from acb_skills.attachment_tools import read_attachment
-        _all_tools = [*_all_tools, read_attachment]
+        from acb_skills.attachment_tools import analyze_image, read_attachment
+        _all_tools = [*_all_tools, read_attachment, analyze_image]
     except ImportError:
         pass
 
@@ -2511,7 +2546,7 @@ def _inject_agent_tools(
     # WS-53 CRM-Q32 follow-up: `org_facts` (and, since CRM-Q32-8,
     # `crm_answer_question`) only for a run of an org on CRM_QUESTIONS_ORGS,
     # so no prompt names them for another org.
-    _facts_off = _facts_withheld()
+    _facts_off = _facts_withheld() | _image_withheld()
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
         withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld | _facts_off,
@@ -2716,6 +2751,7 @@ def _inject_agent_tools(
                         own_risk=_own_risk(list(agent._tools)),
                         # The registry block leaves out the agent itself.
                         agent_name=agent_name,
+                        image_org_on=not _image_withheld(),
                     )
                     opts = getattr(agent, "_default_options", None)
                     if isinstance(opts, dict):
@@ -3835,7 +3871,7 @@ def _pack_base_count(
     names -= gone  # `_add_crm_facts_block` drops an agent's own copy too
     withheld = (_withheld_shell_tools(agent_name, agent_config)
                 | _floor_opt_out(agent_name, agent_config)
-                | _whatsapp_withheld() | gone)
+                | _whatsapp_withheld() | _image_withheld() | gone)
     scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
     chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
     injected = set(chain) if scope is None else {name for name in chain if name in scope}
