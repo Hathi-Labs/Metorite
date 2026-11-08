@@ -149,6 +149,7 @@ import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFro
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
+import type { AskOutcome } from "@/lib/shell/assistant";
 import {
   composerControls,
   composerModelPlan,
@@ -368,10 +369,12 @@ interface AgentChatProps {
    * Words to SEND once, as the member's turn (D99: the shell's chat bar).
    * Unlike `pendingInput`, the member already pressed Enter in the bar. It
    * waits until the history has loaded, sends each `seq` once, and then
-   * calls `onAutoSendConsumed`.
+   * calls `onAutoSendConsumed` with `sent`, or with `kept` when the chat
+   * refused the send and the words wait in the composer. A steer that the
+   * server refuses later calls it again with `kept` (STU-B2c-2c).
    */
   autoSend?: { seq: number; text: string; typed?: boolean } | null;
-  onAutoSendConsumed?: (seq: number) => void;
+  onAutoSendConsumed?: (seq: number, outcome: AskOutcome) => void;
   /**
    * D99: the one assistant's name, "Metorite". The member talks to one
    * assistant and never picks an agent, so with this set the chat shows the
@@ -1861,7 +1864,9 @@ export default function AgentChat({
    * prompt call this with no mark (`lib/typedMark.test.ts`).
    */
   const submitText = useCallback(
-    (text: string, opts?: { typed?: boolean }): boolean => {
+    // `opts.onKept` (STU-B2c-2c): a steer that the server refuses later gives
+    // the words back to the box, and this tells the sender so.
+    (text: string, opts?: { typed?: boolean; onKept?: () => void }): boolean => {
       const trimmed = text.trim();
       // Guard ALL senders (suggestion pills, MCQ choices, HITL card submits,
       // the email "Fix" flow) — not just the textarea form — against sending
@@ -1881,6 +1886,7 @@ export default function AgentChat({
       }
       void (typed ? steerMessage(trimmed, { typed: true }) : steerMessage(trimmed)).then((out) => {
         if (out.kind === "refused") giveBack(trimmed, out.notice, typed);
+        if (out.kind === "refused") opts?.onKept?.();
       });
       return true;
     },
@@ -1901,11 +1907,16 @@ export default function AgentChat({
     // D-PZ-37: the Ask field is one box with the composer, so its typed
     // words carry the mark. A start pill of the field sends none.
     const askTyped = autoSend.typed === true;
-    if (!submitText(autoSend.text, askTyped ? { typed: true } : undefined)) {
+    // STU-B2c-2c: the sender learns what became of the words. A card says
+    // "Sent to the chat" only after a send, never while they wait in the box.
+    const seq = autoSend.seq;
+    const onKept = () => onAutoSendConsumed?.(seq, "kept");
+    const sent = submitText(autoSend.text, askTyped ? { typed: true, onKept } : { onKept });
+    if (!sent) {
       boxMarkRef.current = filled(boxMarkRef.current, askTyped);
       setInput((prev) => mergeCappedText(prev, autoSend.text));
     }
-    onAutoSendConsumed?.(autoSend.seq);
+    onAutoSendConsumed?.(seq, sent ? "sent" : "kept");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSend?.seq, loadingHistory]);
 

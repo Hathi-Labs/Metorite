@@ -2215,3 +2215,174 @@ def test_r8_as_a_key_that_is_no_field_opens_no_request_on_the_real_package_read(
         object="visit", keys="sight")
     assert _studio_runs(w) == runs and _door_posts(w) == []
     assert _ran(w, w.tpkg, "add") == []
+
+
+# ── at to av. The card in the chat of B2c-2c on the real routes ────────────
+#
+# Acceptance (spec row B2c-2c). The card in the chat reads its request
+# through ``GET /agent-access/requests/{id}`` and answers through
+# ``POST /agent-access/requests/{id}/decision``, as the member, with the BFF
+# in front. Its follow-up message names the request id, and Mira's next turn
+# sends the change again with it (the resend of B2c-2b). Here the routes run
+# as their handlers, with the org bound as the auth layer binds it.
+#
+# at. An ask, then the approval on the decision route, then the resend: the
+#     write runs ONCE. The read route gives the request as the card draws it:
+#     awaiting, then approved, then done. A second press with the same key
+#     gives the first answer. No tool of Mira calls the decision route.
+# au. An ask that the member declines on the decision route writes nothing,
+#     and the resend says so.
+# av. Org B, and Ben in org A, get 404 from the read route and from the
+#     decision route for the request of Ana in org A, also with Ana's email.
+#     The request stays as it was, and nothing is written.
+#
+# **The mutations (R7).** Each ran on 2026-11-08 on a committed tree, and was
+# restored with git. See the report of the slice for the tests that went red.
+
+
+def _as(org: str, fn: Callable[[], Awaitable[Any]]) -> Callable[[], Awaitable[Any]]:
+    """``fn`` with *org* bound, as the auth layer binds the org of a member."""
+    async def go() -> Any:
+        token = bind_tenant(org)
+        try:
+            return await fn()
+        finally:
+            release_tenant(token)
+    return go
+
+
+async def _read_route(org: str, email: str, rid: str) -> Any:
+    """The read route of the card, as *email* of *org*: the request, or the
+    status of a refusal."""
+    async def read() -> Any:
+        user = _user(org, email)
+        await agent_requests._require_access(user=user)
+        return await agent_requests.read_app_request(request_id=rid, user=user)
+    try:
+        return await _as(org, read)()
+    except HTTPException as exc:
+        return exc.status_code
+
+
+async def _decide_route(org: str, email: str, rid: str, decision: str, key: str) -> Any:
+    """The decision route of the card, as *email* of *org*."""
+    async def decide() -> Any:
+        user = _user(org, email)
+        await agent_requests._require_access(user=user)
+        return await agent_requests.decide_app_request(
+            payload=agent_requests.DecisionIn(decision=decision, idempotency_key=key),
+            request_id=rid, user=user)
+    try:
+        return await _as(org, decide)()
+    except HTTPException as exc:
+        return exc.status_code
+
+
+def test_r8_at_the_card_approves_on_the_real_routes_and_the_resend_runs_once(
+        tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    count = _record_count(w, w.tobj)
+    data = {**_DATA, "site": "Card site"}
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {"asked": await st.studio_record_create(w.tpkg, "visit", data=data)}
+        rid = got["asked"]["request_id"]
+        got["read"] = await _read_route(w.a, ANA, rid)
+        got["decided"] = await _decide_route(w.a, ANA, rid, "approve", "card-press-1")
+        got["again"] = await _decide_route(w.a, ANA, rid, "approve", "card-press-1")
+        got["read_after"] = await _read_route(w.a, ANA, rid)
+        got["after_decision"] = _record_count(w, w.tobj)
+        # The member's follow-up names the request id. Mira sends the change again.
+        got["ran"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        got["after_ran"] = _record_count(w, w.tobj)
+        got["read_done"] = await _read_route(w.a, ANA, rid)
+        got["second"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    asked = got["asked"]
+    assert (asked["ok"], asked["saved"], asked["status"], asked["state"]) == (
+        False, False, 202, "awaiting"), asked
+    rid = asked["request_id"]
+    # What the card draws: the server's frame and the stored call.
+    read = got["read"]
+    assert isinstance(read, dict), read
+    assert (read["request_id"], read["state"], read["source"], read["app"], read["class"]) == (
+        rid, "awaiting", "studio", "studio", "B")
+    assert (read["card"]["client"], read["card"]["title"]) == ("Studio", "Add a record to visit.")
+    assert read["call"]["body"] == {"data": data} and read["subject"] == w.tpkg
+    # The card's press: one decision, and the same key again gives the first answer.
+    assert (got["decided"]["decision"], got["decided"]["state"], got["decided"]["created"]) == (
+        "approve", "approved", True)
+    assert (got["again"]["state"], got["again"]["created"]) == ("approved", False)
+    assert got["read_after"]["state"] == "approved"
+    assert got["after_decision"] == count, "an approval runs nothing"
+    # The resend after the follow-up runs the stored change once.
+    assert (got["ran"]["ok"], got["ran"]["saved"]) == (True, True), got["ran"]
+    assert got["after_ran"] == count + 1
+    assert _data_of(w, got["ran"]["record_id"])["site"] == "Card site"
+    assert got["read_done"]["state"] == "done"
+    assert (got["second"]["saved"], got["second"]["code"]) == (False, "request_spent")
+    assert _record_count(w, w.tobj) == count + 1
+    # Mira's tools sent one ask and two resends, and never the decision route.
+    assert [q for _a, q, _b in _door_posts(w)] == [
+        "ask=1", f"request_id={rid}", f"request_id={rid}"]
+    assert all("decision" not in path for _m, path, _q, _b in w.seen)
+
+
+def test_r8_au_a_change_that_the_card_declines_writes_nothing(tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    before = _record_row(w, w.trec)
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {}
+        asked = await st.studio_record_update(w.tpkg, "visit", w.trec, {"notes": "From the card"})
+        got["asked"] = asked
+        rid = asked["request_id"]
+        got["declined"] = await _decide_route(w.a, ANA, rid, "decline", "card-press-2")
+        got["read"] = await _read_route(w.a, ANA, rid)
+        got["resend"] = await st.studio_record_update(w.tpkg, "visit", request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    assert got["asked"]["state"] == "awaiting"
+    assert (got["declined"]["decision"], got["declined"]["state"]) == ("decline", "declined")
+    assert got["read"]["state"] == "declined"
+    resend = got["resend"]
+    assert (resend["saved"], resend["code"]) == (False, "request_declined"), resend
+    assert "nothing was written" in resend["errors"][0]["message"]
+    assert _record_row(w, w.trec) == before, "a declined card writes nothing"
+
+
+def test_r8_av_org_b_and_another_member_see_no_request_of_ana(tworld, monkeypatch) -> None:
+    w = tworld
+    monkeypatch.setattr(get_settings(), "agent_access_enabled", True)
+    count = _record_count(w, w.tobj)
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {}
+        asked = await st.studio_record_create(w.tpkg, "visit", data={**_DATA, "site": "Org A"})
+        rid = asked["request_id"]
+        # Org B, with Ana's own email, and Ben of org A.
+        got["b_read"] = await _read_route(w.b, ANA, rid)
+        got["b_decide"] = await _decide_route(w.b, ANA, rid, "approve", "org-b-press")
+        got["ben_read"] = await _read_route(w.a, BEN, rid)
+        got["ben_decide"] = await _decide_route(w.a, BEN, rid, "approve", "ben-press")
+        got["ana_read"] = await _read_route(w.a, ANA, rid)
+        got["resend"] = await st.studio_record_create(w.tpkg, "visit", request_id=rid)
+        return got
+
+    got = _chat(w, go)
+    assert (got["b_read"], got["b_decide"], got["ben_read"], got["ben_decide"]) == (
+        404, 404, 404, 404), got
+    # The request of Ana waits as it was. Nothing approved it, so nothing ran.
+    assert got["ana_read"]["state"] == "awaiting" and got["ana_read"]["decision"] is None
+    assert (got["resend"]["saved"], got["resend"]["code"]) == (False, "request_awaiting")
+    assert _record_count(w, w.tobj) == count
+    with w.p.admin_engine.connect() as c:
+        assert c.execute(text(
+            "SELECT count(*) FROM pm_agent_runs WHERE app = 'studio' "
+            "AND organization_id = CAST(:b AS uuid) AND member_email IN (:a, :n)"),
+            {"b": w.b, "a": ANA, "n": BEN}).scalar_one() == 0

@@ -3123,8 +3123,10 @@ async def studio_record_list(
 # * The ask. A call with no request_id sends the body with the ask marker
 #   ``ask=1``. The door opens ONE request that waits for the member, and it
 #   writes nothing. The result says that the change is NOT saved, and where
-#   the member answers: Integrations, AI agents, Waiting for you, until
-#   B2c-2c draws the card in the chat.
+#   the member answers: Integrations, AI agents, Waiting for you. In the web
+#   chat, B2c-2c also draws the card of the request under the result
+#   (``components/studio/StudioToolCards.tsx``), and its answer comes back
+#   as the member's next message.
 # * The resend. A call with the request_id names it in the query and sends NO
 #   body. The door reads no byte of a resend body, and it runs the STORED call
 #   of an approved request once.
@@ -3143,7 +3145,8 @@ _ASK_MARKER = ("ask", "1")
 #: The verbs of the write tools, in the order of the tools.
 WRITE_VERBS = ("create", "update", "delete")
 
-#: Where the member answers a request until B2c-2c draws the card in the chat.
+#: Where the member answers a request in every channel. The web chat also
+#: draws its card (B2c-2c), and a channel with no card has only this list.
 APPROVE_WHERE = "Integrations, AI agents, Waiting for you"
 
 #: The note of an ask: the change waits, and how the model goes on.
