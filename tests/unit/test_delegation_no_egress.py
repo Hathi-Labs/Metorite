@@ -822,6 +822,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: card, and says open_world=False. None sends anything outside Metorite.
 #: 2026-11-02 (WS-PJP PJP-4, D168.1): update_tasks joined. Each ticked row is one
 #: update_task patch through the gateway, behind one card, and says open_world=False.
+#: 2026-11-08 (SP-12, task 2295): get_plan (a read) joined. It reads one gateway route,
+#: the one plan engine, writes nothing and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -842,7 +844,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "file_tasks",
     "file_access_ls", "file_access_read", "file_access_read_lines",
     "file_access_replace", "file_access_replace_lines", "file_access_write",
-    "find_conflicts", "find_tasks", "fit_for_task",
+    "find_conflicts", "find_tasks", "fit_for_task", "get_plan",
     "intake_queue", "link_tasks", "link_tasks_batch", "list_tasks",
     "make_document", "make_report", "mark_notifications_read", "merge_tags", "merge_tasks",
     "move_project", "convert_folder_to_project",
