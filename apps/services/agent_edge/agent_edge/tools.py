@@ -1754,6 +1754,204 @@ BOARD_STATS = Tool(
 )
 
 
+# ── get_plan (SP-12) ────────────────────────────────────────────────────────
+
+PLAN_ROUTE = "/projects/plan/analysis"
+
+_ID_SCHEMA: dict[str, Any] = {"type": "string", "pattern": _UUID_PATTERN}
+_ID_LIST: dict[str, Any] = {"type": "array", "items": _ID_SCHEMA}
+
+_GET_PLAN_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "root_task_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "The goal, epic or project task to plan. An id from"
+                           " list_tasks or search_tasks."},
+    },
+    "required": ["root_task_id"],
+    "additionalProperties": False,
+}
+
+_GET_PLAN_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "root_task_id": _ID_SCHEMA,
+        "slices": {"type": "integer"},
+        "ready": _ID_LIST,
+        "waves": {"type": "array", "items": _ID_LIST},
+        "critical_path": _ID_LIST,
+        "slack": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "next_slice": {"type": ["string", "null"]},
+        "finish": {
+            "type": ["object", "null"],
+            "properties": {
+                "mins": {"type": "integer"},
+                "working_days": {"type": "integer"},
+                "date": {"type": ["string", "null"]},
+            },
+            "additionalProperties": False,
+        },
+        "held": _ID_LIST,
+        "outside_blockers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"task_id": _ID_SCHEMA, "blocked_by": _ID_LIST},
+                "required": ["task_id", "blocked_by"],
+                "additionalProperties": False,
+            },
+        },
+        "cycle": {
+            "type": ["object", "null"],
+            "properties": {"task_ids": _ID_LIST, "epic_ids": _ID_LIST},
+            "additionalProperties": False,
+        },
+        "missing": {
+            "type": "object",
+            "properties": {
+                "no_estimate": {"type": "integer"},
+                "no_owner": {"type": "integer"},
+                "no_estimate_ids": _ID_LIST,
+                "no_owner_ids": _ID_LIST,
+                "words": {"type": "array", "items": {"type": "string"}},
+            },
+            "additionalProperties": False,
+        },
+        "not_enough": {"type": ["string", "null"]},
+        "ignored_links": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"blocker": _ID_SCHEMA, "blocked": _ID_SCHEMA,
+                               "reason": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+        "labels": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {"number": {"type": ["integer", "null"]},
+                               "title": _UNTRUSTED_OR_NULL},
+                "additionalProperties": False,
+            },
+        },
+        "hidden": {
+            "type": "object",
+            "properties": {"slices": {"type": "integer"},
+                           "outside_blockers": {"type": "integer"}},
+            "required": ["slices", "outside_blockers"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["root_task_id", "slices", "ready", "waves", "critical_path",
+                 "next_slice", "finish", "held", "outside_blockers", "hidden"],
+    "additionalProperties": False,
+}
+
+#: The ``reason`` values of an ignored link, as the engine words them.
+_PLAN_IGNORED_REASONS = frozenset({"same task", "parent and child"})
+
+
+def _int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _plan_finish(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    when = value.get("date")
+    return {"mins": _int(value.get("mins")), "working_days": _int(value.get("working_days")),
+            "date": when if isinstance(when, str) else None}
+
+
+async def _get_plan(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    body = await _get(ctx, PLAN_ROUTE, TEXT_TASK_NOT_FOUND,
+                      query=[("root_task_id", str(args["root_task_id"]))])
+    if not isinstance(body, dict) or _id(body.get("root_task_id")) is None:
+        raise ToolError(TEXT_BUSY)
+    slack = body.get("slack")
+    hidden = body.get("hidden") if isinstance(body.get("hidden"), dict) else {}
+    missing = body.get("missing") if isinstance(body.get("missing"), dict) else {}
+    cycle = body.get("cycle")
+    nxt = body.get("next_slice")
+    words = missing.get("words")
+    waves = body.get("waves")
+    labels = body.get("labels")
+    return {
+        "root_task_id": body["root_task_id"],
+        "slices": _int(body.get("slices")),
+        "ready": _ids(body.get("ready")),
+        "waves": [_ids(w) for w in waves] if isinstance(waves, list) else [],
+        "critical_path": _ids(body.get("critical_path")),
+        "slack": ({k: _int(v) for k, v in slack.items() if _id(k) is not None}
+                  if isinstance(slack, dict) else {}),
+        "next_slice": _id(nxt),
+        "finish": _plan_finish(body.get("finish")),
+        "held": _ids(body.get("held")),
+        "outside_blockers": [
+            {"task_id": row["task_id"], "blocked_by": _ids(row.get("blocked_by"))}
+            for row in _dicts(body.get("outside_blockers"))
+            if _id(row.get("task_id")) is not None
+        ],
+        "cycle": ({"task_ids": _ids(cycle.get("task_ids")),
+                   "epic_ids": _ids(cycle.get("epic_ids"))}
+                  if isinstance(cycle, dict) else None),
+        "missing": {
+            "no_estimate": _int(missing.get("no_estimate")),
+            "no_owner": _int(missing.get("no_owner")),
+            "no_estimate_ids": _ids(missing.get("no_estimate_ids")),
+            "no_owner_ids": _ids(missing.get("no_owner_ids")),
+            "words": ([w for w in words if isinstance(w, str)]
+                      if isinstance(words, list) else []),
+        },
+        "not_enough": (body["not_enough"]
+                       if isinstance(body.get("not_enough"), str) else None),
+        "ignored_links": [
+            {"blocker": row["blocker"], "blocked": row["blocked"], "reason": row["reason"]}
+            for row in _dicts(body.get("ignored_links"))
+            if _id(row.get("blocker")) is not None and _id(row.get("blocked")) is not None
+            and row.get("reason") in _PLAN_IGNORED_REASONS
+        ],
+        "labels": ({
+            k: {"number": v["number"] if isinstance(v.get("number"), int) else None,
+                "title": untrusted(v.get("title"))}
+            for k, v in labels.items() if _id(k) is not None and isinstance(v, dict)
+        } if isinstance(labels, dict) else {}),
+        "hidden": {"slices": _int(hidden.get("slices")),
+                   "outside_blockers": _int(hidden.get("outside_blockers"))},
+    }
+
+
+GET_PLAN = Tool(
+    name="get_plan",
+    title="Get the plan of a goal, epic or project",
+    description=(
+        "Read the order of work under one goal, epic or project task. The server"
+        " computes it from the open slices (tasks with no subtasks) and the"
+        " blocks links. ready holds the slices that can start now. waves holds"
+        " the slices in layers: wave 1 is ready now, and wave 2 is ready when"
+        " wave 1 is done. critical_path is the longest chain, and slack is the"
+        " minutes a slice can slip off it. finish is one date from the"
+        " length of that chain. It is not a forecast. next_slice is the slice to"
+        " start. held holds the slices that wait on an open blocker outside the"
+        " tree, and outside_blockers names those blockers. hidden counts the"
+        " slices and blockers that this member cannot see, and never names them."
+        " cycle lists a loop of links, and then no path is given. labels gives"
+        " the number and title of the tasks that the answer names." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_GET_PLAN_INPUT,
+    output_schema=_GET_PLAN_OUTPUT,
+    route=PLAN_ROUTE,
+    params={"root_task_id": "root_task_id"},
+    not_found=TEXT_TASK_NOT_FOUND,
+    run=_get_plan,
+    routes=(PLAN_ROUTE,),
+)
+
+
 # ── search_tasks ────────────────────────────────────────────────────────────
 
 #: The keys of one ``search_tasks`` hit (§9.1).
@@ -2250,6 +2448,201 @@ GET_PROJECT = Tool(
 )
 
 
+# ── list_members and list_tags (MCP-G21) ────────────────────────────────────
+
+#: The keys of one ``list_members`` row.
+MEMBER_ROW_KEYS: tuple[str, ...] = ("address", "name")
+#: The keys of one ``list_tags`` row.
+TAG_ROW_KEYS: tuple[str, ...] = ("name",)
+
+MEMBERS_ROUTE = "/projects/assignable-members"
+
+#: ``list_tags`` with no project reads the tags of this many top projects at
+#: once, so it never sends a long burst to the gateway.
+TAG_READ_BATCH = 8
+
+_LIMIT_INPUT: dict[str, Any] = {
+    "type": "integer", "minimum": 1, "maximum": LIST_LIMIT_MAX,
+    "default": LIST_LIMIT_DEFAULT,
+    "description": "Rows on one page. Ignored when a cursor is sent.",
+}
+_CURSOR_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": cursor_mod.MAX_CHARS,
+    "description": "The nextCursor of the page before.",
+}
+
+_LIST_MEMBERS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "Only the members who open this project. An id from"
+                           " list_projects. Leave it out to list the members"
+                           " who open at least one project you see."},
+        "limit": _LIMIT_INPUT,
+        "cursor": _CURSOR_INPUT,
+    },
+    "additionalProperties": False,
+}
+
+_LIST_MEMBERS_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "members": {"type": "array", "items": _object({
+            "address": {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]},
+            "name": _UNTRUSTED_OR_NULL,
+        })},
+        "total": {"type": "integer"},
+        "nextCursor": _NULLABLE_STRING,
+    },
+    "required": ["members", "total", "nextCursor"],
+    "additionalProperties": False,
+}
+
+_LIST_TAGS_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {
+            "type": "string", "pattern": _UUID_PATTERN,
+            "description": "Only the tags of this project. An id from"
+                           " list_projects. Leave it out to list the tags of"
+                           " every project you see."},
+        "limit": _LIMIT_INPUT,
+        "cursor": _CURSOR_INPUT,
+    },
+    "additionalProperties": False,
+}
+
+_LIST_TAGS_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "tags": {"type": "array", "items": _object({"name": _UNTRUSTED_SCHEMA})},
+        "total": {"type": "integer"},
+        "nextCursor": _NULLABLE_STRING,
+    },
+    "required": ["tags", "total", "nextCursor"],
+    "additionalProperties": False,
+}
+
+
+async def _list_members(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One read of the gateway's assignable members, then a page of it.
+
+    The gateway applies the rule of ``set_assignees`` (the grant arm), so this
+    list holds nobody that the assign call refuses. The edge adds the pages
+    and wraps each name as ``untrusted_text``.
+    """
+    page, size = _page_of(ctx, "list_members", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+    query = [("project_id", str(args["project_id"]))] if "project_id" in args else []
+    rows = _rows_of(await _get(ctx, MEMBERS_ROUTE, TEXT_PROJECT_NOT_FOUND, query=query))
+    kept = [r for r in rows if isinstance(r.get("address"), str)]
+    shown = kept[(page - 1) * size: page * size]
+    return {
+        "members": [{"address": assignee(r["address"]),
+                     "name": untrusted(r.get("name") or None)} for r in shown],
+        "total": len(kept),
+        "nextCursor": _next_cursor(ctx, "list_members", args, page=page, size=size,
+                                   total=len(kept), shown=len(shown)),
+    }
+
+
+LIST_MEMBERS = Tool(
+    name="list_members",
+    title="List the members you can assign",
+    description=(
+        "List the members of the organization whom set_assignees accepts for a"
+        " task: each one already opens the project through a project grant or"
+        " an admin read right. Send project_id for the members of one project."
+        " Leave it out for the members who open at least one project you see."
+        " A task in a personal project takes only its owner. Each row has the"
+        " member address and the display name, and nothing more. Use the"
+        " address in set_assignees or create_task. An assignee can also be"
+        " agent:<name>, which this list does not hold. Send nextCursor back as"
+        " cursor to read the next page. The pages are offsets." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_MEMBERS_INPUT,
+    output_schema=_LIST_MEMBERS_OUTPUT,
+    route=MEMBERS_ROUTE,
+    params={"project_id": "project_id"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_list_members,
+    routes=(MEMBERS_ROUTE,),
+    edge_inputs=frozenset({"limit", "cursor"}),
+)
+
+
+async def _vocabulary_of(ctx: Context, project_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """The tag rows of the roots of *project_ids*, by tag id.
+
+    Two projects of one root give the same vocabulary rows, so the tag id
+    drops the repeat.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(project_ids), TAG_READ_BATCH):
+        batch = project_ids[start: start + TAG_READ_BATCH]
+        answers = await _together(*(
+            _get(ctx, TAGS_ROUTE, TEXT_PROJECT_NOT_FOUND, path_params={"project_id": pid})
+            for pid in batch))
+        for answer in answers:
+            for row in _rows_of(answer):
+                if isinstance(row.get("name"), str) and row["name"]:
+                    found.setdefault(str(row.get("id")), row)
+    return found
+
+
+async def _list_tags(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """The tag names of one project, or of the top projects of the tree read.
+
+    Both reads go through the gateway's visibility, so a pin narrows them.
+    The ``task_count`` of the route stays behind, as in ``get_project``: the
+    seam does not narrow it. The names join by case, and sort by case.
+    """
+    page, size = _page_of(ctx, "list_tags", args, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+    if "project_id" in args:
+        project_ids = [str(args["project_id"])]
+    else:
+        roots = _rows_of(await _get(ctx, TREE_ROUTE, TEXT_PROJECT_NOT_FOUND))
+        project_ids = [str(n.get("id")) for n in roots
+                       if n.get("archived_at") is None and n.get("id")]
+    names: dict[str, str] = {}
+    for row in (await _vocabulary_of(ctx, project_ids)).values():
+        names.setdefault(row["name"].casefold(), row["name"])
+    ordered = [names[k] for k in sorted(names)]
+    shown = ordered[(page - 1) * size: page * size]
+    return {
+        "tags": [{"name": untrusted(n)} for n in shown],
+        "total": len(ordered),
+        "nextCursor": _next_cursor(ctx, "list_tags", args, page=page, size=size,
+                                   total=len(ordered), shown=len(shown)),
+    }
+
+
+LIST_TAGS = Tool(
+    name="list_tags",
+    title="List the tags",
+    description=(
+        "List the tag names of one project tree, or of every tree you see when"
+        " project_id is left out. Tags belong to the top project of a tree, so"
+        " the list can hold a tag that a hidden project of that tree uses."
+        " A name shows once, in alphabetical order."
+        " Read this before you make a tag in create_task or update_task, so"
+        " you reuse a name that exists. Each row has the tag name only."
+        " Send nextCursor back as cursor to read the next page. The pages are"
+        " offsets." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_READ,
+    input_schema=_LIST_TAGS_INPUT,
+    output_schema=_LIST_TAGS_OUTPUT,
+    route=TAGS_ROUTE,
+    params={"project_id": "project_id"},
+    not_found=TEXT_PROJECT_NOT_FOUND,
+    run=_list_tags,
+    routes=(TAGS_ROUTE, TREE_ROUTE),
+    edge_inputs=frozenset({"limit", "cursor"}),
+)
+
+
 # ── Agent runs: the shapes (EA-12b, §12.1 and §9.4) ─────────────────────────
 
 TASK_RUNS_ROUTE = "/projects/tasks/{task_id}/agent-runs"
@@ -2678,13 +3071,82 @@ def reference(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+#: SP-9. The roll-up of an epic over EVERY descendant that the member sees.
+#: The gateway adds ``rollup`` to ``GET /projects/tasks/{id}`` for a task whose
+#: type is an epic type, and leaves the key out for any other task. The four
+#: keys after ``hidden`` are ``null`` until their sources land (spend: SP-8, the
+#: others: PJP-6).
+ROLLUP_KEYS: tuple[str, ...] = (
+    "slices", "estimate_mins", "waits", "hidden", "spend", "forecast", "health", "hill",
+)
+WAIT_KEYS: tuple[str, ...] = ("run_id", "task_id", "task_number", "title", "person", "since")
+_DONE_TOTAL_SCHEMA = _object({"done": {"type": "integer"}, "total": {"type": "integer"}})
+_WAIT_SCHEMA = _object({
+    "run_id": {"type": "string"}, "task_id": {"type": "string"},
+    "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_SCHEMA,
+    "person": _NULLABLE_STRING, "since": _NULLABLE_STRING,
+})
+_ROLLUP_SCHEMA = _object({
+    "slices": _DONE_TOTAL_SCHEMA,
+    "estimate_mins": _DONE_TOTAL_SCHEMA,
+    "waits": _object({"count": {"type": "integer"},
+                      "items": {"type": "array", "items": _WAIT_SCHEMA}}),
+    "hidden": {"type": "integer"},
+    "spend": {"type": "null"}, "forecast": {"type": "null"},
+    "health": {"type": "null"}, "hill": {"type": "null"},
+})
+
+
+def _rollup_count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _done_total(value: Any) -> dict[str, int]:
+    raw = value if isinstance(value, dict) else {}
+    return {"done": _rollup_count(raw.get("done")), "total": _rollup_count(raw.get("total"))}
+
+
+def rollup(raw: Any) -> dict[str, Any] | None:
+    """The roll-up of an epic (SP-9), the pinned keys and no other. ``None``
+    when the gateway sent none (the task is not an epic). The title of a task
+    that waits is text from other people, so it is (U). The four keys that wait
+    for their source stay ``None``, whatever the gateway sends."""
+    if not isinstance(raw, dict):
+        return None
+    waits = raw.get("waits") if isinstance(raw.get("waits"), dict) else {}
+    items = waits.get("items")
+    return {
+        "slices": _done_total(raw.get("slices")),
+        "estimate_mins": _done_total(raw.get("estimate_mins")),
+        "waits": {
+            "count": _rollup_count(waits.get("count")),
+            "items": [
+                {
+                    "run_id": str(w.get("run_id")),
+                    "task_id": str(w.get("task_id")),
+                    "task_number": _int_or_none(w.get("task_number")),
+                    "title": untrusted(w.get("title") or ""),
+                    "person": _str_or_none(w.get("person")),
+                    "since": _str_or_none(w.get("since")),
+                }
+                for w in items or () if isinstance(w, dict)
+            ] if isinstance(items, list) else [],
+        },
+        "hidden": _rollup_count(raw.get("hidden")),
+        "spend": None, "forecast": None, "health": None, "hill": None,
+    }
+
+
 _GET_TASK_OUTPUT: dict[str, Any] = _object({
     "task": _TASK_SCHEMA,
     "subtasks": {"type": "array", "items": _SUBTASK_SCHEMA},
     "links": {"type": "array", "items": _LINK_SCHEMA},
     "refs": {"type": "array", "items": _REF_SCHEMA},
     "agent_runs": {"type": "array", "items": _RUN_SCHEMA},
+    "rollup": _ROLLUP_SCHEMA,
 })
+# `rollup` is present for an epic only, so it is the one key that is not required.
+_GET_TASK_OUTPUT["required"].remove("rollup")
 
 
 def _custom_fields(value: Any) -> dict[str, Any]:
@@ -2800,7 +3262,7 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(relations, dict):
         raise ToolError(TEXT_BUSY)
     subtasks, links = relations.get("subtasks"), relations.get("links")
-    return {
+    out = {
         "task": _task(row, names),
         "subtasks": [_subtask(r) for r in subtasks or () if isinstance(r, dict)]
         if isinstance(subtasks, list) else [],
@@ -2809,6 +3271,12 @@ async def _get_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         "refs": [reference(r) for r in _rows_of(refs)],
         "agent_runs": runs,
     }
+    # SP-9. The same read, the same visibility: the gateway counted for this
+    # member, and a pin of the agent narrowed it there.
+    shaped_rollup = rollup(row.get("rollup"))
+    if shaped_rollup is not None:
+        out["rollup"] = shaped_rollup
+    return out
 
 
 GET_TASK = Tool(
@@ -2825,7 +3293,11 @@ GET_TASK = Tool(
         " question that waits for an answer. A run with the state awaiting"
         " waits for a person, so do not start a second run for the same"
         " work. url is the address of the task in Metorite, and short_id is the"
-        " short form for a branch name. Put url in the description of each pull"
+        " short form for a branch name. For an epic, rollup counts the slices and"
+        " the estimate done and total over every level below it, lists the"
+        " questions that wait on a person, and gives hidden, the number of"
+        " tasks left out because this member cannot see them. Put url in the"
+        " description of each pull"
         " request, and short_id in the branch name, so that the pull request"
         " links itself to the task." + _UNTRUSTED_NOTE
     ),
@@ -8454,7 +8926,8 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
-    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_TASKS, BOARD_STATS, GET_TASK, GET_TASK_TIMELINE,
+    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
+    BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT,
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK,
     ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
@@ -8648,6 +9121,7 @@ __all__ = [
     "GET_AGENT_RUN",
     "GET_ATTACHMENT",
     "GET_ATTACHMENT_KEYS",
+    "GET_PLAN",
     "GET_PROJECT",
     "GET_TASK",
     "GET_TASK_CONTEXT",

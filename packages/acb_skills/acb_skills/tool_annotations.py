@@ -53,6 +53,11 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "make_report":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # H-229: the text of a file attached in this chat. Pure parsing, no code.
     "read_attachment":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-VOX VOX-3: an attached image to tier-vision through the Console. It
+    # changes no record, and it reaches only the metered model, so it is no
+    # egress tool. Each call counts against a cap and draws credits, so it is
+    # not idempotent.
+    "analyze_image":         {"read_only": True,  "destructive": False, "idempotent": False, "open_world": False},
     # Memory
     "remember":              {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "recall_timeline":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},

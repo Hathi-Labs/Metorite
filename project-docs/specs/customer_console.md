@@ -8670,6 +8670,11 @@ customer to shape it, and guessing produces the wrong ceiling.
 
 ### 6A.10a The transcribe endpoint (H-46) — BUILT, 2026-08-31
 
+**Caller and Sarvam (2026-11-08).** The chat's voice input (`projects_ai_chat.md`
+§31 VOX-1, task 2261) is the first tenant caller of this door. VOX-2 (task 2262)
+adds a native Sarvam call beside the litellm path, because litellm 1.103.0 has
+no Sarvam transcription. §31 owns both slices.
+
 ✅ **BUILT on 2026-08-31, on branch `ws-31-h46-transcribe`.** The route is
 `main.py::audio_transcriptions`, and all ten clauses below hold.
 `tests/unit/test_customer_console_tasks.py` carries the seven fences.
@@ -8876,6 +8881,74 @@ eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_customer_console_tasks.py \
   tests/unit/test_customer_console_catalog.py -q
 ```
+
+#### VOX-2 · Sarvam, and the minutes of a WAV clip — BUILT 2026-11-08
+
+✅ **Built on branch `mt-4d2d1c72-vox2`** (task 2262). `projects_ai_chat.md`
+§31 VOX-2 owns the slice. This block records how the build changes the ten
+clauses above. Each other clause holds as written.
+
+1. **Clause 3, the quantity.** The door measures a WAV clip before any
+   provider call. It bills that length for every provider, a litellm step too.
+   - `customer_console/wav.py` walks the RIFF chunks with `struct`. It ignores
+     the declared `data` size, because that field can lie.
+   - It counts `(bytes after the data header) // block_align` frames. A size
+     of 0, `0xFFFFFFFF`, or a small or large number all bill the bytes present.
+   - A chunk after `data`, such as a trailing `LIST`, counts as audio by a few
+     bytes. The door bills the bytes it sends.
+   - A `fmt ` chunk with a zero block align, or a sample rate outside
+     1 000 to 384 000 Hz, is not a measurable WAV.
+   - The vendor figure never sets the quantity of a measurable WAV clip. A
+     litellm step bills the measured length too, whatever `verbose_json`
+     reports.
+   - A clip that is not a measurable WAV keeps the old rule: the
+     `verbose_json` duration, else zero with the log line
+     `router.unmeasured_quantity`.
+2. **Clause 6, the dispatch.** `native_sarvam` is in `KNOWN_INVOCATIONS` and
+   `SERVING_INVOCATIONS`, and it serves `transcribe` only.
+   - `customer_console/stt_sarvam.py` holds the handler.
+   - A native step gets a `TranscribePayload`: the clip, its name and the
+     key. A litellm step gets the same kwargs as before.
+3. **The prefix ties the verb.** A `sarvam/` model on `transcribe` takes
+   `native_sarvam` only, because litellm has no Sarvam transcription.
+   - The declare route refuses another verb with a 400.
+   - The mode is the last part of the id, as in `sarvam/saaras:v3/translit`.
+     The route refuses a mode that is not `translit`, `codemix`,
+     `transcribe` or `translate`. An id with no mode gets `translit`.
+4. **A new refusal, 415.** The Sarvam handler takes PCM WAV only.
+   - For any other clip, the door drops each Sarvam step from the chain.
+   - When no step is left, the door answers 415 before any provider call.
+   - The 415 writes no usage row, as the 413 writes none. Clause 10's three
+     walls do not change.
+5. **The 30-second limit.** Sarvam's REST call takes 30 seconds of audio at
+   most, and it answers 422 above that. A 422 does not fail over. So the
+   handler cuts a longer clip into parts of 29 seconds and joins the text.
+6. **The 600-second wall.** A measured WAV clip above 600 seconds answers 413
+   "audio above 600 seconds is refused", for every provider. The 413 comes
+   before any provider call and writes no usage row. One request makes at
+   most 21 Sarvam calls.
+7. **Failover.** A Sarvam 5xx, 429 or 403 falls to the next step, as a
+   litellm step does. A 200 with no transcript is terminal, because the
+   vendor has charged for it.
+8. **The accepted leak.** A failure on part N of M fails over the whole step.
+   Sarvam has charged for parts 1 to N-1, and the door never bills them. The
+   next step transcribes the whole clip and bills it once. The loss is bounded
+   at 20 parts for each request, by the 600-second wall. The handler logs
+   `stt_sarvam.partial_failure` with `parts_served` and `parts_total`.
+
+**The vendor facts**, read on 2026-11-08 at
+`https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe`:
+`POST https://api.sarvam.ai/speech-to-text`, the header
+`api-subscription-key`, and the multipart fields `file`, `model` and `mode`.
+The 200 body holds `transcript` and no duration.
+
+| Rule | Fence |
+|---|---|
+| A WAV clip bills the measured minutes, on a Sarvam step and on a litellm step | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor`, `::TestALitellmStepBillsTheMeasuredWav` (R8) |
+| The Sarvam request carries the header, the vendor model and the mode | `test_customer_console_stt_sarvam.py::TestTheRequestShape`, and the R8 class above |
+| A clip that is not WAV on a Sarvam-only chain answers 415 and writes no row | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor` (R8) |
+| A Sarvam 5xx fails over to the next step | `test_customer_console_tasks.py::TestSarvamOnTheTranscribeDoor` (R8), `test_customer_console_stt_sarvam.py::TestTheFailures` |
+| A `sarvam/` transcribe model takes `native_sarvam` only | `test_customer_console_stt_sarvam.py::TestTheNativeVerbForSpeech` |
 
 ### 6A.10b The handler seam (H-47) — BUILT 2026-09-23 by CP-13a
 
@@ -10172,6 +10245,10 @@ facts the table did not state:
   `native_*`. `POST /catalog/capabilities` answers 400 and names the rule.
   Without it, `(model, decide, acompletion)` would answer 502 on the first
   customer call.
+  📌 **VOX-2 changed the first half on 2026-11-08.** From that date, each
+  `native_*` verb serves the ONE task of its handler. `native_sarvam` serves `transcribe`, and a
+  System One verb still serves `decide` only. `decide` still takes a native
+  verb only (`catalog.NATIVE_ONLY_TASKS`). §6A.10a holds the transcribe half.
 - **A 200 that the handler cannot read STOPS the chain.** The vendor has
   already charged for it, so a second step would pay a second vendor for the
   same request. The handler raises `NativeProviderError` with
@@ -10314,12 +10391,44 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
 - **The verb list on the page is a mirror.** `src/lib/invocation.ts` copies
   three constants from `catalog.py`. `test_operator_console_invocations.py`
   fails when the copies differ.
+  📌 VOX-2 (2026-11-08) added two more copies: `NATIVE_ONLY_TASKS`, and
+  `NATIVE_TASK_OF`, the task of each native verb. The same test reads both.
+  `/providers` gained a minimal `sarvam` card, and VOX-4 owns its full text.
 - **The declare form follows the pairing rule.** `src/lib/invocation.ts`
   mirrors `check_invocation_for_task`, so `/models` offers only
   `native_typesafe` for `decide`, and never offers it for another job.
 - **The TypeSafe guide sits in a new "Decisions" section on `/providers`.**
 - `METERING_EXEMPTION` and `_CAPABILITY_GATED_ROUTES` did not change. The
   route reaches no credit write, and a deployment key meets 401 on it.
+
+**VOX-4 (2026-11-08): two more tries, by the same rule.** Spec:
+`projects_ai_chat.md` §31.5.
+
+- **The routes are `POST /catalog/transcribe/try` and `POST /catalog/vision/try`.**
+  Both take a multipart `file`. The vision route also takes a `question` of up
+  to 500 characters. Neither takes a tier. They try `tier-stt` on task
+  `transcribe` and `tier-vision` on task `vision`.
+- **The metering rule is the one above.** The platform key only, a call
+  through `router.call_chain`, and no `usage_event` row. One `control_audit`
+  row for each call that reached the vendor, with the action
+  `catalog.transcribe_try` or `catalog.vision_try`. The outcome is `served`,
+  `upstream_failed` or `unreadable`. `_audit_try` writes it, and it never raises.
+- **The speech route uses the door's helpers.** `_transcribe_attempts` picks the
+  steps. `_transcribe_kwargs` builds the call. `wav.py` measures a WAV clip
+  from its bytes, so a WAV clip answers the length that the Console measured.
+  A try takes 10 MB and 60 seconds. A try takes WAV only, and a clip that is
+  not WAV gets a 415 before the chain resolves.
+- **The vision route sends one chat call with one image part.** The door serves
+  `vision` with the chat verb. The route reads the format from the first
+  bytes (`image_sniff.py`) and decodes no pixel. It takes 4 MB. The system text
+  is the text of `analyze_image` in VOX-3.
+- **A vendor failure shows the vendor's words.** The door never echoes them.
+  A try does, because the operator needs them to fix a key. The Console removes
+  every credential it read and any text shaped like a key, and it cuts the text
+  to 300 characters. The status still goes through `_upstream_refusal`.
+- **The `MATRIX` rows are `admin`, with no elevation window.** `_PROBES` in
+  `test_operator_roles.py` and `NOT_COMMERCIAL` in `test_customer_console_catalog.py`
+  gained both routes. The suite is `test_customer_console_try_voice.py`.
 
 #### CP-13c · The tenant client
 
