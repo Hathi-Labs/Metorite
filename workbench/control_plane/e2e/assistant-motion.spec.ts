@@ -284,8 +284,14 @@ async function expectNoOpenSheetFor(page: Page, ms: number) {
 async function openSheet(page: Page) {
   const ask = page.locator("[data-ask-tab]");
   await expect(ask).toBeVisible({ timeout: 60_000 });
-  await ask.click();
-  await expect(panel(page)).toHaveAttribute("data-panel-form", "sheet");
+  // MOB-9: Ask opens AND closes the sheet, and a chat-first phone opens the
+  // sheet by itself on landing (CF-2). So tap only while it is not open, and
+  // try again: the landing open can arrive between the check and the tap, and
+  // a tap before the bar hydrates does nothing.
+  await expect(async () => {
+    if ((await ask.getAttribute("aria-pressed")) !== "true") await ask.click();
+    await expect(panel(page)).toHaveAttribute("data-panel-form", "sheet", { timeout: 4_000 });
+  }).toPass({ timeout: 60_000 });
   await expect(panel(page)).toHaveAttribute("data-panel-phase", "open");
   await expect(composer(page)).toBeEnabled({ timeout: 30_000 });
 }
@@ -317,11 +323,12 @@ async function expectStrip(page: Page, height: number) {
       };
     })
     .toEqual({ rowHeight: 56, rowOnNav: true, reachesFoot: true });
-  // The page's last row moves up by the strip: the nav's 3.5rem, and 3.5rem more.
+  // The page's last row moves up by the strip: the bar's height (`--phone-bar-h`,
+  // 3.5rem and a 0.75rem foot where the inset is 0, as here), and 3.5rem more.
   await expect.poll(() => page.evaluate(() => document.documentElement.hasAttribute("data-assistant-peek"))).toBe(true);
   await expect
     .poll(() => page.evaluate(() => getComputedStyle(document.querySelector("main.pb-nav")!).paddingBottom))
-    .toBe("112px");
+    .toBe("124px");
   // The sheet's header is hidden and inert under the strip.
   await expect(panel(page).getByRole("button", { name: "Show as a strip" })).toHaveCount(0);
 }
@@ -638,9 +645,11 @@ test.describe("the phone opens on the chat, and one nudge (WS-62 CF-2)", () => {
     expect(b.y + b.height).toBeLessThanOrEqual(a.y + 1);
     expect(b.x + b.width).toBeGreaterThan(a.x);
     await expect.poll(() => page.evaluate(() => document.documentElement.hasAttribute("data-chat-nudge"))).toBe(true);
+    // The bar's height (`--phone-bar-h`: 3.5rem and a 0.75rem foot where the
+    // inset is 0, as here) and the bubble's 3rem: 68 + 48.
     await expect
       .poll(() => page.evaluate(() => getComputedStyle(document.querySelector("main.pb-nav")!).paddingBottom))
-      .toBe("104px");
+      .toBe("116px");
 
     // The first message. The sheet covers the bubble while it is open.
     await openSheet(page);

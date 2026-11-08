@@ -10,6 +10,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,8 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<Response> {
   if (me instanceof NextResponse) return me;
 
   const { callId } = await ctx.params;
+  const refused = refuseUnsafePath([callId]);
+  if (refused) return refused;
   const accountId = req.nextUrl.searchParams.get("account_id") ?? "";
   if (!accountId) {
     return NextResponse.json({ detail: "account_id required" }, { status: 400 });

@@ -513,26 +513,44 @@ async def create_status(
 ) -> StatusModel:
     table, _ = _kind(kind)
     values = payload.model_dump(exclude_unset=True)
+    async with _tenant_session() as db:
+        row = await create_status_in(db, user, kind, values)
+        return status_wire(await read_status(db, table, str(row.id)) or row)
+
+
+async def create_status_in(
+    db: Any, user: Any, kind: str, values: dict[str, Any], *,
+    into_default: bool = True, via: str = change_log.VIA_UI,
+) -> Any:
+    """The body of ``POST /crm/statuses/{kind}``, in the caller's
+    transaction. Returns the new row.
+
+    It is the ONE way to make a stage or a lead status. The route calls it,
+    and so does the create of a pipeline (CRM-M3a), for each stage name that
+    the CRM does not hold yet. A new deal stage joins the default pipeline,
+    unless *into_default* is False: a stage made for a new pipeline sits in
+    that pipeline only. It logs one row (CRM-M1) with *via*.
+    """
+    table, _ = _kind(kind)
     _validate_status(kind, values)
     if not (values.get("name") or "").strip():
         raise HTTPException(status_code=422, detail="A status needs a name.")
     values.setdefault("type", "open")
-    async with _tenant_session() as db:
-        mirror = await _check_mode(db, table, values)
-        if not mirror:
-            await _check_visibility(db, kind, table, values)
-        if values.get("position") is None:
-            values["position"] = await _next_position(db, table)
-        row = await insert_row(db, table, values)
-        if kind == "deal":
-            await add_stage_to_default_pipeline(db, str(row.id))
-        await log_change(db, user, Change(
-            area=STATUS_AREAS[kind], action=change_log.CREATE,
-            summary=f"Added the {_STATUS_NOUNS[kind]} {quoted(row.name)}",
-            ladder=change_log.TEAM, entity_id=str(row.id),
-            after=_snapshot(row, STATUS_LOG_KEYS),
-        ))
-        return status_wire(await read_status(db, table, str(row.id)) or row)
+    mirror = await _check_mode(db, table, values)
+    if not mirror:
+        await _check_visibility(db, kind, table, values)
+    if values.get("position") is None:
+        values["position"] = await _next_position(db, table)
+    row = await insert_row(db, table, values)
+    if kind == "deal" and into_default:
+        await add_stage_to_default_pipeline(db, str(row.id))
+    await log_change(db, user, Change(
+        area=STATUS_AREAS[kind], action=change_log.CREATE,
+        summary=f"Added the {_STATUS_NOUNS[kind]} {quoted(row.name)}",
+        ladder=change_log.TEAM, entity_id=str(row.id),
+        after=_snapshot(row, STATUS_LOG_KEYS),
+    ), via=via)
+    return row
 
 
 @router.put(

@@ -34,7 +34,7 @@ from tests.unit._crm_agent_fakes import (
 )
 
 _M = load_agent_module("crm_assistant_mirror_test")
-_WRITES = {"create_lead", "update_deal_status", "convert_lead"}
+_WRITES = {"create_lead", "update_deal_status", "convert_lead", "crm_update_record"}
 
 
 def _names(agents: list[Any]) -> set[str]:
@@ -74,6 +74,9 @@ async def test_a_mirror_run_lacks_the_three_record_writes(monkeypatch) -> None:
 
 async def test_a_native_run_keeps_every_tool(monkeypatch) -> None:
     _gateway(monkeypatch, {"mode": "native"})
+    # CRM-M3a: an org on CRM_PIPELINES_ORGS keeps crm_create_pipeline too.
+    # The flag drop has its own fence (test_crm_pipelines_native.py).
+    monkeypatch.setattr(ti, "_crm_pipelines_open", lambda: True)
     agents = _M.build_agents()
     before = _names(agents)
     await ti._drop_mirror_record_writes(agents)

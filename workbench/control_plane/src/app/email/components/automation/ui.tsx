@@ -1,5 +1,6 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Switch from "@/components/ui/Switch";
 import Icon from "@/components/Icon";
@@ -28,6 +29,8 @@ export function Modal({
   footer?: React.ReactNode;
   maxWidth?: string;
 }) {
+  // A bar tap closes the window (MOB-9).
+  useCloseOnBarTap(onClose);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
