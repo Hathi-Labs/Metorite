@@ -243,6 +243,17 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _day(value: str | None) -> date | None:
+    """A ``YYYY-MM-DD`` of the body as a date, or None. The pattern of the
+    model passes 2026-02-30, so the parse refuses it here with 422."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise _refusal(422, INVALID, f"{value} is not a real date. Send a date such as 2026-12-01.") from exc
+
+
 # ── The payload (schema_version 1) ──────────────────────────────────────────
 
 
@@ -707,7 +718,7 @@ async def save_template(
     name = _clean_text(payload.name, "name", NAME_MAX, required=True)
     description = _clean_text(payload.description, "description", DESCRIPTION_MAX, required=False)
     source_id = _uuid_or_404(payload.project_id, "Project")
-    anchor = date.fromisoformat(payload.start_date) if payload.start_date else None
+    anchor = _day(payload.start_date)
     saver = actor(user).lower()
 
     async with _tenant_session() as db:
@@ -1039,10 +1050,7 @@ async def apply_template(
         if row.kind != PROJECT_KIND:
             raise _refusal(422, NOT_A_PROJECT_TEMPLATE, "This template makes no project.")
         spec = parse_payload(row.payload)
-        start = (
-            date.fromisoformat(payload.start_date) if payload.start_date
-            else await member_today(db, by)
-        )
+        start = _day(payload.start_date) or await member_today(db, by)
 
         values: dict[str, Any] = {
             "name": name or row.name,

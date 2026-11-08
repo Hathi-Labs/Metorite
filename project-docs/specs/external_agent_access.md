@@ -26,6 +26,8 @@ No caller spends a request yet. The spend on branch 0 is MCP-P1b-2. §19.13 hold
 
 **MCP-G12, MCP-G14 and MCP-G10 are BUILT 2026-11-08 and not merged (branch `mt-5be99476-g12-write-clarity`, Metorite tasks 1023, 1208 and 844).** `update_task` takes null for `due_at`, `start_date` and `estimate_mins`, and null clears the field. `create_task` with the Epic type and a parent answers "An Epic cannot have a parent. Leave out type_id or parent_task_id." A refusal of the write cap holds `retry_after` in seconds, and the reply sends `Retry-After`. A busy answer does the same when the gateway names a wait. Every write tool carries one line that names the limit of 120 changes in 10 minutes. The batch write for comments (G10 item 3) is not built. The fence is `tests/unit/test_mcp_edge_write_clarity.py`.
 
+**WS-39 TPL-1a is BUILT 2026-11-08 and not merged (branch `mt-8d741fc0-tpl1a-templates`, Metorite task 18). It ships dark behind `PROJECTS_TEMPLATES_ORGS`.** Three tools join the edge: the read `list_templates`, and the writes `save_as_template` and `create_project_from_template` (§9.2). The two write pairs are class C in the chat manifest, so rule 2 of §9.5 names them as its sixth exception. `project_management_app.md` §14.8 holds the design.
+
 **MCP-G18 is BUILT 2026-11-06 and merged (Metorite task 1727, first slice).** The read of the image itself is IMG-3 (task 1999, `projects_ai_chat.md` §30.4), by the owner request of 2026-11-07. `get_task_context` returns the metadata of the files on a task. Names are `untrusted_text`. It has no link, no bytes and no upload (§15, row MCP-G18).
 
 **MCP-G15 is BUILT 2026-11-04 and not merged (branch `mt-c4fee5e7-decided-elsewhere`, Metorite task 1567).** An agent records a decision that its member made outside Metorite, such as in the agent's own chat. The new tool is `record_outside_decision` (§12.1, "A decision made outside Metorite"). The run moves from `awaiting` to `in_progress`, and the task leaves each list that waits on the member. It goes live at the merge under `agent_runs_enabled`, which is ON. No migration.
@@ -671,6 +673,8 @@ The timeline rule stays. MCP-G18 adds one separate key, by owner decision (2026-
 
 `get_company_context` is not in EA-3. EA-5 adds it, with the `context:read` scope (§13).
 
+**`list_templates` (WS-39 TPL-1a).** It needs `projects:read` and takes no input. It calls `GET /projects/templates` once, and returns each template of the organization with its id, its kind, its counts and the date it was made. The name and the description leave as `untrusted_text`. The route answers 404 while `PROJECTS_TEMPLATES_ORGS` does not hold the organization. A connection with pins or a left-out list sees only a template whose source project it can see (`project_management_app.md` §14.8).
+
 ### 9.2 Writes (class B, undoable, and class C, hard to undo)
 
 EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `claim_task` (EA3-34). MCP-G2 builds `set_assignees`, and it adds inputs to `create_task` and `update_task` (EA3-52). MCP-G1 builds `create_project`, `update_project`, `preview_move_tasks` and `move_tasks` (EA3-53). Each needs `projects:write`, and each write passes the nonce, the scope check, the flag and the cap of branch 0 (EA3-28 to EA3-30).
@@ -889,6 +893,13 @@ EA-6b moved `claim_task` into the table above (EA3-34), and EA-6c moved `add_com
 
 MCP-G1 adds `move_tasks`, a move across projects, as a class C tool (EA3-53). Its human confirmation step is the preview: the move needs the `preview_id` of the same selection, and `destructiveHint: true` makes the client ask the person. A bulk change is not exposed. A slice that adds one must add a human confirmation step too. MCP-G2 exposes the unassign of another person through `set_assignees`, and EA3-52 records why it needs no confirmation card. An agent may assign only a person who can already open the task, so it cannot widen access. `set_assignees` has `destructiveHint: true`, so a client may ask the person before a call.
 
+**The templates (WS-39 TPL-1a).** Two write tools reach two class C pairs of the chat manifest. Each needs `projects:write`, and each read of the list comes first, so a 404 of the write names the project and not the flag.
+
+- `save_as_template` calls `POST /projects/templates` with the keys `project_id`, `name`, `description` and `start_date` only. It makes one new template row and changes no row that exists. The server takes only a project that the whole organization can see (403 `source_not_org_wide`). A name is used once in the organization (409).
+- `create_project_from_template` calls `POST /projects/templates/{template_id}/apply` with the keys `idempotency_key`, `parent_project_id`, `name`, `description` and `start_date` only. The tool needs the key, and the gateway keeps it, as it does for `request_task_archive`, so the tool has no edge input. The same key and the same body again answer the first project with `replayed: true`.
+- The apply makes the project and each task through the one creator of the app, so the new project has the access of its parent, and each task has the source `mcp`. It can add a task type, a field or a tag to the space of the parent, as a member can in the app. It changes no grant.
+- Each coded refusal of the routes maps to a fixed text (`tools._TEMPLATE_CODES`). The edge never sends the gateway's words. Both tools have the hints of a write with `idempotentHint: true`.
+
 The archive is the one class C act that an agent can reach, and only through a request (EA3-40). The tool `request_task_archive` is class B, because it only writes a question. The class C act is the archive itself, and only the member does it, on a route that the edge cannot call.
 
 **The archive (EA3-33, EA3-40, EA-6g, MERGED and live, #1070).** An agent may archive a task only after the member of the connection approves it on the task in Metorite. The approval goes through an agent run of EA-12 (§12.1), not through MCP elicitation. EA3-2 keeps `/mcp` stateless, and Claude Code declines a form elicitation in the terminal and in VS Code. The agent never deletes a task, and an archive does not cascade to the subtasks.
@@ -974,6 +985,8 @@ SW-31a (`agent_coordination.md` SW-31) adds two read pairs: `GET /agent-guidance
 
 **The fifth exception (MCP-G1).** The node PATCH gains `If-Match`. It needs an entry in `FIELD_EXEMPT` of the manifest, or `test_projects_field_parity.py` fails. The chat sends no `If-Match`.
 
+**The sixth exception (WS-39 TPL-1a).** `POST /projects/templates` and `POST /projects/templates/{template_id}/apply` are class C in the manifest, because the chat asks one card for each. Both are pairs of `MCP_WRITE_ROUTES`. `CLASS_C_WRITES` of `test_mcp_edge_coverage.py` names each one with its reason, and rule 2 allows class C for those two only. The save makes one new row and changes no row that exists. The apply makes one new project under a parent that the member sees, through the one creator of a node and of a task, and a required key makes a retry return the first project.
+
 **The tool record.** Each tool in `agent_edge/tools.py` declares `name`, `title`, `required_scope`, `inputSchema`, `outputSchema`, `annotations` and its routes. `required_scope` is a scope string, or `None` for "any live token". A read has the annotations `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. A write (EA-6a) declares its `method`, and it has `readOnlyHint: false` with the other three the same.
 
 `create_task` (EA-6d) is the one named exception, with `idempotentHint: false` (§9.2). `NON_IDEMPOTENT_WRITES` in the fence names it.
@@ -981,7 +994,7 @@ SW-31a (`agent_coordination.md` SW-31) adds two read pairs: `GET /agent-guidance
 **The fence.** `tests/unit/test_mcp_edge_coverage.py` fails when any of these rules breaks:
 
 1. Each pair in `MCP_ROUTES` is a route that the gateway serves. Its method is `GET`, or it is `PATCH`, `POST` or `PUT` (MCP-G2) for a pair in `MCP_WRITE_ROUTES`. `MCP_WRITE_ROUTES` holds no GET pair.
-2. Each pair is class A in `MANIFEST`, or it is a named exception. EA-3 has one exception, `GET /auth/me`. A pair in `MCP_WRITE_ROUTES` may be class B. No class C or X route appears.
+2. Each pair is class A in `MANIFEST`, or it is a named exception. EA-3 has one exception, `GET /auth/me`. A pair in `MCP_WRITE_ROUTES` may be class B. No class C or X route appears, except the pairs that `CLASS_X_WRITES`, `CLASS_X_READS` and `CLASS_C_WRITES` of the fence name (the third and the sixth exception above).
 3. Each tool declares a `required_scope` key, the four annotations, an `inputSchema` and an `outputSchema`. A write tool has `readOnlyHint: false` and needs `projects:write`.
 4. Each tool input maps to a parameter of its route. The fence reads the parameters from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does: the path, query and header parameters, and the fields of each model in `dependant.body_params`. The tool record declares each map, such as `text` to `q` and `expected_version` to `If-Match`. An input that the edge applies itself is a named exception, and the tool record lists it in `edge_inputs`. EA-3 has four: `parent_id`, `text`, `limit` and `cursor` of `list_projects`, because `GET /projects/tree` takes no parameter. A new edge input needs a spec amendment.
    - EA-6d adds a fifth, `idempotency_key` of `create_task`. The edge keeps the key in its own slot, and the route takes no such field (§9.2).

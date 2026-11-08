@@ -81,6 +81,11 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - While `AGENT_GUIDANCE_ORGS` does not name the org, the gateway answers 404, and the edge leaves out each key. A claim whose guidance read fails still succeeds, with no key.
   - The server instructions say how to read the guidance. Fences: `test_agent_guidance.py`, `test_mcp_edge_claim.py` (`TestClaimReturnsGuidance`), `test_mcp_edge_prompts.py` (`TestGuidanceRule`).
 
+- WS-39 TPL-1a (`project_management_app.md` §14.8) adds three tools over the template routes of the Projects app. They answer the flag text while `PROJECTS_TEMPLATES_ORGS` does not hold the org.
+  - `list_templates` reads `GET /projects/templates`. The name and the description of a template leave as untrusted text.
+  - `save_as_template` posts `TEMPLATE_SAVE_BODY_KEYS` only, and `create_project_from_template` posts `TEMPLATE_APPLY_BODY_KEYS` only (rule 18). Each reads the list first, so a 404 of the write means the project. The apply sends its required `idempotency_key` to the gateway, which keeps it, so the tool has no edge input.
+  - The two write pairs are class C in the chat manifest, and `CLASS_C_WRITES` of the coverage fence names them. Each coded refusal maps to a fixed text of `_TEMPLATE_CODES`. Fence: `tests/unit/test_mcp_edge_templates.py`.
+
 ## Local contract
 
 1. **The flag.** While `agent_access_enabled` is false, every request answers 404 and does nothing else. That covers every path and every method, `OPTIONS` and `HEAD` too. The ASGI middleware `EdgeGate` in `app.py` answers first, before the router. A wrong method then cannot leak a 405 with an `Allow` header.

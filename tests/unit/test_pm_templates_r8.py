@@ -202,6 +202,15 @@ def test_the_payload_literals_mirror_the_vocabularies() -> None:
     assert set(typing.get_args(field_type)) == set(FIELD_TYPES)
 
 
+def test_a_date_that_is_not_real_is_a_422_not_a_500() -> None:
+    """The pattern of the body passes 2026-02-30. The parse refuses it."""
+    assert templates._day(None) is None
+    assert str(templates._day("2026-12-01")) == "2026-12-01"
+    with pytest.raises(HTTPException) as caught:
+        templates._day("2026-02-30")
+    assert caught.value.status_code == 422
+
+
 def _task(title: str, children: list[dict] | None = None, **extra: Any) -> dict[str, Any]:
     return {"title": title, "children": children or [], **extra}
 

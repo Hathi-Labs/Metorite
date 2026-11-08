@@ -163,6 +163,18 @@ The agent can also do these three things:
 
 **The delete switch is on by default.** The switch **Let my AI agents delete tasks** is in **Integrations**, in the **AI agents** view. To stop all deletes by your agents, turn it off there. Your agents cannot change this switch.
 
+### Project templates
+
+When your organization has project templates turned on, three more tools show:
+
+| Tool | What it does |
+|---|---|
+| `list_templates` | It reads the project templates of your organization. Each template gives its name, its description and how many statuses, task types, fields, tags and starter tasks it holds. Every member sees the same list |
+| `save_as_template` | It saves one project as a new template of your organization. The template copies the statuses, task types, fields, tags and tasks of the project, with each date as days from the start. It copies no person, no comment and no history. Metorite takes only a project that the whole organization can see, because every member can read a template |
+| `create_project_from_template` | It makes one new project from a template, inside a space, a folder or a project that you can see. Each task date is the start date plus its days in the template. The tool adds to the whole space each task type, field or tag that the space does not have. The same `idempotency_key` again gives back the first project and makes no second one |
+
+The new project has the access of the space or the project above it. An agent that you pinned to some projects sees only a template whose source project it can see.
+
 ## Ask an agent in Metorite
 
 **"Ask an agent" is live in each organization since 2026-10-15.** You can give work to your agent from the task itself:
