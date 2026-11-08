@@ -305,6 +305,8 @@
 > and the ACP-style "hand a task to the owner's local coding CLI" — all recorded as non-goals
 > or later phases in §1, so their absence is a decision, not an omission.
 >
+> **Reversed in part, 2026-11-08 (D195):** sprints are now in scope, for people and agents. §13 holds the design.
+>
 > **Research provenance (2026-08-05):**
 > - `Paca-AI/paca` @ master (v0.11.0) — **Apache-2.0: patterns adopted, no code translated**
 >   (stack mismatch). Full findings + adopt/adapt/refuse verdicts:
@@ -346,8 +348,10 @@ extra middle phase two-way sync demands.
    both ClickUp code paths, their webhook, cron, and credentials are retired (§7.4).
 
 **Non-goals (v1 — record departures here per `user_management_contract.md` §7):**
-- **Sprints.** Paca has them; we don't run Scrum. The schema leaves room (nothing blocks a
-  later `pm_sprints` + a `sprint` view context); no table now.
+- ~~**Sprints.** Paca has them. We don't run Scrum. The schema leaves room (nothing blocks a
+  later `pm_sprints` + a `sprint` view context). No table now.~~ **REVERSED 2026-11-08 (D195,
+  tasks 979 and 959).** Cycles and sprints are in scope, for people and agents. §13 holds the
+  design, and SP-1 adds the table. The struck text stays as history.
 - ~~**Custom fields.**~~ Paca's `field_key`→JSONB pattern was the recorded additive path,
   and **WS-27l took it 2026-08-07** (§11.9). The departure from the recorded plan is one
   line: deleting a definition also strips its values, which Paca does not do.
@@ -551,7 +555,7 @@ Center master board and a Sales-slice board order the same task differently with
 fighting.**
 
 ### 3.10 What is deliberately absent
-No `pm_sprints`, no `pm_custom_field_definitions`, no attachments table (bind `/tasks`'s
+No `pm_sprints` (**reversed by D195: SP-1 adds a cycle table, §13**), no `pm_custom_field_definitions`, no attachments table (bind `/tasks`'s
 `gtd_attachments` pattern later or reuse the email/notes storage seam — additive), no
 notifications table (the platform inbox owns notification concerns), no closure table, no
 `position` on `pm_tasks`.
@@ -2022,7 +2026,9 @@ across at least three timezones, the WS-27q lesson.
 
 **Not in scope:** resizing a bar by dragging its edge (a second gesture with its own
 half-day/rounding questions), critical-path computation, and baselines. Each is a separate
-decision, and none of them is what was asked for.
+decision, and none of them is what was asked for. **Decided later (D195, 2026-11-08):** the
+critical path and baselines are in scope. One engine in `project_planning.md` (PJP-6) computes
+them (§13.4).
 
 ---
 
@@ -5116,7 +5122,7 @@ interesting it is to build.
 | 11 | ~~**The card looks nothing like /tasks'**~~ | — | **WS-27s ✅ BUILT 2026-08-07** |
 | 12 | **Dependencies cannot be drawn** | `blocks` exists and is cycle-guarded, but wiring one means a dropdown and a task number in a panel — Jira and ClickUp make it a drag between two bars | **WS-27t** |
 
-**Deliberately NOT on this list:** sprints (a stated non-goal, §1), and time tracking and
+**Deliberately NOT on this list:** sprints (a stated non-goal, §1, **reversed 2026-11-08 by D195, see §13**), and time tracking and
 checklists (Paca moved both out of core into plugins — the growth path is subtraction). If
 any is wanted, it is a decision to record, not an omission to fix.
 
@@ -6338,7 +6344,8 @@ the research doc's license wall is binding on every ticket below.
 4. **A non-goal reversed in part**: §5 refuses "a docs surface" and "sprints" — both stand,
    but the sprints refusal now carries Plane's reference design (join-table membership,
    snapshot-on-close, carry-forward — research doc §3.7) so the eventual build starts from
-   a settled shape rather than a blank page.
+   a settled shape rather than a blank page. **D195 (2026-11-08) later reversed the sprints
+   refusal.** §13 holds the design.
 
 ### 11.20 WS-27ag — the house shell, and a mobile UI at all (built 2026-08-10)
 
@@ -8910,6 +8917,302 @@ in its parent's chip, so the parent still says that it has children.
 
 ⚠️ **The delta feed takes `top_level` too** (S3, §11.39). Without it, a
 synced board shows the subtasks that Hidden folded away.
+
+---
+
+## 13. Ways of working, cycles and the plan model (D195, 2026-11-08)
+
+**Status: ACTIVE.** This section reverses the sprint non-goal of §1 (D195). Design: `project-docs/research/agent_era_planning_2026-11.md`. Metorite: WM-0 (task 979), SP-0 (task 959), SP-11 (task 2294) and the epic SP (task 19). The epic WM is task 977. The sections below hold the style catalogue, the cycle calls, the plan model and the slice table.
+
+**The bottom line.** Projects runs five work styles as presets over one set of blocks. A cycle is a time box that people and agents share. A cycle is sized by the review hours of named people and by credits. A Goal sits above the epic, and one engine in `project_planning.md` computes the order of work.
+
+### 13.1 The work-style catalogue (WM-0, task 979)
+
+A **block** is a part that a project can show or hide. Examples are WIP limits, the Backlog canvas, cycles, a cooldown, milestones, baselines, a hill chart and priority scores. A **style** is a named set of blocks with defaults. No style adds a table of its own. The slices of the epic WM (task 977) build the blocks. This section only names them.
+
+| Style | Who it is for | Blocks on, with defaults | Rituals Mira runs (PC-4, task 973) | Template it seeds (task 18) |
+|---|---|---|---|---|
+| **Flow** (the default) | A team with a steady stream of work and no fixed dates | WIP limits (warn), age of each card, time in status, flow report with a service level expectation (WM-1, task 980) | A weekly flow check. A note on stuck work | A board with the statuses of the project |
+| **Sprints or Cycles** | A team that plans, builds and reviews in a fixed time box | The Backlog canvas, a cycle with a goal, capacity in review hours, close with carry-over, cycle reports (§13.2) | Planning, a daily note, a mid-cycle risk note, the review and the retro | A project with a Backlog canvas and a first cycle |
+| **Shape Up cycles** | A product team that bets on shaped work | The cycle time box with 6 weeks and a 2-week cooldown, the appetite of each bet, a hill chart, a betting table (WM-4, task 983) | A betting table before each cycle. A hill check each week | A project with a pitch list and a bet column |
+| **Plan-driven** | A team with a fixed end date and phases | Milestones with progress, phase gates with a sign-off (WM-2, task 981), a baseline and the critical path (WM-3, task 982) | A plan check each week. A gate review at each phase end | A project with phases and milestones |
+| **Personal** | One person who runs their own work | The Tasks lens, horizons and reviews. No cycle and no WIP limit | A weekly review | A personal project |
+
+**Rules of the catalogue.**
+
+1. **One style for each project.** A project has one style at a time. A team may mix blocks by hand. The picker then shows the style as "Custom". Fence: advisory until WM-1 lands, then `tests/unit/test_project_work_style.py` (new).
+2. **A change never deletes.** A change of style hides the blocks that it no longer uses. The data stays, and a change back shows it again. Fence: `tests/unit/test_project_work_style.py` (new, WM-1).
+3. **The picker is the SP-3 setting.** "How this team works" in SP-3 (task 962) becomes the style picker. It offers the five styles, and Flow is the default. Only a Sprints or Cycles project shows the cycle UI.
+4. **The critical path and baselines are decided.** They are in scope. WM-3 reads the one engine of `project_planning.md` §3.4 (PJP-6) and keeps no maths of its own (§13.4). Before D195, the Timeline slice of §9 named them "a separate decision". Fence: the module tests of PJP-6 (`tests/unit/test_planning_module.py`, new).
+5. **WIP limits warn by default.** A project can set a limit as a hard stop. Fence: advisory until WM-1 lands.
+6. **Story points stay refused.** Q2 of the design sets capacity in review hours and credits, so points do not reopen P-31. Work stays sized in hours from `estimate_mins`. Fence: advisory.
+
+### 13.2 The cycle calls (SP-0, task 959)
+
+A **cycle** and a **sprint** are one record. Copy for a Scrum team says "sprint". Copy for an agent team says "cycle". D195 and the design settle each call. A row marked **Changed** replaces the earlier default of the board.
+
+| Call | Settled |
+|---|---|
+| What a cycle belongs to | A project node. So one cycle can span the projects of a space or a folder |
+| How many run at once on a node | One active, and any number planned |
+| How a task joins | A join table with `UNIQUE (task_id)`, as §9 planned for P-23. A task sits in one cycle at most |
+| What happens to unfinished work at the close | The member picks for each task: the next cycle or the backlog. The move is a logged transfer, with one `pm_activities` row for each. Nothing rolls over in silence |
+| What a cycle stores at its start | The committed scope and its total. A report stays true after a carry-over |
+| How work is sized | Hours from `estimate_mins`. **Changed:** story points are not a project option (Q2) |
+| How capacity is set | **Changed:** the review hours of named people, plus a credit budget. Not velocity and not points. The plan card warns and never blocks |
+| The default length | **Changed:** one week (Q1). The daily release is the beat inside it. A cooldown of one or two days is optional, and the default is none. The Shape Up cycle of WM-4 reuses the time box with 6 weeks and a 2-week cooldown |
+| When a slice is done for a cycle | Merged (Q5). The pipeline stage `live` (SW-72) stays the proof of a release |
+| How work reaches an agent | Agents pull the ready slices of the active cycle in critical-path order, inside the WIP limits (Q6). A person can still assign by hand. `agent_coordination.md` holds the rule at SW-68 |
+| The Story type | A seeded, org-wide type beside Task, Bug and Epic (SP-2, task 961) |
+| The cycle goal | One sentence, required at the start. It names a Goal when the cycle serves one |
+| How a total counts a task that the member cannot see | See §13.7. It is an open question |
+
+**Fences.** `tests/unit/test_sprint_store_r8.py` (new, SP-1) fences the store rules. They are one cycle for a task, no read across organizations, a logged move for each carry-over, and a start total that a carry-over does not change. The default length and the capacity rules are advisory until SP-3 and SP-4 land (R7).
+
+### 13.3 The plan model (design §4)
+
+The model has five records. Each lives in the one task store (D52) or beside it. None adds a second store of tasks.
+
+1. **Goal.** The outcome that the work is for. It is a task type "Goal" (Q3). Its fields are the outcome in one sentence, how we know it is met, a target date or cycle, a lead and a health. It sits at the top of a space or a project, and it is the parent of its epics. WM-5 (task 984) builds it.
+2. **Epic.** One output that the goal needs, which a reviewer can accept as a whole. It carries a contract and roll-ups. Its parent may be a Goal and nothing else. No epic sits inside an epic (Q4).
+3. **Slice.** One unit that one agent finishes in one run, and that a person can review in 15 to 30 minutes. A slice has a brief, a risk tier, an agent estimate, a review estimate, its `blocks` links, an assignee and a delegate. A slice has no slices.
+4. **Workstream.** A parallel track towards the goal, usually one app project or one area. It has a lead, an agent setup and a WIP limit. It is a lane record (SW-67). The HathiLabs lanes L1 to L8 are workstreams.
+5. **Cycle.** A time box over a node. It has a cycle goal, the slices that it commits, a capacity snapshot, a start and a close.
+
+**The epic contract.** An epic type carries seven fields (SP-8, task 2291).
+
+| Field | What it holds | Who writes it |
+|---|---|---|
+| Outcome | One sentence: what is true when the epic is done | The lead, drafted by Mira |
+| Acceptance | 3 to 7 checks that a reviewer can tick | The lead, drafted by Mira |
+| Out of scope | What this epic does not do | The lead |
+| Risk tier | LOW, STANDARD or HIGH. It sets the review depth | Code proposes it from the paths. The lead confirms |
+| Appetite | Credits and review hours that the epic may spend | The lead |
+| Workstream | The track that owns it | The lead |
+| Spec link | A Knowledge page or a repository file | Anyone |
+
+**Roll-ups.** An epic computes these values from all of its descendants. Today it counts only its direct children.
+
+- **Progress:** slices done and total, and the estimate done and total.
+- **Spend:** credits used and review hours used, against the appetite.
+- **Waits:** the open questions and previews, and the person that each waits on.
+- **Forecast finish, health and hill position:** these come from the engine (§13.4), after SP-11 lands.
+
+The **epic page** shows the contract, the slice tree, the dependency graph with the critical path, the runs and agents at work, the waits, and the evidence for each acceptance check (SP-10, task 2293).
+
+**Why epics feel thin, and the fix for each cause.**
+
+| Cause | Fix | Slice |
+|---|---|---|
+| Nothing in the app sets a task type | A type control, and "Make it an epic" | SP-6 |
+| A tag "Epic" and the Epic type both exist | A one-off move to the type. The tag stays | SP-7 |
+| No outcome or acceptance field | The epic contract | SP-8 |
+| The roll-up counts direct children only | Roll-ups over all descendants | SP-9 |
+| No epic page | The epic page | SP-10 |
+| Nothing above the epic | The Goal type | WM-5 |
+| The critical-path maths is planned three times | One engine, owned by PJP-6 | SP-11 |
+| An outside planner cannot read the plan | `get_plan` | SP-12 |
+
+Fence: the R8 test of SP-9 (`tests/unit/test_epic_rollup_r8.py`, new) and the Epic-root test of SP-6. The model text itself is advisory.
+
+### 13.4 One critical-path engine (SP-11, task 2294)
+
+`project_planning.md` §3.4 (PJP-6, task 1483) owns the critical-path maths. SW-90 (task 1936) and WM-3 (task 982) read the engine. They keep no maths of their own. The model never computes a path. Code computes, and the model judges. Fence: the module tests of PJP-6 (`tests/unit/test_planning_module.py`, new). The reads of SW-90 and WM-3 add a test that they call the module and not a function of their own.
+
+### 13.5 The cycle loop, the close and the retro
+
+The design (§7) holds the loop for a swarm. This spec takes three rules from it.
+
+1. **The close asks about each unfinished slice.** The choices are the next cycle or the backlog. The move is logged.
+2. **The close shows outcomes.** It shows whether the goal was met, the share of slices that pass the first review, the age of the review queue and the fix rounds. It also shows the credits for each merged slice and the slip of the critical path. It never shows points, lines or pull request counts.
+3. **A retro names the cause and proposes a rule change.** The lead approves each change (PB-2, SW-98, SW-99).
+
+Fence: advisory until SP-4 (task 963) lands. Then the report tests of SP-4 bind it.
+
+### 13.6 The slice table
+
+Each row has one Metorite task. The rows SP-1 to SP-5 keep the scope of the board, adjusted to D195. The risk tiers follow the board.
+
+| Row | Task | Scope | Done when | Risk | Depends on |
+|---|---|---|---|---|---|
+| **SP-1** | 960 | The cycle store: a cycle table and a membership table with `UNIQUE (task_id)`. Both are tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and expand only (R6). Routes to create, edit, start, close and list. Start stores the committed scope and its total. Close takes a choice for each unfinished task and logs each move. The flag `PROJECTS_SPRINTS` is OFF by default | R8 tests prove one cycle for a task, no read across organizations, a logged move for each carry-over, and a start total that a carry-over does not change | HIGH | SP-0 |
+| **SP-2** | 961 | A seeded Story type. An epic filter in the Backlog and on the Board. Epics as bars on the Timeline. "Suggest stories" with Mira, and nothing is written before the accept. The progress of an epic moves to SP-9 | An epic with 5 children and 2 done shows "2 of 5". "Suggest stories" creates no task before the accept. Visual review at 1440 px and 390 px | STANDARD | SP-0 |
+| **SP-3** | 962 | The style picker (§13.1) with the Sprints or Cycles style. A Backlog canvas in the tab row (OP-12, task 839): planned cycles above, the backlog below. Drag, or "Move to sprint" on the phone. Each cycle shows its count and its hours against its capacity: the review hours of named people, plus credits. Over capacity warns and never blocks | Four-capture visual review at 1440 px and 390 px. A drag and its Undo both work | STANDARD | SP-1 |
+| **SP-4** | 963 | Start and close dialogs. The default length is one week, and the goal is required. The Board opens on the active cycle. Reports: committed, added, done and carried over. A burndown that shows each change of scope. Throughput by count and by hours, with no points | R8 tests prove the report numbers after a carry-over. Visual review on desktop and phone | STANDARD | SP-1, SP-3 |
+| **SP-5** | 964 | Cycles in the chat, on WhatsApp and over the MCP, through the one manifest (D136): list, status, create, plan, start, close and move. A bulk move and a close show the payload on one approve card (D124.2). External agents see the cycle of a task in `get_task` and `get_task_context` | The manifest fence passes with each route in its class. One chat run plans a cycle and starts it | STANDARD | SP-1 |
+| **SP-6** | 2289 | A type control on the task page and the row menu, and a command "Make it an epic". The Epic-root rule still holds: an Epic has no parent, or only a Goal parent after WM-5. Chat sets the type on one card. `update_task` takes `type_id`, with a parity row in `skill_projects/manifest.py` | A member sets the type in the app and in chat. An agent sets it with `update_task`. A type change that breaks the Epic-root rule is refused with a reason | STANDARD | SP-0 |
+| **SP-7** | 2290 | A script moves each top-level task tagged "Epic" that has no epic type to the Epic type of its project. The tag stays. A task with a parent is skipped and listed. Each change goes in the task timeline. A dry run comes first, with a count for each organization | The dry-run counts are on the task. After the run, no top-level task tagged "Epic" lacks an epic type. Run it on HathiLabs first. A customer organization needs the owner's OK on the count | HIGH (a data write in live organizations) | SP-6 |
+| **SP-8** | 2291 | The seven fields of the epic contract (§13.3). The chat drafts the outcome and the checks. The MCP reads and writes them. A field on a task that is not an epic is refused. The custom-field store makes it STANDARD. A migration makes it HIGH, and the builder states which | A member fills the contract in the app and in chat. An agent reads it in `get_task_context` | STANDARD with the custom-field store, HIGH with a migration | SP-0, SP-6 |
+| **SP-9** | 2292 | One read that computes, for an epic, progress, spend and waits over every descendant that the reader can see. It leaves room for forecast, health and hill position. A hidden descendant is left out and counted in `hidden` | R8: an epic with slices at depth 1, 2 and 3 counts all of them. A hidden descendant is counted in `hidden`. The direct-child count of today stays correct | STANDARD (read only) | SP-0. Spend needs SP-8 |
+| **SP-10** | 2293 | The epic page (§13.3). The graph shows the links and no path until the engine ships. On the phone the graph becomes an ordered list. The one look applies (`DESIGN_SYSTEM.md`, `statusAccent.ts`). D145 owner preview | The page renders for an epic with 3 levels of slices, in light and dark, at compact density and at phone width. The captures are on the task | STANDARD | SP-8, SP-9. The graph needs SW-16 (task 347) |
+| **SP-11** | 2294 | The spec merge of §13.4. This change closes it | Three rows name one owner. The two doc tests pass | LOW | SP-0 |
+| **SP-12** | 2295 | MCP tool `get_plan(root_task_id)`, class A (read). It returns the ready set, the waves, the critical path with slack, the forecast dates at 50% and 85%, the next slice, and the slices that wait on a person. The same read is a chat tool. Text from other people leaves as `untrusted_text`. A hidden slice is counted and not named. Rows in `skill_projects/manifest.py` | R8: an epic with 6 slices and 5 `blocks` links returns the right waves and path. A hidden slice is counted and not named | STANDARD | PJP-6 (task 1483), SW-16 |
+
+**Order.** The epic slices SP-6 to SP-10 and the `blocks` tool (SW-16) come first. The engine and SP-12 follow. The cycle slices SP-1 to SP-5 read the engine. This order follows §10 of the design. The first HathiLabs cycle starts when SP-4 lands (Q9).
+
+### 13.7 Open question for the owner (task 849)
+
+**How does a total count a task that the member cannot see?** The board has no answer yet. Task 849 holds the question for the space summary. The same call binds a cycle total.
+
+**Default written here:** count only what the reader can see, and show how many are hidden. A total then reads "12 tasks, 3 hidden". This matches `GET /projects/my/summary`. SP-1, SP-9 and SP-12 build to this default. The owner can reverse it. Say yes or no on task 849.
+
+### 13.8 What other apps do
+
+The notes below are research from the web, copied from two comments on the Metorite board. Each source is a claim to check. Check the vendor's current page before you copy a detail. Every "Not verified" line stays.
+
+#### Sprints (research notes, 2026-10-29, task 19)
+
+The web searches ran on 2026-10-29. Each item names its source type.
+
+**Jira** (Atlassian tutorials and community pages)
+
+- The backlog is the hub of sprint planning. There the team sizes the work, changes the scope, checks the velocity and reorders.
+- The team creates a sprint in the backlog, then fills it. Start sets the name, the goal and the dates. A lower sprint must move to the top before it can start.
+- The sprint goal answers "why is this sprint valuable?".
+- At the close, unfinished work goes back to the backlog or to the next sprint. This comes from a third-party guide, so check the Atlassian page.
+- The hierarchy is Epic → Story or Task → Sub-task. Sprints work at the story level. Paid plans add levels above Epic.
+- Reports: burndown, burnup, sprint report and velocity. A vendor blog says a story with many sub-tasks moves the report only when the whole story is done.
+- **We take:** the backlog as the place to plan (SP-3), and name, goal and dates at the start (SP-4). Also the reports (SP-4), and Epic → Story → Subtask on `parent_task_id` (SP-2). A story or a task joins a cycle. A subtask does not.
+
+**Linear, cycles** (vendor docs)
+
+- Cycles can run on a schedule, with an optional cooldown between them.
+- At the end, the unfinished issues leave the cycle and move to the next cycle without a request. An issue never stays in a closed cycle.
+- A capacity dial uses the velocity of the last 3 cycles. A third-party guide adds that it warns and never blocks.
+- **We take:** a capacity that warns and never blocks (SP-3). D195 sets the unit to review hours and credits, not velocity.
+- **We do not take** the automatic rollover. The member picks for each task, because a new team must see what slipped.
+
+**Plane, cycles and modules** (vendor docs, Plane University, and our pinned reference)
+
+- A cycle is a sprint. Only one cycle is active at a time.
+- Auto-schedule sets the length, an optional cooldown and a start day. The rollover can move all unfinished items, only the high-priority ones, or send them to the backlog.
+- Modules group work by feature or release. Epics roll work up to goals. Intake turns outside requests into work items.
+- Our spec maps carry-over to Plane's `cycle_transfer_issues.py`, as a logged transfer (the P-23 row of the reference table in §9.3). It also cites a Plane advisory on the cycle join (the sprint membership item of §9).
+- **We take:** one active cycle for each node, and carry-over as a logged transfer (SP-1).
+- **We do not take** modules. An epic or a sub-project does that job. Intake exists already (`pm_intake`).
+
+**ClickUp, Sprints** (vendor help, a user feedback thread)
+
+- A Sprint Folder holds the backlog list and one list for each sprint.
+- At the end, ClickUp asks what to do with each unfinished task: move it to the next sprint, send it back to the backlog, or close it.
+- A user reports that the move loses the starting points of the sprint, so the review is wrong.
+- **We take:** the choice for each task at the close (SP-4), and a snapshot of the committed total at the start (SP-1). A carry-over then never changes the past report.
+
+**The Scrum Guide 2020** (scrumguides.org, and summaries by Scrum Alliance and Cprime)
+
+- A sprint holds four events: Sprint Planning, the Daily Scrum, the Sprint Review and the Sprint Retrospective. Backlog refinement goes on all the time.
+- Planning answers why, what and how. The why becomes the sprint goal.
+- The Daily Scrum takes 15 minutes, and checks progress toward the goal.
+- For a one-month sprint: planning takes at most 8 h, the review at most 4 h, and the retro at most 3 h.
+- The 2020 guide added the Product Goal, and it says "size" where it once said "estimate".
+- **We take:** a required goal at the start (SP-4). The events become the rituals of Mira (PC-4, task 973). The copy says "size".
+
+**Atlassian, AI work breakdown** (Atlassian Community and help pages)
+
+- "Suggest child work items" on a work item proposes its children. The member accepts each one or all, and can edit them first.
+- A linked page gives the context. The feature keeps the permissions of the member.
+- **We take:** "Suggest stories" on an epic (SP-2). It writes nothing before the accept.
+
+**Paca** (our pinned reference, Apache-2.0)
+
+- Paca has a sprint entity (`services/api/internal/domain/sprint/entity.go`, cited in §9).
+- The research file `paca_pm_research_2026-08.md` holds more. Task 956 brought it back.
+
+**Not verified.** The close behaviour in the own docs of Atlassian. Whether ClickUp moves the unfinished tasks without a request. The claims of Plane about velocity and capacity, which come from its marketing pages.
+
+**Sources.**
+
+- https://www.atlassian.com/agile/tutorials/sprints
+- https://confluence.atlassian.com/x/4Ai7E
+- https://staragile.com/blog/jira-close-sprint
+- https://www.adaptavist.com/blog/improve-project-structure-by-adding-new-jira-hierarchy-levels
+- https://community.atlassian.com/forums/Jira-questions/JIRA-hierarchy/qaq-p/1940075
+- https://linear.app/docs/use-cycles
+- https://docs.plane.so/cycles
+- https://university.plane.so/courses/201-the-growth/09-intro-to-cycle-automation.html
+- https://www.mintlify.com/makeplane/plane/features
+- https://help.clickup.com/hc/en-us/articles/40976121279639-How-to-set-up-Sprint-planning-for-Agile-teams
+- https://help.clickup.com/hc/en-us/articles/6303829495703-Manage-Sprint-spillover-tasks
+- https://feedback.clickup.com/feature-requests/p/add-tasks-to-next-sprint-rather-than-moving-unfinished-tasks-to-next-sprint
+- https://scrumguides.org/docs/scrumguide/v2020/2020-Scrum-Guide-US.pdf
+- https://answers.atlassian.com/t5/Atlassian-Intelligence-Articles/Spend-less-time-creating-work-and-more-time-moving-work-forward/ba-p/2681622
+
+#### Ways of working (research notes, 2026-10-29, task 977)
+
+The web searches ran on 2026-10-29. Each item names its source type.
+
+**Is Scrum still relevant?** (secondary sources on the Digital.ai State of Agile report. No first-hand 2025 figure was found.)
+
+- About 3 in 4 respondents use a hybrid or homegrown model. One aggregator splits it as 48% hybrid and 26% homegrown, and the year of the figure is unclear.
+- Scrum is still the most used named framework: 63% of team-level agile users (the 17th report, 2024).
+- **We take:** build the blocks of each method, and let a team mix them. We do not pick one doctrine.
+
+**Kanban** (the Kanban Guide, kanbanguides.org, version 2020.12)
+
+- Four measures: WIP, throughput, work item age and cycle time. Explicit WIP limits control WIP and make a pull system.
+- A service level expectation pairs a time with a chance, for example "85% of items finish in 8 days", computed from history.
+- Work item age is a leading signal for unfinished work. Cycle time is a lagging one.
+- **We take:** all of WM-1 (task 980).
+
+**Monte Carlo forecasting** (the ActionableAgile docs, a Scrum.org blog, practitioner posts)
+
+- A simulation of past throughput answers "When will it be done?" as a date with a chance. It needs no estimates.
+- Irregular delivery, such as everything on the last day, weakens it.
+- **We have it already:** RA-6 (task 423, the 50% and 85% dates). WM-1 brings it to the chat for an epic.
+
+**Shape Up** (Basecamp's method, from third-party summaries)
+
+- Six-week cycles, then a two-week cooldown. The appetite (a fixed time) comes before the design.
+- A betting table picks shaped pitches. Hill charts track the scopes. There is no long backlog.
+- **We take:** WM-4 (task 983). The cycle reuses the time box of SP-1, with a cooldown.
+
+**Plan-driven and hybrid work** (vendor pages: ONES, ChartPad, InstaGantt)
+
+- A baseline keeps the approved plan and shows each change against it. The critical path shows what sets the end date. Stage gates mark the reviews.
+- In a hybrid, sprints map onto phases, so that each sprint feeds the plan.
+- Linear milestones split a project into phases with target dates. Plane templates carry milestones.
+- **We take:** WM-2 (task 981) and WM-3 (task 982). The sources are marketing grade, so WM-3 is P2.
+
+**Goals and OKRs** (Atlassian Atlas and Jira Goals, Linear initiatives, Plane initiatives)
+
+- Goals link to epics and projects. Atlas gives a projected score from the confidence of the owner.
+- A Linear initiative groups projects, with an owner, a target date, and a health value taken from its latest update.
+- **We take:** WM-5 (task 984), after the owner's call on task 352.
+
+**Priority scores** (Productboard, Decadis, Tempo Structure and Fluid docs)
+
+- RICE = Reach × Impact × Confidence ÷ Effort. ICE = Impact × Confidence × Ease. WSJF = Cost of Delay ÷ Job Size (SAFe).
+- Guard every division: a blank or zero divisor gives no score.
+- **We take:** WM-6 (task 985), beside the D78 matrix.
+
+**AI in project tools in 2026** (review sites)
+
+- Asana has AI Teammates and AI status updates. ClickUp Brain finds duplicates and stuck work. monday AI flags bottlenecks and forecasts from velocity.
+- **We take:** Mira drafts the updates (LP-1, task 988), finds duplicates (LP-2, task 989), flags stuck work by its age (WM-1), and forecasts (RA-6).
+
+**Not verified.** The first-hand State of Agile 2025 figures. How Asana Goals roll up progress. The detail of the hill chart: the book itself is the source.
+
+**Sources.**
+
+- https://echometerapp.com/en/scrum-statistics-2026/
+- https://businessmap.io/blog/agile-statistics
+- https://kanbanguides.org/the-kanban-guide/2020.12
+- https://www.learnsignal.com/blog/kanban-guide-flow-metrics-wip-limits-explained-guide/
+- https://www.scrum.org/resources/blog/release-planning-done-scrum-managing-stakeholder-expectations-forecasting
+- https://dev.to/leading-edje/agile-forecasting-leveraging-monte-carlo-simulations-and-flow-metrics-for-predictability-1a6l
+- https://reflectoring.io/book-review-shape-up/
+- https://resources.rework.com/libraries/project-management/shape-up-method
+- https://www.rubick.com/wiki/process/shape-up
+- https://ones.com/blog/?p=1147137
+- https://linear.app/enablement/guide/building-blocks
+- https://www.atlassian.com/work-management/project-management/goal-management-software
+- https://support.productboard.com/hc/en-us/articles/7400189831955
+- https://knowledge.fluid.work/en/articles/6676546
+- https://www.techrepublic.com/article/ai-project-management-tools/
+
+#### Agents (research notes, 2026-11-08, design file)
+
+The research for cycles of agent teams is in §2 and §12 of `project-docs/research/agent_era_planning_2026-11.md`. That file lists its sources and its "Not verified" line.
 
 ---
 
