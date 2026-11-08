@@ -90,6 +90,11 @@ class _FakeRedis:
         self.ttls[k] = seconds
         return True
 
+    async def decrby(self, k: str, amount: int = 1) -> int:
+        self.calls.append(("decrby", k))
+        self.counts[k] = self.counts.get(k, 0) - amount
+        return self.counts[k]
+
     async def ttl(self, k: str) -> int:
         self.calls.append(("ttl", k))
         return self.ttls.get(k, -1)
@@ -431,13 +436,18 @@ def test_the_docstring_carries_the_rule_in_full() -> None:
 
 
 @pytest.mark.parametrize("sub_agent", [False, True])
-def test_both_addendum_sections_carry_the_rule(sub_agent: bool) -> None:
+def test_both_addendum_sections_carry_the_rule(monkeypatch, sub_agent: bool) -> None:
     sections = addendum.COMPACT_SECTIONS if sub_agent else addendum.FULL_SECTIONS
     mine = [s for s in sections if "analyze_image" in s.gate]
     assert len(mine) == 1 and mine[0].family == "core"
     assert mine[0].gate == ("analyze_image",)
-    held = addendum.render_injected_tools_addendum(
-        is_sub_agent=sub_agent, effective_scope=frozenset({"analyze_image"}))
+    token = bind_tenant(ORG)
+    try:
+        monkeypatch.setattr(get_settings(), "image_analysis_orgs", ORG, raising=False)
+        held = addendum.render_injected_tools_addendum(
+            is_sub_agent=sub_agent, effective_scope=frozenset({"analyze_image"}))
+    finally:
+        release_tenant(token)
     assert _flat(addendum.IMAGE_CALL_RULE) in _flat(held)
     # An agent that does not hold the tool reads none of its prose. (The risk
     # block names every platform tool, as it names read_attachment.)
@@ -445,6 +455,61 @@ def test_both_addendum_sections_carry_the_rule(sub_agent: bool) -> None:
         is_sub_agent=sub_agent, effective_scope=frozenset({"read_attachment"}))
     assert _flat(addendum.IMAGE_CALL_RULE) not in _flat(without)
     assert "analyze_image(" not in without
+
+
+def _rule_in_addendum(monkeypatch, sub_agent: bool, flag: str, org: str | None) -> bool:
+    monkeypatch.setattr(get_settings(), "image_analysis_orgs", flag, raising=False)
+    token = bind_tenant(org) if org else None
+    try:
+        text = addendum.render_injected_tools_addendum(is_sub_agent=sub_agent)
+    finally:
+        release_tenant(token)
+    return _flat(addendum.IMAGE_CALL_RULE) in _flat(text)
+
+
+@pytest.mark.parametrize("sub_agent", [False, True])
+def test_a_dark_org_reads_no_section_and_a_lit_org_reads_it(monkeypatch, sub_agent) -> None:
+    """P1 of the fix round: no cost for an org off IMAGE_ANALYSIS_ORGS."""
+    assert not _rule_in_addendum(monkeypatch, sub_agent, "", ORG)
+    assert not _rule_in_addendum(monkeypatch, sub_agent, OTHER_ORG, ORG)
+    assert not _rule_in_addendum(monkeypatch, sub_agent, ORG, None)
+    assert _rule_in_addendum(monkeypatch, sub_agent, ORG, ORG)
+    assert _rule_in_addendum(monkeypatch, sub_agent, "*", ORG)
+
+
+def test_a_dark_org_run_holds_no_tool_and_a_lit_org_run_holds_it(monkeypatch) -> None:
+    """The name leaves the scope of a dark run, at both sites that use the union."""
+    from orchestrator import _tool_injection as ti
+
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: ORG)
+    monkeypatch.setattr(get_settings(), "image_analysis_orgs", "", raising=False)
+    assert ti._image_withheld() == frozenset({"analyze_image"})
+    monkeypatch.setattr(get_settings(), "image_analysis_orgs", OTHER_ORG, raising=False)
+    assert ti._image_withheld() == frozenset({"analyze_image"})
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: None)
+    monkeypatch.setattr(get_settings(), "image_analysis_orgs", "*", raising=False)
+    assert ti._image_withheld() == frozenset({"analyze_image"})
+    monkeypatch.setattr(ti, "_run_org_or_none", lambda: ORG)
+    assert ti._image_withheld() == frozenset()
+    src = (REPO / "apps/services/orchestrator/orchestrator/_tool_injection.py").read_text(
+        encoding="utf-8")
+    assert src.count("| _image_withheld()") == 2  # both unions
+
+
+def test_a_refused_call_gives_the_slot_back(on, ws, redis, model) -> None:
+    """P2: a 402, a 400 or a fault spends no analysis."""
+    digest = hashlib.blake2b(MEMBER.lower().encode(), digest_size=12).hexdigest()
+    k = f"cc:{ORG}:image-analysis:{digest}"
+    _attach(ws, "a.png", PNG)
+    for err in (RoutedRefusal(402, "no credit"),
+                RoutedRefusal(400, "no binding for tier 'tier-vision'"),
+                RuntimeError("down")):
+        model.error = err
+        _analyze(ws, "a.png")
+        assert redis.counts[k] == 0
+    model.error = None
+    assert "Wrong password" in _analyze(ws, "a.png")
+    assert redis.counts[k] == 1
 
 
 def test_the_core_projects_rules_do_not_name_it() -> None:

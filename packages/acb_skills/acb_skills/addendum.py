@@ -767,6 +767,17 @@ def _dark_tools() -> frozenset[str]:
             dark.update(("org_facts", "crm_answer_question", "crm_propose_rule"))
         elif not answer_first_box_on():
             dark.add("crm_propose_rule")
+    # WS-VOX VOX-3 fix round: `analyze_image` is dark for a run whose bound
+    # tenant is not on IMAGE_ANALYSIS_ORGS, the reader the injection uses
+    # (`_tool_injection._image_withheld`). No tenant is dark too.
+    try:
+        from acb_common.assistant_profile import image_analysis_for
+        from acb_common.db import current_tenant
+
+        if not image_analysis_for(current_tenant()):
+            dark.add("analyze_image")
+    except Exception:
+        dark.add("analyze_image")
     return frozenset(dark)
 
 

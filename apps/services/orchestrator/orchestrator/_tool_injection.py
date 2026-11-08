@@ -1946,6 +1946,26 @@ def _facts_withheld() -> frozenset[str]:
     return frozenset(off)
 
 
+def _image_withheld() -> frozenset[str]:
+    """``analyze_image`` when the run's org is not on ``IMAGE_ANALYSIS_ORGS``.
+
+    WS-VOX VOX-3 fix round. The tool costs about 250 schema tokens, and its
+    addendum section more, in each chat. A dark org pays nothing: the name
+    leaves the SCOPE and the final list, like :func:`_facts_withheld`. The
+    org is the run's own (:func:`_run_org_or_none`), never request input. The
+    answer is per org and not per thread, so the tool list stays the same from
+    turn to turn and the prompt cache holds. No org withholds it too.
+    Fence: ``tests/unit/test_attachment_analyze_image.py``.
+    """
+    try:
+        from acb_common.assistant_profile import image_analysis_for
+    except ImportError:
+        return frozenset({"analyze_image"})
+    if image_analysis_for(_run_org_or_none()):
+        return frozenset()
+    return frozenset({"analyze_image"})
+
+
 def _whatsapp_withheld() -> frozenset[str]:
     """The tools a WhatsApp run does not get, or nothing outside one (WAC-10a).
 
@@ -2489,7 +2509,7 @@ def _inject_agent_tools(
     # WS-53 CRM-Q32 follow-up: `org_facts` (and, since CRM-Q32-8,
     # `crm_answer_question`) only for a run of an org on CRM_QUESTIONS_ORGS,
     # so no prompt names them for another org.
-    _facts_off = _facts_withheld()
+    _facts_off = _facts_withheld() | _image_withheld()
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
         withheld=_withheld | _egress | _mail_store | _opted_out | _wa_withheld | _facts_off,
@@ -3805,7 +3825,7 @@ def _pack_base_count(
     names -= gone  # `_add_crm_facts_block` drops an agent's own copy too
     withheld = (_withheld_shell_tools(agent_name, agent_config)
                 | _floor_opt_out(agent_name, agent_config)
-                | _whatsapp_withheld() | gone)
+                | _whatsapp_withheld() | _image_withheld() | gone)
     scope = _resolve_injected_scope(tool_scope, disabled_families=disabled, withheld=withheld)
     chain = [_tool_name(fn) for fn in _collect_injectable_platform_tools(agent_name)]
     injected = set(chain) if scope is None else {name for name in chain if name in scope}

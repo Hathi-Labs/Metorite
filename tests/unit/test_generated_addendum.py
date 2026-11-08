@@ -121,6 +121,9 @@ class _FakeCopilotAgent:
 
 @pytest.fixture()
 def _injection_env(monkeypatch):
+    # WS-VOX VOX-3: analyze_image is per org. These runs pin the surface of a
+    # lit org (the dark case is in test_attachment_analyze_image.py).
+    monkeypatch.setattr(ti, "_image_withheld", lambda: frozenset())
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
     monkeypatch.delenv("SKILLS_FAIL_CLOSED", raising=False)
     fake_apps = types.ModuleType("orchestrator.app_tools")
