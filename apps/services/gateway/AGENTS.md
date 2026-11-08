@@ -98,6 +98,14 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - A save takes `pg_advisory_xact_lock` on its scope, and the unique index and the retry stay as the backstop.
    - ⚠️ Each statement names `kind = 'guidance'`, so a rule row of item 0r never reaches a block, the history or the next version. Fences: `test_agent_guidance_r8.py` (case 9), `test_project_rules_static.py`.
    - Fences: `test_agent_guidance_r8.py`, `test_agent_guidance.py`.
+   - ⚠️ `project_chains` is the ONE project-tree walk of agent settings. The policy store (item 0s) reuses it. Do not add a second walk.
+0s. routes/agent_policies.py -- **One policy store for agent work** (SW-94, `agent_coordination.md` §3.11.5). `POST /agent-policies` saves a new version of one (scope, tier, key), and each save adds a row of `pm_agent_policies`. `REGISTRY` is the fixed key list. A key outside it gets 422.
+   - The router checks `AGENT_POLICY_ORGS` first, so a dark route answers 404. Then it checks `feature:projects`.
+   - `policy_for(db, task, key)` reads the task's project, each parent, the org, then the default. It walks the tree through `agent_guidance.project_chains`. At each level a tier row wins over an `any` row. A NULL tier reads `any` rows only.
+   - `policy_for_actor(db, org, member, box, lane, key)` reads the box, the member, the lane, the org, then the default.
+   - ⚠️ The master flag is the ceiling (`under_the_flag`). A mode key names its `*_MODES` field, and the result is the lower of the policy and the flag. A gated key gives its default while its `*_ORGS` gate does not name the org. A policy never grants.
+   - ⚠️ Writers: `admin:settings:manage` writes any key at any scope. A lead writes a key off the auth path for the lead's own project, through `authority.guidance_write_refusal`. `required_checks` stays admin only. A member writes `agents_paused` at the scope kind `member` for self only. An agent connection gets 403.
+   - Fences: `test_agent_policies_r8.py` (R8), `test_tenant_coverage.py`.
 0r. routes/project_rules.py -- **The rules of a project** (WS-ALN ALN-5a, `project_alignment.md` §4.2). It is the one writer of a rule row: `kind = 'rule'` on `pm_agent_guidance`. No third store.
    - The router checks `PROJECT_RULES_ORGS` first, so a dark route answers 404. Then it checks `feature:projects`. The prefix is `/project-rules`, and the chat tools are a follow-up slice.
    - ⚠️ Append only. A create, an accept, an edit, a retire and a change of level each add a version row of one `rule_key`. Only the accept route moves `proposed` to `active`. The trigger refuses an UPDATE.

@@ -210,7 +210,14 @@ SELECT DISTINCT ON (g.project_id)
 """
 
 
-async def _chains(db: Any, origins: list[str]) -> dict[str, list[Any]]:
+async def project_chains(db: Any, origins: list[str]) -> dict[str, list[Any]]:
+    """``{origin id: [the origin, its parent, ..., the space]}``, nearest first.
+
+    The ONE project-tree walk of agent settings. The guidance blocks read it,
+    and the policy store (``routes/agent_policies.py``, SW-94) reuses it and
+    adds no walk of its own. Each row holds ``id``, ``parent_project_id``,
+    ``name`` and ``depth``. An unknown origin has no key.
+    """
     rows = (await db.execute(text(_CHAINS_SQL), {"origins": origins})).fetchall()
     out: dict[str, list[Any]] = {}
     for r in rows:
@@ -263,7 +270,7 @@ def cut_to_answer(blocks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], i
 async def blocks_for_project(db: Any, vis: Any, project_id: str) -> tuple[list[dict[str, Any]], int]:
     """The blocks that apply to a task in *project_id*, nearest first, and the
     number dropped by the cap of the answer."""
-    chain = (await _chains(db, [project_id])).get(project_id, [])
+    chain = (await project_chains(db, [project_id])).get(project_id, [])
     ids = [str(r.id) for r in chain]
     if not ids:
         return [], 0
@@ -431,7 +438,7 @@ async def guidance_refs(
     async with _tenant_session() as db:
         visible = await _visible_ids(db, await resolve_visibility(db, user), ids)
         origins = [p for p in ids if p in visible]
-        chains = await _chains(db, origins) if origins else {}
+        chains = await project_chains(db, origins) if origins else {}
         every = sorted({str(r.id) for rows in chains.values() for r in rows})
         latest = await _latest(db, every) if every else {}
         for origin in origins:

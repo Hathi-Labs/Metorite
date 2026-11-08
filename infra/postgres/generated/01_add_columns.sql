@@ -906,3 +906,7 @@ ALTER TABLE crm_change_log
 ALTER TABLE package_field_value
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE pm_agent_policies
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;

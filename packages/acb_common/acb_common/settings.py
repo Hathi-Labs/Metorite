@@ -962,6 +962,17 @@ class Settings(BaseSettings):
     # a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_agent_guidance.py.
     agent_guidance_orgs: str = ""
+    # ── The policy store of agent work (WS-MCP SW-94, agent_coordination.md
+    #    §3.11.5 and SW-94) ───────────────────────────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `POST /agent-policies` answers 404, and `policy_for`
+    # and `policy_for_actor` give the shipped default under the master flag of
+    # each key. The one reader is
+    # `gateway.routes.agent_policies.policies_allowed`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_agent_policies_r8.py.
+    agent_policy_orgs: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids

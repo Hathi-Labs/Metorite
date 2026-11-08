@@ -2210,6 +2210,16 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-MCP SW-94 — one policy store for agent work (agent_coordination.md
+    # §3.11.5 and SW-94): the save of a policy row. Ships dark: 404 while
+    # `AGENT_POLICY_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_policies import router as _agent_policies_router
+
+    app.include_router(_agent_policies_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-ALN ALN-5a — the rules of a project (project_alignment.md §4.2), on
     # the one guidance store: create, accept, edit, retire, the level, the
     # list and the history. Ships dark: 404 while `PROJECT_RULES_ORGS` does

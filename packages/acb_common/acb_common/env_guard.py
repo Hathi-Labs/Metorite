@@ -218,6 +218,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.
     "AGENT_GUIDANCE_ORGS",
+    # WS-MCP SW-94: AGENT_POLICY_ORGS opens the policy store of agent work. A
+    # policy can pause the agents of an org and set how strict a refusal is,
+    # so a tenant must not open it for another org.
+    "AGENT_POLICY_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
