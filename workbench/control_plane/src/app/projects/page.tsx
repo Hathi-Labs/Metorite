@@ -4697,6 +4697,51 @@ function ProjectsWorkspace() {
   // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
   // filter row, the old strip and the old banner, exactly as before.
   const compactChrome = compactChromeEnabled();
+  // WS-64 OP-12: the lens and the project actions. With the compact chrome they
+  // sit at the right of the title line, and the tab row owns the line below.
+  const headerTools = () => (
+    <>
+        {selected ? (
+          <Button
+            className="shrink-0"
+            variant="ghost"
+            size="sm"
+            icon="TriangleAlert"
+            selected={attentionLens}
+            // OP-12: in a narrow row the word folds away, so the tabs
+            // keep their room. The name and the tooltip stay.
+            aria-label={
+              compactChrome
+                ? `${LENS_LABEL}${attentionHere && attentionHere.total > 0 ? ` ${attentionHere.total}` : ""}`
+                : undefined
+            }
+            data-attention-toggle=""
+            title={
+              attentionLens
+                ? "Back to the board"
+                : "Show the work that stopped and waits for a person"
+            }
+            onClick={() => setAttentionFor(attentionLens ? null : selected.id)}
+          >
+            {compactChrome ? (
+              <span className="hidden @[56rem]:inline">{LENS_LABEL}</span>
+            ) : (
+              LENS_LABEL
+            )}
+            {attentionHere && attentionHere.total > 0 ? (
+              <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
+            ) : null}
+          </Button>
+        ) : null}
+        <div
+          className={`flex shrink-0 items-center gap-1${
+            compactChrome ? "" : " ml-auto"
+          }`}
+        >
+          {projectActions(false)}
+        </div>
+    </>
+  );
   // The server takes ONE focus (`agent_focus`), so the toggle and the strip
   // clear each other, as `onAgentFocus` already does.
   const onWaitingOnMe = (next: boolean) => {
@@ -5901,7 +5946,13 @@ function ProjectsWorkspace() {
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
-            <div className="flex min-w-0 items-baseline gap-2 px-3 pt-2 glass:px-4 glass:pt-3.5 glass:pb-1">
+            <div
+              className={`flex min-w-0 gap-2 px-3 pt-2 glass:px-4 glass:pt-3.5 glass:pb-1${
+                compactChrome && !isMyTasksApp(app) && !noProjectChrome
+                  ? " @container items-center"
+                  : " items-baseline"
+              }`}
+            >
               <h2
                 className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground glass:text-subhead glass:font-semibold"
                 title={title}
@@ -5932,6 +5983,9 @@ function ProjectsWorkspace() {
                   {attentionBadge}
                 </Button>
               ) : null}
+              {compactChrome && !isMyTasksApp(app) && !noProjectChrome ? (
+                <div className="ml-auto flex shrink-0 items-center gap-1">{headerTools()}</div>
+              ) : null}
             </div>
             {/* Action row — how you look at it (left) and what you can do to
                 it (right). */}
@@ -5954,16 +6008,13 @@ function ProjectsWorkspace() {
               // chat column (measured at 1440, 2026-09-23).
               <div
                 className={`flex items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5${
-                  compactChrome ? " @container flex-wrap" : " flex-wrap"
+                  compactChrome ? "" : " flex-wrap"
                 }`}
               >
                 {compactChrome ? (
                   // WS-64 OP-12 (D-OP-17) — the canvases and the saved views
                   // are one tab row. The View popover no longer holds them.
                   <ViewTabs
-                    // In a pane under 40rem the row drops below the title
-                    // line, at the full width, so no tab shares its room.
-                    className="@max-[40rem]:order-last @max-[40rem]:basis-full"
                     canvas={shownMode}
                     onCanvas={pickMode}
                     views={tabViews}
@@ -5992,45 +6043,7 @@ function ProjectsWorkspace() {
                 )}
                 {/* WS-55 SW-11a — the lens beside the board's other lenses.
                     Pressed while the list is on screen. */}
-                {selected ? (
-                  <Button
-                    className="shrink-0 @max-[40rem]:ml-auto"
-                    variant="ghost"
-                    size="sm"
-                    icon="TriangleAlert"
-                    selected={attentionLens}
-                    // OP-12: in a narrow row the word folds away, so the tabs
-                    // keep their room. The name and the tooltip stay.
-                    aria-label={
-                      compactChrome
-                        ? `${LENS_LABEL}${attentionHere && attentionHere.total > 0 ? ` ${attentionHere.total}` : ""}`
-                        : undefined
-                    }
-                    data-attention-toggle=""
-                    title={
-                      attentionLens
-                        ? "Back to the board"
-                        : "Show the work that stopped and waits for a person"
-                    }
-                    onClick={() => setAttentionFor(attentionLens ? null : selected.id)}
-                  >
-                    {compactChrome ? (
-                      <span className="hidden @[56rem]:inline">{LENS_LABEL}</span>
-                    ) : (
-                      LENS_LABEL
-                    )}
-                    {attentionHere && attentionHere.total > 0 ? (
-                      <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
-                    ) : null}
-                  </Button>
-                ) : null}
-                <div
-                  className={`flex shrink-0 items-center gap-1${
-                    compactChrome ? " ml-auto @max-[40rem]:ml-0" : " ml-auto"
-                  }`}
-                >
-                  {projectActions(false)}
-                </div>
+                {compactChrome ? null : headerTools()}
               </div>
             )}
           </header>
