@@ -200,7 +200,10 @@ if (!bundledJs || !bundledJs.trim()) {
   fail("esbuild produced an empty bundle");
 }
 
-const finalHtml = template.replace(BUNDLE_MARKER, `<script>${bundledJs}</script>`);
+// A function, not a string: String.replace reads "$&" and "$1" in a string
+// as patterns, and React's own code holds "$&/". The string form put the
+// marker into the bundle and broke keyed children (WS-43h docker test).
+const finalHtml = template.replace(BUNDLE_MARKER, () => `<script>${bundledJs}</script>`);
 
 const distDir = join(workspace, "dist");
 mkdirSync(distDir, { recursive: true });

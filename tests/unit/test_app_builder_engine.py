@@ -784,3 +784,66 @@ async def test_docker_the_app_container_runs_node_and_holds_no_secret(
     assert "PROBE-DONE" in probe, probe
     body = probe.split("\n", 1)[1] if "\n" in probe else probe
     assert "/" not in body.replace("PROBE-DONE", "").strip(), f"a secret is in the container: {probe}"
+
+
+#: The T2 vendor cache of the docker build test. ``T2_VENDOR_TEST_DIR`` names a
+#: ready one, else the fixture installs one in a container (it needs the
+#: network once). The versions are those of ``workbench/control_plane``.
+T2_VENDOR_PACKAGES = ("react@19.2.4", "react-dom@19.2.4", "esbuild@0.28.1", "lucide-react@1.17.0")
+
+
+@pytest.fixture(scope="module")
+def t2_vendor(docker_image: str, tmp_path_factory: pytest.TempPathFactory) -> Path:  # noqa: F811
+    import os
+
+    given = os.environ.get("T2_VENDOR_TEST_DIR", "").strip()
+    if given:
+        return Path(given).resolve()
+    vendor = tmp_path_factory.mktemp("t2-vendor").resolve()
+    done = subprocess.run(
+        ["docker", "run", "--rm", "--user", "1000:1000",
+         "--mount", f"type=bind,source={vendor},target=/v",
+         "-e", "HOME=/tmp", "-e", "npm_config_cache=/tmp/npm",
+         docker_image, "npm", "install", "--prefix", "/v", "--no-audit", "--no-fund",
+         "--no-bin-links", "--no-package-lock", *T2_VENDOR_PACKAGES],
+        capture_output=True, text=True, timeout=600, check=False,
+    )
+    if done.returncode != 0 or not (vendor / "node_modules" / "esbuild").is_dir():
+        pytest.skip(f"no T2 vendor cache could be installed: {done.stderr[-400:]}")
+    return vendor
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_a_t2_app_that_imports_cc_ui_builds_in_the_container(
+    real: dict[str, Any], monkeypatch: pytest.MonkeyPatch, t2_vendor: Path,  # noqa: F811
+) -> None:
+    """Review P1: a REAL T2 build of an app that imports ``@cc/ui`` runs in the
+    container, with the build copy and the vendor cache, and writes a bundle."""
+    from acb_skills.sandbox_tools import app_builder_run_command
+
+    if not real["bind"]:
+        pytest.skip("this Docker cannot bind a host dir, so the build proves nothing here")
+    monkeypatch.setattr(sb, "_BROKER", real["broker"])
+    monkeypatch.setattr(real["settings"], "maf_coding_scope", f"app_builder:{DOCKER_ORG}")
+    monkeypatch.setattr(real["settings"], "custom_apps_t2_vendor_dir", str(t2_vendor),
+                        raising=False)
+    ws = real["apps"] / "t2-app"
+    (ws / "src").mkdir(parents=True)
+    (ws / "app.json").write_text('{"name": "T2", "entry": "dist/bundle.html", "tier": "T2"}\n',
+                                 encoding="utf-8")
+    (ws / "index.html").write_text(
+        '<!doctype html><html><body><div id="root"></div><!-- CC_T2_BUNDLE --></body></html>\n',
+        encoding="utf-8")
+    (ws / "src" / "main.tsx").write_text(
+        'import { createRoot } from "react-dom/client";\n'
+        'import { Stat } from "@cc/ui";\n'
+        'createRoot(document.getElementById("root")!).render(\n'
+        '  <Stat label="WS43H-OPEN-TASKS" value={3} />,\n'
+        ');\n',
+        encoding="utf-8")
+    with bound_run(DOCKER_ORG, agent=AGENT, thread=new_thread(), workspace=str(ws),
+                   instance=""):
+        out = await app_builder_run_command(BUILD_COMMAND, 280)
+    assert "exit 0" in out and "build_t2: ok" in out, out
+    bundle = (ws / "dist" / "bundle.html").read_text(encoding="utf-8")
+    assert "WS43H-OPEN-TASKS" in bundle and "CC_T2_BUNDLE" not in bundle
