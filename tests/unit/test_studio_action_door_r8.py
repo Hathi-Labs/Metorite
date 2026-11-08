@@ -1951,23 +1951,66 @@ def test_r8_three_runs_of_one_change_each_open_a_new_request_at_a_constant_cost(
 
 
 def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None:
-    """With the plain scan off, the planner reads ``pm_agent_runs`` through
-    ``pm_agent_runs_app_member``, and the window of a live request on
+    """``pm_agent_runs_app_member`` can serve the read as a bounded range scan:
+    with it the only index to choose, and the plain scan off, the planner reads
+    ``pm_agent_runs`` through it, and the window of a live request on
     ``created_at`` is part of the index condition. So the read never walks the
     whole history of the member. ``clock_timestamp()`` is volatile and cannot
-    bound an index, so the window reads ``now()``."""
+    bound an index, so the window reads ``now()``.
+
+    Task 2229. The test used to leave every index of the table in place and
+    expect the planner to pick this one. On a table of a few rows the cost of
+    ``pm_agent_runs_app_open_connection`` (organization, connection) wins as
+    often as this one, and the pick followed the statistics that earlier tests
+    left. So the other indexes are dropped INSIDE a transaction that rolls back
+    (DDL is transactional in Postgres), and the plan is read in that state. The
+    test then stands for the capability of the index and no longer for the whim
+    of a planner on tiny statistics."""
     w = rworld
-    params = {"org": w.a, "me": ANA, "app": "studio",
-              "binding": f"session:{ANA}:studio:{w.pkg}", "digest": "0" * 64,
-              "window": app_requests.OPEN_WINDOW_SECONDS}
-    with w.p.admin_engine.begin() as c:
-        c.execute(text("SET LOCAL enable_seqscan = off"))
-        lines = [r[0] for r in c.execute(
-            text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)]
+    params = {
+        "org": w.a,
+        "me": ANA,
+        "app": "studio",
+        "binding": f"session:{ANA}:studio:{w.pkg}",
+        "digest": "0" * 64,
+        "window": app_requests.OPEN_WINDOW_SECONDS,
+    }
+    keep = "pm_agent_runs_app_member"
+    with w.p.admin_engine.connect() as c:
+        trans = c.begin()
+        try:
+            c.execute(text("SET LOCAL lock_timeout = '10s'"))
+            # Every index of the table that no constraint owns, except the one
+            # under test. A constraint index (the key, a unique) cannot be dropped.
+            others = [
+                r[0]
+                for r in c.execute(
+                    text(
+                        "SELECT i.indexname FROM pg_indexes i"
+                        " WHERE i.schemaname = current_schema() AND i.tablename = 'pm_agent_runs'"
+                        "   AND i.indexname <> :keep"
+                        "   AND NOT EXISTS (SELECT 1 FROM pg_constraint k"
+                        "                   JOIN pg_class ic ON ic.oid = k.conindid"
+                        "                   WHERE ic.relname = i.indexname)"
+                    ),
+                    {"keep": keep},
+                )
+            ]
+            assert others, (
+                "the table lost its other indexes: this test then proves nothing about the choice"
+            )
+            for name in others:
+                c.execute(text(f'DROP INDEX "{name}"'))
+            c.execute(text("SET LOCAL enable_seqscan = off"))
+            lines = [
+                r[0] for r in c.execute(text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)
+            ]
+        finally:
+            trans.rollback()
     plan = "\n".join(lines)
     assert "Seq Scan on pm_agent_runs" not in plan, plan
     at = next(i for i, line in enumerate(lines) if "on pm_agent_runs r" in line)
-    assert "pm_agent_runs_app_member" in lines[at], plan
+    assert keep in lines[at], plan
     cond = lines[at + 1]
     assert "Index Cond" in cond and "created_at >" in cond, plan
 
