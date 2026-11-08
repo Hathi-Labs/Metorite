@@ -296,10 +296,23 @@ NATIVE_CHECK_LANGUAGES: frozenset[str] = frozenset(
 HELD_LANGUAGES: frozenset[str] = frozenset({"lus", "kha"})
 #: The `K` rows that the owner confirmed in the PZ-40 preview, as
 #: ``(form, language)``. A row that fits each language uses ANY_LANGUAGE as
-#: its language. EMPTY by default (spec 16.9 question 1). A `K` row ships
-#: only when its pair is here and the member's language is not in
-#: :data:`NATIVE_CHECK_LANGUAGES`.
-OWNER_CONFIRMED_K: frozenset[tuple[str, str]] = frozenset()
+#: its language. A `K` row ships only when its pair is here and the member's
+#: language is not in :data:`NATIVE_CHECK_LANGUAGES` (spec 16.9 question 1).
+#: The owner's answer on task 1824, 2026-11-07 18:28 UTC: the English forms,
+#: the work and rank titles, Hindi "ji" and "Kumari", Punjabi "ji", and Urdu
+#: "Janab" and "Mohtaram". NOT confirmed: the Urdu religious titles (Haji,
+#: Hafiz, Maulana, Maulvi, Qari, Mufti). A new pair needs a new owner answer.
+_CONFIRMED_ANY = (
+    # English forms.
+    "sir", "madam", "Mr.", "Mrs.", "Ms.", "Mx.", "Miss", "Dr.",
+    # Work and rank titles.
+    "Er.", "Adv.", "CA", "CS", "Prof.", "Col.", "Maj.", "Capt.", "Lt.", "Gen.",
+    "Cdr.", "Hon'ble", "IAS", "IPS", "IFS",
+)
+OWNER_CONFIRMED_K: frozenset[tuple[str, str]] = frozenset(
+    {(form, ANY_LANGUAGE) for form in _CONFIRMED_ANY}
+    | {("ji", "hi"), ("Kumari", "hi"), ("ji", "pa"), ("Janab", "ur"), ("Mohtaram", "ur")}
+)
 
 #: Tags of the catalogue that stand for a language group. The key is the first
 #: part of a BCP 47 tag. No code guesses a language: the caller passes the one
@@ -339,17 +352,22 @@ class Offer:
 
 def _may_ship(row: Honorific, lang: str, confirmed: frozenset[tuple[str, str]]) -> str:
     """The tag of *row* for *lang* when a choice list may offer it, else ``""``."""
-    if row.never or lang in HELD_LANGUAGES:
+    if row.never:
         return ""
     tags = dict(row.languages)
     key = lang if lang in tags else ANY_LANGUAGE
+    # The checks of spec 16.9 concern the language of the ROW. A row for all
+    # languages (English forms, work titles) is not a Mizo or Telugu row.
+    own = key != ANY_LANGUAGE
+    if own and lang in HELD_LANGUAGES:
+        return ""
     tag = tags.get(key, "")
     if not tag or tag == "U":
         return ""
     if tag == "V":
         return tag
     # A `K` row: the owner confirmed it, and no native-speaker check is due.
-    if (row.form, key) in confirmed and lang not in NATIVE_CHECK_LANGUAGES:
+    if (row.form, key) in confirmed and not (own and lang in NATIVE_CHECK_LANGUAGES):
         return tag
     return ""
 
@@ -362,9 +380,10 @@ def offered_forms(
 ) -> tuple[Offer, ...]:
     """The choices of the name question for *language*, in the order to ask.
 
-    "just my name" is always first (rule 5). The forms of the language follow:
-    a neutral form before a gendered one, and a form that implies a marital
-    status last (rule 8). A kinship form comes only when *kinship* is true,
+    "just my name" is always first (rule 5). The forms of the member's own
+    language follow, then the forms for every language. In each group a
+    neutral form comes before a gendered one, and a form that implies a
+    marital status comes last (rule 8). A kinship form comes only when *kinship* is true,
     that is, when the member asked for it (rule 7). A `U` row, an unconfirmed
     `K` row and a held row never come (spec 16.9). A form that is not for the
     member's language never comes.
@@ -382,9 +401,12 @@ def offered_forms(
         if not tag:
             continue
         rank = 2 if row.marital else (1 if row.gender != NEUTRAL else 0)
-        picked.append((rank, n, Offer(row.form, row.placement, tag)))
-    picked.sort(key=lambda item: (item[0], item[1]))
-    return (Offer(NAME_ONLY.form, BARE, "K"), *(offer for _, _, offer in picked))
+        # The forms of the member's own language first, then the forms for
+        # every language. Rule 8 orders each group.
+        group = 0 if lang in dict(row.languages) else 1
+        picked.append((group, rank, n, Offer(row.form, row.placement, tag)))
+    picked.sort(key=lambda item: item[:3])
+    return (Offer(NAME_ONLY.form, BARE, "K"), *(item[3] for item in picked))
 
 
 def offer_line(language: str | None = None, **kw) -> str:

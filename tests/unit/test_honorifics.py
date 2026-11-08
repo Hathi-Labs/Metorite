@@ -154,7 +154,7 @@ def test_just_my_name_is_first_for_every_language_and_none() -> None:
 
 
 def test_hindi_offers_its_v_rows_name_first() -> None:
-    got = _forms("hi-IN")
+    got = _forms("hi-IN", confirmed=frozenset())
     assert got[0] == "just my name"
     assert set(got[1:]) == {"Shri", "Shrimati", "Sushri", "Sahab", "Pandit"}
     # A neutral form comes before a gendered one, and a marital one is last.
@@ -163,7 +163,7 @@ def test_hindi_offers_its_v_rows_name_first() -> None:
 
 
 def test_telugu_offers_the_name_only_until_the_owner_confirms_a_k_row() -> None:
-    assert _forms("te-IN") == ["just my name"]
+    assert _forms("te-IN", confirmed=frozenset()) == ["just my name"]
     assert "garu" not in _forms("te-IN", confirmed=frozenset({("garu", "te")}))
     # The 16.9 default: a K row of a language in the native-check set never ships.
     assert "te" in hon.NATIVE_CHECK_LANGUAGES
@@ -179,8 +179,39 @@ def test_a_confirmed_k_row_of_hindi_ships_and_a_u_row_never_does() -> None:
     assert "Selvan" not in _forms("ta", confirmed=ok)  # U row
 
 
-def test_the_shipped_k_set_is_empty() -> None:
-    assert not hon.OWNER_CONFIRMED_K
+#: The owner's answer on task 1824, 2026-11-07 18:28 UTC (the PZ-40 preview).
+_OWNER_ANY = {
+    "sir", "madam", "Mr.", "Mrs.", "Ms.", "Mx.", "Miss", "Dr.",
+    "Er.", "Adv.", "CA", "CS", "Prof.", "Col.", "Maj.", "Capt.", "Lt.", "Gen.",
+    "Cdr.", "Hon'ble", "IAS", "IPS", "IFS",
+}
+_OWNER_LANG = {("ji", "hi"), ("Kumari", "hi"), ("ji", "pa"), ("Janab", "ur"), ("Mohtaram", "ur")}
+_NOT_CONFIRMED = {"Haji", "Hafiz", "Maulana", "Maulvi", "Qari", "Mufti"}
+
+
+def test_the_shipped_k_set_is_the_owners_answer() -> None:
+    expected = {(f, hon.ANY_LANGUAGE) for f in _OWNER_ANY} | _OWNER_LANG
+    assert hon.OWNER_CONFIRMED_K == expected
+    rows = {h.form for h in hon.HONORIFICS}
+    assert {f for f, _ in hon.OWNER_CONFIRMED_K} <= rows
+    # The owner did not tick the Urdu religious titles.
+    assert not {f for f, _ in hon.OWNER_CONFIRMED_K} & _NOT_CONFIRMED
+    assert not set(_forms("ur-IN")) & _NOT_CONFIRMED
+
+
+def test_the_own_language_forms_come_before_the_forms_for_every_language() -> None:
+    got = _forms("hi-IN")
+    assert got[:8] == ["just my name", "ji", "Sahab", "Shri", "Sushri", "Pandit", "Shrimati", "Kumari"]
+    assert set(got[8:]) == _OWNER_ANY
+
+
+def test_a_confirmed_form_for_every_language_reaches_each_language() -> None:
+    # The checks of spec 16.9 concern the language of the row. "Dr." is not a
+    # Telugu or a Mizo row, so the owner's yes is enough for it.
+    for language in ("te-IN", "ta-IN", "lus", "kha", None):
+        got = set(_forms(language))
+        assert _OWNER_ANY <= got, language
+        assert not got & {"garu", "avargal", "Sap", "Pu", "Pi", "Kong", "Bah"}, language
 
 
 def test_no_kinship_form_is_offered_by_default() -> None:
@@ -203,13 +234,17 @@ def test_a_k_row_of_the_eleven_languages_waits_for_a_native_check() -> None:
     everything = frozenset((h.form, lang) for h in hon.HONORIFICS for lang, _ in h.languages)
     for language in hon.NATIVE_CHECK_LANGUAGES - hon.HELD_LANGUAGES:
         for o in hon.offered_forms(language, kinship=True, confirmed=everything):
-            if o.form != "just my name":
-                assert o.tag == "V", (language, o.form)
+            if o.form != "just my name" and o.tag != "V":
+                # Only a row for every language ships here on a yes alone.
+                row = next(h for h in hon.HONORIFICS if h.form == o.form)
+                assert language not in dict(row.languages), (language, o.form)
 
 
 def test_mizo_and_khasi_are_held() -> None:
     assert _forms("lus", confirmed=frozenset({("Sap", "lus")})) == ["just my name"]
-    assert _forms("kha") == ["just my name"]
+    assert _forms("kha", confirmed=frozenset()) == ["just my name"]
+    assert not set(_forms("lus")) & {"Sap", "Pu", "Pi"}
+    assert not set(_forms("kha")) & {"Kong", "Bah"}
 
 
 def test_konkani_and_the_hindi_belt_languages_use_their_group() -> None:
@@ -247,8 +282,9 @@ def test_offer_line_lists_the_choices_in_order_and_picks_none() -> None:
     assert line.index('"just my name"') < line.index("Shri")
     assert "Never pick one for them" in line
     assert "garu" not in line
-    only = hon.offer_line("te-IN")
+    only = hon.offer_line("te-IN", confirmed=frozenset())
     assert "Offer no form of address" in only
+    assert "garu" not in hon.offer_line("te-IN")
 
 
 # ── pz40-block ─────────────────────────────────────────────────────────────
@@ -345,10 +381,12 @@ def test_the_name_question_offers_the_hindi_forms_with_just_my_name_first(interv
     assert "garu" not in offer
 
 
-def test_the_name_question_offers_the_name_only_for_telugu(interview) -> None:
+def test_the_name_question_offers_no_telugu_row_for_telugu(interview) -> None:
     line = _interview_line(interview("te-IN"))
-    assert "Offer no form of address" in line
-    assert "garu" not in line.split("Example")[1].split("Ask it only")[0]
+    offer = line[line.index("Offer these choices"):]
+    assert offer.index('"just my name"') < offer.index('"sir')
+    # "garu" waits for the native-speaker check (spec 16.9 question 2).
+    assert "garu" not in offer
 
 
 def test_the_flag_off_leaves_the_interview_line_as_on_main(run, monkeypatch) -> None:  # noqa: F811
