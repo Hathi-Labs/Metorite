@@ -26,12 +26,14 @@
 -- Each host id and `record_id` are UUID, so the function needs no cast.
 --
 -- Tenancy (R5). The function deletes only rows WHERE organization_id =
--- OLD.organization_id. That filter is the control, not RLS. A foreign key
--- cascade runs as the owner of the table with FORCE RLS off for the owner,
--- so RLS can not bind the delete of the trigger in that case. For a member
--- session, RLS on `package_field_value` binds the delete too, and the bound
--- tenant equals OLD.organization_id, because RLS on the host table let the
--- session see the row.
+-- OLD.organization_id. That filter is the control, not RLS. RLS does not
+-- bind a delete by a role that bypasses it, such as the superuser of the
+-- migration runner or of a production one-off. Such a delete sees the
+-- values of each org. For a member session, RLS on `package_field_value`
+-- binds the delete too, and the bound tenant equals OLD.organization_id,
+-- because RLS on the host table let the session see the row. The R8 suite
+-- measured a cascade from a member session: the trigger ran under the RLS
+-- of that session.
 --
 -- Not SECURITY DEFINER. The function runs as the role that deletes the host
 -- row, so it adds no privilege. search_path is not pinned, because the
