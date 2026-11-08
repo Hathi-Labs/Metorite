@@ -60,7 +60,7 @@ it, and logs one row for each. It locks those stages before the pipeline, in
 the order of a deal write, so the two cannot wait on each other.
 
 **A lead pipeline** (WS-CRM CRM-M4a, ``crm_conversational.md`` §8 CRM-M4).
-It is a row of ``crm_pipelines`` with ``kind = 'lead'`` (migration 360). Its
+It is a row of ``crm_pipelines`` with ``kind = 'lead'`` (migration 365). Its
 stages are lead statuses (``crm_lead_statuses``), and
 ``crm_lead_pipeline_stages`` holds which status sits where. ``PipelineKind``
 holds what is particular to each kind, so the create, the preview, the plan

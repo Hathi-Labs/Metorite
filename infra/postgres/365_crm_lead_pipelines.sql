@@ -1,5 +1,5 @@
 -- ============================================================================
--- 360_crm_lead_pipelines.sql — lead pipelines on the one pipeline table
+-- 365_crm_lead_pipelines.sql — lead pipelines on the one pipeline table
 -- (WS-CRM CRM-M4a, Metorite task mt-a53987cf).
 --
 -- What: the schema of a lead pipeline. No row of data changes.
@@ -58,9 +58,10 @@
 --   * `crm_leads_pipeline_guard`: a lead's pipeline is a lead pipeline of
 --     the org. A NULL pipeline returns at once, so each old write passes.
 --
--- The number is taken at build time (R1). On 2026-11-08 origin/main and each
--- open branch held up to 359, and no branch or worktree held 360. Check it
--- again at merge.
+-- The number is taken at build time (R1). It was 360 until 2026-11-08 15:30
+-- UTC, when a signature-images branch moved to 360 too. Branches and worktrees
+-- then held 360 to 364, 366 and 367, so this file took 365. Check it again at
+-- merge.
 -- Pinned by tests/unit/test_crm_lead_pipelines.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
