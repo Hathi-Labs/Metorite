@@ -736,7 +736,7 @@ def _wants(gate: tuple[str, ...],
     )
 
 
-def _dark_tools() -> frozenset[str]:
+def _dark_tools(image_on: bool | None = None) -> frozenset[str]:
     """Tools this box does not inject, so their sections must not render.
 
     ``_wants`` gates on the SCOPE, and an unscoped agent renders every
@@ -744,6 +744,10 @@ def _dark_tools() -> frozenset[str]:
     advertises a tool the agent does not hold. ``decide`` (WS-31 CP-13d) is
     the one such tool. Its switch is ``decide_tools.decide_tool_enabled``,
     the same function the injection chain asks.
+
+    *image_on* (WS-VOX VOX-3) is whether ``analyze_image`` is lit. A CACHED
+    caller passes it, so its text depends on its cache key alone. ``None``
+    reads the bound tenant, for an uncached caller.
     """
     dark: set[str] = set()
     try:
@@ -770,13 +774,15 @@ def _dark_tools() -> frozenset[str]:
     # WS-VOX VOX-3 fix round: `analyze_image` is dark for a run whose bound
     # tenant is not on IMAGE_ANALYSIS_ORGS, the reader the injection uses
     # (`_tool_injection._image_withheld`). No tenant is dark too.
-    try:
-        from acb_common.assistant_profile import image_analysis_for
-        from acb_common.db import current_tenant
+    if image_on is None:
+        try:
+            from acb_common.assistant_profile import image_analysis_for
+            from acb_common.db import current_tenant
 
-        if not image_analysis_for(current_tenant()):
-            dark.add("analyze_image")
-    except Exception:
+            image_on = bool(image_analysis_for(current_tenant()))
+        except Exception:
+            image_on = False
+    if not image_on:
         dark.add("analyze_image")
     return frozenset(dark)
 
@@ -803,6 +809,7 @@ def rendered_parts(
     effective_scope: frozenset[str] | None = None,
     registry_block: str = "",
     risk_block: str | None = None,
+    image_on: bool | None = None,
 ) -> list[tuple[str, str]]:
     """The addendum's rendered pieces, each paired with its owning family.
 
@@ -822,7 +829,7 @@ def rendered_parts(
         risk_block=risk_block if risk_block is not None else _default_risk_block(),
     )
     sections = COMPACT_SECTIONS if is_sub_agent else FULL_SECTIONS
-    dark = _dark_tools()
+    dark = _dark_tools(image_on)
     parts: list[tuple[str, str]] = []
     for section in sections:
         if not _wants(section.gate, effective_scope):
@@ -847,8 +854,11 @@ def render_injected_tools_addendum(
     effective_scope: frozenset[str] | None = None,
     registry_block: str = "",
     risk_block: str | None = None,
+    image_on: bool | None = None,
 ) -> str:
     """Assemble the injected-tools addendum from the section registries.
+
+    *image_on* says whether ``analyze_image`` is lit (see :func:`_dark_tools`).
 
     ``effective_scope`` is the agent's RESOLVED injected-tool set (declared
     ``tool_scope`` ∪ core floor, ∩ enabled families — what
@@ -883,6 +893,7 @@ def render_injected_tools_addendum(
             effective_scope=effective_scope,
             registry_block=registry_block,
             risk_block=risk_block,
+            image_on=image_on,
         )
     )
 

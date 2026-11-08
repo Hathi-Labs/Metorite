@@ -1547,6 +1547,8 @@ def _build_injected_tools_addendum(
         effective_scope=effective_scope,
         registry_block=_registry_block_for(agent_name),
         risk_block=risk_summary_block(own=own_risk),
+        # The text depends on the cache key alone, never on a tenant read.
+        image_on=image_org_on,
     )
 
 
