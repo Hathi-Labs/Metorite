@@ -7401,8 +7401,8 @@ STANDARD.
 
 **VOX-5 (task 2265). Prove "only when needed".** STANDARD.
 
-- **Files:** `evals/trajectories/` (beside the attachment scope trajectory).
-- **Do:** trajectory cases with an attached image.
+- **Files:** `evals/image_need/`, built on the pattern of `evals/routing/`. The trajectory folder never calls a model, so it cannot test the choice of the model.
+- **Do:** cases with an attached image.
   - No `analyze_image` call: "attach this to task X", "make a task with this
     screenshot", "email this to Priya", "put it in the Files".
   - One call: "what does this screenshot say", "read the invoice number",
@@ -7410,8 +7410,8 @@ STANDARD.
     (the description needs what the image shows).
 - **Done when:** the cases pass on the default chat tier. An eval run that
   costs over USD 0.50 waits for the owner's OK.
-- **Fence (R7):** the trajectory file runs in the eval suite. It is advisory
-  until the owner sets its schedule.
+- **Fence (R7):** `tests/unit/test_image_need_eval.py` and the `--scripted` line of
+  `skill-eval.yml`. The live run is manual and advisory until the owner sets its schedule.
 
 ### 31.6 Owner calls
 
