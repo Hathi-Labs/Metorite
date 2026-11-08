@@ -254,6 +254,64 @@ class TestTheWavClip:
         assert split_wav(clip, 29) == []
 
 
+def _with_data_size(audio: bytes, size: int) -> bytes:
+    out = bytearray(audio)
+    at = out.index(b"data")
+    out[at + 4: at + 8] = struct.pack("<I", size)
+    return bytes(out)
+
+
+class TestTheHeaderCannotLieAboutTheBill:
+    """P1. The provider decodes the bytes present, so the bill counts them."""
+
+    @pytest.mark.parametrize("declared", [0, 1, 100, 0xFFFFFFFF, 10**9],
+                             ids=["zero", "one", "undersized", "max", "oversized"])
+    def test_the_declared_data_size_is_ignored(self, declared):
+        audio = _with_data_size(make_wav(60), declared)
+        assert wav_seconds(audio) == Decimal(60)
+        clip = read_wav(audio)
+        assert clip is not None and clip.seconds == Decimal(60)
+
+    def test_the_parts_cover_a_clip_whose_header_says_zero(self):
+        clip = read_wav(_with_data_size(make_wav(65, rate=8_000), 0))
+        assert clip is not None
+        lengths = [wav_seconds(part) for part in split_wav(clip, 29)]
+        assert lengths == [Decimal(29), Decimal(29), Decimal(7)]
+
+    def test_a_trailing_list_chunk_counts_as_audio(self):
+        """We bill the bytes we send. 20 bytes of LIST after `data` are 10
+        extra frames at 16-bit mono, and that errs toward the platform."""
+        audio = make_wav(1) + b"LIST" + struct.pack("<I", 12) + b"INFOabcdefgh"
+        assert wav_seconds(audio) == Decimal(16_000 + 10) / Decimal(16_000)
+
+    def test_a_chunk_before_data_is_stepped_over(self):
+        base = make_wav(1)
+        at = base.index(b"data")
+        audio = base[:at] + b"LIST" + struct.pack("<I", 5) + b"abcde\x00" + base[at:]
+        assert wav_seconds(audio) == Decimal(1)
+
+    @pytest.mark.parametrize("value", [0, 500, 4_000_000],
+                             ids=["rate0", "rate-low", "rate-high"])
+    def test_an_absurd_sample_rate_is_not_a_measurable_wav(self, value):
+        audio = bytearray(make_wav(1))
+        at = audio.index(b"fmt ")
+        audio[at + 12: at + 16] = struct.pack("<I", value)
+        assert wav_seconds(bytes(audio)) is None
+        assert read_wav(bytes(audio)) is None
+
+    def test_a_zero_block_align_is_not_a_measurable_wav(self):
+        audio = bytearray(make_wav(1))
+        at = audio.index(b"fmt ")
+        audio[at + 20: at + 22] = struct.pack("<H", 0)
+        assert wav_seconds(bytes(audio)) is None
+
+    def test_data_before_fmt_is_not_a_measurable_wav(self):
+        base = make_wav(1)
+        fmt_at, data_at = base.index(b"fmt "), base.index(b"data")
+        audio = base[:12] + base[data_at:] + base[fmt_at:data_at]
+        assert wav_seconds(audio) is None
+
+
 # ── Do 2: the request shape ──────────────────────────────────────────────────
 
 class TestTheRequestShape:
@@ -469,14 +527,19 @@ class TestTheDoorHelpers:
         assert kwargs["invocation"] == "atranscription"
         assert "payload" not in kwargs
 
-    def test_the_measured_length_wins_over_the_vendors_figure(self):
-        """Do 4. The vendor says 90 s. The WAV holds 3 s, and 3 s bills."""
+    def test_the_larger_of_the_clip_and_the_vendors_figure_bills(self):
+        """The vendor says 90 s. The WAV holds 3 s. The vendor decoded and
+        charged for 90 s, so 90 s bills. The clip wins when it is larger."""
         from customer_console.main import _transcribe_minutes
 
         reply = {"text": "x", "usage": {"type": "duration", "seconds": 90}}
         minutes = _transcribe_minutes(Decimal(3), reply, self.whisper, org_id="o",
                                       request_id="r")
-        assert minutes == Decimal("0.0500")
+        assert minutes == Decimal("1.5000")
+        assert _transcribe_minutes(Decimal(120), reply, self.whisper, org_id="o",
+                                   request_id="r") == Decimal("2.0000")
+        assert _transcribe_minutes(Decimal(3), {"text": "x"}, self.whisper, org_id="o",
+                                   request_id="r") == Decimal("0.0500")
 
     def test_another_format_keeps_the_vendors_figure(self):
         from customer_console.main import _transcribe_minutes

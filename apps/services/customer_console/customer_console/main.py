@@ -9296,6 +9296,10 @@ _MINUTE_QUANTUM = Decimal("0.0001")
 #: to replay it across a failover, so the ceiling is ours to state.
 _MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
+#: The longest WAV clip the transcribe door takes, in seconds, for every
+#: provider (VOX-2). With 29 s parts, it bounds one request at 21 vendor calls.
+_MAX_WAV_SECONDS = 600
+
 #: How much of a caller-supplied filename we send upstream. The name only
 #: tells the provider the audio format, and nothing reads it back.
 _FILENAME_MAX = 200
@@ -9504,7 +9508,15 @@ def _transcribe_minutes(
     vendor reports is not. Another format keeps clause 3: the provider's
     ``verbose_json`` duration, else ZERO with ``router.unmeasured_quantity``.
     """
-    seconds = measured if measured is not None else router_mod.duration_seconds(response)
+    reported = router_mod.duration_seconds(response)
+    # P1: for a WAV clip bill the larger of the bytes we sent and the figure
+    # the provider reports. The header can lie, the provider's charge does not.
+    if measured is None:
+        seconds = reported
+    elif reported is None:
+        seconds = measured
+    else:
+        seconds = max(measured, reported)
     if seconds is None:
         # ⚠️ BILL ZERO, LOUDLY (clause 3). The customer already holds the
         # transcript, so the only choice left is whether we also lose the
@@ -9594,6 +9606,13 @@ def audio_transcriptions(
     # VOX-2: measured ONCE, before anything resolves. None means the clip is
     # not a WAV that the standard library reads, and the old rule bills it.
     measured = wav_seconds(audio)
+    if measured is not None and measured > _MAX_WAV_SECONDS:
+        # P2: one request may not fan out into hundreds of vendor calls
+        # (Sarvam cuts a clip in 29 s parts). A 413 writes no usage row.
+        raise HTTPException(
+            status_code=413,
+            detail=f"audio above {_MAX_WAV_SECONDS} seconds is refused",
+        )
 
     # 🔴 **A CUSTOMER refusal leaves this block before it is raised**, exactly
     # as the chat route carries it (§8.1 clause 3). A row written on the

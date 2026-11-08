@@ -9,19 +9,27 @@ So the minutes on the usage row come from the bytes we sent, and never from
 a figure the metered vendor reports. Another format keeps the old rule: the
 provider's ``verbose_json`` duration, else zero and a loud log line.
 
-⚠️ **Only the standard library ``wave`` module reads the clip.** It parses the
-RIFF header and copies PCM frames. It decodes no compressed audio, so it adds
-no dependency and no codec to a cross-tenant service. A clip that ``wave``
-cannot read is "not a WAV" here, whatever its file name says.
+⚠️ **Only the standard library reads the clip.** This module walks the RIFF
+chunks with ``struct`` and cuts parts with ``wave``. It decodes no compressed
+audio, so it adds no dependency and no codec to a cross-tenant service. A
+clip that is not PCM WAV here is "not a WAV", whatever its file name says.
 
-⚠️ **The length counts the frames that are present, never the header's
-claim.** A recorder that streams writes a data size of zero or of
-``0xFFFFFFFF``. Read as the header states it, the second one bills 37 hours
-for a short clip. So :func:`read_wav` reads the frames and counts them.
+🔴 **The length counts the bytes that are present, never the header's
+claim.** The ``wave`` module honours the ``data`` size field. A recorder that
+streams writes zero or ``0xFFFFFFFF`` there, and a hostile caller writes a
+small number. The provider decodes ALL the bytes and charges us for them. So
+the parser finds the start of the ``data`` chunk and counts
+``(len(audio) - data_start) // block_align``. The declared size is ignored.
+A chunk after ``data`` (a trailing ``LIST``) therefore counts as audio, by a
+few bytes. We bill the bytes we send, and that errs toward the platform.
+
+A ``fmt `` chunk with a zero or absurd value (see the bounds below) is not a
+measurable WAV. The caller then uses the non-WAV rule.
 """
 from __future__ import annotations
 
 import io
+import struct
 import wave
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -54,61 +62,74 @@ class WavClip:
         return Decimal(self.frame_count) / Decimal(self.frame_rate)
 
 
-def read_wav(audio: bytes) -> WavClip | None:
-    """The clip, or None when the ``wave`` module cannot read it. Never raises.
+#: Bounds on the ``fmt `` chunk. A value outside them is not a clip we measure.
+_MAX_CHANNELS = 8
+_MIN_RATE = 1_000
+_MAX_RATE = 384_000
+_PCM_TAGS = frozenset({1, 0xFFFE})
 
-    None covers every clip that is not PCM WAV: webm, mp3, a float WAV, a
-    truncated header, and bytes that only start with ``RIFF``. The caller
-    then falls back to the provider's own duration.
+
+def _layout(audio: bytes) -> tuple[int, int, int, int] | None:
+    """``(channels, sample_width, frame_rate, data_start)``, or None. Never raises.
+
+    Walks the chunks and ignores every declared size except the ones that
+    step over a chunk before ``data``. The ``fmt `` chunk must come first.
     """
-    try:
-        with wave.open(io.BytesIO(audio), "rb") as reader:
-            channels = reader.getnchannels()
-            sample_width = reader.getsampwidth()
-            frame_rate = reader.getframerate()
-            if channels <= 0 or sample_width <= 0 or frame_rate <= 0:
-                return None
-            # `readframes` stops at the end of the bytes, so a header that
-            # claims more frames than the file holds cannot inflate the bill.
-            frames = reader.readframes(reader.getnframes())
-    except Exception:  # a hostile header can raise more than `wave.Error`
+    if len(audio) < 12 or audio[0:4] != b"RIFF" or audio[8:12] != b"WAVE":
         return None
+    pos = 12
+    fmt: tuple[int, int, int] | None = None
+    while pos + 8 <= len(audio):
+        chunk_id = audio[pos : pos + 4]
+        size = struct.unpack_from("<I", audio, pos + 4)[0]
+        body = pos + 8
+        if chunk_id == b"fmt ":
+            if size < 16 or body + 16 > len(audio):
+                return None
+            tag, channels, rate, _, align, bits = struct.unpack_from("<HHIIHH", audio, body)
+            if tag not in _PCM_TAGS or bits <= 0 or bits % 8:
+                return None
+            width = bits // 8
+            if not 1 <= channels <= _MAX_CHANNELS or not 1 <= width <= 4:
+                return None
+            if not _MIN_RATE <= rate <= _MAX_RATE or align != channels * width:
+                return None
+            fmt = (channels, width, rate)
+        elif chunk_id == b"data":
+            if fmt is None:
+                return None
+            return fmt[0], fmt[1], fmt[2], body
+        pos = body + size + (size & 1)
+    return None
+
+
+def read_wav(audio: bytes) -> WavClip | None:
+    """The clip, or None when it is not a measurable PCM WAV. Never raises."""
+    layout = _layout(audio)
+    if layout is None:
+        return None
+    channels, width, rate, start = layout
+    size = channels * width
+    usable = (len(audio) - start) // size * size
     return WavClip(
         channels=channels,
-        sample_width=sample_width,
-        frame_rate=frame_rate,
-        frames=frames,
+        sample_width=width,
+        frame_rate=rate,
+        frames=audio[start : start + usable],
     )
-
-
-#: How many frames :func:`wav_seconds` reads at a time.
-_COUNT_BLOCK_FRAMES = 65_536
 
 
 def wav_seconds(audio: bytes) -> Decimal | None:
     """How many seconds of audio a WAV clip holds, or None. Never raises.
 
-    ⚠️ **It counts in blocks and keeps no copy of the frames.** The door
-    calls it for every clip, and §6A.10a clause 1 records the memory that one
-    request may hold. A full copy here would add 25 MB to that bound.
+    It keeps no copy of the frames. The door calls it for every clip, and
+    §6A.10a clause 1 records the memory that one request may hold.
     """
-    try:
-        with wave.open(io.BytesIO(audio), "rb") as reader:
-            frame_size = reader.getnchannels() * reader.getsampwidth()
-            frame_rate = reader.getframerate()
-            if frame_size <= 0 or frame_rate <= 0:
-                return None
-            present = 0
-            while True:
-                # `readframes` stops at the end of the bytes, so a header that
-                # claims more frames than the file holds cannot inflate this.
-                block = reader.readframes(_COUNT_BLOCK_FRAMES)
-                if not block:
-                    break
-                present += len(block) // frame_size
-    except Exception:  # a hostile header can raise more than `wave.Error`
+    layout = _layout(audio)
+    if layout is None:
         return None
-    return Decimal(present) / Decimal(frame_rate)
+    channels, width, rate, start = layout
+    return Decimal((len(audio) - start) // (channels * width)) / Decimal(rate)
 
 
 def split_wav(clip: WavClip, max_seconds: int) -> list[bytes]:

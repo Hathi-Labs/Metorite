@@ -21,6 +21,7 @@ import io
 import logging
 import os
 import pathlib
+import struct
 import uuid
 import wave
 from decimal import Decimal
@@ -1354,10 +1355,11 @@ class TestSarvamOnTheTranscribeDoor:
         assert len(sarvam_vendor.requests) == 1
         assert provider["calls"][-1]["model"] == WHISPER
 
-        # The step that ANSWERED bills, and it bills the clip's own length.
+        # The step that ANSWERED bills the larger of the clip (3 s) and the
+        # vendor's figure (90 s).
         [row] = _rows(db, org_id)
         assert row.model == WHISPER
-        assert row.quantity == WAV_3S_MINUTES
+        assert row.quantity == MINUTES
 
     def test_a_webm_clip_on_a_sarvam_binding_answers_415_and_writes_no_row(
             self, client, db, org_key, org_id, provider, sarvam_vendor, stt_tier):
@@ -1398,6 +1400,55 @@ class TestSarvamOnTheTranscribeDoor:
         [row] = _rows(db, org_id)
         assert row.quantity == Decimal("1.0833")
 
+    @pytest.mark.parametrize("declared", [0, 0xFFFFFFFF, 100], ids=["zero", "max", "small"])
+    def test_a_lying_data_size_bills_the_bytes_present(
+            self, client, db, org_key, org_id, sarvam_vendor, stt_tier, declared):
+        """P1. The header says 0, 0xFFFFFFFF or 100 bytes. 3 s of audio is
+        present, the vendor decodes all of it, and the row bills 3 s."""
+        audio = bytearray(WAV_3S)
+        at = audio.index(b"data")
+        audio[at + 4: at + 8] = struct.pack("<I", declared)
+        tier = stt_tier(SARVAM_MODEL)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=bytes(audio))
+        assert answer.status_code == 200, answer.text
+        [row] = _rows(db, org_id)
+        assert row.quantity == WAV_3S_MINUTES
+
+    def test_a_zero_sample_rate_on_a_sarvam_binding_answers_415(
+            self, client, db, org_key, org_id, sarvam_vendor, stt_tier):
+        audio = bytearray(WAV_3S)
+        at = audio.index(b"fmt ")
+        audio[at + 12: at + 16] = struct.pack("<I", 0)
+        tier = stt_tier(SARVAM_MODEL)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=bytes(audio))
+        assert answer.status_code == 415, answer.text
+        assert sarvam_vendor.requests == []
+        assert _rows(db, org_id) == []
+
+    def test_a_clip_above_600_seconds_answers_413_and_writes_no_row(
+            self, client, db, org_key, org_id, provider, sarvam_vendor, stt_tier):
+        """P2. 601 s at 8 kHz is 9.6 MB, under the byte cap, over the length cap."""
+        tier = stt_tier(SARVAM_MODEL, WHISPER)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=_wav(601, rate=8_000))
+        assert answer.status_code == 413, answer.text
+        assert "600 seconds" in answer.json()["detail"]
+        assert sarvam_vendor.requests == []
+        assert provider["calls"] == []
+        assert _rows(db, org_id) == []
+
+    def test_a_clip_of_exactly_600_seconds_serves(
+            self, client, db, org_key, org_id, sarvam_vendor, stt_tier):
+        tier = stt_tier(SARVAM_MODEL)
+        _, key = org_key
+        answer = _transcribe(client, key, model=tier, audio=_wav(600, rate=8_000))
+        assert answer.status_code == 200, answer.text
+        assert len(sarvam_vendor.requests) == 21
+        [row] = _rows(db, org_id)
+        assert row.quantity == Decimal("10.0000")
+
     def test_the_capability_write_ties_sarvam_to_native_sarvam(self, client, db):
         """Do 1: a `sarvam/` transcribe model takes `native_sarvam` only."""
         model = f"sarvam/vox2-{uuid.uuid4().hex[:6]}/codemix"
@@ -1420,9 +1471,12 @@ class TestSarvamOnTheTranscribeDoor:
 
 
 class TestALitellmStepBillsTheMeasuredWav:
-    """VOX-2 Done-when 2. The vendor says 90 seconds, and the clip holds 3."""
+    """VOX-2 Done-when 2. The vendor says 90 seconds, and the clip holds 3.
 
-    def test_a_wav_clip_on_whisper_bills_the_clip_not_the_vendor(
+    The step bills the LARGER figure, because the vendor charges us for what
+    it decoded and the header of a clip can lie."""
+
+    def test_a_wav_clip_on_whisper_bills_the_larger_of_clip_and_vendor(
             self, client, db, org_key, org_id, priced_stt, provider):
         _, key = org_key
         assert _transcribe(client, key, audio=WAV_3S).status_code == 200
@@ -1430,8 +1484,15 @@ class TestALitellmStepBillsTheMeasuredWav:
         assert provider["calls"][-1]["response_format"] == "verbose_json"
         [row] = _rows(db, org_id)
         assert row.model == WHISPER
-        assert row.quantity == WAV_3S_MINUTES
-        assert row.billed_credits == WAV_3S_MINUTES * CREDITS_PER_MINUTE
+        assert row.quantity == MINUTES
+        assert row.billed_credits == CALL_COST
+
+    def test_a_long_wav_clip_bills_the_clip_when_it_exceeds_the_vendor(
+            self, client, db, org_key, org_id, priced_stt, provider):
+        _, key = org_key
+        assert _transcribe(client, key, audio=_wav(120, rate=8_000)).status_code == 200
+        [row] = _rows(db, org_id)
+        assert row.quantity == Decimal("2.0000")
 
 
 # ══ §6A.10c — the image endpoint and the speak endpoint ═════════════════════

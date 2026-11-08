@@ -8883,14 +8883,21 @@ uv run pytest tests/unit/test_customer_console_tasks.py \
 §31 VOX-2 owns the slice. This block records how the build changes the ten
 clauses above. Each other clause holds as written.
 
-1. **Clause 3, the quantity.** The door reads a WAV clip with the standard
-   library `wave` module before any provider call. It bills that length for
-   every provider, a litellm step too. A clip that `wave` cannot read keeps
-   the old rule: the `verbose_json` duration, else zero with the log line
-   `router.unmeasured_quantity`.
-   - `customer_console/wav.py` holds the reader.
-   - It counts the frames that are present. So a streaming header that
-     claims `0xFFFFFFFF` bytes cannot bill 37 hours.
+1. **Clause 3, the quantity.** The door measures a WAV clip before any
+   provider call. It bills that length for every provider, a litellm step too.
+   - `customer_console/wav.py` walks the RIFF chunks with `struct`. It ignores
+     the declared `data` size, because that field can lie.
+   - It counts `(bytes after the data header) // block_align` frames. A size
+     of 0, `0xFFFFFFFF`, or a small or large number all bill the bytes present.
+   - A chunk after `data`, such as a trailing `LIST`, counts as audio by a few
+     bytes. The door bills the bytes it sends.
+   - A `fmt ` chunk with a zero block align, or a sample rate outside
+     1 000 to 384 000 Hz, is not a measurable WAV.
+   - A litellm step bills the larger of the measured length and the
+     `verbose_json` duration. The provider charges for what it decoded.
+   - A clip that is not a measurable WAV keeps the old rule: the
+     `verbose_json` duration, else zero with the log line
+     `router.unmeasured_quantity`.
 2. **Clause 6, the dispatch.** `native_sarvam` is in `KNOWN_INVOCATIONS` and
    `SERVING_INVOCATIONS`, and it serves `transcribe` only.
    - `customer_console/stt_sarvam.py` holds the handler.
@@ -8910,9 +8917,18 @@ clauses above. Each other clause holds as written.
 5. **The 30-second limit.** Sarvam's REST call takes 30 seconds of audio at
    most, and it answers 422 above that. A 422 does not fail over. So the
    handler cuts a longer clip into parts of 29 seconds and joins the text.
-6. **Failover.** A Sarvam 5xx, 429 or 403 falls to the next step, as a
+6. **The 600-second wall.** A measured WAV clip above 600 seconds answers 413
+   "audio above 600 seconds is refused", for every provider. The 413 comes
+   before any provider call and writes no usage row. One request makes at
+   most 21 Sarvam calls.
+7. **Failover.** A Sarvam 5xx, 429 or 403 falls to the next step, as a
    litellm step does. A 200 with no transcript is terminal, because the
    vendor has charged for it.
+8. **The accepted leak.** A failure on part N of M fails over the whole step.
+   Sarvam has charged for parts 1 to N-1, and the door never bills them. The
+   next step transcribes the whole clip and bills it once. The loss is bounded
+   at 20 parts for each request, by the 600-second wall. The handler logs
+   `stt_sarvam.partial_failure` with `parts_served` and `parts_total`.
 
 **The vendor facts**, read on 2026-11-08 at
 `https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe`:
