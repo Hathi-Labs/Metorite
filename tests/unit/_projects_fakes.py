@@ -817,6 +817,9 @@ class FakeProjectsDB:
         args = dict(params or {})
         self.statements.append(statement)
         self.calls.append((statement, args))
+        # A lock returns nothing that a route reads, and one process holds it.
+        if "pg_advisory_xact_lock" in statement:
+            return _Result([])
         # WS-27aa's tenant source for the scheduled lifecycle sweep:
         # `workflows.owner_email` → `app_user.organization_id`
         # (`routes/workflows/service._workflow_organization`). Taught

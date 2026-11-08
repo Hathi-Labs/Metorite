@@ -143,6 +143,7 @@ from gateway.routes.projects.notifications import (
 from gateway.routes.projects.relations import (
     DIRECTED_TYPES,
     assert_no_block_cycle,
+    canonical_task_id,
     delete_task_link,
     insert_task_link,
 )
@@ -2803,7 +2804,7 @@ async def create_link(
             detail=f"Unknown link type '{payload.link_type}'. "
                    f"One of: {list(_LINK_TYPES)}.",
         )
-    if str(payload.target_task_id) == str(task_id):
+    if canonical_task_id(payload.target_task_id) == canonical_task_id(task_id):
         raise HTTPException(
             status_code=422, detail="A task cannot be linked to itself.",
         )

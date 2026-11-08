@@ -5554,6 +5554,9 @@ TEXT_LINK_BAD_TYPE = "The input 'link_type' must be blocks."
 TEXT_LINK_TOO_LONG = (
     "The chain of tasks that wait on each other is too long. Nothing changed.")
 TEXT_LINK_NOT_FOUND = "Task or link not found."
+TEXT_LINK_NOT_BLOCKS = (
+    "This tool removes blocks links only, and this link is another kind."
+    " Nothing changed. A person removes other kinds of link in the app.")
 #: The ``detail`` strings of the gateway's 422 (``relations.assert_no_block_cycle``
 #: and ``create_link``). ``tests/unit/test_task_links_mcp_r8.py``, in
 #: ``test_the_details_are_the_ones_of_the_gateway``, pins them equal to the
@@ -5579,8 +5582,8 @@ _ADD_LINK_INPUT: dict[str, Any] = {
                                    " get_task. It must be done before the target"
                                    " task can start."},
         "target_task_id": {"type": "string", "pattern": _UUID_PATTERN,
-                           "description": "The task that waits. It cannot start"
-                                          " until task_id is done."},
+                           "description": "The task that waits. my_work does not"
+                                          " offer it until task_id is done."},
         "link_type": {"type": "string", "enum": list(AGENT_LINK_TYPES),
                       "description": "blocks: task_id blocks target_task_id."},
     },
@@ -5616,9 +5619,10 @@ async def _add_task_link(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     The gateway checks that the member sees BOTH tasks, and answers 404 for
     either, so a hidden target reads as "Task not found." The same link twice
     keeps one row (``ON CONFLICT``). The edge reads the links first, so
-    ``created`` is false for a link that was there.
+    ``created`` is false for a link that was there. The ids go in lower case,
+    as ``move_tasks`` sends them.
     """
-    task_id, target = str(args["task_id"]), str(args["target_task_id"])
+    task_id, target = str(args["task_id"]).lower(), str(args["target_task_id"]).lower()
     if args["link_type"] not in AGENT_LINK_TYPES:
         raise ToolError(TEXT_LINK_BAD_TYPE)
     if task_id.lower() == target.lower():
@@ -5640,8 +5644,9 @@ ADD_TASK_LINK = Tool(
     name="add_task_link",
     title="Link two tasks: one blocks the other",
     description=(
-        "Say that one task waits on another. task_id BLOCKS target_task_id: the"
-        " target task cannot start until task_id is done. To make A2 wait on"
+        "Say that one task waits on another. task_id BLOCKS target_task_id:"
+        " my_work does not offer the target task until task_id is done. A"
+        " claim_task on the target task is not refused. To make A2 wait on"
         " A1, call it with task_id A1 and target_task_id A2. Both tasks must be"
         " ones this member can see. A task that is hidden or does not exist"
         " answers Task not found. The same link twice keeps one row, and"
@@ -5682,9 +5687,21 @@ _REMOVE_LINK_OUTPUT: dict[str, Any] = _object({
 
 
 async def _remove_task_link(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
-    """DELETE one link (SW-16a). A link that is gone answers 404, and the edge
-    says so in plain words."""
-    task_id, link_id = str(args["task_id"]), str(args["link_id"])
+    """DELETE one ``blocks`` link (SW-16a). The edge reads the link first, so a
+    ``relates_to`` or ``duplicates`` link stays: this tool could not put it
+    back. A link that the read does not show answers not found. The ids go in
+    lower case, as ``move_tasks`` sends them."""
+    task_id, link_id = str(args["task_id"]).lower(), str(args["link_id"]).lower()
+    body = await _get(ctx, RELATIONS_ROUTE, TEXT_LINK_NOT_FOUND,
+                      path_params={"task_id": task_id})
+    links = body.get("links") if isinstance(body, dict) else None
+    found = next((r for r in links or ()
+                  if isinstance(r, dict) and str(r.get("link_id")).lower() == link_id),
+                 None)
+    if found is None:
+        raise ToolError(TEXT_LINK_NOT_FOUND)
+    if found.get("link_type") != "blocks":
+        raise ToolError(TEXT_LINK_NOT_BLOCKS)
     await _write(
         ctx, "DELETE", LINK_ROUTE, TEXT_LINK_NOT_FOUND,
         path_params={"task_id": task_id, "link_id": link_id}, json_body={})
@@ -5695,11 +5712,12 @@ REMOVE_TASK_LINK = Tool(
     name="remove_task_link",
     title="Remove a link between two tasks",
     description=(
-        "Remove one link from a task this member can see. Send the link_id"
-        " that get_task shows on that task. Either end of the link works. A"
-        " link that is already gone answers Task or link not found. Removing a"
-        " blocks link lets the target task start. To add a link, call"
-        " add_task_link."
+        "Remove one blocks link from a task this member can see. Send the"
+        " link_id that get_task shows on that task. Either end of the link"
+        " works. A link that is already gone answers Task or link not found. A"
+        " link of another kind stays, and a person removes it in the app. After"
+        " a blocks link goes, my_work can offer the target task. To add a link,"
+        " call add_task_link."
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_REMOVE_LINK_INPUT,
@@ -5708,7 +5726,7 @@ REMOVE_TASK_LINK = Tool(
     params={"task_id": "task_id", "link_id": "link_id"},
     not_found=TEXT_LINK_NOT_FOUND,
     run=_remove_task_link,
-    routes=(),
+    routes=(RELATIONS_ROUTE,),
     method="DELETE",
     annotations=dict(DELETE_LINK_ANNOTATIONS),
 )

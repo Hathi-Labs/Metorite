@@ -32,6 +32,7 @@ links stop being maintained and the feature is worse than absent.
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -81,8 +82,45 @@ def subtask_progress(children: list[dict[str, Any]]) -> dict[str, int]:
     return {"done": done, "total": total}
 
 
+def canonical_task_id(value: Any) -> str:
+    """The one text form of a task id.
+
+    Postgres casts ``A1B2...`` and ``a1b2...`` to one uuid, and a comparison of
+    text sees two tasks. So an id from a path or a body passes through this
+    before any comparison with an id that the database gave back (SW-16a).
+    """
+    try:
+        return str(UUID(str(value)))
+    except ValueError:
+        return str(value).lower()
+
+
+#: One ``blocks`` writer at a time in one organization. The org is the one that
+#: the session is bound to, never a value from the request.
+_BLOCK_GRAPH_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock(hashtextextended('pm_task_links:blocks:' "
+    "|| COALESCE(current_setting('app.tenant_id', true), ''), 0))"
+)
+
+
+async def lock_block_graph(db: Any) -> None:
+    """Hold the ``blocks`` graph of this organization to the end of the transaction.
+
+    The loop check reads the graph and the caller then writes it. Without the
+    lock, "A blocks B" and "B blocks A" can both pass the check and both land,
+    and ``my_work`` then skips both tasks with no error. A transaction-level
+    lock is safe under transaction pooling. ⚠️ Take it before any row lock of
+    the transaction, so that one lock order holds.
+    """
+    await db.execute(text(_BLOCK_GRAPH_LOCK_SQL))
+
+
 async def assert_no_block_cycle(db: Any, source_id: str, target_id: str) -> None:
     """Refuse a ``blocks`` link that would close a loop.
+
+    Every writer of a ``blocks`` edge calls this, so the lock lives here. The
+    caller writes the edge in the SAME transaction, and the lock holds until
+    that transaction ends.
 
     Walks forward from the proposed target: if the chain of things *it* blocks
     ever reaches the source, the new link would complete a cycle.
@@ -95,16 +133,18 @@ async def assert_no_block_cycle(db: Any, source_id: str, target_id: str) -> None
     a chain nobody is reading, and an unbounded walk over data somebody can
     create is a denial-of-service surface rather than a thorough check.
     """
-    if str(source_id) == str(target_id):
+    source, target = canonical_task_id(source_id), canonical_task_id(target_id)
+    if source == target:
         raise HTTPException(
             status_code=422, detail="A task cannot block itself.",
         )
-    frontier = {str(target_id)}
+    await lock_block_graph(db)
+    frontier = {target}
     seen: set[str] = set()
     for _ in range(MAX_DEPTH):
         if not frontier:
             return
-        if str(source_id) in frontier:
+        if source in frontier:
             raise HTTPException(
                 status_code=422,
                 detail="That link would make a loop: this task already depends "
@@ -167,7 +207,8 @@ async def insert_task_link(
     return str(row.id)
 
 
-#: The ONE delete of ``pm_task_links``. The path may name either end.
+#: The delete of a link that a caller removes. The path may name either end.
+#: ``merge.py`` has one more delete, for a link that a merge makes redundant.
 _DELETE_LINK_SQL = (
     "DELETE FROM pm_task_links WHERE id = CAST(:lid AS uuid) "
     "AND (source_task_id = CAST(:tid AS uuid) "
@@ -186,8 +227,10 @@ _FAR_END_VISIBLE_SQL = (
     "AND {visible}) "
 )
 
-#: The timeline line of a removal. It names no task: the reader of one end may
-#: not see the other end.
+#: The timeline line of a removal. This text names no task, because the reader
+#: of one end may not see the other end. ``meta.target`` does hold the other
+#: task: :func:`drop_unseen_link_targets` takes it out of each read for a
+#: reader who cannot see that task.
 LINK_REMOVED_BODY = "Removed a link"
 
 
@@ -237,6 +280,51 @@ async def delete_task_link(
                 "direction": direction, "link_action": "removed",
             },
         )
+    return True
+
+
+async def drop_unseen_link_targets(
+    db: Any, vis: Any, activities: list[dict[str, Any]],
+) -> None:
+    """Take ``meta.target`` out of each ``link`` row whose task the reader cannot see.
+
+    A timeline read checks only the task that it names. A ``link`` row of that
+    task holds the id of the other task, so without this a pinned agent reads
+    the id of a task that ``get_task`` hides. One query over the page. The
+    stored row keeps ``target``, for a reader who can see both ends.
+    """
+    def target_of(row: dict[str, Any]) -> Any:
+        meta = row.get("meta")
+        if row.get("type") != "link" or not isinstance(meta, dict):
+            return None
+        return meta.get("target")
+
+    wanted = sorted({
+        canonical_task_id(target) for row in activities
+        if (target := target_of(row)) and _is_uuid(target)
+    })
+    if not wanted:
+        visible: set[str] = set()
+    else:
+        visible = {str(r.id) for r in (await db.execute(
+            text(
+                "SELECT t.id FROM pm_tasks t "
+                "WHERE t.id = ANY(CAST(:target_ids AS uuid[])) "
+                f"AND {task_visibility_clause(vis)}"
+            ),
+            {"target_ids": wanted, **vis.params},
+        )).fetchall()}
+    for row in activities:
+        target = target_of(row)
+        if target and canonical_task_id(target) not in visible:
+            row["meta"] = {k: v for k, v in row["meta"].items() if k != "target"}
+
+
+def _is_uuid(value: Any) -> bool:
+    try:
+        UUID(str(value))
+    except ValueError:
+        return False
     return True
 
 
@@ -360,7 +448,10 @@ __all__ = [
     "LINK_TYPES",
     "assert_no_block_cycle",
     "blocked_by_open",
+    "canonical_task_id",
     "delete_task_link",
+    "drop_unseen_link_targets",
     "insert_task_link",
+    "lock_block_graph",
     "subtask_progress",
 ]

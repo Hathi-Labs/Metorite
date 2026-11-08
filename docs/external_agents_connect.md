@@ -141,8 +141,8 @@ Nine tools make or change a task:
 | `set_assignees` | It replaces the assignees of a task. Each new person must already be able to open the task through a project grant or an admin read right. When Metorite refuses one person, nothing changes. Any change to the task after the agent read it refuses the call |
 | `set_task_status` | It moves a task to another status. It can move a task to a done status when the agent finishes the work. It never moves a task to a cancelled status. A person does that step |
 | `add_task_reference` | It links a pull request, a commit or a branch to a task |
-| `add_task_link` | It says that one task blocks another. `task_id` blocks `target_task_id`, so the second task cannot start until the first is done. You must see both tasks. The same link twice keeps one link. Metorite refuses a link that makes a loop, and a link from a task to itself |
-| `remove_task_link` | It removes one link. Send the `link_id` that `get_task` shows for the link. The agent must be able to see both tasks |
+| `add_task_link` | It says that one task blocks another. `task_id` blocks `target_task_id`, so `my_work` does not offer the second task until the first is done. A claim of the second task is not refused. You must see both tasks. The same link twice keeps one link. Metorite refuses a link that makes a loop, and a link from a task to itself |
+| `remove_task_link` | It removes one `blocks` link. Send the `link_id` that `get_task` shows for the link. The agent must be able to see both tasks. A person removes other kinds of link in the app |
 | `add_comment` | It writes a comment on a task, such as a short progress note while it works. You are the author of the comment. It can reply to a top-level comment. A comment holds at most 20,000 characters. With the same `idempotency_key`, a second call gives back the first comment and adds no second comment |
 
 Each change shows in the task history, with the agent as `mcp:<host>`. A status change of the agent can start a workflow of your organization that runs on a status change, as your own change does. A move to done is a status change too.

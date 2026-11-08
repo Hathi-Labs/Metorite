@@ -1,6 +1,6 @@
 ---
 slug: kit/plan-the-work
-version: 2
+version: 3
 title: "Kit: plan the work on the board"
 summary: How an agent turns a goal into epics and slices on a Metorite board, with the approval of a person at each gate, using the tools of today.
 audience: agent
@@ -67,7 +67,7 @@ This page tells an agent how to plan a goal on a Metorite board with the tools t
 7. After the approval, make each slice with `create_task`. Send `parent_task_id` (its epic), the backlog `status_id`, `estimate_mins`, an `idempotency_key`, and as assignee the person who answers for it.
 8. Link the order. For each pair, call `add_task_link` with the blocking slice as `task_id` and the waiting slice as `target_task_id`. No person adds the links.
 
-**A `blocks` link:** `task_id` blocks `target_task_id`. The second task cannot start until the first is done. `get_task` shows each link with its `link_id`, and `remove_task_link` removes one. Metorite refuses a link that makes a loop. Each link matters today: `my_work` skips a task that an open task blocks.
+**A `blocks` link:** `task_id` blocks `target_task_id`. `my_work` does not offer the second task until the first is done. Metorite does not refuse a claim of the second task, so an agent that takes a task by its id must read its links first. `get_task` shows each link with its `link_id`, and `remove_task_link` removes one. Metorite refuses a link that makes a loop. Each link matters today: `my_work` skips a task that an open task blocks.
 
 ## The first week, until cycles ship
 

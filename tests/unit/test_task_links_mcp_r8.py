@@ -37,9 +37,17 @@ Run::
 * L11. ``G/tasks.py``: ``delete_link`` passes ``far_end_vis`` for a person too. ``test_a_person_may_still_remove_a_link_to_a_hidden_task``.
 * L12. ``G/relations.py``: ``insert_task_link`` loses ``if not row.inserted``. ``test_a_second_identical_add_writes_nothing``.
 * L13. ``E/tools.py``: ``_meta_link`` loses ``link_action``. ``test_the_timeline_keeps_the_mark_of_a_removal``.
+* L14. ``G/activities.py``: ``get_timeline`` skips ``drop_unseen_link_targets``. ``test_a_pinned_agent_reads_no_outside_id``.
+* L15. ``G/relations.py``: ``drop_unseen_link_targets`` drops each target. ``test_a_reader_who_sees_the_far_end_keeps_the_target``.
+* L16. ``G/relations.py``: ``assert_no_block_cycle`` compares the ids as they came. ``test_an_upper_case_id_cannot_close_a_loop``.
+* L17. ``E/tools.py``: the two link tools send the ids as they came. ``test_the_edge_sends_the_ids_in_lower_case``.
+* L18. ``G/relations.py``: ``assert_no_block_cycle`` takes no lock. ``test_two_adds_in_opposite_directions_store_no_loop`` and, with no database, ``test_projects_relations.py::test_the_lock_comes_before_the_first_read_of_the_graph``.
+* L19. ``E/tools.py``: ``_remove_task_link`` skips the kind check. ``test_remove_refuses_a_link_that_is_not_blocks``.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import uuid
 from pathlib import Path
 from typing import Any
@@ -86,7 +94,32 @@ class TestTheRecords:
     def test_the_description_states_the_direction(self):
         text_ = self._listed("add_task_link")["description"]
         assert "task_id BLOCKS target_task_id" in text_
-        assert "cannot start until task_id is done" in text_
+        assert "my_work does not offer the target task until task_id is done" in text_
+        assert "claim_task on the target task is not refused" in text_
+
+    async def test_the_edge_sends_the_ids_in_lower_case(self, monkeypatch):
+        sent: list[Any] = []
+
+        async def read(_ctx, _route, _not_found, **_kw):
+            return {"links": [{"id": ID_B, "link_id": ID_A, "link_type": "blocks",
+                               "direction": "outgoing"}]}
+
+        async def write(_ctx, method, _route, _not_found, **kw):
+            sent.append((method, kw["path_params"], kw["json_body"]))
+            return 200, {"id": ID_A}
+
+        monkeypatch.setattr(tools, "_get", read)
+        monkeypatch.setattr(tools, "_write", write)
+        made = await tools._add_task_link(None, {
+            "task_id": ID_A.upper(), "target_task_id": ID_B.upper(), "link_type": "blocks"})
+        gone = await tools._remove_task_link(None, {
+            "task_id": ID_A.upper(), "link_id": ID_A.upper()})
+        assert (made["task_id"], made["target_task_id"]) == (ID_A, ID_B)
+        assert (gone["task_id"], gone["link_id"]) == (ID_A, ID_A)
+        assert sent == [
+            ("POST", {"task_id": ID_A}, {"target_task_id": ID_B, "link_type": "blocks"}),
+            ("DELETE", {"task_id": ID_A, "link_id": ID_A}, {}),
+        ]
 
     def test_link_type_is_blocks_only(self):
         schema = self._listed("add_task_link")["inputSchema"]["properties"]["link_type"]
@@ -399,6 +432,139 @@ class TestTheRecordOfALink:
         assert second["structuredContent"]["created"] is False
         assert (len(_link_rows(live, a)), len(_link_rows(live, b))) == rows
         assert _stamps(live, a, b) == stamps
+
+
+async def _person_link(live, source: str, target: str, kind: str = "blocks") -> str:
+    """The member adds a link in the app. Returns its id."""
+    sent = await t._send(live, "POST", f"/projects/tasks/{source}/links",
+                         body={"target_task_id": target, "link_type": kind}, signed=None)
+    assert sent.status_code == 201, sent.text
+    return str(sent.json()["id"])
+
+
+async def _link_events(live, name: str, task: str) -> list[dict[str, Any]]:
+    """The ``link`` rows that connection *name* reads, newest first."""
+    read = await _mcp(live, name, "get_task_timeline", {"task_id": task, "kind": "events"})
+    return [r for r in read["structuredContent"]["activities"] if r["type"] == "link"]
+
+
+class TestTheReachAndTheLoopOfALink:
+    """The far end of a timeline row, the loop check and the kind of a removal."""
+
+    pytestmark = _DB_GATE
+
+    async def test_a_pinned_agent_reads_no_outside_id(self, live):
+        _pinned(live)
+        inside = live.task(live.team, live.s.todo, "sw16a far inside")
+        outside = live.task(live.other, live.s.other, "sw16a far outside")
+        link_id = await _person_link(live, inside, outside)
+        # After the add. The row of the add is on the source task.
+        added = await _link_events(live, "pinned", inside)
+        assert added[0]["meta"] == {"type": "blocks"}, added
+        assert outside not in str(added)
+        # After a person removes the link.
+        sent = await t._send(live, "DELETE", f"/projects/tasks/{inside}/links/{link_id}",
+                             signed=None)
+        assert sent.status_code == 200, sent.text
+        removed = await _link_events(live, "pinned", inside)
+        assert removed[0]["meta"] == {
+            "type": "blocks", "direction": "outgoing", "link_action": "removed"}, removed
+        assert outside not in str(removed)
+        # The route of the app gives the agent no more than the tool does.
+        direct = await t._send(live, "GET", f"/projects/tasks/{inside}/timeline",
+                               signed="pinned")
+        assert direct.status_code == 200, direct.text
+        assert outside not in direct.text
+        # The stored row keeps the target, for a reader who can see both ends.
+        assert _link_rows(live, inside)[-1].meta["target"] == outside
+
+    async def test_a_reader_who_sees_the_far_end_keeps_the_target(self, live):
+        _pinned(live)
+        a = live.task(live.team, live.s.todo, "sw16a near")
+        b = live.task(live.team, live.s.todo, "sw16a far")
+        await _person_link(live, a, b)
+        for name in ("write", "pinned"):
+            rows = await _link_events(live, name, a)
+            assert rows[0]["meta"] == {"target": b, "type": "blocks"}, (name, rows)
+        person = await t._send(live, "GET", f"/projects/tasks/{a}/timeline", signed=None)
+        assert person.status_code == 200, person.text
+        kept = [r for r in person.json()["rows"] if r["type"] == "link"]
+        assert kept[0]["meta"] == {"target": b, "type": "blocks"}, kept
+
+    async def test_an_upper_case_id_cannot_close_a_loop(self, live):
+        a = live.task(live.team, live.s.todo, "sw16a case A")
+        b = live.task(live.team, live.s.todo, "sw16a case B")
+        assert (await _link(live, a, b))["isError"] is False
+        assert _text(await _link(live, b.upper(), a)) == tools.TEXT_LINK_CYCLE
+        assert _text(await _link(live, b, a.upper())) == tools.TEXT_LINK_CYCLE
+        # A person reaches the same check through the route.
+        for source, target in ((b.upper(), a), (b, a.upper())):
+            sent = await t._send(live, "POST", f"/projects/tasks/{source}/links",
+                                 body={"target_task_id": target, "link_type": "blocks"},
+                                 signed=None)
+            assert sent.status_code == 422, sent.text
+            assert sent.json()["detail"] == tools.LINK_CYCLE_DETAIL
+        selfed = await t._send(live, "POST", f"/projects/tasks/{a.upper()}/links",
+                               body={"target_task_id": a, "link_type": "relates_to"},
+                               signed=None)
+        assert selfed.status_code == 422, selfed.text
+        assert selfed.json()["detail"] == tools.LINK_SELF_DETAIL
+        assert len(_links(live, a)) == 1
+
+    async def test_two_adds_in_opposite_directions_store_no_loop(self, live, monkeypatch):
+        from gateway.routes.projects import tasks as pm_tasks
+
+        a = live.task(live.team, live.s.todo, "sw16a race A")
+        b = live.task(live.team, live.s.todo, "sw16a race B")
+        real = pm_tasks.insert_task_link
+        both_here = asyncio.Event()
+        arrived = 0
+
+        # Each add waits after its check for the other one. With the lock the
+        # second add cannot pass the check, so the first add waits out the
+        # limit and commits. Without the lock both adds are past the check.
+        async def paused(db, *args, **kwargs):
+            nonlocal arrived
+            arrived += 1
+            if arrived == 2:
+                both_here.set()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(both_here.wait(), 2)
+            return await real(db, *args, **kwargs)
+
+        monkeypatch.setattr(pm_tasks, "insert_task_link", paused)
+
+        async def both() -> list[dict[str, Any]]:
+            return list(await asyncio.gather(*(
+                t._mcp_unscoped(live, "write", "add_task_link", {
+                    "task_id": source, "target_task_id": target, "link_type": "blocks"})
+                for source, target in ((a, b), (b, a)))))
+
+        results = await t._in_scope(live, both)
+        made = [r for r in results if r["isError"] is False]
+        refused = [r for r in results if r["isError"] is not False]
+        assert len(made) == 1 and len(refused) == 1, results
+        assert _text(refused[0]) == tools.TEXT_LINK_CYCLE
+        assert len(_links(live, a)) == 1
+
+    async def test_remove_refuses_a_link_that_is_not_blocks(self, live):
+        a = live.task(live.team, live.s.todo, "sw16a kind A")
+        b = live.task(live.team, live.s.todo, "sw16a kind B")
+        link_id = await _person_link(live, a, b, "relates_to")
+        stamps = _stamps(live, a, b)
+        rows = len(_link_rows(live, a)), len(_link_rows(live, b))
+        refused = await _mcp(live, "write", "remove_task_link", {
+            "task_id": a, "link_id": link_id})
+        assert _text(refused) == tools.TEXT_LINK_NOT_BLOCKS
+        assert "A person removes other kinds of link in the app." in _text(refused)
+        # Nothing was written.
+        assert len(_links(live, a)) == 1
+        assert _stamps(live, a, b) == stamps
+        assert (len(_link_rows(live, a)), len(_link_rows(live, b))) == rows
+        # A person still removes it.
+        sent = await t._send(live, "DELETE", f"/projects/tasks/{a}/links/{link_id}", signed=None)
+        assert sent.status_code == 200, sent.text
+        assert _links(live, a) == []
 
 
 class TestTheTypeOnARealDatabase:
