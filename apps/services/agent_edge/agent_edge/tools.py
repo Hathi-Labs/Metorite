@@ -1248,6 +1248,8 @@ LIST_LIMIT_DEFAULT = 50
 #: MCP-G19a. The page cap of ``list_tasks`` with ``compact`` true. The gateway
 #: holds the same number (``COMPACT_MAX_PAGE_SIZE``), and a pin test compares.
 LIST_COMPACT_LIMIT_MAX = 500
+#: MCP-G19c. ``task_number`` is a BIGINT. The gateway holds the same bound.
+TASK_NUMBER_MAX = 9_223_372_036_854_775_807
 STATS_ROUTE = "/projects/tasks/stats"
 #: The group axes of ``board_stats``, as the gateway names them.
 STATS_GROUP_BY: tuple[str, ...] = (
@@ -1321,10 +1323,23 @@ _LIST_TASKS_INPUT: dict[str, Any] = {
                            " direct subtask. A subtask that this member cannot"
                            " see, and the tasks under it, are not in the list."},
         **_AUDIT_FILTER_PROPERTIES,
+        "type_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "Only tasks of this type. An id from get_project."},
+        "type_name": {"type": "string", "minLength": 1, "maxLength": 100,
+                      "description": "Only tasks of a type with this name, such as Bug,"
+                                     " not case sensitive. Each project has its own"
+                                     " types, so the name matches the type of each one."},
+        "task_number": {"type": "integer", "minimum": 1, "maximum": TASK_NUMBER_MAX,
+                        "description": "Only the task with this number, such as 2315."
+                                       " One number can name one task in each top-level"
+                                       " project, so add project_id to read one of them."
+                                       " A task that this member cannot see is not in"
+                                       " the list."},
         "compact": {"type": "boolean",
                     "description": "True: small rows (id, number, title, project, status"
-                                   " stage and name, parent, updated, due) and a page of"
-                                   " up to 500. Use it to audit a large board."},
+                                   " stage and name, parent, updated, due, type, tags and"
+                                   " created) and a page of up to 500. Use it to audit a"
+                                   " large board."},
         "limit": {"type": "integer", "minimum": 1, "maximum": LIST_COMPACT_LIMIT_MAX,
                   "default": LIST_LIMIT_DEFAULT,
                   "description": "Rows on one page. At most 100, or 500 with compact."
@@ -1335,11 +1350,19 @@ _LIST_TASKS_INPUT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-#: MCP-G19a. The keys of one ``compact`` row.
+#: MCP-G19a. The keys of one ``compact`` row. MCP-G19c adds ``type``, ``tags``
+#: and ``created_at``.
 COMPACT_TASK_KEYS: tuple[str, ...] = (
     "id", "task_number", "title", "project_id", "status_category", "status_name",
-    "parent_task_id", "updated_at", "due_at",
+    "parent_task_id", "updated_at", "due_at", "type", "tags", "created_at",
 )
+#: MCP-G19c. The type of a compact row: its id and name, or null for no type.
+_COMPACT_TYPE_SCHEMA: dict[str, Any] = {"anyOf": [{"type": "null"}, {
+    "type": "object",
+    "properties": {"id": {"type": "string"}, "name": _UNTRUSTED_OR_NULL},
+    "required": ["id", "name"],
+    "additionalProperties": False,
+}]}
 _COMPACT_TASK_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1352,6 +1375,9 @@ _COMPACT_TASK_SCHEMA: dict[str, Any] = {
         "parent_task_id": _NULLABLE_STRING,
         "updated_at": _NULLABLE_STRING,
         "due_at": _NULLABLE_STRING,
+        "type": _COMPACT_TYPE_SCHEMA,
+        "tags": {"type": "array", "items": _UNTRUSTED_SCHEMA},
+        "created_at": _NULLABLE_STRING,
     },
     "required": list(COMPACT_TASK_KEYS),
     "additionalProperties": False,
@@ -1408,6 +1434,9 @@ _LIST_TASKS_PARAMS: dict[str, str] = {
     "is_epic": "is_epic",
     "assigned": "assigned",
     "title_prefix": "title_prefix",
+    "type_id": "type_id",
+    "type_name": "type_name",
+    "task_number": "task_number",
     "compact": "compact",
     "limit": "page_size",
     "cursor": "page",
@@ -1509,7 +1538,20 @@ def _compact_row(
             str(row["parent_task_id"]) if row.get("parent_task_id") is not None else None),
         "updated_at": row.get("updated_at"),
         "due_at": row.get("due_at"),
+        "type": _compact_type(row),
+        "tags": [untrusted(t) for t in row.get("tags") or () if isinstance(t, str)],
+        "created_at": _str_or_none(row.get("created_at")),
     }
+
+
+def _compact_type(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """MCP-G19c. ``{id, name}`` of the type of a compact row, or ``None``.
+    A type name is free text, so it is (U)."""
+    type_id = row.get("type_id")
+    if type_id is None:
+        return None
+    name = row.get("type_name")
+    return {"id": str(type_id), "name": untrusted(name) if isinstance(name, str) else None}
 
 
 def _audit_query(args: Mapping[str, Any]) -> list[tuple[str, str]]:
@@ -1536,7 +1578,8 @@ async def _list_tasks(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"The input 'limit' must be at most {cap}.")
 
     query: list[tuple[str, str]] = []
-    for name in ("project_id", "status_id", "tag", "assignee", "text", "parent_task_id"):
+    for name in ("project_id", "status_id", "tag", "assignee", "text", "parent_task_id",
+                 "type_id", "type_name", "task_number"):
         if name in args:
             query.append((_LIST_TASKS_PARAMS[name], str(args[name])))
     if "project_id" in args:
@@ -1583,8 +1626,10 @@ LIST_TASKS = Tool(
     description=(
         "List the tasks this member can see, newest first, one page at a time."
         " Filter by project, status, status stage, tag, assignee, text, title"
-        " prefix, dates (updated, created, due), parent, epic type or assigned."
-        " Send compact true for small rows and a page of up to 500. A project_id reads"
+        " prefix, dates (updated, created, due), parent, epic type, type (type_id"
+        " or type_name), task number or assigned. Send task_number to read one task"
+        " by its number in one call. Send compact true for small rows with the"
+        " type, tags and created date, and a page of up to 500. A project_id reads"
         " the project and every project under it, unless include_subtree is"
         " false. Send unheld true to"
         " see only tasks that no AI session holds. Send parent_task_id to get"
@@ -2154,13 +2199,31 @@ _PROJECT_ID_INPUT: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_GET_PROJECT_OUTPUT: dict[str, Any] = _object({
-    "project": _PROJECT_SCHEMA,
-    "statuses": {"type": "array", "items": _PROJECT_STATUS_SCHEMA},
-    "types": {"type": "array", "items": _TYPE_SCHEMA},
-    "fields": {"type": "array", "items": _FIELD_SCHEMA},
-    "tags": {"type": "array", "items": _TAG_SCHEMA},
-})
+_GET_PROJECT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **_PROJECT_ID_INPUT["properties"],
+        "compact": {"type": "boolean",
+                    "description": "True: the project, its statuses and its task types"
+                                   " only, with no field definitions and no tags. Use it"
+                                   " to get the status and type ids for list_tasks."},
+    },
+    "required": ["project_id"],
+    "additionalProperties": False,
+}
+
+#: MCP-G19c. A compact answer leaves out ``fields`` and ``tags``, so the two
+#: are not required. A full answer holds all five.
+_GET_PROJECT_OUTPUT: dict[str, Any] = {
+    **_object({
+        "project": _PROJECT_SCHEMA,
+        "statuses": {"type": "array", "items": _PROJECT_STATUS_SCHEMA},
+        "types": {"type": "array", "items": _TYPE_SCHEMA},
+        "fields": {"type": "array", "items": _FIELD_SCHEMA},
+        "tags": {"type": "array", "items": _TAG_SCHEMA},
+    }),
+    "required": ["project", "statuses", "types"],
+}
 
 
 def _project(node: Mapping[str, Any]) -> dict[str, Any]:
@@ -2217,6 +2280,17 @@ async def _get_project(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     node = await _get(ctx, NODE_ROUTE, TEXT_PROJECT_NOT_FOUND, path_params=where)
     if not isinstance(node, dict):
         raise ToolError(TEXT_BUSY)
+    if args.get("compact") is True:
+        # MCP-G19c. The ids that list_tasks takes, and not the field
+        # definitions or the tag list of the organization.
+        statuses, types_ = await _together(*(
+            _get(ctx, route, TEXT_PROJECT_NOT_FOUND, path_params=where)
+            for route in (STATUSES_ROUTE, TYPES_ROUTE)))
+        return {
+            "project": _project(node),
+            "statuses": [_project_status(r) for r in _rows_of(statuses)],
+            "types": [_task_type(r) for r in _rows_of(types_)],
+        }
     statuses, types_, fields, tags = await _together(*(
         _get(ctx, route, TEXT_PROJECT_NOT_FOUND, path_params=where)
         for route in (STATUSES_ROUTE, TYPES_ROUTE, FIELDS_ROUTE, TAGS_ROUTE)))
@@ -2236,16 +2310,19 @@ GET_PROJECT = Tool(
         "Read one project this member can see: its name, description, parent,"
         " kind, level, task prefix, status, time zone and dates, with its statuses,"
         " task types, custom field definitions and tags. Use the status ids"
-        " and tags to filter list_tasks. An archived project still answers,"
-        " with archived_at set." + _UNTRUSTED_NOTE
+        " and tags to filter list_tasks. Send compact true to get only the"
+        " project, its statuses and its task types, with no fields and no tags."
+        " An archived project still answers, with archived_at set." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
-    input_schema=_PROJECT_ID_INPUT,
+    input_schema=_GET_PROJECT_INPUT,
     output_schema=_GET_PROJECT_OUTPUT,
     route=NODE_ROUTE,
     params={"project_id": "project_id"},
     not_found=TEXT_PROJECT_NOT_FOUND,
     run=_get_project,
+    # MCP-G19c. The edge applies `compact` itself: it leaves out two reads.
+    edge_inputs=frozenset({"compact"}),
     routes=(NODE_ROUTE, STATUSES_ROUTE, TYPES_ROUTE, FIELDS_ROUTE, TAGS_ROUTE),
 )
 

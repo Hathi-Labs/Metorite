@@ -510,6 +510,10 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("list_projects", "text"),
     ("list_projects", "limit"),
     ("list_projects", "cursor"),
+    # MCP-G19c. `compact` of `get_project` leaves out the reads of the field
+    # definitions and the tags. `GET /projects/nodes/{project_id}` takes no
+    # such parameter.
+    ("get_project", "compact"),
     # EA-6d. The edge keeps the key in its own slot (`agent_edge.idempotency`),
     # and the route takes no such field (spec §9.2 and §9.5 rule 4).
     ("create_task", "idempotency_key"),
