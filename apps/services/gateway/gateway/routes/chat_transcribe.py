@@ -231,6 +231,10 @@ def check_kind(filename: str, content_type: str) -> str:
     return ext
 
 
+#: The most RIFF chunks the walk reads before it gives up (a browser clip has 2).
+MAX_WAV_CHUNKS = 64
+
+
 def wav_seconds(audio: bytes) -> float:
     """The length of a WAV clip, counted from the bytes that are present.
 
@@ -245,7 +249,13 @@ def wav_seconds(audio: bytes) -> float:
     pos = 12
     rate = align = 0
     data_start: int | None = None
+    chunks = 0
     while pos + 8 <= len(audio):
+        # A browser clip has two chunks. A body of millions of tiny chunks
+        # would cost CPU before the hourly cap, so the walk stops early.
+        chunks += 1
+        if chunks > MAX_WAV_CHUNKS:
+            raise _refuse(400, "no_clip", NO_CLIP)
         cid = audio[pos:pos + 4]
         (size,) = struct.unpack_from("<I", audio, pos + 4)
         body = pos + 8

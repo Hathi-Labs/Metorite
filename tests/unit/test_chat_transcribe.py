@@ -381,6 +381,33 @@ def test_a_malformed_fmt_chunk_is_refused_with_no_slot(box) -> None:
     assert console.requests == [] and redis.counts == {}
 
 
+def test_a_flood_of_chunks_is_refused_with_no_slot(box) -> None:
+    """A body of many tiny chunks before ``data`` stops after
+    ``MAX_WAV_CHUNKS``, so it costs no CPU past that and takes no slot.
+    Mutation: drop the chunk bound, and this answers only after the whole
+    walk (the refusal text stays the same, so the bound test below pins it)."""
+    console, redis = box
+    junk = b"junk" + (0).to_bytes(4, "little")
+    body = b"RIFF" + (0).to_bytes(4, "little") + b"WAVE" + junk * 10_000
+    res = _post(_client(), body)
+    assert _refusal(res) == (400, "no_clip", ct.NO_CLIP)
+    assert console.requests == [] and redis.counts == {}
+
+
+def test_the_chunk_walk_stops_at_its_bound() -> None:
+    """``MAX_WAV_CHUNKS`` empty chunks before a real clip are refused, and a
+    browser clip (two chunks) still measures."""
+    import pytest as _pt
+    from fastapi import HTTPException as _HE
+    junk = b"junk" + (0).to_bytes(4, "little")
+    clip = wav_clip(1.0)
+    flooded = clip[:12] + junk * ct.MAX_WAV_CHUNKS + clip[12:]
+    with _pt.raises(_HE):
+        ct.wav_seconds(flooded)
+    few = clip[:12] + junk * 3 + clip[12:]
+    assert abs(ct.wav_seconds(few) - 1.0) < 0.01
+
+
 def test_a_wav_of_two_minutes_passes(box) -> None:
     res = _post(_client(), wav_clip(ct.MAX_SECONDS))
     assert res.status_code == 200
