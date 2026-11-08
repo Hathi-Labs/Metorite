@@ -111,6 +111,12 @@ export interface TaskMenuContext {
    * and the entry drops, as `canMerge` does.
    */
   canAskAgent?: boolean;
+  /**
+   * WS-AP AP-9a. The person ask is on for the org (`DECISIONS_ORGS` and
+   * `WAITING_ORGS`), and the surface can open the task and its form. Absent
+   * and the entry drops.
+   */
+  canWaitOnSomeone?: boolean;
 }
 
 /**
@@ -233,6 +239,11 @@ export interface TaskMenuActions {
    */
   askAgent?(task: TaskRow): void;
   /**
+   * Open "Wait on someone" for this task (WS-AP AP-9a). It OPENS the task card
+   * at the form, it does not send: the member picks the person and the need.
+   */
+  waitOnSomeone?(task: TaskRow): void;
+  /**
    * File the task out of every default list, board, calendar and search.
    *
    * **Offered on any status**, because archive is a shelf rather than an
@@ -340,7 +351,7 @@ export const isArchived = (ctx: TaskMenuContext): boolean =>
  * The acts that only Projects offers (`taskMenuVocabulary.ts` keeps the shared
  * ones). They sit after every shared act. Fence: `taskMenuVocabulary.test.ts`.
  */
-export const PROJECTS_ONLY_ACTS = ["askAgent"] as const;
+export const PROJECTS_ONLY_ACTS = ["askAgent", "waitOnSomeone"] as const;
 
 export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   {
@@ -495,6 +506,15 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
     group: 1,
     when: (ctx) => Boolean(ctx.canAskAgent),
     run: (actions, ctx) => actions.askAgent?.(ctx.task),
+  },
+  {
+    id: "task.waitOnSomeone",
+    // Local to Projects: the person ask lives on the Projects task card.
+    label: () => "Wait on someone\u2026",
+    icon: "Hourglass",
+    group: 1,
+    when: (ctx) => Boolean(ctx.canWaitOnSomeone),
+    run: (actions, ctx) => actions.waitOnSomeone?.(ctx.task),
   },
 ];
 

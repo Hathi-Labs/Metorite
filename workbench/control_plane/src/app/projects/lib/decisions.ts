@@ -39,11 +39,32 @@ export interface DecisionRow {
 export interface DecisionWaiting {
   decider: string;
   expires_at: string | null;
+  /**
+   * AP-9a: `person` for a person ask. Absent while `WAITING_ORGS` does not
+   * hold the org, and on an older gateway.
+   */
+  source: string | null;
+}
+
+/**
+ * AP-9a: an open person ask that the caller made. The id lets the asker
+ * withdraw it. It holds no question and no answer.
+ */
+export interface OwnAsk {
+  id: string;
+  decider: string;
+  due_at: string | null;
+  created_at: string | null;
 }
 
 export interface TaskDecisions {
   decisions: DecisionRow[];
   waiting_on: DecisionWaiting[];
+  /**
+   * `null` while the person ask is off for the org (`WAITING_ORGS`). A list,
+   * possibly empty, when both flags hold the org. The form draws from it.
+   */
+  asks: OwnAsk[] | null;
 }
 
 /** The reason box takes this many characters (the server's `REASON_MAX`). */
@@ -73,7 +94,7 @@ const text = (v: unknown): string | null => (typeof v === "string" && v ? v : nu
 
 /** The route's body, read defensively. A bad row is left out, never thrown. */
 export function readTaskDecisions(raw: unknown): TaskDecisions {
-  const body = (raw ?? {}) as { decisions?: unknown; waiting_on?: unknown };
+  const body = (raw ?? {}) as { decisions?: unknown; waiting_on?: unknown; asks?: unknown };
   const decisions: DecisionRow[] = [];
   for (const r of Array.isArray(body.decisions) ? body.decisions : []) {
     const row = r as Record<string, unknown>;
@@ -100,9 +121,23 @@ export function readTaskDecisions(raw: unknown): TaskDecisions {
   for (const w of Array.isArray(body.waiting_on) ? body.waiting_on : []) {
     const rec = w as Record<string, unknown>;
     const decider = text(rec?.decider);
-    if (decider) waiting_on.push({ decider, expires_at: text(rec.expires_at) });
+    if (decider) {
+      waiting_on.push({ decider, expires_at: text(rec.expires_at), source: text(rec.source) });
+    }
   }
-  return { decisions, waiting_on };
+  let asks: OwnAsk[] | null = null;
+  if (Array.isArray(body.asks)) {
+    asks = [];
+    for (const a of body.asks) {
+      const rec = a as Record<string, unknown>;
+      const id = text(rec?.id);
+      const decider = text(rec?.decider);
+      if (id && decider) {
+        asks.push({ id, decider, due_at: text(rec.due_at), created_at: text(rec.created_at) });
+      }
+    }
+  }
+  return { decisions, waiting_on, asks };
 }
 
 /**
@@ -148,6 +183,7 @@ export function labelOf(row: DecisionRow, key: string | null): string {
 /** The line for a decision that waits on another member. */
 export function waitingLine(w: DecisionWaiting, nameOf: (email: string) => string): string {
   const end = closesText(w.expires_at, "It closes");
+  if (w.source === "person") return `${nameOf(w.decider)} has an ask.${end ? ` ${end}.` : ""}`;
   return `A decision waits on ${nameOf(w.decider)}.${end ? ` ${end}.` : ""}`;
 }
 

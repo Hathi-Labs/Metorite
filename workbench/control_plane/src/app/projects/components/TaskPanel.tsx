@@ -80,6 +80,10 @@ import { useAccess } from "@/components/AccessProvider";
 import { taskRefResolverFor } from "@/lib/taskRefs";
 
 interface Props {
+  /** WS-AP AP-9a — see `TaskBody`. The page owns the move card and the key `W`. */
+  personalTask?: boolean;
+  onMoveToProject?: () => void;
+  waitRequest?: number;
   task: TaskRow;
   statuses: StatusRow[];
   onClose: () => void;
@@ -168,6 +172,9 @@ export function TaskPanel({
   where,
   myWork = false,
   serverOverlay = false,
+  personalTask,
+  onMoveToProject,
+  waitRequest,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -430,6 +437,9 @@ export function TaskPanel({
         onPeopleSeen={onPeopleSeen}
         twoColumn={twoColumn}
         above={strip ?? serverStrip}
+        personalTask={personalTask}
+        onMoveToProject={onMoveToProject}
+        waitRequest={waitRequest}
       />
     </aside>
   );

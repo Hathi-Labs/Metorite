@@ -51,6 +51,7 @@ import {
   type ViewRow,
   agentRunsApi,
   attentionApi,
+  decisionsApi,
   projectsApi,
   projectsKey,
   projectWatchersApi,
@@ -1015,6 +1016,9 @@ function ProjectsWorkspace() {
    */
   const [archivedCount, setArchivedCount] = useState<number | null>(null);
   const [openTask, setOpenTask] = useState<TaskRow | null>(null);
+  // The key `W` reads the open task through a ref: the key handler is bound once.
+  const openTaskIdRef = useRef<string | null>(null);
+  openTaskIdRef.current = openTask?.id ?? null;
   // WS-27ab — peek · side · full, persisted per user (`lib/panelMode.ts`).
   // Read in an effect rather than a lazy initialiser: `localStorage` does not
   // exist while this renders on the server, and a first paint that disagreed
@@ -1254,6 +1258,15 @@ function ProjectsWorkspace() {
   const [waitingOnMe, setWaitingOnMe] = useState(false);
   const [agentRunsOn, setAgentRunsOn] = useState(false);
   /**
+   * WS-AP AP-9a — "Wait on someone". `waitOn` is one probe of the task read:
+   * its key `asks` is there only while `DECISIONS_ORGS` and `WAITING_ORGS`
+   * both hold the org. `waitFor` asks the open task card to open the form.
+   * The key `W` and the card menu raise it.
+   */
+  const [waitOn, setWaitOn] = useState(false);
+  const [waitProbed, setWaitProbed] = useState(false);
+  const [waitFor, setWaitFor] = useState<{ taskId: string; n: number } | null>(null);
+  /**
    * WS-55 EA-13e (EA3-43, EA3-49) — "Agent work" and the count button of the
    * strip. Page state like "Waiting on me": both filter the loaded rows in
    * the browser. `agentSummary` is the strip's five counts, read from the
@@ -1294,6 +1307,30 @@ function ProjectsWorkspace() {
       live = false;
     };
   }, []);
+
+  // WS-AP AP-9a — one read of the first task tells whether the person ask is
+  // on. The routes answer 404 while a flag is off, and then nothing draws.
+  useEffect(() => {
+    // A request belongs to the task it named. Another task, or none, drops it.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setWaitFor((cur) => (cur && cur.taskId !== (openTask?.id ?? null) ? null : cur));
+  }, [openTask?.id]);
+  const probeTaskId = tasks[0]?.id ?? null;
+  useEffect(() => {
+    if (waitProbed || !probeTaskId) return;
+    let live = true;
+    void decisionsApi
+      .forTask(probeTaskId)
+      .then((read) => {
+        if (!live) return;
+        setWaitOn(read?.asks != null);
+        setWaitProbed(true);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [probeTaskId, waitProbed]);
 
   // WS-27l — the selected node's custom field definitions. Root-scoped, so the
   // whole subtree shares one set; held here rather than in the panel because
@@ -3460,6 +3497,10 @@ function ProjectsWorkspace() {
         openSettings(section ?? null, selected ? spaceOf(allRoots, selected).id : null);
       },
       showShortcuts: () => setShowingShortcuts(true),
+      waitOnSomeone: () => {
+        const id = openTaskIdRef.current;
+        if (id) setWaitFor((cur) => ({ taskId: id, n: (cur?.n ?? 0) + 1 }));
+      },
     }),
     [router, setPanelMode, selected, openSettings, allRoots, app],
   );
@@ -3471,6 +3512,7 @@ function ProjectsWorkspace() {
     isRoot: Boolean(selected && !selected.parent_project_id),
     filtered: isFiltered(filters),
     panelOpen: Boolean(openTask),
+    canWaitOnSomeone: waitOn,
     panelMode,
     // A phone reaches the tree through the shell drawer; there is no rail to
     // toggle, so the command is not offered rather than being a dead entry.
@@ -5266,6 +5308,17 @@ function ProjectsWorkspace() {
                 setMergingTasks([taskId]);
               }}
               onAskAgent={agentRunsOn ? (taskId) => setAskingTasks([taskId]) : undefined}
+              onWaitOnSomeone={
+                waitOn
+                  ? (taskId) => {
+                      const task = tasks.find((t) => t.id === taskId);
+                      if (!task) return;
+                      void openWithStatuses(task).then(() =>
+                        setWaitFor((cur) => ({ taskId, n: (cur?.n ?? 0) + 1 })),
+                      );
+                    }
+                  : undefined
+              }
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
               onDrop={handleDrop}
@@ -5378,6 +5431,12 @@ function ProjectsWorkspace() {
        */
       onPeopleSeen={notePeopleSeen}
       task={openTask}
+      personalTask={flatten(personal).some((e) => e.node.id === openTask.project_id)}
+      onMoveToProject={() => {
+        setMoveTasksError(null);
+        setMovingTasks([openTask.id]);
+      }}
+      waitRequest={waitFor && waitFor.taskId === openTask.id ? waitFor.n : 0}
       statuses={panelStatuses}
       fields={fields}
       tags={tags}

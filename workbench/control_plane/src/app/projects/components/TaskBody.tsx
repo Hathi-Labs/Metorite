@@ -150,6 +150,12 @@ export interface TaskBodyProps {
    * also what the gateway's Priority sort uses.
    */
   urgentWindowHours?: number;
+  /** WS-AP AP-9a — the task is in a personal space, so "Wait on someone" says to move it. */
+  personalTask?: boolean;
+  /** WS-AP AP-9a — open the move card for this task. */
+  onMoveToProject?: () => void;
+  /** WS-AP AP-9a — a counter. Each new value opens "Wait on someone". */
+  waitRequest?: number;
 }
 
 /**
@@ -367,6 +373,9 @@ export function TaskBody({
   twoColumn = false,
   above,
   urgentWindowHours,
+  personalTask,
+  onMoveToProject,
+  waitRequest,
 }: TaskBodyProps) {
   const toast = useToast();
   // RX-6 — "Remind me": a reminder at a time, linked to this task. The due
@@ -996,6 +1005,9 @@ export function TaskBody({
             task={task}
             personLabels={personLabels}
             onActivity={() => void reloadStreams()}
+            personalTask={personalTask}
+            onMoveToProject={onMoveToProject}
+            waitRequest={waitRequest}
           />
           {/* The ADD row (owner, 2026-10-19: "all the main, commonly used
               features easily accessible"). Each button opens the tab of what

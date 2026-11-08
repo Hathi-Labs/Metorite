@@ -402,7 +402,11 @@ describe("the shortcuts sheet is generated, never written", () => {
 
   it("leaves the keys blank for a palette-only command rather than inventing one", () => {
     const panel = shortcutSections().find((s) => s.section === "Panel")!;
-    expect(panel.rows.every((r) => r.keys === "")).toBe(true);
+    // The width commands have no sequence. `W` (AP-9a) is the one Panel key.
+    const widths = panel.rows.filter((r) => r.label !== "Wait on someone");
+    expect(widths.length).toBeGreaterThan(0);
+    expect(widths.every((r) => r.keys === "")).toBe(true);
+    expect(panel.rows.find((r) => r.label === "Wait on someone")?.keys).toBe("w");
   });
 
   it("cannot drift from the registry, because it IS the registry", () => {

@@ -46,11 +46,14 @@ describe("readTaskDecisions", () => {
   it("reads the rows and the people who are waited on", () => {
     const d = readTaskDecisions({
       decisions: [row()],
-      waiting_on: [{ decider: "sam@x.test", expires_at: "2026-11-05T08:00:00Z" }],
+      waiting_on: [{ decider: "sam@x.test", expires_at: "2026-11-05T08:00:00Z", source: null }],
     });
     expect(d.decisions).toHaveLength(1);
     expect(d.decisions[0].options).toEqual(OPTIONS);
-    expect(d.waiting_on).toEqual([{ decider: "sam@x.test", expires_at: "2026-11-05T08:00:00Z" }]);
+    expect(d.waiting_on).toEqual([
+      { decider: "sam@x.test", expires_at: "2026-11-05T08:00:00Z", source: null },
+    ]);
+    expect(d.asks).toBeNull();
   });
 
   it("leaves out a bad row and never throws", () => {
@@ -60,7 +63,7 @@ describe("readTaskDecisions", () => {
     });
     expect(d.decisions.map((r) => r.id)).toEqual(["d-2"]);
     expect(d.waiting_on).toEqual([]);
-    expect(readTaskDecisions(null)).toEqual({ decisions: [], waiting_on: [] });
+    expect(readTaskDecisions(null)).toEqual({ decisions: [], waiting_on: [], asks: null });
   });
 });
 
@@ -92,11 +95,15 @@ describe("the state now", () => {
 describe("the block shows only when it has something to say", () => {
   it("is empty with no row and nobody waited on", () => {
     expect(hasDecisionBlock(null, NOW)).toBe(false);
-    expect(hasDecisionBlock({ decisions: [], waiting_on: [] }, NOW)).toBe(false);
+    expect(hasDecisionBlock({ decisions: [], waiting_on: [], asks: null }, NOW)).toBe(false);
   });
 
   it("shows for a waiting decision on another member", () => {
-    const d = { decisions: [], waiting_on: [{ decider: "sam@x.test", expires_at: null }] };
+    const d = {
+      decisions: [],
+      waiting_on: [{ decider: "sam@x.test", expires_at: null, source: null }],
+      asks: null,
+    };
     expect(hasDecisionBlock(d, NOW)).toBe(true);
   });
 });
@@ -105,13 +112,18 @@ describe("the words", () => {
   const name = (e: string) => e.split("@")[0];
 
   it("says that a decision waits, and on whom", () => {
-    const line = waitingLine({ decider: "sam@x.test", expires_at: "2026-11-05T08:00:00Z" }, name);
+    const line = waitingLine({ decider: "sam@x.test", expires_at: "2026-11-05T08:00:00Z", source: null }, name);
     expect(line.startsWith("A decision waits on sam.")).toBe(true);
     expect(line).toContain("It closes");
   });
 
+  it("says that a person has an ask, with no question in it", () => {
+    const line = waitingLine({ decider: "sam@x.test", expires_at: null, source: "person" }, name);
+    expect(line).toBe("sam has an ask.");
+  });
+
   it("never names the question for a person who waits", () => {
-    const line = waitingLine({ decider: "sam@x.test", expires_at: null }, name);
+    const line = waitingLine({ decider: "sam@x.test", expires_at: null, source: null }, name);
     expect(line).toBe("A decision waits on sam.");
   });
 

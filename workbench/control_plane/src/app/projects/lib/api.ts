@@ -17,6 +17,7 @@ import {
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
+import { type AskBody } from "./askPerson";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
 import {
   ATTENTION_LIMIT,
@@ -3203,6 +3204,19 @@ export const decisionsApi = {
     call<{ decision: unknown }>(`decisions/${encodeURIComponent(decisionId)}/answer`, {
       method: "POST",
       body: JSON.stringify(answerBody(key, reason)),
+    }),
+
+  /** WS-AP AP-9a — "Wait on someone". The asker is the session. */
+  askPerson: (taskId: string, body: AskBody) =>
+    call<{ decision: unknown }>(`tasks/${encodeURIComponent(taskId)}/asks`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** WS-AP AP-9a — the asker withdraws an open ask. */
+  withdrawAsk: (askId: string) =>
+    call<{ decision: unknown }>(`asks/${encodeURIComponent(askId)}/withdraw`, {
+      method: "POST",
     }),
 };
 

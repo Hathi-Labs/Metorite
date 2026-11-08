@@ -198,6 +198,11 @@ interface Props {
    */
   onAskAgent?: (taskId: string) => void;
   /**
+   * WS-AP AP-9a — open the task card at "Wait on someone". Absent = not
+   * offered, which is how the page withholds it while the person ask is off.
+   */
+  onWaitOnSomeone?: (taskId: string) => void;
+  /**
    * File a task, and bring one back. Owner request, 2026-09-20.
    *
    * One prop for both directions: a surface that can file and cannot restore
@@ -293,6 +298,7 @@ export function TaskBoard({
   onMoveTask,
   onMergeTask,
   onAskAgent,
+  onWaitOnSomeone,
   onExtendSelection,
   onSelect,
   onDrop,
@@ -694,6 +700,7 @@ export function TaskBoard({
     moveToProject: (task) => onMoveTask?.(task.id),
     mergeInto: (task) => onMergeTask?.(task.id),
     askAgent: (task) => onAskAgent?.(task.id),
+    waitOnSomeone: (task) => onWaitOnSomeone?.(task.id),
     setStatus: (task, statusId) => {
       if (task.status_id === statusId) return;
       onDrop(task, [], buildColumnDropUpdate("status", statusId));
@@ -737,6 +744,7 @@ export function TaskBoard({
     // An archived task takes no new run, and the gateway refuses it, so the
     // entry drops rather than offering a click that ends in an error.
     canAskAgent: Boolean(onAskAgent) && !task.archived_at,
+    canWaitOnSomeone: Boolean(onWaitOnSomeone) && !task.archived_at,
     // Renaming needs somewhere to send the result. A board whose page does not
     // reload after a write would show the old title until the next poll, which
     // reads as the rename having failed.
