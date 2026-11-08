@@ -7,9 +7,11 @@ Spec: ``project-docs/specs/package_host.md`` §8.3 and the PKG-14a row of §10.
 
 **The routes are on the CRM router.** So the three router dependencies of
 ``core.py`` run first: the kill switch (404), the ``feature:crm`` gate (403)
-and the access rule of ``access.py`` (403). Then the first line of each
-handler reads ``package_host.flags.package_host_allowed``, and an org outside
-``PACKAGE_HOST_ORGS`` gets 404 with no session.
+and the access rule of ``access.py`` (403). The CRM router gate
+(``require_crm_access``) opens a session before the flag check, so a member
+without CRM access gets 403 even while the flag is off. Then the first line of
+each handler reads ``package_host.flags.package_host_allowed``, and an org
+outside ``PACKAGE_HOST_ORGS`` gets 404.
 
 **The record.** Each handler loads the record with ``require_row`` (404). The
 CRM has no visibility rule for each record: each member who passes the
