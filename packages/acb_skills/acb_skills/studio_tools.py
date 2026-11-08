@@ -3201,8 +3201,8 @@ _REQUEST_UNREAD = ("The request could not be read, so nothing was sent. Call aga
                    "the same request_id in a moment.")
 _NOT_A_RECORD_REQUEST = ("This request_id is not a change of a Studio record, so nothing was "
                          "sent. Use the request_id that this tool gave.")
-_OTHER_VERB = ("This request_id is for a {found} of a record, and this tool makes a {verb}. "
-               "Nothing was sent. Call studio_record_{found} with only the request_id.")
+_OTHER_VERB = ("This request_id names a change of kind {found}, and this tool makes a change of "
+               "kind {verb}. Nothing was sent. Call studio_record_{found} with only the request_id.")
 _NOT_THIS_CHANGE = ("This request_id is for another package or object than the values of this "
                     "call. Nothing was sent. Call again with only the request_id.")
 #: The sentences of a network fault. A repeat of an ask gives the same open
