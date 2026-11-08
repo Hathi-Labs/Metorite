@@ -34,6 +34,10 @@ other private chats, and at most 3 of their due tasks. The block shows only
 with `ASSISTANT_BRIEFING_ORGS` on for the org. See §15.4 "As built, PZ-34",
 §15.9 and D-PZ-38 in §15.11.
 
+**§18 ACCEPTED 2026-11-08 (D196). No slice is built.** It adds the epic "Setup health" (Metorite task 940, slice SH-0 task 945). Each live app lists its setup items. The chat raises one missing item at a time, on the seam of the interview, inside the limits of D-PZ-13.
+
+A later phase adds measures and a score. Questions: §18.12.
+
 **§17 ACCEPTED 2026-11-06 (D189). No slice is built.** It adds the epic
 "Tone of voice" (Metorite task 1469). A member can choose a persona. The
 persona changes how the assistant sounds in four places. It never goes into
@@ -1134,6 +1138,8 @@ setup item and its state: done, missing or stale. The first items:
 - **On WhatsApp:** only through Reach (WS-59, D103), and only when the owner
   turns that on.
 
+**Setup health (§18, ACCEPTED, D196).** Each item gains a measure, a scope, a fix and a weight. The chat nudge and the budget are in §18.6.
+
 **Limits.** At most one setup question a day. A dismissed item waits 14 days.
 "Don't ask again" stops that item for good. The member sees every item in
 Settings → Assistant settings.
@@ -1153,6 +1159,8 @@ preference is a defect. A later fence test fails on an app that reads
 `user_settings.assistant_profile` or `email_voice_profiles` outside those two
 modules.
 
+§18.5 lists the fields of a check, and the `setup` field holds the check ids of a pane (ACCEPTED, D196).
+
 This is how the system stays true as the app grows. A new app declares what
 it reads and what it needs set up. The coach then asks for it, and the
 profile serves it.
@@ -1165,7 +1173,7 @@ profile serves it.
 | **PZ-13** | The audience rule from sent mail, by recipient domain | A test with fixed mail derives "formal with X" and stores no body | AGENT-SAFE · HIGH (reads mail) |
 | **PZ-14** | Voice features from the member's own WhatsApp messages and chat turns | A test shows that a message from another person never counts | **OWNER-GATE:** the sources · HIGH |
 | **PZ-15** | Proposals: a derived item asks, and an accepted one writes with Undo | A test shows that no derived item writes without a yes | AGENT-SAFE · MEDIUM |
-| **PZ-16** | `setup_status` and the items of §12.5 | A test for each item's "done when" | AGENT-SAFE · LOW |
+| **PZ-16** | The profile items of §12.5, added to the `setup_status` registry. OB-1a (task 1341) builds `setup_status` first (§18.13) | A test for each item's "done when" | AGENT-SAFE · LOW |
 | **PZ-17** | The coach in the chat and on My Day, with its limits | A test for one question a day, the 14-day wait and "don't ask again" | AGENT-SAFE · MEDIUM |
 | **PZ-18** | `preferences` and `setup` in the shell manifest, and the fence of §12.6 | The fence fails on a direct read outside the two modules | AGENT-SAFE · LOW |
 | **PZ-19** | The coach on WhatsApp through Reach | Reach sends a setup question only with its switch on | **OWNER-GATE:** WhatsApp sends · MEDIUM |
@@ -3596,3 +3604,521 @@ the persona line and the hello and encouragement line of the chat. Rules 7
 (no em dashes), 10 (never invent a name, number, date or quote) and 12 (the
 reader's language) always bind. "Chat answers too" changes the register only,
 so every CORE rule still binds the answer itself. Plain keeps every rule.
+
+
+---
+
+## 18. Setup health: a nudge in the chat, then a score (ACCEPTED 2026-11-08)
+
+**Status: ACCEPTED 2026-11-08 (D196).** The owner answered Q1 to Q7 on
+task 945 at 15:02 UTC: "Approve all 7 recommended defaults". The owner
+answered Q8 at 15:07 UTC: the nudge state lives in `my_day_prefs`.
+
+Nothing in this section is built. It adds the epic SH (Metorite task 940) and
+its first slice, SH-0 (task 945). The decision record is **D196**
+(`work_plan.md` §3).
+
+**Why a new section and not §12.9.** §12 is ACCEPTED (D110). This section
+is not. It extends §12.5 and §12.6 and changes none of their text. A reader
+who looks for the setup coach finds the pointers added to §12.5 and §12.6,
+and they lead here.
+
+### 18.1 The answer in one screen
+
+1. **Phase A: setup items and one chat nudge.** Each live app lists its setup
+   items as done, missing or stale. The chat raises one missing item at a
+   time. It names the app and the item, says why it matters, and offers the
+   fix. This is the 2026-11-08 ask.
+2. **Phase B: measures and a score.** An item gets a measure, a target and a
+   weight. A nightly job scores each app. A Setup health page shows the
+   score and the next step.
+3. **One seam.** The chat nudge rides the personalization interview (§14.4).
+   The items ride `setup_status` (§12.5) and the shell manifest (§12.6). No
+   second registry, no second budget.
+4. **One budget.** All unprompted setup questions share the limits of
+   D-PZ-13 with the interview. The limits count across all apps together.
+5. **Most data exists. Some does not.** §18.4 marks each item. An item with
+   no data waits. This section invents no column.
+
+### 18.2 The owner's ask
+
+> **2026-10-29 (epic 940).** "Depending on the different kinds of setups of
+> the apps that they have (the knowledge base, CRM, etc.), we should
+> proactively keep nudging the user to set things up properly... measure the
+> health of the systems, so that we can work like a copilot along with the
+> user and set up the systems proactively."
+> 
+> **2026-11-08 (chat).** "Also, I want to ensure that across all the
+> applications, whenever a user hasn't set things up, we need to nudge the user
+> to set up different settings via the chat proactively. Similar to how we are
+> setting up for personalization, we should notify the user that XYZ needs to
+> be set up to use this particular XYZ app properly."
+
+Four rules follow. They cover all live apps (`launch_surface.md` §2). The
+nudge goes through the chat. It names the app and the missing setup, for
+example "Email needs a mailbox connected so that I can sort your mail". The
+model is the personalization interview.
+
+### 18.3 What exists (measured 2026-11-08, on `main`)
+
+| Part | State | Where |
+|---|---|---|
+| `setup_status(org, member)` | **Not in the code.** A search of `apps`, `packages` and `workbench/control_plane/src` finds no definition. OB-1a (task 1341) builds it first, with the steps of `onboarding.md` §7. PZ-16 (task 310) adds the profile items | `onboarding.md` §7.1 |
+| The manifest fields `preferences` and `setup` | **Not in `NavPane`.** PZ-18 (task 312) adds them | `workbench/control_plane/src/lib/nav.ts:110` |
+| `needs_setup` and `setup_href` | Built, for installed packages only. They make a "Finish setting up" row. They are not a setup item of a live app | `workbench/control_plane/src/lib/shell/NeedsYouCard.tsx:314` |
+| The interview and its due line | Built (PZ-26, PZ-32). One open area, one line in the block, 24 hours apart, 14 days after a skip | `packages/acb_common/acb_common/assistant_profile.py:1817` |
+| The context seam | Built. The line joins the block in a solo room with writes open, once for each 24 hours in a process | `apps/services/orchestrator/orchestrator/executor.py:875` |
+| The Get started card | Spec only (OB-1b, task 1342). It is the first-week view of `setup_status` | `onboarding.md` §6 |
+| The score, the history, the Setup health page | None | |
+
+### 18.4 Map: what answers "is it set up", for each live app
+
+**The columns.** *Scope* is member or org. *Data today* names the table, the
+column or the route that answers the item now, with `file:line` on `main`.
+*Phase* is A (a binary item with a fix) or B (a measure). An item with the
+words "No data" waits, and nothing builds it until a column exists.
+
+Paths in *Data today* are under `infra/postgres/` unless they start with
+`apps/` or `workbench/`.
+
+| App | Item id | Scope | Done when | Data today | Fix | Phase |
+|---|---|---|---|---|---|---|
+| My Email | `email.mailbox` | member | The member has an `email_accounts` row with `sync_enabled` on and no `sync_error`. It is stale when `last_synced_at` is older than 24 hours | `17_email_accounts.sql:14`. The org key came with `223_email_accounts_unique_per_tenant.sql:55` | A link to the connect flow. The chat cannot grant mail access | A |
+| My Email | `email.rules` | member | One enabled `email_rules` row, or the member chose "Not for us" | `19_email_automation.sql:25`. **"Not now" has no store.** A dismiss of §18.5 holds it | The tool `suggest_email_rules`, then the proposal cards (task 42) | A |
+| My Email | `email.voice` | member | `email_voice_profiles.status` is `READY` for an account | `94_email_voice_profile.sql:8` | The consent card of PZ-12, then the build | A |
+| My Email | `email.signature` | member | A signature is set | **No data.** No signature column exists. Task 1959 designs signatures. This item waits for it | The signature design of task 1959 | waits |
+| My Email | `email.organized_share` | member | 80% or more of last week's mail got a rule | `email_executed_rules` at `19_email_automation.sql:70` and `email_messages` at `17_email_accounts.sql:39`. Counts only | `suggest_email_rules` | B |
+| My Email | `email.reply_rules` | member | An enabled rule with `system_type` `REPLY_ZERO` | `19_email_automation.sql:25` (column `system_type`) | The rule proposal card | B |
+| My WhatsApp | `wa.account` | member | A `wa_accounts` row with `sync_status` `live` and `initial_sync_done` true | `102_whatsapp.sql:22` | A link to the WhatsApp page. Meta sign-up is a browser flow | A |
+| My WhatsApp | `wa.mira_link` | member | A `whatsapp_member_links` row with `status` `active` and `is_current` true | `235_whatsapp_member_links.sql:46` | The link flow in Settings. The code step needs the member's phone | A |
+| Shell | `push.allowed` | member | One `push_subscriptions` row for the member that has not ended | `306_push_subscriptions.sql:37`. **A denied prompt leaves no server row**, so "denied" and "never asked" look the same | The prompt of OB-8, from the browser | A |
+| Calendar | `calendar.connected` | member | An external calendar is connected | **No data.** `apps/services/gateway/gateway/routes/tasks/calendar.py:56` says the list is empty until a `calendar_accounts` table exists. No such table exists | None until the sync is built | waits |
+| Calendar | `calendar.working_hours` | member | `people.working_hours` is not null for the member's row | `172_people_profile.sql:49`. The Calendar settings edit it (`workbench/control_plane/src/app/calendar/components/CalendarSettings.tsx:178`). A member with no `people` row cannot answer | The chat tool for working hours, or a link to Calendar settings | A |
+| My Profile | `profile.address`, `profile.style`, `profile.voice`, `profile.aliases` | member | The rows of §12.5 | `294_user_settings_assistant_profile.sql:35`, read only through `acb_common.assistant_profile` | The interview (§14). These items are PZ-16 | A |
+| Projects | `projects.first_project` | org | One `pm_projects` row that is not archived | `146_projects.sql:50` (column `archived_at`) | The chat tool that makes a project | A |
+| Projects | `projects.lead` | org | Each root project that is not archived has a `lead` | `146_projects.sql:64` | The chat tool that sets the lead | B |
+| Projects | `projects.assignee` | org | Few open tasks have no assignee | `pm_task_assignees` at `146_projects.sql:262` | A suggestion card on the tasks | B |
+| Projects | `projects.stale` | org | No task in progress has gone 14 days with no change | `pm_tasks.updated_at` at `146_projects.sql:231`, with `pm_task_statuses` | The reminder of the task owner | B |
+| CRM | `crm.pipeline` | org | A default `crm_pipelines` row with one `crm_pipeline_stages` row or more | `247_crm_source_profiles_pipelines.sql:70` and `:90` | The pipeline setup in CRM | A |
+| CRM | `crm.deal_owner`, `crm.next_step` | org | Few deals have no `owner_email` or no `next_step` | `crm_deals` at `144_crm.sql:303` (columns at `:324` and `:328`) | A suggestion card on the deals | B |
+| CRM | `crm.duplicates` | org | Few possible duplicate contacts | **No data found in this scan.** SH-4 (task 949) finds or builds the finder | | waits |
+| CRM | `crm.sync_errors` | org | The CRM source has no sync error | `crm_source_profiles` at `247_crm_source_profiles_pipelines.sql:52`. **Not verified here** whether it holds an error field. SH-4 checks | The connection page | waits |
+| Knowledge | `knowledge.first_content` | org | One published `kb_pages` row | `272_knowledge_pages.sql:106` | The chat tool that writes a page | A |
+| Knowledge | `knowledge.sources` | org | One `kb_sources` row on a connected `integration_connections` row | `300_kb_sources.sql:94` and `245_integration_connections.sql:40` | A link to the connect flow | A |
+| Knowledge | `knowledge.owners` | org | Each `team` or `agent` space has an `owner_email`. The `company` space has none by design (`272_knowledge_pages.sql:51`), so it is out | `272_knowledge_pages.sql:51` | The owner picker | B |
+| Knowledge | `knowledge.reviews` | org | Few published pages are past `review_at` | `303_kb_page_verification.sql` (index on `review_at`) | The verify act on the page | B |
+| Knowledge | `knowledge.gaps` | org | Few open `kb_gaps` | `293_kb_gaps.sql:44` | The gap proposal | B |
+| Knowledge | `knowledge.empty_searches` | org | Few searches find nothing | **No data.** No store of searches with no result was found. SH-3 (task 948) adds one | | waits |
+| People | `people.profile_complete` | member | The member's `people` row passes the quality rules | `49_gtd_people.sql:67`. The quality rules are in `apps/services/gateway/gateway/routes/people/quality.py`. **Not read in this scan.** SH-5 (task 950) reads it | The profile editor | B |
+| Organisation | `org.profile` | org, admin | The org has a name, a GST number and an address | `organization.display_name` at `130_org_access_control.sql:37` is always set. **GST and address have no column.** Handoff H-15 holds the build. The item waits for H-15 | The Organization tab | waits |
+| Organisation | `org.members` | org, admin | The org has 2 members or more, active or invited | `app_user` at `09_app_user.sql:13` (column `status` from `130_org_access_control.sql`) | The invite act | A |
+| Organisation | `org.roles` | org, admin | Each member has a role | `user_role` at `130_org_access_control.sql:108` | The role act. It stays an admin write | B |
+| Organisation | `org.member_mailboxes` | org, admin | A count of members with a mailbox. **Counts only** | `email_accounts` (above) | A reminder card to the member | B |
+| Integrations | none | | An integration the deployment does not offer is **never** an item. A connected one counts under the app it serves | `integration_connections` at `245_integration_connections.sql:40` | | |
+| Approvals, Artifacts, Studio, Chat, Appearance | none | | These apps have nothing the member must set up before use. Approvals has no org rule table, and its approver question is open (`work_plan.md` §4, per-Center approvals) | | | |
+
+### 18.5 One check, and the states
+
+A check is a row in the one registry (`onboarding.md` §7.1). It never
+becomes a second table of settings. These are its fields.
+
+| Field | Meaning | Example |
+|---|---|---|
+| `id` | App, a dot, the item | `email.mailbox` |
+| `app` | The `NavPane` href that owns it | `/email` |
+| `scope` | `member` or `org`. A member check reads the member's own rows. An org check reads the org's rows | member |
+| `measure` | What is read. A flag (Phase A) or a count and a ratio (Phase B). It reads counts and settings, never content | `sync_status`, `last_synced_at` |
+| `target` | What counts as met | no error, synced in 24 hours |
+| `why` | One sentence that states the effect on the member | "Without a mailbox I cannot read or sort your mail." |
+| `fix` | A tool of the chat, or a link. Names the card kind when a card fixes it | a link to the connect flow |
+| `weight` | A whole number from 1 to 5. Used in Phase B only | 5 |
+| `flag` | The feature flag that must be on for the app. A check for an app that is off in the org does not run | `feature:email` |
+
+**The states.** `done`, `missing`, `stale`, `cannot_run` and `skipped`.
+
+- `cannot_run` means no data can answer the check (the "waits" rows), or
+  the app or integration is off for this org. It shows nowhere and counts
+  nowhere. The member never reads "needs sign-in" for something the
+  deployment does not offer.
+- `skipped` means the member said "Not for us" (§18.9). It is permanent.
+  The check leaves the nudges and the score, and an Undo brings it back. It
+  is the same state as "Skip" in the Get started card (`onboarding.md` §6).
+- "Not now" is a **dismiss**, not a state. The item stays `missing` and
+  waits 14 days (D-PZ-13). "Don't ask again" stops the nudge only. The
+  check stays in the score.
+
+**The names of the states in three places.** §12.5 says done, missing and
+stale. `onboarding.md` §7.1 says done, open and skipped. §18.5 says done,
+missing, stale, cannot_run and skipped. `open` is `missing` or `stale`.
+`skipped` is the same word in both.
+
+`cannot_run` is new here, and no card shows it.
+
+**The manifest.** The `setup` field of §12.6 lists a pane's check ids. The
+`NavPane` is the only place an app names its checks. The registry holds the
+rows. A fence (§18.11) fails when a live pane has a check whose app is not
+its own.
+
+### 18.6 Phase A: how the chat nudges
+
+**The seam.** The nudge is a second kind of due line in the same place as the
+interview line. The code that builds the block (`_with_interview_line`) asks
+one function for the line. The function picks between a setup item and an
+interview area. It returns at most one line.
+
+**The rule: the nudge does not depend on `learning` or on the interview.**
+The interview line needs `learning` on and a started interview
+(`assistant_profile.py:1694`). A setup nudge needs neither. It needs three
+things: the setup flag for the org, the member's own solo chat, and a due
+item. A member who switched learning off, or who never started the
+interview, still gets told that Email needs a mailbox. Without this rule the
+nudge would miss the members who need it most.
+
+**What the line says.** Example, for a member with no mailbox who opens the
+chat:
+
+> Setup (one item is due): email.mailbox. Email needs a mailbox so that you
+> can read and sort mail here. Ask only if it fits the moment, at the end of
+> your reply, in your own words. Say which app, what is missing, and what it
+> unlocks. Offer the link.
+
+Then the model calls `setup_nudge("asked", "email.mailbox")`. This is the
+twin of `profile_interview("asked", area)`.
+
+**What the member reads.** One question, never a list. It names the app and
+the item, says what it unlocks, and offers one fix.
+
+- "Email needs a mailbox connected so that I can sort your mail. Want me to
+  open the connect page?"
+- "CRM has no pipeline stages yet, so deals cannot move. Shall I set up the
+  usual five stages? You can change them after."
+
+**Which fix.**
+
+- A **yes card** when the chat has a write tool for it. The card shows the
+  change. Nothing writes without the yes (D-PZ-2).
+- A **link** (`show_in_app`, `chat_first_surface.md` §4.4) when the fix is a
+  sign-in, a consent or a flow in the browser. The chat never asks for a
+  password or a code in the message.
+- The fix is **never** an outbound message to another person.
+
+**One budget for every unprompted setup question (decision D-SH-3).**
+
+- The nudge state does **not** live in the profile column. Rule 3 of §7 says
+  that learning "Off" stops every write to the profile. So the state of the
+  nudge (asked, dismissed, "Not for us") lives in the store that
+  `onboarding.md` §7.2 already defines for the setup items. That store is the
+  key `setup` in `user_settings.my_day_prefs`. It holds `hidden_at`,
+  `done_seen_at` and `skipped` for each item now. It is a pref of the
+  member's own screen, so learning does not close it.
+- PZ-17 adds three fields to that key: `last_asked_at`, a `dismissed`
+  time for each item, and `never` for each item. The route is the existing
+  whitelisted `PUT /shell/feed/prefs`, and the chat tool `setup_nudge` writes
+  the same key. So Phase A needs **no new table and no migration**.
+- The clock is `setup.last_asked_at` in that key. The interview keeps its own
+  `last_asked_at` in the profile. The one function that builds the line reads
+  both and takes the later time. A setup nudge sets only its own clock. An
+  interview question sets only its own. So the next unprompted question of
+  either kind waits 24 hours after the later one.
+- With learning off, the interview clock never moves. The setup clock
+  still does. So at most one unprompted setup question comes each day, across
+  all apps. With learning on, the interview and the setup items share the
+  day.
+- D-PZ-13 holds as written: one a day, 14 days after a dismiss, and
+  "Do not ask again".
+
+**Which item goes first.** One rule, in this order.
+
+1. An item whose event just happened (the next paragraph).
+2. An item of an app that the member opened in the last 7 days. This
+   needs a data source. If none exists, skip this step.
+3. The item with the highest weight. In Phase A all weights equal 1, so the
+   registry order decides.
+4. Then the interview area.
+
+**Event first, when the data allows it.** The best moment is just after the
+member meets the gap. An event raises the item in the next chat. It never
+sends a message by itself. Without an event, the item comes at the start of
+a chat.
+
+Events that the data allows today:
+
+- The third mail moved by hand, with no rule (`email_rules` and the move log).
+- A deal made with no stage (`crm_deals`).
+- A Knowledge search with no hit. No store exists today, so this one waits.
+
+**Where it never shows.** The places are the same as for the interview
+(§14.4). It never shows in a shared room, on WhatsApp (the sender is Reach,
+PZ-19), or with the setup flag off for the org. A nudge that cannot fit in the
+block is left out.
+
+**Writes closed.** The nudge still shows. It offers a link and no yes card.
+
+**Persona.** §17.4 treats a setup question as an interview question. The persona colours it. The question and its reason stay plain. It
+takes no line from the bank, so it adds nothing to the cap of 3.
+
+**Copy rules** (the owner's product rules).
+
+1. Every question states why and what it does.
+2. The name "Jev" never shows. The assistant is Mira.
+3. A failure says what happened and the next step.
+4. A setup screen shows the result of the change.
+5. An integration that is off is never named as "needs sign-in".
+
+### 18.7 Phase B: the measure, the target, the score
+
+**A measure** is a number with a target. Example: `email.organized_share`,
+the share of last week's mail that a rule caught, target 80% or more. The
+reader counts rows and reads settings. It does not read the subject, the body
+or a field of a record.
+
+**The score.**
+
+- A check **meets its target** or it does not. A check in the state
+  `cannot_run` or `skipped` is out. It is in neither the top nor the bottom
+  of the sum.
+- The score of an app is 100 times the weights of the met checks. Divide that
+  by the weights of the checks that ran.
+- The overall score is the same sum over all apps. It is not the mean of the
+  app scores.
+- An app with no check that ran has no score. It shows "Not measured yet".
+  It does not show 0 or 100.
+- No bands in the first version. The bands of other products are not
+  verified (§18.10).
+
+**Weights.** A whole number from 1 to 5. The owner reviews the first table
+at the SH-2 preview. The weight is the point value of the check, as in
+Microsoft Secure Score. The page sorts by the score gain.
+
+**The run.** A nightly job runs the checks for each org. It keeps one row for
+each check for each night, so a trend exists.
+
+**After a fix.** A fix runs its own check again
+at once, so the page can say "Email: 62 to 81" without a 24-hour wait
+(SH-7). The job runs under the tenant seam (R5). The tables are new, tenant
+scoped, with force row level security, and the migration is expand only
+(R6). SH-1 (task 946) designs them.
+
+**Quiet by default.** The chat never lists the gaps. It raises one (§18.6).
+The page may list all.
+
+**Measure the nudges.** Each nudge logs `shown`, `accepted`, `dismissed` and
+`fixed`. The log holds the check id and the time. It holds no text. A check
+that the members often dismiss gets asked less. SH-7 sets the rule.
+
+### 18.8 Who sees what
+
+| Viewer | Sees |
+|---|---|
+| A member | The member checks of their own, their own score, and the org checks only as "Your admin handles this" with no detail |
+| An admin | Also the org checks, the org score and the **adoption counts**: how many members have a mailbox, a role, or a rule |
+| Nobody | The content of a member's mail, messages, tasks or records. Nobody sees which member has which setting, except the admin's count of who is not yet set up (SH-8) |
+
+- **The admin list of members.** The admin sees which members still have an
+  open item (task 1348, OB-7, joins SH-8). The list holds names and item ids
+  only. It never holds content.
+- **Admin items nudge only admins** (default of question 4, §18.12). A member
+  never gets a chat nudge for an org item.
+- Every read goes through the session and the tenant seam. No check takes a
+  member or an org from request input (R5).
+
+### 18.9 The limits
+
+D-PZ-13 stays as it is. One unprompted setup question a day, 14 days of wait
+after a dismiss, and "Don't ask again" for good. §18.6 makes the limit
+common to the interview and the setup items. The Get started card asks
+nothing, so these limits do not bind it (`onboarding.md` §6). A step that the
+chat offers as a question obeys them.
+
+**"Not for us".** Decided (Q5): both kinds of check can carry it. A member marks
+a member check. An admin marks an org check for the whole org.
+
+The check goes to `skipped`. It leaves the nudges and the score. The page
+shows it muted with an Undo. The admin's adoption count shows how many are
+marked, as a number.
+
+This differs from a dismiss, which waits 14 days. The Salesforce guides say
+not to chase a full score, since some settings stay off on purpose. This is
+the owner's call (§18.12, question 5).
+
+### 18.10 What other apps do
+
+**Research, 2026-10-29.** The web searches ran on 2026-10-29. Each item
+names its source type. Check the vendor's current page before you copy a
+detail.
+
+**HubSpot, Data Quality command center** (vendor knowledge base)
+
+- One page holds the data health of the CRM.
+- The summary shows the duplicate issues and the formatting issues as a change
+  in percent over a date range. Each issue links to its own fix tab.
+- "Recommended actions" lists what the AI found, for example duplicates.
+- A chart shows how many properties have issues over time. The member can
+  highlight Duplicates, No data or Unused.
+- **We take:** the CRM checks of SH-4 (duplicates, empty fields, unused
+  fields). We also take a trend over time and a link from each issue to its
+  fix (SH-6).
+
+**Microsoft Secure Score** (Microsoft Learn)
+
+- The score counts the recommended actions that the org took. Each action has
+  a fixed point value.
+- By default, the list sorts the actions by how much each one raises the
+  score. Filters group them by product, status and category.
+- Each action shows its effect on users and how hard it is.
+- A change can take up to 24 hours to show in the score. An action that a
+  third-party tool did also counts.
+- **We take:** The weight of a check works as its points. The page sorts by the
+  score gain (SH-6), and each fix shows its effort. A nightly job alone is too
+  slow for "Email: 62 to 81". SH-7 runs the one changed check again just after
+  a fix.
+
+**Salesforce, Security Health Check and Optimizer** (third-party guides)
+
+- Health Check gives a score out of 100 against the recommended settings, or
+  against a baseline that the org sets.
+- The bands: 90 and up Excellent, 80 to 89 Very Good, 70 to 79 Good, 55 to 69
+  Poor, 54 and below Very Poor.
+- The guides say: do not chase 100. Some settings stay off on purpose, for
+  example login-as-user, which helps support.
+- Optimizer reads only metadata and limits, never customer data.
+- **We take:** A member or an admin can mark a check "Not for us". The check
+  then leaves the score (§18.9). A check reads counts and settings, never the
+  content of mail or records (§18.8).
+
+**Intercom Fin, content gaps** (vendor help)
+
+- Fin finds gaps from failed AI answers compared with good human replies. It
+  also finds duplicate content and content that contradicts itself.
+- Each suggestion shows the conversations that caused it, and a create or edit
+  action.
+- The Unresolved questions report shows which sources Fin used.
+- **We take:** the Knowledge checks of SH-3 (searches with no result, chat
+  answers with no source, duplicate pages and pages that contradict each
+  other). Each gap shows the questions that caused it.
+
+**Zendesk** (a competitor's blog, so treat it with care)
+
+- It says Zendesk retired Content Cues in May 2025. Its gap tools now report
+  the top searches that found nothing.
+
+**What we do not take, and why.** A list of 20 gaps at once. Mira raises one
+gap at a time (SH-7) inside the D-PZ-13 limits.
+
+**Not verified.** Microsoft Adoption Score (the search found nothing). The
+Zendesk retirement. The Salesforce bands come from third-party guides.
+
+**Sources.**
+
+- https://knowledge.hubspot.com/reports/data-quality-command-center
+- https://learn.microsoft.com/en-us/training/modules/examine-microsoft-secure-score/4-improve-secure-score
+- https://www.salesforceben.com/secure-your-org-with-salesforce-health-check/
+- https://salesforceben.com/secret-weapon-salesforce-optimizer-report/
+- https://fin.ai/help/en/articles/13975989-use-ai-powered-content-recommendations-to-improve-fin
+- https://www.intercom.com/changes/en/44975-easily-surface-related-content-within-fin-s-unresolved-questions-report
+- https://www.enterpret.com/guides/the-6-best-tools-to-find-help-center-content-gaps-from-support-data-in-2026
+
+**Two lessons added on 2026-11-08.** Stripe and Linear (`onboarding.md` §12.8)
+tick a checklist from server state and keep import an admin act. We do the
+same: every item ticks from a row, never from the browser.
+
+### 18.11 The fences (R7)
+
+A rule with no test is labelled advisory. A test that does not exist yet is
+planned, and its rule is advisory until the slice builds.
+
+| Rule | Fence |
+|---|---|
+| There is one `setup_status` and one registry. A second "onboarding status" is a defect | Planned `tests/unit/test_setup_registry.py`. Advisory until OB-1a builds |
+| A live pane lists only check ids whose `app` is its own | Planned vitest `nav.test.ts` case, with PZ-18. Advisory until then |
+| A check reads counts and settings and never content | Planned `tests/unit/test_setup_checks_no_content.py`: no check imports a body or subject column. Advisory until SH-1 builds |
+| The nudge and the interview share one clock. Never two lines in one block | Planned `tests/unit/test_setup_nudge_budget.py`. Advisory until PZ-17 builds |
+| One unprompted setup question a day, 14 days after a dismiss, "Don't ask again" | The same file, with the cases of D-PZ-13. Advisory until PZ-17 builds |
+| `cannot_run` and `skipped` are out of the score | Planned `tests/unit/test_setup_score.py`. Advisory until SH-1 builds |
+| A check for an app that is off in the org does not run and does not show | Same file as the score. Advisory until SH-1 builds |
+| No tenant or member from request input (R5) | The existing tenancy ratchet (`tests/unit/test_tenancy_boundary.py`) once the tables exist. Planned R8 file for the nightly job. Advisory until SH-1 builds |
+| A member never sees an org check detail | Planned `tests/unit/test_setup_health_visibility_r8.py`. Advisory until SH-8 builds |
+| The persona never changes a setup question's reason | Falls under `test_persona_guards.py` of §17.9. Advisory until PZ-49 builds |
+| The copy rules of §18.6 (why and effect, no "Jev", no "needs sign-in") | Advisory. A review check on the PR. A string test may follow |
+| The decision record and this section are in the index | `tests/unit/test_decision_ids.py` and `tests/unit/test_index_completeness.py` (they pass for SH-0) |
+
+### 18.12 Open questions for the owner
+
+Each question has a default. The default stands until the owner answers.
+**Q1 to Q7 are decided** (D196, owner, 2026-11-08 15:02 UTC, "Approve all 7
+recommended defaults"). **Q8 is decided** (owner, 2026-11-08 15:07 UTC, "Keep
+it in the Get started settings (my_day_prefs), no new table").
+
+| # | Question | Recommended default |
+|---|---|---|
+| **Q1** | Do we build Phase A (items and the chat nudge) before Phase B (the score)? | **Yes.** Phase A is the 2026-11-08 ask and needs no new table (Q8). Phase B follows with SH-1 |
+| **Q2** | Which apps come first? | **Email, WhatsApp, push, Calendar working hours, Projects, CRM pipeline, Knowledge sources, and the Organisation items.** These have data today. Items marked "waits" in §18.4 come when their data exists |
+| **Q3** | Do all setup questions share the one budget with the interview? | **Yes.** One a day in total, across all apps. Not one a day for each app |
+| **Q4** | Do admin items nudge only admins? | **Yes.** A member never gets a chat nudge for an org item. The admin sees the counts |
+| **Q5** | May a member, or an admin, mark a check "Not for us"? | **Yes.** A member marks member checks. An admin marks org checks. The check leaves nudges and score, and shows muted with Undo |
+| **Q6** | Does the nudge go only through the chat, or also through the My Day card and the bell? | **Chat first.** The Get started card on My Day (OB-1b) reads the same items and asks nothing. The bell stays out until Phase B. No message to WhatsApp (PZ-19 stays owner-gated) |
+| **Q8** | Where does the nudge state live? | **In the `setup` key of `user_settings.my_day_prefs`** (`onboarding.md` §7.2), beside the item state. It is not in the profile, so `learning` off does not stop it. No new table. If the owner wants a per-member table, a migration is needed, the slice becomes HIGH, and the table is tenant-scoped (R5) and expand-only (R6) |
+| **Q7** | Does the score show a band or a streak? | **No.** OB-19 says no score and no streak on Get started. The score lives only on the Setup health page, as a number |
+
+### 18.13 The slices
+
+Each slice is one PR. It ships dark behind the flag `SETUP_HEALTH_ORGS`,
+default off. A slice that is built before the flag exists uses the flag of
+its parent (`ASSISTANT_PROFILE_ORGS`). The tier follows `next-ticket.md`
+step 1b. A slice that changes what a member sees needs the D145 preview.
+
+**Reconcile with the older tasks, so no work is done twice.**
+
+- OB-1a (task 1341) builds `setup_status`, `GET /shell/setup`, the registry
+  and the onboarding items. It is the base of everything here.
+- PZ-16 (task 310) adds the profile items to that registry.
+- PZ-18 (task 312) adds the `setup` and `preferences` manifest fields.
+- PZ-17 (task 311) builds the chat nudge and the shared budget. It is the
+  deliverable of Phase A.
+- The SH slices below add the items of the other apps, the measures and the
+  score. They build none of the three seams.
+
+| Slice | What | Done when | Fence (R7) | Gate · tier |
+|---|---|---|---|---|
+| **SH-0** · task 945 | This section, D196 and the INDEX sentence | They are in `main`. The four doc tests pass | Advisory. Docs only | AGENT-SAFE · LOW |
+| **Phase A** | | | | |
+| **OB-1a** · task 1341 | `setup_status` and the registry (existing task) | A test for each item's "done when" | `test_setup_registry.py` | AGENT-SAFE · MEDIUM |
+| **PZ-16** · task 310 | The profile items, added to the registry of OB-1a (existing) | As §12.7 | As §12.7 | AGENT-SAFE · LOW |
+| **PZ-18** · task 312 | The `setup` manifest field (existing) | A live pane lists only its own check ids | the vitest case of §18.11 | AGENT-SAFE · LOW |
+| **PZ-17** · task 311 | The chat nudge, its clock in the `setup` key, and `setup_nudge` (existing, grows by this section) | One question a day across interview and setup, 14 days after a dismiss, "Do not ask again". The nudge shows with `learning` off and with no interview | `test_setup_nudge_budget.py` | AGENT-SAFE · MEDIUM |
+| **SH-9** · task to create at merge | The Phase A items of Email, WhatsApp, push, Calendar working hours, Projects, CRM pipeline, Knowledge and Organisation (the A rows of §18.4) | A test for each item's "done when". Each fix is a card or a link | `test_setup_items_<app>.py`, one file per app, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-10** · task to create at merge | Event triggers for the first items (third mail moved by hand, a deal with no stage) | An event raises the item in the next chat and sends nothing by itself | Planned `test_setup_events.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **Phase B** | | | | |
+| **SH-1** · task 946 | The nightly run, the history, the score, answers in chat and over MCP | The score ignores `cannot_run` and `skipped`. The history keeps one row for each check each night | `test_setup_score.py`, an R8 file | AGENT-SAFE · **HIGH** (a migration) |
+| **SH-2** · task 947 | Email measures | The B rows of Email | `test_setup_checks_email.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-3** · task 948 | Knowledge measures and the empty-search store | The B rows of Knowledge, and the store of searches with no hit | `test_setup_checks_knowledge.py`, advisory until built | AGENT-SAFE · **HIGH** (a migration) |
+| **SH-4** · task 949 | CRM measures | The B rows of CRM, and the duplicate finder is found or built | `test_setup_checks_crm.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-5** · task 950 | Projects, Calendar, People and Organisation measures | The B rows of those apps | `test_setup_checks_other.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-6** · task 951 | The Setup health page and the My Day card | A score for each app, the next step, the trend | vitest and an e2e spec, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-7** · task 952 | The copilot: it re-runs one check after a fix and says the change in score | "Email: 62 to 81" shows after the fix, not the next day | `test_setup_copilot.py`, advisory until built | AGENT-SAFE · MEDIUM |
+| **SH-8** · task 953 | The admin view: org checks, adoption counts, and an in-app nudge to members | An admin sees counts and names with no content | `test_setup_health_visibility_r8.py` | AGENT-SAFE · **HIGH** (a visibility rule) |
+
+Verification commands for SH-0. Run from the repository root:
+
+```bash
+uv run pytest tests/unit/test_decision_ids.py tests/unit/test_index_completeness.py tests/unit/test_doc_names_resolve.py tests/unit/test_board_index.py -q
+```
+
+Each later slice creates the test files that it names.
+
+### 18.14 Decisions
+
+`work_plan.md` §3 records Q1 to Q7 as **D196**. The D-SH-n ids and the
+SH-n slice numbers are two separate sequences. A check of `origin/main` at
+merge confirms the number (R1).
+
+| # | Question | Decision |
+|---|---|---|
+| **D-SH-1** | Build in two phases? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Phase A first (Q1) |
+| **D-SH-2** | Which apps first? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** The apps with data today (Q2) |
+| **D-SH-3** | One shared budget? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Yes, with the interview (Q3) |
+| **D-SH-4** | Who gets an admin nudge? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Admins only (Q4) |
+| **D-SH-5** | "Not for us"? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** Yes, for both kinds, with Undo (Q5) |
+| **D-SH-6** | Where does the nudge show? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** The chat first (Q6) |
+| **D-SH-8** | Where does the nudge state live? | **Decided: owner, 2026-11-08 15:07 UTC, on task 945 ("Keep it in the Get started settings (my_day_prefs), no new table"), recorded in D196.** The `setup` key of `my_day_prefs`, beside the item state. No new table (Q8) |
+| **D-SH-7** | A band or a streak? | **Decided: owner, 2026-11-08 15:02 UTC, accepted as D196 ("Approve all 7 recommended defaults", task 945).** No (Q7) |

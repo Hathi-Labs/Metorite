@@ -714,6 +714,10 @@ export interface AssistantSettings {
    *  get double-signed). */
   signature_text?: string;
   auto_run: boolean;
+  /** Read-only: true when the mailbox has a stored settings row, so the member
+   *  chose (task 2267). False: no stored choice. The PUT ignores it. Absent on
+   *  an older server. */
+  auto_run_chosen?: boolean;
   cold_email_blocker: ColdBlockerMode;
   // No model or tier field: our code picks the tier of each email AI task
   // (D-EM-7, D-EM-61). The server answers none, and a fence keeps them out
