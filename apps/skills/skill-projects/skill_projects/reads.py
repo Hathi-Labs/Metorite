@@ -1503,7 +1503,9 @@ def _plan_name(labels: dict[str, Any], tid: Any) -> str:
 
 def _plan_rows(labels: dict[str, Any], ids: list[Any], slack: dict[str, Any]) -> list[str]:
     out: list[str] = []
-    for tid in ids[:PLAN_LIST_MAX]:
+    for shown, tid in enumerate(ids):
+        if shown >= PLAN_LIST_MAX:
+            break
         extra = f" · slack {slack[tid]} min" if tid in slack else ""
         out.append(f"- {_plan_name(labels, tid)}{extra}")
         out.append(f"  full_id: {tid}")

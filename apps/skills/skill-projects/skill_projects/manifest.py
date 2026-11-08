@@ -1283,6 +1283,11 @@ _STATUS_PLACE_REASON = (
 
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # SP-12: `get_plan` and the MCP tool plan from today. A first working day
+    # is a web planner override, and the chat has no use for it.
+    ("GET", "/projects/plan/analysis"): {
+        "start": "A web planner override of the first working day. The chat and the MCP plan from today (SP-12).",
+    },
     ("GET", "/projects/tasks/stats"): {
         "assigned": _STATS_ROUTE_REASON,
         "assignee": _STATS_ROUTE_REASON,
