@@ -52,7 +52,10 @@ export default function Artifact() {
 }
 `;
 
-describe("compileArtifact", () => {
+// Each case starts a real esbuild build, and the first one also starts the
+// esbuild service. Under a full CI run the first build took more than the
+// default 5 s (home server, 2026-11-09), so this block allows 30 s.
+describe("compileArtifact", { timeout: 30_000 }, () => {
   it("compiles a React component with hooks into a self-contained bundle", async () => {
     const res = await compileArtifact(COMPONENT);
     expect(res.ok).toBe(true);
