@@ -45,6 +45,14 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
   - `check_input` keeps a null only for an input whose type lists `null`. Today that is `parent_task_id` of `update_task`.
   - Fix round 1: an agent may assign only a person who can already open the task. A project grant or the admin read right must give that access. The gateway decides, and the edge maps the codes `assignee_refused` and `assignee_personal_project` (`_assignee_codes`). The PUT of an agent keeps strict equality on the version. `set_assignees` has `destructiveHint: true` too (`ASSIGN_ANNOTATIONS`), because an empty list removes every assignee.
 
+- MCP-G20 (spec §9.2, Metorite task 2212) adds the write tool `update_tasks`. It changes up to 50 tasks in one call (`tools.MAX_BULK_UPDATES`).
+  - Each item is one call of `tools._update_task`, so the edge has no second write path. Each item is a request of its own, with its own nonce and `If-Match`. Branch 0 checks the scope and counts the cap for each item. The route checks who may see each task, so a hidden task is "Task not found."
+  - `updates` is the one input, an edge input of spec §9.5 rule 4. Each item is the input of `update_task`, and `update_tasks` has its `alt_writes`. A failed item never stops the others. After the cap or the writes switch refuses an item, the rest come back with `tried` false.
+  - Each item has its own limit of `TOOL_TIMEOUT_S`. The call starts no item after `BULK_START_BUDGET_S`, and `Tool.timeout_s` gives the call its own limit.
+  - The write cap is the settings `agent_write_cap` and `agent_write_window_s`. Read them through `agent_oauth.write_cap` and `write_window_s` only. `tools.write_limit_line` names the live values when `tools/list` runs. The edge reads its settings at start, so a change needs a restart of the edge and of the gateway.
+  - Each move refusal says why and names the next step. A task of the Epic type stays the top level, and a parent stays in the same project.
+  - Fence: `tests/unit/test_mcp_edge_bulk_updates.py`.
+
 - MCP-G1 (spec §9.2, EA3-53) adds four tools over the routes of the Projects app. The app decides who sees a node and who may move a task.
   - `create_project` calls `POST /projects/nodes`, and `update_project` calls `PATCH /projects/nodes/{project_id}` with `If-Match`. The edge checks the `level` against the parent. When it cannot see the node above a folder, the grammar of the gateway decides. No tool writes a grant or names a lead.
   - A connection with pins makes no space. The edge refuses first, and `tree._refuse_pinned_space` answers 403.
@@ -114,6 +122,8 @@ The deploy starts the edge only after the owner enables the unit. Caddy serves i
 ## Fence
 
 `tests/unit/test_agent_oauth_server.py` holds the behaviour of the OAuth routes, and it holds the structural fences of rules 2, 4 and 15. `tests/unit/test_mcp_edge_protocol.py` holds rules 10 to 14 and the wire contract of `/mcp`. `tests/unit/test_mcp_edge_coverage.py` holds the tool records against `MCP_ROUTES` and the gateway routes, and rule 16. `tests/unit/test_mcp_edge_writes.py` holds the write tools of EA-6a, with R8 classes through the real gateway app. `tests/unit/test_mcp_edge_agent_runs.py` holds the agent-run tools of EA-12b, the flag, the long poll and the text of the tool descriptions. `tests/unit/test_mcp_edge_task_writes.py` holds the tools of EA-6d and rules 17 and 18, with R8 classes and a real Redis class. `tests/unit/test_mcp_edge_comments.py` holds `add_comment` of EA-6c, with R8 classes through the real gateway app. `tests/unit/test_mcp_edge_claim.py` holds `claim_task` and the done rule of EA-6f, with R8 classes. `tests/unit/test_mcp_edge_archive.py` holds `request_task_archive` and the member's approval of EA-6g, with R8 classes. `tests/unit/test_mcp_edge_outside_decision.py` holds `record_outside_decision` of MCP-G15, each refusal and the exit from each waiting list, with R8 classes. `tests/unit/test_mcp_edge_delete.py` holds `delete_task`, the switch and the subtask choice of EA-6h, with R8 classes. `tests/unit/test_mcp_edge_assignees.py` holds the fields, the move and `set_assignees` of MCP-G2, with R8 classes. `tests/unit/test_mcp_edge_projects.py` holds the four tools of MCP-G1, the pins and the preview id, with R8 classes.
+
+`tests/unit/test_mcp_edge_bulk_updates.py` holds `update_tasks` and the cap settings of MCP-G20, with R8 classes.
 
 `tests/unit/test_mcp_edge_app_door.py` holds the four door tools of MCP-P1a and the door half of branch 0. `tests/unit/test_mcp_edge_app_door_r8.py` holds the door end to end on a real database. `tests/unit/test_app_door_coverage.py` holds the manifests.
 
