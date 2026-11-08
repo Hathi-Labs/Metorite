@@ -7040,8 +7040,8 @@ follows PST-4 (pull request 1834), because both change `writes.py`. IMG-4 is rep
 
 ## 31. Voice input and image analysis in the chat (VOX, 2026-11-08)
 
-**Status.** SPECIFIED 2026-11-08. Epic: Metorite task 2240. The owner calls of
-§31.6 are open on the epic, and each one has a safe default. No migration.
+**Status.** SPECIFIED 2026-11-08. Epic: Metorite task 2240. The owner decided
+the four calls of §31.6 on 2026-11-08. No migration.
 VOX-3 takes over IMG-4 (§30.4, task 1598).
 
 ### 31.1 The request
@@ -7414,14 +7414,15 @@ STANDARD.
 
 ### 31.6 Owner calls
 
-Each call has a safe default. The epic task 2240 asks them.
+**The owner accepted all four recommendations on 2026-11-08 at 08:42 UTC**, on
+the epic task 2240. The last column now holds the decision.
 
-| # | Call | Recommendation | Default until answered |
+| # | Call | Recommendation | Decided 2026-11-08 |
 |---|---|---|---|
-| Q1 | What text does Hinglish speech become? | As spoken, in Roman script (Sarvam `translit`) | As spoken |
-| Q2 | Which speech provider first? | Sarvam Saaras as rank 1 on `tier-stt` (India, Roman mode, about Rs 0.49 a minute), and ElevenLabs Scribe v2 as rank 2 (no new code) | VOX-1 works with any litellm STT model, and VOX-2 adds Sarvam |
-| Q3 | Keep the audio? | No. The gateway forwards it and keeps nothing | No |
-| Q4 | Which image model? | Gemini 3.1 Flash-Lite or Claude Haiku 5.5 on `tier-vision`. Both cost well under a tenth of a US cent per image | The operator chooses in the console. VOX-3 stays dark until a model is bound |
+| Q1 | What text does Hinglish speech become? | As spoken, in Roman script (Sarvam `translit`) | The recommendation |
+| Q2 | Which speech provider first? | Sarvam Saaras as rank 1 on `tier-stt` (India, Roman mode, about Rs 0.49 a minute), and ElevenLabs Scribe v2 as rank 2 (no new code) | The recommendation. A test on 20 to 50 own clips sets the final order |
+| Q3 | Keep the audio? | No. The gateway forwards it and keeps nothing | The recommendation |
+| Q4 | Which image model? | Gemini 3.1 Flash-Lite or Claude Haiku 5.5 on `tier-vision`. Both cost well under a tenth of a US cent per image | The recommendation. The owner binds the model in the console |
 
 ### 31.7 Order
 
