@@ -107,8 +107,13 @@ async def _run(env, monkeypatch, graph, **row) -> tuple:
     return env.db.execute.call_args.args[1]
 
 
-_EXPIRING = {"webhook_subscription_id": "sub-old", "webhook_client_state": "cs-old",
-             "webhook_expires_at": datetime.now(UTC) + timedelta(hours=1)}
+def _expiring() -> dict:
+    """A subscription that expires within the 12 h renewal window.
+
+    Computed when each test runs, not when the module loads: CI can run a
+    file up to 30 minutes after import (``test_no_new_clock_flakes``)."""
+    return {"webhook_subscription_id": "sub-old", "webhook_client_state": "cs-old",
+            "webhook_expires_at": datetime.now(UTC) + timedelta(hours=1)}
 
 
 async def test_a_new_subscription_watches_all_mail_while_the_flag_is_on(env, monkeypatch):
@@ -135,7 +140,7 @@ async def test_a_flag_for_another_org_leaves_the_inbox(env, monkeypatch):
 async def test_a_renewed_inbox_subscription_is_replaced_by_an_all_mail_one(env, monkeypatch):
     _flag(monkeypatch, "*")
     graph = _Graph(renewed_resource=INBOX)
-    params = await _run(env, monkeypatch, graph, **_EXPIRING)
+    params = await _run(env, monkeypatch, graph, **_expiring())
     assert graph.renewed == ["sub-old"]
     assert graph.deleted == ["sub-old"]
     assert graph.created == [{"cs": "cs-old", "resource": ALL_MAIL}]
@@ -146,7 +151,7 @@ async def test_a_renewed_inbox_subscription_is_replaced_by_an_all_mail_one(env, 
 async def test_a_renewed_all_mail_subscription_only_renews(env, monkeypatch):
     _flag(monkeypatch, ORG)
     graph = _Graph(renewed_resource="/Me/Messages/")  # the form is normalised
-    params = await _run(env, monkeypatch, graph, **_EXPIRING)
+    params = await _run(env, monkeypatch, graph, **_expiring())
     assert graph.deleted == [] and graph.created == []
     assert params["sid"] == "sub-old"
 
@@ -156,7 +161,7 @@ async def test_an_all_mail_subscription_is_renewed_not_switched_while_the_flag_i
 ):
     _flag(monkeypatch, "")
     graph = _Graph(renewed_resource=ALL_MAIL)
-    params = await _run(env, monkeypatch, graph, **_EXPIRING)
+    params = await _run(env, monkeypatch, graph, **_expiring())
     assert graph.deleted == [] and graph.created == []
     assert params["sid"] == "sub-old"
 
@@ -164,14 +169,14 @@ async def test_an_all_mail_subscription_is_renewed_not_switched_while_the_flag_i
 async def test_an_inbox_subscription_is_renewed_while_the_flag_is_off(env, monkeypatch):
     _flag(monkeypatch, "")
     graph = _Graph(renewed_resource=INBOX)
-    await _run(env, monkeypatch, graph, **_EXPIRING)
+    await _run(env, monkeypatch, graph, **_expiring())
     assert graph.deleted == [] and graph.created == []
 
 
 async def test_a_failed_switch_create_keeps_the_healthy_old_subscription(env, monkeypatch):
     _flag(monkeypatch, ORG)
     graph = _Graph(renewed_resource=INBOX, create_fails=True)
-    params = await _run(env, monkeypatch, graph, **_EXPIRING)
+    params = await _run(env, monkeypatch, graph, **_expiring())
     assert graph.deleted == [], "the old subscription is healthy: do not delete it"
     assert params["sid"] == "sub-old" and params["cs"] == "cs-old"
     assert params["exp"] == datetime.fromisoformat("2026-10-04T00:00:00+00:00")
