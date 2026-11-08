@@ -585,7 +585,7 @@ Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch
 - New with PKG-8b: `routes/studio/packages.py` (`install_package`, `SHARE_RIGHT`), `package_host/studio_app.py` (`install_scope`, `keep_scope_install`), `studio/packages_store.py` (`lock_for_install`, `InstallTarget`)
 - Changed by PKG-8b: `package_host/store.py` (`group_exists`, `OVERLAP`, the kept keys of `set_version`). `group_exists` reads `routes/projects/core.py` (`org_groups`)
 - `routes/crm/access.py` (`my_groups`, the group read of the resolve)
-- New with PKG-6c-1: `package_host/shell_pins.py` (`install_nav_hrefs`, `safe_href`, `system_owns`). Changed by PKG-6c-1: `routes/admin/me.py` (`MAX_PINS`, `ShellPrefs._pins`, `stored_shell`, `put_my_shell`)
+- New with PKG-6c-1: `package_host/shell_pins.py` (`install_nav_hrefs`, `safe_href`, `system_owns`). Changed by PKG-6c-1: `routes/admin/me.py` (`MAX_PINS`, `ShellPrefs._pins`, `stored_shell`, `get_my_shell`, `put_my_shell`, `_keep_install_hrefs`)
 
 **Eval and CI**
 - `evals/routing/shell.py` (`also_serves()` reads `load_gates()`), `.github/workflows/skill-eval.yml` (the path filter)
