@@ -8936,7 +8936,7 @@ clauses above. Each other clause holds as written.
    at 20 parts for each request, by the 600-second wall. The handler logs
    `stt_sarvam.partial_failure` with `parts_served` and `parts_total`.
 
-#### VOX-6 · AssemblyAI, beside Sarvam — BUILT 2026-11-09
+#### VOX-6 · AssemblyAI, beside Sarvam — BUILT 2026-11-08
 
 `native_assemblyai` is the second native verb for `transcribe`. It copies the
 `native_sarvam` pattern, and the clauses above apply to it with these changes.
@@ -8969,11 +8969,11 @@ clauses above. Each other clause holds as written.
 8. **The key stays private.** The handler sends the key in `Authorization`.
    It logs the status only, and never the key, the audio or an error body.
 
-**The vendor facts for VOX-6**, read on 2026-11-08 at
-`https://www.assemblyai.com/docs/api-reference/sync-api/transcribe.md`:
-`POST https://sync.assemblyai.com/v1/transcribe`, the headers `Authorization`
-and `X-AAI-Model: universal-3-5-pro`, and the multipart parts `audio` and
-`config`. The 200 body holds `text`, `words`, `confidence`,
+**The vendor facts for VOX-6.** We read them on 2026-11-08 at
+`https://www.assemblyai.com/docs/api-reference/sync-api/transcribe.md`.
+The endpoint is `POST https://sync.assemblyai.com/v1/transcribe`. The
+headers are `Authorization` and `X-AAI-Model: universal-3-5-pro`. The
+multipart parts are `audio` and `config`. The 200 body holds `text`, `words`, `confidence`,
 `audio_duration_ms`, `session_id` and `request_time_ms`. The handler uses the
 global host only.
 
@@ -10443,7 +10443,7 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
   📌 VOX-2 (2026-11-08) added two more copies: `NATIVE_ONLY_TASKS`, and
   `NATIVE_TASK_OF`, the task of each native verb. The same test reads both.
   `/providers` gained a minimal `sarvam` card, and VOX-4 owns its full text.
-  📌 VOX-6 (2026-11-09) added `native_assemblyai` to the three mirrors and
+  📌 VOX-6 (2026-11-08) added `native_assemblyai` to the three mirrors and
   to the `assemblyai` card. `test_operator_console_vendor_slugs.py` lets that
   slug stay native while litellm lists it, because litellm cannot call it.
 - **The declare form follows the pairing rule.** `src/lib/invocation.ts`

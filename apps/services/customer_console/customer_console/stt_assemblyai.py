@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from customer_console.wav import read_wav
+from customer_console.wav import wav_seconds
 
 if TYPE_CHECKING:
     from customer_console.handlers import TranscribePayload, TranscriptResult
@@ -202,14 +202,17 @@ class AssemblyAIHandler:
             raise NativeProviderError(None, "model id is not an AssemblyAI id")
         vendor_model, languages = parsed
 
-        clip = read_wav(payload.audio)
-        if clip is None:
+        # ``wav_seconds`` counts the frames that the bytes hold and copies
+        # none of them. This handler never cuts a clip, as Sarvam must, so it
+        # needs the length only (review of 2026-11-08).
+        seconds = wav_seconds(payload.audio)
+        if seconds is None:
             # The door drops this step for a clip that is not WAV. This line
             # is the second wall, for a caller that skipped the first.
             raise NativeProviderError(None, "assemblyai takes PCM WAV only")
-        if clip.frame_count == 0:
+        if seconds == 0:
             # No audio, nothing to send. The vendor refuses under 80 ms.
-            return TranscriptResult(text="", duration=clip.seconds)
+            return TranscriptResult(text="", duration=seconds)
 
         url = (payload.api_base or ASSEMBLYAI_API_BASE).rstrip("/") + ASSEMBLYAI_PATH
         files: dict[str, tuple[str | None, bytes | str, str]] = {
@@ -222,7 +225,7 @@ class AssemblyAIHandler:
                 "application/json",
             )
         text = await self._post(url, files, payload, vendor_model)
-        return TranscriptResult(text=text, duration=clip.seconds)
+        return TranscriptResult(text=text, duration=seconds)
 
     async def _post(
         self,
