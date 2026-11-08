@@ -2,8 +2,8 @@
 
 > **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-08 · **Owner:** vjvarada
 > **Status:** 🔨 **In build.** §14 holds the state of each slice, and a built row starts with 🔨 **BUILT**. Every built slice is dark behind `STUDIO_ORGS`, which is empty on every box, and no org has the `studio` tool pack. The `/studio` pane (A1, E1) is live in the nav for the beta since 2026-11-05 (D179), and its routes still need `STUDIO_ORGS`. An org that the flag does not list sees a "not open yet" state. §15 holds the stages, and §20 holds the plan for apps that serve people outside the org. A slice never edits this line.
-> **Verified against code on 2026-11-01 at `82157e5fd`.** Each path in §16 was read on that commit.
-> **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates), **D193** (the Studio IDE), **D202** (the full web IDE, the UI kit, the sandbox for each org and person, and the new blocks). D124, D130, D131 and D136 bind it too.
+> **Verified against code on 2026-11-08 at `4439b200f`** (main). A script checked that each of the 114 paths that §16 names exists on that commit.
+> **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds) and D139 (one coding harness). **D141**: Studio starts now, and a skill creator replaces the agent creator. **D146**: the owner's answers of 2026-10-31, with layered apps, a typed object store and first-party templates. **D193**: the Studio IDE. **D202**: the full web IDE, the UI kit, the sandbox for each org and person, and the new blocks. D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
 > **Gate summary:** every slice is AGENT-SAFE unless §14 says otherwise. The owner answered STU-Q1, Q2, Q3, Q5 and Q6 and the template question on 2026-10-31 (D146). The owner answered STU-Q4 on 2026-11-04 and STU-Q4b on 2026-11-05 (D180). Three questions stay open: Q7, Q8 and Q9 (§12).
 
@@ -530,7 +530,7 @@ Server code (B5) runs on the one coding harness, profile `app_builder` (CA-14, D
 
 ### 6.5 Building a Studio app outside Metorite (D202.10)
 
-The owner asked on 2026-11-08 for a scaffold and a harness, so that an app that a member builds in VS Code stays compatible with Studio.
+The owner asked on 2026-11-08 for a scaffold and a harness. They keep an app that a member builds in VS Code compatible with Studio.
 
 **The rule: an app built in VS Code is the same package as one built in Studio.** It has one manifest format, one validator, one build and one review. The kit adds no second implementation of any seam. The CLI calls the validator, the rule evaluator and the dry run (F4) of the server, and never ports them.
 
@@ -547,7 +547,9 @@ The owner asked on 2026-11-08 for a scaffold and a harness, so that an app that 
 | `AGENTS.md`, `CLAUDE.md` | The rules for coding agents |
 | `package.json` | Pinned versions of `@metorite/studio-sdk` and `@metorite/ui` |
 
-**The sync.** The CLI joins the files into one manifest and splits it again, so each git diff stays small. The server reads only the joined manifest. A manifest from files may grow to the A2 cap of 256 KiB (`studio_manifest.py` `MAX_DOC_BYTES`). The chat cap is 24,000 characters (`studio_tools.py` `MAX_MANIFEST_CHARS`), for a save from chat and for the facts of the IDE (§6.3). Above that cap, the IDE says that Mira in the dock cannot edit the whole draft, and Mira edits it file by file through the harness (G26). This is agent design.
+**The sync.** The CLI joins the files into one manifest and splits it again, so each git diff stays small. The server reads only the joined manifest. A manifest from files may grow to the A2 cap of 256 KiB (`studio_manifest.py` `MAX_DOC_BYTES`).
+
+**The chat cap.** The chat cap is 24,000 characters (`studio_tools.py` `MAX_MANIFEST_CHARS`), for a save from chat and for the facts of the IDE (§6.3). Above that cap, the IDE says that Mira in the dock cannot edit the whole draft. Mira then edits it file by file through the harness (G26). This is agent design.
 
 **The SDK (G22).** One package, `@metorite/studio-sdk`:
 
@@ -702,7 +704,9 @@ The WS-PKG research of 2026-10-31 read `github.com/deepseek-ai/deepseek-harness`
 
 ### 11.2 Anatomy and Dynamic Apps (research, 2026-11-08, D202)
 
-The owner sent two repositories as references for the full IDE goal (task 2326). The research read each README and one more file. It ran no code. The tag **[unverified]** marks a fact that no read file confirmed. The full notes are on epic 491, in the comment of 2026-11-08. **Rule: Metorite takes the patterns below and copies no code.**
+The owner sent two repositories as references for the full IDE goal (task 2326). The research read each README and one more file. It ran no code. The tag **[unverified]** marks a fact that no read file confirmed. The full notes are on epic 491, in the comment of 2026-11-08.
+
+**Rule: Metorite takes the patterns below and copies no code.**
 
 #### 11.2.1 Anatomy
 
@@ -1105,7 +1109,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 ## 16. Current file paths
 
-Each path was read on `82157e5fd`. A3 and C1 added their paths after that commit.
+Each path was read on `82157e5fd`. A3 and C1 added their paths after that commit. On 2026-11-08 a script checked that each path still exists at `4439b200f`.
 
 **Backend**
 
@@ -1486,7 +1490,7 @@ The owner accepted choice 3 of task 2326 on 2026-11-08. Before it, the rules sat
 | 17 | Each failure gives one code from a fixed set, with one sentence | L6 | New with L6: `tests/unit/test_studio_code_error_codes.py` and `src/lib/studio/codeErrors.test.ts`, both golden |
 | 18 | Member code runs only in the off-box sandbox (server code) or in the viewer's browser (screens). A capture of a screen (G13) and a compile (L1, L3) run in the member's browser | D127.2, D146.1 as D202.4 amends it | Advisory. The review of each code slice checks it |
 
-**The limits for each version (proposed).** Dynamic Apps sets 64 MB of heap, a 30 s run, a 1 MiB request, a 4 MiB response, 4 MiB of source, 2,000 files and 256 dependencies. The numbers below stay inside the ceilings that the spec already holds. They stay proposals until L6 measures them.
+**The limits for each version (proposed).** Dynamic Apps sets 64 MB of heap, a 30 s run, a 1 MiB request and a 4 MiB response. It also sets 4 MiB of source, 2,000 files and 256 dependencies. The numbers below stay inside the ceilings that the spec already holds. They stay proposals until L6 measures them.
 
 | Limit | Screen (kind `browser`) | Server code (kinds `sandbox` and `packages`) | Ceiling today |
 |---|---|---|---|
@@ -1548,7 +1552,7 @@ The facts below came from a full read of the code on 2026-11-03.
 | **Identity** | Members, roles, groups and the grant grammar (`org`, `group:<slug>`, an email). The one entitlement intersect | No identity for a person outside the org. Outside people exist only as rows of each app: `crm_contacts`, `wa_contacts` and `email_contacts` |
 | **Outbound** | The Action Broker runs each outward write, with approval where needed | Mail leaves only from a member's own mailbox. No SMS provider. No workflow step sends to a person outside the org |
 
-**An app builds no inbox, calendar or payment system of its own (D202, task 2327).** The clinic study of 2026-11-08 confirms this rule. A clinic app uses the WhatsApp number of the org (O6), its shared mailbox (task 733), the Calendar door (O11) and its own Razorpay account (O10). The study found three gaps, and O17, O18 and O19 close them: email as a channel, a policy for automatic replies, and conversation threads on the record timeline. O20 adds one team inbox over the same seams.
+**An app builds no inbox, calendar or payment system of its own (D202, the clinic study of task 2327).** A clinic app uses the WhatsApp number of the org (O6) and its shared mailbox (task 733). It also uses the Calendar door (O11) and its own Razorpay account (O10). The study found three gaps, and O17, O18 and O19 close them. They are email as a channel, a policy for automatic replies, and conversation threads on the record timeline. O20 adds one team inbox over the same seams.
 
 ### 20.2 How an app joins the rest of Metorite
 
