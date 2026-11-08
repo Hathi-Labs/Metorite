@@ -188,7 +188,7 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 
    An example: the reminders pack (turn 13) and the plan pack (turn 19) are sticky. In turn 20 the member says "remind me" on the Projects page. With the switch on, the cap moves the plan pack out, and the reminders and core packs stay (99 tools). With the switch off, the cap moves the reminders pack out. No pack is spare, so the order of fix round 3 applies. The plan pack ran in the last turn, so it stays, and the core pack steps aside (81 tools).
 
-   **Since ALN-4.** `projects-authority` holds 3 tools, and it is on wherever the core pack is on. It does not count in the reach test, because it holds fewer than `REACH_MIN_TOOLS` tools (fix round 4). Before fix round 4 it kept the owner reached up to 107 tools while no work pack fitted. Then a bulk load beside the core and plan packs refused with `LOAD_NO_PATH`, and the chat handed off one round later.
+   **Since ALN-4.** `projects-authority` holds 3 tools, and it is on wherever the core pack is on. WS-39 LP-1a adds the two tools of a project update to it, so it holds 5 (`project_management_app.md` §14.2a). It does not count in the reach test, because it holds fewer than `REACH_MIN_TOOLS` tools (fix round 4). Before fix round 4 it kept the owner reached up to 107 tools while no work pack fitted. Then a bulk load beside the core and plan packs refused with `LOAD_NO_PATH`, and the chat handed off one round later.
 
 These tests changed because their premise changed:
 
