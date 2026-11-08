@@ -774,8 +774,8 @@ def test_the_spec_tables_parse() -> None:
     """A spec edit that breaks the parse would pass every check below."""
     # 23 since WS-55 EA-12a added G23, the agent-run routes (EA12-9). 24
     # since WS-66 RM-1 added G24, the reminder routes. 25 since WS-AP AP-8a
-    # added G25, the person ask.
-    assert len(_spec_gaps()) == 25
+    # added G25, the person ask. 26 since WS-39 SP-1 added G26, the cycles.
+    assert len(_spec_gaps()) == 26
     assert {"P1", "P2", "P3"} <= _built_slices()
 
 

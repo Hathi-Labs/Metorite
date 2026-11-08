@@ -2434,8 +2434,11 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # reminder tool is planned now.
     # WS-AP AP-8a: the person ask and its withdraw. AP-10 builds both tools.
     ap_10 = {"ask_person", "withdraw_ask"}
+    # WS-39 SP-1: the cycle routes. SP-5 (Metorite task 964) builds the tools.
+    sp_5 = {"list_cycles", "cycle_detail", "create_cycle", "update_cycle", "delete_cycle",
+            "plan_cycle", "start_cycle", "close_cycle"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
-                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a), m.PLANNED
+                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | sp_5), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 

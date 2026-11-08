@@ -1579,3 +1579,31 @@ DROP POLICY IF EXISTS crm_change_log_tenant_isolation ON crm_change_log;
 CREATE POLICY crm_change_log_tenant_isolation ON crm_change_log
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_cycles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_cycles FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_cycles_tenant_isolation ON pm_cycles;
+CREATE POLICY pm_cycles_tenant_isolation ON pm_cycles
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_cycle_tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_cycle_tasks FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_cycle_tasks_tenant_isolation ON pm_cycle_tasks;
+CREATE POLICY pm_cycle_tasks_tenant_isolation ON pm_cycle_tasks
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_cycle_committed ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_cycle_committed FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_cycle_committed_tenant_isolation ON pm_cycle_committed;
+CREATE POLICY pm_cycle_committed_tenant_isolation ON pm_cycle_committed
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_cycle_capacity ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_cycle_capacity FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_cycle_capacity_tenant_isolation ON pm_cycle_capacity;
+CREATE POLICY pm_cycle_capacity_tenant_isolation ON pm_cycle_capacity
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
