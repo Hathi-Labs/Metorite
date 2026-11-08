@@ -47,6 +47,7 @@ __all__ = [
     "extract_text",
     "get_artifact",
     "list_artifacts",
+    "open_artifacts",
     "register_in_session",
     "title_of",
     "trash_in_session",
@@ -452,3 +453,42 @@ async def get_artifact(artifact_id: str, member_email: str) -> dict[str, Any] | 
         # Only the owner sees their own trash, as the list does.
         return None
     return row if can_read(row, member_email) else None
+
+
+#: The most ids one read by id takes (WS-KG KG-6).
+MAX_OPEN = 50
+
+
+async def open_artifacts(artifact_ids: list[str], member_email: str) -> list[dict[str, Any]]:
+    """The ACTIVE rows of *artifact_ids* that the member can read (WS-KG KG-6).
+
+    The read by id of company retrieval (``knowledge_graph.md`` §6). It reads
+    as :func:`get_artifact` does, and it keeps a row only when
+    :func:`can_read` admits the member. Like the search of the app, it keeps
+    active rows only, so a trashed row never comes back. With the registry
+    off, or with no member, it answers nothing. A bad id is left out.
+    """
+    if not enabled() or not member_email:
+        return []
+    import uuid
+
+    wanted: list[str] = []
+    for raw in artifact_ids or []:
+        try:
+            wanted.append(str(uuid.UUID(str(raw))))
+        except (ValueError, TypeError):
+            continue
+    wanted = list(dict.fromkeys(wanted))[:MAX_OPEN]
+    if not wanted:
+        return []
+    from acb_common.db import tenant_session
+    from sqlalchemy import text
+
+    async with tenant_session() as db:
+        res = await db.execute(
+            text(f"SELECT {_COLUMNS} FROM artifacts WHERE id = ANY(CAST(:ids AS uuid[]))"),
+            {"ids": wanted},
+        )
+        rows = [_row(r) for r in res.fetchall()]
+    return [row for row in rows
+            if row.get("status") == "active" and can_read(row, member_email)]
