@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
+from email_ingestion.providers import outlook as outlook_mod
 from email_ingestion.providers.outlook import OutlookProvider
 
 
@@ -22,7 +24,7 @@ class FakeGraph:
 
     def __init__(self, top, children, *, fail_children=(), post_status=201,
                  filter_hits=None):
-        self.top, self.children = top, children
+        self.top, self.children = list(top), {k: list(v) for k, v in children.items()}
         self.fail_children = set(fail_children)
         self.posts: list[dict] = []
         self.moves: list[str] = []
@@ -31,6 +33,17 @@ class FakeGraph:
         self.filter_hits = filter_hits  # callable(n_filter_calls) -> list
         self.filter_calls = 0
         self.dead_ids: set[str] = set()
+        self.fail_status: int | None = None  # None = a plain network error
+        self.fail_once: dict[str, bool] = {}
+        self.fail_once_status = 503
+
+    @staticmethod
+    def _err(status):
+        if status is None:
+            return RuntimeError("network")
+        return httpx.HTTPStatusError(
+            "x", request=httpx.Request("GET", "http://x"),
+            response=httpx.Response(status))
 
     async def get(self, url, params=None):
         if url == "/me/mailFolders" and params and "$filter" in params:
@@ -41,8 +54,10 @@ class FakeGraph:
             self.tree_reads += 1
             return _resp({"value": self.top})
         fid = url.split("/")[3]
+        if self.fail_once.pop(fid, None):
+            raise self._err(self.fail_once_status)
         if fid in self.fail_children:
-            raise RuntimeError("403")
+            raise self._err(self.fail_status)
         return _resp({"value": self.children.get(fid, [])})
 
     async def post(self, url, json=None):
@@ -55,6 +70,13 @@ class FakeGraph:
         if json["destinationId"] in self.dead_ids:
             return _resp({}, ok=False, status=404)
         return _resp({"id": "moved"})
+
+
+@pytest.fixture(autouse=True)
+def _clear_shared_cache():
+    outlook_mod._folder_id_shared.clear()
+    yield
+    outlook_mod._folder_id_shared.clear()
 
 
 def _f(fid, name, kids=0):
@@ -147,3 +169,78 @@ async def test_h_409_race_reread_finds_the_nested_folder() -> None:
     p.list_folders = tree  # type: ignore[method-assign]
     assert await p._get_or_create_folder_id("Newsletter") == "N-in"
     assert len(g.posts) == 1
+
+
+# ── fix round: partial reads, retry, shared cache ────────────────────────────
+
+async def test_i_transient_429_raises_and_makes_no_post() -> None:
+    g = FakeGraph(top=[_f("inbox", "Inbox", 1)], children={},
+                  fail_children=["inbox"])
+    g.fail_status = 429
+    with pytest.raises(outlook_mod.FolderCheckIncomplete):
+        await _p(g)._get_or_create_folder_id("Newsletter")
+    assert g.posts == []
+
+
+async def test_j_permanent_403_creates_once_with_a_warning(caplog) -> None:
+    g = FakeGraph(top=[_f("inbox", "Inbox", 1)], children={},
+                  fail_children=["inbox"])
+    g.fail_status = 403
+    with caplog.at_level("WARNING"):
+        assert await _p(g)._get_or_create_folder_id("Newsletter") == "NEW"
+    assert len(g.posts) == 1
+    assert any("folder_tree_unreadable count=1" in r.getMessage()
+               for r in caplog.records)
+
+
+async def test_k_one_off_subtree_failure_is_retried_to_a_full_read() -> None:
+    g = FakeGraph(**INBOX_TREE)
+    g.fail_once = {"inbox": True}
+    assert await _p(g)._get_or_create_folder_id("Newsletter") == "N-in"
+    assert g.posts == []
+
+
+async def test_l_two_providers_one_account_make_one_tree_read() -> None:
+    g = FakeGraph(**INBOX_TREE)
+    p1, p2 = _p(g), _p(g)
+    p1.folder_cache_scope = p2.folder_cache_scope = "acct-1"
+    await p1.move_to_folder("m1", "Newsletter")
+    await p2.move_to_folder("m2", "Newsletter")
+    assert g.tree_reads == 1
+    assert g.moves == ["N-in", "N-in"]
+
+
+async def test_m_other_account_never_shares_an_entry() -> None:
+    g = FakeGraph(**INBOX_TREE)
+    p1, p2 = _p(g), _p(g)
+    p1.folder_cache_scope, p2.folder_cache_scope = "acct-1", "acct-2"
+    await p1.move_to_folder("m1", "Newsletter")
+    await p2.move_to_folder("m2", "Newsletter")
+    assert g.tree_reads == 2
+
+
+async def test_n_shared_entry_expires_after_the_ttl(monkeypatch) -> None:
+    g = FakeGraph(**INBOX_TREE)
+    p1 = _p(g)
+    p1.folder_cache_scope = "acct-1"
+    await p1.move_to_folder("m1", "Newsletter")
+    real = outlook_mod.time.monotonic
+    monkeypatch.setattr(outlook_mod.time, "monotonic", lambda: real() + 301)
+    p2 = _p(g)
+    p2.folder_cache_scope = "acct-1"
+    await p2.move_to_folder("m2", "Newsletter")
+    assert g.tree_reads == 2
+
+
+async def test_o_404_drops_the_shared_entry_too() -> None:
+    g = FakeGraph(**INBOX_TREE)
+    p1 = _p(g)
+    p1.folder_cache_scope = "acct-1"
+    await p1.move_to_folder("m1", "Newsletter")
+    g.dead_ids.add("N-in")
+    g.children["inbox"] = []
+    p2 = _p(g)
+    p2.folder_cache_scope = "acct-1"
+    await p2.move_to_folder("m2", "Newsletter")
+    assert g.moves[-1] == "N-ot"
+    assert outlook_mod._folder_id_shared[("acct-1", "newsletter")][0] == "N-ot"

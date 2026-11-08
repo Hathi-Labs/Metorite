@@ -7,6 +7,7 @@ import json
 from acb_auth import UserContext, get_current_user
 from email_ingestion import import_window
 from email_ingestion import storage as ingest_storage
+from email_ingestion.providers.base import FolderCheckIncomplete
 from fastapi import Depends, HTTPException
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
@@ -178,6 +179,14 @@ async def create_folder(
                 raise HTTPException(
                     status_code=400,
                     detail="This account type doesn't support creating folders.",
+                )
+            except FolderCheckIncomplete:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Outlook did not answer when Metorite checked your "
+                        "folders, so no folder was made. Try again in a minute."
+                    ),
                 )
 
             # Mirror into email_folders so the folder is queryable immediately.
