@@ -675,6 +675,9 @@ DEBT: dict[str, str] = {
     "POST /api/email/reply-card/discard": "P-2",
     "POST /api/email/rules/generate": "P-2",
     "POST /api/email/rules/patterns/review": "P-2",
+    # Paid by SG-6 (task 2182): the chat sets a signature image from an image
+    # the member attaches.
+    "POST /api/email/signature/images": "P-2",
     # ── Notes ──
     "DELETE /api/notes/glossary/{}": "P-4",
     "DELETE /api/notes/meetings/{}": "P-4",
@@ -997,7 +1000,7 @@ DEBT_CEILING: dict[str, int] = {
     "projects": 8,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43a (2026-11-05) added agentRunsApi.withdrawAnswer, paid by the chat tool of SW-43c (task 1802).
     "tasks": 9,
     "calendar": 1,
-    "email": 13,
+    "email": 14,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182).
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,
