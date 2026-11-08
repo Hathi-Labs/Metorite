@@ -12,8 +12,7 @@ The SDK token must, as ``COPILOT_SDK_AUTH_TOKEN``.
 The paths:
 
 1. ``MetoriteCopilotAgent.start`` (Tier 1.5 and ``code_session``).
-2. ``gateway.main._list_copilot_models``, which the startup warmup and
-   ``/copilot/models`` call, through the route itself.
+2. (Removed in WS-43o: the gateway model listing no longer starts the CLI.)
 3. ``executor._tier2_copilot_client`` (Tier 2).
 4. The upstream ``GitHubCopilotAgent.start`` (``_agent.py`` line 772), which
    builds a client with no env. ``orchestrator.copilot_agent`` binds a guard on
@@ -112,20 +111,6 @@ async def test_metorite_agent_start(stub: tuple[str, Path]) -> None:
     finally:
         with contextlib.suppress(BaseException):
             await agent.stop()
-    _assert_clean(_child_env(out))
-
-
-async def test_gateway_model_listing(stub: tuple[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
-    """Through the route. The CLI path comes from COPILOT_CLI_PATH, which
-    copilot_env() keeps, so the SDK finds the stub as it finds an operator's
-    override."""
-    from gateway import main as gw
-
-    cli, out = stub
-    monkeypatch.setenv("COPILOT_CLI_PATH", cli)
-    monkeypatch.setitem(gw._copilot_models_cache, "data", None)
-    result = await asyncio.wait_for(gw.copilot_models(), 60)
-    assert result["source"] != "live"
     _assert_clean(_child_env(out))
 
 
