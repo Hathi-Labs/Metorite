@@ -366,6 +366,21 @@ def _git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str] | None
         return None
 
 
+def init_app_repo(workspace: Path) -> bool:
+    """``git init`` in an app dir that has no ``.git``. True when a real one exists after.
+
+    WS-43h (review P2). The sandbox broker calls it before an ``app_builder``
+    container starts, so the read-only cover of ``.git`` always has a
+    ``.git`` to cover. ``git init`` reads no file of the work tree.
+    """
+    git_dir = workspace / ".git"
+    if not git_dir.exists() and not git_dir.is_symlink():
+        done = _git(workspace, "init", "-q")
+        if done is None or done.returncode != 0:
+            return False
+    return git_dir.is_dir() and not git_dir.is_symlink()
+
+
 def _head_short_sha(workspace: Path) -> str | None:
     proc = _git(workspace, "rev-parse", "--short", "HEAD")
     if proc is None or proc.returncode != 0:

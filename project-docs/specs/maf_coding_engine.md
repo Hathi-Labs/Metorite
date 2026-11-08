@@ -2698,10 +2698,11 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   in place of that code. The docker test found it, and the build now
   replaces with a function.
 - **The `.git` cover (§7.5 rule A, review P2).** `.git` gets the empty
-  read-only cover only when it exists at the start. So the broker runs
-  `git init` in an app dir with no `.git` before a container starts
-  (`sandbox_broker.ensure_app_git`). It refuses a `.git` that is a link or
-  a file, and it fails closed when the init fails.
+  read-only cover only when it exists at the start. So before a container
+  starts, `sandbox_broker.ensure_app_git` has `durability.init_app_repo`
+  run `git init` in an app dir with no `.git`. The broker itself starts no
+  process but `docker` (WS43-F1). It refuses a `.git` that is a link or a
+  file, and it fails closed when the init fails.
 - **The checkpoints (§7.5 rule A).** `_git` of `apps/durability.py` runs
   with `GIT_CONFIG_NOSYSTEM=1`, `GIT_ATTR_NOSYSTEM=1`,
   `GIT_CEILING_DIRECTORIES` at the parent of the app dir,

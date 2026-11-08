@@ -342,33 +342,25 @@ def ensure_app_git(workspace: Path) -> None:
     WS-43h (review P2). ``.git`` gets the empty read-only cover only when it
     exists at the start. With no ``.git``, a container could write
     ``.git/config`` and ``.gitattributes``, and the next host checkpoint
-    would run a planted filter on the host. So a missing ``.git`` is made
-    here with ``git init``, which reads no file of the work tree, and a
-    ``.git`` that is a link or a file is refused. It fails closed: no repo,
-    no container.
+    would run a planted filter on the host. So a ``.git`` that is a link or a
+    file is refused, and a missing one is made before the start. It fails
+    closed: no repo, no container.
+
+    The broker starts no process but ``docker`` (WS43-F1). The ``git init``
+    is ``durability.init_app_repo``, the one host git of an app dir.
     """
-    import subprocess
-
-    from acb_common.child_env import child_env
-
     git_dir = workspace / ".git"
     if _is_link(git_dir) or (git_dir.exists() and not git_dir.is_dir()):
         raise SandboxRefused("The .git of the app dir is not a real dir, so no sandbox starts.")
     if git_dir.is_dir():
         return
     try:
-        done = subprocess.run(
-            ["git", "-c", "core.hooksPath=/dev/null", "init", "-q", str(workspace)],
-            capture_output=True, text=True, timeout=_SMALL_TIMEOUT_SECONDS, check=False,
-            env=child_env(extra={
-                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CEILING_DIRECTORIES": str(workspace.parent),
-            }),
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        from gateway.routes.apps.durability import init_app_repo
+    except ImportError as exc:
         raise SandboxUnavailable(
-            "The app dir has no git repo, and git init did not run. No sandbox starts."
+            "The app dir has no git repo, and no code here can make one. No sandbox starts."
         ) from exc
-    if done.returncode != 0 or _is_link(git_dir) or not git_dir.is_dir():
+    if not init_app_repo(workspace) or _is_link(git_dir) or not git_dir.is_dir():
         raise SandboxUnavailable(
             "The app dir has no git repo, and git init failed. No sandbox starts."
         )
