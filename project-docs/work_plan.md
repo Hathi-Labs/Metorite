@@ -5743,13 +5743,42 @@ Owner decisions, 2026-10-29 (WM-0) and 2026-11-08, in chat. Design: `project-doc
    6. **Q6, dispatch.** Agents pull the ready slices of the active cycle by themselves. They take them in critical-path order, inside the WIP limits. A person can still assign by hand.
    7. **Q7, the workstation.** The first path for a non-developer is one workstation with the runner (path B: EA-19 and SW-78). Cloud agents (WS-56) come later.
    8. **Q8, the critical path.** `specs/project_planning.md` (PJP-6) owns the maths. SW-90 and WM-3 read it. Code computes the path and the model judges it.
-   9. **Q9, dogfood.** HathiLabs runs its Metorite work in cycles from phase 4 of the design. Lanes L1 to L8 are the workstreams.
+   9. **Q9, dogfood.** HathiLabs runs its Metorite work in cycles from phase 4 of the design. Lanes L1 to L8 are the workstreams. **Amended by D199:** the app project is the workstream, and a lane is who does the work.
 
 **What this does not change.** Each slice ships dark. A slice that changes what a member sees needs a D145 preview and the owner's approval. Q3 sets the shape of the Goal that WM-5 (task 984) builds. How one goal links to many projects, and how it reaches agents as context, stays with SW-21 (task 352).
 
 **Re-check this number at merge.** The first merge wins a D-number. No branch or worktree held D195 when task 959 wrote this record. D194 was the highest on `main`.
 
 Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of each slice in `specs/project_management_app.md` §13.6 bind its rule. Until a slice lands, the rule is advisory (R7).
+
+### D197 — Approvals have one named approver, the intake form is for members only, and Projects has no timer: the three answers of LP-0 (2026-11-08)
+
+Owner decision, 2026-11-08 at 15:02 UTC, on Metorite task 987 (LP-0). The owner chose "Accept all three recommendations". The options are in `specs/project_management_app.md` §14.5 (two questions) and §14.6 (the timer note). It changes no other rule.
+
+1. **Approvals (LP-7, task 994).** Option A. The project lead sets one named approver per gate, and one approval is enough. Reject sends the task back to the status it left, with a required reason. Each decision writes an audit row. An agent can ask for an approval and can never approve. LP-7 can plan its migration, and the phase gates of WM-2 (task 981) can build on it.
+2. **Public intake form (LP-8, task 995, D-PM-14).** Option A, members only. LP-8 ships the internal form and the project intake address. No anonymous write route exists. The posture of D-PM-14 stays.
+3. **Timer.** Projects has no timer. Time spent stays a typed field. D77 does not name a timer, so this decision is the record that refuses one.
+
+**Re-check this number at merge.** The first merge wins a D-number. D196 is held by branch `mt-e634d840-sh0-setup-health`. No branch or worktree held D197 when this record was written.
+
+Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The tests of LP-7 and LP-8 in `specs/project_management_app.md` §14.2 bind their rules. Until those slices land, the rules are advisory (R7).
+
+### D199 — The app project is the workstream, a member sees Goal, Epic and Task, and the roadmap is a view of ranked Goals (2026-11-08)
+
+The owner accepted the recommendation of the plan audit session on 2026-11-08, in chat: "go ahead with your recommendation". The owner's rule: "There shouldn't be too many terms that confuse people, and it should be obvious how best to organize a project." Metorite: task 2309. The context is on WM-5 (task 984) and on the build order LIN (task 2301).
+
+1. **The app project is the workstream.** D190.9 stands. A lane (L1 to L8) is who does the work, not a level of the plan. This amends D195 Q9. The lane rules add no planning level.
+2. **A member sees three words: Goal, Epic and Task.** D195 Q4 keeps its order. "Slice" stays in specs and agent text, and a member sees "task".
+3. **The roadmap is a view, not a record.** It shows the Goals of a space in rank order, each with live progress from its epics in any project. The roadmap adds no initiative object and no milestone object. Milestones and phase gates stay inside the plan-driven preset (WM-2, task 981).
+4. **Workstream and Cycle stay hidden** unless a project picks a style that uses them (D195.1).
+5. **A space-level Goal takes epics from any project** (SW-21, task 352). Goals carry a rank, because M2 has no date (D190.2) and a date alone cannot order the roadmap.
+6. **One epic serves one Goal.** An epic whose tasks span several milestones splits by Goal when the board is reorganized (SOT-14, task 2273).
+
+**What D199 amends.** D195 Q9, and nothing else.
+
+**Re-check this number at merge.** The first merge wins a D-number. On 2026-11-08, branch `mt-e634d840-sh0-setup-health` held D196, and the box worktree `wt-civ23-box-runners` held D198.
+
+Fence: none new. Names in this record resolve under `tests/unit/test_doc_names_resolve.py`. The rules stay advisory until WM-5, SW-21 and WM-2 build their tests (R7).
 
 ## 4. Single-owner registry (who owns duplicated work)
 
