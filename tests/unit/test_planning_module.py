@@ -249,6 +249,19 @@ _ALLOWED: dict[str, str] = {
         "`_block_cycle` only finds a loop among the rows of a plan the member "
         "proposes, before the card. It computes no order, wave, slack or date."
     ),
+    # SP-12: three files read the engine's answer by its key names.
+    "apps/services/gateway/gateway/routes/projects/plan_analysis.py": (
+        "The route that calls `analyze_plan`. It reads the keys of the answer to "
+        "label the tasks that the answer names. It sorts no graph."
+    ),
+    "apps/services/agent_edge/agent_edge/tools.py": (
+        "`get_plan` copies the keys of the route answer, among the keys of 40 other "
+        "tools. It sorts no graph."
+    ),
+    "apps/skills/skill-projects/skill_projects/reads.py": (
+        "`get_plan` prints the keys of the route answer, among the other reads. It "
+        "sorts no graph."
+    ),
 }
 
 

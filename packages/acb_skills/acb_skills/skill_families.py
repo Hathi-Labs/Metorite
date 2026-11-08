@@ -534,6 +534,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "edit_project",
             "find_conflicts",
             "fit_for_task",
+            "get_plan",
             "link_tasks",
             "link_tasks_batch",
             "needs_attention",
