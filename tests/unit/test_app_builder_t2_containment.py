@@ -215,7 +215,8 @@ def _assert_refused(done: subprocess.CompletedProcess[str], ws: Path, *, names: 
     assert done.returncode != 0, f"the build passed:\n{out}"
     assert REFUSAL in out, out
     if names is not None:
-        assert json.dumps(names) in out, f"the refusal does not name {names!r}:\n{out}"
+        assert f"Cannot import {json.dumps(names)}. {REFUSAL}" in out, (
+            f"the refusal does not name {names!r}:\n{out}")
     _assert_no_leak(out, ws, allowed=names or "")
     _assert_no_leak(_bundle(ws), ws)
 
