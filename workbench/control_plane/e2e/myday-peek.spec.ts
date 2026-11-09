@@ -21,6 +21,12 @@ import { expect, test, type Page, type Request, type Route } from "@playwright/t
  *   4. With the flag off, the row opens Projects, as before.
  *   5. At 390 wide the panel is a sheet that ends at the bar's top edge, and
  *      a tap on a bar tab closes it.
+ *   6. At 1024 the card stands over the page (`CardPanel`), and the rows keep
+ *      their titles. The open row is marked, and the focus moves into the
+ *      card. After ✕ the focus is back on the row.
+ *   7. A `#7` pill in the description opens task 7 in the panel, not Projects.
+ *   8. A task that does not load says so once, with no "..", and Escape
+ *      closes that state too.
  */
 
 const SESSION = {
@@ -45,6 +51,10 @@ const KNOWN = ["/tasks", "/calendar", "/email", "/projects", "/chat"];
 const LAYOUT = { preset: "engineer", answered: "answered", pins: KNOWN, known: KNOWN, cardOrder: null, newOrder: null };
 
 const TASK_ID = "6f0c1a52-3b9e-4c7d-9a10-2b5e8f4d1c33";
+/** Task #7, which the description of TASK_ID names. */
+const T7 = "7e7e7e7e-0000-4000-8000-000000000007";
+/** A task the gateway does not know. */
+const GONE = "0b0b0b0b-0000-4000-8000-00000000dead";
 const LANES = [
   { id: "s1", project_id: "p1", name: "To do", color: "", position: 10, category: "todo", is_default: true },
   { id: "s2", project_id: "p1", name: "In progress", color: "", position: 20, category: "in_progress", is_default: false },
@@ -66,6 +76,7 @@ function task(store: Store) {
     task_number: 42,
     status_id: store.status,
     title: "Send the quote",
+    description: "Read #7 first.",
     tags: [],
     assignees: ["asha@example.com"],
     custom_fields: {},
@@ -163,9 +174,16 @@ async function setup(page: Page, opts: { peek?: boolean } = {}): Promise<Store> 
       }
       return json(task(store));
     }
-    if (path === `/api/projects/my/tasks/${TASK_ID}/lanes`) return json({ rows: LANES, total: LANES.length });
+    if (path === `/api/projects/tasks/${T7}`) {
+      return json({ ...task(store), id: T7, task_number: 7, title: "Book the venue", description: "" });
+    }
+    if (path === `/api/projects/tasks/${GONE}`) return json({ detail: "No such task." }, 404);
+    if (path === "/api/projects/search/refs") {
+      return json({ rows: [{ id: T7, task_number: 7, title: "Book the venue", status_name: "To do", category: "todo", archived: false }] });
+    }
+    if (/^\/api\/projects\/my\/tasks\/[^/]+\/lanes$/.test(path)) return json({ rows: LANES, total: LANES.length });
     // Not in the member's lens as an overlay: the panel draws no strip.
-    if (path === `/api/projects/my/tasks/${TASK_ID}`) return json({ detail: "No such task" }, 404);
+    if (/^\/api\/projects\/my\/tasks\/[^/]+$/.test(path)) return json({ detail: "No such task" }, 404);
     if (path === "/api/auth/me/shell") return json(LAYOUT);
     if (path === "/api/auth/me") return json(MEMBER);
     if (path === "/api/auth/session") return json(SESSION);
@@ -185,6 +203,16 @@ const row = (page: Page) => page.getByTestId(`feed-card-tasks:${TASK_ID}`);
 const rowLink = (page: Page) => row(page).getByRole("link", { name: "Send the quote" });
 const panel = (page: Page) => page.locator("[data-my-day-peek]");
 const panelTitle = (page: Page) => panel(page).getByRole("heading", { name: "Send the quote" });
+/** Where the record card stands, read off its host's classes (`cardFrameClasses`). */
+const cardStop = (page: Page) =>
+  page.evaluate(() => {
+    const host = document.querySelector("[data-my-day-peek]")?.closest("aside")?.parentElement?.parentElement;
+    if (!host) return "none";
+    return host.className.includes("absolute") ? "full" : host.className.includes("fixed") ? "phone" : "side";
+  });
+/** The focus is inside the record card. */
+const focusInCard = (page: Page) =>
+  page.evaluate(() => !!document.querySelector("[data-my-day-peek]")?.closest("aside")?.contains(document.activeElement));
 
 test.describe("My Day panel (PK-1), desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
@@ -209,8 +237,13 @@ test.describe("My Day panel (PK-1), desktop", () => {
       "href",
       `/projects?task=${TASK_ID}`,
     );
-    // The page beside it stays: the row is still on screen.
+    // The page beside it stays: the row is still on screen, and it is marked.
     await expect(rowLink(page)).toBeVisible();
+    expect(await cardStop(page)).toBe("side");
+    await expect(row(page)).toHaveAttribute("data-peek-open", "");
+    await expect(rowLink(page)).toHaveAttribute("aria-current", "true");
+    // The keyboard is in the card.
+    await expect.poll(() => focusInCard(page)).toBe(true);
 
     // The shared body's Status control.
     await panel(page).getByRole("button", { name: "Status" }).click();
@@ -225,6 +258,58 @@ test.describe("My Day panel (PK-1), desktop", () => {
     // The rows read again on close, and the row shows the new lane.
     await expect.poll(() => store.feedReads).toBeGreaterThan(readsBefore);
     await expect(row(page)).toContainText("In progress");
+    // The mark leaves with the card, and the focus is back on the row.
+    await expect(row(page)).not.toHaveAttribute("data-peek-open", "");
+    await expect.poll(() => rowLink(page).evaluate((a) => a === document.activeElement)).toBe(true);
+  });
+
+  test("a #7 pill in the description opens task 7 in the panel, not Projects", async ({ page }) => {
+    test.setTimeout(120_000);
+    await setup(page);
+    await page.goto("/");
+    await expect(rowLink(page)).toBeVisible({ timeout: 60_000 });
+    await rowLink(page).click();
+    await expect(panelTitle(page)).toBeVisible({ timeout: 30_000 });
+    const pill = panel(page).locator(`a[href="/projects?task=${T7}"]`).first();
+    await expect(pill).toBeVisible({ timeout: 30_000 });
+    await pill.click();
+    await expect(panel(page).getByRole("heading", { name: "Book the venue" })).toBeVisible({ timeout: 30_000 });
+    const url = new URL(page.url());
+    expect(url.pathname).toBe("/");
+    expect(url.searchParams.get("peek")).toBe(`task:${T7}`);
+    // Back walks to the first task, and ✕ closes the card from there.
+    await page.goBack();
+    await expect(panelTitle(page)).toBeVisible();
+    await panel(page).getByRole("button", { name: "Close task" }).click();
+    await expect(panel(page)).toHaveCount(0);
+  });
+
+  test("a member who came in on a link closes the card with ✕ after a second task", async ({ page }) => {
+    test.setTimeout(120_000);
+    await setup(page);
+    await page.goto(`/?peek=task:${TASK_ID}`);
+    await expect(panelTitle(page)).toBeVisible({ timeout: 60_000 });
+    const pill = panel(page).locator(`a[href="/projects?task=${T7}"]`).first();
+    await expect(pill).toBeVisible({ timeout: 30_000 });
+    await pill.click();
+    await expect(panel(page).getByRole("heading", { name: "Book the venue" })).toBeVisible({ timeout: 30_000 });
+    // ✕ walks back to the entry it came in on, and that entry loses its panel too.
+    await panel(page).getByRole("button", { name: "Close task" }).click();
+    await expect(panel(page)).toHaveCount(0);
+    await expect.poll(() => new URL(page.url()).searchParams.get("peek")).toBeNull();
+  });
+
+  test("a task that does not load says so, and Escape closes that state", async ({ page }) => {
+    test.setTimeout(120_000);
+    await setup(page);
+    await page.goto(`/?peek=task:${GONE}`);
+    const alert = panel(page).getByRole("alert");
+    await expect(alert).toContainText("Could not open this task.", { timeout: 60_000 });
+    await expect(alert).toContainText("No such task. Try again, or open it in Projects.");
+    await expect(alert).not.toContainText("..");
+    await page.keyboard.press("Escape");
+    await expect(panel(page)).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.get("peek")).toBeNull();
   });
 
   test("Escape and Back close the panel, and a reload opens it again", async ({ page }) => {
@@ -235,7 +320,7 @@ test.describe("My Day panel (PK-1), desktop", () => {
 
     await rowLink(page).click();
     await expect(panelTitle(page)).toBeVisible({ timeout: 30_000 });
-    // The focus is on the row the member clicked, on the page.
+    // The focus moved into the card on open.
     await page.keyboard.press("Escape");
     await expect(panel(page)).toHaveCount(0);
     expect(new URL(page.url()).pathname).toBe("/");
@@ -245,6 +330,8 @@ test.describe("My Day panel (PK-1), desktop", () => {
     await page.goBack();
     await expect(panel(page)).toHaveCount(0);
     expect(new URL(page.url()).search).toBe("");
+    // Back gives the keyboard back to the row, as ✕ and Escape do.
+    await expect.poll(() => rowLink(page).evaluate((a) => a === document.activeElement)).toBe(true);
 
     await page.goto(`/?peek=task:${TASK_ID}`);
     await expect(panelTitle(page)).toBeVisible({ timeout: 60_000 });
@@ -278,6 +365,29 @@ test.describe("My Day panel (PK-1), desktop", () => {
   });
 });
 
+test.describe("My Day panel (PK-1), 1024 wide", () => {
+  test.use({ viewport: { width: 1024, height: 800 } });
+
+  test("the card stands over the page, and the rows keep their titles", async ({ page }) => {
+    test.setTimeout(120_000);
+    await setup(page);
+    await page.goto("/");
+    await expect(rowLink(page)).toBeVisible({ timeout: 60_000 });
+    const before = (await rowLink(page).boundingBox())!.width;
+    await rowLink(page).click();
+    await expect(panelTitle(page)).toBeVisible({ timeout: 30_000 });
+    // A docked card would leave the page under 36 rem, so the card stands over it.
+    expect(await cardStop(page)).toBe("full");
+    await expect.poll(() => focusInCard(page)).toBe(true);
+    // The page keeps its grid and its width: the title is as wide as before.
+    const after = (await rowLink(page).boundingBox())!.width;
+    expect(after).toBeGreaterThan(100);
+    expect(Math.abs(after - before)).toBeLessThan(2);
+    await page.keyboard.press("Escape");
+    await expect(panel(page)).toHaveCount(0);
+  });
+});
+
 test.describe("My Day panel (PK-1), phone", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
@@ -294,7 +404,7 @@ test.describe("My Day panel (PK-1), phone", () => {
     expect(new URL(page.url()).pathname).toBe("/");
     const box = await page.evaluate(() => {
       const bar = document.querySelector("[data-phone-nav-bar]")!.getBoundingClientRect();
-      const sheet = document.querySelector("[data-my-day-peek]")!.getBoundingClientRect();
+      const sheet = document.querySelector("[data-my-day-peek]")!.closest("aside")!.getBoundingClientRect();
       return { barTop: bar.top, sheetTop: sheet.top, sheetBottom: sheet.bottom, width: sheet.width };
     });
     expect(box.sheetBottom).toBeLessThanOrEqual(box.barTop + 0.5);

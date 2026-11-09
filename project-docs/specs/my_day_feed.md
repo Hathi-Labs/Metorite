@@ -2157,48 +2157,80 @@ test above runs in code after the answer.
 
 ### 11.5 The panel — a task opens on My Day (PK-1, D204)
 
-**Decided by the owner, 2026-11-09 (D204).** The owner wrote: "when I open
-any task card ... it opens up the projects app itself, and I need to go back
-to My Day to look at the rest of my day." So the context of a row now opens
-on My Day. This amends D101 point 2 for the link of a row. The act test of
-§11.2 does not change.
+**Decided by the owner, 2026-11-09 (D204).** The owner wrote that a task
+card "opens up the projects app itself". Then the owner must go "back to My
+Day to look at the rest of my day". So the context of a row now opens on My
+Day. This amends D101 point 2 for each link to a task. The act test of §11.2
+does not change.
 
 **Built: PK-1, 2026-11-09** (task 2469), dark behind
 `NEXT_PUBLIC_MY_DAY_PEEK`, default OFF. PK-2 (email, task 2470) and PK-3
 (reminders, task 2471) add their kinds later.
 
-**What opens in place.** A plain click on a link of a row opens the panel,
+**What opens in place.** A plain click on a link to a task opens the panel,
 and the path stays `/`. A task link is `/projects?task=<id>`,
-`/tasks?task=<id>` or `/tasks?item=<id>`, with no other key. This holds in
-each card of My Day: the feed, the Do first band, Needs you, Next actions and
-the brief. A link with any other key still opens its app.
+`/tasks?task=<id>` or `/tasks?item=<id>`, with no other key.
+
+- This holds for a row's title and for an act that is a link, for example
+  "Move to tomorrow" (`needs.py`, `task_href`). An act with its own button,
+  such as Done or a snooze, still runs in place.
+- It holds in each card of My Day: the feed, the Do first band, Needs you,
+  Next actions and the brief. A link with any other key still opens its app.
+- A `#123` pill in the panel's title, description or comments opens that
+  task in the panel too.
+- The rows of "AI waiting on you" are chat threads (`chatLink()`). They open
+  the assistant on My Day already, so they are not rows of the panel. An
+  agent's question about a task comes as a task row, and that row opens the
+  panel.
 
 **What the panel is.**
 
 - It draws the shared task card of Projects (`TaskPanel` and `TaskBody`),
   and never a second task view. `useTaskById` is the one loader of a card
   that starts from an id, and My Tasks reads through it too.
-- On a desktop it is a column at the right of My Day, at the docked width.
-  On a phone it is the phone frame of the task card. It ends at the top edge
-  of the phone bar, and a tap on a bar tab closes it. The Ask tab keeps it,
-  because the assistant opens above a task card (D172.4).
+- Its frame is the record card (`CardPanel`, D181, `one_record_card.md`
+  §3.1). The card docks at the right of My Day while the page keeps 36 rem
+  beside it. A narrower page gets the same card over the page. On a phone it
+  fills the screen above the phone bar. The member's stored stop and the
+  expand toggle are the ones of Projects.
+- While the card docks beside the page, My Day draws its cards in one
+  column. Over the page, the page keeps its grid.
+- A tap on a phone bar tab closes it. The Ask tab keeps it, because the
+  assistant opens above a task card (D172.4).
 - ✕, Escape and the browser's Back close it. The URL holds it as
-  `?peek=task:<id>`, so a reload opens it again.
+  `?peek=task:<id>`, so a reload opens it again. On open the keyboard goes
+  into the card. On close it goes back to the row.
+- The open row wears the selected tint of the house, and its link carries
+  `aria-current`.
 - After a close, My Day reads its rows again when the panel changed the
-  task. So the row shows the new status or the new comment.
+  task. So the row shows the new status or the new comment. The reads drop
+  their cache keys, so a read that was in flight cannot answer.
 
 **What still opens the app.** D101 point 3 stays: the member can always open
 the app. The panel's header has "Open in Projects". Ctrl-click, Cmd-click and
 a middle click on a row open Projects in a new tab.
+
+**Known limits.**
+
+- A tap on a phone bar tab closes the card in place, with no step back. So
+  the history keeps the entries of the card, and Back can open it again.
+- A reload of an address with `?peek=` at a wide window draws three grid
+  columns first. When the card docks, the grid changes to one column.
+- Escape works from the card and from the page. With the focus on the shell
+  around the page, Escape is the shell's (`cardEscape`).
+- The feed cache of the gateway (`MY_DAY_CACHE`) moves on each `pm.*`
+  event. A re-read that arrives before that event can show the old row
+  until the next read.
 
 **The seam.** `lib/shell/myDayPeek.ts` holds the rules, as a registry of
 kinds. A later kind adds one row there and one branch in
 `MyDayPeekPanel.tsx`. `useMyDayPeek.tsx` binds the rules to the page.
 
 **Fences.** `src/lib/shell/myDayPeek.test.ts` holds the link rule, the click
-rule, the URL, the flag and the seams. `src/app/projects/lib/useTaskById.test.ts`
-holds the loader. `e2e/myday-peek.spec.ts` holds the open, the close and the
-phone sheet in a browser.
+rule, the URL, the flag and the seams. `src/components/CardPanel.test.ts`
+holds the page minimum. `src/app/projects/lib/useTaskById.test.ts` holds the
+loader. `e2e/myday-peek.spec.ts` holds the open, the close, the pill, the
+stop at 1024 and the phone sheet in a browser.
 
 ---
 

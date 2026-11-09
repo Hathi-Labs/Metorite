@@ -841,8 +841,9 @@ needs more context. `my_day_feed.md` §11 holds the rule. This spec keeps the
 page frame, the bell, the manifest and the flags.
 
 **D204 (owner, 2026-11-09) changes "A longer act opens the owning app" for
-the link of a task row.** Behind `NEXT_PUBLIC_MY_DAY_PEEK`, the task opens in
-a panel on My Day, and the member stays on My Day. "Open in Projects" and a
+each link to a task.** Behind `NEXT_PUBLIC_MY_DAY_PEEK`, a row's link or an
+act's link opens the task in a panel on My Day, and the member stays on My
+Day. An act with its own button runs in place. "Open in Projects" and a
 Ctrl-click still open the app. `my_day_feed.md` §11.5 holds the rule.
 
 ### 4.4 Cards
