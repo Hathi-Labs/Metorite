@@ -5901,8 +5901,10 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
 _FILE_CHECK_BATCH = 20
 #: The next step after a file that cannot go. ``Not sent.`` comes first.
 _FILE_NEXT_STEP = (
-    "No card was shown. Send the email without the file, or ask the member "
-    "to attach it in Email.")
+    "No card was shown. Tell the member that this file cannot go with the "
+    "email, and ask whether to send it without the file or to attach the "
+    "file in Email first. Do not send without the file before the member "
+    "answers.")
 #: The answer when the gateway did not check the files.
 _FILES_UNCHECKED = (
     "Not sent. The files of this email could not be checked, so no card was "

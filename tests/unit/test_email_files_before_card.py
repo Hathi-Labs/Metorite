@@ -264,7 +264,9 @@ async def test_a_file_that_does_not_resolve_shows_no_card(monkeypatch, gw, which
     assert not set(gw.paths()) & set(SEND_ROUTES), gw.paths()
     assert out.startswith("Not sent.")
     assert f'The file "{UPLOAD_NAME}" is not one this mail can attach.' in out
-    assert "Send the email without the file, or ask the member to attach it in Email." in out
+    # Review P3: the member hears about the file before any send without it.
+    assert "Tell the member that this file cannot go with the email" in out
+    assert "Do not send without the file before the member answers." in out
     # The answer names the file only: no folder of the workspace.
     assert "inputs/" not in out and "chat-th-7f3a" not in out
     # The good file is not named as a bad one.
