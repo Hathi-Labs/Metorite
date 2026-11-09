@@ -208,7 +208,7 @@ def start_notes(lanes: set[str]) -> dict[str, str]:
 
 def _start(name: str, note: str) -> tuple[int, str]:
     """Start a lane fresh. Never raises."""
-    cwd = os.environ.get("KEEPER_START_CWD") or str(HOME / "Metorite")
+    cwd = str(HOME / "Metorite")
     where = cwd if Path(cwd).is_dir() else None
     try:
         r = subprocess.run(
