@@ -54,6 +54,23 @@ result below was run on 2026-11-09, with ``test_studio_lines.py`` too.
   ``test_r8_fifty_lines_are_refused_and_forty_nine_are_saved``,
   ``test_r8_a_chat_ask_with_fifty_lines_opens_no_request`` and
   ``test_fifty_lines_are_refused_before_any_write`` go red.
+
+**The mutations of fix round 1** (run on 2026-11-09):
+
+* M2 of the verifier on the code before the fix: drop ``mark.before is None and``
+  from the linked-create test of ``_new_parents``.
+  ``test_r8_a_line_saved_with_its_parent_cannot_then_move_to_another_package``
+  goes red: the batch commits. On the fixed code the same edit turns
+  ``test_r8_a_line_saved_with_its_parent_may_then_move_inside_the_package`` red.
+* F2. ``_new_parents``: ``continue`` for each mark whose first write is linked.
+  The package test, the place test and the delete test go red.
+* F3. ``_new_parents``: no refusal for a linked create whose parent is gone.
+  ``test_r8_a_linked_line_of_a_parent_that_the_batch_deletes_is_refused`` goes red.
+* F4. ``_new_parents``: name ``mark.index`` again.
+  ``test_r8_the_refusal_of_a_move_names_the_write_that_moved_the_line`` goes red.
+* F5. ``_line_moves``: no check of the one form. The ``capitals`` and ``hex32``
+  cases go red. With the second check of ``_new_parents`` gone too, the ``urn``
+  and ``uuid`` cases go red with the old DBAPIError, the 500 of the review.
 """
 
 from __future__ import annotations
