@@ -8,6 +8,7 @@ import ssl
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException
@@ -89,27 +90,24 @@ class MetoriteFileRef(BaseModel):
 SendEmailRequest.model_rebuild()
 
 
-def load_artifact_attachments(
-    refs: "list[ArtifactAttachment] | None",
-    user_email: str | None = None,
-) -> list[dict]:
-    """Resolve workspace-artifact references to ``[{filename, content,
-    mime_type}]`` for a provider. Reads each ref from the sending member's OWN
-    workspace of its source agent (default ``email-assistant``).
+def resolve_artifact_path(ref: ArtifactAttachment, user_email: str | None) -> Path:
+    """THE resolver of one workspace file of a send: its path, or a 422.
 
-    H-201 part 2 (``projects_ai_chat.md`` §21.14). The source is only
+    The file must be in the sending member's OWN workspace of its source
+    agent (default ``email-assistant``). H-201 part 2
+    (``projects_ai_chat.md`` §21.14): the source is only
     ``workspace._member_agent_workspace``, so a shared agent's clone is never
     read. The path goes through ``_safe_resolve``, and ``_is_blocked_path``
     refuses ``.env``, ``.git/`` and every other secret name.
 
-    H-201 part 3 (§21.15, the P1 of the part 2 review): a ref that is refused
-    FAILS the send with 422, and a warning names it. The old rule skipped it,
-    so the mail went out without the file the member asked for, and nobody
-    was told. This fails closed."""
-    if not refs:
-        return []
-    import mimetypes
+    H-201 part 3 (§21.15, the P1 of the part 2 review): a refused ref FAILS
+    the send with 422, and a warning names it. The old rule skipped it, so
+    the mail went out without the file that the member asked for.
 
+    Task 2491: :func:`load_artifact_attachments` (the send) and
+    :func:`refused_artifacts` (the check before a card) both call this, so
+    the check and the send keep one rule. Fence:
+    ``tests/unit/test_email_files_before_card.py``."""
     from acb_common import get_logger
     from gateway.routes.workspace import (
         _is_blocked_path,
@@ -117,27 +115,63 @@ def load_artifact_attachments(
         _safe_resolve,
     )
 
-    log = get_logger("gateway.email.send")
+    agent = (ref.agent or "email-assistant").strip() or "email-assistant"
+    rel = (ref.path or "").strip()
+    ws = _member_agent_workspace(agent, user_email) if rel else None
+    full = None
+    if ws is not None and not _is_blocked_path(rel):
+        try:
+            full = _safe_resolve(ws, rel)
+        except HTTPException:
+            full = None
+    if full is None or not full.is_file():
+        get_logger("gateway.email.send").warning(
+            "email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The attachment '{rel[:200]}' is not a file in your own "
+                "workspace, so nothing was sent."
+            ),
+        )
+    return full
+
+
+def refused_artifacts(
+    refs: list[ArtifactAttachment], user_email: str | None,
+) -> list[str]:
+    """The path of each ref that a send refuses, as the ref gives it.
+
+    Task 2491. A check before a card: it runs :func:`resolve_artifact_path`,
+    the rule of the send, on each ref. It reads no bytes and sends nothing.
+    A card that names a file that the send refuses costs the member an
+    approval for a mail that cannot go."""
+    refused: list[str] = []
+    for ref in refs:
+        try:
+            resolve_artifact_path(ref, user_email)
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            refused.append(ref.path)
+    return refused
+
+
+def load_artifact_attachments(
+    refs: "list[ArtifactAttachment] | None",
+    user_email: str | None = None,
+) -> list[dict]:
+    """Resolve workspace-artifact references to ``[{filename, content,
+    mime_type}]`` for a provider. Each ref resolves through
+    :func:`resolve_artifact_path`, and a refused ref fails the whole send
+    with 422 (H-201 part 3). This fails closed."""
+    if not refs:
+        return []
+    import mimetypes
+
     out: list[dict] = []
     for ref in refs:
-        agent = (ref.agent or "email-assistant").strip() or "email-assistant"
-        rel = (ref.path or "").strip()
-        ws = _member_agent_workspace(agent, user_email) if rel else None
-        full = None
-        if ws is not None and not _is_blocked_path(rel):
-            try:
-                full = _safe_resolve(ws, rel)
-            except HTTPException:
-                full = None
-        if full is None or not full.is_file():
-            log.warning("email.artifact_ref_refused", agent=agent[:80], path=rel[:200])
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"The attachment '{rel[:200]}' is not a file in your own "
-                    "workspace, so nothing was sent."
-                ),
-            )
+        full = resolve_artifact_path(ref, user_email)
         mime, _ = mimetypes.guess_type(full.name)
         out.append({
             "filename": ref.name or full.name,

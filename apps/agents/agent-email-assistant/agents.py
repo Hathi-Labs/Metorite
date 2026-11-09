@@ -5889,6 +5889,105 @@ def _attachment_refs(attachments: list[str] | None) -> list[dict[str, Any]]:
     return refs
 
 
+# ── A file of a send resolves before its card (task 2491) ───────────────────
+#
+# Defect of 2026-11-09: a chat upload went to send_email, the member approved
+# the card, and only then did ``POST /email/send`` refuse the file (422). The
+# model sent the mail again with no file, under a second card. So each file
+# now resolves before any card, the way the send resolves it, and a file that
+# does not resolve shows no card.
+
+#: The most files of one check (``metorite_files.MAX_METORITE_FILES``).
+_FILE_CHECK_BATCH = 20
+#: The next step after a file that cannot go. ``Not sent.`` comes first.
+_FILE_NEXT_STEP = (
+    "No card was shown. Send the email without the file, or ask the member "
+    "to attach it in Email.")
+#: The answer when the gateway did not check the files.
+_FILES_UNCHECKED = (
+    "Not sent. The files of this email could not be checked, so no card was "
+    "shown. Try again in a moment.")
+
+
+def _file_name_only(path: str) -> str:
+    """The last part of *path*, as a card shows a name: no folder is named."""
+    last = str(path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return _card_file_name(last or "file")
+
+
+def _not_attachable(paths: list[str], why: str = "") -> str:
+    """The answer when a file of a send does not resolve (task 2491): what
+    happened, each file by its name, and the next step. *why* is the reason
+    that the resolver gave, when it gave one."""
+    names = [f'"{_file_name_only(p)}"' for p in paths]
+    if len(names) == 1:
+        head = f"The file {names[0]} is not one this mail can attach."
+        why = why or "It is not a file in your own workspace."
+    else:
+        listed = f"{', '.join(names[:-1])} and {names[-1]}"
+        head = f"The files {listed} are not ones this mail can attach."
+        why = why or "They are not files in your own workspace."
+    return f"Not sent. {head} {why} {_FILE_NEXT_STEP}"
+
+
+async def _unattachable_files(refs: list[dict[str, Any]]) -> str | None:
+    """None when each workspace file of a send resolves. Else the answer that
+    names each file that does not, and no card shows (task 2491).
+
+    The gateway checks each file with ``send.refused_artifacts``, the
+    resolver that ``POST /email/send`` runs (``/email/metorite-files/resolve``
+    with ``artifacts``). It reads no bytes and sends nothing. An answer with
+    no ``refused`` list fails closed."""
+    refused: list[str] = []
+    for i in range(0, len(refs), _FILE_CHECK_BATCH):
+        chunk = refs[i:i + _FILE_CHECK_BATCH]
+        try:
+            res = await _post("/email/metorite-files/resolve",
+                              {"refs": [], "artifacts": chunk})
+        except GatewayError as exc:
+            if 400 <= exc.status < 500:
+                return _FILES_UNCHECKED
+            raise
+        got = res.get("refused") if isinstance(res, dict) else None
+        if not isinstance(got, list):
+            return _FILES_UNCHECKED
+        for path in got:
+            # The gateway gives the path. The answer names the text that the
+            # model gave, so "Shot 10:00.png" is not named "00.png".
+            ref = next((r for r in chunk if str(r.get("path")) == str(path)), None)
+            refused.append(_ref_text(ref) if ref else str(path))
+    return _not_attachable(refused) if refused else None
+
+
+def _ref_text(ref: dict[str, Any]) -> str:
+    """A ref of :func:`_attachment_refs` as the model wrote it."""
+    agent, path = str(ref.get("agent") or ""), str(ref.get("path") or "")
+    return f"{agent}:{path}" if agent else path
+
+
+def _held_unparsed_files(files: list[str]) -> str | None:
+    """None when each file of a held send has a form that the held card can
+    resolve. Else the answer that names each file that has none (task 2491).
+
+    The held card resolves each file before its card. Its first step is
+    ``acb_skills.held_card.parse_file_ref``, the parse of both of its
+    resolvers, and a bare workspace path fails it. This calls the same
+    parse, so the answer can name the file."""
+    try:
+        from acb_skills.held_card import parse_file_ref
+    except ImportError:  # an older platform: the held card refuses it
+        return None
+    bad: list[str] = []
+    why = ""
+    for ref in files:
+        try:
+            parse_file_ref(ref)
+        except ValueError as exc:
+            bad.append(ref)
+            why = why or str(exc)
+    return _not_attachable(bad, why) if bad else None
+
+
 #: The most addresses of one list that a send card names one by one. A longer
 #: list ends with "+N more", so the count always shows.
 _CARD_TARGET_CAP = 10
@@ -6218,6 +6317,14 @@ async def send_email(
         return refusal
     if warning:
         reply_notices.insert(0, warning)
+    # Task 2491: each workspace file resolves BEFORE either card, through the
+    # resolver of the send. A file that the send would refuse shows no card,
+    # so it costs the member no approval. A Metorite file resolves before
+    # each card too: below for this card, and in ``POST /email/new-card``.
+    refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
+    unattachable = await _unattachable_files(refs) if refs else None
+    if unattachable:
+        return unattachable
     if not reply_to_email_id and _edit_card_open():
         # §18.10 (owner, 2026-11-03): a new mail shows the ONE email card that
         # the member edits. The gateway records it, and its act sends only the
@@ -6240,7 +6347,6 @@ async def send_email(
     if reply_to_email_id:
         payload["reply_to_message_id"] = reply_to_email_id
     metorite = [str(a) for a in (attachments or []) if _is_metorite_ref(a)]
-    refs = _attachment_refs([a for a in (attachments or []) if not _is_metorite_ref(a)])
     if refs:
         payload["artifacts"] = refs
     shared: list[dict[str, Any]] = []
@@ -6711,10 +6817,16 @@ async def _held_new_mail(
         account_id, ask = await _new_mail_mailbox(to[0])
         if ask:
             return ask
+    wanted = [str(a) for a in (attachments or []) if str(a).strip()]
+    # Task 2491: a file that the held card cannot resolve shows no card, and
+    # the answer names it. The held card resolves every file before its card.
+    unparsed = _held_unparsed_files(wanted)
+    if unparsed:
+        return unparsed
     res = await _held_card({
         "kind": "new", "account_id": account_id, "to": to, "cc": list(cc or []),
         "bcc": list(bcc or []), "subject": subject or "", "note": body,
-        "files": [str(a) for a in (attachments or []) if str(a).strip()],
+        "files": wanted,
     }, "Not sent", "Send cancelled — the email was not sent.", form=True)
     if isinstance(res, str):
         return res

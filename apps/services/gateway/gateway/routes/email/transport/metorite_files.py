@@ -37,6 +37,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.email.core import router
+from gateway.routes.email.transport.send import ArtifactAttachment
 from pydantic import BaseModel, ConfigDict, Field
 
 #: The most files of one send.
@@ -230,6 +231,10 @@ class MetoriteFilesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     refs: list[str] = Field(max_length=MAX_METORITE_FILES)
+    #: Task 2491: files of the member's own workspace by path, in the shape
+    #: of ``SendEmailRequest.artifacts``. The route only checks them.
+    artifacts: list[ArtifactAttachment] = Field(
+        default_factory=list, max_length=MAX_METORITE_FILES)
 
 
 @router.post("/metorite-files/resolve")
@@ -238,6 +243,14 @@ async def resolve_metorite_files_route(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """The name, the size and the digest of each named file, as the member
-    sees it. A read: it sends nothing and returns no bytes."""
+    sees it. A read: it sends nothing and returns no bytes.
+
+    Task 2491: ``refused`` names each path of ``artifacts`` that
+    ``POST /email/send`` refuses, as the request gave it. The check is
+    ``send.refused_artifacts``, the resolver of the send, so a chat shows no
+    card for a file that cannot go. It reads no bytes."""
+    from gateway.routes.email.transport.send import refused_artifacts
+
+    refused = refused_artifacts(list(req.artifacts), user.email)
     files = await resolve_metorite_files(user, list(req.refs))
-    return {"files": [f.shown() for f in files]}
+    return {"files": [f.shown() for f in files], "refused": refused}
