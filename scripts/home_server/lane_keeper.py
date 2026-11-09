@@ -8,7 +8,9 @@ no PC and no person. One pass:
    whole list of lanes that may wake. With no file, nothing wakes.
 2. Read ``claude agents --json``. Keep the newest session of each listed lane.
 3. A lane is ended when its state is done, blocked or idle. A lane that
-   sleeps inside a ``sleep 600`` has state working, so it is never woken.
+   sleeps inside a ``sleep 600`` has state working, so it is not woken, unless
+   its status is idle and its transcript is older than 30 minutes (reason
+   ``stale-working``, task 2466).
 4. A lane with a busy session is never woken. That is a busy session that
    has the lane's name, or a busy session of any name whose transcript header
    names the lane. A fork copies the header of its parent, so a fork that an old
@@ -26,9 +28,13 @@ no PC and no person. One pass:
    goes to it as ``KEEPER_SKIP_ACCOUNTS``, and the keeper does not run it
    while the box sits on a skip-list account.
 
+8. A listed lane with no session of its name is started fresh from
+   ``~/lanes/start/<lane>.txt`` (reason ``fresh start``, task 2466). With no such
+   file it logs and starts nothing. The 30-minute cap applies.
+
 Every wake and every skip with a reason goes to ``~/lanes/keeper.log``.
-The keeper stops only the ended session of a lane that it is about to resume,
-and it never starts a new lane.
+The keeper stops only the ended session of a lane that it is about to resume.
+It starts a new session only for a listed lane that has none and has a start note.
 Fence: tests/unit/test_lane_keeper.py.
 """
 
@@ -46,6 +52,10 @@ LANES_DIR = Path(os.environ.get("KEEPER_LANES_DIR", HOME / "lanes"))
 IDLE_S = 600
 CAP_S = 1800
 ENDED = {"done", "blocked", "idle"}
+# CIV-19b (task 2466). A turn can end with status idle and state still "working"
+# (lane-merge, 2026-11-08, cost about 5 hours). Such a lane wakes when its
+# transcript is older than this.
+STALE_S = 1800
 # Lanes that wait on the owner. Owner directive 2026-11-07: never in a loop.
 DEFAULT_SKIP_LANES = "lane-chat,lane-bill"
 NOTE = (
@@ -147,15 +157,70 @@ def plan(
         # An empty `only_lanes` wakes nothing: the list file is the whole list.
         if name in skip_lanes or name not in only_lanes or name in busy:
             continue
-        if a.get("state") not in ENDED:
-            continue
         age = ages.get(a["sessionId"])
+        stale = a.get("status") == "idle" and age is not None and age >= STALE_S
+        if a.get("state") not in ENDED and not stale:
+            continue
         if age is None or age < IDLE_S:
             continue
         if not force_all and now - state.get(name, 0) < CAP_S:
             continue
-        wakes.append((name, a["sessionId"], "account change" if force_all else a["state"]))
+        reason = "account change" if force_all else (a["state"] if a.get("state") in ENDED else "stale-working")
+        wakes.append((name, a["sessionId"], reason))
     return wakes
+
+
+def plan_fresh(
+    agents: list[dict],
+    state: dict[str, float],
+    now: float,
+    *,
+    skip_lanes: set[str],
+    only_lanes: set[str],
+    busy: set[str],
+    notes: dict[str, str],
+) -> list[tuple[str, str]]:
+    """Listed lanes with no session at all: (lane, start note). Pure."""
+    have = set(newest_per_lane(agents))
+    out = []
+    for name in sorted(only_lanes):
+        if name in skip_lanes or name in have or name in busy:
+            continue
+        if now - state.get(name, 0) < CAP_S:
+            continue
+        if name in notes:
+            out.append((name, notes[name]))
+    return out
+
+
+def start_notes(lanes: set[str]) -> dict[str, str]:
+    """The start note of each lane: ``~/lanes/start/<lane>.txt``, when it exists."""
+    out = {}
+    for n in lanes:
+        try:
+            text = (LANES_DIR / "start" / f"{n}.txt").read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            out[n] = text
+    return out
+
+
+def _start(name: str, note: str) -> tuple[int, str]:
+    """Start a lane fresh. Never raises."""
+    cwd = os.environ.get("KEEPER_START_CWD") or str(HOME / "Metorite")
+    where = cwd if Path(cwd).is_dir() else None
+    try:
+        r = subprocess.run(
+            ["claude", "--bg", "-n", name, f"--remote-control={name}", note],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=where,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return 1, f" {type(exc).__name__}"
+    return r.returncode, (f" {r.stderr.strip()[:120]!r}" if r.returncode and r.stderr else "")
 
 
 def account_email() -> str:
@@ -277,6 +342,19 @@ def run_pass(
             state[name] = now
         elif reason == "account change":
             failed_forced = True
+    skip_lanes = _csv("KEEPER_SKIP_LANES", DEFAULT_SKIP_LANES)
+    notes = start_notes(lanes)
+    for name in sorted(lanes - set(newest_per_lane(agents)) - skip_lanes - busy):
+        if name not in notes:
+            log(f"no session of {name} and no start note in lanes/start, so no start")
+    for name, note in plan_fresh(
+        agents, state, now, skip_lanes=skip_lanes, only_lanes=lanes, busy=busy, notes=notes
+    ):
+        rc, why = _start(name, note)
+        log(f"start {name} reason=fresh start exit={rc}{why}")
+        if rc == 0:
+            state[name] = now
+            wakes.append((name, "", "fresh start"))
     if not failed_forced:
         state["_account"] = email
     LANES_DIR.mkdir(parents=True, exist_ok=True)
