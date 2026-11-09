@@ -168,6 +168,14 @@ def _rows(world: Any) -> list[tuple[str, str, str]]:
             "WHERE owner_email LIKE :t ORDER BY created_at, slug"), {"t": _LIKE})]
 
 
+def _all_rows(world: Any) -> set[tuple[str, str]]:
+    """Every row of ``apps`` in the database, as the superuser: slug, org.
+    It holds the rows that the ``promoted`` fixture seeded, two in org A."""
+    with world.p.admin_engine.connect() as c:
+        return {(r[0], r[1]) for r in c.execute(text(
+            "SELECT slug, organization_id::text FROM apps"))}
+
+
 def _keep_org_a_folder(world: Any, slug: str, on_disk: bool) -> Path:
     """Write the secret of org A into its folder. Off disk, move the folder
     away, as after a disk loss. The store then rebuilds it on the next read."""
@@ -314,8 +322,20 @@ def test_r8_a_late_folder_is_never_written_or_removed(
     succeeds, and the folder is there all the same. That is the case when
     another request failed after its claim, rolled its row back, and has not
     yet removed its folder. The request never writes or removes that folder.
-    It deletes its own row, and takes the next slug with no 409."""
-    a = world.p.org_a
+    It deletes its own row, and takes the next slug with no 409.
+
+    The give-back deletes ONLY that row. A committed app of the same org and
+    one of the other org stay, and so do the rows that the fixture seeded.
+    RLS alone would let a give-back with no row key delete every app of the
+    org."""
+    a, b = world.p.org_a, world.p.org_b
+    keep_a = _create(world, a, f"Keep {TAG}", ANA)
+    keep_b = _create(world, b, f"Keep {TAG}", BEN)
+    assert isinstance(keep_a, lifecycle.AppDetail), keep_a
+    assert isinstance(keep_b, lifecycle.AppDetail), keep_b
+    before = _all_rows(world)
+    assert {(keep_a.slug, a), (keep_b.slug, b)} <= before
+    assert sum(1 for _, o in before if o == a) >= 2, "org A needs a row besides the new one"
     late = world.root / f"late-{TAG}"
     late.mkdir(parents=True)
     (late / "keep.txt").write_text(SECRET, encoding="utf-8")
@@ -328,8 +348,10 @@ def test_r8_a_late_folder_is_never_written_or_removed(
         "the create wrote into a folder that it did not make")
     assert isinstance(out, lifecycle.AppDetail), out
     assert out.slug == f"late-{TAG}-2"
-    assert _rows(world) == [(out.slug, a, str(world.root / out.slug))], (
-        "the row of the taken folder stayed")
+    after = _all_rows(world)
+    assert not before - after, f"the give-back deleted rows it did not make: {sorted(before - after)}"
+    assert after == before | {(out.slug, a)}, "the row of the taken folder stayed"
+    assert _rows(world)[-1] == (out.slug, a, str(world.root / out.slug))
 
 
 # ── f. A common name never runs out ───────────────────────────────────────
@@ -348,13 +370,26 @@ def _busy_folders(world: Any, extra: tuple[str, ...] = ()) -> list[Path]:
 
 def test_r8_after_ten_slugs_the_create_takes_a_random_suffix(
         world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exactly 10 sequential slugs come first, then the random suffix. A
+    ``SLUG_TRIES`` of 9 skips ``busy-<tag>-10``, and 11 takes ``busy-<tag>-11``.
+    Both go red here."""
     a = world.p.org_a
     busy = _busy_folders(world, ("aaaaaaaa",))
     hexes = iter(["aaaaaaaa", "bbbbbbbb", "cccccccc"])
     monkeypatch.setattr(lifecycle, "_random_hex", lambda: next(hexes))
+    checked: list[str] = []
+    real_free = lifecycle._folder_free
+
+    def spy(folder: Path) -> bool:
+        checked.append(folder.name)
+        return real_free(folder)
+
+    monkeypatch.setattr(lifecycle, "_folder_free", spy)
 
     out = _create(world, a, f"Busy {TAG}", ANA)
 
+    sequential = [f"busy-{TAG}"] + [f"busy-{TAG}-{i}" for i in range(2, 11)]
+    assert checked == [*sequential, f"busy-{TAG}-aaaaaaaa", f"busy-{TAG}-bbbbbbbb"], checked
     assert isinstance(out, lifecycle.AppDetail), out
     assert out.slug == f"busy-{TAG}-bbbbbbbb"
     assert all(not any(f.iterdir()) for f in busy), "the create wrote a busy folder"
