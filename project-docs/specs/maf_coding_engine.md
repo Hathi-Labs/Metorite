@@ -2759,7 +2759,14 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   build refuses a glob import (a path built with `+` or `${}`) before
   esbuild parses the file. It refuses a bare name with a `.` or `..` part.
   A refusal of a file outside every root names no path. The host route
-  builds inside `delivery_guard`, and it kills node at the timeout.
+  builds inside `delivery_guard`, and it kills node at the timeout. Review
+  round 4 added three more. The check also reads esbuild's transform of
+  each file. onLoad gives esbuild the checked bytes, so esbuild never reads
+  an app file itself. An import that does not resolve and one that leads
+  out read the same. Before esbuild runs, the build refuses a package.json
+  whose path field leads out of the app dir. The flag
+  `CUSTOM_APPS_HOST_BUILD` keeps the host route
+  off by default.
 - **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
   Copilot path. A dir that a container mounted is on the broker's list, so
   the executor's host git skips it (WS43-F13).

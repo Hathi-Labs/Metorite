@@ -210,12 +210,32 @@ def _assert_no_leak(text: str, ws: Path, *, allowed: str = "") -> None:
                 assert form not in text, f"a path leaked ({form}):\n{text}"
 
 
-def _assert_refused(done: subprocess.CompletedProcess[str], ws: Path, *, names: str | None = None) -> None:
+#: The refusal of an import that esbuild could not resolve, or that resolved
+#: out of the roots. The two read the same (round 4 P1).
+UNRESOLVED = "It does not exist, or it is not a file of this app."
+#: The refusal of a package.json whose path field leads out of the app dir. It
+#: comes before esbuild runs, so a target that exists and one that does not
+#: read the same (round 4).
+PACKAGE_OUT = "names a path out of this app in a package field."
+
+
+def _assert_refused(
+    done: subprocess.CompletedProcess[str], ws: Path, *, names: str | None = None,
+    unresolved: bool = False,
+) -> None:
+    """The build failed with the fence's refusal and leaked nothing.
+
+    *names*: the import that the refusal names. The lexical refusal (the path
+    leaves the app dir as written) reads ``Cannot import "<x>". <REFUSAL>``.
+    With *unresolved*, the refusal after esbuild's resolver reads
+    ``Cannot import "<x>". <UNRESOLVED> <REFUSAL>``.
+    """
     out = done.stdout + done.stderr
     assert done.returncode != 0, f"the build passed:\n{out}"
     assert REFUSAL in out, out
     if names is not None:
-        assert f"Cannot import {json.dumps(names)}. {REFUSAL}" in out, (
+        middle = f"{UNRESOLVED} " if unresolved else ""
+        assert f"Cannot import {json.dumps(names)}. {middle}{REFUSAL}" in out, (
             f"the refusal does not name {names!r}:\n{out}")
     _assert_no_leak(out, ws, allowed=names or "")
     _assert_no_leak(_bundle(ws), ws)
@@ -363,25 +383,18 @@ def test_a_bare_name_with_a_dot_part_is_refused(apps: dict[str, Path], vendor: P
 
 
 @docker
-def test_a_mapping_out_of_the_app_names_no_path_and_prints_once(
-    apps: dict[str, Path], vendor: Path,
-) -> None:
-    """A package.json "browser" map leads two imports to org A's files. onLoad
-    refuses each one with the fixed text, which names no path, and the two
-    equal lines print once (review P0 a)."""
+def test_an_equal_refusal_prints_once(apps: dict[str, Path], vendor: Path) -> None:
+    """An import and a require() of one name on one line give two equal
+    refusals. The printer prints the line once, so the count of the lines
+    says nothing (review P0 a). esbuild merges two equal imports by itself,
+    so the test uses two kinds of import."""
     b = apps["b"]
-    _write(b / "package.json", json.dumps({"browser": {
-        "./src/x.ts": "../org-a-app/src/payroll-secret-2026.json",
-        "./src/y.ts": "../org-a-app/src/zz-hidden-name.ts",
-    }}))
-    _write(b / "src" / "x.ts", "export default 1;\n")
-    _write(b / "src" / "y.ts", "export default 2;\n")
-    _write(b / "src" / "main.tsx", 'import x from "./x"; import y from "./y"; console.log(x, y);\n')
+    _write(b / "src" / "main.tsx", 'import x from "./gone"; const y = require("./gone"); console.log(x, y);\n')
     done = _build(b, vendor)
     out = done.stdout + done.stderr
     assert done.returncode != 0, out
     assert out.count(REFUSAL) == 1, out
-    _assert_no_leak(out, b)
+    assert f'Cannot import "./gone". {UNRESOLVED} {REFUSAL}' in out, out
 
 
 @docker
@@ -401,22 +414,191 @@ def test_a_parse_error_in_a_file_outside_the_app_shows_no_word_of_it(
     _assert_no_leak(out, apps["b"])
 
 
+def _probe_pair(
+    b: Path, vendor: Path, write: Any, hit: str, miss: str,
+) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str]]:
+    """Build org B's app twice: *write(hit)* names a file of org A that exists,
+    *write(miss)* one that does not. No 1-bit oracle: both must read the same."""
+    write(hit)
+    first = _build(b, vendor)
+    for leftover in (b / "dist",):
+        if leftover.is_dir():
+            shutil.rmtree(leftover)
+    write(miss)
+    second = _build(b, vendor)
+    return first, second
+
+
+def _assert_same_refusal(
+    pair: tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str]], b: Path,
+) -> str:
+    first, second = pair
+    out_hit, out_miss = first.stdout + first.stderr, second.stdout + second.stderr
+    assert first.returncode != 0 and second.returncode != 0, f"{out_hit}\n---\n{out_miss}"
+    assert out_hit == out_miss, f"an oracle: the hit and the miss read apart:\n{out_hit}\n---\n{out_miss}"
+    assert REFUSAL in out_hit, out_hit
+    _assert_no_leak(out_hit, b)
+    _assert_no_leak(_bundle(b), b)
+    return out_hit
+
+
+#: The reviewer's call forms (round 4 P0). The text check missed each one,
+#: and each is still a glob to esbuild. ``%s`` is the last part of the path.
+CALL_FORMS = {
+    "paren": "const x = (window as any).x;\nconst k = (require)(`../../${x}/src/%s`);\nconsole.log(k);\n",
+    "bang": "const x = (window as any).x;\nconst k = require!(`../../${x}/src/%s`);\nconsole.log(k);\n",
+    "cast": "const x = (window as any).x;\nconst k = (require as any)(`../../${x}/src/%s`);\nconsole.log(k);\n",
+    "unicode": "const x = (window as any).x;\nconst k = requir\\u0065(`../../${x}/src/%s`);\nconsole.log(k);\n",
+    "comment_require": "const x = (window as any).x;\nconst k = require // c\n(`../../${x}/src/%s`);\nconsole.log(k);\n",
+    "comment_import": "const x = (window as any).x;\nconst k = import // c\n(`../../${x}/src/%s`);\nconsole.log(k);\n",
+    "paren_concat": 'const x = (window as any).x;\nconst k = (require)("../../" + x + "/src/%s");\nconsole.log(k);\n',
+}
+
+
+@docker
+@pytest.mark.parametrize("mode", ["default", "custom_deps"])
+@pytest.mark.parametrize("form", sorted(CALL_FORMS))
+def test_a_disguised_glob_call_is_refused_the_same_for_a_hit_and_a_miss(
+    apps: dict[str, Path], vendor: Path, form: str, mode: str,
+) -> None:
+    """The check runs on esbuild's transform of the file, which turns each form
+    into a plain call. A pattern that matches a file of org A and one that
+    matches nothing read the same."""
+    b = apps["b"]
+    if mode == "custom_deps":
+        _custom_deps(b)
+    pair = _probe_pair(
+        b, vendor, lambda last: _write(b / "src" / "main.tsx", CALL_FORMS[form] % last),
+        "data.json", "nothere-2464.json",
+    )
+    out = _assert_same_refusal(pair, b)
+    assert "src/main.tsx builds an import path from parts" in out, out
+
+
+#: Package fields that name a path in another app (round 4 P1). Each is
+#: ``(mode, writer)``. The writer sets up org B's app for a target, and
+#: ``hit`` names a file of org A, ``miss`` one that does not exist.
+def _evil_package(field: str) -> Any:
+    def write(b: Path, target: str) -> None:
+        body = {"name": "evil", "main": "./a.js"}
+        if field in ("main", "module"):
+            body = {"name": "evil", field: f"../../../org-a-app/src/{target}"}
+        elif field == "browser":
+            body["browser"] = {"./a.js": f"../../../org-a-app/src/{target}"}
+        elif field == "exports":
+            body = {"name": "evil", "exports": {".": f"./../../../org-a-app/src/{target}"}}
+        _write(b / "node_modules" / "evil" / "package.json", json.dumps(body))
+        _write(b / "src" / "main.tsx", 'import e from "evil";\nconsole.log(e);\n')
+    return write
+
+
+def _app_imports_field(b: Path, target: str) -> None:
+    _write(b / "package.json", json.dumps({"imports": {"#x": f"../org-a-app/src/{target}"}}))
+    _write(b / "src" / "main.tsx", 'import e from "#x";\nconsole.log(e);\n')
+
+
+def _dir_main(b: Path, target: str) -> None:
+    _write(b / "src" / "evil" / "package.json", json.dumps({"main": f"../../../org-a-app/src/{target}"}))
+    _write(b / "src" / "main.tsx", 'import e from "./evil";\nconsole.log(e);\n')
+
+
+def _app_browser_map(b: Path, target: str) -> None:
+    _write(b / "package.json", json.dumps({"browser": {"./src/x.ts": f"../org-a-app/src/{target}"}}))
+    _write(b / "src" / "x.ts", "export default 1;\n")
+    _write(b / "src" / "main.tsx", 'import e from "./x";\nconsole.log(e);\n')
+
+
+PACKAGE_FIELDS = {
+    "main": ("custom_deps", _evil_package("main")),
+    "module": ("custom_deps", _evil_package("module")),
+    "browser": ("custom_deps", _evil_package("browser")),
+    "exports": ("custom_deps", _evil_package("exports")),
+    "imports": ("custom_deps", _app_imports_field),
+    "dir_main": ("default", _dir_main),
+    "app_browser_map": ("default", _app_browser_map),
+}
+
+
+@docker
+@pytest.mark.parametrize("field", sorted(PACKAGE_FIELDS))
+def test_a_package_field_out_of_the_app_reads_the_same_for_a_hit_and_a_miss(
+    apps: dict[str, Path], vendor: Path, field: str,
+) -> None:
+    """A package.json field that names a file of org A that exists, and one
+    that does not, give the same refusal (round 4 P1). esbuild falls back
+    when a field's file is missing (a "browser" map to the plain file, `main`
+    to index.js), so the check reads each package.json before esbuild runs."""
+    b = apps["b"]
+    mode, write = PACKAGE_FIELDS[field]
+    if mode == "custom_deps":
+        _custom_deps(b)
+    out = _assert_same_refusal(
+        _probe_pair(b, vendor, lambda target: write(b, target), "data.json", "nothere-2464.json"), b,
+    )
+    assert PACKAGE_OUT in out, out
+
+
+@docker
+def test_a_file_swapped_during_the_build_never_reaches_esbuild_unchecked(
+    apps: dict[str, Path], vendor: Path,
+) -> None:
+    """Round 4 P0: the check and esbuild once read the file apart, and a write
+    between the two let a glob through. onLoad now hands esbuild the checked
+    bytes. A writer swaps src/main.tsx between a plain file and a glob while
+    the builds run. Each build either refuses the glob in the check, or
+    builds the plain file. None reaches esbuild with the glob."""
+    import threading
+
+    b = apps["b"]
+    benign = b"const x = (window as any).x; console.log(x);\n"
+    globbed = b'const x = (window as any).x; const k = require("../../" + x + "/src/data.json"); console.log(k);\n'
+    main = b / "src" / "main.tsx"
+    main.write_bytes(benign)
+    stop = threading.Event()
+
+    def swap_forever() -> None:
+        flip = 0
+        while not stop.is_set():
+            # Windows refuses a write while node holds the file open.
+            with contextlib.suppress(OSError):
+                main.write_bytes(globbed if flip & 1 else benign)
+            flip += 1
+
+    writer = threading.Thread(target=swap_forever, daemon=True)
+    writer.start()
+    outcomes = {"checked": 0, "built": 0, "reached": 0, "other": 0}
+    seen: list[str] = []
+    try:
+        for _ in range(30):
+            done = _build(b, vendor)
+            out = done.stdout + done.stderr
+            if "builds an import path from parts" in out:
+                outcomes["checked"] += 1
+            elif done.returncode == 0:
+                outcomes["built"] += 1
+            elif REFUSAL in out:
+                outcomes["reached"] += 1
+                seen.append(out)
+            else:
+                outcomes["other"] += 1
+                seen.append(out)
+    finally:
+        stop.set()
+        writer.join(timeout=10)
+    assert outcomes["reached"] == 0, f"{outcomes}\n" + "\n---\n".join(seen[:3])
+    _assert_no_leak(_bundle(b), b)
+
+
 @docker
 @pytest.mark.parametrize("mode", ["default", "custom_deps"])
 def test_a_backslash_relative_import_is_refused(apps: dict[str, Path], vendor: Path, mode: str) -> None:
-    """Windows reads a backslash as a path separator, so the fence must refuse
-    the import and name it. Linux reads it as part of one file name, so the
-    build cannot resolve it. On both, no byte of org A reaches the bundle."""
+    """esbuild reads a backslash as a path separator, on Linux too. The fence
+    reads it so as well, so it refuses the import before any disk read."""
     if mode == "custom_deps":
         _custom_deps(apps["b"])
     spec = "..\\..\\org-a-app\\src\\data.json"
     _write(apps["b"] / "src" / "main.tsx", f"import d from {json.dumps(spec)};\nconsole.log(d);\n")
-    done = _build(apps["b"], vendor)
-    if os.name == "nt":
-        _assert_refused(done, apps["b"], names=spec)
-    else:
-        assert done.returncode != 0, done.stdout + done.stderr
-        assert MARKER not in _bundle(apps["b"])
+    _assert_refused(_build(apps["b"], vendor), apps["b"], names=spec)
 
 
 @docker
@@ -426,7 +608,7 @@ def test_a_dir_link_that_points_out_is_refused(apps: dict[str, Path], vendor: Pa
         _custom_deps(apps["b"])
     _link(apps["b"] / "src" / "shared", apps["a"] / "src", is_dir=True)
     _write(apps["b"] / "src" / "main.tsx", 'import d from "./shared/data.json";\nconsole.log(d);\n')
-    _assert_refused(_build(apps["b"], vendor), apps["b"], names="src/shared/data.json")
+    _assert_refused(_build(apps["b"], vendor), apps["b"], names="./shared/data.json", unresolved=True)
 
 
 @docker
@@ -436,7 +618,7 @@ def test_a_file_link_that_points_out_is_refused(apps: dict[str, Path], vendor: P
         _custom_deps(apps["b"])
     _link(apps["b"] / "src" / "data.json", apps["a"] / "src" / "data.json")
     _write(apps["b"] / "src" / "main.tsx", 'import d from "./data.json";\nconsole.log(d);\n')
-    _assert_refused(_build(apps["b"], vendor), apps["b"], names="src/data.json")
+    _assert_refused(_build(apps["b"], vendor), apps["b"], names="./data.json", unresolved=True)
 
 
 @docker
@@ -463,7 +645,9 @@ def test_a_package_main_that_leads_out_is_refused(apps: dict[str, Path], vendor:
     _write(apps["b"] / "node_modules" / "x" / "package.json",
            json.dumps({"name": "x", "main": "../../../org-a-app/src/data.json"}))
     _write(apps["b"] / "src" / "main.tsx", 'import d from "x";\nconsole.log(d);\n')
-    _assert_refused(_build(apps["b"], vendor), apps["b"])
+    done = _build(apps["b"], vendor)
+    _assert_refused(done, apps["b"])
+    assert f"node_modules/x/package.json {PACKAGE_OUT}" in done.stdout + done.stderr
 
 
 @docker
@@ -471,7 +655,7 @@ def test_a_link_in_node_modules_is_refused(apps: dict[str, Path], vendor: Path) 
     _custom_deps(apps["b"])
     _link(apps["b"] / "node_modules" / "x", apps["a"] / "src", is_dir=True)
     _write(apps["b"] / "src" / "main.tsx", 'import d from "x/data.json";\nconsole.log(d);\n')
-    _assert_refused(_build(apps["b"], vendor), apps["b"], names="node_modules/x/data.json")
+    _assert_refused(_build(apps["b"], vendor), apps["b"], names="x/data.json", unresolved=True)
 
 
 @docker
@@ -504,7 +688,9 @@ def test_a_linked_template_is_refused(apps: dict[str, Path], vendor: Path) -> No
 @docker
 def test_a_linked_entry_point_is_refused(apps: dict[str, Path], vendor: Path) -> None:
     _link(apps["b"] / "src" / "main.tsx", apps["a"] / "src" / "main.tsx")
-    _assert_refused(_build(apps["b"], vendor), apps["b"], names="src/main.tsx")
+    done = _build(apps["b"], vendor)
+    _assert_refused(done, apps["b"])
+    assert UNRESOLVED in done.stdout + done.stderr
 
 
 @docker
@@ -645,7 +831,43 @@ def host_route(apps: dict[str, Path], tmp_path: Path, monkeypatch: pytest.Monkey
         return SimpleNamespace(id="app-b", slug="org-b-app", workspace_path=str(apps["b"])), apps["b"]
 
     monkeypatch.setattr(files, "_edit_workspace", edit)
+    # The host build ships dark (round 4). These tests run it with the flag on.
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "custom_apps_host_build", True, raising=False)
     return SimpleNamespace(files=files, clone=clone, broker=sandbox_broker)
+
+
+def test_the_host_route_builds_nothing_while_the_flag_is_off(
+    host_route: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round 4: CUSTOM_APPS_HOST_BUILD is off by default. The route answers
+    the normal "not built" shape with a message that names no flag, and it
+    never starts node."""
+    from acb_common import get_settings
+    from acb_common.settings import Settings
+
+    assert Settings.model_fields["custom_apps_host_build"].default is False
+    monkeypatch.setattr(get_settings(), "custom_apps_host_build", False, raising=False)
+    started: list[Any] = []
+
+    async def spawn(*args: Any, **_kwargs: Any) -> Any:
+        started.append(args)
+        raise AssertionError("the route started a process")
+
+    async def run(_ws: Path, _script: Path) -> tuple[bool, str]:
+        started.append("build")
+        return True, "build_t2: ok"
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(host_route.files, "_run_build_t2", run)
+    out = asyncio.run(host_route.files.build_app("org-b-app", user=None))
+    assert out == {"built": False, "error": host_route.files.HOST_BUILD_OFF_MESSAGE}, out
+    assert out["error"] == (
+        "This app builds in its sandbox. Ask the builder to build it, or ask Metorite support."
+    )
+    assert "CUSTOM_APPS" not in out["error"]
+    assert started == []
 
 
 def test_the_host_route_runs_the_source_tree_script_not_the_clone(

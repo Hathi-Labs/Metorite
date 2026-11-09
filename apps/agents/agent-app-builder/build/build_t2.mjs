@@ -50,10 +50,24 @@
 //     link in the app dir that points out is refused, and so is a package
 //     or tsconfig mapping that leads out. preserveSymlinks keeps the found
 //     path, so the two paths can differ.
-//   - onLoad also reads each code file of the app before esbuild parses it,
-//     and refuses a require() or import() whose path is built from parts
-//     (`+` or `${}`). esbuild turns such a call into a glob, and sends each
-//     match straight to onLoad.
+//   - onLoad reads each file of the app ONCE, checks those bytes, and gives
+//     esbuild the same bytes ({ contents, loader }). esbuild never reads a
+//     file of the app by itself, so a write between check and parse changes
+//     nothing (round 4).
+//   - The check refuses a require() or import() whose path is built from
+//     parts (`+` or `${}`). esbuild turns such a call into a glob, and sends
+//     each match straight to onLoad. The check reads the text, then
+//     esbuild's own transform of it, which turns `(require)(...)`,
+//     `require!(...)`, a cast, a \u escape and a comment into a plain call.
+//   - Each import of an app file resolves through pluginBuild.resolve. A
+//     resolve error and a file outside the roots give the SAME refusal, so a
+//     package.json field cannot test whether a path of another app exists.
+//   - Before esbuild runs, each package.json of the app may name only paths
+//     in the app in `main`, `module`, `browser`, `exports` and `imports`.
+//     esbuild falls back when a field's file is missing (a "browser" map to
+//     the plain file, `main` to index.js), so only a check that reads no
+//     target hides whether a path exists. A package.json that changes
+//     during the build fails it.
 //   - A refusal of a file outside every root names no path, and the error
 //     printer prints each line once. A diagnostic placed in a file outside
 //     the roots shows only the fixed text (review round 3).
@@ -70,7 +84,9 @@
 
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -79,7 +95,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
+import { dirname, extname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BUNDLE_MARKER = "<!-- CC_T2_BUNDLE -->";
@@ -233,12 +249,41 @@ function hasGlobImport(source) {
   return false;
 }
 
+/** The refusal of an import of an app file that esbuild could not resolve,
+ * or that resolved outside the roots. The two read the SAME, so a package.json
+ * `main`, `module`, `browser`, `exports` or `imports` field that names a path
+ * in another app cannot tell whether that path exists (task 2464 round 4). */
+function refuseUnresolved(spec) {
+  return {
+    errors: [{
+      text:
+        `Cannot import ${JSON.stringify(spec)}. It does not exist, or it is not a file ` +
+        `of this app. ${OWN_FILES_ONLY}`,
+    }],
+  };
+}
+
+// The loader that esbuild gives each extension by default (esbuild 0.24).
+const DEFAULT_LOADERS = {
+  ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "jsx",
+  ".ts": "ts", ".mts": "ts", ".cts": "ts", ".tsx": "tsx",
+  ".json": "json", ".css": "css", ".txt": "text",
+};
+
+/** The esbuild loader of an app file, or null when esbuild has none. */
+function loaderFor(path, attributes) {
+  if (attributes && attributes.type === "json") return "json";
+  if (/\.module\.css$/i.test(path)) return "local-css";
+  return DEFAULT_LOADERS[extname(path).toLowerCase()] || null;
+}
+
 /** The one containment check of every import, in both dependency modes
  * (task 2464, see the header). `app` and `vendor` are { dir, real }: the
  * path that esbuild finds and its real path. `ui` is the same for the one
  * @cc/ui file, or null. `allowlist` is the set of bare package names in
- * default mode, and null in custom-deps mode. */
-function containmentPlugin({ app, vendor, ui, allowlist }) {
+ * default mode, and null in custom-deps mode. `esbuild` is the loaded
+ * module, for the transform of each app code file. */
+function containmentPlugin({ app, vendor, ui, allowlist, esbuild }) {
   /** The root that the found path *p* is in: "app", "vendor", "ui" or null. */
   function rootOf(p) {
     if (!p) return null;
@@ -248,9 +293,51 @@ function containmentPlugin({ app, vendor, ui, allowlist }) {
     return null;
   }
 
+  /** True when the real path *real* stays in the root *root*. */
+  function realIn(root, real) {
+    if (root === "app") return within(app.real, real);
+    if (root === "vendor") return within(vendor.real, real);
+    if (root === "ui") return real !== null && real === ui.real;
+    return false;
+  }
+
   return {
     name: "t2-import-containment",
     setup(pluginBuild) {
+      /** Resolve an import of an app file with esbuild's own resolver. A
+       * resolve error and a file outside *roots* give the same refusal. */
+      async function resolveOwn(spec, args, roots) {
+        const found = await pluginBuild.resolve(spec, {
+          kind: args.kind,
+          importer: args.importer,
+          namespace: args.namespace,
+          resolveDir: args.resolveDir,
+          with: args.with,
+          pluginData: { [CONTAIN_GUARD]: true },
+        });
+        if (found.errors.length > 0) return refuseUnresolved(spec);
+        if (found.external) return refuseUnresolved(spec);
+        // A module that a package.json "browser" map turns off (`"fs": false`)
+        // comes back with no namespace. esbuild gives it an empty module of
+        // its own, and reads no file, so esbuild resolves it again itself.
+        if (!found.namespace) return undefined;
+        // A data: URL reads no file from disk. Its own imports have no root.
+        if (found.namespace !== "file") {
+          return { path: found.path, namespace: found.namespace, suffix: found.suffix };
+        }
+        const root = rootOf(found.path);
+        if (!roots.includes(root) || !realIn(root, realOrNull(found.path))) {
+          return refuseUnresolved(spec);
+        }
+        return {
+          path: found.path,
+          namespace: "file",
+          suffix: found.suffix,
+          sideEffects: found.sideEffects,
+          pluginData: found.pluginData,
+        };
+      }
+
       pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
         if (args.pluginData && args.pluginData[CONTAIN_GUARD]) return undefined;
         const spec = args.path;
@@ -258,13 +345,20 @@ function containmentPlugin({ app, vendor, ui, allowlist }) {
         const from = args.kind === "entry-point" ? "app" : rootOf(args.importer);
         if (from === null || /^file:/i.test(spec)) return refuse(spec);
         if (isRelativeImport(spec) || isAbsoluteImport(spec)) {
-          // A path import stays in the importer's own root. A link on the
-          // way is onLoad's check. esbuild may drop a `?` or `#` suffix and
-          // try again, so the path with no suffix must stay in the root too.
+          // A path import stays in the importer's own root. esbuild may drop
+          // a `?` or `#` suffix and try again, so the path with no suffix
+          // must stay in the root too.
           const own = from === "app" ? app.dir : from === "vendor" ? vendor.dir : null;
-          const stays = [spec, spec.split(/[?#]/)[0]].every((p) =>
+          // esbuild also reads a `\` as a separator, on Linux too, so each
+          // form is checked with `/` in its place as well.
+          const forms = [spec, spec.split(/[?#]/)[0]].flatMap((p) => [p, p.replace(/\\/g, "/")]);
+          const stays = forms.every((p) =>
             within(own, isRelativeImport(p) ? resolve(args.resolveDir, p) : resolve(p)));
-          return stays ? undefined : refuse(spec);
+          if (!stays) return refuse(spec);
+          // A file of the vendor cache resolves by itself. A file of the app
+          // resolves here: a package.json on the way (a dir's `main`, the
+          // app's `browser` map) can lead out of the app dir.
+          return from === "app" ? resolveOwn(spec, args, ["app"]) : undefined;
         }
         // A bare package name. A `.` or `..` part walks out of node_modules
         // (`x/../../other-app`), and `@cc/ui/<part>` walks out of the one UI
@@ -285,6 +379,13 @@ function containmentPlugin({ app, vendor, ui, allowlist }) {
                 `Inline any helper code into your own src/ files instead.`,
             }],
           };
+        }
+        if (from === "app") {
+          // A bare name resolves through node_modules, and a package.json
+          // field there can name a path in another app (round 4 P1).
+          const roots = allowlist ? ["app", "vendor"] : ["app"];
+          if (spec === UI_PACKAGE && ui) roots.push("ui");
+          return resolveOwn(spec, args, roots);
         }
         if (from !== "ui") return undefined;
         // @cc/ui's own imports (react/jsx-runtime) resolve as if the app
@@ -309,23 +410,46 @@ function containmentPlugin({ app, vendor, ui, allowlist }) {
       // Every file that esbuild reads from disk: its real path must stay in
       // the root of the path that esbuild found (a link that points out of
       // the app dir is refused here, before esbuild reads the file).
-      pluginBuild.onLoad({ filter: /.*/, namespace: "file" }, (args) => {
+      pluginBuild.onLoad({ filter: /.*/, namespace: "file" }, async (args) => {
         const root = rootOf(args.path);
         const real = realOrNull(args.path);
         if (root === "app" && within(app.real, real)) {
-          // A file of the app that builds a path from parts is refused here,
-          // before esbuild parses it and globs a dir (review P0).
-          if (CODE_FILE.test(args.path) && hasGlobImport(readFileSync(real, "utf-8"))) {
-            const shown = relative(app.dir, args.path).split(sep).join("/");
-            return {
+          // esbuild never reads a file of the app by itself (round 4 P0). This
+          // reads it once, checks those bytes, and hands esbuild the same
+          // bytes. So a write between the check and the parse changes nothing.
+          const shown = relative(app.dir, args.path).split(sep).join("/");
+          const loader = loaderFor(args.path, args.with);
+          if (!loader) {
+            return { errors: [{ text: `No loader is configured for ${JSON.stringify(shown)}.` }] };
+          }
+          const bytes = readFileSync(real);
+          if (CODE_FILE.test(args.path)) {
+            const globbed = {
               errors: [{
                 text:
                   `${shown} builds an import path from parts (with + or \${}). ` +
                   `${OWN_FILES_ONLY} Import each file by its fixed path.`,
               }],
             };
+            const text = bytes.toString("utf-8");
+            // The cheap check on the text first. Then the check on esbuild's
+            // own transform of the same bytes: it turns `(require)(...)`,
+            // `require!(...)`, `(require as any)(...)`, `require(...)`
+            // and a comment before `(` into a plain call (round 4 P0).
+            if (hasGlobImport(text)) return globbed;
+            let code;
+            try {
+              ({ code } = await esbuild.transform(text, {
+                loader, jsx: "automatic", target: "es2020", logLevel: "silent",
+                tsconfigRaw: {},
+              }));
+            } catch (err) {
+              const first = (err.errors && err.errors[0] && err.errors[0].text) || "it does not parse";
+              return { errors: [{ text: `${shown}: ${first}` }] };
+            }
+            if (hasGlobImport(code)) return globbed;
           }
-          return undefined;
+          return { contents: bytes, loader };
         }
         if (root === "vendor" && within(vendor.real, real)) return undefined;
         if (root === "ui" && real !== null && real === ui.real) return undefined;
@@ -380,6 +504,92 @@ if (!existsSync(join(vendorModules, "esbuild"))) {
 // app's own npm-installed node_modules depends on which the app has.
 const hasAppDeps = existsSync(join(workspace, "node_modules"));
 
+// The package.json fields that name a module path, for esbuild on the browser
+// platform: its main fields, and the `exports` and `imports` maps.
+const PACKAGE_PATH_FIELDS = ["main", "module", "browser", "exports", "imports"];
+
+/** Each package.json below *root*, with its text. It follows no link. */
+function packageJsons(root) {
+  const found = new Map();
+  const dirs = [root];
+  while (dirs.length > 0) {
+    const dir = dirs.pop();
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) dirs.push(full);
+      else if (entry.isFile() && entry.name === "package.json") {
+        try {
+          found.set(full, readFileSync(full, "utf-8"));
+        } catch {
+          found.set(full, "");
+        }
+      }
+    }
+  }
+  return found;
+}
+
+/** Each string in *value*, at any depth (a field can be a map or a list). */
+function stringsIn(value, out = []) {
+  if (typeof value === "string") out.push(value);
+  else if (value && typeof value === "object") {
+    for (const item of Object.values(value)) stringsIn(item, out);
+  }
+  return out;
+}
+
+/** The package.json of the app whose path field leads out of the app dir, or
+ * null (task 2464 round 4). esbuild tries a field, and when its file is
+ * missing it may fall back (a "browser" map to the plain file, `main` to
+ * index.js). So the build would differ for a path of another app that
+ * exists and one that does not. A static check reads no target at all. */
+function packageLeavingTheApp(files) {
+  for (const [file, text] of files) {
+    let pkg;
+    try {
+      pkg = JSON.parse(text);
+    } catch {
+      continue; // esbuild reports the app's own bad JSON itself
+    }
+    if (!pkg || typeof pkg !== "object") continue;
+    const dir = dirname(file);
+    for (const field of PACKAGE_PATH_FIELDS) {
+      for (const target of stringsIn(pkg[field])) {
+        if (!within(workspace, resolve(dir, target.replace(/\\/g, "/")))) {
+          return relative(workspace, file).split(sep).join("/");
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** True when the package.json files of the app read the same as *before*. */
+function samePackageJsons(before) {
+  const now = packageJsons(workspace);
+  if (now.size !== before.size) return false;
+  for (const [file, text] of now) {
+    if (before.get(file) !== text) return false;
+  }
+  return true;
+}
+
+const packageFiles = packageJsons(workspace);
+const leaving = packageLeavingTheApp(packageFiles);
+if (leaving) {
+  fail(`${leaving} names a path out of this app in a package field. ${OWN_FILES_ONLY}`);
+}
+// A package.json that changes during the build could undo the check above.
+const CHANGED_DURING_BUILD =
+  "A package.json of this app changed during the build. Build again when no file changes.";
+
 const require = createRequire(import.meta.url);
 let esbuild;
 try {
@@ -428,10 +638,12 @@ try {
         vendor: { dir: resolve(vendor), real: realOrNull(vendor) },
         ui: uiAvailable ? { dir: resolve(UI_SOURCE), real: realOrNull(UI_SOURCE) } : null,
         allowlist: hasAppDeps ? null : ALLOWED_IMPORTS,
+        esbuild,
       }),
     ],
   });
 } catch (err) {
+  if (!samePackageJsons(packageFiles)) fail(CHANGED_DURING_BUILD);
   // A diagnostic that esbuild places in a file outside the roots (a parse
   // error in another app's package.json) shows the fixed text, never its
   // words or its path. Each line prints once, so a count says nothing.
@@ -450,6 +662,8 @@ try {
   const diagnostics = [...new Set(lines)].join("\n");
   fail(`esbuild failed:\n${diagnostics || "the build stopped with no diagnostic."}`);
 }
+
+if (!samePackageJsons(packageFiles)) fail(CHANGED_DURING_BUILD);
 
 const outputFiles = result.outputFiles || [];
 if (outputFiles.length === 0) {

@@ -1771,6 +1771,15 @@ class Settings(BaseSettings):
     # gateway.routes.apps.t2_vendor_dir().
     custom_apps_t2_vendor_dir: str = ""
 
+    # Task 2464: the HOST build route (`POST /apps/{slug}/build`, `files.py`)
+    # runs build_t2.mjs on the gateway box, beside every org's app dir. It
+    # ships dark. Off (the default), the route builds nothing and tells the
+    # member to ask the builder, whose sandbox build sees only its own app.
+    # Only the owner sets CUSTOM_APPS_HOST_BUILD: `env_guard` refuses every
+    # `CUSTOM_APPS_` name on a tenant write. Fence:
+    # tests/unit/test_app_builder_t2_containment.py.
+    custom_apps_host_build: bool = False
+
     # -- Bot git identity (written into every local clone via git config) --
     # Commits and PRs opened by Self_Mutation_Node carry this identity.
     # Create a dedicated GitHub machine user (or use the GitHub App's identity).

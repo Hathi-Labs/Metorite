@@ -49,6 +49,12 @@ from pydantic import BaseModel
 # loaded box without leaving a runaway process to hang the request forever.
 BUILD_TIMEOUT_SECONDS = 60.0
 
+#: The answer of the host build route while CUSTOM_APPS_HOST_BUILD is off
+#: (task 2464). It names no flag, and it tells the member what to do next.
+HOST_BUILD_OFF_MESSAGE = (
+    "This app builds in its sandbox. Ask the builder to build it, or ask Metorite support."
+)
+
 
 class AppFileEntry(BaseModel):
     path: str
@@ -390,6 +396,9 @@ async def build_app(
     manifest = read_workspace_manifest(workspace)
     if not _is_buildable_manifest(manifest):
         return {"built": False, "reason": "not a build-based (T2) app"}
+    # Task 2464: the host build ships dark. Off, no node process starts.
+    if not getattr(get_settings(), "custom_apps_host_build", False):
+        return {"built": False, "error": HOST_BUILD_OFF_MESSAGE}
 
     script = await asyncio.get_event_loop().run_in_executor(None, _t2_build_script)
     if script is None:
