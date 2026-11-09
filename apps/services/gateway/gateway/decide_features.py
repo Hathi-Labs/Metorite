@@ -274,6 +274,12 @@ FEATURE_TABLE: tuple[Feature, ...] = (
     Feature("projects.vague_title", "projects", "boolean", on=True),
     Feature("projects.atomize_dedup", "projects", "boolean", on=True),
     Feature("projects.commitment", "projects", "boolean", on=True),
+    # DEC-2b: the four pick steps of Tasks AI. Each has an old LLM call that
+    # stays the fallback, so `on` is legal (`routes/tasks/projects_decide.py`).
+    Feature("projects.parent_step", "projects", "choice", on=True),
+    Feature("projects.enrich", "projects", "mixed", on=True),
+    Feature("projects.delegate_pick", "projects", "choice", on=True),
+    Feature("projects.propose_picks", "projects", "choice", on=True),
 )
 
 
