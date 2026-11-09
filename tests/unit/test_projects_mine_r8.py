@@ -144,15 +144,17 @@ class _Seeder:
             o=self.org))
 
     def task(self, key: str, project: str, status: str, *, by: str,
-             assignee: str | None = None, due: datetime | None = None) -> str:
+             assignee: str | None = None, due: datetime | None = None,
+             archived: bool = False) -> str:
         self.number += 1
         tid = str(self.one(
             "INSERT INTO pm_tasks (title, project_id, root_project_id, status_id,"
-            " created_by, organization_id, task_number, due_at) VALUES (:t,"
-            " CAST(:p AS uuid), CAST(:p AS uuid), CAST(:s AS uuid), :a,"
-            " CAST(:o AS uuid), :n, :due) RETURNING id",
+            " created_by, organization_id, task_number, due_at, archived_at)"
+            " VALUES (:t, CAST(:p AS uuid), CAST(:p AS uuid), CAST(:s AS uuid),"
+            " :a, CAST(:o AS uuid), :n, :due,"
+            " CASE WHEN :arch THEN now() END) RETURNING id",
             t=f"op11 {key}", p=project, s=status, a=by, o=self.org,
-            n=self.number, due=due))
+            n=self.number, due=due, arch=archived))
         if assignee:
             self.one(
                 "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by,"
@@ -305,10 +307,24 @@ def world():
     s.assign(t["both2"], B, by=B)
     s.overlay(t["both2"], B, "SOMEDAY")
 
+    # ARC-1. Filed tasks: the Archive view lists A's own, across projects.
+    t["a_filed"] = s.task("a_filed", team.id, team.todo, by=B, assignee=A,
+                          archived=True)
+    t["a_filed_old"] = s.task("a_filed_old", old.id, old.todo, by=A, assignee=A,
+                              archived=True)
+    t["a_filed_personal"] = s.task("a_filed_personal", a_root.id, a_root.todo,
+                                   by=A, archived=True)
+    t["b_filed"] = s.task("b_filed", team.id, team.todo, by=B, assignee=B,
+                          archived=True)
+    t["free_filed"] = s.task("free_filed", team.id, team.todo, by=B,
+                             archived=True)
+
     # The second organization: C types A's address onto a task of their own.
     sc = _Seeder(eng, org_c, "op11c")
     sc.member(C, ["feature:projects"])
     other = _board(sc, "Other org", by=C, grant_to="org")
+    t["c_filed_for_a"] = sc.task("c_filed_for_a", other.id, other.todo, by=C,
+                                 assignee=A, archived=True)
     t["c_for_a"] = sc.task("c_for_a", other.id, other.todo, by=C, assignee=A)
     t["c_own"] = sc.task("c_own", other.id, other.todo, by=C, assignee=C)
 
@@ -385,6 +401,88 @@ def _window() -> dict[str, str]:
     today = datetime.now(UTC).date()
     return {"from": (today - timedelta(days=10)).isoformat(),
             "to": (today + timedelta(days=10)).isoformat()}
+
+
+class TestTheArchiveView:
+    """ARC-1 (`one_projects_app.md` §9b.4). The Archive view reads the one list
+    route: ``scope=mine`` with ``archived_only``. One "mine", no second route."""
+
+    async def test_it_lists_my_filed_tasks_across_projects(self, armed):
+        rows = await _list_mine(armed, A, archived_only="true")
+        got = {r["id"] for r in rows}
+        # Assigned, in a team project, in an archived project, and in my own
+        # personal tree. Every row carries the task's own archive stamp.
+        assert _named(armed, got) == {"a_filed", "a_filed_old", "a_filed_personal"}
+        assert all(r["archived_at"] for r in rows)
+
+    async def test_it_leaves_out_what_is_not_mine_or_not_filed(self, armed):
+        got = {r["id"] for r in await _list_mine(armed, A, archived_only="true")}
+        for key in ("b_filed", "free_filed", "c_filed_for_a", "a_open", "a_done"):
+            assert armed.t[key] not in got, key
+        assert {r["id"] for r in await _list_mine(armed, B, archived_only="true")} == {
+            armed.t["b_filed"]}
+        assert {r["id"] for r in await _list_mine(armed, C, archived_only="true")} == set()
+
+    async def test_the_live_list_does_not_show_filed_tasks(self, armed):
+        got = {r["id"] for r in await _list_mine(armed, A)}
+        for key in ("a_filed", "a_filed_old", "a_filed_personal"):
+            assert armed.t[key] not in got, key
+
+    async def test_a_restored_task_leaves_the_archive_and_joins_the_list(self, armed):
+        """Restore is the existing unarchive route. The row moves lists."""
+        task = armed.t["a_filed"]
+
+        async def _post(verb: str) -> httpx.Response:
+            headers = {"Authorization": f"Bearer {INTERNAL}", "X-User-Email": A}
+
+            async def _go() -> httpx.Response:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=_gateway()), base_url="http://gw",
+                ) as client:
+                    return await client.post(f"/projects/tasks/{task}/{verb}", headers=headers)
+
+            async with tenant_engine_scope(armed.app_dsn):
+                return await asyncio.create_task(_go())
+
+        r = await _post("unarchive")
+        try:
+            assert r.status_code == 200, r.text
+            filed = {x["id"] for x in await _list_mine(armed, A, archived_only="true")}
+            assert task not in filed
+            assert task in {x["id"] for x in await _list_mine(armed, A)}
+        finally:
+            # The world is shared by the module: file the task again.
+            assert (await _post("archive")).status_code == 200
+
+    async def test_the_bulk_body_of_the_view_restores_many(self, armed):
+        """The exact body of the view's "Restore N tasks": the bulk route with
+        ``action: "unarchive"``. Both rows leave the archive and join the list."""
+        ids = [armed.t["a_filed"], armed.t["a_filed_personal"]]
+        headers = {"Authorization": f"Bearer {INTERNAL}", "X-User-Email": A}
+
+        async def _post(path: str, body: dict) -> httpx.Response:
+            async def _go() -> httpx.Response:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=_gateway()), base_url="http://gw",
+                ) as client:
+                    return await client.post(path, headers=headers, json=body)
+
+            async with tenant_engine_scope(armed.app_dsn):
+                return await asyncio.create_task(_go())
+
+        r = await _post("/projects/tasks/bulk", {"task_ids": ids, "action": "unarchive"})
+        try:
+            assert r.status_code == 200, r.text
+            assert r.json()["applied"] == 2, r.text
+            filed = {x["id"] for x in await _list_mine(armed, A, archived_only="true")}
+            live = {x["id"] for x in await _list_mine(armed, A)}
+            for task in ids:
+                assert task not in filed
+                assert task in live
+        finally:
+            # The world is shared by the module: file both tasks again.
+            back = await _post("/projects/tasks/bulk", {"task_ids": ids, "action": "archive"})
+            assert back.status_code == 200, back.text
 
 
 class TestTheOneMine:
