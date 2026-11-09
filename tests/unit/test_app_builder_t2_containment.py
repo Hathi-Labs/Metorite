@@ -35,10 +35,20 @@ in custom-deps mode):
   runs the agent clone-cache copy, because the clone refreshes only when the
   agent loads. A planted clone script with other content never runs.
 
-The vendor cache: ``T2_VENDOR_TEST_DIR`` (the name that
-``test_app_builder_engine.py`` reads), then ``CUSTOM_APPS_T2_VENDOR_DIR``,
-then the default dirs of the gateway and the box. With none, the build tests
-SKIP and say so. ``scripts/vps_apply.sh`` holds the install command.
+Where each test runs (R7: the fence must run in CI, with no skip):
+
+* A test that builds needs a T2 vendor cache, so it is ``sandbox_docker``. The
+  "Sandbox Docker tests" job (``.github/workflows/sandbox-docker.yml``) runs
+  it, and that job FAILS on any skip. The ``vendor`` fixture installs the
+  cache with npm in the coding image (``tests/unit/_t2_vendor.py``, the same
+  install as the ``t2_vendor`` fixture of ``test_app_builder_engine.py``).
+  It uses production's versions (``PROD_T2_PACKAGES``, from
+  ``scripts/vps_apply.sh``) and production's ``--ignore-scripts``, because the
+  host route runs with them. ``--os`` and ``--cpu`` give esbuild's binary for
+  the host, because the test runs node on the host, as the route does.
+  ``T2_VENDOR_PROD_TEST_DIR`` names a ready cache and skips the install.
+* A test that needs no cache (the install refusals, the route script, the
+  missing script) stays unmarked, so the unit shards run it.
 
 Mutations this suite catches (R7), each run red once by hand:
 
@@ -62,6 +72,10 @@ from typing import Any
 
 import pytest
 
+from tests.unit._t2_vendor import PROD_T2_PACKAGES, host_platform_args, install_t2_vendor
+from tests.unit.test_coding_sandbox_image import coding_sandbox_image  # noqa: F401 — a fixture
+from tests.unit.test_sandbox_exec_hygiene import docker_image  # noqa: F401 — a fixture
+
 REPO = Path(__file__).resolve().parents[2]
 BUILD_DIR = REPO / "apps" / "agents" / "agent-app-builder" / "build"
 BUILD = BUILD_DIR / "build_t2.mjs"
@@ -79,31 +93,23 @@ NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(NODE is None, reason="needs node on PATH")
 
 
-def _vendor_candidates() -> list[Path]:
-    named = [os.environ.get("T2_VENDOR_TEST_DIR", ""), os.environ.get("CUSTOM_APPS_T2_VENDOR_DIR", "")]
-    paths = [Path(n.strip()) for n in named if n.strip()]
-    paths.append(Path.home() / ".acb" / "agents" / "vendor" / "t2-react")
-    paths.append(Path("/opt/acb/t2-vendor"))
-    return paths
-
-
-def _find_vendor() -> Path | None:
-    for path in _vendor_candidates():
-        modules = path / "node_modules"
-        if all((modules / name).is_dir() for name in ("esbuild", "react", "react-dom")):
-            return path.resolve()
-    return None
+#: A test that runs a real build: it needs the vendor cache from Docker.
+docker = pytest.mark.sandbox_docker
 
 
 @pytest.fixture(scope="module")
-def vendor() -> Path:
-    found = _find_vendor()
-    if found is None:
-        pytest.skip(
-            "no T2 vendor cache: set T2_VENDOR_TEST_DIR to a dir whose node_modules holds "
-            "esbuild, react and react-dom (scripts/vps_apply.sh installs one at /opt/acb/t2-vendor)"
-        )
-    return found
+def vendor(docker_image: str, tmp_path_factory: pytest.TempPathFactory) -> Path:  # noqa: F811
+    """A T2 vendor cache of production's versions, for this host (see the docstring)."""
+    given = os.environ.get("T2_VENDOR_PROD_TEST_DIR", "").strip()
+    if given:
+        return Path(given).resolve()
+    cache = tmp_path_factory.mktemp("t2-vendor-prod").resolve()
+    done = install_t2_vendor(
+        docker_image, cache, PROD_T2_PACKAGES, "--ignore-scripts", *host_platform_args(),
+    )
+    if done.returncode != 0 or not (cache / "node_modules" / "esbuild").is_dir():
+        pytest.skip(f"no T2 vendor cache could be installed: {done.stderr[-400:]}")
+    return cache
 
 
 def _write(path: Path, text: str) -> None:
@@ -242,6 +248,7 @@ PATH_ROUTES = {
 }
 
 
+@docker
 @pytest.mark.parametrize("mode", ["default", "custom_deps"])
 @pytest.mark.parametrize("route", sorted(PATH_ROUTES))
 def test_an_import_of_another_apps_file_is_refused(
@@ -253,16 +260,25 @@ def test_an_import_of_another_apps_file_is_refused(
     _assert_refused(_build(apps["b"], vendor), apps["b"], names=spec)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="only Windows reads a backslash as a path separator")
+@docker
 @pytest.mark.parametrize("mode", ["default", "custom_deps"])
 def test_a_backslash_relative_import_is_refused(apps: dict[str, Path], vendor: Path, mode: str) -> None:
+    """Windows reads a backslash as a path separator, so the fence must refuse
+    the import and name it. Linux reads it as part of one file name, so the
+    build cannot resolve it. On both, no byte of org A reaches the bundle."""
     if mode == "custom_deps":
         _custom_deps(apps["b"])
     spec = "..\\..\\org-a-app\\src\\data.json"
     _write(apps["b"] / "src" / "main.tsx", f"import d from {json.dumps(spec)};\nconsole.log(d);\n")
-    _assert_refused(_build(apps["b"], vendor), apps["b"], names=spec)
+    done = _build(apps["b"], vendor)
+    if os.name == "nt":
+        _assert_refused(done, apps["b"], names=spec)
+    else:
+        assert done.returncode != 0, done.stdout + done.stderr
+        assert MARKER not in _bundle(apps["b"])
 
 
+@docker
 @pytest.mark.parametrize("mode", ["default", "custom_deps"])
 def test_a_dir_link_that_points_out_is_refused(apps: dict[str, Path], vendor: Path, mode: str) -> None:
     if mode == "custom_deps":
@@ -272,6 +288,7 @@ def test_a_dir_link_that_points_out_is_refused(apps: dict[str, Path], vendor: Pa
     _assert_refused(_build(apps["b"], vendor), apps["b"], names="src/shared/data.json")
 
 
+@docker
 @pytest.mark.parametrize("mode", ["default", "custom_deps"])
 def test_a_file_link_that_points_out_is_refused(apps: dict[str, Path], vendor: Path, mode: str) -> None:
     if mode == "custom_deps":
@@ -281,6 +298,7 @@ def test_a_file_link_that_points_out_is_refused(apps: dict[str, Path], vendor: P
     _assert_refused(_build(apps["b"], vendor), apps["b"], names="src/data.json")
 
 
+@docker
 def test_an_app_file_outside_src_reaches_the_vendor_cache_only_by_package_name(
     apps: dict[str, Path], vendor: Path,
 ) -> None:
@@ -298,6 +316,7 @@ def test_an_app_file_outside_src_reaches_the_vendor_cache_only_by_package_name(
 # ── custom-deps mode: node_modules ──────────────────────────────────────────
 
 
+@docker
 def test_a_package_main_that_leads_out_is_refused(apps: dict[str, Path], vendor: Path) -> None:
     _custom_deps(apps["b"])
     _write(apps["b"] / "node_modules" / "x" / "package.json",
@@ -306,6 +325,7 @@ def test_a_package_main_that_leads_out_is_refused(apps: dict[str, Path], vendor:
     _assert_refused(_build(apps["b"], vendor), apps["b"])
 
 
+@docker
 def test_a_link_in_node_modules_is_refused(apps: dict[str, Path], vendor: Path) -> None:
     _custom_deps(apps["b"])
     _link(apps["b"] / "node_modules" / "x", apps["a"] / "src", is_dir=True)
@@ -313,6 +333,7 @@ def test_a_link_in_node_modules_is_refused(apps: dict[str, Path], vendor: Path) 
     _assert_refused(_build(apps["b"], vendor), apps["b"], names="node_modules/x/data.json")
 
 
+@docker
 @pytest.mark.parametrize("mode", ["default", "custom_deps"])
 def test_a_node_modules_above_the_app_dir_is_refused(
     apps: dict[str, Path], vendor: Path, mode: str,
@@ -330,6 +351,7 @@ def test_a_node_modules_above_the_app_dir_is_refused(
 # ── the template, the entry and the output ──────────────────────────────────
 
 
+@docker
 def test_a_linked_template_is_refused(apps: dict[str, Path], vendor: Path) -> None:
     (apps["b"] / "index.html").unlink()
     _link(apps["b"] / "index.html", apps["a"] / "index.html")
@@ -338,11 +360,13 @@ def test_a_linked_template_is_refused(apps: dict[str, Path], vendor: Path) -> No
     assert not (apps["b"] / "dist").exists()
 
 
+@docker
 def test_a_linked_entry_point_is_refused(apps: dict[str, Path], vendor: Path) -> None:
     _link(apps["b"] / "src" / "main.tsx", apps["a"] / "src" / "main.tsx")
     _assert_refused(_build(apps["b"], vendor), apps["b"], names="src/main.tsx")
 
 
+@docker
 def test_a_linked_dist_dir_is_refused(apps: dict[str, Path], vendor: Path) -> None:
     (apps["a"] / "dist").mkdir()
     _link(apps["b"] / "dist", apps["a"] / "dist", is_dir=True)
@@ -353,6 +377,7 @@ def test_a_linked_dist_dir_is_refused(apps: dict[str, Path], vendor: Path) -> No
     assert list((apps["a"] / "dist").iterdir()) == []
 
 
+@docker
 @pytest.mark.parametrize("planted", [".bundle.html.tmp", "bundle.html"])
 def test_a_link_planted_in_dist_never_writes_into_another_app(
     apps: dict[str, Path], vendor: Path, planted: str,
@@ -369,6 +394,7 @@ def test_a_link_planted_in_dist_never_writes_into_another_app(
     assert "org-b-own" in bundle.read_text(encoding="utf-8")
 
 
+@docker
 @pytest.mark.parametrize("config", ["tsconfig.json", "jsconfig.json", "src/tsconfig.json"])
 def test_a_tsconfig_extends_never_reads_another_apps_file(
     apps: dict[str, Path], vendor: Path, config: str,
@@ -386,6 +412,7 @@ def test_a_tsconfig_extends_never_reads_another_apps_file(
 # ── a legal app still builds ────────────────────────────────────────────────
 
 
+@docker
 def test_a_legal_app_builds_with_its_own_files_react_and_cc_ui(
     apps: dict[str, Path], vendor: Path,
 ) -> None:
@@ -412,6 +439,7 @@ def test_a_legal_app_builds_with_its_own_files_react_and_cc_ui(
     assert "CC_T2_BUNDLE" not in bundle
 
 
+@docker
 def test_a_custom_deps_app_builds_a_package_of_its_own_node_modules(
     apps: dict[str, Path], vendor: Path,
 ) -> None:
@@ -431,11 +459,12 @@ def test_a_custom_deps_app_builds_a_package_of_its_own_node_modules(
     assert "ORG-B-PKG-TEXT" in bundle and "ORG-B-LIB-TEXT" in bundle
 
 
+@docker
 def test_a_big_vendor_package_builds_inside_the_gateway_timeout(apps: dict[str, Path], vendor: Path) -> None:
     """lucide-react re-exports 3,924 icon files. A check that calls esbuild's
     resolve() for each import took over 170 s here, so the build timed out."""
-    if not (vendor / "node_modules" / "lucide-react").is_dir():
-        pytest.skip("the vendor cache has no lucide-react")
+    # PROD_T2_PACKAGES holds lucide-react, so a missing one is a broken cache.
+    assert (vendor / "node_modules" / "lucide-react").is_dir(), "the vendor cache has no lucide-react"
     _write(apps["b"] / "src" / "main.tsx", 'import { Save } from "lucide-react";\nconsole.log(Save);\n')
     env = dict(os.environ, CUSTOM_APPS_T2_VENDOR_DIR=str(vendor))
     env.pop("CUSTOM_APPS_T2_UI_SOURCE", None)
@@ -510,6 +539,7 @@ def test_the_host_route_refuses_when_the_source_script_is_missing(
     assert expected in out["error"], out
 
 
+@docker
 def test_the_host_route_builds_with_the_source_script_and_refuses_a_leak(
     host_route: Any, apps: dict[str, Path], vendor: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

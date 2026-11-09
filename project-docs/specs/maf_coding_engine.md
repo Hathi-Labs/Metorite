@@ -2752,7 +2752,9 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   host route runs the `build_t2.mjs` of the deployed source tree, the one
   that the broker copies. It no longer runs the agent clone cache, because
   the clone refreshes only when the agent loads. Fence:
-  `test_app_builder_t2_containment.py`.
+  `test_app_builder_t2_containment.py`. Its build tests are `sandbox_docker`,
+  so the "Sandbox Docker tests" job runs them with production's vendor
+  versions, and it fails on a skip.
 - **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
   Copilot path. A dir that a container mounted is on the broker's list, so
   the executor's host git skips it (WS43-F13).
