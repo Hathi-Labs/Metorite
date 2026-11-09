@@ -1948,7 +1948,32 @@ def _address_line(address: dict[str, Any], name: str, *, own: bool = True,
     return " ".join(bits)
 
 
-_BLOCK_LANGUAGE = re.compile(r"Language: (\S+?)\. Answer in it")
+# Language names for the style line. Same nine as ``LANGUAGES`` in
+# ``settings/assistant/lib/profile.ts``. ``test_assistant_profile_language.py``
+# keeps the two maps equal. A tag outside the map stays a bare tag.
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English", "hi": "Hindi", "kn": "Kannada", "ta": "Tamil",
+    "te": "Telugu", "mr": "Marathi", "bn": "Bengali", "gu": "Gujarati",
+    "ml": "Malayalam",
+}
+
+# The one language rule of every chat turn (PZ-51, personalization.md 5.3).
+# ``executor._context_preamble_parts`` adds it to each turn, with or without
+# a profile block. Owner, 2026-11-09: the core truth is saved in English, and
+# the language of the message wins over the profile language.
+LANGUAGE_RULE_LINE = (
+    "Language rule: answer in the language that the member uses in this "
+    "message, also when it differs from their profile language. Use the "
+    "profile language only when the language of the message is unclear. "
+    "Write every saved record in English: task and project titles and "
+    "descriptions, comments, notes, CRM records, calendar events, and email "
+    "or message drafts. Do this even when the member writes in another "
+    "language. The one exception is a member's explicit request for another "
+    "language in that record, such as \"write this email in Hindi\"."
+)
+
+# Accepts "kn" and "Kannada (kn)". The group is always the TAG.
+_BLOCK_LANGUAGE = re.compile(r"Language: (?:[^.()]*?\()?([^\s.()]+?)\)?\. Answer in it")
 
 
 def block_language(block: str) -> str | None:
@@ -1964,7 +1989,10 @@ def _style_line(style: dict[str, Any], notes: list[str]) -> str:
     if style.get("length"):
         bits.append(LENGTH_LINES[style["length"]])
     if style.get("language"):
-        bits.append(f"Language: {_one_line(style['language'])}. Answer in it, "
+        tag = _one_line(style["language"])
+        name = LANGUAGE_NAMES.get(tag.lower())
+        label = f"{name} ({tag})" if name else tag
+        bits.append(f"Language: {label}. Answer in it, "
                     "unless they write in another language.")
     if notes:
         bits.append("Notes: " + " ".join(_sentence(n) for n in notes))
