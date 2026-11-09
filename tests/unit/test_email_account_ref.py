@@ -254,6 +254,24 @@ def test_every_account_id_route_calls_the_helper():
         f"account_ref.resolve_account_filter: {missing}")
 
 
+def test_the_signature_writer_reads_one_mailbox_through_the_helper():
+    """WS-17 SG-3a (§23.3.10). The GET takes ``account_id`` as a query value,
+    and the scan above sees it. The PUT takes it in its body, which the scan
+    cannot see. Each one calls the helper with ``required=True``, so "all"
+    and a value of no shape are a 422 before any SQL."""
+    path = _EMAIL_ROUTES / "signature_settings.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    handlers = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)}
+    for name in ("get_signature_settings", "put_signature_settings"):
+        calls = [c for c in ast.walk(handlers[name]) if isinstance(c, ast.Call)
+                 and getattr(c.func, "id", "") == "resolve_account_filter"]
+        assert len(calls) == 1, name
+        required = {k.arg: getattr(k.value, "value", None) for k in calls[0].keywords}
+        assert required.get("required") is True, name
+    assert ("signature_settings.py", "get_signature_settings", True) in (
+        _routes_with_account_id())
+
+
 # ── R8: the address read on a real database, under FORCE RLS ────────────────
 
 try:

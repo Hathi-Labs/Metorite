@@ -24,7 +24,11 @@ from gateway.routes.email import signature_images as _signature_images
 # WS-17 SG-2: imported for its route only (the preview of a layout signature).
 from gateway.routes.email import signature_preview as _signature_preview
 
-_ = (_signature_images, _signature_preview)
+# WS-17 SG-3a: imported for its routes only (the read and the write of the
+# signature row of one mailbox).
+from gateway.routes.email import signature_settings as _signature_settings
+
+_ = (_signature_images, _signature_preview, _signature_settings)
 
 # Flatten submodule namespaces into the package so the historical public surface
 # (incl. private ``_helpers`` the scheduler/tests import by name) is preserved.

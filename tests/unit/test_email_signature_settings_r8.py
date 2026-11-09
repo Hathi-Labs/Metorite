@@ -16,6 +16,11 @@ superuser, no BYPASSRLS). It pins:
   stored bytes unchanged, with the flag off and on (rule 7). A template row
   renders while the flag holds the org, and a row of another org is never
   read. The settings GET and the PUT answer carry the same bytes as main.
+* The writer of SG-3a (``signature_settings.py``, §23.3.10) on a real
+  database. Organization A cannot write or read a row of organization B. The
+  writer refuses an image address of another org, and a value that a CHECK
+  refuses is a 422 that writes nothing. The tenant comes from the bound
+  session, and the send carries what the PUT answered.
 
 Each database class skips cleanly without ``TENANT_LADDER_DATABASE_URL``
 (``_DB_GATE``). The migration check and the CI list check need no database.
@@ -33,8 +38,10 @@ from acb_auth.permissions import EffectiveAccess
 from acb_auth.roles import UserContext, UserRole
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
+from fastapi import HTTPException
 from gateway.routes.email import AssistantSettingsModel, signature_render
 from gateway.routes.email import signature as sig
+from gateway.routes.email import signature_settings as writer
 from gateway.routes.email.automation import assistant as assistant_mod
 from gateway.routes.email.automation import drafting
 from gateway.routes.email.core import _tenant_session
@@ -326,3 +333,171 @@ class TestTheResolverOnRealSql:
             release_tenant(token)
         assert got["signature"] == _STORED
         assert got["signature_text"] == signature_render.render("classic", _FIELDS)[1]
+
+
+# ── The writer of SG-3a (§23.3.10) ──────────────────────────────────────────
+
+_BASE = "https://api.sg3a.test"
+_TOKEN = "B" * 43
+
+
+def _member(owner: str, org: str) -> UserContext:
+    return UserContext(
+        email=owner, role=UserRole.EMPLOYEE, organization_id=org,
+        access=EffectiveAccess(role_granted=frozenset({"feature:email"})))
+
+
+def _body(account_id: str, **over) -> writer.SignatureSettingsRequest:
+    return writer.SignatureSettingsRequest(**{
+        "account_id": account_id, "mode": "template", "layout": "classic",
+        "fields": dict(_FIELDS), "reply_mode": "full", **over})
+
+
+def _logo(org: str) -> dict:
+    return {"url": f"{_BASE}/email/signature-image/{org}/{_TOKEN}.png",
+            "width": 120, "height": 60}
+
+
+async def _as(promoted, org: str, call):  # noqa: F811
+    """Run ``call`` as a request bound to ``org``, through the app role."""
+    token = bind_tenant(org)
+    try:
+        async with tenant_engine_scope(_app_dsn(promoted)):
+            return await call()
+    finally:
+        release_tenant(token)
+
+
+def _row(admin_engine, account_id: str):
+    with admin_engine.connect() as c:
+        row = c.execute(text(
+            "SELECT organization_id::text, mode, layout, fields, reply_mode, "
+            "created_at, updated_at FROM email_signature_settings "
+            "WHERE account_id = CAST(:a AS uuid)"), {"a": account_id}).first()
+    return tuple(row) if row else None
+
+
+@_DB_GATE
+class TestTheWriterOnRealSql:
+
+    async def test_a_put_stores_the_row_of_the_bound_tenant_and_the_send_carries_it(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _assert_non_priv(app_engine)
+        _flag(monkeypatch, promoted.org_b)
+        monkeypatch.setenv("GATEWAY_PUBLIC_URL", _BASE)
+        owner, acc = _box(promoted)
+        _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                     signature=_STORED)
+        me = _member(owner, promoted.org_b)
+        fields = {**_FIELDS, "logo": _logo(promoted.org_b)}
+        put = await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+            _body(acc, fields=fields, reply_mode="short"), user=me))
+        html, text_form = signature_render.render("classic", fields)
+        assert (put["html"], put["text"]) == (html, text_form)
+        assert _logo(promoted.org_b)["url"] in put["html"]
+        org, mode, layout, stored, reply_mode, created, updated = _row(
+            promoted.admin_engine, acc)
+        assert (org, mode, layout, stored, reply_mode) == (
+            promoted.org_b, "template", "classic", fields, "short")
+        assert await _resolve(promoted, promoted.org_b, acc, "new") == put["html"]
+        got = await _as(promoted, promoted.org_b, lambda: writer.get_signature_settings(
+            account_id=acc, user=me))
+        assert (got["mode"], got["layout"], got["fields"], got["reply_mode"]) == (
+            "template", "classic", fields, "short")
+        assert got["image_upload"] is True
+        # A second PUT updates the one row, and moves updated_at only.
+        await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+            _body(acc, mode="custom", reply_mode="none"), user=me))
+        after = _row(promoted.admin_engine, acc)
+        assert after[1] == "custom" and after[4] == "none"
+        assert after[5] == created and after[6] >= updated
+        assert await _resolve(promoted, promoted.org_b, acc, "new") == _STORED
+
+    async def test_org_a_cannot_write_or_read_a_row_of_org_b(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """The same member in two organizations. Bound to A, a PUT and a GET
+        of the mailbox of B answer 404, and B's row does not change. A PUT
+        of the member's mailbox in A writes a row of A only."""
+        _flag(monkeypatch, "*")
+        owner, acc_b = _box(promoted)
+        _seed_settings(promoted.admin_engine, org=promoted.org_b, account_id=acc_b,
+                       reply_mode="short")
+        acc_a = _seed_account(promoted.admin_engine, org=promoted.org_a, owner=owner)
+        before = _row(promoted.admin_engine, acc_b)
+        me_in_a = _member(owner, promoted.org_a)
+        for call in (
+            lambda: writer.put_signature_settings(
+                _body(acc_b, mode="custom", reply_mode="none"), user=me_in_a),
+            lambda: writer.get_signature_settings(account_id=acc_b, user=me_in_a),
+        ):
+            with pytest.raises(HTTPException) as caught:
+                await _as(promoted, promoted.org_a, call)
+            assert caught.value.status_code == 404
+        assert _row(promoted.admin_engine, acc_b) == before
+        put = await _as(promoted, promoted.org_a, lambda: writer.put_signature_settings(
+            _body(acc_a), user=me_in_a))
+        assert put["account_id"] == acc_a
+        assert _row(promoted.admin_engine, acc_a)[0] == promoted.org_a
+        assert _row(promoted.admin_engine, acc_b) == before
+
+    async def test_a_member_with_no_send_access_gets_404(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _flag(monkeypatch, "*")
+        _, acc = _box(promoted)
+        stranger = _member(f"stranger-{uuid.uuid4().hex[:8]}@sg2.test", promoted.org_b)
+        for call in (
+            lambda: writer.put_signature_settings(_body(acc), user=stranger),
+            lambda: writer.get_signature_settings(account_id=acc, user=stranger),
+        ):
+            with pytest.raises(HTTPException) as caught:
+                await _as(promoted, promoted.org_b, call)
+            assert caught.value.status_code == 404
+        assert _row(promoted.admin_engine, acc) is None
+
+    async def test_an_image_address_of_another_org_is_a_422(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _flag(monkeypatch, "*")
+        monkeypatch.setenv("GATEWAY_PUBLIC_URL", _BASE)
+        owner, acc = _box(promoted)
+        me = _member(owner, promoted.org_b)
+        for key in ("logo", "photo"):
+            body = _body(acc, fields={**_FIELDS, key: _logo(promoted.org_a)})
+            with pytest.raises(HTTPException) as caught:
+                await _as(promoted, promoted.org_b,
+                          lambda body=body: writer.put_signature_settings(body, user=me))
+            assert caught.value.status_code == 422
+            assert "not an image of your organization" in caught.value.detail
+        assert _row(promoted.admin_engine, acc) is None
+
+    async def test_a_value_that_a_check_refuses_is_a_422_that_writes_nothing(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """Postgres writes ``1e300`` with every digit, so 60 of them pass the
+        bound of the model and fail the CHECK on ``octet_length(fields::text)``."""
+        _flag(monkeypatch, "*")
+        owner, acc = _box(promoted)
+        body = _body(acc, mode="custom", layout=None, fields={"x": [1e300] * 60})
+        with pytest.raises(HTTPException) as caught:
+            await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+                body, user=_member(owner, promoted.org_b)))
+        assert (caught.value.status_code, caught.value.detail) == (422, writer.TOO_LARGE)
+        assert _row(promoted.admin_engine, acc) is None
+
+    async def test_with_the_flag_off_nothing_writes_the_table(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        _flag(monkeypatch, promoted.org_a)
+        owner, acc = _box(promoted)
+        _seed_stored(promoted.admin_engine, org=promoted.org_b, account_id=acc,
+                     signature=_STORED)
+        with pytest.raises(HTTPException) as caught:
+            await _as(promoted, promoted.org_b, lambda: writer.put_signature_settings(
+                _body(acc), user=_member(owner, promoted.org_b)))
+        assert caught.value.status_code == 404
+        assert _row(promoted.admin_engine, acc) is None
+        for kind in sig.SIGNATURE_KINDS:
+            assert await _resolve(promoted, promoted.org_b, acc, kind) == _STORED
