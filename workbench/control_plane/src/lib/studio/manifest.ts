@@ -49,6 +49,8 @@ export interface FieldDef {
   to?: string | null;
   // The field gets a row in the index side table of C1 (studio_record_hot).
   hot?: boolean;
+  // C13. A lines relation: the field of the object `to` that names this one.
+  lines?: string | null;
 }
 
 export interface ObjectDef {

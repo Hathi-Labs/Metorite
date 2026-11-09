@@ -418,7 +418,7 @@ def _object_out(obj: objects_store.StudioObject) -> dict[str, Any]:
         "fields": [{
             "key": f.key, "type": f.type, "label": f.label, "required": f.required,
             "many": f.many, "options": None if f.options is None else list(f.options),
-            "to": f.to, "hot": f.hot} for f in obj.fields],
+            "to": f.to, "hot": f.hot, "lines": f.lines} for f in obj.fields],
         "rules": [r.stored() for r in obj.constraints],
         "created_at": obj.created_at, "updated_at": obj.updated_at,
     }

@@ -1521,6 +1521,9 @@ The audit captured every Projects surface at 390 px and 360 px, in dark and ligh
 | UNDO-2 | 1543 | Undo for bulk acts and delete | One Undo restores every task of a bulk act. Delete acts at once with Undo, as D109.5 asks | MEDIUM |
 | SEL-1 | 1544 | Select many in My tasks (each chip, Done too) and in Table, with Ctrl+A and a bulk bar across projects | The member selects every done task and archives them in one act, with Undo | MEDIUM |
 | ARC-1 | 1545 | One Archive view across projects in My work | It lists the member's archived tasks. Restore works for one task or many | LOW |
+| ARC-2a | 2502 | The bar on an archived space, project or subproject, with Restore (§9b.6 rule 1) | An archived project shows the bar with its date, and names the ancestor it was filed with. Restore returns it to the live tree with no reload | LOW |
+| ARC-2b | 2503 | The server refuses task writes in an archived project (§9b.6 rule 2) | Each refused route answers 409 with the sentence. Each read and each allowed act still answers. Chat and MCP show the same words | STANDARD |
+| ARC-2c | 2504 | The app draws an archived project read-only (§9b.6 rule 3) | Board, List, Table, Calendar, Timeline and the panel draw no write control. Filters, views, search and export stay | STANDARD |
 
 ### 9b.5 Fences
 
@@ -1528,10 +1531,34 @@ The audit captured every Projects surface at 390 px and 360 px, in dark and ligh
 - INB-1: a test that a capture is in the inbox, that an assigned untriaged task is not, and that the count equals the list. The SQL runs against a real database (R8).
 - UNDO-1 and UNDO-2: a test for each act that its inverse restores the row it changed.
 - SEL-1 and ARC-1: a test that a bulk archive of the Done chip writes one request and that the Archive view lists the rows.
+- ARC-2a: a vitest of the bar's words for an archive root and for a row filed with its parent.
+- ARC-2b: an R8 test for each refused route family, and a test that each read and each allowed act still answers.
+- ARC-2c: a vitest of the one read-only rule, for each write control it hides.
 - MOB-9: `lib/layers.test.ts`, `lib/phoneBarTap.test.ts`, `lib/menuClamp.test.ts` and `e2e/phone-bar-always.spec.ts`.
 - MOB-10: `lib/tasksRedirect.test.ts`. MOB-11: `components/TaskBoardPhone.test.ts`. MOB-12: `lib/shell/phoneBar.test.ts`.
 
 Each fence is advisory until its slice builds.
+
+### 9b.6 An archived project opens read-only (2026-11-09)
+
+**Status:** ARC-2a BUILT 2026-11-09. ARC-2b and ARC-2c are 📋 SPEC. The owner accepted this on 2026-11-09, in chat. Metorite: tasks 2502 (ARC-2a), 2503 (ARC-2b) and 2504 (ARC-2c).
+
+On 2026-11-08 the owner asked whether the archive design was settled. A review found that an archived project opened from the rail's Archived section gave no sign that it was archived. Its board also kept every edit control. The rail itself drew a filed project twice (ARC-BUG-1, task 2325, merged 69c40d08e).
+
+**What archive does today.** `archive_node` stamps `archived_at` and `archived_root_id` on each project of the subtree. It never touches a task row (D-PM-26). The server keeps automation and reports out of an archived project (`runnable_project_clause`, `reportable_project_clause`). It refuses no task write.
+
+**Rules.**
+
+1. **The bar.** A space, a project or a subproject with `archived_at` shows one bar under its title.
+   - It says "Archived on <date>. Restore it to change its work."
+   - A row that was filed with an ancestor (`archived_root_id` is not its own id) says "Archived with <ancestor name> on <date>."
+   - The bar holds one Restore button. Restore runs the unarchive of `archived_root_id`, the same act as Unarchive on the rail menu. The whole filed branch returns.
+2. **Read-only on the server.** A task write into a project with `archived_at` answers 409: "This project is archived. Restore it to change its work."
+   - Refused: make a task, edit a field, change the status, assignees, tags, dates or the parent, move a task, set positions, add a subtask, a comment, an attachment or a relation, and unarchive a task. A bulk act follows the bulk refusal rule that exists. It names each refused task.
+   - Allowed: every read and export, Restore, Delete of the project (its own gate), and the agent-run routes. A run keeps its own lifecycle, so an agent can still finish or release it.
+   - Chat and MCP reach the same routes. So they show the same words, and no tool needs its own check.
+3. **Read-only in the app.** The views of an archived project draw no write control. That means no New task, no quick add, no drag, no inline edit and no bulk bar. The task panel shows its fields as text. Filters, views, search and export stay. ARC-2c builds after ARC-2b, so a control that the app misses still meets the server's refusal.
+4. **What does not change.** Archive still stamps projects and never tasks. Reports and automation still skip archived work. The rail keeps one Archived section (task 2325).
 
 ## 9c. The task card (D172, 2026-11-03)
 

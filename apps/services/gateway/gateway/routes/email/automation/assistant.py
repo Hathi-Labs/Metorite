@@ -66,12 +66,16 @@ async def _load_assistant_about(
     actually bear on this email make the budget.
     """
     row = (await db.execute(text(
-        """SELECT about, signature, personal_instructions, writing_style,
+        """SELECT about, personal_instructions, writing_style,
                   learned_writing_style
            FROM email_assistant_settings WHERE account_id = :aid"""
     ), {"aid": account_id})).fetchone()
     about = (row.about if row else "") or ""
-    signature = (row.signature if row else "") or ""
+    # WS-17 SG-2 (D-EM-66): the resolver gives the signature. A drafted step
+    # asks for ``new`` until SG-5 passes the kind of the step.
+    from gateway.routes.email.signature import resolve_signature
+
+    signature = await resolve_signature(db, account_id, "new")
     personal = (getattr(row, "personal_instructions", None) or "") if row else ""
     style = (getattr(row, "writing_style", None) or "") if row else ""
     learned_style = (
@@ -311,7 +315,7 @@ async def get_assistant_settings(
             db, account_id, user.email or "anonymous", required=True)
         await _assert_account_owner(db, account_id, user.email or "anonymous", level="send")
         row = (await db.execute(text(
-            """SELECT about, signature, auto_run, auto_run_chosen_at,
+            """SELECT about, auto_run, auto_run_chosen_at,
                       cold_email_blocker,
                       digest_frequency, personal_instructions, writing_style,
                       learned_writing_style,
@@ -335,7 +339,13 @@ async def get_assistant_settings(
         # Fall back to the legacy single field if the new column is still 0.
         if not awaiting and row:
             awaiting = getattr(row, "follow_up_days", 0) or 0
-        from gateway.routes.email.signature import signature_text  # noqa: PLC0415
+        from gateway.routes.email.signature import (  # noqa: PLC0415
+            signature_forms,
+            signature_text,
+        )
+        # WS-17 SG-2 (D-EM-66): the editor gets the stored free HTML, and the
+        # composer seeds the text of the ``new`` form that the resolver gives.
+        forms = await signature_forms(db, account_id)
         # A stored value always wins. With NO settings row, answer what the
         # engine does: drafting is ON only when a reply rule carries
         # DRAFT_EMAIL. A new mailbox has no rules, so it reads OFF (D-EM-6).
@@ -358,12 +368,12 @@ async def get_assistant_settings(
         return {
             "account_id": account_id,
             "about": row.about if row else "",
-            "signature": row.signature if row else "",
+            "signature": forms.stored,
             # The SERVER's plain-text rendering of the signature — the composer
             # seeds this exact text into the body so the draft-write paths'
             # idempotent re-signing recognises it (a client-side re-derivation
             # could differ by whitespace and get double-signed).
-            "signature_text": signature_text((row.signature if row else "") or ""),
+            "signature_text": signature_text(forms.of("new")),
             "auto_run": auto_run,
             # Read-only (task 2267, rule of task 2305): true when the member
             # chose Auto-run, so the client can tell "the member chose" from
@@ -569,7 +579,9 @@ async def put_assistant_settings(
             "SELECT email_address FROM email_accounts WHERE id = :aid"
         ), {"aid": req.account_id})).fetchone()
         from gateway.routes.email.automation.identity import _domain_of  # noqa: PLC0415
-        from gateway.routes.email.signature import signature_text
+        from gateway.routes.email.signature import signature_forms, signature_text
+        # WS-17 SG-2 (D-EM-66): the composer seeds the text of the ``new`` form.
+        forms = await signature_forms(db, req.account_id, stored=signature or "")
         own_domain = _domain_of(getattr(acc_row, "email_address", "") or "")
         # The answer carries EVERY key the GET carries. SettingsTab keeps this
         # body as its state and PUTs it back on the next change, so a missing
@@ -579,7 +591,7 @@ async def put_assistant_settings(
             "account_id": req.account_id,
             "about": req.about or "",
             "signature": signature or "",
-            "signature_text": signature_text(signature or ""),
+            "signature_text": signature_text(forms.of("new")),
             "auto_run": auto_run,
             # Task 2305: the GET's rule over the row that the upsert
             # RETURNs. A save of another field is no choice.

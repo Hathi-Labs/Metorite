@@ -125,6 +125,18 @@
           "default": null,
           "title": "Label"
         },
+        "lines": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lines"
+        },
         "many": {
           "default": false,
           "title": "Many",
