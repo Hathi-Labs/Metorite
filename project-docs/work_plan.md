@@ -5815,6 +5815,20 @@ Owner directive, 2026-11-08, in chat. Metorite: task 2310. It amends D145 for on
 
 Fence: `tests/unit/test_loop_local_first.py` pins D200 in `CLAUDE.md`, `next-ticket.md` and `engineering_practice.md` §1.3. The judgement of "small" is advisory (R7).
 
+### D201 — GitHub Actions light jobs run on the box's own runners, with a safety design (2026-11-08)
+
+Owner decision, 2026-11-08, in chat. Metorite: task 2304 (CIV-23). It reverses the non-goal "no GitHub self-hosted runner" of `specs/ci_velocity.md` §2. It changes no other rule.
+
+1. **What runs on the box.** The light jobs of `pr-check.yml`: lint, migrations, frontend, caddy and the secret scan. The unit shard job (`test`) stays on `ubuntu-24.04`, because it ran over 40 minutes on the box against 14 on GitHub (measured 2026-11-08, quiet box, tmpfs database). `e2e` and `backup-restore` stay there too.
+2. **The label.** The runners carry only the label `metorite-box`. They carry no default label, and no job uses `self-hosted`.
+3. **The switch.** The variable `USE_BOX_RUNNERS` set to `1` turns it on. Any other value sends the job to `ubuntu-24.04`.
+4. **No fork code on the box.** The `runs-on` test routes a fork PR to `ubuntu-24.04`, but it is not the control: a fork PR carries its own workflow file. The control is the repository setting `fork-pr-contributor-approval = all_external_contributors`. A maintainer must not approve a fork run that touches `.github/`. No test pins the setting, so this rule is advisory (R7).
+5. **The runner user.** User `ghrunner` has no sudo, is not in the docker group, and has a home with mode 750. Its Docker is rootless. Runners `metorite-box-1` to `-4` (more may register) run as capped systemd user services (6 GB and 4 CPUs each).
+6. **No sudo in a job.** A step that needs `sudo` or `apt-get` runs only when `runner.environment == 'github-hosted'`. The owner of the box installs each tool that a job needs.
+7. **Service containers.** The box runners share one Docker daemon. The Postgres containers publish to a host port that Docker picks. A step writes the database URLs from that port.
+
+Fence: `tests/unit/test_box_runner_routing.py`. **Re-check this number at merge.** The first merge wins a D-number. Branches held D198 to D200 when task 2304 wrote this record.
+
 ### D202 — AI Studio is a full web IDE inside Metorite: blocks first, code files first-class, one UI kit, a sandbox per organization and per person, and the new blocks (2026-11-08)
 
 Owner directives of 2026-11-08, in chat, and the owner's answers in Metorite on tasks 2326 and 2327. Owner spec: `specs/ai_studio.md` §0, §2.2, §5.1, §5.4, §6.3, §6.5, §11.2, §14, §15, §19.10 and §20.1, and the row PKG-14c of `specs/package_host.md`. Board: **WS-STU**. Metorite: task 2326, task 2327 and epic 491.
