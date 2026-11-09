@@ -454,6 +454,28 @@ DECISION = {"id": DECISION_ID, "subject_kind": "task", "subject_id": LIVE,
             "options": [{"key": "yes", "label": "Yes"}, {"key": "no", "label": "No"}]}
 
 
+#: WS-39 LP-1a. One live update of the project UUID, which the member may delete.
+UPDATE_ID = "c3d9fad5-d9cb-469f-a165-70867728950e"
+UPDATE_ROW = {"id": UPDATE_ID, "project_id": UUID, "author": "pm@fracktal.in",
+              "health": "at_risk", "body": "The vendor slipped a week.",
+              "posted_at": "2026-11-08T10:00:00+00:00", "drafted_by_ai": False,
+              "via": None, "can_delete": True, "delete_refusal": None}
+
+
+def _lp1a_answers(call: dict) -> Any:
+    """WS-39 LP-1a: the updates of a project, a post and a delete."""
+    path, method = call["path"], call["method"]
+    base = f"/projects/nodes/{UUID}/updates"
+    if path == base and method == "GET":
+        return {"rows": [UPDATE_ROW], "next_before": None}
+    if path == base and method == "POST":
+        return {**UPDATE_ROW, "id": OTHER, **(call["json"] or {})}
+    if path == f"{base}/{UPDATE_ID}" and method == "DELETE":
+        return {"id": UPDATE_ID, "project_id": UUID, "deleted": True,
+                "deleted_at": "2026-11-09T10:00:00+00:00"}
+    return None
+
+
 def _aln2a_answers(call: dict) -> Any:
     """WS-ALN ALN-2a: the member's open decisions, and the answer."""
     path, method = call["path"], call["method"]
@@ -545,9 +567,37 @@ def _reminder_answers(call: dict) -> Any:
     return {**REMINDER_ROW, "state": "scheduled"}
 
 
+#: WS-39 TPL-1a. One template of the org, as `GET /projects/templates` lists it.
+TEMPLATE_ROW = {
+    "id": UUID, "kind": "project", "name": "Install kit", "description": None,
+    "work_style": None, "created_by": "a@x.io", "created_at": "2026-11-08T10:00:00+00:00",
+    "counts": {"statuses": 4, "types": 3, "fields": 2, "tags": 1, "tasks": 6},
+}
+
+
+def _template_answers(call: dict) -> Any:
+    """The three template routes (WS-39 TPL-1a)."""
+    path, method = call["path"], call["method"]
+    body = call["json"] if isinstance(call["json"], dict) else {}
+    if path == "/projects/templates" and method == "GET":
+        return {"rows": [TEMPLATE_ROW], "total": 1, "more": False}
+    if path == "/projects/templates" and method == "POST":
+        return {**TEMPLATE_ROW, "id": OTHER, "name": body.get("name")}
+    if path.startswith("/projects/templates/") and path.endswith("/apply"):
+        return {
+            "project": {"id": OTHER, "name": body.get("name") or "Install kit"},
+            "template_id": UUID, "replayed": False, "own_statuses": True,
+            "created": {"statuses": 4, "types": 0, "fields": 0, "tags": 0, "tasks": 6},
+        }
+    return None
+
+
 def responder(call: dict) -> Any:
     """A gateway that answers every read the write tools make, and every write."""
     path, method = call["path"], call["method"]
+    template = _template_answers(call)
+    if template is not None:
+        return template
     if path == f"/projects/tasks/{UUID}":
         return TASK
     if path == f"/projects/tasks/{OTHER}":
@@ -558,7 +608,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -783,6 +833,9 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "grant_access": [{"project_id": UUID, "subject": "org"}],
     # WS-ALN ALN-4 — one pin per card, by pin_id
     "pin_authority": [{"project_id": UUID, "page_id": OTHER}],
+    # WS-39 TPL-1a: one template per card, and one project per card.
+    "save_as_template": [{"project_id": UUID, "name": "Office move"}],
+    "create_project_from_template": [{"template_id": UUID, "parent_id": UUID}],
     "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
     # WS-ALN ALN-2a: one answer per card
     "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
@@ -849,6 +902,12 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             f'{{"task_id": "{OTHER}", "destination_project_id": "{SALES}"}}]',
         }
     ],
+    # WS-39 LP-1a — a project update with the health that the member picks,
+    # and the delete of one, one card each.
+    "post_project_update": [
+        {"project_id": UUID, "health": "at risk", "body": "The vendor slipped a week."}
+    ],
+    "delete_project_update": [{"project_id": UUID, "update_id": UPDATE_ID}],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -890,10 +949,13 @@ _ONE_ID: dict[str, str] = {
     "pin_authority": "page_id",
     "unpin_authority": "pin_id",
     "answer_decision": "decision_id",
+    "delete_project_update": "update_id",
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",
     "promote_reminder": "reminder_id",
+    "save_as_template": "project_id",
+    "create_project_from_template": "template_id",
 }
 
 
@@ -2436,8 +2498,11 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # reminder tool is planned now.
     # WS-AP AP-8a: the person ask and its withdraw. AP-10 builds both tools.
     ap_10 = {"ask_person", "withdraw_ask"}
+    # WS-39 SP-1: the cycle routes. SP-5 (Metorite task 964) builds the tools.
+    sp_5 = {"list_cycles", "cycle_detail", "create_cycle", "update_cycle", "delete_cycle",
+            "plan_cycle", "start_cycle", "close_cycle"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
-                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | mcp_g21), m.PLANNED
+                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 

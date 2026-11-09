@@ -472,6 +472,46 @@ export function projectStateAccent(value?: string | null): StatusAccent {
   return ACCENTS[state ? state.hue : "gray"];
 }
 
+/* ── Project health (WS-39 LP-1a, `project_management_app.md` §14.2a) ──────
+ *
+ * The health of a project UPDATE: how the lead says the project goes. A
+ * fourth axis, beside a task's status, a project's run state and an agent's
+ * state, and this is still the one module it becomes a colour in (rule 4).
+ * It is a CLOSED lookup, like `PROJECT_STATES`, and never goes through
+ * `resolveHue`, because "track" and "risk" are no keyword of that chain.
+ *
+ * The three values map onto existing hues of this palette, and add none:
+ * On track is green (`--success`), At risk is amber (`--warning`) and Off
+ * track is red (`--destructive`). Each also carries a glyph and its words, so
+ * the chip never depends on colour alone.
+ */
+
+export interface ProjectHealthVisual {
+  /** What a person reads. Never the stored value. */
+  label: string;
+  hue: AccentHue;
+  /** Lucide name for `<Icon name=… />`. */
+  icon: string;
+}
+
+export const PROJECT_HEALTHS: Record<string, ProjectHealthVisual> = {
+  on_track: { label: "On track", hue: "green", icon: "CircleCheck" },
+  at_risk: { label: "At risk", hue: "amber", icon: "TriangleAlert" },
+  off_track: { label: "Off track", hue: "red", icon: "CircleX" },
+};
+
+/** How a health draws, or `null` when the value is not one. */
+export function projectHealth(value?: string | null): ProjectHealthVisual | null {
+  const key = value?.trim().toLowerCase();
+  return (key && Object.hasOwn(PROJECT_HEALTHS, key) && PROJECT_HEALTHS[key]) || null;
+}
+
+/** The chip's class pair (fill and ink) for a health. Unknown is gray. */
+export function projectHealthChip(value?: string | null): string {
+  const visual = projectHealth(value);
+  return ACCENTS[visual ? visual.hue : "gray"].chip;
+}
+
 /* ── Agent run state (WS-55 EA-12c, `external_agent_access.md` §12.1) ──────
  *
  * The pill on a task that an outside agent works on. A third axis, beside a

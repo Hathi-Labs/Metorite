@@ -1307,7 +1307,9 @@ class TestAimlApiIsRegistered:
             if isinstance(h, handlers.SystemOneHandler)
         }
         assert system_one == {"typesafe", "aimlapi"}
-        assert handlers.native_vendors() == frozenset({"typesafe", "aimlapi", "sarvam"})
+        assert handlers.native_vendors() == frozenset(
+            {"typesafe", "aimlapi", "sarvam", "assemblyai"}
+        )
 
     def test_the_pairing_refuses_it_for_chat(self):
         with pytest.raises(catalog.CatalogRefused):

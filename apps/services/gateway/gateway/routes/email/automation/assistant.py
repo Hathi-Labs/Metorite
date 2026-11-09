@@ -272,6 +272,13 @@ class AssistantSettingsModel(BaseModel):
     insights_enabled: bool = False
 
 
+def _signature_upload_on() -> bool:
+    """True when this server can host a signature image (WS-17 SG-1)."""
+    from gateway.routes.email.signature_images import public_base_url
+
+    return public_base_url() is not None
+
+
 @router.get("/assistant/settings")
 async def get_assistant_settings(
     account_id: str = Query(...),
@@ -410,6 +417,13 @@ async def get_assistant_settings(
             ),
             # Read-only: the account's own domain, always treated as internal.
             "own_domain": own_domain,
+            # Read-only (WS-17 SG-1, §23.3.9): False when this server has no
+            # https address to host a signature image. The editor turns its
+            # upload button off.
+            "signature_image_upload": _signature_upload_on(),
+            # Only a save removes anything (the PUT answer). The key is here so
+            # the GET and the PUT carry the same keys.
+            "signature_removed": [],
         }
 
 
@@ -419,6 +433,16 @@ async def put_assistant_settings(
     user: UserContext = Depends(get_current_user),
 ):
     """Upsert the assistant settings for an account."""
+    # WS-17 SG-1 (D-EM-70): a new HTML signature is cleaned on save, and each
+    # `data:` image in it becomes a hosted image first. This runs BEFORE the
+    # session below, because a hosted image runs a child process for up to
+    # 10 s, and no session waits on it. A signature equal to the stored one
+    # stays byte for byte.
+    from gateway.routes.email.signature_images import (
+        signature_for_save,
+    )
+    signature, signature_removed = await signature_for_save(
+        req.account_id, user.email or "anonymous", req.signature)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         _log_retired_model_fields(req)
@@ -477,7 +501,7 @@ async def put_assistant_settings(
                  insights_enabled = EXCLUDED.insights_enabled,
                  updated_at = now()
                RETURNING learned_writing_style"""
-        ), {"aid": req.account_id, "about": req.about, "sig": req.signature,
+        ), {"aid": req.account_id, "about": req.about, "sig": signature,
             "auto": auto_run, "cold": req.cold_email_blocker or "OFF",
             "digest": req.digest_frequency or "OFF",
             "pi": req.personal_instructions, "ws": req.writing_style,
@@ -519,8 +543,8 @@ async def put_assistant_settings(
         return {
             "account_id": req.account_id,
             "about": req.about or "",
-            "signature": req.signature or "",
-            "signature_text": signature_text(req.signature or ""),
+            "signature": signature or "",
+            "signature_text": signature_text(signature or ""),
             "auto_run": auto_run,
             # The upsert above wrote the row, so the choice is stored now.
             "auto_run_chosen": True,
@@ -547,6 +571,10 @@ async def put_assistant_settings(
             "org_domains": org_domains,
             "insights_enabled": req.insights_enabled,
             "own_domain": own_domain,
+            "signature_image_upload": _signature_upload_on(),
+            # WS-17 SG-1 (D-EM-70): each link or image address that the clean
+            # of THIS save removed, so the dialog can name it.
+            "signature_removed": signature_removed,
         }
 
 

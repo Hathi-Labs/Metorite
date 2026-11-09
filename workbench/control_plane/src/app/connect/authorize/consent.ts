@@ -203,6 +203,36 @@ export function toggleScope(view: CheckView, chosen: ReadonlySet<string>, scope:
   return next;
 }
 
+/**
+ * A read scope (SW-34b): `projects:read`, `context:read` or `<app>:read`.
+ * The same rule as `agent_oauth.READ_SCOPES` on the server.
+ */
+export function isReadScope(scope: string): boolean {
+  return scope.endsWith(":read");
+}
+
+/**
+ * True when the "Read only" choice can change something: the agent asked for
+ * a read scope and for a scope that is not a read scope.
+ */
+export function offersReadOnly(view: CheckView): boolean {
+  const asked = view.scopes.filter((s) => s !== OFFLINE_ACCESS);
+  return asked.some(isReadScope) && asked.some((s) => !isReadScope(s));
+}
+
+/**
+ * The "Read only" choice (SW-34b): each read scope that the agent asked for,
+ * and no other. `grantedScopes` adds `offline_access` when it was asked for.
+ */
+export function readOnlyChoice(view: CheckView): Set<string> {
+  return new Set(view.scopes.filter((s) => s !== OFFLINE_ACCESS && isReadScope(s)));
+}
+
+/** True when the choice holds one scope or more, and each is a read scope. */
+export function isReadOnly(chosen: ReadonlySet<string>): boolean {
+  return chosen.size > 0 && [...chosen].every(isReadScope);
+}
+
 export interface Choice {
   scopes: ReadonlySet<string>;
   pins: readonly string[];
