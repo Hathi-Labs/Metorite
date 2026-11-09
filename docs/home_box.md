@@ -28,7 +28,7 @@ a session scratchpad and on the owner's PC.
 | `dev` | Agent sessions, the lane keeper, the Hub and Remote Control | `ssh metorite-home` |
 | `acb` | Admin, with passwordless sudo | `ssh metorite-home-admin` |
 | `ci` | The `ci_local` lane. Docker, no sudo. | `bash scripts/ci_local.sh` reaches it |
-| `ghrunner` | Four GitHub Actions runners, with rootless Docker (§6.3) | Through `acb` only |
+| `ghrunner` | The GitHub Actions runners, with rootless Docker (§6.3) | Through `acb` only |
 | Windows admin | Repairs only: restart WSL, free disk space | `ssh metorite-home-win` (10 to 17 s per call) |
 
 The three aliases live in `~/.ssh/config` on the owner's PC. `metorite-home`
@@ -79,8 +79,8 @@ lane rules in `scripts/home_server/lanes/lane-rules.md`.
 1. Check the box (§2). The Metorite MCP must be connected, and 5000 MB of
    memory must be free.
 2. Read the live account and its limits: `bash scripts/home_server/box.sh accounts`.
-   Each lane uses about 4% of one Max 5x account's weekly limit in 12 hours.
-   Twelve lanes use that much in one hour.
+   On 2026-11-07, twelve lanes used about 4% of one Max 5x account's weekly
+   limit in one hour.
 3. Choose the tasks. Name the task numbers in the start note. A lane that
    gets "take the next free task" often reports that it has nothing to do.
 
@@ -221,7 +221,7 @@ it needed one.
 | Unit (user `dev`) | What it runs |
 |---|---|
 | `metorite-rc.service` | `claude remote-control --name metorite-home --spawn worktree`, through the wrapper `~/.local/bin/metorite-rc`. It lets the owner open a box session from the Claude app. |
-| `cloudcli.service` | The CloudCLI web UI on `127.0.0.1:3456`, behind Tailscale Serve. |
+| `cloudcli.service` | The CloudCLI web UI on `127.0.0.1:3456`. Tailscale Serve on the Windows host publishes it on the tailnet. |
 | `claude-account-switcher.service` | The account Hub (§5). |
 
 A session that the owner opens through Remote Control runs as `dev` in
@@ -264,7 +264,7 @@ When `claude mcp list` shows `metorite` as "Needs authentication":
    browser shows.
 4. Deliver it on the box at once, while the listener lives:
    `ssh metorite-home 'curl -s "<that address>"'`.
-5. Check with `claude mcp list`. Then start fresh lanes (§3.5).
+5. Check with `claude mcp list`. Then start fresh lanes (§3.3), not resumes.
 
 The login needs a terminal. A login with no terminal opens no listener. A
 callback address that waits too long expires. The per-box token of task 1819
@@ -285,8 +285,8 @@ bash scripts/ci_local.sh --full   # every test, as pr-check does on a merge
 
 The home box is the default lane, and this PC's `metorite-ci` distro is the
 second lane. The script's header and `engineering_practice.md` §7a own the
-details. A full suite peaks at about 10.7 GB of memory and takes about
-41 minutes, so the box runs one full suite at a time.
+details. On 2026-11-06 a full suite peaked at about 10.7 GB of memory and
+took about 41 minutes (task 1907). So run one full suite at a time on the box.
 
 Before each push, run the tests that the diff can affect:
 `timeout 2400 uv run python scripts/affected_tests.py --run`.
@@ -307,12 +307,19 @@ Before each push, run the tests that the diff can affect:
 
 ### 6.3 GitHub Actions runners on the box
 
-Four runners, `metorite-box-1` to `metorite-box-4`, run as user `ghrunner`
-with the label `metorite-box` only (task 2304, CIV-23). Only the unit shards
-of pr-check go to them, and only when both of these are true:
+The runners run as user `ghrunner` with the label `metorite-box` only (task
+2304, CIV-23). Eight are registered. `metorite-box-1` to `metorite-box-4` are
+online, and `metorite-box-5` to `metorite-box-8` are offline. Read them with
+`gh api repos/Hathi-Labs/Metorite/actions/runners --jq '.runners[] | "\(.name) \(.status)"'`.
+
+The `runs-on` line of each pr-check job says where it runs. Eight jobs can go
+to the box: `changes`, `lint`, `unit-tests`, `migrations`, `frontend`,
+`frontend-operator`, `caddy` and `secret-scan`. The unit shards (`test`),
+`backup-restore` and `e2e` always run on GitHub-hosted runners. A job goes
+to the box only when both of these are true:
 
 - The repository variable `USE_BOX_RUNNERS` is `1`.
-- The pull request comes from this repository, not from a fork.
+- The run is not a pull request from a fork. A push run counts as ours.
 
 **They are off now.** `USE_BOX_RUNNERS` has been `0` since 2026-11-09 02:22
 UTC, because the box ran the jobs 2 to 3 times slower than GitHub-hosted
@@ -324,13 +331,15 @@ gh variable set USE_BOX_RUNNERS --body 1   # on
 gh variable set USE_BOX_RUNNERS --body 0   # off: the kill switch
 ```
 
-The runners stay registered and running in both states.
+The variable changes only where jobs go. The online runners keep running in
+both states.
 
 ### 6.4 Postgres for tests
 
 Put the data directory of a test database on tmpfs:
-`--tmpfs /var/lib/postgresql/data`. On the WSL disk each commit costs about
-2.5 ms, so R8 suites ran 10 to 50 times slower (2026-11-08).
+`--tmpfs /var/lib/postgresql/data`. A benchmark on 2026-11-08 (task 2304)
+measured about 2.5 ms for each commit on the WSL disk. R8 suites on the box
+then ran 10 to 50 times slower than on GitHub.
 
 ---
 
