@@ -76,6 +76,7 @@ not write a second copy of that seam. A bare test file name is under
    - OA-7i: `plan_loader` is the ONE reachability rule of the loader in a run. Its `LoaderPlan` gives the offer and `via_loader`, the owners whose specialist leaves. A hand-off to such an owner answers `LOADER_HANDOFF_REFUSED`. Fence: `test_loader_replaces_handoff.py`.
    - `PackRun.holds()` gives each pack of the run, loads too. `PackRun.refusal` applies `_refusals_for` to them. `_rules_block` is the ONE rules text of both layers. Fence: `test_load_skill_tools.py`.
    - `owner_scope(owner, held)` binds `no_egress` for any value of `held` but `False`. Fences: `test_tool_packs_registry.py`, `test_pack_guards.py`.
+   - Task 2492: `PACK_OUTSIDE_TEXT` is the ONE map of the tools of a pack of an owner that reads stranger text. Each entry says if the answer of the tool can bring outside text. `marks_chat` reads it, and `_tool_injection._pack_call` marks the chat before the tool body only when `marks_chat` is true. A send that reads nothing leaves the chat clear. A tool that the map does not name marks. When in doubt, mark. Fence: `test_pack_outside_text.py`, which fails for a pack tool with no entry.
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
    - `decide_tool_enabled()` is its ONE switch. `decide_tool_for(agent_name)` is the one place that picks `system_one_decide` or the Jev `decide`.
    - Fences: `test_decide_tool.py`, `test_system_one_tool.py`.

@@ -3600,8 +3600,11 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
        refuses, and else the write is recorded on the run's record
        (``tool_packs.pack_write_refusal``). No await comes between the run
        check and the record, so a hand-off in the same model step sees it.
-    3. It marks the chat session for an owner of :data:`UNTRUSTED_INPUT_AGENTS`,
-       BEFORE the tool body runs (EM-G11f3, as before an email sub-run).
+    3. It marks the chat session BEFORE the tool body runs (EM-G11f3, as
+       before an email sub-run), for a call that ``tool_packs.marks_chat``
+       names: a tool of an owner of :data:`UNTRUSTED_INPUT_AGENTS` whose
+       answer can bring outside text (``tool_packs.PACK_OUTSIDE_TEXT``, task
+       2492). A send that reads nothing leaves the chat clear.
     4. It runs the gated tool inside ``tool_packs.owner_scope``. The gate reads
        the owner, so an owner's write asks its own card and never the
        untrusted card too.
@@ -3635,6 +3638,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
     from acb_skills.tool_packs import (
         PACK_RUN_KEY,
         PACK_SLUG_ATTR,
+        marks_chat,
         note_used,
         owner_scope,
         pack_tool_runs,
@@ -3663,13 +3667,15 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         if twice is not None:
             return twice
         pack_tool_runs(slug, ctx)  # RX-1, before any await: its pack stays
-        await _mark_pack_session(owner, ctx)
+        call_args = _call_args(fn, args, kwargs)
+        if marks_chat(owner, name, call_args):  # task 2492: a read marks, a send does not
+            await _mark_pack_session(owner, ctx)
         try:
             with owner_scope(owner, held_now):
                 result = await gated(*args, **kwargs)
         finally:
             _close_pack_profile_writes()
-        await _record_pack_call(owner, ctx, name, _call_args(fn, args, kwargs), result)
+        await _record_pack_call(owner, ctx, name, call_args, result)
         if slug:
             await note_used(slug, ctx)
         return result
@@ -3698,7 +3704,9 @@ async def _mark_pack_session(owner: str, ctx: Any) -> None:
 
     The executor's own helper, which marks before an email sub-run starts.
     It marks only for an owner of :data:`UNTRUSTED_INPUT_AGENTS`, keys on the
-    bound tenant and the session of *ctx*, and never raises."""
+    bound tenant and the session of *ctx*, and never raises. The pack call
+    asks ``tool_packs.marks_chat`` first, so only a call that can read
+    outside text comes here (task 2492)."""
     from orchestrator.executor import _mark_untrusted_session
 
     await _mark_untrusted_session(owner, ctx)

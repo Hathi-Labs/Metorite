@@ -76,6 +76,7 @@ __all__ = [
     "PACKS_KEY",
     "PACK_ONLY_OWNERS",
     "PACK_ONLY_REFUSED",
+    "PACK_OUTSIDE_TEXT",
     "PACK_RUN_KEY",
     "PACK_SLUG_ATTR",
     "SURFACE",
@@ -98,6 +99,7 @@ __all__ = [
     "handoff_ended",
     "load_tool",
     "loadable",
+    "marks_chat",
     "matched_layer",
     "note_used",
     "owner_packs",
@@ -1133,6 +1135,114 @@ PACKS: dict[str, Pack] = {
         surface="studio",
     ),
 }
+
+# ── The pack tools that read outside text (task 2492) ───────────────────────
+
+#: Each tool of a pack whose owner reads stranger text
+#: (``egress.UNTRUSTED_INPUT_AGENTS``), and when its answer brings text that a
+#: stranger wrote into the model's context. ``_tool_injection._pack_call``
+#: marks the chat session BEFORE the tool body runs for each call that
+#: :func:`marks_chat` names (EM-G11f3). Before task 2492 every call marked,
+#: so a send held the chat that only sent.
+#:
+#: * ``True``: the answer can hold outside text: a body, a subject, a sender
+#:   name, a thread, a file text, a snippet, a learned pattern, or a draft
+#:   that the drafter wrote from a mail. Each call marks.
+#: * ``False``: the answer holds only the member's own data (a mailbox label,
+#:   a count, an id), the model's own arguments and the server's own words.
+#:   A card can show outside text to the member, but the answer that the
+#:   model reads holds none. No call marks.
+#: * A tuple of argument names: a call marks when it passes one of them with
+#:   a value. ``send_email`` with ``reply_to_email_id`` names the addresses
+#:   that the server took from the headers of the original mail.
+#:
+#: When in doubt, ``True``. A tool that the map does not name marks (fail
+#: closed). Fence: ``tests/unit/test_pack_outside_text.py`` holds each tool of
+#: each such pack to one entry here.
+PACK_OUTSIDE_TEXT: Mapping[str, bool | tuple[str, ...]] = {
+    # The ``email`` pack.
+    "bulk_manage_inbox": False,  # counts and the model's own filter
+    "cancel_scheduled_send": False,  # fixed words, or the server's refusal
+    "compose_reply": True,  # the subject and the recent reply of the thread
+    "create_label": False,  # the model's own label name
+    "digest": True,  # subjects and senders
+    "draft_reply": True,  # the drafter's text from the mail, and its subject
+    "edit_draft": True,  # the draft's subject, which can be "Re: <subject>"
+    "find_contact": True,  # names from the headers of mail
+    "find_follow_ups": True,  # subjects and senders
+    "find_priority": True,  # subjects and senders
+    "forward_email": True,  # the subject and the file names of the mail
+    "get_account_overview": True,  # top senders and subjects
+    "list_accounts": False,  # the member's own mailboxes and counts
+    "list_artifacts": True,  # file names that a mail can have named
+    "list_labels": True,  # a label name that a rule or a sort can have made
+    "list_scheduled_sends": True,  # draft subjects and failure text
+    "manage_inbox": False,  # counts; the senders and subjects stay on the card
+    "mark_thread_done": False,  # fixed words; the subject stays on the card
+    "narrow_and_read": True,  # mail text
+    "present_email_groups": True,  # subjects and senders
+    "query_inbox": True,  # mail text
+    "query_insights": True,  # mail text
+    "read_email": True,  # mail text
+    "read_email_attachment": True,  # file text
+    "read_thread": True,  # mail text
+    "reclassify_reply_zero": False,  # fixed words
+    "schedule_send": False,  # the time, the own mailbox and the schedule id
+    "send_draft": False,  # "Draft sent." or a refusal with ids
+    "send_email": ("reply_to_email_id",),  # a reply names derived addresses
+    "snooze_email": True,  # the subject of the mail
+    "sync_account": False,  # a count
+    # The ``email-setup`` pack.
+    "apply_settings_to_mailboxes": False,  # the member's own mailboxes
+    "auto_categorize_inbox": True,  # senders and categories of mail
+    "categorize_senders": True,  # senders
+    "copy_rules": True,  # rule names that a learned rule can carry
+    "create_rule": False,  # the model's own rule and the own mailbox
+    "create_rules_from_prompt": True,  # rule names that a model wrote
+    "delete_knowledge": False,  # the id
+    "delete_rule": False,  # the id
+    "forget_pattern": True,  # a pattern learned from mail
+    "generate_writing_style": True,  # a style read from sent mail and quotes
+    "get_rules_and_settings": True,  # rules and patterns learned from mail
+    "install_default_rules": False,  # the preset names and the own mailbox
+    "learn_rule_pattern": True,  # a pattern learned from a mail
+    "list_knowledge": True,  # entries that a mail can have filled
+    "list_patterns": True,  # patterns learned from mail
+    "list_rule_history": True,  # subjects and senders of the acted mail
+    "list_senders": True,  # senders
+    "resolve_execution": True,  # the subject and the sender of the act
+    "rule_guidance": True,  # guidance and policy lines
+    "run_rules": True,  # subjects and senders of the acted mail
+    "save_knowledge": False,  # the model's own title and the own mailbox
+    "set_sender_status": True,  # the sender lines of the server
+    "test_rule_match": True,  # subjects and senders of the matched mail
+    "unsubscribe_sender": True,  # unsubscribe targets that a mail names
+    "update_account": False,  # the member's own mailbox
+    "update_assistant_settings": False,  # the own mailbox, or the server's words
+    "update_rule": True,  # the stored rule name
+    "voice_profile": True,  # a voice read from sent mail and quotes
+}
+
+
+def marks_chat(owner: str, tool: str, args: Mapping[str, Any] | None = None) -> bool:
+    """True when a call of *tool* of a pack of *owner* must mark the chat
+    session before its body runs (task 2492).
+
+    An owner outside ``egress.UNTRUSTED_INPUT_AGENTS`` gives False, because
+    its tools read no stranger text. For an owner inside it, the entry of
+    :data:`PACK_OUTSIDE_TEXT` decides, with the call's own arguments *args*.
+    A tool that the map does not name gives True (fail closed)."""
+    try:
+        from acb_skills.egress import UNTRUSTED_INPUT_AGENTS
+    except ImportError:
+        return True
+    if str(owner or "") not in UNTRUSTED_INPUT_AGENTS:
+        return False
+    rule = PACK_OUTSIDE_TEXT.get(str(tool or ""), True)
+    if isinstance(rule, bool):
+        return rule
+    given = args or {}
+    return any(bool(given.get(name)) for name in rule)
 
 #: A pack that follows a parent pack, and that parent. The pack is on wherever
 #: its parent is on (:func:`packs_on`), and off wherever an admin turned the
