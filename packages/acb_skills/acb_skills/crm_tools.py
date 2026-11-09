@@ -975,20 +975,12 @@ async def _overlay_lanes(mod: str) -> str:
     return "\n".join(lines)
 
 
-@_read_tool
-async def crm_list_pipelines() -> str:
-    """The deal pipelines, each with its stages in order: the stage type, the
-    probability that a weighted forecast uses, and the stage id."""
-    mod = await _overlay_module("deals")
-    if mod is not None:
-        return await _overlay_lanes(mod)
-    pipelines = await _get("/crm/pipelines")
-    if not pipelines:
-        return "The CRM has no deal pipeline yet."
-    lines = []
+def _pipeline_lines(pipelines: list[dict[str, Any]], label: str) -> list[str]:
+    """One heading for each pipeline, then its stages in order."""
+    lines: list[str] = []
     for p in pipelines:
         lines.append(
-            f"Pipeline {p.get('name')}" + (" (default)" if p.get("is_default") else "")
+            f"{label} {p.get('name')}" + (" (default)" if p.get("is_default") else "")
             + f" (id={p.get('id')}):"
         )
         for s in p.get("stages") or []:
@@ -998,6 +990,28 @@ async def crm_list_pipelines() -> str:
                 + (f" · {prob}%" if prob is not None else "")
                 + f" (id={s.get('id')})"
             )
+    return lines
+
+
+@_read_tool
+async def crm_list_pipelines() -> str:
+    """The deal pipelines, each with its stages in order: the stage type, the
+    probability that a weighted forecast uses, and the stage id. Then the lead
+    pipelines, if any, each with its lead statuses in order."""
+    mod = await _overlay_module("deals")
+    if mod is not None:
+        return await _overlay_lanes(mod)
+    pipelines = await _get("/crm/pipelines")
+    # CRM-M4a: the lead pipelines of the org, with ``kind=lead``. A lead with
+    # no pipeline sits on the default lead list, which holds every status.
+    leads = [p for p in await _get("/crm/pipelines", {"kind": "lead"}) or []
+             if isinstance(p, dict) and p.get("kind") == "lead"]
+    lines = (_pipeline_lines(pipelines, "Pipeline") if pipelines
+             else ["The CRM has no deal pipeline yet."])
+    if leads:
+        lines.append(
+            "Lead pipelines (a lead with no pipeline is on the default lead list):")
+        lines += _pipeline_lines(leads, "Lead pipeline")
     return "\n".join(lines)
 
 

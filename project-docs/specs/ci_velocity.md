@@ -69,9 +69,11 @@ waited up to 22 minutes for a runner.
 
 **Non-goals:**
 - No merge queue (D-2026-10-16).
-- No GitHub self-hosted runner while the repo is public. A fork PR could run
-  code on it. The home box takes work only from our own sessions, over
-  Tailscale (task 1534).
+- No GitHub self-hosted runner, except the box runners of CIV-23 (D201). They
+  carry only the label `metorite-box`, run the light jobs (not the unit shards) and the nightly browser suite (D203), and never
+  take a fork PR. They run as user `ghrunner` with no sudo and a rootless
+  Docker. The home box also takes work from our own sessions, over Tailscale
+  (task 1534).
 - This spec does not change the full-suite rule of a release. CIV-21
   (D194) changes only the clock: production moves three times a day, at
   05:30, 13:30 and 21:30 UTC.

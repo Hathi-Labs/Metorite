@@ -109,6 +109,24 @@ async def test_a_closed_key_writes_behind_a_card(gw) -> None:
     assert gw.puts[0]["about"] == "old about"
 
 
+@pytest.mark.parametrize(("kw", "marked"), [
+    ({"auto_run": False}, True),
+    ({"auto_run": True, "cold_email_blocker": "label"}, True),
+    ({"cold_email_blocker": "label"}, False),
+    ({"draft_replies": True}, False),
+], ids=["off", "on-and-other", "other-only", "drafting-only"])
+async def test_the_held_path_marks_only_an_auto_run_change(gw, kw, marked) -> None:
+    """Task 2305 (§12.3.13.7): the held path sends the marker
+    ``auto_run_choice`` only when the model passed ``auto_run``. A change of
+    another key records no Auto-run choice."""
+    out = await agents.update_assistant_settings(account_id=F.BOX, **kw)
+    assert out.startswith("Assistant settings updated")
+    [body] = gw.puts
+    assert ("auto_run_choice" in body) is marked
+    if marked:
+        assert body["auto_run_choice"] is True and body["auto_run"] is kw["auto_run"]
+
+
 async def test_a_no_on_the_card_writes_nothing(gw) -> None:
     gw.approve = False
     out = await agents.update_assistant_settings(account_id=F.BOX, draft_replies=True)
