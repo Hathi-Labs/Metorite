@@ -62,9 +62,9 @@ ALLOW: dict[tuple[str, str], str] = {
     # --- DEC-2 (task 2307) moves these six picks. Each leaves the list. ---
     (T + "ai.py", "_find_parent_task"): "moving in DEC-2",  # parent-step check
     (T + "ai.py", "_llm_enrich"): "moving in DEC-2",  # enrich picks
-    (T + "ai.py", "_llm_suggest_title"): "moving in DEC-2",  # vague-title gate
-    (T + "ai.py", "_llm_atomize"): "moving in DEC-2",  # atomize dedup
-    (T + "capture_email.py", "_llm_detect_commitment"): "moving in DEC-2",
+    (T + "ai.py", "_llm_suggest_title"): "fallback of projects.vague_title",  # vague-title gate
+    (T + "ai.py", "_llm_atomize"): "fallback of projects.atomize_dedup",  # atomize dedup
+    (T + "capture_email.py", "_llm_detect_commitment"): "fallback of projects.commitment",
     (T + "capture_email.py", "_llm_capture"): "moving in DEC-2",  # delegate pick
     # --- Prose a person reads, or real judgement. ---
     # Serves _llm_propose: picks project, assignee and type. A Choice, so it moves.
