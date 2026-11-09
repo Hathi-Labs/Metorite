@@ -537,6 +537,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.agent_run_sweep_skipped", error=str(exc))
 
+    # Start the job worker (gateway/jobs/worker.py; spec job_queue.md §5,
+    # WS-BRIEF BR-1a). Every 10 s it claims the due jobs of each org and runs
+    # their handlers. Dark by default: with JOB_QUEUE_ENABLED off it starts no
+    # task and logs once. The gate lives inside the start function. Fence:
+    # test_job_queue_r8.py.
+    try:
+        from gateway.jobs.worker import start_job_worker
+        _log.info("gateway.job_worker", started=await start_job_worker())
+    except Exception as exc:
+        _log.warning("gateway.job_worker_skipped", error=str(exc))
+
     # Chat-run liveness (incident 2026-10-09). This process beats a heartbeat
     # key, so a run it holds reads as alive and a run of a dead process reads
     # as dead. The loop also sweeps: each run a dead process left is closed,
@@ -681,6 +692,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from gateway.agent_run_sweep import stop_agent_run_sweep
         await stop_agent_run_sweep()
+    except Exception:
+        pass
+
+    # Stop the job worker. It waits for a tick in progress, then cancels it.
+    # A cancelled job keeps its lease, so the next process runs it again.
+    try:
+        from gateway.jobs.worker import stop_job_worker
+        await stop_job_worker()
     except Exception:
         pass
 
@@ -2102,6 +2121,11 @@ class Version(BaseModel):
     #: shows whether a box serves them. With it off, every reminder route
     #: answers 404. Off by default.
     calendar_reminders: bool = False
+    #: WS-BRIEF BR-1a (`job_queue.md` §5). The gateway's `JOB_QUEUE_ENABLED`
+    #: flag, the ONE switch of the job worker, so `curl` shows whether a box
+    #: runs jobs. With it off, `enqueue` still writes and no job runs. Off by
+    #: default.
+    job_queue: bool = False
 
 
 def _runtime_checks() -> dict[str, dict]:
@@ -2195,8 +2219,11 @@ async def version() -> Version:
     does not break. S9 may drop it.
 
     `web_push` is the gateway's `WEB_PUSH_ENABLED` (WS-66 PN-1), through
-    its one reader, `gateway.push.flags`.
+    its one reader, `gateway.push.flags`. `job_queue` is the gateway's
+    `JOB_QUEUE_ENABLED` (WS-BRIEF BR-1a), through its one reader,
+    `gateway.jobs.worker.worker_enabled`.
     """
+    from gateway.jobs.worker import worker_enabled
     from gateway.push import flags as push_flags
     from gateway.routes.projects.reminders import reminders_enabled
 
@@ -2209,6 +2236,7 @@ async def version() -> Version:
         applied_at=applied_at,
         web_push=push_flags.enabled(),
         calendar_reminders=reminders_enabled(),
+        job_queue=worker_enabled(),
     )
 
 

@@ -434,6 +434,20 @@ class Settings(BaseSettings):
     # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
     calendar_reminders: bool = False
 
+    # ── The job queue (WS-BRIEF BR-1a, 2026-10-28) ──────────────────────────
+    #
+    # `job_queue_enabled` is the switch of the job worker, default OFF. With
+    # it off, `start_job_worker()` starts no task and logs
+    # `jobs.worker_disabled`, and `run_tick()` does nothing. `enqueue` still
+    # writes, so a caller can be built and tested dark. `/version` carries the
+    # value as `job_queue`. The one reader is `worker_enabled()` in
+    # gateway/jobs/worker.py. The `_ENABLED` suffix of
+    # `env_guard.PLATFORM_ENV_SUFFIXES` keeps a tenant from setting
+    # `JOB_QUEUE_ENABLED`. Spec project-docs/specs/job_queue.md §5. A flip on
+    # a box is gate `enforcement-flip`, and after 2026-11-30 it is JQ-G3.
+    # Fences: tests/unit/test_job_queue_r8.py and tests/unit/test_job_queue.py.
+    job_queue_enabled: bool = False
+
     # ── The Knowledge app (WS-61 KB-1, 2026-10-15) ──────────────────────────
     #
     # `/knowledge` serves an organization only when both settings allow it.
