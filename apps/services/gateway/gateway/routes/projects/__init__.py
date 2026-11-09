@@ -70,6 +70,7 @@ from gateway.routes.projects import needs_attention as _needs_attention  # noqa:
 from gateway.routes.projects import notifications as _notifications  # noqa: F401
 from gateway.routes.projects import personal as _personal  # noqa: F401
 from gateway.routes.projects import plan_analysis as _plan_analysis  # noqa: F401
+from gateway.routes.projects import plan_order as _plan_order  # noqa: F401
 from gateway.routes.projects import plan_preview as _plan_preview  # noqa: F401
 from gateway.routes.projects import planning as _planning  # noqa: F401
 from gateway.routes.projects import recurrence as _recurrence  # noqa: F401

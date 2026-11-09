@@ -19,12 +19,15 @@ import {
   reviewRulePatterns, saveAssistantSettings, scanFollowUps, updateKnowledge,
   upsertColdSender,
 } from "../../../lib/api";
-import { AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn } from "../../../lib/assistantSettings";
+import {
+  AUTO_RUN_AI_LINE, AUTO_RUN_DESCRIPTION, autoDraftRepliesOn,
+  settingsSaveBody, withoutAutoRunChoice,
+} from "../../../lib/assistantSettings";
 import {
   dialogAfterSave, patchBody, saveSignature, settingsAfterSave, shownError, type SignatureSave,
 } from "../../../lib/signatureSave";
 import {
-  AssistantSettings, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
+  AssistantSettings, AssistantSettingsSave, ColdBlockerMode, ColdSender, DRAFT_CONFIDENCE_OPTIONS,
   DraftConfidence, KnowledgeEntry, LearnedPattern,
   LearnedRulePattern, RuleGuidance, VoiceProfile, WEEKDAYS,
 } from "../../../lib/types";
@@ -308,14 +311,16 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
 
   // Persist the whole settings object. Toggles/selects persist immediately;
   // the free-text cards rely on the bottom "Save settings" button.
-  const persist = async (next: AssistantSettings) => {
-    setSettings(next);
+  // Task 2305: the state never holds the Auto-run marker, and only the
+  // Auto-run switch passes `autoRunChoice`. So only its save sends the marker.
+  const persist = async (next: AssistantSettingsSave, autoRunChoice = false) => {
+    setSettings(withoutAutoRunChoice(next));
     setSaving(true);
     setError(null);
     setSaved(false);
     try {
-      const res = await saveAssistantSettings(next);
-      setSettings(res);
+      const res = await saveAssistantSettings(settingsSaveBody(next, autoRunChoice));
+      setSettings(withoutAutoRunChoice(res));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -331,6 +336,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
   const s = settings; // narrowed
   // Builds on the settings state, which holds the STORED signature, so a
   // toggle never sends a signature edit that did not save (WS-17 SG-1).
+  // persist drops the Auto-run marker, so a toggle records no choice (task 2305).
   const persistPatch = (p: Partial<AssistantSettings>) => persist(patchBody(s, p));
   // A signature save changes the state only on success. A refusal leaves the
   // stored signature in the state and on the card (signatureSave.ts).
@@ -500,7 +506,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
             right={
               <Toggle
                 enabled={s.auto_run}
-                onChange={(v) => persistPatch({ auto_run: v })}
+                onChange={(v) => persist({ ...s, auto_run: v }, true)}
               />
             }
           />
