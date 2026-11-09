@@ -538,6 +538,38 @@ def test_a_package_field_out_of_the_app_reads_the_same_for_a_hit_and_a_miss(
     assert PACKAGE_OUT in out, out
 
 
+#: Imports that esbuild's resolver follows out of the app dir through a link
+#: (round 4 P1): (mode, the link, its target in org A, the import).
+LINK_ROUTES = {
+    "dir_link": ("default", "src/shared", "src", "./shared/{}"),
+    "node_modules_link": ("custom_deps", "node_modules/x", "src", "x/{}"),
+}
+
+
+@docker
+@pytest.mark.parametrize("route", sorted(LINK_ROUTES))
+def test_a_link_out_of_the_app_reads_the_same_for_a_hit_and_a_miss(
+    apps: dict[str, Path], vendor: Path, route: str,
+) -> None:
+    """Through a link, a file of org A that exists resolves out of the roots,
+    and one that does not fails to resolve. Both give the same refusal, which
+    differs only in the name that org B wrote (round 4 P1)."""
+    b = apps["b"]
+    mode, link, target, spec = LINK_ROUTES[route]
+    if mode == "custom_deps":
+        _custom_deps(b)
+    _link(b / link, apps["a"] / target, is_dir=True)
+    outs = []
+    for name in ("data.json", "nothere-2464.json"):
+        _write(b / "src" / "main.tsx", f"import d from {json.dumps(spec.format(name))};\nconsole.log(d);\n")
+        done = _build(b, vendor)
+        assert done.returncode != 0, done.stdout + done.stderr
+        outs.append((done.stdout + done.stderr).replace(name, "<file>"))
+    assert outs[0] == outs[1], f"an oracle: the hit and the miss read apart:\n{outs[0]}\n---\n{outs[1]}"
+    assert UNRESOLVED in outs[0], outs[0]
+    _assert_no_leak(outs[0], b)
+
+
 @docker
 def test_a_file_swapped_during_the_build_never_reaches_esbuild_unchecked(
     apps: dict[str, Path], vendor: Path,
