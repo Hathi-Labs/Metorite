@@ -30,10 +30,15 @@ language page (https://www.assemblyai.com/docs/sync-stt/language-selection.md):
 * Data residency hosts exist. This handler uses the global host only.
 
 🔴 **The model and the languages are in the model id.** No column holds a
-per-model setting, so the operator declares ``assemblyai/universal-3-5-pro/hi,en``.
+per-model setting, so the operator declares ``assemblyai/universal-3-5-pro/en``.
 The text before the first slash names the credential. The vendor sees the model
 in ``X-AAI-Model`` and the codes in ``config``. An id with no languages sends
 no ``config`` part, and the vendor applies no steering.
+
+⚠️ **``hi,en`` writes Hindi in Devanagari script** (production, 2026-11-09). An
+8 s English clip came back in Devanagari with ``hi,en``, and in clean English
+with ``/en`` or with no codes. So ``/en`` is the registry default
+(``provider_registry.py``, spec ``customer_console.md`` §6A.18).
 
 🔴 **The bill is the door's measure of the WAV bytes.** ``audio_duration_ms``
 never sets a quantity (the VOX-2 measured-only rule). The result carries the
@@ -140,7 +145,7 @@ def model_refusal(model: str) -> str | None:
     return (
         f"model {model!r} is not an AssemblyAI id this Console can call. Declare "
         f"assemblyai/<model> or assemblyai/<model>/<codes>, for example "
-        f"assemblyai/universal-3-5-pro/hi,en. The model is one of "
+        f"assemblyai/universal-3-5-pro/en. The model is one of "
         f"{', '.join(sorted(MODELS))}. The codes are a comma list from "
         f"{', '.join(sorted(LANGUAGES))}, with no repeat, and no codes means "
         "no language steering"
