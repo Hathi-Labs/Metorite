@@ -648,9 +648,11 @@ only English can still speak Hindi to the assistant.
 |---|---|---|---|---|
 | **PZ-52** | `style.languages` in `_clean_style`, the dual write with `style.language`, the old-profile read, the block line, the route in `admin/assistant_profile.py` | A profile with `languages=["en","hi","kn"]` gives the line `Languages: English (en), then Hindi (hi), then Kannada (kn).` An old profile with `language="kn"` reads as `["kn"]` | `tests/unit/test_assistant_profile_languages.py`: cap 6, repeat dropped, 7th tag 422, old read, mismatch rule, block line. R8: the PUT and GET round trip on a real database | AGENT-SAFE · STANDARD |
 | **PZ-53** | The Settings control: ordered chips, rank 1 "Preferred", drag and button reorder, remove, add from the 9 languages | The control saves the order, and a reload shows it | `profile.test.ts` (the `LANGUAGES` map, the move helpers), a pane test for the keyboard moves, and the captures of the UI gate | AGENT-SAFE · STANDARD |
-| **VOX-8** | Console: `language_hints` on the door and in both handlers. Gateway: read the list server-side and send it. Details are in `projects_ai_chat.md` §31 | A WAV clip on a `tier-stt` chain with AssemblyAI sends `language_codes` from the list. A Sarvam clip sends none | See §31 VOX-8 | HIGH |
+| **VOX-8** (DEFERRED, owner 2026-11-09) | Console: `language_hints` on the door and in both handlers. Gateway: read the list server-side and send it. Details are in `projects_ai_chat.md` §31 | A WAV clip on a `tier-stt` chain with AssemblyAI sends `language_codes` from the list. A Sarvam clip sends none | See §31 VOX-8 | HIGH |
 
-PZ-52 goes first. PZ-53 and VOX-8 follow in parallel. VOX-8 reads
+**Owner, 2026-11-09 (task 2505):** "looks fine. You can continue", which approved the option "build the list for the chat now, mic hint later". VOX-8 stays closed until Sarvam has served real clips and shows a wrong-language guess. The reason: Sarvam detects every Indian language with no hint, and a hint can only narrow it. AssemblyAI steered with `hi` wrote English speech in Devanagari script (production Try, 2026-11-09). Since 2026-11-09 09:33 UTC, `tier-stt` on production is `[sarvam/saaras:v4/codemix, assemblyai/universal-3-5-pro/en]`.
+
+PZ-52 goes first. PZ-53 follows. VOX-8, when it opens, reads
 `style.languages` from the profile, so it needs PZ-52. No slice adds a flag,
 because an empty list changes nothing. The existing voice routing switch turns
 the mic path off.
@@ -660,6 +662,8 @@ Numbers: `PZ-51` is taken (PR 2031). No branch uses `PZ-52` or `PZ-53`.
 Re-check all three at merge (R1).
 
 #### Owner calls
+
+**ANSWERED 2026-11-09:** the owner approved the preview and the recommendations. Q1 is 6 and Q3 is "not now". Q2 does not apply while VOX-8 stays closed.
 
 | # | Call | Recommendation |
 |---|---|---|

@@ -7466,7 +7466,8 @@ the metered door. A Sonnet builder, because Opus was rate-limited until 2026-11-
 
 **VOX-8 (task 2505). The mic hears the languages the member speaks.** HIGH,
 because it changes the metered door. Design: `personalization.md` §5.3a.
-Needs PZ-52 for the list.
+Needs PZ-52 for the list. **DEFERRED by the owner on 2026-11-09.** It opens
+only when Sarvam, now first on `tier-stt`, shows a wrong-language guess.
 
 - **Why:** the owner said on 2026-11-09: "just because our preference is
   English doesn't mean that it should not understand Hindi as input."
