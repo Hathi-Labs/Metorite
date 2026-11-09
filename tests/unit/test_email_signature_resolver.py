@@ -12,7 +12,10 @@ Spec: ``project-docs/specs/email_app_master_plan.md`` §23.3.3, §23.5 and
   resolver with its kind. Each caller of ``strip_signature_text`` gets its
   signature from the resolver.
 * **One signature.** A reply that a draft path wrote and that the send then
-  signs carries exactly one signature, for each ``reply_mode``.
+  signs carries exactly one signature, for each ``reply_mode``. A change of
+  mode between the draft and the send gives one signature too (§23.9).
+* **One reader of the flag.** Only ``signature.templates_on`` reads
+  ``EMAIL_SIGNATURE_TEMPLATES_ORGS`` (§23.5).
 
 ⚠️ Limit of the scan (R7): it reads string literals, and a ``+`` of two
 literals. A column name that the code builds at run time passes it.
@@ -304,6 +307,25 @@ async def test_a_custom_reply_drafted_and_sent_carries_one_signature(
     sig_text = signature_text(stored)
     assert sent["body_text"].count(sig_text) == 1
     assert (sent["body_text"], sent["body_html"]) == build_signed_bodies(stored, body, None)
+
+
+@pytest.mark.parametrize("reply_mode", sig.REPLY_MODES)
+@pytest.mark.parametrize("reply_to", [None, "local-1"])
+async def test_a_mode_change_between_draft_and_send_gives_one_signature(
+    monkeypatch: pytest.MonkeyPatch, reply_mode: str, reply_to: str | None,
+) -> None:
+    """§23.9. A draft written while the mailbox was ``custom`` holds the stored
+    signature. The mode then changes to ``template`` before the send. The send
+    keeps the signature of the draft, and adds no second one."""
+    _flag(monkeypatch, "*")
+    db = _Db("<p>Ravi Kumar</p><p>Acme</p>")
+    body = await _drafted(db, _REPLY)
+    assert body.count("Ravi Kumar") == 1
+    db.settings = _template(reply_mode)
+    sent = await _send(monkeypatch, db, body, reply_to)
+    for part in (sent["body_text"], sent["body_html"]):
+        assert part.count("Ravi Kumar") == 1, part
+        assert "Jane Doe" not in part, part
 
 
 @pytest.mark.parametrize("stored", _STORED)
@@ -609,6 +631,69 @@ def test_the_strip_scan_can_go_red() -> None:
         "def reader(db):\n    return strip_signature_text(raw(db), 'x')\n"
         "def raw(db):\n    return db.execute('x')\n").body]
     assert _is_sourced("reader", defs, _sourced_names(defs)) is False
+
+
+_FLAG = "email_signature_templates_orgs"
+#: The settings field declares the flag, and the env guard names it. Neither reads it.
+_FLAG_DECLARED = (
+    _ROOT / "packages/acb_common/acb_common/settings.py",
+    _ROOT / "packages/acb_common/acb_common/env_guard.py",
+)
+
+
+def flag_reads(source: str) -> list[int]:
+    """The lines that name the flag in code: a string, an attribute or a name.
+    A docstring only describes the flag, so it is not a read."""
+    tree = ast.parse(source)
+    docs: set[int] = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)):
+            docs.add(id(body[0].value))
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) not in docs and _FLAG in node.value.lower():
+                lines.add(node.lineno)
+        elif isinstance(node, ast.Attribute) and node.attr.lower() == _FLAG:
+            lines.add(node.lineno)
+        elif isinstance(node, ast.Name) and node.id.lower() == _FLAG:
+            lines.add(node.lineno)
+    return sorted(lines)
+
+
+def test_templates_on_is_the_one_reader_of_the_flag() -> None:
+    """§23.5 (R7). A second reader could disagree with ``templates_on`` on the
+    parse, the ``*`` or the bound tenant, and switch one reader on alone."""
+    found = {}
+    for path in _product_files():
+        if path == _SIGNATURE_PY or path in _FLAG_DECLARED:
+            continue
+        lines = flag_reads(path.read_text(encoding="utf-8-sig"))
+        if lines:
+            found[path.relative_to(_ROOT).as_posix()] = lines
+    assert not found, (
+        f"Code outside signature.templates_on reads {_FLAG.upper()}: {found}. "
+        "Call templates_on().")
+    source = _SIGNATURE_PY.read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(source))
+              if isinstance(n, ast.FunctionDef) and n.name == "templates_on")
+    reads = flag_reads(source)
+    assert reads, "templates_on no longer reads the flag"
+    assert all(fn.lineno <= line <= (fn.end_lineno or fn.lineno) for line in reads), reads
+
+
+@pytest.mark.parametrize(("source", "want"), [
+    ("X = get_settings().email_signature_templates_orgs\n", [1]),
+    ("import os\nX = os.environ['EMAIL_SIGNATURE_TEMPLATES_ORGS']\n", [2]),
+    ("X = getattr(s, 'email_signature_templates_orgs', '')\n", [1]),
+    ('"""EMAIL_SIGNATURE_TEMPLATES_ORGS gates the layouts."""\n', []),
+    ('def f():\n    """Reads EMAIL_SIGNATURE_TEMPLATES_ORGS."""\n    return 1\n', []),
+])
+def test_the_flag_scan_can_go_red(source: str, want: list[int]) -> None:
+    assert flag_reads(source) == want
 
 
 # ── 5. The preview route ────────────────────────────────────────────────────

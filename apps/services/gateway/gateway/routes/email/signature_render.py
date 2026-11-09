@@ -152,8 +152,10 @@ def _int(value: Any) -> int | None:
 def _image(value: Any, box: tuple[int, int]) -> tuple[str, int, int] | None:
     """``(src, width, height)`` of a hosted image fitted in ``box``, or ``None``.
 
-    Only a hosted image of SG-1 passes, so the send never carries a ``data:``
-    image or an address of a stranger. The image keeps its aspect ratio."""
+    Only an address in the shape of a hosted image of SG-1 passes, so the send
+    never carries a ``data:`` image. The renderer stays pure, so it checks the
+    path and not the host. The SG-3 writer stores only an address that starts
+    with ``public_base_url()`` (§23.6). The image keeps its aspect ratio."""
     if not isinstance(value, Mapping):
         return None
     src = value.get("url")

@@ -320,12 +320,19 @@ class SignatureForms:
         ``new`` form into the body until SG-5 passes the kind of the draft. So
         when the body holds the ``new`` form and not the form of ``kind``, the
         send keeps the ``new`` form. ``build_signed_bodies`` then finds it in
-        the text and adds no second one."""
+        the text and adds no second one.
+
+        The same holds for the ``stored`` form. A draft written while the
+        mailbox was ``custom`` holds the stored signature. When the mode
+        changes to ``template`` before the send, the send keeps the stored
+        form (§23.9). With the flag off, the three forms are the same bytes,
+        so the send gives the signature of main."""
         signature = self.of(kind)
-        if kind == "new" or _in_body(signature, body_text):
+        if _in_body(signature, body_text):
             return signature
-        if self.full != signature and _in_body(self.full, body_text):
-            return self.full
+        for held in (self.full, self.stored):
+            if held != signature and _in_body(held, body_text):
+                return held
         return signature
 
 

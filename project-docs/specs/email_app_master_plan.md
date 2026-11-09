@@ -22900,9 +22900,21 @@ change with no restart.
 - The audit narrowed SG-2: `kind` comes only from a field that exists (23.3.3, the kind rule).
   SG-4 builds the `company` branch, and SG-5 adds the kind of a draft.
 - The send keeps the form that the body holds (23.3.3). Without this rule, a template with
-  `reply_mode` `short` gave a reply two signatures, because each draft path seeds `new`.
-- A layout image must be a hosted image of SG-1 (`/email/signature-image/...`). The renderer
-  draws no other image address. A link takes https only, and a bare host gets `https://`.
+  `reply_mode` `short` gave a reply two signatures, because each draft path seeds `new`. The
+  rule also keeps the stored form, so a draft written in `custom` mode and sent after a change
+  to `template` carries one signature (23.9). Fence:
+  `test_email_signature_resolver.py::test_a_mode_change_between_draft_and_send_gives_one_signature`.
+- The resolver cannot see a change of a template FIELD between a draft and its send. The draft
+  holds the old text, so the send adds the new one under it. SG-3 owns this case, because its
+  writer changes the fields. `_in_body` also searches the quoted text. SG-5 owns that case.
+- Keep the flag off until SG-5 merges. Until then `short` and `none` change only the reply card
+  and a forward with no signature in its body.
+- A layout image must have the address shape of a hosted image of SG-1
+  (`/email/signature-image/<org>/<token>.<ext>`). The renderer is pure, so it checks the shape
+  and not the host. The SG-3 writer must store only an address that starts with
+  `public_base_url()`. A link takes https only, and a bare host gets `https://`.
+- `templates_on` is the one reader of the flag. Fence:
+  `test_email_signature_resolver.py::test_templates_on_is_the_one_reader_of_the_flag`.
 - Each font size is 13 px, or 15 px for the name. The legal line is grey, at 13 px.
 - `role` is not in the server allowlist of D-EM-70, so a clean of a rendered layout removes
   it. The resolver never cleans a rendered layout. SG-6 must keep this in mind for the card.
@@ -22968,7 +22980,8 @@ bash scripts/ci_local.sh && bash scripts/premerge.sh
   SG-1 is live.
 - **A company change between a draft and its send.** The draft holds the old plain text, so
   the send may not find it to upgrade it to HTML. SG-2 and SG-4 add a test, and the send must
-  give one signature, never two.
+  give one signature, never two. SG-2 added it for a change of mode
+  (`test_a_mode_change_between_draft_and_send_gives_one_signature`). SG-4 adds the company case.
 - **The token is the capability.** Anybody who holds an image URL can fetch that image, as with
   any logo on a website. The token never leaves in anything but a signature, and the image is
   public by intent.

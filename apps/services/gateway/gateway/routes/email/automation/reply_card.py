@@ -429,7 +429,7 @@ class _Mail:
         self.provider = str(getattr(row, "provider", "") or "")
         # The signature of a reply from the mailbox, from the resolver.
         self.signature = signature or ""
-        self.folder =str(getattr(row, "folder", "") or "").lower()
+        self.folder = str(getattr(row, "folder", "") or "").lower()
 
     def was_received(self) -> bool:
         """True for a mail that the member got, not one the member wrote."""
