@@ -56,12 +56,21 @@ Mutations this suite catches (R7), each run red once by hand:
 * the old ``importerInsideSrc`` rule (an app importer outside ``src/`` is
   not policed): the chain test (the error no longer names the import) and the
   vendor-by-path test (the build succeeds);
+* onLoad names ``args.path`` again: the mapping test and the main and
+  node_modules tests (a path leaks);
+* the error printer prints a line placed outside the roots: the parse
+  error test (the first word leaks);
+* no glob scan in onLoad: the glob tests (the refusal text is gone);
+* no dot-part rule: the dot-part tests (the refusal no longer names the
+  import);
+* no ``delivery_guard`` in ``build_app``: the dir lock test;
 * ``build_app`` takes the script from the clone cache again
   (``_agent_workspace_dir("agent-app-builder")``): the two route tests.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -108,7 +117,11 @@ def vendor(docker_image: str, tmp_path_factory: pytest.TempPathFactory) -> Path:
         docker_image, cache, PROD_T2_PACKAGES, "--ignore-scripts", *host_platform_args(),
     )
     if done.returncode != 0 or not (cache / "node_modules" / "esbuild").is_dir():
-        pytest.skip(f"no T2 vendor cache could be installed: {done.stderr[-400:]}")
+        why = f"no T2 vendor cache could be installed: {done.stderr[-400:]}"
+        # In CI a missing cache is a failure: a fence that skips there proves nothing.
+        if os.environ.get("CI", "").strip():
+            pytest.fail(why)
+        pytest.skip(why)
     return cache
 
 
@@ -145,10 +158,16 @@ def apps(tmp_path: Path) -> dict[str, Path]:
     _write(org_a / "src" / "secret.ts", f'export const SECRET = "{MARKER}-ts";\n')
     _write(org_a / "src" / "a.css", f'.a {{ content: "{MARKER}-css"; }}\n')
     _write(org_a / "src" / "note.txt", f"{MARKER}-txt and more words\n")
+    # Names and first words that a leak would show (task 2464 review P0, P3).
+    _write(org_a / "src" / "payroll-secret-2026.json", "{}\n")
+    _write(org_a / "src" / "zz-hidden-name.ts", "export {};\n")
+    _write(org_a / ".env", "KEY=1\n")
+    _write(org_a / "bad" / "package.json", "FIRSTWORD2464 is not JSON\n")
+    _write(tmp_path / "host" / "host-secret-file.txt", "host\n")
     _write(org_b / "app.json", '{"name": "B", "entry": "dist/bundle.html", "tier": "T2"}\n')
     _write(org_b / "index.html", TEMPLATE)
     (org_b / "src").mkdir(parents=True)
-    return {"root": root, "a": org_a, "b": org_b}
+    return {"root": root, "a": org_a, "b": org_b, "host": tmp_path / "host"}
 
 
 def _build(ws: Path, vendor: Path) -> subprocess.CompletedProcess[str]:
@@ -167,13 +186,38 @@ def _bundle(ws: Path) -> str:
     return path.read_text(encoding="utf-8") if path.is_file() else ""
 
 
+#: Words that only org A's files and the host dir hold. No output may show one.
+LEAK_TOKENS = (MARKER, "payroll-secret-2026", "zz-hidden-name", "FIRSTWORD2464", "host-secret-file")
+
+
+def _path_forms(path: Path) -> set[str]:
+    forms: set[str] = set()
+    for p in {path, path.resolve()}:
+        forms |= {str(p), p.as_posix(), json.dumps(str(p))[1:-1]}
+    return forms
+
+
+def _assert_no_leak(text: str, ws: Path, *, allowed: str = "") -> None:
+    """*text* shows no word of org A's files, and no path of org A or the host.
+
+    A path that org B wrote itself (*allowed*, the import spec) is no leak.
+    """
+    for token in LEAK_TOKENS:
+        assert token not in text, f"{token!r} leaked:\n{text}"
+    for leaked in (ws.parent / "org-a-app", ws.parent.parent / "host"):
+        for form in _path_forms(leaked):
+            if form not in allowed:
+                assert form not in text, f"a path leaked ({form}):\n{text}"
+
+
 def _assert_refused(done: subprocess.CompletedProcess[str], ws: Path, *, names: str | None = None) -> None:
     out = done.stdout + done.stderr
     assert done.returncode != 0, f"the build passed:\n{out}"
     assert REFUSAL in out, out
     if names is not None:
         assert json.dumps(names) in out, f"the refusal does not name {names!r}:\n{out}"
-    assert MARKER not in _bundle(ws)
+    _assert_no_leak(out, ws, allowed=names or "")
+    _assert_no_leak(_bundle(ws), ws)
 
 
 def _custom_deps(ws: Path) -> None:
@@ -258,6 +302,102 @@ def test_an_import_of_another_apps_file_is_refused(
         _custom_deps(apps["b"])
     spec = PATH_ROUTES[route](apps["a"], apps["b"])
     _assert_refused(_build(apps["b"], vendor), apps["b"], names=spec)
+
+
+#: Glob imports (task 2464 review P0). esbuild sends each match straight to
+#: onLoad, so before the fix each match printed one path of another org. The
+#: first two are the reviewer's forms. ``host`` and ``etc`` glob a dir outside
+#: the apps root.
+GLOB_ROUTES = {
+    "template": "const k = String(Math.random());\nconsole.log(require(`../../${k}/src/${k}`));\n",
+    "concat": 'const k = String(Math.random());\nconsole.log(require("../../org-a-app/src/" + k));\n',
+    "host": 'const k = String(Math.random());\nconsole.log(require("../../../host/" + k));\n',
+    "etc": 'const k = String(Math.random());\nconsole.log(require("' + "../" * 14 + 'etc/" + k));\n',
+    "cast": 'const k = String(Math.random());\nconsole.log(require(("../../org-a-app/" as string) + k));\n',
+    "dynamic": "const k = String(Math.random());\nimport(`../../org-a-app/src/${k}.json`).then(console.log);\n",
+}
+
+
+@docker
+@pytest.mark.parametrize("mode", ["default", "custom_deps"])
+@pytest.mark.parametrize("route", sorted(GLOB_ROUTES))
+def test_a_glob_import_is_refused_and_lists_no_file(
+    apps: dict[str, Path], vendor: Path, route: str, mode: str,
+) -> None:
+    b = apps["b"]
+    if mode == "custom_deps":
+        _custom_deps(b)
+    _write(b / "src" / "main.tsx", GLOB_ROUTES[route])
+    done = _build(b, vendor)
+    out = done.stdout + done.stderr
+    assert done.returncode != 0, out
+    assert "src/main.tsx builds an import path from parts" in out, out
+    _assert_no_leak(out, b)
+    _assert_no_leak(_bundle(b), b)
+    for host_word in ("passwd", "hostname", "shadow"):
+        assert host_word not in out, out
+
+
+#: A bare name with a ``.`` or ``..`` part, or ``@cc/ui/<part>`` (review P3).
+#: In custom-deps mode esbuild walked out of node_modules with it, and parsed
+#: the package.json of the dir it reached. ``pkg_json`` reaches org A's
+#: ``bad/package.json``, whose parse error showed its first word.
+DOT_PART_SPECS = {
+    "file": "x/../../../org-a-app/src/data.json",
+    "pkg_json": "x/../../../org-a-app/bad",
+    "missing": "x/../../../org-a-app/src/nope.json",
+    "dot": "x/./../../../org-a-app/src/data.json",
+    "cc_ui": "@cc/ui/../../../../org-a-app/src/data.json",
+}
+
+
+@docker
+@pytest.mark.parametrize("name", sorted(DOT_PART_SPECS))
+def test_a_bare_name_with_a_dot_part_is_refused(apps: dict[str, Path], vendor: Path, name: str) -> None:
+    b = apps["b"]
+    _custom_deps(b)
+    spec = DOT_PART_SPECS[name]
+    _write(b / "src" / "main.tsx", f"import d from {json.dumps(spec)};\nconsole.log(d);\n")
+    _assert_refused(_build(b, vendor), b, names=spec)
+
+
+@docker
+def test_a_mapping_out_of_the_app_names_no_path_and_prints_once(
+    apps: dict[str, Path], vendor: Path,
+) -> None:
+    """A package.json "browser" map leads two imports to org A's files. onLoad
+    refuses each one with the fixed text, which names no path, and the two
+    equal lines print once (review P0 a)."""
+    b = apps["b"]
+    _write(b / "package.json", json.dumps({"browser": {
+        "./src/x.ts": "../org-a-app/src/payroll-secret-2026.json",
+        "./src/y.ts": "../org-a-app/src/zz-hidden-name.ts",
+    }}))
+    _write(b / "src" / "x.ts", "export default 1;\n")
+    _write(b / "src" / "y.ts", "export default 2;\n")
+    _write(b / "src" / "main.tsx", 'import x from "./x"; import y from "./y"; console.log(x, y);\n')
+    done = _build(b, vendor)
+    out = done.stdout + done.stderr
+    assert done.returncode != 0, out
+    assert out.count(REFUSAL) == 1, out
+    _assert_no_leak(out, b)
+
+
+@docker
+def test_a_parse_error_in_a_file_outside_the_app_shows_no_word_of_it(
+    apps: dict[str, Path], vendor: Path,
+) -> None:
+    """esbuild reads the package.json of each dir above an app file. A parse
+    error placed in a file outside the roots shows only the fixed text."""
+    _write(apps["root"] / "package.json", "FIRSTWORD2464 is not JSON\n")
+    _write(apps["b"] / "src" / "own.ts", "export const OWN = 1;\n")
+    _write(apps["b"] / "src" / "main.tsx", 'import { OWN } from "./own";\nconsole.log(OWN);\n')
+    done = _build(apps["b"], vendor)
+    out = done.stdout + done.stderr
+    assert done.returncode != 0, out
+    assert REFUSAL in out, out
+    assert "package.json" not in out, out
+    _assert_no_leak(out, apps["b"])
 
 
 @docker
@@ -539,6 +679,72 @@ def test_the_host_route_refuses_when_the_source_script_is_missing(
     assert expected in out["error"], out
 
 
+def test_the_host_route_checks_and_builds_under_the_dir_lock(
+    host_route: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review P2: the refusal check and the build run inside delivery_guard,
+    so no container exec can put a link at dist/ between a check and a write."""
+    events: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def guard(_workspace: Path) -> Any:
+        events.append("lock")
+        try:
+            yield False
+        finally:
+            events.append("unlock")
+
+    def refusal(_workspace: Path) -> None:
+        events.append("check")
+
+    async def run(_ws: Path, _script: Path) -> tuple[bool, str]:
+        events.append("build")
+        return True, "build_t2: ok"
+
+    monkeypatch.setattr(host_route.broker, "delivery_guard", guard)
+    monkeypatch.setattr(host_route.files, "host_build_refusal", refusal)
+    monkeypatch.setattr(host_route.files, "_run_build_t2", run)
+    out = asyncio.run(host_route.files.build_app("org-b-app", user=None))
+    assert out["built"] is True, out
+    assert events == ["lock", "check", "build", "unlock"], events
+
+
+def test_a_build_past_the_timeout_is_killed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review P2: at the timeout the route kills node. Before, wait_for gave up
+    on the wait only, and node ran on."""
+    pytest.importorskip("fastapi")
+    from gateway.routes.apps import files
+
+    script = tmp_path / "slow.mjs"
+    script.write_text("setInterval(() => {}, 1000);\n", encoding="utf-8")
+    procs: list[Any] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        proc = await real_exec(*args, **kwargs)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    monkeypatch.setattr(files, "BUILD_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(files, "t2_vendor_dir", lambda: tmp_path / "vendor")
+
+    async def go() -> tuple[bool, str, Any]:
+        ok, output = await files._run_build_t2(tmp_path, script)
+        return ok, output, procs[0].returncode
+
+    try:
+        ok, output, code = asyncio.run(go())
+    finally:
+        import signal
+
+        for proc in procs:  # no process outlives the test, even when it fails
+            with contextlib.suppress(OSError):
+                os.kill(proc.pid, signal.SIGTERM)
+    assert ok is False and "was stopped" in output, output
+    assert code is not None, "node still ran after the timeout"
+
+
 @docker
 def test_the_host_route_builds_with_the_source_script_and_refuses_a_leak(
     host_route: Any, apps: dict[str, Path], vendor: Path, monkeypatch: pytest.MonkeyPatch,
@@ -564,12 +770,32 @@ def test_the_host_route_builds_with_the_source_script_and_refuses_a_leak(
 # ── install_t2_deps.mjs: no dependency from disk ────────────────────────────
 
 
-def _install(ws: Path, tmp: Path) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ, npm_config_offline="true", npm_config_cache=str(tmp / "npm-cache"))
-    return subprocess.run(
-        [NODE, str(INSTALL), ".", "react"], cwd=str(ws), env=env, capture_output=True,
-        text=True, encoding="utf-8", timeout=120, check=False,
+#: Loaded before install_t2_deps.mjs (``node --import``). It puts a fake
+#: ``spawnSync`` in place, which writes the call it got to NPM_CALL_LOG and
+#: runs nothing. So the test sees the exact npm call, or that none was made.
+NPM_STUB = """import cp from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { writeFileSync } from "node:fs";
+cp.spawnSync = (cmd, args, opts) => {
+  writeFileSync(process.env.NPM_CALL_LOG, JSON.stringify({ cmd, args, cwd: opts && opts.cwd }));
+  return { status: 0, stdout: "", stderr: "" };
+};
+syncBuiltinESMExports();
+"""
+
+
+def _install(ws: Path, tmp: Path) -> tuple[subprocess.CompletedProcess[str], dict[str, Any] | None]:
+    """Run install_t2_deps.mjs with npm stubbed. Returns the run and the npm call."""
+    stub = tmp / "npm_stub.mjs"
+    stub.write_text(NPM_STUB, encoding="utf-8")
+    log = tmp / "npm_call.json"
+    env = dict(os.environ, NPM_CALL_LOG=str(log))
+    done = subprocess.run(
+        [NODE, "--import", stub.as_uri(), str(INSTALL), ".", "react"], cwd=str(ws), env=env,
+        capture_output=True, text=True, encoding="utf-8", timeout=120, check=False,
     )
+    call = json.loads(log.read_text(encoding="utf-8")) if log.is_file() else None
+    return done, call
 
 
 LOCAL_DEPS = {
@@ -592,15 +818,19 @@ def test_install_refuses_a_dependency_from_disk(apps: dict[str, Path], tmp_path:
     b = apps["b"]
     for name, body in LOCAL_DEPS[case].items():
         _write(b / name, json.dumps(body))
-    done = _install(b, tmp_path)
+    done, call = _install(b, tmp_path)
     assert done.returncode == 1, done.stdout + done.stderr
     assert "An app can install only registry packages" in done.stderr, done.stderr
+    assert call is None, f"npm ran: {call}"
     assert not (b / "node_modules").exists()
 
 
 def test_install_lets_a_registry_version_through_to_npm(apps: dict[str, Path], tmp_path: Path) -> None:
-    """A plain version passes the check. npm then runs offline and may fail,
-    but not with the refusal."""
+    """A plain version passes the check, and npm gets exactly this call."""
     _write(apps["b"] / "package.json", json.dumps({"dependencies": {"react": "^18.3.1", "x": "1.x"}}))
-    done = _install(apps["b"], tmp_path)
-    assert "An app can install only registry packages" not in done.stderr, done.stderr
+    done, call = _install(apps["b"], tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert call is not None, done.stdout + done.stderr
+    assert call["cmd"] == "npm"
+    assert call["args"] == ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--save-exact", "react"]
+    assert Path(call["cwd"]).resolve() == apps["b"].resolve()

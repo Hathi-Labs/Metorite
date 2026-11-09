@@ -13,6 +13,7 @@ from ``app_files``) and writes mirror the file back into that store.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -285,6 +286,26 @@ def host_build_refusal(workspace: Path) -> str | None:
     return None
 
 
+async def _stop_build(proc: Any) -> None:
+    """Kill a build that did not finish, and wait for it (task 2464 review P2).
+
+    ``wait_for`` cancels only the wait. Without this, node and esbuild ran on
+    after the route answered, so a slow build could hold the box.
+    """
+    kill = getattr(proc, "kill", None)
+    if kill is None:
+        return
+    try:
+        kill()
+    except ProcessLookupError:
+        return
+    wait = getattr(proc, "wait", None)
+    if wait is not None:
+        # The kill is sent. A late reap is not an error.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(wait(), timeout=5)
+
+
 async def _run_build_t2(workspace: Path, script: Path) -> tuple[bool, str]:
     """Run ``node build_t2.mjs`` against *workspace*. Returns (ok, output) —
     ``output`` is stdout on success, stderr on failure. Never raises: a
@@ -302,14 +323,52 @@ async def _run_build_t2(workspace: Path, script: Path) -> tuple[bool, str]:
             cwd=str(workspace), env=env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
+    except Exception as exc:  # missing node, etc.
+        return False, str(exc)
+    try:
         out, err = await asyncio.wait_for(
             proc.communicate(), timeout=BUILD_TIMEOUT_SECONDS,
         )
-    except Exception as exc:  # timeout, missing node, etc.
+    except TimeoutError:
+        await _stop_build(proc)
+        return False, (
+            f"The build ran for more than {BUILD_TIMEOUT_SECONDS:.0f} s, so it was "
+            "stopped. Make the app smaller, then build again."
+        )
+    except Exception as exc:
+        await _stop_build(proc)
         return False, str(exc)
     if proc.returncode != 0:
         return False, err.decode(errors="replace")[-2000:]
     return True, out.decode(errors="replace")[-2000:]
+
+
+async def _build_under_dir_lock(workspace: Path, script: Path) -> tuple[bool, str]:
+    """``host_build_refusal`` and the build, under the broker's dir lock.
+
+    Task 2464 review P2. Each real-path check of ``build_t2.mjs`` comes before
+    its read or write. Without the lock, a container that mounted the dir
+    during a slow build could put a link at ``dist/`` between the check and
+    the write. ``delivery_guard`` holds off every container exec on the dir,
+    as ``durability._git_under_dir_lock`` does. With no broker in this
+    process, no container can mount the dir.
+    """
+    try:
+        from orchestrator.sandbox_broker import delivery_guard
+    except ImportError:
+        delivery_guard = None
+    loop = asyncio.get_event_loop()
+
+    async def checked_build() -> tuple[bool, str]:
+        refusal = await loop.run_in_executor(None, host_build_refusal, workspace)
+        if refusal:
+            return False, refusal
+        return await _run_build_t2(workspace, script)
+
+    if delivery_guard is None:
+        return await checked_build()
+    async with delivery_guard(workspace):
+        return await checked_build()
 
 
 @router.post("/{slug}/build")
@@ -340,12 +399,6 @@ async def build_app(
         }
     if script.is_symlink() or not script.is_file():
         return {"built": False, "error": f"build script missing: {script}"}
-    refusal = await asyncio.get_event_loop().run_in_executor(
-        None, host_build_refusal, workspace,
-    )
-    if refusal:
-        return {"built": False, "error": refusal}
-
-    ok, output = await _run_build_t2(workspace, script)
+    ok, output = await _build_under_dir_lock(workspace, script)
     _log.info("apps.build_triggered", slug=slug, ok=ok)
     return {"built": ok, **({"output": output} if ok else {"error": output})}

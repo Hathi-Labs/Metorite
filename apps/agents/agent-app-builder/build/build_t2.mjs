@@ -50,6 +50,14 @@
 //     link in the app dir that points out is refused, and so is a package
 //     or tsconfig mapping that leads out. preserveSymlinks keeps the found
 //     path, so the two paths can differ.
+//   - onLoad also reads each code file of the app before esbuild parses it,
+//     and refuses a require() or import() whose path is built from parts
+//     (`+` or `${}`). esbuild turns such a call into a glob, and sends each
+//     match straight to onLoad.
+//   - A refusal of a file outside every root names no path, and the error
+//     printer prints each line once. A diagnostic placed in a file outside
+//     the roots shows only the fixed text (review round 3).
+//   - A bare name with a `.` or `..` part, and `@cc/ui/<part>`, are refused.
 // The roots are the app dir, the vendor cache and the one @cc/ui file.
 // The template (index.html) and the output dir (dist/) must also be real
 // paths inside the app dir. The output path is fixed here, and app.json
@@ -148,6 +156,83 @@ function refuse(spec) {
   return { errors: [{ text: `Cannot import ${JSON.stringify(spec)}. ${OWN_FILES_ONLY}` }] };
 }
 
+/** The refusal of a file outside every root. It names NO path: esbuild sends
+ * each file that a glob import matches straight to onLoad, so a path here
+ * would list the files of other apps (task 2464 review P0). */
+function refuseUnnamed() {
+  return { errors: [{ text: OWN_FILES_ONLY }] };
+}
+
+// The files that esbuild parses as code. Only these can hold a glob import.
+const CODE_FILE = /\.(?:[cm]?[jt]sx?)$/i;
+const CALL_START = /\b(?:require|import)\s*(?:\/\*[\s\S]*?\*\/\s*)*\(/g;
+
+/** The end index of the string or template literal that starts at *i*. */
+function skipLiteral(source, i) {
+  const quote = source[i];
+  let j = i + 1;
+  while (j < source.length) {
+    const c = source[j];
+    if (c === "\\") { j += 2; continue; }
+    if (c === quote) return j + 1;
+    if (quote === "`" && c === "$" && source[j + 1] === "{") {
+      let depth = 1;
+      j += 2;
+      while (j < source.length && depth > 0) {
+        if (source[j] === "{") depth++;
+        else if (source[j] === "}") depth--;
+        j++;
+      }
+      continue;
+    }
+    j++;
+  }
+  return j;
+}
+
+/** True when *source* holds a require() or import() whose argument is built
+ * from parts: a literal joined with `+`, or a template literal with `${`.
+ * esbuild turns such a call into a glob, reads the matching dir and sends each
+ * match to onLoad. So the build refuses the file before esbuild parses it
+ * (task 2464 review P0). A call with one fixed literal, or with no literal
+ * at all (`import(x)`), stays legal. */
+function hasGlobImport(source) {
+  CALL_START.lastIndex = 0;
+  let m;
+  while ((m = CALL_START.exec(source))) {
+    let i = m.index + m[0].length;
+    let depth = 1;
+    let literals = 0;
+    let joined = false;
+    while (i < source.length && depth > 0) {
+      const c = source[i];
+      if (c === '"' || c === "'" || c === "`") {
+        const end = skipLiteral(source, i);
+        literals++;
+        if (c === "`" && source.slice(i, end).includes("${")) joined = true;
+        i = end;
+        continue;
+      }
+      if (c === "/" && source[i + 1] === "*") {
+        const end = source.indexOf("*/", i + 2);
+        i = end < 0 ? source.length : end + 2;
+        continue;
+      }
+      if (c === "/" && source[i + 1] === "/") {
+        const end = source.indexOf("\n", i);
+        i = end < 0 ? source.length : end;
+        continue;
+      }
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "+") joined = true;
+      i++;
+    }
+    if (literals > 0 && joined) return true;
+  }
+  return false;
+}
+
 /** The one containment check of every import, in both dependency modes
  * (task 2464, see the header). `app` and `vendor` are { dir, real }: the
  * path that esbuild finds and its real path. `ui` is the same for the one
@@ -174,13 +259,23 @@ function containmentPlugin({ app, vendor, ui, allowlist }) {
         if (from === null || /^file:/i.test(spec)) return refuse(spec);
         if (isRelativeImport(spec) || isAbsoluteImport(spec)) {
           // A path import stays in the importer's own root. A link on the
-          // way is onLoad's check.
-          const target = isRelativeImport(spec) ? resolve(args.resolveDir, spec) : resolve(spec);
-          if (from === "app" && within(app.dir, target)) return undefined;
-          if (from === "vendor" && within(vendor.dir, target)) return undefined;
-          return refuse(spec);
+          // way is onLoad's check. esbuild may drop a `?` or `#` suffix and
+          // try again, so the path with no suffix must stay in the root too.
+          const own = from === "app" ? app.dir : from === "vendor" ? vendor.dir : null;
+          const stays = [spec, spec.split(/[?#]/)[0]].every((p) =>
+            within(own, isRelativeImport(p) ? resolve(args.resolveDir, p) : resolve(p)));
+          return stays ? undefined : refuse(spec);
         }
-        // A bare package name.
+        // A bare package name. A `.` or `..` part walks out of node_modules
+        // (`x/../../other-app`), and `@cc/ui/<part>` walks out of the one UI
+        // file through the alias. esbuild reads a package.json on the way, and
+        // its parse error showed the first word (task 2464 review P3).
+        if (from === "app") {
+          const parts = spec.split(/[\\/]/);
+          if (parts.includes(".") || parts.includes("..") || spec.startsWith(`${UI_PACKAGE}/`)) {
+            return refuse(spec);
+          }
+        }
         if (from === "app" && allowlist && !allowlist.has(spec)) {
           return {
             errors: [{
@@ -217,11 +312,26 @@ function containmentPlugin({ app, vendor, ui, allowlist }) {
       pluginBuild.onLoad({ filter: /.*/, namespace: "file" }, (args) => {
         const root = rootOf(args.path);
         const real = realOrNull(args.path);
-        if (root === "app" && within(app.real, real)) return undefined;
+        if (root === "app" && within(app.real, real)) {
+          // A file of the app that builds a path from parts is refused here,
+          // before esbuild parses it and globs a dir (review P0).
+          if (CODE_FILE.test(args.path) && hasGlobImport(readFileSync(real, "utf-8"))) {
+            const shown = relative(app.dir, args.path).split(sep).join("/");
+            return {
+              errors: [{
+                text:
+                  `${shown} builds an import path from parts (with + or \${}). ` +
+                  `${OWN_FILES_ONLY} Import each file by its fixed path.`,
+              }],
+            };
+          }
+          return undefined;
+        }
         if (root === "vendor" && within(vendor.real, real)) return undefined;
         if (root === "ui" && real !== null && real === ui.real) return undefined;
-        const shown = root === "app" ? relative(app.dir, args.path).split(sep).join("/") : args.path;
-        return refuse(shown);
+        // A path in the app dir that leads out (a link) names only the app's
+        // own path. Any other path is named by no word at all.
+        return root === "app" ? refuse(relative(app.dir, args.path).split(sep).join("/")) : refuseUnnamed();
       });
     },
   };
@@ -322,10 +432,23 @@ try {
     ],
   });
 } catch (err) {
-  const diagnostics = (err.errors || [])
-    .map((e) => `  ${e.text}${e.location ? ` (${e.location.file}:${e.location.line})` : ""}`)
-    .join("\n");
-  fail(`esbuild failed:\n${diagnostics || err.message}`);
+  // A diagnostic that esbuild places in a file outside the roots (a parse
+  // error in another app's package.json) shows the fixed text, never its
+  // words or its path. Each line prints once, so a count says nothing.
+  const vendorDirFound = resolve(vendor);
+  const uiFound = uiAvailable ? resolve(UI_SOURCE) : null;
+  const ownFile = (file) => {
+    const found = resolve(workspace, file);
+    return within(workspace, found) || within(vendorDirFound, found) ||
+      (uiFound !== null && relative(uiFound, found) === "");
+  };
+  const lines = (err.errors || []).map((e) => {
+    const file = e.location && e.location.file;
+    if (file && !ownFile(file)) return `  ${OWN_FILES_ONLY}`;
+    return `  ${e.text}${file ? ` (${file}:${e.location.line})` : ""}`;
+  });
+  const diagnostics = [...new Set(lines)].join("\n");
+  fail(`esbuild failed:\n${diagnostics || "the build stopped with no diagnostic."}`);
 }
 
 const outputFiles = result.outputFiles || [];

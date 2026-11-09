@@ -2754,7 +2754,11 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
   the clone refreshes only when the agent loads. Fence:
   `test_app_builder_t2_containment.py`. Its build tests are `sandbox_docker`,
   so the "Sandbox Docker tests" job runs them with production's vendor
-  versions, and it fails on a skip.
+  versions, and it fails on a skip. Review round 3 added four rules. The
+  build refuses a glob import (a path built with `+` or `${}`) before
+  esbuild parses the file. It refuses a bare name with a `.` or `..` part.
+  A refusal of a file outside every root names no path. The host route
+  builds inside `delivery_guard`, and it kills node at the timeout.
 - **Done-when 6.** `_maybe_sandbox_session_workspace` runs only on the
   Copilot path. A dir that a container mounted is on the broker's list, so
   the executor's host git skips it (WS43-F13).
