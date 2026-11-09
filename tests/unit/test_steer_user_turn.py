@@ -126,7 +126,11 @@ class ScriptedClient(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClien
 def _native_view(agent: Agent) -> Any:
     """The per-run view that ``_inject_agent_tools`` builds (the real seam)."""
     agents = [agent]
-    _tool_injection._apply_steer_turns(agents)
+    token = executor._stream_relay_thread_id.set(THREAD)
+    try:
+        _tool_injection._apply_steer_turns(agents)
+    finally:
+        executor._stream_relay_thread_id.reset(token)
     assert agents[0] is not agent, "a native agent gets a per-run view"
     assert agent.context_providers == [] or all(
         not isinstance(p, steer.SteerTurnsProvider) for p in agent.context_providers
@@ -242,6 +246,14 @@ def test_an_injection_in_a_tool_result_stays_in_the_tool_result(stream: bool):
     last = client.requests[-1]
     assert _users(last) == ["Read my mail"], "no tool text became a user turn"
     assert any(INJECTION in t for t in _tools(last))
+
+
+def test_a_run_with_no_relay_thread_keeps_its_agent():
+    """No relay thread means no steer applier, so the agent stays as it is."""
+    agent = Agent(client=ScriptedClient([]), name="batch")
+    agents = [agent]
+    _tool_injection._apply_steer_turns(agents)
+    assert agents[0] is agent
 
 
 def test_only_the_member_route_feeds_the_steer_buffer():

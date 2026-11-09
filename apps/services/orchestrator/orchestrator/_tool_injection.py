@@ -2971,11 +2971,11 @@ def _inject_agent_tools(
         _apply_no_egress(agents, agent_name, injected=_egress)
     else:
         _apply_chat_hold(agents, agent_name)
+    # Task 2494: a member's steer reaches each native agent as a user turn.
+    _apply_steer_turns(agents)
     # CRM-Q29: a native MAF agent that holds a CRM tool gets the number
     # check, as a per-run view, after the H-236 step.
     _apply_answer_check(agents, agent_name)
-    # Task 2494: a member's steer reaches each native agent as a user turn.
-    _apply_steer_turns(agents)
     return _run_tool_names
 
 
@@ -3000,6 +3000,12 @@ def _apply_steer_turns(agents: list[Any]) -> None:
         return
     from orchestrator._native_run_context import agent_with_providers
 
+    from orchestrator.steer import _run_thread_id
+
+    if not _run_thread_id():
+        # No relay thread: no steer applier, so no steer can come. The agent
+        # stays as it is (a batch run, a test, a sandbox build).
+        return
     for i, agent in enumerate(agents):
         if isinstance(agent, Agent):
             agents[i] = agent_with_providers(agent, [SteerTurnsProvider()])
