@@ -349,6 +349,23 @@ async def test_a_refused_check_fails_closed(monkeypatch, gw) -> None:
     assert cards == [] and not set(gw.paths()) & set(SEND_ROUTES)
 
 
+async def test_many_files_are_checked_in_batches_the_route_takes(monkeypatch, gw) -> None:
+    """The route takes at most ``MAX_METORITE_FILES`` paths in one check, so
+    the tool sends the files in batches of that size. Mutation: one batch of
+    every file (the route answers 422, and no card shows) → red."""
+    assert agents._FILE_CHECK_BATCH == mf.MAX_METORITE_FILES
+    _path(monkeypatch, "plain")
+    cards = _cards(monkeypatch)
+    files = [f"outputs/report-{i}.pdf" for i in range(mf.MAX_METORITE_FILES + 5)]
+    await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Shot",
+                            attachments=files)
+    checks = [b for p, b in gw.posts if p == "/email/metorite-files/resolve"]
+    assert [len(b["artifacts"]) for b in checks] == [mf.MAX_METORITE_FILES, 5]
+    for body in checks:
+        mf.MetoriteFilesRequest(**body)  # each batch is a request the route takes
+    assert len(cards) == 1 and gw.paths()[-1] == "/email/send"
+
+
 async def test_a_send_with_no_workspace_file_makes_no_check(monkeypatch, gw) -> None:
     """No workspace file, no check: the plain card and the send, as before."""
     _path(monkeypatch, "plain")
