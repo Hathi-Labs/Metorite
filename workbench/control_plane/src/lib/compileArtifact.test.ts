@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 
 import { describe, expect, it } from "vitest";
 
-import { BUSY, BuildSlot, COMPILE_LIMITS, compileArtifact } from "./compileArtifact";
+import { BUSY, BuildSlot, COMPILE_LIMITS, compileArtifact, MEMBER_BUSY } from "./compileArtifact";
 
 /**
  * The esbuild service processes that THIS test process started. vitest runs
@@ -268,29 +268,45 @@ describe("compileArtifact", { timeout: 30_000 }, () => {
     expect(res.js).not.toMatch(/\bimport\s*\{/);
   });
 
-  // ── The limits (task 2432, F1) ────────────────────────────────────────────
+  // ── The limits (task 2432, F1 and the fix round) ──────────────────────────
 
   it("pins the limits the route relies on", () => {
     expect(COMPILE_LIMITS).toEqual({
-      maxSourceBytes: 256 * 1024,
+      maxSourceBytes: 64 * 1024,
       maxOutputBytes: 1024 * 1024,
       timeoutMs: 10_000,
-      maxQueued: 4,
-      maxWaitMs: 10_000,
+      maxQueued: 8,
+      maxWaitMs: 25_000,
     });
+    // A build that runs into the kill must never turn the builds behind it
+    // away on its own.
+    expect(COMPILE_LIMITS.maxWaitMs).toBeGreaterThan(COMPILE_LIMITS.timeoutMs);
     expect(Object.isFrozen(COMPILE_LIMITS)).toBe(true);
   });
 
-  it("builds 64 KB of nested ternaries fast, because the minifier is off", async () => {
-    // With `minify: true` this source took 13 s on 2026-11-09, so it ran into
-    // the 10 s timeout. Mutation: minify back on -> slow or timeout -> red.
-    const source = `export default function A(){ return <p>{${"a?b:".repeat(16_384)}c}</p>; }`;
-    expect(Buffer.byteLength(source)).toBeGreaterThan(64 * 1024);
-    const started = Date.now();
-    const res = await compileArtifact(source);
-    const took = Date.now() - started;
+  it("takes a source of 64 KiB and refuses one byte more", async () => {
+    const at = "//" + "x".repeat(64 * 1024 - 3) + "\n";
+    expect(Buffer.byteLength(at)).toBe(64 * 1024);
+    const over = await compileArtifact(at + "x");
+    expect(over.ok).toBe(false);
+    if (over.ok) return;
+    expect(over.reason).toBe("too_large");
+    expect(over.error).toMatch(/larger than 64 KB/);
+    const res = await compileArtifact(at + "export default function A(){ return <p/>; }", {
+      maxSourceBytes: 64 * 1024 + 100,
+    });
     expect(res.ok, res.ok ? "" : res.error).toBe(true);
-    expect(took).toBeLessThan(5_000);
+  });
+
+  it("builds 64 KB of nested ternaries, because the minifier is off", async () => {
+    // With `minify: true` this source took 13 s on 2026-11-09, so it runs into
+    // the 10 s kill. Mutation: minify back on -> a timeout -> red. No clock
+    // assert: the kill is the bound, so a loaded box cannot make this flake.
+    const source = `export default function A(){ return <p>{${"a?b:".repeat(16_371)}c}</p>; }`;
+    expect(Buffer.byteLength(source)).toBeGreaterThan(63 * 1024);
+    expect(Buffer.byteLength(source)).toBeLessThanOrEqual(COMPILE_LIMITS.maxSourceBytes);
+    const res = await compileArtifact(source);
+    expect(res.ok, res.ok ? "" : res.error).toBe(true);
   }, 30_000);
 
   it("refuses a bundle over the output cap, with the size and the next step", async () => {
@@ -307,19 +323,16 @@ describe("compileArtifact", { timeout: 30_000 }, () => {
     expect((await compileArtifact(COMPONENT)).ok).toBe(true);
     expect(await untilChildren(1, 5_000)).toBe(1);
 
-    const started = Date.now();
     const res = await compileArtifact(SLOW, { timeoutMs: 50 });
-    const took = Date.now() - started;
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.reason).toBe("timeout");
     expect(res.error).toMatch(/Metorite stopped it/);
     expect(res.error).toMatch(/send it again/);
-    expect(took).toBeLessThan(2_000);
 
-    // The proof that the work ended: the esbuild process is gone. Without
-    // `stop()` it would still grind the nested arrows for seconds.
-    expect(await untilChildren(0, 3_000)).toBe(0);
+    // The proof that the work ended is the stop, not a clock: the esbuild
+    // process is gone. Without `stop()` it would still grind the arrows.
+    expect(await untilChildren(0, 10_000)).toBe(0);
 
     // A fresh service takes the next build.
     const next = await compileArtifact(COMPONENT);
@@ -344,25 +357,77 @@ describe("compileArtifact", { timeout: 30_000 }, () => {
     const [a, b] = await Promise.all([first, second]);
     expect(a.ok && b.ok).toBe(true);
   });
+
+  // ── One build for each member (fix round, review P1) ──────────────────────
+
+  it("gives a member's second build, while the first runs, member_busy at once", async () => {
+    const first = compileArtifact(COMPONENT, {}, { owner: "Ana@acme.test" });
+    const second = await compileArtifact(COMPONENT + "\n// two", {}, { owner: "ana@acme.test" });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.reason).toBe("member_busy");
+    expect(second.error).toBe(MEMBER_BUSY);
+    expect((await first).ok).toBe(true);
+    // The first one ended, so the member may build again.
+    expect((await compileArtifact(COMPONENT + "\n// three", {}, { owner: "ana@acme.test" })).ok).toBe(true);
+  });
+
+  it("one member cannot block another member's build", async () => {
+    // Mallory holds the slot with a slow source, and tries to queue more.
+    // Ben's build waits behind ONE build of Mallory and then runs.
+    const slow = compileArtifact(SLOW, { timeoutMs: 1_500 }, { owner: "mallory@evil.test" });
+    const more = await Promise.all(
+      [1, 2, 3].map((i) =>
+        compileArtifact(SLOW + `\n// ${i}`, { timeoutMs: 1_500 }, { owner: "mallory@evil.test" }),
+      ),
+    );
+    expect(more.map((r) => (r.ok ? "ok" : r.reason))).toEqual(["member_busy", "member_busy", "member_busy"]);
+    const ben = await compileArtifact(COMPONENT + "\n// ben", {}, { owner: "ben@acme.test" });
+    expect(ben.ok, ben.ok ? "" : ben.error).toBe(true);
+    await slow;
+  }, 60_000);
 });
 
 describe("BuildSlot", () => {
   it("hands the slot over in order, refuses past the queue, and frees it at the end", async () => {
     const slot = new BuildSlot();
-    expect(await slot.acquire(1, 1_000)).toBe(true);
-    const waiting = slot.acquire(1, 1_000);
+    expect(await slot.acquire(undefined, 1, 1_000)).toBe("granted");
+    const waiting = slot.acquire(undefined, 1, 1_000);
     expect(slot.queued).toBe(1);
-    expect(await slot.acquire(1, 1_000)).toBe(false);
-    slot.release();
-    expect(await waiting).toBe(true);
-    slot.release();
-    expect(await slot.acquire(0, 1_000)).toBe(true);
+    expect(await slot.acquire(undefined, 1, 1_000)).toBe("busy");
+    slot.release(undefined);
+    expect(await waiting).toBe("granted");
+    slot.release(undefined);
+    expect(await slot.acquire(undefined, 0, 1_000)).toBe("granted");
   });
 
   it("gives up a wait that runs out, and drops it from the queue", async () => {
     const slot = new BuildSlot();
-    expect(await slot.acquire(1, 1_000)).toBe(true);
-    expect(await slot.acquire(1, 20)).toBe(false);
+    expect(await slot.acquire(undefined, 1, 1_000)).toBe("granted");
+    expect(await slot.acquire(undefined, 1, 20)).toBe("busy");
     expect(slot.queued).toBe(0);
+  });
+
+  it("holds one running or queued build for each owner, and frees the owner at the end", async () => {
+    const slot = new BuildSlot();
+    expect(await slot.acquire("a", 4, 1_000)).toBe("granted");
+    expect(await slot.acquire("a", 4, 1_000)).toBe("member_busy");
+    const b = slot.acquire("b", 4, 1_000);
+    expect(slot.queued).toBe(1);
+    // b waits in the queue, so a second build of b is refused too.
+    expect(await slot.acquire("b", 4, 1_000)).toBe("member_busy");
+    slot.release("a");
+    expect(await b).toBe("granted");
+    expect(slot.holds("a")).toBe(false);
+    expect(slot.holds("b")).toBe(true);
+    slot.release("b");
+    expect(slot.holds("b")).toBe(false);
+  });
+
+  it("frees the owner of a wait that ran out", async () => {
+    const slot = new BuildSlot();
+    expect(await slot.acquire("a", 4, 1_000)).toBe("granted");
+    expect(await slot.acquire("b", 4, 20)).toBe("busy");
+    expect(slot.holds("b")).toBe(false);
   });
 });

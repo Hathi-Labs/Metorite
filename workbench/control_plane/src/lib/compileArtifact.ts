@@ -36,13 +36,19 @@
  * (nested ternaries: 16 KB in 1 s, 64 KB in 13 s, 256 KiB past 150 s). Some
  * shapes grow fast with no minifier too (nested arrows). So:
  *   • no minifier — the frame inlines the bundle, so bytes cost little;
- *   • ONE build at a time in this process, a short queue, and a refusal past it;
+ *   • a source cap of 64 KiB (fix round: one build still spiked to 0.9 GB);
+ *   • ONE build at a time in this process, a queue bounded by count AND by
+ *     wait, and a refusal past it;
+ *   • ONE running or queued build for each member. About 130 KB of nested
+ *     arrows reached the kill, so a member with a second build in the queue
+ *     held the slot for 20 s while every other tenant got "busy";
  *   • a timeout that KILLS the esbuild process (`stop()`). `cancel()` on a
  *     context is not enough: measured, it let a 3 s build run to its end;
  *   • a cap on the output, which a deep JSX tree inflates nine times over.
  * One build at a time is what makes `stop()` precise: the only build that the
- * kill ends is the one that ran out of time. The route adds a cap on the body
- * and a rate limit for each member (`app/api/artifacts/compile/route.ts`).
+ * kill ends is the one that ran out of time. The route adds a cap on the body,
+ * a rate limit for each member, and a heavy charge for a killed build
+ * (`app/api/artifacts/compile/route.ts`).
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -111,17 +117,27 @@ export interface CompileLimits {
   timeoutMs: number;
   /** Builds that may wait for the one build slot of this process. */
   maxQueued: number;
-  /** The longest a build waits for the slot before it is refused as busy. */
+  /**
+   * The longest a build waits for the slot before it is refused as busy.
+   * Longer than `timeoutMs`, so one build that runs into the kill never
+   * turns the builds behind it away on its own.
+   */
   maxWaitMs: number;
 }
 
 export const COMPILE_LIMITS: Readonly<CompileLimits> = Object.freeze({
-  maxSourceBytes: 256 * 1024,
+  maxSourceBytes: 64 * 1024,
   maxOutputBytes: 1024 * 1024,
   timeoutMs: 10_000,
-  maxQueued: 4,
-  maxWaitMs: 10_000,
+  maxQueued: 8,
+  maxWaitMs: 25_000,
 });
+
+/** Who asked for a compile. One running or queued build for each owner. */
+export interface CompileCaller {
+  /** The member's email. Absent for a caller with no member (tests, e2e). */
+  owner?: string;
+}
 
 export interface CompileOk {
   ok: true;
@@ -131,10 +147,18 @@ export interface CompileOk {
 }
 
 /**
- * Why a compile failed. The route maps `busy` to 429. Every other reason is a
- * fault of the source, so the route answers it as data (200, `ok: false`).
+ * Why a compile failed. The route maps `busy` and `member_busy` to 429. Every
+ * other reason is a fault of the source, so the route answers it as data
+ * (200, `ok: false`).
  */
-export type CompileFailure = "source" | "too_large" | "output_too_large" | "timeout" | "busy" | "setup";
+export type CompileFailure =
+  | "source"
+  | "too_large"
+  | "output_too_large"
+  | "timeout"
+  | "busy"
+  | "member_busy"
+  | "setup";
 
 export interface CompileErr {
   ok: false;
@@ -235,45 +259,76 @@ function formatErrors(err: unknown): string {
 
 // ── One build at a time ──────────────────────────────────────────────────────
 
+/** The answer of {@link BuildSlot.acquire}. */
+export type SlotAnswer = "granted" | "busy" | "member_busy";
+
 /**
  * The one build slot of this process, with a short FIFO queue.
  *
  * One slot, not two: a build that runs out of time is ended with `stop()`,
  * which kills the whole esbuild service process. With one slot, that process
  * holds no other build, so the kill ends only the build that timed out.
+ *
+ * One running or queued build for each owner (fix round, review P1). With a
+ * plain FIFO, one member with a slow build in the slot and a second one in
+ * the queue held the slot for two full timeouts, and every other tenant got
+ * "busy" meanwhile. Now a member's second build is refused at once, as
+ * `member_busy`, and only that member sees it.
+ *
+ * The queue is bounded by count and by wait. `maxWaitMs` is longer than the
+ * build timeout, so a build that runs into the kill never turns the builds
+ * behind it away on its own.
  */
 export class BuildSlot {
   private busy = false;
   private readonly waiting: Array<(granted: boolean) => void> = [];
+  private readonly owners = new Set<string>();
 
   /** Builds that wait for the slot now. */
   get queued(): number {
     return this.waiting.length;
   }
 
-  /** True when the caller holds the slot. False when the queue is full, or the wait ran out. */
-  acquire(maxQueued: number, maxWaitMs: number): Promise<boolean> {
+  /** Whether `owner` has a running or queued build. */
+  holds(owner: string): boolean {
+    return this.owners.has(owner);
+  }
+
+  /**
+   * `granted` when the caller holds the slot. `member_busy` when `owner`
+   * already has a running or queued build. `busy` when the queue is full, or
+   * the wait ran out. A granted caller must call {@link release} once.
+   *
+   * Synchronous up to the returned promise: a second call in the same tick
+   * already sees this one.
+   */
+  acquire(owner: string | undefined, maxQueued: number, maxWaitMs: number): Promise<SlotAnswer> {
+    if (owner !== undefined && this.owners.has(owner)) return Promise.resolve("member_busy");
     if (!this.busy) {
       this.busy = true;
-      return Promise.resolve(true);
+      if (owner !== undefined) this.owners.add(owner);
+      return Promise.resolve("granted");
     }
-    if (this.waiting.length >= maxQueued) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => {
-      const grant = (granted: boolean) => {
+    if (this.waiting.length >= maxQueued) return Promise.resolve("busy");
+    if (owner !== undefined) this.owners.add(owner);
+    return new Promise<SlotAnswer>((resolve) => {
+      const grant = () => {
         clearTimeout(timer);
-        resolve(granted);
+        resolve("granted");
       };
       const timer = setTimeout(() => {
         const at = this.waiting.indexOf(grant);
         if (at >= 0) this.waiting.splice(at, 1);
-        resolve(false);
+        if (owner !== undefined) this.owners.delete(owner);
+        resolve("busy");
       }, maxWaitMs);
       this.waiting.push(grant);
     });
   }
 
-  /** Hand the slot to the next waiter, or free it. */
-  release(): void {
+  /** End `owner`'s build: hand the slot to the next waiter, or free it. */
+  release(owner: string | undefined): void {
+    if (owner !== undefined) this.owners.delete(owner);
     const next = this.waiting.shift();
     if (next) next(true);
     else this.busy = false;
@@ -317,11 +372,13 @@ async function buildWithin(
  *
  * `code` must default-export a component. The returned JS mounts it into
  * `#root` and expects nothing else from the page. `overrides` narrows the
- * limits, for tests only. The route passes none.
+ * limits, for tests only. The route passes none. `caller.owner` is the
+ * member: one running or queued build for each member.
  */
 export async function compileArtifact(
   code: string,
   overrides: Partial<CompileLimits> = {},
+  caller: CompileCaller = {},
 ): Promise<CompileResult> {
   const limits: CompileLimits = { ...COMPILE_LIMITS, ...overrides };
   if (!code || !code.trim()) {
@@ -353,19 +410,24 @@ export async function compileArtifact(
 
   // The first await. Everything above ran in the caller's tick, so a second
   // call made in the same tick already sees this one holding the slot.
-  if (!(await buildSlot.acquire(limits.maxQueued, limits.maxWaitMs))) {
-    return { ok: false, reason: "busy", error: BUSY };
-  }
+  const owner = caller.owner?.trim().toLowerCase() || undefined;
+  const answer = await buildSlot.acquire(owner, limits.maxQueued, limits.maxWaitMs);
+  if (answer === "member_busy") return { ok: false, reason: "member_busy", error: MEMBER_BUSY };
+  if (answer === "busy") return { ok: false, reason: "busy", error: BUSY };
   try {
     return await compileInSlot(code, limits);
   } finally {
-    buildSlot.release();
+    buildSlot.release(owner);
   }
 }
 
 /** The refusal of a full queue. The route answers it with 429. */
 export const BUSY =
   "Metorite is building other artifacts right now. Wait a few seconds and try again.";
+
+/** The refusal of a member's second build. The route answers it with 429. */
+export const MEMBER_BUSY =
+  "One of your artifacts is still building. Wait for it to finish, then try again.";
 
 function timedOut(limits: CompileLimits): CompileErr {
   return {

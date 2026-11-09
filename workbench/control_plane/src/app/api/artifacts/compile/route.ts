@@ -20,12 +20,16 @@
  *   3. one slot of the member's rate limit, from the gateway's
  *      `POST /artifact-compile/slot`. The counter lives in the tenant Redis
  *      wrapper, so this route keeps no limiter of its own. Over the limit:
- *      429. The gateway cannot answer: 503;
+ *      429 `rate_limited`. The counter is for fairness, so when the gateway
+ *      cannot count, the build goes on (fail open, fix round);
  *   4. the body, read as a stream and cut at the body cap, or 413. A missing
  *      or false Content-Length cannot get past this read;
  *   5. JSON with a `code` string, or 400.
- * Then `compileArtifact` adds one build at a time, a queue (full: 429), a
- * timeout that kills esbuild, and a cap on the output.
+ * Then `compileArtifact` adds one build at a time, one build for each member
+ * (a second one: 429 `member_busy`), a queue bounded by count and by wait
+ * (full: 429 `busy`), a timeout that kills esbuild, and a cap on the output.
+ * A build that ran into the kill is charged 20 more units at the gateway
+ * (`POST /artifact-compile/charge`), so one member cannot keep the slot busy.
  *
  * Each refusal is `{ ok: false, error, code }`. `error` says what happened and
  * what to do next, because SandboxedReact shows it as it is.
@@ -35,6 +39,7 @@ import { NextResponse } from "next/server";
 
 import { compileArtifact } from "@/lib/compileArtifact";
 import {
+  chargeTimeout,
   declaredTooLarge,
   MAX_BODY_BYTES,
   NO_CODE,
@@ -72,9 +77,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
   if (typeof code !== "string") return refuse(400, "no_code", NO_CODE);
 
-  const result = await compileArtifact(code);
+  const result = await compileArtifact(code, {}, { owner: me.email });
   if (!result.ok) {
     if (result.reason === "busy") return refuse(429, "busy", result.error, "5");
+    if (result.reason === "member_busy") return refuse(429, "member_busy", result.error, "2");
+    // A build that ran into the kill held the one build slot for the whole
+    // timeout. It costs the member 20 more units of the rate limit.
+    if (result.reason === "timeout") await chargeTimeout();
     // A compile error, a timeout or an oversized bundle is the source's fault,
     // the agent's to fix, not a server fault — 200 with ok:false so the client
     // renders the diagnostics instead of a network error.
