@@ -200,3 +200,41 @@ describe("the page wiring", () => {
     expect(page.indexOf("<StorageNotice")).toBeLessThan(page.indexOf("<AutoRunNotice"));
   });
 });
+
+// Task 2451: the count follows the rules in the same session.
+describe("the count follows a rule change", () => {
+  it("a read after a rule is turned off gives the new number, and nothing at 0", async () => {
+    const rules: Array<Partial<AutomationRule>> = [{ enabled: true }, { enabled: true }, { enabled: true }];
+    const { api } = fake(NO_CHOICE, rules);
+    expect(await loadAutoRunNotice(api, GMAIL, [])).toBe(3);
+    rules[2].enabled = false;
+    expect(await loadAutoRunNotice(api, GMAIL, [])).toBe(2);
+    rules[0].enabled = false;
+    rules[1].enabled = false;
+    expect(await loadAutoRunNotice(api, GMAIL, [])).toBeNull();
+  });
+
+  it("the signal reaches a listener once per announce, and stops after unsubscribe", async () => {
+    const { announceRulesChanged, onRulesChanged } = await import("./rulesChanged");
+    const target = new EventTarget();
+    let reads = 0;
+    const stop = onRulesChanged(() => reads++, target);
+    announceRulesChanged(target);
+    announceRulesChanged(target);
+    expect(reads).toBe(2);
+    stop();
+    announceRulesChanged(target);
+    expect(reads).toBe(2);
+  });
+
+  it("the notice listens for the signal, and every rule writer announces it", () => {
+    const view = readFileSync(join(__dirname, "..", "components", "AutoRunNotice.tsx"), { encoding: "utf-8" });
+    expect(view).toMatch(/onRulesChanged\(read\)/);
+    const api = readFileSync(join(__dirname, "api.ts"), { encoding: "utf-8" });
+    for (const fn of ["createRule", "updateRule", "deleteRule", "installPresetRules", "copyRules", "resetRules"]) {
+      const start = api.indexOf(`export async function ${fn}(`);
+      const end = api.indexOf("\nexport ", start + 10);
+      expect(api.slice(start, end), fn).toContain("announceRulesChanged()");
+    }
+  });
+});

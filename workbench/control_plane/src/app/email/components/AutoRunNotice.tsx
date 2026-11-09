@@ -26,6 +26,7 @@ import {
   turnOnAutoRun,
   type AutoRunNoticeApi,
 } from "../lib/autoRunNotice";
+import { onRulesChanged } from "../lib/rulesChanged";
 import type { EmailAccount } from "../lib/types";
 
 const NOTICE_API: AutoRunNoticeApi = { listRules, getAssistantSettings, saveAssistantSettings };
@@ -83,9 +84,14 @@ export function AutoRunNotice({ account }: { account: Pick<EmailAccount, "id" | 
 
   useEffect(() => {
     let live = true;
-    void loadAutoRunNotice(NOTICE_API, { id: accountId, provider }).then((n) => live && setCount(n));
+    const read = () =>
+      void loadAutoRunNotice(NOTICE_API, { id: accountId, provider }).then((n) => live && setCount(n));
+    read();
+    // A rule write elsewhere in the app changes the count. Read it again.
+    const stop = onRulesChanged(read);
     return () => {
       live = false;
+      stop();
     };
   }, [accountId, provider]);
 
