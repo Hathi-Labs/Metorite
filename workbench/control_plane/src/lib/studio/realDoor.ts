@@ -305,6 +305,8 @@ export interface ObjectRow {
   fields: Array<{
     key: string; type: string; label: string | null; required: boolean; many: boolean;
     options: string[] | null; to: string | null; hot: boolean;
+    /** C13. A lines relation names the field of its line object that points back. */
+    lines?: string | null;
   }>;
   rules: Array<Record<string, unknown>>;
 }
