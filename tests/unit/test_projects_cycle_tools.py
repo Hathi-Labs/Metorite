@@ -31,6 +31,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import httpx
 import pytest
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
@@ -60,7 +61,8 @@ def _task(tid: str, number: int, category: str = "todo") -> dict[str, Any]:
             "status_category": category, "estimate_mins": 60, "archived": False}
 
 
-def _gateway(monkeypatch, *, tasks=None, cycles=None, off=False, post_refusal=None):
+def _gateway(monkeypatch, *, tasks=None, cycles=None, off=False, post_refusal=None,  # noqa: C901
+             timeout_on=None, already=None, held=None):
     members = tasks if tasks is not None else [_task(T1, 1), _task(T2, 2, "done")]
     rows = {PLANNED: PLANNED_ROW, ACTIVE: ACTIVE_ROW, NEXT: NEXT_ROW}
 
@@ -82,7 +84,16 @@ def _gateway(monkeypatch, *, tasks=None, cycles=None, off=False, post_refusal=No
             tid = path.rsplit("/", 1)[1]
             if tid == T3:
                 return FakeResponse({"detail": "Task not found"}, 404)
-            return {"id": tid, "title": f"Task {tid[:4]}", "task_number": 9}
+            row = {"id": tid, "title": f"Task {tid[:4]}", "task_number": 9}
+            if held and tid in held:
+                row["cycle"] = held[tid]
+            return row
+        if timeout_on and method == "POST" and path.endswith("/tasks") \
+                and call["json"].get("task_id") == timeout_on:
+            raise httpx.ReadTimeout("slow")
+        if already and method == "POST" and path.endswith("/tasks") \
+                and call["json"].get("task_id") == already:
+            return {"cycle_id": PLANNED, "task_id": already, "added": False}
         if method in ("POST", "DELETE") and post_refusal and path.endswith("/tasks") \
                 and call["json"] and call["json"].get("task_id") == post_refusal:
             return FakeResponse({"detail": {"error": "task_in_cycle",
@@ -111,8 +122,10 @@ def test_the_manifest_maps_the_routes_to_the_built_tools() -> None:
 
 def test_the_bounds_equal_the_routes() -> None:
     cycles = pytest.importorskip("gateway.routes.projects.cycles")
+    core = pytest.importorskip("gateway.routes.projects.core")
     assert (C.NAME_MAX, C.GOAL_MAX, C.SPAN_MAX_DAYS, C.CHOICES_MAX) == (
         cycles.NAME_MAX, cycles.GOAL_MAX, cycles.SPAN_MAX_DAYS, cycles.CHOICES_MAX)
+    assert set(C._CLOSING) == set(core.CLOSING_CATEGORIES)
 
 
 async def test_the_reads_list_the_cycles_and_one_cycle(monkeypatch) -> None:
@@ -197,7 +210,8 @@ async def test_a_bulk_add_shows_one_card_with_every_task_then_writes(monkeypatch
     sent = [(c["method"], c["path"], c["json"]) for c in writes(calls)]
     assert sent == [("POST", f"/projects/cycles/{PLANNED}/tasks", {"task_id": t})
                     for t in sorted((T1, T2))], "the adds go in id order"
-    assert "added 2 of 2" in out
+    assert "2 of 2 task changes made" in out and "cycle_id:" in out
+    assert out.count("added: #9 «Task") == 2, "each task is named, not a bare id"
 
 
 async def test_a_removal_goes_through_the_delete_route(monkeypatch) -> None:
@@ -207,7 +221,7 @@ async def test_a_removal_goes_through_the_delete_route(monkeypatch) -> None:
     assert len(asked) == 1
     assert [(c["method"], c["path"]) for c in writes(calls)] == [
         ("DELETE", f"/projects/cycles/{PLANNED}/tasks/{T1}")]
-    assert "removed 1 of 1" in out
+    assert "removed: #9 «Task" in out and "1 of 1 task changes made" in out
 
 
 async def test_a_declined_plan_writes_nothing(monkeypatch) -> None:
@@ -255,15 +269,59 @@ async def test_a_closed_cycle_takes_no_change(monkeypatch) -> None:
     assert "is closed" in out and asked == [] and writes(calls) == []
 
 
-async def test_a_409_of_the_route_stops_the_bulk_and_says_how_far_it_went(monkeypatch) -> None:
-    """A task in another open cycle answers 409. The earlier adds stay, and the
-    answer says how many went in and which task stopped it."""
+async def test_a_409_after_the_first_add_is_a_partial_receipt(monkeypatch) -> None:
+    """A task in another open cycle answers 409. The earlier add stays. The
+    answer has a `stopped:` line, names each task, and keeps its id line, so
+    the card reads "partial" and not done."""
     approve(monkeypatch)
     first, second = sorted((T1, T2))
     calls = _gateway(monkeypatch, post_refusal=second)
     out = await skill_projects.plan_cycle(PLANNED, add_task_ids=f"{T1},{T2}")
-    assert "added 1 of 2" in out and f"Stopped at task {second}" in out and "Sprint 5" in out
+    lines = out.split("\n")
+    assert any(ln.startswith("stopped: #9 «Task " + second[:4]) for ln in lines), out
+    assert any(ln.startswith("added: #9 «Task " + first[:4]) for ln in lines), out
+    assert "1 of 2 task changes made" in out and "cycle_id:" in out
+    assert "«" in next(ln for ln in lines if ln.startswith("stopped:")), "the detail is fenced"
     assert [c["json"]["task_id"] for c in writes(calls)] == [first, second]
+
+
+async def test_a_409_at_the_first_task_is_a_refusal_with_no_id_line(monkeypatch) -> None:
+    """Nothing went in, so the answer has no id line and the card cannot show done."""
+    approve(monkeypatch)
+    first, second = sorted((T1, T2))
+    _gateway(monkeypatch, post_refusal=first)
+    out = await skill_projects.plan_cycle(PLANNED, add_task_ids=f"{T1},{T2}")
+    assert "stopped:" in out and "not tried: #9 «Task " + second[:4] in out
+    assert "_id:" not in out and "Nothing was changed" in out
+
+
+async def test_a_timeout_after_the_first_add_keeps_the_receipt(monkeypatch) -> None:
+    """A transport fault on add 2 must not escape as a raise: add 1 landed."""
+    approve(monkeypatch)
+    first, second = sorted((T1, T2))
+    _gateway(monkeypatch, timeout_on=second)
+    out = await skill_projects.plan_cycle(PLANNED, add_task_ids=f"{T1},{T2}")
+    assert f"added: #9 «Task {first[:4]}»" in out
+    assert "stopped:" in out and "ReadTimeout" in out and "may or may not" in out
+    assert f"cycle_id: {PLANNED}" in out
+
+
+async def test_a_task_in_the_cycle_already_is_not_counted_as_added(monkeypatch) -> None:
+    approve(monkeypatch)
+    _first, second = sorted((T1, T2))
+    _gateway(monkeypatch, already=second)
+    out = await skill_projects.plan_cycle(PLANNED, add_task_ids=f"{T1},{T2}")
+    assert "1 of 2 task changes made" in out and f"already in: #9 «Task {second[:4]}»" in out
+    only = await skill_projects.plan_cycle(PLANNED, add_task_ids=second)
+    assert "0 of 1" in only and "_id:" not in only
+
+
+async def test_a_task_in_another_open_cycle_is_refused_before_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = _gateway(monkeypatch, held={T1: {"id": NEXT, "name": "Sprint 5", "state": "active"}})
+    out = await skill_projects.plan_cycle(PLANNED, add_task_ids=T1)
+    assert "«Sprint 5»" in out and "Nothing was changed" in out
+    assert asked == [] and writes(calls) == []
 
 
 async def test_a_start_shows_the_counts_on_one_card(monkeypatch) -> None:
@@ -336,6 +394,14 @@ async def test_a_close_to_the_next_cycle_names_it_and_sends_its_id(monkeypatch) 
     await skill_projects.close_cycle(ACTIVE, NEXT)
     assert "«Sprint 8»" in asked[0]["context"]
     assert writes(calls)[0]["json"] == {"choices": [{"task_id": T1, "choice": "next", "cycle_id": NEXT}]}
+
+
+async def test_a_close_with_a_cycle_name_says_carry_over(monkeypatch) -> None:
+    approve(monkeypatch)
+    _gateway(monkeypatch)
+    with pytest.raises(GatewayRefusal) as err:
+        await skill_projects.close_cycle(ACTIVE, "Sprint 8")
+    assert "carry_over" in str(err.value)
 
 
 async def test_a_close_refuses_the_cycle_itself_and_a_closed_target(monkeypatch) -> None:

@@ -126,6 +126,27 @@ describe("classifyActionResult", () => {
     );
   });
 
+  it("is partial when plan_cycle stopped after one task, and refused when none went in (SP-5a)", () => {
+    const id = "d4d9fad5-d9cb-469f-a165-70867728950e";
+    const stopped = [
+      "«Sprint 7»: 1 of 3 task changes made.",
+      'stopped: #9 «Task ab12» refused (409): «This task is in the cycle "Sprint 5".».',
+      "added: #8 «Task 0f3c»",
+      "not tried: #10 «Task cd34»",
+      `  cycle_id: ${id}`,
+    ].join("\n");
+    expect(classifyActionResult(stopped, "done", "plan_cycle")).toBe("partial");
+    const none = [
+      "«Sprint 7»: 0 of 3 task changes made.",
+      "stopped: #8 «Task 0f3c» refused (409): «x».",
+      "not tried: #9 «Task ab12»",
+      "Nothing was changed in the cycle.",
+    ].join("\n");
+    expect(classifyActionResult(none, "done", "plan_cycle")).toBe("refused");
+    const all = ["«Sprint 7»: 2 of 2 task changes made.", "added: #8 «Task 0f3c»", `  cycle_id: ${id}`].join("\n");
+    expect(classifyActionResult(all, "done", "plan_cycle")).toBe("done");
+  });
+
   it("is partial when a plan stopped part way, and never done (S7d rule 9)", () => {
     const text = [
       "Created project «Steps» under «Ops».",

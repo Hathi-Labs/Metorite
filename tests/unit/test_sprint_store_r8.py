@@ -817,6 +817,16 @@ class TestTheCycleStoreOnARealDatabase:
             # Bob sees the project of the task, not the space of the cycle.
             bob = (await call(w.u_bob, "GET", f"/projects/tasks/{task}")).json()
             assert bob["cycle"] is None
+            # A started cycle still shows. A closed cycle is history, so it shows none.
+            started = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/start", {})
+            assert started.status_code == 200, started.text
+            active = (await call(w.u_alice, "GET", f"/projects/tasks/{task}")).json()["cycle"]
+            assert active["state"] == "active"
+            closed = await call(w.u_alice, "POST", f"/projects/cycles/{cycle}/close", {
+                "choices": [{"task_id": task, "choice": "backlog"}]})
+            assert closed.status_code == 200, closed.text
+            after = (await call(w.u_alice, "GET", f"/projects/tasks/{task}")).json()
+            assert after["cycle"] is None
             monkeypatch.setattr(get_settings(), "projects_sprints_orgs", w.p.org_b)
             off = (await call(w.u_alice, "GET", f"/projects/tasks/{task}")).json()
             assert "cycle" not in off

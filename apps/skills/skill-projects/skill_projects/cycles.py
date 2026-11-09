@@ -43,6 +43,7 @@ from skill_projects.writes import (
     _fits_on_card,
     _node,
     _ref,
+    _refusal_words,
     _split,
     _task,
 )
@@ -97,9 +98,9 @@ def _span(cycle: dict[str, Any]) -> str:
     return f"{cycle.get('starts_on')} to {cycle.get('ends_on')}"
 
 
-async def _read_cycle(cycle_id: str) -> tuple[str, dict[str, Any] | None]:
+async def _read_cycle(cycle_id: str, what: str = "cycle_id") -> tuple[str, dict[str, Any] | None]:
     """``(canonical id, the read of the cycle)``, or ``(id, None)`` while the flag is off."""
-    cid = uuid_of(cycle_id, "cycle_id")
+    cid = uuid_of(cycle_id, what)
     try:
         return cid, (await get(f"/projects/cycles/{cid}")) or {}
     except GatewayRefusal as exc:
@@ -256,9 +257,14 @@ def _ids(csv: str, what: str) -> list[str]:
     return list(seen)
 
 
-async def _refs(ids: list[str]) -> tuple[list[str], str]:
-    """The card names of tasks *ids*, or ``([], sentence)`` for the first that is not found."""
-    names: list[str] = []
+async def _refs(
+    ids: list[str], cid: str, *, adding: bool,
+) -> tuple[list[tuple[str, str]], str]:
+    """``[(task id, card name)]`` for *ids*, or ``([], sentence)`` for the first
+    task that is not found, or that sits in another open cycle. The task read
+    carries ``cycle`` while the flag is on, so a bad add stops before the card.
+    """
+    out: list[tuple[str, str]] = []
     for tid in ids:
         try:
             _bound, row = await _task(tid)
@@ -269,24 +275,41 @@ async def _refs(ids: list[str]) -> tuple[list[str], str]:
                     "Nothing was changed. Check the task_id with find_tasks."
                 )
             raise
-        names.append(_ref(row))
-    return names, ""
+        held = row.get("cycle") if isinstance(row.get("cycle"), dict) else None
+        if held is not None and str(held.get("id")) != cid:
+            where = f"the cycle {data(held.get('name'))}"
+            if adding:
+                return [], (
+                    f"{_ref(row)} is in {where}. Nothing was changed. Take it out of that "
+                    "cycle first (plan_cycle with remove_task_ids on that cycle), then add it here."
+                )
+            return [], f"{_ref(row)} is in {where}, not in this cycle. Nothing was changed."
+        out.append((tid, _ref(row)))
+    return out, ""
 
 
-async def _apply(cid: str, ids: list[str], *, remove: bool) -> tuple[int, str]:
-    """Send one route call for each of *ids*, in order. Returns how many went
-    through, and the sentence of the first refusal (``""`` when none)."""
-    done = 0
-    for tid in ids:
-        try:
-            if remove:
-                await delete(f"/projects/cycles/{cid}/tasks/{tid}")
-            else:
-                await post(f"/projects/cycles/{cid}/tasks", {"task_id": tid})
-        except GatewayRefusal as exc:
-            return done, f"Stopped at task {tid}: {getattr(exc, 'detail', '') or exc}"
-        done += 1
-    return done, ""
+def _rows(label: str, refs: list[tuple[str, str]]) -> dict[str, Any]:
+    """One card row for each task: ``<label> task 1``, ``<label> task 2``, and so on."""
+    return {f"{label} task {n}": ref for n, (_tid, ref) in enumerate(refs, 1)}
+
+
+async def _send(cid: str, tid: str, *, remove: bool) -> bool:
+    """One route call. True when the task changed, False when it was in already."""
+    if remove:
+        await delete(f"/projects/cycles/{cid}/tasks/{tid}")
+        return True
+    got = await post(f"/projects/cycles/{cid}/tasks", {"task_id": tid})
+    return not (isinstance(got, dict) and got.get("added") is False)
+
+
+def _why(exc: Exception) -> str:
+    """The reason a call stopped, in words the member reads (no raw detail)."""
+    if isinstance(exc, GatewayRefusal):
+        return _refusal_words(exc)
+    return (
+        f"the write failed ({type(exc).__name__}), so it may or may not have happened. "
+        "Read cycle_detail before a retry"
+    )
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
@@ -311,50 +334,69 @@ async def plan_cycle(cycle_id: str, add_task_ids: str = "", remove_task_ids: str
     if got is None:
         return CYCLES_OFF
     cycle = got.get("cycle") or {}
+    name = data(cycle.get("name"))
     if cycle.get("state") == "closed":
         return (
-            f"The cycle {data(cycle.get('name'))} is closed, so it takes no change. "
+            f"The cycle {name} is closed, so it takes no change. "
             "Plan the tasks in a planned or an active cycle."
         )
-    add_names, refused = await _refs(adds)
+    add_refs, refused = await _refs(adds, cid, adding=True)
     if refused:
         return refused
-    drop_names, refused = await _refs(drops)
+    drop_refs, refused = await _refs(drops, cid, adding=False)
     if refused:
         return refused
-    card: dict[str, Any] = {"cycle": data(cycle.get("name")), "state": cycle.get("state")}
-    if add_names:
-        card[f"add {len(add_names)} tasks"] = "; ".join(add_names)
-    if drop_names:
-        card[f"remove {len(drop_names)} tasks"] = "; ".join(drop_names)
+    card: dict[str, Any] = {"cycle": name, "state": cycle.get("state")}
+    card.update(_rows("add", add_refs))
+    card.update(_rows("remove", drop_refs))
     if not _fits_on_card(card):
         return "These tasks do not fit on one card, so nothing was changed. Send fewer tasks and call again."
     if not await _confirm(
         title="Change the tasks of this cycle?",
-        detail=f"{data(cycle.get('name'))}: +{len(adds)} / -{len(drops)}",
+        detail=f"{name}: +{len(adds)} / -{len(drops)}",
         context=_fields_block(card),
     ):
         return CANCELLED
     # The removes first, then the adds in id order: one lock order for every
     # bulk add. Each task is its own transaction in the route, so a stop
-    # leaves the earlier tasks in, and the answer says how many.
-    done_drop, stopped = await _apply(cid, sorted(drops), remove=True)
-    done_add = 0
-    if not stopped:
-        done_add, stopped = await _apply(cid, sorted(adds), remove=False)
-    head = f"{data(cycle.get('name'))}: added {done_add} of {len(adds)}, removed {done_drop} of {len(drops)}."
-    return f"{head} {stopped}\n  cycle_id: {cid}" if stopped else f"{head}\n  cycle_id: {cid}"
+    # leaves the earlier tasks in. Nothing raises after the first write: a
+    # raise reads as "Function failed", and the model would redo the acts.
+    todo = [(t, r, True) for t, r in sorted(drop_refs)] + [(t, r, False) for t, r in sorted(add_refs)]
+    lines: list[str] = []
+    changed = 0
+    stop = ""
+    for n, (tid, ref, remove) in enumerate(todo):
+        try:
+            moved = await _send(cid, tid, remove=remove)
+        except Exception as exc:  # every call ends in the receipt, never in a raise
+            stop = f"stopped: {ref} {_why(exc)}."
+            left = [r for _t, r, _rm in todo[n + 1:]]
+            if left:
+                lines.append("not tried: " + ", ".join(left))
+            break
+        if moved:
+            changed += 1
+            lines.append(f"{'removed' if remove else 'added'}: {ref}")
+        else:
+            lines.append(f"already in: {ref}")
+    head = f"{name}: {changed} of {len(todo)} task changes made."
+    body = "\n".join([head, stop, *lines] if stop else [head, *lines])
+    if not changed:
+        return body + "\nNothing was changed in the cycle."
+    return f"{body}\n  cycle_id: {cid}"
 
 
 # ── Class C: start, and close with a carry-over ──────────────────────────────
 
 
-def _names(tasks: list[dict[str, Any]]) -> str:
-    """The first tasks of *tasks* as a card names them, and how many more there are."""
+def _names(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """One card row for each of the first tasks of *tasks* (``task 1``, ``task 2``).
+    The impact line of the card holds the total."""
     page = paged(tasks, 0, CLOSE_CARD_NAMES, default=CLOSE_CARD_NAMES)
-    shown = [_ref({"task_number": t.get("task_number"), "title": t.get("title")}) for t in page.items]
-    more = len(tasks) - len(shown)
-    return "; ".join(shown) + (f"; and {more} more" if more > 0 else "")
+    return {
+        f"task {n}": _ref({"task_number": t.get("task_number"), "title": t.get("title")})
+        for n, t in enumerate(page.items, 1)
+    }
 
 
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
@@ -399,10 +441,7 @@ async def start_cycle(cycle_id: str, goal: str = "") -> str:
         + (f" and {hidden} more that are hidden from you" if hidden else "")
         + ". The committed list does not change after the start"
     )
-    shown = _names(tasks)
-    rest: dict[str, Any] = {"cycle": name, "goal": aim}
-    if shown:
-        rest["tasks"] = shown
+    rest: dict[str, Any] = {"cycle": name, "goal": aim, **_names(tasks)}
     if not await _confirm(
         title="Start this cycle?",
         detail=name,
@@ -453,7 +492,7 @@ async def close_cycle(cycle_id: str, carry_over: str = "") -> str:
         lines += [f"- {data(c.get('name'))} · {c.get('state')} · cycle_id {c.get('id')}" for c in nexts]
         return "\n".join(lines)
     if unfinished and target.lower() != "backlog":
-        nid, nxt = await _read_cycle(target)
+        nid, nxt = await _read_cycle(target, "carry_over")
         if nxt is None:
             return CYCLES_OFF
         if nid == cid:
@@ -467,8 +506,7 @@ async def close_cycle(cycle_id: str, carry_over: str = "") -> str:
         f"{len(unfinished)} unfinished tasks move to {place}"
     )
     rest: dict[str, Any] = {"cycle": name, "unfinished": len(unfinished), "carry to": place}
-    if unfinished:
-        rest["tasks"] = _names(unfinished)
+    rest.update(_names(unfinished))
     if not await _confirm(
         title="Close this cycle?",
         detail=f"{name}: {len(unfinished)} unfinished to {place}",
