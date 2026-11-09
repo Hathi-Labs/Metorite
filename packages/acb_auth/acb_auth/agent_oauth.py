@@ -345,6 +345,20 @@ def protocol_allowed(organization_id: object) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def plan_order_allowed(organization_id: object) -> bool:
+    """True when ``my_work_plan_order_orgs`` allows *organization_id* (SW-68a).
+
+    The ONE reader of the flag. Off by default. The edge and the gateway route
+    both ask it, and the organization comes from the token row or the session,
+    never from request input. It reads the settings at each call.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().my_work_plan_order_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
 def org_allowed(organization_id: object) -> bool:
     """True when ``agent_access_orgs`` allows *organization_id*.
 
@@ -889,6 +903,10 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks"),
     # MCP-G19a: the counts of `board_stats`, over the same scope as the list.
     ("GET", "/projects/tasks/stats"),
+    # SW-68a: the plan order of `my_work`. The answer holds ids, counts and
+    # `labels`: the number and title of the VISIBLE blockers, for the chat. The
+    # edge ignores `labels`, and a hidden blocker is never named.
+    ("GET", "/projects/plan/order"),
     # MCP-G21: the members that `set_assignees` would accept, for `list_members`.
     ("GET", "/projects/assignable-members"),
     # SP-12: the order of work under one goal, epic or project, for `get_plan`.
