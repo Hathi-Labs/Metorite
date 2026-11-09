@@ -5883,8 +5883,13 @@ function ProjectsWorkspace() {
     slotOpen: app === "ai-chat",
   });
 
+  // ⚠️ Not `noProjectChrome`: that also hides the header actions on a space
+  // or folder dashboard, and a filed SPACE must still say it is filed (rule 1
+  // names spaces). Only the app's own pages, which show no node, drop it.
+  const onAppPage =
+    app === "reports" || app === "ai-chat" || app === "settings" || isMyWorkId(app);
   const archiveBarEl =
-    !noProjectChrome && selected && archiveBarNow ? (
+    !onAppPage && selected && archiveBarNow ? (
       <div
         role="status"
         data-archive-bar=""

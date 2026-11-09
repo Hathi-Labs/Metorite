@@ -1541,7 +1541,7 @@ Each fence is advisory until its slice builds.
 
 ### 9b.6 An archived project opens read-only (2026-11-09)
 
-**Status:** 📋 SPEC. The owner accepted this on 2026-11-09, in chat. Metorite: tasks 2502 (ARC-2a), 2503 (ARC-2b) and 2504 (ARC-2c).
+**Status:** ARC-2a BUILT 2026-11-09. ARC-2b and ARC-2c are 📋 SPEC. The owner accepted this on 2026-11-09, in chat. Metorite: tasks 2502 (ARC-2a), 2503 (ARC-2b) and 2504 (ARC-2c).
 
 On 2026-11-08 the owner asked whether the archive design was settled. A review found that an archived project opened from the rail's Archived section gave no sign that it was archived. Its board also kept every edit control. The rail itself drew a filed project twice (ARC-BUG-1, task 2325, merged 69c40d08e).
 
