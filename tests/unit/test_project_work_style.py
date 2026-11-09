@@ -218,6 +218,27 @@ def test_a_change_never_deletes(db: FakeProjectsDB) -> None:
         assert "name" not in statement.split("WHERE", 1)[0].split("SET", 1)[1]
 
 
+@pytest.mark.parametrize("code", sorted(core.TRANSIENT_SQLSTATES))
+def test_a_race_of_the_style_write_answers_409_not_500(db: FakeProjectsDB, monkeypatch, code) -> None:
+    """A deadlock, a serialization failure or a lock timeout of the node PATCH
+    is a 409 (``tree._tree_race_as_409``), and the caller may send it again."""
+
+    class DriverError(Exception):
+        def __init__(self, sqlstate: str) -> None:
+            super().__init__(sqlstate)
+            self.sqlstate = sqlstate
+
+    async def boom(*_args, **_kwargs):
+        raise DriverError(code)
+
+    node = db.seed_project(name="Delivery")
+    monkeypatch.setattr(tree, "update_row", boom)
+    with pytest.raises(HTTPException) as err:
+        run(tree.patch_node(str(node.id), ProjectIn(work_style="sprints"), user=USER))
+    assert err.value.status_code == 409
+    assert err.value.detail == tree.TREE_RACE_DETAIL
+
+
 def test_an_agent_cannot_set_the_style_yet() -> None:
     """SP-5 gives the chat and the MCP the style (G26). Until then a signed
     agent write of a node names no style."""
