@@ -30,7 +30,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
-import { categoryLabel } from "@/lib/statusCategory";
+import { categoryLabel, closesTask } from "@/lib/statusCategory";
 import { clickSelect, type SelectionState } from "@/lib/selection";
 
 import { accentForStatus } from "../lib/accent";
@@ -357,6 +357,11 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
           innerRef={attach(task.id)}
           dense
           selected={picked}
+          // A sprint may hold a finished task. The backlog holds open work only.
+          completed={closesTask(task.category ?? "")}
+          // The canvas has no keyboard cursor: Tab walks the cards, and the
+          // checkbox and "Move to sprint" are the keyboard path of a move.
+          atCursor={false}
           draggable={surface.drag}
           ariaLabel={picked ? `${task.title}, selected` : task.title}
           onActivate={() => onOpenTask(task.id)}
