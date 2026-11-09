@@ -22870,7 +22870,8 @@ already holds each column and CHECK.
 - `people.links` is a JSON object, such as `{"linkedin": "..."}`. The renderer wants a list of
   `{label, url}`. The form maps the first four keys, and the key becomes the label.
 - `people.phone` is one column in the private tier. It starts the Phone field only. Mobile
-  starts empty. Owner question SG-Q3 decides whether the form fills Phone without a click.
+  starts empty. SG-Q3 (answered): the form leaves Phone empty, with a "Use my profile phone"
+  button.
 - "Edit as HTML" saves the HTML through `PUT /email/assistant/settings` first. Only then does it
   set `custom`. A cancel then loses no layout signature.
 - The preview draws in a sandboxed iframe with no script. The form calls three routes, so
@@ -22885,7 +22886,7 @@ already holds each column and CHECK.
 - The dark-logo check reads `dark_share` and `clear_share` from the upload answer, so the SG-1
   child does not change. The warning shows at upload time only. After a reload it is gone.
 - The proposed rule warns on a logo when `clear_share` is 0.10 or more and `dark_share` is 0.50
-  or more (owner question SG-Q5). A unit test pins the numbers.
+  or more. The owner accepted this rule (SG-Q5). A unit test pins the numbers.
 - "Add a white background" draws the member's own file over white on a canvas, then uploads it
   through `POST /signature/images`. A canvas cannot read the hosted image, because the public
   route sends no CORS header. Do not add one, because it widens a public route.
@@ -22897,8 +22898,8 @@ it. Only stored history can fix this.
 One expand-only migration adds a nullable JSONB column of earlier renders: at most three
 `{layout, fields}` entries, with a CHECK on the type and the size. The writer pushes the old
 entry when the rendered text changes. `for_body` then also tests each earlier render. This also
-covers a change from `template` to `custom`. Owner question SG-Q4 decides between SG-3d and
-SG-5.
+covers a change from `template` to `custom`. SG-Q4 (answered): SG-3d builds it, and it merges
+before any flip of the flag.
 
 ### 23.4 Tenancy (R5) and safety
 
@@ -23115,9 +23116,11 @@ recommendation below is now the decision.
 | **SG-Q1** | May an admin require the company signature, so a member cannot switch to an own layout? | No, in v1. The company signature is the first choice for each mailbox, one click away. A "required" switch can come later |
 | **SG-Q2** | For a new signature, should replies and forwards get the full or the short signature? | Short (name, title, company, phone), as most companies use. Each existing mailbox keeps full |
 
-The SG-3 audit (2026-11-09) adds four questions. They wait on task 2179. None blocks SG-3a.
+The SG-3 audit (2026-11-09) adds four questions. The owner answered them on task 2179 on
+2026-11-09 at 08:14 UTC, with "Accept all four recommendations". Each answer below is now the
+decision.
 
-| Id | Question | Recommendation | Blocks |
+| Id | Question | Answer | Binds |
 |---|---|---|---|
 | **SG-Q3** | `people.phone` is private. A signature goes to people outside the company. Should the form fill Phone from the profile? | No. Leave Phone empty, with a "Use my profile phone" button | SG-3b |
 | **SG-Q4** | A draft written before a signature edit gets two signatures at the send. Fix it now in SG-3d (one migration), or in SG-5? | SG-3d, before any flip of the flag | SG-3d |
