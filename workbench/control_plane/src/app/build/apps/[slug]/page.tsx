@@ -18,6 +18,7 @@ import SandboxedHtml from "@/components/SandboxedHtml";
 import {
   buildAppSrcDoc,
   extractCcIconNames,
+  newBridgeNonce,
   useCcBridge,
   type CcToolConfirmDecision,
   type CcToolConfirmRequest,
@@ -209,8 +210,12 @@ export default function AppRunPage({
     []
   );
 
-  // Broker the app frame's cc.* calls against /api/apps/{slug}/…
-  useCcBridge(slug, { mode: "live", onToolConfirm });
+  // Broker the app frame's cc.* calls against /api/apps/{slug}/… — for THIS
+  // page's app frame only, the one that holds this nonce (task 2433).
+  const appFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const getAppFrame = useCallback(() => appFrameRef.current, []);
+  const [bridgeNonce] = useState(newBridgeNonce);
+  useCcBridge(slug, { mode: "live", nonce: bridgeNonce, getFrame: getAppFrame, onToolConfirm });
 
   /** Fetch + set the live bundle — factored out so both the "no consent
    * needed" mount path and the "just consented" Allow handler can trigger
@@ -385,8 +390,9 @@ export default function AppRunPage({
   );
 
   const srcDoc = useMemo(
-    () => (bundle ? buildAppSrcDoc(bundle, { slug, mode: "live" }) : null),
-    [bundle, slug]
+    () =>
+      bundle ? buildAppSrcDoc(bundle, { slug, mode: "live", nonce: bridgeNonce }) : null,
+    [bundle, slug, bridgeNonce]
   );
   // Same icon pre-resolution as the Workshop's preview — the published run
   // page goes through the exact same sandboxed frame.
@@ -571,7 +577,7 @@ export default function AppRunPage({
       {/* ── The app, in the sandboxed frame ─────────────────────────── */}
       <div className="flex-1 min-h-0 flex flex-col">
         {srcDoc ? (
-          <SandboxedHtml chromeless html={srcDoc} iconNames={runIcons} />
+          <SandboxedHtml chromeless html={srcDoc} iconNames={runIcons} iframeRef={appFrameRef} />
         ) : (
           <div className="flex flex-col items-center justify-center flex-1 gap-3 text-center px-6">
             <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center">

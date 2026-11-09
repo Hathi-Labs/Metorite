@@ -111,3 +111,25 @@ async def test_a_slow_plan_read_keeps_the_old_text(monkeypatch):
 
     monkeypatch.setattr(reads, "get", get)
     assert await reads.my_work() == old
+
+
+async def test_view_archived_reads_the_one_list_route_over_mine(monkeypatch):
+    """ARC-1 chat parity. ``view="archived"`` reads ``scope=mine`` with
+    ``archived_only`` (the Archive chip's read) and keeps the plan read out."""
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def get(path: str, params: dict[str, Any] | None = None) -> Any:
+        seen.append((path, params or {}))
+        if path == "/projects/tasks":
+            return {"rows": [{**_rows()[0], "archived_at": "2026-11-01T00:00:00Z"}], "total": 1}
+        if path == "/projects/my/today":
+            raise GatewayRefusal("no clock")
+        return {"rows": []}
+
+    monkeypatch.setattr(reads, "get", get)
+    out = await reads.my_work(view="archived")
+    listed = [p for path, p in seen if path == "/projects/tasks"]
+    assert listed and listed[0]["scope"] == "mine" and listed[0]["archived_only"] is True
+    assert "My archive (1 total" in out
+    assert "First" in out
+    assert all(path != "/projects/plan/order" for path, _ in seen)

@@ -1650,6 +1650,13 @@ CREATE POLICY crm_lead_pipeline_stages_tenant_isolation ON crm_lead_pipeline_sta
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE email_signature_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_signature_settings FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_signature_settings_tenant_isolation ON email_signature_settings;
+CREATE POLICY email_signature_settings_tenant_isolation ON email_signature_settings
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_epic_contracts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_epic_contracts FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_epic_contracts_tenant_isolation ON pm_epic_contracts;

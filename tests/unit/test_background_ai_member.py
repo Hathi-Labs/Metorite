@@ -295,6 +295,7 @@ def _load_runner():
     return mod
 
 
+@pytest.mark.usefixtures("no_copilot_cli_download")
 class TestTheMutationSandbox:
     """🔴 ``mutation_runner.py`` runs in a container with no ``acb_llm`` and
     called gateway ``/v1`` with only the LLM key.
@@ -362,11 +363,14 @@ class TestTheMutationSandbox:
         import copilot
 
         rpc_calls: list = []
+        created_evt: list = []  # holds the Event, built inside the running loop
 
         class _Rpc:
             async def request(self, method, params=None, **_kw):
                 rpc_calls.append((method, params or {}))
                 if method == "session.create":
+                    if created_evt:
+                        created_evt[0].set()
                     return {"sessionId": params["sessionId"]}
                 return {"messageId": "m-1"}
 
@@ -387,11 +391,12 @@ class TestTheMutationSandbox:
         runner = _load_runner()
 
         async def go():
+            created_evt.append(asyncio.Event())
             task = asyncio.ensure_future(runner.main())
-            for _ in range(200):
-                if any(m == "session.create" for m, _ in rpc_calls):
-                    break
-                await asyncio.sleep(0.01)
+            # Wait on wall time, not a loop count: a loaded runner stretched
+            # 200 x sleep(0.01) past its ~2 s budget (task 2472).
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(created_evt[0].wait(), timeout=30)
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task

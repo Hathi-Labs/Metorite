@@ -86,6 +86,18 @@ fails the read. A read changes nothing, so a lost row loses no change. B2c
 must not copy this: it writes its audit row in the same transaction as the
 write, and a failed audit fails the write.
 
+**The lines (C13).** The data of a create or an update can hold the key of a
+lines field of the object: a list of lines, each ``{data}`` for a new line or
+``{id, data}`` for a changed line. :func:`_split_lines` takes them out of the
+record data before any write, and refuses more than
+:data:`~acb_common.studio_rules.MAX_LINES_PER_SAVE` lines (``too_many_lines``)
+or a line of another shape (``bad_lines``), each with a 422. The ask of a
+delegated write runs the same check, so it opens no card for such a list. The
+record is write 0 of ONE ``apply_writes`` call, and each line is a write
+linked to it, so the record and its lines are saved all or none. A refusal of
+a line names its place. A line is not removed through its record, because a
+delete is class C, and the save of a record is class B.
+
 **A delegated write (B2c-2a).** The approval store of MCP-P1b-1
 (``gateway/app_requests.py``) holds the card, and the door builds no second
 store.
@@ -138,9 +150,14 @@ from acb_auth import direct_proof as _direct_proof
 from acb_common import get_logger, studio_query
 from acb_common.app_manifests.base import OP_PATTERN
 from acb_common.no_person import no_person_present
-from acb_common.studio_fields import FieldError, RecordError
+from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
-from acb_common.studio_rules import COMPUTED_FIELD, FormulaError, RuleViolation
+from acb_common.studio_rules import (
+    COMPUTED_FIELD,
+    MAX_LINES_PER_SAVE,
+    FormulaError,
+    RuleViolation,
+)
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from gateway import app_requests
@@ -310,6 +327,19 @@ BAD_WRITE_INPUT = (
     "and id for a delete.")
 STORE_REFUSED = "The store refuses this write, so check the id and the data."
 
+#: C13. The codes and the sentences of a refused list of lines.
+TOO_MANY_LINES = "too_many_lines"
+BAD_LINES = "bad_lines"
+LINES_OVER_CAP = (
+    "A save holds at most {cap} lines, and this save holds {n}. Save at most {cap} lines now, "
+    "and add the rest in a second save.")
+BAD_LINES_INPUT = (
+    "Send the lines of `{key}` as a list. A new line is {{\"data\": {{...}}}}, and a changed "
+    "line is {{\"id\": \"<line id>\", \"data\": {{...}}}}.")
+NEW_RECORD_LINES = (
+    "A new record has no lines yet, so each line of `{key}` takes data only, and no id.")
+NO_SUCH_LINE = "This app holds no such line, so send the line with no id to add it."
+
 
 @dataclasses.dataclass
 class _Fail:
@@ -358,6 +388,10 @@ class _Outcome:
     #: True when the call wrote its own audit row, in the session of the write,
     #: or wrote none because it held no connection.
     audited: bool = False
+    #: The ids of the lines that a write saved with its record (C13), by the key
+    #: of their lines field, each list in the order of the body. The audit row
+    #: holds their count only.
+    lines: dict[str, list[str]] | None = None
 
 
 def _app_id(raw: str) -> str:
@@ -598,30 +632,53 @@ def _refused(code: str, message: str, rule: str | None = None,
         "code": code, "message": message, "rule": rule, "fieldErrors": errors}))
 
 
-def _set_write_error(out: _Outcome, exc: Exception) -> bool:
+@dataclasses.dataclass(frozen=True)
+class _Line:
+    """One line of a save (C13): its lines field, its place in that list (from
+    1), the id of a changed line, and its data."""
+
+    key: str
+    to: str
+    place: int
+    id: str | None
+    data: dict[str, Any]
+
+
+def _at(line: _Line | None, message: str) -> str:
+    """*message*, with the place of *line* first when the error is of a line."""
+    return message if line is None else f"Line {line.place} of `{line.key}`: {message}"
+
+
+def _set_write_error(out: _Outcome, exc: Exception, line: _Line | None = None) -> bool:
     """Set the answer of *out* for the error *exc* of a direct write, and say
-    whether it did. A fault that it does not know stays a fault (500).
+    whether it did. A fault that it does not know stays a fault (500). An error
+    of a *line* (C13) names its place, and its field error names the lines field.
 
     ⚠️ The order is load-bearing. ``StoreBusy`` is a subclass of
     ``ObjectStoreError``, so it comes first. A busy org is a 503 that can work
     later, and not a refused write."""
     if isinstance(exc, objects_store.StoreBusy):
         out.fail = _busy()
-    elif isinstance(exc, objects_store.RecordNotFound):
+    elif isinstance(exc, objects_store.RecordNotFound) and line is None:
         out.missing = True
+    elif isinstance(exc, objects_store.RecordNotFound):
+        out.fail = _refused(BAD_LINES, _at(line, NO_SUCH_LINE), field=line.key)
     elif isinstance(exc, FieldError):
-        out.fail = _refused(FIELD_INVALID, exc.message, field=exc.field)
+        out.fail = _refused(FIELD_INVALID, _at(line, exc.message),
+                            field=exc.field if line is None else line.key)
     elif isinstance(exc, RuleViolation):
         computed = isinstance(exc, FormulaError) and exc.code == COMPUTED_FIELD
-        out.fail = _refused(COMPUTED_FIELD if computed else RULE_REFUSED, exc.message,
-                            rule=exc.rule, field=getattr(exc, "field", None))
+        field = getattr(exc, "field", None)
+        out.fail = _refused(COMPUTED_FIELD if computed else RULE_REFUSED, _at(line, exc.message),
+                            rule=exc.rule, field=field if line is None or field is None
+                            else line.key)
     elif isinstance(exc, studio_query.QueryError):
         out.fail = _Fail("failed" if exc.code == studio_query.TIMEOUT else "refused", exc.code,
                          _query_refusal(exc))
     elif isinstance(exc, RecordError):
-        out.fail = _refused(RECORD_INVALID, str(exc))
+        out.fail = _refused(RECORD_INVALID, _at(line, str(exc)))
     elif isinstance(exc, objects_store.ObjectStoreError):
-        out.fail = _refused(RECORD_INVALID, STORE_REFUSED)
+        out.fail = _refused(RECORD_INVALID, _at(line, STORE_REFUSED))
     else:
         return False
     return True
@@ -650,11 +707,79 @@ def _write_input(op: str, raw: bytes) -> dict[str, Any] | None:
     return body
 
 
+def _split_lines(op: str, obj: objects_store.StudioObject,
+                 body: dict[str, Any]) -> tuple[Any, list[_Line]] | _Fail:
+    """The record data of *body* and its lines (C13), or the refusal of the
+    lines. Each key of a lines field of *obj* holds a list of lines, and the
+    record data keeps every other key. A new line is ``{data}``, and a
+    changed line is ``{id, data}``. A new record takes new lines only. At most
+    :data:`MAX_LINES_PER_SAVE` lines in all, so the record and its lines fit
+    one batch. Pure: it runs no statement, and the text echoes no value."""
+    if op == "delete":
+        return None, []
+    data = dict(body["data"])
+    lists: list[tuple[FieldSpec, list[Any]]] = []
+    for f in obj.fields:
+        if f.lines is None or f.key not in data:
+            continue
+        items = data.pop(f.key)
+        if not isinstance(items, list):
+            return _refused(BAD_LINES, BAD_LINES_INPUT.format(key=f.key), field=f.key)
+        lists.append((f, items))
+    total = sum(len(items) for _f, items in lists)
+    if total > MAX_LINES_PER_SAVE:
+        return _refused(TOO_MANY_LINES, LINES_OVER_CAP.format(cap=MAX_LINES_PER_SAVE, n=total))
+    lines: list[_Line] = []
+    for f, items in lists:
+        for place, item in enumerate(items, start=1):
+            keys = set(item) if isinstance(item, dict) else set()
+            if (keys not in ({"data"}, {"id", "data"}) or not isinstance(item["data"], dict)
+                    or not isinstance(item.get("id", ""), str)):
+                return _refused(BAD_LINES, BAD_LINES_INPUT.format(key=f.key), field=f.key)
+            if op == "create" and "id" in item:
+                return _refused(BAD_LINES, NEW_RECORD_LINES.format(key=f.key), field=f.key)
+            lines.append(_Line(f.key, str(f.to), place, item.get("id"), item["data"]))
+    return data, lines
+
+
+async def _line_writes(db: Any, package: packages_store.Package,
+                       lines: list[_Line]) -> list[objects_store.Write] | None:
+    """The writes of *lines*, each linked to the record write at place 0. None
+    when the package holds no object that a lines field names."""
+    ids: dict[str, str] = {}
+    writes: list[objects_store.Write] = []
+    for line in lines:
+        if line.to not in ids:
+            try:
+                child = await objects_store.get_object_by_name(db, line.to, package_id=package.id)
+            except objects_store.ObjectStoreError:
+                child = None
+            if child is None:
+                return None
+            ids[line.to] = child.id
+        writes.append(objects_store.Write(
+            op="create" if line.id is None else "update", object_id=ids[line.to],
+            record_id=line.id, data=line.data, parent=0))
+    return writes
+
+
+def _saved_lines(lines: list[_Line], answers: list[Any]) -> dict[str, list[str]]:
+    """The ids of the saved lines, by the key of their lines field, each list
+    in the order of the body (C13)."""
+    out: dict[str, list[str]] = {}
+    for line, saved in zip(lines, answers, strict=True):
+        if isinstance(saved, objects_store.Record):
+            out.setdefault(line.key, []).append(saved.id)
+    return out
+
+
 async def _do_object_write(db: Any, member: str, package: packages_store.Package,
                            ref: UsesRef, raw: bytes, out: _Outcome) -> None:
     """Run one create, update or delete as *member*, through ONE
-    ``apply_writes`` call with one write. It sets *out* and never raises an
-    ``HTTPException``. The caller writes the audit row."""
+    ``apply_writes`` call. The record is the first write, and each of its
+    lines (C13) follows it, so the record and its lines are saved all or none.
+    It sets *out* and never raises an ``HTTPException``. The caller writes the
+    audit row."""
     op = str(ref.op)
     body = _write_input(op, raw)
     if body is None:
@@ -670,14 +795,23 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
     if obj is None:
         out.object_missing = True
         return
-    write = objects_store.Write(op=op, object_id=obj.id, record_id=body.get("id"),
-                                data=body.get("data"))
+    split = _split_lines(op, obj, body)
+    if isinstance(split, _Fail):
+        out.fail = split
+        return
+    data, lines = split
+    line_writes = await _line_writes(db, package, lines)
+    if line_writes is None:
+        out.object_missing = True
+        return
+    write = objects_store.Write(op=op, object_id=obj.id, record_id=body.get("id"), data=data)
     try:
         answers = await objects_store.apply_writes(
-            db, member, package_id=package.id, writes=[write])
+            db, member, package_id=package.id, writes=[write, *line_writes])
     except objects_store.BatchError as exc:
         # The SAVEPOINT of the batch rolled back, so the session is usable.
-        if not _set_write_error(out, exc.cause):
+        line = lines[exc.index - 1] if 0 < exc.index <= len(lines) else None
+        if not _set_write_error(out, exc.cause, line):
             raise
         return
     except Exception as exc:
@@ -691,6 +825,13 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
     elif isinstance(done, objects_store.Record):
         out.record = done
         out.record_id = done.id
+        if lines:
+            out.lines = _saved_lines(lines, answers[1:])
+            # A roll-up over the lines (C7b) changed the record after its own
+            # write, in the same batch. The answer reads it once, so it shows
+            # the sum that the batch committed.
+            out.record = await objects_store.get_record(
+                db, obj.id, done.id, package_id=package.id) or done
 
 
 async def _run_object_write(db: Any, member: str, package: packages_store.Package,
@@ -794,10 +935,14 @@ async def _run_ask(db: Any, org: str, member: str, package: packages_store.Packa
                 db, str(ref.object), package_id=package.id)
         except objects_store.ObjectStoreError:
             obj = None
+    split = None if body is None or obj is None else _split_lines(str(ref.op), obj, body)
     if body is None:
         out.fail = _refused(BAD_INPUT, BAD_WRITE_INPUT)
     elif obj is None:
         out.object_missing = True
+    elif isinstance(split, _Fail):
+        # C13: a list of lines that the resend would refuse opens no card.
+        out.fail = split
     else:
         call = _door_call(package.id, out.action, out.uses, body)
         binding = store.studio_binding(member, REQUEST_APP, package.id)
@@ -996,6 +1141,8 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
         detail["record_id"] = out.record_id
     if out.request_id is not None:
         detail["request_id"] = out.request_id
+    if out.lines:
+        detail["lines"] = sum(len(ids) for ids in out.lines.values())
     return detail
 
 
@@ -1032,6 +1179,8 @@ def _answer(out: _Outcome) -> dict[str, Any] | JSONResponse:
         return {"deleted": True, "id": out.deleted}
     if out.missing or out.record is None:
         raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if out.lines:
+        return {"record": dataclasses.asdict(out.record), "lines": out.lines}
     return {"record": dataclasses.asdict(out.record)}
 
 
