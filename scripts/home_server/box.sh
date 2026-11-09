@@ -17,6 +17,8 @@
 # accounts and switch need BOX_HUB (the Hub address on the tailnet). Set
 # BOX_SWITCH_SKIP to the account that this PC's sessions use. This repo is
 # public, so neither value is written here.
+# The node -e programs below sit in single quotes on purpose: node expands them.
+# shellcheck disable=SC2016
 set -euo pipefail
 HOST="${BOX_HOST:-metorite-home}"
 HUB="${BOX_HUB:-}"
@@ -164,7 +166,7 @@ case "$cmd" in
   start) [ $# -ge 3 ] || die "usage: box start <name> <model> <prompt-file> [title]"; start "$@" ;;
   stop) [ $# -eq 1 ] || die "usage: box stop <name|id>"; r "claude stop $(sid "$1")" ;;
   respawn) [ $# -eq 1 ] || die "usage: box respawn <name|id>"; r "claude respawn $(sid "$1")" ;;
-  accounts) accounts ;;
-  switch) [ $# -eq 1 ] || die "usage: box switch <email|auto>"; switch "$1" ;;
+  accounts) need_hub; accounts ;;
+  switch) [ $# -eq 1 ] || die "usage: box switch <email|auto>"; need_hub; switch "$1" ;;
   *) sed -n '2,21p' "$0"; exit 1 ;;
 esac
