@@ -688,7 +688,7 @@ def _blocker_text(task_id: str, label: Any) -> str:
     if isinstance(label, dict) and label.get("title"):
         number = f"#{label['number']} " if label.get("number") else ""
         return f"{number}{data(label['title'])}"
-    return task_id[:8]
+    return task_id.split("-", 1)[0]
 
 
 def _plan_note(plan: Any, labels: dict[str, Any] | None = None) -> str:
@@ -703,7 +703,7 @@ def _plan_note(plan: Any, labels: dict[str, Any] | None = None) -> str:
     named = [_blocker_text(str(i), (labels or {}).get(str(i))) for i in plan.get("blocked_by") or []]
     parts = [f"blocked by {', '.join(named)}"] if named else []
     if plan.get("blocked_by_hidden"):
-        parts.append("blocked by a task you cannot see")
+        parts.append("blocked by a task hidden from you")
     return "  plan: " + (" · ".join(parts) or "blocked")
 
 

@@ -77,7 +77,7 @@ async def test_a_blocker_is_named_by_number_and_title(monkeypatch):
     text = await _text(monkeypatch, {"order": [B, A], "plan": plan, "labels": labels})
     assert "blocked by #7" in text and "Fix the extruder" in text
     assert BLOCKER not in text
-    assert "blocked by a task you cannot see" in text
+    assert "blocked by a task hidden from you" in text
 
 
 async def test_with_the_flag_off_the_text_is_the_text_of_main(monkeypatch):

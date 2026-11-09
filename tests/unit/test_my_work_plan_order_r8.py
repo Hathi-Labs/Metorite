@@ -250,7 +250,7 @@ class TestTheOrderOnARealDatabase:
         titles, text_ = await _chat(live, monkeypatch)
         assert _where(titles, "hidden x2") < _where(titles, "hidden u")
         assert _where(titles, "hidden v") > _where(titles, "hidden u")  # blocked: after
-        assert "blocked by a task you cannot see" in text_
+        assert "blocked by a task hidden from you" in text_
         assert secret not in text_ and also not in text_ and "sw68a secret" not in text_
         r = await t._send(live, "GET", ORDER, query=f"task_ids={v},{u},{x2}", signed=None)
         plan = r.json()["plan"][v]
