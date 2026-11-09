@@ -2049,6 +2049,8 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 
 **When the runs flag is off.** `agent_runs_enabled` gates the agent-runs list (`_ENABLED`). With the flag off, `my_work` makes no runs call, and it returns the third group only. It is not a `runs=True` tool, because the queue of assigned tasks is useful without runs.
 
+**The plan order (SW-68a).** The edge sends the ids of its whole assigned list to `GET /projects/plan/order` (class A, in `MCP_ROUTES`). The edge reads no flag. The gateway route reads `MY_WORK_PLAN_ORDER_ORGS`, and it answers the input order with no plan while the org is off. The edge keeps the order that it gets, then hides the rows that it never offers. The read has a 2 second limit, and any failure keeps the old order. A task under an epic is ranked by the plan, and it has an optional `plan` key: `epic_id`, `ready`, `slack_mins`, `blocked_by` (ids) and `blocked_by_hidden` (a count, no names).
+
 **What `my_work` does not do.** It never lists a task that the member is not assigned to and that this connection does not hold. An agent takes new work only by assignment or by an explicit claim. One residual stays while SW-7 is dark: two terminals that share ONE connection are not told apart. SW-7 (§12.5) is built behind `agent_mcp_sessions_enabled`. With the flag on, each terminal is its own MCP session, and `my_work` keeps the runs of this session and the runs with no key.
 
 **EA-15c. The protocol.** The server instructions (`mcp.py`) and the prompt `work_on_task` (`prompts.py`) give one order of steps:

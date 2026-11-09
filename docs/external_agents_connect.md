@@ -51,7 +51,7 @@ Each agent session follows the same six steps. The server instructions and the c
 
 1. The runs of this connection that wait. You queued work for it, you answered its question, or you asked it to stop.
 2. The tasks of a run of this connection whose session went quiet for five minutes. The agent can take that work back. A run that another session of this connection works on now does not show.
-3. The tasks assigned to you that no AI session holds and that no open task blocks.
+3. The tasks assigned to you that no AI session holds and that no open task blocks. Metorite ranks a task under an epic by the plan of the epic, when your organization has this on. A ready slice comes before a held slice. Then the least slack comes first, then the best priority. A task under no epic keeps its place. A row under an epic has a `plan` field. It holds `ready`, `slack_mins`, `blocked_by` (task ids) and `blocked_by_hidden`. The last one counts the blockers that you cannot see, and it never names them.
 
 It never gives a task that is not assigned to you and that this connection does not hold. A run of another client or of another connection does not show. Each computer that you connect gets its own connection, so the work of your other computer stays with it. Two terminals on one connection share it, so `my_work` cannot tell them apart until the MCP sessions of spec §12.5 are on.
 
