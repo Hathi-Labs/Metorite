@@ -670,6 +670,7 @@ jobs:
               tests/unit/test_mcp_edge_attachment_r8.py \
               tests/unit/test_mcp_edge_comment_edit_r8.py \
               tests/unit/test_projects_status_slot_r8.py \
+              tests/unit/test_pm_project_updates_r8.py \
               tests/unit/test_staging_export.py
 
       # CIV-3. A selection run holds part of the timings. Only a full run

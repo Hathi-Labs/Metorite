@@ -993,6 +993,15 @@ class Settings(BaseSettings):
     # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
     authority_pins_orgs: str = ""
 
+    # ── Project updates with health (WS-39 LP-1a, project_management_app.md §14.2a)
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the two update routes answer 404, the two MCP tools
+    # say that the feature is off, and the web line does not draw. The one
+    # reader is `gateway.routes.projects.updates.updates_allowed`. A SIGHUP
+    # reload applies a change. Fence: tests/unit/test_pm_project_updates_r8.py.
+    projects_updates_orgs: str = ""
+
     # ── Questions for me (WS-55 EA-18a, external_agent_access.md §12.8) ──────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1047,6 +1056,16 @@ class Settings(BaseSettings):
     # applies a change (`gateway/flag_reload.py`). Only the owner writes the
     # value. Fence: tests/unit/test_sprint_store_r8.py.
     projects_sprints_orgs: str = ""
+
+    # ── The templates of Projects (WS-39 TPL-1a, task 18) ──────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, each `/projects/templates` route answers 404 and no
+    # template row is written. The one reader is
+    # `gateway.routes.projects.templates.templates_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_pm_templates_r8.py.
+    projects_templates_orgs: str = ""
 
     # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
     #
