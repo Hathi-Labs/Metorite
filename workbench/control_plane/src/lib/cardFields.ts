@@ -110,6 +110,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "estimate_mins": { label: "Estimate", kind: "minutes" },
   "expected_by": { label: "Expected by", kind: "date" },
   "expected_close_date": { label: "Expected close", kind: "date" },
+  // WS-CRM CRM-M4a: the deal pipeline that a new lead pipeline feeds.
+  "feeds deals into": { label: "Feeds deals into" },
   "field": { label: "Field" },
   "field *": { label: "Field" },
   "field_type": { label: "Field type", kind: "words" },
@@ -204,6 +206,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   // WS-CRM CRM-M3a: where a new pipeline starts, "new" or "a copy of X".
   "starts from": { label: "Starts from" },
   "status": { label: "Status", kind: "status" },
+  // WS-CRM CRM-M4a: each lead status of a new lead pipeline, in order.
+  "status N": { label: "Status", plural: "Statuses" },
   "status set": { label: "Status set", kind: "project" },
   "status_category": { label: "Status category", kind: "category" },
   "status_id": { label: "Status" },

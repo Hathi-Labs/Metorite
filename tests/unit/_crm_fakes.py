@@ -196,6 +196,15 @@ _MY_GROUPS_RE = re.compile(r"FROM\s+org_group\s+g\s+JOIN\s+org_group_member", re
 _NEXT_ACTIVITY_RE = re.compile(
     r"^SELECT DISTINCT ON \(a\.(\w+)\).*\bFROM crm_activities a\b", re.I,
 )
+#: ``core.PIPELINE_CREATE_LOCK_SQL`` (CRM-M4a repair 2). One request runs at a
+#: time here, so the lock takes nothing.
+_ADVISORY_LOCK_RE = re.compile(r"^SELECT pg_advisory_xact_lock\(", re.I)
+#: ``core._HOLDERS_SQL`` (CRM-M4a repairs 2 to 4): the pipelines of one kind
+#: with an open change that names a status.
+_HOLDERS_RE = re.compile(
+    r"^SELECT p\.id, p\.name FROM crm_pipelines p WHERE p\.kind = :kind AND EXISTS "
+    r"\(SELECT 1 FROM crm_change_log c\b", re.I,
+)
 
 # ── WS-26d-email: the shapes the CRM timeline's email source emits ──────────
 #
@@ -456,6 +465,8 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "crm_lost_reasons": {"position": 0},
     "crm_deal_contacts": {"is_primary": False},
+    # Migration 386 (CRM-M4a): a pipeline that names no kind is a deal one.
+    "crm_pipelines": {"kind": "deal", "feeds_pipeline_id": None},
     # Migration 145's retry trio on the activity queue.
     "crm_activities": {
         "zoho_push_attempts": 0, "zoho_push_error": None,
@@ -614,6 +625,11 @@ class FakeCrmDB:
         next_activity = _NEXT_ACTIVITY_RE.match(statement)
         if next_activity:
             return self._next_activity(next_activity.group(1), args)
+        if _ADVISORY_LOCK_RE.match(statement):
+            return _Result([])
+        holders = _HOLDERS_RE.match(statement)
+        if holders:
+            return self._holders(args)
         head = statement.split(None, 1)[0].upper()
         table = _table(statement)
         if head == "INSERT":
@@ -926,6 +942,35 @@ class FakeCrmDB:
                 merged[name] = (source or {}).get(column)
             out.append(merged)
         return out
+
+    def _holders(self, args: dict) -> _Result:
+        """``core._HOLDERS_SQL``: the pipelines of ``:kind`` with an open change
+        (not undone, not an Undo) that names ``:s``: a create that lists it, a
+        stage add or a take-out. It reads the change log of this fake."""
+        wanted = str(args.get("s"))
+
+        def obj(value: Any) -> dict:
+            return json.loads(value) if isinstance(value, str) else dict(value or {})
+
+        def names(row: dict) -> bool:
+            area, action = row.get("area"), row.get("action")
+            if area == "pipeline" and action == "create":
+                return any(str(s.get("id")) == wanted for s in obj(row.get("after")).get("stages") or [])
+            if area == "pipeline_stage":
+                side = obj(row.get("after") if action == "create" else row.get("before"))
+                return str(side.get("status_id")) == wanted
+            return False
+
+        held = {
+            str(r.get("entity_id")) for r in self.rows("crm_change_log")
+            if r.get("undone_by") is None and r.get("undoes_id") is None and names(r)
+        }
+        return _Result([
+            SimpleNamespace(id=p.get("id"), name=p.get("name"))
+            for p in sorted(self.rows("crm_pipelines"),
+                            key=lambda r: (r.get("position") or 0, str(r.get("name"))))
+            if str(p.get("id")) in held and p.get("kind", "deal") == args.get("kind")
+        ])
 
     def _my_groups(self, args: dict) -> _Result:
         """``_MY_GROUPS_SQL``: the ``group:<slug>`` subjects of ``:email``.

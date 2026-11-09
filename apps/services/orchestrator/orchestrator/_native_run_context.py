@@ -75,7 +75,14 @@ def agent_for_run(
     *history* (the session history of WS-43t2), then *provider*. The copy
     shares the client, the options and the tools, so it sends what the agent
     would send. The list of the shared agent is never mutated.
+
+    *history* is left out when the agent already holds a provider with the
+    same source id (WS-43h). That provider reads and writes the same state of
+    the same session, so a second one would load every turn twice.
     """
+    own = {getattr(p, "source_id", None) for p in getattr(agent, "context_providers", None) or []}
+    if history is not None and getattr(history, "source_id", None) in own:
+        history = None
     extra = [p for p in (history, provider) if p is not None]
     if not extra:
         return agent
