@@ -13,7 +13,7 @@
  */
 import { useEffect, useRef, useSyncExternalStore } from "react";
 
-import { litSegments, ringOf, smoothLevel, WAVE_H, WAVE_LAYERS, WAVE_W, wavePath } from "@/lib/voiceWave";
+import { gainLevel, litSegments, ringOf, smoothLevel, WAVE_H, WAVE_LAYERS, WAVE_W, wavePath } from "@/lib/voiceWave";
 
 const SEGMENTS = 10;
 const REDUCED_QUERY = "(prefers-reduced-motion: reduce)";
@@ -67,7 +67,7 @@ export default function VoiceWave({
         ring.style.opacity = "0.55";
       }
       const id = setInterval(() => {
-        shown = smoothLevel(shown, levelRef.current);
+        shown = smoothLevel(shown, gainLevel(levelRef.current));
         const on = litSegments(shown, SEGMENTS);
         segs.current.forEach((s, i) => s?.setAttribute("data-on", i < on ? "true" : "false"));
       }, 120);
@@ -77,7 +77,7 @@ export default function VoiceWave({
     const t0 = performance.now();
     let frame = 0;
     const draw = (now: number) => {
-      shown = smoothLevel(shown, levelRef.current);
+      shown = smoothLevel(shown, gainLevel(levelRef.current));
       const t = (now - t0) / 1000;
       WAVE_LAYERS.forEach((layer, i) => paths.current[i]?.setAttribute("d", wavePath(layer, t, shown)));
       setRing(shown);
@@ -107,7 +107,7 @@ export default function VoiceWave({
   return (
     // The SVG fills a box with no size of its own, so the box can shrink to
     // 2 rem on a narrow bar and the cluster never forces a wrap.
-    <span className={`relative h-8 min-w-8 flex-1 text-primary ${className}`}>
+    <span className={`relative -my-1 h-10 min-w-8 flex-1 text-primary ${className}`}>
       <svg
         aria-hidden="true"
         data-chat-voice-wave="lines"

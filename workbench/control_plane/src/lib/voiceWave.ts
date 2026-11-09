@@ -14,7 +14,7 @@ import { MAX_SECONDS } from "@/lib/voiceDictation";
 
 /** The viewBox of the wave. The SVG stretches it to the box it sits in. */
 export const WAVE_W = 100;
-export const WAVE_H = 32;
+export const WAVE_H = 40;
 
 export interface WaveLayer {
   /** Cycles across the width. */
@@ -29,11 +29,11 @@ export interface WaveLayer {
   opacity: number;
 }
 
-/** Back to front: a faint wide line, a middle line, a strong front line. */
+/** Back to front: a faint slow line, a middle line, a strong fast front line. */
 export const WAVE_LAYERS: readonly WaveLayer[] = [
-  { freq: 1.6, speed: 1.3, amp: 0.55, weight: 1.5, opacity: 0.35 },
-  { freq: 2.2, speed: -1.7, amp: 0.75, weight: 1.75, opacity: 0.6 },
-  { freq: 3.0, speed: 2.4, amp: 1, weight: 2.25, opacity: 1 },
+  { freq: 1.3, speed: 0.9, amp: 0.55, weight: 1.5, opacity: 0.35 },
+  { freq: 2.1, speed: -1.5, amp: 0.78, weight: 1.75, opacity: 0.6 },
+  { freq: 3.2, speed: 2.3, amp: 1, weight: 2.25, opacity: 1 },
 ];
 
 /** The ring around the stop button, as a scale and an opacity. */
@@ -46,20 +46,36 @@ export function clamp01(n: number): number {
   return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
 }
 
+/**
+ * The level the picture shows. The mic reports RMS x 3, which sits near 0.1 to
+ * 0.4 for normal speech and reads flat. A gain and a curve lift it, so
+ * speech fills about 60 to 80 per cent of the band.
+ */
+export function gainLevel(raw: number): number {
+  return clamp01(Math.pow(clamp01(raw) * 2.2, 0.7));
+}
+
 /** One step of the level shown: it rises fast and falls slowly. */
 export function smoothLevel(shown: number, raw: number): number {
   const r = clamp01(raw);
   return shown + (r - shown) * (r > shown ? 0.55 : 0.12);
 }
 
-/** The `d` of one line at time `t` (seconds) and level `level` (0..1). */
+/** The share of the band that a line swings at silence, and its breath. */
+export const IDLE_SWING = 0.24;
+export const BREATH_SWING = 0.1;
+
+/** The `d` of one line at time `t` (seconds) and shown level `level` (0..1). */
 export function wavePath(layer: WaveLayer, t: number, level: number): string {
   const mid = WAVE_H / 2;
-  const swing = (0.08 + 0.92 * Math.pow(clamp01(level), 0.85)) * (mid - 2);
+  // Silence still breathes: three soft lines, each on its own beat.
+  const breath = 0.5 + 0.5 * Math.sin(t * 1.4 * (0.6 + layer.freq * 0.2) + layer.freq * 2);
+  const share = Math.max(IDLE_SWING + BREATH_SWING * breath, clamp01(level));
+  const swing = share * (mid - 2);
   let d = "";
   for (let x = 0; x <= WAVE_W; x += 2) {
     const u = x / WAVE_W;
-    const envelope = Math.pow(Math.sin(Math.PI * u), 1.6);
+    const envelope = Math.pow(Math.sin(Math.PI * u), 1.4);
     const y = mid + Math.sin(u * Math.PI * 2 * layer.freq + t * layer.speed * 2.2) * swing * layer.amp * envelope;
     d += `${x === 0 ? "M" : "L"}${x},${y.toFixed(2)}`;
   }

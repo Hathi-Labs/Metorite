@@ -78,10 +78,19 @@ export default function VoiceInputButton({
 
   // The first recording of this browser shows "Tap ■ to finish" for 4.5 s.
   const [hint, setHint] = useState<"shown" | "fading" | null>(null);
+  // The tip sits above the top edge of the composer, so it never covers the
+  // box. `lift` is the distance from the button to that edge.
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  const [lift, setLift] = useState(0);
   useEffect(() => {
     if (!recording || hintSeen()) return;
     markHintSeen();
-    const show = setTimeout(() => setHint("shown"), 0);
+    const show = setTimeout(() => {
+      const wrap = wrapRef.current;
+      const box = wrap?.closest("[data-chat-composer]");
+      if (wrap && box) setLift(Math.max(0, wrap.getBoundingClientRect().top - box.getBoundingClientRect().top));
+      setHint("shown");
+    }, 0);
     const fade = setTimeout(() => setHint("fading"), HINT_MS);
     return () => {
       clearTimeout(show);
@@ -122,7 +131,7 @@ export default function VoiceInputButton({
       className={waiting || recording ? "flex min-w-fit flex-[3] basis-0 items-center gap-1.5" : "flex shrink-0 items-center gap-1.5"}
       data-chat-voice={phase}
     >
-      <span className="relative flex shrink-0">
+      <span ref={wrapRef} className="relative flex shrink-0">
         {recording && (
           <span
             ref={ringRef}
@@ -135,7 +144,8 @@ export default function VoiceInputButton({
           <span
             aria-hidden={hint === "fading"}
             data-chat-voice-hint=""
-            className={`pointer-events-none absolute bottom-full left-0 z-20 mb-2 flex w-full justify-center transition-opacity duration-500 motion-reduce:transition-none ${
+            style={{ marginBottom: lift + 10 }}
+            className={`pointer-events-none absolute bottom-full left-0 z-20 flex w-full justify-center transition-opacity duration-500 motion-reduce:transition-none ${
               hint === "shown" ? "opacity-100" : "opacity-0"
             }`}
           >

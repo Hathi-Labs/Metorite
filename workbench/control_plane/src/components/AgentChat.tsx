@@ -925,6 +925,16 @@ export default function AgentChat({
   const voiceAvailability = useVoiceAvailability();
   const voiceRef = useRef<VoiceControls>(null);
   const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
+  // VOX-7: while the mic records or transcribes, the pickers give the row to
+  // the wave. They stay mounted, so a choice and an open menu survive.
+  const voiceBusy = voicePhase === "recording" || voicePhase === "transcribing";
+  // The pickers may sit on a row of their own. The bar keeps the height that
+  // it had when the mic asked, so the composer never shrinks.
+  const barRef = useRef<HTMLDivElement>(null);
+  const barLock = useRef(0);
+  useEffect(() => {
+    if (voicePhase === "asking") barLock.current = barRef.current?.offsetHeight ?? 0;
+  }, [voicePhase]);
   const putDictation = useCallback((text: string) => {
     const el = inputRef.current;
     const prev = el?.value ?? "";
@@ -2968,7 +2978,11 @@ export default function AgentChat({
               disabled={loadingHistory}
               aria-label={`Message ${currentAgentLabel}`}
               placeholder={
-                loadingHistory
+                voicePhase === "recording"
+                  ? "Listening… tap ■ to finish"
+                  : voicePhase === "transcribing"
+                    ? "Transcribing…"
+                    : loadingHistory
                   ? "Loading previous messages…"
                   : isRunActive
                     ? `Add to the reply of ${currentAgentLabel}…`
@@ -2984,7 +2998,7 @@ export default function AgentChat({
                 right. On a phone the agent's controls take a row of their
                 own above Attach and the primary control, so neither row wraps
                 into a staircase (visual review, 2026-10-12, 390 px). */}
-            <div className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
+            <div ref={barRef} style={voiceBusy && barLock.current ? { minHeight: barLock.current } : undefined} className="flex flex-wrap items-end gap-1 px-1.5 pb-1.5 glass:px-2.5 glass:pb-2.5">
               <FileUploadButton sessionId={sessionId}
                 onPick={(files) => { att.add(files); inputRef.current?.focus(); }}
                 className={`shrink-0 flex ${tap} items-center justify-center`} />
@@ -2994,7 +3008,7 @@ export default function AgentChat({
                   className={`shrink-0 flex ${tap} items-center justify-center`} />
               )}
             {hasComposerControls && !phoneChrome && (
-            <div data-chat-pickers="" className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
+            <div data-chat-pickers="" style={voiceBusy ? { display: "none" } : undefined} className="order-first flex min-w-0 basis-full flex-wrap items-center gap-1 text-[11px] text-muted-foreground sm:order-none sm:basis-auto sm:flex-initial sm:self-center" ref={modelMenuRef}>
             <>
               {/* Agent selector — only the orchestrator can switch agents mid-session.
                   Specialised agents lock you into their session for clean history. */}
@@ -3193,11 +3207,11 @@ export default function AgentChat({
             </>
             </div>
             )}
-              <span className="flex-1" aria-hidden="true" />
+              {!voiceBusy && <span className="flex-1" aria-hidden="true" />}
               {/* CF-8: the phone's one "…" control, at the composer's end.
                   The status, Share, the effort choice, the context window
                   and the model picker live in it. */}
-              {phoneChrome && (
+              {phoneChrome && !voiceBusy && (
                 <ChatMoreMenu
                   status={{ label: currentAgentLabel, active: isRunActive }}
                   acts={moreActs}

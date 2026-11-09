@@ -14,6 +14,7 @@ import { insertAtCaret, MAX_SECONDS } from "./voiceDictation";
 import {
   HINT_KEY,
   hintSeen,
+  gainLevel,
   litSegments,
   markHintSeen,
   ringOf,
@@ -42,8 +43,33 @@ describe("the three layered lines", () => {
     const front = WAVE_LAYERS[2];
     const quiet = swing(wavePath(front, 0.37, 0));
     const loud = swing(wavePath(front, 0.37, 1));
-    expect(loud).toBeGreaterThan(quiet * 5);
+    expect(loud).toBeGreaterThan(quiet * 3);
     expect(loud).toBeLessThanOrEqual(WAVE_H);
+  });
+
+  it("the three layers differ in frequency, speed and strength", () => {
+    for (const k of ["freq", "amp", "weight", "opacity"] as const) {
+      expect(new Set(WAVE_LAYERS.map((l) => l[k])).size).toBe(3);
+    }
+    expect(new Set(WAVE_LAYERS.map((l) => Math.abs(l.speed))).size).toBe(3);
+    expect(WAVE_LAYERS.map((l) => l.opacity)).toEqual([0.35, 0.6, 1]);
+  });
+
+  it("silence still shows three soft lines that breathe", () => {
+    for (const layer of WAVE_LAYERS) {
+      const a = swing(wavePath(layer, 0.2, 0));
+      const b = swing(wavePath(layer, 1.7, 0));
+      expect(a).toBeGreaterThan(1);
+      expect(Math.abs(a - b) + Math.abs(swing(wavePath(layer, 3.1, 0)) - a)).toBeGreaterThan(0);
+    }
+  });
+
+  it("a gain lifts a normal-speech level to fill 60 to 80 per cent of the band", () => {
+    expect(gainLevel(0)).toBe(0);
+    expect(gainLevel(0.2)).toBeGreaterThanOrEqual(0.5);
+    expect(gainLevel(0.35)).toBeGreaterThanOrEqual(0.6);
+    expect(gainLevel(0.35)).toBeLessThanOrEqual(0.9);
+    expect(gainLevel(5)).toBe(1);
   });
 
   it("the line starts and ends on the middle, so it never touches the edge", () => {
@@ -167,6 +193,16 @@ describe("source fences", () => {
 
   it("the cluster takes room with basis-0, so the bar keeps its height", () => {
     expect(button).toContain("flex min-w-fit flex-[3] basis-0 items-center");
+  });
+
+  it("the pickers give the row to the wave, and the box says what the mic does", () => {
+    const chat = read("components/AgentChat.tsx");
+    expect(chat).toContain('const voiceBusy = voicePhase === "recording" || voicePhase === "transcribing";');
+    expect(chat).toContain('style={voiceBusy ? { display: "none" } : undefined}');
+    expect(chat).toContain("Listening… tap ■ to finish");
+    expect(chat).toMatch(/voicePhase === "transcribing"\s*\? "Transcribing…"/);
+    expect(button).toContain("data-chat-composer");
+    expect(chat).toContain("minHeight: barLock.current");
   });
 
   it("the composer keeps the box mounted while the mic records", () => {
