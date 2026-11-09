@@ -2120,6 +2120,13 @@ EPIC_MAX_APPETITE_REVIEW_HOURS = 100_000
 #: The answer while ``EPIC_CONTRACT_ORGS`` does not hold the org. The route
 #: answers 404, and the tool makes no card.
 EPIC_CONTRACTS_OFF = "Epic contracts are not on for this organization yet. Nothing was changed."
+#: The answer of a 412: the task changed after the card was made, for
+#: example an agent ticked a check. The save sends the version of the read
+#: as ``If-Match``, so it never replaces a change that the card did not show.
+EPIC_CONTRACT_CHANGED = (
+    "The epic contract changed after this card was made, so nothing was changed. "
+    "Read the task again, then set the contract."
+)
 #: A list mark at the start of a line of checks: "- ", "* ", "1. " or "2) ".
 _CHECK_BULLET = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+")
 #: A done mark at the start of a check: "[x] " or "[ ] ". The word "check"
@@ -2397,7 +2404,18 @@ async def set_epic_contract(
         context=_fields_block(rows, before=old_rows, lead=lead),
     ):
         return _not_confirmed()
-    saved = (await put(f"/projects/tasks/{tid}/epic-contract", {"epic_contract": contract})) or {}
+    # The version of the read rides as If-Match. A change by another writer
+    # while the card waited is a 412, and the save then writes nothing.
+    version = current.get("version")
+    try:
+        saved = (await put(
+            f"/projects/tasks/{tid}/epic-contract", {"epic_contract": contract},
+            headers={"If-Match": str(version)} if version else None,
+        )) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 412:
+            return EPIC_CONTRACT_CHANGED + f"\n  full_id: {tid}"
+        raise
     changed = [str(c).removeprefix("epic_").replace("_", " ")
                for c in saved.get("changed") or () if isinstance(c, str)]
     said = f" Changed: {', '.join(changed)}." if changed else ""

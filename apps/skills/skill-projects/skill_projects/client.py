@@ -220,8 +220,13 @@ async def patch(
     ).json()
 
 
-async def put(path: str, payload: dict[str, Any] | None = None) -> Any:
-    resp = await request("PUT", path, json=payload or {})
+async def put(
+    path: str, payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> Any:
+    """A PUT. ``headers`` adds a request header, such as ``If-Match`` (SP-8a).
+    The identity headers of :func:`headers` always win (``request``)."""
+    resp = await request("PUT", path, json=payload or {}, headers=headers or {})
     return resp.json() if resp.content else {}
 
 

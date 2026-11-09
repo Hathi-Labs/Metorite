@@ -901,3 +901,56 @@ class TestTheRepairs:
         assert [r["ok"] for r in rows] == [True, False]
         assert rows[1]["error"] == tools.TEXT_NOT_EPIC
         assert _stored(live, epic).outcome == "Bulk." and _stored(live, plain) is None
+
+    async def test_the_chat_save_refuses_a_contract_that_changed_after_its_card(
+            self, live, monkeypatch):
+        """Repair round 2 (P2). The chat tool reads the contract and draws its
+        card. While the card waits, another writer ticks a check with its
+        evidence. The member then approves: the save carries the version of
+        the read as If-Match, the gateway answers 412, the tool says so, and
+        the other writer's tick stays. The chat client talks to the REAL
+        gateway app here, in the one engine scope of the call."""
+        import acb_skills.ask_tools as ask_tools
+        import httpx
+        import skill_projects.client as chat_client
+        from gateway.main import app as gateway_app
+        from skill_projects import writes as sp
+
+        epic = _epic(live, "sp8 chat race")
+        first = await _send(live, "PUT", ROUTE.format(epic), body=_body(outcome="First"),
+                            signed=None)
+        assert first.status_code == 200, first.text
+        transport = httpx.ASGITransport(app=gateway_app)
+        monkeypatch.setattr(chat_client, "httpx", SimpleNamespace(
+            AsyncClient=lambda **kw: httpx.AsyncClient(transport=transport, **kw)))
+        monkeypatch.setattr(chat_client, "gateway_url", lambda: "http://gateway.test")
+        monkeypatch.setattr(chat_client, "internal_token", lambda: t.INTERNAL)
+        monkeypatch.setattr(chat_client, "current_user_email", lambda: MEMBER)
+        ticked = {"outcome": "First", "acceptance": [
+            {"text": c["text"], "done": i == 0, "evidence": "PR 42" if i == 0 else None}
+            for i, c in enumerate(_checks(3))]}
+        cards: list[dict[str, Any]] = []
+
+        async def other_writer_then_yes(**kwargs: Any) -> bool:
+            cards.append(kwargs)
+            async with httpx.AsyncClient(transport=transport,
+                                         base_url="http://gateway.test") as c:
+                r = await c.put(ROUTE.format(epic), content=json.dumps(
+                    {"epic_contract": ticked}).encode(), headers={
+                    "Authorization": f"Bearer {t.INTERNAL}", "X-User-Email": MEMBER,
+                    "Content-Type": "application/json"})
+            assert r.status_code == 200, r.text
+            return True
+
+        monkeypatch.setattr(ask_tools, "request_confirmation", other_writer_then_yes)
+
+        async def go() -> str:
+            return await sp.set_epic_contract(
+                epic, "\n".join(c["text"] for c in _checks(3)), outcome="Mine")
+
+        said = await t._in_scope(live, go)
+        assert len(cards) == 1
+        assert said.startswith(sp.EPIC_CONTRACT_CHANGED), said
+        row = _stored(live, epic)
+        assert row.outcome == "First"
+        assert (row.acceptance[0]["done"], row.acceptance[0]["evidence"]) == (True, "PR 42")
