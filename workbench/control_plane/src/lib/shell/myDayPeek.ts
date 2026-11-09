@@ -7,7 +7,7 @@
  * of my day." So a plain click on a task row of My Day opens the task in a
  * panel on My Day, and the path stays `/`.
  *
- * This file decides four things, and does no I/O:
+ * This file decides these things, and does no I/O:
  *
  * 1. **Which link opens in the panel** ({@link peekTargetOf}). A KIND
  *    registry answers, so PK-2 (email) and PK-3 (reminders) each add one row
@@ -19,11 +19,16 @@
  *    on `/`. So Back closes the panel, and a reload opens it again (M13).
  * 4. **How a close walks back** ({@link closeMove}). The page counts its own
  *    history entries in `history.state`, and a close returns to the entry
- *    before the first one.
+ *    before the first one ({@link landingClears} for a link that came in).
+ * 5. **Where the card stands** ({@link MY_DAY_PAGE_MIN_REM}, {@link isDocked}).
+ *    The frame is the record card's (`components/CardPanel.tsx`, D181).
+ * 6. **Which row is open** ({@link PEEK_ROW}, {@link PEEK_OPEN_ATTR}).
  *
  * Fence: `myDayPeek.test.ts`.
  */
 
+import type { CardStop } from "@/components/CardPanel";
+import { shouldIntercept } from "@/lib/controlLink";
 import { isInAppPath } from "@/lib/inAppLink";
 
 /** What the panel shows. PK-1 knows a task. A later kind joins the union. */
@@ -37,11 +42,62 @@ export const PEEK_PARAM = "peek";
 /** The key of the page's own entry count, in `history.state`. */
 export const PEEK_DEPTH_KEY = "myDayPeekDepth";
 
-/** The attribute on the panel's frame. Escape from inside it is the panel's own. */
+/** The attribute on the panel's body, inside the card. Its value is the kind. */
 export const PEEK_FRAME_ATTR = "data-my-day-peek";
 
 /** The one label of the way out to the owning app (D101 point 3). */
 export const OPEN_IN_PROJECTS = "Open in Projects";
+
+/** The attribute of the way out. A click on it leaves My Day, always. */
+export const OPEN_APP_ATTR = "data-peek-open-app";
+
+/**
+ * The attribute on the row whose task is open. `globals.css` gives it the
+ * house selected tint (`bg-primary/10`, AGENTS.md rule 6), and the link in
+ * it carries `aria-current`.
+ */
+export const PEEK_OPEN_ATTR = "data-peek-open";
+
+/**
+ * The row of a link: the feed row, the framed feed card, the row box of a
+ * list, or the list item. The nearest one wins, so each card keeps its
+ * markup and My Day marks it from one place.
+ */
+export const PEEK_ROW = "[data-feed-row], [data-home-card], li > div, li";
+
+/**
+ * The narrowest page My Day keeps beside a docked card, in rem. A feed row
+ * keeps its acts at its end (`sm:` is the WINDOW width), so a page of 20
+ * rem (the card's default) left a row with no title at 1024 (PK-1 verifier,
+ * 2026-11-09). With 36, a docked page keeps about 200 px of title. A
+ * narrower page gets the card over it (`sideCardFits`).
+ */
+export const MY_DAY_PAGE_MIN_REM = 36;
+
+/**
+ * The card stands beside the page as a column, so the page is narrower.
+ * Only then does My Day draw its cards in one column. Over the page and on a
+ * phone, the page keeps its grid.
+ */
+export function isDocked(open: boolean, stop: CardStop | null): boolean {
+  return open && stop === "side";
+}
+
+/**
+ * The narrowest card that draws the task body in two columns, in rem. The
+ * body pairs its sections at the `full` stop (`TaskBody`'s `twoColumn`). A
+ * card that stands over a narrow page is narrower than `max-w-3xl`: at 768
+ * it was 430 px, and two columns cut each field (PK-1 round 2).
+ */
+export const TWO_COLUMN_MIN_REM = 40;
+
+/**
+ * The width stop `TaskPanel` draws at. `full` only for a card over the page
+ * that is wide enough for two columns. A docked card and a phone are `side`.
+ */
+export function panelModeFor(stop: CardStop, cardWidth: number, rem: number): "side" | "full" {
+  return stop === "full" && cardWidth >= TWO_COLUMN_MIN_REM * rem ? "full" : "side";
+}
 
 /**
  * An id the panel will put in its URL and read: letters, digits, `-` and
@@ -182,12 +238,57 @@ export interface LinkFacts {
  * `click` at all, so it never reaches this.
  */
 export function peekTakesClick(click: ClickFacts, link: LinkFacts): boolean {
-  if (click.defaultPrevented) return false;
-  if (click.button !== 0) return false;
-  if (click.metaKey || click.ctrlKey || click.shiftKey || click.altKey) return false;
+  // The one rule of a click the app may take (`lib/controlLink.ts`).
+  if (!shouldIntercept(click)) return false;
   if (link.download) return false;
   if (link.target && link.target !== "_self") return false;
   return true;
+}
+
+/** What the panel reads of the link that was clicked. */
+export interface ClickedLink extends LinkFacts {
+  /** The raw `href` attribute. */
+  href: string | null;
+  /** The link is the way out to the app ({@link OPEN_APP_ATTR}). */
+  openApp: boolean;
+}
+
+/** The parts of an element that {@link clickedLinkOf} reads. A test passes a plain object. */
+interface LinkLike {
+  getAttribute(name: string): string | null;
+  hasAttribute(name: string): boolean;
+  closest(selector: string): unknown;
+}
+
+/**
+ * The link a click landed in, inside the element that holds the handler, or
+ * null. It reads the DOM through four calls only, so the node runner can
+ * hold it with plain objects.
+ */
+export function clickedLinkOf(event: {
+  target: unknown;
+  currentTarget: { contains(node: never): boolean };
+}): ClickedLink | null {
+  const from = event.target as { closest?: (selector: string) => LinkLike | null } | null;
+  const link = from?.closest?.("a[href]") ?? null;
+  if (!link || !event.currentTarget.contains(link as never)) return null;
+  return {
+    href: link.getAttribute("href"),
+    target: link.getAttribute("target") ?? "",
+    download: link.hasAttribute("download"),
+    openApp: link.closest(`[${OPEN_APP_ATTR}]`) !== null,
+  };
+}
+
+/**
+ * What a click opens in the panel, or null when the click is the browser's.
+ * The capture handler of the page column and the one of the card both ask
+ * this, so the click rule and the link rule cannot part.
+ */
+export function peekOfClick(click: ClickFacts, link: ClickedLink | null): PeekTarget | null {
+  if (!link || link.openApp) return null;
+  if (!peekTakesClick(click, link)) return null;
+  return peekTargetOf(link.href);
 }
 
 /** The phone bar tab that opens the assistant (`AppShell`'s `sendBarTap("ask")`). */
@@ -217,4 +318,22 @@ export function peekDepthOf(state: unknown): number {
  */
 export function closeMove(depth: number): { go: number } | { replace: true } {
   return depth > 0 ? { go: -depth } : { replace: true };
+}
+
+/**
+ * Whether the entry a close walked back to must lose its panel too. A
+ * member who came in on `/?peek=task:A` and then opened B walks back to the
+ * entry of A, which the page did not push (depth 0). ✕ means "close", so
+ * that entry is replaced with the address that has no panel.
+ */
+export function landingClears(closing: boolean, depth: number, holdsPeek: boolean): boolean {
+  return closing && depth === 0 && holdsPeek;
+}
+
+/**
+ * A server message ends with a stop most of the time. The panel adds its own
+ * sentence after it, so it drops one trailing stop and never prints "..".
+ */
+export function sentenceOf(message: string): string {
+  return message.trim().replace(/[.\s]+$/, "");
 }

@@ -10,16 +10,22 @@
  *    kept, and a close that walks back over the page's own entries.
  * 4. The flag: off by default, read in the one form Next inlines, and the
  *    server render reads the build-time value only.
- * 5. The seams, by source: the panel hosts Projects' `TaskPanel` and draws
- *    no field block of its own. It closes on a phone bar tap, with the hook
- *    above every return. The task body loads on demand. The feed's phone
- *    menu goes through `useMyDayGo`. My Tasks reads through `useTaskById`.
+ * 5. The seams, by source: the frame is the record card (`CardPanel`, D181)
+ *    with My Day's page minimum, and the panel builds no frame and no Escape
+ *    of its own. It hosts Projects' `TaskPanel` and draws no field block. It
+ *    closes on a phone bar tab but Ask (`useBarTap`), with the hook above
+ *    every return. The task body loads on demand. The feed's phone menu goes
+ *    through `useMyDayGo`. My Tasks reads through `useTaskById`.
  * 6. With the flag off, the server render of `/` is the same markup.
+ * 7. The capture handler of the hook asks the click guard: a Ctrl-click
+ *    stays with the browser, and a plain click opens the panel.
  *
  * Mutation, run by hand (2026-11-09): make `peekTakesClick` ignore
  * `ctrlKey`, and the modifier case fails. Make `TASK_KIND` take any key,
- * and the `org` case fails. Move `useCloseOnBarTap` below the return of
- * `MyDayPeekPanel`, and the hook-order case fails.
+ * and the `org` case fails. Move `useBarTap` below the return of
+ * `MyDayPeekPanel`, and the hook-order case fails. Make the hook's handler
+ * call `peekTargetOf` in place of `peekOfClick`, and the Ctrl-click render
+ * case fails.
  */
 import { readFileSync } from "node:fs";
 
@@ -30,10 +36,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NO_ACCESS } from "@/lib/access";
 
 import {
+  MY_DAY_PAGE_MIN_REM,
   PEEK_DEPTH_KEY,
   PEEK_KINDS,
+  PEEK_ROW,
   barTapCloses,
+  clickedLinkOf,
   closeMove,
+  isDocked,
+  landingClears,
+  panelModeFor,
+  peekOfClick,
+  sentenceOf,
   peekDepthOf,
   peekFromParam,
   peekHref,
@@ -180,11 +194,156 @@ describe("the flag (NEXT_PUBLIC_MY_DAY_PEEK)", () => {
   });
 });
 
+describe("the click, the card stop, the landing and the words", () => {
+  const plain = { button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, defaultPrevented: false };
+  /** A link as `clickedLinkOf` reads it, inside the element with the handler. */
+  function clickOn(href: string | null, attrs: Record<string, string> = {}, inside = true) {
+    const link = {
+      getAttribute: (n: string) => (n === "href" ? href : (attrs[n] ?? null)),
+      hasAttribute: (n: string) => n in attrs,
+      closest: (sel: string): unknown => (sel === "[data-peek-open-app]" && "data-peek-open-app" in attrs ? link : null),
+    };
+    return { target: { closest: (sel: string) => (sel === "a[href]" ? link : null) }, currentTarget: { contains: () => inside } };
+  }
+
+  it("opens a task link on a plain click, and never the way out or a link outside", () => {
+    expect(peekOfClick(plain, clickedLinkOf(clickOn(`/projects?task=${ID}`)))).toEqual({ kind: "task", id: ID });
+    expect(peekOfClick(plain, clickedLinkOf(clickOn(`/projects?task=${ID}`, { "data-peek-open-app": "" })))).toBeNull();
+    expect(peekOfClick(plain, clickedLinkOf(clickOn(`/projects?task=${ID}`, {}, false)))).toBeNull();
+    expect(peekOfClick({ ...plain, ctrlKey: true }, clickedLinkOf(clickOn(`/projects?task=${ID}`)))).toBeNull();
+    expect(peekOfClick(plain, clickedLinkOf(clickOn(`/projects?task=${ID}`, { target: "_blank" })))).toBeNull();
+    expect(peekOfClick(plain, clickedLinkOf(clickOn("/email?email=a&account=b")))).toBeNull();
+    expect(peekOfClick(plain, null)).toBeNull();
+  });
+
+  it("draws one column only while the card is docked beside the page", () => {
+    expect(isDocked(true, "side")).toBe(true);
+    expect(isDocked(true, "full")).toBe(false);
+    expect(isDocked(true, "phone")).toBe(false);
+    expect(isDocked(true, null)).toBe(false);
+    expect(isDocked(false, "side")).toBe(false);
+  });
+
+  it("keeps 36 rem of page beside a docked card", () => {
+    expect(MY_DAY_PAGE_MIN_REM).toBe(36);
+  });
+
+  it("draws two columns only in a card over the page that has room for them", () => {
+    // At 768 the card over the page was 430 px, and two columns cut each field.
+    expect(panelModeFor("full", 430, 16)).toBe("side");
+    expect(panelModeFor("full", 640, 16)).toBe("full");
+    expect(panelModeFor("full", 686, 16)).toBe("full");
+    expect(panelModeFor("side", 900, 16)).toBe("side");
+    expect(panelModeFor("phone", 900, 16)).toBe("side");
+  });
+
+  it("clears a panel the page did not push when a close lands on it", () => {
+    expect(landingClears(true, 0, true)).toBe(true);
+    expect(landingClears(false, 0, true)).toBe(false);
+    expect(landingClears(true, 1, true)).toBe(false);
+    expect(landingClears(true, 0, false)).toBe(false);
+  });
+
+  it("never prints two stops after a server message", () => {
+    expect(sentenceOf("No such task.")).toBe("No such task");
+    expect(sentenceOf("No such task")).toBe("No such task");
+    expect(sentenceOf(" The server answered 502. ")).toBe("The server answered 502");
+  });
+
+  it("marks the nearest row of a link with the house selected tint", () => {
+    expect(PEEK_ROW.split(", ")).toEqual(["[data-feed-row]", "[data-home-card]", "li > div", "li"]);
+    const css = readFileSync(new URL("../../app/globals.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\[data-peek-open\] \{\s*background-color: color-mix\(in srgb, var\(--primary\) 10%, transparent\);/);
+  });
+});
+
+/**
+ * Item 7 of the PK-1 fix round: the HOOK must ask the click guard. The hook
+ * runs in a server render, which keeps its handler. The test calls the
+ * handler with a click on a row link.
+ */
+describe("the capture handler of the hook", () => {
+  async function handler() {
+    const pushed: string[] = [];
+    vi.stubGlobal("window", {
+      location: { pathname: "/", search: "", hash: "" },
+      history: { state: null, pushState: (_s: unknown, _t: string, url: string) => pushed.push(url) },
+    });
+    const { useMyDayPeek } = await import("./useMyDayPeek");
+    const got: { hook: ReturnType<typeof useMyDayPeek> | null } = { hook: null };
+    function Probe() {
+      got.hook = useMyDayPeek(true, { onSettled: () => {} });
+      return null;
+    }
+    renderToStaticMarkup(createElement(Probe));
+    const onClickCapture = got.hook?.onClickCapture;
+    if (!onClickCapture) throw new Error("the hook gave no handler with the flag on");
+    return { onClickCapture, pushed };
+  }
+  function event(over: Record<string, unknown>) {
+    const link = {
+      getAttribute: (n: string) => (n === "href" ? `/projects?task=${ID}` : null),
+      hasAttribute: () => false,
+      closest: () => null,
+    };
+    const prevented = { yes: false };
+    return {
+      prevented,
+      e: {
+        button: 0,
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+        defaultPrevented: false,
+        target: { closest: () => link },
+        currentTarget: { contains: () => true },
+        preventDefault: () => {
+          prevented.yes = true;
+        },
+        ...over,
+      } as never,
+    };
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("leaves a Ctrl-click to the browser", async () => {
+    const { onClickCapture, pushed } = await handler();
+    const { e, prevented } = event({ ctrlKey: true });
+    onClickCapture(e);
+    expect(prevented.yes).toBe(false);
+    expect(pushed).toEqual([]);
+  });
+
+  it("opens the panel on a plain click, and the path stays /", async () => {
+    const { onClickCapture, pushed } = await handler();
+    const { e, prevented } = event({});
+    onClickCapture(e);
+    expect(prevented.yes).toBe(true);
+    expect(pushed).toEqual([`/?peek=task%3A${ID}`]);
+  });
+});
+
 describe("the seams (source)", () => {
   const panel = code(read("./MyDayPeekPanel.tsx"));
   const hook = code(read("./useMyDayPeek.tsx"));
 
-  it("hosts Projects' own TaskPanel, and no second task view", () => {
+  it("stands in the record card, and builds no frame and no Escape of its own", () => {
+    expect(panel).toMatch(/import CardPanel, \{ type CardStop, useCardStop \} from "@\/components\/CardPanel"/);
+    expect(panel).toContain("useCardStop(isMobile, MY_DAY_PAGE_MIN_REM)");
+    expect(panel).toContain("<CardPanel stop={stop}");
+    // No copied frame: the phone frame and the frame over the page are the card's.
+    expect(panel).not.toContain("TASK_CARD_FRAME");
+    expect(panel).not.toContain("PANEL_WIDTH_CLASS");
+    expect(panel).not.toMatch(/z-\[(5[1-9]|[6-9][0-9])\]/);
+    // No Escape of its own: the card's `cardEscape` serves every state.
+    for (const src of [panel, hook]) {
+      expect(src).not.toContain("cardEscape");
+      expect(src).not.toMatch(/addEventListener\("keydown"/);
+    }
+  });
+
+  it("hosts Projects' own TaskPanel at the card's stop, and no second task view", () => {
     expect(panel).toMatch(/import \{ TaskPanel \} from "@\/app\/projects\/components\/TaskPanel"/);
     expect(panel).toContain("<TaskPanel");
     expect(panel).not.toContain("<TaskBody");
@@ -193,7 +352,16 @@ describe("the seams (source)", () => {
       expect(panel, block).not.toContain(block);
     }
     // The one loader of a panel that starts from an id.
-    expect(panel).toContain("useTaskById(id, { followMerge: true })");
+    expect(panel).toContain('useTaskById(target.kind === "task" ? target.id : null, { followMerge: true })');
+    expect(panel).toContain("mode={panelModeFor(stop, card.width, card.rem)}");
+    expect(panel).toContain("mode={mode}");
+    expect(panel).toContain("onMode={expand ? () => expand.onToggle() : undefined}");
+  });
+
+  it("moves the focus into the card on open, and takes a pill click inside it", () => {
+    expect(panel).toContain("aside.focus({ preventScroll: true })");
+    expect(panel).toContain("const next = peekOfClick(event, clickedLinkOf(event));");
+    expect(panel).toContain("onClickCapture={onClickCapture}");
   });
 
   it("closes on a phone bar tap, but Ask, with the hook above every return", () => {
@@ -205,9 +373,6 @@ describe("the seams (source)", () => {
     expect(body).toContain("if (barTapCloses(tab)) onLeave();");
     expect(hookAt).toBeGreaterThan(0);
     expect(hookAt).toBeLessThan(body.indexOf("return"));
-    // The phone frame is the task card's own (`lib/layers.ts`), never a new layer.
-    expect(panel).toContain("TASK_CARD_FRAME.phone");
-    expect(panel).not.toMatch(/z-\[(5[1-9]|[6-9][0-9])\]/);
   });
 
   it("loads the panel on demand, so the task body is not in My Day's first load", () => {
@@ -217,23 +382,43 @@ describe("the seams (source)", () => {
 
   it("gives nothing with the flag off: no handler, no reader, no panel", () => {
     expect(hook).toMatch(
-      /if \(!enabled\) \{\s*return \{ pageRef, onClickCapture: undefined, peek: null, reader: null, panel: null, docked: false \};/,
+      /if \(!enabled\) \{\s*return \{ columnRef, onClickCapture: undefined, peek: null, reader: null, panel: null, docked: false \};/,
     );
   });
 
-  it("keeps the count of its history entries when another part replaces the state", () => {
+  it("keeps the count of its history entries, and clears a landing it did not push", () => {
     // `useTaskTab` mirrors `?ttab=` with `replaceState(null, …)`, which drops
     // our key. The hook keeps the count in a ref and writes it back.
     expect(hook).toContain("const depth = useRef(0);");
     expect(hook).toMatch(/window\.history\.replaceState\(\{ \.\.\.state, \[PEEK_DEPTH_KEY\]: depth\.current \}, ""\)/);
     expect(hook).toContain("const move = closeMove(depth.current);");
+    expect(hook).toContain("if (!landingClears(wasClosing, depth.current, peekInAddress() !== null)) return;");
   });
 
-  it("draws My Day in one column while the panel is docked, and as before when it is not", () => {
+  it("marks the open row from the hook, and watches the column for a re-read", () => {
+    expect(hook).toContain("rows.add(link.closest(PEEK_ROW) ?? link);");
+    expect(hook).toContain("new MutationObserver(mark)");
+    expect(hook).toContain("watch.observe(column, { childList: true, subtree: true });");
+  });
+
+  it("draws one column only while the card is docked, and as before otherwise", () => {
     const page = code(read("./MyDayPage.tsx"));
+    expect(hook).toContain("docked: isDocked(!!target, stop),");
     expect(page).toContain('const wide = (classes: string) => (peek.docked ? "" : classes);');
     expect(page.match(/\$\{wide\("xl:grid-cols-3"\)\}/g)).toHaveLength(2);
     expect(page).toContain('wide("xl:col-span-2 xl:col-start-1 xl:row-start-1")');
+    // The page root and the page column of the card (`useSideCardFits` reads `<main>`).
+    expect(page).toContain('{...{ [CARD_PAGE_ATTR]: "" }}');
+    expect(page).toContain("<main ref={peek.columnRef}");
+  });
+
+  it("drops the My Day keys on a close after a write, so no read in flight answers", () => {
+    const page = code(read("./MyDayPage.tsx"));
+    const from = page.indexOf("onSettled: () => {");
+    const settled = page.slice(from, page.indexOf("},", from));
+    expect(settled).toContain("rereadFeed();");
+    expect(settled).toContain("invalidate(needsKey());");
+    expect(settled).not.toContain("feed.refresh()");
   });
 
   it("sends the feed's phone menu through useMyDayGo, not router.push", () => {

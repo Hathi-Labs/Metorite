@@ -1428,6 +1428,13 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
 [data-askbar-clear] {
   padding-bottom: calc(var(--askbar-pb, 0px) + var(--askbar-extra, 0px));
 }
+/* The row of My Day whose task is open in the panel (PK-1, D204).
+   `useMyDayPeek.tsx` marks it from one place, so each card keeps its markup.
+   The house selected tint, `bg-primary/10` (AGENTS.md rule 6). Unlayered, so
+   it holds over a row's hover fill. Fence: `myDayPeek.test.ts`. */
+[data-peek-open] {
+  background-color: color-mix(in srgb, var(--primary) 10%, transparent);
+}
 /* Where the page column itself takes the room (Email Cleaner's fixed last
    row), the panes stop above the bar and their vertical lines ended in mid-air
    (owner, 2026-11-08). One hairline closes them. The negative margin makes its

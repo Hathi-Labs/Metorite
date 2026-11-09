@@ -9,7 +9,7 @@
  *
  * - **A click.** `onClickCapture` on the page column sees the click before
  *   the link does. A plain left click on a link that the panel takes
- *   (`peekTargetOf`) opens the panel, and the link does nothing. Any other
+ *   (`peekOfClick`) opens the panel, and the link does nothing. Any other
  *   click is the link's, so Ctrl-click opens Projects in a new tab.
  * - **A link in code.** A menu item goes through `useMyDayGo`
  *   (`myDayGo.ts`), and this hook provides its `peek`.
@@ -17,9 +17,11 @@
  *   pushes one history entry for each open, so Back closes the panel and a
  *   reload opens it again. Next keeps `useSearchParams` in step with
  *   `history.pushState`, and the panel reads only that.
- * - **Escape.** From the page or from nowhere, Escape closes the panel
- *   (`cardEscape`, the record card's rule). From inside the panel,
- *   `TaskPanel` owns it.
+ * - **The frame** is the record card (`components/CardPanel.tsx`). It owns
+ *   Escape, the focus return and `inert`. The panel reports its stop, so My
+ *   Day draws one column only while the card stands beside the page.
+ * - **The open row** wears `PEEK_OPEN_ATTR`, and its link `aria-current`.
+ *   The page column is watched, so a re-read of the feed keeps the mark.
  * - **The rows.** A panel that wrote something asks My Day to read its rows
  *   again when it closes (`onSettled`), so the row shows the change.
  *
@@ -40,21 +42,24 @@ import {
   useState,
 } from "react";
 
-import { cardEscape } from "@/components/CardPanel";
-import { useViewMode } from "@/components/ViewModeProvider";
+import type { CardStop } from "@/components/CardPanel";
 
 import type { PeekOpener } from "./myDayGo";
 import {
   PEEK_DEPTH_KEY,
-  PEEK_FRAME_ATTR,
+  PEEK_OPEN_ATTR,
   PEEK_PARAM,
+  PEEK_ROW,
   type PeekTarget,
+  clickedLinkOf,
   closeMove,
+  isDocked,
+  landingClears,
   peekDepthOf,
   peekFromParam,
   peekHref,
+  peekOfClick,
   peekParamOf,
-  peekTakesClick,
   peekTargetOf,
 } from "./myDayPeek";
 
@@ -79,8 +84,8 @@ function peekInAddress(): PeekTarget | null {
 }
 
 export interface MyDayPeek {
-  /** The page root. A key from inside it reaches the panel's Escape. */
-  pageRef: RefObject<HTMLDivElement | null>;
+  /** The page column (`<main>`): the rows to take a click from and to mark. */
+  columnRef: RefObject<HTMLElement | null>;
   /** The page column's click handler, or undefined with the flag off. */
   onClickCapture: ((event: MouseEvent<HTMLElement>) => void) | undefined;
   /** What `useMyDayGo` asks, or null with the flag off. */
@@ -89,9 +94,9 @@ export interface MyDayPeek {
   reader: ReactNode;
   panel: ReactNode;
   /**
-   * The panel stands as a column beside the page: open, on a desktop. The
-   * page's grid is set by the WINDOW width (`xl:`), so with the column
-   * open My Day draws its cards in one column (`wide` in `MyDayPage.tsx`).
+   * The card stands as a column beside the page (`isDocked`). The page's
+   * grid is set by the WINDOW width (`xl:`), so then My Day draws its cards
+   * in one column (`wide` in `MyDayPage.tsx`). Over the page, the grid stays.
    */
   docked: boolean;
 }
@@ -102,10 +107,10 @@ export function useMyDayPeek(
 ): MyDayPeek {
   const [param, setParam] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [stop, setStop] = useState<CardStop | null>(null);
   const target = enabled ? peekFromParam(param) : null;
   const targetKey = target ? peekParamOf(target) : null;
-  const { isMobile } = useViewMode();
-  const pageRef = useRef<HTMLDivElement | null>(null);
+  const columnRef = useRef<HTMLElement | null>(null);
   const changed = useRef(false);
   const settle = useRef(options.onSettled);
   useEffect(() => {
@@ -122,9 +127,20 @@ export function useMyDayPeek(
    * effect below writes the count back after another part dropped it.
    */
   const depth = useRef(0);
+  // A close that walks back. The entry it lands on loses its panel too when
+  // the page did not push it (`landingClears`): ✕ means "close".
+  const closing = useRef(false);
   useEffect(() => {
     const onPop = () => {
       depth.current = peekDepthOf(window.history.state);
+      const wasClosing = closing.current;
+      closing.current = false;
+      if (!landingClears(wasClosing, depth.current, peekInAddress() !== null)) return;
+      // After Next's own traversal of this entry, never inside it.
+      window.setTimeout(() => {
+        window.history.replaceState({}, "", peekHref(window.location, null));
+        setParam(null);
+      }, 0);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -159,6 +175,7 @@ export function useMyDayPeek(
     const move = closeMove(depth.current);
     if ("go" in move) {
       // Back over the page's own entries. Next's reader then sees no panel.
+      closing.current = true;
       window.history.go(move.go);
       return;
     }
@@ -186,31 +203,46 @@ export function useMyDayPeek(
     if (wasOpen.current && changed.current) settle.current();
     wasOpen.current = false;
     changed.current = false;
+    setStop(null);
   }, [targetKey]);
 
-  // Escape from the page, or from nowhere, closes the panel.
+  // The open row: the house selected tint on its row, and `aria-current` on
+  // its link. A feed re-read draws new nodes, so the column is watched.
   useEffect(() => {
-    if (!targetKey) return;
-    const onKey = (event: KeyboardEvent) => {
-      const page = pageRef.current;
-      const target = event.target as (HTMLElement & Node) | null;
-      const frame = page?.querySelector(`[${PEEK_FRAME_ATTR}]`) ?? null;
-      // Inside the panel, `TaskPanel` owns Escape (blur a field, then close).
-      if (frame && target instanceof Node && frame.contains(target)) return;
-      const inReach = target === document.body || (target instanceof Node && !!page?.contains(target));
-      const dialogOpen = document.querySelector('[role="dialog"], [role="alertdialog"]') !== null;
-      if (cardEscape(event, target, inReach, dialogOpen) === "close") close();
+    const column = columnRef.current;
+    if (!column || !targetKey) return;
+    const mark = () => {
+      const rows = new Set<Element>();
+      const links = new Set<Element>();
+      for (const link of column.querySelectorAll("a[href]")) {
+        const at = peekTargetOf(link.getAttribute("href"));
+        if (!at || peekParamOf(at) !== targetKey) continue;
+        links.add(link);
+        rows.add(link.closest(PEEK_ROW) ?? link);
+      }
+      for (const el of column.querySelectorAll(`[${PEEK_OPEN_ATTR}]`)) {
+        if (!rows.has(el)) el.removeAttribute(PEEK_OPEN_ATTR);
+      }
+      for (const el of column.querySelectorAll('a[aria-current="true"]')) {
+        if (!links.has(el)) el.removeAttribute("aria-current");
+      }
+      for (const el of rows) if (!el.hasAttribute(PEEK_OPEN_ATTR)) el.setAttribute(PEEK_OPEN_ATTR, "");
+      for (const el of links) if (el.getAttribute("aria-current") !== "true") el.setAttribute("aria-current", "true");
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [targetKey, close]);
+    mark();
+    // Only the tree is watched, never an attribute, so a mark wakes nothing.
+    const watch = new MutationObserver(mark);
+    watch.observe(column, { childList: true, subtree: true });
+    return () => {
+      watch.disconnect();
+      for (const el of column.querySelectorAll(`[${PEEK_OPEN_ATTR}]`)) el.removeAttribute(PEEK_OPEN_ATTR);
+      for (const el of column.querySelectorAll('a[aria-current="true"]')) el.removeAttribute("aria-current");
+    };
+  }, [targetKey]);
 
   const onClickCapture = useCallback(
     (event: MouseEvent<HTMLElement>) => {
-      const link = (event.target as Element | null)?.closest?.("a[href]");
-      if (!(link instanceof HTMLAnchorElement) || !event.currentTarget.contains(link)) return;
-      if (!peekTakesClick(event, { target: link.target, download: link.hasAttribute("download") })) return;
-      const next = peekTargetOf(link.getAttribute("href"));
+      const next = peekOfClick(event, clickedLinkOf(event));
       if (!next) return;
       // The link's own handler sees `defaultPrevented` and stays still.
       event.preventDefault();
@@ -239,10 +271,10 @@ export function useMyDayPeek(
   }, []);
 
   if (!enabled) {
-    return { pageRef, onClickCapture: undefined, peek: null, reader: null, panel: null, docked: false };
+    return { columnRef, onClickCapture: undefined, peek: null, reader: null, panel: null, docked: false };
   }
   return {
-    pageRef,
+    columnRef,
     onClickCapture,
     peek,
     // `useSearchParams` needs a Suspense boundary at build (`OrgLinkGate.tsx`).
@@ -252,8 +284,16 @@ export function useMyDayPeek(
       </Suspense>
     ),
     panel: target ? (
-      <MyDayPeekPanel target={target} onClose={close} onLeave={leave} onOpen={open} onChanged={markChanged} me={options.me} />
+      <MyDayPeekPanel
+        target={target}
+        onClose={close}
+        onLeave={leave}
+        onOpen={open}
+        onChanged={markChanged}
+        onStop={setStop}
+        me={options.me}
+      />
     ) : null,
-    docked: !!target && !isMobile,
+    docked: isDocked(!!target, stop),
   };
 }

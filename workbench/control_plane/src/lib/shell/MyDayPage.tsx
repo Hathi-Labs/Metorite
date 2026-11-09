@@ -75,6 +75,10 @@ import { BUILT_CARDS } from "./presets";
 import TodayBand from "./TodayBand";
 import { showTodayBand, todayBandOn, todayBandOnServer } from "./todayBandFlag";
 import { useMyDayPeek } from "./useMyDayPeek";
+import { rereadFeed } from "./feedState";
+import { needsKey } from "./needs";
+import { CARD_PAGE_ATTR } from "@/components/CardPanel";
+import { invalidate } from "@/lib/dataCache";
 import { MyDayPeekContext } from "./myDayGo";
 import { myDayPeekOn, myDayPeekOnServer } from "./myDayPeekFlag";
 import { homePane } from "./shellNav";
@@ -200,33 +204,39 @@ export default function MyDay() {
 
   // PK-1: a row opens its task in the panel. After a panel that wrote
   // something closes, the reads that drew the rows go out again, so the row
-  // shows the change. A Projects write already drops the Projects reads
-  // (Today, Next actions). The feed and the needs reads are the shell's.
+  // shows the change. ⚠️ A DROPPED key, never `refresh`: a forced read joins a
+  // read already in flight (`dataCache.read`), and that read may predate the
+  // write. A dropped key makes the next read a new one. A Projects write
+  // already drops the Projects reads (Today, Next actions).
   const peek = useMyDayPeek(peekOn, {
     me: session?.user?.email ?? undefined,
     onSettled: () => {
-      feed.refresh();
-      needs.refresh();
+      rereadFeed();
+      invalidate(needsKey());
       today.refresh();
     },
   });
-  // The grid below steps by the WINDOW width (`xl:`). With the panel docked
+  // The grid below steps by the WINDOW width (`xl:`). With the card docked
   // beside it, the page column is 384 px narrower, and at 1280 three grid
   // columns left a feed title two letters long (PK-1 visual review). So while
-  // the panel is docked, the cards stand in one column and Today goes last.
-  // Closed, every class is as before.
+  // the card is docked, the cards stand in one column and Today goes last.
+  // Over the page, and closed, every class is as before.
   const wide = (classes: string) => (peek.docked ? "" : classes);
 
   return (
     <MyDayPeekContext.Provider value={peek.peek}>
-    <div ref={peek.pageRef} className="flex h-full min-h-0 flex-col">
+    {/* The page root of the record card (`CardPanel`): a key from inside it
+        reaches the card's Escape, and over the page the rest goes inert. */}
+    <div {...{ [CARD_PAGE_ATTR]: "" }} className="flex h-full min-h-0 flex-col">
     {/* The compact bar on a phone (AppTopBar decides), so the page keeps
         its one h1 there too. */}
     <AppTopBar title={home.label} icon={home.icon} />
-    {/* One row: the page column, and the panel at its right while a task is
-        open (PK-1). With the flag off the row holds the column alone. */}
+    {/* One row: the page column, `<main>`, and the card beside it while a
+        task is docked (PK-1), as the CRM's row holds its record card. The
+        card measures this row. With the flag off the row holds the column
+        alone. */}
     <div className="flex min-h-0 flex-1">
-    <div className="min-h-0 min-w-0 flex-1 overflow-auto" onClickCapture={peek.onClickCapture}>
+    <main ref={peek.columnRef} className="min-h-0 min-w-0 flex-1 overflow-auto" onClickCapture={peek.onClickCapture}>
     <div className={`mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 ${wide("xl:max-w-6xl")}`} data-guide="home.my-day" data-testid="my-day">
       <div>
         {now ? (
@@ -359,7 +369,7 @@ export default function MyDay() {
         pathname="/"
       />
     </div>
-    </div>
+    </main>
     {peek.panel}
     </div>
     {peek.reader}

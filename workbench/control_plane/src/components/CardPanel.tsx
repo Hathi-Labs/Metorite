@@ -57,7 +57,11 @@ export const CARD_PAGE_ATTR = "data-card-page";
 /** The width of a docked card: `TASK_PANEL_WIDTH`, `max-w-sm`. */
 const SIDE_CARD_REM = 24;
 
-/** The narrowest page beside a docked card: one list column and its tools. */
+/**
+ * The narrowest page beside a docked card: one list column and its tools.
+ * A host whose page needs more room passes its own (`useCardStop`). My Day's
+ * rows keep their acts at the end, so it passes 36 (PK-1, D204).
+ */
 export const PAGE_MIN_REM = 20;
 
 /**
@@ -67,9 +71,9 @@ export const PAGE_MIN_REM = 20;
  * views). Neither one depends on the stop, so the answer cannot flip the stop
  * and flip back. An unmeasured row (0 before the first layout) says yes.
  */
-export function sideCardFits(rowWidth: number, railWidth: number, rem: number): boolean {
+export function sideCardFits(rowWidth: number, railWidth: number, rem: number, pageMinRem = PAGE_MIN_REM): boolean {
   if (!(rowWidth > 0)) return true;
-  return rowWidth - railWidth - SIDE_CARD_REM * rem >= PAGE_MIN_REM * rem;
+  return rowWidth - railWidth - SIDE_CARD_REM * rem >= pageMinRem * rem;
 }
 
 /** The classes of the three parts at one stop. Pure, so a test reads them. */
@@ -179,7 +183,7 @@ export function usePanelMode(): [PanelMode, (next: PanelMode) => void] {
 }
 
 /** Watch the row that holds the card. True while it holds a docked card too. */
-function useSideCardFits(asideRef: RefObject<HTMLElement | null>): boolean {
+function useSideCardFits(asideRef: RefObject<HTMLElement | null>, pageMinRem: number): boolean {
   const [fits, setFits] = useState(true);
   useLayoutEffect(() => {
     const main = asideRef.current?.closest(`[${CARD_PAGE_ATTR}]`)?.querySelector("main");
@@ -193,7 +197,7 @@ function useSideCardFits(asideRef: RefObject<HTMLElement | null>): boolean {
           child === main || child.contains(asideRef.current) ? sum : sum + child.getBoundingClientRect().width,
         0,
       );
-      setFits(sideCardFits(row.clientWidth, railWidth, rem));
+      setFits(sideCardFits(row.clientWidth, railWidth, rem, pageMinRem));
     };
     measure();
     const watcher = new ResizeObserver(measure);
@@ -201,22 +205,23 @@ function useSideCardFits(asideRef: RefObject<HTMLElement | null>): boolean {
     // A rail that folds moves `<main>` and leaves the row the same width.
     watcher.observe(main);
     return () => watcher.disconnect();
-  }, [asideRef]);
+  }, [asideRef, pageMinRem]);
   return fits;
 }
 
 /**
  * The stop to draw, and the toggle for the shared header. A phone and a page
- * too narrow for a docked card have no toggle.
+ * too narrow for a docked card have no toggle. `pageMinRem` is the narrowest
+ * page the host keeps beside a docked card ({@link PAGE_MIN_REM} by default).
  */
-export function useCardStop(phone: boolean): {
+export function useCardStop(phone: boolean, pageMinRem = PAGE_MIN_REM): {
   stop: CardStop;
   expand: { expanded: boolean; onToggle: () => void } | undefined;
   asideRef: RefObject<HTMLElement | null>;
 } {
   const [mode, setMode] = usePanelMode();
   const asideRef = useRef<HTMLElement>(null);
-  const fits = useSideCardFits(asideRef);
+  const fits = useSideCardFits(asideRef, pageMinRem);
   if (phone) return { stop: "phone", expand: undefined, asideRef };
   if (!fits) return { stop: "full", expand: undefined, asideRef };
   return {
