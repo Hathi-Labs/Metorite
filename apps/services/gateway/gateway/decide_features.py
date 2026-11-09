@@ -269,6 +269,11 @@ FEATURE_TABLE: tuple[Feature, ...] = (
     Feature("crm.map_stage", "crm", "choice", on=True),
     Feature("crm.map_catalogue", "crm", "choice", on=True),
     Feature("projects.align", "projects", "choice", on=True),
+    # DEC-2a: the three yes/no steps of Tasks AI. Each has an old LLM call that
+    # stays the fallback, so `on` is legal (`routes/tasks/projects_decide.py`).
+    Feature("projects.vague_title", "projects", "boolean", on=True),
+    Feature("projects.atomize_dedup", "projects", "boolean", on=True),
+    Feature("projects.commitment", "projects", "boolean", on=True),
 )
 
 
