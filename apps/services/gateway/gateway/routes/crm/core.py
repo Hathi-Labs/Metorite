@@ -848,8 +848,13 @@ def status_wire(row: Any) -> StatusModel:
 ADMIN_ORDER_TAIL = 1_000_000
 
 
-def _effective_columns(table: str, *, deal: bool) -> str:
-    """The SELECT list of one status table, over the alias ``s``."""
+def _effective_columns(table: str, *, deal: bool, membership: str | None = None) -> str:
+    """The SELECT list of one status table, over the alias ``s``.
+
+    *membership* is the alias of a ``crm_pipeline_stages`` row of the read
+    (CRM-M3b, D166). Then the win chance and the warning days come from that
+    row, and a NULL there reads the stage row. The Mirror overlay
+    ``ui_probability`` still wins over both."""
     # A scalar subquery with no WHERE: row level security binds it to the
     # tenant, and it reads the whole kind even when the outer read is a subset.
     ordered = f"(SELECT bool_or(o.ui_position IS NOT NULL) FROM {table} o)"
@@ -864,13 +869,18 @@ def _effective_columns(table: str, *, deal: bool) -> str:
         "COALESCE(s.ui_color, s.color) AS color",
     ]
     # Both kinds carry a win chance since migration 288 (CRM-U6).
+    source = f"COALESCE({membership}.probability, s.probability)" if membership else "s.probability"
     columns += [
-        "s.ui_probability", "s.probability AS source_probability",
-        "COALESCE(s.ui_probability, s.probability) AS probability",
+        "s.ui_probability", f"{source} AS source_probability",
+        f"COALESCE(s.ui_probability, {source}) AS probability",
     ]
     if deal:
+        dwell = (
+            f"COALESCE({membership}.max_dwell_days, s.max_dwell_days)"
+            if membership else "s.max_dwell_days"
+        )
         columns += [
-            "s.required_fields", "s.max_dwell_days", "s.forecast_category",
+            "s.required_fields", f"{dwell} AS max_dwell_days", "s.forecast_category",
         ]
     return ", ".join(columns)
 
@@ -887,6 +897,15 @@ EFFECTIVE_STATUS_COLUMNS: dict[str, str] = {
     "crm_lead_statuses": _effective_columns("crm_lead_statuses", deal=False),
 }
 
+#: CRM-M3b (D166, migration 394): the SELECT list of a deal stage ``s`` in one
+#: deal pipeline, over its membership ``ps`` (``crm_pipeline_stages``). The win
+#: chance is ``COALESCE(s.ui_probability, ps.probability, s.probability)``, and
+#: the warning days are ``COALESCE(ps.max_dwell_days, s.max_dwell_days)``. A
+#: read with no membership row (a LEFT JOIN that found none) reads the stage
+#: row, as :data:`EFFECTIVE_STATUS_COLUMNS` does. ``GET /crm/statuses/{kind}``
+#: keeps that list, because it serves the stage row.
+PIPELINE_STAGE_COLUMNS = _effective_columns("crm_deal_statuses", deal=True, membership="ps")
+
 
 async def read_statuses(db: Any, table: str) -> list[Any]:
     """Each row of one status table, with the effective values, in lane order."""
@@ -896,6 +915,28 @@ async def read_statuses(db: Any, table: str) -> list[Any]:
             "ORDER BY position, name"
         ),
         {},
+    )).fetchall())
+
+
+async def read_deal_stages(db: Any, pipeline_id: str | None = None) -> list[Any]:
+    """Each deal stage, with the values of its membership of one deal pipeline,
+    in lane order (CRM-M3b).
+
+    The pipeline is *pipeline_id*, else the default deal pipeline: the board
+    of all pipelines and the reports read the default one. A stage that the
+    pipeline does not list reads its stage row. With no deal pipeline at all,
+    this is :func:`read_statuses`."""
+    target = pipeline_id or await default_pipeline_id(db)
+    if not target:
+        return await read_statuses(db, "crm_deal_statuses")
+    return list((await db.execute(
+        text(
+            f"SELECT {PIPELINE_STAGE_COLUMNS} FROM crm_deal_statuses s "
+            "LEFT JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
+            "AND ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+            "ORDER BY position, name"
+        ),
+        {"pipeline_id": str(target)},
     )).fetchall())
 
 
@@ -1588,12 +1629,17 @@ async def add_stage_to_default_pipeline(db: Any, status_id: str) -> None:
     pipeline = await default_pipeline_id(db)
     if pipeline is None:
         return
+    # CRM-M3b: the membership copies the win chance and the warning days of
+    # the stage row (migration 394).
     await db.execute(
         text(
-            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
-            "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), COALESCE((SELECT "
+            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position, "
+            "probability, max_dwell_days) "
+            "SELECT CAST(:p AS uuid), s.id, COALESCE((SELECT "
             "max(position) + 1 FROM crm_pipeline_stages WHERE pipeline_id = "
-            "CAST(:p AS uuid)), 0)) ON CONFLICT (pipeline_id, status_id) DO NOTHING"
+            f"CAST(:p AS uuid)), 0), {copied_values_sql()} "
+            "FROM crm_deal_statuses s WHERE s.id = CAST(:s AS uuid) "
+            "ON CONFLICT (pipeline_id, status_id) DO NOTHING"
         ),
         {"p": pipeline, "s": str(status_id)},
     )
@@ -1637,6 +1683,12 @@ async def pipeline_takes_unset(db: Any, pipeline_id: str | None) -> bool:
 DEAL_PIPELINE_SQL = "kind = 'deal'"
 
 
+#: The order that picks the default deal pipeline: the flagged one, then the
+#: first by place and age. :func:`default_pipeline_id` and
+#: :func:`default_deal_pipeline_sql` share it, so the two never disagree.
+_DEFAULT_PIPELINE_ORDER = "ORDER BY is_default DESC, position, created_at LIMIT 1"
+
+
 async def default_pipeline_id(db: Any) -> str | None:
     """The id of the organization's default deal pipeline, or ``None``.
 
@@ -1646,11 +1698,146 @@ async def default_pipeline_id(db: Any) -> str | None:
     row = (await db.execute(
         text(
             f"SELECT id FROM crm_pipelines WHERE {DEAL_PIPELINE_SQL} "
-            "ORDER BY is_default DESC, position, created_at LIMIT 1"
+            f"{_DEFAULT_PIPELINE_ORDER}"
         ),
         {},
     )).first()
     return str(row.id) if row is not None else None
+
+
+def default_deal_pipeline_sql(org_column: str) -> str:
+    """The default deal pipeline of the org in *org_column*, as a scalar
+    subquery (CRM-M3b). The rule of :func:`default_pipeline_id`.
+
+    It names the org itself, so a read under a role that row level security
+    does not bind still reads one org. *org_column* is SQL of this package,
+    such as ``d.organization_id``, never caller text."""
+    return (
+        f"(SELECT dp.id FROM crm_pipelines dp WHERE {DEAL_PIPELINE_SQL} "
+        f"AND dp.organization_id = {org_column} {_DEFAULT_PIPELINE_ORDER})"
+    )
+
+
+# ── The win chance and the warning days of a stage in a pipeline (CRM-M3b) ──
+
+#: The two values of a deal stage that sit on its membership of one deal
+#: pipeline (D166, migration 394). NULL there reads the stage row. The stage
+#: row keeps both columns: ``GET /crm/statuses/deal`` serves it, and a new
+#: membership copies it.
+MEMBERSHIP_COLUMNS: tuple[str, ...] = ("probability", "max_dwell_days")
+
+#: What a new membership copies from its stage row ``s``. A value outside the
+#: range of a CHECK of migration 394 stays NULL, and then each reader reads
+#: the stage row, as before.
+_COPY_SQL: dict[str, str] = {
+    "probability": "CASE WHEN s.probability BETWEEN 0 AND 100 THEN s.probability END",
+    "max_dwell_days": "CASE WHEN s.max_dwell_days >= 1 THEN s.max_dwell_days END",
+}
+
+
+def copied_values_sql(source: str | None = None) -> str:
+    """The two values of a new membership of the deal stage ``s``, as SQL, in
+    the order of :data:`MEMBERSHIP_COLUMNS`.
+
+    With *source*, the alias of the membership of the pipeline that a create
+    copies, each value comes from there first. Else from the stage row."""
+    if source is None:
+        return ", ".join(_COPY_SQL[c] for c in MEMBERSHIP_COLUMNS)
+    return ", ".join(f"COALESCE({source}.{c}, {_COPY_SQL[c]})" for c in MEMBERSHIP_COLUMNS)
+
+
+async def entry_probability(db: Any, status: Any, pipeline_id: Any) -> int | None:
+    """The win chance that a deal takes when it enters *status* (CRM-M3b).
+
+    It reads the membership of the deal's pipeline, else of the default deal
+    pipeline when the deal names none. A NULL there, or no membership, reads
+    the stage row, as before CRM-M3b. A new deal, a moved deal and the deal of
+    a convert call it, so the three agree. Two small reads, so the hermetic
+    fakes answer them too."""
+    fallback = getattr(status, "probability", None)
+    target = str(pipeline_id) if pipeline_id else await default_pipeline_id(db)
+    if not target:
+        return fallback
+    row = (await db.execute(
+        text(
+            "SELECT probability FROM crm_pipeline_stages "
+            "WHERE pipeline_id = CAST(:p AS uuid) AND status_id = CAST(:s AS uuid)"
+        ),
+        {"p": target, "s": str(status.id)},
+    )).first()
+    found = getattr(row, "probability", None) if row is not None else None
+    return found if found is not None else fallback
+
+
+async def stage_memberships(
+    db: Any, status_id: str, columns: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """The stored values of *columns* in each membership of one deal stage, by
+    pipeline id. It locks the rows ``FOR UPDATE`` in pipeline id order, so
+    two writers of one stage take them in one order (CRM-M3b)."""
+    rows = (await db.execute(
+        text(
+            "SELECT pipeline_id, probability, max_dwell_days FROM crm_pipeline_stages "
+            "WHERE status_id = CAST(:s AS uuid) ORDER BY pipeline_id FOR UPDATE"
+        ),
+        {"s": str(status_id)},
+    )).fetchall()
+    return {
+        str(r.pipeline_id): {c: getattr(r, c, None) for c in columns}
+        for r in rows
+    }
+
+
+async def write_memberships(
+    db: Any, status_id: str, values: dict[str, dict[str, Any]],
+) -> None:
+    """Write the values of each membership of one deal stage (CRM-M3b).
+
+    *values* is ``{pipeline id: {column: value}}``, with columns of
+    :data:`MEMBERSHIP_COLUMNS` only. The memberships follow the guard of the
+    stage row, because each write here goes with a write of that row: a
+    Mirror admin may write ``max_dwell_days`` (UX-Q5) and no other column."""
+    for pipeline_id, row in sorted(values.items()):
+        columns = [c for c in MEMBERSHIP_COLUMNS if c in row]
+        if not columns:
+            continue
+        await assert_writable(
+            db, current_tenant(), "crm_deal_statuses", {c: row[c] for c in columns},
+        )
+        await db.execute(
+            text(
+                "UPDATE crm_pipeline_stages SET "
+                + ", ".join(f"{c} = :{c}" for c in columns)
+                + " WHERE pipeline_id = CAST(:p AS uuid) AND status_id = CAST(:s AS uuid)"
+            ),
+            {**{c: row[c] for c in columns}, "p": pipeline_id, "s": str(status_id)},
+        )
+
+
+async def fan_out_stage_values(
+    db: Any, status_id: str, values: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Each membership of one deal stage takes the membership columns of
+    *values* (CRM-M3b). The write of the stage row calls it in the same
+    transaction: the old route ``PATCH /crm/statuses/deal/{id}`` sets a value
+    for every pipeline, and so does the stage import.
+
+    Returns ``(before, after)`` of each membership that changed, by pipeline
+    id, so a Change history row can put each one back. The caller has locked
+    the stage row first, then this locks the memberships (one order)."""
+    columns = [c for c in MEMBERSHIP_COLUMNS if c in values]
+    if not columns:
+        return {}, {}
+    held = await stage_memberships(db, status_id, columns)
+    before: dict[str, dict[str, Any]] = {}
+    after: dict[str, dict[str, Any]] = {}
+    for pipeline_id, stored in held.items():
+        changed = {c: values[c] for c in columns if stored.get(c) != values[c]}
+        if changed:
+            before[pipeline_id] = {c: stored.get(c) for c in changed}
+            after[pipeline_id] = changed
+    await write_memberships(db, status_id, after)
+    return before, after
 
 
 async def require_deal_pipeline(db: Any, pipeline_id: str) -> Any:
@@ -2529,9 +2716,16 @@ async def merge_status_from_source(
             ),
             ids,
         )
+        # CRM-M3b: a moved deal membership holds the values of the folded row.
+        # It takes NULL, so it reads the kept row, as one value per stage of
+        # Mirror mode needs (migration 394).
+        values = (
+            ", probability = NULL, max_dwell_days = NULL"
+            if stages == "crm_pipeline_stages" else ""
+        )
         await db.execute(
             text(
-                f"UPDATE {stages} SET status_id = CAST(:keep AS uuid) "
+                f"UPDATE {stages} SET status_id = CAST(:keep AS uuid){values} "
                 "WHERE status_id = CAST(:drop AS uuid)"
             ),
             ids,

@@ -55,6 +55,7 @@ from gateway.routes.crm import change_log
 from gateway.routes.crm.access import ADMIN_PERMISSION
 from gateway.routes.crm.change_log import Change, Logged, log_change, quoted
 from gateway.routes.crm.core import (
+    MEMBERSHIP_COLUMNS,
     MIRROR_OVERLAY_COLUMNS,
     STAGE_REQUIREABLE_FIELDS,
     STATUS_TYPES,
@@ -65,6 +66,7 @@ from gateway.routes.crm.core import (
     add_stage_to_default_pipeline,
     assert_writable,
     current_tenant,
+    fan_out_stage_values,
     insert_row,
     is_mirror_mode,
     load_row,
@@ -74,8 +76,10 @@ from gateway.routes.crm.core import (
     read_statuses,
     require_row,
     router,
+    stage_memberships,
     status_wire,
     update_row,
+    write_memberships,
 )
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -652,12 +656,17 @@ async def patch_status(
 
 async def patch_status_in(
     db: Any, user: Any, kind: str, status_id: str, values: dict[str, Any],
-    *, undoes: str | None = None,
+    *, undoes: str | None = None, members: dict[str, dict[str, Any]] | None = None,
 ) -> StatusModel:
     """The body of ``PATCH /crm/statuses/{kind}/{id}``, in the caller's
     transaction. The route and the Undo of a change both call it, so an
     Undo meets every check of the route. It logs one row when a value
-    changes (CRM-M1)."""
+    changes (CRM-M1).
+
+    CRM-M3b: a deal stage's ``probability`` and ``max_dwell_days`` go to the
+    stage row AND to each of its pipeline memberships, so this route sets them
+    for every pipeline. ``PATCH /crm/pipelines/{id}/stages/{status_id}`` sets
+    them for one. *members* is the Undo's "before" of each membership."""
     table, _ = _kind(kind)
     row = await require_row(db, table, status_id, "Status")
     mirror = await _check_mode(db, table, values)
@@ -665,21 +674,106 @@ async def patch_status_in(
     _validate_overlay(values)
     if not mirror:
         await _check_visibility(db, kind, table, values, row)
-    if values:
-        updated = await update_row(db, table, status_id, values, touch=False)
+    if values or members:
+        updated = (
+            await update_row(db, table, status_id, values, touch=False) if values else row
+        )
         before, after = change_log.diff(
             {k: getattr(row, k, None) for k in values},
             {k: getattr(updated, k, None) for k in values},
         )
+        # CRM-M3b: after the stage row, its memberships (one lock order).
+        moved_before, moved_after = await _membership_values(
+            db, kind, updated, values, members, mirror=mirror,
+        )
+        if moved_after:
+            before[PIPELINES_KEY], after[PIPELINES_KEY] = moved_before, moved_after
         if after:
             await log_change(db, user, Change(
                 area=STATUS_AREAS[kind], action=change_log.CHANGE,
                 summary=_change_summary(
-                    _STATUS_NOUNS[kind], row.name, before, after, "name"),
+                    _STATUS_NOUNS[kind], row.name, before, _summary_keys(after), "name"),
                 ladder=change_log.TEAM, entity_id=str(row.id),
                 before=before, after=after,
             ), undoes=undoes)
     return status_wire(await read_status(db, table, status_id) or row)
+
+
+#: CRM-M3b: the key of "before" and "after" of a stage change that holds the
+#: value of each membership that the change wrote, by pipeline id. The Undo
+#: puts each one back, so a win chance of one pipeline survives an Undo.
+PIPELINES_KEY = "pipelines"
+
+
+def _summary_keys(after: dict[str, Any]) -> dict[str, Any]:
+    """The keys of *after* for the words of a summary: the membership columns
+    stand for :data:`PIPELINES_KEY`."""
+    keys = {k: v for k, v in after.items() if k != PIPELINES_KEY}
+    for moved in (after.get(PIPELINES_KEY) or {}).values():
+        keys.update(dict.fromkeys(moved, True))
+    return keys
+
+
+async def _membership_values(
+    db: Any, kind: str, row: Any, values: dict[str, Any],
+    members: dict[str, dict[str, Any]] | None, *, mirror: bool,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """The membership half of a deal stage edit (CRM-M3b, D166).
+
+    The route sets a value for every pipeline: each membership takes the
+    win chance or the warning days of *values* (``core.fan_out_stage_values``).
+    An Undo passes *members*, the "before" of the change, and each membership
+    that still exists takes back its own value. Before either, a ``type``
+    change of the route meets the clamp of D-CRM-10 in each pipeline. Returns
+    ``(before, after)`` of each membership that changed, by pipeline id."""
+    if kind != "deal":
+        return {}, {}
+    status_id = str(row.id)
+    if members is not None:
+        held = await stage_memberships(db, status_id, MEMBERSHIP_COLUMNS)
+        back = {
+            pid: {c: v for c, v in vals.items() if c in MEMBERSHIP_COLUMNS}
+            for pid, vals in members.items() if pid in held
+        }
+        await write_memberships(db, status_id, back)
+        return {pid: {c: held[pid].get(c) for c in vals} for pid, vals in back.items()}, back
+    if not mirror:
+        await _check_member_clamp(db, row, values)
+    return await fan_out_stage_values(db, status_id, values)
+
+
+async def _check_member_clamp(db: Any, row: Any, values: dict[str, Any]) -> None:
+    """422 when a ``type`` change leaves a pipeline of the stage at a win
+    chance that the new type does not take (D-CRM-10, CRM-M3b).
+
+    A change that names ``probability`` too sets it in every pipeline, and
+    :func:`_validate_status` judged that value already. The memberships are
+    locked first, so a win chance edit of one pipeline waits for this."""
+    pinned = CLAMPED_PROBABILITY.get(str(values.get("type") or ""))
+    if pinned is None or "probability" in values:
+        return
+    held = await stage_memberships(db, str(row.id), ("probability",))
+    stage_chance = getattr(row, "probability", None)
+    wrong = sorted(
+        pid for pid, vals in held.items()
+        if (vals.get("probability") if vals.get("probability") is not None
+            else stage_chance) != pinned
+    )
+    if not wrong:
+        return
+    names = [str(r.name) for r in (await db.execute(
+        text(
+            "SELECT name FROM crm_pipelines WHERE kind = 'deal' "
+            "AND id = ANY(CAST(:ids AS uuid[])) ORDER BY position, name"
+        ),
+        {"ids": wrong},
+    )).fetchall()]
+    raise HTTPException(status_code=422, detail=(
+        f"A '{values['type']}' stage always forecasts {pinned}%, and the pipeline "
+        f"{_names(names)} gives this stage another win chance. Send probability "
+        f"{pinned} with the type to set it in every pipeline, or set it to "
+        f"{pinned} in that pipeline first (D-CRM-10)."
+    ))
 
 
 async def status_in_use(db: Any, kind: str, status_id: str) -> int:
@@ -937,8 +1031,19 @@ async def _undo_status(db: Any, user: Any, logged: Logged) -> None:
         # then never passes between the check and the delete.
         await lock_pipeline_creates(db)
     row = await _current(db, table, logged.entity_id, logged.area)
-    if not change_log.same_values(_snapshot(row, STATUS_LOG_KEYS), logged.after):
+    after = dict(logged.after or {})
+    moved = after.pop(PIPELINES_KEY, None) or {}
+    if not change_log.same_values(_snapshot(row, STATUS_LOG_KEYS), after):
         raise change_log.changed_since()
+    held: dict[str, dict[str, Any]] = {}
+    if moved:
+        # CRM-M3b: each membership that the change wrote and that still
+        # exists must still hold that value. One that is gone is skipped: its
+        # own change holds it (a take-out keeps its values).
+        held = await stage_memberships(db, str(row.id), MEMBERSHIP_COLUMNS)
+        if any(pid in held and not change_log.same_values(held[pid], vals)
+               for pid, vals in moved.items()):
+            raise change_log.changed_since()
     if creates:
         held = await status_in_use(db, kind, str(row.id))
         if held:
@@ -955,9 +1060,19 @@ async def _undo_status(db: Any, user: Any, logged: Logged) -> None:
             before=_snapshot(row, STATUS_LOG_KEYS),
         ), undoes=logged.id)
         return None
-    async with _name_free(table, _STATUS_NOUNS[kind], (logged.before or {}).get("name")):
+    before = dict(logged.before or {})
+    members = before.pop(PIPELINES_KEY, None)
+    if moved and not before and not any(pid in held for pid in moved):
+        # Only memberships changed, and none is left: nothing to put back.
+        raise change_log.in_use(
+            f"No pipeline holds the {_STATUS_NOUNS[kind]} {quoted(row.name)} now, so "
+            "this change cannot be undone. Undo the changes that took it out of its "
+            "pipelines first, and then undo this."
+        )
+    async with _name_free(table, _STATUS_NOUNS[kind], before.get("name")):
         await patch_status_in(
-            db, user, kind, str(row.id), dict(logged.before or {}), undoes=logged.id,
+            db, user, kind, str(row.id), before, undoes=logged.id,
+            members=members if isinstance(members, dict) else None,
         )
     return None
 

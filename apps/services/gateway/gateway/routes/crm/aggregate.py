@@ -129,6 +129,7 @@ from gateway.routes.crm.core import (
     Entity,
     _tenant_session,
     current_tenant,
+    default_deal_pipeline_sql,
     is_mirror_mode,
     resolve_owner,
     router,
@@ -1072,23 +1073,36 @@ _DWELL_SQL = (
     "AND dwell_seconds IS NOT NULL GROUP BY from_status"
 )
 
+#: CRM-M3b (D166): the warning days of the deal's stage in the deal's own
+#: pipeline, else in the default deal pipeline for a deal with none, else the
+#: stage row. The join names the org of the deal on each side, so a read under
+#: a role that row level security does not bind joins no row of another org.
+_STAGE_LIMIT = "COALESCE(ps.max_dwell_days, s.max_dwell_days)"
+_MEMBERSHIP_JOIN = (
+    "LEFT JOIN crm_pipeline_stages ps ON ps.status_id = d.status_id "
+    "AND ps.organization_id = d.organization_id "
+    "AND ps.pipeline_id = COALESCE(d.pipeline_id, "
+    f"{default_deal_pipeline_sql('d.organization_id')}) "
+)
+
 #: The open deals past their limit. ``:days`` replaces each stage's
 #: ``max_dwell_days`` when the caller gives it. A stage with no limit, and a
 #: deal with no stage clock, is never overdue (``board.ts`` rule).
 _OVERDUE_FROM = (
     "FROM crm_deals d JOIN crm_deal_statuses s ON s.id = d.status_id "
+    f"{_MEMBERSHIP_JOIN}"
     "WHERE s.type <> ALL(CAST(:closing AS text[])) "
     "AND d.status_changed_at IS NOT NULL "
-    "AND COALESCE(CAST(:days AS int), CAST(s.max_dwell_days AS int)) IS NOT NULL "
+    f"AND COALESCE(CAST(:days AS int), CAST({_STAGE_LIMIT} AS int)) IS NOT NULL "
     "AND d.status_changed_at < now() - make_interval(days => "
-    "COALESCE(CAST(:days AS int), CAST(s.max_dwell_days AS int)))"
+    f"COALESCE(CAST(:days AS int), CAST({_STAGE_LIMIT} AS int)))"
 )
 
 _OVERDUE_SQL = (
     "SELECT d.id, d.name, d.owner_email, d.amount, d.currency, "
     "s.name AS stage, "
     "EXTRACT(EPOCH FROM (now() - d.status_changed_at)) / 86400.0 AS days_in, "
-    "COALESCE(CAST(:days AS int), CAST(s.max_dwell_days AS int)) AS limit_days "
+    f"COALESCE(CAST(:days AS int), CAST({_STAGE_LIMIT} AS int)) AS limit_days "
     f"{_OVERDUE_FROM} "
     "ORDER BY d.status_changed_at ASC, d.id LIMIT :limit OFFSET :offset"
 )
@@ -1119,7 +1133,7 @@ _MINE = (
 #: no ``:days`` override, so a stage with no limit never fires.
 _MY_OVERDUE_SQL = (
     "SELECT d.id, d.name, s.name AS stage, d.status_changed_at, "
-    "CAST(s.max_dwell_days AS int) AS limit_days "
+    f"CAST({_STAGE_LIMIT} AS int) AS limit_days "
     f"{_OVERDUE_FROM}{_MINE} "
     "ORDER BY d.status_changed_at ASC, d.id LIMIT :limit"
 )
@@ -1246,8 +1260,18 @@ async def stage_dwell(
                 stages=[], overdue=[], overdue_total=0,
                 reason=MIRROR_DWELL_REASON,
             )
+        # CRM-M3b: each stage reads the warning days of the default deal
+        # pipeline, as the overdue rule does for a deal with no pipeline.
         lanes = (await db.execute(
-            text("SELECT * FROM crm_deal_statuses ORDER BY position, name"), {},
+            text(
+                f"SELECT s.id, s.name, s.type, {_STAGE_LIMIT} AS max_dwell_days "
+                "FROM crm_deal_statuses s LEFT JOIN crm_pipeline_stages ps "
+                "ON ps.status_id = s.id AND ps.organization_id = s.organization_id "
+                "AND ps.pipeline_id = "
+                f"{default_deal_pipeline_sql('s.organization_id')} "
+                "ORDER BY s.position, s.name"
+            ),
+            {},
         )).fetchall()
         measured = {
             str(r.name): r

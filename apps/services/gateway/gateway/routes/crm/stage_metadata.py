@@ -50,6 +50,7 @@ from gateway.routes.crm.core import (
     STATUS_TYPES,
     _tenant_session,
     actor,
+    fan_out_stage_values,
     insert_row,
     refuse_in_mirror_mode,
     router,
@@ -514,6 +515,9 @@ async def apply_repair(db: Any, plan: RepairPlan) -> None:
         # has no `updated_at`, and it is absent from ZOHO_TRACKED_TABLES, so
         # this cannot dirty anything even if it wanted to.
         await update_row(db, STATUS_TABLE, status_id, values, touch=False)
+        # CRM-M3b: the repaired win chance holds in every pipeline of the
+        # stage, because each reader takes the membership value first.
+        await fan_out_stage_values(db, status_id, values)
     for values in plan.creates:
         row = await insert_row(db, STATUS_TABLE, values)
         plan.types_after[str(row.id)] = str(values["type"])

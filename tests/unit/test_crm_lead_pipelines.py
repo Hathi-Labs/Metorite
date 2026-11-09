@@ -1301,6 +1301,14 @@ _DEAL_ORDERS: tuple[tuple[str, ...], ...] = (
     ("take_out", "rename", "hide", "undo_s", "delete_s", "undo_p"),
     ("undo_take_out", "undo_s"),
     ("delete_s", "take_out", "undo_take_out", "undo_s"),
+    # CRM-M3b: the win chance of S in P (`edit_chance`). The edit row holds
+    # no status, so the Undo of S or P never waits on it. Its own Undo
+    # answers 409 `gone` while S is out of P, and works again after the
+    # Undo of the take-out.
+    ("edit_chance", "undo_s", "undo_p"),
+    ("edit_chance", "take_out", "undo_edit_chance", "undo_take_out", "undo_p"),
+    ("edit_chance", "undo_p", "undo_edit_chance"),
+    ("take_out", "edit_chance", "undo_take_out", "edit_chance", "delete_s", "undo_p"),
 )
 _LEAD_ORDERS: tuple[tuple[str, ...], ...] = (
     ("undo_s", "undo_p"),
@@ -1354,11 +1362,15 @@ async def _run_order(p: Any, admin: Any, kind: str, how: str, ops: tuple[str, ..
     #: The Undo of each kind of op: the area and the action of its row.
     undoes = {"undo_s": (_area(kind), "create"), "undo_p": ("pipeline", "create"),
               "undo_take_out": ("pipeline_stage", "delete"),
-              "undo_rename": ("pipeline", "change"), "undo_hide": (_area(kind), "change")}
+              "undo_rename": ("pipeline", "change"), "undo_hide": (_area(kind), "change"),
+              "undo_edit_chance": ("pipeline_stage", "change")}
     writes = {"delete_s": ("DELETE", f"/crm/statuses/{kind}/{sid}", None),
               "take_out": ("DELETE", f"/crm/pipelines/{pid}/stages/{sid}", None),
               "rename": ("PATCH", f"/crm/pipelines/{pid}", {"name": f"{p_name} 2"}),
-              "hide": ("PATCH", f"/crm/statuses/{kind}/{sid}", {"hidden": True})}
+              "hide": ("PATCH", f"/crm/statuses/{kind}/{sid}", {"hidden": True}),
+              # CRM-M3b: the win chance of S in P only (deal orders).
+              "edit_chance": ("PATCH", f"/crm/pipelines/{pid}/stages/{sid}",
+                              {"probability": 35, "max_dwell_days": 6})}
     for op in ops:
         if op in writes:
             method, path, payload = writes[op]

@@ -1140,6 +1140,16 @@ _PICKLIST_UPDATE_SQL = (
     "ext_id = COALESCE(CAST(:ext AS text), ext_id), source_gone_at = NULL{prob_set} "
     "WHERE id = CAST(:id AS uuid)"
 )
+#: CRM-M3b (D166, migration 394): the win chance of a stage sits on each of
+#: its pipeline memberships too, and each reader takes that value first. So a
+#: Zoho win chance goes to every membership of the stage in the same step:
+#: Mirror mode keeps one value for each stage, and Zoho wins. A membership
+#: that the sync makes (``core.set_pipeline_stages_from_source``) holds NULL,
+#: which reads the stage row.
+_MEMBERSHIP_PROBABILITY_SQL = (
+    "UPDATE crm_pipeline_stages SET probability = :probability "
+    "WHERE status_id = CAST(:id AS uuid)"
+)
 #: Two values of one picklist can trade names in one Zoho edit. The row that
 #: holds the name of another value moves aside under this name, and its own
 #: picklist value names it again in the same run.
@@ -1313,6 +1323,11 @@ async def _source_status(
             {"id": target, "name": value.name, "position": value.position,
              "ext": value.ext_id, "probability": value.probability},
         )
+        if prob:
+            await db.execute(
+                text(_MEMBERSHIP_PROBABILITY_SQL),
+                {"id": target, "probability": value.probability},
+            )
     if deal and value.forecast_category:
         await db.execute(
             text(_FORECAST_SQL), {"id": target, "category": value.forecast_category},

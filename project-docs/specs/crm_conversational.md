@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386).**
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386). CRM-M3b is built and ships dark behind the same flag (2026-11-09, migration 394, task 2041).**
 
 Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
@@ -316,7 +316,7 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 | CRM-M2g | Saved views, record names, labels, access and the settings |
 | CRM-M2h | Business rules and the open questions of the AI |
 | CRM-M2i | Mapping plans, field suggestions and the conversion mapping |
-| CRM-M2j | Rename a pipeline, add a stage and remove a stage |
+| CRM-M2j | Rename a pipeline, add a stage and remove a stage. Set the win chance and the warning days of a stage in one pipeline (CRM-M3b) |
 | CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again |
 | CRM-M2l | The reads of the setup screens, the digests and the exports |
 
@@ -365,6 +365,23 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 - **Through what.** The row says `chat` only when the request carries `X-Actor-Via: chat:crm-assistant` beside the internal bearer (`change_log.via_of`). The BFF forwards no header of the browser, so a browser cannot claim `chat`. A CRM-M2 tool reuses this helper.
 - **The chat tool.** `crm_create_pipeline(name, stages, copy_from)` takes names, reads the preview, and asks on one card before the create. The `crm-records` pack holds it. A run of an org off the flag drops it (`_tool_injection.PIPELINE_WRITES`).
 - **Settings.** "New pipeline" on the Native Deal stages card, for an admin, while `GET /crm/mode` says `pipeline_create`.
+
+#### Built as (CRM-M3b)
+
+Task 2041. Backend only. It closes done-when 3 and 7. The Settings UI is CRM-M3c.
+
+- **The migration.** Migration 394 adds `probability` and `max_dwell_days` (SMALLINT, nullable) to `crm_pipeline_stages`. Each CHECK goes in NOT VALID, and a guarded block validates it. The file copies the values of each stage row into each of its memberships, one org at a time. The stage row keeps both columns. A value outside a CHECK stays NULL.
+- **One read rule.** Each reader takes `COALESCE(ps.<column>, s.<column>)`, so NULL on a membership reads the stage row. The Mirror overlay `ui_probability` wins over both. `core.PIPELINE_STAGE_COLUMNS` holds the SELECT list. The board of one pipeline, `GET /crm/pipelines`, a new deal, a moved deal, a convert and the overdue reads use it. The board of all pipelines and the reports read the default deal pipeline. `GET /crm/statuses/deal` still serves the stage row.
+- **The edit route.** `PATCH /crm/pipelines/{id}/stages/{status_id}` takes `probability` and `max_dwell_days`, as whole numbers. It is Native only and admin only, behind `CRM_PIPELINES_ORGS`. Mirror mode gives 409 `mirror_mode_settings`. A lead pipeline, or a stage that the pipeline does not list, gives 404 with words. The clamp of D-CRM-10 binds: a `won` stage is 100 and a `lost` stage is 0, in each pipeline.
+- **No "never" in one pipeline yet.** NULL on a membership reads the stage row. So the route refuses `max_dwell_days: null` while the stage row has a limit. The words say how to turn the warning off for the whole stage.
+- **The old route sets every pipeline.** `PATCH /crm/statuses/deal/{id}` writes the stage row and each membership (`core.fan_out_stage_values`). Its row keeps the old value of each membership in `pipelines`, so its Undo puts back the value of each pipeline. The route refuses a `type` change while a pipeline gives the stage another win chance. The words name that pipeline. The Mirror edit of `max_dwell_days` (UX-Q5) reaches every membership in the same way.
+- **Each new membership copies the values.** A pipeline create copies the membership of the copied pipeline, else the stage row. A stage add, the default pipeline of a new stage, and the seed copy the stage row. A take-out keeps both values in "before", and its Undo puts them back.
+- **The sync and the switch.** A Zoho win chance goes to the stage row and to each membership of that stage, so Mirror keeps one value for each stage. The switch folds `ui_probability` into each membership before it clears the overlay. A Mirror merge of two stages gives each moved membership NULL, so it reads the kept stage.
+- **The edit row and the holder rule.** The edit logs one `pipeline_stage` row with the action `change`. It does not join `core.pipelines_holding`, because it changes no membership: no other Undo needs it. Its Undo answers 409 `gone` with words while the membership is gone. The Undo of the take-out puts the stage back with its values, and then this Undo works. A refusal of the route inside the Undo answers 409 `changed_since`. `test_no_order_leaves_the_undo_of_a_pipeline_stuck` drains four orders with this edit.
+- **One lock order.** The pipeline create lock, then the change-log row, then a stage row, then its memberships. The route takes the create lock and then the membership. A deadlock, a serialization failure or a lock timeout gives 409 `try_again`.
+- **The chat.** The route is a planned CRM-M2j row of the CRM manifest. The ceiling of planned rows in `test_crm_ui_actions.py` went from 90 to 91 for this one dark route. CRM-M2j lowers it again when the chat gets its tool.
+- **Lead statuses.** A lead win chance stays on the status row (`crm_lead_statuses.probability`). Lead pipelines get no value of their own in CRM-M3b.
+- **Fence.** `tests/unit/test_crm_pipelines_native.py` (R8) and `tests/unit/test_crm_lead_pipelines.py`.
 
 ### CRM-M4. Lead pipelines (#1098) — Wave 2
 
