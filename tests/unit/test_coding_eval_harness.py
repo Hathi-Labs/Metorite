@@ -216,10 +216,17 @@ def test_a_production_router_is_no_go() -> None:
 
 
 def _client(serving: bool, completion: int = 200) -> httpx.Client:
+    """A gateway as WS-24b made it: the internal token ``it`` opens
+    ``/settings/llm``, and the LLM key ``k`` opens ``/v1`` only."""
     def handler(request: httpx.Request) -> httpx.Response:
+        bearer = request.headers.get("Authorization", "")
         if request.url.path == "/settings/llm":
+            if bearer != "Bearer it":
+                return httpx.Response(401)
             return httpx.Response(200, json={"router_serving": serving})
         if request.url.path == "/v1/chat/completions":
+            if bearer != "Bearer k":
+                return httpx.Response(401)
             return httpx.Response(completion, json={"choices": []})
         return httpx.Response(404)
 
@@ -231,16 +238,49 @@ def _client(serving: bool, completion: int = 200) -> httpx.Client:
 ])
 def test_the_router_check(serving: bool, completion: int, ok: bool) -> None:
     gate = P.router("http://127.0.0.1:8080/v1", "k", "tier-balanced", T.MEMBER,
-                    client=_client(serving, completion))
+                    internal_token="it", client=_client(serving, completion))
     assert gate.ok is ok
     assert gate.reason.startswith(P.NO_GO) is not ok
+
+
+def test_settings_take_the_internal_token_and_v1_the_llm_key() -> None:
+    """WS43-E8 NO-GO of 2026-11-09: the preflight sent the LLM key to
+    ``/settings/llm`` and every stack answered 401. The mock refuses a wrong
+    bearer on each route, so a swap of the two tokens turns this red."""
+    seen: list[tuple[str, str]] = []
+    inner = _client(True)
+
+    def spy(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, request.headers.get("Authorization", "")))
+        return inner.send(request)
+
+    gate = P.router("http://127.0.0.1:8080/v1", "k", "tier-balanced", T.MEMBER,
+                    internal_token="it", client=httpx.Client(transport=httpx.MockTransport(spy)))
+    assert gate.ok is True, gate.reason
+    assert seen == [("/settings/llm", "Bearer it"), ("/v1/chat/completions", "Bearer k")]
+
+
+def test_a_refused_settings_read_names_the_internal_token() -> None:
+    gate = P.router("http://127.0.0.1:8080/v1", "k", "tier-balanced", T.MEMBER,
+                    internal_token="wrong", client=_client(True))
+    assert gate.ok is False
+    assert "401" in gate.reason and "GATEWAY_INTERNAL_TOKEN" in gate.reason
+
+
+def test_an_empty_internal_token_is_no_go_with_no_call() -> None:
+    def no_call(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"the preflight called {request.url}")
+
+    gate = P.router("http://127.0.0.1:8080/v1", "k", "tier-balanced", T.MEMBER,
+                    internal_token=" ", client=httpx.Client(transport=httpx.MockTransport(no_call)))
+    assert gate.ok is False and "GATEWAY_INTERNAL_TOKEN" in gate.reason
 
 
 def test_a_stack_that_does_not_answer_is_no_go() -> None:
     def down(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)
 
-    gate = P.router("http://127.0.0.1:9", "k", "tier-balanced", T.MEMBER,
+    gate = P.router("http://127.0.0.1:9", "k", "tier-balanced", T.MEMBER, internal_token="it",
                     client=httpx.Client(transport=httpx.MockTransport(down)))
     assert gate.ok is False and "does not answer" in gate.reason
 

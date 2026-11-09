@@ -804,8 +804,14 @@ def t2_vendor(docker_image: str, tmp_path_factory: pytest.TempPathFactory) -> Pa
     if given:
         return Path(given).resolve()
     vendor = tmp_path_factory.mktemp("t2-vendor").resolve()
+    # The install writes into a host dir that this process owns. On a GitHub
+    # runner (uid 1001) a container user of 1000:1000 got EACCES, and both
+    # Docker tests skipped, which the CI job counts as a failure. So the
+    # container runs as the host's own uid and gid. Windows has no getuid, and
+    # Docker Desktop maps any user onto the bind mount.
+    user = f"{os.getuid()}:{os.getgid()}" if hasattr(os, "getuid") else "1000:1000"
     done = subprocess.run(
-        ["docker", "run", "--rm", "--user", "1000:1000",
+        ["docker", "run", "--rm", "--user", user,
          "--mount", f"type=bind,source={vendor},target=/v",
          "-e", "HOME=/tmp", "-e", "npm_config_cache=/tmp/npm",
          docker_image, "npm", "install", "--prefix", "/v", "--no-audit", "--no-fund",

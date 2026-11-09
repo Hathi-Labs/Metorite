@@ -37,6 +37,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import secrets
 import shutil
 import subprocess
@@ -705,7 +706,10 @@ def _router_gate(tier: str, member: str) -> preflight.Check:
     from tests.unit._native_maf_harness import load_agent_module
 
     provider = load_agent_module(AGENT_DIR)._llm_provider()
-    return preflight.router(provider["base_url"], provider["api_key"], tier, member)
+    # WS-24b: the LLM key opens /v1 only. /settings/llm takes the internal token.
+    internal = os.environ.get("GATEWAY_INTERNAL_TOKEN", "")
+    return preflight.router(provider["base_url"], provider["api_key"], tier, member,
+                            internal_token=internal)
 
 
 if __name__ == "__main__":
