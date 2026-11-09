@@ -22512,11 +22512,13 @@ changes the egress pin in `acb_skills/egress.py`, and each change adds a fence.
 
 ## 23. Email signatures: a good signature in one minute (2026-11-07)
 
-**Status: SPECIFIED. SG-1 MERGED as `6a4b08bc9` (task 2177, migration 378). SG-2 is BUILT on
-the branch `mt-a19ff63c-signature-renderer` (task 2178, migration 393), in review, dark behind
-`EMAIL_SIGNATURE_TEMPLATES_ORGS`. SG-3 to SG-9 are not built.** Task 1959. Owner request in chat,
-2026-11-07: "design and
-create good signatures for our email." The orchestrator checked the anchors at `origin/main`
+**Status: SPECIFIED. SG-1 MERGED as `6a4b08bc9` (task 2177, migration 378), live since
+2026-11-09 07:00 UTC. SG-2 MERGED as `623948e7f` (task 2178, migration 393), dark behind
+`EMAIL_SIGNATURE_TEMPLATES_ORGS`. A spec-auditor split SG-3 into SG-3a to SG-3d on 2026-11-09
+(23.3.10, tasks 2495 to 2498). SG-3 to SG-9 are not built.**
+
+Task 1959. Owner request in chat, 2026-11-07: "design and create good signatures for our
+email." The orchestrator checked the anchors at `origin/main`
 `f7904d365` on 2026-11-07. A spec-auditor checked them again on the same day, and round 2 of
 this section applies its corrections. Re-check each anchor at dispatch.
 
@@ -22669,7 +22671,7 @@ holds no kind field, so each draft path passes `new` until SG-5 adds the kind of
 the `new` form into the body. A send of a `reply` then finds that form, keeps it, and adds no
 second one. So a reply carries one signature for each `reply_mode`, before and after SG-5.
 
-**The readers.** Each one calls the resolver (anchors on the SG-2 branch, 2026-11-09):
+**The readers.** Each one calls the resolver (anchors at `623948e7f`, 2026-11-09):
 
 | Reader | Anchor | Call | `kind` |
 |---|---|---|---|
@@ -22829,6 +22831,73 @@ draft write and the send pass the same `kind` (23.3.3), so the send finds the te
 | Upload refused | What failed, and the next step. For example: "That file is not a picture. Upload a PNG or a JPEG." |
 | No public base URL | The upload button is off, with "Image upload is not set up on this server" |
 | Phone width | The same steps, one column. The layouts show as a list |
+| No `people` row for the member | The form starts the name from the session name, else the mailbox address. Each other profile field starts empty |
+
+#### 23.3.10 The SG-3 slices and routes (spec-auditor, 2026-11-09)
+
+The auditor found SG-3 too large for one builder: a writer, a form, an image fix route, a
+dark-logo check and a send-path fix. It split SG-3 into four slices (23.6). SG-2 added no
+writer, so SG-3a adds one.
+
+**SG-3a, the writer.** Two routes, behind `templates_on()`. No UI and no migration. Migration 393
+already holds each column and CHECK.
+
+| Route | Body | Answer | Errors |
+|---|---|---|---|
+| `GET /email/signature/settings?account_id=` | — | `{mode, layout, fields, reply_mode, layouts, image_upload}`. A mailbox with no row answers `custom`, `null`, `{}` and `full` | 404 with the flag off, or with no send access |
+| `PUT /email/signature/settings` | `{account_id, mode, layout, fields, reply_mode}`, with `extra="forbid"` | The saved row, and the `html` and `text` that `signature_render.render` gives | 404 as above. 422 for `company` (until SG-4), a `fields` object over 16384 bytes, or an image address that breaks the rule below |
+
+- Both routes read the account with `resolve_account_filter(..., required=True)`. Both call
+  `_assert_account_owner(db, account_id, member, level="send")` inside `_tenant_session()`.
+- The writer stores an image (`logo` or `photo`) only when its address starts with
+  `public_base_url()`, then `/email/signature-image/`, then the bound tenant id. The address must
+  also have the hosted shape of the renderer. Each refusal names the next step. With no
+  `public_base_url()`, the writer refuses an image field and says why.
+- The upsert is `INSERT ... ON CONFLICT (account_id) DO UPDATE`, with `updated_at = now()`. The
+  tenant comes from the bound default. The writer never reads a tenant from the request.
+- With the flag off, nothing writes the table, and the send gives the bytes of main.
+- The fences:
+  - `test_email_signature_writer.py`, a new file.
+  - `test_email_signature_settings_r8.py`, with two new cases: organization A cannot write or
+    read a row of B, and the writer refuses an image address of B.
+  - `test_email_owner_scope_fence.py`, `test_email_account_ref.py` and `test_tenant_coverage.py`.
+
+**SG-3b, the form.** These points narrow 23.3.1:
+
+- The form reads the profile through `GET /people/me` (`routes/people/selfservice.py`), and the
+  company name through `GET /me` (`routes/admin/me.py`). It needs no new profile route.
+- `people.links` is a JSON object, such as `{"linkedin": "..."}`. The renderer wants a list of
+  `{label, url}`. The form maps the first four keys, and the key becomes the label.
+- `people.phone` is one column in the private tier. It starts the Phone field only. Mobile
+  starts empty. Owner question SG-Q3 decides whether the form fills Phone without a click.
+- "Edit as HTML" saves the HTML through `PUT /email/assistant/settings` first. Only then does it
+  set `custom`. A cancel then loses no layout signature.
+- The preview draws in a sandboxed iframe with no script. The form calls three routes, so
+  `chat_parity.py` gets three rows in DEBT, paid by SG-6.
+
+**SG-3c, the image fixes.**
+
+- "Fix it" needs its own route, `POST /email/signature/fix-images`. A re-save through
+  `PUT /email/assistant/settings` hosts nothing: `signature_for_save` returns an unchanged
+  signature as it is (`signature_images.py:392-393`). The route calls `host_data_images` and
+  `clean_signature_report`, then writes the stored signature in one transaction.
+- The dark-logo check reads `dark_share` and `clear_share` from the upload answer, so the SG-1
+  child does not change. The warning shows at upload time only. After a reload it is gone.
+- The proposed rule warns on a logo when `clear_share` is 0.10 or more and `dark_share` is 0.50
+  or more (owner question SG-Q5). A unit test pins the numbers.
+- "Add a white background" draws the member's own file over white on a canvas, then uploads it
+  through `POST /signature/images`. A canvas cannot read the hosted image, because the public
+  route sends no CORS header. Do not add one, because it widens a public route.
+
+**SG-3d, the field-change fix.** `SignatureForms.for_body` looks for `full` and `stored` in a
+draft. After a field edit, the draft holds the old render, so the send adds the new one under
+it. Only stored history can fix this.
+
+One expand-only migration adds a nullable JSONB column of earlier renders: at most three
+`{layout, fields}` entries, with a CHECK on the type and the size. The writer pushes the old
+entry when the rendered text changes. `for_body` then also tests each earlier render. This also
+covers a change from `template` to `custom`. Owner question SG-Q4 decides between SG-3d and
+SG-5.
 
 ### 23.4 Tenancy (R5) and safety
 
@@ -22868,8 +22937,12 @@ change with no restart.
 |---|---|---|---|---|---|
 | **SG-0** | This section, and the slice tasks | LOW | AGENT-SAFE | — | 1959 |
 | **SG-1** | Hosted images: the table, the confined upload child, the upload and retire routes, the public route in its three lists, the server allowlist (D-EM-70), the editor uploads in place of `data:` | HIGH (migration, public route) | AGENT-SAFE, dark | — | 2177, merged (`6a4b08bc9`) |
-| **SG-2** | The renderer, the five layouts, the signature table (mode, layout, fields, `reply_mode`), the resolver at each reader of 23.3.3, the grep fence, the preview route | HIGH (migration, the send path) | AGENT-SAFE, dark | SG-1 | 2178, built, in review |
-| **SG-3** | The member form: the layout gallery, the fields from the profile, the live preview in light, dark and phone width, the reply choice. An owner preview | STANDARD | AGENT-SAFE, dark | SG-2 | 2179 |
+| **SG-2** | The renderer, the five layouts, the signature table (mode, layout, fields, `reply_mode`), the resolver at each reader of 23.3.3, the grep fence, the preview route | HIGH (migration, the send path) | AGENT-SAFE, dark | SG-1 | 2178, merged (`623948e7f`) |
+| **SG-3** | The member form. Four slices (23.3.10) | — | — | SG-2 | 2179 (parent) |
+| **SG-3a** | The writer: `GET` and `PUT /email/signature/settings`, the owner check, the hosted-image rule. No UI, no migration | HIGH (a writer to a FORCE-RLS table, the content of sent mail) | AGENT-SAFE, dark | SG-2 | 2495 |
+| **SG-3b** | The form: the layout gallery, the fields from the profile, the live preview in light, dark and phone width, the reply choice, "Edit as HTML", the states of 23.3.9. An owner preview | STANDARD | AGENT-SAFE, dark | SG-3a | 2496 |
+| **SG-3c** | "Fix it" for a `data:` image, and the dark-logo warning with "Add a white background" | STANDARD | AGENT-SAFE, dark | SG-3b | 2497 |
+| **SG-3d** | A draft written before a signature edit gets one signature at the send: the earlier renders | HIGH (migration, the send path) | AGENT-SAFE, dark. Must merge before the flag flip | SG-3a | 2498 |
 | **SG-4** | The company signature: the `org_settings` key, the admin section, "Use the company signature" | STANDARD | AGENT-SAFE, dark | SG-2 | 2180 |
 | **SG-5** | Replies and forwards: the composers ask for `kind`, and the short signature seeds a reply | STANDARD | AGENT-SAFE, dark | SG-2 | 2181 |
 | **SG-6** | The chat: `get_signature`, `set_signature`, the preview card, the fence set | STANDARD | AGENT-SAFE, dark | SG-2 | 2182 |
@@ -23009,3 +23082,12 @@ recommendation below is now the decision.
 |---|---|---|
 | **SG-Q1** | May an admin require the company signature, so a member cannot switch to an own layout? | No, in v1. The company signature is the first choice for each mailbox, one click away. A "required" switch can come later |
 | **SG-Q2** | For a new signature, should replies and forwards get the full or the short signature? | Short (name, title, company, phone), as most companies use. Each existing mailbox keeps full |
+
+The SG-3 audit (2026-11-09) adds four questions. They wait on task 2179. None blocks SG-3a.
+
+| Id | Question | Recommendation | Blocks |
+|---|---|---|---|
+| **SG-Q3** | `people.phone` is private. A signature goes to people outside the company. Should the form fill Phone from the profile? | No. Leave Phone empty, with a "Use my profile phone" button | SG-3b |
+| **SG-Q4** | A draft written before a signature edit gets two signatures at the send. Fix it now in SG-3d (one migration), or in SG-5? | SG-3d, before any flip of the flag | SG-3d |
+| **SG-Q5** | Warn on a dark logo when 10% or more of it is clear and 50% or more of it is dark? | Yes. The owner may tune the numbers later | SG-3c |
+| **SG-Q6** | Until SG-5, `short` and `none` change only the reply card and a forward with no signature. Should the form show the reply choice with a note, or hide it until SG-5? | Show it, with the note "Replies use this from the next update" | SG-3b |
