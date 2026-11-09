@@ -897,7 +897,7 @@ EFFECTIVE_STATUS_COLUMNS: dict[str, str] = {
     "crm_lead_statuses": _effective_columns("crm_lead_statuses", deal=False),
 }
 
-#: CRM-M3b (D166, migration 394): the SELECT list of a deal stage ``s`` in one
+#: CRM-M3b (D166, migration 398): the SELECT list of a deal stage ``s`` in one
 #: deal pipeline, over its membership ``ps`` (``crm_pipeline_stages``). The win
 #: chance is ``COALESCE(s.ui_probability, ps.probability, s.probability)``, and
 #: the warning days are ``COALESCE(ps.max_dwell_days, s.max_dwell_days)``. A
@@ -1630,7 +1630,7 @@ async def add_stage_to_default_pipeline(db: Any, status_id: str) -> None:
     if pipeline is None:
         return
     # CRM-M3b: the membership copies the win chance and the warning days of
-    # the stage row (migration 394).
+    # the stage row (migration 398).
     await db.execute(
         text(
             "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position, "
@@ -1721,13 +1721,13 @@ def default_deal_pipeline_sql(org_column: str) -> str:
 # ── The win chance and the warning days of a stage in a pipeline (CRM-M3b) ──
 
 #: The two values of a deal stage that sit on its membership of one deal
-#: pipeline (D166, migration 394). NULL there reads the stage row. The stage
+#: pipeline (D166, migration 398). NULL there reads the stage row. The stage
 #: row keeps both columns: ``GET /crm/statuses/deal`` serves it, and a new
 #: membership copies it.
 MEMBERSHIP_COLUMNS: tuple[str, ...] = ("probability", "max_dwell_days")
 
 #: What a new membership copies from its stage row ``s``. A value outside the
-#: range of a CHECK of migration 394 stays NULL, and then each reader reads
+#: range of a CHECK of migration 398 stays NULL, and then each reader reads
 #: the stage row, as before.
 _COPY_SQL: dict[str, str] = {
     "probability": "CASE WHEN s.probability BETWEEN 0 AND 100 THEN s.probability END",
@@ -2718,7 +2718,7 @@ async def merge_status_from_source(
         )
         # CRM-M3b: a moved deal membership holds the values of the folded row.
         # It takes NULL, so it reads the kept row, as one value per stage of
-        # Mirror mode needs (migration 394).
+        # Mirror mode needs (migration 398).
         values = (
             ", probability = NULL, max_dwell_days = NULL"
             if stages == "crm_pipeline_stages" else ""

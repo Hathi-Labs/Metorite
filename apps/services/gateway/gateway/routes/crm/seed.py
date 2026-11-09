@@ -82,7 +82,7 @@ _PIPELINE_SQL = (
     "VALUES (CAST(:organization_id AS uuid), :name, 0, true) RETURNING id"
 )
 
-#: CRM-M3b (migration 394): each membership copies the win chance and the
+#: CRM-M3b (migration 398): each membership copies the win chance and the
 #: warning days of its stage row. The text of ``core.copied_values_sql()``,
 #: kept here because this module is a leaf. ``test_crm_pipelines_native.py``
 #: holds the two equal.

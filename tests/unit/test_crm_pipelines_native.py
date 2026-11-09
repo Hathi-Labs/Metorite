@@ -18,7 +18,7 @@ in ``apps/services/gateway/gateway/routes/crm/pipelines.py``.
   each refusal, Mirror mode, the Change history row and its Undo, the preview,
   ``GET /crm/mode``, a write that rolls back, and a second org that reads zero
   rows.
-- CRM-M3b (D166, migration 394, found by content): the win chance and the
+- CRM-M3b (D166, migration 398, found by content): the win chance and the
   warning days on the membership. One pipeline's edit leaves the other, the
   clamp, Mirror, a new, moved and converted deal, the overdue reads, the
   take-out and its Undo, the old route for every pipeline, the sync, the
@@ -862,7 +862,7 @@ async def test_another_database_error_of_an_undo_is_not_called_a_conflict(
 
 
 def _m3b_migration() -> Path:
-    """Migration 394, found by CONTENT, never by number (R1)."""
+    """Migration 398, found by CONTENT, never by number (R1)."""
     found = [
         p for p in sorted((_ROOT / "infra" / "postgres").glob("[0-9]*.sql"))
         if re.search(r"ALTER TABLE crm_pipeline_stages\s+ADD COLUMN IF NOT EXISTS "
@@ -1322,7 +1322,7 @@ async def test_a_zoho_shaped_org_reads_the_same_board_after_the_migration(pns) -
     """Done when 7 (R8). A Mirror org with Zoho stages, win chances, an
     overlay and warning days, two pipelines, and memberships as old code
     wrote them (no values). The board and the pipeline list read the same
-    before and after migration 394 runs, and a second run changes nothing. A
+    before and after migration 398 runs, and a second run changes nothing. A
     stage row outside a CHECK leaves its membership NULL."""
     from tests.unit._tenant_ladder import _exec_file
 

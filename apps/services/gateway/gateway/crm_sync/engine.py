@@ -1140,7 +1140,7 @@ _PICKLIST_UPDATE_SQL = (
     "ext_id = COALESCE(CAST(:ext AS text), ext_id), source_gone_at = NULL{prob_set} "
     "WHERE id = CAST(:id AS uuid)"
 )
-#: CRM-M3b (D166, migration 394): the win chance of a stage sits on each of
+#: CRM-M3b (D166, migration 398): the win chance of a stage sits on each of
 #: its pipeline memberships too, and each reader takes that value first. So a
 #: Zoho win chance goes to every membership of the stage in the same step:
 #: Mirror mode keeps one value for each stage, and Zoho wins. A membership

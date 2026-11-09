@@ -19,7 +19,7 @@ A stage (``crm_deal_statuses``) stays one global list, and
 So the same stage can sit in two pipelines.
 
 **The win chance and the warning days of a stage in a pipeline** (WS-CRM
-CRM-M3b, D166, migration 394). They sit on the membership row
+CRM-M3b, D166, migration 398). They sit on the membership row
 (``crm_pipeline_stages.probability`` and ``max_dwell_days``), and NULL there
 reads the stage row. So a win chance edited in one pipeline does not change
 the other. ``PATCH /crm/pipelines/{id}/stages/{status_id}`` sets them, Native
@@ -1351,7 +1351,7 @@ def _check_stage_values(values: dict[str, Any], stage: Any) -> None:
             ))
         limit = getattr(stage, "max_dwell_days", None)
         if days is None and limit is not None:
-            # NULL on a membership reads the stage row (migration 394), so it
+            # NULL on a membership reads the stage row (migration 398), so it
             # cannot mean "never" while the stage row holds a limit.
             raise HTTPException(status_code=422, detail=(
                 f"The stage {quoted(stage.name)} shows the warning after {limit} "

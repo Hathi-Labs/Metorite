@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386). CRM-M3b is built and ships dark behind the same flag (2026-11-09, migration 394, task 2041).**
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386). CRM-M3b is built and ships dark behind the same flag (2026-11-09, migration 398, task 2041).**
 
 Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
@@ -370,7 +370,7 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 
 Task 2041. Backend only. It closes done-when 3 and 7. The Settings UI is CRM-M3c.
 
-- **The migration.** Migration 394 adds `probability` and `max_dwell_days` (SMALLINT, nullable) to `crm_pipeline_stages`. Each CHECK goes in NOT VALID, and a guarded block validates it. The file copies the values of each stage row into each of its memberships, one org at a time. The stage row keeps both columns. A value outside a CHECK stays NULL.
+- **The migration.** Migration 398 adds `probability` and `max_dwell_days` (SMALLINT, nullable) to `crm_pipeline_stages`. Each CHECK goes in NOT VALID, and a guarded block validates it. The file copies the values of each stage row into each of its memberships, one org at a time. The stage row keeps both columns. A value outside a CHECK stays NULL.
 - **One read rule.** Each reader takes `COALESCE(ps.<column>, s.<column>)`, so NULL on a membership reads the stage row. The Mirror overlay `ui_probability` wins over both. `core.PIPELINE_STAGE_COLUMNS` holds the SELECT list. The board of one pipeline, `GET /crm/pipelines`, a new deal, a moved deal, a convert and the overdue reads use it. The board of all pipelines and the reports read the default deal pipeline. `GET /crm/statuses/deal` still serves the stage row.
 - **The edit route.** `PATCH /crm/pipelines/{id}/stages/{status_id}` takes `probability` and `max_dwell_days`, as whole numbers. It is Native only and admin only, behind `CRM_PIPELINES_ORGS`. Mirror mode gives 409 `mirror_mode_settings`. A lead pipeline, or a stage that the pipeline does not list, gives 404 with words. The clamp of D-CRM-10 binds: a `won` stage is 100 and a `lost` stage is 0, in each pipeline.
 - **No "never" in one pipeline yet.** NULL on a membership reads the stage row. So the route refuses `max_dwell_days: null` while the stage row has a limit. The words say how to turn the warning off for the whole stage.
