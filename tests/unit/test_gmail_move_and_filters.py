@@ -34,6 +34,7 @@ Run::
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -808,8 +809,13 @@ def test_json_or_empty_passes_a_dict_and_raises_on_a_bad_body() -> None:
         gmail_mod._json_or_empty(_resp(b"<html>Service Unavailable</html>"))
 
 
-async def test_label_assignments_read_an_empty_body_as_none(fake: _Gmail) -> None:
-    assert await _blank(fake, "/messages").fetch_label_assignments() == {}
+async def test_label_assignments_read_an_empty_body_as_none(
+    fake: _Gmail, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The restore goes on, and a warning names the skipped label (task 2434)."""
+    with caplog.at_level(logging.WARNING, logger=gmail_mod.__name__):
+        assert await _blank(fake, "/messages").fetch_label_assignments() == {}
+    assert "gmail.label_restore_empty_page" in caplog.text
 
 
 async def test_the_draft_lookup_reads_an_empty_body_as_no_draft(

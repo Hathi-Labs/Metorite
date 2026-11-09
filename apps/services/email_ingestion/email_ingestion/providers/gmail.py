@@ -1542,6 +1542,10 @@ class GmailProvider(BaseEmailProvider):
                 except httpx.HTTPError:
                     break  # one bad label must not abort the whole restore
                 data = _json_or_empty(resp)
+                if not data:
+                    # An empty body skips this label, and the restore goes on.
+                    # The line makes the partial restore visible (task 2434).
+                    logger.warning("gmail.label_restore_empty_page label_id=%s", lid)
                 for ref in data.get("messages", []) or []:
                     mid = ref.get("id")
                     if mid:
