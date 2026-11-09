@@ -32,6 +32,7 @@ import { clickSelect } from "@/lib/selection";
 import type { UndoEntry } from "@/lib/undo";
 
 import { type TaskRow, projectsApi } from "../lib/api";
+import { shortDate } from "../lib/outlook";
 import {
   ARCHIVED_PROJECT_REASON,
   ARCHIVE_EMPTY_HINT,
@@ -76,10 +77,10 @@ async function readArchive(): Promise<TaskRow[]> {
   return rows;
 }
 
+/** "8 Nov 2026": the one short date of the Projects app (`lib/outlook.ts`),
+ *  so this list and the archived-project bar (ARC-2a) print a date alike. */
 function filedOn(task: TaskRow): string {
-  const at = task.archived_at ? new Date(task.archived_at) : null;
-  if (!at || Number.isNaN(at.getTime())) return "";
-  return at.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  return task.archived_at ? shortDate(task.archived_at).replace("—", "") : "";
 }
 
 export function MyArchiveView({ projectPath, projectArchived, onOpenTask, version, onRestored }: Props) {
